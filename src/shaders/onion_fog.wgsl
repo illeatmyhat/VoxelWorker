@@ -54,6 +54,10 @@ struct FogUniforms {
 // surface so the solid band correctly occludes fog behind it.
 @group(0) @binding(1) var scene_depth: texture_depth_multisampled_2d;
 
+// Voxels of inset applied to the fog's soft edge (option B): keeps the smooth haze
+// inside the voxel slab's quantised silhouette rather than poking past its edges.
+const FOG_EDGE_INSET: f32 = 0.75;
+
 // ---- SDF library (ported 1:1 from src/voxel.rs) ----
 
 fn sd_box(point: vec3<f32>, box_half: vec3<f32>) -> f32 {
@@ -155,16 +159,13 @@ fn fragment_main(input: VsOut) -> @location(0) vec4<f32> {
     let ray_length_total = length(ray_full);
     let ray_direction = ray_full / max(ray_length_total, 1e-6);
 
-    // Stop the march at the nearest opaque surface: load the MSAA depth (sample 0)
-    // at this pixel, unproject it to a world point, and use its distance along the
-    // ray as the far bound.
-    let depth_texel = vec2<i32>(input.clip_position.xy);
-    let sampled_depth = textureLoad(scene_depth, depth_texel, 0);
-    var march_far = ray_length_total;
-    if (sampled_depth < 1.0) {
-        let hit_world = unproject(vec3<f32>(ndc_xy, sampled_depth));
-        march_far = length(hit_world - ray_origin);
-    }
+    // X-ray onion (option B, user-confirmed): march the FULL ray and deliberately
+    // ignore the opaque slab's depth occlusion. The conventional cel-animation
+    // "onion skin" lets you see the neighbour layers *through* the current frame, so
+    // the ghost layers must show on BOTH sides of the displayed slice — including
+    // the band that sits behind the solid slab from the camera's view. (`scene_depth`
+    // stays bound for a possible future occluded mode but is unused here.)
+    let march_far = ray_length_total;
 
     // Fixed-step integration of fog density along the ray. The step count trades
     // quality for cost; the band is thin so a modest count suffices. (Avoid the
@@ -178,8 +179,11 @@ fn fragment_main(input: VsOut) -> @location(0) vec4<f32> {
         // Inside the shape?
         let distance = scene_sdf(sample_point);
         // Smooth density: 1 well inside the surface, fading to 0 at/just outside,
-        // so the fog edge is soft (no hard SDF iso-cliff).
-        let inside = smoothstep(0.5, -0.5, distance);
+        // so the fog edge is soft (no hard SDF iso-cliff). The FOG_EDGE_INSET pushes
+        // the soft edge INWARD from the ideal SDF surface so the smooth haze stays
+        // inside the voxel slab's stair-stepped silhouette instead of undercutting /
+        // haloing past its quantised edges (option B inset).
+        let inside = smoothstep(0.5, -0.5, distance + FOG_EDGE_INSET);
 
         // Vertical onion weight: 0 inside the displayed band (the opaque pass owns
         // it) and BELOW/ABOVE the onion reach, ramping to its peak just outside the

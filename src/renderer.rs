@@ -1948,7 +1948,8 @@ fn floor_vertices(grid_dimensions: [u32; 3]) -> Vec<LineVertex> {
 
 /// Parameters for one frame of the onion-skin fog pass. The fog raymarches the
 /// parametric SDF and integrates a faint haze in the onion-band Y range OUTSIDE
-/// the displayed (solid) band, stopping at the opaque scene depth.
+/// the displayed (solid) band. Option B (x-ray onion): the march ignores the
+/// opaque slab's depth so neighbour layers show through the slice on both sides.
 #[derive(Debug, Clone, Copy)]
 pub struct OnionFogParams {
     /// Inverse camera view-projection (to unproject screen → world rays).
@@ -1988,9 +1989,11 @@ struct OnionFogUniforms {
 }
 
 /// Fog tint (cool blue-grey) and Beer–Lambert strength. Strength is low so the
-/// haze is aerogel-faint and the solid band clearly shows through.
+/// haze is aerogel-faint and the solid band clearly shows through. Option B
+/// (x-ray onion) wants it wispier still, so the band reads as a faint ghost rather
+/// than a frosted puck — lowered from the original 0.18.
 const ONION_FOG_COLOR_HEX: u32 = 0x9c_b4_d8;
-const ONION_FOG_STRENGTH: f32 = 0.18;
+const ONION_FOG_STRENGTH: f32 = 0.10;
 
 /// Fullscreen volumetric-fog renderer for the onion skin (issue #12).
 pub struct OnionFogRenderer {
@@ -2117,8 +2120,9 @@ impl OnionFogRenderer {
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
     }
 
-    /// Draw the fog into `target_view` (the resolved scene), sampling `depth_view`
-    /// (the 3D pass's MSAA depth) to stop the raymarch at opaque surfaces. Its own
+    /// Draw the fog into `target_view` (the resolved scene). `depth_view` (the 3D
+    /// pass's MSAA depth) stays bound for a possible future occluded mode, but the
+    /// x-ray onion (option B) marches the full ray and does not clamp to it. Its own
     /// render pass loads the existing colour and composites the haze over it.
     pub fn draw(
         &self,

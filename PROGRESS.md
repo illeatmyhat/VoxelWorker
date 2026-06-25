@@ -33,6 +33,18 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **fog polish → option B (x-ray onion), implemented** — Applied the user-confirmed B decision to the
+  volumetric fog (`onion_fog.wgsl` + `OnionFogRenderer`): (1) **x-ray** — the raymarch now ignores the
+  opaque slab's depth and marches the FULL ray, so the neighbour onion bands show through the displayed
+  slice on BOTH sides (`scene_depth` stays bound but unused, reserved for a future occluded mode);
+  (2) **inset** — `FOG_EDGE_INSET = 0.75` voxels pushes the smooth SDF density edge inward so the haze
+  stays inside the voxel slab's stair-stepped silhouette instead of haloing past it; (3) **lower
+  density** — `ONION_FOG_STRENGTH 0.18 → 0.10` so it reads wispy/aerogel, not a frosted puck. Verified
+  headless on a 6³ sphere single-equator slice + onion 3/5 (`shots/onion-B*.png`): bands show above AND
+  below the slab, stop within the disc rim (no undercut), and the brown texture reads through. The
+  horizontal-stripe look of a thin onion band is inherent to the already-chosen volumetric SDF method,
+  not a regression. Tree green: build (both bins) + clippy + 33 tests.
+
 - **volumetric onion fog + camera core #13a (green checkpoint)** — Onion skin evolved into a true
   **fullscreen SDF raymarch fog pass** (`onion_fog.wgsl`): ports the 5 shape SDFs, marches the view
   ray bounded by the 3D MSAA depth, Beer–Lambert haze in the onion Y-range; `OnionFogRenderer` in
