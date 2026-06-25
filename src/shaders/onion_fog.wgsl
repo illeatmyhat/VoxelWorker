@@ -1,122 +1,57 @@
-// Volumetric onion-skin fog (issue #12) — fullscreen SDF raymarch.
+// Volumetric onion-skin fog (issue #12) — fullscreen raymarch of the RESOLVED
+// voxel grid as a cloud density field.
 //
-// The onion skin is no longer drawn as per-voxel translucent cubes (which showed
-// cube faces/edges and wrongly treated a rough/concave volume as one solid
-// shell). Instead this fullscreen pass raymarches the SAME parametric SDF the
-// CPU producer uses, integrating a smooth fog density wherever the shape is
-// SOLID *and* the world-Y falls in the onion-skin layer band OUTSIDE the
-// displayed band. The result is true optical-thickness fog: a ray that crosses
-// material → gap → material (e.g. a torus side-on, or the near + far walls of a
-// hollow shape) accumulates correctly, with NO voxel quantization and no edges.
+// The onion skin is just the set of voxels in the layers neighbouring the
+// displayed band. Rather than re-deriving the parametric shape on the GPU (which
+// only works for the 5 built-in SDFs and forces a 1:1 duplicate of the SDF
+// library from src/voxel.rs), this pass treats the resolved VoxelGrid as a 3D
+// density field — exactly how volumetric clouds are rendered — and raymarches it.
+// Trilinear filtering of the binary occupancy yields a smooth density for free,
+// so the haze is soft (no cube faces, no SDF iso-cliff) AND it works for ANY
+// voxel set, including future sculpt / override producers. This honours the
+// resolved-grid seam in REPRESENTATION.md (every consumer reads the grid, never
+// the SDF).
 //
-// Putting the SDF on the GPU is fine here (the user lifted the CPU-only
-// assumption): the shapes are cheap closed-form SDFs and there is no fidelity
-// loss versus the resolved grid for a smooth haze.
-//
-// The pass:
-//   * Draws a single full-screen triangle (no vertex buffer).
-//   * Reconstructs each pixel's world-space view ray from the inverse
-//     view-projection.
-//   * Marches the ray from the near plane up to the SCENE depth (sampled from the
-//     resolved opaque depth) so the solid band correctly occludes fog behind it.
-//   * Integrates fog density (Beer–Lambert) and composites OVER the scene colour.
+// X-ray onion (option B, user-confirmed): the march ignores opaque depth and
+// integrates the FULL ray, so the neighbour onion layers show through the
+// displayed slice on BOTH sides (the conventional cel-animation "onion skin" =
+// see the neighbouring frames through the current one).
 
-// std140-safe: each vec3 is followed by a scalar; field order matches the Rust
-// `OnionFogUniforms` struct in renderer.rs exactly (128 bytes).
+// std140-safe: field order matches the Rust `OnionFogUniforms` struct in
+// renderer.rs exactly (112 bytes).
 struct FogUniforms {
     // Inverse of the camera view-projection, to unproject screen → world rays.
     inverse_view_projection: mat4x4<f32>,
-    // Inscribed semi-axes (voxel-space half-extents) of the shape.
+    // Inscribed semi-axes (= grid_dimensions / 2). The shape is centred at the
+    // origin, so world → normalised grid coords is `world / semi_axes * 0.5 + 0.5`.
     semi_axes: vec3<f32>,
-    // Shape selector: 0 cylinder, 1 tube, 2 sphere, 3 torus, 4 box.
-    shape_kind: f32,
-    // Fog tint (linear RGB) and tube wall thickness in voxels (tube only).
+    // Overall fog strength (Beer–Lambert coefficient).
+    fog_strength: f32,
+    // Fog tint (linear RGB).
     fog_color: vec3<f32>,
-    wall_voxels: f32,
-    // The world-space Y range of the ONION band (layers OUTSIDE the displayed
-    // band that should fog), in world units (voxel-centred). Fog is integrated
-    // only where world_y is within [onion_y_min, onion_y_max] AND outside
-    // [band_y_min, band_y_max] (the solid band the opaque pass already drew).
+    _pad0: f32,
+    // World-space Y range of the ONION band (layers OUTSIDE the displayed band that
+    // should fog) and of the displayed solid band (excluded — the opaque pass
+    // already drew it). Fog integrates only where world_y is within
+    // [onion_y_min, onion_y_max] AND outside [band_y_min, band_y_max].
     onion_y_min: f32,
     onion_y_max: f32,
     band_y_min: f32,
     band_y_max: f32,
-    // Overall fog strength (Beer–Lambert coefficient) + padding to 16 bytes.
-    fog_strength: f32,
-    _pad0: f32,
-    _pad1: f32,
-    _pad2: f32,
 };
 
 @group(0) @binding(0) var<uniform> fog: FogUniforms;
-// The opaque 3D pass's 4× MSAA depth buffer, read directly (sample 0) via
-// `textureLoad` — no resolve pass needed. The march stops at this nearest opaque
-// surface so the solid band correctly occludes fog behind it.
-@group(0) @binding(1) var scene_depth: texture_depth_multisampled_2d;
+// The resolved voxel grid as an R8 occupancy field (1 = solid, 0 = empty),
+// trilinear-sampled so the binary grid reads as a smooth cloud density.
+@group(0) @binding(1) var occupancy: texture_3d<f32>;
+@group(0) @binding(2) var occupancy_sampler: sampler;
 
-// Voxels of inset applied to the fog's soft edge (option B): keeps the smooth haze
-// inside the voxel slab's quantised silhouette rather than poking past its edges.
-const FOG_EDGE_INSET: f32 = 0.75;
-
-// ---- SDF library (ported 1:1 from src/voxel.rs) ----
-
-fn sd_box(point: vec3<f32>, box_half: vec3<f32>) -> f32 {
-    let q = abs(point) - box_half;
-    return length(max(q, vec3<f32>(0.0))) + min(max(q.x, max(q.y, q.z)), 0.0);
-}
-
-fn sd_ellipsoid(point: vec3<f32>, semi_axes: vec3<f32>) -> f32 {
-    let scaled = point / semi_axes;
-    let k0 = length(scaled);
-    if (k0 == 0.0) {
-        return -min(semi_axes.x, min(semi_axes.y, semi_axes.z));
-    }
-    let scaled_sq = point / (semi_axes * semi_axes);
-    let k1 = length(scaled_sq);
-    return k0 * (k0 - 1.0) / k1;
-}
-
-fn sd_elliptical_cylinder(point: vec3<f32>, semi_axis_x: f32, semi_axis_z: f32, half_height: f32) -> f32 {
-    let radial = (length(vec2<f32>(point.x / semi_axis_x, point.z / semi_axis_z)) - 1.0)
-        * min(semi_axis_x, semi_axis_z);
-    let vertical = abs(point.y) - half_height;
-    return min(max(radial, vertical), 0.0)
-        + length(vec2<f32>(max(radial, 0.0), max(vertical, 0.0)));
-}
-
-// Dispatch matching src/voxel.rs `signed_distance`.
-fn scene_sdf(point: vec3<f32>) -> f32 {
-    let ax = fog.semi_axes.x;
-    let ay = fog.semi_axes.y;
-    let az = fog.semi_axes.z;
-    let kind = i32(fog.shape_kind + 0.5);
-    if (kind == 0) {
-        // Cylinder.
-        return sd_elliptical_cylinder(point, ax, az, ay);
-    } else if (kind == 1) {
-        // Tube: outer cylinder minus inner cylinder.
-        let outer = sd_elliptical_cylinder(point, ax, az, ay);
-        let inner = sd_elliptical_cylinder(
-            point,
-            max(ax - fog.wall_voxels, 0.01),
-            max(az - fog.wall_voxels, 0.01),
-            ay + 1.0,
-        );
-        return max(outer, -inner);
-    } else if (kind == 2) {
-        // Sphere (ellipsoid).
-        return sd_ellipsoid(point, fog.semi_axes);
-    } else if (kind == 3) {
-        // Torus.
-        let tube_radius = ay;
-        let ring_radius = max(min(ax, az) - tube_radius, 0.0);
-        let radial = length(vec2<f32>(point.x, point.z)) - ring_radius;
-        return length(vec2<f32>(radial, point.y)) - tube_radius;
-    } else {
-        // Box.
-        return sd_box(point, fog.semi_axes);
-    }
-}
+// Trilinear interpolation reads ~0.5 at a solid/empty voxel boundary, so mapping
+// occupancy through this soft window insets the haze edge INWARD — keeping it
+// inside the voxel slab's stair-stepped silhouette instead of bleeding past the
+// quantised edges (option B inset). Values below FOG_EDGE_LOW read as empty.
+const FOG_EDGE_LOW: f32 = 0.35;
+const FOG_EDGE_HIGH: f32 = 0.85;
 
 // ---- Fullscreen triangle ----
 
@@ -136,7 +71,7 @@ fn vertex_main(@builtin(vertex_index) vertex_index: u32) -> VsOut {
     let p = positions[vertex_index];
     var out: VsOut;
     out.clip_position = vec4<f32>(p, 0.0, 1.0);
-    // UV in [0,1], y flipped so (0,0) is top-left like the depth texture.
+    // UV in [0,1], y flipped so (0,0) is top-left.
     out.uv = vec2<f32>((p.x + 1.0) * 0.5, (1.0 - p.y) * 0.5);
     return out;
 }
@@ -159,12 +94,8 @@ fn fragment_main(input: VsOut) -> @location(0) vec4<f32> {
     let ray_length_total = length(ray_full);
     let ray_direction = ray_full / max(ray_length_total, 1e-6);
 
-    // X-ray onion (option B, user-confirmed): march the FULL ray and deliberately
-    // ignore the opaque slab's depth occlusion. The conventional cel-animation
-    // "onion skin" lets you see the neighbour layers *through* the current frame, so
-    // the ghost layers must show on BOTH sides of the displayed slice — including
-    // the band that sits behind the solid slab from the camera's view. (`scene_depth`
-    // stays bound for a possible future occluded mode but is unused here.)
+    // X-ray onion (option B): march the FULL ray and ignore opaque occlusion, so
+    // the onion bands show through the displayed slice on both sides.
     let march_far = ray_length_total;
 
     // Fixed-step integration of fog density along the ray. The step count trades
@@ -176,14 +107,20 @@ fn fragment_main(input: VsOut) -> @location(0) vec4<f32> {
     var t = step_size * 0.5;
     for (var i = 0; i < step_count; i = i + 1) {
         let sample_point = ray_origin + ray_direction * t;
-        // Inside the shape?
-        let distance = scene_sdf(sample_point);
-        // Smooth density: 1 well inside the surface, fading to 0 at/just outside,
-        // so the fog edge is soft (no hard SDF iso-cliff). The FOG_EDGE_INSET pushes
-        // the soft edge INWARD from the ideal SDF surface so the smooth haze stays
-        // inside the voxel slab's stair-stepped silhouette instead of undercutting /
-        // haloing past its quantised edges (option B inset).
-        let inside = smoothstep(0.5, -0.5, distance + FOG_EDGE_INSET);
+
+        // World → normalised grid coords. The shape is centred at the origin and
+        // semi_axes = grid_dimensions / 2, so this lands [0,1] across the grid box,
+        // with voxel centres at texel centres (trilinear-aligned).
+        let grid_uvw = sample_point / fog.semi_axes * 0.5 + vec3<f32>(0.5);
+        var density = 0.0;
+        // Only sample inside the grid box. Clamp-to-edge would otherwise smear the
+        // border voxels (e.g. a box that fills the grid) along the entire ray.
+        let inside_box = all(grid_uvw >= vec3<f32>(0.0)) && all(grid_uvw <= vec3<f32>(1.0));
+        if (inside_box) {
+            density = textureSampleLevel(occupancy, occupancy_sampler, grid_uvw, 0.0).r;
+        }
+        // Soft, inset density from the trilinear occupancy.
+        let inside = smoothstep(FOG_EDGE_LOW, FOG_EDGE_HIGH, density);
 
         // Vertical onion weight: 0 inside the displayed band (the opaque pass owns
         // it) and BELOW/ABOVE the onion reach, ramping to its peak just outside the
@@ -213,7 +150,7 @@ fn fragment_main(input: VsOut) -> @location(0) vec4<f32> {
     if (coverage < 0.002) {
         discard;
     }
-    // Premultiplied OVER composite: blend state is src.a-driven alpha-over, so
-    // return straight (non-premultiplied) colour with `coverage` as alpha.
+    // Straight (non-premultiplied) colour with `coverage` as alpha; blend state is
+    // alpha-over.
     return vec4<f32>(fog.fog_color, coverage);
 }

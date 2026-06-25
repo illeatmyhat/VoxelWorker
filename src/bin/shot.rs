@@ -33,18 +33,6 @@ use voxel_worker::{
     COLOR_TARGET_FORMAT,
 };
 
-/// Map a [`ShapeKind`] to the onion-fog shader's shape selector (issue #12),
-/// matching the `scene_sdf` dispatch in `onion_fog.wgsl`.
-fn shape_kind_index(kind: ShapeKind) -> u32 {
-    match kind {
-        ShapeKind::Cylinder => 0,
-        ShapeKind::Tube => 1,
-        ShapeKind::Sphere => 2,
-        ShapeKind::Torus => 3,
-        ShapeKind::Box => 4,
-    }
-}
-
 /// Build the onion-skin fog parameters (issue #12) from the camera, grid, and
 /// layer-range. World-Y of layer `j` spans `[j - grid_y/2, j+1 - grid_y/2]`; the
 /// solid band is layers `[lower, upper]`, the onion band extends `onion_depth`
@@ -52,7 +40,6 @@ fn shape_kind_index(kind: ShapeKind) -> u32 {
 fn onion_fog_params(
     view_projection: glam::Mat4,
     grid_dimensions: [u32; 3],
-    geometry: &GeometryParams,
     layer_range: LayerRange,
 ) -> OnionFogParams {
     let half_y = grid_dimensions[1] as f32 / 2.0;
@@ -61,13 +48,11 @@ fn onion_fog_params(
     let upper = layer_range.upper.min(grid_dimensions[1].saturating_sub(1)) as f32;
     OnionFogParams {
         inverse_view_projection: view_projection.inverse(),
-        shape_kind: shape_kind_index(geometry.shape),
         semi_axes: [
             grid_dimensions[0] as f32 / 2.0,
             grid_dimensions[1] as f32 / 2.0,
             grid_dimensions[2] as f32 / 2.0,
         ],
-        wall_voxels: (geometry.wall_blocks * geometry.voxels_per_block) as f32,
         onion_y_min: (lower - depth) - half_y,
         onion_y_max: (upper + 1.0 + depth) - half_y,
         band_y_min: lower - half_y,
@@ -612,7 +597,9 @@ async fn run_capture(options: ShotOptions) {
         options.geometry.voxels_per_block,
     );
     let view_cube_renderer = ViewCubeRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
-    let onion_fog_renderer = OnionFogRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
+    let mut onion_fog_renderer = OnionFogRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
+    // Upload the resolved grid as the fog's 3D occupancy field (issue #12).
+    onion_fog_renderer.upload_grid(&gpu.device, &gpu.queue, &grid);
     // Issue #12: the layer-range band for the 3D clip + the measured-diameter
     // readout (widest occupied run in the active band).
     let band = if layer_range.is_full_range(grid_y) && !layer_range.onion_skin {
@@ -666,7 +653,7 @@ async fn run_capture(options: ShotOptions) {
     if onion_active {
         onion_fog_renderer.update(
             &gpu.queue,
-            onion_fog_params(view_projection, shape.grid_dimensions(), &options.geometry, layer_range),
+            onion_fog_params(view_projection, shape.grid_dimensions(), layer_range),
         );
     }
 

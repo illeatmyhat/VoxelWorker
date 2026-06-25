@@ -1947,19 +1947,16 @@ fn floor_vertices(grid_dimensions: [u32; 3]) -> Vec<LineVertex> {
 // ============================================================================
 
 /// Parameters for one frame of the onion-skin fog pass. The fog raymarches the
-/// parametric SDF and integrates a faint haze in the onion-band Y range OUTSIDE
-/// the displayed (solid) band. Option B (x-ray onion): the march ignores the
-/// opaque slab's depth so neighbour layers show through the slice on both sides.
+/// RESOLVED voxel grid (uploaded via [`OnionFogRenderer::upload_grid`]) as a 3D
+/// cloud density field and integrates a faint haze in the onion-band Y range
+/// OUTSIDE the displayed (solid) band. Option B (x-ray onion): the march ignores
+/// opaque depth so neighbour layers show through the slice on both sides.
 #[derive(Debug, Clone, Copy)]
 pub struct OnionFogParams {
     /// Inverse camera view-projection (to unproject screen → world rays).
     pub inverse_view_projection: glam::Mat4,
-    /// Shape selector: 0 cylinder, 1 tube, 2 sphere, 3 torus, 4 box.
-    pub shape_kind: u32,
-    /// Inscribed semi-axes (voxel-space half-extents) of the shape.
+    /// Inscribed semi-axes (= grid_dimensions / 2); maps world → normalised grid.
     pub semi_axes: [f32; 3],
-    /// Tube wall thickness in voxels (tube only).
-    pub wall_voxels: f32,
     /// World-space Y extent of the onion band (the layers to fog).
     pub onion_y_min: f32,
     pub onion_y_max: f32,
@@ -1975,17 +1972,13 @@ pub struct OnionFogParams {
 struct OnionFogUniforms {
     inverse_view_projection: [[f32; 4]; 4],
     semi_axes: [f32; 3],
-    shape_kind: f32,
+    fog_strength: f32,
     fog_color: [f32; 3],
-    wall_voxels: f32,
+    _pad0: f32,
     onion_y_min: f32,
     onion_y_max: f32,
     band_y_min: f32,
     band_y_max: f32,
-    fog_strength: f32,
-    _pad0: f32,
-    _pad1: f32,
-    _pad2: f32,
 }
 
 /// Fog tint (cool blue-grey) and Beer–Lambert strength. Strength is low so the
@@ -1995,11 +1988,20 @@ struct OnionFogUniforms {
 const ONION_FOG_COLOR_HEX: u32 = 0x9c_b4_d8;
 const ONION_FOG_STRENGTH: f32 = 0.10;
 
-/// Fullscreen volumetric-fog renderer for the onion skin (issue #12).
+/// Fullscreen volumetric-fog renderer for the onion skin (issue #12). Raymarches
+/// the resolved voxel grid (uploaded as a 3D occupancy texture) as a cloud.
 pub struct OnionFogRenderer {
     pipeline: wgpu::RenderPipeline,
     uniform_buffer: wgpu::Buffer,
     bind_group_layout: wgpu::BindGroupLayout,
+    /// Trilinear sampler for the occupancy grid (the cloud density read).
+    sampler: wgpu::Sampler,
+    /// Current grid as a 3D R8 occupancy texture view; replaced on `upload_grid`.
+    grid_view: wgpu::TextureView,
+    /// Largest 3D texture dimension the device allows (grids past this skip fog).
+    max_grid_dimension: u32,
+    /// Whether the current grid uploaded successfully (else `draw` is a no-op).
+    active: bool,
 }
 
 impl OnionFogRenderer {
@@ -2010,8 +2012,8 @@ impl OnionFogRenderer {
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/onion_fog.wgsl").into()),
         });
 
-        // Binding 0: uniform; binding 1: the MSAA scene depth (multisampled depth
-        // texture, read via textureLoad at sample 0).
+        // Binding 0: uniform; binding 1: the resolved voxel grid as a 3D occupancy
+        // texture (R8, trilinear-filtered); binding 2: its sampler.
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("onion fog bind group layout"),
             entries: &[
@@ -2029,10 +2031,16 @@ impl OnionFogRenderer {
                     binding: 1,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Depth,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: true,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D3,
+                        multisampled: false,
                     },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
             ],
@@ -2093,11 +2101,114 @@ impl OnionFogRenderer {
             mapped_at_creation: false,
         });
 
+        // Trilinear sampler: linear filtering turns the binary occupancy grid into
+        // a smooth cloud density. Clamp-to-edge (the shader also rejects samples
+        // outside the grid box, so the border value never smears along the ray).
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("onion fog occupancy sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
+        });
+
+        // Start with a 1×1×1 empty grid so the bind group is valid before the first
+        // `upload_grid`. `active` stays false until a real grid lands.
+        let grid_view = create_empty_occupancy_view(device);
+
         Self {
             pipeline,
             uniform_buffer,
             bind_group_layout,
+            sampler,
+            grid_view,
+            max_grid_dimension: device.limits().max_texture_dimension_3d,
+            active: false,
         }
+    }
+
+    /// Upload the resolved voxel grid as a 3D occupancy texture (the cloud density
+    /// the fog raymarches). Call whenever the grid changes (geometry rebuild). A
+    /// grid whose dimensions exceed the device's 3D-texture limit, or that is
+    /// empty, disables the fog (`draw` becomes a no-op) rather than failing.
+    pub fn upload_grid(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, grid: &VoxelGrid) {
+        let [grid_x, grid_y, grid_z] = grid.dimensions;
+        let limit = self.max_grid_dimension;
+        if grid_x == 0
+            || grid_y == 0
+            || grid_z == 0
+            || grid_x > limit
+            || grid_y > limit
+            || grid_z > limit
+        {
+            self.active = false;
+            return;
+        }
+
+        // Densify the sparse occupied list into an R8 volume. Texel order matches a
+        // 3D texture: index = (k * height + j) * width + i, with width=x, height=y,
+        // depth=z. Voxel (i, j, k) ← round(world + half - 0.5), the same mapping the
+        // grid uses elsewhere (voxel.rs::widest_run_in_band).
+        let (width, height, depth) = (grid_x as usize, grid_y as usize, grid_z as usize);
+        let mut occupancy = vec![0u8; width * height * depth];
+        let half_x = grid_x as f32 / 2.0;
+        let half_y = grid_y as f32 / 2.0;
+        let half_z = grid_z as f32 / 2.0;
+        for voxel in &grid.occupied {
+            let i = (voxel.world_position[0] + half_x - 0.5).round() as i64;
+            let j = (voxel.world_position[1] + half_y - 0.5).round() as i64;
+            let k = (voxel.world_position[2] + half_z - 0.5).round() as i64;
+            if i < 0
+                || j < 0
+                || k < 0
+                || i >= grid_x as i64
+                || j >= grid_y as i64
+                || k >= grid_z as i64
+            {
+                continue;
+            }
+            let index = (k as usize * height + j as usize) * width + i as usize;
+            occupancy[index] = 255;
+        }
+
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("onion fog occupancy grid"),
+            size: wgpu::Extent3d {
+                width: grid_x,
+                height: grid_y,
+                depth_or_array_layers: grid_z,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D3,
+            format: wgpu::TextureFormat::R8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &occupancy,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(grid_x),
+                rows_per_image: Some(grid_y),
+            },
+            wgpu::Extent3d {
+                width: grid_x,
+                height: grid_y,
+                depth_or_array_layers: grid_z,
+            },
+        );
+        self.grid_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        self.active = true;
     }
 
     /// Upload this frame's fog parameters.
@@ -2105,32 +2216,31 @@ impl OnionFogRenderer {
         let uniforms = OnionFogUniforms {
             inverse_view_projection: params.inverse_view_projection.to_cols_array_2d(),
             semi_axes: params.semi_axes,
-            shape_kind: params.shape_kind as f32,
+            fog_strength: ONION_FOG_STRENGTH,
             fog_color: srgb_hex_to_linear(ONION_FOG_COLOR_HEX),
-            wall_voxels: params.wall_voxels,
+            _pad0: 0.0,
             onion_y_min: params.onion_y_min,
             onion_y_max: params.onion_y_max,
             band_y_min: params.band_y_min,
             band_y_max: params.band_y_max,
-            fog_strength: ONION_FOG_STRENGTH,
-            _pad0: 0.0,
-            _pad1: 0.0,
-            _pad2: 0.0,
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
     }
 
-    /// Draw the fog into `target_view` (the resolved scene). `depth_view` (the 3D
-    /// pass's MSAA depth) stays bound for a possible future occluded mode, but the
-    /// x-ray onion (option B) marches the full ray and does not clamp to it. Its own
-    /// render pass loads the existing colour and composites the haze over it.
+    /// Draw the fog into `target_view` (the resolved scene). The x-ray onion
+    /// (option B) marches the full ray and ignores opaque depth, so no depth input
+    /// is needed; it raymarches the uploaded occupancy grid instead. A no-op until
+    /// a grid has been uploaded (`upload_grid`). Its own render pass loads the
+    /// existing colour and composites the haze over it.
     pub fn draw(
         &self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
         target_view: &wgpu::TextureView,
-        depth_view: &wgpu::TextureView,
     ) {
+        if !self.active {
+            return;
+        }
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("onion fog bind group"),
             layout: &self.bind_group_layout,
@@ -2141,7 +2251,11 @@ impl OnionFogRenderer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::TextureView(depth_view),
+                    resource: wgpu::BindingResource::TextureView(&self.grid_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
                 },
             ],
         });
@@ -2168,6 +2282,26 @@ impl OnionFogRenderer {
     }
 }
 
+/// A 1×1×1 empty (zero) R8 occupancy texture view, used to keep the fog bind group
+/// valid before/without a real grid upload.
+fn create_empty_occupancy_view(device: &wgpu::Device) -> wgpu::TextureView {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("onion fog occupancy (empty)"),
+        size: wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D3,
+        format: wgpu::TextureFormat::R8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    texture.create_view(&wgpu::TextureViewDescriptor::default())
+}
+
 /// Create a 4-sample (MSAA) depth texture view sized to a render target.
 pub fn create_depth_view(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureView {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -2181,9 +2315,7 @@ pub fn create_depth_view(device: &wgpu::Device, width: u32, height: u32) -> wgpu
         sample_count: MSAA_SAMPLE_COUNT,
         dimension: wgpu::TextureDimension::D2,
         format: DEPTH_FORMAT,
-        // TEXTURE_BINDING so the onion-skin volumetric fog pass can sample this
-        // MSAA depth (sample 0) to stop its raymarch at the nearest opaque surface.
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         view_formats: &[],
     });
     texture.create_view(&wgpu::TextureViewDescriptor::default())

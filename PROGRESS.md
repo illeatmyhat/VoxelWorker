@@ -33,6 +33,22 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **fog rearchitected: voxel-density cloud (replaces GPU SDF re-derivation)** — The fog raymarch now
+  samples the **resolved VoxelGrid as a 3D R8 occupancy texture** (trilinear-filtered → smooth cloud
+  density), instead of re-deriving the parametric SDF on the GPU. Why: the SDF approach only worked for
+  the 5 built-in shapes, duplicated `src/voxel.rs`'s SDF library in WGSL (a sync hazard), and quietly
+  bypassed the resolved-grid seam (REPRESENTATION.md — every other consumer reads the grid, never the
+  SDF). The cloud approach works for ANY voxel set (future sculpt / override producers) and deletes the
+  whole `scene_sdf` port. `OnionFogRenderer::upload_grid` densifies the sparse occupied list into a
+  `D3` `R8Unorm` texture on each geometry rebuild (≤6 MB at the 6M voxel cap; grids past the device's
+  3D-texture limit disable the fog instead of failing); world→grid coords are `world/semi_axes*0.5+0.5`
+  (voxel centres land on texel centres). The shader rejects samples outside the grid box so clamp-to-edge
+  can't smear border voxels along the ray. Option B carries over: x-ray full-ray march, edge inset via
+  `smoothstep(0.35,0.85,density)`, strength 0.10. Depth is no longer sampled (removed the depth
+  `TEXTURE_BINDING` + the fog's depth param). `shape_kind`/`wall_voxels` dropped from the fog uniform +
+  params. **Validated** on a flat torus ring (`shots/onion-vox-ring-34.png`): the fog follows the ring
+  and breaks across the central hole — proving it reads true occupancy, not a filled SDF disc. Tree
+  green: build (both bins, no warnings) + clippy + 33 tests.
 - **fog polish → option B (x-ray onion), implemented** — Applied the user-confirmed B decision to the
   volumetric fog (`onion_fog.wgsl` + `OnionFogRenderer`): (1) **x-ray** — the raymarch now ignores the
   opaque slab's depth and marches the FULL ray, so the neighbour onion bands show through the displayed

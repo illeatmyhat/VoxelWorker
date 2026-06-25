@@ -20,7 +20,7 @@ use voxel_worker::{
     create_depth_view, create_msaa_color_view, procedural_material_average_color, render_frame,
     run_egui_frame, AppConfig, CubeFace, EguiPaintBridge, FrameOverlays, GizmoRenderer,
     GpuContext, GridLatticeRenderer, LayerBand, MaterialSource, OnionFogParams, OnionFogRenderer,
-    OrbitCamera, PanelState, SdfShape, ShapeKind, SnapTween, ViewCubeElement, VoxExport,
+    OrbitCamera, PanelState, SdfShape, SnapTween, ViewCubeElement, VoxExport,
     ViewCubeRenderer, VoxelGrid, VoxelProducer, VoxelRenderer, COLOR_TARGET_FORMAT,
     VIEW_CUBE_VIEWPORT_PIXELS,
 };
@@ -121,18 +121,6 @@ fn face_for_axis_sign(axis: usize, positive: bool) -> CubeFace {
     }
 }
 
-/// Map a [`ShapeKind`] to the onion-fog shader's shape selector (issue #12),
-/// matching the `scene_sdf` dispatch in `onion_fog.wgsl`.
-fn shape_kind_index(kind: ShapeKind) -> u32 {
-    match kind {
-        ShapeKind::Cylinder => 0,
-        ShapeKind::Tube => 1,
-        ShapeKind::Sphere => 2,
-        ShapeKind::Torus => 3,
-        ShapeKind::Box => 4,
-    }
-}
-
 /// Build the onion-skin fog parameters (issue #12) from the camera, grid, and
 /// layer-range scrubber. World-Y of layer `j` spans `[j - grid_y/2, j+1 -
 /// grid_y/2]` (voxel centres at `j + 0.5 - grid_y/2`). The solid band is layers
@@ -140,7 +128,6 @@ fn shape_kind_index(kind: ShapeKind) -> u32 {
 fn onion_fog_params(
     view_projection: glam::Mat4,
     grid_dimensions: [u32; 3],
-    geometry: &voxel_worker::GeometryParams,
     layer_range: voxel_worker::LayerRange,
 ) -> OnionFogParams {
     let grid_y = grid_dimensions[1] as f32;
@@ -150,13 +137,11 @@ fn onion_fog_params(
     let upper = layer_range.upper.min(grid_dimensions[1].saturating_sub(1)) as f32;
     OnionFogParams {
         inverse_view_projection: view_projection.inverse(),
-        shape_kind: shape_kind_index(geometry.shape),
         semi_axes: [
             grid_dimensions[0] as f32 / 2.0,
             grid_dimensions[1] as f32 / 2.0,
             grid_dimensions[2] as f32 / 2.0,
         ],
-        wall_voxels: (geometry.wall_blocks * geometry.voxels_per_block) as f32,
         // Onion band world-Y: `depth` layers below the band's bottom edge to
         // `depth` layers above its top edge.
         onion_y_min: (lower - depth) - half_y,
@@ -276,7 +261,9 @@ impl WindowedState {
         );
         let view_cube_renderer =
             ViewCubeRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
-        let onion_fog_renderer = OnionFogRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
+        let mut onion_fog_renderer = OnionFogRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
+        // Upload the resolved grid as the fog's 3D occupancy field (issue #12).
+        onion_fog_renderer.upload_grid(&gpu.device, &gpu.queue, &grid);
         let thumbnail_renderer = ThumbnailRenderer::new(&gpu.device, &gpu.queue);
 
         // Kick off the VS auto-detect + scan on a background thread immediately;
@@ -372,6 +359,9 @@ impl WindowedState {
         shape.resolve(&mut grid);
         self.voxel_renderer
             .rebuild_instances(&self.gpu.device, &self.gpu.queue, &grid);
+        // Re-upload the fog's 3D occupancy field for the new grid (issue #12).
+        self.onion_fog_renderer
+            .upload_grid(&self.gpu.device, &self.gpu.queue, &grid);
         // Keep the gizmo sized to the grid.
         self.gizmo_renderer
             .rebuild(&self.gpu.device, &self.gpu.queue, grid.dimensions);
@@ -792,13 +782,14 @@ impl WindowedState {
             .update_uniforms(&self.gpu.queue, self.camera.view_cube_view_projection());
 
         // Issue #12: onion-skin volumetric fog. Active only when onion skin is on
-        // and not in debug-face mode. Upload the SDF + band world-Y ranges so the
-        // fullscreen raymarch hazes the layers around the band.
+        // and not in debug-face mode. Upload the camera + band world-Y ranges so the
+        // fullscreen raymarch of the occupancy grid hazes the layers around the band
+        // (the grid itself is uploaded on geometry rebuild, not per frame).
         let onion_active = layer_range.onion_skin && !self.panel_state.debug_face_orientation;
         if onion_active {
             self.onion_fog_renderer.update(
                 &self.gpu.queue,
-                onion_fog_params(view_projection, grid_dimensions, &geometry, layer_range),
+                onion_fog_params(view_projection, grid_dimensions, layer_range),
             );
         }
 

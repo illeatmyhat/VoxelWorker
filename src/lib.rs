@@ -270,13 +270,13 @@ pub fn render_frame(
         }
     }
 
-    // === Pass 1a: onion-skin volumetric fog (issue #12). A fullscreen SDF
-    // raymarch that composites a faint haze over the resolved scene for the layers
-    // around the displayed band. Runs after the 3D resolve (so it has the scene
-    // colour + MSAA depth) and before the view cube/egui (so the corner cube and
-    // panel aren't fogged).
+    // === Pass 1a: onion-skin volumetric fog (issue #12). A fullscreen raymarch of
+    // the resolved voxel grid (as a 3D cloud density) that composites a faint haze
+    // over the resolved scene for the layers around the displayed band. Runs after
+    // the 3D resolve and before the view cube/egui (so the corner cube and panel
+    // aren't fogged). X-ray (option B): ignores opaque depth, so no depth input.
     if let Some(onion_fog) = overlays.onion_fog {
-        onion_fog.draw(device, &mut encoder, target_view, depth_view);
+        onion_fog.draw(device, &mut encoder, target_view);
     }
 
     // === Pass 1b: view cube into a scissored top-left corner (its own depth).
