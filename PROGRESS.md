@@ -33,6 +33,20 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **ADR 0001 accepted: scene graph (parts vs tools), streaming, scale** — `docs/adr/0001-scene-graph-
+  parts-and-tools.md`. Replaces the `debug_clouds: bool` shortcut with a proper **assembly graph**:
+  a recursive Scene of nodes, each a producer — **Tool** (parametric SDF, single material) or **Part**
+  (static voxel body, multi-material, e.g. the cloud field / a saved chiseled block). Reuse by
+  reference (definition + instances → a village of identical houses is cheap). Distinct from the
+  per-Tool SDF *construction* tree (booleans/lathe) in REPRESENTATION.md — the scene sits above it.
+  Decisions: union-only (CombineOp growth path), per-voxel materials, affine-target transform
+  (translation first), density = app setting (16). **Scale committed:** explicit working canvas
+  (~1024³ blocks, designed far beyond) → no monolithic grid; region-addressable `resolve_region(aabb,
+  lod)`, chunked + spatial-indexed + lazily resolved, 64-bit addressing, origin-rebased rendering,
+  greedy meshing, GPU instancing, out-of-core store, palette/sparse compression. **LOD parked** (may
+  never build) but seam preserved: `lod` in the resolve signature + `(coord,lod)` cache key, renderer
+  consumes opaque per-chunk items. 8-step build sequence; step 1 = model + `resolve_region` through a
+  one-node scene, delete the boolean, no UI, behaves identically. Implementation pending step-1 go.
 - **debug clouds in the interactive app (panel "Clouds" chip)** — Wired `DebugCloudField` into the app
   as a 6th shape option. `GeometryParams` gains `debug_clouds: bool`; the Shape section adds a "Clouds"
   chip (after a separator) that's mutually exclusive with the 5 SDF chips (an SDF chip highlights only
