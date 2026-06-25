@@ -19,8 +19,8 @@ use voxel_worker::scan_worker::{
 use voxel_worker::{
     create_depth_view, create_msaa_color_view, procedural_material_average_color, render_frame,
     run_egui_frame, AppConfig, CubeFace, EguiPaintBridge, FrameOverlays,
-    GeometryParams, GizmoRenderer,
-    GpuContext, GridLatticeRenderer, LayerBand, MaterialChoice, MaterialSource, OnionFogParams,
+    GizmoRenderer,
+    GpuContext, GridLatticeRenderer, LayerBand, MaterialSource, OnionFogParams,
     OnionFogRenderer, OrbitCamera, PanelState, Scene, SdfShape, SnapTween, ViewCubeElement,
     VoxExport, ViewCubeRenderer, VoxelGrid, VoxelRenderer, COLOR_TARGET_FORMAT,
     VIEW_CUBE_VIEWPORT_PIXELS,
@@ -160,16 +160,14 @@ fn default_vox_filename(shape: &SdfShape) -> String {
     format!("{kind}_{grid_x}x{grid_y}x{grid_z}.vox")
 }
 
-/// Resolve the active producer into a fresh grid via a one-node [`Scene`]
-/// (ADR 0001 step 1). The scene wraps the current [`GeometryParams`] + material:
-/// a Tool when `!debug_clouds`, a `DebugClouds` Part otherwise. It resolves the
-/// node's full extent as a single region at full resolution (`lod 0`), so the
-/// result is identical to the old direct producer resolve — same dimensions, same
-/// occupied set — while routing all resolution through the scene.
-fn resolve_active_producer(geometry: &GeometryParams, material: MaterialChoice) -> VoxelGrid {
-    let scene = Scene::from_geometry(*geometry, material);
-    let region = scene.full_extent_blocks(geometry.voxels_per_block);
-    scene.resolve_region(region, geometry.voxels_per_block, 0)
+/// Resolve the whole [`Scene`] into a fresh grid (ADR 0001 step 2). Every visible
+/// node composites (union) into one region sized to the per-axis max of the
+/// nodes' extents, at full resolution (`lod 0`). `voxels_per_block` is the global
+/// app density (the inspector mirror's density). For a one-node scene this is
+/// identical to the step-1 behaviour.
+fn resolve_scene(scene: &Scene, voxels_per_block: u32) -> VoxelGrid {
+    let region = scene.full_extent_blocks(voxels_per_block);
+    scene.resolve_region(region, voxels_per_block, 0)
 }
 
 impl WindowedState {
@@ -243,7 +241,7 @@ impl WindowedState {
             None => PanelState::with_view_cube_default(),
         };
         let shape = SdfShape::from_geometry(panel_state.geometry);
-        let grid = resolve_active_producer(&panel_state.geometry, panel_state.material);
+        let grid = resolve_scene(&panel_state.scene, panel_state.geometry.voxels_per_block);
         // Initialise the layer-range band to the full grid height (issue #12).
         let grid_y = grid.dimensions[1];
         panel_state
@@ -357,18 +355,28 @@ impl WindowedState {
     /// When `auto_frame` is set (size/density change, NOT shape change) the
     /// camera distance is re-framed; shape switches never move the camera.
     fn rebuild_geometry(&mut self, auto_frame: bool) {
+        let density = self.panel_state.geometry.voxels_per_block;
+        // The cap is evaluated against the resolved region (the per-axis max of the
+        // scene's node extents at the app density), not a single shape — multiple
+        // nodes share one grid (ADR 0001 step 2).
+        let region = self.panel_state.scene.full_extent_blocks(density);
+        let region_voxel_count = region.size_blocks[0] as u64
+            * region.size_blocks[1] as u64
+            * region.size_blocks[2] as u64
+            * density as u64
+            * density as u64
+            * density as u64;
         let shape = SdfShape::from_geometry(self.panel_state.geometry);
 
-        if shape.exceeds_voxel_cap() {
+        if shape.exceeds_voxel_cap() || region_voxel_count > voxel_worker::voxel::MAX_GRID_VOXELS {
             self.panel_state.voxel_cap_warning_millions =
-                Some(shape.grid_voxel_count() as f32 / 1_000_000.0);
+                Some(region_voxel_count.max(shape.grid_voxel_count()) as f32 / 1_000_000.0);
             return;
         }
         self.panel_state.voxel_cap_warning_millions = None;
 
         let previous_grid_y = self.grid.dimensions[1];
-        let grid =
-            resolve_active_producer(&self.panel_state.geometry, self.panel_state.material);
+        let grid = resolve_scene(&self.panel_state.scene, density);
         self.voxel_renderer
             .rebuild_instances(&self.gpu.device, &self.gpu.queue, &grid);
         // Re-upload the fog's 3D occupancy field for the new grid (issue #12).
@@ -500,7 +508,7 @@ impl WindowedState {
             eprintln!("export .vox: grid exceeds the voxel cap; not exporting");
             return;
         }
-        let grid = resolve_active_producer(&self.panel_state.geometry, self.panel_state.material);
+        let grid = resolve_scene(&self.panel_state.scene, self.panel_state.geometry.voxels_per_block);
 
         let representative = match &self.loaded_material {
             Some(loaded) => loaded.average_color,
@@ -735,8 +743,13 @@ impl WindowedState {
         // density changes also auto-frame. A shape switch rebuilds but does NOT
         // auto-frame (guard #1). Display/camera params never reach here.
         let panel_response = prepared.panel_response;
-        if panel_response.geometry_changed {
-            self.rebuild_geometry(panel_response.size_or_density_changed);
+        // A geometry edit (inspector) or a scene change (add/delete/select/
+        // visibility/seed) both re-resolve the composited scene. Add/delete can
+        // change the extent, so a scene change auto-frames like a size change.
+        if panel_response.geometry_changed || panel_response.scene_changed {
+            let auto_frame =
+                panel_response.size_or_density_changed || panel_response.scene_changed;
+            self.rebuild_geometry(auto_frame);
         }
 
         // Projection is a display-only param: apply it to the camera each frame
@@ -749,11 +762,10 @@ impl WindowedState {
         let aspect_ratio =
             self.surface_config.width as f32 / self.surface_config.height.max(1) as f32;
         let geometry = self.panel_state.geometry;
-        let grid_dimensions = [
-            geometry.size_blocks[0] * geometry.voxels_per_block,
-            geometry.size_blocks[1] * geometry.voxels_per_block,
-            geometry.size_blocks[2] * geometry.voxels_per_block,
-        ];
+        // The grid dims come from the ACTUALLY resolved scene grid (the composited
+        // region's extent), not the active node's geometry — with several nodes the
+        // region is the per-axis max of their sizes (ADR 0001 step 2).
+        let grid_dimensions = self.grid.dimensions;
         let view_projection = self.camera.view_projection(aspect_ratio);
         // Issue #12: translate the layer-range scrubber into the shader band. The
         // band is inclusive on both ends; the upper handle is a layer index, so a

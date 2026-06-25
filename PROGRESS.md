@@ -33,6 +33,28 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **ADR 0001 step 2: flat node-list UI + add/select/delete/visibility; the node is the panel's
+  source of truth** (closes #15) — `src/scene.rs`, `src/panel.rs`, `src/settings.rs`, `src/main.rs`,
+  `src/bin/shot.rs`. `Scene` gained an `active: Option<usize>` selection plus `add_node` /
+  `remove_node` (selection-preserving) helpers; `full_extent_blocks` now takes the per-axis MAX over
+  all leaf nodes so several origin-centred nodes composite into one region (union). The panel holds
+  the `Scene`: a new **Scene** node-list section lists each node as a selectable row (name +
+  visibility checkbox + per-row ✕ delete) with an **+ Add** menu (a Tool of any shape, or a Clouds
+  Part). The inspector **switches on the active node** — a Tool shows the existing
+  Shape/Size/Density/Material controls (edits mirror back onto the active node); a Clouds Part shows
+  its name + seed instead. `GeometryParams::debug_clouds` and the old "Clouds" chip are **removed** —
+  the Part node content replaces the boolean. Resolution routes through `resolve_scene(&Scene, density)`
+  in `main`/`shot`; the voxel cap is now evaluated against the composited region. Persistence
+  (`AppConfig`) drops the `debug_clouds` field (old configs still load — serde ignores the unknown
+  field — and migrate to a one-Tool-node scene); multi-node scene persistence is deferred to step 8
+  (marked `// step 8`). New tests: a 2-node sphere+box `resolve_region` equals the set-union and is
+  strictly larger than either alone; an old-config-with-`debug_clouds` migration test; updated
+  round-trip. Verified: `cargo build --bins` / `clippy --all-targets` clean (no warnings), `cargo test`
+  40 pass; `shots/step2-panel.png` shows the node list + Tool inspector over a rendered sphere, and
+  `shots/step2-clouds.png` shows the Clouds node with the Part (name+seed) inspector. NOTE: interactive
+  add/delete/select clicks can't be exercised headlessly — covered by the model unit tests + the two
+  visual confirmations; transforms stay zero so multiple nodes overlap at origin (expected for step 2).
+
 - **ADR 0001 step 1: scene model + region-addressable compositing (no UI)** — new `src/scene.rs`.
   Introduces the assembly model (`Scene`/`Node`/`NodeContent { Tool, Part, Group, Instance }`,
   `Part::DebugClouds`, `AssemblyDef`, `DefId`, `CombineOp::Union`, `NodeTransform`) and routes ALL

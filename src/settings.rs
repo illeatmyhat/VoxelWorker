@@ -30,6 +30,11 @@ use crate::voxel::ShapeKind;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppConfig {
     // --- geometry ---
+    // step 8: full multi-node scene persistence (the node list + extent/density)
+    // is ADR 0001 step 8. For now this persists only the active/first Tool node's
+    // geometry for back-compat — on load it becomes a one-Tool-node scene. The old
+    // `debug_clouds: bool` field was dropped; an old config carrying it still loads
+    // (serde ignores the now-unknown field) and migrates to a Tool-only scene.
     #[serde(default = "default_shape")]
     pub shape: ShapeKind,
     #[serde(default = "default_size")]
@@ -38,8 +43,6 @@ pub struct AppConfig {
     pub voxels_per_block: u32,
     #[serde(default = "default_wall")]
     pub wall_blocks: u32,
-    #[serde(default)]
-    pub debug_clouds: bool,
 
     // --- display / material ---
     #[serde(default)]
@@ -122,7 +125,6 @@ impl Default for AppConfig {
             size_blocks: default_size(),
             voxels_per_block: default_density(),
             wall_blocks: default_wall(),
-            debug_clouds: false,
             projection_mode: ProjectionMode::default(),
             material: MaterialChoice::default(),
             show_grid_overlay: false,
@@ -151,7 +153,6 @@ impl AppConfig {
             size_blocks: panel.geometry.size_blocks,
             voxels_per_block: panel.geometry.voxels_per_block,
             wall_blocks: panel.geometry.wall_blocks,
-            debug_clouds: panel.geometry.debug_clouds,
             projection_mode: panel.projection_mode,
             material: panel.material,
             show_grid_overlay: panel.show_grid_overlay,
@@ -171,14 +172,17 @@ impl AppConfig {
     }
 
     /// Build the [`PanelState`] this config describes.
+    ///
+    /// step 8: only the single persisted geometry is restored here; it becomes the
+    /// scene's one Tool node (via [`PanelState::seed_scene_from_geometry`] below).
+    /// Full multi-node scene persistence is deferred to ADR 0001 step 8.
     pub fn to_panel_state(&self) -> PanelState {
-        PanelState {
+        let mut state = PanelState {
             geometry: GeometryParams {
                 shape: self.shape,
                 size_blocks: self.size_blocks,
                 voxels_per_block: self.voxels_per_block,
                 wall_blocks: self.wall_blocks,
-                debug_clouds: self.debug_clouds,
             },
             projection_mode: self.projection_mode,
             material: self.material,
@@ -203,7 +207,12 @@ impl AppConfig {
                 onion_skin: self.onion_skin,
                 onion_depth: self.onion_depth.clamp(1, 8),
             },
-        }
+            // Seeded just below from the restored geometry (a one-Tool-node scene).
+            scene: crate::scene::Scene::default(),
+        };
+        // step 8: the persisted single geometry becomes the scene's one Tool node.
+        state.seed_scene_from_geometry();
+        state
     }
 
     /// Apply this config's camera fields to an [`OrbitCamera`] (keeps its target).
@@ -280,7 +289,6 @@ mod tests {
             size_blocks: [7, 3, 9],
             voxels_per_block: 24,
             wall_blocks: 2,
-            debug_clouds: true,
             projection_mode: ProjectionMode::Orthographic,
             material: MaterialChoice::Wood,
             show_grid_overlay: true,
@@ -312,6 +320,36 @@ mod tests {
         // Outright invalid JSON must be a clean Err (the caller turns it into a
         // defaults fallback), never a panic.
         assert!(serde_json::from_str::<AppConfig>("not json at all}{").is_err());
+    }
+
+    /// step 2 migration: an OLD config that still carries the dropped
+    /// `debug_clouds` boolean must load gracefully — serde ignores the now-unknown
+    /// field, and every other field round-trips to its persisted value.
+    #[test]
+    fn old_config_with_debug_clouds_field_still_loads() {
+        let old_json = r#"{
+            "shape": "Sphere",
+            "size_blocks": [3, 4, 5],
+            "voxels_per_block": 20,
+            "wall_blocks": 2,
+            "debug_clouds": true,
+            "material": "Wood"
+        }"#;
+        let restored: AppConfig =
+            serde_json::from_str(old_json).expect("old config (with debug_clouds) must still parse");
+        assert_eq!(restored.shape, ShapeKind::Sphere);
+        assert_eq!(restored.size_blocks, [3, 4, 5]);
+        assert_eq!(restored.voxels_per_block, 20);
+        assert_eq!(restored.material, MaterialChoice::Wood);
+
+        // It migrates to a one-Tool-node scene (no Clouds Part — the boolean is
+        // dropped; Clouds is now an explicit Add-a-Part action).
+        let panel = restored.to_panel_state();
+        assert_eq!(panel.scene.nodes.len(), 1);
+        assert!(matches!(
+            panel.scene.active_node().map(|node| &node.content),
+            Some(crate::scene::NodeContent::Tool { .. })
+        ));
     }
 
     #[test]

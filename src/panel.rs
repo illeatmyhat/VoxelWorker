@@ -19,7 +19,8 @@
 
 use crate::block_palette::BlockPalette;
 use crate::camera::ProjectionMode;
-use crate::voxel::ShapeKind;
+use crate::scene::{Node, NodeContent, Part, Scene};
+use crate::voxel::{SdfShape, ShapeKind};
 
 /// Geometry parameters — the *only* params that trigger a voxel rebuild.
 ///
@@ -35,11 +36,6 @@ pub struct GeometryParams {
     pub voxels_per_block: u32,
     /// Tube wall thickness in whole blocks (used by [`ShapeKind::Tube`] only).
     pub wall_blocks: u32,
-    /// Debug producer override: when set, the grid is filled by the debug cloud
-    /// field (`DebugCloudField`) instead of the parametric `shape` SDF — several
-    /// distinct billowy blobs for exercising the renderer / onion fog. `shape`,
-    /// `size_blocks` and `voxels_per_block` still set the grid dimensions.
-    pub debug_clouds: bool,
 }
 
 impl Default for GeometryParams {
@@ -49,7 +45,6 @@ impl Default for GeometryParams {
             size_blocks: [5, 1, 5],
             voxels_per_block: 16,
             wall_blocks: 1,
-            debug_clouds: false,
         }
     }
 }
@@ -154,7 +149,15 @@ impl LayerRange {
 /// frame; [`PanelResponse`] tells them what changed.
 #[derive(Debug, Clone, Default)]
 pub struct PanelState {
-    /// Rebuild-driving geometry params.
+    /// The scene (ADR 0001): the flat node list that is now the panel's source of
+    /// truth. The node list section adds/selects/deletes nodes; the inspector
+    /// edits the ACTIVE node. [`geometry`](Self::geometry) / [`material`](Self::material)
+    /// are the inspector's working mirror of the active Tool node (synced both
+    /// ways) so the renderer/export call sites that read voxel dims + density keep
+    /// working unchanged.
+    pub scene: Scene,
+    /// Rebuild-driving geometry params — the inspector's editing surface, mirrored
+    /// onto the active Tool node (and re-read from it when the selection changes).
     pub geometry: GeometryParams,
     /// Camera projection (display-only: no rebuild).
     pub projection_mode: ProjectionMode,
@@ -193,12 +196,59 @@ impl PanelState {
     /// Sensible defaults for the windowed app: like [`Default`] but with the view
     /// cube enabled (prototype `showCube: true`).
     pub fn with_view_cube_default() -> Self {
-        Self {
+        let mut state = Self {
             show_view_cube: true,
             // Block lattice defaults ON (prototype `showLattice: true`); the fine
             // floor grid defaults OFF (`showFloor: false`).
             show_block_lattice: true,
             ..Self::default()
+        };
+        state.seed_scene_from_geometry();
+        state
+    }
+
+    /// Seed the scene with a single Tool node from the current geometry/material
+    /// mirror (the back-compat path: a default or a config-loaded one-geometry
+    /// state becomes a one-Tool-node scene). Does nothing if the scene already has
+    /// nodes.
+    pub fn seed_scene_from_geometry(&mut self) {
+        if self.scene.nodes.is_empty() {
+            self.scene = Scene::from_geometry(self.geometry, self.material);
+        }
+    }
+
+    /// Copy the active node's parameters into the inspector mirror
+    /// ([`geometry`](Self::geometry) / [`material`](Self::material)) when it is a
+    /// Tool, so the inspector edits the active selection. Called whenever the
+    /// active node changes (selection or delete). A Part active node leaves the
+    /// mirror untouched (its editor shows name + seed instead).
+    pub fn sync_mirror_from_active(&mut self) {
+        if let Some(node) = self.scene.active_node() {
+            if let NodeContent::Tool { shape, material } = &node.content {
+                self.geometry = GeometryParams {
+                    shape: shape.kind,
+                    size_blocks: shape.size_blocks,
+                    voxels_per_block: shape.voxels_per_block,
+                    wall_blocks: shape.wall_blocks,
+                };
+                self.material = *material;
+            }
+        }
+    }
+
+    /// Write the inspector mirror back onto the active node when it is a Tool
+    /// (shape/size/wall/material edits target the active selection). Density is
+    /// global, but it is stored on every Tool's shape so the resolve reads it; the
+    /// mirror's `voxels_per_block` is propagated here. No-op for a Part active node
+    /// or an empty scene.
+    pub fn write_mirror_to_active(&mut self) {
+        let geometry = self.geometry;
+        let material = self.material;
+        if let Some(node) = self.scene.active_node_mut() {
+            if let NodeContent::Tool { shape, material: node_material } = &mut node.content {
+                *shape = SdfShape::from_geometry(geometry);
+                *node_material = material;
+            }
         }
     }
 }
@@ -223,6 +273,12 @@ pub struct PanelResponse {
     /// The "Export .vox" button was clicked this frame → open the OS save dialog
     /// and write the resolved grid as a MagicaVoxel `.vox` file (M8).
     pub clicked_export_vox: bool,
+    /// The scene's node list changed this frame (a node was added, deleted, or the
+    /// active selection switched) → the caller re-resolves the scene and re-frames
+    /// as it would for a geometry change. Distinct from
+    /// [`geometry_changed`](Self::geometry_changed) (an inspector edit), though the
+    /// caller treats both as "rebuild".
+    pub scene_changed: bool,
 }
 
 /// Build the right-hand side panel into the root [`egui::Ui`] of the frame.
@@ -254,11 +310,9 @@ pub fn build_panel(
             ui.add_space(6.0);
             ui.separator();
 
-            build_shape_section(ui, state, &mut response);
-            build_size_section(ui, state, &mut response);
-            build_density_section(ui, state, &mut response);
+            build_node_list_section(ui, state, &mut response);
+            build_inspector_section(ui, state, &mut response);
             build_camera_section(ui, state);
-            build_material_section(ui, state, &mut response);
             build_display_section(ui, state);
             build_export_section(ui, &mut response);
             build_layers_section(ui, state, grid_y, measured_diameter);
@@ -336,37 +390,187 @@ fn build_palette_dock(
         });
 }
 
+/// The scene node list (ADR 0001 step 2): a vertical list of selectable rows
+/// (name + visibility checkbox + per-row delete ✕), plus an "+ Add" control that
+/// appends a Tool of a chosen shape or a Clouds Part. No drag-reorder — a simple
+/// list. Each node composites into the one resolved region (union); selecting a
+/// node makes it the inspector's active node.
+fn build_node_list_section(
+    ui: &mut egui::Ui,
+    state: &mut PanelState,
+    response: &mut PanelResponse,
+) {
+    ui.add_space(8.0);
+    ui.strong("Scene");
+
+    let mut select: Option<usize> = None;
+    let mut delete: Option<usize> = None;
+
+    for (index, node) in state.scene.nodes.iter_mut().enumerate() {
+        let is_active = state.scene.active == Some(index);
+        ui.horizontal(|ui| {
+            // Visibility checkbox (toggles the node's contribution to resolution).
+            if ui
+                .checkbox(&mut node.visible, "")
+                .on_hover_text("Visible")
+                .changed()
+            {
+                response.scene_changed = true;
+            }
+            // Selectable name row.
+            let label = match &node.content {
+                NodeContent::Tool { shape, .. } => format!("{:?}", shape.kind),
+                NodeContent::Part(Part::DebugClouds { .. }) => "Clouds".to_string(),
+                NodeContent::Group(_) => "Group".to_string(),
+                NodeContent::Instance(_) => "Instance".to_string(),
+            };
+            let name = if node.name.is_empty() { label } else { node.name.clone() };
+            if ui.selectable_label(is_active, name).clicked() {
+                select = Some(index);
+            }
+            // Right-aligned per-row delete.
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.small_button("✕").on_hover_text("Delete node").clicked() {
+                    delete = Some(index);
+                }
+            });
+        });
+    }
+
+    if state.scene.nodes.is_empty() {
+        ui.label(egui::RichText::new("(no nodes — add one below)").small().weak());
+    }
+
+    ui.add_space(4.0);
+    ui.horizontal_wrapped(|ui| {
+        ui.menu_button("+ Add", |ui| {
+            for (kind, label) in SHAPE_CHIPS {
+                if ui.button(*label).clicked() {
+                    // A new Tool node inherits the current density/size so it is
+                    // visible immediately; its own shape is the chosen one.
+                    let shape = SdfShape {
+                        kind: *kind,
+                        size_blocks: state.geometry.size_blocks,
+                        voxels_per_block: state.geometry.voxels_per_block,
+                        wall_blocks: state.geometry.wall_blocks,
+                    };
+                    state.scene.add_node(Node::new(
+                        *label,
+                        NodeContent::Tool { shape, material: state.material },
+                    ));
+                    state.sync_mirror_from_active();
+                    response.scene_changed = true;
+                    ui.close();
+                }
+            }
+            ui.separator();
+            if ui.button("Clouds (Part)").clicked() {
+                state.scene.add_node(Node::new(
+                    "Clouds",
+                    NodeContent::Part(Part::DebugClouds { seed: 0 }),
+                ));
+                response.scene_changed = true;
+                ui.close();
+            }
+        });
+    });
+
+    // Apply the deferred selection / delete after the iteration (can't mutate the
+    // active index while borrowing `nodes`).
+    if let Some(index) = delete {
+        state.scene.remove_node(index);
+        state.sync_mirror_from_active();
+        response.scene_changed = true;
+    } else if let Some(index) = select {
+        if state.scene.active != Some(index) {
+            state.scene.active = Some(index);
+            state.sync_mirror_from_active();
+            response.scene_changed = true;
+        }
+    }
+
+    ui.separator();
+}
+
+/// The inspector: switches on the active node. A **Tool** shows the shape chips,
+/// size sliders, density slider and material selector (editing the active Tool
+/// node, mirrored through [`PanelState::write_mirror_to_active`]). A **Clouds
+/// Part** shows its name + seed instead. With no active node, a hint.
+fn build_inspector_section(
+    ui: &mut egui::Ui,
+    state: &mut PanelState,
+    response: &mut PanelResponse,
+) {
+    match state.scene.active_node().map(|node| matches!(node.content, NodeContent::Tool { .. })) {
+        Some(true) => {
+            build_shape_section(ui, state, response);
+            build_size_section(ui, state, response);
+            build_density_section(ui, state, response);
+            build_material_section(ui, state, response);
+            // Any inspector edit this frame is mirrored back onto the active node.
+            // A material pick (`selected_procedural_material`) updates the Tool's
+            // material; a geometry edit updates its shape — both write the mirror.
+            if response.geometry_changed || response.selected_procedural_material {
+                state.write_mirror_to_active();
+            }
+        }
+        Some(false) => build_part_inspector_section(ui, state, response),
+        None => {
+            ui.add_space(8.0);
+            ui.label(
+                egui::RichText::new("Select or add a node to edit it.")
+                    .small()
+                    .weak(),
+            );
+            ui.separator();
+        }
+    }
+}
+
+/// Inspector for a Clouds Part active node: its name and seed (its one knob). A
+/// seed change re-resolves the scene.
+fn build_part_inspector_section(
+    ui: &mut egui::Ui,
+    state: &mut PanelState,
+    response: &mut PanelResponse,
+) {
+    ui.add_space(8.0);
+    ui.strong("Clouds (Part)");
+    let Some(node) = state.scene.active_node_mut() else {
+        return;
+    };
+    ui.horizontal(|ui| {
+        ui.label("Name");
+        ui.text_edit_singleline(&mut node.name);
+    });
+    if let NodeContent::Part(Part::DebugClouds { seed }) = &mut node.content {
+        let mut value = *seed;
+        if ui
+            .add(egui::Slider::new(&mut value, 0..=64).text("seed"))
+            .changed()
+        {
+            *seed = value;
+            response.scene_changed = true;
+        }
+    }
+    ui.separator();
+}
+
 /// Shape chips. Selecting a shape sets [`GeometryParams::shape`] ONLY — it never
-/// touches the size or the camera (Milestone 3 guard #1). The trailing "Clouds"
-/// chip is a debug producer: it swaps the SDF for the [`DebugCloudField`] at the
-/// same grid size, and is mutually exclusive with the SDF chips.
+/// touches the size or the camera (Milestone 3 guard #1). Shown only for a Tool
+/// active node; the edit is mirrored onto that node by the inspector.
 fn build_shape_section(ui: &mut egui::Ui, state: &mut PanelState, response: &mut PanelResponse) {
     ui.add_space(8.0);
     ui.strong("Shape");
     ui.horizontal_wrapped(|ui| {
         for (kind, label) in SHAPE_CHIPS {
-            // An SDF chip is selected only when the debug producer is off.
-            let is_selected = !state.geometry.debug_clouds && state.geometry.shape == *kind;
+            let is_selected = state.geometry.shape == *kind;
             if ui.selectable_label(is_selected, *label).clicked() && !is_selected {
                 state.geometry.shape = *kind;
-                state.geometry.debug_clouds = false;
                 response.geometry_changed = true;
                 // Deliberately NOT setting size_or_density_changed: a shape
                 // switch re-resolves at the same size and must not auto-frame.
             }
-        }
-
-        // Debug cloud field chip (separate visual group).
-        ui.separator();
-        let clouds_selected = state.geometry.debug_clouds;
-        if ui
-            .selectable_label(clouds_selected, "Clouds")
-            .on_hover_text("Debug: distinct billowy blobs (fBm noise) instead of an SDF shape")
-            .clicked()
-            && !clouds_selected
-        {
-            state.geometry.debug_clouds = true;
-            response.geometry_changed = true;
         }
     });
     ui.separator();

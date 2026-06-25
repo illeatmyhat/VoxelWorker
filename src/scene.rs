@@ -172,61 +172,107 @@ pub struct AssemblyDef {
 }
 
 /// The scene (assembly): a list of placed nodes resolved into the shared
-/// [`VoxelGrid`] truth. ADR 0001's full model carries reusable `definitions` and
-/// an `active` selection too; step 1 only needs the root node list, so those are
-/// deferred (added when the node-list UI and instancing arrive).
+/// [`VoxelGrid`] truth. ADR 0001's full model carries reusable `definitions` too;
+/// step 2 adds the flat node list plus the `active` selection that drives the
+/// inspector. `definitions` (recursion + instancing) stay deferred to step 4.
 #[derive(Debug, Clone, Default)]
 pub struct Scene {
     /// The top-level assembly's nodes, resolved in order (later nodes win on
     /// overlap under [`CombineOp::Union`]).
     pub nodes: Vec<Node>,
+    /// Index into [`nodes`](Self::nodes) of the active/selected node — the one the
+    /// inspector edits. `None` when the scene is empty. Step 2 keeps this valid
+    /// (clamped) across add/delete.
+    pub active: Option<usize>,
 }
 
 impl Scene {
-    /// A scene with a single node — the shape every step-1 call site builds.
+    /// A scene with a single node — the shape every one-node call site builds. The
+    /// lone node is the active selection.
     pub fn single_node(node: Node) -> Self {
-        Self { nodes: vec![node] }
+        Self {
+            nodes: vec![node],
+            active: Some(0),
+        }
     }
 
-    /// Build the one-node scene that reproduces today's behaviour from the
-    /// panel's [`GeometryParams`] plus the active [`MaterialChoice`].
+    /// The active node, if any.
+    pub fn active_node(&self) -> Option<&Node> {
+        self.active.and_then(|index| self.nodes.get(index))
+    }
+
+    /// The active node mutably, if any (the inspector edits through this).
+    pub fn active_node_mut(&mut self) -> Option<&mut Node> {
+        match self.active {
+            Some(index) => self.nodes.get_mut(index),
+            None => None,
+        }
+    }
+
+    /// Append `node` and make it the active selection. Returns the new index.
+    pub fn add_node(&mut self, node: Node) -> usize {
+        self.nodes.push(node);
+        let index = self.nodes.len() - 1;
+        self.active = Some(index);
+        index
+    }
+
+    /// Remove the node at `index`, keeping the `active` selection valid: the
+    /// active index shifts down when a node before it is removed, clamps to the new
+    /// last node when the removed node was the active (or last) one, and becomes
+    /// `None` when the scene empties. Out-of-range indices are ignored.
+    pub fn remove_node(&mut self, index: usize) {
+        if index >= self.nodes.len() {
+            return;
+        }
+        self.nodes.remove(index);
+        if self.nodes.is_empty() {
+            self.active = None;
+            return;
+        }
+        let last = self.nodes.len() - 1;
+        self.active = Some(match self.active {
+            Some(active) if active > index => active - 1,
+            Some(active) => active.min(last),
+            None => last,
+        });
+    }
+
+    /// Build the one-node Tool scene that reproduces today's single-shape
+    /// behaviour from the panel's [`GeometryParams`] plus the active
+    /// [`MaterialChoice`]. The node is a [`NodeContent::Tool`] wrapping the SDF
+    /// shape, carrying `material` as its single material.
     ///
-    /// When `geometry.debug_clouds` is set the node is a [`Part::DebugClouds`];
-    /// otherwise it is a [`NodeContent::Tool`] wrapping the SDF shape. The
-    /// `material` is carried on the Tool (ignored by the Part, which would bring
-    /// its own per-voxel materials). This mirrors the old `resolve_active_producer`
-    /// branch exactly.
-    ///
-    /// Step 1 keeps the `debug_clouds` selector (the ADR deletes it in step 2,
-    /// when the node becomes the panel's source of truth).
+    /// Step 2 removed the `debug_clouds: bool` selector — "Clouds" is now an
+    /// Add-a-Part action in the node list ([`Part::DebugClouds`]), not a mode of
+    /// the geometry. So this constructor only ever builds a Tool; the back-compat
+    /// config load (a single persisted geometry) routes through here.
     pub fn from_geometry(geometry: GeometryParams, material: MaterialChoice) -> Self {
-        let node = if geometry.debug_clouds {
-            Node::new(
-                "Clouds",
-                NodeContent::Part(Part::DebugClouds { seed: 0 }),
-            )
-        } else {
-            Node::new(
-                "Shape",
-                NodeContent::Tool {
-                    shape: SdfShape::from_geometry(geometry),
-                    material,
-                },
-            )
-        };
-        Self::single_node(node)
+        Self::single_node(Node::new(
+            "Shape",
+            NodeContent::Tool {
+                shape: SdfShape::from_geometry(geometry),
+                material,
+            },
+        ))
     }
 
-    /// The whole-block extent of this step-1 scene: the single node's block
-    /// extent. (A multi-node / placed scene would union the node world-AABBs;
-    /// that arrives with transforms in step 3 and the node list in step 2.)
+    /// The whole-block extent of the scene: the per-axis MAX over every leaf
+    /// node's block extent. Step 2 composites several nodes into one region; since
+    /// transforms are step 3 every node is centred at the origin, so the region
+    /// that contains them all is the axis-wise maximum of their sizes. A
+    /// Part-only node (the cloud field, which has no intrinsic size) contributes
+    /// nothing and adopts whatever extent the Tools establish.
     pub fn full_extent_blocks(&self, voxels_per_block: u32) -> RegionBlocks {
+        let mut extent = [0u32; 3];
         for node in &self.nodes {
             if let Some(size_blocks) = leaf_size_blocks(&node.content, voxels_per_block) {
-                return RegionBlocks::new(size_blocks);
+                for axis in 0..3 {
+                    extent[axis] = extent[axis].max(size_blocks[axis]);
+                }
             }
         }
-        RegionBlocks::new([0, 0, 0])
+        RegionBlocks::new(extent)
     }
 
     /// Resolve `region` into a fresh [`VoxelGrid`] by a union tree-walk: each
@@ -408,7 +454,6 @@ mod tests {
             size_blocks: [6, 6, 6],
             voxels_per_block: 16,
             wall_blocks: 1,
-            debug_clouds: false,
         };
 
         // Bare producer (today's path).
@@ -432,37 +477,111 @@ mod tests {
         );
     }
 
-    /// The same guarantee for a Part (the debug cloud field): the one-node Part
-    /// scene matches `DebugCloudField::resolve` at the same dimensions.
+    /// The same guarantee for a Part (the debug cloud field): a one-node Part
+    /// scene matches `DebugCloudField::resolve` at the same dimensions. Step 2
+    /// builds the Part node directly (the `debug_clouds` selector is gone).
     #[test]
     fn part_scene_matches_bare_cloud_field() {
-        let geometry = GeometryParams {
-            shape: ShapeKind::Cylinder,
-            size_blocks: [4, 4, 4],
-            voxels_per_block: 16,
-            wall_blocks: 1,
-            debug_clouds: true,
-        };
-
+        let size_blocks = [4u32, 4, 4];
+        let voxels_per_block = 16u32;
         let dimensions = [
-            geometry.size_blocks[0] * geometry.voxels_per_block,
-            geometry.size_blocks[1] * geometry.voxels_per_block,
-            geometry.size_blocks[2] * geometry.voxels_per_block,
+            size_blocks[0] * voxels_per_block,
+            size_blocks[1] * voxels_per_block,
+            size_blocks[2] * voxels_per_block,
         ];
         let bare_field = DebugCloudField {
             dimensions,
-            voxels_per_block: geometry.voxels_per_block,
+            voxels_per_block,
             seed: 0,
         };
         let mut bare = VoxelGrid::new(dimensions);
         bare_field.resolve(&mut bare);
 
-        let scene = Scene::from_geometry(geometry, MaterialChoice::Stone);
-        let region = RegionBlocks::new(geometry.size_blocks);
-        let resolved = scene.resolve_region(region, geometry.voxels_per_block, 0);
+        let scene =
+            Scene::single_node(Node::new("Clouds", NodeContent::Part(Part::DebugClouds { seed: 0 })));
+        let region = RegionBlocks::new(size_blocks);
+        let resolved = scene.resolve_region(region, voxels_per_block, 0);
 
         assert_eq!(resolved.dimensions, bare.dimensions);
         assert_eq!(resolved.occupied_count(), bare.occupied_count());
+    }
+
+    /// ADR 0001 step 2: several leaf nodes composite into one region under union.
+    /// A 2-node scene (a sphere Tool + a box Tool, both centred at origin) yields
+    /// the SET-UNION of their occupied voxels: the union count is at least each
+    /// node alone, and exactly equals the union of the two single-node sets.
+    #[test]
+    fn two_node_scene_resolves_to_union() {
+        let voxels_per_block = 12u32;
+        let region = RegionBlocks::new([6, 6, 6]);
+
+        let sphere = Node::new(
+            "Sphere",
+            NodeContent::Tool {
+                shape: SdfShape {
+                    kind: ShapeKind::Sphere,
+                    size_blocks: [6, 6, 6],
+                    voxels_per_block,
+                    wall_blocks: 1,
+                },
+                material: MaterialChoice::Stone,
+            },
+        );
+        // A full-extent box: its corners poke outside the inscribed sphere, so the
+        // union is strictly larger than the sphere alone (a real composite).
+        let cube = Node::new(
+            "Box",
+            NodeContent::Tool {
+                shape: SdfShape {
+                    kind: ShapeKind::Box,
+                    size_blocks: [6, 6, 6],
+                    voxels_per_block,
+                    wall_blocks: 1,
+                },
+                material: MaterialChoice::Wood,
+            },
+        );
+
+        // Each node resolved alone.
+        let sphere_only = Scene::single_node(sphere.clone())
+            .resolve_region(region, voxels_per_block, 0);
+        let cube_only =
+            Scene::single_node(cube.clone()).resolve_region(region, voxels_per_block, 0);
+
+        // Both nodes composited.
+        let scene = Scene {
+            nodes: vec![sphere, cube],
+            active: Some(0),
+        };
+        let union = scene.resolve_region(region, voxels_per_block, 0);
+
+        // The expected set-union of the two single-node occupied sets, keyed by
+        // integer voxel position (the producers emit voxel-centre world positions).
+        use std::collections::HashSet;
+        let key = |grid: &VoxelGrid| -> HashSet<[i64; 3]> {
+            grid.occupied
+                .iter()
+                .map(|voxel| {
+                    [
+                        voxel.world_position[0].round() as i64,
+                        voxel.world_position[1].round() as i64,
+                        voxel.world_position[2].round() as i64,
+                    ]
+                })
+                .collect()
+        };
+        let sphere_set = key(&sphere_only);
+        let cube_set = key(&cube_only);
+        let union_set = key(&union);
+        let expected: HashSet<[i64; 3]> = sphere_set.union(&cube_set).copied().collect();
+
+        // Union is at least as occupied as either node alone …
+        assert!(union_set.len() >= sphere_set.len());
+        assert!(union_set.len() >= cube_set.len());
+        // … and equals the set-union exactly (the box pokes outside the sphere, so
+        // the union is strictly larger than the sphere alone — a real composite).
+        assert_eq!(union_set, expected);
+        assert!(union_set.len() > sphere_set.len());
     }
 
     /// A hidden node contributes nothing.

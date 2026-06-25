@@ -29,9 +29,9 @@ use voxel_worker::{
     run_egui_frame, CubeFace, EguiPaintBridge, FrameOverlays, GeometryParams,
     GizmoRenderer,
     GpuContext, GridLatticeRenderer, LayerBand, LayerRange, MaterialChoice, MaterialSource,
-    OnionFogParams, OnionFogRenderer, OrbitCamera, PanelState, ProjectionMode, RegionBlocks, Scene,
-    SdfShape, ShapeKind, ViewCubeElement, VoxExport, ViewCubeRenderer, VoxelGrid, VoxelRenderer,
-    COLOR_TARGET_FORMAT,
+    Node, NodeContent, OnionFogParams, OnionFogRenderer, OrbitCamera, PanelState, Part,
+    ProjectionMode, RegionBlocks, Scene, SdfShape, ShapeKind, ViewCubeElement, VoxExport,
+    ViewCubeRenderer, VoxelGrid, VoxelRenderer, COLOR_TARGET_FORMAT,
 };
 
 /// Build the onion-skin fog parameters (issue #12) from the camera, grid, and
@@ -560,13 +560,20 @@ async fn run_capture(options: ShotOptions) {
         layer_range,
         ..PanelState::default()
     };
-    // ADR 0001 step 1: resolve through a one-node scene (a Tool, or a DebugClouds
-    // Part when `--shape debug-clouds`). The `debug_clouds` selector lives on the
-    // shot options, so mirror it onto a geometry copy the scene reads.
-    let scene_geometry = GeometryParams {
-        debug_clouds: options.debug_clouds,
-        ..options.geometry
+    // ADR 0001 step 2: resolve through a one-node scene — a Tool, or a DebugClouds
+    // Part when `--shape debug-clouds` (the boolean selector on GeometryParams was
+    // removed; Clouds is now its own node content). shot still builds a one-node
+    // scene from the CLI options. Seed the panel's scene so the node-list section
+    // renders the node in the captured panel.
+    let scene = if options.debug_clouds {
+        Scene::single_node(Node::new(
+            "Clouds",
+            NodeContent::Part(Part::DebugClouds { seed: 0 }),
+        ))
+    } else {
+        Scene::from_geometry(options.geometry, options.material)
     };
+    panel_state.scene = scene.clone();
     let grid = if shape.exceeds_voxel_cap() {
         panel_state.voxel_cap_warning_millions =
             Some(shape.grid_voxel_count() as f32 / 1_000_000.0);
@@ -576,7 +583,6 @@ async fn run_capture(options: ShotOptions) {
         );
         VoxelGrid::new(shape.grid_dimensions())
     } else {
-        let scene = Scene::from_geometry(scene_geometry, options.material);
         let region = RegionBlocks::new(options.geometry.size_blocks);
         scene.resolve_region(region, options.geometry.voxels_per_block, 0)
     };
