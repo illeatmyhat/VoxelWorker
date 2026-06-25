@@ -431,14 +431,12 @@ fn leaf_size_blocks(content: &NodeContent, voxels_per_block: u32) -> Option<[u32
     }
 }
 
-/// Map a Tool's [`MaterialChoice`] to the `material_id` it stamps. Step 1 keeps
-/// the existing single procedural material set; today every producer emits
-/// `material_id == 0`, so to preserve identical behaviour the Tool also stamps
-/// `0`. (The per-voxel material wiring — distinct ids per choice — is ADR 0001
-/// step 3.) Returning `Some(0)` documents the seam while matching today exactly.
-fn material_id_for(_material: MaterialChoice) -> Option<u16> {
-    // step 3: return Some(material.material_id()) so the Tool stamps its own id.
-    Some(0)
+/// Map a Tool's [`MaterialChoice`] to the `material_id` it stamps (ADR 0001 step 3
+/// "Materials"). A Tool is single-material by nature: every voxel it emits takes
+/// this one id, so distinct nodes render in distinct materials. Stone = 0,
+/// Wood = 1, Plain = 2 (see [`MaterialChoice::material_id`]).
+fn material_id_for(material: MaterialChoice) -> Option<u16> {
+    Some(material.material_id())
 }
 
 /// Resolve `producer` into its own local grid (centred at the origin, as the
@@ -639,6 +637,67 @@ mod tests {
         // the union is strictly larger than the sphere alone — a real composite).
         assert_eq!(union_set, expected);
         assert!(union_set.len() > sphere_set.len());
+    }
+
+    /// ADR 0001 step 3 (per-voxel material): a Tool with `MaterialChoice::Wood`
+    /// stamps voxels whose `material_id` equals the Wood id (1) — every voxel it
+    /// emits carries the Tool's single material, so distinct nodes are distinct.
+    #[test]
+    fn wood_tool_stamps_wood_material_id() {
+        let voxels_per_block = 8u32;
+        let shape = SdfShape {
+            kind: ShapeKind::Box,
+            size_blocks: [2, 2, 2],
+            voxels_per_block,
+            wall_blocks: 1,
+        };
+        let scene = Scene::single_node(Node::new(
+            "Wood box",
+            NodeContent::Tool { shape, material: MaterialChoice::Wood },
+        ));
+        let grid = scene.resolve_region(RegionBlocks::new([2, 2, 2]), voxels_per_block, 0);
+        let wood_id = MaterialChoice::Wood.material_id();
+        assert!(grid.occupied_count() > 0, "the box must emit voxels");
+        assert!(
+            grid.occupied.iter().all(|voxel| voxel.material_id == wood_id),
+            "every voxel a Wood Tool stamps must carry the Wood material id"
+        );
+    }
+
+    /// ADR 0001 step 3 (per-voxel material): a 2-Tool scene (Stone + Wood, placed
+    /// disjointly) yields BOTH material ids present — proving the per-voxel id
+    /// travels through compositing so the two nodes render in distinct materials.
+    #[test]
+    fn two_material_scene_has_both_material_ids() {
+        let voxels_per_block = 8u32;
+        let base = SdfShape {
+            kind: ShapeKind::Box,
+            size_blocks: [1, 1, 1],
+            voxels_per_block,
+            wall_blocks: 1,
+        };
+        let mut stone = Node::new("Stone", NodeContent::Tool { shape: base, material: MaterialChoice::Stone });
+        stone.transform.offset_blocks = [0, 0, 0];
+        let mut wood = Node::new("Wood", NodeContent::Tool { shape: base, material: MaterialChoice::Wood });
+        wood.transform.offset_blocks = [5, 0, 0];
+        let scene = Scene {
+            nodes: vec![stone, wood],
+            active: Some(0),
+        };
+        let region = scene.full_extent_blocks(voxels_per_block);
+        let grid = scene.resolve_region(region, voxels_per_block, 0);
+
+        let stone_id = MaterialChoice::Stone.material_id();
+        let wood_id = MaterialChoice::Wood.material_id();
+        assert_ne!(stone_id, wood_id, "Stone and Wood must map to distinct ids");
+        assert!(
+            grid.occupied.iter().any(|voxel| voxel.material_id == stone_id),
+            "the Stone node's voxels must carry the Stone id"
+        );
+        assert!(
+            grid.occupied.iter().any(|voxel| voxel.material_id == wood_id),
+            "the Wood node's voxels must carry the Wood id"
+        );
     }
 
     /// A hidden node contributes nothing.

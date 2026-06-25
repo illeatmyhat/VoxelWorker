@@ -51,12 +51,19 @@ struct CubeVertex {
     face_uv: [f32; 2],
 }
 
-/// Per-voxel instance data (24-byte stride).
+/// Per-voxel instance data (28-byte stride).
+///
+/// `material_id` (ADR 0001 step 3) is the per-voxel material handle carried from
+/// the resolved grid: a Tool stamps its single id, a Part its own per-voxel ids.
+/// It is uploaded as a `u32` (the GPU has no 16-bit vertex format) and indexes the
+/// shader's `material_base_colors` uniform array so distinct nodes modulate to
+/// distinct colours.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 pub struct VoxelInstance {
     pub world_position: [f32; 3],
     pub block_local_coord: [f32; 3],
+    pub material_id: u32,
 }
 
 /// The uniform block uploaded to the shader.
@@ -87,8 +94,22 @@ struct VoxelUniforms {
     /// the band; the two pads keep the trailing std140 16-byte slot.
     band_min: f32,
     band_max: f32,
-    _band_pad0: f32,
+    /// Per-voxel material modulation toggle (ADR 0001 step 3): `1` = modulate the
+    /// lit/textured colour by `material_base_colors[material_id]`, `0` = leave it
+    /// (the bound texture wins globally). Off for debug-faces and for a loaded VS
+    /// block (which stays a single global material). Reuses a former band pad.
+    material_modulation_enabled: f32,
     _band_pad1: f32,
+    /// Per-material base colours (ADR 0001 step 3), one `vec4` per
+    /// [`MaterialChoice`] (`[r, g, b, _pad]`, linear). Indexed by the per-instance
+    /// `material_id`; the fragment shader MODULATES the lit/textured colour by this
+    /// base so distinct nodes render in distinct materials cheaply. Each entry is
+    /// the material's average colour ([`procedural_material_average_color`])
+    /// RELATIVE to the bound texture's own average (i.e. divided by it), so the
+    /// bound material's own slot is ~neutral white and the others recolour the
+    /// shared texture toward their own tint (see `update_uniforms`). Padded to
+    /// `vec4` for std140 array stride.
+    material_base_colors: [[f32; 4]; MaterialChoice::MATERIAL_COUNT],
 }
 
 /// Grid overlay tuning, transcribed from the prototype `GRID` uniforms
@@ -399,6 +420,14 @@ impl VoxelRenderer {
                     shader_location: 4,
                     format: wgpu::VertexFormat::Float32x3,
                 },
+                // Per-voxel material id (ADR 0001 step 3), indexes the shader's
+                // `material_base_colors` array. `u32`: the GPU has no 16-bit
+                // vertex format, so the grid's `u16` is widened on upload.
+                wgpu::VertexAttribute {
+                    offset: std::mem::size_of::<[f32; 6]>() as u64,
+                    shader_location: 5,
+                    format: wgpu::VertexFormat::Uint32,
+                },
             ],
         };
 
@@ -530,6 +559,13 @@ impl VoxelRenderer {
     /// `debug_face_mode` enables the face-orientation debug shader path (colour by
     /// outward normal + back-facing marker); it must match the pipeline chosen in
     /// [`VoxelRenderer::draw`].
+    ///
+    /// `material` is the material that will be BOUND in [`VoxelRenderer::draw`]
+    /// (it must match). It drives the per-voxel material modulation (ADR 0001 step
+    /// 3): for a procedural bound material, each voxel's `material_id` recolours the
+    /// shared texture toward that material's tint, so distinct nodes look distinct.
+    /// Modulation is OFF in debug-faces mode and for a loaded VS block (which stays
+    /// a single global material, per the ADR scope note).
     #[allow(clippy::too_many_arguments)]
     pub fn update_uniforms(
         &self,
@@ -540,7 +576,17 @@ impl VoxelRenderer {
         grid_overlay_enabled: bool,
         debug_face_mode: bool,
         band: LayerBand,
+        material: MaterialSource<'_>,
     ) {
+        // Per-voxel material modulation (ADR 0001 step 3). Only meaningful when a
+        // PROCEDURAL material is bound and we are not in debug-faces mode. A loaded
+        // VS block stays global, so modulation is off and the bound texture wins.
+        let (modulation_enabled, base_colors) = match material {
+            MaterialSource::Procedural(bound) if !debug_face_mode => {
+                (true, relative_material_base_colors(bound))
+            }
+            _ => (false, neutral_material_base_colors()),
+        };
         let uniforms = VoxelUniforms {
             view_projection: view_projection.to_cols_array_2d(),
             grid_half_extent: [
@@ -559,8 +605,9 @@ impl VoxelRenderer {
             block_line_alpha: BLOCK_LINE_ALPHA,
             band_min: band.band_min as f32,
             band_max: band.band_max as f32,
-            _band_pad0: 0.0,
+            material_modulation_enabled: if modulation_enabled { 1.0 } else { 0.0 },
             _band_pad1: 0.0,
+            material_base_colors: base_colors,
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
     }
@@ -815,6 +862,55 @@ pub fn procedural_material_average_color(material: MaterialChoice) -> [u8; 4] {
     ]
 }
 
+/// The average colour of a material's procedural texture as a LINEAR `[r, g, b]`
+/// (the space the shader lights/blends in). Indexed by `material_id` order
+/// (Stone/Wood/Plain) via [`MaterialChoice::from_material_id`].
+fn material_average_linear(id: u16) -> [f32; 3] {
+    let srgb = procedural_material_average_color(MaterialChoice::from_material_id(id));
+    [
+        srgb_component_to_linear(srgb[0]),
+        srgb_component_to_linear(srgb[1]),
+        srgb_component_to_linear(srgb[2]),
+    ]
+}
+
+/// The neutral (identity) per-material base-colour array: every slot is white, so
+/// modulation by it is a no-op. Used when modulation is OFF (debug-faces or a
+/// loaded VS block), so the uniform is always well-defined.
+fn neutral_material_base_colors() -> [[f32; 4]; MaterialChoice::MATERIAL_COUNT] {
+    [[1.0, 1.0, 1.0, 0.0]; MaterialChoice::MATERIAL_COUNT]
+}
+
+/// The per-voxel material base colours (ADR 0001 step 3) RELATIVE to the bound
+/// texture's own average colour. Slot `id` holds `avg(id) / avg(bound)`, so:
+///   * the bound material's own slot is ~`[1,1,1]` (neutral — its texture is
+///     shown unchanged, preserving the existing look for a single-material model);
+///   * every other material's slot recolours the shared bound texture toward that
+///     material's tint, so a Wood node and a Stone node drawn from one bound
+///     texture render in visibly distinct colours.
+///
+/// This is the cheap base-colour-modulation the ADR/task call for, NOT a
+/// per-material texture array.
+fn relative_material_base_colors(
+    bound: MaterialChoice,
+) -> [[f32; 4]; MaterialChoice::MATERIAL_COUNT] {
+    let bound_avg = material_average_linear(bound.material_id());
+    let mut colors = [[1.0, 1.0, 1.0, 0.0]; MaterialChoice::MATERIAL_COUNT];
+    for (id, slot) in colors.iter_mut().enumerate() {
+        let avg = material_average_linear(id as u16);
+        // Guard against a near-zero bound channel (a flat black texture); fall back
+        // to a neutral 1.0 so a divide can't explode.
+        for axis in 0..3 {
+            slot[axis] = if bound_avg[axis] > 1e-4 {
+                avg[axis] / bound_avg[axis]
+            } else {
+                1.0
+            };
+        }
+    }
+    colors
+}
+
 /// Build the instance list FROM the resolved grid (REPRESENTATION.md seam).
 fn instances_from_grid(grid: &VoxelGrid) -> Vec<VoxelInstance> {
     grid.occupied
@@ -827,6 +923,7 @@ fn instances_from_grid(grid: &VoxelGrid) -> Vec<VoxelInstance> {
                 voxel.block_local_coord[1] as f32,
                 voxel.block_local_coord[2] as f32,
             ],
+            material_id: voxel.material_id as u32,
         })
         .collect()
 }
@@ -839,6 +936,7 @@ fn pad_to_capacity(mut instances: Vec<VoxelInstance>, capacity: u32) -> Vec<Voxe
             VoxelInstance {
                 world_position: [0.0; 3],
                 block_local_coord: [0.0; 3],
+                material_id: 0,
             },
         );
     }

@@ -40,8 +40,16 @@ struct VoxelUniforms {
     // slot (matching `VoxelUniforms` in renderer.rs).
     band_min: f32,
     band_max: f32,
-    _band_pad0: f32,
+    // Per-voxel material modulation toggle (ADR 0001 step 3): 1 = modulate the
+    // lit/textured colour by material_base_colors[material_id], 0 = leave it.
+    // Off for debug-faces and for a loaded VS block. (Reuses a former band pad.)
+    material_modulation_enabled: f32,
     _band_pad1: f32,
+    // Per-material base colours (ADR 0001 step 3), one vec4 per MaterialChoice
+    // ([r, g, b, _pad], LINEAR), RELATIVE to the bound texture's average. Indexed
+    // by the per-instance material_id; the fragment stage MULTIPLIES the lit
+    // texture colour by this so distinct nodes render in distinct materials.
+    material_base_colors: array<vec4<f32>, 3>,
 };
 
 @group(0) @binding(0)
@@ -71,6 +79,13 @@ fn face_layer(face_normal: vec3<f32>) -> i32 {
     }
 }
 
+// Look up a per-voxel material base colour by id, clamped into range so an
+// unexpected id can never index out of bounds (ADR 0001 step 3).
+fn material_base_colors_lookup(material_id: u32) -> vec3<f32> {
+    let index = min(material_id, 2u);
+    return uniforms.material_base_colors[index].rgb;
+}
+
 struct VertexInput {
     @location(0) vertex_position: vec3<f32>,
     @location(1) face_normal: vec3<f32>,
@@ -80,6 +95,8 @@ struct VertexInput {
 struct InstanceInput {
     @location(3) world_position: vec3<f32>,
     @location(4) block_local_coord: vec3<f32>,
+    // Per-voxel material id (ADR 0001 step 3): indexes material_base_colors.
+    @location(5) material_id: u32,
 };
 
 struct VertexOutput {
@@ -97,6 +114,9 @@ struct VertexOutput {
     // because centres sit at integer+0.5, `layer = floor(that)`. Flat so every
     // fragment of the cube reports the voxel's own layer.
     @location(4) @interpolate(flat) voxel_layer: f32,
+    // Per-voxel material id (ADR 0001 step 3), flat (constant per instance), used
+    // to index material_base_colors in the fragment stage.
+    @location(5) @interpolate(flat) material_id: u32,
 };
 
 @vertex
@@ -128,6 +148,7 @@ fn vertex_main(vertex: VertexInput, instance: InstanceInput) -> VertexOutput {
     // absolute (0-based) voxel space. Centres are at integer+0.5 so floor() lands
     // on the voxel's layer index regardless of which face this vertex belongs to.
     output.voxel_layer = floor(instance.world_position.y + uniforms.grid_half_extent.y);
+    output.material_id = instance.material_id;
     return output;
 }
 
@@ -203,6 +224,16 @@ fn fragment_main(
     let ambient = 0.45;
     let lighting = ambient + (1.0 - ambient) * diffuse;
     var color = sampled * lighting;
+
+    // --- Per-voxel material modulation (ADR 0001 step 3) ---
+    // Multiply by this voxel's material base colour (relative to the bound
+    // texture's average) so distinct nodes render in distinct materials from the
+    // one shared texture. Off (flag 0) for a loaded VS block, which stays global.
+    // Debug-faces mode returns earlier, so it is unaffected.
+    if (uniforms.material_modulation_enabled > 0.5) {
+        let base = material_base_colors_lookup(input.material_id);
+        color = color * base;
+    }
 
     // --- BUG 2 fix: grid overlay from absolute voxel position ---
     if (uniforms.grid_overlay_enabled > 0.5) {

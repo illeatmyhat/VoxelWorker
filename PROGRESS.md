@@ -33,6 +33,29 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **ADR 0001 step 3 (per-voxel material half): COMPLETES step 3 / closes #16** —
+  `src/panel.rs`, `src/scene.rs`, `src/renderer.rs`, `src/shaders/voxel.wgsl`, `src/main.rs`,
+  `src/bin/shot.rs`. Distinct nodes now render in distinct materials, driven by `Voxel.material_id`.
+  **Id mapping:** `MaterialChoice::material_id()` (Stone=0, Wood=1, Plain=2) + `from_material_id`;
+  `scene.rs::material_id_for` now returns the Tool's real id (was always `Some(0)`), so each Tool
+  stamps its one material; a Part (clouds) still emits its own (id 0 today). **Renderer:** added a
+  `material_id: u32` field to `VoxelInstance` (new instance vertex attribute @location 5, `Uint32`)
+  carried from the grid's `u16`. **Shader (bounded approach — NOT a per-material texture array):** a
+  small uniform `array<vec4,3>` of per-material base colours, indexed by the per-instance
+  `material_id`, MODULATES the lit/textured colour. The base colours are each material's average
+  colour RELATIVE to the bound texture's average (computed in `update_uniforms`), so the bound
+  material's own slot is ~neutral (its texture shows unchanged — single-material models look
+  identical to before) and the others recolour the one shared texture toward their tint. **Scope
+  kept:** modulation is gated OFF for `--debug-faces` (face-orientation colours intact) and for a
+  loaded VS block (stays a single GLOBAL material, per the ADR) — `update_uniforms` now takes the
+  bound `MaterialSource` and sets `material_modulation_enabled` accordingly. The per-face slice +
+  grid overlay are unchanged. **Tests:** `wood_tool_stamps_wood_material_id` (every voxel a Wood
+  Tool emits carries the Wood id) and `two_material_scene_has_both_material_ids` (a Stone+Wood scene
+  composites both ids). **Headless visual:** `shot --demo-scene` (sphere=Stone grey, box=Wood brown,
+  torus=Plain tan) shows DISTINCT per-node colours; `--material wood` still renders wood-tinted;
+  `--debug-faces` still shows the R/G/B face palette. `cargo build --bins` clean, `cargo clippy
+  --all-targets` clean, `cargo test` 44 + 1 pass.
+
 - **ADR 0001 step 3 (translation half): per-node placement** (part of #16; per-voxel material is the
   remaining #16 sub-step) — `src/scene.rs`, `src/panel.rs`, `src/bin/shot.rs`. Nodes can now be
   PLACED in space, so two nodes occupy disjoint voxel regions instead of overlapping at the origin.

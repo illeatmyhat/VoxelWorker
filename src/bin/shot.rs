@@ -770,15 +770,11 @@ async fn run_capture(options: ShotOptions) {
     };
     let aspect_ratio = options.width as f32 / options.height as f32;
     let view_projection = camera.view_projection(aspect_ratio);
-    voxel_renderer.update_uniforms(
-        &gpu.queue,
-        view_projection,
-        grid_dimensions,
-        options.geometry.voxels_per_block,
-        options.show_grid_overlay,
-        options.debug_face_orientation,
-        band,
-    );
+    // The material that will be bound at draw time (ADR 0001 step 3): a loaded VS
+    // block overrides the procedural choice — but it isn't resolved until the
+    // optional VS scan below, so the voxel uniform upload (which needs the bound
+    // material to drive per-voxel material modulation) is deferred to just before
+    // `run_egui_frame`. The overlay uniforms have no such dependency.
     gizmo_renderer.update_uniforms(&gpu.queue, view_projection);
     grid_lattice_renderer.update_uniforms(&gpu.queue, view_projection);
     view_cube_renderer.update_uniforms(&gpu.queue, camera.view_cube_view_projection());
@@ -906,6 +902,24 @@ async fn run_capture(options: ShotOptions) {
             );
         }
     }
+
+    // Deferred voxel uniform upload (see note above): now that any VS block has
+    // been resolved, pick the bound material and upload — it drives per-voxel
+    // material modulation (ADR 0001 step 3) and must match the draw-time binding.
+    let uniform_material = match &loaded_material {
+        Some(loaded) => MaterialSource::Loaded(&loaded.bind_group),
+        None => MaterialSource::Procedural(options.material),
+    };
+    voxel_renderer.update_uniforms(
+        &gpu.queue,
+        view_projection,
+        grid_dimensions,
+        options.geometry.voxels_per_block,
+        options.show_grid_overlay,
+        options.debug_face_orientation,
+        band,
+        uniform_material,
+    );
 
     let prepared = run_egui_frame(
         &mut egui_bridge,

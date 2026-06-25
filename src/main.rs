@@ -786,6 +786,13 @@ impl WindowedState {
                 },
             }
         };
+        // The material that will be bound at draw time (ADR 0001 step 3): a loaded
+        // VS block overrides the procedural choice. It drives per-voxel material
+        // modulation in the uniforms, so it must match the draw-time selection.
+        let material = match &self.loaded_material {
+            Some(loaded) => MaterialSource::Loaded(&loaded.bind_group),
+            None => MaterialSource::Procedural(self.panel_state.material),
+        };
         self.voxel_renderer.update_uniforms(
             &self.gpu.queue,
             view_projection,
@@ -794,6 +801,7 @@ impl WindowedState {
             self.panel_state.show_grid_overlay,
             self.panel_state.debug_face_orientation,
             band,
+            material,
         );
         // M5 overlay uniforms: gizmo shares the main camera matrix; the view cube
         // uses its own orientation-mirroring matrix.
