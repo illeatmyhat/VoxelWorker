@@ -15,6 +15,7 @@
 pub mod assets;
 pub mod block_palette;
 pub mod camera;
+pub mod debug_clouds;
 pub mod gpu;
 pub mod panel;
 pub mod renderer;
@@ -23,6 +24,7 @@ pub mod settings;
 pub mod vox_export;
 pub mod voxel;
 
+pub use debug_clouds::DebugCloudField;
 pub use camera::{
     nearest_equivalent_theta, CubeFace, OrbitCamera, ProjectionMode, SnapTween, ViewCubeElement,
     CUBE_FACES, POLE_EPSILON,

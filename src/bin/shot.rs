@@ -9,7 +9,7 @@
 //!   --out <path>     output PNG path        (default: shots/m1.png)
 //!   --width <u32>    capture width          (default: 1280)
 //!   --height <u32>   capture height         (default: 800)
-//!   --shape <cylinder|tube|sphere|torus|box>   (default: cylinder)
+//!   --shape <cylinder|tube|sphere|torus|box|debug-clouds>   (default: cylinder)
 //!   --size-x <u32> --size-y <u32> --size-z <u32>   size in blocks (default 5/1/5)
 //!   --density <u32>  voxels per block       (default: 16)
 //!   --wall <u32>     tube wall in blocks    (default: 1)
@@ -26,7 +26,8 @@ use voxel_worker::block_palette::{BlockPalette, LoadedMaterial, ThumbnailRendere
 use voxel_worker::scan_worker::{run_auto_scan_blocking, FaceResolver};
 use voxel_worker::{
     create_depth_view, create_msaa_color_view, procedural_material_average_color, render_frame,
-    run_egui_frame, CubeFace, EguiPaintBridge, FrameOverlays, GeometryParams, GizmoRenderer,
+    run_egui_frame, CubeFace, DebugCloudField, EguiPaintBridge, FrameOverlays, GeometryParams,
+    GizmoRenderer,
     GpuContext, GridLatticeRenderer, LayerBand, LayerRange, MaterialChoice, MaterialSource,
     OnionFogParams, OnionFogRenderer, OrbitCamera, PanelState, ProjectionMode, SdfShape, ShapeKind,
     ViewCubeElement, VoxExport, ViewCubeRenderer, VoxelGrid, VoxelProducer, VoxelRenderer,
@@ -125,6 +126,10 @@ struct ShotOptions {
     /// Onion-skin depth (issue #12): 0 = off (hard band clip), N = ghost N layers
     /// on each side of the band with screen-door dither.
     onion_depth: u32,
+    /// `--shape debug-clouds`: replace the parametric producer with the debug
+    /// cloud field (several distinct billowy blobs in a mostly-empty volume) at
+    /// the requested size/density. The grid dims still come from size×density.
+    debug_clouds: bool,
 }
 
 impl Default for ShotOptions {
@@ -155,6 +160,7 @@ impl Default for ShotOptions {
             layer_lower: None,
             layer_upper: None,
             onion_depth: 0,
+            debug_clouds: false,
         }
     }
 }
@@ -255,8 +261,15 @@ fn parse_options() -> ShotOptions {
                     .expect("--height must be a positive integer");
             }
             "--shape" => {
-                options.geometry.shape =
-                    parse_shape(&args.next().expect("--shape requires a value"));
+                let value = args.next().expect("--shape requires a value");
+                if value == "debug-clouds" || value == "clouds" {
+                    // Not an SDF shape: switch the producer to the debug cloud
+                    // field. Leave geometry.shape at its default so size/density
+                    // (→ grid dims) and the panel still render sensibly.
+                    options.debug_clouds = true;
+                } else {
+                    options.geometry.shape = parse_shape(&value);
+                }
             }
             "--size-x" => {
                 options.geometry.size_blocks[0] = args
@@ -395,7 +408,7 @@ fn parse_options() -> ShotOptions {
                     "shot — headless VoxelWorker capture\n\
                      \n\
                      Usage: shot [--out <path>] [--width <u32>] [--height <u32>]\n\
-                     \x20            [--shape <cylinder|tube|sphere|torus|box>]\n\
+                     \x20            [--shape <cylinder|tube|sphere|torus|box|debug-clouds>]\n\
                      \x20            [--size-x <u32>] [--size-y <u32>] [--size-z <u32>]\n\
                      \x20            [--density <u32>] [--wall <u32>]\n\
                      \x20            [--proj <perspective|ortho>]\n\
@@ -555,16 +568,32 @@ async fn run_capture(options: ShotOptions) {
             "3D paused — {:.1}M voxels exceeds the cap; rendering empty grid",
             shape.grid_voxel_count() as f32 / 1_000_000.0
         );
+    } else if options.debug_clouds {
+        DebugCloudField {
+            dimensions: shape.grid_dimensions(),
+            voxels_per_block: options.geometry.voxels_per_block,
+            seed: 0,
+        }
+        .resolve(&mut grid);
     } else {
         shape.resolve(&mut grid);
     }
-    println!(
-        "resolved {} voxels for {:?} {:?}@{}",
-        grid.occupied_count(),
-        shape.kind,
-        shape.size_blocks,
-        shape.voxels_per_block
-    );
+    if options.debug_clouds {
+        println!(
+            "resolved {} voxels for DebugClouds {:?}@{}",
+            grid.occupied_count(),
+            shape.size_blocks,
+            shape.voxels_per_block
+        );
+    } else {
+        println!(
+            "resolved {} voxels for {:?} {:?}@{}",
+            grid.occupied_count(),
+            shape.kind,
+            shape.size_blocks,
+            shape.voxels_per_block
+        );
+    }
 
     // M8: `--export-vox` writes the resolved grid as a MagicaVoxel .vox and then
     // exits (no render needed — this is the headless verification path).

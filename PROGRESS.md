@@ -33,6 +33,19 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **debug cloud field producer (`src/debug_clouds.rs`)** — A second `VoxelProducer` (besides
+  `SdfShape`) that fills the grid with several visually distinct, billowy cloud blobs in a mostly-empty
+  volume — richer test content than the 5 SDFs (many disjoint objects + space), exercising the renderer
+  and onion fog. Recipe = the standard cloud one: each cloud is a soft RADIAL FALLOFF (bounded, separate
+  puff) whose surface is displaced by FRACTAL PERLIN NOISE (fBm = summed octaves of gradient noise);
+  `max` across clouds keeps them separate. 8 puffs on the octant centres, seed-jittered position/radius
+  so none read alike. Self-contained improved-Perlin + fBm + small LCG (no new dependency); fully
+  deterministic from `seed`. Recommended fBm over Worley/cellular (fBm = soft/fluffy; Worley =
+  lumpier/cauliflower) but the code makes either easy. Exposed via `shot --shape debug-clouds`
+  (grid dims still = size×density; honours the 6M cap). Verified at 128³ and 180³
+  (`shots/debug-clouds*.png`): 8 fluffy puffs, clear gaps. +2 unit tests (non-empty/not-too-dense,
+  determinism). Lib + shot clippy clean; 34 lib tests. NOTE: app exe was locked (app running) so only
+  the `shot` bin + lib were rebuilt this turn; rebuild `voxel_worker` when free.
 - **fog: AABB-clipped sampling + depth occlusion (Minecraft-cloud model)** — Two corrections after
   visual review. (1) **Sampling bug:** the march spread its fixed 96 steps over the FULL near→far ray
   (hundreds of units), so from a top/bottom view — where the onion band is thin in the view direction —
