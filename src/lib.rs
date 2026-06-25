@@ -24,15 +24,16 @@ pub mod vox_export;
 pub mod voxel;
 
 pub use camera::{
-    nearest_equivalent_theta, CubeFace, OrbitCamera, ProjectionMode, SnapTween, CUBE_FACES,
+    nearest_equivalent_theta, CubeFace, OrbitCamera, ProjectionMode, SnapTween, ViewCubeElement,
+    CUBE_FACES, POLE_EPSILON,
 };
 pub use gpu::GpuContext;
 pub use panel::{build_panel, GeometryParams, LayerRange, MaterialChoice, PanelResponse, PanelState};
 pub use assets::{CubeFaceSlot, FaceProvenance, FaceTextures};
 pub use renderer::{
     create_depth_view, create_msaa_color_view, GizmoRenderer, GridLatticeRenderer, LayerBand,
-    MaterialSource, ViewCubeRenderer, VoxelRenderer, DEPTH_FORMAT, MSAA_SAMPLE_COUNT,
-    VIEW_CUBE_VIEWPORT_PIXELS,
+    MaterialSource, OnionFogParams, OnionFogRenderer, ViewCubeRenderer, VoxelRenderer, DEPTH_FORMAT,
+    MSAA_SAMPLE_COUNT, VIEW_CUBE_VIEWPORT_PIXELS,
 };
 pub use renderer::procedural_material_average_color;
 pub use settings::AppConfig;
@@ -186,6 +187,11 @@ pub struct FrameOverlays<'a> {
     /// debug pipeline (colour by outward normal + back-facing marker). Must match
     /// the `debug_face_mode` flag passed to `VoxelRenderer::update_uniforms`.
     pub debug_face_mode: bool,
+    /// Onion-skin volumetric fog (issue #12): when `Some`, a fullscreen SDF
+    /// raymarch composites a faint haze over the resolved scene for the layers
+    /// around the displayed band. `None` when onion skin is off. Its uniforms must
+    /// already be uploaded via `OnionFogRenderer::update`.
+    pub onion_fog: Option<&'a renderer::OnionFogRenderer>,
     /// Target dimensions (needed to place the view-cube corner viewport).
     pub target_width: u32,
     pub target_height: u32,
@@ -238,7 +244,9 @@ pub fn render_frame(
                 view: depth_view,
                 depth_ops: Some(wgpu::Operations {
                     load: wgpu::LoadOp::Clear(1.0),
-                    store: wgpu::StoreOp::Discard,
+                    // Stored (not discarded) so the onion-skin fog pass can sample
+                    // this MSAA depth to stop its raymarch at opaque surfaces.
+                    store: wgpu::StoreOp::Store,
                 }),
                 stencil_ops: None,
             }),
@@ -260,6 +268,15 @@ pub fn render_frame(
         if let Some(gizmo) = overlays.gizmo {
             gizmo.draw(&mut voxel_pass);
         }
+    }
+
+    // === Pass 1a: onion-skin volumetric fog (issue #12). A fullscreen SDF
+    // raymarch that composites a faint haze over the resolved scene for the layers
+    // around the displayed band. Runs after the 3D resolve (so it has the scene
+    // colour + MSAA depth) and before the view cube/egui (so the corner cube and
+    // panel aren't fogged).
+    if let Some(onion_fog) = overlays.onion_fog {
+        onion_fog.draw(device, &mut encoder, target_view, depth_view);
     }
 
     // === Pass 1b: view cube into a scissored top-left corner (its own depth).

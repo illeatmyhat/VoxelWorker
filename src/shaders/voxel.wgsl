@@ -35,15 +35,13 @@ struct VoxelUniforms {
     // The visible band, in voxel Y-layer indices. A fragment is kept when its
     // layer satisfies `band_min <= layer <= band_max` (BOTH ends INCLUSIVE).
     // Full range = band_min 0, band_max >= grid_y - 1 (then nothing is clipped).
+    // The onion skin is a separate volumetric fog pass (shaders/onion_fog.wgsl),
+    // so this opaque pass only needs the band. Two pads keep the std140 16-byte
+    // slot (matching `VoxelUniforms` in renderer.rs).
     band_min: f32,
     band_max: f32,
-    // Onion-skin ghost depth in layers (0 = onion off → hard band clip). Ghost
-    // layers are those within `onion_depth` OUTSIDE the band; they render as a
-    // faint translucent fog in a separate alpha-blended pass.
-    onion_depth: f32,
-    // Render mode: 0 = OPAQUE band pass (in-band solid, discard the rest);
-    // 1 = GHOST pass (onion layers as faint translucent fog, discard the band).
-    render_mode: f32,
+    _band_pad0: f32,
+    _band_pad1: f32,
 };
 
 @group(0) @binding(0)
@@ -160,47 +158,18 @@ fn fragment_main(
     // Debug-face mode skips this entirely so the culling regression check always
     // sees the whole model.
     //
-    // Two render modes share this shader:
-    //   render_mode 0 (OPAQUE pass): keep in-band fragments; discard everything
-    //     else (hard clip — onion layers are painted by the separate ghost pass).
-    //   render_mode 1 (GHOST pass): keep ONLY onion layers (within onion_depth
-    //     OUTSIDE the band) and emit them as a faint translucent fog; discard the
-    //     in-band band so the ghost pass never repaints the solid surface.
-    // `ghost_alpha` carries the fog opacity for the ghost pass (very low — an
-    // aerogel-like haze that the band surface clearly shows through).
-    var ghost_alpha = 1.0;
+    // This opaque voxel pass draws ONLY the displayed band: keep fragments whose
+    // layer is in [band_min, band_max] (inclusive) and hard-discard the rest. The
+    // onion skin is no longer drawn here — it is a separate fullscreen volumetric
+    // SDF-raymarch fog pass (see shaders/onion_fog.wgsl), so the surrounding
+    // layers read as smooth fog with no voxel edges.
     if (uniforms.debug_face_mode <= 0.5) {
         let layer = input.voxel_layer;
         let in_band = layer >= uniforms.band_min && layer <= uniforms.band_max;
-        let ghost_pass = uniforms.render_mode > 0.5;
-        if (in_band) {
-            // The band itself: drawn only by the opaque pass.
-            if (ghost_pass) {
-                discard;
-            }
-        } else {
-            // Outside the band: only the ghost pass may draw it, and only within
-            // `onion_depth` layers of the band.
-            if (!ghost_pass || uniforms.onion_depth < 0.5) {
-                discard;
-            }
-            var distance_layers = 0.0;
-            if (layer < uniforms.band_min) {
-                distance_layers = uniforms.band_min - layer;
-            } else {
-                distance_layers = layer - uniforms.band_max;
-            }
-            if (distance_layers > uniforms.onion_depth) {
-                discard;
-            }
-            // Fog opacity fades with distance: nearest ghost layer the least faint,
-            // fading to nearly nothing at onion_depth. Capped very low so the fog
-            // is almost invisible (aerogel-like) and the band shows through.
-            let nearness = 1.0 - (distance_layers - 1.0) / max(uniforms.onion_depth, 1.0);
-            ghost_alpha = clamp(nearness, 0.0, 1.0) * 0.14 + 0.02;
+        if (!in_band) {
+            discard;
         }
     }
-    let is_ghost = uniforms.render_mode > 0.5 && uniforms.debug_face_mode <= 0.5;
 
     // --- Face-orientation debug mode ---
     // Colour each fragment by its outward face normal (signed-axis palette),
@@ -268,17 +237,6 @@ fn fragment_main(
             line_color = uniforms.block_line_color;
         }
         color = mix(color, line_color, blend);
-    }
-
-    // Ghost (onion-skin) layers: a faint cool fog. The colour keeps a hint of the
-    // surface's own brightness for shape, tinted cool; the very low `ghost_alpha`
-    // (set above, capped ~0.16) is the blend opacity in the alpha-blended ghost
-    // pass, so the fog is almost invisible and the band surface shows through.
-    if (is_ghost) {
-        let luminance = dot(color, vec3<f32>(0.299, 0.587, 0.114));
-        let fog_tint = vec3<f32>(0.62, 0.72, 0.92);
-        color = mix(fog_tint, vec3<f32>(luminance) * fog_tint, 0.5);
-        return vec4<f32>(color, ghost_alpha);
     }
 
     return vec4<f32>(color, 1.0);

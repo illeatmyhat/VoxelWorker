@@ -82,14 +82,13 @@ struct VoxelUniforms {
     block_line_alpha: f32,
     /// Layer-range scrubber band (issue #12), in voxel Y-layer indices. A voxel
     /// is drawn solid when `band_min <= layer <= band_max` (both ends INCLUSIVE).
-    /// Full range = `band_min 0`, `band_max >= grid_y - 1` (nothing clipped).
+    /// Full range = `band_min 0`, `band_max >= grid_y - 1` (nothing clipped). The
+    /// onion skin is a separate volumetric fog pass, so the voxel pass only needs
+    /// the band; the two pads keep the trailing std140 16-byte slot.
     band_min: f32,
     band_max: f32,
-    /// Onion-skin ghost depth in layers (0 = onion off → hard clip at the band).
-    onion_depth: f32,
-    /// Render mode for the voxel pass: `0` = opaque band pass, `1` = translucent
-    /// ghost (onion-skin) pass. Written per sub-draw inside [`VoxelRenderer::draw`].
-    render_mode: f32,
+    _band_pad0: f32,
+    _band_pad1: f32,
 }
 
 /// Grid overlay tuning, transcribed from the prototype `GRID` uniforms
@@ -212,13 +211,6 @@ pub struct VoxelRenderer {
     /// bug) still DRAWS and gets flagged by the shader's `front_facing` marker.
     /// Depth testing stays on so the nearest face still wins.
     debug_pipeline: wgpu::RenderPipeline,
-    /// Onion-skin ghost pipeline (issue #12): alpha-blended, depth-TESTED but with
-    /// depth writes OFF, so the faint translucent fog shows the solid band through
-    /// it and the band (drawn first, opaque) still occludes ghosts behind it.
-    ghost_pipeline: wgpu::RenderPipeline,
-    /// Whether the last `update_uniforms` enabled onion skin (so `draw` runs the
-    /// ghost sub-pass). `Cell` so `update_uniforms`/`draw` keep `&self`.
-    onion_active: std::cell::Cell<bool>,
     cube_vertex_buffer: wgpu::Buffer,
     cube_index_buffer: wgpu::Buffer,
     cube_index_count: u32,
@@ -229,12 +221,6 @@ pub struct VoxelRenderer {
     instance_capacity: u32,
     uniform_buffer: wgpu::Buffer,
     uniform_bind_group: wgpu::BindGroup,
-    /// A second uniform buffer + bind group identical to the main one except
-    /// `render_mode = 1` (the translucent ghost pass). Kept separate so the ghost
-    /// sub-draw can bind a different render_mode WITHOUT a mid-pass buffer rewrite
-    /// (which would retroactively affect the opaque draw in the same pass).
-    ghost_uniform_buffer: wgpu::Buffer,
-    ghost_uniform_bind_group: wgpu::BindGroup,
     /// One bind group per material (Stone/Wood/Plain), indexed by
     /// [`MaterialChoice`] order.
     material_bind_groups: [wgpu::BindGroup; 3],
@@ -306,23 +292,6 @@ impl VoxelRenderer {
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
                 resource: uniform_buffer.as_entire_binding(),
-            }],
-        });
-
-        // The ghost (onion-skin) uniform buffer mirrors the main one but with
-        // `render_mode = 1`; bound only by the translucent ghost sub-pass.
-        let ghost_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("voxel ghost uniforms"),
-            size: std::mem::size_of::<VoxelUniforms>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-        let ghost_uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("voxel ghost uniform bind group"),
-            layout: &uniform_bind_group_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: ghost_uniform_buffer.as_entire_binding(),
             }],
         });
 
@@ -492,21 +461,12 @@ impl VoxelRenderer {
             build_pipeline("voxel pipeline", Some(wgpu::Face::Back), wgpu::BlendState::REPLACE, true);
         let debug_pipeline =
             build_pipeline("voxel debug pipeline", None, wgpu::BlendState::REPLACE, true);
-        // Ghost pipeline: standard src-alpha over blending, depth writes OFF so the
-        // band surface (drawn first, opaque) shows through the faint fog and the
-        // ghosts don't fight each other in the depth buffer.
-        let ghost_pipeline = build_pipeline(
-            "voxel ghost pipeline",
-            Some(wgpu::Face::Back),
-            wgpu::BlendState::ALPHA_BLENDING,
-            false,
-        );
+        // (Onion skin is a separate volumetric fog pass — see `OnionFogRenderer`
+        // — so the voxel renderer no longer needs a translucent ghost pipeline.)
 
         Self {
             pipeline,
             debug_pipeline,
-            ghost_pipeline,
-            onion_active: std::cell::Cell::new(false),
             cube_vertex_buffer,
             cube_index_buffer,
             cube_index_count: indices.len() as u32,
@@ -515,8 +475,6 @@ impl VoxelRenderer {
             instance_capacity,
             uniform_buffer,
             uniform_bind_group,
-            ghost_uniform_buffer,
-            ghost_uniform_bind_group,
             material_bind_groups,
             material_bind_group_layout,
             material_sampler,
@@ -601,23 +559,10 @@ impl VoxelRenderer {
             block_line_alpha: BLOCK_LINE_ALPHA,
             band_min: band.band_min as f32,
             band_max: band.band_max as f32,
-            onion_depth: band.onion_depth as f32,
-            // The opaque band pass runs in render_mode 0; the ghost uniform below
-            // is the same block with render_mode 1 for the translucent sub-pass.
-            render_mode: 0.0,
+            _band_pad0: 0.0,
+            _band_pad1: 0.0,
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
-        let ghost_uniforms = VoxelUniforms {
-            render_mode: 1.0,
-            ..uniforms
-        };
-        queue.write_buffer(
-            &self.ghost_uniform_buffer,
-            0,
-            bytemuck::bytes_of(&ghost_uniforms),
-        );
-        // Remember whether onion skin is on so `draw` runs the ghost sub-pass.
-        self.onion_active.set(band.onion_depth > 0);
     }
 
     /// Record the voxel draw into an already-begun render pass.
@@ -657,22 +602,6 @@ impl VoxelRenderer {
         render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
         render_pass.set_index_buffer(self.cube_index_buffer.slice(..), wgpu::IndexFormat::Uint16);
         render_pass.draw_indexed(0..self.cube_index_count, 0, 0..self.instance_count);
-
-        // Onion-skin (issue #12): a second, alpha-blended sub-draw over the same
-        // instances. The ghost uniform (render_mode 1) keeps ONLY the onion layers
-        // and emits them as faint translucent fog; depth writes are off so the
-        // opaque band (drawn just above) shows through. Skipped in debug-face mode
-        // and when onion skin is off, so the regression path is untouched.
-        if self.onion_active.get() && !debug_face_mode {
-            render_pass.set_pipeline(&self.ghost_pipeline);
-            render_pass.set_bind_group(0, &self.ghost_uniform_bind_group, &[]);
-            render_pass.set_bind_group(1, material_bind_group, &[]);
-            render_pass.set_vertex_buffer(0, self.cube_vertex_buffer.slice(..));
-            render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
-            render_pass
-                .set_index_buffer(self.cube_index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-            render_pass.draw_indexed(0..self.cube_index_count, 0, 0..self.instance_count);
-        }
     }
 }
 
@@ -2013,6 +1942,228 @@ fn floor_vertices(grid_dimensions: [u32; 3]) -> Vec<LineVertex> {
     vertices
 }
 
+// ============================================================================
+// Onion-skin volumetric fog (issue #12) — fullscreen SDF raymarch.
+// ============================================================================
+
+/// Parameters for one frame of the onion-skin fog pass. The fog raymarches the
+/// parametric SDF and integrates a faint haze in the onion-band Y range OUTSIDE
+/// the displayed (solid) band, stopping at the opaque scene depth.
+#[derive(Debug, Clone, Copy)]
+pub struct OnionFogParams {
+    /// Inverse camera view-projection (to unproject screen → world rays).
+    pub inverse_view_projection: glam::Mat4,
+    /// Shape selector: 0 cylinder, 1 tube, 2 sphere, 3 torus, 4 box.
+    pub shape_kind: u32,
+    /// Inscribed semi-axes (voxel-space half-extents) of the shape.
+    pub semi_axes: [f32; 3],
+    /// Tube wall thickness in voxels (tube only).
+    pub wall_voxels: f32,
+    /// World-space Y extent of the onion band (the layers to fog).
+    pub onion_y_min: f32,
+    pub onion_y_max: f32,
+    /// World-space Y extent of the displayed solid band (excluded from the fog —
+    /// the opaque voxel pass already drew it).
+    pub band_y_min: f32,
+    pub band_y_max: f32,
+}
+
+/// std140-safe uniform block; field order matches `FogUniforms` in onion_fog.wgsl.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+struct OnionFogUniforms {
+    inverse_view_projection: [[f32; 4]; 4],
+    semi_axes: [f32; 3],
+    shape_kind: f32,
+    fog_color: [f32; 3],
+    wall_voxels: f32,
+    onion_y_min: f32,
+    onion_y_max: f32,
+    band_y_min: f32,
+    band_y_max: f32,
+    fog_strength: f32,
+    _pad0: f32,
+    _pad1: f32,
+    _pad2: f32,
+}
+
+/// Fog tint (cool blue-grey) and Beer–Lambert strength. Strength is low so the
+/// haze is aerogel-faint and the solid band clearly shows through.
+const ONION_FOG_COLOR_HEX: u32 = 0x9c_b4_d8;
+const ONION_FOG_STRENGTH: f32 = 0.18;
+
+/// Fullscreen volumetric-fog renderer for the onion skin (issue #12).
+pub struct OnionFogRenderer {
+    pipeline: wgpu::RenderPipeline,
+    uniform_buffer: wgpu::Buffer,
+    bind_group_layout: wgpu::BindGroupLayout,
+}
+
+impl OnionFogRenderer {
+    /// Create the fog renderer for a colour target format.
+    pub fn new(device: &wgpu::Device, color_format: wgpu::TextureFormat) -> Self {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("onion fog shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/onion_fog.wgsl").into()),
+        });
+
+        // Binding 0: uniform; binding 1: the MSAA scene depth (multisampled depth
+        // texture, read via textureLoad at sample 0).
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("onion fog bind group layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: true,
+                    },
+                    count: None,
+                },
+            ],
+        });
+
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("onion fog pipeline layout"),
+            bind_group_layouts: &[Some(&bind_group_layout)],
+            immediate_size: 0,
+        });
+
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("onion fog pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vertex_main"),
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fragment_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: color_format,
+                    // Straight alpha-over: fog colour composited onto the resolved
+                    // scene by its `coverage` alpha.
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            // The fog runs at 1 sample onto the resolved target (after the 3D MSAA
+            // resolve, before egui), so no depth attachment / no MSAA here.
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState {
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview_mask: None,
+            cache: None,
+        });
+
+        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("onion fog uniforms"),
+            size: std::mem::size_of::<OnionFogUniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        Self {
+            pipeline,
+            uniform_buffer,
+            bind_group_layout,
+        }
+    }
+
+    /// Upload this frame's fog parameters.
+    pub fn update(&self, queue: &wgpu::Queue, params: OnionFogParams) {
+        let uniforms = OnionFogUniforms {
+            inverse_view_projection: params.inverse_view_projection.to_cols_array_2d(),
+            semi_axes: params.semi_axes,
+            shape_kind: params.shape_kind as f32,
+            fog_color: srgb_hex_to_linear(ONION_FOG_COLOR_HEX),
+            wall_voxels: params.wall_voxels,
+            onion_y_min: params.onion_y_min,
+            onion_y_max: params.onion_y_max,
+            band_y_min: params.band_y_min,
+            band_y_max: params.band_y_max,
+            fog_strength: ONION_FOG_STRENGTH,
+            _pad0: 0.0,
+            _pad1: 0.0,
+            _pad2: 0.0,
+        };
+        queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
+    }
+
+    /// Draw the fog into `target_view` (the resolved scene), sampling `depth_view`
+    /// (the 3D pass's MSAA depth) to stop the raymarch at opaque surfaces. Its own
+    /// render pass loads the existing colour and composites the haze over it.
+    pub fn draw(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        target_view: &wgpu::TextureView,
+        depth_view: &wgpu::TextureView,
+    ) {
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("onion fog bind group"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.uniform_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(depth_view),
+                },
+            ],
+        });
+
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("onion fog pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target_view,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, &bind_group, &[]);
+        pass.draw(0..3, 0..1);
+    }
+}
+
 /// Create a 4-sample (MSAA) depth texture view sized to a render target.
 pub fn create_depth_view(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureView {
     let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -2026,7 +2177,9 @@ pub fn create_depth_view(device: &wgpu::Device, width: u32, height: u32) -> wgpu
         sample_count: MSAA_SAMPLE_COUNT,
         dimension: wgpu::TextureDimension::D2,
         format: DEPTH_FORMAT,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        // TEXTURE_BINDING so the onion-skin volumetric fog pass can sample this
+        // MSAA depth (sample 0) to stop its raymarch at the nearest opaque surface.
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
         view_formats: &[],
     });
     texture.create_view(&wgpu::TextureViewDescriptor::default())

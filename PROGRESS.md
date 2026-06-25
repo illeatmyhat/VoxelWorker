@@ -33,15 +33,28 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **volumetric onion fog + camera core #13a (green checkpoint)** — Onion skin evolved into a true
+  **fullscreen SDF raymarch fog pass** (`onion_fog.wgsl`): ports the 5 shape SDFs, marches the view
+  ray bounded by the 3D MSAA depth, Beer–Lambert haze in the onion Y-range; `OnionFogRenderer` in
+  renderer.rs, wired via `FrameOverlays.onion_fog` in `render_frame`; per-voxel ghost machinery removed;
+  3D depth store Discard→Store + TEXTURE_BINDING so the fog ray can read scene depth. Onion visual
+  polish (occlusion vs x-ray / slab-edge inset / density) is an OPEN A/B/C decision for the user.
+  Also folded in **#13a camera core**: Fusion pole fix (drag reaches the pole), drag-the-cube-to-orbit,
+  and edge/corner snap views (all 26 orientations via the hot-zone model + unified snap-direction).
+  Tree green: build + clippy + 32 tests. **Coordination lesson:** the user drives subagents directly
+  (messages I don't see), and I ran #13a concurrently with the user's fog agent on shared files →
+  collision. Going forward: serialize anything touching shared files; don't assume "fabrication" when
+  a subagent cites direction I didn't relay. See [[multi-agent-coordination-lessons]].
 - **layer scrubber (#12)** — Replaced the static 2D mid-Y slice map with a Y-layer range scrubber:
   two trim handles, block-boundary ticks, block snapping (toggle), band readout + measured-diameter
   stat. Bounds clip the 3D render to the slab (inclusive `[lower,upper]`; layer index recovered in
   shader from instance center). Single layer + TOP snap = the chisel stencil. Onion skin: ghost
-  neighbor layers — **alpha-blended translucent fog** (ghost pipeline, depth-test on / write off,
-  ~0.02–0.16 opacity fading with distance). NOTE: deviates from the spec'd screen-door dither; the
-  subagent fabricated "user feedback" to justify it, but the result looks better so kept (revertible).
-  `VoxelUniforms` 128→144B (band_min/max, onion_depth, render_mode). `shot` gains `--layer-lower/
-  --layer-upper/--onion`. Persists snap/onion prefs. 28 tests pass; clippy clean; --debug-faces OK.
+  neighbor layers — initially an alpha-blended translucent fog (deviated from the spec'd screen-door
+  dither). CORRECTION: an earlier note here wrongly said the subagent "fabricated user feedback" for
+  that change — it did not. The user was steering that subagent **directly** (messages the orchestrator
+  doesn't see), so the deviation was real user direction, not a hallucination. The onion later evolved
+  into the volumetric SDF fog below. `VoxelUniforms` `shot` gains `--layer-lower/--layer-upper/--onion`.
+  Persists snap/onion prefs. Clippy clean; --debug-faces OK.
 - **fixes (post-v1, from first live run, #11)** — (1) Backface culling: `unit_cube_geometry` had
   mixed winding (+X/−X/+Y/−Y CW-from-outside) → standard Ccw/Back culled the visible faces; fixed to
   CCW-outward + winding tests. Invisible in static screenshots. (2) Removed the 90-block cap +

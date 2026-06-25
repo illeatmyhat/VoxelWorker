@@ -19,10 +19,15 @@ use voxel_worker::scan_worker::{
 use voxel_worker::{
     create_depth_view, create_msaa_color_view, procedural_material_average_color, render_frame,
     run_egui_frame, AppConfig, CubeFace, EguiPaintBridge, FrameOverlays, GizmoRenderer,
-    GpuContext, GridLatticeRenderer, LayerBand, MaterialSource, OrbitCamera, PanelState, SdfShape,
-    SnapTween, VoxExport, ViewCubeRenderer, VoxelGrid, VoxelProducer, VoxelRenderer,
-    COLOR_TARGET_FORMAT, VIEW_CUBE_VIEWPORT_PIXELS,
+    GpuContext, GridLatticeRenderer, LayerBand, MaterialSource, OnionFogParams, OnionFogRenderer,
+    OrbitCamera, PanelState, SdfShape, ShapeKind, SnapTween, ViewCubeElement, VoxExport,
+    ViewCubeRenderer, VoxelGrid, VoxelProducer, VoxelRenderer, COLOR_TARGET_FORMAT,
+    VIEW_CUBE_VIEWPORT_PIXELS,
 };
+
+/// Drag threshold (pixels) distinguishing a click (snap) from a drag (orbit) on
+/// the view cube, and the general orbit-start threshold.
+const VIEW_CUBE_DRAG_THRESHOLD_PIXELS: f64 = 5.0;
 
 /// Margin from the top-left corner to the view-cube viewport (must match the
 /// renderer's `VIEW_CUBE_VIEWPORT_MARGIN`).
@@ -45,6 +50,8 @@ struct WindowedState {
     /// Block lattice + fine floor grid (M8).
     grid_lattice_renderer: GridLatticeRenderer,
     view_cube_renderer: ViewCubeRenderer,
+    /// Onion-skin volumetric fog (issue #12).
+    onion_fog_renderer: OnionFogRenderer,
     /// Offscreen renderer for the 45° palette cube thumbnails (M6).
     thumbnail_renderer: ThumbnailRenderer,
     /// The palette of scanned VS blocks (tiles + status + click counter, M6).
@@ -90,11 +97,74 @@ struct WindowedState {
     press_position: Option<(f64, f64)>,
     /// Whether the most recent left-press started inside the view-cube viewport.
     press_in_view_cube: bool,
+    /// Whether a press that started on the view cube has moved past the drag
+    /// threshold and is now orbiting the main camera (so the release snaps nothing).
+    view_cube_drag_active: bool,
 }
 
 #[derive(Default)]
 struct App {
     state: Option<WindowedState>,
+}
+
+/// The [`CubeFace`] whose outward normal lies along `axis` (0=X,1=Y,2=Z) with the
+/// given sign (`true` = positive → Right/Top/Front, `false` = negative →
+/// Left/Bottom/Back).
+fn face_for_axis_sign(axis: usize, positive: bool) -> CubeFace {
+    match (axis, positive) {
+        (0, true) => CubeFace::Right,
+        (0, false) => CubeFace::Left,
+        (1, true) => CubeFace::Top,
+        (1, false) => CubeFace::Bottom,
+        (2, true) => CubeFace::Front,
+        _ => CubeFace::Back,
+    }
+}
+
+/// Map a [`ShapeKind`] to the onion-fog shader's shape selector (issue #12),
+/// matching the `scene_sdf` dispatch in `onion_fog.wgsl`.
+fn shape_kind_index(kind: ShapeKind) -> u32 {
+    match kind {
+        ShapeKind::Cylinder => 0,
+        ShapeKind::Tube => 1,
+        ShapeKind::Sphere => 2,
+        ShapeKind::Torus => 3,
+        ShapeKind::Box => 4,
+    }
+}
+
+/// Build the onion-skin fog parameters (issue #12) from the camera, grid, and
+/// layer-range scrubber. World-Y of layer `j` spans `[j - grid_y/2, j+1 -
+/// grid_y/2]` (voxel centres at `j + 0.5 - grid_y/2`). The solid band is layers
+/// `[lower, upper]`; the onion band extends `onion_depth` layers on each side.
+fn onion_fog_params(
+    view_projection: glam::Mat4,
+    grid_dimensions: [u32; 3],
+    geometry: &voxel_worker::GeometryParams,
+    layer_range: voxel_worker::LayerRange,
+) -> OnionFogParams {
+    let grid_y = grid_dimensions[1] as f32;
+    let half_y = grid_y / 2.0;
+    let depth = layer_range.onion_depth.clamp(1, 8) as f32;
+    let lower = layer_range.lower as f32;
+    let upper = layer_range.upper.min(grid_dimensions[1].saturating_sub(1)) as f32;
+    OnionFogParams {
+        inverse_view_projection: view_projection.inverse(),
+        shape_kind: shape_kind_index(geometry.shape),
+        semi_axes: [
+            grid_dimensions[0] as f32 / 2.0,
+            grid_dimensions[1] as f32 / 2.0,
+            grid_dimensions[2] as f32 / 2.0,
+        ],
+        wall_voxels: (geometry.wall_blocks * geometry.voxels_per_block) as f32,
+        // Onion band world-Y: `depth` layers below the band's bottom edge to
+        // `depth` layers above its top edge.
+        onion_y_min: (lower - depth) - half_y,
+        onion_y_max: (upper + 1.0 + depth) - half_y,
+        // Solid band world-Y (excluded from the fog).
+        band_y_min: lower - half_y,
+        band_y_max: (upper + 1.0) - half_y,
+    }
 }
 
 /// Default `.vox` filename from the shape + voxel dims (e.g. `cylinder_80x16x80.vox`).
@@ -206,6 +276,7 @@ impl WindowedState {
         );
         let view_cube_renderer =
             ViewCubeRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
+        let onion_fog_renderer = OnionFogRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
         let thumbnail_renderer = ThumbnailRenderer::new(&gpu.device, &gpu.queue);
 
         // Kick off the VS auto-detect + scan on a background thread immediately;
@@ -242,6 +313,7 @@ impl WindowedState {
             gizmo_renderer,
             grid_lattice_renderer,
             view_cube_renderer,
+            onion_fog_renderer,
             thumbnail_renderer,
             palette,
             scan_handle,
@@ -262,6 +334,7 @@ impl WindowedState {
             last_cursor_position: None,
             press_position: None,
             press_in_view_cube: false,
+            view_cube_drag_active: false,
         }
     }
 
@@ -491,10 +564,13 @@ impl WindowedState {
     }
 
     /// Ray-cast a click inside the view-cube viewport against the cube and return
-    /// the hit [`CubeFace`]. NDC is computed within the cube's screen rect, then
-    /// unprojected through the view-cube matrix; the nearest of the six unit
-    /// faces (|coord| ≈ 0.7) that the ray crosses is returned.
-    fn pick_view_cube_face(&self, x: f64, y: f64) -> Option<CubeFace> {
+    /// the hit [`ViewCubeElement`] (face / edge / corner). NDC is computed within
+    /// the cube's screen rect, then unprojected through the view-cube matrix; the
+    /// entry face is found by a slab intersection, and the 3D hit point's in-plane
+    /// coordinates pick one of the face's 9 hot zones (3×3 grid at the 1/3 and 2/3
+    /// thresholds): centre → the face, an edge zone → this face + the neighbour the
+    /// zone points toward, a corner zone → this face + both neighbours.
+    fn pick_view_cube_element(&self, x: f64, y: f64) -> Option<ViewCubeElement> {
         let margin = VIEW_CUBE_VIEWPORT_MARGIN as f32;
         let size = VIEW_CUBE_VIEWPORT_PIXELS as f32;
         // NDC inside the cube rect (y up).
@@ -549,7 +625,36 @@ impl WindowedState {
 
         // Map (axis, sign) → material index (+X,-X,+Y,-Y,+Z,-Z) → CubeFace.
         let material_index = entry_axis * 2 + if entry_sign > 0.0 { 0 } else { 1 };
-        CubeFace::from_material_index(material_index)
+        let face = CubeFace::from_material_index(material_index)?;
+
+        // 3D hit point on the entry face, in cube space.
+        let hit = origin + direction * t_entry;
+
+        // The two axes NOT equal to `entry_axis` are the face's in-plane axes.
+        // For each, the signed coordinate selects a 3×3 zone column/row: outside
+        // ±HALF/3 the zone points toward the neighbouring face whose normal is
+        // ±that axis. The combined set of faces resolves the element.
+        const ZONE_THRESHOLD: f32 = HALF / 3.0; // 1/3 of the half-extent.
+        let mut neighbours: Vec<CubeFace> = Vec::with_capacity(2);
+        for axis in 0..3 {
+            if axis == entry_axis {
+                continue;
+            }
+            let coordinate = hit[axis];
+            if coordinate > ZONE_THRESHOLD {
+                // Positive face along this axis (+X→Right, +Y→Top, +Z→Front).
+                neighbours.push(face_for_axis_sign(axis, true));
+            } else if coordinate < -ZONE_THRESHOLD {
+                neighbours.push(face_for_axis_sign(axis, false));
+            }
+        }
+
+        Some(match neighbours.as_slice() {
+            [] => ViewCubeElement::from_face(face),
+            [a] => ViewCubeElement::from_edge(face, *a),
+            [a, b] => ViewCubeElement::from_corner(face, *a, *b),
+            _ => ViewCubeElement::from_face(face),
+        })
     }
 
     fn render(&mut self) {
@@ -686,6 +791,17 @@ impl WindowedState {
         self.view_cube_renderer
             .update_uniforms(&self.gpu.queue, self.camera.view_cube_view_projection());
 
+        // Issue #12: onion-skin volumetric fog. Active only when onion skin is on
+        // and not in debug-face mode. Upload the SDF + band world-Y ranges so the
+        // fullscreen raymarch hazes the layers around the band.
+        let onion_active = layer_range.onion_skin && !self.panel_state.debug_face_orientation;
+        if onion_active {
+            self.onion_fog_renderer.update(
+                &self.gpu.queue,
+                onion_fog_params(view_projection, grid_dimensions, &geometry, layer_range),
+            );
+        }
+
         let overlays = FrameOverlays {
             gizmo: if self.panel_state.show_origin_gizmo {
                 Some(&self.gizmo_renderer)
@@ -701,6 +817,11 @@ impl WindowedState {
             show_lattice: self.panel_state.show_block_lattice,
             show_floor: self.panel_state.show_floor_grid,
             debug_face_mode: self.panel_state.debug_face_orientation,
+            onion_fog: if onion_active {
+                Some(&self.onion_fog_renderer)
+            } else {
+                None
+            },
             target_width: self.surface_config.width,
             target_height: self.surface_config.height,
         };
@@ -774,23 +895,29 @@ impl ApplicationHandler for App {
                             .unwrap_or(false);
                     state.press_position = position;
                     state.press_in_view_cube = in_cube;
-                    // Pressing on the view cube starts a snap (not an orbit drag).
+                    state.view_cube_drag_active = false;
+                    // Pressing on the view cube does NOT start a scene-path orbit
+                    // (`left_button_held`): a press on the cube either becomes a
+                    // cube-drag orbit (handled in CursorMoved) or, if it stays put,
+                    // snaps on release. So the scene orbit path is reserved for
+                    // presses that started outside the cube and weren't on egui.
                     state.left_button_held = !egui_consumed && !in_cube;
                 } else {
-                    // Release: a small, stationary click that started AND ended in
-                    // the cube selects a face and snaps to it (prototype pointerup).
-                    if state.press_in_view_cube {
+                    // Release: a press that started in the cube and DIDN'T become a
+                    // drag (stayed within the threshold) selects the picked hot-zone
+                    // element and snaps to it (prototype pointerup). A cube-drag has
+                    // already orbited the camera, so it snaps nothing.
+                    if state.press_in_view_cube && !state.view_cube_drag_active {
                         if let (Some((down_x, down_y)), Some((up_x, up_y))) =
                             (state.press_position, state.last_cursor_position)
                         {
-                            let stationary =
-                                (up_x - down_x).abs() < 5.0 && (up_y - down_y).abs() < 5.0;
-                            if stationary
-                                && state.position_in_view_cube(up_x, up_y)
-                            {
-                                if let Some(face) = state.pick_view_cube_face(up_x, up_y) {
+                            let stationary = (up_x - down_x).abs()
+                                < VIEW_CUBE_DRAG_THRESHOLD_PIXELS
+                                && (up_y - down_y).abs() < VIEW_CUBE_DRAG_THRESHOLD_PIXELS;
+                            if stationary && state.position_in_view_cube(up_x, up_y) {
+                                if let Some(element) = state.pick_view_cube_element(up_x, up_y) {
                                     state.snap_tween =
-                                        Some(SnapTween::to_face(&state.camera, face));
+                                        Some(SnapTween::to_element(&state.camera, element));
                                 }
                             }
                         }
@@ -798,11 +925,30 @@ impl ApplicationHandler for App {
                     state.left_button_held = false;
                     state.last_cursor_position = None;
                     state.press_in_view_cube = false;
+                    state.view_cube_drag_active = false;
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
                 let current = (position.x, position.y);
-                if state.left_button_held {
+
+                // A press that started on the view cube becomes an orbit drag once
+                // it moves past the threshold. This routes the SAME delta into
+                // `orbit_by_drag` as a scene drag (no double-application: the cube
+                // press never sets `left_button_held`, so only one path fires).
+                if state.press_in_view_cube && !state.view_cube_drag_active {
+                    if let Some((down_x, down_y)) = state.press_position {
+                        let moved = (current.0 - down_x).abs() >= VIEW_CUBE_DRAG_THRESHOLD_PIXELS
+                            || (current.1 - down_y).abs() >= VIEW_CUBE_DRAG_THRESHOLD_PIXELS;
+                        if moved {
+                            state.view_cube_drag_active = true;
+                            // Promote to an orbit drag: cancel any in-progress snap.
+                            state.snap_tween = None;
+                        }
+                    }
+                }
+
+                let orbiting = state.left_button_held || state.view_cube_drag_active;
+                if orbiting {
                     if let Some((previous_x, previous_y)) = state.last_cursor_position {
                         let delta_x = (current.0 - previous_x) as f32;
                         let delta_y = (current.1 - previous_y) as f32;

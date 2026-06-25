@@ -28,9 +28,52 @@ use voxel_worker::{
     create_depth_view, create_msaa_color_view, procedural_material_average_color, render_frame,
     run_egui_frame, CubeFace, EguiPaintBridge, FrameOverlays, GeometryParams, GizmoRenderer,
     GpuContext, GridLatticeRenderer, LayerBand, LayerRange, MaterialChoice, MaterialSource,
-    OrbitCamera, PanelState, ProjectionMode, SdfShape, ShapeKind, VoxExport, ViewCubeRenderer,
-    VoxelGrid, VoxelProducer, VoxelRenderer, COLOR_TARGET_FORMAT,
+    OnionFogParams, OnionFogRenderer, OrbitCamera, PanelState, ProjectionMode, SdfShape, ShapeKind,
+    ViewCubeElement, VoxExport, ViewCubeRenderer, VoxelGrid, VoxelProducer, VoxelRenderer,
+    COLOR_TARGET_FORMAT,
 };
+
+/// Map a [`ShapeKind`] to the onion-fog shader's shape selector (issue #12),
+/// matching the `scene_sdf` dispatch in `onion_fog.wgsl`.
+fn shape_kind_index(kind: ShapeKind) -> u32 {
+    match kind {
+        ShapeKind::Cylinder => 0,
+        ShapeKind::Tube => 1,
+        ShapeKind::Sphere => 2,
+        ShapeKind::Torus => 3,
+        ShapeKind::Box => 4,
+    }
+}
+
+/// Build the onion-skin fog parameters (issue #12) from the camera, grid, and
+/// layer-range. World-Y of layer `j` spans `[j - grid_y/2, j+1 - grid_y/2]`; the
+/// solid band is layers `[lower, upper]`, the onion band extends `onion_depth`
+/// layers on each side.
+fn onion_fog_params(
+    view_projection: glam::Mat4,
+    grid_dimensions: [u32; 3],
+    geometry: &GeometryParams,
+    layer_range: LayerRange,
+) -> OnionFogParams {
+    let half_y = grid_dimensions[1] as f32 / 2.0;
+    let depth = layer_range.onion_depth.clamp(1, 8) as f32;
+    let lower = layer_range.lower as f32;
+    let upper = layer_range.upper.min(grid_dimensions[1].saturating_sub(1)) as f32;
+    OnionFogParams {
+        inverse_view_projection: view_projection.inverse(),
+        shape_kind: shape_kind_index(geometry.shape),
+        semi_axes: [
+            grid_dimensions[0] as f32 / 2.0,
+            grid_dimensions[1] as f32 / 2.0,
+            grid_dimensions[2] as f32 / 2.0,
+        ],
+        wall_voxels: (geometry.wall_blocks * geometry.voxels_per_block) as f32,
+        onion_y_min: (lower - depth) - half_y,
+        onion_y_max: (upper + 1.0 + depth) - half_y,
+        band_y_min: lower - half_y,
+        band_y_max: (upper + 1.0) - half_y,
+    }
+}
 
 struct ShotOptions {
     output_path: PathBuf,
@@ -60,10 +103,11 @@ struct ShotOptions {
     export_vox_path: Option<PathBuf>,
     /// Whether the view cube is drawn (M5; ON by default, `--no-viewcube` hides).
     show_view_cube: bool,
-    /// When `Some`, set the camera directly to this face's snapped angles (M5
+    /// When `Some`, set the camera directly to this element's snapped angles (M5
     /// `--snap`), overriding `--theta`/`--phi` so the snap table can be verified
-    /// headlessly (no tween).
-    snap_face: Option<CubeFace>,
+    /// headlessly (no tween). Faces, edges (`front-top`) and corners
+    /// (`front-top-right`) are all accepted (#13a).
+    snap_element: Option<ViewCubeElement>,
     /// Orbit azimuth (radians). Default 0.7.
     theta: f32,
     /// Orbit polar angle from +Y (radians). Default 1.05.
@@ -114,7 +158,7 @@ impl Default for ShotOptions {
             debug_face_orientation: false,
             export_vox_path: None,
             show_view_cube: true,
-            snap_face: None,
+            snap_element: None,
             theta: 0.7,
             phi: 1.05,
             distance: None,
@@ -130,16 +174,43 @@ impl Default for ShotOptions {
     }
 }
 
-/// Parse a `--snap` value into a [`CubeFace`].
-fn parse_snap_face(value: &str) -> CubeFace {
-    match value.to_ascii_lowercase().as_str() {
+/// Parse a single face name into a [`CubeFace`].
+fn parse_face_name(value: &str) -> CubeFace {
+    match value {
         "front" => CubeFace::Front,
         "back" => CubeFace::Back,
         "left" => CubeFace::Left,
         "right" => CubeFace::Right,
         "top" => CubeFace::Top,
         "bottom" => CubeFace::Bottom,
-        other => panic!("--snap must be front|back|left|right|top|bottom, got '{other}'"),
+        other => panic!("--snap face must be front|back|left|right|top|bottom, got '{other}'"),
+    }
+}
+
+/// Parse a `--snap` value into a [`ViewCubeElement`]. Accepts a single face
+/// (`front`), a hyphen-joined edge (`front-top`, 2 adjacent faces) or a corner
+/// (`front-top-right`, 3 mutually-adjacent faces). Opposite faces (e.g.
+/// `front-back`) share no edge/corner and are rejected.
+fn parse_snap_element(value: &str) -> ViewCubeElement {
+    let lower = value.to_ascii_lowercase();
+    let faces: Vec<CubeFace> = lower.split('-').map(parse_face_name).collect();
+    // Reject any pair of faces lying on the same axis (opposite or duplicate):
+    // their normals don't define a real edge/corner.
+    for (i, a) in faces.iter().enumerate() {
+        for b in &faces[i + 1..] {
+            if a.normal().abs() == b.normal().abs() {
+                panic!(
+                    "--snap '{value}' combines faces on the same axis; \
+                     use adjacent faces (e.g. front-top, front-top-right)"
+                );
+            }
+        }
+    }
+    match faces.as_slice() {
+        [a] => ViewCubeElement::from_face(*a),
+        [a, b] => ViewCubeElement::from_edge(*a, *b),
+        [a, b, c] => ViewCubeElement::from_corner(*a, *b, *c),
+        _ => panic!("--snap must name 1 (face), 2 (edge) or 3 (corner) faces, got '{value}'"),
     }
 }
 
@@ -309,8 +380,8 @@ fn parse_options() -> ShotOptions {
                 options.show_view_cube = false;
             }
             "--snap" => {
-                options.snap_face =
-                    Some(parse_snap_face(&args.next().expect("--snap requires a value")));
+                options.snap_element =
+                    Some(parse_snap_element(&args.next().expect("--snap requires a value")));
             }
             "--theta" => {
                 options.theta = args
@@ -351,7 +422,7 @@ fn parse_options() -> ShotOptions {
                      \x20            [--debug-faces]\n\
                      \x20            [--layer-lower <u32>] [--layer-upper <u32>] [--onion <u32>]\n\
                      \x20            [--export-vox <path.vox>]\n\
-                     \x20            [--snap <front|back|left|right|top|bottom>]\n\
+                     \x20            [--snap <face|edge|corner>  e.g. front, front-top, front-top-right]\n\
                      \x20            [--theta <f32>] [--phi <f32>] [--dist <f32>]\n\
                      Defaults: --out shots/m1.png --width 1280 --height 800\n\
                      \x20         --shape cylinder --size-x 5 --size-y 1 --size-z 5\n\
@@ -541,6 +612,7 @@ async fn run_capture(options: ShotOptions) {
         options.geometry.voxels_per_block,
     );
     let view_cube_renderer = ViewCubeRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
+    let onion_fog_renderer = OnionFogRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
     // Issue #12: the layer-range band for the 3D clip + the measured-diameter
     // readout (widest occupied run in the active band).
     let band = if layer_range.is_full_range(grid_y) && !layer_range.onion_skin {
@@ -560,8 +632,8 @@ async fn run_capture(options: ShotOptions) {
 
     // Build the orbit camera from the CLI flags. `--snap` overrides theta/phi
     // with the face's snapped angles directly (no tween in the headless path).
-    let (theta, phi) = match options.snap_face {
-        Some(face) => face.snap_angles(),
+    let (theta, phi) = match options.snap_element {
+        Some(element) => element.snap_angles(),
         None => (options.theta, options.phi),
     };
     let camera = OrbitCamera {
@@ -587,6 +659,16 @@ async fn run_capture(options: ShotOptions) {
     gizmo_renderer.update_uniforms(&gpu.queue, view_projection);
     grid_lattice_renderer.update_uniforms(&gpu.queue, view_projection);
     view_cube_renderer.update_uniforms(&gpu.queue, camera.view_cube_view_projection());
+
+    // Issue #12: onion-skin volumetric fog params (active when --onion > 0 and not
+    // in debug-face mode).
+    let onion_active = layer_range.onion_skin && !options.debug_face_orientation;
+    if onion_active {
+        onion_fog_renderer.update(
+            &gpu.queue,
+            onion_fog_params(view_projection, shape.grid_dimensions(), &options.geometry, layer_range),
+        );
+    }
 
     // egui driven WITHOUT winit: build RawInput by hand.
     let mut egui_bridge = EguiPaintBridge::new(&gpu.device, COLOR_TARGET_FORMAT);
@@ -737,6 +819,11 @@ async fn run_capture(options: ShotOptions) {
         show_lattice: options.show_block_lattice,
         show_floor: options.show_floor_grid,
         debug_face_mode: options.debug_face_orientation,
+        onion_fog: if onion_active {
+            Some(&onion_fog_renderer)
+        } else {
+            None
+        },
         target_width: options.width,
         target_height: options.height,
     };
