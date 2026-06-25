@@ -17,6 +17,11 @@ use glam::Vec3;
 /// at or below this level. NOT a uniform and NOT a UI slider (DEV_NOTES).
 pub const SURFACE_ISOLEVEL: f32 = 0.0;
 
+/// Stability cap on the sampling grid volume (ARCHITECTURE.md §7). If
+/// `grid_x * grid_y * grid_z` exceeds this, the 3D rebuild is skipped (the panel
+/// shows a warning) so dragging a sphere to 16×16×16 @32 can't freeze the app.
+pub const MAX_GRID_VOXELS: u64 = 6_000_000;
+
 /// The parametric primitive kinds (ARCHITECTURE.md §2 dispatcher).
 ///
 /// Milestone 2 only renders [`ShapeKind::Cylinder`], but the full set is
@@ -101,13 +106,16 @@ pub struct SdfShape {
 }
 
 impl SdfShape {
-    /// The hard-coded Milestone 2 scene: a 5×1×5-block cylinder at density 16.
-    pub fn milestone_two_cylinder() -> Self {
+    /// Build the shape from the panel's [`GeometryParams`](crate::panel::GeometryParams).
+    ///
+    /// This is the single place geometry params become a producer; the split in
+    /// `panel.rs` guarantees display/camera params never reach here.
+    pub fn from_geometry(geometry: crate::panel::GeometryParams) -> Self {
         Self {
-            kind: ShapeKind::Cylinder,
-            size_blocks: [5, 1, 5],
-            voxels_per_block: 16,
-            wall_blocks: 1,
+            kind: geometry.shape,
+            size_blocks: geometry.size_blocks,
+            voxels_per_block: geometry.voxels_per_block,
+            wall_blocks: geometry.wall_blocks,
         }
     }
 
@@ -118,6 +126,19 @@ impl SdfShape {
             self.size_blocks[1] * self.voxels_per_block,
             self.size_blocks[2] * self.voxels_per_block,
         ]
+    }
+
+    /// Total number of sampling-grid voxels (`grid_x * grid_y * grid_z`), as
+    /// `u64` so it can't overflow at large sizes/densities.
+    pub fn grid_voxel_count(&self) -> u64 {
+        let [grid_x, grid_y, grid_z] = self.grid_dimensions();
+        grid_x as u64 * grid_y as u64 * grid_z as u64
+    }
+
+    /// Whether this shape's sampling grid exceeds [`MAX_GRID_VOXELS`] and so the
+    /// 3D rebuild should be skipped (ARCHITECTURE.md §7).
+    pub fn exceeds_voxel_cap(&self) -> bool {
+        self.grid_voxel_count() > MAX_GRID_VOXELS
     }
 }
 

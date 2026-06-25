@@ -17,6 +17,14 @@ use crate::voxel::VoxelGrid;
 /// Depth format used by the voxel pass and the depth texture.
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
+/// Stability cap on the number of cube instances actually uploaded
+/// (ARCHITECTURE.md §7). The CPU may resolve more occupied voxels than this; we
+/// only ever draw the first `MAX_DRAWN_INSTANCES` so dragging a sphere to a huge
+/// size/density can't blow up GPU memory or stall the draw. The separate 6M
+/// voxel cap in `voxel.rs` usually fires first; this is the belt-and-braces
+/// limit on the render side.
+pub const MAX_DRAWN_INSTANCES: usize = 450_000;
+
 /// One cube vertex: position on the unit cube plus its face normal.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
@@ -88,6 +96,9 @@ pub struct VoxelRenderer {
     cube_index_count: u32,
     instance_buffer: wgpu::Buffer,
     instance_count: u32,
+    /// Number of instances the current `instance_buffer` can hold without a
+    /// reallocation. `rebuild_instances` grows the buffer only when exceeded.
+    instance_capacity: u32,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
 }
@@ -114,9 +125,12 @@ impl VoxelRenderer {
 
         let instances = instances_from_grid(grid);
         let instance_count = instances.len() as u32;
+        let instance_capacity = instance_count.max(1);
         let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("voxel instances"),
-            contents: bytemuck::cast_slice(&instances),
+            // Always allocate room for at least one instance so an initially empty
+            // grid still has a valid (zero-drawn) buffer to grow from.
+            contents: bytemuck::cast_slice(&pad_to_capacity(instances, instance_capacity)),
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         });
 
@@ -241,14 +255,42 @@ impl VoxelRenderer {
             cube_index_count: indices.len() as u32,
             instance_buffer,
             instance_count,
+            instance_capacity,
             camera_buffer,
             camera_bind_group,
         }
     }
 
-    /// Number of voxel instances currently in the buffer.
+    /// Number of voxel instances currently drawn from the buffer.
     pub fn instance_count(&self) -> u32 {
         self.instance_count
+    }
+
+    /// Rebuild the instance buffer FROM a freshly-resolved grid (M3 live edit).
+    ///
+    /// Reuses the existing `COPY_DST` buffer with `queue.write_buffer` when the
+    /// new instance count fits the current capacity; otherwise reallocates a
+    /// larger buffer. The instance count is capped at [`MAX_DRAWN_INSTANCES`]
+    /// (ARCHITECTURE.md §7) so an enormous grid can't stall the draw.
+    pub fn rebuild_instances(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, grid: &VoxelGrid) {
+        let instances = instances_from_grid(grid);
+        let instance_count = instances.len() as u32;
+
+        if instance_count <= self.instance_capacity {
+            if instance_count > 0 {
+                queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(&instances));
+            }
+        } else {
+            // Grow: allocate exactly the new count. A `create_buffer_init` keeps
+            // the COPY_DST usage so subsequent rebuilds can reuse it again.
+            self.instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("voxel instances"),
+                contents: bytemuck::cast_slice(&instances),
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            });
+            self.instance_capacity = instance_count;
+        }
+        self.instance_count = instance_count;
     }
 
     /// Upload a new `view_projection` matrix to the camera uniform.
@@ -275,9 +317,14 @@ impl VoxelRenderer {
 
 /// Build the instance list FROM the resolved grid (REPRESENTATION.md seam: the
 /// instance buffer is built from the [`VoxelGrid`], not from the sampling loop).
+///
+/// Capped at [`MAX_DRAWN_INSTANCES`] (ARCHITECTURE.md §7): if the grid resolved
+/// more occupied voxels than the cap, only the first `MAX_DRAWN_INSTANCES` are
+/// uploaded.
 fn instances_from_grid(grid: &VoxelGrid) -> Vec<VoxelInstance> {
     grid.occupied
         .iter()
+        .take(MAX_DRAWN_INSTANCES)
         .map(|voxel| VoxelInstance {
             world_position: voxel.world_position,
             block_local_coord: [
@@ -287,6 +334,22 @@ fn instances_from_grid(grid: &VoxelGrid) -> Vec<VoxelInstance> {
             ],
         })
         .collect()
+}
+
+/// Grow `instances` to at least `capacity` entries with zeroed padding so the
+/// initial buffer allocation reserves room (degenerate zero-size cubes at the
+/// origin are never drawn because `instance_count` < capacity).
+fn pad_to_capacity(mut instances: Vec<VoxelInstance>, capacity: u32) -> Vec<VoxelInstance> {
+    if (instances.len() as u32) < capacity {
+        instances.resize(
+            capacity as usize,
+            VoxelInstance {
+                world_position: [0.0; 3],
+                block_local_coord: [0.0; 3],
+            },
+        );
+    }
+    instances
 }
 
 /// Create a depth texture view sized to a render target. Recreated on window

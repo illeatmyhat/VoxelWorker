@@ -92,9 +92,10 @@ impl WindowedState {
             None,
         );
 
-        // Resolve the hard-coded M2 cylinder into the grid, then build the
+        // Resolve the panel's default geometry into the grid, then build the
         // renderer's instance buffer FROM the grid (REPRESENTATION.md seam).
-        let shape = SdfShape::milestone_two_cylinder();
+        let panel_state = PanelState::default();
+        let shape = SdfShape::from_geometry(panel_state.geometry);
         let mut grid = VoxelGrid::new(shape.grid_dimensions());
         shape.resolve(&mut grid);
         println!(
@@ -108,6 +109,7 @@ impl WindowedState {
 
         let camera = OrbitCamera {
             orbit_distance: OrbitCamera::auto_framed_distance(grid.dimensions),
+            projection_mode: panel_state.projection_mode,
             ..OrbitCamera::default()
         };
 
@@ -120,7 +122,7 @@ impl WindowedState {
             gpu,
             egui_bridge,
             egui_winit_state,
-            panel_state: PanelState::default(),
+            panel_state,
             voxel_renderer,
             depth_view,
             camera,
@@ -139,6 +141,31 @@ impl WindowedState {
             .configure(&self.gpu.device, &self.surface_config);
         // Recreate the depth texture to match the new target size.
         self.depth_view = create_depth_view(&self.gpu.device, width, height);
+    }
+
+    /// Re-resolve the current panel geometry into a fresh grid and rebuild the
+    /// instance buffer. Honours the voxel cap (ARCHITECTURE.md §7): if the grid
+    /// is too large the 3D rebuild is skipped and the panel shows a warning.
+    /// When `auto_frame` is set (size/density change, NOT shape change) the
+    /// camera distance is re-framed; shape switches never move the camera.
+    fn rebuild_geometry(&mut self, auto_frame: bool) {
+        let shape = SdfShape::from_geometry(self.panel_state.geometry);
+
+        if shape.exceeds_voxel_cap() {
+            self.panel_state.voxel_cap_warning_millions =
+                Some(shape.grid_voxel_count() as f32 / 1_000_000.0);
+            return;
+        }
+        self.panel_state.voxel_cap_warning_millions = None;
+
+        let mut grid = VoxelGrid::new(shape.grid_dimensions());
+        shape.resolve(&mut grid);
+        self.voxel_renderer
+            .rebuild_instances(&self.gpu.device, &self.gpu.queue, &grid);
+
+        if auto_frame {
+            self.camera.orbit_distance = OrbitCamera::auto_framed_distance(grid.dimensions);
+        }
     }
 
     fn render(&mut self) {
@@ -182,6 +209,18 @@ impl WindowedState {
         // Feed egui's platform output (cursor icon, clipboard, …) back to winit.
         self.egui_winit_state
             .handle_platform_output(&self.window, prepared.platform_output.clone());
+
+        // React to panel edits (M3): geometry changes rebuild the grid; size or
+        // density changes also auto-frame. A shape switch rebuilds but does NOT
+        // auto-frame (guard #1). Display/camera params never reach here.
+        let panel_response = prepared.panel_response;
+        if panel_response.geometry_changed {
+            self.rebuild_geometry(panel_response.size_or_density_changed);
+        }
+
+        // Projection is a display-only param: apply it to the camera each frame
+        // (no rebuild).
+        self.camera.projection_mode = self.panel_state.projection_mode;
 
         // Upload the current camera matrix before drawing.
         let aspect_ratio =

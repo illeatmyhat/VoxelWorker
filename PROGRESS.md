@@ -9,7 +9,7 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 | 0 | Repo + scaffolding + dev notes | — | ✅ done |
 | 1 | Window + clear + empty egui panel + **headless `shot` binary** | #1 | ✅ done |
 | 2 | Voxel core: SDF → instances → flat cubes + orbit cam (5×1×5 cylinder) | #2 | ✅ done |
-| 3 | egui params + all shapes + ortho toggle | #3 | ⏳ pending |
+| 3 | egui params + all shapes + ortho toggle | #3 | ✅ done |
 | 4 | Shaders: per-voxel slice, then position-based grid overlay | #4 | ⏳ pending |
 | 5 | View cube + origin gizmo + 2D slice map | #5 | ⏳ pending |
 | 6 | VS folder auto-detect + scan + palette + thumbnails | #6 | ⏳ pending |
@@ -32,6 +32,14 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **m3** — Params/shapes/ortho done & verified. Functional panel: shape chips (all 5), X/Y/Z
+  block sliders, density, conditional Tube wall, projection toggle, inert material selector,
+  Display placeholder. Params split into `GeometryParams` (drives dirty rebuild) vs display/camera
+  (no rebuild). Auto-frame gated on size/density change only — **shape-switch keeps size & camera**;
+  **density is fineness-only** (verified d8 vs d32 = same physical disc). Ortho branch in
+  `OrbitCamera` (vh=dist*0.42). Voxel cap (6M grid / 450k instances) prevents freezes. `shot` gains
+  `--shape/--size-*/--density/--wall/--proj`. Screenshots m3-{cylinder,sphere,sphere4,box,torus,
+  tube,ortho,d8,d32}.png all correct. Clippy clean.
 - **m2** — Voxel core done & verified. `VoxelGrid`/`VoxelProducer` seam in place (`SdfShape` is
   the sole producer; renderer builds instances from the grid, never calls the SDF). Full SDF set
   + dispatcher (descriptive names). Instanced unit cubes (per-face normals), flat directional+

@@ -9,18 +9,30 @@
 //!   --out <path>     output PNG path        (default: shots/m1.png)
 //!   --width <u32>    capture width          (default: 1280)
 //!   --height <u32>   capture height         (default: 800)
+//!   --shape <cylinder|tube|sphere|torus|box>   (default: cylinder)
+//!   --size-x <u32> --size-y <u32> --size-z <u32>   size in blocks (default 5/1/5)
+//!   --density <u32>  voxels per block       (default: 16)
+//!   --wall <u32>     tube wall in blocks    (default: 1)
+//!   --proj <perspective|ortho>              (default: perspective)
+//!   --theta/--phi/--dist                    orbit overrides (auto-framed dist)
 
 use std::path::PathBuf;
 
 use voxel_worker::{
-    create_depth_view, render_frame, run_egui_frame, EguiPaintBridge, GpuContext, OrbitCamera,
-    PanelState, SdfShape, VoxelGrid, VoxelProducer, VoxelRenderer, COLOR_TARGET_FORMAT,
+    create_depth_view, render_frame, run_egui_frame, EguiPaintBridge, GeometryParams, GpuContext,
+    OrbitCamera, PanelState, ProjectionMode, SdfShape, ShapeKind, VoxelGrid, VoxelProducer,
+    VoxelRenderer, COLOR_TARGET_FORMAT,
 };
 
 struct ShotOptions {
     output_path: PathBuf,
     width: u32,
     height: u32,
+    /// Geometry the panel + producer both use (so the rendered panel reflects
+    /// the requested shape/size/density/wall).
+    geometry: GeometryParams,
+    /// Camera projection.
+    projection_mode: ProjectionMode,
     /// Orbit azimuth (radians). Default 0.7.
     theta: f32,
     /// Orbit polar angle from +Y (radians). Default 1.05.
@@ -35,10 +47,33 @@ impl Default for ShotOptions {
             output_path: PathBuf::from("shots/m1.png"),
             width: 1280,
             height: 800,
+            geometry: GeometryParams::default(),
+            projection_mode: ProjectionMode::Perspective,
             theta: 0.7,
             phi: 1.05,
             distance: None,
         }
+    }
+}
+
+/// Parse a `--shape` value into a [`ShapeKind`].
+fn parse_shape(value: &str) -> ShapeKind {
+    match value.to_ascii_lowercase().as_str() {
+        "cylinder" => ShapeKind::Cylinder,
+        "tube" => ShapeKind::Tube,
+        "sphere" => ShapeKind::Sphere,
+        "torus" => ShapeKind::Torus,
+        "box" => ShapeKind::Box,
+        other => panic!("--shape must be cylinder|tube|sphere|torus|box, got '{other}'"),
+    }
+}
+
+/// Parse a `--proj` value into a [`ProjectionMode`].
+fn parse_projection(value: &str) -> ProjectionMode {
+    match value.to_ascii_lowercase().as_str() {
+        "perspective" | "persp" => ProjectionMode::Perspective,
+        "ortho" | "orthographic" => ProjectionMode::Orthographic,
+        other => panic!("--proj must be perspective|ortho, got '{other}'"),
     }
 }
 
@@ -65,6 +100,49 @@ fn parse_options() -> ShotOptions {
                     .expect("--height requires a value")
                     .parse()
                     .expect("--height must be a positive integer");
+            }
+            "--shape" => {
+                options.geometry.shape =
+                    parse_shape(&args.next().expect("--shape requires a value"));
+            }
+            "--size-x" => {
+                options.geometry.size_blocks[0] = args
+                    .next()
+                    .expect("--size-x requires a value")
+                    .parse()
+                    .expect("--size-x must be a positive integer");
+            }
+            "--size-y" => {
+                options.geometry.size_blocks[1] = args
+                    .next()
+                    .expect("--size-y requires a value")
+                    .parse()
+                    .expect("--size-y must be a positive integer");
+            }
+            "--size-z" => {
+                options.geometry.size_blocks[2] = args
+                    .next()
+                    .expect("--size-z requires a value")
+                    .parse()
+                    .expect("--size-z must be a positive integer");
+            }
+            "--density" => {
+                options.geometry.voxels_per_block = args
+                    .next()
+                    .expect("--density requires a value")
+                    .parse()
+                    .expect("--density must be a positive integer");
+            }
+            "--wall" => {
+                options.geometry.wall_blocks = args
+                    .next()
+                    .expect("--wall requires a value")
+                    .parse()
+                    .expect("--wall must be a positive integer");
+            }
+            "--proj" => {
+                options.projection_mode =
+                    parse_projection(&args.next().expect("--proj requires a value"));
             }
             "--theta" => {
                 options.theta = args
@@ -93,8 +171,14 @@ fn parse_options() -> ShotOptions {
                     "shot — headless VoxelWorker capture\n\
                      \n\
                      Usage: shot [--out <path>] [--width <u32>] [--height <u32>]\n\
+                     \x20            [--shape <cylinder|tube|sphere|torus|box>]\n\
+                     \x20            [--size-x <u32>] [--size-y <u32>] [--size-z <u32>]\n\
+                     \x20            [--density <u32>] [--wall <u32>]\n\
+                     \x20            [--proj <perspective|ortho>]\n\
                      \x20            [--theta <f32>] [--phi <f32>] [--dist <f32>]\n\
                      Defaults: --out shots/m1.png --width 1280 --height 800\n\
+                     \x20         --shape cylinder --size-x 5 --size-y 1 --size-z 5\n\
+                     \x20         --density 16 --wall 1 --proj perspective\n\
                      \x20         --theta 0.7 --phi 1.05 --dist <auto-framed>"
                 );
                 std::process::exit(0);
@@ -139,11 +223,26 @@ async fn run_capture(options: ShotOptions) {
     // Depth texture at the offscreen size (M2: voxel pass needs depth).
     let depth_view = create_depth_view(&gpu.device, options.width, options.height);
 
-    // Resolve the hard-coded M2 cylinder into the grid, then build the
-    // renderer's instance buffer FROM the grid (REPRESENTATION.md seam).
-    let shape = SdfShape::milestone_two_cylinder();
+    // Resolve the requested geometry into the grid, then build the renderer's
+    // instance buffer FROM the grid (REPRESENTATION.md seam). The voxel cap
+    // (ARCHITECTURE.md §7) guards against an enormous CLI request.
+    let shape = SdfShape::from_geometry(options.geometry);
     let mut grid = VoxelGrid::new(shape.grid_dimensions());
-    shape.resolve(&mut grid);
+    let mut panel_state = PanelState {
+        geometry: options.geometry,
+        projection_mode: options.projection_mode,
+        ..PanelState::default()
+    };
+    if shape.exceeds_voxel_cap() {
+        panel_state.voxel_cap_warning_millions =
+            Some(shape.grid_voxel_count() as f32 / 1_000_000.0);
+        eprintln!(
+            "3D paused — {:.1}M voxels exceeds the cap; rendering empty grid",
+            shape.grid_voxel_count() as f32 / 1_000_000.0
+        );
+    } else {
+        shape.resolve(&mut grid);
+    }
     println!(
         "resolved {} voxels for {:?} {:?}@{}",
         grid.occupied_count(),
@@ -152,7 +251,6 @@ async fn run_capture(options: ShotOptions) {
         shape.voxels_per_block
     );
     let voxel_renderer = VoxelRenderer::new(&gpu.device, COLOR_TARGET_FORMAT, &grid);
-    assert_eq!(voxel_renderer.instance_count() as usize, grid.occupied_count());
 
     // Build the orbit camera from the CLI flags (distance auto-framed if unset).
     let camera = OrbitCamera {
@@ -162,6 +260,7 @@ async fn run_capture(options: ShotOptions) {
         orbit_distance: options
             .distance
             .unwrap_or_else(|| OrbitCamera::auto_framed_distance(grid.dimensions)),
+        projection_mode: options.projection_mode,
     };
     let aspect_ratio = options.width as f32 / options.height as f32;
     voxel_renderer.update_camera(&gpu.queue, camera.view_projection(aspect_ratio));
@@ -177,7 +276,6 @@ async fn run_capture(options: ShotOptions) {
         ..Default::default()
     };
 
-    let mut panel_state = PanelState::default();
     let prepared = run_egui_frame(
         &mut egui_bridge,
         &gpu.device,

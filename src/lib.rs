@@ -18,9 +18,9 @@ pub mod panel;
 pub mod renderer;
 pub mod voxel;
 
-pub use camera::OrbitCamera;
+pub use camera::{OrbitCamera, ProjectionMode};
 pub use gpu::GpuContext;
-pub use panel::{build_panel, PanelState};
+pub use panel::{build_panel, GeometryParams, MaterialChoice, PanelResponse, PanelState};
 pub use renderer::{create_depth_view, VoxelRenderer, DEPTH_FORMAT};
 pub use voxel::{SdfShape, ShapeKind, VoxelGrid, VoxelProducer};
 
@@ -83,6 +83,9 @@ pub struct PreparedEguiFrame {
     pub screen_descriptor: egui_wgpu::ScreenDescriptor,
     pub textures_to_free: Vec<egui::TextureId>,
     pub platform_output: egui::PlatformOutput,
+    /// What the user changed in the panel this frame (M3): drives the geometry
+    /// rebuild + camera auto-frame in the caller.
+    pub panel_response: PanelResponse,
 }
 
 /// Run the egui pass for one frame: build the panel, upload changed textures to
@@ -100,9 +103,10 @@ pub fn run_egui_frame(
     size_in_pixels: [u32; 2],
     pixels_per_point: f32,
 ) -> PreparedEguiFrame {
-    let full_output = bridge
-        .context
-        .run_ui(raw_input, |ui| build_panel(ui, panel_state));
+    let mut panel_response = PanelResponse::default();
+    let full_output = bridge.context.run_ui(raw_input, |ui| {
+        panel_response = build_panel(ui, panel_state);
+    });
 
     for (texture_id, image_delta) in &full_output.textures_delta.set {
         bridge
@@ -122,6 +126,7 @@ pub fn run_egui_frame(
         },
         textures_to_free: full_output.textures_delta.free,
         platform_output: full_output.platform_output,
+        panel_response,
     }
 }
 

@@ -15,6 +15,24 @@ const PERSPECTIVE_FOV_Y: f32 = std::f32::consts::FRAC_PI_4; // 45°
 const PHI_MIN: f32 = 0.05;
 const PHI_MAX: f32 = std::f32::consts::PI - 0.05;
 
+/// Orthographic half-height factor relative to `orbit_distance`
+/// (ARCHITECTURE.md §4: `vh = distance * 0.42`, chosen so toggling perspective ↔
+/// orthographic keeps roughly the same framing at the target).
+const ORTHO_HALF_HEIGHT_FACTOR: f32 = 0.42;
+
+/// Which projection the orbit rig produces in [`OrbitCamera::view_projection`].
+///
+/// A display-only param (ARCHITECTURE.md §4): switching it never rebuilds the
+/// voxel grid and never moves the camera — only the projection matrix changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ProjectionMode {
+    /// 45° vertical field-of-view perspective.
+    #[default]
+    Perspective,
+    /// Orthographic frustum whose half-height tracks `orbit_distance`.
+    Orthographic,
+}
+
 /// Spherical orbit camera around `target`.
 #[derive(Debug, Clone, Copy)]
 pub struct OrbitCamera {
@@ -26,6 +44,8 @@ pub struct OrbitCamera {
     pub orbit_phi: f32,
     /// Distance from `target` to the camera eye.
     pub orbit_distance: f32,
+    /// Active projection (perspective by default). Display-only param.
+    pub projection_mode: ProjectionMode,
 }
 
 impl Default for OrbitCamera {
@@ -35,6 +55,7 @@ impl Default for OrbitCamera {
             orbit_theta: 0.7,
             orbit_phi: 1.05,
             orbit_distance: 10.0,
+            projection_mode: ProjectionMode::Perspective,
         }
     }
 }
@@ -76,13 +97,33 @@ impl OrbitCamera {
     }
 
     /// Build the combined `view_projection` matrix for an aspect ratio (w/h).
+    ///
+    /// The projection branch is chosen by [`OrbitCamera::projection_mode`]; the
+    /// orthographic frustum tracks `orbit_distance` so zoom keeps working and the
+    /// framing is preserved when toggling (ARCHITECTURE.md §4).
     pub fn view_projection(&self, aspect_ratio: f32) -> Mat4 {
         let view = Mat4::look_at_rh(self.eye(), self.target, Vec3::Y);
         // Near/far chosen generously relative to the auto-framed distance so the
         // grid never clips at any zoom we allow.
         let near = (self.orbit_distance * 0.01).max(0.05);
         let far = self.orbit_distance * 10.0 + 1000.0;
-        let projection = Mat4::perspective_rh(PERSPECTIVE_FOV_Y, aspect_ratio, near, far);
+        let projection = match self.projection_mode {
+            ProjectionMode::Perspective => {
+                Mat4::perspective_rh(PERSPECTIVE_FOV_Y, aspect_ratio, near, far)
+            }
+            ProjectionMode::Orthographic => {
+                let half_height = self.orbit_distance * ORTHO_HALF_HEIGHT_FACTOR;
+                let half_width = half_height * aspect_ratio;
+                Mat4::orthographic_rh(
+                    -half_width,
+                    half_width,
+                    -half_height,
+                    half_height,
+                    near,
+                    far,
+                )
+            }
+        };
         projection * view
     }
 }
