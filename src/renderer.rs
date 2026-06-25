@@ -643,6 +643,535 @@ fn pad_to_capacity(mut instances: Vec<VoxelInstance>, capacity: u32) -> Vec<Voxe
     instances
 }
 
+// ============================================================================
+// View cube (Milestone 5) — ARCHITECTURE.md §4.
+// ============================================================================
+
+/// Edge length (pixels) of the corner view-cube viewport (top-left).
+pub const VIEW_CUBE_VIEWPORT_PIXELS: u32 = 128;
+/// Margin (pixels) from the top-left corner to the viewport.
+pub const VIEW_CUBE_VIEWPORT_MARGIN: u32 = 16;
+/// Edge length of each square face-label texture.
+const FACE_LABEL_TEXTURE_SIZE: u32 = 128;
+
+/// One view-cube vertex: position, face normal, face UV, and the texture-array
+/// layer (face index in +X,-X,+Y,-Y,+Z,-Z order).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+struct CubeLabelVertex {
+    position: [f32; 3],
+    normal: [f32; 3],
+    uv: [f32; 2],
+    layer: u32,
+}
+
+/// The corner view cube: a labelled cube mirroring the main camera, plus a teal
+/// edge wireframe (ARCHITECTURE.md §4). Rendered into a scissored top-left
+/// viewport in its own pass (depth cleared there first).
+pub struct ViewCubeRenderer {
+    face_pipeline: wgpu::RenderPipeline,
+    edge_pipeline: wgpu::RenderPipeline,
+    vertex_buffer: wgpu::Buffer,
+    index_buffer: wgpu::Buffer,
+    index_count: u32,
+    edge_buffer: wgpu::Buffer,
+    edge_vertex_count: u32,
+    uniform_buffer: wgpu::Buffer,
+    uniform_bind_group: wgpu::BindGroup,
+    label_bind_group: wgpu::BindGroup,
+}
+
+impl ViewCubeRenderer {
+    /// Create the view-cube renderer for a colour target format.
+    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, color_format: wgpu::TextureFormat) -> Self {
+        let (vertices, indices) = view_cube_geometry();
+        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("view cube vertices"),
+            contents: bytemuck::cast_slice(&vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("view cube indices"),
+            contents: bytemuck::cast_slice(&indices),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+
+        let edges = view_cube_edges();
+        let edge_vertex_count = edges.len() as u32;
+        let edge_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("view cube edges"),
+            contents: bytemuck::cast_slice(&edges),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+
+        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("view cube uniforms"),
+            size: std::mem::size_of::<LineUniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let (uniform_bind_group_layout, uniform_bind_group) =
+            cube_uniform_bind_group(device, &uniform_buffer);
+
+        // --- 6-layer face-label texture array ---
+        let label_pixels = generate_face_label_textures();
+        let label_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("view cube label textures"),
+            size: wgpu::Extent3d {
+                width: FACE_LABEL_TEXTURE_SIZE,
+                height: FACE_LABEL_TEXTURE_SIZE,
+                depth_or_array_layers: 6,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &label_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &label_pixels,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * FACE_LABEL_TEXTURE_SIZE),
+                rows_per_image: Some(FACE_LABEL_TEXTURE_SIZE),
+            },
+            wgpu::Extent3d {
+                width: FACE_LABEL_TEXTURE_SIZE,
+                height: FACE_LABEL_TEXTURE_SIZE,
+                depth_or_array_layers: 6,
+            },
+        );
+        let label_view = label_texture.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        });
+        let label_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("view cube label sampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let label_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("view cube label layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2Array,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
+        let label_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("view cube label bind group"),
+            layout: &label_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&label_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&label_sampler),
+                },
+            ],
+        });
+
+        // --- Face pipeline (textured cube) ---
+        let cube_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("view cube shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/viewcube.wgsl").into()),
+        });
+        let face_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("view cube face pipeline layout"),
+            bind_group_layouts: &[Some(&uniform_bind_group_layout), Some(&label_bind_group_layout)],
+            immediate_size: 0,
+        });
+        let cube_vertex_layout = wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<CubeLabelVertex>() as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &[
+                wgpu::VertexAttribute { offset: 0, shader_location: 0, format: wgpu::VertexFormat::Float32x3 },
+                wgpu::VertexAttribute { offset: 12, shader_location: 1, format: wgpu::VertexFormat::Float32x3 },
+                wgpu::VertexAttribute { offset: 24, shader_location: 2, format: wgpu::VertexFormat::Float32x2 },
+                wgpu::VertexAttribute { offset: 32, shader_location: 3, format: wgpu::VertexFormat::Uint32 },
+            ],
+        };
+        // The view cube renders at 1 sample into the resolved target (after the
+        // 3D MSAA resolve, before egui), so its pipelines use sample_count 1.
+        let face_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("view cube face pipeline"),
+            layout: Some(&face_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &cube_shader,
+                entry_point: Some("vertex_main"),
+                buffers: &[cube_vertex_layout],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &cube_shader,
+                entry_point: Some("fragment_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: color_format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: Some(wgpu::Face::Back),
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState { count: 1, mask: !0, alpha_to_coverage_enabled: false },
+            multiview_mask: None,
+            cache: None,
+        });
+
+        // --- Edge pipeline (teal wireframe, 1 sample, depth-tested) ---
+        let edge_pipeline = build_line_pipeline(
+            device,
+            color_format,
+            &uniform_bind_group_layout,
+            "view cube edge",
+            true,
+            1,
+        );
+
+        Self {
+            face_pipeline,
+            edge_pipeline,
+            vertex_buffer,
+            index_buffer,
+            index_count: indices.len() as u32,
+            edge_buffer,
+            edge_vertex_count,
+            uniform_buffer,
+            uniform_bind_group,
+            label_bind_group,
+        }
+    }
+
+    /// Upload the view-cube camera matrix (`OrbitCamera::view_cube_view_projection`).
+    pub fn update_uniforms(&self, queue: &wgpu::Queue, view_projection: glam::Mat4) {
+        let uniforms = LineUniforms { view_projection: view_projection.to_cols_array_2d() };
+        queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
+    }
+
+    /// Draw the cube into a scissored top-left corner of `target_view` (its own
+    /// render pass, with a freshly-cleared private depth texture). The colour
+    /// attachment loads the already-resolved scene so only the corner is touched.
+    pub fn draw(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        target_view: &wgpu::TextureView,
+        target_width: u32,
+        target_height: u32,
+    ) {
+        let margin = VIEW_CUBE_VIEWPORT_MARGIN;
+        let size = VIEW_CUBE_VIEWPORT_PIXELS;
+        // Bail if the target is too small to host the corner viewport.
+        if target_width < margin + size || target_height < margin + size {
+            return;
+        }
+        // The depth attachment must match the colour attachment's size, so this
+        // transient single-sample depth texture spans the whole target; the
+        // scissor/viewport still confine the cube to the top-left corner.
+        let depth_texture =
+            create_single_sample_depth_view(device, target_width, target_height);
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("view cube pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target_view,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    // Load the resolved scene; the scissor confines our writes to
+                    // the corner so the rest of the frame is untouched.
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &depth_texture,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Discard,
+                }),
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+
+        pass.set_viewport(margin as f32, margin as f32, size as f32, size as f32, 0.0, 1.0);
+        pass.set_scissor_rect(margin, margin, size, size);
+
+        pass.set_pipeline(&self.face_pipeline);
+        pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+        pass.set_bind_group(1, &self.label_bind_group, &[]);
+        pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+        pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+        pass.draw_indexed(0..self.index_count, 0, 0..1);
+
+        pass.set_pipeline(&self.edge_pipeline);
+        pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+        pass.set_vertex_buffer(0, self.edge_buffer.slice(..));
+        pass.draw(0..self.edge_vertex_count, 0..1);
+    }
+}
+
+/// Uniform bind group for the view cube (binding 0 = view-projection).
+fn cube_uniform_bind_group(
+    device: &wgpu::Device,
+    uniform_buffer: &wgpu::Buffer,
+) -> (wgpu::BindGroupLayout, wgpu::BindGroup) {
+    let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("view cube uniform layout"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::VERTEX,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        }],
+    });
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("view cube uniform bind group"),
+        layout: &layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: uniform_buffer.as_entire_binding(),
+        }],
+    });
+    (layout, bind_group)
+}
+
+/// Build the labelled-cube geometry (side 1.4, centred on origin). Face order +X,
+/// -X, +Y, -Y, +Z, -Z (matches `materialIndex` / `CubeFace`).
+fn view_cube_geometry() -> (Vec<CubeLabelVertex>, Vec<u16>) {
+    const HALF: f32 = 0.7; // side 1.4
+    const UVS: [[f32; 2]; 4] = [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]];
+    let faces: [([f32; 3], [[f32; 3]; 4]); 6] = [
+        ([1.0, 0.0, 0.0], [[HALF, -HALF, HALF], [HALF, -HALF, -HALF], [HALF, HALF, -HALF], [HALF, HALF, HALF]]),
+        ([-1.0, 0.0, 0.0], [[-HALF, -HALF, -HALF], [-HALF, -HALF, HALF], [-HALF, HALF, HALF], [-HALF, HALF, -HALF]]),
+        ([0.0, 1.0, 0.0], [[-HALF, HALF, HALF], [HALF, HALF, HALF], [HALF, HALF, -HALF], [-HALF, HALF, -HALF]]),
+        ([0.0, -1.0, 0.0], [[-HALF, -HALF, -HALF], [HALF, -HALF, -HALF], [HALF, -HALF, HALF], [-HALF, -HALF, HALF]]),
+        ([0.0, 0.0, 1.0], [[-HALF, -HALF, HALF], [HALF, -HALF, HALF], [HALF, HALF, HALF], [-HALF, HALF, HALF]]),
+        ([0.0, 0.0, -1.0], [[HALF, -HALF, -HALF], [-HALF, -HALF, -HALF], [-HALF, HALF, -HALF], [HALF, HALF, -HALF]]),
+    ];
+    let mut vertices = Vec::with_capacity(24);
+    let mut indices = Vec::with_capacity(36);
+    for (layer, (normal, corners)) in faces.iter().enumerate() {
+        let base = vertices.len() as u16;
+        for (corner_index, corner) in corners.iter().enumerate() {
+            vertices.push(CubeLabelVertex {
+                position: *corner,
+                normal: *normal,
+                uv: UVS[corner_index],
+                layer: layer as u32,
+            });
+        }
+        indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+    }
+    (vertices, indices)
+}
+
+/// Teal wireframe edges (12 cube edges) for the view cube.
+fn view_cube_edges() -> Vec<LineVertex> {
+    const HALF: f32 = 0.705; // a hair outside the faces so the edges read crisply
+    let color = srgb_hex_to_linear(0x5f_b8_a4);
+    let corners = [
+        [-HALF, -HALF, -HALF], [HALF, -HALF, -HALF], [HALF, HALF, -HALF], [-HALF, HALF, -HALF],
+        [-HALF, -HALF, HALF], [HALF, -HALF, HALF], [HALF, HALF, HALF], [-HALF, HALF, HALF],
+    ];
+    let edges = [
+        (0, 1), (1, 2), (2, 3), (3, 0), // back face
+        (4, 5), (5, 6), (6, 7), (7, 4), // front face
+        (0, 4), (1, 5), (2, 6), (3, 7), // connecting
+    ];
+    let mut vertices = Vec::with_capacity(edges.len() * 2);
+    for (a, b) in edges {
+        vertices.push(LineVertex { position: corners[a], color });
+        vertices.push(LineVertex { position: corners[b], color });
+    }
+    vertices
+}
+
+/// Render the six face-label textures (RIGHT/LEFT/TOP/BOTTOM/FRONT/BACK) into one
+/// stacked RGBA8 buffer (6 layers, in `materialIndex` order). Each is a dark
+/// warm panel `#241d15` with a teal `#5fb8a4` border and parchment `#e9e1d1`
+/// text, transcribed from the prototype `faceTex`.
+fn generate_face_label_textures() -> Vec<u8> {
+    const LABELS: [&str; 6] = ["RIGHT", "LEFT", "TOP", "BOTTOM", "FRONT", "BACK"];
+    let size = FACE_LABEL_TEXTURE_SIZE as usize;
+    let mut all = Vec::with_capacity(size * size * 4 * 6);
+    for label in LABELS {
+        all.extend_from_slice(&render_face_label(label));
+    }
+    all
+}
+
+/// Render one face-label texture (RGBA8, `FACE_LABEL_TEXTURE_SIZE` square).
+fn render_face_label(label: &str) -> Vec<u8> {
+    let size = FACE_LABEL_TEXTURE_SIZE as usize;
+    const BACKGROUND: [u8; 4] = [0x24, 0x1d, 0x15, 0xff];
+    const BORDER: [u8; 4] = [0x5f, 0xb8, 0xa4, 0xff];
+    const TEXT: [u8; 4] = [0xe9, 0xe1, 0xd1, 0xff];
+
+    let mut pixels = vec![0u8; size * size * 4];
+    for pixel in pixels.chunks_exact_mut(4) {
+        pixel.copy_from_slice(&BACKGROUND);
+    }
+    // Teal border (7px, inset 4px) like the prototype `strokeRect(4,4,120,120)`.
+    let border_inset = 4usize;
+    let border_thickness = 7usize;
+    let put = |pixels: &mut [u8], x: usize, y: usize, color: [u8; 4]| {
+        if x < size && y < size {
+            let index = (y * size + x) * 4;
+            pixels[index..index + 4].copy_from_slice(&color);
+        }
+    };
+    for offset in 0..border_thickness {
+        let lo = border_inset + offset;
+        let hi = size - 1 - border_inset - offset;
+        for c in border_inset..(size - border_inset) {
+            put(&mut pixels, c, lo, BORDER);
+            put(&mut pixels, c, hi, BORDER);
+            put(&mut pixels, lo, c, BORDER);
+            put(&mut pixels, hi, c, BORDER);
+        }
+    }
+
+    // Centred bitmap text.
+    draw_centered_label(&mut pixels, size, label, TEXT);
+    pixels
+}
+
+/// Draw `label` centred using the built-in 5×7 bitmap font, scaled to fill the
+/// face, into the RGBA8 `pixels` buffer.
+fn draw_centered_label(pixels: &mut [u8], size: usize, label: &str, color: [u8; 4]) {
+    let glyph_width = 5usize;
+    let glyph_height = 7usize;
+    let spacing = 1usize;
+    let count = label.chars().count().max(1);
+    let text_cells_wide = count * glyph_width + (count - 1) * spacing;
+    // Choose an integer scale that fits within ~80% of the face width/height.
+    let max_scale_w = (size * 8 / 10) / text_cells_wide.max(1);
+    let max_scale_h = (size * 5 / 10) / glyph_height;
+    let scale = max_scale_w.min(max_scale_h).max(1);
+
+    let text_pixel_width = text_cells_wide * scale;
+    let text_pixel_height = glyph_height * scale;
+    let origin_x = (size.saturating_sub(text_pixel_width)) / 2;
+    let origin_y = (size.saturating_sub(text_pixel_height)) / 2;
+
+    let mut cursor_x = origin_x;
+    for ch in label.chars() {
+        let glyph = glyph_bitmap(ch);
+        for (row, bits) in glyph.iter().enumerate() {
+            for col in 0..glyph_width {
+                if (bits >> (glyph_width - 1 - col)) & 1 == 1 {
+                    // Filled cell → scale×scale block.
+                    for dy in 0..scale {
+                        for dx in 0..scale {
+                            let x = cursor_x + col * scale + dx;
+                            let y = origin_y + row * scale + dy;
+                            if x < size && y < size {
+                                let index = (y * size + x) * 4;
+                                pixels[index..index + 4].copy_from_slice(&color);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        cursor_x += (glyph_width + spacing) * scale;
+    }
+}
+
+/// A 5×7 bitmap (7 rows of 5-bit masks) for the uppercase letters used by the
+/// face labels. Unknown characters render blank.
+fn glyph_bitmap(ch: char) -> [u8; 7] {
+    match ch {
+        'A' => [0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
+        'B' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110],
+        'C' => [0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110],
+        'D' => [0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110],
+        'E' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111],
+        'F' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000],
+        'G' => [0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b10001, 0b01110],
+        'H' => [0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
+        'I' => [0b01110, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
+        'K' => [0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001],
+        'L' => [0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111],
+        'M' => [0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001],
+        'N' => [0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001],
+        'O' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
+        'P' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000],
+        'R' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001],
+        'T' => [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100],
+        _ => [0; 7],
+    }
+}
+
+/// Create a single-sample depth texture view (used by the view-cube pass).
+fn create_single_sample_depth_view(
+    device: &wgpu::Device,
+    width: u32,
+    height: u32,
+) -> wgpu::TextureView {
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("view cube depth texture"),
+        size: wgpu::Extent3d {
+            width: width.max(1),
+            height: height.max(1),
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: DEPTH_FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        view_formats: &[],
+    });
+    texture.create_view(&wgpu::TextureViewDescriptor::default())
+}
+
 /// Create a 4-sample (MSAA) colour texture view for the 3D pass, sized to a
 /// render target. Recreated on window resize / created at the offscreen size for
 /// the headless capture. `format` matches the resolve target.
@@ -667,6 +1196,310 @@ pub fn create_msaa_color_view(
         view_formats: &[],
     });
     texture.create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+// ============================================================================
+// Origin gizmo (Milestone 5) — ARCHITECTURE.md §5.
+// ============================================================================
+
+/// X axis colour `#d9603f` (sRGB hex → linear).
+const GIZMO_AXIS_X_HEX: u32 = 0xd9_60_3f;
+/// Y axis colour `#6fcf5f`.
+const GIZMO_AXIS_Y_HEX: u32 = 0x6f_cf_5f;
+/// Z axis colour `#5a8cff`.
+const GIZMO_AXIS_Z_HEX: u32 = 0x5a_8c_ff;
+/// Right-angle square colour `#bdb39a`.
+const GIZMO_SQUARE_HEX: u32 = 0xbd_b3_9a;
+
+/// One coloured line-segment vertex (position + linear RGB colour).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+struct LineVertex {
+    position: [f32; 3],
+    color: [f32; 3],
+}
+
+/// Camera uniform for the line passes (gizmo + view-cube edges): just the
+/// view-projection matrix.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+struct LineUniforms {
+    view_projection: [[f32; 4]; 4],
+}
+
+/// The origin gizmo: three coloured axis lines and three perpendicular square
+/// line-loops, drawn with **depth-test disabled** so it shows through a solid
+/// model (ARCHITECTURE.md §5). Drawn in the MSAA pass, after the voxels.
+pub struct GizmoRenderer {
+    pipeline: wgpu::RenderPipeline,
+    vertex_buffer: wgpu::Buffer,
+    vertex_count: u32,
+    vertex_capacity: u32,
+    uniform_buffer: wgpu::Buffer,
+    uniform_bind_group: wgpu::BindGroup,
+}
+
+impl GizmoRenderer {
+    /// Create the gizmo renderer for a colour target format. `grid_dimensions`
+    /// sizes the gizmo (`L = max(dims) * 0.62`).
+    pub fn new(
+        device: &wgpu::Device,
+        color_format: wgpu::TextureFormat,
+        grid_dimensions: [u32; 3],
+    ) -> Self {
+        let vertices = gizmo_vertices(grid_dimensions);
+        let vertex_count = vertices.len() as u32;
+        let vertex_capacity = vertex_count.max(1);
+        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("gizmo line vertices"),
+            contents: bytemuck::cast_slice(&pad_lines(vertices, vertex_capacity)),
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("gizmo uniforms"),
+            size: std::mem::size_of::<LineUniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let (uniform_bind_group_layout, uniform_bind_group) =
+            line_uniform_bind_group(device, &uniform_buffer, "gizmo");
+
+        let pipeline = build_line_pipeline(
+            device,
+            color_format,
+            &uniform_bind_group_layout,
+            "gizmo",
+            // Depth-test OFF (Always, no write) so the gizmo shows through solids.
+            false,
+            MSAA_SAMPLE_COUNT,
+        );
+
+        Self {
+            pipeline,
+            vertex_buffer,
+            vertex_count,
+            vertex_capacity,
+            uniform_buffer,
+            uniform_bind_group,
+        }
+    }
+
+    /// Resize the gizmo to a freshly-resolved grid (matches the voxel rebuild).
+    pub fn rebuild(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, grid_dimensions: [u32; 3]) {
+        let vertices = gizmo_vertices(grid_dimensions);
+        let vertex_count = vertices.len() as u32;
+        if vertex_count <= self.vertex_capacity {
+            if vertex_count > 0 {
+                queue.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&vertices));
+            }
+        } else {
+            self.vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("gizmo line vertices"),
+                contents: bytemuck::cast_slice(&vertices),
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            });
+            self.vertex_capacity = vertex_count;
+        }
+        self.vertex_count = vertex_count;
+    }
+
+    /// Upload the camera matrix (same `view_projection` as the voxel pass).
+    pub fn update_uniforms(&self, queue: &wgpu::Queue, view_projection: glam::Mat4) {
+        let uniforms = LineUniforms {
+            view_projection: view_projection.to_cols_array_2d(),
+        };
+        queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
+    }
+
+    /// Record the gizmo draw into an already-begun (MSAA) render pass.
+    pub fn draw(&self, render_pass: &mut wgpu::RenderPass<'_>) {
+        if self.vertex_count == 0 {
+            return;
+        }
+        render_pass.set_pipeline(&self.pipeline);
+        render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+        render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+        render_pass.draw(0..self.vertex_count, 0..1);
+    }
+}
+
+/// Build the gizmo line vertices (axes + perpendicular squares), in world space.
+fn gizmo_vertices(grid_dimensions: [u32; 3]) -> Vec<LineVertex> {
+    let longest = grid_dimensions[0]
+        .max(grid_dimensions[1])
+        .max(grid_dimensions[2]) as f32;
+    let axis_length = (longest * 0.62).max(1.0);
+    let square_side = axis_length * 0.28;
+
+    let x_color = srgb_hex_to_linear(GIZMO_AXIS_X_HEX);
+    let y_color = srgb_hex_to_linear(GIZMO_AXIS_Y_HEX);
+    let z_color = srgb_hex_to_linear(GIZMO_AXIS_Z_HEX);
+    let square_color = srgb_hex_to_linear(GIZMO_SQUARE_HEX);
+
+    let mut vertices = Vec::new();
+    let mut line = |from: [f32; 3], to: [f32; 3], color: [f32; 3]| {
+        vertices.push(LineVertex { position: from, color });
+        vertices.push(LineVertex { position: to, color });
+    };
+
+    // Three axes from the origin.
+    line([0.0, 0.0, 0.0], [axis_length, 0.0, 0.0], x_color);
+    line([0.0, 0.0, 0.0], [0.0, axis_length, 0.0], y_color);
+    line([0.0, 0.0, 0.0], [0.0, 0.0, axis_length], z_color);
+
+    let s = square_side;
+    // Square line-loops (closed) in the XY, YZ and ZX planes (prototype `sq`).
+    let loop_segments = |points: &[[f32; 3]], color: [f32; 3], out: &mut Vec<LineVertex>| {
+        for pair in points.windows(2) {
+            out.push(LineVertex { position: pair[0], color });
+            out.push(LineVertex { position: pair[1], color });
+        }
+    };
+    loop_segments(
+        &[[0.0, 0.0, 0.0], [s, 0.0, 0.0], [s, s, 0.0], [0.0, s, 0.0], [0.0, 0.0, 0.0]],
+        square_color,
+        &mut vertices,
+    );
+    loop_segments(
+        &[[0.0, 0.0, 0.0], [0.0, s, 0.0], [0.0, s, s], [0.0, 0.0, s], [0.0, 0.0, 0.0]],
+        square_color,
+        &mut vertices,
+    );
+    loop_segments(
+        &[[0.0, 0.0, 0.0], [0.0, 0.0, s], [s, 0.0, s], [s, 0.0, 0.0], [0.0, 0.0, 0.0]],
+        square_color,
+        &mut vertices,
+    );
+    vertices
+}
+
+/// Pad a line-vertex list to `capacity` with zeroed (degenerate) vertices.
+fn pad_lines(mut vertices: Vec<LineVertex>, capacity: u32) -> Vec<LineVertex> {
+    if (vertices.len() as u32) < capacity {
+        vertices.resize(
+            capacity as usize,
+            LineVertex { position: [0.0; 3], color: [0.0; 3] },
+        );
+    }
+    vertices
+}
+
+/// Build the shared uniform bind group (binding 0 = `LineUniforms`) for a line pass.
+fn line_uniform_bind_group(
+    device: &wgpu::Device,
+    uniform_buffer: &wgpu::Buffer,
+    label: &str,
+) -> (wgpu::BindGroupLayout, wgpu::BindGroup) {
+    let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some(&format!("{label} line uniform layout")),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::VERTEX,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        }],
+    });
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some(&format!("{label} line uniform bind group")),
+        layout: &layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: uniform_buffer.as_entire_binding(),
+        }],
+    });
+    (layout, bind_group)
+}
+
+/// Build a `LineList` render pipeline (shared shader `line.wgsl`). `depth_tested`
+/// selects whether the pass writes/tests depth; the gizmo passes `false`
+/// (depth-test off so it shows through solids).
+fn build_line_pipeline(
+    device: &wgpu::Device,
+    color_format: wgpu::TextureFormat,
+    uniform_bind_group_layout: &wgpu::BindGroupLayout,
+    label: &str,
+    depth_tested: bool,
+    sample_count: u32,
+) -> wgpu::RenderPipeline {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("line shader"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("shaders/line.wgsl").into()),
+    });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some(&format!("{label} line pipeline layout")),
+        bind_group_layouts: &[Some(uniform_bind_group_layout)],
+        immediate_size: 0,
+    });
+    let vertex_layout = wgpu::VertexBufferLayout {
+        array_stride: std::mem::size_of::<LineVertex>() as u64,
+        step_mode: wgpu::VertexStepMode::Vertex,
+        attributes: &[
+            wgpu::VertexAttribute {
+                offset: 0,
+                shader_location: 0,
+                format: wgpu::VertexFormat::Float32x3,
+            },
+            wgpu::VertexAttribute {
+                offset: std::mem::size_of::<[f32; 3]>() as u64,
+                shader_location: 1,
+                format: wgpu::VertexFormat::Float32x3,
+            },
+        ],
+    };
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some(&format!("{label} line pipeline")),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vertex_main"),
+            buffers: &[vertex_layout],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fragment_main"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: color_format,
+                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::LineList,
+            strip_index_format: None,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: None,
+            unclipped_depth: false,
+            polygon_mode: wgpu::PolygonMode::Fill,
+            conservative: false,
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: DEPTH_FORMAT,
+            // Depth-test off (Always + no write) makes the gizmo show through the
+            // model; depth-test on uses standard Less for the in-cube edges.
+            depth_write_enabled: Some(depth_tested),
+            depth_compare: Some(if depth_tested {
+                wgpu::CompareFunction::Less
+            } else {
+                wgpu::CompareFunction::Always
+            }),
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
+        multisample: wgpu::MultisampleState {
+            count: sample_count,
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        },
+        multiview_mask: None,
+        cache: None,
+    })
 }
 
 /// Create a 4-sample (MSAA) depth texture view sized to a render target.

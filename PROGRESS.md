@@ -11,7 +11,7 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 | 2 | Voxel core: SDF → instances → flat cubes + orbit cam (5×1×5 cylinder) | #2 | ✅ done |
 | 3 | egui params + all shapes + ortho toggle | #3 | ✅ done |
 | 4 | Shaders: per-voxel slice, then position-based grid overlay | #4 | ✅ done |
-| 5 | View cube + origin gizmo + 2D slice map | #5 | ⏳ pending |
+| 5 | View cube + origin gizmo + 2D slice map | #5 | ✅ done |
 | 6 | VS folder auto-detect + scan + palette + thumbnails | #6 | ⏳ pending |
 | 7 | Block-JSON per-face textures | #7 | ⏳ pending |
 | 8 | Polish: `.vox` export, config persistence | #8 | ⏳ pending |
@@ -32,6 +32,13 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **m5** — View cube + gizmo + 2D slice done & verified. View cube: wgpu corner viewport (scissor),
+  6 CPU bitmap-font face labels, mirrors main camera; click→ray-pick face→eased snap tween (8 unit
+  tests for snap table / nearest-theta / easing). Gizmo: X/Y/Z lines + perpendicular squares,
+  depth_compare=Always so it shows through the model; toggle off by default. 2D slice: mid-Y layer
+  read from `VoxelGrid.occupied` → egui nearest image with teal block lines (circle/ring/square per
+  shape). `shot` gains `--gizmo/--no-viewcube/--snap <face>`. Lattice/floor deferred → issue #10.
+  Cosmetic: TOP label 180°-rotated head-on (picking correct). Clippy clean; tests pass.
 - **m4** — Shaders done & verified; BOTH regression-guarded bugs confirmed fixed. Procedural
   Stone/Wood/Plain textures (CPU-gen, nearest/clamp). Bug 1: per-voxel `1/density` texture slice
   (one texture per block — wood top-down restarts grain per block cell). Bug 2: grid overlay from

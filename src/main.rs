@@ -13,10 +13,15 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowId};
 
 use voxel_worker::{
-    create_depth_view, create_msaa_color_view, render_frame, run_egui_frame, EguiPaintBridge,
-    GpuContext, OrbitCamera, PanelState, SdfShape, VoxelGrid, VoxelProducer, VoxelRenderer,
-    COLOR_TARGET_FORMAT,
+    create_depth_view, create_msaa_color_view, render_frame, run_egui_frame, CubeFace,
+    EguiPaintBridge, FrameOverlays, GizmoRenderer, GpuContext, OrbitCamera, PanelState, SdfShape,
+    SliceImage, SnapTween, ViewCubeRenderer, VoxelGrid, VoxelProducer, VoxelRenderer,
+    COLOR_TARGET_FORMAT, VIEW_CUBE_VIEWPORT_PIXELS,
 };
+
+/// Margin from the top-left corner to the view-cube viewport (must match the
+/// renderer's `VIEW_CUBE_VIEWPORT_MARGIN`).
+const VIEW_CUBE_VIEWPORT_MARGIN: u32 = 16;
 
 /// State that exists only once the window and GPU have been created (on first
 /// `resumed`). Kept in its own struct so `App` can start as `None` before then.
@@ -31,14 +36,26 @@ struct WindowedState {
     egui_winit_state: egui_winit::State,
     panel_state: PanelState,
     voxel_renderer: VoxelRenderer,
+    gizmo_renderer: GizmoRenderer,
+    view_cube_renderer: ViewCubeRenderer,
+    /// The current mid-Y 2D slice image, rebuilt whenever the grid rebuilds.
+    slice_image: SliceImage,
     depth_view: wgpu::TextureView,
     /// 4× MSAA colour target for the 3D pass; resolved into the surface texture.
     msaa_color_view: wgpu::TextureView,
     camera: OrbitCamera,
+    /// In-progress eased view-cube snap, if any.
+    snap_tween: Option<SnapTween>,
+    /// Timestamp of the previous frame, for advancing the snap tween.
+    last_frame_time: std::time::Instant,
     /// Whether the left mouse button is held (orbit drag in progress).
     left_button_held: bool,
     /// Last cursor position, for computing drag deltas.
     last_cursor_position: Option<(f64, f64)>,
+    /// Where the most recent left-press landed (for view-cube click detection).
+    press_position: Option<(f64, f64)>,
+    /// Whether the most recent left-press started inside the view-cube viewport.
+    press_in_view_cube: bool,
 }
 
 #[derive(Default)]
@@ -96,8 +113,9 @@ impl WindowedState {
         );
 
         // Resolve the panel's default geometry into the grid, then build the
-        // renderer's instance buffer FROM the grid (REPRESENTATION.md seam).
-        let panel_state = PanelState::default();
+        // renderer's instance buffer FROM the grid (REPRESENTATION.md seam). The
+        // view cube is ON by default (prototype `showCube: true`).
+        let panel_state = PanelState::with_view_cube_default();
         let shape = SdfShape::from_geometry(panel_state.geometry);
         let mut grid = VoxelGrid::new(shape.grid_dimensions());
         shape.resolve(&mut grid);
@@ -110,6 +128,11 @@ impl WindowedState {
         );
         let voxel_renderer =
             VoxelRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT, &grid);
+        let gizmo_renderer =
+            GizmoRenderer::new(&gpu.device, COLOR_TARGET_FORMAT, grid.dimensions);
+        let view_cube_renderer =
+            ViewCubeRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
+        let slice_image = grid.build_slice_image(shape.voxels_per_block);
 
         let camera = OrbitCamera {
             orbit_distance: OrbitCamera::auto_framed_distance(grid.dimensions),
@@ -130,11 +153,18 @@ impl WindowedState {
             egui_winit_state,
             panel_state,
             voxel_renderer,
+            gizmo_renderer,
+            view_cube_renderer,
+            slice_image,
             depth_view,
             msaa_color_view,
             camera,
+            snap_tween: None,
+            last_frame_time: std::time::Instant::now(),
             left_button_held: false,
             last_cursor_position: None,
+            press_position: None,
+            press_in_view_cube: false,
         }
     }
 
@@ -171,10 +201,83 @@ impl WindowedState {
         shape.resolve(&mut grid);
         self.voxel_renderer
             .rebuild_instances(&self.gpu.device, &self.gpu.queue, &grid);
+        // Keep the gizmo sized to the grid and rebuild the 2D slice (cheap).
+        self.gizmo_renderer
+            .rebuild(&self.gpu.device, &self.gpu.queue, grid.dimensions);
+        self.slice_image = grid.build_slice_image(shape.voxels_per_block);
 
         if auto_frame {
             self.camera.orbit_distance = OrbitCamera::auto_framed_distance(grid.dimensions);
         }
+    }
+
+    /// Is the pixel `(x, y)` inside the top-left view-cube viewport?
+    fn position_in_view_cube(&self, x: f64, y: f64) -> bool {
+        let margin = VIEW_CUBE_VIEWPORT_MARGIN as f64;
+        let size = VIEW_CUBE_VIEWPORT_PIXELS as f64;
+        x >= margin && x <= margin + size && y >= margin && y <= margin + size
+    }
+
+    /// Ray-cast a click inside the view-cube viewport against the cube and return
+    /// the hit [`CubeFace`]. NDC is computed within the cube's screen rect, then
+    /// unprojected through the view-cube matrix; the nearest of the six unit
+    /// faces (|coord| ≈ 0.7) that the ray crosses is returned.
+    fn pick_view_cube_face(&self, x: f64, y: f64) -> Option<CubeFace> {
+        let margin = VIEW_CUBE_VIEWPORT_MARGIN as f32;
+        let size = VIEW_CUBE_VIEWPORT_PIXELS as f32;
+        // NDC inside the cube rect (y up).
+        let ndc_x = ((x as f32 - margin) / size) * 2.0 - 1.0;
+        let ndc_y = -(((y as f32 - margin) / size) * 2.0 - 1.0);
+
+        let view_projection = self.camera.view_cube_view_projection();
+        let inverse = view_projection.inverse();
+        let near = inverse * glam::Vec4::new(ndc_x, ndc_y, 0.0, 1.0);
+        let far = inverse * glam::Vec4::new(ndc_x, ndc_y, 1.0, 1.0);
+        let near = near.truncate() / near.w;
+        let far = far.truncate() / far.w;
+        let origin = near;
+        let direction = (far - near).normalize_or_zero();
+        if direction == glam::Vec3::ZERO {
+            return None;
+        }
+
+        // Slab intersection against the cube [-HALF, HALF]^3; the entry face's
+        // dominant axis gives the material index / CubeFace.
+        const HALF: f32 = 0.7;
+        let mut t_entry = f32::NEG_INFINITY;
+        let mut entry_axis = 0usize;
+        let mut entry_sign = 1.0f32;
+        let mut t_exit = f32::INFINITY;
+        for axis in 0..3 {
+            let o = origin[axis];
+            let d = direction[axis];
+            if d.abs() < 1e-6 {
+                if !(-HALF..=HALF).contains(&o) {
+                    return None; // parallel and outside the slab
+                }
+                continue;
+            }
+            let mut t0 = (-HALF - o) / d;
+            let mut t1 = (HALF - o) / d;
+            let mut sign = -1.0; // entering the -HALF face
+            if t0 > t1 {
+                std::mem::swap(&mut t0, &mut t1);
+                sign = 1.0; // entering the +HALF face
+            }
+            if t0 > t_entry {
+                t_entry = t0;
+                entry_axis = axis;
+                entry_sign = sign;
+            }
+            t_exit = t_exit.min(t1);
+        }
+        if t_entry > t_exit || t_exit < 0.0 {
+            return None;
+        }
+
+        // Map (axis, sign) → material index (+X,-X,+Y,-Y,+Z,-Z) → CubeFace.
+        let material_index = entry_axis * 2 + if entry_sign > 0.0 { 0 } else { 1 };
+        CubeFace::from_material_index(material_index)
     }
 
     fn render(&mut self) {
@@ -210,10 +313,21 @@ impl WindowedState {
             &self.gpu.device,
             &self.gpu.queue,
             &mut self.panel_state,
+            &self.slice_image,
             raw_input,
             [self.surface_config.width, self.surface_config.height],
             pixels_per_point,
         );
+
+        // Advance an in-progress view-cube snap tween (eased over ~380ms).
+        let now = std::time::Instant::now();
+        let delta_seconds = (now - self.last_frame_time).as_secs_f32();
+        self.last_frame_time = now;
+        if let Some(tween) = self.snap_tween.as_mut() {
+            if tween.advance(&mut self.camera, delta_seconds) {
+                self.snap_tween = None;
+            }
+        }
 
         // Feed egui's platform output (cursor icon, clipboard, …) back to winit.
         self.egui_winit_state
@@ -242,13 +356,35 @@ impl WindowedState {
             geometry.size_blocks[1] * geometry.voxels_per_block,
             geometry.size_blocks[2] * geometry.voxels_per_block,
         ];
+        let view_projection = self.camera.view_projection(aspect_ratio);
         self.voxel_renderer.update_uniforms(
             &self.gpu.queue,
-            self.camera.view_projection(aspect_ratio),
+            view_projection,
             grid_dimensions,
             geometry.voxels_per_block,
             self.panel_state.show_grid_overlay,
         );
+        // M5 overlay uniforms: gizmo shares the main camera matrix; the view cube
+        // uses its own orientation-mirroring matrix.
+        self.gizmo_renderer
+            .update_uniforms(&self.gpu.queue, view_projection);
+        self.view_cube_renderer
+            .update_uniforms(&self.gpu.queue, self.camera.view_cube_view_projection());
+
+        let overlays = FrameOverlays {
+            gizmo: if self.panel_state.show_origin_gizmo {
+                Some(&self.gizmo_renderer)
+            } else {
+                None
+            },
+            view_cube: if self.panel_state.show_view_cube {
+                Some(&self.view_cube_renderer)
+            } else {
+                None
+            },
+            target_width: self.surface_config.width,
+            target_height: self.surface_config.height,
+        };
 
         render_frame(
             &mut self.egui_bridge,
@@ -259,6 +395,7 @@ impl WindowedState {
             &self.depth_view,
             &self.voxel_renderer,
             self.panel_state.material,
+            &overlays,
             &prepared,
         );
 
@@ -302,10 +439,38 @@ impl ApplicationHandler for App {
                 button: MouseButton::Left,
                 ..
             } => {
-                state.left_button_held =
-                    button_state == ElementState::Pressed && !egui_consumed;
-                if button_state == ElementState::Released {
+                if button_state == ElementState::Pressed {
+                    let position = state.last_cursor_position;
+                    let in_cube = state.panel_state.show_view_cube
+                        && position
+                            .map(|(x, y)| state.position_in_view_cube(x, y))
+                            .unwrap_or(false);
+                    state.press_position = position;
+                    state.press_in_view_cube = in_cube;
+                    // Pressing on the view cube starts a snap (not an orbit drag).
+                    state.left_button_held = !egui_consumed && !in_cube;
+                } else {
+                    // Release: a small, stationary click that started AND ended in
+                    // the cube selects a face and snaps to it (prototype pointerup).
+                    if state.press_in_view_cube {
+                        if let (Some((down_x, down_y)), Some((up_x, up_y))) =
+                            (state.press_position, state.last_cursor_position)
+                        {
+                            let stationary =
+                                (up_x - down_x).abs() < 5.0 && (up_y - down_y).abs() < 5.0;
+                            if stationary
+                                && state.position_in_view_cube(up_x, up_y)
+                            {
+                                if let Some(face) = state.pick_view_cube_face(up_x, up_y) {
+                                    state.snap_tween =
+                                        Some(SnapTween::to_face(&state.camera, face));
+                                }
+                            }
+                        }
+                    }
+                    state.left_button_held = false;
                     state.last_cursor_position = None;
+                    state.press_in_view_cube = false;
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
@@ -314,7 +479,11 @@ impl ApplicationHandler for App {
                     if let Some((previous_x, previous_y)) = state.last_cursor_position {
                         let delta_x = (current.0 - previous_x) as f32;
                         let delta_y = (current.1 - previous_y) as f32;
-                        state.camera.orbit_by_drag(delta_x, delta_y);
+                        if delta_x != 0.0 || delta_y != 0.0 {
+                            // A manual orbit cancels any in-progress snap tween.
+                            state.snap_tween = None;
+                            state.camera.orbit_by_drag(delta_x, delta_y);
+                        }
                     }
                 }
                 state.last_cursor_position = Some(current);

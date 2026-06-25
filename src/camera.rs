@@ -20,6 +20,131 @@ const PHI_MAX: f32 = std::f32::consts::PI - 0.05;
 /// orthographic keeps roughly the same framing at the target).
 const ORTHO_HALF_HEIGHT_FACTOR: f32 = 0.42;
 
+/// The six view-cube faces, in `materialIndex` order (+X, -X, +Y, -Y, +Z, -Z).
+///
+/// Index order matches the prototype's `CUBELABELS` / `FACE_VIEW` arrays so a
+/// raycast hit's material index maps straight to a [`CubeFace`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CubeFace {
+    /// +X — RIGHT.
+    Right,
+    /// -X — LEFT.
+    Left,
+    /// +Y — TOP.
+    Top,
+    /// -Y — BOTTOM.
+    Bottom,
+    /// +Z — FRONT.
+    Front,
+    /// -Z — BACK.
+    Back,
+}
+
+/// The view-cube faces in `materialIndex` order, with their human labels.
+pub const CUBE_FACES: [(CubeFace, &str); 6] = [
+    (CubeFace::Right, "RIGHT"),
+    (CubeFace::Left, "LEFT"),
+    (CubeFace::Top, "TOP"),
+    (CubeFace::Bottom, "BOTTOM"),
+    (CubeFace::Front, "FRONT"),
+    (CubeFace::Back, "BACK"),
+];
+
+impl CubeFace {
+    /// Map a 0..5 material index (raycast hit) to a face, matching the prototype
+    /// `materialIndex` order (+X, -X, +Y, -Y, +Z, -Z).
+    pub fn from_material_index(index: usize) -> Option<Self> {
+        CUBE_FACES.get(index).map(|(face, _)| *face)
+    }
+
+    /// The snap target `(theta, phi)` for this face (ARCHITECTURE.md §4
+    /// `FACE_VIEW`). Polar values use a tiny epsilon at the poles so the view
+    /// matrix never degenerates (look direction parallel to up).
+    pub fn snap_angles(self) -> (f32, f32) {
+        use std::f32::consts::{FRAC_PI_2, PI};
+        const POLE_EPSILON: f32 = 0.0001;
+        match self {
+            CubeFace::Right => (0.0, FRAC_PI_2),
+            CubeFace::Left => (PI, FRAC_PI_2),
+            CubeFace::Top => (-FRAC_PI_2, POLE_EPSILON),
+            CubeFace::Bottom => (-FRAC_PI_2, PI - POLE_EPSILON),
+            CubeFace::Front => (FRAC_PI_2, FRAC_PI_2),
+            CubeFace::Back => (-FRAC_PI_2, FRAC_PI_2),
+        }
+    }
+}
+
+/// Pick the equivalent of `target_theta` (mod 2π) nearest to `current_theta`,
+/// so a snap never spins the long way round (ARCHITECTURE.md §4: "add/sub 2π
+/// before tweening"). Mirrors the prototype `snapTo` loop.
+pub fn nearest_equivalent_theta(current_theta: f32, target_theta: f32) -> f32 {
+    use std::f32::consts::PI;
+    let mut chosen = target_theta;
+    while chosen - current_theta > PI {
+        chosen -= 2.0 * PI;
+    }
+    while chosen - current_theta < -PI {
+        chosen += 2.0 * PI;
+    }
+    chosen
+}
+
+/// easeInOutQuad over `t` in `[0, 1]` (prototype `applyTween`).
+pub fn ease_in_out_quad(t: f32) -> f32 {
+    if t < 0.5 {
+        2.0 * t * t
+    } else {
+        1.0 - (-2.0 * t + 2.0).powi(2) / 2.0
+    }
+}
+
+/// An in-progress eased camera snap from `(theta, phi)` toward a face's view.
+///
+/// The windowed app advances it each frame; the headless `shot` path skips the
+/// tween and applies the final angles directly. `theta_to` is already the
+/// nearest-equivalent target (no long spins).
+#[derive(Debug, Clone, Copy)]
+pub struct SnapTween {
+    pub theta_from: f32,
+    pub phi_from: f32,
+    pub theta_to: f32,
+    pub phi_to: f32,
+    /// Seconds elapsed since the tween started.
+    pub elapsed_seconds: f32,
+    /// Total duration in seconds (~0.38 s, ARCHITECTURE.md §4).
+    pub duration_seconds: f32,
+}
+
+impl SnapTween {
+    /// Tween duration in seconds (~380 ms, ARCHITECTURE.md §4).
+    pub const DEFAULT_DURATION_SECONDS: f32 = 0.38;
+
+    /// Begin a snap from the camera's current angles to a face. `theta_to` is
+    /// resolved to the nearest equivalent so the camera takes the short way.
+    pub fn to_face(camera: &OrbitCamera, face: CubeFace) -> Self {
+        let (target_theta, target_phi) = face.snap_angles();
+        Self {
+            theta_from: camera.orbit_theta,
+            phi_from: camera.orbit_phi,
+            theta_to: nearest_equivalent_theta(camera.orbit_theta, target_theta),
+            phi_to: target_phi,
+            elapsed_seconds: 0.0,
+            duration_seconds: Self::DEFAULT_DURATION_SECONDS,
+        }
+    }
+
+    /// Advance by `delta_seconds` and write the eased angles into `camera`.
+    /// Returns `true` once the tween has finished (so the caller can drop it).
+    pub fn advance(&mut self, camera: &mut OrbitCamera, delta_seconds: f32) -> bool {
+        self.elapsed_seconds += delta_seconds;
+        let progress = (self.elapsed_seconds / self.duration_seconds).clamp(0.0, 1.0);
+        let eased = ease_in_out_quad(progress);
+        camera.orbit_theta = self.theta_from + (self.theta_to - self.theta_from) * eased;
+        camera.orbit_phi = self.phi_from + (self.phi_to - self.phi_from) * eased;
+        progress >= 1.0
+    }
+}
+
 /// Which projection the orbit rig produces in [`OrbitCamera::view_projection`].
 ///
 /// A display-only param (ARCHITECTURE.md §4): switching it never rebuilds the
@@ -125,5 +250,117 @@ impl OrbitCamera {
             }
         };
         projection * view
+    }
+
+    /// View-projection for the corner view cube (ARCHITECTURE.md §4): an
+    /// orthographic camera whose eye copies the MAIN camera's *direction*
+    /// (`pos = direction * 4`, look at origin), so the small cube mirrors the
+    /// current main view. Independent of `orbit_distance` / projection mode.
+    pub fn view_cube_view_projection(&self) -> Mat4 {
+        let eye = self.direction() * 4.0;
+        let view = Mat4::look_at_rh(eye, Vec3::ZERO, Vec3::Y);
+        // Half-extent 1.35 frames a cube of side 1.4 with a little margin
+        // (prototype `OrthographicCamera(-1.35, 1.35, 1.35, -1.35, …)`).
+        let projection = Mat4::orthographic_rh(-1.35, 1.35, -1.35, 1.35, 0.1, 100.0);
+        projection * view
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::f32::consts::{FRAC_PI_2, PI};
+
+    fn approx(a: f32, b: f32) -> bool {
+        (a - b).abs() < 1e-4
+    }
+
+    #[test]
+    fn material_index_maps_to_faces_in_order() {
+        assert_eq!(CubeFace::from_material_index(0), Some(CubeFace::Right));
+        assert_eq!(CubeFace::from_material_index(2), Some(CubeFace::Top));
+        assert_eq!(CubeFace::from_material_index(5), Some(CubeFace::Back));
+        assert_eq!(CubeFace::from_material_index(6), None);
+    }
+
+    #[test]
+    fn front_face_points_down_positive_z() {
+        // FRONT = +Z: snapping should put the eye on +Z looking back at origin.
+        let (theta, phi) = CubeFace::Front.snap_angles();
+        assert!(approx(theta, FRAC_PI_2));
+        assert!(approx(phi, FRAC_PI_2));
+        let camera = OrbitCamera {
+            orbit_theta: theta,
+            orbit_phi: phi,
+            ..OrbitCamera::default()
+        };
+        let direction = camera.direction();
+        // direction = (sin·cos, cos, sin·sin) → ~(0, 0, 1).
+        assert!(approx(direction.x, 0.0));
+        assert!(approx(direction.y, 0.0));
+        assert!(approx(direction.z, 1.0));
+    }
+
+    #[test]
+    fn top_face_points_down_positive_y() {
+        let (theta, phi) = CubeFace::Top.snap_angles();
+        let camera = OrbitCamera {
+            orbit_theta: theta,
+            orbit_phi: phi,
+            ..OrbitCamera::default()
+        };
+        let direction = camera.direction();
+        assert!(approx(direction.y, 1.0));
+        assert!(direction.x.abs() < 1e-3 && direction.z.abs() < 1e-3);
+    }
+
+    #[test]
+    fn right_face_points_down_positive_x() {
+        let (theta, phi) = CubeFace::Right.snap_angles();
+        let camera = OrbitCamera {
+            orbit_theta: theta,
+            orbit_phi: phi,
+            ..OrbitCamera::default()
+        };
+        let direction = camera.direction();
+        assert!(approx(direction.x, 1.0));
+        assert!(direction.y.abs() < 1e-3 && direction.z.abs() < 1e-3);
+    }
+
+    #[test]
+    fn nearest_theta_avoids_long_spin() {
+        // Current near 3.0 rad, target 0 → should pick -2π (i.e. ≈ -0… within π).
+        let chosen = nearest_equivalent_theta(3.0, 0.0);
+        assert!((chosen - 3.0).abs() <= PI + 1e-4);
+        // Target chosen must be congruent to 0 mod 2π.
+        let remainder = chosen.rem_euclid(2.0 * PI);
+        assert!(approx(remainder, 0.0) || approx(remainder, 2.0 * PI));
+    }
+
+    #[test]
+    fn nearest_theta_picks_plus_two_pi_when_closer() {
+        // current -3.0, target +π/2: +π/2 is 4.57 away; +π/2 - 2π = -4.71 (1.71 away).
+        let chosen = nearest_equivalent_theta(-3.0, FRAC_PI_2);
+        assert!((chosen - (-3.0)).abs() <= PI + 1e-4);
+    }
+
+    #[test]
+    fn ease_in_out_quad_endpoints_and_midpoint() {
+        assert!(approx(ease_in_out_quad(0.0), 0.0));
+        assert!(approx(ease_in_out_quad(1.0), 1.0));
+        assert!(approx(ease_in_out_quad(0.5), 0.5));
+    }
+
+    #[test]
+    fn tween_lands_exactly_on_target() {
+        let mut camera = OrbitCamera::default();
+        let mut tween = SnapTween::to_face(&camera, CubeFace::Front);
+        let target_theta = tween.theta_to;
+        let target_phi = tween.phi_to;
+        // Step well past the duration.
+        let finished = tween.advance(&mut camera, 1.0);
+        assert!(finished);
+        assert!(approx(camera.orbit_theta, target_theta));
+        assert!(approx(camera.orbit_phi, target_phi));
     }
 }

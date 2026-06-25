@@ -18,7 +18,7 @@
 //! density only sets [`GeometryParams::voxels_per_block`] (never the block size).
 
 use crate::camera::ProjectionMode;
-use crate::voxel::ShapeKind;
+use crate::voxel::{ShapeKind, SliceImage};
 
 /// Geometry parameters — the *only* params that trigger a voxel rebuild.
 ///
@@ -72,10 +72,25 @@ pub struct PanelState {
     pub material: MaterialChoice,
     /// Whether the voxel/block grid overlay is drawn (M4 Display toggle).
     pub show_grid_overlay: bool,
+    /// Whether the corner view cube is drawn (M5 Display toggle, ON by default).
+    pub show_view_cube: bool,
+    /// Whether the origin gizmo is drawn (M5 Display toggle, OFF by default).
+    pub show_origin_gizmo: bool,
     /// When `Some`, the 3D rebuild was skipped because the grid exceeds the
     /// voxel cap; the panel shows a warning. Set by the caller after it decides
     /// whether to rebuild. Value is the would-be voxel count (in millions).
     pub voxel_cap_warning_millions: Option<f32>,
+}
+
+impl PanelState {
+    /// Sensible defaults for the windowed app: like [`Default`] but with the view
+    /// cube enabled (prototype `showCube: true`).
+    pub fn with_view_cube_default() -> Self {
+        Self {
+            show_view_cube: true,
+            ..Self::default()
+        }
+    }
 }
 
 /// What changed during a [`build_panel`] call, so the caller can react.
@@ -90,13 +105,19 @@ pub struct PanelResponse {
 
 /// Build the right-hand side panel into the root [`egui::Ui`] of the frame.
 ///
-/// Returns a [`PanelResponse`] describing what the user changed this frame.
-pub fn build_panel(root_ui: &mut egui::Ui, state: &mut PanelState) -> PanelResponse {
+/// `slice` is the freshly-built 2D mid-Y slice map (M5); it is shown as a
+/// nearest-filtered egui image. Returns a [`PanelResponse`] describing what the
+/// user changed this frame.
+pub fn build_panel(
+    root_ui: &mut egui::Ui,
+    state: &mut PanelState,
+    slice: &SliceImage,
+) -> PanelResponse {
     let mut response = PanelResponse::default();
 
     egui::Panel::right("voxel_worker_controls")
         .resizable(false)
-        .default_size(280.0)
+        .default_size(300.0)
         .show_inside(root_ui, |ui| {
             ui.add_space(8.0);
             ui.heading("VoxelWorker");
@@ -110,6 +131,7 @@ pub fn build_panel(root_ui: &mut egui::Ui, state: &mut PanelState) -> PanelRespo
             build_camera_section(ui, state);
             build_material_section(ui, state);
             build_display_section(ui, state);
+            build_slice_section(ui, state, slice);
 
             if let Some(millions) = state.voxel_cap_warning_millions {
                 ui.add_space(8.0);
@@ -229,17 +251,76 @@ fn build_material_section(ui: &mut egui::Ui, state: &mut PanelState) {
     ui.separator();
 }
 
-/// Display section. The voxel-grid overlay toggle is functional (M4); the other
-/// toggles (lattice, floor, view cube, gizmo) arrive in M5.
+/// Display section. M4 added the voxel-grid overlay; M5 wires the view cube and
+/// the origin gizmo. (Lattice/floor are deferred — see the M5 report.)
 fn build_display_section(ui: &mut egui::Ui, state: &mut PanelState) {
     ui.add_space(8.0);
     ui.strong("Display");
     ui.checkbox(&mut state.show_grid_overlay, "Voxel grid overlay");
+    ui.checkbox(&mut state.show_view_cube, "View cube");
+    ui.checkbox(&mut state.show_origin_gizmo, "Origin gizmo");
     ui.label(
-        egui::RichText::new("Lattice · floor · view cube · gizmo — coming in M5.")
+        egui::RichText::new("Lattice · floor — deferred.")
             .small()
             .weak(),
     );
+    ui.separator();
+}
+
+/// The 2D slice section (M5): the mid-Y layer of the resolved grid, shown as a
+/// nearest-filtered egui image scaled to the panel width, plus the measured
+/// widest run for round shapes ("Ø N vx · N.NN bl").
+fn build_slice_section(ui: &mut egui::Ui, state: &mut PanelState, slice: &SliceImage) {
+    ui.add_space(8.0);
+    ui.strong("Slice (mid-layer)");
+
+    let [width, height] = slice.size;
+    if width == 0 || height == 0 || slice.rgba.len() != (width * height * 4) as usize {
+        ui.label(
+            egui::RichText::new("no slice")
+                .small()
+                .weak(),
+        );
+        ui.separator();
+        return;
+    }
+
+    // Rebuild the egui texture from the CPU image every frame the grid changes;
+    // `load_texture` re-uploads under the same name so the handle stays stable.
+    let color_image = egui::ColorImage::from_rgba_unmultiplied(
+        [width as usize, height as usize],
+        &slice.rgba,
+    );
+    let texture = ui.ctx().load_texture(
+        "voxel_worker_slice",
+        color_image,
+        egui::TextureOptions::NEAREST,
+    );
+
+    // Scale to fit the panel width, keeping the slice's aspect ratio; crisp
+    // (nearest) so individual voxels stay square.
+    let available_width = ui.available_width();
+    let aspect = height as f32 / width as f32;
+    let display_size = egui::vec2(available_width, available_width * aspect);
+    ui.add(egui::Image::new(&texture).fit_to_exact_size(display_size));
+
+    // Measured diameter readout for round shapes (prototype `updateStats`).
+    let round = matches!(
+        state.geometry.shape,
+        ShapeKind::Cylinder | ShapeKind::Tube | ShapeKind::Sphere | ShapeKind::Torus
+    );
+    if round {
+        let density = state.geometry.voxels_per_block.max(1) as f32;
+        let blocks = slice.widest_run_voxels as f32 / density;
+        ui.label(
+            egui::RichText::new(format!(
+                "Ø {} vx · {:.2} bl",
+                slice.widest_run_voxels, blocks
+            ))
+            .small()
+            .weak(),
+        );
+    }
     ui.separator();
 }
 

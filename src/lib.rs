@@ -18,13 +18,16 @@ pub mod panel;
 pub mod renderer;
 pub mod voxel;
 
-pub use camera::{OrbitCamera, ProjectionMode};
+pub use camera::{
+    nearest_equivalent_theta, CubeFace, OrbitCamera, ProjectionMode, SnapTween, CUBE_FACES,
+};
 pub use gpu::GpuContext;
 pub use panel::{build_panel, GeometryParams, MaterialChoice, PanelResponse, PanelState};
 pub use renderer::{
-    create_depth_view, create_msaa_color_view, VoxelRenderer, DEPTH_FORMAT, MSAA_SAMPLE_COUNT,
+    create_depth_view, create_msaa_color_view, GizmoRenderer, ViewCubeRenderer, VoxelRenderer,
+    DEPTH_FORMAT, MSAA_SAMPLE_COUNT, VIEW_CUBE_VIEWPORT_PIXELS,
 };
-pub use voxel::{SdfShape, ShapeKind, VoxelGrid, VoxelProducer};
+pub use voxel::{SdfShape, ShapeKind, SliceImage, VoxelGrid, VoxelProducer};
 
 /// Surface / offscreen colour format used everywhere in the project.
 ///
@@ -96,18 +99,20 @@ pub struct PreparedEguiFrame {
 /// This is the render-target-agnostic half of egui integration. Both binaries
 /// call it; the windowed binary supplies `raw_input` from `egui_winit`, the
 /// headless binary builds `raw_input` by hand.
+#[allow(clippy::too_many_arguments)]
 pub fn run_egui_frame(
     bridge: &mut EguiPaintBridge,
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     panel_state: &mut PanelState,
+    slice: &voxel::SliceImage,
     raw_input: egui::RawInput,
     size_in_pixels: [u32; 2],
     pixels_per_point: f32,
 ) -> PreparedEguiFrame {
     let mut panel_response = PanelResponse::default();
     let full_output = bridge.context.run_ui(raw_input, |ui| {
-        panel_response = build_panel(ui, panel_state);
+        panel_response = build_panel(ui, panel_state, slice);
     });
 
     for (texture_id, image_delta) in &full_output.textures_delta.set {
@@ -152,6 +157,18 @@ pub fn run_egui_frame(
 ///
 /// `msaa_color_view` and `depth_view` are render-target-agnostic: the window and
 /// the headless capture pass their own 4-sample textures sized to the same target.
+/// Optional M5 overlays for [`render_frame`]: the origin gizmo (drawn in the
+/// MSAA pass, depth-test off) and the corner view cube (its own scissored pass).
+/// Each is `None` when its Display toggle is off, so the caller controls
+/// visibility without the renderer caring.
+pub struct FrameOverlays<'a> {
+    pub gizmo: Option<&'a renderer::GizmoRenderer>,
+    pub view_cube: Option<&'a renderer::ViewCubeRenderer>,
+    /// Target dimensions (needed to place the view-cube corner viewport).
+    pub target_width: u32,
+    pub target_height: u32,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn render_frame(
     bridge: &mut EguiPaintBridge,
@@ -162,6 +179,7 @@ pub fn render_frame(
     depth_view: &wgpu::TextureView,
     voxel_renderer: &renderer::VoxelRenderer,
     material: MaterialChoice,
+    overlays: &FrameOverlays,
     prepared: &PreparedEguiFrame,
 ) {
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -208,6 +226,24 @@ pub fn render_frame(
         });
 
         voxel_renderer.draw(&mut voxel_pass, material);
+
+        // Origin gizmo: same MSAA pass, after the voxels, depth-test OFF so it
+        // shows through the solid model (ARCHITECTURE.md §5/§6).
+        if let Some(gizmo) = overlays.gizmo {
+            gizmo.draw(&mut voxel_pass);
+        }
+    }
+
+    // === Pass 1b: view cube into a scissored top-left corner (its own depth).
+    // Drawn after the 3D resolve, before egui (ARCHITECTURE.md §6 layering).
+    if let Some(view_cube) = overlays.view_cube {
+        view_cube.draw(
+            device,
+            &mut encoder,
+            target_view,
+            overlays.target_width,
+            overlays.target_height,
+        );
     }
 
     // === Pass 2: egui at 1 sample onto the RESOLVED target (load, don't clear).

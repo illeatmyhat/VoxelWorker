@@ -21,9 +21,10 @@
 use std::path::PathBuf;
 
 use voxel_worker::{
-    create_depth_view, create_msaa_color_view, render_frame, run_egui_frame, EguiPaintBridge,
-    GeometryParams, GpuContext, MaterialChoice, OrbitCamera, PanelState, ProjectionMode, SdfShape,
-    ShapeKind, VoxelGrid, VoxelProducer, VoxelRenderer, COLOR_TARGET_FORMAT,
+    create_depth_view, create_msaa_color_view, render_frame, run_egui_frame, CubeFace,
+    EguiPaintBridge, FrameOverlays, GeometryParams, GizmoRenderer, GpuContext, MaterialChoice,
+    OrbitCamera, PanelState, ProjectionMode, SdfShape, ShapeKind, ViewCubeRenderer, VoxelGrid,
+    VoxelProducer, VoxelRenderer, COLOR_TARGET_FORMAT,
 };
 
 struct ShotOptions {
@@ -39,6 +40,14 @@ struct ShotOptions {
     material: MaterialChoice,
     /// Whether the voxel/block grid overlay is drawn.
     show_grid_overlay: bool,
+    /// Whether the origin gizmo is drawn (M5 `--gizmo`).
+    show_origin_gizmo: bool,
+    /// Whether the view cube is drawn (M5; ON by default, `--no-viewcube` hides).
+    show_view_cube: bool,
+    /// When `Some`, set the camera directly to this face's snapped angles (M5
+    /// `--snap`), overriding `--theta`/`--phi` so the snap table can be verified
+    /// headlessly (no tween).
+    snap_face: Option<CubeFace>,
     /// Orbit azimuth (radians). Default 0.7.
     theta: f32,
     /// Orbit polar angle from +Y (radians). Default 1.05.
@@ -57,10 +66,26 @@ impl Default for ShotOptions {
             projection_mode: ProjectionMode::Perspective,
             material: MaterialChoice::Stone,
             show_grid_overlay: false,
+            show_origin_gizmo: false,
+            show_view_cube: true,
+            snap_face: None,
             theta: 0.7,
             phi: 1.05,
             distance: None,
         }
+    }
+}
+
+/// Parse a `--snap` value into a [`CubeFace`].
+fn parse_snap_face(value: &str) -> CubeFace {
+    match value.to_ascii_lowercase().as_str() {
+        "front" => CubeFace::Front,
+        "back" => CubeFace::Back,
+        "left" => CubeFace::Left,
+        "right" => CubeFace::Right,
+        "top" => CubeFace::Top,
+        "bottom" => CubeFace::Bottom,
+        other => panic!("--snap must be front|back|left|right|top|bottom, got '{other}'"),
     }
 }
 
@@ -169,6 +194,16 @@ fn parse_options() -> ShotOptions {
             "--grid" => {
                 options.show_grid_overlay = true;
             }
+            "--gizmo" => {
+                options.show_origin_gizmo = true;
+            }
+            "--no-viewcube" => {
+                options.show_view_cube = false;
+            }
+            "--snap" => {
+                options.snap_face =
+                    Some(parse_snap_face(&args.next().expect("--snap requires a value")));
+            }
             "--theta" => {
                 options.theta = args
                     .next()
@@ -201,6 +236,8 @@ fn parse_options() -> ShotOptions {
                      \x20            [--density <u32>] [--wall <u32>]\n\
                      \x20            [--proj <perspective|ortho>]\n\
                      \x20            [--material <stone|wood|plain>] [--grid]\n\
+                     \x20            [--gizmo] [--no-viewcube]\n\
+                     \x20            [--snap <front|back|left|right|top|bottom>]\n\
                      \x20            [--theta <f32>] [--phi <f32>] [--dist <f32>]\n\
                      Defaults: --out shots/m1.png --width 1280 --height 800\n\
                      \x20         --shape cylinder --size-x 5 --size-y 1 --size-z 5\n\
@@ -264,6 +301,8 @@ async fn run_capture(options: ShotOptions) {
         projection_mode: options.projection_mode,
         material: options.material,
         show_grid_overlay: options.show_grid_overlay,
+        show_view_cube: options.show_view_cube,
+        show_origin_gizmo: options.show_origin_gizmo,
         ..PanelState::default()
     };
     if shape.exceeds_voxel_cap() {
@@ -285,25 +324,37 @@ async fn run_capture(options: ShotOptions) {
     );
     let voxel_renderer =
         VoxelRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT, &grid);
+    let gizmo_renderer = GizmoRenderer::new(&gpu.device, COLOR_TARGET_FORMAT, grid.dimensions);
+    let view_cube_renderer = ViewCubeRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
+    // The 2D mid-Y slice (always shown in the panel), built FROM the grid.
+    let slice_image = grid.build_slice_image(options.geometry.voxels_per_block);
 
-    // Build the orbit camera from the CLI flags (distance auto-framed if unset).
+    // Build the orbit camera from the CLI flags. `--snap` overrides theta/phi
+    // with the face's snapped angles directly (no tween in the headless path).
+    let (theta, phi) = match options.snap_face {
+        Some(face) => face.snap_angles(),
+        None => (options.theta, options.phi),
+    };
     let camera = OrbitCamera {
         target: glam::Vec3::ZERO,
-        orbit_theta: options.theta,
-        orbit_phi: options.phi,
+        orbit_theta: theta,
+        orbit_phi: phi,
         orbit_distance: options
             .distance
             .unwrap_or_else(|| OrbitCamera::auto_framed_distance(grid.dimensions)),
         projection_mode: options.projection_mode,
     };
     let aspect_ratio = options.width as f32 / options.height as f32;
+    let view_projection = camera.view_projection(aspect_ratio);
     voxel_renderer.update_uniforms(
         &gpu.queue,
-        camera.view_projection(aspect_ratio),
+        view_projection,
         shape.grid_dimensions(),
         options.geometry.voxels_per_block,
         options.show_grid_overlay,
     );
+    gizmo_renderer.update_uniforms(&gpu.queue, view_projection);
+    view_cube_renderer.update_uniforms(&gpu.queue, camera.view_cube_view_projection());
 
     // egui driven WITHOUT winit: build RawInput by hand.
     let mut egui_bridge = EguiPaintBridge::new(&gpu.device, COLOR_TARGET_FORMAT);
@@ -321,10 +372,26 @@ async fn run_capture(options: ShotOptions) {
         &gpu.device,
         &gpu.queue,
         &mut panel_state,
+        &slice_image,
         raw_input,
         [options.width, options.height],
         pixels_per_point,
     );
+
+    let overlays = FrameOverlays {
+        gizmo: if options.show_origin_gizmo {
+            Some(&gizmo_renderer)
+        } else {
+            None
+        },
+        view_cube: if options.show_view_cube {
+            Some(&view_cube_renderer)
+        } else {
+            None
+        },
+        target_width: options.width,
+        target_height: options.height,
+    };
 
     // Paint via the exact same render-target-agnostic core the window uses.
     render_frame(
@@ -336,6 +403,7 @@ async fn run_capture(options: ShotOptions) {
         &depth_view,
         &voxel_renderer,
         options.material,
+        &overlays,
         &prepared,
     );
 
