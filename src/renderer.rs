@@ -2043,6 +2043,18 @@ impl OnionFogRenderer {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                // Binding 3: the MSAA scene depth, so the fog is occluded by the
+                // displayed opaque slice (depth-tested like Minecraft's clouds).
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: true,
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -2227,16 +2239,17 @@ impl OnionFogRenderer {
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
     }
 
-    /// Draw the fog into `target_view` (the resolved scene). The x-ray onion
-    /// (option B) marches the full ray and ignores opaque depth, so no depth input
-    /// is needed; it raymarches the uploaded occupancy grid instead. A no-op until
-    /// a grid has been uploaded (`upload_grid`). Its own render pass loads the
-    /// existing colour and composites the haze over it.
+    /// Draw the fog into `target_view` (the resolved scene), raymarching the
+    /// uploaded occupancy grid and depth-testing against `depth_view` (the 3D pass's
+    /// MSAA depth) so the displayed opaque slice occludes the onion layers behind
+    /// it. A no-op until a grid has been uploaded (`upload_grid`). Its own render
+    /// pass loads the existing colour and composites the haze over it.
     pub fn draw(
         &self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
         target_view: &wgpu::TextureView,
+        depth_view: &wgpu::TextureView,
     ) {
         if !self.active {
             return;
@@ -2256,6 +2269,10 @@ impl OnionFogRenderer {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(depth_view),
                 },
             ],
         });
@@ -2315,7 +2332,9 @@ pub fn create_depth_view(device: &wgpu::Device, width: u32, height: u32) -> wgpu
         sample_count: MSAA_SAMPLE_COUNT,
         dimension: wgpu::TextureDimension::D2,
         format: DEPTH_FORMAT,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        // TEXTURE_BINDING so the onion fog pass can sample this MSAA depth (sample 0)
+        // to occlude the haze behind the displayed opaque slice.
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
         view_formats: &[],
     });
     texture.create_view(&wgpu::TextureViewDescriptor::default())

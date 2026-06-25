@@ -33,6 +33,19 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **fog: AABB-clipped sampling + depth occlusion (Minecraft-cloud model)** — Two corrections after
+  visual review. (1) **Sampling bug:** the march spread its fixed 96 steps over the FULL near→far ray
+  (hundreds of units), so from a top/bottom view — where the onion band is thin in the view direction —
+  almost no samples landed in the grid and the fog vanished. Fixed by clipping the ray to the grid's
+  world-space AABB (slab test) and spending every step INSIDE the box. A torus now shows the expected
+  cloud **donut from top/bottom**. (2) **Occlusion:** the earlier "x-ray, ignore depth" choice (option B
+  from the handoff) was wrong — real voxel clouds (e.g. Minecraft's translucent cloud prisms) are
+  depth-tested and occluded by solid geometry. Re-added the MSAA scene-depth binding and clamp the march
+  at the nearest opaque surface, so the **displayed slice occludes the onion layers behind it**; only
+  the near-side/beside layers show. Bonus: this also removes the view-angle "stripe" artifact (a
+  single-layer sphere now reads as a coherent haze, not bright bands), because the bright far-side path
+  is now occluded. NOTE: this reverses the handoff's recorded "option B = x-ray" fog decision, per the
+  user's direct visual feedback. Tree green: build (both bins, no warnings) + clippy + 33 tests.
 - **fog rearchitected: voxel-density cloud (replaces GPU SDF re-derivation)** — The fog raymarch now
   samples the **resolved VoxelGrid as a 3D R8 occupancy texture** (trilinear-filtered → smooth cloud
   density), instead of re-deriving the parametric SDF on the GPU. Why: the SDF approach only worked for

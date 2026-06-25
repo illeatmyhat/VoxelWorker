@@ -274,9 +274,10 @@ pub fn render_frame(
     // the resolved voxel grid (as a 3D cloud density) that composites a faint haze
     // over the resolved scene for the layers around the displayed band. Runs after
     // the 3D resolve and before the view cube/egui (so the corner cube and panel
-    // aren't fogged). X-ray (option B): ignores opaque depth, so no depth input.
+    // aren't fogged). Depth-tested against the 3D pass's MSAA depth so the displayed
+    // opaque slice occludes the onion layers behind it (like Minecraft's clouds).
     if let Some(onion_fog) = overlays.onion_fog {
-        onion_fog.draw(device, &mut encoder, target_view);
+        onion_fog.draw(device, &mut encoder, target_view, depth_view);
     }
 
     // === Pass 1b: view cube into a scissored top-left corner (its own depth).

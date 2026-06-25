@@ -12,10 +12,9 @@
 // resolved-grid seam in REPRESENTATION.md (every consumer reads the grid, never
 // the SDF).
 //
-// X-ray onion (option B, user-confirmed): the march ignores opaque depth and
-// integrates the FULL ray, so the neighbour onion layers show through the
-// displayed slice on BOTH sides (the conventional cel-animation "onion skin" =
-// see the neighbouring frames through the current one).
+// Depth-tested like Minecraft's translucent clouds: the displayed solid slice
+// occludes the onion layers behind it (the march stops at opaque depth), while the
+// neighbour layers in front of and beside the slice still show as haze.
 
 // std140-safe: field order matches the Rust `OnionFogUniforms` struct in
 // renderer.rs exactly (112 bytes).
@@ -45,6 +44,10 @@ struct FogUniforms {
 // trilinear-sampled so the binary grid reads as a smooth cloud density.
 @group(0) @binding(1) var occupancy: texture_3d<f32>;
 @group(0) @binding(2) var occupancy_sampler: sampler;
+// The opaque 3D pass's MSAA depth (read at sample 0). Like Minecraft's clouds,
+// the fog is depth-tested: the march stops at the nearest opaque surface so the
+// displayed solid slice OCCLUDES the onion layers behind it.
+@group(0) @binding(3) var scene_depth: texture_depth_multisampled_2d;
 
 // Trilinear interpolation reads ~0.5 at a solid/empty voxel boundary, so mapping
 // occupancy through this soft window insets the haze edge INWARD — keeping it
@@ -94,17 +97,50 @@ fn fragment_main(input: VsOut) -> @location(0) vec4<f32> {
     let ray_length_total = length(ray_full);
     let ray_direction = ray_full / max(ray_length_total, 1e-6);
 
-    // X-ray onion (option B): march the FULL ray and ignore opaque occlusion, so
-    // the onion bands show through the displayed slice on both sides.
-    let march_far = ray_length_total;
+    // The grid occupies only a small slab of the (potentially hundreds of units
+    // long) near→far ray, so spending the fixed step budget over the FULL ray would
+    // land only a few samples inside the grid — from a top/bottom view the onion
+    // band is thin in the view direction and the fog all but vanishes. So clip the
+    // ray to the grid's world-space AABB ([-semi_axes, +semi_axes]) and spend every
+    // step INSIDE the box, where all the density lives.
+    let box_min = -fog.semi_axes;
+    let box_max = fog.semi_axes;
+    // Robust slab test. A zero ray_direction component yields ±inf t's; the min/max
+    // collapse leaves that axis unconstrained iff the origin is within the slab.
+    let inv_dir = 1.0 / ray_direction;
+    let t_lo = (box_min - ray_origin) * inv_dir;
+    let t_hi = (box_max - ray_origin) * inv_dir;
+    let t_small = min(t_lo, t_hi);
+    let t_big = max(t_lo, t_hi);
+    let t_enter = max(max(t_small.x, t_small.y), t_small.z);
+    let t_exit = min(min(t_big.x, t_big.y), t_big.z);
+    // Miss (or the box is entirely behind the camera): nothing to fog.
+    if (t_exit < t_enter || t_exit <= 0.0) {
+        discard;
+    }
+    let march_near = max(t_enter, 0.0);
+    var march_far = min(t_exit, ray_length_total);
 
-    // Fixed-step integration of fog density along the ray. The step count trades
-    // quality for cost; the band is thin so a modest count suffices. (Avoid the
+    // Depth-test like Minecraft's clouds: stop the march at the nearest opaque
+    // surface so the displayed solid slice occludes the onion layers behind it.
+    // (Fog in FRONT of the slice still shows — only the far side is blocked.)
+    let depth_texel = vec2<i32>(input.clip_position.xy);
+    let sampled_depth = textureLoad(scene_depth, depth_texel, 0);
+    if (sampled_depth < 1.0) {
+        let hit_world = unproject(vec3<f32>(ndc_xy, sampled_depth));
+        march_far = min(march_far, length(hit_world - ray_origin));
+    }
+    // Fully behind the opaque surface (or zero-length segment): nothing to fog.
+    if (march_far <= march_near) {
+        discard;
+    }
+
+    // Fixed-step integration of fog density across the in-box segment. (Avoid the
     // name `step` for the local — it shadows the WGSL builtin `step()`.)
     let step_count = 96;
-    let step_size = march_far / f32(step_count);
+    let step_size = (march_far - march_near) / f32(step_count);
     var optical_thickness = 0.0;
-    var t = step_size * 0.5;
+    var t = march_near + step_size * 0.5;
     for (var i = 0; i < step_count; i = i + 1) {
         let sample_point = ray_origin + ray_direction * t;
 
