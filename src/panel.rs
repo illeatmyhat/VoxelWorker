@@ -513,8 +513,15 @@ fn build_inspector_section(
             if response.geometry_changed || response.selected_procedural_material {
                 state.write_mirror_to_active();
             }
+            // Placement (ADR 0001 step 3) is on the node's transform, not the
+            // geometry mirror, so it is edited AFTER the mirror write-back (which
+            // only touches shape + material) and is common to Tools and Parts.
+            build_offset_section(ui, state, response);
         }
-        Some(false) => build_part_inspector_section(ui, state, response),
+        Some(false) => {
+            build_part_inspector_section(ui, state, response);
+            build_offset_section(ui, state, response);
+        }
         None => {
             ui.add_space(8.0);
             ui.label(
@@ -552,6 +559,43 @@ fn build_part_inspector_section(
             *seed = value;
             response.scene_changed = true;
         }
+    }
+    ui.separator();
+}
+
+/// Offset (placement) section (ADR 0001 step 3): three integer drag boxes
+/// (X/Y/Z, may be negative) writing the active node's
+/// [`NodeTransform::offset_blocks`](crate::scene::NodeTransform::offset_blocks).
+/// Common to Tools and Parts — placement is on the node's transform, not the
+/// producer. Editing it re-resolves the composited scene (a node moving changes
+/// the composite extent, so it auto-frames like a size change via
+/// [`PanelResponse::scene_changed`]).
+///
+/// Offsets are in-memory only for now — persistence is ADR 0001 step 8 (the
+/// config round-trip does not yet carry them). // step 8: serialize offsets.
+fn build_offset_section(ui: &mut egui::Ui, state: &mut PanelState, response: &mut PanelResponse) {
+    let Some(node) = state.scene.active_node_mut() else {
+        return;
+    };
+    ui.add_space(8.0);
+    ui.strong("Offset (blocks)");
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        for (axis_index, axis_label) in ["X", "Y", "Z"].iter().enumerate() {
+            let mut value = node.transform.offset_blocks[axis_index];
+            let drag = egui::DragValue::new(&mut value)
+                .speed(0.1)
+                .prefix(format!("{axis_label} "));
+            if ui.add(drag).changed() {
+                node.transform.offset_blocks[axis_index] = value;
+                changed = true;
+            }
+        }
+    });
+    if changed {
+        // A placement edit re-resolves + re-frames the composite (treated like a
+        // scene change so the caller auto-frames the whole composited extent).
+        response.scene_changed = true;
     }
     ui.separator();
 }

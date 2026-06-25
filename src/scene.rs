@@ -257,22 +257,57 @@ impl Scene {
         ))
     }
 
-    /// The whole-block extent of the scene: the per-axis MAX over every leaf
-    /// node's block extent. Step 2 composites several nodes into one region; since
-    /// transforms are step 3 every node is centred at the origin, so the region
-    /// that contains them all is the axis-wise maximum of their sizes. A
-    /// Part-only node (the cloud field, which has no intrinsic size) contributes
-    /// nothing and adopts whatever extent the Tools establish.
+    /// The whole-block extent of the scene: the per-axis size of the bounding box
+    /// that encompasses every placed leaf node (ADR 0001 step 3). Each leaf
+    /// occupies `offset_blocks ± size/2`; the composite extent is the union of
+    /// those boxes (`max_corner - min_corner` per axis). With every node at a zero
+    /// offset this reduces to the per-axis MAX of the node sizes (the step-2
+    /// behaviour). A Part-only node (the cloud field, which has no intrinsic size)
+    /// contributes no box and adopts whatever extent the Tools establish.
+    ///
+    /// Returns a zero-sized region when no leaf has an intrinsic size.
     pub fn full_extent_blocks(&self, voxels_per_block: u32) -> RegionBlocks {
-        let mut extent = [0u32; 3];
+        match self.placed_extent_blocks(voxels_per_block) {
+            Some((min_corner, max_corner)) => RegionBlocks::new([
+                (max_corner[0] - min_corner[0]) as u32,
+                (max_corner[1] - min_corner[1]) as u32,
+                (max_corner[2] - min_corner[2]) as u32,
+            ]),
+            None => RegionBlocks::new([0, 0, 0]),
+        }
+    }
+
+    /// The composite bounding box of all placed leaf nodes, in **whole-block**
+    /// coordinates: `(min_corner, max_corner)` where each leaf with intrinsic
+    /// `size_blocks` placed at `offset_blocks` spans
+    /// `[offset - size/2, offset - size/2 + size]`. `None` when no leaf has an
+    /// intrinsic size (a Part-only scene). Drives both [`full_extent_blocks`] (the
+    /// size) and the recentre in [`resolve_region`] (centring the composite so its
+    /// world positions sit symmetrically about the origin — what the renderer and
+    /// camera assume).
+    ///
+    /// Block extents are split into a low/high half (`floor(size/2)` below the
+    /// centre, the remainder above) so an odd block size keeps the same parity the
+    /// voxel-space resolution uses, and the returned box is exact in blocks.
+    fn placed_extent_blocks(&self, voxels_per_block: u32) -> Option<([i32; 3], [i32; 3])> {
+        let mut min_corner = [i32::MAX; 3];
+        let mut max_corner = [i32::MIN; 3];
+        let mut any = false;
         for node in &self.nodes {
-            if let Some(size_blocks) = leaf_size_blocks(&node.content, voxels_per_block) {
-                for axis in 0..3 {
-                    extent[axis] = extent[axis].max(size_blocks[axis]);
-                }
+            let Some(size_blocks) = leaf_size_blocks(&node.content, voxels_per_block) else {
+                continue;
+            };
+            any = true;
+            let offset = node.transform.offset_blocks;
+            for axis in 0..3 {
+                let half_low = (size_blocks[axis] / 2) as i32;
+                let low = offset[axis] - half_low;
+                let high = low + size_blocks[axis] as i32;
+                min_corner[axis] = min_corner[axis].min(low);
+                max_corner[axis] = max_corner[axis].max(high);
             }
         }
-        RegionBlocks::new(extent)
+        any.then_some((min_corner, max_corner))
     }
 
     /// Resolve `region` into a fresh [`VoxelGrid`] by a union tree-walk: each
@@ -306,17 +341,41 @@ impl Scene {
         ];
         let mut output = VoxelGrid::new(region_dimensions);
 
+        // Recentre the composite so its world positions sit symmetrically about
+        // the origin (what the renderer + camera auto-frame assume). Each producer
+        // emits voxels centred on ITS OWN grid; a node's placed centre in the
+        // composite's voxel space is `offset_voxels`, and the whole composite's
+        // centre is `((min + max) / 2) * voxels_per_block`. Subtracting that centre
+        // from every node's translation lands the composite centred in `output`.
+        // With a single zero-offset node the composite centre is the node's own
+        // centre, so the shift is zero — the step-2 identity is preserved.
+        let recentre_voxels = match self.placed_extent_blocks(voxels_per_block) {
+            Some((min_corner, max_corner)) => [
+                ((min_corner[0] + max_corner[0]) * voxels_per_block as i32) / 2,
+                ((min_corner[1] + max_corner[1]) * voxels_per_block as i32) / 2,
+                ((min_corner[2] + max_corner[2]) * voxels_per_block as i32) / 2,
+            ],
+            None => [0, 0, 0],
+        };
+
         for node in &self.nodes {
             if !node.visible {
                 continue;
             }
+            // The translation applied to this node's producer voxels: its block
+            // offset (× density) minus the composite recentre, both in voxels.
+            let offset = node.transform.offset_blocks;
+            let translation_voxels = [
+                offset[0] * voxels_per_block as i32 - recentre_voxels[0],
+                offset[1] * voxels_per_block as i32 - recentre_voxels[1],
+                offset[2] * voxels_per_block as i32 - recentre_voxels[2],
+            ];
             match &node.content {
                 NodeContent::Tool { shape, material } => {
                     stamp_producer(
                         &mut output,
                         region_dimensions,
-                        node.transform.offset_blocks,
-                        voxels_per_block,
+                        translation_voxels,
                         material_id_for(*material),
                         shape,
                     );
@@ -332,8 +391,7 @@ impl Scene {
                     stamp_producer(
                         &mut output,
                         region_dimensions,
-                        node.transform.offset_blocks,
-                        voxels_per_block,
+                        translation_voxels,
                         // A Part brings its own per-voxel materials; today the
                         // cloud field emits material 0, so the stamp keeps that.
                         None,
@@ -384,35 +442,35 @@ fn material_id_for(_material: MaterialChoice) -> Option<u16> {
 }
 
 /// Resolve `producer` into its own local grid (centred at the origin, as the
-/// trait guarantees) and **stamp** it into `output` under `offset_blocks`.
+/// trait guarantees) and **stamp** it into `output`, translated by
+/// `translation_voxels` (the node's placement minus the composite recentre, in
+/// voxels).
 ///
-/// In step 1 the offset is always `[0, 0, 0]` and the producer's grid equals the
-/// region, so the stamp is the identity: the producer's occupied set is moved
-/// into `output` unchanged. When `material_override` is `Some(id)`, every stamped
-/// voxel takes that id (a Tool's single material); when `None`, each voxel keeps
-/// the material the producer emitted (a Part's own per-voxel materials).
+/// When `translation_voxels` is zero and no material override applies, the stamp
+/// is the identity: the producer's occupied set is moved into `output` unchanged
+/// (the one-node, zero-offset path — guarantees a bit-for-bit match with the bare
+/// producer). When `material_override` is `Some(id)`, every stamped voxel takes
+/// that id (a Tool's single material); when `None`, each voxel keeps the material
+/// the producer emitted (a Part's own per-voxel materials).
 fn stamp_producer(
     output: &mut VoxelGrid,
     region_dimensions: [u32; 3],
-    offset_blocks: [i32; 3],
-    voxels_per_block: u32,
+    translation_voxels: [i32; 3],
     material_override: Option<u16>,
     producer: &dyn VoxelProducer,
 ) {
+    // The producer sizes its own grid (`SdfShape::resolve` overwrites
+    // `dimensions` to its own `size_blocks × density`, centred at the origin), so
+    // the local grid need only seed the dimensions; the cloud field, which has no
+    // intrinsic size, fills the region it is handed.
     let mut local = VoxelGrid::new(region_dimensions);
     producer.resolve(&mut local);
 
-    let offset_voxels = [
-        offset_blocks[0] * voxels_per_block as i32,
-        offset_blocks[1] * voxels_per_block as i32,
-        offset_blocks[2] * voxels_per_block as i32,
-    ];
-    let zero_offset = offset_voxels == [0, 0, 0];
+    let zero_offset = translation_voxels == [0, 0, 0];
 
     if zero_offset && material_override.is_none() {
         // Fast path / exact identity: no translation and no material rewrite, so
-        // the local occupied set IS the output. This is the step-1 cloud case and
-        // guarantees a bit-for-bit match with the bare producer.
+        // the local occupied set IS the output.
         if output.occupied.is_empty() {
             output.occupied = local.occupied;
             return;
@@ -421,16 +479,15 @@ fn stamp_producer(
         return;
     }
 
-    // General stamp: translate each voxel by the block offset (in voxel units)
-    // and, for a Tool, overwrite its material id. Step 1 only ever hits the
-    // zero-offset branch, but the translation is written so step 3 needs no
-    // change here.
+    // General stamp: translate each voxel into the composite (the producer's
+    // origin-centred position plus the node's recentred placement) and, for a
+    // Tool, overwrite its material id.
     output.occupied.reserve(local.occupied.len());
     for mut voxel in local.occupied {
         if !zero_offset {
-            voxel.world_position[0] += offset_voxels[0] as f32;
-            voxel.world_position[1] += offset_voxels[1] as f32;
-            voxel.world_position[2] += offset_voxels[2] as f32;
+            voxel.world_position[0] += translation_voxels[0] as f32;
+            voxel.world_position[1] += translation_voxels[1] as f32;
+            voxel.world_position[2] += translation_voxels[2] as f32;
         }
         if let Some(id) = material_override {
             voxel.material_id = id;
@@ -603,5 +660,193 @@ mod tests {
         let scene = Scene::single_node(node);
         let resolved = scene.resolve_region(RegionBlocks::new([2, 2, 2]), 8, 0);
         assert_eq!(resolved.occupied_count(), 0);
+    }
+
+    /// A box Tool sized to fill a single block (so the whole block of voxels is
+    /// occupied), at the given block offset along X, in a wide region. Returns the
+    /// set of occupied voxel positions keyed to integer coordinates.
+    fn boxed_block_positions(offset_x: i32, voxels_per_block: u32) -> std::collections::HashSet<[i64; 3]> {
+        let shape = SdfShape {
+            kind: ShapeKind::Box,
+            size_blocks: [1, 1, 1],
+            voxels_per_block,
+            wall_blocks: 1,
+        };
+        let mut node = Node::new("Box", NodeContent::Tool { shape, material: MaterialChoice::Stone });
+        node.transform.offset_blocks = [offset_x, 0, 0];
+        // A region wide enough to hold the offset box without clipping.
+        let region = RegionBlocks::new([8, 1, 1]);
+        let grid = Scene::single_node(node).resolve_region(region, voxels_per_block, 0);
+        grid.occupied
+            .iter()
+            .map(|voxel| {
+                [
+                    voxel.world_position[0].round() as i64,
+                    voxel.world_position[1].round() as i64,
+                    voxel.world_position[2].round() as i64,
+                ]
+            })
+            .collect()
+    }
+
+    /// ADR 0001 step 3 (a): a node with `offset_blocks = [N, 0, 0]` places its
+    /// voxels shifted by exactly `N × voxels_per_block` in X versus offset 0.
+    ///
+    /// A two-node scene (a 1-block box at offset 0 and an identical box at offset
+    /// N, far enough apart to be disjoint) shares ONE composite recentre, so the
+    /// only difference between the two boxes' positions is the N-block placement.
+    /// The occupied set splits into two equal clusters whose X-spans are exactly
+    /// `N × voxels_per_block` apart; shifting one cluster by that amount reproduces
+    /// the other.
+    #[test]
+    fn offset_node_shifts_voxels_by_blocks_times_density() {
+        let voxels_per_block = 8u32;
+        let n = 5i32; // 5 blocks apart: a 1-block box leaves a 4-block gap (disjoint).
+        let region = RegionBlocks::new([8, 1, 1]);
+        let base = SdfShape {
+            kind: ShapeKind::Box,
+            size_blocks: [1, 1, 1],
+            voxels_per_block,
+            wall_blocks: 1,
+        };
+        let mut at_zero = Node::new("A", NodeContent::Tool { shape: base, material: MaterialChoice::Stone });
+        at_zero.transform.offset_blocks = [0, 0, 0];
+        let mut at_n = Node::new("B", NodeContent::Tool { shape: base, material: MaterialChoice::Stone });
+        at_n.transform.offset_blocks = [n, 0, 0];
+
+        let scene = Scene {
+            nodes: vec![at_zero, at_n],
+            active: Some(0),
+        };
+        let grid = scene.resolve_region(region, voxels_per_block, 0);
+
+        // Key each voxel by its EXACT world position (the producers emit voxel-
+        // centre positions; the placement is an exact integer-voxel translation, so
+        // float comparison is safe and exact — no rounding). The boxes are disjoint
+        // in X (5 blocks apart, 1 block wide), so the occupied set splits cleanly at
+        // the gap between box A's X-run and box B's X-run.
+        let shift = (n * voxels_per_block as i32) as f32; // N blocks → N×density voxels.
+        let key = |position: [f32; 3]| -> [i64; 3] {
+            // Bit-exact key: positions are k+0.5 half-integers, so ×2 is an exact
+            // integer and avoids any float-equality fragility in the HashSet.
+            [
+                (position[0] * 2.0) as i64,
+                (position[1] * 2.0) as i64,
+                (position[2] * 2.0) as i64,
+            ]
+        };
+
+        // The composite centre lies between the two boxes; split there.
+        let mut xs: Vec<f32> = grid.occupied.iter().map(|v| v.world_position[0]).collect();
+        xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let split_x = (xs.first().unwrap() + xs.last().unwrap()) / 2.0;
+
+        let cluster_low: std::collections::HashSet<[i64; 3]> = grid
+            .occupied
+            .iter()
+            .filter(|v| v.world_position[0] < split_x)
+            .map(|v| key(v.world_position))
+            .collect();
+        let cluster_high: std::collections::HashSet<[i64; 3]> = grid
+            .occupied
+            .iter()
+            .filter(|v| v.world_position[0] >= split_x)
+            .map(|v| key(v.world_position))
+            .collect();
+
+        assert!(!cluster_low.is_empty() && !cluster_high.is_empty(), "both boxes present");
+        assert_eq!(cluster_low.len(), cluster_high.len(), "both boxes fill one block");
+        // Shifting the low box by exactly N×density in X reproduces the high box.
+        let shifted: std::collections::HashSet<[i64; 3]> = cluster_low
+            .iter()
+            .map(|c| [c[0] + (shift * 2.0) as i64, c[1], c[2]])
+            .collect();
+        assert_eq!(shifted, cluster_high, "offset N blocks shifts voxels by exactly N×density");
+    }
+
+    /// ADR 0001 step 3 (b): two nodes at non-overlapping offsets give an occupied
+    /// count equal to the SUM of each alone (a disjoint union — the placement
+    /// genuinely separates them in space, no longer overlapping at the origin).
+    #[test]
+    fn disjoint_offsets_give_summed_occupancy() {
+        let voxels_per_block = 8u32;
+        // Two 1-block boxes 5 blocks apart in X — far enough that their voxel sets
+        // never touch (each is 1 block = 8 voxels wide, gap is 4 empty blocks).
+        let a_alone = boxed_block_positions(0, voxels_per_block).len();
+        let b_alone = boxed_block_positions(5, voxels_per_block).len();
+        assert!(a_alone > 0 && b_alone > 0);
+
+        let base = SdfShape {
+            kind: ShapeKind::Box,
+            size_blocks: [1, 1, 1],
+            voxels_per_block,
+            wall_blocks: 1,
+        };
+        let mut a = Node::new("A", NodeContent::Tool { shape: base, material: MaterialChoice::Stone });
+        a.transform.offset_blocks = [0, 0, 0];
+        let mut b = Node::new("B", NodeContent::Tool { shape: base, material: MaterialChoice::Stone });
+        b.transform.offset_blocks = [5, 0, 0];
+
+        let scene = Scene {
+            nodes: vec![a, b],
+            active: Some(0),
+        };
+        // Region spans the full composite (offset 0..5, each 1 block) → 6 blocks X.
+        let region = scene.full_extent_blocks(voxels_per_block);
+        assert_eq!(region.size_blocks, [6, 1, 1], "composite extent encompasses both offsets");
+        let grid = scene.resolve_region(region, voxels_per_block, 0);
+        assert_eq!(
+            grid.occupied_count(),
+            a_alone + b_alone,
+            "disjoint placement → occupied count is the sum (no overlap)"
+        );
+    }
+
+    /// ADR 0001 step 3 (c): `full_extent_blocks` grows to encompass an offset node.
+    /// A single 2-block box pushed +4 blocks in X spans blocks `[3, 5]` in X (centre
+    /// 4, ±1), so the composite X extent is 6 blocks (`0..6` once recentred), while
+    /// Y/Z stay at the box's 2 blocks. (A zero-offset single node would be just the
+    /// box's own 2×2×2.)
+    #[test]
+    fn full_extent_encompasses_offset_node() {
+        let voxels_per_block = 4u32;
+        let base = SdfShape {
+            kind: ShapeKind::Box,
+            size_blocks: [2, 2, 2],
+            voxels_per_block,
+            wall_blocks: 1,
+        };
+        let mut node = Node::new("Box", NodeContent::Tool { shape: base, material: MaterialChoice::Stone });
+        node.transform.offset_blocks = [4, 0, 0];
+        let scene = Scene::single_node(node);
+
+        // The box centred at block 4 with half-size 1 spans X blocks [3, 5] → its
+        // own size (2) is unchanged but its placement means the bounding box from
+        // the origin is wider. `full_extent_blocks` returns the box SIZE of the
+        // composite: for a single node that is just the node's own size in every
+        // axis (the offset moves it but doesn't enlarge a single box). To prove the
+        // extent ACCOUNTS for the offset, compare against a two-node scene where the
+        // offset opens a real gap.
+        let single = scene.full_extent_blocks(voxels_per_block);
+        assert_eq!(single.size_blocks, [2, 2, 2], "a lone offset box keeps its own size");
+
+        // Add a second box at the origin: now the composite must span from the
+        // origin box (blocks [-1, 1]) to the offset box (blocks [3, 5]) → X width 6.
+        let mut origin_box =
+            Node::new("Origin", NodeContent::Tool { shape: base, material: MaterialChoice::Stone });
+        origin_box.transform.offset_blocks = [0, 0, 0];
+        let mut offset_box =
+            Node::new("Offset", NodeContent::Tool { shape: base, material: MaterialChoice::Stone });
+        offset_box.transform.offset_blocks = [4, 0, 0];
+        let two = Scene {
+            nodes: vec![origin_box, offset_box],
+            active: Some(0),
+        };
+        let extent = two.full_extent_blocks(voxels_per_block);
+        assert_eq!(
+            extent.size_blocks,
+            [6, 2, 2],
+            "the offset node widens the composite extent in X from 2 to 6 blocks"
+        );
     }
 }

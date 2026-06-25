@@ -130,6 +130,12 @@ struct ShotOptions {
     /// cloud field (several distinct billowy blobs in a mostly-empty volume) at
     /// the requested size/density. The grid dims still come from size×density.
     debug_clouds: bool,
+    /// `--demo-scene` (ADR 0001 step 3): ignore the single-shape options and build
+    /// a hardcoded multi-node PLACED scene (a sphere at the origin, a box offset
+    /// +8 blocks in X, and a clouds Part offset in Z) so the headless capture can
+    /// confirm nodes appear separated in space (not overlapping at the origin).
+    /// Useful for future headless multi-node checks.
+    demo_scene: bool,
 }
 
 impl Default for ShotOptions {
@@ -161,6 +167,7 @@ impl Default for ShotOptions {
             layer_upper: None,
             onion_depth: 0,
             debug_clouds: false,
+            demo_scene: false,
         }
     }
 }
@@ -346,6 +353,9 @@ fn parse_options() -> ShotOptions {
             "--debug-faces" => {
                 options.debug_face_orientation = true;
             }
+            "--demo-scene" => {
+                options.demo_scene = true;
+            }
             "--layer-lower" => {
                 options.layer_lower = Some(
                     args.next()
@@ -417,7 +427,7 @@ fn parse_options() -> ShotOptions {
                      \x20            [--apply-block <substring>] [--list-perface]\n\
                      \x20            [--force-demo-stem <texture/stem>]\n\
                      \x20            [--gizmo] [--lattice] [--floor] [--no-viewcube]\n\
-                     \x20            [--debug-faces]\n\
+                     \x20            [--debug-faces] [--demo-scene]\n\
                      \x20            [--layer-lower <u32>] [--layer-upper <u32>] [--onion <u32>]\n\
                      \x20            [--export-vox <path.vox>]\n\
                      \x20            [--snap <face|edge|corner>  e.g. front, front-top, front-top-right]\n\
@@ -426,7 +436,13 @@ fn parse_options() -> ShotOptions {
                      \x20         --shape cylinder --size-x 5 --size-y 1 --size-z 5\n\
                      \x20         --density 16 --wall 1 --proj perspective\n\
                      \x20         --material stone (grid off)\n\
-                     \x20         --theta 0.7 --phi 1.05 --dist <auto-framed>"
+                     \x20         --theta 0.7 --phi 1.05 --dist <auto-framed>\n\
+                     \n\
+                     \x20  --demo-scene  build a hardcoded multi-node placed scene\n\
+                     \x20                (sphere at origin + box offset +8 blocks in X\n\
+                     \x20                + clouds offset in Z) to verify separated, non-\n\
+                     \x20                overlapping placement (ADR 0001 step 3). Overrides\n\
+                     \x20                --shape/--size/--density."
                 );
                 std::process::exit(0);
             }
@@ -502,6 +518,45 @@ fn locate_stem_png(stem: &str) -> Option<std::path::PathBuf> {
     None
 }
 
+/// Build the `--demo-scene` (ADR 0001 step 3): a hardcoded multi-node PLACED
+/// scene proving disjoint placement. A sphere at the origin, a box offset +8
+/// blocks in X, and a torus offset +6 blocks in Z. Each Tool is 5 blocks, so the
+/// offsets open clear gaps and the three solids sit visibly apart (no overlap at
+/// the origin) — the headless check the demo exists to confirm.
+///
+/// NOTE (ADR deviation): the task example named a clouds Part as the third node.
+/// The `DebugClouds` Part has no intrinsic bounded size — it fills whatever region
+/// it is handed (a bounded stored body is a later Part variant), so as a region-
+/// filling fog it would densely OCCLUDE the sphere and box and defeat the very
+/// separation the demo verifies. A third SDF Tool (torus) is a crisp, bounded
+/// solid that makes the disjoint placement unambiguous in the PNG. Part placement
+/// itself is covered by the scene.rs unit tests (a Part stamps under its offset),
+/// and the in-app inspector offsets both Tools and Parts.
+fn build_demo_scene(voxels_per_block: u32) -> Scene {
+    let make_tool = |kind, offset: [i32; 3], material| {
+        let shape = SdfShape {
+            kind,
+            size_blocks: [5, 5, 5],
+            voxels_per_block,
+            wall_blocks: 1,
+        };
+        let mut node = Node::new(
+            format!("{kind:?}"),
+            NodeContent::Tool { shape, material },
+        );
+        node.transform.offset_blocks = offset;
+        node
+    };
+    Scene {
+        nodes: vec![
+            make_tool(ShapeKind::Sphere, [0, 0, 0], MaterialChoice::Stone),
+            make_tool(ShapeKind::Box, [8, 0, 0], MaterialChoice::Wood),
+            make_tool(ShapeKind::Torus, [0, 0, 6], MaterialChoice::Plain),
+        ],
+        active: Some(0),
+    }
+}
+
 async fn run_capture(options: ShotOptions) {
     assert!(options.width > 0 && options.height > 0, "capture size must be non-zero");
 
@@ -560,12 +615,15 @@ async fn run_capture(options: ShotOptions) {
         layer_range,
         ..PanelState::default()
     };
-    // ADR 0001 step 2: resolve through a one-node scene — a Tool, or a DebugClouds
-    // Part when `--shape debug-clouds` (the boolean selector on GeometryParams was
-    // removed; Clouds is now its own node content). shot still builds a one-node
-    // scene from the CLI options. Seed the panel's scene so the node-list section
-    // renders the node in the captured panel.
-    let scene = if options.debug_clouds {
+    // ADR 0001 step 2/3: resolve through a scene. `--demo-scene` builds a
+    // hardcoded multi-node PLACED scene (sphere at origin + box offset +8 in X +
+    // clouds offset in Z) to verify separated placement; otherwise a one-node
+    // scene — a Tool, or a DebugClouds Part when `--shape debug-clouds`. Seed the
+    // panel's scene so the node-list section renders the nodes in the captured
+    // panel.
+    let scene = if options.demo_scene {
+        build_demo_scene(options.geometry.voxels_per_block)
+    } else if options.debug_clouds {
         Scene::single_node(Node::new(
             "Clouds",
             NodeContent::Part(Part::DebugClouds { seed: 0 }),
@@ -574,7 +632,21 @@ async fn run_capture(options: ShotOptions) {
         Scene::from_geometry(options.geometry, options.material)
     };
     panel_state.scene = scene.clone();
-    let grid = if shape.exceeds_voxel_cap() {
+    // The resolve region: for a placed multi-node scene this is the whole
+    // composite extent (per-axis box over all node offsets ± sizes); for a single
+    // node it equals the node's own size (the step-2 region).
+    let region = if options.demo_scene {
+        scene.full_extent_blocks(options.geometry.voxels_per_block)
+    } else {
+        RegionBlocks::new(options.geometry.size_blocks)
+    };
+    let region_voxel_count = region.size_blocks[0] as u64
+        * region.size_blocks[1] as u64
+        * region.size_blocks[2] as u64
+        * options.geometry.voxels_per_block as u64
+        * options.geometry.voxels_per_block as u64
+        * options.geometry.voxels_per_block as u64;
+    let grid = if !options.demo_scene && shape.exceeds_voxel_cap() {
         panel_state.voxel_cap_warning_millions =
             Some(shape.grid_voxel_count() as f32 / 1_000_000.0);
         eprintln!(
@@ -582,11 +654,31 @@ async fn run_capture(options: ShotOptions) {
             shape.grid_voxel_count() as f32 / 1_000_000.0
         );
         VoxelGrid::new(shape.grid_dimensions())
+    } else if region_voxel_count > voxel_worker::voxel::MAX_GRID_VOXELS {
+        panel_state.voxel_cap_warning_millions =
+            Some(region_voxel_count as f32 / 1_000_000.0);
+        eprintln!(
+            "3D paused — {:.1}M composited voxels exceeds the cap; rendering empty grid",
+            region_voxel_count as f32 / 1_000_000.0
+        );
+        VoxelGrid::new([
+            region.size_blocks[0] * options.geometry.voxels_per_block,
+            region.size_blocks[1] * options.geometry.voxels_per_block,
+            region.size_blocks[2] * options.geometry.voxels_per_block,
+        ])
     } else {
-        let region = RegionBlocks::new(options.geometry.size_blocks);
         scene.resolve_region(region, options.geometry.voxels_per_block, 0)
     };
-    if options.debug_clouds {
+    // The voxel-space grid dimensions actually resolved (the composite region for
+    // a placed scene), used for camera framing, the layer track and the uniforms.
+    let grid_dimensions = grid.dimensions;
+    if options.demo_scene {
+        println!(
+            "resolved {} voxels for demo-scene (region {:?} blocks)",
+            grid.occupied_count(),
+            region.size_blocks
+        );
+    } else if options.debug_clouds {
         println!(
             "resolved {} voxels for DebugClouds {:?}@{}",
             grid.occupied_count(),
@@ -637,14 +729,21 @@ async fn run_capture(options: ShotOptions) {
     let mut onion_fog_renderer = OnionFogRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
     // Upload the resolved grid as the fog's 3D occupancy field (issue #12).
     onion_fog_renderer.upload_grid(&gpu.device, &gpu.queue, &grid);
+    // The voxel-space grid_y of the ACTUALLY resolved grid (the composite for a
+    // placed scene), used for the band clip + uniforms so a demo scene that grew
+    // past the single-shape `grid_y` is not clipped or mis-sized.
+    let render_grid_y = grid_dimensions[1];
     // Issue #12: the layer-range band for the 3D clip + the measured-diameter
-    // readout (widest occupied run in the active band).
-    let band = if layer_range.is_full_range(grid_y) && !layer_range.onion_skin {
+    // readout (widest occupied run in the active band). The demo scene always
+    // renders the full band (placement, not layer-scrubbing, is what it verifies).
+    let band = if options.demo_scene
+        || (layer_range.is_full_range(render_grid_y) && !layer_range.onion_skin)
+    {
         LayerBand::FULL
     } else {
         LayerBand {
             band_min: layer_range.lower,
-            band_max: layer_range.upper.min(grid_y.saturating_sub(1)),
+            band_max: layer_range.upper.min(render_grid_y.saturating_sub(1)),
             onion_depth: if layer_range.onion_skin {
                 layer_range.onion_depth.clamp(1, 8)
             } else {
@@ -674,7 +773,7 @@ async fn run_capture(options: ShotOptions) {
     voxel_renderer.update_uniforms(
         &gpu.queue,
         view_projection,
-        shape.grid_dimensions(),
+        grid_dimensions,
         options.geometry.voxels_per_block,
         options.show_grid_overlay,
         options.debug_face_orientation,
@@ -690,7 +789,7 @@ async fn run_capture(options: ShotOptions) {
     if onion_active {
         onion_fog_renderer.update(
             &gpu.queue,
-            onion_fog_params(view_projection, shape.grid_dimensions(), layer_range),
+            onion_fog_params(view_projection, grid_dimensions, layer_range),
         );
     }
 
@@ -813,7 +912,7 @@ async fn run_capture(options: ShotOptions) {
         &gpu.device,
         &gpu.queue,
         &mut panel_state,
-        grid_y,
+        render_grid_y,
         measured_diameter,
         &palette,
         raw_input,

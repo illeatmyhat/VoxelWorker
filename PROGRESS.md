@@ -33,6 +33,32 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **ADR 0001 step 3 (translation half): per-node placement** (part of #16; per-voxel material is the
+  remaining #16 sub-step) — `src/scene.rs`, `src/panel.rs`, `src/bin/shot.rs`. Nodes can now be
+  PLACED in space, so two nodes occupy disjoint voxel regions instead of overlapping at the origin.
+  **Inspector:** a new **Offset (blocks)** control (X/Y/Z integer `DragValue`s, may be negative)
+  edits the active node's `transform.offset_blocks` for both Tools and Parts; editing it sets
+  `scene_changed` so the caller re-resolves AND re-frames the composite. Offsets are in-memory only
+  (persistence is step 8 — a `// step 8` note marks it). **Resolution:** `resolve_region` translates
+  each node's producer voxels by `offset_blocks × voxels_per_block`, then subtracts a composite
+  recentre (`((min+max)/2)×density` over all placed-node block AABBs) so the whole composite stays
+  centred on the origin (what the renderer + camera auto-frame assume). A single zero-offset node
+  recentres on itself → zero shift → bit-for-bit identical to step 2 (the identity guarantee holds).
+  **Extent + framing:** `full_extent_blocks` now returns the per-axis size of the union AABB of every
+  placed node (`max−min` of `offset ± half-size`), growing to encompass offset nodes; the camera
+  auto-frames `grid.dimensions` (the whole composite) and the voxel cap is checked against the
+  composited region. Rendering stays single-material (per-voxel material untouched — next #16 step).
+  **Verification:** `cargo build --bins`, `cargo clippy --all-targets`, `cargo test` all clean (42
+  lib tests + 1 integration test pass). Three new scene unit tests: (a) a node at `offset=[N,0,0]`
+  shifts its voxels by exactly `N×density` in X vs offset 0; (b) two disjoint-offset nodes give
+  `occupied_count == sum` of each alone (disjoint union); (c) `full_extent_blocks` grows from 2→6
+  blocks in X when a node is offset. New TEMPORARY `shot --demo-scene` flag (kept + documented in
+  `--help`): a hardcoded 3-node placed scene (sphere @origin + box +8 X + torus +6 Z) renders the
+  solids clearly SEPARATED in space; a normal `--shape sphere` shot is unchanged (53776 voxels, one
+  centred disc). **ADR deviation:** the demo's third node is a torus Tool, not the example's clouds
+  Part — `DebugClouds` has no bounded size (it fills its whole region) so as fog it would occlude the
+  separation; Part placement is covered by the unit tests + the inspector instead.
+
 - **ADR 0001 step 2: flat node-list UI + add/select/delete/visibility; the node is the panel's
   source of truth** (closes #15) — `src/scene.rs`, `src/panel.rs`, `src/settings.rs`, `src/main.rs`,
   `src/bin/shot.rs`. `Scene` gained an `active: Option<usize>` selection plus `add_node` /
