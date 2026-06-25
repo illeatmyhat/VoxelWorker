@@ -50,7 +50,7 @@ impl Default for GeometryParams {
 
 /// Procedural material choice. Selects which procedural texture (Stone/Wood/
 /// Plain) binds in the M4 texture-slice shader.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum MaterialChoice {
     #[default]
     Stone,
@@ -77,6 +77,12 @@ pub struct PanelState {
     pub show_view_cube: bool,
     /// Whether the origin gizmo is drawn (M5 Display toggle, OFF by default).
     pub show_origin_gizmo: bool,
+    /// Whether the block lattice (box lattice at block boundaries) is drawn (M8
+    /// Display toggle, ON by default — matches the prototype `showLattice`).
+    pub show_block_lattice: bool,
+    /// Whether the fine floor grid (bottom-plane grid) is drawn (M8 Display
+    /// toggle, OFF by default — matches the prototype `showFloor`).
+    pub show_floor_grid: bool,
     /// When `Some`, the 3D rebuild was skipped because the grid exceeds the
     /// voxel cap; the panel shows a warning. Set by the caller after it decides
     /// whether to rebuild. Value is the would-be voxel count (in millions).
@@ -93,6 +99,9 @@ impl PanelState {
     pub fn with_view_cube_default() -> Self {
         Self {
             show_view_cube: true,
+            // Block lattice defaults ON (prototype `showLattice: true`); the fine
+            // floor grid defaults OFF (`showFloor: false`).
+            show_block_lattice: true,
             ..Self::default()
         }
     }
@@ -115,6 +124,9 @@ pub struct PanelResponse {
     /// A built-in procedural material (Stone/Wood/Plain) was selected this frame →
     /// clear any applied loaded block and revert to the procedural material (M6).
     pub selected_procedural_material: bool,
+    /// The "Export .vox" button was clicked this frame → open the OS save dialog
+    /// and write the resolved grid as a MagicaVoxel `.vox` file (M8).
+    pub clicked_export_vox: bool,
 }
 
 /// Build the right-hand side panel into the root [`egui::Ui`] of the frame.
@@ -150,6 +162,7 @@ pub fn build_panel(
             build_camera_section(ui, state);
             build_material_section(ui, state, &mut response);
             build_display_section(ui, state);
+            build_export_section(ui, &mut response);
             build_slice_section(ui, state, slice);
 
             if let Some(millions) = state.voxel_cap_warning_millions {
@@ -344,19 +357,32 @@ fn build_material_section(ui: &mut egui::Ui, state: &mut PanelState, response: &
     ui.separator();
 }
 
-/// Display section. M4 added the voxel-grid overlay; M5 wires the view cube and
-/// the origin gizmo. (Lattice/floor are deferred — see the M5 report.)
+/// Display section. M4 added the voxel-grid overlay; M5 wired the view cube and
+/// the origin gizmo; M8 wires the block lattice and fine floor grid (#10).
 fn build_display_section(ui: &mut egui::Ui, state: &mut PanelState) {
     ui.add_space(8.0);
     ui.strong("Display");
-    ui.checkbox(&mut state.show_grid_overlay, "Voxel grid overlay");
+    ui.checkbox(&mut state.show_grid_overlay, "Voxel grid on faces");
+    ui.checkbox(&mut state.show_block_lattice, "Block lattice");
+    ui.checkbox(&mut state.show_floor_grid, "Fine floor grid");
     ui.checkbox(&mut state.show_view_cube, "View cube");
     ui.checkbox(&mut state.show_origin_gizmo, "Origin gizmo");
-    ui.label(
-        egui::RichText::new("Lattice · floor — deferred.")
-            .small()
-            .weak(),
-    );
+    ui.separator();
+}
+
+/// Export section (M8): a single "Export .vox" button. The click is reported via
+/// [`PanelResponse::clicked_export_vox`]; the caller opens the OS save dialog and
+/// writes the resolved grid (so the panel stays free of file-system concerns).
+fn build_export_section(ui: &mut egui::Ui, response: &mut PanelResponse) {
+    ui.add_space(8.0);
+    ui.strong("Export");
+    if ui
+        .button("Export .vox")
+        .on_hover_text("Write the resolved voxels as a MagicaVoxel .vox file")
+        .clicked()
+    {
+        response.clicked_export_vox = true;
+    }
     ui.separator();
 }
 

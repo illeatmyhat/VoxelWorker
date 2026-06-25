@@ -19,6 +19,8 @@ pub mod gpu;
 pub mod panel;
 pub mod renderer;
 pub mod scan_worker;
+pub mod settings;
+pub mod vox_export;
 pub mod voxel;
 
 pub use camera::{
@@ -28,9 +30,12 @@ pub use gpu::GpuContext;
 pub use panel::{build_panel, GeometryParams, MaterialChoice, PanelResponse, PanelState};
 pub use assets::{CubeFaceSlot, FaceProvenance, FaceTextures};
 pub use renderer::{
-    create_depth_view, create_msaa_color_view, GizmoRenderer, MaterialSource, ViewCubeRenderer,
-    VoxelRenderer, DEPTH_FORMAT, MSAA_SAMPLE_COUNT, VIEW_CUBE_VIEWPORT_PIXELS,
+    create_depth_view, create_msaa_color_view, GizmoRenderer, GridLatticeRenderer, MaterialSource,
+    ViewCubeRenderer, VoxelRenderer, DEPTH_FORMAT, MSAA_SAMPLE_COUNT, VIEW_CUBE_VIEWPORT_PIXELS,
 };
+pub use renderer::procedural_material_average_color;
+pub use settings::AppConfig;
+pub use vox_export::VoxExport;
 pub use voxel::{SdfShape, ShapeKind, SliceImage, VoxelGrid, VoxelProducer};
 
 /// Surface / offscreen colour format used everywhere in the project.
@@ -169,6 +174,12 @@ pub fn run_egui_frame(
 pub struct FrameOverlays<'a> {
     pub gizmo: Option<&'a renderer::GizmoRenderer>,
     pub view_cube: Option<&'a renderer::ViewCubeRenderer>,
+    /// The block lattice + fine floor grid (M8). Drawn in the MSAA pass (depth-
+    /// tested) before the gizmo. `show_lattice`/`show_floor` reflect the toggles;
+    /// `None` skips both.
+    pub grid_lattice: Option<&'a renderer::GridLatticeRenderer>,
+    pub show_lattice: bool,
+    pub show_floor: bool,
     /// Target dimensions (needed to place the view-cube corner viewport).
     pub target_width: u32,
     pub target_height: u32,
@@ -231,6 +242,12 @@ pub fn render_frame(
         });
 
         voxel_renderer.draw(&mut voxel_pass, material);
+
+        // Block lattice + fine floor grid (M8): same MSAA pass, depth-tested so
+        // the solid model occludes them (a scaffold around/under it).
+        if let Some(grid_lattice) = overlays.grid_lattice {
+            grid_lattice.draw(&mut voxel_pass, overlays.show_lattice, overlays.show_floor);
+        }
 
         // Origin gizmo: same MSAA pass, after the voxels, depth-test OFF so it
         // shows through the solid model (ARCHITECTURE.md §5/§6).

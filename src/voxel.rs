@@ -12,6 +12,7 @@
 //! voxels into the grid.
 
 use glam::Vec3;
+use rayon::prelude::*;
 
 /// CPU-only iso-surface threshold. A voxel is kept when its signed distance is
 /// at or below this level. NOT a uniform and NOT a UI slider (DEV_NOTES).
@@ -26,7 +27,7 @@ pub const MAX_GRID_VOXELS: u64 = 6_000_000;
 ///
 /// Milestone 2 only renders [`ShapeKind::Cylinder`], but the full set is
 /// implemented now because M3 needs them and the cost is trivial.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ShapeKind {
     Cylinder,
     Tube,
@@ -266,36 +267,44 @@ impl VoxelProducer for SdfShape {
         let half_y = grid_y as f32 / 2.0;
         let half_z = grid_z as f32 / 2.0;
 
-        // The loop is written per-outer-slice independent (no shared mutable
-        // accumulator threaded through) so rayon can drop in later: each `j`
-        // slice could `into_par_iter().flat_map(..)` and the results be
-        // concatenated. We keep it serial here.
-        for j in 0..grid_y {
-            for k in 0..grid_z {
-                for i in 0..grid_x {
-                    // World-centred sample point at the voxel centre.
-                    let point = Vec3::new(
-                        i as f32 + 0.5 - half_x,
-                        j as f32 + 0.5 - half_y,
-                        k as f32 + 0.5 - half_z,
-                    );
+        // The outer `j` slices are order-independent (each samples a disjoint set
+        // of voxels and writes nothing shared), so M8 parallelises them with
+        // rayon: each slice produces a local `Vec<Voxel>` and the results are
+        // concatenated. The voxel ORDER may differ from the serial version, but
+        // the SET is identical — the renderer doesn't care about order, and the
+        // 2D slice / `.vox` export recover indices from each voxel's position.
+        let kind = self.kind;
+        grid.occupied = (0..grid_y)
+            .into_par_iter()
+            .flat_map_iter(|j| {
+                let mut local = Vec::new();
+                for k in 0..grid_z {
+                    for i in 0..grid_x {
+                        // World-centred sample point at the voxel centre.
+                        let point = Vec3::new(
+                            i as f32 + 0.5 - half_x,
+                            j as f32 + 0.5 - half_y,
+                            k as f32 + 0.5 - half_z,
+                        );
 
-                    if signed_distance(self.kind, point, semi_axes, wall_voxels)
-                        <= SURFACE_ISOLEVEL
-                    {
-                        grid.occupied.push(Voxel {
-                            world_position: [point.x, point.y, point.z],
-                            block_local_coord: [
-                                (i % voxels_per_block) as u8,
-                                (j % voxels_per_block) as u8,
-                                (k % voxels_per_block) as u8,
-                            ],
-                            material_id: 0,
-                        });
+                        if signed_distance(kind, point, semi_axes, wall_voxels)
+                            <= SURFACE_ISOLEVEL
+                        {
+                            local.push(Voxel {
+                                world_position: [point.x, point.y, point.z],
+                                block_local_coord: [
+                                    (i % voxels_per_block) as u8,
+                                    (j % voxels_per_block) as u8,
+                                    (k % voxels_per_block) as u8,
+                                ],
+                                material_id: 0,
+                            });
+                        }
                     }
                 }
-            }
-        }
+                local
+            })
+            .collect();
     }
 }
 

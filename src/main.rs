@@ -17,10 +17,11 @@ use voxel_worker::scan_worker::{
     spawn_auto_scan, spawn_custom_folder_scan, FaceResolver, ScanHandle, ScanMessage,
 };
 use voxel_worker::{
-    create_depth_view, create_msaa_color_view, render_frame, run_egui_frame, CubeFace,
-    EguiPaintBridge, FrameOverlays, GizmoRenderer, GpuContext, MaterialSource, OrbitCamera,
-    PanelState, SdfShape, SliceImage, SnapTween, ViewCubeRenderer, VoxelGrid, VoxelProducer,
-    VoxelRenderer, COLOR_TARGET_FORMAT, VIEW_CUBE_VIEWPORT_PIXELS,
+    create_depth_view, create_msaa_color_view, procedural_material_average_color, render_frame,
+    run_egui_frame, AppConfig, CubeFace, EguiPaintBridge, FrameOverlays, GizmoRenderer,
+    GpuContext, GridLatticeRenderer, MaterialSource, OrbitCamera, PanelState, SdfShape, SliceImage,
+    SnapTween, VoxExport, ViewCubeRenderer, VoxelGrid, VoxelProducer, VoxelRenderer,
+    COLOR_TARGET_FORMAT, VIEW_CUBE_VIEWPORT_PIXELS,
 };
 
 /// Margin from the top-left corner to the view-cube viewport (must match the
@@ -41,6 +42,8 @@ struct WindowedState {
     panel_state: PanelState,
     voxel_renderer: VoxelRenderer,
     gizmo_renderer: GizmoRenderer,
+    /// Block lattice + fine floor grid (M8).
+    grid_lattice_renderer: GridLatticeRenderer,
     view_cube_renderer: ViewCubeRenderer,
     /// Offscreen renderer for the 45° palette cube thumbnails (M6).
     thumbnail_renderer: ThumbnailRenderer,
@@ -81,11 +84,29 @@ struct App {
     state: Option<WindowedState>,
 }
 
+/// Default `.vox` filename from the shape + voxel dims (e.g. `cylinder_80x16x80.vox`).
+fn default_vox_filename(shape: &SdfShape) -> String {
+    let [grid_x, grid_y, grid_z] = shape.grid_dimensions();
+    let kind = format!("{:?}", shape.kind).to_lowercase();
+    format!("{kind}_{grid_x}x{grid_y}x{grid_z}.vox")
+}
+
 impl WindowedState {
     fn new(event_loop: &ActiveEventLoop) -> Self {
+        // M8: load persisted config (geometry, display, material, camera, window
+        // size). Missing/invalid config falls back to defaults (never panics).
+        let config = AppConfig::load();
+
+        let mut window_attributes = Window::default_attributes().with_title("VoxelWorker");
+        if let Some(config) = &config {
+            window_attributes = window_attributes.with_inner_size(winit::dpi::LogicalSize::new(
+                config.window_size[0],
+                config.window_size[1],
+            ));
+        }
         let window = Arc::new(
             event_loop
-                .create_window(Window::default_attributes().with_title("VoxelWorker"))
+                .create_window(window_attributes)
                 .expect("failed to create window"),
         );
 
@@ -130,10 +151,13 @@ impl WindowedState {
             None,
         );
 
-        // Resolve the panel's default geometry into the grid, then build the
-        // renderer's instance buffer FROM the grid (REPRESENTATION.md seam). The
-        // view cube is ON by default (prototype `showCube: true`).
-        let panel_state = PanelState::with_view_cube_default();
+        // Resolve the panel geometry into the grid, then build the renderer's
+        // instance buffer FROM the grid (REPRESENTATION.md seam). The view cube +
+        // block lattice are ON by default; the persisted config overrides them.
+        let panel_state = match &config {
+            Some(config) => config.to_panel_state(),
+            None => PanelState::with_view_cube_default(),
+        };
         let shape = SdfShape::from_geometry(panel_state.geometry);
         let mut grid = VoxelGrid::new(shape.grid_dimensions());
         shape.resolve(&mut grid);
@@ -148,6 +172,12 @@ impl WindowedState {
             VoxelRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT, &grid);
         let gizmo_renderer =
             GizmoRenderer::new(&gpu.device, COLOR_TARGET_FORMAT, grid.dimensions);
+        let grid_lattice_renderer = GridLatticeRenderer::new(
+            &gpu.device,
+            COLOR_TARGET_FORMAT,
+            grid.dimensions,
+            shape.voxels_per_block,
+        );
         let view_cube_renderer =
             ViewCubeRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
         let thumbnail_renderer = ThumbnailRenderer::new(&gpu.device, &gpu.queue);
@@ -161,11 +191,15 @@ impl WindowedState {
         };
         let scan_handle = Some(spawn_auto_scan());
 
-        let camera = OrbitCamera {
+        let mut camera = OrbitCamera {
             orbit_distance: OrbitCamera::auto_framed_distance(grid.dimensions),
             projection_mode: panel_state.projection_mode,
             ..OrbitCamera::default()
         };
+        // Restore the persisted camera orbit + projection if a config was loaded.
+        if let Some(config) = &config {
+            config.apply_camera(&mut camera);
+        }
 
         let depth_view = create_depth_view(&gpu.device, width, height);
         let msaa_color_view =
@@ -181,6 +215,7 @@ impl WindowedState {
             panel_state,
             voxel_renderer,
             gizmo_renderer,
+            grid_lattice_renderer,
             view_cube_renderer,
             thumbnail_renderer,
             palette,
@@ -236,6 +271,13 @@ impl WindowedState {
         // Keep the gizmo sized to the grid and rebuild the 2D slice (cheap).
         self.gizmo_renderer
             .rebuild(&self.gpu.device, &self.gpu.queue, grid.dimensions);
+        // Keep the block lattice + floor grid sized to the grid/density.
+        self.grid_lattice_renderer.rebuild(
+            &self.gpu.device,
+            &self.gpu.queue,
+            grid.dimensions,
+            shape.voxels_per_block,
+        );
         self.slice_image = grid.build_slice_image(shape.voxels_per_block);
 
         if auto_frame {
@@ -304,6 +346,48 @@ impl WindowedState {
                 self.scan_handle = Some(spawn_custom_folder_scan(folder));
             }
         }
+        if response.clicked_export_vox {
+            self.export_vox();
+        }
+    }
+
+    /// Re-resolve the current geometry and write it to a user-chosen `.vox` file
+    /// (M8). The default filename encodes the shape + voxel dims (e.g.
+    /// `cylinder_80x16x80.vox`). The palette colour is the active material's
+    /// representative colour (a loaded block's average, or the procedural one).
+    fn export_vox(&mut self) {
+        let shape = SdfShape::from_geometry(self.panel_state.geometry);
+        if shape.exceeds_voxel_cap() {
+            eprintln!("export .vox: grid exceeds the voxel cap; not exporting");
+            return;
+        }
+        let mut grid = VoxelGrid::new(shape.grid_dimensions());
+        shape.resolve(&mut grid);
+
+        let representative = match &self.loaded_material {
+            Some(loaded) => loaded.average_color,
+            None => procedural_material_average_color(self.panel_state.material),
+        };
+
+        let default_name = default_vox_filename(&shape);
+        let Some(path) = rfd::FileDialog::new()
+            .set_file_name(default_name)
+            .add_filter("MagicaVoxel", &["vox"])
+            .save_file()
+        else {
+            return;
+        };
+        let export = VoxExport::from_grid(&grid, representative);
+        match export.write(&path) {
+            Ok(bytes) => println!(
+                "wrote {} ({} voxels, {} model(s), {} bytes)",
+                path.display(),
+                export.voxel_count(),
+                export.model_count(),
+                bytes
+            ),
+            Err(error) => eprintln!("export .vox failed: {error}"),
+        }
     }
 
     /// Resolve `variant_path`'s per-face textures (M7) and bind the 6-layer
@@ -325,6 +409,14 @@ impl WindowedState {
             label.clone(),
         ));
         self.panel_state.applied_block_label = Some(label);
+    }
+
+    /// Persist the current UI + camera + window state to the platform config
+    /// (M8). Called on window close / loop exit. Never panics on failure.
+    fn save_config(&self) {
+        let window_size = [self.surface_config.width, self.surface_config.height];
+        let config = AppConfig::capture(&self.panel_state, &self.camera, window_size);
+        config.save();
     }
 
     /// Is the pixel `(x, y)` inside the top-left view-cube viewport?
@@ -493,6 +585,8 @@ impl WindowedState {
         // uses its own orientation-mirroring matrix.
         self.gizmo_renderer
             .update_uniforms(&self.gpu.queue, view_projection);
+        self.grid_lattice_renderer
+            .update_uniforms(&self.gpu.queue, view_projection);
         self.view_cube_renderer
             .update_uniforms(&self.gpu.queue, self.camera.view_cube_view_projection());
 
@@ -507,6 +601,9 @@ impl WindowedState {
             } else {
                 None
             },
+            grid_lattice: Some(&self.grid_lattice_renderer),
+            show_lattice: self.panel_state.show_block_lattice,
+            show_floor: self.panel_state.show_floor_grid,
             target_width: self.surface_config.width,
             target_height: self.surface_config.height,
         };
@@ -560,6 +657,8 @@ impl ApplicationHandler for App {
 
         match event {
             WindowEvent::CloseRequested => {
+                // M8: persist UI + camera + window size before exiting.
+                state.save_config();
                 event_loop.exit();
             }
             WindowEvent::Resized(new_size) => {
@@ -636,6 +735,14 @@ impl ApplicationHandler for App {
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
         if let Some(state) = self.state.as_ref() {
             state.window.request_redraw();
+        }
+    }
+
+    /// Loop is exiting (e.g. OS-initiated): persist config as a safety net in
+    /// case the exit didn't go through `CloseRequested` (M8).
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        if let Some(state) = self.state.as_ref() {
+            state.save_config();
         }
     }
 }

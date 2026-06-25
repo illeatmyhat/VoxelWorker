@@ -149,7 +149,7 @@ impl SnapTween {
 ///
 /// A display-only param (ARCHITECTURE.md §4): switching it never rebuilds the
 /// voxel grid and never moves the camera — only the projection matrix changes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum ProjectionMode {
     /// 45° vertical field-of-view perspective.
     #[default]

@@ -13,7 +13,12 @@ directly (the browser File System Access sandbox blocks `%APPDATA%`).
 
 ## Status
 
-In active autonomous development — see [`PROGRESS.md`](PROGRESS.md) and the GitHub issues.
+**v1 feature-complete** — all 8 milestones done (see [`PROGRESS.md`](PROGRESS.md)). Builds clean,
+24 tests pass, clippy clean. Verified headlessly against the prototype via the `shot` binary.
+Implemented: parametric voxel core (5 shapes), live egui params, per-voxel texture slicing +
+position-based grid overlay, perspective/ortho orbit camera, view cube, origin gizmo, 2D slice map,
+block lattice + floor grid, zero-action Vintage Story install detection + block palette with
+per-face block-JSON textures, `.vox` export, and config persistence.
 
 ## Design docs
 

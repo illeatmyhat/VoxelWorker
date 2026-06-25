@@ -155,6 +155,12 @@ fn srgb_hex_to_linear(hex: u32) -> [f32; 3] {
     ]
 }
 
+/// Append an alpha channel to a linear RGB colour, producing the `[f32; 4]` the
+/// line pipeline's vertices carry (M8: lattice/floor draw at low opacity).
+fn with_alpha(rgb: [f32; 3], alpha: f32) -> [f32; 4] {
+    [rgb[0], rgb[1], rgb[2], alpha]
+}
+
 /// All GPU resources for drawing the voxel grid as textured instanced cubes.
 pub struct VoxelRenderer {
     pipeline: wgpu::RenderPipeline,
@@ -693,6 +699,31 @@ fn generate_plain_texture() -> Vec<u8> {
     pixels
 }
 
+/// The average RGBA colour of a procedural material's texture — the
+/// representative palette colour used by the `.vox` export (M8). A loaded VS
+/// block can supply its own average instead; this covers the procedural case.
+pub fn procedural_material_average_color(material: MaterialChoice) -> [u8; 4] {
+    let pixels = match material {
+        MaterialChoice::Stone => generate_stone_texture(),
+        MaterialChoice::Wood => generate_wood_texture(),
+        MaterialChoice::Plain => generate_plain_texture(),
+    };
+    let mut sums = [0u64; 3];
+    let count = (pixels.len() / 4) as u64;
+    for pixel in pixels.chunks_exact(4) {
+        sums[0] += pixel[0] as u64;
+        sums[1] += pixel[1] as u64;
+        sums[2] += pixel[2] as u64;
+    }
+    let count = count.max(1);
+    [
+        (sums[0] / count) as u8,
+        (sums[1] / count) as u8,
+        (sums[2] / count) as u8,
+        255,
+    ]
+}
+
 /// Build the instance list FROM the resolved grid (REPRESENTATION.md seam).
 fn instances_from_grid(grid: &VoxelGrid) -> Vec<VoxelInstance> {
     grid.occupied
@@ -1094,7 +1125,7 @@ fn view_cube_geometry() -> (Vec<CubeLabelVertex>, Vec<u16>) {
 /// Teal wireframe edges (12 cube edges) for the view cube.
 fn view_cube_edges() -> Vec<LineVertex> {
     const HALF: f32 = 0.705; // a hair outside the faces so the edges read crisply
-    let color = srgb_hex_to_linear(0x5f_b8_a4);
+    let color = with_alpha(srgb_hex_to_linear(0x5f_b8_a4), 1.0);
     let corners = [
         [-HALF, -HALF, -HALF], [HALF, -HALF, -HALF], [HALF, HALF, -HALF], [-HALF, HALF, -HALF],
         [-HALF, -HALF, HALF], [HALF, -HALF, HALF], [HALF, HALF, HALF], [-HALF, HALF, HALF],
@@ -1291,12 +1322,14 @@ const GIZMO_AXIS_Z_HEX: u32 = 0x5a_8c_ff;
 /// Right-angle square colour `#bdb39a`.
 const GIZMO_SQUARE_HEX: u32 = 0xbd_b3_9a;
 
-/// One coloured line-segment vertex (position + linear RGB colour).
+/// One coloured line-segment vertex (position + linear RGBA colour). The alpha
+/// lets the M8 block lattice / floor grid draw at low opacity through the same
+/// alpha-blending line pipeline the gizmo / view-cube edges use (those pass 1.0).
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 struct LineVertex {
     position: [f32; 3],
-    color: [f32; 3],
+    color: [f32; 4],
 }
 
 /// Camera uniform for the line passes (gizmo + view-cube edges): just the
@@ -1412,13 +1445,13 @@ fn gizmo_vertices(grid_dimensions: [u32; 3]) -> Vec<LineVertex> {
     let axis_length = (longest * 0.62).max(1.0);
     let square_side = axis_length * 0.28;
 
-    let x_color = srgb_hex_to_linear(GIZMO_AXIS_X_HEX);
-    let y_color = srgb_hex_to_linear(GIZMO_AXIS_Y_HEX);
-    let z_color = srgb_hex_to_linear(GIZMO_AXIS_Z_HEX);
-    let square_color = srgb_hex_to_linear(GIZMO_SQUARE_HEX);
+    let x_color = with_alpha(srgb_hex_to_linear(GIZMO_AXIS_X_HEX), 1.0);
+    let y_color = with_alpha(srgb_hex_to_linear(GIZMO_AXIS_Y_HEX), 1.0);
+    let z_color = with_alpha(srgb_hex_to_linear(GIZMO_AXIS_Z_HEX), 1.0);
+    let square_color = with_alpha(srgb_hex_to_linear(GIZMO_SQUARE_HEX), 1.0);
 
     let mut vertices = Vec::new();
-    let mut line = |from: [f32; 3], to: [f32; 3], color: [f32; 3]| {
+    let mut line = |from: [f32; 3], to: [f32; 3], color: [f32; 4]| {
         vertices.push(LineVertex { position: from, color });
         vertices.push(LineVertex { position: to, color });
     };
@@ -1430,7 +1463,7 @@ fn gizmo_vertices(grid_dimensions: [u32; 3]) -> Vec<LineVertex> {
 
     let s = square_side;
     // Square line-loops (closed) in the XY, YZ and ZX planes (prototype `sq`).
-    let loop_segments = |points: &[[f32; 3]], color: [f32; 3], out: &mut Vec<LineVertex>| {
+    let loop_segments = |points: &[[f32; 3]], color: [f32; 4], out: &mut Vec<LineVertex>| {
         for pair in points.windows(2) {
             out.push(LineVertex { position: pair[0], color });
             out.push(LineVertex { position: pair[1], color });
@@ -1459,7 +1492,7 @@ fn pad_lines(mut vertices: Vec<LineVertex>, capacity: u32) -> Vec<LineVertex> {
     if (vertices.len() as u32) < capacity {
         vertices.resize(
             capacity as usize,
-            LineVertex { position: [0.0; 3], color: [0.0; 3] },
+            LineVertex { position: [0.0; 3], color: [0.0; 4] },
         );
     }
     vertices
@@ -1527,7 +1560,7 @@ fn build_line_pipeline(
             wgpu::VertexAttribute {
                 offset: std::mem::size_of::<[f32; 3]>() as u64,
                 shader_location: 1,
-                format: wgpu::VertexFormat::Float32x3,
+                format: wgpu::VertexFormat::Float32x4,
             },
         ],
     };
@@ -1580,6 +1613,242 @@ fn build_line_pipeline(
         multiview_mask: None,
         cache: None,
     })
+}
+
+// ============================================================================
+// Block lattice + fine floor grid (Milestone 8) — prototype `buildGrids`.
+// ============================================================================
+
+/// Block lattice colour `#5fb8a4` (teal patina) at ~0.28 alpha.
+const LATTICE_COLOR_HEX: u32 = 0x5f_b8_a4;
+const LATTICE_ALPHA: f32 = 0.28;
+/// Fine floor grid colour `#6b5f4a` (dim warm) at ~0.16 alpha.
+const FLOOR_COLOR_HEX: u32 = 0x6b_5f_4a;
+const FLOOR_ALPHA: f32 = 0.16;
+
+/// The block lattice and fine floor grid (ARCHITECTURE.md §6 / prototype
+/// `buildGrids`), drawn through the shared alpha-blended, depth-tested line
+/// pipeline in the MSAA pass. The lattice is a 3D box lattice with lines at every
+/// BLOCK boundary (spacing = `voxels_per_block`); the floor is a flat grid on the
+/// bottom plane. Each is toggled independently by the caller.
+pub struct GridLatticeRenderer {
+    pipeline: wgpu::RenderPipeline,
+    lattice_buffer: wgpu::Buffer,
+    lattice_vertex_count: u32,
+    lattice_capacity: u32,
+    floor_buffer: wgpu::Buffer,
+    floor_vertex_count: u32,
+    floor_capacity: u32,
+    uniform_buffer: wgpu::Buffer,
+    uniform_bind_group: wgpu::BindGroup,
+}
+
+impl GridLatticeRenderer {
+    /// Create the renderer for a colour target, sized to the current grid.
+    pub fn new(
+        device: &wgpu::Device,
+        color_format: wgpu::TextureFormat,
+        grid_dimensions: [u32; 3],
+        voxels_per_block: u32,
+    ) -> Self {
+        let lattice = lattice_vertices(grid_dimensions, voxels_per_block);
+        let floor = floor_vertices(grid_dimensions);
+        let lattice_vertex_count = lattice.len() as u32;
+        let floor_vertex_count = floor.len() as u32;
+        let lattice_capacity = lattice_vertex_count.max(1);
+        let floor_capacity = floor_vertex_count.max(1);
+
+        let lattice_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("lattice line vertices"),
+            contents: bytemuck::cast_slice(&pad_lines(lattice, lattice_capacity)),
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        });
+        let floor_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("floor line vertices"),
+            contents: bytemuck::cast_slice(&pad_lines(floor, floor_capacity)),
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("lattice uniforms"),
+            size: std::mem::size_of::<LineUniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let (uniform_bind_group_layout, uniform_bind_group) =
+            line_uniform_bind_group(device, &uniform_buffer, "lattice");
+
+        // Depth-tested (true) so the lattice/floor are occluded by the solid model
+        // — they read as a scaffold around/under it, not an overlay on top.
+        let pipeline = build_line_pipeline(
+            device,
+            color_format,
+            &uniform_bind_group_layout,
+            "lattice",
+            true,
+            MSAA_SAMPLE_COUNT,
+        );
+
+        Self {
+            pipeline,
+            lattice_buffer,
+            lattice_vertex_count,
+            lattice_capacity,
+            floor_buffer,
+            floor_vertex_count,
+            floor_capacity,
+            uniform_buffer,
+            uniform_bind_group,
+        }
+    }
+
+    /// Rebuild both line sets for a freshly-resolved grid (matches the voxel
+    /// rebuild; `buildGrids` keyed on the same dims/density).
+    pub fn rebuild(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        grid_dimensions: [u32; 3],
+        voxels_per_block: u32,
+    ) {
+        let lattice = lattice_vertices(grid_dimensions, voxels_per_block);
+        let floor = floor_vertices(grid_dimensions);
+
+        self.lattice_vertex_count =
+            upload_lines(device, queue, &mut self.lattice_buffer, &mut self.lattice_capacity, lattice, "lattice line vertices");
+        self.floor_vertex_count =
+            upload_lines(device, queue, &mut self.floor_buffer, &mut self.floor_capacity, floor, "floor line vertices");
+    }
+
+    /// Upload the camera matrix (same `view_projection` as the voxel pass).
+    pub fn update_uniforms(&self, queue: &wgpu::Queue, view_projection: glam::Mat4) {
+        let uniforms = LineUniforms {
+            view_projection: view_projection.to_cols_array_2d(),
+        };
+        queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
+    }
+
+    /// Record the lattice and/or floor draws into an already-begun (MSAA) pass.
+    pub fn draw(&self, render_pass: &mut wgpu::RenderPass<'_>, show_lattice: bool, show_floor: bool) {
+        if !show_lattice && !show_floor {
+            return;
+        }
+        render_pass.set_pipeline(&self.pipeline);
+        render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+        if show_lattice && self.lattice_vertex_count > 0 {
+            render_pass.set_vertex_buffer(0, self.lattice_buffer.slice(..));
+            render_pass.draw(0..self.lattice_vertex_count, 0..1);
+        }
+        if show_floor && self.floor_vertex_count > 0 {
+            render_pass.set_vertex_buffer(0, self.floor_buffer.slice(..));
+            render_pass.draw(0..self.floor_vertex_count, 0..1);
+        }
+    }
+}
+
+/// Write a line-vertex list to `buffer`, growing it if needed; returns the count.
+fn upload_lines(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    buffer: &mut wgpu::Buffer,
+    capacity: &mut u32,
+    vertices: Vec<LineVertex>,
+    label: &str,
+) -> u32 {
+    let count = vertices.len() as u32;
+    if count <= *capacity {
+        if count > 0 {
+            queue.write_buffer(buffer, 0, bytemuck::cast_slice(&vertices));
+        }
+    } else {
+        *buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some(label),
+            contents: bytemuck::cast_slice(&vertices),
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        });
+        *capacity = count;
+    }
+    count
+}
+
+/// Block lattice line segments: a 3D box lattice with grid lines at every BLOCK
+/// boundary (spacing = `voxels_per_block`). Port of the prototype `buildGrids`
+/// lattice loop. World-centred so it aligns with the voxel grid.
+fn lattice_vertices(grid_dimensions: [u32; 3], voxels_per_block: u32) -> Vec<LineVertex> {
+    let [grid_x, grid_y, grid_z] = grid_dimensions;
+    let half_x = grid_x as f32 / 2.0;
+    let half_y = grid_y as f32 / 2.0;
+    let half_z = grid_z as f32 / 2.0;
+    let step = voxels_per_block.max(1);
+    let color = with_alpha(srgb_hex_to_linear(LATTICE_COLOR_HEX), LATTICE_ALPHA);
+
+    // Block-boundary planes along each axis (0, D, 2D, …, N), world-centred.
+    let boundaries = |extent: u32, half: f32| -> Vec<f32> {
+        let mut values = Vec::new();
+        let mut g = 0u32;
+        while g <= extent {
+            values.push(g as f32 - half);
+            g += step;
+        }
+        values
+    };
+    let xs = boundaries(grid_x, half_x);
+    let ys = boundaries(grid_y, half_y);
+    let zs = boundaries(grid_z, half_z);
+
+    let mut vertices = Vec::new();
+    let mut add = |from: [f32; 3], to: [f32; 3]| {
+        vertices.push(LineVertex { position: from, color });
+        vertices.push(LineVertex { position: to, color });
+    };
+
+    // Lines along Y at every (x, z) lattice node.
+    for &x in &xs {
+        for &z in &zs {
+            add([x, -half_y, z], [x, half_y, z]);
+        }
+    }
+    // Lines along X at every (y, z) lattice node.
+    for &y in &ys {
+        for &z in &zs {
+            add([-half_x, y, z], [half_x, y, z]);
+        }
+    }
+    // Lines along Z at every (x, y) lattice node.
+    for &x in &xs {
+        for &y in &ys {
+            add([x, y, -half_z], [x, y, half_z]);
+        }
+    }
+    vertices
+}
+
+/// Fine floor grid: a flat grid on the bottom plane (`y = -grid_y/2`) at 1-VOXEL
+/// spacing (prototype `buildGrids` floor loop steps `g += 1`; "fine" = per-voxel).
+fn floor_vertices(grid_dimensions: [u32; 3]) -> Vec<LineVertex> {
+    let [grid_x, grid_y, grid_z] = grid_dimensions;
+    let half_x = grid_x as f32 / 2.0;
+    let half_z = grid_z as f32 / 2.0;
+    let y = -(grid_y as f32 / 2.0);
+    let color = with_alpha(srgb_hex_to_linear(FLOOR_COLOR_HEX), FLOOR_ALPHA);
+
+    let mut vertices = Vec::new();
+    let mut add = |from: [f32; 3], to: [f32; 3]| {
+        vertices.push(LineVertex { position: from, color });
+        vertices.push(LineVertex { position: to, color });
+    };
+
+    // Lines parallel to Z, stepping along X.
+    for g in 0..=grid_x {
+        let c = g as f32 - half_x;
+        add([c, y, -half_z], [c, y, half_z]);
+    }
+    // Lines parallel to X, stepping along Z.
+    for g in 0..=grid_z {
+        let c = g as f32 - half_z;
+        add([-half_x, y, c], [half_x, y, c]);
+    }
+    vertices
 }
 
 /// Create a 4-sample (MSAA) depth texture view sized to a render target.

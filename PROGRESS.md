@@ -14,7 +14,8 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 | 5 | View cube + origin gizmo + 2D slice map | #5 | ✅ done |
 | 6 | VS folder auto-detect + scan + palette + thumbnails | #6 | ✅ done |
 | 7 | Block-JSON per-face textures | #7 | ✅ done |
-| 8 | Polish: `.vox` export, config persistence | #8 | ⏳ pending |
+| 8 | Polish: `.vox` export, config persistence | #8 | ✅ done |
+| + | Block lattice + fine floor grid (deferred from M5) | #10 | ✅ done |
 
 ## Environment (confirmed this session)
 
@@ -32,6 +33,15 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **m8** — Polish done & verified. (1) `.vox` export: hand-written chunked binary (VOX 150,
+  MAIN/SIZE/XYZI/RGBA), Y-up→Z-up axis map, splits into ≤256 tiled models (no truncation), palette
+  index 1 = active material avg color; "Export .vox" button (rfd) + `shot --export-vox`; round-trip
+  validated with dot_vox (80,384 voxels, 322KB). (2) Config persistence: `%APPDATA%\VoxelWorker\
+  config.json` (geometry/projection/material/toggles/applied-block/camera/window); load on start,
+  save on close/exit; bad config → defaults, never panics; round-trip tested. (3) Block lattice +
+  fine floor grid (closes #10) via M5 line pipeline (now RGBA/alpha); lattice default ON, floor OFF.
+  (4) rayon parallel sampling: sphere 12³@16 **45.8ms → 19.8ms (2.3×)**, voxel set identical.
+  24 tests pass; clippy clean. Future work: 24→8 instance packing, multi-material .vox palette.
 - **m7** — Per-face block-JSON textures done & verified. `BlockSource::resolve_faces` + VS impl:
   cached `blocktypes/**.json` index (VS lenient-JSON normalized → serde_json), directory-keyed +
   scored matching, handles `all`/explicit faces/`sides`/`horizontals`/`verticals` + `texturesByType`

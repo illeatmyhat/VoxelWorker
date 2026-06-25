@@ -285,6 +285,9 @@ pub struct LoadedMaterial {
     /// Whether the resolved faces are genuinely per-face (top != side); used for
     /// logging / verification (`--list-perface`, `--apply-block`).
     pub is_per_face: bool,
+    /// Average RGBA colour of the side face — the representative palette colour
+    /// used by the `.vox` export (M8).
+    pub average_color: [u8; 4],
 }
 
 impl LoadedMaterial {
@@ -332,6 +335,10 @@ impl LoadedMaterial {
             })
             .collect();
 
+        // Representative palette colour for the .vox export: the average of the
+        // side face (layer 0), which is the most representative of the block.
+        let average_color = average_rgba(&layers_rgba[0]);
+
         let layer_slices: [&[u8]; 6] = [
             &layers_rgba[0],
             &layers_rgba[1],
@@ -369,8 +376,31 @@ impl LoadedMaterial {
             bind_group,
             label,
             is_per_face,
+            average_color,
         }
     }
+}
+
+/// Average RGBA of a tightly-packed RGBA8 buffer (alpha forced opaque). Used for
+/// the `.vox` export's representative palette colour (M8).
+fn average_rgba(pixels: &[u8]) -> [u8; 4] {
+    if pixels.len() < 4 {
+        return [0x80, 0x80, 0x80, 0xff];
+    }
+    let mut sums = [0u64; 3];
+    let count = (pixels.len() / 4) as u64;
+    for pixel in pixels.chunks_exact(4) {
+        sums[0] += pixel[0] as u64;
+        sums[1] += pixel[1] as u64;
+        sums[2] += pixel[2] as u64;
+    }
+    let count = count.max(1);
+    [
+        (sums[0] / count) as u8,
+        (sums[1] / count) as u8,
+        (sums[2] / count) as u8,
+        255,
+    ]
 }
 
 /// Nearest-neighbour rescale of a decoded RGBA image to `target_width`×

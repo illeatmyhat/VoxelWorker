@@ -23,10 +23,11 @@ use std::path::PathBuf;
 use voxel_worker::block_palette::{BlockPalette, LoadedMaterial, ThumbnailRenderer};
 use voxel_worker::scan_worker::{run_auto_scan_blocking, FaceResolver};
 use voxel_worker::{
-    create_depth_view, create_msaa_color_view, render_frame, run_egui_frame, CubeFace,
-    EguiPaintBridge, FrameOverlays, GeometryParams, GizmoRenderer, GpuContext, MaterialChoice,
-    MaterialSource, OrbitCamera, PanelState, ProjectionMode, SdfShape, ShapeKind, ViewCubeRenderer,
-    VoxelGrid, VoxelProducer, VoxelRenderer, COLOR_TARGET_FORMAT,
+    create_depth_view, create_msaa_color_view, procedural_material_average_color, render_frame,
+    run_egui_frame, CubeFace, EguiPaintBridge, FrameOverlays, GeometryParams, GizmoRenderer,
+    GpuContext, GridLatticeRenderer, MaterialChoice, MaterialSource, OrbitCamera, PanelState,
+    ProjectionMode, SdfShape, ShapeKind, VoxExport, ViewCubeRenderer, VoxelGrid, VoxelProducer,
+    VoxelRenderer, COLOR_TARGET_FORMAT,
 };
 
 struct ShotOptions {
@@ -44,6 +45,13 @@ struct ShotOptions {
     show_grid_overlay: bool,
     /// Whether the origin gizmo is drawn (M5 `--gizmo`).
     show_origin_gizmo: bool,
+    /// Whether the block lattice is drawn (M8 `--lattice`).
+    show_block_lattice: bool,
+    /// Whether the fine floor grid is drawn (M8 `--floor`).
+    show_floor_grid: bool,
+    /// When `Some`, write the resolved grid to this `.vox` path (M8
+    /// `--export-vox`) instead of (or in addition to) rendering a PNG.
+    export_vox_path: Option<PathBuf>,
     /// Whether the view cube is drawn (M5; ON by default, `--no-viewcube` hides).
     show_view_cube: bool,
     /// When `Some`, set the camera directly to this face's snapped angles (M5
@@ -86,6 +94,9 @@ impl Default for ShotOptions {
             material: MaterialChoice::Stone,
             show_grid_overlay: false,
             show_origin_gizmo: false,
+            show_block_lattice: false,
+            show_floor_grid: false,
+            export_vox_path: None,
             show_view_cube: true,
             snap_face: None,
             theta: 0.7,
@@ -238,6 +249,17 @@ fn parse_options() -> ShotOptions {
             "--gizmo" => {
                 options.show_origin_gizmo = true;
             }
+            "--lattice" => {
+                options.show_block_lattice = true;
+            }
+            "--floor" => {
+                options.show_floor_grid = true;
+            }
+            "--export-vox" => {
+                options.export_vox_path = Some(PathBuf::from(
+                    args.next().expect("--export-vox requires a path argument"),
+                ));
+            }
             "--no-viewcube" => {
                 options.show_view_cube = false;
             }
@@ -280,7 +302,8 @@ fn parse_options() -> ShotOptions {
                      \x20            [--scan-vs] [--apply-first-block]\n\
                      \x20            [--apply-block <substring>] [--list-perface]\n\
                      \x20            [--force-demo-stem <texture/stem>]\n\
-                     \x20            [--gizmo] [--no-viewcube]\n\
+                     \x20            [--gizmo] [--lattice] [--floor] [--no-viewcube]\n\
+                     \x20            [--export-vox <path.vox>]\n\
                      \x20            [--snap <front|back|left|right|top|bottom>]\n\
                      \x20            [--theta <f32>] [--phi <f32>] [--dist <f32>]\n\
                      Defaults: --out shots/m1.png --width 1280 --height 800\n\
@@ -406,6 +429,8 @@ async fn run_capture(options: ShotOptions) {
         show_grid_overlay: options.show_grid_overlay,
         show_view_cube: options.show_view_cube,
         show_origin_gizmo: options.show_origin_gizmo,
+        show_block_lattice: options.show_block_lattice,
+        show_floor_grid: options.show_floor_grid,
         ..PanelState::default()
     };
     if shape.exceeds_voxel_cap() {
@@ -425,9 +450,37 @@ async fn run_capture(options: ShotOptions) {
         shape.size_blocks,
         shape.voxels_per_block
     );
+
+    // M8: `--export-vox` writes the resolved grid as a MagicaVoxel .vox and then
+    // exits (no render needed — this is the headless verification path).
+    if let Some(vox_path) = &options.export_vox_path {
+        let representative = procedural_material_average_color(options.material);
+        let export = VoxExport::from_grid(&grid, representative);
+        match export.write(vox_path) {
+            Ok(bytes) => println!(
+                "wrote {} ({} voxels, {} model(s), {} bytes)",
+                vox_path.display(),
+                export.voxel_count(),
+                export.model_count(),
+                bytes
+            ),
+            Err(error) => {
+                eprintln!("export .vox failed: {error}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
     let voxel_renderer =
         VoxelRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT, &grid);
     let gizmo_renderer = GizmoRenderer::new(&gpu.device, COLOR_TARGET_FORMAT, grid.dimensions);
+    let grid_lattice_renderer = GridLatticeRenderer::new(
+        &gpu.device,
+        COLOR_TARGET_FORMAT,
+        grid.dimensions,
+        options.geometry.voxels_per_block,
+    );
     let view_cube_renderer = ViewCubeRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
     // The 2D mid-Y slice (always shown in the panel), built FROM the grid.
     let slice_image = grid.build_slice_image(options.geometry.voxels_per_block);
@@ -457,6 +510,7 @@ async fn run_capture(options: ShotOptions) {
         options.show_grid_overlay,
     );
     gizmo_renderer.update_uniforms(&gpu.queue, view_projection);
+    grid_lattice_renderer.update_uniforms(&gpu.queue, view_projection);
     view_cube_renderer.update_uniforms(&gpu.queue, camera.view_cube_view_projection());
 
     // egui driven WITHOUT winit: build RawInput by hand.
@@ -603,6 +657,9 @@ async fn run_capture(options: ShotOptions) {
         } else {
             None
         },
+        grid_lattice: Some(&grid_lattice_renderer),
+        show_lattice: options.show_block_lattice,
+        show_floor: options.show_floor_grid,
         target_width: options.width,
         target_height: options.height,
     };
