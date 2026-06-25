@@ -1,6 +1,7 @@
-# Chisel Bench
+# VoxelWorker
 
-A native desktop planning tool for **Vintage Story** chiseling. It defines a parametric shape
+A native desktop planning tool for **Vintage Story** chiseling. (The tool concept is referred to
+as "Chisel Bench" in the original design docs; the project/repo is **VoxelWorker**.) It defines a parametric shape
 in a block-sized box, samples it onto a voxel grid (VS's 16×16×16 microblock grid by default),
 and renders the result as hard, individually-textured cubes — so you can see the exact
 stair-stepped quantization *before* you chisel in-game. It also reads your real Vintage Story

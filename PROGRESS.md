@@ -1,4 +1,4 @@
-# PROGRESS — Chisel Bench (Rust port)
+# PROGRESS — VoxelWorker (Rust port)
 
 Autonomous build log. Orchestrator updates this after each milestone. Newest at top.
 

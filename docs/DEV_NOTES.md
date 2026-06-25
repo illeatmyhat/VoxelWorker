@@ -1,5 +1,8 @@
 # DEV NOTES — verified API signatures & decisions
 
+> Project / repo / crate name: **VoxelWorker** (crate `voxel_worker`). The design docs
+> (HANDOFF/ARCHITECTURE/DATA) call the tool "Chisel Bench" — same thing, historical name.
+
 This file exists so implementation subagents don't have to re-derive churn-prone API
 signatures. Everything below was read directly from the extracted crate sources for the
 **exact resolved versions** in `Cargo.toml` (Rust 1.92). If you change a dependency version,
@@ -40,7 +43,7 @@ let adapter = instance
 // adapter.request_device — ONE arg now (no trace_path second param). Returns Result<(Device,Queue)>.
 let (device, queue) = adapter
     .request_device(&wgpu::DeviceDescriptor {
-        label: Some("chisel-bench device"),
+        label: Some("voxel-worker device"),
         required_features: wgpu::Features::empty(),
         required_limits: wgpu::Limits::default(),
         ..Default::default()   // experimental_features, memory_hints, trace: Trace::Off
