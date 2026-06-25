@@ -39,6 +39,11 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
   renderer.rs, wired via `FrameOverlays.onion_fog` in `render_frame`; per-voxel ghost machinery removed;
   3D depth store Discard→Store + TEXTURE_BINDING so the fog ray can read scene depth. Onion visual
   polish (occlusion vs x-ray / slab-edge inset / density) is an OPEN A/B/C decision for the user.
+  **FOG VISUAL DECISION (user, confirmed):** go with **B — x-ray onion**: the fog pass must IGNORE
+  the opaque slab's depth occlusion so neighbor fog shows on BOTH sides through the slice (the
+  conventional cel-animation "onion skin" = see neighbors through the current layer), PLUS a slight
+  inset so it doesn't undercut the voxel slab's stair-stepped edges, PLUS lower density. This is the
+  next fog task (currently the fog is realistic/occluded = option A).
   Also folded in **#13a camera core**: Fusion pole fix (drag reaches the pole), drag-the-cube-to-orbit,
   and edge/corner snap views (all 26 orientations via the hot-zone model + unified snap-direction).
   Tree green: build + clippy + 32 tests. **Coordination lesson:** the user drives subagents directly
