@@ -18,7 +18,8 @@ use voxel_worker::scan_worker::{
 };
 use voxel_worker::{
     create_depth_view, create_msaa_color_view, procedural_material_average_color, render_frame,
-    run_egui_frame, AppConfig, CubeFace, EguiPaintBridge, FrameOverlays, GizmoRenderer,
+    run_egui_frame, AppConfig, CubeFace, DebugCloudField, EguiPaintBridge, FrameOverlays,
+    GeometryParams, GizmoRenderer,
     GpuContext, GridLatticeRenderer, LayerBand, MaterialSource, OnionFogParams, OnionFogRenderer,
     OrbitCamera, PanelState, SdfShape, SnapTween, ViewCubeElement, VoxExport,
     ViewCubeRenderer, VoxelGrid, VoxelProducer, VoxelRenderer, COLOR_TARGET_FORMAT,
@@ -159,6 +160,23 @@ fn default_vox_filename(shape: &SdfShape) -> String {
     format!("{kind}_{grid_x}x{grid_y}x{grid_z}.vox")
 }
 
+/// Resolve the active producer into `grid`: the debug cloud field when
+/// `geometry.debug_clouds` is set, otherwise the parametric `shape` SDF. Both use
+/// the same grid dimensions (`shape.grid_dimensions()`), so the rest of the
+/// pipeline (cap check, renderers, fog) is unchanged either way.
+fn resolve_active_producer(grid: &mut VoxelGrid, shape: &SdfShape, geometry: &GeometryParams) {
+    if geometry.debug_clouds {
+        DebugCloudField {
+            dimensions: shape.grid_dimensions(),
+            voxels_per_block: geometry.voxels_per_block,
+            seed: 0,
+        }
+        .resolve(grid);
+    } else {
+        shape.resolve(grid);
+    }
+}
+
 impl WindowedState {
     fn new(event_loop: &ActiveEventLoop) -> Self {
         // M8: load persisted config (geometry, display, material, camera, window
@@ -231,7 +249,7 @@ impl WindowedState {
         };
         let shape = SdfShape::from_geometry(panel_state.geometry);
         let mut grid = VoxelGrid::new(shape.grid_dimensions());
-        shape.resolve(&mut grid);
+        resolve_active_producer(&mut grid, &shape, &panel_state.geometry);
         // Initialise the layer-range band to the full grid height (issue #12).
         let grid_y = grid.dimensions[1];
         panel_state
@@ -356,7 +374,7 @@ impl WindowedState {
 
         let previous_grid_y = self.grid.dimensions[1];
         let mut grid = VoxelGrid::new(shape.grid_dimensions());
-        shape.resolve(&mut grid);
+        resolve_active_producer(&mut grid, &shape, &self.panel_state.geometry);
         self.voxel_renderer
             .rebuild_instances(&self.gpu.device, &self.gpu.queue, &grid);
         // Re-upload the fog's 3D occupancy field for the new grid (issue #12).
@@ -489,7 +507,7 @@ impl WindowedState {
             return;
         }
         let mut grid = VoxelGrid::new(shape.grid_dimensions());
-        shape.resolve(&mut grid);
+        resolve_active_producer(&mut grid, &shape, &self.panel_state.geometry);
 
         let representative = match &self.loaded_material {
             Some(loaded) => loaded.average_color,

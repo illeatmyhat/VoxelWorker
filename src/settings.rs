@@ -38,6 +38,8 @@ pub struct AppConfig {
     pub voxels_per_block: u32,
     #[serde(default = "default_wall")]
     pub wall_blocks: u32,
+    #[serde(default)]
+    pub debug_clouds: bool,
 
     // --- display / material ---
     #[serde(default)]
@@ -120,6 +122,7 @@ impl Default for AppConfig {
             size_blocks: default_size(),
             voxels_per_block: default_density(),
             wall_blocks: default_wall(),
+            debug_clouds: false,
             projection_mode: ProjectionMode::default(),
             material: MaterialChoice::default(),
             show_grid_overlay: false,
@@ -148,6 +151,7 @@ impl AppConfig {
             size_blocks: panel.geometry.size_blocks,
             voxels_per_block: panel.geometry.voxels_per_block,
             wall_blocks: panel.geometry.wall_blocks,
+            debug_clouds: panel.geometry.debug_clouds,
             projection_mode: panel.projection_mode,
             material: panel.material,
             show_grid_overlay: panel.show_grid_overlay,
@@ -174,6 +178,7 @@ impl AppConfig {
                 size_blocks: self.size_blocks,
                 voxels_per_block: self.voxels_per_block,
                 wall_blocks: self.wall_blocks,
+                debug_clouds: self.debug_clouds,
             },
             projection_mode: self.projection_mode,
             material: self.material,
@@ -275,6 +280,7 @@ mod tests {
             size_blocks: [7, 3, 9],
             voxels_per_block: 24,
             wall_blocks: 2,
+            debug_clouds: true,
             projection_mode: ProjectionMode::Orthographic,
             material: MaterialChoice::Wood,
             show_grid_overlay: true,

@@ -33,6 +33,16 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **debug clouds in the interactive app (panel "Clouds" chip)** — Wired `DebugCloudField` into the app
+  as a 6th shape option. `GeometryParams` gains `debug_clouds: bool`; the Shape section adds a "Clouds"
+  chip (after a separator) that's mutually exclusive with the 5 SDF chips (an SDF chip highlights only
+  when `!debug_clouds`). New `resolve_active_producer(grid, shape, geometry)` helper branches the
+  producer; used in the constructor, `rebuild_geometry`, and `.vox export` so all three honour the
+  toggle (grid dims still come from `shape.grid_dimensions()`, so the cap check / renderers / fog are
+  unchanged). Persisted in `AppConfig` (serde `#[serde(default)]`, round-trip test updated). NOTE: the
+  size sliders cap at 16 blocks, so for a large cloud volume in-app use density (e.g. 16 blocks @ 8 =
+  128³); bigger sizes are reachable via `shot --shape debug-clouds`. Build (both bins) + clippy + 35
+  tests green.
 - **debug cloud field producer (`src/debug_clouds.rs`)** — A second `VoxelProducer` (besides
   `SdfShape`) that fills the grid with several visually distinct, billowy cloud blobs in a mostly-empty
   volume — richer test content than the 5 SDFs (many disjoint objects + space), exercising the renderer

@@ -35,6 +35,11 @@ pub struct GeometryParams {
     pub voxels_per_block: u32,
     /// Tube wall thickness in whole blocks (used by [`ShapeKind::Tube`] only).
     pub wall_blocks: u32,
+    /// Debug producer override: when set, the grid is filled by the debug cloud
+    /// field (`DebugCloudField`) instead of the parametric `shape` SDF — several
+    /// distinct billowy blobs for exercising the renderer / onion fog. `shape`,
+    /// `size_blocks` and `voxels_per_block` still set the grid dimensions.
+    pub debug_clouds: bool,
 }
 
 impl Default for GeometryParams {
@@ -44,6 +49,7 @@ impl Default for GeometryParams {
             size_blocks: [5, 1, 5],
             voxels_per_block: 16,
             wall_blocks: 1,
+            debug_clouds: false,
         }
     }
 }
@@ -331,19 +337,36 @@ fn build_palette_dock(
 }
 
 /// Shape chips. Selecting a shape sets [`GeometryParams::shape`] ONLY — it never
-/// touches the size or the camera (Milestone 3 guard #1).
+/// touches the size or the camera (Milestone 3 guard #1). The trailing "Clouds"
+/// chip is a debug producer: it swaps the SDF for the [`DebugCloudField`] at the
+/// same grid size, and is mutually exclusive with the SDF chips.
 fn build_shape_section(ui: &mut egui::Ui, state: &mut PanelState, response: &mut PanelResponse) {
     ui.add_space(8.0);
     ui.strong("Shape");
     ui.horizontal_wrapped(|ui| {
         for (kind, label) in SHAPE_CHIPS {
-            let is_selected = state.geometry.shape == *kind;
+            // An SDF chip is selected only when the debug producer is off.
+            let is_selected = !state.geometry.debug_clouds && state.geometry.shape == *kind;
             if ui.selectable_label(is_selected, *label).clicked() && !is_selected {
                 state.geometry.shape = *kind;
+                state.geometry.debug_clouds = false;
                 response.geometry_changed = true;
                 // Deliberately NOT setting size_or_density_changed: a shape
                 // switch re-resolves at the same size and must not auto-frame.
             }
+        }
+
+        // Debug cloud field chip (separate visual group).
+        ui.separator();
+        let clouds_selected = state.geometry.debug_clouds;
+        if ui
+            .selectable_label(clouds_selected, "Clouds")
+            .on_hover_text("Debug: distinct billowy blobs (fBm noise) instead of an SDF shape")
+            .clicked()
+            && !clouds_selected
+        {
+            state.geometry.debug_clouds = true;
+            response.geometry_changed = true;
         }
     });
     ui.separator();
