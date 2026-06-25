@@ -33,6 +33,14 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **fixes (post-v1, from first live run, #11)** — (1) Backface culling: `unit_cube_geometry` had
+  mixed winding (+X/−X/+Y/−Y CW-from-outside) → standard Ccw/Back culled the visible faces; fixed to
+  CCW-outward + winding tests. Invisible in static screenshots. (2) Removed the 90-block cap +
+  label-dedup → **434 groups**; thumbnails built ≤8/frame to avoid startup hitch. (3) Palette click:
+  full path verified correct + regression test; was likely masked by the backface bug. Added a
+  **face-orientation debug mode** (`shot --debug-faces` / Display toggle) — colors faces by outward
+  normal, stripe-marks back-faces (cull off); used it to CONFIRM the cull fix (default octant =
+  red/green/blue, no marker). Window opens maximized. 27+1 tests pass.
 - **m8** — Polish done & verified. (1) `.vox` export: hand-written chunked binary (VOX 150,
   MAIN/SIZE/XYZI/RGBA), Y-up→Z-up axis map, splits into ≤256 tiled models (no truncation), palette
   index 1 = active material avg color; "Export .vox" button (rfd) + `shot --export-vox`; round-trip
