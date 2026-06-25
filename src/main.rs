@@ -12,11 +12,13 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowId};
 
+use voxel_worker::block_palette::{BlockPalette, LoadedMaterial, ThumbnailRenderer};
+use voxel_worker::scan_worker::{spawn_auto_scan, spawn_custom_folder_scan, ScanHandle, ScanMessage};
 use voxel_worker::{
     create_depth_view, create_msaa_color_view, render_frame, run_egui_frame, CubeFace,
-    EguiPaintBridge, FrameOverlays, GizmoRenderer, GpuContext, OrbitCamera, PanelState, SdfShape,
-    SliceImage, SnapTween, ViewCubeRenderer, VoxelGrid, VoxelProducer, VoxelRenderer,
-    COLOR_TARGET_FORMAT, VIEW_CUBE_VIEWPORT_PIXELS,
+    EguiPaintBridge, FrameOverlays, GizmoRenderer, GpuContext, MaterialSource, OrbitCamera,
+    PanelState, SdfShape, SliceImage, SnapTween, ViewCubeRenderer, VoxelGrid, VoxelProducer,
+    VoxelRenderer, COLOR_TARGET_FORMAT, VIEW_CUBE_VIEWPORT_PIXELS,
 };
 
 /// Margin from the top-left corner to the view-cube viewport (must match the
@@ -38,6 +40,16 @@ struct WindowedState {
     voxel_renderer: VoxelRenderer,
     gizmo_renderer: GizmoRenderer,
     view_cube_renderer: ViewCubeRenderer,
+    /// Offscreen renderer for the 45° palette cube thumbnails (M6).
+    thumbnail_renderer: ThumbnailRenderer,
+    /// The palette of scanned VS blocks (tiles + status + click counter, M6).
+    palette: BlockPalette,
+    /// The in-flight background scan (auto-detect on startup, or a custom folder
+    /// scan triggered by "Connect folder…"). `None` once finished/idle.
+    scan_handle: Option<ScanHandle>,
+    /// The active applied VS block, if any (M6). When `Some`, the voxel pass binds
+    /// this loaded texture instead of the procedural material.
+    loaded_material: Option<LoadedMaterial>,
     /// The current mid-Y 2D slice image, rebuilt whenever the grid rebuilds.
     slice_image: SliceImage,
     depth_view: wgpu::TextureView,
@@ -132,7 +144,16 @@ impl WindowedState {
             GizmoRenderer::new(&gpu.device, COLOR_TARGET_FORMAT, grid.dimensions);
         let view_cube_renderer =
             ViewCubeRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
+        let thumbnail_renderer = ThumbnailRenderer::new(&gpu.device, &gpu.queue);
         let slice_image = grid.build_slice_image(shape.voxels_per_block);
+
+        // Kick off the VS auto-detect + scan on a background thread immediately;
+        // results stream in over the next frames (no startup block).
+        let palette = BlockPalette {
+            status: "Scanning…".to_string(),
+            ..BlockPalette::default()
+        };
+        let scan_handle = Some(spawn_auto_scan());
 
         let camera = OrbitCamera {
             orbit_distance: OrbitCamera::auto_framed_distance(grid.dimensions),
@@ -155,6 +176,10 @@ impl WindowedState {
             voxel_renderer,
             gizmo_renderer,
             view_cube_renderer,
+            thumbnail_renderer,
+            palette,
+            scan_handle,
+            loaded_material: None,
             slice_image,
             depth_view,
             msaa_color_view,
@@ -209,6 +234,89 @@ impl WindowedState {
         if auto_frame {
             self.camera.orbit_distance = OrbitCamera::auto_framed_distance(grid.dimensions);
         }
+    }
+
+    /// Drain the background scan channel: build a thumbnail + palette tile for
+    /// each streamed group, and settle the status line on `Done`. All GPU work
+    /// (thumbnail render, egui registration) happens here on the main thread.
+    fn poll_scan(&mut self) {
+        let Some(handle) = self.scan_handle.as_ref() else {
+            return;
+        };
+        let messages = handle.drain();
+        let mut finished = false;
+        for message in messages {
+            match message {
+                ScanMessage::Group { group, thumbnail_rgba } => {
+                    self.palette.add_group(
+                        &self.gpu.device,
+                        &self.gpu.queue,
+                        &self.thumbnail_renderer,
+                        &mut self.egui_bridge.renderer,
+                        group,
+                        &thumbnail_rgba,
+                    );
+                    // Show progress as tiles arrive.
+                    self.palette.status = format!("{} blocks loaded…", self.palette.tiles.len());
+                }
+                ScanMessage::Done { group_count, source_name } => {
+                    self.palette.status = match source_name {
+                        Some(name) => format!("{group_count} blocks loaded — {name}"),
+                        None => "No VS install found — use Connect folder".to_string(),
+                    };
+                    finished = true;
+                }
+            }
+        }
+        if finished {
+            self.scan_handle = None;
+        }
+    }
+
+    /// Apply palette interactions from this frame's [`PanelResponse`] (M6):
+    /// applying a block loads + binds its texture; "Connect folder…" opens the OS
+    /// picker and starts a custom scan; selecting a procedural material clears the
+    /// applied block.
+    fn handle_palette_response(&mut self, response: &voxel_worker::PanelResponse) {
+        if response.selected_procedural_material {
+            self.loaded_material = None;
+            self.panel_state.applied_block_label = None;
+        }
+        if let Some(tile_index) = response.clicked_palette_tile {
+            if let Some(variant_path) = self.palette.pick_variant(tile_index) {
+                self.apply_block_variant(&variant_path, tile_index);
+            }
+        }
+        if response.clicked_connect_folder {
+            if let Some(folder) = rfd::FileDialog::new().pick_folder() {
+                // Reset the palette + start a fresh scan of the picked folder.
+                self.palette.tiles.clear();
+                self.palette.status = "Scanning folder…".to_string();
+                self.scan_handle = Some(spawn_custom_folder_scan(folder));
+            }
+        }
+    }
+
+    /// Decode + upload `variant_path` and set it as the active loaded material.
+    fn apply_block_variant(&mut self, variant_path: &std::path::Path, tile_index: usize) {
+        let Some(decoded) = voxel_worker::scan_worker::decode_rgba(variant_path) else {
+            return;
+        };
+        let label = self
+            .palette
+            .tiles
+            .get(tile_index)
+            .map(|tile| tile.label.clone())
+            .unwrap_or_default();
+        self.loaded_material = Some(LoadedMaterial::new(
+            &self.gpu.device,
+            &self.gpu.queue,
+            self.voxel_renderer.material_bind_group_layout(),
+            self.voxel_renderer.material_sampler(),
+            &decoded,
+            label.clone(),
+        ));
+        self.panel_state.applied_block_label = Some(label);
     }
 
     /// Is the pixel `(x, y)` inside the top-left view-cube viewport?
@@ -305,6 +413,10 @@ impl WindowedState {
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
+        // M6: drain the background scan channel and turn any new groups into
+        // palette tiles (GPU thumbnail + egui texture registration on this thread).
+        self.poll_scan();
+
         let raw_input = self.egui_winit_state.take_egui_input(&self.window);
         let pixels_per_point = self.egui_winit_state.egui_ctx().pixels_per_point();
 
@@ -314,10 +426,15 @@ impl WindowedState {
             &self.gpu.queue,
             &mut self.panel_state,
             &self.slice_image,
+            &self.palette,
             raw_input,
             [self.surface_config.width, self.surface_config.height],
             pixels_per_point,
         );
+
+        // M6: react to palette interactions (apply a block, connect a folder,
+        // revert to a procedural material).
+        self.handle_palette_response(&prepared.panel_response);
 
         // Advance an in-progress view-cube snap tween (eased over ~380ms).
         let now = std::time::Instant::now();
@@ -386,6 +503,12 @@ impl WindowedState {
             target_height: self.surface_config.height,
         };
 
+        // M6: an applied VS block overrides the procedural material selection.
+        let material = match &self.loaded_material {
+            Some(loaded) => MaterialSource::Loaded(&loaded.bind_group),
+            None => MaterialSource::Procedural(self.panel_state.material),
+        };
+
         render_frame(
             &mut self.egui_bridge,
             &self.gpu.device,
@@ -394,7 +517,7 @@ impl WindowedState {
             &self.msaa_color_view,
             &self.depth_view,
             &self.voxel_renderer,
-            self.panel_state.material,
+            material,
             &overlays,
             &prepared,
         );

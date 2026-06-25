@@ -12,10 +12,13 @@
 //!     captured frame is identical to the live one.
 //!   * The colour identity from ARCHITECTURE.md §8 (warm-dark workshop).
 
+pub mod assets;
+pub mod block_palette;
 pub mod camera;
 pub mod gpu;
 pub mod panel;
 pub mod renderer;
+pub mod scan_worker;
 pub mod voxel;
 
 pub use camera::{
@@ -24,8 +27,8 @@ pub use camera::{
 pub use gpu::GpuContext;
 pub use panel::{build_panel, GeometryParams, MaterialChoice, PanelResponse, PanelState};
 pub use renderer::{
-    create_depth_view, create_msaa_color_view, GizmoRenderer, ViewCubeRenderer, VoxelRenderer,
-    DEPTH_FORMAT, MSAA_SAMPLE_COUNT, VIEW_CUBE_VIEWPORT_PIXELS,
+    create_depth_view, create_msaa_color_view, GizmoRenderer, MaterialSource, ViewCubeRenderer,
+    VoxelRenderer, DEPTH_FORMAT, MSAA_SAMPLE_COUNT, VIEW_CUBE_VIEWPORT_PIXELS,
 };
 pub use voxel::{SdfShape, ShapeKind, SliceImage, VoxelGrid, VoxelProducer};
 
@@ -106,13 +109,14 @@ pub fn run_egui_frame(
     queue: &wgpu::Queue,
     panel_state: &mut PanelState,
     slice: &voxel::SliceImage,
+    palette: &block_palette::BlockPalette,
     raw_input: egui::RawInput,
     size_in_pixels: [u32; 2],
     pixels_per_point: f32,
 ) -> PreparedEguiFrame {
     let mut panel_response = PanelResponse::default();
     let full_output = bridge.context.run_ui(raw_input, |ui| {
-        panel_response = build_panel(ui, panel_state, slice);
+        panel_response = build_panel(ui, panel_state, slice, palette);
     });
 
     for (texture_id, image_delta) in &full_output.textures_delta.set {
@@ -178,7 +182,7 @@ pub fn render_frame(
     msaa_color_view: &wgpu::TextureView,
     depth_view: &wgpu::TextureView,
     voxel_renderer: &renderer::VoxelRenderer,
-    material: MaterialChoice,
+    material: renderer::MaterialSource,
     overlays: &FrameOverlays,
     prepared: &PreparedEguiFrame,
 ) {

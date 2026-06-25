@@ -20,11 +20,13 @@
 
 use std::path::PathBuf;
 
+use voxel_worker::block_palette::{BlockPalette, LoadedMaterial, ThumbnailRenderer};
+use voxel_worker::scan_worker::run_auto_scan_blocking;
 use voxel_worker::{
     create_depth_view, create_msaa_color_view, render_frame, run_egui_frame, CubeFace,
     EguiPaintBridge, FrameOverlays, GeometryParams, GizmoRenderer, GpuContext, MaterialChoice,
-    OrbitCamera, PanelState, ProjectionMode, SdfShape, ShapeKind, ViewCubeRenderer, VoxelGrid,
-    VoxelProducer, VoxelRenderer, COLOR_TARGET_FORMAT,
+    MaterialSource, OrbitCamera, PanelState, ProjectionMode, SdfShape, ShapeKind, ViewCubeRenderer,
+    VoxelGrid, VoxelProducer, VoxelRenderer, COLOR_TARGET_FORMAT,
 };
 
 struct ShotOptions {
@@ -54,6 +56,12 @@ struct ShotOptions {
     phi: f32,
     /// Orbit distance. `None` = auto-frame from the grid.
     distance: Option<f32>,
+    /// Run the VS auto-detect + scan synchronously before rendering (M6) so the
+    /// palette dock is populated in the screenshot.
+    scan_vs: bool,
+    /// After `--scan-vs`, apply the first scanned block's texture as the active
+    /// material (M6) so the model shows a real VS texture (per-voxel sliced).
+    apply_first_block: bool,
 }
 
 impl Default for ShotOptions {
@@ -72,6 +80,8 @@ impl Default for ShotOptions {
             theta: 0.7,
             phi: 1.05,
             distance: None,
+            scan_vs: false,
+            apply_first_block: false,
         }
     }
 }
@@ -194,6 +204,12 @@ fn parse_options() -> ShotOptions {
             "--grid" => {
                 options.show_grid_overlay = true;
             }
+            "--scan-vs" => {
+                options.scan_vs = true;
+            }
+            "--apply-first-block" => {
+                options.apply_first_block = true;
+            }
             "--gizmo" => {
                 options.show_origin_gizmo = true;
             }
@@ -236,6 +252,7 @@ fn parse_options() -> ShotOptions {
                      \x20            [--density <u32>] [--wall <u32>]\n\
                      \x20            [--proj <perspective|ortho>]\n\
                      \x20            [--material <stone|wood|plain>] [--grid]\n\
+                     \x20            [--scan-vs] [--apply-first-block]\n\
                      \x20            [--gizmo] [--no-viewcube]\n\
                      \x20            [--snap <front|back|left|right|top|bottom>]\n\
                      \x20            [--theta <f32>] [--phi <f32>] [--dist <f32>]\n\
@@ -367,16 +384,66 @@ async fn run_capture(options: ShotOptions) {
         ..Default::default()
     };
 
+    // M6: synchronously scan the VS install and populate the palette so the
+    // screenshot shows real block thumbnails. Optionally apply the first block.
+    let thumbnail_renderer = ThumbnailRenderer::new(&gpu.device, &gpu.queue);
+    let mut palette = BlockPalette::default();
+    let mut loaded_material: Option<LoadedMaterial> = None;
+    if options.scan_vs {
+        let (groups, source_name) = run_auto_scan_blocking();
+        println!(
+            "scan: {} groups from {}",
+            groups.len(),
+            source_name.as_deref().unwrap_or("(no install found)")
+        );
+        palette.status = match source_name {
+            Some(name) => format!("{} blocks loaded — {}", groups.len(), name),
+            None => "No VS install found — use Connect folder".to_string(),
+        };
+        if options.apply_first_block {
+            if let Some((group, decoded)) = groups.first() {
+                loaded_material = Some(LoadedMaterial::new(
+                    &gpu.device,
+                    &gpu.queue,
+                    voxel_renderer.material_bind_group_layout(),
+                    voxel_renderer.material_sampler(),
+                    decoded,
+                    group.label.clone(),
+                ));
+                panel_state.applied_block_label = Some(group.label.clone());
+                println!("applied first block: {}", group.label);
+            }
+        }
+        for (group, decoded) in groups {
+            palette.add_group(
+                &gpu.device,
+                &gpu.queue,
+                &thumbnail_renderer,
+                &mut egui_bridge.renderer,
+                group,
+                &decoded,
+            );
+        }
+    }
+
     let prepared = run_egui_frame(
         &mut egui_bridge,
         &gpu.device,
         &gpu.queue,
         &mut panel_state,
         &slice_image,
+        &palette,
         raw_input,
         [options.width, options.height],
         pixels_per_point,
     );
+
+    // M6: the active material is a loaded VS block when one was applied,
+    // otherwise the procedural choice.
+    let material = match &loaded_material {
+        Some(loaded) => MaterialSource::Loaded(&loaded.bind_group),
+        None => MaterialSource::Procedural(options.material),
+    };
 
     let overlays = FrameOverlays {
         gizmo: if options.show_origin_gizmo {
@@ -402,7 +469,7 @@ async fn run_capture(options: ShotOptions) {
         &msaa_color_view,
         &depth_view,
         &voxel_renderer,
-        options.material,
+        material,
         &overlays,
         &prepared,
     );

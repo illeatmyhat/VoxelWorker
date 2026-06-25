@@ -171,6 +171,13 @@ pub struct VoxelRenderer {
     /// One bind group per material (Stone/Wood/Plain), indexed by
     /// [`MaterialChoice`] order.
     material_bind_groups: [wgpu::BindGroup; 3],
+    /// The material bind-group layout (texture + sampler). Exposed so a
+    /// runtime-loaded VS block (M6) can build a bind group of the SAME shape and
+    /// be drawn interchangeably with the procedural materials.
+    material_bind_group_layout: wgpu::BindGroupLayout,
+    /// The shared material sampler (nearest, clamp-to-edge) — reused by loaded
+    /// materials so they slice/filter exactly like the procedural ones.
+    material_sampler: wgpu::Sampler,
 }
 
 impl VoxelRenderer {
@@ -403,7 +410,21 @@ impl VoxelRenderer {
             uniform_buffer,
             uniform_bind_group,
             material_bind_groups,
+            material_bind_group_layout,
+            material_sampler,
         }
+    }
+
+    /// The material bind-group layout (texture @ binding 0, sampler @ binding 1).
+    /// A loaded VS block builds a bind group against this so it can be bound
+    /// exactly like Stone/Wood/Plain (M6).
+    pub fn material_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
+        &self.material_bind_group_layout
+    }
+
+    /// The shared material sampler, reused by loaded materials (M6).
+    pub fn material_sampler(&self) -> &wgpu::Sampler {
+        &self.material_sampler
     }
 
     /// Number of voxel instances currently drawn from the buffer.
@@ -468,20 +489,40 @@ impl VoxelRenderer {
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
     }
 
-    /// Record the voxel draw into an already-begun render pass, binding the
-    /// texture for `material`.
-    pub fn draw(&self, render_pass: &mut wgpu::RenderPass<'_>, material: MaterialChoice) {
+    /// Record the voxel draw into an already-begun render pass.
+    ///
+    /// The active material is a [`MaterialSource`]: either one of the procedural
+    /// textures (Stone/Wood/Plain) or a runtime-loaded VS block bind group (M6).
+    /// In both cases the SAME pipeline + per-voxel slice shader run — only the
+    /// bound texture differs — so a loaded block textures the model with correct
+    /// 1/density slicing, identically to the procedural materials.
+    pub fn draw(&self, render_pass: &mut wgpu::RenderPass<'_>, material: MaterialSource<'_>) {
         if self.instance_count == 0 {
             return;
         }
+        let material_bind_group = match material {
+            MaterialSource::Procedural(choice) => &self.material_bind_groups[material_index(choice)],
+            MaterialSource::Loaded(bind_group) => bind_group,
+        };
         render_pass.set_pipeline(&self.pipeline);
         render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
-        render_pass.set_bind_group(1, &self.material_bind_groups[material_index(material)], &[]);
+        render_pass.set_bind_group(1, material_bind_group, &[]);
         render_pass.set_vertex_buffer(0, self.cube_vertex_buffer.slice(..));
         render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
         render_pass.set_index_buffer(self.cube_index_buffer.slice(..), wgpu::IndexFormat::Uint16);
         render_pass.draw_indexed(0..self.cube_index_count, 0, 0..self.instance_count);
     }
+}
+
+/// Which texture the voxel pass binds for the active material.
+///
+/// `Procedural` selects one of the built-in Stone/Wood/Plain textures;
+/// `Loaded` overrides with a runtime-loaded VS block's bind group (M6). Both use
+/// the identical pipeline + per-voxel slice shader.
+#[derive(Clone, Copy)]
+pub enum MaterialSource<'a> {
+    Procedural(MaterialChoice),
+    Loaded(&'a wgpu::BindGroup),
 }
 
 /// Index a [`MaterialChoice`] into the `material_bind_groups` array.

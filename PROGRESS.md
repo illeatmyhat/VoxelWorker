@@ -12,7 +12,7 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 | 3 | egui params + all shapes + ortho toggle | #3 | ✅ done |
 | 4 | Shaders: per-voxel slice, then position-based grid overlay | #4 | ✅ done |
 | 5 | View cube + origin gizmo + 2D slice map | #5 | ✅ done |
-| 6 | VS folder auto-detect + scan + palette + thumbnails | #6 | ⏳ pending |
+| 6 | VS folder auto-detect + scan + palette + thumbnails | #6 | ✅ done |
 | 7 | Block-JSON per-face textures | #7 | ⏳ pending |
 | 8 | Polish: `.vox` export, config persistence | #8 | ⏳ pending |
 
@@ -32,6 +32,15 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **m6** — VS auto-detect + scan + palette done & verified against the real install. Pluggable
+  `BlockSource`/`SourceDetector` traits; `VintageStoryDetector` + `VintageStorySource` +
+  `CustomFolderSource` + registry. Background thread (mpsc) does detect+walkdir+PNG-decode; main
+  thread does GPU work (thumbnail render → `register_native_texture`). **Real scan: 90 groups**
+  (Granite/Basalt/Sandstone/Slate/planks/marbles…). ALLOW/EXCLUDE tuned: added `metal/` + `painting/`
+  excludes (the `chalk` substring was matching molybdochalkos + caveart). Dedup-by-label at the 90 cap
+  → distinct materials. Palette dock with 45° cube thumbnails; click applies a variant as active
+  material (`MaterialSource::Loaded`, per-voxel sliced — verified on m6-applied). "Connect folder…"
+  rfd fallback. `shot` gains `--scan-vs`/`--apply-first-block`. Clippy clean; 13 tests pass.
 - **m5** — View cube + gizmo + 2D slice done & verified. View cube: wgpu corner viewport (scissor),
   6 CPU bitmap-font face labels, mirrors main camera; click→ray-pick face→eased snap tween (8 unit
   tests for snap table / nearest-theta / easing). Gizmo: X/Y/Z lines + perpendicular squares,
