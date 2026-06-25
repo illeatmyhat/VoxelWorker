@@ -34,10 +34,29 @@ struct VoxelUniforms {
 @group(0) @binding(0)
 var<uniform> uniforms: VoxelUniforms;
 
+// M7: the material is a 6-layer array, one layer per cube face. Layer order
+// matches the renderer's CubeFaceSlot: 0 +X(east), 1 -X(west), 2 +Y(up),
+// 3 -Y(down), 4 +Z(south), 5 -Z(north). A uniform material has the same image
+// on all six layers, so the per-voxel slice + grid overlay below are unchanged.
 @group(1) @binding(0)
-var material_texture: texture_2d<f32>;
+var material_texture: texture_2d_array<f32>;
 @group(1) @binding(1)
 var material_sampler: sampler;
+
+// Pick the texture-array layer for a cube face from its outward normal.
+fn face_layer(face_normal: vec3<f32>) -> i32 {
+    let axis_magnitude = abs(face_normal);
+    if (axis_magnitude.x > 0.5) {
+        // +X → east (0), -X → west (1).
+        return select(1, 0, face_normal.x > 0.0);
+    } else if (axis_magnitude.y > 0.5) {
+        // +Y → up (2), -Y → down (3).
+        return select(3, 2, face_normal.y > 0.0);
+    } else {
+        // +Z → south (4), -Z → north (5).
+        return select(5, 4, face_normal.z > 0.0);
+    }
+}
 
 struct VertexInput {
     @location(0) vertex_position: vec3<f32>,
@@ -57,6 +76,8 @@ struct VertexOutput {
     // Absolute voxel position: world position of this fragment shifted so that
     // voxel boundaries fall on integers (BUG 2 fix input).
     @location(2) voxel_absolute_position: vec3<f32>,
+    // M7: the texture-array layer for this face (flat — constant per face).
+    @location(3) @interpolate(flat) face_texture_layer: i32,
 };
 
 @vertex
@@ -83,13 +104,21 @@ fn vertex_main(vertex: VertexInput, instance: InstanceInput) -> VertexOutput {
     output.world_normal = vertex.face_normal;
     output.texture_coord = (vertex.face_uv + voxel_offset) / uniforms.voxels_per_block;
     output.voxel_absolute_position = world_point + uniforms.grid_half_extent;
+    output.face_texture_layer = face_layer(vertex.face_normal);
     return output;
 }
 
 @fragment
 fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    // Sampled procedural material colour (sRGB texture → linear via the format).
-    let sampled = textureSample(material_texture, material_sampler, input.texture_coord).rgb;
+    // Sampled material colour for this face's layer (sRGB texture → linear via
+    // the format). The per-voxel slice in `texture_coord` is unchanged: each face
+    // samples its own layer, sliced by block_local_coord exactly as before.
+    let sampled = textureSample(
+        material_texture,
+        material_sampler,
+        input.texture_coord,
+        input.face_texture_layer,
+    ).rgb;
 
     // Directional + ambient lighting (kept from M2), applied to the texture.
     let light_direction = normalize(vec3<f32>(0.4, 0.9, 0.5));

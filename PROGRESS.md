@@ -13,7 +13,7 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 | 4 | Shaders: per-voxel slice, then position-based grid overlay | #4 | ✅ done |
 | 5 | View cube + origin gizmo + 2D slice map | #5 | ✅ done |
 | 6 | VS folder auto-detect + scan + palette + thumbnails | #6 | ✅ done |
-| 7 | Block-JSON per-face textures | #7 | ⏳ pending |
+| 7 | Block-JSON per-face textures | #7 | ✅ done |
 | 8 | Polish: `.vox` export, config persistence | #8 | ⏳ pending |
 
 ## Environment (confirmed this session)
@@ -32,6 +32,15 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **m7** — Per-face block-JSON textures done & verified. `BlockSource::resolve_faces` + VS impl:
+  cached `blocktypes/**.json` index (VS lenient-JSON normalized → serde_json), directory-keyed +
+  scored matching, handles `all`/explicit faces/`sides`/`horizontals`/`verticals` + `texturesByType`
+  + `{rock}`/`{wood}` placeholders + `domain:path` resolution; graceful uniform fallback. Renderer
+  now binds a 6-layer `D2Array`; shader picks the layer from face normal (one pipeline serves uniform
+  + per-face). Per-voxel slice + grid overlay preserved per face. Finding: **0/90 chiselable blocks
+  have distinct faces** (vanilla rock all uniform) — mechanism proven on a log (end-grain top vs bark
+  sides, m7-perface). `shot` gains `--apply-block/--list-perface/--force-demo-stem`. Deps serde +
+  serde_json. Clippy clean; 19 tests pass.
 - **m6** — VS auto-detect + scan + palette done & verified against the real install. Pluggable
   `BlockSource`/`SourceDetector` traits; `VintageStoryDetector` + `VintageStorySource` +
   `CustomFolderSource` + registry. Background thread (mpsc) does detect+walkdir+PNG-decode; main

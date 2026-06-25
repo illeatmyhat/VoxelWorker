@@ -253,28 +253,11 @@ impl VoxelRenderer {
             mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
-        let material_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("voxel material bind group layout"),
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            multisampled: false,
-                        },
-                        count: None,
-                    },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                ],
-            });
+        // M7: the material is a 6-layer texture array (one layer per cube face).
+        // A uniform material (the procedural Stone/Wood/Plain, or a VS block with
+        // a single `all` texture) puts the same image on all six layers, so the
+        // SAME pipeline draws both uniform and genuinely per-face materials.
+        let material_bind_group_layout = build_face_material_layout(device);
         let material_bind_groups = [
             generate_stone_texture(),
             generate_wood_texture(),
@@ -282,8 +265,19 @@ impl VoxelRenderer {
         ]
         .iter()
         .map(|pixels| {
-            let texture = upload_material_texture(device, queue, pixels);
-            let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+            // Replicate the single procedural image across all six face layers.
+            let layers: [&[u8]; 6] = [pixels, pixels, pixels, pixels, pixels, pixels];
+            let texture = upload_face_material_texture(
+                device,
+                queue,
+                MATERIAL_TEXTURE_SIZE,
+                MATERIAL_TEXTURE_SIZE,
+                &layers,
+            );
+            let view = texture.create_view(&wgpu::TextureViewDescriptor {
+                dimension: Some(wgpu::TextureViewDimension::D2Array),
+                ..Default::default()
+            });
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("voxel material bind group"),
                 layout: &material_bind_group_layout,
@@ -534,19 +528,54 @@ fn material_index(material: MaterialChoice) -> usize {
     }
 }
 
-/// Upload a 32×32 RGBA8 sRGB texture (nearest filter, clamp-to-edge, no mipmaps).
-fn upload_material_texture(
+/// Build the 6-layer face-material bind-group layout (M7): a `D2Array` texture
+/// (binding 0, one layer per cube face) + a sampler (binding 1). Both the
+/// procedural materials and a loaded VS block build a bind group of this shape,
+/// so the single voxel pipeline draws uniform and per-face materials alike.
+pub fn build_face_material_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("voxel face material bind group layout"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2Array,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
+    })
+}
+
+/// Upload six RGBA8 sRGB layers (one per cube face) as a single `D2Array`
+/// texture (nearest filter, clamp-to-edge, no mipmaps). Every layer must be the
+/// same `width`×`height`; callers that have per-face PNGs of differing sizes
+/// rescale to a common size first (see `block_palette::upload_face_layers`).
+pub fn upload_face_material_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    pixels: &[u8],
+    width: u32,
+    height: u32,
+    layers: &[&[u8]; 6],
 ) -> wgpu::Texture {
+    let width = width.max(1);
+    let height = height.max(1);
     let size = wgpu::Extent3d {
-        width: MATERIAL_TEXTURE_SIZE,
-        height: MATERIAL_TEXTURE_SIZE,
-        depth_or_array_layers: 1,
+        width,
+        height,
+        depth_or_array_layers: 6,
     };
     let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("voxel material texture"),
+        label: Some("voxel face material texture"),
         size,
         mip_level_count: 1,
         sample_count: 1,
@@ -557,21 +586,31 @@ fn upload_material_texture(
         usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
         view_formats: &[],
     });
-    queue.write_texture(
-        wgpu::TexelCopyTextureInfo {
-            texture: &texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        pixels,
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(4 * MATERIAL_TEXTURE_SIZE),
-            rows_per_image: Some(MATERIAL_TEXTURE_SIZE),
-        },
-        size,
-    );
+    for (layer_index, layer_pixels) in layers.iter().enumerate() {
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: 0,
+                    y: 0,
+                    z: layer_index as u32,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            layer_pixels,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * width),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
     texture
 }
 

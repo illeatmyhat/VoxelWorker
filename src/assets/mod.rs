@@ -27,8 +27,11 @@
 use std::path::PathBuf;
 
 pub mod custom_pack;
+pub mod faces;
 pub mod registry;
 pub mod vintage_story;
+
+pub use faces::{CubeFaceSlot, FaceProvenance, FaceTextures};
 
 /// Hard cap on the number of [`BlockGroup`]s a scan returns (prototype `slice(0,90)`).
 pub const MAX_BLOCK_GROUPS: usize = 90;
@@ -64,6 +67,18 @@ pub trait BlockSource: Send {
     /// Walk this source and return its grouped chiselable blocks (capped,
     /// label-sorted).
     fn scan(&self) -> Vec<BlockGroup>;
+
+    /// Resolve a group's per-face textures (Milestone 7).
+    ///
+    /// `chosen_variant` is the specific PNG the palette picked for this apply
+    /// (so `{rock}`/`{wood}` placeholders resolve to the right material and any
+    /// face the blocktype doesn't cover falls back to it). Implementations look
+    /// up the matching blocktype JSON and map each cube face to a PNG; the
+    /// default returns a uniform mapping (the M6 single-texture behaviour), which
+    /// is also the graceful fallback when no blocktype matches.
+    fn resolve_faces(&self, _group: &BlockGroup, chosen_variant: &std::path::Path) -> FaceTextures {
+        FaceTextures::uniform(chosen_variant.to_path_buf())
+    }
 }
 
 /// Locates installs of *one* game on this OS, with no user action.

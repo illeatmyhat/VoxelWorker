@@ -21,7 +21,7 @@
 use std::path::PathBuf;
 
 use voxel_worker::block_palette::{BlockPalette, LoadedMaterial, ThumbnailRenderer};
-use voxel_worker::scan_worker::run_auto_scan_blocking;
+use voxel_worker::scan_worker::{run_auto_scan_blocking, FaceResolver};
 use voxel_worker::{
     create_depth_view, create_msaa_color_view, render_frame, run_egui_frame, CubeFace,
     EguiPaintBridge, FrameOverlays, GeometryParams, GizmoRenderer, GpuContext, MaterialChoice,
@@ -62,6 +62,17 @@ struct ShotOptions {
     /// After `--scan-vs`, apply the first scanned block's texture as the active
     /// material (M6) so the model shows a real VS texture (per-voxel sliced).
     apply_first_block: bool,
+    /// After `--scan-vs`, apply the first scanned block whose label/key matches
+    /// this substring (case-insensitive), going through per-face JSON resolution
+    /// (M7 `--apply-block`).
+    apply_block_substring: Option<String>,
+    /// After `--scan-vs`, print which scanned blocks resolve to genuinely
+    /// distinct per-face textures (top != side), then exit (M7 `--list-perface`).
+    list_per_face: bool,
+    /// Debug escape hatch (M7 verification): resolve an arbitrary blocktype by
+    /// its texture stem (e.g. `wood/treetrunk/oak`) even if it is outside the
+    /// chiselable allow-list, to demonstrate per-face rendering on a known block.
+    force_demo_stem: Option<String>,
 }
 
 impl Default for ShotOptions {
@@ -82,6 +93,9 @@ impl Default for ShotOptions {
             distance: None,
             scan_vs: false,
             apply_first_block: false,
+            apply_block_substring: None,
+            list_per_face: false,
+            force_demo_stem: None,
         }
     }
 }
@@ -210,6 +224,17 @@ fn parse_options() -> ShotOptions {
             "--apply-first-block" => {
                 options.apply_first_block = true;
             }
+            "--apply-block" => {
+                options.apply_block_substring =
+                    Some(args.next().expect("--apply-block requires a substring"));
+            }
+            "--list-perface" => {
+                options.list_per_face = true;
+            }
+            "--force-demo-stem" => {
+                options.force_demo_stem =
+                    Some(args.next().expect("--force-demo-stem requires a texture stem"));
+            }
             "--gizmo" => {
                 options.show_origin_gizmo = true;
             }
@@ -253,6 +278,8 @@ fn parse_options() -> ShotOptions {
                      \x20            [--proj <perspective|ortho>]\n\
                      \x20            [--material <stone|wood|plain>] [--grid]\n\
                      \x20            [--scan-vs] [--apply-first-block]\n\
+                     \x20            [--apply-block <substring>] [--list-perface]\n\
+                     \x20            [--force-demo-stem <texture/stem>]\n\
                      \x20            [--gizmo] [--no-viewcube]\n\
                      \x20            [--snap <front|back|left|right|top|bottom>]\n\
                      \x20            [--theta <f32>] [--phi <f32>] [--dist <f32>]\n\
@@ -275,6 +302,65 @@ fn parse_options() -> ShotOptions {
 fn main() {
     let options = parse_options();
     pollster::block_on(run_capture(options));
+}
+
+/// The file stem (no dir, no extension) of a path, for compact log output.
+fn file_stem_of(path: &std::path::Path) -> String {
+    path.file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string())
+}
+
+/// Resolve an arbitrary texture stem (e.g. `wood/treetrunk/oak`) to per-face
+/// textures via the VS JSON index, bypassing the chiselable allow-list. Used by
+/// `--force-demo-stem` to demonstrate per-face rendering on a known block when no
+/// chiselable block has distinct faces. Returns `None` if no install is found or
+/// the stem can't be located on disk.
+fn resolve_demo_stem(stem: &str) -> Option<voxel_worker::FaceTextures> {
+    use voxel_worker::assets::registry::detect_all_sources;
+
+    // Find the actual variant PNG on disk for this stem, under each install's
+    // textures dir, trying both domains. The detectors give us the block dirs.
+    let chosen_variant = locate_stem_png(stem)?;
+    // Build a synthetic group keyed by the stem so the resolver can look up the
+    // matching blocktype (its `base` entries reference this stem's directory).
+    let group = voxel_worker::assets::BlockGroup {
+        label: stem.rsplit('/').next().unwrap_or(stem).to_string(),
+        key: stem.to_string(),
+        variants: vec![chosen_variant.clone()],
+    };
+    let sources = detect_all_sources();
+    let mut fallback: Option<voxel_worker::FaceTextures> = None;
+    for source in &sources {
+        let faces = source.resolve_faces(&group, &chosen_variant);
+        if !faces.is_uniform() {
+            return Some(faces);
+        }
+        if fallback.is_none() {
+            fallback = Some(faces);
+        }
+    }
+    fallback
+}
+
+/// Locate the PNG for a bare texture stem on disk, scanning the same install
+/// roots the detectors use, trying the `game` then `survival` domains.
+fn locate_stem_png(stem: &str) -> Option<std::path::PathBuf> {
+    let appdata = std::env::var("APPDATA").ok()?;
+    let assets_root = std::path::Path::new(&appdata)
+        .join("Vintagestory")
+        .join("assets");
+    for domain in ["game", "survival", "creative"] {
+        let candidate = assets_root
+            .join(domain)
+            .join("textures")
+            .join("block")
+            .join(format!("{stem}.png"));
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 async fn run_capture(options: ShotOptions) {
@@ -400,20 +486,81 @@ async fn run_capture(options: ShotOptions) {
             Some(name) => format!("{} blocks loaded — {}", groups.len(), name),
             None => "No VS install found — use Connect folder".to_string(),
         };
-        if options.apply_first_block {
-            if let Some((group, decoded)) = groups.first() {
-                loaded_material = Some(LoadedMaterial::new(
-                    &gpu.device,
-                    &gpu.queue,
-                    voxel_renderer.material_bind_group_layout(),
-                    voxel_renderer.material_sampler(),
-                    decoded,
-                    group.label.clone(),
-                ));
-                panel_state.applied_block_label = Some(group.label.clone());
-                println!("applied first block: {}", group.label);
+
+        // M7: per-face resolver, kept alive so each group can resolve its
+        // blocktype JSON → per-face PNGs.
+        let resolver = FaceResolver::auto();
+
+        // `--list-perface`: report which chiselable blocks have a distinct top vs
+        // side face, then exit before any rendering.
+        if options.list_per_face {
+            let mut distinct = 0usize;
+            println!("--- per-face scan (top != side) ---");
+            for (group, _) in &groups {
+                let variant = group.variants.first().cloned().unwrap_or_default();
+                let faces = resolver.resolve(group, &variant);
+                if faces.top_differs_from_side() {
+                    distinct += 1;
+                    println!(
+                        "DISTINCT  {:<22} key={}  up={}  side={}  [{:?}]",
+                        group.label,
+                        group.key,
+                        file_stem_of(&faces.paths[2]),
+                        file_stem_of(&faces.paths[0]),
+                        faces.provenance,
+                    );
+                }
             }
+            println!(
+                "--- {distinct}/{} chiselable blocks resolve to distinct per-face textures ---",
+                groups.len()
+            );
+            return;
         }
+
+        // Choose which block to apply (if any) and resolve its per-face textures.
+        let chosen: Option<(String, voxel_worker::FaceTextures)> =
+            if let Some(stem) = &options.force_demo_stem {
+                // Demo escape hatch: resolve an arbitrary texture stem directly via
+                // the JSON index, even outside the chiselable allow-list, to prove
+                // the per-face mechanism on a known block (e.g. wood/treetrunk/oak).
+                resolve_demo_stem(stem).map(|faces| (stem.clone(), faces))
+            } else {
+                let target = if let Some(substring) = &options.apply_block_substring {
+                    let lower = substring.to_ascii_lowercase();
+                    groups.iter().find(|(group, _)| {
+                        group.label.to_ascii_lowercase().contains(&lower)
+                            || group.key.to_ascii_lowercase().contains(&lower)
+                    })
+                } else if options.apply_first_block {
+                    groups.first()
+                } else {
+                    None
+                };
+                target.map(|(group, _)| {
+                    let variant = group.variants.first().cloned().unwrap_or_default();
+                    let faces = resolver.resolve(group, &variant);
+                    (group.label.clone(), faces)
+                })
+            };
+
+        if let Some((label, faces)) = chosen {
+            let material = LoadedMaterial::from_faces(
+                &gpu.device,
+                &gpu.queue,
+                voxel_renderer.material_bind_group_layout(),
+                voxel_renderer.material_sampler(),
+                &faces,
+                label.clone(),
+            );
+            println!(
+                "applied block: {label} (per_face={}, provenance={:?})",
+                material.is_per_face, faces.provenance
+            );
+            panel_state.applied_block_label = Some(label);
+            loaded_material = Some(material);
+        }
+
         for (group, decoded) in groups {
             palette.add_group(
                 &gpu.device,

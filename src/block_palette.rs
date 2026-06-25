@@ -274,29 +274,83 @@ fn thumbnail_view_projection() -> glam::Mat4 {
     projection * view
 }
 
-/// A runtime-loaded block texture, bound exactly like the procedural materials so
-/// the per-voxel slice shader treats it identically (one texture per block).
+/// A runtime-loaded block material: a 6-layer texture array (one layer per cube
+/// face), bound exactly like the procedural materials so the per-voxel slice
+/// shader treats it identically. A uniform block puts the same image on all six
+/// layers; a per-face block (M7) puts each face's PNG on its own layer.
 pub struct LoadedMaterial {
     pub bind_group: wgpu::BindGroup,
     /// The label of the applied block (for the panel readout).
     pub label: String,
+    /// Whether the resolved faces are genuinely per-face (top != side); used for
+    /// logging / verification (`--list-perface`, `--apply-block`).
+    pub is_per_face: bool,
 }
 
 impl LoadedMaterial {
-    /// Upload a decoded block texture and build its material bind group against
-    /// the voxel renderer's material layout (sRGB so the main shader's lighting +
-    /// grid overlay mix in linear space, matching Stone/Wood/Plain).
-    pub fn new(
+    /// Build a 6-layer material from resolved per-face PNG paths (M7).
+    ///
+    /// Each face PNG is decoded and, if face sizes differ, rescaled to the
+    /// largest common size so all six layers share one `Extent3d`. The texture is
+    /// sRGB so the main shader's lighting + grid overlay mix in linear space,
+    /// matching Stone/Wood/Plain. Falls back to a uniform layer set from any face
+    /// that fails to decode.
+    pub fn from_faces(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         material_bind_group_layout: &wgpu::BindGroupLayout,
         sampler: &wgpu::Sampler,
-        decoded: &DecodedRgba,
+        faces: &crate::assets::FaceTextures,
         label: String,
     ) -> Self {
-        let texture =
-            upload_block_texture(device, queue, decoded, wgpu::TextureFormat::Rgba8UnormSrgb);
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let is_per_face = !faces.is_uniform();
+
+        // Decode each face PNG (in CubeFaceSlot layer order). A face that fails
+        // to decode is left None and filled from a sibling below.
+        let decoded_faces: Vec<Option<DecodedRgba>> = faces
+            .paths
+            .iter()
+            .map(|path| crate::scan_worker::decode_rgba(path))
+            .collect();
+
+        // Pick a representative decoded face to size the array + fill gaps.
+        let representative = decoded_faces
+            .iter()
+            .flatten()
+            .next()
+            .cloned()
+            .unwrap_or((1, 1, vec![0u8, 0u8, 0u8, 255u8]));
+        let (target_width, target_height, _) = representative;
+
+        // Normalise every layer to (target_width, target_height) so the array's
+        // layers share one size. Missing faces use the representative image.
+        let layers_rgba: Vec<Vec<u8>> = decoded_faces
+            .into_iter()
+            .map(|face| {
+                let decoded = face.unwrap_or_else(|| representative.clone());
+                resize_rgba_nearest(&decoded, target_width, target_height)
+            })
+            .collect();
+
+        let layer_slices: [&[u8]; 6] = [
+            &layers_rgba[0],
+            &layers_rgba[1],
+            &layers_rgba[2],
+            &layers_rgba[3],
+            &layers_rgba[4],
+            &layers_rgba[5],
+        ];
+        let texture = crate::renderer::upload_face_material_texture(
+            device,
+            queue,
+            target_width,
+            target_height,
+            &layer_slices,
+        );
+        let view = texture.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        });
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("loaded block material bind group"),
             layout: material_bind_group_layout,
@@ -311,8 +365,38 @@ impl LoadedMaterial {
                 },
             ],
         });
-        Self { bind_group, label }
+        Self {
+            bind_group,
+            label,
+            is_per_face,
+        }
     }
+}
+
+/// Nearest-neighbour rescale of a decoded RGBA image to `target_width`×
+/// `target_height`. A no-op (clone) when the size already matches. Nearest keeps
+/// VS block textures crisp and matches the material sampler's filter.
+fn resize_rgba_nearest(decoded: &DecodedRgba, target_width: u32, target_height: u32) -> Vec<u8> {
+    let (width, height, ref pixels) = *decoded;
+    if width == target_width && height == target_height {
+        return pixels.clone();
+    }
+    let width = width.max(1);
+    let height = height.max(1);
+    let mut out = vec![0u8; (target_width * target_height * 4) as usize];
+    for y in 0..target_height {
+        let source_y = (y * height / target_height.max(1)).min(height - 1);
+        for x in 0..target_width {
+            let source_x = (x * width / target_width.max(1)).min(width - 1);
+            let source_index = ((source_y * width + source_x) * 4) as usize;
+            let dest_index = ((y * target_width + x) * 4) as usize;
+            if source_index + 4 <= pixels.len() {
+                out[dest_index..dest_index + 4]
+                    .copy_from_slice(&pixels[source_index..source_index + 4]);
+            }
+        }
+    }
+    out
 }
 
 /// One ready palette tile: its label, variant count, the egui texture id of its
@@ -322,6 +406,8 @@ pub struct PaletteTile {
     pub variant_count: usize,
     pub thumbnail_id: egui::TextureId,
     pub variants: Vec<std::path::PathBuf>,
+    /// The scanned group (kept so M7 per-face resolution can re-key on apply).
+    pub group: BlockGroup,
     /// Keep the thumbnail texture alive for as long as the tile (egui only holds
     /// a view/bind-group internally; dropping the texture would invalidate it).
     pub _thumbnail_texture: wgpu::Texture,
@@ -356,10 +442,11 @@ impl BlockPalette {
         let thumbnail_id =
             egui_renderer.register_native_texture(device, &view, wgpu::FilterMode::Nearest);
         self.tiles.push(PaletteTile {
-            label: group.label,
+            label: group.label.clone(),
             variant_count: group.variants.len(),
             thumbnail_id,
-            variants: group.variants,
+            variants: group.variants.clone(),
+            group,
             _thumbnail_texture: texture,
         });
     }

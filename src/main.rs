@@ -13,7 +13,9 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowId};
 
 use voxel_worker::block_palette::{BlockPalette, LoadedMaterial, ThumbnailRenderer};
-use voxel_worker::scan_worker::{spawn_auto_scan, spawn_custom_folder_scan, ScanHandle, ScanMessage};
+use voxel_worker::scan_worker::{
+    spawn_auto_scan, spawn_custom_folder_scan, FaceResolver, ScanHandle, ScanMessage,
+};
 use voxel_worker::{
     create_depth_view, create_msaa_color_view, render_frame, run_egui_frame, CubeFace,
     EguiPaintBridge, FrameOverlays, GizmoRenderer, GpuContext, MaterialSource, OrbitCamera,
@@ -47,9 +49,13 @@ struct WindowedState {
     /// The in-flight background scan (auto-detect on startup, or a custom folder
     /// scan triggered by "Connect folder…"). `None` once finished/idle.
     scan_handle: Option<ScanHandle>,
-    /// The active applied VS block, if any (M6). When `Some`, the voxel pass binds
-    /// this loaded texture instead of the procedural material.
+    /// The active applied VS block, if any (M6/M7). When `Some`, the voxel pass
+    /// binds this loaded 6-layer face material instead of the procedural one.
     loaded_material: Option<LoadedMaterial>,
+    /// Per-face texture resolver (M7): kept alive beside the palette so a clicked
+    /// block resolves its blocktype JSON → per-face PNGs on the main thread.
+    /// Rebuilt when "Connect folder…" switches the source.
+    face_resolver: FaceResolver,
     /// The current mid-Y 2D slice image, rebuilt whenever the grid rebuilds.
     slice_image: SliceImage,
     depth_view: wgpu::TextureView,
@@ -180,6 +186,7 @@ impl WindowedState {
             palette,
             scan_handle,
             loaded_material: None,
+            face_resolver: FaceResolver::auto(),
             slice_image,
             depth_view,
             msaa_color_view,
@@ -292,28 +299,29 @@ impl WindowedState {
                 // Reset the palette + start a fresh scan of the picked folder.
                 self.palette.tiles.clear();
                 self.palette.status = "Scanning folder…".to_string();
+                // Re-point the M7 face resolver at the same folder.
+                self.face_resolver = FaceResolver::custom_folder(folder.clone());
                 self.scan_handle = Some(spawn_custom_folder_scan(folder));
             }
         }
     }
 
-    /// Decode + upload `variant_path` and set it as the active loaded material.
+    /// Resolve `variant_path`'s per-face textures (M7) and bind the 6-layer
+    /// material. Uniform blocks resolve to the same PNG on all faces (the M6
+    /// path); per-face blocks (e.g. a log: end-grain top, bark sides) bind each
+    /// face's own PNG.
     fn apply_block_variant(&mut self, variant_path: &std::path::Path, tile_index: usize) {
-        let Some(decoded) = voxel_worker::scan_worker::decode_rgba(variant_path) else {
+        let Some(tile) = self.palette.tiles.get(tile_index) else {
             return;
         };
-        let label = self
-            .palette
-            .tiles
-            .get(tile_index)
-            .map(|tile| tile.label.clone())
-            .unwrap_or_default();
-        self.loaded_material = Some(LoadedMaterial::new(
+        let label = tile.label.clone();
+        let faces = self.face_resolver.resolve(&tile.group, variant_path);
+        self.loaded_material = Some(LoadedMaterial::from_faces(
             &self.gpu.device,
             &self.gpu.queue,
             self.voxel_renderer.material_bind_group_layout(),
             self.voxel_renderer.material_sampler(),
-            &decoded,
+            &faces,
             label.clone(),
         ));
         self.panel_state.applied_block_label = Some(label);

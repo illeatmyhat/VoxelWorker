@@ -131,6 +131,56 @@ pub fn run_auto_scan_blocking() -> (Vec<(BlockGroup, DecodedRgba)>, Option<Strin
     (results, source_name)
 }
 
+/// Per-face texture resolver (Milestone 7).
+///
+/// Holds the detected [`BlockSource`]s alive so the main thread can resolve a
+/// clicked block's per-face textures on demand (each VS source caches its parsed
+/// blocktype index internally, so repeated lookups are cheap). Built once and
+/// kept beside the palette.
+pub struct FaceResolver {
+    sources: Vec<Box<dyn BlockSource>>,
+}
+
+impl FaceResolver {
+    /// Build a resolver from auto-detected sources (windowed + headless paths).
+    pub fn auto() -> Self {
+        Self {
+            sources: detect_all_sources(),
+        }
+    }
+
+    /// Build a resolver for a single custom folder (the "Connect folder…" path).
+    pub fn custom_folder(folder: std::path::PathBuf) -> Self {
+        Self {
+            sources: vec![Box::new(CustomFolderSource::new(folder)) as Box<dyn BlockSource>],
+        }
+    }
+
+    /// Resolve a group's per-face textures, picking the source by matching the
+    /// group key against the source's scanned groups. `chosen_variant` is the
+    /// specific PNG the palette picked. Falls back to a uniform mapping if no
+    /// source recognises the group (the M6 behaviour).
+    pub fn resolve(
+        &self,
+        group: &BlockGroup,
+        chosen_variant: &std::path::Path,
+    ) -> crate::assets::FaceTextures {
+        // A single source is the common case; try each and take the first that
+        // returns a genuinely per-face (non-uniform) mapping, else the first.
+        let mut fallback: Option<crate::assets::FaceTextures> = None;
+        for source in &self.sources {
+            let faces = source.resolve_faces(group, chosen_variant);
+            if !faces.is_uniform() {
+                return faces;
+            }
+            if fallback.is_none() {
+                fallback = Some(faces);
+            }
+        }
+        fallback.unwrap_or_else(|| crate::assets::FaceTextures::uniform(chosen_variant.to_path_buf()))
+    }
+}
+
 /// Decode a PNG file to a tightly-packed RGBA8 buffer (CPU work). Returns `None`
 /// on any decode error (the group is skipped, matching the prototype's
 /// try/catch-continue in `buildPalette`).

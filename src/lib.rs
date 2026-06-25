@@ -26,6 +26,7 @@ pub use camera::{
 };
 pub use gpu::GpuContext;
 pub use panel::{build_panel, GeometryParams, MaterialChoice, PanelResponse, PanelState};
+pub use assets::{CubeFaceSlot, FaceProvenance, FaceTextures};
 pub use renderer::{
     create_depth_view, create_msaa_color_view, GizmoRenderer, MaterialSource, ViewCubeRenderer,
     VoxelRenderer, DEPTH_FORMAT, MSAA_SAMPLE_COUNT, VIEW_CUBE_VIEWPORT_PIXELS,
