@@ -1,0 +1,14 @@
+/target
+**/*.rs.bk
+Cargo.lock.orig
+
+# Headless capture output (verification screenshots are regenerated, not committed
+# except curated goldens under tests/golden/)
+/shots/
+*.tmp.png
+
+# OS / editor
+Thumbs.db
+.DS_Store
+.vscode/
+.idea/

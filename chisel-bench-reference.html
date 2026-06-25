@@ -1,0 +1,644 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Chisel Bench — VS microblock previewer</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<style>
+  :root{
+    --bg:#14110d; --bg2:#0d0b08;
+    --panel:rgba(24,20,15,0.94);
+    --line:rgba(120,104,80,0.22);
+    --ink:#e9e1d1; --mute:#9a9183;
+    --patina:#5fb8a4; --copper:#c08457;
+    --font-ui:ui-sans-serif,system-ui,"Segoe UI",Helvetica,Arial,sans-serif;
+    --font-mono:ui-monospace,"SFMono-Regular",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;overflow:hidden;background:var(--bg);color:var(--ink);font-family:var(--font-ui)}
+  #stage{position:fixed;inset:0;background:radial-gradient(120% 120% at 30% 10%,#1c1712 0%,var(--bg) 45%,var(--bg2) 100%)}
+  canvas{display:block}
+
+  #panel{position:fixed;top:0;right:0;height:100%;width:332px;background:var(--panel);
+    border-left:1px solid var(--line);backdrop-filter:blur(6px);
+    display:flex;flex-direction:column;overflow-y:auto;z-index:10}
+  #panel header{padding:18px 18px 12px;border-bottom:1px solid var(--line)}
+  #panel header .mark{font-family:var(--font-mono);font-size:11px;letter-spacing:.32em;color:var(--patina);text-transform:uppercase;margin-bottom:6px}
+  #panel header h1{margin:0;font-size:17px;font-weight:600;letter-spacing:-.01em}
+  #panel header p{margin:6px 0 0;font-size:12px;line-height:1.4;color:var(--mute)}
+
+  .sec{padding:14px 18px;border-bottom:1px solid var(--line)}
+  .sec > .lbl{font-family:var(--font-mono);font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--mute);margin-bottom:10px;display:block}
+  .row{display:flex;align-items:center;gap:10px;margin:9px 0}
+  .row label{flex:0 0 64px;font-size:12.5px;color:var(--ink)}
+  .row.off{opacity:.32;pointer-events:none}
+  .row input[type=range]{flex:1;accent-color:var(--patina);height:18px}
+  .row .val{flex:0 0 78px;text-align:right;font-family:var(--font-mono);font-size:11.5px;color:var(--patina)}
+  .row .val small{color:var(--mute)}
+
+  input[type=file]::file-selector-button{font-family:var(--font-ui);color:var(--ink);background:#221d16;border:1px solid var(--line);border-radius:5px;padding:7px 9px;font-size:13px}
+  .chips{display:flex;gap:6px;flex-wrap:wrap}
+  .chip{flex:1;min-width:60px;text-align:center;cursor:pointer;padding:7px 4px;font-size:12.5px;background:#201b14;border:1px solid var(--line);border-radius:5px;user-select:none}
+  .chip[aria-pressed=true]{border-color:var(--patina);color:var(--patina);background:rgba(95,184,164,.08)}
+  input[type=file]{font-size:12px;color:var(--mute);width:100%}
+  input[type=file]::file-selector-button{cursor:pointer;margin-right:8px}
+
+  .toggle{display:flex;align-items:center;gap:8px;font-size:12.5px;cursor:pointer;margin:7px 0}
+  .toggle input{accent-color:var(--patina);width:15px;height:15px}
+
+  #slicewrap{padding:14px 18px;border-bottom:1px solid var(--line)}
+  #slice{width:100%;image-rendering:pixelated;border:1px solid var(--line);border-radius:4px;background:#0b0907;display:block}
+  #slicewrap .cap{font-size:11px;color:var(--mute);margin-top:8px;line-height:1.4}
+
+  #stats{padding:14px 18px;font-family:var(--font-mono);font-size:12px;color:var(--mute);line-height:1.7}
+  #stats b{color:var(--ink);font-weight:600}
+  #stats .big{color:var(--copper)}
+  #stats .warn{color:#d98a5b}
+
+  footer{margin-top:auto;padding:14px 18px;font-size:11px;color:var(--mute);line-height:1.45;border-top:1px solid var(--line)}
+  .hint{font-size:11px;color:var(--mute);margin:2px 0 0;line-height:1.4}
+
+  .btn{font-family:var(--font-ui);color:var(--ink);background:#221d16;border:1px solid var(--line);border-radius:5px;padding:8px 11px;font-size:13px;cursor:pointer;width:100%}
+  .btn:hover{border-color:var(--patina);color:var(--patina)}
+  #status{font-size:11px;color:var(--mute);margin-top:7px;line-height:1.4;min-height:1em}
+
+  #palette{position:fixed;left:0;right:332px;bottom:0;height:140px;background:rgba(15,12,8,0.96);
+    border-top:1px solid var(--line);display:none;align-items:center;gap:12px;overflow-x:auto;overflow-y:hidden;padding:10px 14px;z-index:8;backdrop-filter:blur(4px)}
+  #palette.show{display:flex}
+  #palette .ptitle{position:absolute;top:6px;left:14px;font-family:var(--font-mono);font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--mute)}
+  .ptile{flex:0 0 auto;width:86px;cursor:pointer;text-align:center;opacity:.9;margin-top:12px}
+  .ptile:hover{opacity:1}
+  .ptile img{width:74px;height:74px;display:block;margin:0 auto;border-radius:5px;background:#0b0907}
+  .ptile span{display:block;font-size:10.5px;color:var(--mute);margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+  @media (max-width:760px){
+    #palette{right:0;bottom:48%}
+  }
+  @media (max-width:760px){
+    #panel{width:100%;height:48%;top:auto;bottom:0;border-left:none;border-top:1px solid var(--line)}
+    #stage{bottom:48%}
+  }
+  :focus-visible{outline:2px solid var(--patina);outline-offset:2px}
+</style>
+</head>
+<body>
+<div id="stage"></div>
+
+<aside id="panel">
+  <header>
+    <div class="mark">Chisel Bench</div>
+    <h1>VS microblock previewer</h1>
+    <p>A shape inscribed in a block-sized box, sampled onto the chisel grid as hard voxels.</p>
+  </header>
+
+  <div class="sec">
+    <span class="lbl">Shape</span>
+    <div class="chips" id="shapes">
+      <div class="chip" data-shape="Cylinder" aria-pressed="true">Cylinder</div>
+      <div class="chip" data-shape="Tube" aria-pressed="false">Tube</div>
+      <div class="chip" data-shape="Sphere" aria-pressed="false">Sphere</div>
+      <div class="chip" data-shape="Torus" aria-pressed="false">Torus</div>
+      <div class="chip" data-shape="Box" aria-pressed="false">Box</div>
+    </div>
+    <p class="hint" id="shapehint">Axis is Y. Set Y to 1 for a flat disc.</p>
+  </div>
+
+  <div class="sec">
+    <span class="lbl">Size <span style="color:var(--mute)">(blocks)</span></span>
+    <div class="row"><label for="X">X</label><input id="X" type="range" min="1" max="16" step="1" value="5"><span class="val" id="v-X"></span></div>
+    <div class="row"><label for="Y">Y</label><input id="Y" type="range" min="1" max="16" step="1" value="1"><span class="val" id="v-Y"></span></div>
+    <div class="row"><label for="Z">Z</label><input id="Z" type="range" min="1" max="16" step="1" value="5"><span class="val" id="v-Z"></span></div>
+    <div class="row" id="r-wall"><label for="wall">wall</label><input id="wall" type="range" min="1" max="8" step="1" value="1"><span class="val" id="v-wall"></span></div>
+    <p class="hint">The bounding box, in whole blocks. The shape fills it.</p>
+  </div>
+
+  <div class="sec">
+    <span class="lbl">Chisel grid</span>
+    <div class="row"><label for="density">density</label><input id="density" type="range" min="4" max="32" step="1" value="16"><span class="val" id="v-density">16 <small>vx/bl</small></span></div>
+    <p class="hint">Voxels per block — chisel fineness only. 16 = Vintage Story. Higher = smoother, same size, same texture scale.</p>
+  </div>
+
+  <div class="sec">
+    <span class="lbl">Quantization</span>
+    <div class="row"><label for="iso">isolevel</label><input id="iso" type="range" min="-2" max="2" step="0.05" value="0"><span class="val" id="v-iso">0.00</span></div>
+    <p class="hint">The boundary rule. Nudge it and watch the rim run-lengths snap — the whole game for clean circles. 0 = the true surface.</p>
+  </div>
+
+  <div class="sec">
+    <span class="lbl">Camera</span>
+    <div class="chips" id="proj">
+      <div class="chip" data-proj="persp" aria-pressed="true">Perspective</div>
+      <div class="chip" data-proj="ortho" aria-pressed="false">Orthographic</div>
+    </div>
+    <p class="hint">Click a face of the cube (top-left) to snap to front / back / left / right / top / bottom.</p>
+  </div>
+
+  <div class="sec">
+    <span class="lbl">Material</span>
+    <div class="chips" id="mats" style="margin-bottom:10px">
+      <div class="chip" data-mat="Stone" aria-pressed="true">Stone</div>
+      <div class="chip" data-mat="Wood" aria-pressed="false">Wood</div>
+      <div class="chip" data-mat="Plain" aria-pressed="false">Plain</div>
+    </div>
+    <input id="png" type="file" accept="image/png,image/*">
+    <button class="btn" id="connect" style="margin-top:10px">Connect VS folder…</button>
+    <div id="status"></div>
+    <p class="hint" style="margin-top:8px">Load one block PNG, or connect your <span style="font-family:var(--font-mono)">assets/survival</span> folder to load all known chiselable blocks into the palette below.</p>
+  </div>
+
+  <div id="slicewrap">
+    <span class="lbl" style="display:block;margin-bottom:10px">Top-down slice · mid-height</span>
+    <canvas id="slice" width="48" height="48"></canvas>
+    <div class="cap">The exact pixel map to chisel against. Bold lines mark block boundaries.</div>
+  </div>
+
+  <div class="sec">
+    <label class="toggle"><input type="checkbox" id="t-vox"> Voxel grid on faces</label>
+    <label class="toggle"><input type="checkbox" id="t-grid" checked> Block lattice</label>
+    <label class="toggle"><input type="checkbox" id="t-floor"> Fine floor grid</label>
+    <label class="toggle"><input type="checkbox" id="t-cube" checked> View cube</label>
+    <label class="toggle"><input type="checkbox" id="t-gizmo"> Origin gizmo</label>
+  </div>
+
+  <div id="stats"></div>
+
+  <footer>Drag to orbit · scroll to zoom. Hard voxels, true quantization — stair-steps and all.</footer>
+</aside>
+
+<div id="palette"><div class="ptitle">Detected blocks · click to apply a random variant</div></div>
+
+<script>
+"use strict";
+const T = THREE;
+
+// X,Y,Z and wall are WHOLE BLOCKS; density is voxels per block. Shape never edits these.
+const S = { shape:"Cylinder", D:16, X:5, Y:1, Z:5, W:1, iso:0, mat:"Stone",
+            showLattice:true, showFloor:false, showVoxGrid:false, showCube:true, showGizmo:false };
+
+const stage = document.getElementById("stage");
+const renderer = new T.WebGLRenderer({antialias:true, alpha:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+stage.appendChild(renderer.domElement);
+
+const scene = new T.Scene();
+const persp = new T.PerspectiveCamera(45, 1, 0.1, 20000);
+const ortho = new T.OrthographicCamera(-1,1,1,-1, 0.1, 20000);
+let camera = persp;                 // active camera
+scene.add(new T.HemisphereLight(0xfff1dd, 0x20140c, 0.85));
+const key = new T.DirectionalLight(0xffffff, 0.9); key.position.set(0.6,1,0.45); scene.add(key);
+const fill = new T.DirectionalLight(0x8fb6c0, 0.25); fill.position.set(-0.5,-0.2,-0.6); scene.add(fill);
+
+const unitBox = new T.BoxGeometry(1,1,1);
+
+// ---- material: per-voxel UV slicing, one texture per block ----
+const material = new T.MeshLambertMaterial({color:0xffffff});
+// shared grid-overlay uniforms (references kept so toggles update live)
+const GRID = {
+  uGrid:{value:0}, uVoxHW:{value:0.05}, uBlkHW:{value:0.11},
+  uVoxA:{value:0.40}, uBlkA:{value:0.92},
+  uVoxColor:{value:new T.Color(0x17120b)}, uBlkColor:{value:new T.Color(0x080605)},
+  uHalf:{value:new T.Vector3(40,8,40)}
+};
+material.onBeforeCompile = (shader)=>{
+  shader.uniforms.uDensity = { value: S.D };
+  Object.assign(shader.uniforms, GRID);
+  // --- vertex: per-voxel texture slice + pass normal & absolute voxel position ---
+  shader.vertexShader =
+    "attribute vec3 iLocal;\nuniform float uDensity;\nuniform vec3 uHalf;\nvarying vec3 vNrm;\nvarying vec3 vVoxAbs;\n" + shader.vertexShader;
+  shader.vertexShader = shader.vertexShader.replace(
+    "#include <uv_vertex>",
+    `#include <uv_vertex>
+     vec3 an = abs(normal);
+     vec2 voff;
+     if (an.x > 0.5) voff = vec2(iLocal.z, iLocal.y);
+     else if (an.y > 0.5) voff = vec2(iLocal.x, iLocal.z);
+     else voff = vec2(iLocal.x, iLocal.y);
+     vUv = (vUv + voff) / uDensity;
+     vNrm = normal;
+     vVoxAbs = (instanceMatrix * vec4(position,1.0)).xyz + uHalf;`
+  );
+  // --- fragment: grid drawn from world position, not UVs (orientation-independent) ---
+  shader.fragmentShader =
+    "uniform float uDensity;\nvarying vec3 vNrm;\nvarying vec3 vVoxAbs;\n"+
+    "uniform float uGrid;\nuniform float uVoxHW;\nuniform float uBlkHW;\nuniform float uVoxA;\nuniform float uBlkA;\nuniform vec3 uVoxColor;\nuniform vec3 uBlkColor;\n"+
+    shader.fragmentShader;
+  shader.fragmentShader = shader.fragmentShader.replace(
+    "#include <dithering_fragment>",
+    `if (uGrid > 0.5) {
+       vec3 A = vVoxAbs;
+       vec3 inpl = step(abs(vNrm), vec3(0.5));                          // 1 for in-plane axes
+       vec3 di = abs(A - floor(A + 0.5));                               // dist to voxel boundary
+       vec3 db = abs(A/uDensity - floor(A/uDensity + 0.5)) * uDensity;  // dist to block boundary
+       float aa = 0.012;
+       vec3 vl = (1.0 - smoothstep(vec3(uVoxHW), vec3(uVoxHW+aa), di)) * inpl;
+       vec3 bl = (1.0 - smoothstep(vec3(uBlkHW), vec3(uBlkHW+aa), db)) * inpl;
+       float voxel = max(max(vl.x, vl.y), vl.z);
+       float block = max(max(bl.x, bl.y), bl.z);
+       float g = voxel * uVoxA; vec3 lc = uVoxColor;
+       if (block * uBlkA > g) { g = block * uBlkA; lc = uBlkColor; }
+       gl_FragColor.rgb = mix(gl_FragColor.rgb, lc, g);
+     }
+     #include <dithering_fragment>`
+  );
+  material.userData.shader = shader;
+};
+
+function tuneTex(t){ t.magFilter=t.minFilter=T.NearestFilter; t.wrapS=t.wrapT=T.ClampToEdgeWrapping; t.generateMipmaps=false; t.needsUpdate=true; return t; }
+function makeStone(){
+  const c=document.createElement("canvas"); c.width=c.height=32; const x=c.getContext("2d");
+  for(let i=0;i<32;i++)for(let j=0;j<32;j++){const n=132+(Math.random()*40-20|0); x.fillStyle=`rgb(${n},${n-6},${n-14})`; x.fillRect(i,j,1,1);}
+  for(let k=0;k<22;k++){const px=Math.random()*32|0,py=Math.random()*32|0,d=90+(Math.random()*30|0); x.fillStyle=`rgb(${d},${d-8},${d-16})`; x.fillRect(px,py,1,1);}
+  return tuneTex(new T.CanvasTexture(c));
+}
+function makeWood(){
+  const c=document.createElement("canvas"); c.width=c.height=32; const x=c.getContext("2d");
+  for(let j=0;j<32;j++){const g=Math.sin(j*0.9)*10+(Math.random()*10-5);
+    for(let i=0;i<32;i++){const r=120+g+(Math.random()*8-4); x.fillStyle=`rgb(${r|0},${(r*0.62)|0},${(r*0.34)|0})`; x.fillRect(i,j,1,1);}}
+  return tuneTex(new T.CanvasTexture(c));
+}
+function makePlain(){const c=document.createElement("canvas"); c.width=c.height=2; const x=c.getContext("2d"); x.fillStyle="#b6a079"; x.fillRect(0,0,2,2); return tuneTex(new T.CanvasTexture(c));}
+const TEX = { Stone:makeStone(), Wood:makeWood(), Plain:makePlain(), Custom:null };
+function applyMat(){ material.map = TEX[S.mat] || TEX.Plain; material.needsUpdate = true; }
+applyMat();
+
+// ---- voxel-space semi-axes (set per rebuild) ----
+let AX=0,AY=0,AZ=0,WV=0;
+
+// ---- SDFs: shapes inscribed in the AX×AY×AZ box ----
+const hyp=Math.hypot;
+function sdBox(p,bx,by,bz){const qx=Math.abs(p.x)-bx,qy=Math.abs(p.y)-by,qz=Math.abs(p.z)-bz;return hyp(Math.max(qx,0),Math.max(qy,0),Math.max(qz,0))+Math.min(Math.max(qx,qy,qz),0);}
+function sdEllip(p,ax,ay,az){
+  const k0=hyp(p.x/ax,p.y/ay,p.z/az); if(k0===0)return -Math.min(ax,ay,az);
+  const k1=hyp(p.x/(ax*ax),p.y/(ay*ay),p.z/(az*az));
+  return k0*(k0-1)/k1;
+}
+function sdCylE(p,ax,az,ay){
+  const dr=(hyp(p.x/ax,p.z/az)-1)*Math.min(ax,az);
+  const dy=Math.abs(p.y)-ay;
+  return Math.min(Math.max(dr,dy),0)+hyp(Math.max(dr,0),Math.max(dy,0));
+}
+function sdf(p){
+  switch(S.shape){
+    case "Cylinder": return sdCylE(p,AX,AZ,AY);
+    case "Tube":{
+      const outer=sdCylE(p,AX,AZ,AY), inax=AX-WV, inaz=AZ-WV;
+      if(inax<=0||inaz<=0) return outer;
+      return Math.max(outer, -sdCylE(p,inax,inaz,AY+1));
+    }
+    case "Sphere": return sdEllip(p,AX,AY,AZ);
+    case "Torus":{
+      const t=AY; let R=Math.min(AX,AZ)-t; if(R<0)R=0;
+      return hyp(hyp(p.x,p.z)-R, p.y)-t;
+    }
+    case "Box": return sdBox(p,AX,AY,AZ);
+  }
+}
+
+// extent = exactly X,Y,Z blocks, shape-independent
+function extents(){ const D=S.D; return {bx:S.X,by:S.Y,bz:S.Z, Nx:S.X*D,Ny:S.Y*D,Nz:S.Z*D}; }
+function setDims(e){ AX=e.Nx/2; AY=e.Ny/2; AZ=e.Nz/2; WV=S.W*S.D; }
+
+let mesh=null;
+const dummy=new T.Object3D();
+const MAXI=450000, CAP=6000000;
+let lastDiameter=0, lastE=null;
+
+function rebuild(){
+  const e=extents(); lastE=e; setDims(e);
+  GRID.uHalf.value.set(e.Nx/2, e.Ny/2, e.Nz/2);
+  const {Nx,Ny,Nz}=e, D=S.D, hX=Nx/2,hY=Ny/2,hZ=Nz/2, iso=S.iso;
+  drawSlice(e,iso);
+  if(Nx*Ny*Nz>CAP){ updateStats(0,"over",e); return; }
+  const pos=[], loc=[]; const p={x:0,y:0,z:0}; let overflow=false;
+  for(let j=0;j<Ny&&!overflow;j++){ p.y=j+0.5-hY;
+    for(let k=0;k<Nz&&!overflow;k++){ p.z=k+0.5-hZ;
+      for(let i=0;i<Nx;i++){ p.x=i+0.5-hX;
+        if(sdf(p)<=iso){ pos.push(p.x,p.y,p.z); loc.push(i%D,j%D,k%D); if(pos.length>MAXI*3){overflow=true;break;} }
+      }
+    }
+  }
+  const count=pos.length/3;
+  if(mesh){ scene.remove(mesh); mesh.geometry.dispose(); }
+  const geo=unitBox.clone();
+  geo.setAttribute("iLocal", new T.InstancedBufferAttribute(new Float32Array(loc),3));
+  mesh=new T.InstancedMesh(geo, material, Math.max(count,1));
+  mesh.frustumCulled=false;
+  for(let n=0;n<count;n++){ dummy.position.set(pos[n*3],pos[n*3+1],pos[n*3+2]); dummy.updateMatrix(); mesh.setMatrixAt(n,dummy.matrix); }
+  mesh.count=count; mesh.instanceMatrix.needsUpdate=true;
+  scene.add(mesh);
+  updateStats(count, overflow?"cap":"", e);
+}
+
+const sliceCanvas=document.getElementById("slice"), sctx=sliceCanvas.getContext("2d");
+function drawSlice(e,iso){
+  const {Nx,Ny,Nz}=e, hX=Nx/2,hY=Ny/2,hZ=Nz/2, D=S.D;
+  sliceCanvas.width=Nx; sliceCanvas.height=Nz;
+  const img=sctx.createImageData(Nx,Nz);
+  const j=Math.floor(Ny/2); const p={x:0,y:j+0.5-hY,z:0}; let maxW=0;
+  for(let k=0;k<Nz;k++){ p.z=k+0.5-hZ; let w=0;
+    for(let i=0;i<Nx;i++){ p.x=i+0.5-hX; const idx=(k*Nx+i)*4;
+      if(sdf(p)<=iso){img.data[idx]=205;img.data[idx+1]=191;img.data[idx+2]=166;img.data[idx+3]=255;w++;}
+      else{img.data[idx]=12;img.data[idx+1]=10;img.data[idx+2]=8;img.data[idx+3]=255;}
+    } if(w>maxW)maxW=w;
+  }
+  lastDiameter=maxW; sctx.putImageData(img,0,0);
+  sctx.save(); sctx.strokeStyle="rgba(95,184,164,0.55)"; sctx.lineWidth=0.06;
+  for(let g=0;g<=Nx;g+=D){sctx.beginPath();sctx.moveTo(g,0);sctx.lineTo(g,Nz);sctx.stroke();}
+  for(let g=0;g<=Nz;g+=D){sctx.beginPath();sctx.moveTo(0,g);sctx.lineTo(Nx,g);sctx.stroke();}
+  sctx.restore(); sliceCanvas.style.width="100%";
+}
+
+let lattice=null, floor=null, gridKey="";
+function buildGrids(e){
+  const k=`${e.Nx}_${e.Ny}_${e.Nz}_${S.D}`; if(k===gridKey) return; gridKey=k;
+  if(lattice){scene.remove(lattice);lattice.geometry.dispose();}
+  if(floor){scene.remove(floor);floor.geometry.dispose();}
+  const {Nx,Ny,Nz}=e, hX=Nx/2,hY=Ny/2,hZ=Nz/2, D=S.D;
+  const axis=(N)=>{const a=[];for(let g=0;g<=N+0.001;g+=D)a.push(g);return a;};
+  const BX=axis(Nx).map(v=>v-hX), BY=axis(Ny).map(v=>v-hY), BZ=axis(Nz).map(v=>v-hZ);
+  const seg=[], add=(ax,ay,az,bx,by,bz)=>seg.push(ax,ay,az,bx,by,bz);
+  for(const x of BX)for(const y of BY)add(x,y,-hZ,x,y,hZ);
+  for(const x of BX)for(const z of BZ)add(x,-hY,z,x,hY,z);
+  for(const y of BY)for(const z of BZ)add(-hX,y,z,hX,y,z);
+  const lg=new T.BufferGeometry(); lg.setAttribute("position",new T.Float32BufferAttribute(seg,3));
+  lattice=new T.LineSegments(lg,new T.LineBasicMaterial({color:0x5fb8a4,transparent:true,opacity:0.28}));
+  lattice.visible=S.showLattice; scene.add(lattice);
+  const fseg=[], y=-hY;
+  for(let g=0;g<=Nx+0.001;g+=1){const c=g-hX;fseg.push(c,y,-hZ,c,y,hZ);}
+  for(let g=0;g<=Nz+0.001;g+=1){const c=g-hZ;fseg.push(-hX,y,c,hX,y,c);}
+  const fg=new T.BufferGeometry(); fg.setAttribute("position",new T.Float32BufferAttribute(fseg,3));
+  floor=new T.LineSegments(fg,new T.LineBasicMaterial({color:0x6b5f4a,transparent:true,opacity:0.16}));
+  floor.visible=S.showFloor; scene.add(floor);
+}
+
+function updateStats(count,flag,e){
+  const el=document.getElementById("stats");
+  if(flag==="over"){
+    el.innerHTML=`<div>box &nbsp;<b>${e.bx} × ${e.by} × ${e.bz}</b> blocks</div>`+
+      `<div class="warn">3D view paused — ${(e.Nx*e.Ny*e.Nz/1e6).toFixed(1)}M voxels.<br>Lower density or size. Slice still live.</div>`;
+    return;
+  }
+  let extra="";
+  if(["Cylinder","Tube","Sphere","Torus"].includes(S.shape))
+    extra=`<div>measured Ø &nbsp;<b class="big">${lastDiameter}</b> vx · ${(lastDiameter/S.D).toFixed(2)} bl</div>`;
+  el.innerHTML=
+    `<div>box &nbsp;<b>${e.bx} × ${e.by} × ${e.bz}</b> blocks</div>`+
+    `<div>voxels &nbsp;<b>${count.toLocaleString()}</b>${flag==="cap"?' <span class="warn">(capped)</span>':''}</div>`+extra;
+}
+
+// ---------- origin gizmo ----------
+let gizmo=null, gizmoKey="";
+function buildGizmo(e){
+  const k=`${e.Nx}_${e.Ny}_${e.Nz}`; if(k===gizmoKey) return; gizmoKey=k;
+  if(gizmo){ scene.remove(gizmo); gizmo.traverse(o=>{o.geometry&&o.geometry.dispose();}); }
+  gizmo=new T.Group();
+  const L=Math.max(e.Nx,e.Ny,e.Nz)*0.62, s=L*0.28;
+  const mkArrow=(dir,col)=>{ const a=new T.ArrowHelper(dir,new T.Vector3(0,0,0),L,col,L*0.16,L*0.09);
+    a.traverse(o=>{ if(o.material){o.material.depthTest=false;o.material.transparent=true;o.material.opacity=0.95;} o.renderOrder=999; }); return a; };
+  gizmo.add(mkArrow(new T.Vector3(1,0,0),0xd9603f));   // X
+  gizmo.add(mkArrow(new T.Vector3(0,1,0),0x6fcf5f));   // Y
+  gizmo.add(mkArrow(new T.Vector3(0,0,1),0x5a8cff));   // Z
+  const sqMat=new T.LineBasicMaterial({color:0xbdb39a,transparent:true,opacity:0.7,depthTest:false});
+  const sq=(pts)=>{ const g=new T.BufferGeometry().setFromPoints(pts.map(p=>new T.Vector3(p[0],p[1],p[2]))); const l=new T.Line(g,sqMat); l.renderOrder=999; return l; };
+  gizmo.add(sq([[0,0,0],[s,0,0],[s,s,0],[0,s,0],[0,0,0]]));   // XY
+  gizmo.add(sq([[0,0,0],[0,s,0],[0,s,s],[0,0,s],[0,0,0]]));   // YZ
+  gizmo.add(sq([[0,0,0],[0,0,s],[s,0,s],[s,0,0],[0,0,0]]));   // ZX
+  gizmo.visible=S.showGizmo; scene.add(gizmo);
+}
+
+// ---------- view cube (own scene, drawn in a corner viewport) ----------
+const cubeScene=new T.Scene();
+const cubeCam=new T.OrthographicCamera(-1.35,1.35,1.35,-1.35,0.1,100);
+cubeScene.add(new T.HemisphereLight(0xffffff,0x333333,1.1));
+const cubeLight=new T.DirectionalLight(0xffffff,0.55); cubeLight.position.set(2,3,4); cubeScene.add(cubeLight);
+function faceTex(label){
+  const c=document.createElement("canvas"); c.width=c.height=128; const x=c.getContext("2d");
+  x.fillStyle="#241d15"; x.fillRect(0,0,128,128);
+  x.strokeStyle="#5fb8a4"; x.lineWidth=7; x.strokeRect(4,4,120,120);
+  x.fillStyle="#e9e1d1"; x.font="600 24px ui-sans-serif,system-ui,sans-serif"; x.textAlign="center"; x.textBaseline="middle";
+  x.fillText(label,64,68);
+  return new T.CanvasTexture(c);
+}
+const CUBELABELS=["RIGHT","LEFT","TOP","BOTTOM","FRONT","BACK"];   // +x,-x,+y,-y,+z,-z
+const cubeMats=CUBELABELS.map(l=>new T.MeshLambertMaterial({map:faceTex(l)}));
+const cubeMesh=new T.Mesh(new T.BoxGeometry(1.4,1.4,1.4), cubeMats);
+cubeMesh.add(new T.LineSegments(new T.EdgesGeometry(cubeMesh.geometry), new T.LineBasicMaterial({color:0x5fb8a4})));
+cubeScene.add(cubeMesh);
+const FACE_VIEW=[ [0,Math.PI/2], [Math.PI,Math.PI/2], [-Math.PI/2,0.0001], [-Math.PI/2,Math.PI-0.0001], [Math.PI/2,Math.PI/2], [-Math.PI/2,Math.PI/2] ];
+const CUBE_PX=128, CUBE_M=16;
+const ray=new T.Raycaster();
+let hoverFace=-1;
+function inCube(px,py){ return px>=CUBE_M&&px<=CUBE_M+CUBE_PX&&py>=CUBE_M&&py<=CUBE_M+CUBE_PX; }
+function cubePick(px,py){
+  const nx=((px-CUBE_M)/CUBE_PX)*2-1, ny=-(((py-CUBE_M)/CUBE_PX)*2-1);
+  ray.setFromCamera({x:nx,y:ny}, cubeCam);
+  const hit=ray.intersectObject(cubeMesh,false)[0];
+  return hit?hit.face.materialIndex:-1;
+}
+
+// ---------- camera control + snap tween ----------
+let theta=0.7, phi=1.05, dist=140, target=new T.Vector3(0,0,0);
+let tw=null;
+const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+function frameCamera(e){ dist=Math.max(e.Nx,e.Ny,e.Nz)*1.9; }
+function snapTo(idx){
+  const [th1,ph1]=FACE_VIEW[idx];
+  let t1=th1; while(t1-theta>Math.PI)t1-=2*Math.PI; while(t1-theta<-Math.PI)t1+=2*Math.PI;
+  if(reduceMotion){ theta=t1; phi=ph1; tw=null; return; }
+  tw={th0:theta,ph0:phi,th1:t1,ph1,t0:performance.now(),dur:380};
+}
+function applyTween(){
+  let u=(performance.now()-tw.t0)/tw.dur; if(u>=1)u=1;
+  const e=u<0.5?2*u*u:1-Math.pow(-2*u+2,2)/2;
+  theta=tw.th0+(tw.th1-tw.th0)*e; phi=tw.ph0+(tw.ph1-tw.ph0)*e;
+  if(u>=1)tw=null;
+}
+function camDir(){ return new T.Vector3(Math.sin(phi)*Math.cos(theta), Math.cos(phi), Math.sin(phi)*Math.sin(theta)); }
+function updateCamera(){
+  const d=camDir();
+  camera.position.set(target.x+d.x*dist, target.y+d.y*dist, target.z+d.z*dist);
+  camera.up.set(0,1,0); camera.lookAt(target);
+  if(camera===ortho){
+    const w=stage.clientWidth,h=stage.clientHeight, aspect=(w/h)||1, vh=dist*0.42;
+    ortho.top=vh; ortho.bottom=-vh; ortho.left=-vh*aspect; ortho.right=vh*aspect; ortho.updateProjectionMatrix();
+  }
+  cubeCam.position.copy(d).multiplyScalar(4); cubeCam.up.set(0,1,0); cubeCam.lookAt(0,0,0);
+}
+
+let dragging=false,lx=0,ly=0,downX=0,downY=0,downInCube=false;
+renderer.domElement.addEventListener("pointerdown",e=>{
+  downX=e.clientX; downY=e.clientY; downInCube=inCube(e.clientX,e.clientY);
+  if(downInCube && S.showCube) return;
+  dragging=true; lx=e.clientX; ly=e.clientY; renderer.domElement.setPointerCapture(e.pointerId);
+});
+renderer.domElement.addEventListener("pointermove",e=>{
+  if(dragging){ tw=null; theta-=(e.clientX-lx)*0.01; phi-=(e.clientY-ly)*0.01; phi=Math.max(0.05,Math.min(Math.PI-0.05,phi)); lx=e.clientX; ly=e.clientY; return; }
+  hoverFace=(S.showCube&&inCube(e.clientX,e.clientY))?cubePick(e.clientX,e.clientY):-1;
+  renderer.domElement.style.cursor=hoverFace>=0?"pointer":"default";
+});
+addEventListener("pointerup",e=>{
+  if(downInCube && S.showCube && inCube(e.clientX,e.clientY) && Math.abs(e.clientX-downX)<5 && Math.abs(e.clientY-downY)<5){
+    const idx=cubePick(e.clientX,e.clientY); if(idx>=0) snapTo(idx);
+  }
+  dragging=false; downInCube=false;
+});
+renderer.domElement.addEventListener("wheel",e=>{e.preventDefault();dist*=(1+Math.sign(e.deltaY)*0.08);dist=Math.max(8,Math.min(5000,dist));},{passive:false});
+
+function resize(){const w=stage.clientWidth,h=stage.clientHeight;renderer.setSize(w,h);persp.aspect=w/h;persp.updateProjectionMatrix();}
+addEventListener("resize",resize);
+
+const $=id=>document.getElementById(id);
+let dirty=true, autoFrame=true;
+const mark=()=>dirty=true;
+const ifmt=(id,v)=>{ $("v-"+id).innerHTML=`${v} <small>· ${v*S.D}vx</small>`; };
+function refreshVals(){ ifmt("X",S.X);ifmt("Y",S.Y);ifmt("Z",S.Z);ifmt("wall",S.W); $("v-density").innerHTML=`${S.D} <small>vx/bl</small>`; }
+
+function syncRows(){ $("r-wall").classList.toggle("off", S.shape!=="Tube"); }
+
+$("shapes").addEventListener("click",e=>{const c=e.target.closest(".chip");if(!c)return;
+  S.shape=c.dataset.shape; [...$("shapes").children].forEach(ch=>ch.setAttribute("aria-pressed",ch===c));
+  syncRows(); mark(); /* no value or camera change on shape switch */});
+$("mats").addEventListener("click",e=>{const c=e.target.closest(".chip");if(!c)return;
+  S.mat=c.dataset.mat; [...$("mats").children].forEach(ch=>ch.setAttribute("aria-pressed",ch===c)); applyMat();});
+
+$("X").oninput=e=>{S.X=+e.target.value;ifmt("X",S.X);autoFrame=true;mark();};
+$("Y").oninput=e=>{S.Y=+e.target.value;ifmt("Y",S.Y);autoFrame=true;mark();};
+$("Z").oninput=e=>{S.Z=+e.target.value;ifmt("Z",S.Z);autoFrame=true;mark();};
+$("wall").oninput=e=>{S.W=+e.target.value;ifmt("wall",S.W);mark();};
+$("density").oninput=e=>{S.D=+e.target.value; if(material.userData.shader)material.userData.shader.uniforms.uDensity.value=S.D; refreshVals(); autoFrame=true; mark();};
+$("iso").oninput=e=>{S.iso=+e.target.value;$("v-iso").textContent=S.iso.toFixed(2);mark();};
+$("t-vox").onchange=e=>{S.showVoxGrid=e.target.checked; GRID.uGrid.value=S.showVoxGrid?1:0;};
+$("t-grid").onchange=e=>{S.showLattice=e.target.checked;if(lattice)lattice.visible=S.showLattice;};
+$("t-floor").onchange=e=>{S.showFloor=e.target.checked;if(floor)floor.visible=S.showFloor;};
+$("proj").addEventListener("click",e=>{const c=e.target.closest(".chip");if(!c)return;
+  [...$("proj").children].forEach(ch=>ch.setAttribute("aria-pressed",ch===c));
+  camera = c.dataset.proj==="ortho" ? ortho : persp;});
+$("t-cube").onchange=e=>{S.showCube=e.target.checked;};
+$("t-gizmo").onchange=e=>{S.showGizmo=e.target.checked; if(gizmo)gizmo.visible=S.showGizmo;};
+$("png").onchange=e=>{const f=e.target.files[0];if(!f)return;const img=new Image();
+  img.onload=()=>{TEX.Custom=tuneTex(new T.Texture(img));S.mat="Custom";applyMat();[...$("mats").children].forEach(ch=>ch.setAttribute("aria-pressed",false));};
+  img.src=URL.createObjectURL(f);};
+
+// ===== File System Access: load known chiselable blocks from a VS install =====
+// known chiselable solids — matched as lowercase substrings of the texture path
+const CHISEL_NAMES=["granite","andesite","basalt","chalk","chert","claystone","conglomerate",
+  "diorite","dolomite","dolostone","sandstone","limestone","shale","slate","peridotite","phyllite",
+  "suevite","kimberlite","bauxite","halite","graphite","obsidian","marble","quartzite","gneiss",
+  "breccia","greenschist","plank","ashlar","polished","stonebrick","claybrick","cobblestone","drystone"];
+const EXCLUDE=["/ore","gravel","overlay","/soil","crack","_n.png","-n.png","glow"];
+function prettify(key){
+  let s=key.split("/").pop().replace(/[-_]/g," ").trim();
+  return s.replace(/\b\w/g,c=>c.toUpperCase());
+}
+function isChiselable(p){
+  p=p.toLowerCase();
+  if(EXCLUDE.some(x=>p.includes(x))) return false;
+  if(p.includes("/rock/")) return true;
+  return CHISEL_NAMES.some(n=>p.includes(n));
+}
+async function findBlockDir(root){
+  try{ const t=await root.getDirectoryHandle("textures"); return await t.getDirectoryHandle("block"); }catch(_){}
+  if(root.name==="block") return root;
+  try{ for await (const [name,h] of root.entries()){ if(h.kind==="directory"){
+    if(name==="block") return h;
+    try{ const t=await h.getDirectoryHandle("textures"); return await t.getDirectoryHandle("block"); }catch(_){}
+  }}}catch(_){}
+  return root;
+}
+async function scanBlocks(dir){
+  const pngs=[]; let n=0;
+  async function walk(d,prefix){
+    for await (const [name,h] of d.entries()){
+      if(n>8000) return;
+      if(h.kind==="directory") await walk(h, prefix+name+"/");
+      else if(name.toLowerCase().endsWith(".png")){ n++; const path=prefix+name; if(isChiselable(path)) pngs.push({path,handle:h}); }
+    }
+  }
+  await walk(dir,"");
+  const groups=new Map();
+  for(const f of pngs){
+    const key=f.path.replace(/\.png$/i,"").replace(/\d+$/,"");
+    if(!groups.has(key)) groups.set(key,{key,label:prettify(key),files:[]});
+    groups.get(key).files.push(f);
+  }
+  return [...groups.values()].sort((a,b)=>a.label.localeCompare(b.label)).slice(0,90);
+}
+
+// tiny offscreen renderer for 45° orthographic block thumbnails
+const thumbR=new T.WebGLRenderer({antialias:true,alpha:true,preserveDrawingBuffer:true});
+thumbR.setPixelRatio(2); thumbR.setSize(96,96);
+const thumbScene=new T.Scene();
+thumbScene.add(new T.HemisphereLight(0xffffff,0x434343,1.05));
+const tlight=new T.DirectionalLight(0xffffff,0.6); tlight.position.set(1.2,2,1.4); thumbScene.add(tlight);
+const thumbCam=new T.OrthographicCamera(-0.92,0.92,0.92,-0.92,0.1,10);
+{ const a=Math.PI/4, el=0.62, R=4;
+  thumbCam.position.set(Math.cos(el)*Math.sin(a)*R, Math.sin(el)*R, Math.cos(el)*Math.cos(a)*R); thumbCam.lookAt(0,0,0); }
+const thumbMat=new T.MeshLambertMaterial();
+const thumbCube=new T.Mesh(new T.BoxGeometry(1,1,1), thumbMat); thumbScene.add(thumbCube);
+function renderThumb(tex){ thumbMat.map=tex; thumbMat.needsUpdate=true; thumbR.render(thumbScene,thumbCam); return thumbR.domElement.toDataURL("image/png"); }
+
+async function imgFromHandle(h){
+  const file=await h.getFile(); const url=URL.createObjectURL(file);
+  const img=new Image(); await new Promise((res,rej)=>{img.onload=res;img.onerror=rej;img.src=url;});
+  return img;
+}
+const paletteEl=$("palette");
+async function applyBlock(g){
+  const f=g.files[(Math.random()*g.files.length)|0];
+  const img=await imgFromHandle(f.handle);
+  TEX.Custom=tuneTex(new T.Texture(img)); S.mat="Custom"; applyMat();
+  [...$("mats").children].forEach(ch=>ch.setAttribute("aria-pressed",false));
+}
+async function buildPalette(groups){
+  [...paletteEl.querySelectorAll(".ptile")].forEach(t=>t.remove());
+  for(const g of groups){
+    let url;
+    try{ const img=await imgFromHandle(g.files[0].handle); const tex=tuneTex(new T.Texture(img)); url=renderThumb(tex); tex.dispose(); }
+    catch(_){ continue; }
+    const tile=document.createElement("div"); tile.className="ptile";
+    tile.innerHTML=`<img alt="${g.label}"><span>${g.label}${g.files.length>1?` ·${g.files.length}`:""}</span>`;
+    tile.querySelector("img").src=url;
+    tile.title=`${g.label} — ${g.files.length} variant${g.files.length>1?"s":""}`;
+    tile.onclick=()=>applyBlock(g);
+    paletteEl.appendChild(tile);
+  }
+}
+function setStatus(t){ $("status").textContent=t; }
+$("connect").onclick=async ()=>{
+  if(!window.showDirectoryPicker){ setStatus("This browser has no folder access. Use Chrome/Edge, or load a single PNG above."); return; }
+  let root;
+  try{ root=await window.showDirectoryPicker({mode:"read"}); }
+  catch(err){ if(err&&err.name==="AbortError")return; setStatus("Couldn't open folder: "+(err.message||err)); return; }
+  try{
+    setStatus("Scanning…");
+    const blockDir=await findBlockDir(root);
+    const groups=await scanBlocks(blockDir);
+    if(!groups.length){ setStatus("No known chiselable textures found. Pick your assets/survival folder."); return; }
+    setStatus(`${groups.length} blocks found — building palette…`);
+    await buildPalette(groups);
+    paletteEl.classList.add("show");
+    setStatus(`${groups.length} blocks loaded. Click any to apply a random variant.`);
+  }catch(err){ setStatus("Scan failed: "+(err.message||err)); }
+};
+
+renderer.autoClear=false;
+function tick(){
+  if(dirty){ rebuild(); buildGrids(lastE); buildGizmo(lastE); if(autoFrame){frameCamera(lastE);autoFrame=false;} dirty=false; }
+  if(tw) applyTween();
+  updateCamera();
+  const w=stage.clientWidth, h=stage.clientHeight;
+  renderer.setScissorTest(false); renderer.setViewport(0,0,w,h); renderer.clear();
+  renderer.render(scene,camera);
+  if(S.showCube){
+    for(let i=0;i<cubeMats.length;i++) cubeMats[i].color.setHex(i===hoverFace?0x5fb8a4:0xffffff);
+    const s=CUBE_PX, x=CUBE_M, y=h-CUBE_M-s;
+    renderer.setViewport(x,y,s,s); renderer.setScissor(x,y,s,s); renderer.setScissorTest(true);
+    renderer.clearDepth(); renderer.render(cubeScene,cubeCam); renderer.setScissorTest(false);
+  }
+  requestAnimationFrame(tick);
+}
+resize(); refreshVals(); syncRows(); tick();
+</script>
+</body>
+</html>
