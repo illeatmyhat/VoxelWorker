@@ -73,7 +73,9 @@ struct VoxelUniforms {
     voxel_line_color: [f32; 3],
     grid_overlay_enabled: f32,
     block_line_color: [f32; 3],
-    _pad: f32,
+    /// Face-orientation debug flag (0 = normal, 1 = colour-by-normal debug).
+    /// Reuses the std140 scalar slot that pads the preceding vec3 to 16 bytes.
+    debug_face_mode: f32,
     voxel_line_half_width: f32,
     block_line_half_width: f32,
     voxel_line_alpha: f32,
@@ -100,16 +102,21 @@ fn unit_cube_geometry() -> (Vec<CubeVertex>, Vec<u16>) {
     // Base UVs for the four corners of every face, in winding order.
     const FACE_UVS: [[f32; 2]; 4] = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
 
-    // (normal, the four corner offsets in the plane of that face).
+    // (normal, the four corner offsets in the plane of that face). Every corner
+    // list is wound counter-clockwise WHEN VIEWED FROM OUTSIDE the cube so that
+    // `front_face: Ccw` + `cull_mode: Back` keeps the outward faces. (The +X/-X/
+    // +Y/-Y lists were previously wound clockwise-from-outside, which culled the
+    // four side/top/bottom faces and rendered only the inner +Z/-Z faces — the
+    // "backfaces only" bug.)
     let faces: [([f32; 3], [[f32; 3]; 4]); 6] = [
         // +X
-        ([1.0, 0.0, 0.0], [[1.0, -1.0, -1.0], [1.0, -1.0, 1.0], [1.0, 1.0, 1.0], [1.0, 1.0, -1.0]]),
+        ([1.0, 0.0, 0.0], [[1.0, 1.0, -1.0], [1.0, 1.0, 1.0], [1.0, -1.0, 1.0], [1.0, -1.0, -1.0]]),
         // -X
-        ([-1.0, 0.0, 0.0], [[-1.0, -1.0, 1.0], [-1.0, -1.0, -1.0], [-1.0, 1.0, -1.0], [-1.0, 1.0, 1.0]]),
+        ([-1.0, 0.0, 0.0], [[-1.0, 1.0, 1.0], [-1.0, 1.0, -1.0], [-1.0, -1.0, -1.0], [-1.0, -1.0, 1.0]]),
         // +Y
-        ([0.0, 1.0, 0.0], [[-1.0, 1.0, -1.0], [1.0, 1.0, -1.0], [1.0, 1.0, 1.0], [-1.0, 1.0, 1.0]]),
+        ([0.0, 1.0, 0.0], [[-1.0, 1.0, 1.0], [1.0, 1.0, 1.0], [1.0, 1.0, -1.0], [-1.0, 1.0, -1.0]]),
         // -Y
-        ([0.0, -1.0, 0.0], [[-1.0, -1.0, 1.0], [1.0, -1.0, 1.0], [1.0, -1.0, -1.0], [-1.0, -1.0, -1.0]]),
+        ([0.0, -1.0, 0.0], [[-1.0, -1.0, -1.0], [1.0, -1.0, -1.0], [1.0, -1.0, 1.0], [-1.0, -1.0, 1.0]]),
         // +Z
         ([0.0, 0.0, 1.0], [[-1.0, -1.0, 1.0], [1.0, -1.0, 1.0], [1.0, 1.0, 1.0], [-1.0, 1.0, 1.0]]),
         // -Z
@@ -127,8 +134,10 @@ fn unit_cube_geometry() -> (Vec<CubeVertex>, Vec<u16>) {
                 face_uv: FACE_UVS[corner_index],
             });
         }
-        // Two CCW triangles (counter-clockwise wound so the default front-face /
-        // back-face culling keeps outward faces).
+        // Two triangles per face. Every face's corner list above is wound
+        // counter-clockwise WHEN VIEWED FROM OUTSIDE the cube (verified by
+        // `voxel_cube_is_ccw_outward`), so with `front_face: Ccw` +
+        // `cull_mode: Back` the OUTWARD faces are kept and the inner ones culled.
         indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
     }
     (vertices, indices)
@@ -164,6 +173,11 @@ fn with_alpha(rgb: [f32; 3], alpha: f32) -> [f32; 4] {
 /// All GPU resources for drawing the voxel grid as textured instanced cubes.
 pub struct VoxelRenderer {
     pipeline: wgpu::RenderPipeline,
+    /// Face-orientation debug pipeline: identical to `pipeline` except
+    /// `cull_mode: None`, so a back face that is the nearest surface (a winding
+    /// bug) still DRAWS and gets flagged by the shader's `front_facing` marker.
+    /// Depth testing stays on so the nearest face still wins.
+    debug_pipeline: wgpu::RenderPipeline,
     cube_vertex_buffer: wgpu::Buffer,
     cube_index_buffer: wgpu::Buffer,
     cube_index_count: u32,
@@ -355,52 +369,62 @@ impl VoxelRenderer {
             ],
         };
 
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("voxel pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vertex_main"),
-                buffers: &[vertex_layout, instance_layout],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fragment_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: color_format,
-                    blend: Some(wgpu::BlendState::REPLACE),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: Some(wgpu::Face::Back),
-                unclipped_depth: false,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                conservative: false,
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: DEPTH_FORMAT,
-                depth_write_enabled: Some(true),
-                depth_compare: Some(wgpu::CompareFunction::Less),
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
-            multisample: wgpu::MultisampleState {
-                count: MSAA_SAMPLE_COUNT,
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            },
-            multiview_mask: None,
-            cache: None,
-        });
+        // Both pipelines share everything except the cull mode. The debug
+        // pipeline disables culling (`cull_mode: None`) so that if a back face is
+        // the nearest surface to the camera (a winding bug), it draws and the
+        // shader's `front_facing` marker flags it — culling would otherwise hide
+        // the evidence. Depth testing stays on in both, so the nearest face wins.
+        let build_pipeline = |label: &str, cull_mode: Option<wgpu::Face>| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vertex_main"),
+                    buffers: &[vertex_layout.clone(), instance_layout.clone()],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fragment_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: color_format,
+                        blend: Some(wgpu::BlendState::REPLACE),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    strip_index_format: None,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode,
+                    unclipped_depth: false,
+                    polygon_mode: wgpu::PolygonMode::Fill,
+                    conservative: false,
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DEPTH_FORMAT,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::Less),
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState::default(),
+                }),
+                multisample: wgpu::MultisampleState {
+                    count: MSAA_SAMPLE_COUNT,
+                    mask: !0,
+                    alpha_to_coverage_enabled: false,
+                },
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let pipeline = build_pipeline("voxel pipeline", Some(wgpu::Face::Back));
+        let debug_pipeline = build_pipeline("voxel debug pipeline", None);
 
         Self {
             pipeline,
+            debug_pipeline,
             cube_vertex_buffer,
             cube_index_buffer,
             cube_index_count: indices.len() as u32,
@@ -461,6 +485,9 @@ impl VoxelRenderer {
     /// extent is `dimensions / 2` so a fragment's `world_pos + half_extent` makes
     /// voxel boundaries fall on integers (BUG 2 fix). `voxels_per_block` is the
     /// current density. `grid_overlay_enabled` reflects the Display toggle.
+    /// `debug_face_mode` enables the face-orientation debug shader path (colour by
+    /// outward normal + back-facing marker); it must match the pipeline chosen in
+    /// [`VoxelRenderer::draw`].
     pub fn update_uniforms(
         &self,
         queue: &wgpu::Queue,
@@ -468,6 +495,7 @@ impl VoxelRenderer {
         grid_dimensions: [u32; 3],
         voxels_per_block: u32,
         grid_overlay_enabled: bool,
+        debug_face_mode: bool,
     ) {
         let uniforms = VoxelUniforms {
             view_projection: view_projection.to_cols_array_2d(),
@@ -480,7 +508,7 @@ impl VoxelRenderer {
             voxel_line_color: srgb_hex_to_linear(VOXEL_LINE_COLOR_HEX),
             grid_overlay_enabled: if grid_overlay_enabled { 1.0 } else { 0.0 },
             block_line_color: srgb_hex_to_linear(BLOCK_LINE_COLOR_HEX),
-            _pad: 0.0,
+            debug_face_mode: if debug_face_mode { 1.0 } else { 0.0 },
             voxel_line_half_width: VOXEL_LINE_HALF_WIDTH,
             block_line_half_width: BLOCK_LINE_HALF_WIDTH,
             voxel_line_alpha: VOXEL_LINE_ALPHA,
@@ -496,7 +524,17 @@ impl VoxelRenderer {
     /// In both cases the SAME pipeline + per-voxel slice shader run — only the
     /// bound texture differs — so a loaded block textures the model with correct
     /// 1/density slicing, identically to the procedural materials.
-    pub fn draw(&self, render_pass: &mut wgpu::RenderPass<'_>, material: MaterialSource<'_>) {
+    ///
+    /// When `debug_face_mode` is true the cull-off debug pipeline is selected (it
+    /// must match the `debug_face_mode` flag passed to
+    /// [`VoxelRenderer::update_uniforms`]); otherwise the normal back-culled
+    /// pipeline runs, leaving the lit/textured output unchanged.
+    pub fn draw(
+        &self,
+        render_pass: &mut wgpu::RenderPass<'_>,
+        material: MaterialSource<'_>,
+        debug_face_mode: bool,
+    ) {
         if self.instance_count == 0 {
             return;
         }
@@ -504,7 +542,12 @@ impl VoxelRenderer {
             MaterialSource::Procedural(choice) => &self.material_bind_groups[material_index(choice)],
             MaterialSource::Loaded(bind_group) => bind_group,
         };
-        render_pass.set_pipeline(&self.pipeline);
+        let pipeline = if debug_face_mode {
+            &self.debug_pipeline
+        } else {
+            &self.pipeline
+        };
+        render_pass.set_pipeline(pipeline);
         render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
         render_pass.set_bind_group(1, material_bind_group, &[]);
         render_pass.set_vertex_buffer(0, self.cube_vertex_buffer.slice(..));
@@ -1868,4 +1911,54 @@ pub fn create_depth_view(device: &wgpu::Device, width: u32, height: u32) -> wgpu
         view_formats: &[],
     });
     texture.create_view(&wgpu::TextureViewDescriptor::default())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// For a triangle wound CCW *as seen from outside*, the geometric face normal
+    /// (edge0 × edge1) points in the SAME direction as the stored outward normal,
+    /// so their dot product is positive. A negative dot means the winding is
+    /// inside-out (BUG 1) and back-face culling would hide the visible face.
+    fn assert_ccw_outward(positions: &[[f32; 3]], normals: &[[f32; 3]], indices: &[u16]) {
+        assert_eq!(indices.len() % 3, 0, "indices must form whole triangles");
+        for tri in indices.chunks_exact(3) {
+            let a = positions[tri[0] as usize];
+            let b = positions[tri[1] as usize];
+            let c = positions[tri[2] as usize];
+            let edge0 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+            let edge1 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+            // edge0 × edge1
+            let geometric_normal = [
+                edge0[1] * edge1[2] - edge0[2] * edge1[1],
+                edge0[2] * edge1[0] - edge0[0] * edge1[2],
+                edge0[0] * edge1[1] - edge0[1] * edge1[0],
+            ];
+            let outward = normals[tri[0] as usize];
+            let dot = geometric_normal[0] * outward[0]
+                + geometric_normal[1] * outward[1]
+                + geometric_normal[2] * outward[2];
+            assert!(
+                dot > 0.0,
+                "triangle {tri:?} is wound inside-out (dot={dot}); outward faces would be culled",
+            );
+        }
+    }
+
+    #[test]
+    fn voxel_cube_is_ccw_outward() {
+        let (vertices, indices) = unit_cube_geometry();
+        let positions: Vec<[f32; 3]> = vertices.iter().map(|v| v.position).collect();
+        let normals: Vec<[f32; 3]> = vertices.iter().map(|v| v.normal).collect();
+        assert_ccw_outward(&positions, &normals, &indices);
+    }
+
+    #[test]
+    fn view_cube_is_ccw_outward() {
+        let (vertices, indices) = view_cube_geometry();
+        let positions: Vec<[f32; 3]> = vertices.iter().map(|v| v.position).collect();
+        let normals: Vec<[f32; 3]> = vertices.iter().map(|v| v.normal).collect();
+        assert_ccw_outward(&positions, &normals, &indices);
+    }
 }

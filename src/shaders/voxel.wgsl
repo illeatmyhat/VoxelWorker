@@ -24,7 +24,9 @@ struct VoxelUniforms {
     voxel_line_color: vec3<f32>,
     grid_overlay_enabled: f32,
     block_line_color: vec3<f32>,
-    _pad: f32,
+    // Face-orientation debug flag (0 = normal render, 1 = colour-by-normal debug).
+    // Reuses the std140 scalar slot that pads the preceding vec3 to 16 bytes.
+    debug_face_mode: f32,
     voxel_line_half_width: f32,
     block_line_half_width: f32,
     voxel_line_alpha: f32,
@@ -108,8 +110,43 @@ fn vertex_main(vertex: VertexInput, instance: InstanceInput) -> VertexOutput {
     return output;
 }
 
+// Map an outward normal to a signed-axis debug colour:
+//   +X red, -X cyan; +Y green, -Y magenta; +Z blue, -Z yellow.
+// The dominant axis of the (normalized) normal picks the colour.
+fn debug_face_color(face_normal: vec3<f32>) -> vec3<f32> {
+    let axis_magnitude = abs(face_normal);
+    if (axis_magnitude.x > axis_magnitude.y && axis_magnitude.x > axis_magnitude.z) {
+        // +X red, -X cyan.
+        return select(vec3<f32>(0.0, 1.0, 1.0), vec3<f32>(1.0, 0.0, 0.0), face_normal.x > 0.0);
+    } else if (axis_magnitude.y > axis_magnitude.z) {
+        // +Y green, -Y magenta.
+        return select(vec3<f32>(1.0, 0.0, 1.0), vec3<f32>(0.0, 1.0, 0.0), face_normal.y > 0.0);
+    } else {
+        // +Z blue, -Z yellow.
+        return select(vec3<f32>(1.0, 1.0, 0.0), vec3<f32>(0.0, 0.0, 1.0), face_normal.z > 0.0);
+    }
+}
+
 @fragment
-fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
+fn fragment_main(
+    input: VertexOutput,
+    @builtin(front_facing) is_front_facing: bool,
+) -> @location(0) vec4<f32> {
+    // --- Face-orientation debug mode ---
+    // Colour each fragment by its outward face normal (signed-axis palette),
+    // bypassing texture + lighting. Any fragment that is NOT front-facing (a back
+    // face that survived because culling is off in the debug pipeline) is flagged
+    // with bold black diagonal stripes so winding/cull bugs are unmistakable.
+    if (uniforms.debug_face_mode > 0.5) {
+        var debug_color = debug_face_color(input.world_normal);
+        if (!is_front_facing) {
+            // Diagonal stripes in screen space over a forced-white base.
+            let stripe = step(0.5, fract((input.clip_position.x + input.clip_position.y) * 0.06));
+            debug_color = mix(vec3<f32>(1.0, 1.0, 1.0), vec3<f32>(0.0, 0.0, 0.0), stripe);
+        }
+        return vec4<f32>(debug_color, 1.0);
+    }
+
     // Sampled material colour for this face's layer (sRGB texture → linear via
     // the format). The per-voxel slice in `texture_coord` is unchanged: each face
     // samples its own layer, sliced by block_local_coord exactly as before.

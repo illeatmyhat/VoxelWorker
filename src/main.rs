@@ -52,6 +52,14 @@ struct WindowedState {
     /// The in-flight background scan (auto-detect on startup, or a custom folder
     /// scan triggered by "Connect folder…"). `None` once finished/idle.
     scan_handle: Option<ScanHandle>,
+    /// Groups received from the scan worker but not yet turned into tiles; drained
+    /// a few per frame so a few-hundred-block scan doesn't hitch a single frame.
+    pending_groups: std::collections::VecDeque<(voxel_worker::assets::BlockGroup, voxel_worker::scan_worker::DecodedRgba)>,
+    /// Final group count from the worker's `Done`, applied to the status line once
+    /// the pending queue is fully drained.
+    scan_total: Option<usize>,
+    /// Source name from the worker's `Done` (for the settled status line).
+    scan_source_name: Option<String>,
     /// The active applied VS block, if any (M6/M7). When `Some`, the voxel pass
     /// binds this loaded 6-layer face material instead of the procedural one.
     loaded_material: Option<LoadedMaterial>,
@@ -97,7 +105,10 @@ impl WindowedState {
         // size). Missing/invalid config falls back to defaults (never panics).
         let config = AppConfig::load();
 
-        let mut window_attributes = Window::default_attributes().with_title("VoxelWorker");
+        let mut window_attributes = Window::default_attributes()
+            .with_title("VoxelWorker")
+            // Open maximized so the 3D view + panels get the full screen.
+            .with_maximized(true);
         if let Some(config) = &config {
             window_attributes = window_attributes.with_inner_size(winit::dpi::LogicalSize::new(
                 config.window_size[0],
@@ -220,6 +231,9 @@ impl WindowedState {
             thumbnail_renderer,
             palette,
             scan_handle,
+            pending_groups: std::collections::VecDeque::new(),
+            scan_total: None,
+            scan_source_name: None,
             loaded_material: None,
             face_resolver: FaceResolver::auto(),
             slice_image,
@@ -285,40 +299,59 @@ impl WindowedState {
         }
     }
 
-    /// Drain the background scan channel: build a thumbnail + palette tile for
-    /// each streamed group, and settle the status line on `Done`. All GPU work
-    /// (thumbnail render, egui registration) happens here on the main thread.
+    /// Drain the background scan channel into a pending queue, then build a
+    /// BOUNDED number of thumbnails per frame so a few-hundred-block scan never
+    /// stalls a frame. All GPU work (thumbnail render, egui registration) happens
+    /// here on the main thread; with the cap it is amortised across frames.
     fn poll_scan(&mut self) {
-        let Some(handle) = self.scan_handle.as_ref() else {
-            return;
-        };
-        let messages = handle.drain();
-        let mut finished = false;
-        for message in messages {
-            match message {
-                ScanMessage::Group { group, thumbnail_rgba } => {
-                    self.palette.add_group(
-                        &self.gpu.device,
-                        &self.gpu.queue,
-                        &self.thumbnail_renderer,
-                        &mut self.egui_bridge.renderer,
-                        group,
-                        &thumbnail_rgba,
-                    );
-                    // Show progress as tiles arrive.
-                    self.palette.status = format!("{} blocks loaded…", self.palette.tiles.len());
-                }
-                ScanMessage::Done { group_count, source_name } => {
-                    self.palette.status = match source_name {
-                        Some(name) => format!("{group_count} blocks loaded — {name}"),
-                        None => "No VS install found — use Connect folder".to_string(),
-                    };
-                    finished = true;
+        // Cap the thumbnail GPU work per frame. The PNG decode already happens on
+        // the scan worker; this only bounds the main-thread render+register so a
+        // burst of groups arriving at once can't hitch the frame.
+        const THUMBNAILS_PER_FRAME: usize = 8;
+
+        // Move everything the worker has produced so far into the pending queue.
+        if let Some(handle) = self.scan_handle.as_ref() {
+            for message in handle.drain() {
+                match message {
+                    ScanMessage::Group { group, thumbnail_rgba } => {
+                        self.pending_groups.push_back((group, thumbnail_rgba));
+                    }
+                    ScanMessage::Done { group_count, source_name } => {
+                        self.scan_total = Some(group_count);
+                        self.scan_source_name = source_name;
+                        self.scan_handle = None;
+                    }
                 }
             }
         }
-        if finished {
-            self.scan_handle = None;
+
+        // Build at most a few thumbnails this frame; the rest wait for later
+        // frames (we keep redrawing each frame via `about_to_wait`).
+        for _ in 0..THUMBNAILS_PER_FRAME {
+            let Some((group, thumbnail_rgba)) = self.pending_groups.pop_front() else {
+                break;
+            };
+            self.palette.add_group(
+                &self.gpu.device,
+                &self.gpu.queue,
+                &self.thumbnail_renderer,
+                &mut self.egui_bridge.renderer,
+                group,
+                &thumbnail_rgba,
+            );
+        }
+
+        // Status line: still working while groups are arriving or queued; settle
+        // to the final count once the worker is done AND the queue is drained.
+        if self.scan_handle.is_none() && self.pending_groups.is_empty() {
+            if let Some(total) = self.scan_total.take() {
+                self.palette.status = match self.scan_source_name.take() {
+                    Some(name) => format!("{total} blocks loaded — {name}"),
+                    None => "No VS install found — use Connect folder".to_string(),
+                };
+            }
+        } else {
+            self.palette.status = format!("{} blocks loaded…", self.palette.tiles.len());
         }
     }
 
@@ -338,8 +371,12 @@ impl WindowedState {
         }
         if response.clicked_connect_folder {
             if let Some(folder) = rfd::FileDialog::new().pick_folder() {
-                // Reset the palette + start a fresh scan of the picked folder.
+                // Reset the palette + any in-flight scan state, then start a fresh
+                // scan of the picked folder.
                 self.palette.tiles.clear();
+                self.pending_groups.clear();
+                self.scan_total = None;
+                self.scan_source_name = None;
                 self.palette.status = "Scanning folder…".to_string();
                 // Re-point the M7 face resolver at the same folder.
                 self.face_resolver = FaceResolver::custom_folder(folder.clone());
@@ -580,6 +617,7 @@ impl WindowedState {
             grid_dimensions,
             geometry.voxels_per_block,
             self.panel_state.show_grid_overlay,
+            self.panel_state.debug_face_orientation,
         );
         // M5 overlay uniforms: gizmo shares the main camera matrix; the view cube
         // uses its own orientation-mirroring matrix.
@@ -604,6 +642,7 @@ impl WindowedState {
             grid_lattice: Some(&self.grid_lattice_renderer),
             show_lattice: self.panel_state.show_block_lattice,
             show_floor: self.panel_state.show_floor_grid,
+            debug_face_mode: self.panel_state.debug_face_orientation,
             target_width: self.surface_config.width,
             target_height: self.surface_config.height,
         };

@@ -180,6 +180,10 @@ pub struct FrameOverlays<'a> {
     pub grid_lattice: Option<&'a renderer::GridLatticeRenderer>,
     pub show_lattice: bool,
     pub show_floor: bool,
+    /// Face-orientation debug mode: the voxel cubes are drawn with the cull-off
+    /// debug pipeline (colour by outward normal + back-facing marker). Must match
+    /// the `debug_face_mode` flag passed to `VoxelRenderer::update_uniforms`.
+    pub debug_face_mode: bool,
     /// Target dimensions (needed to place the view-cube corner viewport).
     pub target_width: u32,
     pub target_height: u32,
@@ -241,7 +245,7 @@ pub fn render_frame(
             multiview_mask: None,
         });
 
-        voxel_renderer.draw(&mut voxel_pass, material);
+        voxel_renderer.draw(&mut voxel_pass, material, overlays.debug_face_mode);
 
         // Block lattice + fine floor grid (M8): same MSAA pass, depth-tested so
         // the solid model occludes them (a scaffold around/under it).

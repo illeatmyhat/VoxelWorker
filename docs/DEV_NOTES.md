@@ -150,3 +150,10 @@ impl winit::application::ApplicationHandler for App {
 3. Compare against the prototype behavior described in ARCHITECTURE.md / DATA.md.
 4. Report: files touched, build status, screenshot path, deviations from spec (+why), blockers,
    what the next milestone needs. Keep the report concise — the orchestrator reads the PNG.
+
+- **Face winding/culling check:** `shot --debug-faces` (or the "Debug: face orientation" Display
+  toggle) is the standard way to verify cube face winding/culling — it colours each fragment by its
+  outward normal (+X red/−X cyan, +Y green/−Y magenta, +Z blue/−Z yellow) with the cube pipeline's
+  culling OFF and flags any back-facing fragment with black-on-white stripes. A correct cube from the
+  default 3/4 view shows red/green/blue with no marker; cyan/magenta/yellow or stripes means inverted
+  winding.

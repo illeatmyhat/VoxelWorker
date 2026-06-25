@@ -33,9 +33,6 @@ pub mod vintage_story;
 
 pub use faces::{CubeFaceSlot, FaceProvenance, FaceTextures};
 
-/// Hard cap on the number of [`BlockGroup`]s a scan returns (prototype `slice(0,90)`).
-pub const MAX_BLOCK_GROUPS: usize = 90;
-
 /// Safety cap on the number of PNGs walked per source (prototype `n>8000`).
 pub const MAX_TEXTURES_WALKED: usize = 8000;
 
@@ -207,61 +204,42 @@ pub struct ScannedTexture {
     pub relative_path: String,
 }
 
-/// Group scanned chiselable textures into [`BlockGroup`]s, transcribing the
-/// prototype `scanBlocks` grouping with one documented deviation at the cap step.
+/// Group scanned chiselable textures into [`BlockGroup`]s, faithfully following
+/// the prototype `scanBlocks` grouping — no artificial cap, no label de-dup.
 ///
-/// Faithful to the prototype: GROUP KEY = relative path without `.png`, trailing
-/// digits stripped; LABEL = Title-Cased last segment; variants accumulate per
-/// key; the result is label-sorted and capped at [`MAX_BLOCK_GROUPS`].
+/// GROUP KEY = relative texture path without `.png`, trailing digits stripped, so
+/// each distinct texture-set is ONE tile and numbered variants of the same stem
+/// (`granite1`, `granite2`, …) stay grouped under that stem. LABEL = Title-Cased
+/// last segment. Every group that passes the chiselable ALLOW/EXCLUDE filter is
+/// returned; the result is key-sorted (stable, deterministic) so the palette
+/// order is reproducible across runs.
 ///
-/// **Deviation (reported):** the prototype keys by the *full* path, so the real
-/// VS tree yields ~444 groups of which the alphabetically-first 90 are only ~18
-/// distinct materials (dozens of near-identical "Andesite" tiles from different
-/// brick/cobble sub-dirs). To make the 90-tile palette useful we de-duplicate by
-/// LABEL at the cap, merging variants, and prefer the cleaner `/rock/` base
-/// texture as the representative key. The ALLOW/EXCLUDE/key/label rules
-/// themselves are unchanged.
+/// Earlier builds de-duplicated by LABEL and capped the result at 90 groups to
+/// keep the palette small; that hid most of the chiselable blocks (two distinct
+/// texture-sets that prettify to the same label were merged, and everything past
+/// the 90th label was dropped). Both the cap and the label de-dup are gone: the
+/// real VS tree yields a few hundred groups and the palette shows them all.
 pub fn group_block_textures(textures: Vec<ScannedTexture>) -> Vec<BlockGroup> {
     use std::collections::BTreeMap;
 
-    // First pass: accumulate variants per full-path key (faithful key derivation).
+    // Accumulate variants per full-path key (the faithful prototype key): one
+    // group per distinct texture-set, numbered variants of a stem merged in.
     let mut by_key: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
     for texture in textures {
         let key = group_key_for(&texture.relative_path);
         by_key.entry(key).or_default().push(texture.absolute_path);
     }
 
-    // Order keys so the cleaner representative wins when de-duping by label:
-    // `/rock/` base textures first, then shallower paths, then lexicographic.
-    let mut keyed: Vec<(String, Vec<PathBuf>)> = by_key.into_iter().collect();
-    keyed.sort_by(|(left_key, _), (right_key, _)| {
-        let left_is_rock = path_has_rock_segment(left_key);
-        let right_is_rock = path_has_rock_segment(right_key);
-        right_is_rock
-            .cmp(&left_is_rock)
-            .then_with(|| left_key.matches('/').count().cmp(&right_key.matches('/').count()))
-            .then_with(|| left_key.cmp(right_key))
-    });
-
-    // De-duplicate by label, merging variants into the first (best) representative.
-    let mut by_label: BTreeMap<String, BlockGroup> = BTreeMap::new();
-    for (key, mut variants) in keyed {
-        let label = prettify_label(&key);
-        variants.sort();
-        by_label
-            .entry(label.clone())
-            .and_modify(|group| group.variants.extend(variants.clone()))
-            .or_insert(BlockGroup { label, key, variants });
-    }
-
-    // Final: label-sorted (BTreeMap already is), capped.
-    by_label.into_values().take(MAX_BLOCK_GROUPS).collect()
-}
-
-/// Does the (lower-cased) key contain a `/rock/` path segment, or start with `rock/`?
-fn path_has_rock_segment(key: &str) -> bool {
-    let lowercased = key.to_ascii_lowercase();
-    lowercased.contains("/rock/") || lowercased.starts_with("rock/")
+    // One BlockGroup per key, variants sorted for deterministic variant picking.
+    // BTreeMap iteration is already key-sorted, so the palette order is stable.
+    by_key
+        .into_iter()
+        .map(|(key, mut variants)| {
+            variants.sort();
+            let label = prettify_label(&key);
+            BlockGroup { label, key, variants }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -304,12 +282,9 @@ mod tests {
     }
 
     #[test]
-    fn grouping_dedupes_by_label_and_prefers_rock() {
+    fn grouping_keeps_one_group_per_texture_set_and_merges_stem_variants() {
         let textures = vec![
-            ScannedTexture {
-                absolute_path: "/x/stone/brick/granite1.png".into(),
-                relative_path: "stone/brick/granite1.png".into(),
-            },
+            // Two numbered variants of the SAME stem → one group, two variants.
             ScannedTexture {
                 absolute_path: "/x/stone/rock/granite1.png".into(),
                 relative_path: "stone/rock/granite1.png".into(),
@@ -318,12 +293,40 @@ mod tests {
                 absolute_path: "/x/stone/rock/granite2.png".into(),
                 relative_path: "stone/rock/granite2.png".into(),
             },
+            // A DIFFERENT texture-set that prettifies to the same label "Granite"
+            // must stay its OWN group now (no label de-dup).
+            ScannedTexture {
+                absolute_path: "/x/stone/brick/granite1.png".into(),
+                relative_path: "stone/brick/granite1.png".into(),
+            },
         ];
         let groups = group_block_textures(textures);
-        // One "Granite" group, representative key from /rock/, all 3 variants merged.
-        let granite: Vec<_> = groups.iter().filter(|g| g.label == "Granite").collect();
-        assert_eq!(granite.len(), 1);
-        assert!(granite[0].key.contains("/rock/"));
-        assert_eq!(granite[0].variants.len(), 3);
+        // Two distinct keys → two groups, both labelled "Granite".
+        assert_eq!(groups.len(), 2);
+        let rock = groups
+            .iter()
+            .find(|g| g.key == "stone/rock/granite")
+            .expect("rock granite group");
+        assert_eq!(rock.variants.len(), 2, "stem variants merge into one group");
+        assert!(groups.iter().any(|g| g.key == "stone/brick/granite"));
+        assert!(groups.iter().all(|g| g.label == "Granite"));
+    }
+
+    #[test]
+    fn grouping_has_no_artificial_cap() {
+        // 200 distinct texture-sets must all survive (the old code capped at 90).
+        // Use distinct non-numeric stems so trailing-digit stripping keeps them
+        // separate (numbered variants of one stem would correctly merge).
+        let textures: Vec<ScannedTexture> = (0..200)
+            .map(|i| {
+                let stem = format!("kind_{}", (b'a' + (i % 26) as u8) as char) + &i.to_string() + "x";
+                ScannedTexture {
+                    absolute_path: format!("/x/stone/rock/{stem}.png").into(),
+                    relative_path: format!("stone/rock/{stem}.png"),
+                }
+            })
+            .collect();
+        let groups = group_block_textures(textures);
+        assert_eq!(groups.len(), 200, "no 90-group cap");
     }
 }

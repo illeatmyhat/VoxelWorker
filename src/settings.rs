@@ -162,6 +162,9 @@ impl AppConfig {
             show_floor_grid: self.show_floor_grid,
             show_view_cube: self.show_view_cube,
             show_origin_gizmo: self.show_origin_gizmo,
+            // Face-orientation debug is a transient verification mode; it is not
+            // persisted, so it always starts off.
+            debug_face_orientation: false,
             voxel_cap_warning_millions: None,
             // Re-applied lazily/best-effort: only the label is restored (for the
             // panel readout); the material itself reverts to procedural.

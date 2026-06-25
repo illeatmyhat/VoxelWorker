@@ -83,6 +83,10 @@ pub struct PanelState {
     /// Whether the fine floor grid (bottom-plane grid) is drawn (M8 Display
     /// toggle, OFF by default — matches the prototype `showFloor`).
     pub show_floor_grid: bool,
+    /// Whether the voxel cubes render in face-orientation debug mode (colour by
+    /// outward face normal + a back-facing marker, cull off). Display toggle, OFF
+    /// by default; the standard way to verify face winding/culling.
+    pub debug_face_orientation: bool,
     /// When `Some`, the 3D rebuild was skipped because the grid exceeds the
     /// voxel cap; the panel shows a warning. Set by the caller after it decides
     /// whether to rebuild. Value is the would-be voxel count (in millions).
@@ -367,6 +371,7 @@ fn build_display_section(ui: &mut egui::Ui, state: &mut PanelState) {
     ui.checkbox(&mut state.show_floor_grid, "Fine floor grid");
     ui.checkbox(&mut state.show_view_cube, "View cube");
     ui.checkbox(&mut state.show_origin_gizmo, "Origin gizmo");
+    ui.checkbox(&mut state.debug_face_orientation, "Debug: face orientation");
     ui.separator();
 }
 

@@ -16,6 +16,8 @@
 //!   --proj <perspective|ortho>              (default: perspective)
 //!   --material <stone|wood|plain>           (default: stone)
 //!   --grid                                  enable the voxel/block grid overlay
+//!   --debug-faces                           face-orientation debug render (colour
+//!                                            by outward normal + back-face marker)
 //!   --theta/--phi/--dist                    orbit overrides (auto-framed dist)
 
 use std::path::PathBuf;
@@ -49,6 +51,10 @@ struct ShotOptions {
     show_block_lattice: bool,
     /// Whether the fine floor grid is drawn (M8 `--floor`).
     show_floor_grid: bool,
+    /// Whether the voxel cubes render in face-orientation debug mode
+    /// (`--debug-faces`): colour by outward face normal + back-facing marker,
+    /// cull off. The standard way to verify face winding/culling.
+    debug_face_orientation: bool,
     /// When `Some`, write the resolved grid to this `.vox` path (M8
     /// `--export-vox`) instead of (or in addition to) rendering a PNG.
     export_vox_path: Option<PathBuf>,
@@ -96,6 +102,7 @@ impl Default for ShotOptions {
             show_origin_gizmo: false,
             show_block_lattice: false,
             show_floor_grid: false,
+            debug_face_orientation: false,
             export_vox_path: None,
             show_view_cube: true,
             snap_face: None,
@@ -255,6 +262,9 @@ fn parse_options() -> ShotOptions {
             "--floor" => {
                 options.show_floor_grid = true;
             }
+            "--debug-faces" => {
+                options.debug_face_orientation = true;
+            }
             "--export-vox" => {
                 options.export_vox_path = Some(PathBuf::from(
                     args.next().expect("--export-vox requires a path argument"),
@@ -303,6 +313,7 @@ fn parse_options() -> ShotOptions {
                      \x20            [--apply-block <substring>] [--list-perface]\n\
                      \x20            [--force-demo-stem <texture/stem>]\n\
                      \x20            [--gizmo] [--lattice] [--floor] [--no-viewcube]\n\
+                     \x20            [--debug-faces]\n\
                      \x20            [--export-vox <path.vox>]\n\
                      \x20            [--snap <front|back|left|right|top|bottom>]\n\
                      \x20            [--theta <f32>] [--phi <f32>] [--dist <f32>]\n\
@@ -431,6 +442,7 @@ async fn run_capture(options: ShotOptions) {
         show_origin_gizmo: options.show_origin_gizmo,
         show_block_lattice: options.show_block_lattice,
         show_floor_grid: options.show_floor_grid,
+        debug_face_orientation: options.debug_face_orientation,
         ..PanelState::default()
     };
     if shape.exceeds_voxel_cap() {
@@ -508,6 +520,7 @@ async fn run_capture(options: ShotOptions) {
         shape.grid_dimensions(),
         options.geometry.voxels_per_block,
         options.show_grid_overlay,
+        options.debug_face_orientation,
     );
     gizmo_renderer.update_uniforms(&gpu.queue, view_projection);
     grid_lattice_renderer.update_uniforms(&gpu.queue, view_projection);
@@ -660,6 +673,7 @@ async fn run_capture(options: ShotOptions) {
         grid_lattice: Some(&grid_lattice_renderer),
         show_lattice: options.show_block_lattice,
         show_floor: options.show_floor_grid,
+        debug_face_mode: options.debug_face_orientation,
         target_width: options.width,
         target_height: options.height,
     };
