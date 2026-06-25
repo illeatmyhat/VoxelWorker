@@ -13,8 +13,9 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowId};
 
 use voxel_worker::{
-    create_depth_view, render_frame, run_egui_frame, EguiPaintBridge, GpuContext, OrbitCamera,
-    PanelState, SdfShape, VoxelGrid, VoxelProducer, VoxelRenderer, COLOR_TARGET_FORMAT,
+    create_depth_view, create_msaa_color_view, render_frame, run_egui_frame, EguiPaintBridge,
+    GpuContext, OrbitCamera, PanelState, SdfShape, VoxelGrid, VoxelProducer, VoxelRenderer,
+    COLOR_TARGET_FORMAT,
 };
 
 /// State that exists only once the window and GPU have been created (on first
@@ -31,6 +32,8 @@ struct WindowedState {
     panel_state: PanelState,
     voxel_renderer: VoxelRenderer,
     depth_view: wgpu::TextureView,
+    /// 4× MSAA colour target for the 3D pass; resolved into the surface texture.
+    msaa_color_view: wgpu::TextureView,
     camera: OrbitCamera,
     /// Whether the left mouse button is held (orbit drag in progress).
     left_button_held: bool,
@@ -105,7 +108,8 @@ impl WindowedState {
             shape.size_blocks,
             shape.voxels_per_block
         );
-        let voxel_renderer = VoxelRenderer::new(&gpu.device, COLOR_TARGET_FORMAT, &grid);
+        let voxel_renderer =
+            VoxelRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT, &grid);
 
         let camera = OrbitCamera {
             orbit_distance: OrbitCamera::auto_framed_distance(grid.dimensions),
@@ -114,6 +118,8 @@ impl WindowedState {
         };
 
         let depth_view = create_depth_view(&gpu.device, width, height);
+        let msaa_color_view =
+            create_msaa_color_view(&gpu.device, width, height, COLOR_TARGET_FORMAT);
 
         Self {
             window,
@@ -125,6 +131,7 @@ impl WindowedState {
             panel_state,
             voxel_renderer,
             depth_view,
+            msaa_color_view,
             camera,
             left_button_held: false,
             last_cursor_position: None,
@@ -139,8 +146,10 @@ impl WindowedState {
         self.surface_config.height = height;
         self.surface
             .configure(&self.gpu.device, &self.surface_config);
-        // Recreate the depth texture to match the new target size.
+        // Recreate the depth + MSAA colour textures to match the new target size.
         self.depth_view = create_depth_view(&self.gpu.device, width, height);
+        self.msaa_color_view =
+            create_msaa_color_view(&self.gpu.device, width, height, COLOR_TARGET_FORMAT);
     }
 
     /// Re-resolve the current panel geometry into a fresh grid and rebuild the
@@ -222,19 +231,34 @@ impl WindowedState {
         // (no rebuild).
         self.camera.projection_mode = self.panel_state.projection_mode;
 
-        // Upload the current camera matrix before drawing.
+        // Upload the per-frame uniforms before drawing: camera matrix, grid
+        // half-extent + density (per-voxel slice + overlay), and the overlay
+        // toggle. The grid dims are the current geometry's voxel-space size.
         let aspect_ratio =
             self.surface_config.width as f32 / self.surface_config.height.max(1) as f32;
-        self.voxel_renderer
-            .update_camera(&self.gpu.queue, self.camera.view_projection(aspect_ratio));
+        let geometry = self.panel_state.geometry;
+        let grid_dimensions = [
+            geometry.size_blocks[0] * geometry.voxels_per_block,
+            geometry.size_blocks[1] * geometry.voxels_per_block,
+            geometry.size_blocks[2] * geometry.voxels_per_block,
+        ];
+        self.voxel_renderer.update_uniforms(
+            &self.gpu.queue,
+            self.camera.view_projection(aspect_ratio),
+            grid_dimensions,
+            geometry.voxels_per_block,
+            self.panel_state.show_grid_overlay,
+        );
 
         render_frame(
             &mut self.egui_bridge,
             &self.gpu.device,
             &self.gpu.queue,
             &target_view,
+            &self.msaa_color_view,
             &self.depth_view,
             &self.voxel_renderer,
+            self.panel_state.material,
             &prepared,
         );
 

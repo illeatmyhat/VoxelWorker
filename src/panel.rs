@@ -47,8 +47,8 @@ impl Default for GeometryParams {
     }
 }
 
-/// Procedural material choice. Stored only; it has NO visual effect in M3 — the
-/// cubes stay flat-shaded. It will drive the M4 texture-slice shader.
+/// Procedural material choice. Selects which procedural texture (Stone/Wood/
+/// Plain) binds in the M4 texture-slice shader.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MaterialChoice {
     #[default]
@@ -68,8 +68,10 @@ pub struct PanelState {
     pub geometry: GeometryParams,
     /// Camera projection (display-only: no rebuild).
     pub projection_mode: ProjectionMode,
-    /// Material selection (display-only, inert in M3: no rebuild, no visual).
+    /// Material selection (display-only: selects the M4 procedural texture).
     pub material: MaterialChoice,
+    /// Whether the voxel/block grid overlay is drawn (M4 Display toggle).
+    pub show_grid_overlay: bool,
     /// When `Some`, the 3D rebuild was skipped because the grid exceeds the
     /// voxel cap; the panel shows a warning. Set by the caller after it decides
     /// whether to rebuild. Value is the would-be voxel count (in millions).
@@ -107,7 +109,7 @@ pub fn build_panel(root_ui: &mut egui::Ui, state: &mut PanelState) -> PanelRespo
             build_density_section(ui, state, &mut response);
             build_camera_section(ui, state);
             build_material_section(ui, state);
-            build_display_placeholder(ui);
+            build_display_section(ui, state);
 
             if let Some(millions) = state.voxel_cap_warning_millions {
                 ui.add_space(8.0);
@@ -215,7 +217,7 @@ fn build_camera_section(ui: &mut egui::Ui, state: &mut PanelState) {
     ui.separator();
 }
 
-/// Material selector (display-only, inert in M3: stores the choice, no visual).
+/// Material selector (display-only): selects which procedural texture binds (M4).
 fn build_material_section(ui: &mut egui::Ui, state: &mut PanelState) {
     ui.add_space(8.0);
     ui.strong("Material");
@@ -224,21 +226,17 @@ fn build_material_section(ui: &mut egui::Ui, state: &mut PanelState) {
         ui.selectable_value(&mut state.material, MaterialChoice::Wood, "Wood");
         ui.selectable_value(&mut state.material, MaterialChoice::Plain, "Plain");
     });
-    ui.label(
-        egui::RichText::new("Not applied yet — drives the M4 texture shader.")
-            .small()
-            .weak(),
-    );
     ui.separator();
 }
 
-/// Display section — intentionally a "coming soon" placeholder so there are no
-/// dead controls (these toggles become functional in M4/M5).
-fn build_display_placeholder(ui: &mut egui::Ui) {
+/// Display section. The voxel-grid overlay toggle is functional (M4); the other
+/// toggles (lattice, floor, view cube, gizmo) arrive in M5.
+fn build_display_section(ui: &mut egui::Ui, state: &mut PanelState) {
     ui.add_space(8.0);
     ui.strong("Display");
+    ui.checkbox(&mut state.show_grid_overlay, "Voxel grid overlay");
     ui.label(
-        egui::RichText::new("Voxel grid · lattice · floor · view cube · gizmo — coming in M4/M5.")
+        egui::RichText::new("Lattice · floor · view cube · gizmo — coming in M5.")
             .small()
             .weak(),
     );

@@ -14,14 +14,16 @@
 //!   --density <u32>  voxels per block       (default: 16)
 //!   --wall <u32>     tube wall in blocks    (default: 1)
 //!   --proj <perspective|ortho>              (default: perspective)
+//!   --material <stone|wood|plain>           (default: stone)
+//!   --grid                                  enable the voxel/block grid overlay
 //!   --theta/--phi/--dist                    orbit overrides (auto-framed dist)
 
 use std::path::PathBuf;
 
 use voxel_worker::{
-    create_depth_view, render_frame, run_egui_frame, EguiPaintBridge, GeometryParams, GpuContext,
-    OrbitCamera, PanelState, ProjectionMode, SdfShape, ShapeKind, VoxelGrid, VoxelProducer,
-    VoxelRenderer, COLOR_TARGET_FORMAT,
+    create_depth_view, create_msaa_color_view, render_frame, run_egui_frame, EguiPaintBridge,
+    GeometryParams, GpuContext, MaterialChoice, OrbitCamera, PanelState, ProjectionMode, SdfShape,
+    ShapeKind, VoxelGrid, VoxelProducer, VoxelRenderer, COLOR_TARGET_FORMAT,
 };
 
 struct ShotOptions {
@@ -33,6 +35,10 @@ struct ShotOptions {
     geometry: GeometryParams,
     /// Camera projection.
     projection_mode: ProjectionMode,
+    /// Procedural material (Stone/Wood/Plain).
+    material: MaterialChoice,
+    /// Whether the voxel/block grid overlay is drawn.
+    show_grid_overlay: bool,
     /// Orbit azimuth (radians). Default 0.7.
     theta: f32,
     /// Orbit polar angle from +Y (radians). Default 1.05.
@@ -49,6 +55,8 @@ impl Default for ShotOptions {
             height: 800,
             geometry: GeometryParams::default(),
             projection_mode: ProjectionMode::Perspective,
+            material: MaterialChoice::Stone,
+            show_grid_overlay: false,
             theta: 0.7,
             phi: 1.05,
             distance: None,
@@ -65,6 +73,16 @@ fn parse_shape(value: &str) -> ShapeKind {
         "torus" => ShapeKind::Torus,
         "box" => ShapeKind::Box,
         other => panic!("--shape must be cylinder|tube|sphere|torus|box, got '{other}'"),
+    }
+}
+
+/// Parse a `--material` value into a [`MaterialChoice`].
+fn parse_material(value: &str) -> MaterialChoice {
+    match value.to_ascii_lowercase().as_str() {
+        "stone" => MaterialChoice::Stone,
+        "wood" => MaterialChoice::Wood,
+        "plain" => MaterialChoice::Plain,
+        other => panic!("--material must be stone|wood|plain, got '{other}'"),
     }
 }
 
@@ -144,6 +162,13 @@ fn parse_options() -> ShotOptions {
                 options.projection_mode =
                     parse_projection(&args.next().expect("--proj requires a value"));
             }
+            "--material" => {
+                options.material =
+                    parse_material(&args.next().expect("--material requires a value"));
+            }
+            "--grid" => {
+                options.show_grid_overlay = true;
+            }
             "--theta" => {
                 options.theta = args
                     .next()
@@ -175,10 +200,12 @@ fn parse_options() -> ShotOptions {
                      \x20            [--size-x <u32>] [--size-y <u32>] [--size-z <u32>]\n\
                      \x20            [--density <u32>] [--wall <u32>]\n\
                      \x20            [--proj <perspective|ortho>]\n\
+                     \x20            [--material <stone|wood|plain>] [--grid]\n\
                      \x20            [--theta <f32>] [--phi <f32>] [--dist <f32>]\n\
                      Defaults: --out shots/m1.png --width 1280 --height 800\n\
                      \x20         --shape cylinder --size-x 5 --size-y 1 --size-z 5\n\
                      \x20         --density 16 --wall 1 --proj perspective\n\
+                     \x20         --material stone (grid off)\n\
                      \x20         --theta 0.7 --phi 1.05 --dist <auto-framed>"
                 );
                 std::process::exit(0);
@@ -220,8 +247,12 @@ async fn run_capture(options: ShotOptions) {
     });
     let capture_view = capture_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-    // Depth texture at the offscreen size (M2: voxel pass needs depth).
+    // 4× MSAA depth + colour at the offscreen size. The 3D pass renders into the
+    // multisampled colour texture and resolves into `capture_texture` (the single
+    // -sample COPY_SRC target read back below).
     let depth_view = create_depth_view(&gpu.device, options.width, options.height);
+    let msaa_color_view =
+        create_msaa_color_view(&gpu.device, options.width, options.height, COLOR_TARGET_FORMAT);
 
     // Resolve the requested geometry into the grid, then build the renderer's
     // instance buffer FROM the grid (REPRESENTATION.md seam). The voxel cap
@@ -231,6 +262,8 @@ async fn run_capture(options: ShotOptions) {
     let mut panel_state = PanelState {
         geometry: options.geometry,
         projection_mode: options.projection_mode,
+        material: options.material,
+        show_grid_overlay: options.show_grid_overlay,
         ..PanelState::default()
     };
     if shape.exceeds_voxel_cap() {
@@ -250,7 +283,8 @@ async fn run_capture(options: ShotOptions) {
         shape.size_blocks,
         shape.voxels_per_block
     );
-    let voxel_renderer = VoxelRenderer::new(&gpu.device, COLOR_TARGET_FORMAT, &grid);
+    let voxel_renderer =
+        VoxelRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT, &grid);
 
     // Build the orbit camera from the CLI flags (distance auto-framed if unset).
     let camera = OrbitCamera {
@@ -263,7 +297,13 @@ async fn run_capture(options: ShotOptions) {
         projection_mode: options.projection_mode,
     };
     let aspect_ratio = options.width as f32 / options.height as f32;
-    voxel_renderer.update_camera(&gpu.queue, camera.view_projection(aspect_ratio));
+    voxel_renderer.update_uniforms(
+        &gpu.queue,
+        camera.view_projection(aspect_ratio),
+        shape.grid_dimensions(),
+        options.geometry.voxels_per_block,
+        options.show_grid_overlay,
+    );
 
     // egui driven WITHOUT winit: build RawInput by hand.
     let mut egui_bridge = EguiPaintBridge::new(&gpu.device, COLOR_TARGET_FORMAT);
@@ -292,8 +332,10 @@ async fn run_capture(options: ShotOptions) {
         &gpu.device,
         &gpu.queue,
         &capture_view,
+        &msaa_color_view,
         &depth_view,
         &voxel_renderer,
+        options.material,
         &prepared,
     );
 

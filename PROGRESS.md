@@ -10,7 +10,7 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 | 1 | Window + clear + empty egui panel + **headless `shot` binary** | #1 | ✅ done |
 | 2 | Voxel core: SDF → instances → flat cubes + orbit cam (5×1×5 cylinder) | #2 | ✅ done |
 | 3 | egui params + all shapes + ortho toggle | #3 | ✅ done |
-| 4 | Shaders: per-voxel slice, then position-based grid overlay | #4 | ⏳ pending |
+| 4 | Shaders: per-voxel slice, then position-based grid overlay | #4 | ✅ done |
 | 5 | View cube + origin gizmo + 2D slice map | #5 | ⏳ pending |
 | 6 | VS folder auto-detect + scan + palette + thumbnails | #6 | ⏳ pending |
 | 7 | Block-JSON per-face textures | #7 | ⏳ pending |
@@ -32,6 +32,14 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **m4** — Shaders done & verified; BOTH regression-guarded bugs confirmed fixed. Procedural
+  Stone/Wood/Plain textures (CPU-gen, nearest/clamp). Bug 1: per-voxel `1/density` texture slice
+  (one texture per block — wood top-down restarts grain per block cell). Bug 2: grid overlay from
+  world position `vox_abs` (block lines align on vertical faces, no off-by-one). `VoxelUniforms`
+  (view_proj + grid_half_extent + density + line colors/widths/alphas). 4× MSAA (resolve into
+  surface/capture; egui at 1 sample on resolved view). Material selector now functional; "Voxel
+  grid overlay" toggle live. `shot` gains `--material` + `--grid`. sRGB-correct (textures sRGB,
+  lighting+lines in linear). Clippy clean. Goldens: m4-slice-wood-grid-topdown, m4-grid-box-zoom.
 - **m3** — Params/shapes/ortho done & verified. Functional panel: shape chips (all 5), X/Y/Z
   block sliders, density, conditional Tube wall, projection toggle, inert material selector,
   Display placeholder. Params split into `GeometryParams` (drives dirty rebuild) vs display/camera

@@ -21,7 +21,9 @@ pub mod voxel;
 pub use camera::{OrbitCamera, ProjectionMode};
 pub use gpu::GpuContext;
 pub use panel::{build_panel, GeometryParams, MaterialChoice, PanelResponse, PanelState};
-pub use renderer::{create_depth_view, VoxelRenderer, DEPTH_FORMAT};
+pub use renderer::{
+    create_depth_view, create_msaa_color_view, VoxelRenderer, DEPTH_FORMAT, MSAA_SAMPLE_COUNT,
+};
 pub use voxel::{SdfShape, ShapeKind, VoxelGrid, VoxelProducer};
 
 /// Surface / offscreen colour format used everywhere in the project.
@@ -56,12 +58,12 @@ impl EguiPaintBridge {
             device,
             target_format,
             egui_wgpu::RendererOptions {
-                // egui feathers its own AA; 3D MSAA is a separate concern (M4).
+                // egui feathers its own AA at 1 sample. M4 splits the frame into a
+                // 4× MSAA 3D pass (resolved) followed by a separate egui pass that
+                // loads the resolved single-sample target — so egui's pipeline
+                // needs neither MSAA nor a depth attachment.
                 msaa_samples: 1,
-                // The shared render pass carries a depth attachment for the voxel
-                // pass (M2). egui doesn't write depth, but its pipeline must be
-                // compatible with the pass's attachment formats, so declare it.
-                depth_stencil_format: Some(renderer::DEPTH_FORMAT),
+                depth_stencil_format: None,
                 dithering: true,
                 predictable_texture_filtering: false,
             },
@@ -133,21 +135,33 @@ pub fn run_egui_frame(
 /// Render a complete frame into `target_view`.
 ///
 /// This is the render-target-agnostic core (Hard requirement #2): it accepts a
-/// colour [`wgpu::TextureView`] plus the prepared egui data and has no knowledge
-/// of winit or surfaces. The windowed binary passes the surface texture's view;
-/// the headless binary passes the offscreen capture texture's view.
+/// resolved single-sample colour [`wgpu::TextureView`] plus the prepared egui
+/// data and has no knowledge of winit or surfaces. The windowed binary passes
+/// the surface texture's view; the headless binary passes the offscreen capture
+/// texture's view.
 ///
-/// Milestone 2 draws the instanced voxel cubes (with a depth attachment) into
-/// this same render pass *before* the egui pass composites the panel on top.
-/// `voxel_renderer` and `depth_view` are render-target-agnostic: the window and
-/// the headless capture pass their own depth view sized to the same target.
+/// Milestone 4 restructures the frame into two passes:
+///   1. **3D MSAA pass** — the instanced voxel cubes are drawn into a 4-sample
+///      colour texture (`msaa_color_view`) with a 4-sample depth attachment
+///      (`depth_view`) and resolved into `target_view` (the single-sample
+///      surface / capture texture). `material` selects the bound texture and
+///      `grid_overlay_enabled` was already folded into the uniforms by the
+///      caller.
+///   2. **egui pass** — egui renders at 1 sample directly onto the RESOLVED
+///      `target_view` with `LoadOp::Load`, compositing the panel on top.
+///
+/// `msaa_color_view` and `depth_view` are render-target-agnostic: the window and
+/// the headless capture pass their own 4-sample textures sized to the same target.
+#[allow(clippy::too_many_arguments)]
 pub fn render_frame(
     bridge: &mut EguiPaintBridge,
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     target_view: &wgpu::TextureView,
+    msaa_color_view: &wgpu::TextureView,
     depth_view: &wgpu::TextureView,
     voxel_renderer: &renderer::VoxelRenderer,
+    material: MaterialChoice,
     prepared: &PreparedEguiFrame,
 ) {
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -164,23 +178,27 @@ pub fn render_frame(
         &prepared.screen_descriptor,
     );
 
+    // === Pass 1: 3D voxel pass at 4× MSAA, resolved into the single-sample target.
     {
-        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("voxel-worker main pass"),
+        let mut voxel_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("voxel-worker 3D msaa pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: target_view,
-                resolve_target: None,
+                view: msaa_color_view,
+                // Resolve the multisampled colour into the single-sample target.
+                resolve_target: Some(target_view),
                 depth_slice: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(WORKSHOP_CLEAR_COLOR),
-                    store: wgpu::StoreOp::Store,
+                    // The multisampled texture is transient; we only keep the
+                    // resolved result. Discarding it is the cheaper store.
+                    store: wgpu::StoreOp::Discard,
                 },
             })],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: depth_view,
                 depth_ops: Some(wgpu::Operations {
                     load: wgpu::LoadOp::Clear(1.0),
-                    store: wgpu::StoreOp::Store,
+                    store: wgpu::StoreOp::Discard,
                 }),
                 stencil_ops: None,
             }),
@@ -189,17 +207,31 @@ pub fn render_frame(
             multiview_mask: None,
         });
 
-        // === Milestone 2 ===
-        // Instanced voxel cubes are drawn into the same render pass, using the
-        // depth attachment above and the camera uniform bind group. The egui
-        // pass below then composites the panel on top. Nothing about the target
-        // view changes — voxels paint into the surface and the capture
-        // identically.
-        voxel_renderer.draw(&mut render_pass);
+        voxel_renderer.draw(&mut voxel_pass, material);
+    }
+
+    // === Pass 2: egui at 1 sample onto the RESOLVED target (load, don't clear).
+    {
+        let egui_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("voxel-worker egui pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target_view,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
 
         // egui wants a RenderPass<'static>; forget_lifetime converts it.
         bridge.renderer.render(
-            &mut render_pass.forget_lifetime(),
+            &mut egui_pass.forget_lifetime(),
             &prepared.paint_jobs,
             &prepared.screen_descriptor,
         );
