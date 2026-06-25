@@ -8,12 +8,13 @@
 use std::sync::Arc;
 
 use winit::application::ApplicationHandler;
-use winit::event::WindowEvent;
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowId};
 
 use voxel_worker::{
-    run_egui_frame, render_frame, EguiPaintBridge, GpuContext, PanelState, COLOR_TARGET_FORMAT,
+    create_depth_view, render_frame, run_egui_frame, EguiPaintBridge, GpuContext, OrbitCamera,
+    PanelState, SdfShape, VoxelGrid, VoxelProducer, VoxelRenderer, COLOR_TARGET_FORMAT,
 };
 
 /// State that exists only once the window and GPU have been created (on first
@@ -28,6 +29,13 @@ struct WindowedState {
     egui_bridge: EguiPaintBridge,
     egui_winit_state: egui_winit::State,
     panel_state: PanelState,
+    voxel_renderer: VoxelRenderer,
+    depth_view: wgpu::TextureView,
+    camera: OrbitCamera,
+    /// Whether the left mouse button is held (orbit drag in progress).
+    left_button_held: bool,
+    /// Last cursor position, for computing drag deltas.
+    last_cursor_position: Option<(f64, f64)>,
 }
 
 #[derive(Default)]
@@ -84,6 +92,27 @@ impl WindowedState {
             None,
         );
 
+        // Resolve the hard-coded M2 cylinder into the grid, then build the
+        // renderer's instance buffer FROM the grid (REPRESENTATION.md seam).
+        let shape = SdfShape::milestone_two_cylinder();
+        let mut grid = VoxelGrid::new(shape.grid_dimensions());
+        shape.resolve(&mut grid);
+        println!(
+            "resolved {} voxels for {:?} {:?}@{}",
+            grid.occupied_count(),
+            shape.kind,
+            shape.size_blocks,
+            shape.voxels_per_block
+        );
+        let voxel_renderer = VoxelRenderer::new(&gpu.device, COLOR_TARGET_FORMAT, &grid);
+
+        let camera = OrbitCamera {
+            orbit_distance: OrbitCamera::auto_framed_distance(grid.dimensions),
+            ..OrbitCamera::default()
+        };
+
+        let depth_view = create_depth_view(&gpu.device, width, height);
+
         Self {
             window,
             surface,
@@ -92,6 +121,11 @@ impl WindowedState {
             egui_bridge,
             egui_winit_state,
             panel_state: PanelState::default(),
+            voxel_renderer,
+            depth_view,
+            camera,
+            left_button_held: false,
+            last_cursor_position: None,
         }
     }
 
@@ -103,6 +137,8 @@ impl WindowedState {
         self.surface_config.height = height;
         self.surface
             .configure(&self.gpu.device, &self.surface_config);
+        // Recreate the depth texture to match the new target size.
+        self.depth_view = create_depth_view(&self.gpu.device, width, height);
     }
 
     fn render(&mut self) {
@@ -147,11 +183,19 @@ impl WindowedState {
         self.egui_winit_state
             .handle_platform_output(&self.window, prepared.platform_output.clone());
 
+        // Upload the current camera matrix before drawing.
+        let aspect_ratio =
+            self.surface_config.width as f32 / self.surface_config.height.max(1) as f32;
+        self.voxel_renderer
+            .update_camera(&self.gpu.queue, self.camera.view_projection(aspect_ratio));
+
         render_frame(
             &mut self.egui_bridge,
             &self.gpu.device,
             &self.gpu.queue,
             &target_view,
+            &self.depth_view,
+            &self.voxel_renderer,
             &prepared,
         );
 
@@ -176,11 +220,12 @@ impl ApplicationHandler for App {
             return;
         };
 
-        // Let egui consume the event first; if it did, we still process system
-        // events like resize/close below.
-        let _response = state
+        // Let egui consume the event first; if it did, don't also use it to
+        // drive the camera (so dragging on the panel doesn't orbit the scene).
+        let response = state
             .egui_winit_state
             .on_window_event(&state.window, &event);
+        let egui_consumed = response.consumed;
 
         match event {
             WindowEvent::CloseRequested => {
@@ -188,6 +233,35 @@ impl ApplicationHandler for App {
             }
             WindowEvent::Resized(new_size) => {
                 state.resize(new_size.width, new_size.height);
+            }
+            WindowEvent::MouseInput {
+                state: button_state,
+                button: MouseButton::Left,
+                ..
+            } => {
+                state.left_button_held =
+                    button_state == ElementState::Pressed && !egui_consumed;
+                if button_state == ElementState::Released {
+                    state.last_cursor_position = None;
+                }
+            }
+            WindowEvent::CursorMoved { position, .. } => {
+                let current = (position.x, position.y);
+                if state.left_button_held {
+                    if let Some((previous_x, previous_y)) = state.last_cursor_position {
+                        let delta_x = (current.0 - previous_x) as f32;
+                        let delta_y = (current.1 - previous_y) as f32;
+                        state.camera.orbit_by_drag(delta_x, delta_y);
+                    }
+                }
+                state.last_cursor_position = Some(current);
+            }
+            WindowEvent::MouseWheel { delta, .. } if !egui_consumed => {
+                let scroll_lines = match delta {
+                    MouseScrollDelta::LineDelta(_, vertical) => vertical,
+                    MouseScrollDelta::PixelDelta(position) => position.y as f32,
+                };
+                state.camera.zoom_by_wheel(scroll_lines);
             }
             WindowEvent::RedrawRequested => {
                 state.render();

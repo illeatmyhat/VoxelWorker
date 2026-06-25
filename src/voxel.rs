@@ -1,0 +1,252 @@
+//! The resolved voxel grid and the producers that fill it.
+//!
+//! This module implements the architectural seam required by `REPRESENTATION.md`:
+//! **the renderer never calls the SDF directly.** Instead a [`VoxelProducer`]
+//! resolves a parametric shape (or, in a later milestone, a sculpt overlay) into
+//! a [`VoxelGrid`] — the one consumed truth. The renderer, the 2D slice (M5) and
+//! the `.vox` export (M8) all read the grid, so adding a second producer later
+//! touches nothing downstream.
+//!
+//! Milestone 2 has exactly one producer: [`SdfShape`], which runs the sampling
+//! triple-loop transcribed from `ARCHITECTURE.md` §1/§2 and writes occupied
+//! voxels into the grid.
+
+use glam::Vec3;
+
+/// CPU-only iso-surface threshold. A voxel is kept when its signed distance is
+/// at or below this level. NOT a uniform and NOT a UI slider (DEV_NOTES).
+pub const SURFACE_ISOLEVEL: f32 = 0.0;
+
+/// The parametric primitive kinds (ARCHITECTURE.md §2 dispatcher).
+///
+/// Milestone 2 only renders [`ShapeKind::Cylinder`], but the full set is
+/// implemented now because M3 needs them and the cost is trivial.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShapeKind {
+    Cylinder,
+    Tube,
+    Sphere,
+    Torus,
+    Box,
+}
+
+/// One occupied voxel in the resolved grid.
+///
+/// `block_local_coord` is `(i % voxels_per_block, …)` — the voxel's position
+/// *within* its block, needed by the M4 texture-slice shader. `material_id` is
+/// reserved for M3+ and unused in M2.
+#[derive(Debug, Clone, Copy)]
+pub struct Voxel {
+    /// World-centred voxel-grid coordinate of the voxel centre.
+    pub world_position: [f32; 3],
+    /// Coordinate within the owning block: `(i % d, j % d, k % d)`.
+    pub block_local_coord: [u8; 3],
+    /// Reserved material handle (unused in M2).
+    pub material_id: u16,
+}
+
+/// The resolved truth consumed by the renderer / slice / export.
+///
+/// Sparse representation: grid dimensions in voxels plus a `Vec` of the occupied
+/// voxels only. For a filled 5×1×5@16 disc this is ~800k entries which is
+/// memory-friendly compared with a dense 80×16×80 bitfield-plus-payload, and it
+/// is exactly the iteration set the instance buffer needs.
+#[derive(Debug, Default)]
+pub struct VoxelGrid {
+    /// Grid dimensions in voxels: `size_blocks * voxels_per_block`.
+    pub dimensions: [u32; 3],
+    /// The occupied voxels (sparse).
+    pub occupied: Vec<Voxel>,
+}
+
+impl VoxelGrid {
+    /// Create an empty grid with the given voxel dimensions.
+    pub fn new(dimensions: [u32; 3]) -> Self {
+        Self {
+            dimensions,
+            occupied: Vec::new(),
+        }
+    }
+
+    /// Number of occupied voxels.
+    pub fn occupied_count(&self) -> usize {
+        self.occupied.len()
+    }
+}
+
+/// Anything that can resolve itself into the shared [`VoxelGrid`].
+///
+/// v1 has a single implementor ([`SdfShape`]); the trait exists so a sculpt
+/// overlay (REPRESENTATION.md option 2) can be added later without changing the
+/// renderer.
+pub trait VoxelProducer {
+    /// Write occupied voxels into `grid`. The grid's `dimensions` are assumed to
+    /// already be set by the caller (so multiple producers can target one grid).
+    fn resolve(&self, grid: &mut VoxelGrid);
+}
+
+/// A single parametric SDF primitive: the first (and, in M2, only) producer.
+///
+/// Sizes are stored in **whole blocks**; `voxels_per_block` (density) is fineness
+/// only and never changes object size (DATA.md "the density bug").
+#[derive(Debug, Clone, Copy)]
+pub struct SdfShape {
+    pub kind: ShapeKind,
+    /// Bounding-box size in whole blocks (X, Y, Z).
+    pub size_blocks: [u32; 3],
+    /// Voxels per block (chisel fineness). Default 16.
+    pub voxels_per_block: u32,
+    /// Tube wall thickness in whole blocks (used by [`ShapeKind::Tube`] only).
+    pub wall_blocks: u32,
+}
+
+impl SdfShape {
+    /// The hard-coded Milestone 2 scene: a 5×1×5-block cylinder at density 16.
+    pub fn milestone_two_cylinder() -> Self {
+        Self {
+            kind: ShapeKind::Cylinder,
+            size_blocks: [5, 1, 5],
+            voxels_per_block: 16,
+            wall_blocks: 1,
+        }
+    }
+
+    /// Grid dimensions in voxels: `size_blocks * voxels_per_block`.
+    pub fn grid_dimensions(&self) -> [u32; 3] {
+        [
+            self.size_blocks[0] * self.voxels_per_block,
+            self.size_blocks[1] * self.voxels_per_block,
+            self.size_blocks[2] * self.voxels_per_block,
+        ]
+    }
+}
+
+impl VoxelProducer for SdfShape {
+    fn resolve(&self, grid: &mut VoxelGrid) {
+        let [grid_x, grid_y, grid_z] = self.grid_dimensions();
+        grid.dimensions = [grid_x, grid_y, grid_z];
+
+        // Shape inscribed in the box: semi-axes are half the voxel-space dims.
+        let semi_axes = Vec3::new(
+            grid_x as f32 / 2.0,
+            grid_y as f32 / 2.0,
+            grid_z as f32 / 2.0,
+        );
+        let wall_voxels = (self.wall_blocks * self.voxels_per_block) as f32;
+        let voxels_per_block = self.voxels_per_block;
+
+        let half_x = grid_x as f32 / 2.0;
+        let half_y = grid_y as f32 / 2.0;
+        let half_z = grid_z as f32 / 2.0;
+
+        // The loop is written per-outer-slice independent (no shared mutable
+        // accumulator threaded through) so rayon can drop in later: each `j`
+        // slice could `into_par_iter().flat_map(..)` and the results be
+        // concatenated. We keep it serial here.
+        for j in 0..grid_y {
+            for k in 0..grid_z {
+                for i in 0..grid_x {
+                    // World-centred sample point at the voxel centre.
+                    let point = Vec3::new(
+                        i as f32 + 0.5 - half_x,
+                        j as f32 + 0.5 - half_y,
+                        k as f32 + 0.5 - half_z,
+                    );
+
+                    if signed_distance(self.kind, point, semi_axes, wall_voxels)
+                        <= SURFACE_ISOLEVEL
+                    {
+                        grid.occupied.push(Voxel {
+                            world_position: [point.x, point.y, point.z],
+                            block_local_coord: [
+                                (i % voxels_per_block) as u8,
+                                (j % voxels_per_block) as u8,
+                                (k % voxels_per_block) as u8,
+                            ],
+                            material_id: 0,
+                        });
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Signed distance to an axis-aligned box with half-extents `box_half`.
+///
+/// `sdBox` in ARCHITECTURE.md §2, descriptive names.
+pub fn signed_distance_box(point: Vec3, box_half: Vec3) -> f32 {
+    let q = point.abs() - box_half;
+    q.max(Vec3::ZERO).length() + q.x.max(q.y.max(q.z)).min(0.0)
+}
+
+/// Signed distance to an inscribed ellipsoid (IQ approximation).
+///
+/// `sdEllipsoid` in ARCHITECTURE.md §2.
+pub fn signed_distance_ellipsoid(point: Vec3, semi_axes: Vec3) -> f32 {
+    let scaled = point / semi_axes;
+    let distance_to_unit = scaled.length();
+    if distance_to_unit == 0.0 {
+        return -semi_axes.x.min(semi_axes.y.min(semi_axes.z));
+    }
+    let scaled_squared = point / (semi_axes * semi_axes);
+    let gradient = scaled_squared.length();
+    distance_to_unit * (distance_to_unit - 1.0) / gradient
+}
+
+/// Signed distance to an elliptical cylinder with its axis along Y.
+///
+/// `sdCylE(p, ax, az, ay)` in ARCHITECTURE.md §2: `semi_axis_x`/`semi_axis_z`
+/// are the cross-section radii, `half_height` is the Y half-extent.
+pub fn signed_distance_elliptical_cylinder(
+    point: Vec3,
+    semi_axis_x: f32,
+    semi_axis_z: f32,
+    half_height: f32,
+) -> f32 {
+    let radial = (glam::Vec2::new(point.x / semi_axis_x, point.z / semi_axis_z).length() - 1.0)
+        * semi_axis_x.min(semi_axis_z);
+    let vertical = point.y.abs() - half_height;
+    radial.max(vertical).min(0.0)
+        + glam::Vec2::new(radial.max(0.0), vertical.max(0.0)).length()
+}
+
+/// Dispatch to the right SDF for a shape kind (ARCHITECTURE.md §2 `sdf(p)`).
+///
+/// `semi_axes` are the inscribed half-extents `(AX, AY, AZ)`; `wall_voxels` is
+/// `wall * density` (Tube only).
+pub fn signed_distance(
+    shape: ShapeKind,
+    point: Vec3,
+    semi_axes: Vec3,
+    wall_voxels: f32,
+) -> f32 {
+    let semi_axis_x = semi_axes.x;
+    let semi_axis_y = semi_axes.y;
+    let semi_axis_z = semi_axes.z;
+
+    match shape {
+        ShapeKind::Cylinder => {
+            signed_distance_elliptical_cylinder(point, semi_axis_x, semi_axis_z, semi_axis_y)
+        }
+        ShapeKind::Tube => {
+            let outer =
+                signed_distance_elliptical_cylinder(point, semi_axis_x, semi_axis_z, semi_axis_y);
+            let inner = signed_distance_elliptical_cylinder(
+                point,
+                (semi_axis_x - wall_voxels).max(0.01),
+                (semi_axis_z - wall_voxels).max(0.01),
+                semi_axis_y + 1.0,
+            );
+            outer.max(-inner)
+        }
+        ShapeKind::Sphere => signed_distance_ellipsoid(point, semi_axes),
+        ShapeKind::Torus => {
+            let tube_radius = semi_axis_y;
+            let ring_radius = (semi_axis_x.min(semi_axis_z) - tube_radius).max(0.0);
+            let radial = glam::Vec2::new(point.x, point.z).length() - ring_radius;
+            glam::Vec2::new(radial, point.y).length() - tube_radius
+        }
+        ShapeKind::Box => signed_distance_box(point, semi_axes),
+    }
+}

@@ -12,11 +12,17 @@
 //!     captured frame is identical to the live one.
 //!   * The colour identity from ARCHITECTURE.md §8 (warm-dark workshop).
 
+pub mod camera;
 pub mod gpu;
 pub mod panel;
+pub mod renderer;
+pub mod voxel;
 
+pub use camera::OrbitCamera;
 pub use gpu::GpuContext;
 pub use panel::{build_panel, PanelState};
+pub use renderer::{create_depth_view, VoxelRenderer, DEPTH_FORMAT};
+pub use voxel::{SdfShape, ShapeKind, VoxelGrid, VoxelProducer};
 
 /// Surface / offscreen colour format used everywhere in the project.
 ///
@@ -52,7 +58,10 @@ impl EguiPaintBridge {
             egui_wgpu::RendererOptions {
                 // egui feathers its own AA; 3D MSAA is a separate concern (M4).
                 msaa_samples: 1,
-                depth_stencil_format: None,
+                // The shared render pass carries a depth attachment for the voxel
+                // pass (M2). egui doesn't write depth, but its pipeline must be
+                // compatible with the pass's attachment formats, so declare it.
+                depth_stencil_format: Some(renderer::DEPTH_FORMAT),
                 dithering: true,
                 predictable_texture_filtering: false,
             },
@@ -123,13 +132,17 @@ pub fn run_egui_frame(
 /// of winit or surfaces. The windowed binary passes the surface texture's view;
 /// the headless binary passes the offscreen capture texture's view.
 ///
-/// Milestone 2 will extend this to draw instanced voxel cubes *before* the egui
-/// pass (see the marked insertion point below).
+/// Milestone 2 draws the instanced voxel cubes (with a depth attachment) into
+/// this same render pass *before* the egui pass composites the panel on top.
+/// `voxel_renderer` and `depth_view` are render-target-agnostic: the window and
+/// the headless capture pass their own depth view sized to the same target.
 pub fn render_frame(
     bridge: &mut EguiPaintBridge,
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     target_view: &wgpu::TextureView,
+    depth_view: &wgpu::TextureView,
+    voxel_renderer: &renderer::VoxelRenderer,
     prepared: &PreparedEguiFrame,
 ) {
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -147,7 +160,7 @@ pub fn render_frame(
     );
 
     {
-        let render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("voxel-worker main pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: target_view,
@@ -158,17 +171,26 @@ pub fn render_frame(
                     store: wgpu::StoreOp::Store,
                 },
             })],
-            depth_stencil_attachment: None,
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: depth_view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
             timestamp_writes: None,
             occlusion_query_set: None,
             multiview_mask: None,
         });
 
-        // === Milestone 2 insertion point ===
-        // Instanced voxel cubes are drawn here, into the same render pass, using
-        // a depth attachment and the camera/uniform bind group. The egui pass
-        // below then composites the panel on top. Nothing about the target view
-        // changes — voxels paint into the surface and the capture identically.
+        // === Milestone 2 ===
+        // Instanced voxel cubes are drawn into the same render pass, using the
+        // depth attachment above and the camera uniform bind group. The egui
+        // pass below then composites the panel on top. Nothing about the target
+        // view changes — voxels paint into the surface and the capture
+        // identically.
+        voxel_renderer.draw(&mut render_pass);
 
         // egui wants a RenderPass<'static>; forget_lifetime converts it.
         bridge.renderer.render(

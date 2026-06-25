@@ -13,13 +13,20 @@
 use std::path::PathBuf;
 
 use voxel_worker::{
-    run_egui_frame, render_frame, EguiPaintBridge, GpuContext, PanelState, COLOR_TARGET_FORMAT,
+    create_depth_view, render_frame, run_egui_frame, EguiPaintBridge, GpuContext, OrbitCamera,
+    PanelState, SdfShape, VoxelGrid, VoxelProducer, VoxelRenderer, COLOR_TARGET_FORMAT,
 };
 
 struct ShotOptions {
     output_path: PathBuf,
     width: u32,
     height: u32,
+    /// Orbit azimuth (radians). Default 0.7.
+    theta: f32,
+    /// Orbit polar angle from +Y (radians). Default 1.05.
+    phi: f32,
+    /// Orbit distance. `None` = auto-frame from the grid.
+    distance: Option<f32>,
 }
 
 impl Default for ShotOptions {
@@ -28,6 +35,9 @@ impl Default for ShotOptions {
             output_path: PathBuf::from("shots/m1.png"),
             width: 1280,
             height: 800,
+            theta: 0.7,
+            phi: 1.05,
+            distance: None,
         }
     }
 }
@@ -56,12 +66,36 @@ fn parse_options() -> ShotOptions {
                     .parse()
                     .expect("--height must be a positive integer");
             }
+            "--theta" => {
+                options.theta = args
+                    .next()
+                    .expect("--theta requires a value")
+                    .parse()
+                    .expect("--theta must be a float (radians)");
+            }
+            "--phi" => {
+                options.phi = args
+                    .next()
+                    .expect("--phi requires a value")
+                    .parse()
+                    .expect("--phi must be a float (radians)");
+            }
+            "--dist" => {
+                options.distance = Some(
+                    args.next()
+                        .expect("--dist requires a value")
+                        .parse()
+                        .expect("--dist must be a float"),
+                );
+            }
             "--help" | "-h" => {
                 println!(
                     "shot — headless VoxelWorker capture\n\
                      \n\
                      Usage: shot [--out <path>] [--width <u32>] [--height <u32>]\n\
-                     Defaults: --out shots/m1.png --width 1280 --height 800"
+                     \x20            [--theta <f32>] [--phi <f32>] [--dist <f32>]\n\
+                     Defaults: --out shots/m1.png --width 1280 --height 800\n\
+                     \x20         --theta 0.7 --phi 1.05 --dist <auto-framed>"
                 );
                 std::process::exit(0);
             }
@@ -102,6 +136,36 @@ async fn run_capture(options: ShotOptions) {
     });
     let capture_view = capture_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
+    // Depth texture at the offscreen size (M2: voxel pass needs depth).
+    let depth_view = create_depth_view(&gpu.device, options.width, options.height);
+
+    // Resolve the hard-coded M2 cylinder into the grid, then build the
+    // renderer's instance buffer FROM the grid (REPRESENTATION.md seam).
+    let shape = SdfShape::milestone_two_cylinder();
+    let mut grid = VoxelGrid::new(shape.grid_dimensions());
+    shape.resolve(&mut grid);
+    println!(
+        "resolved {} voxels for {:?} {:?}@{}",
+        grid.occupied_count(),
+        shape.kind,
+        shape.size_blocks,
+        shape.voxels_per_block
+    );
+    let voxel_renderer = VoxelRenderer::new(&gpu.device, COLOR_TARGET_FORMAT, &grid);
+    assert_eq!(voxel_renderer.instance_count() as usize, grid.occupied_count());
+
+    // Build the orbit camera from the CLI flags (distance auto-framed if unset).
+    let camera = OrbitCamera {
+        target: glam::Vec3::ZERO,
+        orbit_theta: options.theta,
+        orbit_phi: options.phi,
+        orbit_distance: options
+            .distance
+            .unwrap_or_else(|| OrbitCamera::auto_framed_distance(grid.dimensions)),
+    };
+    let aspect_ratio = options.width as f32 / options.height as f32;
+    voxel_renderer.update_camera(&gpu.queue, camera.view_projection(aspect_ratio));
+
     // egui driven WITHOUT winit: build RawInput by hand.
     let mut egui_bridge = EguiPaintBridge::new(&gpu.device, COLOR_TARGET_FORMAT);
     let pixels_per_point = 1.0;
@@ -130,6 +194,8 @@ async fn run_capture(options: ShotOptions) {
         &gpu.device,
         &gpu.queue,
         &capture_view,
+        &depth_view,
+        &voxel_renderer,
         &prepared,
     );
 

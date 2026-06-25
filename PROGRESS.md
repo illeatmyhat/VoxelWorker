@@ -8,7 +8,7 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 |---|-----------|-------|-------|
 | 0 | Repo + scaffolding + dev notes | — | ✅ done |
 | 1 | Window + clear + empty egui panel + **headless `shot` binary** | #1 | ✅ done |
-| 2 | Voxel core: SDF → instances → flat cubes + orbit cam (5×1×5 cylinder) | #2 | ⏳ pending |
+| 2 | Voxel core: SDF → instances → flat cubes + orbit cam (5×1×5 cylinder) | #2 | ✅ done |
 | 3 | egui params + all shapes + ortho toggle | #3 | ⏳ pending |
 | 4 | Shaders: per-voxel slice, then position-based grid overlay | #4 | ⏳ pending |
 | 5 | View cube + origin gizmo + 2D slice map | #5 | ⏳ pending |
@@ -32,6 +32,13 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **m2** — Voxel core done & verified. `VoxelGrid`/`VoxelProducer` seam in place (`SdfShape` is
+  the sole producer; renderer builds instances from the grid, never calls the SDF). Full SDF set
+  + dispatcher (descriptive names). Instanced unit cubes (per-face normals), flat directional+
+  ambient shading, depth buffer, perspective orbit camera (drag-orbit + wheel-zoom windowed;
+  `--theta/--phi/--dist` in `shot`). 5×1×5@16 cylinder = **80,384 voxels**; `shots/m2-persp.png`
+  and `m2-top.png` show correct round disc + stair-stepped rim. Clippy clean. Sampling loop is
+  order-independent (rayon-ready). egui pipeline given `Depth32Float` to share the depth pass.
 - **m1** — Foundation done & verified. Crate `voxel_worker`: lib (render-target-agnostic
   `render_frame(&TextureView,...)`) + windowed bin (winit 0.30 / wgpu 29 / egui 0.34) + headless
   `shot` bin (offscreen → PNG, 256-byte row padding handled). `shots/m1.png` shows the panel as
