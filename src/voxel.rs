@@ -3,9 +3,9 @@
 //! This module implements the architectural seam required by `REPRESENTATION.md`:
 //! **the renderer never calls the SDF directly.** Instead a [`VoxelProducer`]
 //! resolves a parametric shape (or, in a later milestone, a sculpt overlay) into
-//! a [`VoxelGrid`] — the one consumed truth. The renderer, the 2D slice (M5) and
-//! the `.vox` export (M8) all read the grid, so adding a second producer later
-//! touches nothing downstream.
+//! a [`VoxelGrid`] — the one consumed truth. The renderer, the layer-range
+//! diameter readout (issue #12) and the `.vox` export (M8) all read the grid, so
+//! adding a second producer later touches nothing downstream.
 //!
 //! Milestone 2 has exactly one producer: [`SdfShape`], which runs the sampling
 //! triple-loop transcribed from `ARCHITECTURE.md` §1/§2 and writes occupied
@@ -79,111 +79,56 @@ impl VoxelGrid {
         self.occupied.len()
     }
 
-    /// Build the 2D mid-Y slice map (ARCHITECTURE.md §1 right branch; prototype
-    /// `drawSlice`). Reads the RESOLVED grid — NOT the SDF — per REPRESENTATION.md:
-    /// it keeps every occupied voxel whose y-index equals `grid_y / 2` and paints
-    /// a `grid_x × grid_z` RGBA8 image (occupied = parchment, empty = dark warm),
-    /// then overlays teal block-boundary lines every `voxels_per_block` pixels.
+    /// Measure the widest occupied voxel run (the diameter readout, issue #12),
+    /// restricted to the layers `[band_min, band_max]` (inclusive) along Y. The
+    /// "widest run" is the longest contiguous span of occupied voxels along X
+    /// within any single `(y, z)` row of the band — the same measure the old 2D
+    /// slice reported, but taken over the active band instead of the mid-Y layer.
     ///
-    /// Returns `([width, height], rgba_pixels, widest_run_voxels)`. `width = grid_x`,
-    /// `height = grid_z`; `widest_run_voxels` is the longest horizontal run of
-    /// occupied voxels in the layer (the measured diameter readout).
-    pub fn build_slice_image(&self, voxels_per_block: u32) -> SliceImage {
+    /// Reads the RESOLVED grid — NOT the SDF — per REPRESENTATION.md. Cheap: one
+    /// pass over the sparse occupied list bucketed into per-(y,z)-row bitsets.
+    pub fn widest_run_in_band(&self, band_min: u32, band_max: u32) -> u32 {
         let [grid_x, grid_y, grid_z] = self.dimensions;
-        let width = grid_x.max(1) as usize;
-        let height = grid_z.max(1) as usize;
-
-        // The mid-Y layer. The voxel's y-index is recovered from its world-centred
-        // position: `world_y = j + 0.5 - grid_y/2` ⇒ `j = round(world_y + grid_y/2 - 0.5)`.
-        let mid_layer = (grid_y / 2) as i32;
-        let half_y = grid_y as f32 / 2.0;
+        if grid_x == 0 || grid_y == 0 || grid_z == 0 {
+            return 0;
+        }
+        let width = grid_x as usize;
         let half_x = grid_x as f32 / 2.0;
+        let half_y = grid_y as f32 / 2.0;
         let half_z = grid_z as f32 / 2.0;
 
-        const OCCUPIED: [u8; 3] = [205, 191, 166]; // parchment
-        const EMPTY: [u8; 3] = [12, 10, 8]; // dark warm
-        // Teal block line `#5fb8a4` at ~55% alpha, composited over each pixel.
-        const BLOCK_LINE: [u8; 3] = [0x5f, 0xb8, 0xa4];
-        const BLOCK_LINE_ALPHA: f32 = 0.55;
-
-        let mut pixels = vec![0u8; width * height * 4];
-        // Start every pixel "empty".
-        for pixel in pixels.chunks_exact_mut(4) {
-            pixel.copy_from_slice(&[EMPTY[0], EMPTY[1], EMPTY[2], 255]);
-        }
-
-        // Mark occupied voxels in the mid-Y layer.
+        // One occupancy row (length grid_x) per (y, z) row that touches the band.
+        // Keyed by a flat (y, z) index; built sparsely so an empty grid is cheap.
+        let mut rows: std::collections::HashMap<u64, Vec<bool>> = std::collections::HashMap::new();
         for voxel in &self.occupied {
-            let world_y = voxel.world_position[1];
-            let j = (world_y + half_y - 0.5).round() as i32;
-            if j != mid_layer {
+            let j = (voxel.world_position[1] + half_y - 0.5).round() as i64;
+            if j < band_min as i64 || j > band_max as i64 {
                 continue;
             }
-            let i = (voxel.world_position[0] + half_x - 0.5).round() as i32;
-            let k = (voxel.world_position[2] + half_z - 0.5).round() as i32;
-            if i < 0 || k < 0 || i >= width as i32 || k >= height as i32 {
+            let i = (voxel.world_position[0] + half_x - 0.5).round() as i64;
+            let k = (voxel.world_position[2] + half_z - 0.5).round() as i64;
+            if i < 0 || i >= width as i64 || k < 0 || k >= grid_z as i64 {
                 continue;
             }
-            let index = (k as usize * width + i as usize) * 4;
-            pixels[index..index + 3].copy_from_slice(&OCCUPIED);
+            let key = (j as u64) << 32 | (k as u64);
+            let row = rows.entry(key).or_insert_with(|| vec![false; width]);
+            row[i as usize] = true;
         }
 
-        // Measure the widest horizontal run of occupied voxels (the Ø readout).
-        let mut widest_run = 0u32;
-        for k in 0..height {
+        let mut widest = 0u32;
+        for row in rows.values() {
             let mut run = 0u32;
-            for i in 0..width {
-                let index = (k * width + i) * 4;
-                if pixels[index..index + 3] == OCCUPIED {
+            for &occupied in row {
+                if occupied {
                     run += 1;
-                    widest_run = widest_run.max(run);
+                    widest = widest.max(run);
                 } else {
                     run = 0;
                 }
             }
         }
-
-        // Overlay block-boundary lines every `voxels_per_block` pixels. A boundary
-        // at pixel column/row `c` is drawn ON the cell to its right/below (the
-        // first voxel of each block), matching the prototype's grid lines.
-        let step = voxels_per_block.max(1) as usize;
-        let blend = |dst: &mut [u8]| {
-            for channel in 0..3 {
-                let base = dst[channel] as f32;
-                let lit = BLOCK_LINE[channel] as f32;
-                dst[channel] = (base + (lit - base) * BLOCK_LINE_ALPHA).round() as u8;
-            }
-        };
-        for k in 0..height {
-            for i in (0..width).step_by(step) {
-                let index = (k * width + i) * 4;
-                blend(&mut pixels[index..index + 4]);
-            }
-        }
-        for k in (0..height).step_by(step) {
-            for i in 0..width {
-                let index = (k * width + i) * 4;
-                blend(&mut pixels[index..index + 4]);
-            }
-        }
-
-        SliceImage {
-            size: [width as u32, height as u32],
-            rgba: pixels,
-            widest_run_voxels: widest_run,
-        }
+        widest
     }
-}
-
-/// The CPU-built 2D mid-Y slice map (RGBA8) plus its measured widest run.
-#[derive(Debug, Clone, Default)]
-pub struct SliceImage {
-    /// `[width, height]` = `[grid_x, grid_z]`.
-    pub size: [u32; 2],
-    /// Tightly packed RGBA8 pixels, row-major (`width * height * 4` bytes).
-    pub rgba: Vec<u8>,
-    /// Longest horizontal run of occupied voxels in the layer (measured Ø).
-    pub widest_run_voxels: u32,
 }
 
 /// Anything that can resolve itself into the shared [`VoxelGrid`].

@@ -19,7 +19,7 @@ use voxel_worker::scan_worker::{
 use voxel_worker::{
     create_depth_view, create_msaa_color_view, procedural_material_average_color, render_frame,
     run_egui_frame, AppConfig, CubeFace, EguiPaintBridge, FrameOverlays, GizmoRenderer,
-    GpuContext, GridLatticeRenderer, MaterialSource, OrbitCamera, PanelState, SdfShape, SliceImage,
+    GpuContext, GridLatticeRenderer, LayerBand, MaterialSource, OrbitCamera, PanelState, SdfShape,
     SnapTween, VoxExport, ViewCubeRenderer, VoxelGrid, VoxelProducer, VoxelRenderer,
     COLOR_TARGET_FORMAT, VIEW_CUBE_VIEWPORT_PIXELS,
 };
@@ -67,8 +67,13 @@ struct WindowedState {
     /// block resolves its blocktype JSON → per-face PNGs on the main thread.
     /// Rebuilt when "Connect folder…" switches the source.
     face_resolver: FaceResolver,
-    /// The current mid-Y 2D slice image, rebuilt whenever the grid rebuilds.
-    slice_image: SliceImage,
+    /// The resolved voxel grid, kept so the layer-range diameter readout (issue
+    /// #12) can re-measure the widest occupied run in the active band on demand.
+    grid: VoxelGrid,
+    /// Cached widest-run measurement + the band it was computed for, so we only
+    /// re-measure when the band or grid actually changes.
+    measured_diameter: u32,
+    measured_band: (u32, u32),
     depth_view: wgpu::TextureView,
     /// 4× MSAA colour target for the 3D pass; resolved into the surface texture.
     msaa_color_view: wgpu::TextureView,
@@ -165,13 +170,23 @@ impl WindowedState {
         // Resolve the panel geometry into the grid, then build the renderer's
         // instance buffer FROM the grid (REPRESENTATION.md seam). The view cube +
         // block lattice are ON by default; the persisted config overrides them.
-        let panel_state = match &config {
+        let mut panel_state = match &config {
             Some(config) => config.to_panel_state(),
             None => PanelState::with_view_cube_default(),
         };
         let shape = SdfShape::from_geometry(panel_state.geometry);
         let mut grid = VoxelGrid::new(shape.grid_dimensions());
         shape.resolve(&mut grid);
+        // Initialise the layer-range band to the full grid height (issue #12).
+        let grid_y = grid.dimensions[1];
+        panel_state
+            .layer_range
+            .rescale_to_grid_y(0, grid_y, shape.voxels_per_block);
+        let measured_diameter = grid.widest_run_in_band(
+            panel_state.layer_range.lower,
+            panel_state.layer_range.upper,
+        );
+        let measured_band = (panel_state.layer_range.lower, panel_state.layer_range.upper);
         println!(
             "resolved {} voxels for {:?} {:?}@{}",
             grid.occupied_count(),
@@ -192,7 +207,6 @@ impl WindowedState {
         let view_cube_renderer =
             ViewCubeRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
         let thumbnail_renderer = ThumbnailRenderer::new(&gpu.device, &gpu.queue);
-        let slice_image = grid.build_slice_image(shape.voxels_per_block);
 
         // Kick off the VS auto-detect + scan on a background thread immediately;
         // results stream in over the next frames (no startup block).
@@ -236,7 +250,9 @@ impl WindowedState {
             scan_source_name: None,
             loaded_material: None,
             face_resolver: FaceResolver::auto(),
-            slice_image,
+            grid,
+            measured_diameter,
+            measured_band,
             depth_view,
             msaa_color_view,
             camera,
@@ -278,11 +294,12 @@ impl WindowedState {
         }
         self.panel_state.voxel_cap_warning_millions = None;
 
+        let previous_grid_y = self.grid.dimensions[1];
         let mut grid = VoxelGrid::new(shape.grid_dimensions());
         shape.resolve(&mut grid);
         self.voxel_renderer
             .rebuild_instances(&self.gpu.device, &self.gpu.queue, &grid);
-        // Keep the gizmo sized to the grid and rebuild the 2D slice (cheap).
+        // Keep the gizmo sized to the grid.
         self.gizmo_renderer
             .rebuild(&self.gpu.device, &self.gpu.queue, grid.dimensions);
         // Keep the block lattice + floor grid sized to the grid/density.
@@ -292,10 +309,20 @@ impl WindowedState {
             grid.dimensions,
             shape.voxels_per_block,
         );
-        self.slice_image = grid.build_slice_image(shape.voxels_per_block);
+
+        // Issue #12: clamp/rescale the layer band to the new grid_y (re-snapping
+        // to block multiples when snapping is on), then invalidate the diameter
+        // cache so the readout re-measures against the new grid.
+        self.panel_state.layer_range.rescale_to_grid_y(
+            previous_grid_y,
+            grid.dimensions[1],
+            shape.voxels_per_block,
+        );
+        self.grid = grid;
+        self.measured_band = (u32::MAX, u32::MAX); // force a re-measure next frame.
 
         if auto_frame {
-            self.camera.orbit_distance = OrbitCamera::auto_framed_distance(grid.dimensions);
+            self.camera.orbit_distance = OrbitCamera::auto_framed_distance(self.grid.dimensions);
         }
     }
 
@@ -557,12 +584,23 @@ impl WindowedState {
         let raw_input = self.egui_winit_state.take_egui_input(&self.window);
         let pixels_per_point = self.egui_winit_state.egui_ctx().pixels_per_point();
 
+        // Issue #12: re-measure the band diameter only when the band changed (the
+        // grid rebuild path resets `measured_band` to force a re-measure).
+        let grid_y = self.grid.dimensions[1];
+        let current_band = (self.panel_state.layer_range.lower, self.panel_state.layer_range.upper);
+        if current_band != self.measured_band {
+            self.measured_diameter =
+                self.grid.widest_run_in_band(current_band.0, current_band.1);
+            self.measured_band = current_band;
+        }
+
         let prepared = run_egui_frame(
             &mut self.egui_bridge,
             &self.gpu.device,
             &self.gpu.queue,
             &mut self.panel_state,
-            &self.slice_image,
+            grid_y,
+            self.measured_diameter,
             &self.palette,
             raw_input,
             [self.surface_config.width, self.surface_config.height],
@@ -611,6 +649,25 @@ impl WindowedState {
             geometry.size_blocks[2] * geometry.voxels_per_block,
         ];
         let view_projection = self.camera.view_projection(aspect_ratio);
+        // Issue #12: translate the layer-range scrubber into the shader band. The
+        // band is inclusive on both ends; the upper handle is a layer index, so a
+        // single-layer band is `lower == upper`. A full range draws everything.
+        let layer_range = self.panel_state.layer_range;
+        let band = if layer_range.is_full_range(grid_dimensions[1]) && !layer_range.onion_skin {
+            LayerBand::FULL
+        } else {
+            LayerBand {
+                band_min: layer_range.lower,
+                // `upper` is the last visible layer index; clamp into the grid so a
+                // full-range upper (== grid_y) still includes the top layer.
+                band_max: layer_range.upper.min(grid_dimensions[1].saturating_sub(1)),
+                onion_depth: if layer_range.onion_skin {
+                    layer_range.onion_depth.clamp(1, 8)
+                } else {
+                    0
+                },
+            }
+        };
         self.voxel_renderer.update_uniforms(
             &self.gpu.queue,
             view_projection,
@@ -618,6 +675,7 @@ impl WindowedState {
             geometry.voxels_per_block,
             self.panel_state.show_grid_overlay,
             self.panel_state.debug_face_orientation,
+            band,
         );
         // M5 overlay uniforms: gizmo shares the main camera matrix; the view cube
         // uses its own orientation-mirroring matrix.

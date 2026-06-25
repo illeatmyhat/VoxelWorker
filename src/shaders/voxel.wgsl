@@ -31,6 +31,19 @@ struct VoxelUniforms {
     block_line_half_width: f32,
     voxel_line_alpha: f32,
     block_line_alpha: f32,
+    // --- Layer-range scrubber (issue #12) ---
+    // The visible band, in voxel Y-layer indices. A fragment is kept when its
+    // layer satisfies `band_min <= layer <= band_max` (BOTH ends INCLUSIVE).
+    // Full range = band_min 0, band_max >= grid_y - 1 (then nothing is clipped).
+    band_min: f32,
+    band_max: f32,
+    // Onion-skin ghost depth in layers (0 = onion off → hard band clip). Ghost
+    // layers are those within `onion_depth` OUTSIDE the band; they render as a
+    // faint translucent fog in a separate alpha-blended pass.
+    onion_depth: f32,
+    // Render mode: 0 = OPAQUE band pass (in-band solid, discard the rest);
+    // 1 = GHOST pass (onion layers as faint translucent fog, discard the band).
+    render_mode: f32,
 };
 
 @group(0) @binding(0)
@@ -80,6 +93,12 @@ struct VertexOutput {
     @location(2) voxel_absolute_position: vec3<f32>,
     // M7: the texture-array layer for this face (flat — constant per face).
     @location(3) @interpolate(flat) face_texture_layer: i32,
+    // Issue #12: this voxel's Y layer index, recovered from the instance CENTRE
+    // (not the interpolated fragment), so a cube's top/bottom faces share the
+    // same layer. `vox_centre_abs.y = world_position.y + grid_half_extent.y`, and
+    // because centres sit at integer+0.5, `layer = floor(that)`. Flat so every
+    // fragment of the cube reports the voxel's own layer.
+    @location(4) @interpolate(flat) voxel_layer: f32,
 };
 
 @vertex
@@ -107,6 +126,10 @@ fn vertex_main(vertex: VertexInput, instance: InstanceInput) -> VertexOutput {
     output.texture_coord = (vertex.face_uv + voxel_offset) / uniforms.voxels_per_block;
     output.voxel_absolute_position = world_point + uniforms.grid_half_extent;
     output.face_texture_layer = face_layer(vertex.face_normal);
+    // Layer index from the voxel CENTRE (instance.world_position), shifted into
+    // absolute (0-based) voxel space. Centres are at integer+0.5 so floor() lands
+    // on the voxel's layer index regardless of which face this vertex belongs to.
+    output.voxel_layer = floor(instance.world_position.y + uniforms.grid_half_extent.y);
     return output;
 }
 
@@ -132,6 +155,53 @@ fn fragment_main(
     input: VertexOutput,
     @builtin(front_facing) is_front_facing: bool,
 ) -> @location(0) vec4<f32> {
+    // --- Layer-range band clip + onion skin (issue #12) ---
+    // The band is INCLUSIVE on both ends: layers [band_min, band_max] are solid.
+    // Debug-face mode skips this entirely so the culling regression check always
+    // sees the whole model.
+    //
+    // Two render modes share this shader:
+    //   render_mode 0 (OPAQUE pass): keep in-band fragments; discard everything
+    //     else (hard clip — onion layers are painted by the separate ghost pass).
+    //   render_mode 1 (GHOST pass): keep ONLY onion layers (within onion_depth
+    //     OUTSIDE the band) and emit them as a faint translucent fog; discard the
+    //     in-band band so the ghost pass never repaints the solid surface.
+    // `ghost_alpha` carries the fog opacity for the ghost pass (very low — an
+    // aerogel-like haze that the band surface clearly shows through).
+    var ghost_alpha = 1.0;
+    if (uniforms.debug_face_mode <= 0.5) {
+        let layer = input.voxel_layer;
+        let in_band = layer >= uniforms.band_min && layer <= uniforms.band_max;
+        let ghost_pass = uniforms.render_mode > 0.5;
+        if (in_band) {
+            // The band itself: drawn only by the opaque pass.
+            if (ghost_pass) {
+                discard;
+            }
+        } else {
+            // Outside the band: only the ghost pass may draw it, and only within
+            // `onion_depth` layers of the band.
+            if (!ghost_pass || uniforms.onion_depth < 0.5) {
+                discard;
+            }
+            var distance_layers = 0.0;
+            if (layer < uniforms.band_min) {
+                distance_layers = uniforms.band_min - layer;
+            } else {
+                distance_layers = layer - uniforms.band_max;
+            }
+            if (distance_layers > uniforms.onion_depth) {
+                discard;
+            }
+            // Fog opacity fades with distance: nearest ghost layer the least faint,
+            // fading to nearly nothing at onion_depth. Capped very low so the fog
+            // is almost invisible (aerogel-like) and the band shows through.
+            let nearness = 1.0 - (distance_layers - 1.0) / max(uniforms.onion_depth, 1.0);
+            ghost_alpha = clamp(nearness, 0.0, 1.0) * 0.14 + 0.02;
+        }
+    }
+    let is_ghost = uniforms.render_mode > 0.5 && uniforms.debug_face_mode <= 0.5;
+
     // --- Face-orientation debug mode ---
     // Colour each fragment by its outward face normal (signed-axis palette),
     // bypassing texture + lighting. Any fragment that is NOT front-facing (a back
@@ -198,6 +268,17 @@ fn fragment_main(
             line_color = uniforms.block_line_color;
         }
         color = mix(color, line_color, blend);
+    }
+
+    // Ghost (onion-skin) layers: a faint cool fog. The colour keeps a hint of the
+    // surface's own brightness for shape, tinted cool; the very low `ghost_alpha`
+    // (set above, capped ~0.16) is the blend opacity in the alpha-blended ghost
+    // pass, so the fog is almost invisible and the band surface shows through.
+    if (is_ghost) {
+        let luminance = dot(color, vec3<f32>(0.299, 0.587, 0.114));
+        let fog_tint = vec3<f32>(0.62, 0.72, 0.92);
+        color = mix(fog_tint, vec3<f32>(luminance) * fog_tint, 0.5);
+        return vec4<f32>(color, ghost_alpha);
     }
 
     return vec4<f32>(color, 1.0);

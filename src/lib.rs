@@ -27,16 +27,17 @@ pub use camera::{
     nearest_equivalent_theta, CubeFace, OrbitCamera, ProjectionMode, SnapTween, CUBE_FACES,
 };
 pub use gpu::GpuContext;
-pub use panel::{build_panel, GeometryParams, MaterialChoice, PanelResponse, PanelState};
+pub use panel::{build_panel, GeometryParams, LayerRange, MaterialChoice, PanelResponse, PanelState};
 pub use assets::{CubeFaceSlot, FaceProvenance, FaceTextures};
 pub use renderer::{
-    create_depth_view, create_msaa_color_view, GizmoRenderer, GridLatticeRenderer, MaterialSource,
-    ViewCubeRenderer, VoxelRenderer, DEPTH_FORMAT, MSAA_SAMPLE_COUNT, VIEW_CUBE_VIEWPORT_PIXELS,
+    create_depth_view, create_msaa_color_view, GizmoRenderer, GridLatticeRenderer, LayerBand,
+    MaterialSource, ViewCubeRenderer, VoxelRenderer, DEPTH_FORMAT, MSAA_SAMPLE_COUNT,
+    VIEW_CUBE_VIEWPORT_PIXELS,
 };
 pub use renderer::procedural_material_average_color;
 pub use settings::AppConfig;
 pub use vox_export::VoxExport;
-pub use voxel::{SdfShape, ShapeKind, SliceImage, VoxelGrid, VoxelProducer};
+pub use voxel::{SdfShape, ShapeKind, VoxelGrid, VoxelProducer};
 
 /// Surface / offscreen colour format used everywhere in the project.
 ///
@@ -114,7 +115,8 @@ pub fn run_egui_frame(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     panel_state: &mut PanelState,
-    slice: &voxel::SliceImage,
+    grid_y: u32,
+    measured_diameter: u32,
     palette: &block_palette::BlockPalette,
     raw_input: egui::RawInput,
     size_in_pixels: [u32; 2],
@@ -122,7 +124,7 @@ pub fn run_egui_frame(
 ) -> PreparedEguiFrame {
     let mut panel_response = PanelResponse::default();
     let full_output = bridge.context.run_ui(raw_input, |ui| {
-        panel_response = build_panel(ui, panel_state, slice, palette);
+        panel_response = build_panel(ui, panel_state, grid_y, measured_diameter, palette);
     });
 
     for (texture_id, image_delta) in &full_output.textures_delta.set {

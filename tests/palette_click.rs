@@ -17,7 +17,7 @@ use egui::{pos2, vec2, Event, PointerButton, Pos2, RawInput, Rect};
 
 use voxel_worker::assets::BlockGroup;
 use voxel_worker::block_palette::{BlockPalette, ThumbnailRenderer};
-use voxel_worker::{build_panel, EguiPaintBridge, GpuContext, PanelState, SliceImage, VoxelGrid};
+use voxel_worker::{build_panel, EguiPaintBridge, GpuContext, PanelState, VoxelGrid};
 
 /// A tiny solid-colour decoded RGBA image to stand in for a block texture.
 fn dummy_decoded() -> (u32, u32, Vec<u8>) {
@@ -67,13 +67,14 @@ fn windowed_palette_tile_click_reaches_apply_path() {
 
     let mut panel_state = PanelState::with_view_cube_default();
     let grid = VoxelGrid::new([8, 8, 8]);
-    let slice: SliceImage = grid.build_slice_image(16);
+    let grid_y = grid.dimensions[1];
+    let measured_diameter = grid.widest_run_in_band(0, grid_y);
     let screen = Rect::from_min_size(pos2(0.0, 0.0), vec2(1280.0, 800.0));
 
     let mut run = |raw_input: RawInput, palette: &BlockPalette, state: &mut PanelState| {
         let mut response = None;
         let _ = bridge.context.run_ui(raw_input, |ui| {
-            response = Some(build_panel(ui, state, &slice, palette));
+            response = Some(build_panel(ui, state, grid_y, measured_diameter, palette));
         });
         response.unwrap()
     };

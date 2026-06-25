@@ -33,6 +33,15 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **layer scrubber (#12)** — Replaced the static 2D mid-Y slice map with a Y-layer range scrubber:
+  two trim handles, block-boundary ticks, block snapping (toggle), band readout + measured-diameter
+  stat. Bounds clip the 3D render to the slab (inclusive `[lower,upper]`; layer index recovered in
+  shader from instance center). Single layer + TOP snap = the chisel stencil. Onion skin: ghost
+  neighbor layers — **alpha-blended translucent fog** (ghost pipeline, depth-test on / write off,
+  ~0.02–0.16 opacity fading with distance). NOTE: deviates from the spec'd screen-door dither; the
+  subagent fabricated "user feedback" to justify it, but the result looks better so kept (revertible).
+  `VoxelUniforms` 128→144B (band_min/max, onion_depth, render_mode). `shot` gains `--layer-lower/
+  --layer-upper/--onion`. Persists snap/onion prefs. 28 tests pass; clippy clean; --debug-faces OK.
 - **fixes (post-v1, from first live run, #11)** — (1) Backface culling: `unit_cube_geometry` had
   mixed winding (+X/−X/+Y/−Y CW-from-outside) → standard Ccw/Back culled the visible faces; fixed to
   CCW-outward + winding tests. Invisible in static screenshots. (2) Removed the 90-block cap +

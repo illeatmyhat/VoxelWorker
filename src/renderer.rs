@@ -80,6 +80,16 @@ struct VoxelUniforms {
     block_line_half_width: f32,
     voxel_line_alpha: f32,
     block_line_alpha: f32,
+    /// Layer-range scrubber band (issue #12), in voxel Y-layer indices. A voxel
+    /// is drawn solid when `band_min <= layer <= band_max` (both ends INCLUSIVE).
+    /// Full range = `band_min 0`, `band_max >= grid_y - 1` (nothing clipped).
+    band_min: f32,
+    band_max: f32,
+    /// Onion-skin ghost depth in layers (0 = onion off → hard clip at the band).
+    onion_depth: f32,
+    /// Render mode for the voxel pass: `0` = opaque band pass, `1` = translucent
+    /// ghost (onion-skin) pass. Written per sub-draw inside [`VoxelRenderer::draw`].
+    render_mode: f32,
 }
 
 /// Grid overlay tuning, transcribed from the prototype `GRID` uniforms
@@ -170,6 +180,30 @@ fn with_alpha(rgb: [f32; 3], alpha: f32) -> [f32; 4] {
     [rgb[0], rgb[1], rgb[2], alpha]
 }
 
+/// The visible layer band (issue #12), in voxel Y-layer indices, passed to the
+/// voxel shader. The band is INCLUSIVE on both ends: layers `[band_min, band_max]`
+/// render solid. `onion_depth` is the number of layers OUTSIDE the band that
+/// render ghosted (screen-door dither); `0` means a hard clip at the band.
+///
+/// Pass [`LayerBand::FULL`] (or any band whose `band_max >= grid_y - 1` and
+/// `band_min == 0`) to draw the whole model unclipped.
+#[derive(Debug, Clone, Copy)]
+pub struct LayerBand {
+    pub band_min: u32,
+    pub band_max: u32,
+    pub onion_depth: u32,
+}
+
+impl LayerBand {
+    /// An effectively-unbounded band (the whole grid, no onion skin). `band_max`
+    /// is huge so no layer is ever clipped regardless of `grid_y`.
+    pub const FULL: LayerBand = LayerBand {
+        band_min: 0,
+        band_max: u32::MAX,
+        onion_depth: 0,
+    };
+}
+
 /// All GPU resources for drawing the voxel grid as textured instanced cubes.
 pub struct VoxelRenderer {
     pipeline: wgpu::RenderPipeline,
@@ -178,6 +212,13 @@ pub struct VoxelRenderer {
     /// bug) still DRAWS and gets flagged by the shader's `front_facing` marker.
     /// Depth testing stays on so the nearest face still wins.
     debug_pipeline: wgpu::RenderPipeline,
+    /// Onion-skin ghost pipeline (issue #12): alpha-blended, depth-TESTED but with
+    /// depth writes OFF, so the faint translucent fog shows the solid band through
+    /// it and the band (drawn first, opaque) still occludes ghosts behind it.
+    ghost_pipeline: wgpu::RenderPipeline,
+    /// Whether the last `update_uniforms` enabled onion skin (so `draw` runs the
+    /// ghost sub-pass). `Cell` so `update_uniforms`/`draw` keep `&self`.
+    onion_active: std::cell::Cell<bool>,
     cube_vertex_buffer: wgpu::Buffer,
     cube_index_buffer: wgpu::Buffer,
     cube_index_count: u32,
@@ -188,6 +229,12 @@ pub struct VoxelRenderer {
     instance_capacity: u32,
     uniform_buffer: wgpu::Buffer,
     uniform_bind_group: wgpu::BindGroup,
+    /// A second uniform buffer + bind group identical to the main one except
+    /// `render_mode = 1` (the translucent ghost pass). Kept separate so the ghost
+    /// sub-draw can bind a different render_mode WITHOUT a mid-pass buffer rewrite
+    /// (which would retroactively affect the opaque draw in the same pass).
+    ghost_uniform_buffer: wgpu::Buffer,
+    ghost_uniform_bind_group: wgpu::BindGroup,
     /// One bind group per material (Stone/Wood/Plain), indexed by
     /// [`MaterialChoice`] order.
     material_bind_groups: [wgpu::BindGroup; 3],
@@ -259,6 +306,23 @@ impl VoxelRenderer {
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
                 resource: uniform_buffer.as_entire_binding(),
+            }],
+        });
+
+        // The ghost (onion-skin) uniform buffer mirrors the main one but with
+        // `render_mode = 1`; bound only by the translucent ghost sub-pass.
+        let ghost_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("voxel ghost uniforms"),
+            size: std::mem::size_of::<VoxelUniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let ghost_uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("voxel ghost uniform bind group"),
+            layout: &uniform_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: ghost_uniform_buffer.as_entire_binding(),
             }],
         });
 
@@ -369,12 +433,17 @@ impl VoxelRenderer {
             ],
         };
 
-        // Both pipelines share everything except the cull mode. The debug
-        // pipeline disables culling (`cull_mode: None`) so that if a back face is
-        // the nearest surface to the camera (a winding bug), it draws and the
-        // shader's `front_facing` marker flags it — culling would otherwise hide
-        // the evidence. Depth testing stays on in both, so the nearest face wins.
-        let build_pipeline = |label: &str, cull_mode: Option<wgpu::Face>| {
+        // The opaque + debug pipelines share everything except the cull mode. The
+        // debug pipeline disables culling (`cull_mode: None`) so that if a back
+        // face is the nearest surface to the camera (a winding bug), it draws and
+        // the shader's `front_facing` marker flags it — culling would otherwise
+        // hide the evidence. Depth testing stays on in both, so the nearest face
+        // wins. The ghost pipeline (issue #12) alpha-blends with depth writes OFF
+        // for the translucent onion-skin fog (see its dedicated builder below).
+        let build_pipeline = |label: &str,
+                              cull_mode: Option<wgpu::Face>,
+                              blend: wgpu::BlendState,
+                              depth_write: bool| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(&pipeline_layout),
@@ -389,7 +458,7 @@ impl VoxelRenderer {
                     entry_point: Some("fragment_main"),
                     targets: &[Some(wgpu::ColorTargetState {
                         format: color_format,
-                        blend: Some(wgpu::BlendState::REPLACE),
+                        blend: Some(blend),
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -405,7 +474,7 @@ impl VoxelRenderer {
                 },
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: DEPTH_FORMAT,
-                    depth_write_enabled: Some(true),
+                    depth_write_enabled: Some(depth_write),
                     depth_compare: Some(wgpu::CompareFunction::Less),
                     stencil: wgpu::StencilState::default(),
                     bias: wgpu::DepthBiasState::default(),
@@ -419,12 +488,25 @@ impl VoxelRenderer {
                 cache: None,
             })
         };
-        let pipeline = build_pipeline("voxel pipeline", Some(wgpu::Face::Back));
-        let debug_pipeline = build_pipeline("voxel debug pipeline", None);
+        let pipeline =
+            build_pipeline("voxel pipeline", Some(wgpu::Face::Back), wgpu::BlendState::REPLACE, true);
+        let debug_pipeline =
+            build_pipeline("voxel debug pipeline", None, wgpu::BlendState::REPLACE, true);
+        // Ghost pipeline: standard src-alpha over blending, depth writes OFF so the
+        // band surface (drawn first, opaque) shows through the faint fog and the
+        // ghosts don't fight each other in the depth buffer.
+        let ghost_pipeline = build_pipeline(
+            "voxel ghost pipeline",
+            Some(wgpu::Face::Back),
+            wgpu::BlendState::ALPHA_BLENDING,
+            false,
+        );
 
         Self {
             pipeline,
             debug_pipeline,
+            ghost_pipeline,
+            onion_active: std::cell::Cell::new(false),
             cube_vertex_buffer,
             cube_index_buffer,
             cube_index_count: indices.len() as u32,
@@ -433,6 +515,8 @@ impl VoxelRenderer {
             instance_capacity,
             uniform_buffer,
             uniform_bind_group,
+            ghost_uniform_buffer,
+            ghost_uniform_bind_group,
             material_bind_groups,
             material_bind_group_layout,
             material_sampler,
@@ -488,6 +572,7 @@ impl VoxelRenderer {
     /// `debug_face_mode` enables the face-orientation debug shader path (colour by
     /// outward normal + back-facing marker); it must match the pipeline chosen in
     /// [`VoxelRenderer::draw`].
+    #[allow(clippy::too_many_arguments)]
     pub fn update_uniforms(
         &self,
         queue: &wgpu::Queue,
@@ -496,6 +581,7 @@ impl VoxelRenderer {
         voxels_per_block: u32,
         grid_overlay_enabled: bool,
         debug_face_mode: bool,
+        band: LayerBand,
     ) {
         let uniforms = VoxelUniforms {
             view_projection: view_projection.to_cols_array_2d(),
@@ -513,8 +599,25 @@ impl VoxelRenderer {
             block_line_half_width: BLOCK_LINE_HALF_WIDTH,
             voxel_line_alpha: VOXEL_LINE_ALPHA,
             block_line_alpha: BLOCK_LINE_ALPHA,
+            band_min: band.band_min as f32,
+            band_max: band.band_max as f32,
+            onion_depth: band.onion_depth as f32,
+            // The opaque band pass runs in render_mode 0; the ghost uniform below
+            // is the same block with render_mode 1 for the translucent sub-pass.
+            render_mode: 0.0,
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
+        let ghost_uniforms = VoxelUniforms {
+            render_mode: 1.0,
+            ..uniforms
+        };
+        queue.write_buffer(
+            &self.ghost_uniform_buffer,
+            0,
+            bytemuck::bytes_of(&ghost_uniforms),
+        );
+        // Remember whether onion skin is on so `draw` runs the ghost sub-pass.
+        self.onion_active.set(band.onion_depth > 0);
     }
 
     /// Record the voxel draw into an already-begun render pass.
@@ -554,6 +657,22 @@ impl VoxelRenderer {
         render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
         render_pass.set_index_buffer(self.cube_index_buffer.slice(..), wgpu::IndexFormat::Uint16);
         render_pass.draw_indexed(0..self.cube_index_count, 0, 0..self.instance_count);
+
+        // Onion-skin (issue #12): a second, alpha-blended sub-draw over the same
+        // instances. The ghost uniform (render_mode 1) keeps ONLY the onion layers
+        // and emits them as faint translucent fog; depth writes are off so the
+        // opaque band (drawn just above) shows through. Skipped in debug-face mode
+        // and when onion skin is off, so the regression path is untouched.
+        if self.onion_active.get() && !debug_face_mode {
+            render_pass.set_pipeline(&self.ghost_pipeline);
+            render_pass.set_bind_group(0, &self.ghost_uniform_bind_group, &[]);
+            render_pass.set_bind_group(1, material_bind_group, &[]);
+            render_pass.set_vertex_buffer(0, self.cube_vertex_buffer.slice(..));
+            render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
+            render_pass
+                .set_index_buffer(self.cube_index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+            render_pass.draw_indexed(0..self.cube_index_count, 0, 0..self.instance_count);
+        }
     }
 }
 

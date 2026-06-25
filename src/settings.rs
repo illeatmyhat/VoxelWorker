@@ -22,7 +22,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::camera::{OrbitCamera, ProjectionMode};
-use crate::panel::{GeometryParams, MaterialChoice, PanelState};
+use crate::panel::{GeometryParams, LayerRange, MaterialChoice, PanelState};
 use crate::voxel::ShapeKind;
 
 /// The whole persisted configuration. Every field is `#[serde(default)]` so a
@@ -57,6 +57,17 @@ pub struct AppConfig {
     /// Best-effort applied-block label (re-applied lazily; see module docs).
     #[serde(default)]
     pub applied_block_label: Option<String>,
+
+    // --- layer-range scrubber (issue #12) ---
+    // The bounds themselves depend on the live grid_y, so they are NOT persisted
+    // (they always re-derive to the full range on load); only the sticky control
+    // preferences are saved here.
+    #[serde(default = "default_true")]
+    pub snap_to_blocks: bool,
+    #[serde(default)]
+    pub onion_skin: bool,
+    #[serde(default = "default_onion_depth")]
+    pub onion_depth: u32,
 
     // --- camera ---
     #[serde(default = "default_theta")]
@@ -98,6 +109,9 @@ fn default_distance() -> f32 {
 fn default_window_size() -> [u32; 2] {
     [1280, 800]
 }
+fn default_onion_depth() -> u32 {
+    2
+}
 
 impl Default for AppConfig {
     fn default() -> Self {
@@ -114,6 +128,9 @@ impl Default for AppConfig {
             show_view_cube: true,
             show_origin_gizmo: false,
             applied_block_label: None,
+            snap_to_blocks: true,
+            onion_skin: false,
+            onion_depth: default_onion_depth(),
             orbit_theta: default_theta(),
             orbit_phi: default_phi(),
             orbit_distance: default_distance(),
@@ -139,6 +156,9 @@ impl AppConfig {
             show_view_cube: panel.show_view_cube,
             show_origin_gizmo: panel.show_origin_gizmo,
             applied_block_label: panel.applied_block_label.clone(),
+            snap_to_blocks: panel.layer_range.snap_to_blocks,
+            onion_skin: panel.layer_range.onion_skin,
+            onion_depth: panel.layer_range.onion_depth,
             orbit_theta: camera.orbit_theta,
             orbit_phi: camera.orbit_phi,
             orbit_distance: camera.orbit_distance,
@@ -169,6 +189,15 @@ impl AppConfig {
             // Re-applied lazily/best-effort: only the label is restored (for the
             // panel readout); the material itself reverts to procedural.
             applied_block_label: self.applied_block_label.clone(),
+            // Issue #12: only the sticky control prefs persist; the band bounds
+            // are re-derived to the full range against the live grid_y on load.
+            layer_range: LayerRange {
+                lower: 0,
+                upper: 0, // rescaled to grid_y by the caller after the grid resolves.
+                snap_to_blocks: self.snap_to_blocks,
+                onion_skin: self.onion_skin,
+                onion_depth: self.onion_depth.clamp(1, 8),
+            },
         }
     }
 
@@ -254,6 +283,9 @@ mod tests {
             show_view_cube: false,
             show_origin_gizmo: true,
             applied_block_label: Some("Granite".to_string()),
+            snap_to_blocks: false,
+            onion_skin: true,
+            onion_depth: 5,
             orbit_theta: 1.23,
             orbit_phi: 0.95,
             orbit_distance: 42.0,

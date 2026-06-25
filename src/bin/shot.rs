@@ -27,9 +27,9 @@ use voxel_worker::scan_worker::{run_auto_scan_blocking, FaceResolver};
 use voxel_worker::{
     create_depth_view, create_msaa_color_view, procedural_material_average_color, render_frame,
     run_egui_frame, CubeFace, EguiPaintBridge, FrameOverlays, GeometryParams, GizmoRenderer,
-    GpuContext, GridLatticeRenderer, MaterialChoice, MaterialSource, OrbitCamera, PanelState,
-    ProjectionMode, SdfShape, ShapeKind, VoxExport, ViewCubeRenderer, VoxelGrid, VoxelProducer,
-    VoxelRenderer, COLOR_TARGET_FORMAT,
+    GpuContext, GridLatticeRenderer, LayerBand, LayerRange, MaterialChoice, MaterialSource,
+    OrbitCamera, PanelState, ProjectionMode, SdfShape, ShapeKind, VoxExport, ViewCubeRenderer,
+    VoxelGrid, VoxelProducer, VoxelRenderer, COLOR_TARGET_FORMAT,
 };
 
 struct ShotOptions {
@@ -87,6 +87,15 @@ struct ShotOptions {
     /// its texture stem (e.g. `wood/treetrunk/oak`) even if it is outside the
     /// chiselable allow-list, to demonstrate per-face rendering on a known block.
     force_demo_stem: Option<String>,
+    /// Layer-range scrubber lower bound (issue #12), a voxel Y-layer index. When
+    /// `None`, defaults to the full range (0). Raw voxel index — no snapping.
+    layer_lower: Option<u32>,
+    /// Layer-range scrubber upper bound (issue #12), a voxel Y-layer index. When
+    /// `None`, defaults to the full range (grid_y). Raw voxel index — no snapping.
+    layer_upper: Option<u32>,
+    /// Onion-skin depth (issue #12): 0 = off (hard band clip), N = ghost N layers
+    /// on each side of the band with screen-door dither.
+    onion_depth: u32,
 }
 
 impl Default for ShotOptions {
@@ -114,6 +123,9 @@ impl Default for ShotOptions {
             apply_block_substring: None,
             list_per_face: false,
             force_demo_stem: None,
+            layer_lower: None,
+            layer_upper: None,
+            onion_depth: 0,
         }
     }
 }
@@ -265,6 +277,29 @@ fn parse_options() -> ShotOptions {
             "--debug-faces" => {
                 options.debug_face_orientation = true;
             }
+            "--layer-lower" => {
+                options.layer_lower = Some(
+                    args.next()
+                        .expect("--layer-lower requires a value")
+                        .parse()
+                        .expect("--layer-lower must be a non-negative integer"),
+                );
+            }
+            "--layer-upper" => {
+                options.layer_upper = Some(
+                    args.next()
+                        .expect("--layer-upper requires a value")
+                        .parse()
+                        .expect("--layer-upper must be a non-negative integer"),
+                );
+            }
+            "--onion" => {
+                options.onion_depth = args
+                    .next()
+                    .expect("--onion requires a value")
+                    .parse()
+                    .expect("--onion must be a non-negative integer (0 = off)");
+            }
             "--export-vox" => {
                 options.export_vox_path = Some(PathBuf::from(
                     args.next().expect("--export-vox requires a path argument"),
@@ -314,6 +349,7 @@ fn parse_options() -> ShotOptions {
                      \x20            [--force-demo-stem <texture/stem>]\n\
                      \x20            [--gizmo] [--lattice] [--floor] [--no-viewcube]\n\
                      \x20            [--debug-faces]\n\
+                     \x20            [--layer-lower <u32>] [--layer-upper <u32>] [--onion <u32>]\n\
                      \x20            [--export-vox <path.vox>]\n\
                      \x20            [--snap <front|back|left|right|top|bottom>]\n\
                      \x20            [--theta <f32>] [--phi <f32>] [--dist <f32>]\n\
@@ -433,6 +469,16 @@ async fn run_capture(options: ShotOptions) {
     // (ARCHITECTURE.md §7) guards against an enormous CLI request.
     let shape = SdfShape::from_geometry(options.geometry);
     let mut grid = VoxelGrid::new(shape.grid_dimensions());
+    let grid_y = shape.grid_dimensions()[1];
+    // Issue #12: build the layer-range band from the raw CLI voxel indices (no
+    // snapping — flags take raw indices). Defaults to the full range.
+    let layer_range = LayerRange {
+        lower: options.layer_lower.unwrap_or(0).min(grid_y),
+        upper: options.layer_upper.unwrap_or(grid_y).min(grid_y),
+        snap_to_blocks: true,
+        onion_skin: options.onion_depth > 0,
+        onion_depth: options.onion_depth.clamp(1, 8),
+    };
     let mut panel_state = PanelState {
         geometry: options.geometry,
         projection_mode: options.projection_mode,
@@ -443,6 +489,7 @@ async fn run_capture(options: ShotOptions) {
         show_block_lattice: options.show_block_lattice,
         show_floor_grid: options.show_floor_grid,
         debug_face_orientation: options.debug_face_orientation,
+        layer_range,
         ..PanelState::default()
     };
     if shape.exceeds_voxel_cap() {
@@ -494,8 +541,22 @@ async fn run_capture(options: ShotOptions) {
         options.geometry.voxels_per_block,
     );
     let view_cube_renderer = ViewCubeRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
-    // The 2D mid-Y slice (always shown in the panel), built FROM the grid.
-    let slice_image = grid.build_slice_image(options.geometry.voxels_per_block);
+    // Issue #12: the layer-range band for the 3D clip + the measured-diameter
+    // readout (widest occupied run in the active band).
+    let band = if layer_range.is_full_range(grid_y) && !layer_range.onion_skin {
+        LayerBand::FULL
+    } else {
+        LayerBand {
+            band_min: layer_range.lower,
+            band_max: layer_range.upper.min(grid_y.saturating_sub(1)),
+            onion_depth: if layer_range.onion_skin {
+                layer_range.onion_depth.clamp(1, 8)
+            } else {
+                0
+            },
+        }
+    };
+    let measured_diameter = grid.widest_run_in_band(layer_range.lower, layer_range.upper);
 
     // Build the orbit camera from the CLI flags. `--snap` overrides theta/phi
     // with the face's snapped angles directly (no tween in the headless path).
@@ -521,6 +582,7 @@ async fn run_capture(options: ShotOptions) {
         options.geometry.voxels_per_block,
         options.show_grid_overlay,
         options.debug_face_orientation,
+        band,
     );
     gizmo_renderer.update_uniforms(&gpu.queue, view_projection);
     grid_lattice_renderer.update_uniforms(&gpu.queue, view_projection);
@@ -645,7 +707,8 @@ async fn run_capture(options: ShotOptions) {
         &gpu.device,
         &gpu.queue,
         &mut panel_state,
-        &slice_image,
+        grid_y,
+        measured_diameter,
         &palette,
         raw_input,
         [options.width, options.height],
