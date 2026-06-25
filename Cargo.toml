@@ -1,0 +1,27 @@
+[package]
+name = "voxel_worker"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "voxel_worker"
+path = "src/lib.rs"
+
+[[bin]]
+name = "voxel_worker"
+path = "src/main.rs"
+
+[[bin]]
+name = "shot"
+path = "src/bin/shot.rs"
+
+[dependencies]
+winit = "0.30.13"
+wgpu = "29.0.3"
+egui = "0.34.3"
+egui-wgpu = "0.34.3"
+egui-winit = "0.34.3"
+glam = "0.33.1"
+bytemuck = { version = "1.25", features = ["derive"] }
+pollster = "0.4"
+image = "0.25"

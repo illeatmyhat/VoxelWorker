@@ -117,7 +117,11 @@ state.handle_platform_output(&window, full_output.platform_output);
   `RawInput { screen_rect: Some(Rect::from_min_size(pos2(0,0), vec2(w,h))), ..Default::default() }`.
   Inject `egui::Event::PointerButton{..}` only if a test needs to exercise a click.
 - After render: `copy_texture_to_buffer` (padded row), `buffer.slice(..).map_async(Read, cb)`,
-  `device.poll(wgpu::Maintain::Wait)`, read mapped range, strip row padding, `image::save_buffer`.
+  `device.poll(wgpu::PollType::wait_indefinitely()).unwrap()` (wgpu 29 poll returns Result and
+  takes `PollType`, NOT the old `Maintain::Wait`), read mapped range, strip row padding,
+  `image::save_buffer`.
+- Windowed surface lifetime: store the window as `std::sync::Arc<winit::window::Window>` and call
+  `instance.create_surface(window.clone())` so the surface is `Surface<'static>` (no borrow fight).
 - CLI (`bin/shot`): accept a scene spec (shape, size x/y/z, density, camera theta/phi/dist,
   toggles, out-path) so a batch of viewpoints can be scripted. m1: just clear color + panel.
 
