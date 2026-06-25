@@ -33,6 +33,21 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **ADR 0001 step 1: scene model + region-addressable compositing (no UI)** — new `src/scene.rs`.
+  Introduces the assembly model (`Scene`/`Node`/`NodeContent { Tool, Part, Group, Instance }`,
+  `Part::DebugClouds`, `AssemblyDef`, `DefId`, `CombineOp::Union`, `NodeTransform`) and routes ALL
+  voxel resolution through `Scene::resolve_region(region_blocks, voxels_per_block, lod)`. The producer
+  trait is unchanged (producers still emit centred-at-origin content); the Scene now owns compositing
+  — a union tree-walk that resolves each visible leaf and **stamps** it into the output grid. Only the
+  two leaves that exist today (`Tool` = SDF + `MaterialChoice`; `Part::DebugClouds`) are resolved;
+  `Group`/`Instance` are typed but no-ops (`// step 4`). `lod` is carried from day one (always 0) as
+  the cheap forward-seam ADR 0001 requires. `resolve_active_producer` (main.rs) + the shot resolve now
+  build a one-node scene; used in the constructor, `rebuild_geometry`, `export_vox`, and shot. **No
+  user-visible change** — all 5 SDF shapes + Clouds render exactly as before. The `debug_clouds`
+  boolean is intentionally KEPT as the selector (its deletion is step 2). Guarantee proven by a unit
+  test: a one-node Tool scene's `resolve_region` yields the same dimensions + occupied count as
+  `SdfShape::resolve` (and a Part scene vs `DebugCloudField::resolve`). Green: build/clippy clean,
+  40 tests pass, sphere + clouds shots unchanged.
 - **ADR 0001 accepted: scene graph (parts vs tools), streaming, scale** — `docs/adr/0001-scene-graph-
   parts-and-tools.md`. Replaces the `debug_clouds: bool` shortcut with a proper **assembly graph**:
   a recursive Scene of nodes, each a producer — **Tool** (parametric SDF, single material) or **Part**

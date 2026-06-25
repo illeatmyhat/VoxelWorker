@@ -20,6 +20,7 @@ pub mod gpu;
 pub mod panel;
 pub mod renderer;
 pub mod scan_worker;
+pub mod scene;
 pub mod settings;
 pub mod vox_export;
 pub mod voxel;
@@ -38,6 +39,9 @@ pub use renderer::{
     MSAA_SAMPLE_COUNT, VIEW_CUBE_VIEWPORT_PIXELS,
 };
 pub use renderer::procedural_material_average_color;
+pub use scene::{
+    AssemblyDef, CombineOp, DefId, Node, NodeContent, NodeTransform, Part, RegionBlocks, Scene,
+};
 pub use settings::AppConfig;
 pub use vox_export::VoxExport;
 pub use voxel::{SdfShape, ShapeKind, VoxelGrid, VoxelProducer};

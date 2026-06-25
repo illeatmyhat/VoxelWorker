@@ -18,11 +18,11 @@ use voxel_worker::scan_worker::{
 };
 use voxel_worker::{
     create_depth_view, create_msaa_color_view, procedural_material_average_color, render_frame,
-    run_egui_frame, AppConfig, CubeFace, DebugCloudField, EguiPaintBridge, FrameOverlays,
+    run_egui_frame, AppConfig, CubeFace, EguiPaintBridge, FrameOverlays,
     GeometryParams, GizmoRenderer,
-    GpuContext, GridLatticeRenderer, LayerBand, MaterialSource, OnionFogParams, OnionFogRenderer,
-    OrbitCamera, PanelState, SdfShape, SnapTween, ViewCubeElement, VoxExport,
-    ViewCubeRenderer, VoxelGrid, VoxelProducer, VoxelRenderer, COLOR_TARGET_FORMAT,
+    GpuContext, GridLatticeRenderer, LayerBand, MaterialChoice, MaterialSource, OnionFogParams,
+    OnionFogRenderer, OrbitCamera, PanelState, Scene, SdfShape, SnapTween, ViewCubeElement,
+    VoxExport, ViewCubeRenderer, VoxelGrid, VoxelRenderer, COLOR_TARGET_FORMAT,
     VIEW_CUBE_VIEWPORT_PIXELS,
 };
 
@@ -160,21 +160,16 @@ fn default_vox_filename(shape: &SdfShape) -> String {
     format!("{kind}_{grid_x}x{grid_y}x{grid_z}.vox")
 }
 
-/// Resolve the active producer into `grid`: the debug cloud field when
-/// `geometry.debug_clouds` is set, otherwise the parametric `shape` SDF. Both use
-/// the same grid dimensions (`shape.grid_dimensions()`), so the rest of the
-/// pipeline (cap check, renderers, fog) is unchanged either way.
-fn resolve_active_producer(grid: &mut VoxelGrid, shape: &SdfShape, geometry: &GeometryParams) {
-    if geometry.debug_clouds {
-        DebugCloudField {
-            dimensions: shape.grid_dimensions(),
-            voxels_per_block: geometry.voxels_per_block,
-            seed: 0,
-        }
-        .resolve(grid);
-    } else {
-        shape.resolve(grid);
-    }
+/// Resolve the active producer into a fresh grid via a one-node [`Scene`]
+/// (ADR 0001 step 1). The scene wraps the current [`GeometryParams`] + material:
+/// a Tool when `!debug_clouds`, a `DebugClouds` Part otherwise. It resolves the
+/// node's full extent as a single region at full resolution (`lod 0`), so the
+/// result is identical to the old direct producer resolve — same dimensions, same
+/// occupied set — while routing all resolution through the scene.
+fn resolve_active_producer(geometry: &GeometryParams, material: MaterialChoice) -> VoxelGrid {
+    let scene = Scene::from_geometry(*geometry, material);
+    let region = scene.full_extent_blocks(geometry.voxels_per_block);
+    scene.resolve_region(region, geometry.voxels_per_block, 0)
 }
 
 impl WindowedState {
@@ -248,8 +243,7 @@ impl WindowedState {
             None => PanelState::with_view_cube_default(),
         };
         let shape = SdfShape::from_geometry(panel_state.geometry);
-        let mut grid = VoxelGrid::new(shape.grid_dimensions());
-        resolve_active_producer(&mut grid, &shape, &panel_state.geometry);
+        let grid = resolve_active_producer(&panel_state.geometry, panel_state.material);
         // Initialise the layer-range band to the full grid height (issue #12).
         let grid_y = grid.dimensions[1];
         panel_state
@@ -373,8 +367,8 @@ impl WindowedState {
         self.panel_state.voxel_cap_warning_millions = None;
 
         let previous_grid_y = self.grid.dimensions[1];
-        let mut grid = VoxelGrid::new(shape.grid_dimensions());
-        resolve_active_producer(&mut grid, &shape, &self.panel_state.geometry);
+        let grid =
+            resolve_active_producer(&self.panel_state.geometry, self.panel_state.material);
         self.voxel_renderer
             .rebuild_instances(&self.gpu.device, &self.gpu.queue, &grid);
         // Re-upload the fog's 3D occupancy field for the new grid (issue #12).
@@ -506,8 +500,7 @@ impl WindowedState {
             eprintln!("export .vox: grid exceeds the voxel cap; not exporting");
             return;
         }
-        let mut grid = VoxelGrid::new(shape.grid_dimensions());
-        resolve_active_producer(&mut grid, &shape, &self.panel_state.geometry);
+        let grid = resolve_active_producer(&self.panel_state.geometry, self.panel_state.material);
 
         let representative = match &self.loaded_material {
             Some(loaded) => loaded.average_color,

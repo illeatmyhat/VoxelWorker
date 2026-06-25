@@ -26,11 +26,11 @@ use voxel_worker::block_palette::{BlockPalette, LoadedMaterial, ThumbnailRendere
 use voxel_worker::scan_worker::{run_auto_scan_blocking, FaceResolver};
 use voxel_worker::{
     create_depth_view, create_msaa_color_view, procedural_material_average_color, render_frame,
-    run_egui_frame, CubeFace, DebugCloudField, EguiPaintBridge, FrameOverlays, GeometryParams,
+    run_egui_frame, CubeFace, EguiPaintBridge, FrameOverlays, GeometryParams,
     GizmoRenderer,
     GpuContext, GridLatticeRenderer, LayerBand, LayerRange, MaterialChoice, MaterialSource,
-    OnionFogParams, OnionFogRenderer, OrbitCamera, PanelState, ProjectionMode, SdfShape, ShapeKind,
-    ViewCubeElement, VoxExport, ViewCubeRenderer, VoxelGrid, VoxelProducer, VoxelRenderer,
+    OnionFogParams, OnionFogRenderer, OrbitCamera, PanelState, ProjectionMode, RegionBlocks, Scene,
+    SdfShape, ShapeKind, ViewCubeElement, VoxExport, ViewCubeRenderer, VoxelGrid, VoxelRenderer,
     COLOR_TARGET_FORMAT,
 };
 
@@ -537,7 +537,6 @@ async fn run_capture(options: ShotOptions) {
     // instance buffer FROM the grid (REPRESENTATION.md seam). The voxel cap
     // (ARCHITECTURE.md §7) guards against an enormous CLI request.
     let shape = SdfShape::from_geometry(options.geometry);
-    let mut grid = VoxelGrid::new(shape.grid_dimensions());
     let grid_y = shape.grid_dimensions()[1];
     // Issue #12: build the layer-range band from the raw CLI voxel indices (no
     // snapping — flags take raw indices). Defaults to the full range.
@@ -561,23 +560,26 @@ async fn run_capture(options: ShotOptions) {
         layer_range,
         ..PanelState::default()
     };
-    if shape.exceeds_voxel_cap() {
+    // ADR 0001 step 1: resolve through a one-node scene (a Tool, or a DebugClouds
+    // Part when `--shape debug-clouds`). The `debug_clouds` selector lives on the
+    // shot options, so mirror it onto a geometry copy the scene reads.
+    let scene_geometry = GeometryParams {
+        debug_clouds: options.debug_clouds,
+        ..options.geometry
+    };
+    let grid = if shape.exceeds_voxel_cap() {
         panel_state.voxel_cap_warning_millions =
             Some(shape.grid_voxel_count() as f32 / 1_000_000.0);
         eprintln!(
             "3D paused — {:.1}M voxels exceeds the cap; rendering empty grid",
             shape.grid_voxel_count() as f32 / 1_000_000.0
         );
-    } else if options.debug_clouds {
-        DebugCloudField {
-            dimensions: shape.grid_dimensions(),
-            voxels_per_block: options.geometry.voxels_per_block,
-            seed: 0,
-        }
-        .resolve(&mut grid);
+        VoxelGrid::new(shape.grid_dimensions())
     } else {
-        shape.resolve(&mut grid);
-    }
+        let scene = Scene::from_geometry(scene_geometry, options.material);
+        let region = RegionBlocks::new(options.geometry.size_blocks);
+        scene.resolve_region(region, options.geometry.voxels_per_block, 0)
+    };
     if options.debug_clouds {
         println!(
             "resolved {} voxels for DebugClouds {:?}@{}",
