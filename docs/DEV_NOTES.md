@@ -147,7 +147,7 @@ impl winit::application::ApplicationHandler for App {
 
 `tests/golden.rs` is a GPU-gated integration test (`#![cfg(feature = "gpu")]`, skipped by the
 GPU-less CI runner). It renders 5 canonical cases through the real `shot` binary (found via
-`CARGO_BIN_EXE_shot`) at a fixed `640×400` + fixed orbit angles, then tolerance-compares each PNG
+`CARGO_BIN_EXE_shot`) at a fixed `1280x720` + fixed orbit angles, then tolerance-compares each PNG
 against a committed reference under `tests/golden/`. This proves the cuboid-mesher renderer rewrite
 does not change the pixels.
 

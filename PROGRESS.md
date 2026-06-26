@@ -36,7 +36,7 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 - **Golden-image regression harness — Closes #24 (E0 safety net for ADR 0002)** — added
   `tests/golden.rs`, a GPU-gated (`#![cfg(feature = "gpu")]`) integration test that renders 5
   canonical cases through the REAL `shot` binary (located via `CARGO_BIN_EXE_shot`) at a fixed
-  `--width 640 --height 400` and fixed orbit angles (`--theta 0.7 --phi 1.05`, auto-framed distance)
+  `--width 1280 --height 720` and fixed orbit angles (`--theta 0.7 --phi 1.05`, auto-framed distance)
   into temp PNGs, then tolerance-compares each against a committed reference under `tests/golden/`.
   Cases: `sphere --debug-faces`, `cylinder`, `torus 8×2×8`, `--demo-village` (instanced scene graph),
   `debug-clouds 64³ @density 2`. Tolerance: a pixel "differs" when its max per-channel abs diff > 8/255;

@@ -3,7 +3,7 @@
 //!
 //! Each canonical case renders through the REAL `shot` binary (located via the
 //! `CARGO_BIN_EXE_shot` env var Cargo sets for integration tests — it auto-builds
-//! the binary) into a temp PNG at a fixed `--width 640 --height 400` and a fixed
+//! the binary) into a temp PNG at a fixed `--width 1280 --height 720` and a fixed
 //! camera, then compares the result against a committed reference under
 //! `tests/golden/`. When the cuboid mesher replaces the current renderer, these
 //! goldens prove the pixels did not change (or, if they intentionally did, the
@@ -45,8 +45,8 @@ const MAX_MISMATCH_FRACTION: f64 = 0.005;
 
 /// Fixed capture size for every case — small enough to keep the references tiny,
 /// large enough that shape silhouettes are unambiguous.
-const WIDTH: u32 = 640;
-const HEIGHT: u32 = 400;
+const WIDTH: u32 = 1280;
+const HEIGHT: u32 = 720;
 
 /// A canonical golden case: a stable name (→ `tests/golden/<name>.png`) and the
 /// shot CLI args that produce it. The width/height/camera are appended uniformly
@@ -71,7 +71,9 @@ const CASES: &[GoldenCase] = &[
     },
     GoldenCase {
         name: "torus",
-        args: &["--shape", "torus", "--size-x", "8", "--size-y", "2", "--size-z", "8"],
+        args: &[
+            "--shape", "torus", "--size-x", "8", "--size-y", "2", "--size-z", "8",
+        ],
     },
     GoldenCase {
         name: "demo-village",
@@ -80,9 +82,16 @@ const CASES: &[GoldenCase] = &[
     GoldenCase {
         name: "debug-clouds",
         args: &[
-            "--shape", "debug-clouds",
-            "--size-x", "64", "--size-y", "64", "--size-z", "64",
-            "--density", "2",
+            "--shape",
+            "debug-clouds",
+            "--size-x",
+            "64",
+            "--size-y",
+            "64",
+            "--size-z",
+            "64",
+            "--density",
+            "2",
         ],
     },
 ];
@@ -96,7 +105,9 @@ const CAMERA_ARGS: &[&str] = &["--theta", "0.7", "--phi", "1.05"];
 
 /// Directory holding the committed reference PNGs (`tests/golden/`).
 fn golden_dir() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("golden")
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("golden")
 }
 
 /// A per-run temp output dir (rendered PNGs + actual/diff artifacts on failure).
@@ -148,13 +159,12 @@ fn compare_images(actual: &RgbaImage, reference: &RgbaImage, diff_path: &Path) -
     let total = (width as u64) * (height as u64);
 
     for (a, r, d) in itertools_zip(actual, reference, &mut diff) {
-        let max_channel_diff = a
-            .0
-            .iter()
-            .zip(r.0.iter())
-            .map(|(av, rv)| av.abs_diff(*rv))
-            .max()
-            .unwrap_or(0);
+        let max_channel_diff =
+            a.0.iter()
+                .zip(r.0.iter())
+                .map(|(av, rv)| av.abs_diff(*rv))
+                .max()
+                .unwrap_or(0);
         if max_channel_diff > CHANNEL_DIFF_THRESHOLD {
             differing += 1;
             *d = image::Rgba([255, 0, 0, 255]);
@@ -174,7 +184,13 @@ fn itertools_zip<'a>(
     actual: &'a RgbaImage,
     reference: &'a RgbaImage,
     diff: &'a mut RgbaImage,
-) -> impl Iterator<Item = (&'a image::Rgba<u8>, &'a image::Rgba<u8>, &'a mut image::Rgba<u8>)> {
+) -> impl Iterator<
+    Item = (
+        &'a image::Rgba<u8>,
+        &'a image::Rgba<u8>,
+        &'a mut image::Rgba<u8>,
+    ),
+> {
     actual
         .pixels()
         .zip(reference.pixels())
