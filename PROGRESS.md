@@ -33,6 +33,23 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **ViewCube: live hover highlighting for chrome arrows — Part of #13 (Step 4).**
+  Wired the LIVE hover so the rotate/roll arrows brighten when the cursor is over their zone
+  (the render path already supported it: `ViewCubeRenderer::draw` brightens `hovered_zone`, and
+  `FrameOverlays.cube_hovered_zone` was hardcoded `None` in the live app). Added
+  `hovered_cube_zone: Option<CubeChromeZone>` to `WindowedState` (`main.rs`). In `CursorMoved`,
+  after updating `last_cursor_position`, recompute it cheaply: held at `None` while orbiting/dragging
+  (`left_button_held || view_cube_drag_active`), when egui consumed the move, when the cube is hidden,
+  or when the cursor is outside `position_in_view_cube`; otherwise call `classify_cube_point(cube_rect, x, y, || None)`.
+  The `None` body-picker DELIBERATELY skips the expensive cube raycast for hover (the body never
+  highlights), so a body-region hover resolves to `None` — only arrow/Home/Fit zones light up. Then
+  `render` passes `self.hovered_cube_zone` into `FrameOverlays.cube_hovered_zone` (replacing the
+  hardcoded `None`). Non-interfering by construction: hover never sets orbit/drag flags, never touches
+  the click dispatch (Step 3 release path) or scene input, and zeroes out exactly when those paths own
+  the cursor. Goldens unaffected (headless capture hovers nothing; live hover isn't on the `shot` path).
+  Gate: `cargo build --bins` + `cargo clippy --all-targets` clean (no new warnings), 227 lib tests pass,
+  8 golden cases byte-identical. Highlight feel is INTERACTIVE — user verifies on return.
+
 - **ViewCube: remove compass ring (modern Fusion has none) — Part of #13.**
   The N/E/S/W compass ring at the cube's base (added in #13 Steps 1–3) is REMOVED
   entirely — modern Fusion 360 has no such ring and at the cube's tiny scale it read

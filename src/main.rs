@@ -19,7 +19,8 @@ use voxel_worker::scan_worker::{
 use voxel_worker::{
     chrome_zone_left_click_action, classify_cube_point, create_depth_view, create_msaa_color_view,
     procedural_material_average_color, render_frame,
-    run_egui_frame, AppConfig, ChromeClickAction, CubeFace, CubeRect, EguiPaintBridge, FogMode,
+    run_egui_frame, AppConfig, ChromeClickAction, CubeChromeZone, CubeFace, CubeRect,
+    EguiPaintBridge, FogMode,
     FrameOverlays,
     TransformGizmoRenderer,
     GpuContext, InfiniteGridRenderer, LayerBand, MaterialSource, OnionFogParams, PointsRenderer,
@@ -158,6 +159,13 @@ struct WindowedState {
     /// right-press inside the cube rect; the egui pass draws a small menu there and
     /// clears it on selection or click-away.
     context_menu_open_at: Option<egui::Pos2>,
+    /// #13 Step 4: the ViewCube chrome zone currently under the cursor (a rotate
+    /// or roll arrow / Home / Fit), driving the live hover highlight in
+    /// [`ViewCubeRenderer::draw`]. Recomputed cheaply on every `CursorMoved`; held
+    /// at `None` while orbiting/dragging, when the cursor leaves the cube rect, or
+    /// when egui consumed the move. The cube body never highlights (we skip its
+    /// raycast for hover), so a body hover is treated as `None`.
+    hovered_cube_zone: Option<CubeChromeZone>,
 }
 
 #[derive(Default)]
@@ -463,6 +471,7 @@ impl WindowedState {
             // Default to the full target until the first frame fills it in.
             last_viewport_px: [0, 0, width, height],
             context_menu_open_at: None,
+            hovered_cube_zone: None,
         }
     }
 
@@ -1228,9 +1237,10 @@ impl WindowedState {
             } else {
                 None
             },
-            // #13 Step 2: chrome hover wiring is Step 3; the live app draws the
-            // always-on chrome (Home/Fit) with no arrows for now.
-            cube_hovered_zone: None,
+            // #13 Step 4: live hover — the chrome zone under the cursor (computed
+            // cheaply in `CursorMoved`) so the hovered rotate/roll arrow brightens.
+            // `None` when nothing's hovered or while orbiting/dragging.
+            cube_hovered_zone: self.hovered_cube_zone,
             scene_grid: Some(&self.scene_grid_renderer),
             // Issue #29 S5: the windowed app always shows the Points (the Origin's
             // ground+axes are on by default); the batch self-gates on hidden/off.
@@ -1422,6 +1432,35 @@ impl ApplicationHandler for App {
                     }
                 }
                 state.last_cursor_position = Some(current);
+
+                // #13 Step 4: live hover highlight for the chrome arrows. This runs
+                // on every move, so keep it cheap: the chrome zones are pure
+                // screen-rect tests, and we DELIBERATELY pass a `None` body picker so
+                // the expensive cube raycast never fires for hover — a body-region
+                // hover resolves to `None` (the body doesn't highlight anyway). Hover
+                // stays `None` while orbiting/dragging, when egui ate the move, when
+                // the cube is hidden, or when the cursor is outside the cube rect, so
+                // it never interferes with drag-orbit, the click dispatch, or the
+                // scene input.
+                state.hovered_cube_zone = if orbiting
+                    || egui_consumed
+                    || !state.panel_state.show_view_cube
+                    || !state.position_in_view_cube(current.0, current.1)
+                {
+                    None
+                } else {
+                    match classify_cube_point(
+                        state.cube_rect(),
+                        current.0 as f32,
+                        current.1 as f32,
+                        || None,
+                    ) {
+                        // The body delegates to the (skipped) raycast and yields
+                        // `None`; only arrow/button zones light up on hover.
+                        Some(CubeChromeZone::Element(_)) | None => None,
+                        Some(zone) => Some(zone),
+                    }
+                };
             }
             WindowEvent::MouseWheel { delta, .. } if !egui_consumed => {
                 let scroll_lines = match delta {
