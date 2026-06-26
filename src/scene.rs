@@ -787,6 +787,198 @@ impl Scene {
 
         output
     }
+
+    /// Resolve exactly **one chunk** of the scene into a fresh [`VoxelGrid`], in
+    /// **absolute (non-recentred) composite voxel coordinates**.
+    ///
+    /// This is the chunk-addressable counterpart to [`resolve_region`] required by
+    /// issue #27 (deep chunked resolve). It is **additive**: the live render path
+    /// still goes through [`resolve_region`] (which recentres the composite on the
+    /// origin); this path does **not** recentre, so its voxel positions are the
+    /// scene's true composite coordinates. The two frames differ by exactly the
+    /// recentre offset [`resolve_region`] subtracts (see
+    /// [`recentre_voxels`](Self::recentre_voxels)).
+    ///
+    /// A chunk is a `CHUNK_BLOCKS³`-block cell (`CHUNK_BLOCKS = 4`,
+    /// [`crate::renderer::CHUNK_BLOCKS`]); one chunk therefore spans
+    /// `CHUNK_BLOCKS * voxels_per_block` voxels per axis. `chunk_coord` is that
+    /// cell's integer coordinate, so the chunk covers the **half-open** absolute
+    /// voxel box
+    /// `[chunk_coord * chunk_extent_voxels, (chunk_coord + 1) * chunk_extent_voxels)`
+    /// per axis. Boundary ownership is `floor(world_position / chunk_extent_voxels)`:
+    /// because every resolved voxel centre sits at an `n + 0.5` position and chunk
+    /// boundaries fall on integer multiples of `chunk_extent_voxels`, the `floor`
+    /// is never ambiguous and every voxel lands in **exactly one** chunk.
+    ///
+    /// The returned grid's `dimensions` are one chunk's voxel extent
+    /// (`chunk_extent_voxels³`); the occupied voxels keep their **absolute**
+    /// composite `world_position` (they are NOT rebased to the chunk's local origin
+    /// — that, like the recentre removal, is a later step). An empty chunk (no leaf
+    /// overlaps it) returns an empty grid; it never panics.
+    ///
+    /// `voxels_per_block` is the application density (ADR 0001). `lod` is the parked
+    /// level-of-detail seam (ADR 0002 Decision 2): it is **always `0`** for now and
+    /// is asserted so; it exists from day one so a future down-sampling LOD level is
+    /// a behavioural change, not a signature break.
+    pub fn resolve_chunk(
+        &self,
+        chunk_coord: [i32; 3],
+        voxels_per_block: u32,
+        lod: u32,
+    ) -> VoxelGrid {
+        debug_assert_eq!(lod, 0, "S0 only resolves full resolution (lod 0)");
+
+        let chunk_extent_voxels = (crate::renderer::CHUNK_BLOCKS * voxels_per_block.max(1)) as i32;
+
+        // The chunk's half-open absolute-voxel box `[min, max)` per axis.
+        let chunk_min_voxels = [
+            chunk_coord[0] * chunk_extent_voxels,
+            chunk_coord[1] * chunk_extent_voxels,
+            chunk_coord[2] * chunk_extent_voxels,
+        ];
+        let chunk_max_voxels = [
+            chunk_min_voxels[0] + chunk_extent_voxels,
+            chunk_min_voxels[1] + chunk_extent_voxels,
+            chunk_min_voxels[2] + chunk_extent_voxels,
+        ];
+
+        // The chunk grid is one chunk's voxel extent. (The voxels keep ABSOLUTE
+        // positions inside it; `dimensions` describes the chunk's size, not the
+        // window of absolute space the positions live in — the consumers that need
+        // chunk-local coordinates rebase later, S4.)
+        let chunk_dimensions = [
+            chunk_extent_voxels as u32,
+            chunk_extent_voxels as u32,
+            chunk_extent_voxels as u32,
+        ];
+        let mut output = VoxelGrid::new(chunk_dimensions);
+
+        // Each leaf is resolved into its own origin-centred local grid (exactly as
+        // `resolve_region` does), translated by its WORLD offset × density — but
+        // WITHOUT the composite recentre, so positions are absolute. We then keep
+        // only the voxels whose absolute centre falls in this chunk's box.
+        let region_dimensions = self.placed_region_dimensions(voxels_per_block);
+        self.for_each_leaf(&mut |world_offset, content| {
+            let translation_voxels = [
+                world_offset[0] * voxels_per_block as i32,
+                world_offset[1] * voxels_per_block as i32,
+                world_offset[2] * voxels_per_block as i32,
+            ];
+            let (material_override, producer): (Option<u16>, Box<dyn VoxelProducer>) = match content
+            {
+                NodeContent::Tool { shape, material } => {
+                    (material_id_for(*material), Box::new(*shape))
+                }
+                NodeContent::Part(Part::DebugClouds { seed }) => (
+                    None,
+                    Box::new(DebugCloudField {
+                        dimensions: region_dimensions,
+                        voxels_per_block,
+                        seed: *seed,
+                    }),
+                ),
+                NodeContent::Group(_) | NodeContent::Instance(_) => return,
+            };
+            stamp_producer_into_chunk(
+                &mut output,
+                region_dimensions,
+                translation_voxels,
+                material_override,
+                producer.as_ref(),
+                chunk_min_voxels,
+                chunk_max_voxels,
+            );
+        });
+
+        output
+    }
+
+    /// Resolve the scene's whole region by **decomposing it into chunks** and
+    /// merging them back into one grid, in **absolute (non-recentred) coordinates**.
+    ///
+    /// This loops over every chunk coordinate covering the composite AABB, calls
+    /// [`resolve_chunk`](Self::resolve_chunk) for each, and unions the results. It
+    /// proves the chunk decomposition reconstructs the whole scene; it is **not**
+    /// wired into rendering (the render path stays on [`resolve_region`], which
+    /// recentres — see issue #27 S0). The returned grid is sized to the full
+    /// composite extent and its voxels keep their absolute composite positions;
+    /// compared against [`resolve_region`]'s output it differs only by the
+    /// recentre offset.
+    pub fn resolve_region_via_chunks(&self, voxels_per_block: u32, lod: u32) -> VoxelGrid {
+        debug_assert_eq!(lod, 0, "S0 only resolves full resolution (lod 0)");
+
+        let region_dimensions = self.placed_region_dimensions(voxels_per_block);
+        let mut output = VoxelGrid::new(region_dimensions);
+
+        let Some(chunk_range) = self.covering_chunk_range(voxels_per_block) else {
+            // No leaf has an intrinsic size (a Part-only scene with no Tools): no
+            // composite AABB, so there are no chunks to resolve.
+            return output;
+        };
+        let (min_chunk, max_chunk) = chunk_range;
+        for chunk_z in min_chunk[2]..=max_chunk[2] {
+            for chunk_y in min_chunk[1]..=max_chunk[1] {
+                for chunk_x in min_chunk[0]..=max_chunk[0] {
+                    let chunk =
+                        self.resolve_chunk([chunk_x, chunk_y, chunk_z], voxels_per_block, lod);
+                    output.occupied.extend(chunk.occupied);
+                }
+            }
+        }
+        output
+    }
+
+    /// The recentre offset (in voxels) that [`resolve_region`] subtracts from every
+    /// voxel to centre the composite on the origin. The chunk path does NOT apply
+    /// this, so it is the exact translation between the two frames:
+    /// `resolve_region.world_position == chunk_path.world_position − recentre_voxels`.
+    /// Exposed (crate-internal) so the S0 equivalence tests can normalise one frame
+    /// to the other. `[0, 0, 0]` for a scene with no intrinsic-size leaf.
+    #[cfg(test)]
+    pub(crate) fn recentre_voxels(&self, voxels_per_block: u32) -> [i32; 3] {
+        match self.placed_extent_blocks(voxels_per_block) {
+            Some((min_corner, max_corner)) => [
+                ((min_corner[0] + max_corner[0]) * voxels_per_block as i32) / 2,
+                ((min_corner[1] + max_corner[1]) * voxels_per_block as i32) / 2,
+                ((min_corner[2] + max_corner[2]) * voxels_per_block as i32) / 2,
+            ],
+            None => [0, 0, 0],
+        }
+    }
+
+    /// The full composite extent in voxels (`size_blocks × density`) — the size the
+    /// whole-region grids ([`resolve_region`], [`resolve_region_via_chunks`]) and
+    /// the per-leaf local grids are seeded with.
+    fn placed_region_dimensions(&self, voxels_per_block: u32) -> [u32; 3] {
+        let region = self.full_extent_blocks(voxels_per_block);
+        [
+            region.size_blocks[0] * voxels_per_block,
+            region.size_blocks[1] * voxels_per_block,
+            region.size_blocks[2] * voxels_per_block,
+        ]
+    }
+
+    /// The inclusive range of chunk coordinates `[min_chunk, max_chunk]` whose
+    /// half-open boxes cover the composite AABB in **absolute** voxel space.
+    /// `None` when no leaf has an intrinsic size (no AABB to cover).
+    fn covering_chunk_range(&self, voxels_per_block: u32) -> Option<([i32; 3], [i32; 3])> {
+        let (min_corner_blocks, max_corner_blocks) =
+            self.placed_extent_blocks(voxels_per_block)?;
+        let chunk_extent_voxels = (crate::renderer::CHUNK_BLOCKS * voxels_per_block.max(1)) as i32;
+
+        let mut min_chunk = [0i32; 3];
+        let mut max_chunk = [0i32; 3];
+        for axis in 0..3 {
+            let min_voxel = min_corner_blocks[axis] * voxels_per_block as i32;
+            // The AABB is the half-open box `[min, max)`; its last occupied voxel
+            // centre is at `max_voxel - 1 + 0.5`, so the highest chunk is the one
+            // owning `max_voxel - 1`.
+            let max_voxel = max_corner_blocks[axis] * voxels_per_block as i32;
+            min_chunk[axis] = min_voxel.div_euclid(chunk_extent_voxels);
+            max_chunk[axis] = (max_voxel - 1).div_euclid(chunk_extent_voxels);
+        }
+        Some((min_chunk, max_chunk))
+    }
 }
 
 /// Depth-first worker for [`Scene::tree_rows`]: append `(path, depth)` for each
@@ -885,6 +1077,56 @@ fn stamp_producer(
             voxel.world_position[1] += translation_voxels[1] as f32;
             voxel.world_position[2] += translation_voxels[2] as f32;
         }
+        if let Some(id) = material_override {
+            voxel.material_id = id;
+        }
+        output.occupied.push(voxel);
+    }
+}
+
+/// Resolve `producer` into its own origin-centred local grid, translate it by
+/// `translation_voxels` (the node's WORLD placement × density — **no recentre**),
+/// and stamp only the voxels whose absolute centre falls in the half-open chunk
+/// box `[chunk_min_voxels, chunk_max_voxels)` into `output`.
+///
+/// This is the chunk-scoped sibling of [`stamp_producer`]: same per-leaf
+/// resolution, same material-override rule (a Tool overwrites every voxel's id;
+/// `None` keeps the producer's own ids), but it (a) never recentres and (b)
+/// clips each voxel to one chunk. Ownership is `floor(world_position /
+/// chunk_extent_voxels)` per axis; since centres sit at `n + 0.5` and boundaries
+/// at integer multiples of the chunk extent, each voxel lands in exactly one
+/// chunk.
+#[allow(clippy::too_many_arguments)]
+fn stamp_producer_into_chunk(
+    output: &mut VoxelGrid,
+    region_dimensions: [u32; 3],
+    translation_voxels: [i32; 3],
+    material_override: Option<u16>,
+    producer: &dyn VoxelProducer,
+    chunk_min_voxels: [i32; 3],
+    chunk_max_voxels: [i32; 3],
+) {
+    let mut local = VoxelGrid::new(region_dimensions);
+    producer.resolve(&mut local);
+
+    output.occupied.reserve(local.occupied.len());
+    for mut voxel in local.occupied {
+        // Absolute composite position (no recentre).
+        voxel.world_position[0] += translation_voxels[0] as f32;
+        voxel.world_position[1] += translation_voxels[1] as f32;
+        voxel.world_position[2] += translation_voxels[2] as f32;
+
+        // Keep only voxels whose centre lands in this chunk's half-open box. The
+        // centre is at an `n + 0.5` position, so `floor` never lands on a boundary
+        // integer — each voxel belongs to exactly one chunk.
+        let in_chunk = (0..3).all(|axis| {
+            let position = voxel.world_position[axis];
+            position >= chunk_min_voxels[axis] as f32 && position < chunk_max_voxels[axis] as f32
+        });
+        if !in_chunk {
+            continue;
+        }
+
         if let Some(id) = material_override {
             voxel.material_id = id;
         }
@@ -1712,5 +1954,264 @@ mod tests {
         assert_eq!(active, NodePath::from_indices(vec![0, 0]));
         let node = scene.node_at_path(&active).expect("the child resolves by path");
         assert_eq!(node.name, "A", "the path reaches the wrapped child node");
+    }
+
+    // ---- S0: chunk-addressable resolve (issue #27) ---------------------------
+    //
+    // These tests prove the ADDITIVE chunked resolve path reconstructs EXACTLY
+    // what the monolithic `resolve_region` produces, after normalising for the
+    // recentre offset that `resolve_region` applies and the chunk path does not.
+    // The render path (`resolve_region`) is untouched; only these new functions
+    // are exercised.
+
+    /// Canonicalise an occupied set into a multiset of
+    /// `(absolute_voxel_index, material_id)` so two resolves can be compared as
+    /// the same shape regardless of voxel emission ORDER.
+    ///
+    /// `recentre_voxels` translates the frame into ABSOLUTE composite space: pass
+    /// `[0,0,0]` for the chunked (already-absolute) frame, and the scene's
+    /// recentre for the monolithic frame (whose positions are `absolute −
+    /// recentre`). A voxel centre sits at an `n + 0.5` position, so `(p − 0.5)`
+    /// recovers the integer voxel index exactly.
+    fn occupied_multiset(
+        grid: &VoxelGrid,
+        recentre_voxels: [i32; 3],
+    ) -> std::collections::BTreeMap<([i64; 3], u16), usize> {
+        let mut multiset = std::collections::BTreeMap::new();
+        for voxel in &grid.occupied {
+            let key = [
+                (voxel.world_position[0] - 0.5).round() as i64 + recentre_voxels[0] as i64,
+                (voxel.world_position[1] - 0.5).round() as i64 + recentre_voxels[1] as i64,
+                (voxel.world_position[2] - 0.5).round() as i64 + recentre_voxels[2] as i64,
+            ];
+            *multiset.entry((key, voxel.material_id)).or_insert(0) += 1;
+        }
+        multiset
+    }
+
+    /// Assert the chunk-reassembled occupied set EXACTLY equals the monolithic
+    /// `resolve_region`'s set (position + material), after recentre normalisation,
+    /// AND that no chunk emits a voxel outside its own chunk AABB.
+    fn assert_chunked_matches_monolithic(scene: &Scene, voxels_per_block: u32, label: &str) {
+        let monolithic = scene.resolve_region(
+            scene.full_extent_blocks(voxels_per_block),
+            voxels_per_block,
+            0,
+        );
+        let chunked = scene.resolve_region_via_chunks(voxels_per_block, 0);
+
+        let recentre = scene.recentre_voxels(voxels_per_block);
+        let monolithic_set = occupied_multiset(&monolithic, recentre);
+        let chunked_set = occupied_multiset(&chunked, [0, 0, 0]);
+
+        assert_eq!(
+            chunked_set, monolithic_set,
+            "[{label}] chunked occupied set must equal monolithic resolve (recentre-normalised)"
+        );
+        // Cross-check the count too (a multiset equality already implies it, but
+        // this pins the failure message to the simplest symptom first).
+        assert_eq!(
+            chunked.occupied_count(),
+            monolithic.occupied_count(),
+            "[{label}] chunked occupied count must equal monolithic"
+        );
+
+        // Each per-chunk resolve must keep every voxel inside its OWN chunk AABB
+        // (exactly-one-chunk ownership). Walk the covering range and re-resolve.
+        let chunk_extent_voxels =
+            (crate::renderer::CHUNK_BLOCKS * voxels_per_block.max(1)) as i32;
+        if let Some((min_chunk, max_chunk)) = scene.covering_chunk_range(voxels_per_block) {
+            let mut total_from_chunks = 0usize;
+            for chunk_z in min_chunk[2]..=max_chunk[2] {
+                for chunk_y in min_chunk[1]..=max_chunk[1] {
+                    for chunk_x in min_chunk[0]..=max_chunk[0] {
+                        let chunk_coord = [chunk_x, chunk_y, chunk_z];
+                        let chunk = scene.resolve_chunk(chunk_coord, voxels_per_block, 0);
+                        total_from_chunks += chunk.occupied_count();
+                        for voxel in &chunk.occupied {
+                            for axis in 0..3 {
+                                let lo = (chunk_coord[axis] * chunk_extent_voxels) as f32;
+                                let hi = lo + chunk_extent_voxels as f32;
+                                let position = voxel.world_position[axis];
+                                assert!(
+                                    position >= lo && position < hi,
+                                    "[{label}] voxel {position} on axis {axis} escaped chunk \
+                                     {chunk_coord:?} box [{lo}, {hi})"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+            // Every monolithic voxel is accounted for by exactly one chunk (no
+            // double-counting, no drops): the chunk total equals the whole count.
+            assert_eq!(
+                total_from_chunks,
+                monolithic.occupied_count(),
+                "[{label}] summed per-chunk counts must equal the monolithic count \
+                 (each voxel in exactly one chunk)"
+            );
+        }
+    }
+
+    fn shape_scene(kind: ShapeKind, voxels_per_block: u32) -> Scene {
+        Scene::from_geometry(
+            GeometryParams {
+                shape: kind,
+                size_blocks: [5, 5, 5],
+                voxels_per_block,
+                wall_blocks: 1,
+            },
+            MaterialChoice::Stone,
+        )
+    }
+
+    /// Single-shape parity, all five SDF kinds — mirrors the all-shapes coverage
+    /// style. (Single-node zero-offset scenes also exercise the recentre
+    /// normalisation, since `resolve_region` recentres even a lone node.)
+    #[test]
+    fn chunked_resolve_matches_monolithic_for_all_shapes() {
+        for kind in [
+            ShapeKind::Sphere,
+            ShapeKind::Cylinder,
+            ShapeKind::Tube,
+            ShapeKind::Torus,
+            ShapeKind::Box,
+        ] {
+            let scene = shape_scene(kind, 16);
+            assert_chunked_matches_monolithic(&scene, 16, &format!("{kind:?}"));
+        }
+    }
+
+    /// A multi-node placed scene (the `--demo-scene` shape: a Sphere + an offset
+    /// Box + an offset Torus, three materials) — proves the chunked path composes
+    /// several leaves at distinct offsets and materials.
+    #[test]
+    fn chunked_resolve_matches_monolithic_for_demo_scene() {
+        let voxels_per_block = 16;
+        let make_tool = |kind, offset: [i32; 3], material| {
+            let shape = SdfShape {
+                kind,
+                size_blocks: [5, 5, 5],
+                voxels_per_block,
+                wall_blocks: 1,
+            };
+            let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
+            node.transform.offset_blocks = offset;
+            node
+        };
+        let scene = Scene {
+            nodes: vec![
+                make_tool(ShapeKind::Sphere, [0, 0, 0], MaterialChoice::Stone),
+                make_tool(ShapeKind::Box, [8, 0, 0], MaterialChoice::Wood),
+                make_tool(ShapeKind::Torus, [0, 0, 6], MaterialChoice::Plain),
+            ],
+            active: Some(NodePath::root_index(0)),
+            ..Scene::default()
+        };
+        assert_chunked_matches_monolithic(&scene, voxels_per_block, "demo-scene");
+    }
+
+    /// The `--demo-village` scene: four `Instance`s of one `House` definition (a
+    /// Box body + a Cylinder chimney `Group`) — proves the chunked path follows
+    /// instance + group transform composition (reuse-by-reference).
+    #[test]
+    fn chunked_resolve_matches_monolithic_for_demo_village() {
+        let voxels_per_block = 16;
+        let house_def_id = DefId(1);
+        let tool = |kind, size: [u32; 3], offset: [i32; 3], material| {
+            let shape = SdfShape {
+                kind,
+                size_blocks: size,
+                voxels_per_block,
+                wall_blocks: 1,
+            };
+            let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
+            node.transform.offset_blocks = offset;
+            node
+        };
+        let house = AssemblyDef {
+            id: house_def_id,
+            name: "House".to_string(),
+            children: vec![
+                tool(ShapeKind::Box, [2, 2, 2], [0, 0, 0], MaterialChoice::Stone),
+                tool(ShapeKind::Cylinder, [1, 2, 1], [0, 2, 0], MaterialChoice::Wood),
+            ],
+        };
+        let instance = |name: &str, offset: [i32; 3]| {
+            let mut node = Node::new(name, NodeContent::Instance(house_def_id));
+            node.transform.offset_blocks = offset;
+            node
+        };
+        let scene = Scene {
+            nodes: vec![
+                instance("House 1", [0, 0, 0]),
+                instance("House 2", [6, 0, 0]),
+                instance("House 3", [12, 0, 0]),
+                instance("House 4", [18, 0, 0]),
+            ],
+            definitions: vec![house],
+            active: Some(NodePath::root_index(0)),
+        };
+        assert_chunked_matches_monolithic(&scene, voxels_per_block, "demo-village");
+    }
+
+    /// A scene with a single node shifted well OFF the origin (+8 blocks on X) —
+    /// proves the chunked path handles off-centre placement (the AABB does not
+    /// start at the origin, so the covering chunk range is non-trivial and the
+    /// recentre offset is non-zero).
+    #[test]
+    fn chunked_resolve_matches_monolithic_for_offset_node() {
+        let voxels_per_block = 16;
+        let shape = SdfShape {
+            kind: ShapeKind::Sphere,
+            size_blocks: [4, 4, 4],
+            voxels_per_block,
+            wall_blocks: 1,
+        };
+        let mut node = Node::new(
+            "Offset sphere",
+            NodeContent::Tool {
+                shape,
+                material: MaterialChoice::Wood,
+            },
+        );
+        node.transform.offset_blocks = [8, 0, 0];
+        let scene = Scene::single_node(node);
+
+        // Sanity: the recentre is genuinely non-zero for this off-centre scene, so
+        // the normalisation is actually exercised (a zero recentre would make the
+        // test vacuous on that axis).
+        let recentre = scene.recentre_voxels(voxels_per_block);
+        assert_ne!(
+            recentre, [0, 0, 0],
+            "an off-centre node must produce a non-zero recentre (else the \
+             normalisation is untested)"
+        );
+        assert_chunked_matches_monolithic(&scene, voxels_per_block, "offset-node");
+    }
+
+    /// A chunk that no leaf overlaps resolves to an EMPTY grid (no panic), and its
+    /// dimensions are still one chunk's extent.
+    #[test]
+    fn empty_chunk_resolves_to_empty_grid() {
+        let scene = shape_scene(ShapeKind::Sphere, 16);
+        // A chunk far outside the (origin-area) composite AABB.
+        let chunk = scene.resolve_chunk([1000, 1000, 1000], 16, 0);
+        assert_eq!(chunk.occupied_count(), 0, "a far-off chunk must be empty");
+        let chunk_extent = crate::renderer::CHUNK_BLOCKS * 16;
+        assert_eq!(
+            chunk.dimensions,
+            [chunk_extent, chunk_extent, chunk_extent],
+            "an empty chunk still reports one chunk's voxel extent"
+        );
+    }
+
+    /// Parity holds at a non-default density too (16 is the app default; this pins
+    /// that the chunk-extent / ownership math is density-correct).
+    #[test]
+    fn chunked_resolve_matches_monolithic_at_density_8() {
+        let scene = shape_scene(ShapeKind::Torus, 8);
+        assert_chunked_matches_monolithic(&scene, 8, "torus@8");
     }
 }

@@ -33,6 +33,38 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **Chunk-addressable resolve (additive, behaviourally identical) (S0) — Part of #27** — the first,
+  safest step toward deep chunked resolve (issue #27). **Purely additive: the live render path is
+  untouched** (`Scene::resolve_region` still allocates one whole-region grid AND recentres the
+  composite on the origin, exactly as before; goldens stay green). Two new functions in
+  `src/scene.rs`:
+  - `Scene::resolve_chunk(chunk_coord: [i32;3], voxels_per_block, lod) -> VoxelGrid` — resolves
+    exactly ONE `CHUNK_BLOCKS³`-block chunk (`CHUNK_BLOCKS = 4`, reused from `renderer.rs`) in
+    **absolute (non-recentred) composite voxel coordinates**. Reuses the same per-leaf
+    resolve+stamp logic as `resolve_region` (via a new `stamp_producer_into_chunk` helper) but
+    clips each voxel to the chunk's box. `lod` is the parked LOD seam — always `0`, asserted,
+    present for forward-compat (ADR 0002 Decision 2).
+  - `Scene::resolve_region_via_chunks(voxels_per_block, lod) -> VoxelGrid` — loops the covering
+    chunk range, resolves each chunk, unions them into one full grid (absolute coords). Proves the
+    decomposition reconstructs the whole scene; NOT wired into rendering.
+  - **Chunk-AABB ownership (the rule the next step inherits):** a chunk covers the **half-open**
+    absolute-voxel box `[chunk_coord·E, (chunk_coord+1)·E)` per axis, `E = CHUNK_BLOCKS·density`.
+    A voxel belongs to `floor(world_position / E)`. Voxel centres sit at `n + 0.5` and boundaries
+    at integer multiples of `E`, so `floor` is never ambiguous → **each voxel lands in exactly one
+    chunk**. (`covering_chunk_range` uses `div_euclid` so negative chunk coords work; the high
+    chunk owns `max_voxel − 1`.)
+  - **Verification — pure-CPU unit tests** asserting the chunk-reassembled occupied set EXACTLY
+    equals the monolithic `resolve_region`'s set (position + `material_id`), after normalising for
+    the recentre: the two frames differ by exactly `recentre_voxels`, so the test adds it back to
+    the monolithic frame (`chunked.world_position == resolve_region.world_position + recentre`).
+    Also asserts no chunk emits a voxel outside its own AABB and that summed per-chunk counts equal
+    the whole count (exactly-one-chunk). Coverage: all 5 SDF shapes, the `--demo-scene` and
+    `--demo-village` (instanced) multi-node scenes, an **off-centre node (+8 blocks, non-zero
+    recentre)**, an empty far-off chunk (no panic, empty grid), and density 8. **No discrepancy
+    found — chunked and monolithic resolve are bit-identical (modulo recentre + order).**
+  - Gates green: `cargo build --bins`, `cargo clippy --all-targets` (0 warnings), `cargo test`
+    (**101 lib tests**, was 95 + 6 new), `cargo test --features gpu --test golden` (unchanged).
+
 - **Make cuboid the DEFAULT mesher; rebaseline goldens from the cuboid path (E3c-2) — Part of #18**
   — with full feature + multi-material parity (E3b) and the texture atlas (E3c-1) done, the cuboid
   box-decomposition path is now the **default** render path. `MesherChoice`'s `#[default]` flipped
