@@ -33,6 +33,40 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **64-bit (i64) world block addressing (S4a) — Part of #18 (ADR 0002 Decision 2, "world
+  addressing to 64-bit").** DATA-MODEL change only — the recentre / camera / render math is
+  UNCHANGED (origin-rebasing is the next step, S4b). Near-origin scenes render byte-identical
+  (goldens green, NOT rebaselined); the far-offset demo (100_000) still recenters home as before.
+  - **`NodeTransform.offset_blocks: [i32;3] → [i64;3]`** (`src/scene.rs`). The whole block-offset
+    composition down the tree (`for_each_leaf` / `walk_nodes` visitor signature, `parent_offset`)
+    is now i64, so far-apart nodes sum without i32 overflow.
+  - **Absolute-voxel math widened to i64** where it multiplies a block offset by density:
+    `placed_extent_blocks`, `placed_extent_voxels`, `recentre_voxels_for_resolve`, `resolve_region`
+    (recentre + per-leaf translation), `resolve_chunk` (chunk + leaf AABB corners),
+    `build_leaf_spatial_index`, and the `stamp_producer{,_into_chunk}` `translation_voxels` params.
+    At density 16 a ±10⁹-block offset is ±1.6×10¹⁰ absolute voxels — past i32 — so this frame MUST
+    be i64 or it silently truncates.
+  - **`VoxelAabb` (`src/spatial_index.rs`) min/max: `[i32;3] → [i64;3]`** (absolute voxels), plus
+    its `VoxelAabbKey` diff key. **Chunk coordinate / cache key stayed `[i32;3]`** — the chunk
+    coord is `voxel / chunk_extent` (= /64 at density 16), so a ±10⁹-block offset is only ±2.5×10⁸
+    chunks, well inside i32. Block→chunk derivation now happens in i64 then narrows via a guarded
+    `narrow_chunk_coord` (debug-asserts the i32 fit). **Max safely-supported offset ≈ ±8×10⁹ blocks**
+    (where the chunk coord would approach i32::MAX); the absolute-voxel i64 frame itself has far
+    more headroom.
+  - **Tolerant persistence migration.** serde widens an old `i32` JSON number into the `i64` field
+    transparently (a JSON integer carries no width) — no schema bump needed. Tests:
+    `settings::tests::old_i32_offset_scene_loads_after_widening_to_i64` (a hand-authored pre-S4a
+    document loads + resolves) and `large_i64_offset_round_trips_through_json` (a 3×10⁹-block offset,
+    past i32::MAX, round-trips byte-exact through capture→JSON→load).
+  - **UI / demos:** `panel.rs` offset DragValues bind the i64 field directly (egui `Numeric`);
+    `shot.rs` `FAR_OFFSET_BLOCKS` + all four demo builders use `[i64;3]`.
+  - **New CPU test `scene::tests::i64_composition_beyond_i32_range_is_exact`**: a Group(+2×10⁹)
+    over a leaf(+10⁹) composes to 3×10⁹ blocks — past i32::MAX — and the producer-true voxel AABB
+    is exact in pure i64 (would have wrapped negative under i32). Existing chunked-resolve parity +
+    far-offset (100_000) tests still pass unchanged.
+  - **Gate:** `cargo build --bins` ✓, `cargo clippy --all-targets` clean ✓, `cargo test` 125 ✓
+    (122 + 3 new), `cargo test --features gpu --test golden` green ✓.
+
 - **Edit-AABB chunk invalidation + node spatial index (S3) — Part of #27 (ADR 0002 streaming,
   Decision 3 "dirty-whole-chunk invalidation")** — retires the wholesale `clear()`-on-every-edit:
   an edit now evicts ONLY the cache chunks its world-AABB touches. Render output stays

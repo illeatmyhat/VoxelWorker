@@ -554,6 +554,123 @@ mod tests {
         );
     }
 
+    /// S4a back-compat: a scene serialized by an OLDER build (when `offset_blocks`
+    /// was `[i32; 3]`) loads into the now-`[i64; 3]` field unchanged. A JSON integer
+    /// carries no width, so serde widens the old numbers transparently — this is the
+    /// "tolerant persistence migration" the S4a task requires, proven by a
+    /// hand-authored document that predates the widening (note the small i32-range
+    /// offsets, exactly what an old save held). The document must load, keep its
+    /// offsets, and resolve to a non-empty grid.
+    #[test]
+    fn old_i32_offset_scene_loads_after_widening_to_i64() {
+        use crate::scene::NodeContent;
+
+        // An old-style document: a single Box Tool offset +5 blocks in X. The
+        // `offset_blocks` numbers are plain JSON integers, exactly as the pre-S4a
+        // `[i32; 3]` field serialized them.
+        let old_json = r#"{
+            "scene": {
+                "nodes": [
+                    {
+                        "name": "Box",
+                        "transform": { "offset_blocks": [5, 0, 0] },
+                        "operation": "Union",
+                        "visible": true,
+                        "content": {
+                            "Tool": {
+                                "shape": {
+                                    "kind": "Box",
+                                    "size_blocks": [2, 2, 2],
+                                    "voxels_per_block": 8,
+                                    "wall_blocks": 1
+                                },
+                                "material": "Stone"
+                            }
+                        }
+                    }
+                ],
+                "active": { "indices": [0] }
+            },
+            "shape": "Box",
+            "size_blocks": [2, 2, 2],
+            "voxels_per_block": 8,
+            "wall_blocks": 1
+        }"#;
+
+        let restored: AppConfig =
+            serde_json::from_str(old_json).expect("an old i32-offset scene must still parse");
+        let panel = restored.to_panel_state();
+        assert_eq!(panel.scene.nodes.len(), 1, "the old node survives the widening");
+        // The i32-range offset widened into the i64 field intact.
+        assert_eq!(
+            panel.scene.nodes[0].transform.offset_blocks,
+            [5i64, 0, 0],
+            "the old i32 offset must widen to the same i64 value"
+        );
+        assert!(matches!(
+            panel.scene.nodes[0].content,
+            NodeContent::Tool { .. }
+        ));
+        // The migrated document still resolves to a non-empty grid.
+        let region = panel.scene.full_extent_blocks(8);
+        assert!(
+            panel.scene.resolve_region(region, 8, 0).occupied_count() > 0,
+            "the migrated old-offset scene resolves to voxels"
+        );
+    }
+
+    /// S4a: a scene whose `offset_blocks` is a LARGE i64 (well beyond the old
+    /// `i32` range, ±2.1×10⁹) round-trips through `capture → JSON → load` byte-exact.
+    /// This proves the widened field both serializes and deserializes the full
+    /// 64-bit range — far-apart village nodes survive a save/load.
+    #[test]
+    fn large_i64_offset_round_trips_through_json() {
+        use crate::scene::{Node, NodeContent, NodePath, Scene};
+        use crate::voxel::SdfShape;
+
+        // Beyond i32::MAX (2_147_483_647): a node placed ~3 billion blocks out. An
+        // i32 field could never have held this; the i64 field must persist it exactly.
+        let far_offset: i64 = 3_000_000_000;
+        let shape = SdfShape {
+            kind: ShapeKind::Box,
+            size_blocks: [2, 2, 2],
+            voxels_per_block: 8,
+            wall_blocks: 1,
+        };
+        let mut node = Node::new(
+            "Far box",
+            NodeContent::Tool { shape, material: MaterialChoice::Stone },
+        );
+        node.transform.offset_blocks = [far_offset, -far_offset, far_offset / 2];
+        let scene = Scene::single_node(node);
+
+        let mut panel = PanelState::with_view_cube_default();
+        panel.geometry.voxels_per_block = 8;
+        panel.scene = scene.clone();
+        let camera = OrbitCamera::default();
+        let config = AppConfig::capture(&panel, &camera, [1280, 800]);
+
+        let json = serde_json::to_string_pretty(&config).expect("serialise");
+        let restored: AppConfig = serde_json::from_str(&json).expect("deserialise");
+        let restored_panel = restored.to_panel_state();
+
+        assert_eq!(
+            restored_panel.scene.nodes.len(),
+            1,
+            "the far node survives the round-trip"
+        );
+        assert_eq!(
+            restored_panel.scene.nodes[0].transform.offset_blocks,
+            [far_offset, -far_offset, far_offset / 2],
+            "a >i32-range i64 offset must round-trip byte-exact through save/load"
+        );
+        assert_eq!(
+            restored_panel.scene.active,
+            Some(NodePath::root_index(0)),
+            "the active selection survives"
+        );
+    }
+
     #[test]
     fn capture_then_to_panel_state_preserves_toggles() {
         let mut panel = PanelState::with_view_cube_default();

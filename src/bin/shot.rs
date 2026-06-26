@@ -216,9 +216,11 @@ impl Default for ShotOptions {
 }
 
 /// The block offset of the far-offset demo box (ADR 0002 streaming S1): a large
-/// but i32-range offset (`offset_blocks` is `[i32; 3]` today — S4 widens it). At
-/// density 16 this is 1.6M voxels from the origin in absolute composite space.
-const FAR_OFFSET_BLOCKS: [i32; 3] = [100_000, 0, 0];
+/// offset in the now-`i64` `offset_blocks` (widened in S4a). At density 16 this is
+/// 1.6M voxels from the origin in absolute composite space. Kept at 100_000 so the
+/// far-offset golden baseline is unchanged; S4a only widens the addressing TYPE
+/// (the i64 composition is proven beyond i32 range by the CPU tests in `scene.rs`).
+const FAR_OFFSET_BLOCKS: [i64; 3] = [100_000, 0, 0];
 
 /// Parse a single face name into a [`CubeFace`].
 fn parse_face_name(value: &str) -> CubeFace {
@@ -624,7 +626,7 @@ fn locate_stem_png(stem: &str) -> Option<std::path::PathBuf> {
 /// itself is covered by the scene.rs unit tests (a Part stamps under its offset),
 /// and the in-app inspector offsets both Tools and Parts.
 fn build_demo_scene(voxels_per_block: u32) -> Scene {
-    let make_tool = |kind, offset: [i32; 3], material| {
+    let make_tool = |kind, offset: [i64; 3], material| {
         let shape = SdfShape {
             kind,
             size_blocks: [5, 5, 5],
@@ -659,7 +661,7 @@ fn build_demo_scene(voxels_per_block: u32) -> Scene {
 /// locations.
 fn build_demo_village(voxels_per_block: u32) -> Scene {
     let house_def_id = DefId(1);
-    let tool = |kind, size: [u32; 3], offset: [i32; 3], material| {
+    let tool = |kind, size: [u32; 3], offset: [i64; 3], material| {
         let shape = SdfShape {
             kind,
             size_blocks: size,
@@ -690,7 +692,7 @@ fn build_demo_village(voxels_per_block: u32) -> Scene {
     // houses non-overlapping in screen space when viewed perpendicular to the row,
     // so the headless PNG unambiguously shows the repeated assembly at four
     // separated locations from a single stored definition.
-    let instance = |name: &str, offset: [i32; 3]| {
+    let instance = |name: &str, offset: [i64; 3]| {
         let mut node = Node::new(name, NodeContent::Instance(house_def_id));
         node.transform.offset_blocks = offset;
         node
@@ -715,7 +717,7 @@ fn build_demo_village(voxels_per_block: u32) -> Scene {
 /// nested+indented under it, a top-level Tool, and an Instance row, plus the
 /// Definitions list — the whole authoring surface this step adds.
 fn build_demo_groups(voxels_per_block: u32) -> Scene {
-    let tool = |kind, size: [u32; 3], offset: [i32; 3], material, name: &str| {
+    let tool = |kind, size: [u32; 3], offset: [i64; 3], material, name: &str| {
         let shape = SdfShape { kind, size_blocks: size, voxels_per_block, wall_blocks: 1 };
         let mut node = Node::new(name, NodeContent::Tool { shape, material });
         node.transform.offset_blocks = offset;

@@ -142,8 +142,15 @@ pub enum CombineOp {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct NodeTransform {
     /// Translation in whole blocks (X, Y, Z).
+    ///
+    /// **64-bit world addressing (S4a, ADR 0002 Decision 2):** the block offset is
+    /// `i64` so far-apart nodes compose down the tree without `i32` overflow (a
+    /// node placed at ±10⁹ blocks, or a deep nest summing past the i32 range, is
+    /// exact). serde widens an older `i32` JSON number into this field transparently
+    /// (a JSON integer carries no width), so previously-saved scenes load unchanged
+    /// — see the persistence round-trip tests in `settings.rs`.
     #[serde(default)]
-    pub offset_blocks: [i32; 3],
+    pub offset_blocks: [i64; 3],
     // future: rotation, scale → a general affine.
 }
 
@@ -550,7 +557,7 @@ impl Scene {
             .filter(|node| matches!(node.content, NodeContent::Instance(id) if id == def_id))
             .count();
         let mut node = Node::new(name, NodeContent::Instance(def_id));
-        node.transform.offset_blocks = [(existing as i32 + 1) * DEFAULT_INSTANCE_SPACING_BLOCKS, 0, 0];
+        node.transform.offset_blocks = [(existing as i64 + 1) * DEFAULT_INSTANCE_SPACING_BLOCKS as i64, 0, 0];
         let index = self.add_node(node);
         Some(NodePath::root_index(index))
     }
@@ -590,6 +597,11 @@ impl Scene {
                 (max_corner[1] - min_corner[1]) as u32,
                 (max_corner[2] - min_corner[2]) as u32,
             ]),
+            // NOTE: the corners are `i64` (S4a 64-bit block addressing); the
+            // DIFFERENCE (the region size) is bounded by the placed geometry's own
+            // extent, never by how far from the origin it sits, so narrowing to u32
+            // is safe — a scene whose *span* exceeds 4G blocks is not representable
+            // as a single monolithic grid regardless of addressing width.
             None => RegionBlocks::new([0, 0, 0]),
         }
     }
@@ -606,9 +618,9 @@ impl Scene {
     /// Block extents are split into a low/high half (`floor(size/2)` below the
     /// centre, the remainder above) so an odd block size keeps the same parity the
     /// voxel-space resolution uses, and the returned box is exact in blocks.
-    fn placed_extent_blocks(&self, voxels_per_block: u32) -> Option<([i32; 3], [i32; 3])> {
-        let mut min_corner = [i32::MAX; 3];
-        let mut max_corner = [i32::MIN; 3];
+    fn placed_extent_blocks(&self, voxels_per_block: u32) -> Option<([i64; 3], [i64; 3])> {
+        let mut min_corner = [i64::MAX; 3];
+        let mut max_corner = [i64::MIN; 3];
         let mut any = false;
         self.for_each_leaf(&mut |world_offset, content| {
             let Some(size_blocks) = leaf_size_blocks(content, voxels_per_block) else {
@@ -616,9 +628,9 @@ impl Scene {
             };
             any = true;
             for axis in 0..3 {
-                let half_low = (size_blocks[axis] / 2) as i32;
+                let half_low = (size_blocks[axis] / 2) as i64;
                 let low = world_offset[axis] - half_low;
-                let high = low + size_blocks[axis] as i32;
+                let high = low + size_blocks[axis] as i64;
                 min_corner[axis] = min_corner[axis].min(low);
                 max_corner[axis] = max_corner[axis].max(high);
             }
@@ -638,7 +650,7 @@ impl Scene {
     /// reference an ancestor definition) lives in [`walk_nodes`].
     ///
     /// [`walk_nodes`]: Self::walk_nodes
-    fn for_each_leaf(&self, visitor: &mut dyn FnMut([i32; 3], &NodeContent)) {
+    fn for_each_leaf(&self, visitor: &mut dyn FnMut([i64; 3], &NodeContent)) {
         let mut def_path: Vec<DefId> = Vec::new();
         self.walk_nodes(&self.nodes, [0, 0, 0], &mut def_path, visitor);
     }
@@ -651,9 +663,9 @@ impl Scene {
     fn walk_nodes(
         &self,
         nodes: &[Node],
-        parent_offset: [i32; 3],
+        parent_offset: [i64; 3],
         def_path: &mut Vec<DefId>,
-        visitor: &mut dyn FnMut([i32; 3], &NodeContent),
+        visitor: &mut dyn FnMut([i64; 3], &NodeContent),
     ) {
         for node in nodes {
             if !node.visible {
@@ -736,21 +748,24 @@ impl Scene {
         // centre, so the shift is zero — the step-2 identity is preserved.
         let recentre_voxels = match self.placed_extent_blocks(voxels_per_block) {
             Some((min_corner, max_corner)) => [
-                ((min_corner[0] + max_corner[0]) * voxels_per_block as i32) / 2,
-                ((min_corner[1] + max_corner[1]) * voxels_per_block as i32) / 2,
-                ((min_corner[2] + max_corner[2]) * voxels_per_block as i32) / 2,
+                ((min_corner[0] + max_corner[0]) * voxels_per_block as i64) / 2,
+                ((min_corner[1] + max_corner[1]) * voxels_per_block as i64) / 2,
+                ((min_corner[2] + max_corner[2]) * voxels_per_block as i64) / 2,
             ],
-            None => [0, 0, 0],
+            None => [0i64; 3],
         };
 
         // Walk the whole tree (groups + instances recurse, composing world
         // translation down — ADR 0001 step 4). Each visited leaf is stamped under
-        // its WORLD offset (× density) minus the composite recentre.
+        // its WORLD offset (× density) minus the composite recentre. All of this is
+        // in i64 (S4a) so a far-placed node composes without overflow; the result
+        // is downcast to f32 inside the stamp (the render frame stays f32 — S4b
+        // makes the far case byte-identical via origin rebasing).
         self.for_each_leaf(&mut |world_offset, content| {
             let translation_voxels = [
-                world_offset[0] * voxels_per_block as i32 - recentre_voxels[0],
-                world_offset[1] * voxels_per_block as i32 - recentre_voxels[1],
-                world_offset[2] * voxels_per_block as i32 - recentre_voxels[2],
+                world_offset[0] * voxels_per_block as i64 - recentre_voxels[0],
+                world_offset[1] * voxels_per_block as i64 - recentre_voxels[1],
+                world_offset[2] * voxels_per_block as i64 - recentre_voxels[2],
             ];
             match content {
                 NodeContent::Tool { shape, material } => {
@@ -829,13 +844,15 @@ impl Scene {
     ) -> VoxelGrid {
         debug_assert_eq!(lod, 0, "S0 only resolves full resolution (lod 0)");
 
-        let chunk_extent_voxels = (crate::renderer::CHUNK_BLOCKS * voxels_per_block.max(1)) as i32;
+        // Chunk extent fits i64 trivially; the chunk's absolute-voxel corners can be
+        // large (a far-placed chunk), so they are computed in i64 (S4a).
+        let chunk_extent_voxels = (crate::renderer::CHUNK_BLOCKS * voxels_per_block.max(1)) as i64;
 
         // The chunk's half-open absolute-voxel box `[min, max)` per axis.
         let chunk_min_voxels = [
-            chunk_coord[0] * chunk_extent_voxels,
-            chunk_coord[1] * chunk_extent_voxels,
-            chunk_coord[2] * chunk_extent_voxels,
+            chunk_coord[0] as i64 * chunk_extent_voxels,
+            chunk_coord[1] as i64 * chunk_extent_voxels,
+            chunk_coord[2] as i64 * chunk_extent_voxels,
         ];
         let chunk_max_voxels = [
             chunk_min_voxels[0] + chunk_extent_voxels,
@@ -859,7 +876,7 @@ impl Scene {
         // WITHOUT the composite recentre, so positions are absolute. We then keep
         // only the voxels whose absolute centre falls in this chunk's box.
         let region_dimensions = self.placed_region_dimensions(voxels_per_block);
-        let density = voxels_per_block.max(1) as i32;
+        let density = voxels_per_block.max(1) as i64;
         let chunk_box = VoxelAabb::new(chunk_min_voxels, chunk_max_voxels);
         self.for_each_leaf(&mut |world_offset, content| {
             // Issue #27 S3 optimisation: skip a leaf whose world-AABB doesn't touch
@@ -872,10 +889,10 @@ impl Scene {
             // region-spanning leaf (a Part, `leaf_size_blocks` → `None`) has no
             // localisable AABB, so it is never skipped (it may emit anywhere).
             if let Some(size_blocks) = leaf_size_blocks(content, voxels_per_block) {
-                let mut leaf_min = [0i32; 3];
-                let mut leaf_max = [0i32; 3];
+                let mut leaf_min = [0i64; 3];
+                let mut leaf_max = [0i64; 3];
                 for axis in 0..3 {
-                    let grid = size_blocks[axis] as i32 * density;
+                    let grid = size_blocks[axis] as i64 * density;
                     let centre = world_offset[axis] * density;
                     leaf_min[axis] = centre - grid / 2;
                     leaf_max[axis] = leaf_min[axis] + grid;
@@ -885,9 +902,9 @@ impl Scene {
                 }
             }
             let translation_voxels = [
-                world_offset[0] * voxels_per_block as i32,
-                world_offset[1] * voxels_per_block as i32,
-                world_offset[2] * voxels_per_block as i32,
+                world_offset[0] * voxels_per_block as i64,
+                world_offset[1] * voxels_per_block as i64,
+                world_offset[2] * voxels_per_block as i64,
             ];
             let (material_override, producer): (Option<u16>, Box<dyn VoxelProducer>) = match content
             {
@@ -960,7 +977,7 @@ impl Scene {
     /// Exposed (crate-internal) so the S0 equivalence tests can normalise one frame
     /// to the other. `[0, 0, 0]` for a scene with no intrinsic-size leaf.
     #[cfg(test)]
-    pub(crate) fn recentre_voxels(&self, voxels_per_block: u32) -> [i32; 3] {
+    pub(crate) fn recentre_voxels(&self, voxels_per_block: u32) -> [i64; 3] {
         self.recentre_voxels_for_resolve(voxels_per_block)
     }
 
@@ -971,14 +988,14 @@ impl Scene {
     /// the identical offset when reassembling the recentred monolithic grid from
     /// absolute per-chunk pieces, so the assembled output is bit-identical. `[0, 0,
     /// 0]` for a scene with no intrinsic-size leaf.
-    pub(crate) fn recentre_voxels_for_resolve(&self, voxels_per_block: u32) -> [i32; 3] {
+    pub(crate) fn recentre_voxels_for_resolve(&self, voxels_per_block: u32) -> [i64; 3] {
         match self.placed_extent_blocks(voxels_per_block) {
             Some((min_corner, max_corner)) => [
-                ((min_corner[0] + max_corner[0]) * voxels_per_block as i32) / 2,
-                ((min_corner[1] + max_corner[1]) * voxels_per_block as i32) / 2,
-                ((min_corner[2] + max_corner[2]) * voxels_per_block as i32) / 2,
+                ((min_corner[0] + max_corner[0]) * voxels_per_block as i64) / 2,
+                ((min_corner[1] + max_corner[1]) * voxels_per_block as i64) / 2,
+                ((min_corner[2] + max_corner[2]) * voxels_per_block as i64) / 2,
             ],
-            None => [0, 0, 0],
+            None => [0i64; 3],
         }
     }
 
@@ -1020,10 +1037,10 @@ impl Scene {
     /// frame) or it drops the voxels living in the chunks the block-AABB misses —
     /// the cause of the flat-shape (Y = 1 block) half-drop. `None` when no leaf has
     /// an intrinsic size.
-    fn placed_extent_voxels(&self, voxels_per_block: u32) -> Option<([i32; 3], [i32; 3])> {
-        let density = voxels_per_block.max(1) as i32;
-        let mut min_corner = [i32::MAX; 3];
-        let mut max_corner = [i32::MIN; 3];
+    fn placed_extent_voxels(&self, voxels_per_block: u32) -> Option<([i64; 3], [i64; 3])> {
+        let density = voxels_per_block.max(1) as i64;
+        let mut min_corner = [i64::MAX; 3];
+        let mut max_corner = [i64::MIN; 3];
         let mut any = false;
         self.for_each_leaf(&mut |world_offset, content| {
             let Some(size_blocks) = leaf_size_blocks(content, voxels_per_block) else {
@@ -1031,7 +1048,7 @@ impl Scene {
             };
             any = true;
             for axis in 0..3 {
-                let grid = size_blocks[axis] as i32 * density;
+                let grid = size_blocks[axis] as i64 * density;
                 // The producer centres its grid on the origin (voxel centres at
                 // `idx + 0.5 − grid/2`), so its occupied voxel span is `[−grid/2,
                 // grid/2)`; placed at `world_offset·d` it spans `[off − grid/2, off +
@@ -1059,7 +1076,11 @@ impl Scene {
     /// frame would miss).
     pub(crate) fn covering_chunk_range(&self, voxels_per_block: u32) -> Option<([i32; 3], [i32; 3])> {
         let (min_voxel_corner, max_voxel_corner) = self.placed_extent_voxels(voxels_per_block)?;
-        let chunk_extent_voxels = (crate::renderer::CHUNK_BLOCKS * voxels_per_block.max(1)) as i32;
+        // The voxel corners are i64 (a far-placed leaf), but the chunk extent is
+        // small; the block→chunk division therefore happens in i64 and the QUOTIENT
+        // (the chunk coordinate) narrows to i32 safely — for offsets up to ±10⁹
+        // blocks at density 16 a chunk coord is ≤ ±2.5×10⁸, well inside i32 (S4a).
+        let chunk_extent_voxels = (crate::renderer::CHUNK_BLOCKS * voxels_per_block.max(1)) as i64;
 
         let mut min_chunk = [0i32; 3];
         let mut max_chunk = [0i32; 3];
@@ -1069,8 +1090,8 @@ impl Scene {
             // centre is at `max_voxel - 1 + 0.5`, so the highest chunk is the one
             // owning `max_voxel - 1`.
             let max_voxel = max_voxel_corner[axis];
-            min_chunk[axis] = min_voxel.div_euclid(chunk_extent_voxels);
-            max_chunk[axis] = (max_voxel - 1).div_euclid(chunk_extent_voxels);
+            min_chunk[axis] = narrow_chunk_coord(min_voxel.div_euclid(chunk_extent_voxels));
+            max_chunk[axis] = narrow_chunk_coord((max_voxel - 1).div_euclid(chunk_extent_voxels));
         }
         Some((min_chunk, max_chunk))
     }
@@ -1093,7 +1114,7 @@ impl Scene {
     /// a query against the index returns the same leaf set as the full walk filtered
     /// by AABB (proven in the spatial-index tests).
     pub fn build_leaf_spatial_index(&self, voxels_per_block: u32) -> LeafSpatialIndex {
-        let density = voxels_per_block.max(1) as i32;
+        let density = voxels_per_block.max(1) as i64;
         let mut entries: Vec<LeafEntry> = Vec::new();
         let mut has_region_spanning_leaf = false;
         self.for_each_leaf(&mut |world_offset, content| {
@@ -1103,11 +1124,11 @@ impl Scene {
                     // is placed at `world_offset·d`; its occupied voxel span per axis
                     // is `[off·d − grid/2, off·d + grid/2)` — the producer-true
                     // half-extent (`grid/2 = size·d/2`), identical to
-                    // `placed_extent_voxels`.
-                    let mut min = [0i32; 3];
-                    let mut max = [0i32; 3];
+                    // `placed_extent_voxels`. Absolute voxels are i64 (S4a).
+                    let mut min = [0i64; 3];
+                    let mut max = [0i64; 3];
                     for axis in 0..3 {
-                        let grid = size_blocks[axis] as i32 * density;
+                        let grid = size_blocks[axis] as i64 * density;
                         let centre = world_offset[axis] * density;
                         min[axis] = centre - grid / 2;
                         max[axis] = min[axis] + grid;
@@ -1149,7 +1170,26 @@ impl Scene {
 /// ([`LeafSpatialIndex::edit_aabb_since`](crate::spatial_index::LeafSpatialIndex::edit_aabb_since))
 /// treats them as unchanged. `world_offset` is included so a moved Tool whose box
 /// happens to coincide with another's still reads as distinct.
-fn leaf_content_fingerprint(world_offset: [i32; 3], content: &NodeContent) -> String {
+/// Narrow an `i64` chunk coordinate to `i32` (the cache-key / chunk-index width).
+///
+/// **Audit (S4a, ADR 0002 Decision 2):** the absolute-VOXEL math is i64 so a
+/// far-placed node composes without overflow, but the CHUNK coordinate (= voxel /
+/// chunk_extent) is much smaller — at density 16 / `CHUNK_BLOCKS = 4` the extent is
+/// 64 voxels, so a block offset of ±10⁹ yields a chunk coord of only ±2.5×10⁸,
+/// comfortably inside i32 (±2.1×10⁹). Keeping the chunk coord / cache key i32 is
+/// therefore safe and avoids widening the whole chunk index. A coordinate that
+/// would not fit i32 means a block offset past ~±8×10⁹ — beyond the supported
+/// range — and is clamped (debug-asserted) rather than silently wrapping.
+fn narrow_chunk_coord(chunk_coord: i64) -> i32 {
+    debug_assert!(
+        chunk_coord >= i32::MIN as i64 && chunk_coord <= i32::MAX as i64,
+        "chunk coordinate {chunk_coord} overflows i32 — block offset is past the \
+         supported ±~8×10⁹-block range (S4a)"
+    );
+    chunk_coord.clamp(i32::MIN as i64, i32::MAX as i64) as i32
+}
+
+fn leaf_content_fingerprint(world_offset: [i64; 3], content: &NodeContent) -> String {
     match content {
         NodeContent::Tool { shape, material } => {
             format!("Tool@{world_offset:?}:{shape:?}:{material:?}")
@@ -1224,7 +1264,7 @@ fn material_id_for(material: MaterialChoice) -> Option<u16> {
 fn stamp_producer(
     output: &mut VoxelGrid,
     region_dimensions: [u32; 3],
-    translation_voxels: [i32; 3],
+    translation_voxels: [i64; 3],
     material_override: Option<u16>,
     producer: &dyn VoxelProducer,
 ) {
@@ -1281,11 +1321,11 @@ fn stamp_producer(
 fn stamp_producer_into_chunk(
     output: &mut VoxelGrid,
     region_dimensions: [u32; 3],
-    translation_voxels: [i32; 3],
+    translation_voxels: [i64; 3],
     material_override: Option<u16>,
     producer: &dyn VoxelProducer,
-    chunk_min_voxels: [i32; 3],
-    chunk_max_voxels: [i32; 3],
+    chunk_min_voxels: [i64; 3],
+    chunk_max_voxels: [i64; 3],
 ) {
     let mut local = VoxelGrid::new(region_dimensions);
     producer.resolve(&mut local);
@@ -1547,7 +1587,7 @@ mod tests {
     /// A box Tool sized to fill a single block (so the whole block of voxels is
     /// occupied), at the given block offset along X, in a wide region. Returns the
     /// set of occupied voxel positions keyed to integer coordinates.
-    fn boxed_block_positions(offset_x: i32, voxels_per_block: u32) -> std::collections::HashSet<[i64; 3]> {
+    fn boxed_block_positions(offset_x: i64, voxels_per_block: u32) -> std::collections::HashSet<[i64; 3]> {
         let shape = SdfShape {
             kind: ShapeKind::Box,
             size_blocks: [1, 1, 1],
@@ -1583,7 +1623,7 @@ mod tests {
     #[test]
     fn offset_node_shifts_voxels_by_blocks_times_density() {
         let voxels_per_block = 8u32;
-        let n = 5i32; // 5 blocks apart: a 1-block box leaves a 4-block gap (disjoint).
+        let n = 5i64; // 5 blocks apart: a 1-block box leaves a 4-block gap (disjoint).
         let region = RegionBlocks::new([8, 1, 1]);
         let base = SdfShape {
             kind: ShapeKind::Box,
@@ -1608,7 +1648,7 @@ mod tests {
         // float comparison is safe and exact — no rounding). The boxes are disjoint
         // in X (5 blocks apart, 1 block wide), so the occupied set splits cleanly at
         // the gap between box A's X-run and box B's X-run.
-        let shift = (n * voxels_per_block as i32) as f32; // N blocks → N×density voxels.
+        let shift = (n * voxels_per_block as i64) as f32; // N blocks → N×density voxels.
         let key = |position: [f32; 3]| -> [i64; 3] {
             // Bit-exact key: positions are k+0.5 half-integers, so ×2 is an exact
             // integer and avoids any float-equality fragility in the HashSet.
@@ -1770,8 +1810,8 @@ mod tests {
     fn nested_group_composes_transforms_down() {
         let voxels_per_block = 8u32;
         let region = RegionBlocks::new([10, 1, 1]);
-        let a = 3i32; // group offset
-        let b = 2i32; // leaf offset within the group
+        let a = 3i64; // group offset
+        let b = 2i64; // leaf offset within the group
 
         // Grouped: a Group at +A containing a box at +B.
         let mut leaf = Node::new(
@@ -1811,7 +1851,7 @@ mod tests {
     fn instance_matches_direct_placement() {
         let voxels_per_block = 8u32;
         let region = RegionBlocks::new([10, 1, 1]);
-        let t = 4i32;
+        let t = 4i64;
         let def_id = DefId(7);
 
         // Definition: a single box at the origin (within the def).
@@ -2156,14 +2196,14 @@ mod tests {
     /// recovers the integer voxel index exactly.
     fn occupied_multiset(
         grid: &VoxelGrid,
-        recentre_voxels: [i32; 3],
+        recentre_voxels: [i64; 3],
     ) -> std::collections::BTreeMap<([i64; 3], u16), usize> {
         let mut multiset = std::collections::BTreeMap::new();
         for voxel in &grid.occupied {
             let key = [
-                (voxel.world_position[0] - 0.5).round() as i64 + recentre_voxels[0] as i64,
-                (voxel.world_position[1] - 0.5).round() as i64 + recentre_voxels[1] as i64,
-                (voxel.world_position[2] - 0.5).round() as i64 + recentre_voxels[2] as i64,
+                (voxel.world_position[0] - 0.5).round() as i64 + recentre_voxels[0],
+                (voxel.world_position[1] - 0.5).round() as i64 + recentre_voxels[1],
+                (voxel.world_position[2] - 0.5).round() as i64 + recentre_voxels[2],
             ];
             *multiset.entry((key, voxel.material_id)).or_insert(0) += 1;
         }
@@ -2270,7 +2310,7 @@ mod tests {
     #[test]
     fn chunked_resolve_matches_monolithic_for_demo_scene() {
         let voxels_per_block = 16;
-        let make_tool = |kind, offset: [i32; 3], material| {
+        let make_tool = |kind, offset: [i64; 3], material| {
             let shape = SdfShape {
                 kind,
                 size_blocks: [5, 5, 5],
@@ -2300,7 +2340,7 @@ mod tests {
     fn chunked_resolve_matches_monolithic_for_demo_village() {
         let voxels_per_block = 16;
         let house_def_id = DefId(1);
-        let tool = |kind, size: [u32; 3], offset: [i32; 3], material| {
+        let tool = |kind, size: [u32; 3], offset: [i64; 3], material| {
             let shape = SdfShape {
                 kind,
                 size_blocks: size,
@@ -2319,7 +2359,7 @@ mod tests {
                 tool(ShapeKind::Cylinder, [1, 2, 1], [0, 2, 0], MaterialChoice::Wood),
             ],
         };
-        let instance = |name: &str, offset: [i32; 3]| {
+        let instance = |name: &str, offset: [i64; 3]| {
             let mut node = Node::new(name, NodeContent::Instance(house_def_id));
             node.transform.offset_blocks = offset;
             node
@@ -2405,8 +2445,11 @@ mod tests {
     // `resolve_region_via_chunks`), which — unlike `resolve_region` — does NOT
     // recentre, so its voxel positions ARE the scene's true composite coordinates.
     //
-    // `offset_blocks` is `[i32; 3]` today (S4 widens to i64); 100_000 blocks is
-    // comfortably in i32 range, and at density 16 lands the box ~1.6M voxels out.
+    // `offset_blocks` is `[i64; 3]` (widened in S4a); 100_000 blocks is comfortably
+    // in i32 range too, and at density 16 lands the box ~1.6M voxels out. The
+    // BEYOND-i32 composition (offsets past ±2.1×10⁹) is proven separately in
+    // `i64_composition_beyond_i32_range_is_exact` (pure integer, no f32 precision
+    // loss).
 
     /// A far-offset node resolves to absolute voxel/chunk coordinates around
     /// 100_000 blocks: the box's voxels sit at absolute X ≈ 100_000 × density, the
@@ -2416,7 +2459,7 @@ mod tests {
     #[test]
     fn far_offset_node_resolves_to_absolute_coords_near_100k() {
         let voxels_per_block = 16u32;
-        let offset_blocks = 100_000i32;
+        let offset_blocks = 100_000i64;
         // A 4³ box — the same recognizable shape `shot --demo-far-offset` builds.
         let shape = SdfShape {
             kind: ShapeKind::Box,
@@ -2478,8 +2521,8 @@ mod tests {
         // The owning chunk coordinates are around 100_000 × density / chunk_extent,
         // i.e. far from chunk 0 — the chunk addressing places it far away too.
         let chunk_extent_voxels =
-            (crate::renderer::CHUNK_BLOCKS * voxels_per_block) as i32;
-        let expected_chunk_x = (offset_blocks * voxels_per_block as i32) / chunk_extent_voxels;
+            (crate::renderer::CHUNK_BLOCKS * voxels_per_block) as i64;
+        let expected_chunk_x = ((offset_blocks * voxels_per_block as i64) / chunk_extent_voxels) as i32;
         let (min_chunk, max_chunk) = scene
             .covering_chunk_range(voxels_per_block)
             .expect("the far box has an intrinsic size → a covering chunk range");
@@ -2505,7 +2548,7 @@ mod tests {
         let recentre = scene.recentre_voxels(voxels_per_block);
         assert_eq!(
             recentre[0],
-            offset_blocks * voxels_per_block as i32,
+            offset_blocks * voxels_per_block as i64,
             "the recentre offset equals the full far placement — it is what hides the \
              far offset from the live render today (S4 removes it)"
         );
@@ -2522,6 +2565,93 @@ mod tests {
         );
     }
 
+    /// S4a (64-bit world addressing): nested transforms compose down the tree in
+    /// **i64**, so a leaf whose accumulated block offset exceeds the `i32` range
+    /// lands at the EXACT absolute coordinate — no overflow, no truncation. This is
+    /// the load-bearing data-model guarantee of S4a, proven in PURE INTEGER space
+    /// (the producer-true voxel AABB from `build_leaf_spatial_index`) so there is no
+    /// f32 precision loss to muddy the result.
+    ///
+    /// A Group offset `+2_000_000_000` blocks contains a leaf offset `+1_000_000_000`
+    /// blocks; their sum `3_000_000_000` is past `i32::MAX` (2_147_483_647). The
+    /// composed absolute-voxel centre must be `3_000_000_000 × density` — a value
+    /// that would have wrapped to a negative number under the old i32 composition.
+    #[test]
+    fn i64_composition_beyond_i32_range_is_exact() {
+        let voxels_per_block = 16u32;
+        let density = voxels_per_block as i64;
+        let group_offset: i64 = 2_000_000_000; // ~i32::MAX on its own
+        let leaf_offset: i64 = 1_000_000_000;
+        let composed_blocks = group_offset + leaf_offset; // 3e9 — past i32::MAX
+        assert!(
+            composed_blocks > i32::MAX as i64,
+            "the composed offset must exceed i32 range to exercise 64-bit addressing"
+        );
+
+        // A 1-block box leaf inside a Group; the leaf carries +leaf_offset, the Group
+        // +group_offset, so the leaf's world offset composes to their sum.
+        let shape = SdfShape {
+            kind: ShapeKind::Box,
+            size_blocks: [1, 1, 1],
+            voxels_per_block,
+            wall_blocks: 1,
+        };
+        let mut leaf = Node::new(
+            "Leaf",
+            NodeContent::Tool { shape, material: MaterialChoice::Stone },
+        );
+        leaf.transform.offset_blocks = [leaf_offset, 0, 0];
+        let mut group = Node::new("Group", NodeContent::Group(vec![leaf]));
+        group.transform.offset_blocks = [group_offset, 0, 0];
+        let scene = Scene {
+            nodes: vec![group],
+            active: Some(NodePath::root_index(0)),
+            ..Scene::default()
+        };
+
+        // The producer-true voxel AABB (pure i64) is centred on the composed offset
+        // × density. A 1-block box spans `[centre − d/2, centre + d/2)`.
+        let index = scene.build_leaf_spatial_index(voxels_per_block);
+        assert_eq!(index.entries.len(), 1, "exactly one leaf is indexed");
+        let aabb = index.entries[0].world_aabb;
+        let composed_voxels = composed_blocks * density; // 48_000_000_000 — past i32 too
+        let half = density / 2;
+        assert_eq!(
+            aabb.min[0], composed_voxels - half,
+            "the composed leaf min-X must equal (group+leaf)·density − d/2, with NO i32 \
+             overflow (got {}, want {})",
+            aabb.min[0],
+            composed_voxels - half
+        );
+        assert_eq!(
+            aabb.max[0], composed_voxels - half + density,
+            "the composed leaf max-X must be exact in i64"
+        );
+        // Sanity: this absolute voxel coordinate genuinely exceeds the i32 range, so
+        // the test would have FAILED (wrapped negative) under i32 composition.
+        assert!(
+            composed_voxels > i32::MAX as i64,
+            "the absolute voxel coordinate ({composed_voxels}) is past i32::MAX — the \
+             exact case 64-bit addressing exists to handle"
+        );
+
+        // The covering chunk range also derives correctly (chunk coord narrows to i32
+        // safely): chunk-X = composed_voxels / chunk_extent, well inside i32.
+        let chunk_extent = (crate::renderer::CHUNK_BLOCKS as i64) * density;
+        let expected_chunk_x = composed_voxels.div_euclid(chunk_extent);
+        assert!(
+            expected_chunk_x <= i32::MAX as i64,
+            "the derived chunk coordinate stays inside i32 even for a 3e9-block offset"
+        );
+        let (min_chunk, max_chunk) = scene
+            .covering_chunk_range(voxels_per_block)
+            .expect("the far leaf has an intrinsic size");
+        assert!(
+            (min_chunk[0] as i64) <= expected_chunk_x && expected_chunk_x <= (max_chunk[0] as i64),
+            "the covering chunk-X range must bracket the composed chunk {expected_chunk_x}"
+        );
+    }
+
     // ===== Issue #27 S3: leaf spatial index =====================================
 
     /// The ground-truth leaf set a query AABB selects: a FULL `for_each_leaf` walk,
@@ -2534,16 +2664,16 @@ mod tests {
         voxels_per_block: u32,
         query: &crate::spatial_index::VoxelAabb,
     ) -> Vec<crate::spatial_index::VoxelAabb> {
-        let density = voxels_per_block.max(1) as i32;
+        let density = voxels_per_block.max(1) as i64;
         let mut matched = Vec::new();
         scene.for_each_leaf(&mut |world_offset, content| {
             let Some(size_blocks) = leaf_size_blocks(content, voxels_per_block) else {
                 return; // region-spanning leaf — not an AABB match.
             };
-            let mut min = [0i32; 3];
-            let mut max = [0i32; 3];
+            let mut min = [0i64; 3];
+            let mut max = [0i64; 3];
             for axis in 0..3 {
-                let grid = size_blocks[axis] as i32 * density;
+                let grid = size_blocks[axis] as i64 * density;
                 let centre = world_offset[axis] * density;
                 min[axis] = centre - grid / 2;
                 max[axis] = min[axis] + grid;
@@ -2558,13 +2688,13 @@ mod tests {
 
     fn sorted_aabbs(
         mut boxes: Vec<crate::spatial_index::VoxelAabb>,
-    ) -> Vec<([i32; 3], [i32; 3])> {
+    ) -> Vec<([i64; 3], [i64; 3])> {
         boxes.sort_by_key(|b| (b.min, b.max));
         boxes.into_iter().map(|b| (b.min, b.max)).collect()
     }
 
     fn demo_three_tool_scene(voxels_per_block: u32) -> Scene {
-        let make_tool = |kind, offset: [i32; 3], material| {
+        let make_tool = |kind, offset: [i64; 3], material| {
             let shape = SdfShape {
                 kind,
                 size_blocks: [5, 5, 5],
@@ -2588,7 +2718,7 @@ mod tests {
 
     fn demo_village_scene(voxels_per_block: u32) -> Scene {
         let house_def_id = DefId(1);
-        let tool = |kind, size: [u32; 3], offset: [i32; 3], material| {
+        let tool = |kind, size: [u32; 3], offset: [i64; 3], material| {
             let shape = SdfShape {
                 kind,
                 size_blocks: size,
@@ -2607,7 +2737,7 @@ mod tests {
                 tool(ShapeKind::Cylinder, [1, 2, 1], [0, 2, 0], MaterialChoice::Wood),
             ],
         };
-        let instance = |name: &str, offset: [i32; 3]| {
+        let instance = |name: &str, offset: [i64; 3]| {
             let mut node = Node::new(name, NodeContent::Instance(house_def_id));
             node.transform.offset_blocks = offset;
             node

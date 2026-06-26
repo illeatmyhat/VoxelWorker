@@ -400,7 +400,7 @@ mod tests {
     #[test]
     fn cache_region_matches_monolithic_for_demo_scene() {
         let voxels_per_block = 16;
-        let make_tool = |kind, offset: [i32; 3], material| {
+        let make_tool = |kind, offset: [i64; 3], material| {
             let shape = SdfShape {
                 kind,
                 size_blocks: [5, 5, 5],
@@ -427,7 +427,7 @@ mod tests {
     fn cache_region_matches_monolithic_for_demo_village() {
         let voxels_per_block = 16;
         let house_def_id = DefId(1);
-        let tool = |kind, size: [u32; 3], offset: [i32; 3], material| {
+        let tool = |kind, size: [u32; 3], offset: [i64; 3], material| {
             let shape = SdfShape {
                 kind,
                 size_blocks: size,
@@ -446,7 +446,7 @@ mod tests {
                 tool(ShapeKind::Cylinder, [1, 2, 1], [0, 2, 0], MaterialChoice::Wood),
             ],
         };
-        let instance = |name: &str, offset: [i32; 3]| {
+        let instance = |name: &str, offset: [i64; 3]| {
             let mut node = Node::new(name, NodeContent::Instance(house_def_id));
             node.transform.offset_blocks = offset;
             node
@@ -515,14 +515,14 @@ mod tests {
         let voxels_per_block = 16u32;
         // Two 1-block stone cubes at opposite corners of a 16-block cube, so the
         // composite spans a huge cubic extent while each chunk holds at most one box.
-        let spacing_blocks = 16i32;
+        let spacing_blocks = 16i64;
         let shape = SdfShape {
             kind: ShapeKind::Box,
             size_blocks: [1, 1, 1],
             voxels_per_block,
             wall_blocks: 1,
         };
-        let corner = |label: &str, offset: [i32; 3]| {
+        let corner = |label: &str, offset: [i64; 3]| {
             let mut node = Node::new(
                 label,
                 NodeContent::Tool { shape, material: MaterialChoice::Stone },
@@ -612,8 +612,8 @@ mod tests {
 
     // ===== Issue #27 S3: targeted edit-AABB invalidation ========================
 
-    fn three_tool_scene(voxels_per_block: u32, box_offset_x: i32) -> Scene {
-        let make_tool = |kind, offset: [i32; 3], material| {
+    fn three_tool_scene(voxels_per_block: u32, box_offset_x: i64) -> Scene {
+        let make_tool = |kind, offset: [i64; 3], material| {
             let shape = SdfShape {
                 kind,
                 size_blocks: [5, 5, 5],

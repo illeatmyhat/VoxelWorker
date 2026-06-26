@@ -38,14 +38,20 @@ use crate::renderer::CHUNK_BLOCKS;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VoxelAabb {
     /// Inclusive minimum corner (absolute voxels).
-    pub min: [i32; 3],
+    ///
+    /// **i64 (S4a, 64-bit world addressing):** absolute voxels = block offset ×
+    /// density, so a far-placed leaf (a node at ±10⁹ blocks × density 16 ≈ ±1.6×10¹⁰
+    /// voxels) overflows i32 — the corner MUST be i64 or the producer-true frame
+    /// silently truncates. The derived CHUNK coordinate stays i32 (see
+    /// [`Self::covering_chunk_range`]).
+    pub min: [i64; 3],
     /// Exclusive maximum corner (absolute voxels).
-    pub max: [i32; 3],
+    pub max: [i64; 3],
 }
 
 impl VoxelAabb {
     /// A box spanning `[min, max)`.
-    pub fn new(min: [i32; 3], max: [i32; 3]) -> Self {
+    pub fn new(min: [i64; 3], max: [i64; 3]) -> Self {
         Self { min, max }
     }
 
@@ -96,12 +102,15 @@ impl VoxelAabb {
         if self.is_empty() {
             return None;
         }
-        let chunk_extent_voxels = (CHUNK_BLOCKS * voxels_per_block.max(1)) as i32;
+        // Voxel corners are i64 (a far-placed leaf); the chunk extent is small, so
+        // the division happens in i64 and the chunk-coord QUOTIENT narrows to i32
+        // safely (≤ ±2.5×10⁸ for offsets up to ±10⁹ blocks — S4a).
+        let chunk_extent_voxels = (CHUNK_BLOCKS * voxels_per_block.max(1)) as i64;
         let mut min_chunk = [0i32; 3];
         let mut max_chunk = [0i32; 3];
         for axis in 0..3 {
-            min_chunk[axis] = self.min[axis].div_euclid(chunk_extent_voxels);
-            max_chunk[axis] = (self.max[axis] - 1).div_euclid(chunk_extent_voxels);
+            min_chunk[axis] = narrow_chunk_coord(self.min[axis].div_euclid(chunk_extent_voxels));
+            max_chunk[axis] = narrow_chunk_coord((self.max[axis] - 1).div_euclid(chunk_extent_voxels));
         }
         Some((min_chunk, max_chunk))
     }
@@ -250,8 +259,22 @@ impl LeafSpatialIndex {
 /// A hashable/orderable mirror of [`VoxelAabb`] for use as a map key in the diff.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct VoxelAabbKey {
-    min: [i32; 3],
-    max: [i32; 3],
+    min: [i64; 3],
+    max: [i64; 3],
+}
+
+/// Narrow an `i64` chunk coordinate to `i32` (the cache-key / chunk-index width).
+/// See the audit note on
+/// [`Scene::covering_chunk_range`](crate::scene::Scene::covering_chunk_range): the
+/// absolute-voxel math is i64, but the chunk coordinate stays well inside i32 for
+/// the supported offset range (S4a).
+fn narrow_chunk_coord(chunk_coord: i64) -> i32 {
+    debug_assert!(
+        chunk_coord >= i32::MIN as i64 && chunk_coord <= i32::MAX as i64,
+        "chunk coordinate {chunk_coord} overflows i32 — block offset past the \
+         supported range (S4a)"
+    );
+    chunk_coord.clamp(i32::MIN as i64, i32::MAX as i64) as i32
 }
 
 impl From<VoxelAabb> for VoxelAabbKey {
