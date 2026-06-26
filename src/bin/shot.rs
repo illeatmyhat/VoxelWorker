@@ -215,12 +215,16 @@ impl Default for ShotOptions {
     }
 }
 
-/// The block offset of the far-offset demo box (ADR 0002 streaming S1): a large
-/// offset in the now-`i64` `offset_blocks` (widened in S4a). At density 16 this is
-/// 1.6M voxels from the origin in absolute composite space. Kept at 100_000 so the
-/// far-offset golden baseline is unchanged; S4a only widens the addressing TYPE
-/// (the i64 composition is proven beyond i32 range by the CPU tests in `scene.rs`).
-const FAR_OFFSET_BLOCKS: [i64; 3] = [100_000, 0, 0];
+/// The block offset of the far-offset demo box (ADR 0002 streaming S1; S4b makes it
+/// jitter-free). A large offset in the now-`i64` `offset_blocks` (widened in S4a). At
+/// density 16 this is **16 million voxels** from the origin — past the f32
+/// exact-integer ceiling (2²⁴ ≈ 16.7M), where the old recentre-AFTER-f32-add path
+/// lost the voxel-centre `.5` fraction on EVERY voxel (the real precision breakdown
+/// the S1 flag exists to expose). The S4b camera-relative rebase (subtract the
+/// floating origin in i64 BEFORE the f32 downcast) renders this byte-identical to the
+/// near box. (At the previous 100_000 the f32 ULP at 1.6M is 0.125, so `.5` survived
+/// and the box never actually jittered — only the demo's UI text differed.)
+const FAR_OFFSET_BLOCKS: [i64; 3] = [1_000_000, 0, 0];
 
 /// Parse a single face name into a [`CubeFace`].
 fn parse_face_name(value: &str) -> CubeFace {
@@ -875,9 +879,10 @@ async fn run_capture(options: ShotOptions) {
     // composite extent; a single-node scene uses its own block size (step-2 region).
     // The far-offset demo also resolves its full composite extent (a single 4³
     // box). `full_extent_blocks` returns the box's own size (4³) for a lone node,
-    // and `resolve_region` recentres it — so even at a 100_000-block offset the
-    // grid stays a tiny 4³ box at the origin (the recentre maps it home). See the
-    // S1 PROGRESS note: this is why far-offset jitter is hidden until S4.
+    // and the resolve rebases it to the floating origin (= the composite recentre)
+    // in i64 BEFORE the f32 downcast (S4b), so even at a 1_000_000-block offset
+    // (16M voxels, past the f32 exact-integer ceiling) the grid is BYTE-IDENTICAL
+    // to the near box at the origin — the far-lands jitter is gone (S4b proof).
     let placed_scene = options.demo_scene
         || options.demo_village
         || options.demo_groups
@@ -929,8 +934,8 @@ async fn run_capture(options: ShotOptions) {
     if options.far_offset || options.far_offset_near {
         println!(
             "resolved {} voxels for demo-far-offset ({}, offset {:?} blocks, region {:?} blocks) \
-             — NOTE: resolve_region recentres the composite, so the box renders at the origin \
-             regardless of offset (far-offset jitter is hidden until S4)",
+             — S4b: the resolve rebases to the floating origin in i64 before the f32 downcast, so \
+             the far box renders BYTE-IDENTICAL to the near box (no far-lands jitter)",
             grid.occupied_count(),
             if options.far_offset { "far" } else { "near" },
             if options.far_offset { FAR_OFFSET_BLOCKS } else { [0, 0, 0] },

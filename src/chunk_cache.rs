@@ -78,12 +78,22 @@ impl ChunkCacheKey {
 /// on top of this seam.
 #[derive(Debug, Default)]
 pub struct ChunkResolveCache {
-    /// The resolved per-chunk grids (absolute composite coordinates).
+    /// The resolved per-chunk grids, in coordinates **rebased to the bound floating
+    /// origin** (ADR 0002 Decision 2, S4b). With the default floating origin
+    /// `[0, 0, 0]` these are absolute composite coordinates (the S0 contract); the
+    /// render path binds the origin to the composite recentre so the chunks come out
+    /// already rebased (and far chunks keep f32 precision — the subtraction is done in
+    /// i64 inside [`Scene::resolve_chunk_rebased`], not in f32 here).
     chunks: HashMap<ChunkCacheKey, VoxelGrid>,
     /// The density every cached chunk was resolved at, set on first use. `None`
     /// until the first resolve. A request at a different density clears the cache
     /// and re-binds to the new density (a chunk's voxel extent depends on density).
     bound_density: Option<u32>,
+    /// The floating origin (in absolute voxels) every cached chunk was rebased
+    /// around (ADR 0002 S4b). `[0, 0, 0]` until bound otherwise. A request at a
+    /// different origin clears + re-binds (every cached chunk's stored positions are
+    /// relative to it). `resolve_region` binds it to the composite recentre.
+    bound_floating_origin: [i64; 3],
 }
 
 impl ChunkResolveCache {
@@ -112,11 +122,31 @@ impl ChunkResolveCache {
     /// from the chunk's voxel extent); this method itself does not re-check it (it
     /// resolves whatever the scene yields for that chunk).
     pub fn chunk(&mut self, chunk_coord: [i32; 3], scene: &Scene, voxels_per_block: u32, lod: u32) -> &VoxelGrid {
-        self.rebind_if_density_changed(voxels_per_block);
+        // The public entry binds the cache to the ABSOLUTE frame (floating origin
+        // `[0, 0, 0]`) — the S0 contract a bare `chunk()` caller expects. The render
+        // path goes through `resolve_region`, which binds the floating origin to the
+        // composite recentre first and then pulls chunks via `chunk_for_current_binding`.
+        self.rebind_if_changed(voxels_per_block, [0, 0, 0]);
+        self.chunk_for_current_binding(chunk_coord, scene, voxels_per_block, lod)
+    }
+
+    /// Pull (or resolve) one chunk for the cache's CURRENT density + floating-origin
+    /// binding, WITHOUT re-binding. The caller is responsible for having bound the
+    /// cache (via `rebind_if_changed`) to the intended density/origin first — this is
+    /// what lets `resolve_region` bind to the composite recentre once and then pull
+    /// every covering chunk already rebased.
+    fn chunk_for_current_binding(
+        &mut self,
+        chunk_coord: [i32; 3],
+        scene: &Scene,
+        voxels_per_block: u32,
+        lod: u32,
+    ) -> &VoxelGrid {
         let key = ChunkCacheKey::new(chunk_coord, lod);
+        let origin = self.bound_floating_origin;
         self.chunks
             .entry(key)
-            .or_insert_with(|| scene.resolve_chunk(chunk_coord, voxels_per_block, lod))
+            .or_insert_with(|| scene.resolve_chunk_rebased(chunk_coord, voxels_per_block, lod, origin))
     }
 
     /// Rebuild the SAME recentred monolithic [`VoxelGrid`] the renderer, mesher and
@@ -153,7 +183,17 @@ impl ChunkResolveCache {
     /// solve; it is out of scope for S2 and is NOT a golden.)
     pub fn resolve_region(&mut self, scene: &Scene, voxels_per_block: u32, lod: u32) -> VoxelGrid {
         debug_assert_eq!(lod, 0, "S2 only resolves full resolution (lod 0)");
-        self.rebind_if_density_changed(voxels_per_block);
+
+        // The render floating origin (ADR 0002 Decision 2 / S4b) IS the composite
+        // recentre offset `resolve_region` subtracts to centre the composite on the
+        // origin. Binding the cache to it makes every chunk come out ALREADY rebased
+        // by `resolve_chunk_rebased` — with the subtraction done in i64 BEFORE the f32
+        // downcast, so a far-placed scene keeps full f32 precision (the S1 speckle is
+        // gone). For a near scene this is bit-identical to the previous f32 subtract
+        // (the recentre is integer-block-aligned and positions are small), so the
+        // goldens are unchanged.
+        let recentre_voxels = scene.recentre_voxels_for_resolve(voxels_per_block);
+        self.rebind_if_changed(voxels_per_block, recentre_voxels);
 
         let region_dimensions = scene.placed_region_dimensions(voxels_per_block);
         let mut output = VoxelGrid::new(region_dimensions);
@@ -165,24 +205,18 @@ impl ChunkResolveCache {
             return output;
         };
 
-        // The recentre offset `resolve_region` subtracts from every voxel to centre
-        // the composite on the origin. We pull ABSOLUTE chunks from the cache and
-        // apply the identical offset here, so the assembled grid matches byte-for-
-        // byte (see the invariant above).
-        let recentre_voxels = scene.recentre_voxels_for_resolve(voxels_per_block);
-
         for chunk_z in min_chunk[2]..=max_chunk[2] {
             for chunk_y in min_chunk[1]..=max_chunk[1] {
                 for chunk_x in min_chunk[0]..=max_chunk[0] {
-                    let chunk = self.chunk([chunk_x, chunk_y, chunk_z], scene, voxels_per_block, lod);
-                    output.occupied.reserve(chunk.occupied.len());
-                    for voxel in &chunk.occupied {
-                        let mut recentred = *voxel;
-                        recentred.world_position[0] -= recentre_voxels[0] as f32;
-                        recentred.world_position[1] -= recentre_voxels[1] as f32;
-                        recentred.world_position[2] -= recentre_voxels[2] as f32;
-                        output.occupied.push(recentred);
-                    }
+                    let chunk = self.chunk_for_current_binding(
+                        [chunk_x, chunk_y, chunk_z],
+                        scene,
+                        voxels_per_block,
+                        lod,
+                    );
+                    // The cached chunk is already rebased to the floating origin
+                    // (= recentre), so its voxels drop straight into the output.
+                    output.occupied.extend_from_slice(&chunk.occupied);
                 }
             }
         }
@@ -198,6 +232,7 @@ impl ChunkResolveCache {
     pub fn clear(&mut self) {
         self.chunks.clear();
         self.bound_density = None;
+        self.bound_floating_origin = [0, 0, 0];
     }
 
     /// Drop a single cached chunk across all LODs (a finer-grained seam).
@@ -244,18 +279,22 @@ impl ChunkResolveCache {
         });
     }
 
-    /// Clear + re-bind the cache when the requested density differs from the one the
-    /// resident chunks were resolved at (a chunk's voxel extent depends on density,
-    /// so a density change invalidates every cached chunk).
-    fn rebind_if_density_changed(&mut self, voxels_per_block: u32) {
-        match self.bound_density {
-            Some(bound) if bound == voxels_per_block => {}
-            Some(_) => {
-                self.chunks.clear();
-                self.bound_density = Some(voxels_per_block);
-            }
-            None => self.bound_density = Some(voxels_per_block),
+    /// Clear + re-bind the cache when the requested density OR floating origin differs
+    /// from the one the resident chunks were resolved at. A chunk's voxel extent
+    /// depends on density, and its stored positions are relative to the floating
+    /// origin (ADR 0002 S4b), so a change in either invalidates every cached chunk.
+    fn rebind_if_changed(&mut self, voxels_per_block: u32, floating_origin: [i64; 3]) {
+        let density_matches = self.bound_density == Some(voxels_per_block);
+        let origin_matches = self.bound_floating_origin == floating_origin;
+        if density_matches && origin_matches {
+            return;
         }
+        if self.bound_density.is_some() && !(density_matches && origin_matches) {
+            // Re-binding from a previous binding: drop the now-stale chunks.
+            self.chunks.clear();
+        }
+        self.bound_density = Some(voxels_per_block);
+        self.bound_floating_origin = floating_origin;
     }
 }
 
@@ -736,6 +775,68 @@ mod tests {
         let empty = crate::spatial_index::VoxelAabb::new([0, 0, 0], [0, 0, 0]);
         cache.invalidate_aabb(&empty, density);
         assert_eq!(resident_coords(&cache), before, "an empty edit AABB evicts nothing");
+    }
+
+    /// **ADR 0002 S4b — origin-rebased rendering, far-offset precision.** A box
+    /// placed a HUGE distance from the origin must resolve to a grid whose voxel
+    /// positions are **byte-identical** to the SAME box at the origin — because the
+    /// render frame is rebased to the floating origin (= the composite recentre) in
+    /// i64 BEFORE the f32 downcast, so the absolute distance never reaches the f32
+    /// data.
+    ///
+    /// The offset is **1_000_000 blocks** = 16_000_000 voxels at density 16, PAST the
+    /// f32 exact-integer ceiling (2²⁴ ≈ 16.7M). Under the OLD recentre-AFTER-f32-add
+    /// path the absolute position `local + 1.6e7` lost the voxel-centre `.5` on EVERY
+    /// voxel (the S1 far-lands jitter — verified at ~13% of the 3D viewport in the
+    /// headless render). This test is the durable CPU regression guard that the
+    /// rebased path keeps far == near to the LAST BIT (replacing S1's degraded
+    /// far-offset behaviour). The bit-exact key (`f32::to_bits`) fails on any sub-ULP
+    /// shift, so it would catch a regression that a rounded-voxel comparison misses.
+    #[test]
+    fn far_offset_resolves_byte_identical_to_near_after_rebase() {
+        let vpb = 16u32;
+        let box_scene = |offset_x: i64| -> Scene {
+            let shape = SdfShape {
+                kind: ShapeKind::Box,
+                size_blocks: [4, 4, 4],
+                voxels_per_block: vpb,
+                wall_blocks: 1,
+            };
+            let mut node = Node::new(
+                "box",
+                NodeContent::Tool { shape, material: MaterialChoice::Stone },
+            );
+            node.transform.offset_blocks = [offset_x, 0, 0];
+            Scene::single_node(node)
+        };
+
+        let mut near_cache = ChunkResolveCache::new();
+        let near = near_cache.resolve_region(&box_scene(0), vpb, 0);
+        // 1_000_000 blocks → 16M voxels, past the f32 exact-integer ceiling.
+        let mut far_cache = ChunkResolveCache::new();
+        let far = far_cache.resolve_region(&box_scene(1_000_000), vpb, 0);
+
+        assert_eq!(near.occupied_count(), far.occupied_count(), "same shape");
+        assert!(near.occupied_count() > 0, "the box must resolve to voxels");
+        // Every voxel-centre `.5` fraction must survive the rebase (would be lost to
+        // f32 rounding at 1.6e7 under the old subtract-AFTER-f32 path).
+        for voxel in &far.occupied {
+            for axis in 0..3 {
+                let frac = voxel.world_position[axis].fract().abs();
+                assert!(
+                    (frac - 0.5).abs() < 1e-4,
+                    "far voxel centre lost its .5 fraction (f32 jitter): {:?}",
+                    voxel.world_position
+                );
+            }
+        }
+        assert_eq!(
+            occupied_multiset(&far),
+            occupied_multiset(&near),
+            "the far box must resolve BYTE-IDENTICAL to the near box — the rebase \
+             subtracts the floating origin in i64 before the f32 downcast, so the \
+             absolute distance never degrades the rendered f32 positions (S4b)"
+        );
     }
 
     /// A Part-only scene (no intrinsic-size leaf) resolves to an empty recentred

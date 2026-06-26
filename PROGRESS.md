@@ -33,6 +33,51 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **Origin-rebased (camera-relative) rendering; far-offset precision fixed (S4b) — Part of #18
+  (ADR 0002 Decision 2, "origin-rebased (camera-relative) f32 rendering" + matrix row 3).**
+  Replaces the recentre-AFTER-f32 path with a **floating-origin rebase done in i64 BEFORE the f32
+  downcast**, so rendered f32 magnitudes stay small no matter how far geometry sits from the
+  absolute origin. Near scenes are **pixel-identical** (goldens 0.00000%, NOT rebaselined); the
+  far-offset demo is now **byte-identical** to the near box.
+  - **The floating origin = the composite recentre** (`Scene::recentre_voxels_for_resolve`, an
+    integer-block-aligned point). Choosing it as exactly today's recentre is what makes near
+    framing reproduce bit-for-bit (the grid-overlay block phase is unchanged → goldens locked).
+  - **Where the i64/f64 subtraction happens.** New `Scene::resolve_chunk_rebased(chunk_coord,
+    vpb, lod, floating_origin_voxels)` and a rebased `stamp_producer_into_chunk`: the stored
+    `world_position = local + (world_offset·d − floating_origin)` with the **subtraction in i64**
+    before the `as f32`. The chunk-membership clip moved to **f64 absolute** so a far chunk's
+    boundary voxels are never misclassified by f32 rounding. The bare `resolve_chunk` keeps the S0
+    ABSOLUTE contract (floating origin `[0,0,0]`) so every S0/S2/S3 parity + placement test is
+    untouched.
+  - **Both render paths rebased.** The renderer consumes one assembled monolithic grid (the S2
+    bridge), so the floating-origin translation is applied **per chunk at resolve time** in
+    `ChunkResolveCache`: the cache now binds to `(density, floating_origin)` and resolves each
+    covering chunk ALREADY rebased (`chunk_for_current_binding`), dropping the old per-voxel f32
+    recentre subtract in `resolve_region`. The default **cuboid** path AND `--mesher instanced`
+    both draw the rebased grid identically (both verified byte-identical far==near). The shader
+    `voxel_absolute_position = world_position + grid_half_extent` already carries absolute block
+    phase; because `grid_half_extent` is identical for far/near and the rebased `world_position`
+    is byte-identical, the per-voxel slice + grid overlay are byte-identical — no shader change
+    was needed for parity (the absolute-phase uniform already existed, matrix row 3).
+  - **The S1 "0.2% speckle" was a MISDIAGNOSIS.** At 100_000 blocks (1.6M voxels) the f32 ULP is
+    0.125, so the voxel-centre `.5` survived and the 3D box never jittered — the ~0.2% diff was
+    just the demo's UI panel text ("Far box"/"100000" vs "Near box"/"0"). The real f32 breakdown
+    starts past the 2²⁴≈16.7M-voxel exact-integer ceiling, so **`FAR_OFFSET_BLOCKS` is bumped to
+    1_000_000** (16M voxels) — where the OLD path lost the `.5` on EVERY voxel.
+  - **PROOF (headless, 3D viewport x<960, UI panel masked):** OLD code at 1M blocks → **13.24%**
+    of the 3D viewport differs far-vs-near (maxd 96) — gross jitter. NEW code → **0.00000%**
+    (maxd 0) on BOTH cuboid and instanced. Durable CPU guard (no GPU):
+    `chunk_cache::tests::far_offset_resolves_byte_identical_to_near_after_rebase` asserts the 1M
+    -block box resolves byte-identical (`f32::to_bits`) to the origin box and every voxel keeps
+    its `.5` fraction.
+  - **Audited, unbroken:** camera auto-frame / orbit / origin gizmo / block lattice / fine floor
+    grid / view cube all key off `grid.dimensions` + the recentred grid, byte-identical for near
+    — a `--demo-scene --grid --gizmo --lattice --floor` PNG was READ and confirmed correct.
+    `.vox` export / scrubber / diameter still consume the recentred whole grid (region-scoping is
+    #28) — left as-is, not regressed.
+  - **Gate:** `cargo build --bins` ✓, `cargo clippy --all-targets` clean ✓, `cargo test` 126 ✓
+    (125 + 1 new), `cargo test --features gpu --test golden` green (all 5 cases 0.00000%) ✓.
+
 - **64-bit (i64) world block addressing (S4a) — Part of #18 (ADR 0002 Decision 2, "world
   addressing to 64-bit").** DATA-MODEL change only — the recentre / camera / render math is
   UNCHANGED (origin-rebasing is the next step, S4b). Near-origin scenes render byte-identical

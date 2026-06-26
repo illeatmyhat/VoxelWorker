@@ -842,6 +842,35 @@ impl Scene {
         voxels_per_block: u32,
         lod: u32,
     ) -> VoxelGrid {
+        // The bare `resolve_chunk` keeps the S0 contract: ABSOLUTE composite
+        // positions (floating origin `[0, 0, 0]`). The live render path uses
+        // `resolve_chunk_rebased` with the floating origin = the composite recentre.
+        self.resolve_chunk_rebased(chunk_coord, voxels_per_block, lod, [0, 0, 0])
+    }
+
+    /// Resolve one chunk like [`resolve_chunk`](Self::resolve_chunk), but store each
+    /// voxel's position **rebased to `floating_origin_voxels`** (ADR 0002 Decision 2,
+    /// camera-relative / origin-rebased rendering — S4b).
+    ///
+    /// The stored `world_position` is `absolute_composite_position −
+    /// floating_origin_voxels`, with the subtraction performed in **i64 before the
+    /// f32 downcast**, so the rendered f32 magnitude stays small no matter how far the
+    /// chunk sits from the absolute origin. The chunk-membership clip is still decided
+    /// in **absolute** space (f64), so a far chunk's boundary voxels are never
+    /// misclassified by f32 rounding.
+    ///
+    /// `floating_origin_voxels = [0, 0, 0]` reproduces [`resolve_chunk`] exactly. The
+    /// live render passes [`recentre_voxels_for_resolve`](Self::recentre_voxels_for_resolve)
+    /// (the composite recentre, an integer-block-aligned point), so for a near scene
+    /// the result is bit-identical to today's recentred [`resolve_region`] while a
+    /// far-placed scene renders with no f32 jitter (the S1 speckle fix).
+    pub fn resolve_chunk_rebased(
+        &self,
+        chunk_coord: [i32; 3],
+        voxels_per_block: u32,
+        lod: u32,
+        floating_origin_voxels: [i64; 3],
+    ) -> VoxelGrid {
         debug_assert_eq!(lod, 0, "S0 only resolves full resolution (lod 0)");
 
         // Chunk extent fits i64 trivially; the chunk's absolute-voxel corners can be
@@ -925,6 +954,7 @@ impl Scene {
                 &mut output,
                 region_dimensions,
                 translation_voxels,
+                floating_origin_voxels,
                 material_override,
                 producer.as_ref(),
                 chunk_min_voxels,
@@ -1317,11 +1347,22 @@ fn stamp_producer(
 /// chunk_extent_voxels)` per axis; since centres sit at `n + 0.5` and boundaries
 /// at integer multiples of the chunk extent, each voxel lands in exactly one
 /// chunk.
+/// `floating_origin_voxels` is the **render floating origin** (ADR 0002 Decision 2,
+/// camera-relative / origin-rebased rendering — S4b): the integer-voxel point the
+/// rendered f32 frame is rebased around. The stored `world_position` is the voxel's
+/// absolute composite position **minus the floating origin**, with the subtraction
+/// done in **i64 BEFORE the f32 downcast** so the rendered f32 magnitude stays small
+/// regardless of how far the chunk sits from the absolute origin (no far-lands
+/// jitter). Pass `[0, 0, 0]` to store true absolute positions (the chunk-cache
+/// parity tests / `.vox`-style consumers). The chunk-membership clip is computed in
+/// **f64 absolute** space (independent of the rebase) so a far chunk's boundary
+/// voxels are never misclassified by f32 rounding.
 #[allow(clippy::too_many_arguments)]
 fn stamp_producer_into_chunk(
     output: &mut VoxelGrid,
     region_dimensions: [u32; 3],
     translation_voxels: [i64; 3],
+    floating_origin_voxels: [i64; 3],
     material_override: Option<u16>,
     producer: &dyn VoxelProducer,
     chunk_min_voxels: [i64; 3],
@@ -1330,23 +1371,36 @@ fn stamp_producer_into_chunk(
     let mut local = VoxelGrid::new(region_dimensions);
     producer.resolve(&mut local);
 
+    // The voxel's chunk-local placement, rebased to the floating origin in i64
+    // FIRST so the f32 add never sees a large magnitude. For the live render the
+    // floating origin equals the composite recentre, so for a near scene this is
+    // EXACTLY the small `world_offset·d − recentre` translation `resolve_region`
+    // adds in f32 today — bit-identical framing — while a far chunk no longer loses
+    // the voxel-centre `.5` to f32 rounding at ~1e6 magnitude (the S1 speckle).
+    let rebased_translation = [
+        (translation_voxels[0] - floating_origin_voxels[0]) as f32,
+        (translation_voxels[1] - floating_origin_voxels[1]) as f32,
+        (translation_voxels[2] - floating_origin_voxels[2]) as f32,
+    ];
+
     output.occupied.reserve(local.occupied.len());
     for mut voxel in local.occupied {
-        // Absolute composite position (no recentre).
-        voxel.world_position[0] += translation_voxels[0] as f32;
-        voxel.world_position[1] += translation_voxels[1] as f32;
-        voxel.world_position[2] += translation_voxels[2] as f32;
-
-        // Keep only voxels whose centre lands in this chunk's half-open box. The
-        // centre is at an `n + 0.5` position, so `floor` never lands on a boundary
-        // integer — each voxel belongs to exactly one chunk.
+        // Chunk membership is decided on the ABSOLUTE centre, computed in f64 so a
+        // far chunk's boundary voxels are classified at full precision (the half-open
+        // box `[min, max)` with centres at `n + 0.5` → each voxel owns exactly one
+        // chunk). f64 carries far more than the ~21 bits an f32 keeps at 1.6M voxels.
         let in_chunk = (0..3).all(|axis| {
-            let position = voxel.world_position[axis];
-            position >= chunk_min_voxels[axis] as f32 && position < chunk_max_voxels[axis] as f32
+            let absolute = voxel.world_position[axis] as f64 + translation_voxels[axis] as f64;
+            absolute >= chunk_min_voxels[axis] as f64 && absolute < chunk_max_voxels[axis] as f64
         });
         if !in_chunk {
             continue;
         }
+
+        // Store the rebased (origin-relative) f32 position.
+        voxel.world_position[0] += rebased_translation[0];
+        voxel.world_position[1] += rebased_translation[1];
+        voxel.world_position[2] += rebased_translation[2];
 
         if let Some(id) = material_override {
             voxel.material_id = id;
