@@ -22,7 +22,7 @@ use voxel_worker::{
     TransformGizmoRenderer,
     GpuContext, InfiniteGridRenderer, LayerBand, MaterialSource, OnionFogParams, PointsRenderer,
     SceneGridRenderer,
-    OnionFogRenderer, OrbitCamera, PanelState, Scene, SdfShape, SnapTween, ViewCubeElement,
+    HomeView, OnionFogRenderer, OrbitCamera, PanelState, Scene, SdfShape, SnapTween, ViewCubeElement,
     VoxExport, ViewCubeRenderer, VoxelGrid, COLOR_TARGET_FORMAT,
     VIEW_CUBE_VIEWPORT_PIXELS,
 };
@@ -126,6 +126,10 @@ struct WindowedState {
     /// 4× MSAA colour target for the 3D pass; resolved into the surface texture.
     msaa_color_view: wgpu::TextureView,
     camera: OrbitCamera,
+    /// The saved Home view (#13): the orbit angles + distance the Home button
+    /// returns to. Restored from the persisted config; updated by
+    /// `set_home_to_current`. Step 1 only stores it (no input wiring yet).
+    home_view: HomeView,
     /// In-progress eased view-cube snap, if any.
     snap_tween: Option<SnapTween>,
     /// Timestamp of the previous frame, for advancing the snap tween.
@@ -397,6 +401,11 @@ impl WindowedState {
         if let Some(config) = &config {
             config.apply_camera(&mut camera);
         }
+        // Restore the saved Home view (#13), or default to the camera defaults.
+        let home_view = config
+            .as_ref()
+            .map(AppConfig::home_view)
+            .unwrap_or_default();
 
         let depth_view = create_depth_view(&gpu.device, width, height);
         let msaa_color_view =
@@ -435,6 +444,7 @@ impl WindowedState {
             depth_view,
             msaa_color_view,
             camera,
+            home_view,
             snap_tween: None,
             last_frame_time: std::time::Instant::now(),
             left_button_held: false,
@@ -767,8 +777,47 @@ impl WindowedState {
     /// (M8). Called on window close / loop exit. Never panics on failure.
     fn save_config(&self) {
         let window_size = [self.surface_config.width, self.surface_config.height];
-        let config = AppConfig::capture(&self.panel_state, &self.camera, window_size);
+        let config =
+            AppConfig::capture(&self.panel_state, &self.camera, self.home_view, window_size);
         config.save();
+    }
+
+    /// #13: save the live camera orbit as the new Home view (the right-click
+    /// "set current view as home" action; wired to input in a later step).
+    // Step 1 ships the logic only; Step 3 wires it to the context menu, so it is
+    // intentionally unused for now.
+    #[allow(dead_code)]
+    fn set_home_to_current(&mut self) {
+        self.home_view = HomeView::from_camera(&self.camera);
+    }
+
+    /// #13: begin an eased snap toward the saved Home view and set the home
+    /// distance directly (the tween animates the orbit angles; distance is a
+    /// non-orbit param so it is applied immediately, matching the face-snap
+    /// path which never tweens distance). Wired to the Home button in a later
+    /// step; pure-ish here so the logic is testable.
+    #[allow(dead_code)]
+    fn home_snap_tween(&mut self) -> SnapTween {
+        let tween = self.home_view.snap_tween(&self.camera);
+        self.camera.orbit_distance = self.home_view.distance;
+        tween
+    }
+
+    /// #13: frame the model (the "Fit to view" action). Recompute the auto-frame
+    /// distance from the scene's region dimensions and recentre the target on the
+    /// model centroid — the recentred composite always sits at the world origin
+    /// (`resolve_region` centres it), so the centroid is `Vec3::ZERO`. No geometry
+    /// rebuild: only the camera distance + target change. The distance math is the
+    /// same `auto_framed_distance` covered by camera tests.
+    #[allow(dead_code)]
+    fn fit_to_view(&mut self) {
+        let region_dimensions = region_dimensions_for(
+            &self.panel_state.scene,
+            self.panel_state.geometry.voxels_per_block,
+            &self.grid,
+        );
+        self.camera.target = glam::Vec3::ZERO;
+        self.camera.orbit_distance = OrbitCamera::auto_framed_distance(region_dimensions);
     }
 
     /// Is the pixel `(x, y)` inside the view-cube viewport? Issue #25: the cube's

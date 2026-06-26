@@ -170,6 +170,320 @@ impl ViewCubeElement {
     }
 }
 
+/// Screen direction of a ViewCube **rotate arrow** (90° step to the adjacent
+/// face). `Up`/`Down`/`Left`/`Right` are *screen-relative* — the direction the
+/// arrow points in the cube's gutter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArrowDir {
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
+impl ArrowDir {
+    /// The opposite screen direction (Up↔Down, Left↔Right).
+    pub fn opposite(self) -> ArrowDir {
+        match self {
+            ArrowDir::Up => ArrowDir::Down,
+            ArrowDir::Down => ArrowDir::Up,
+            ArrowDir::Left => ArrowDir::Right,
+            ArrowDir::Right => ArrowDir::Left,
+        }
+    }
+}
+
+/// Screen direction of a ViewCube **roll arrow** (90° roll about the view axis).
+/// `Cw` = clockwise, `Ccw` = counter-clockwise (as seen on screen).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RollDir {
+    Cw,
+    Ccw,
+}
+
+/// A compass heading on the ViewCube base ring (AutoCAD/Inventor style). The
+/// mapping to faces / theta is pinned in [`compass_heading_to_theta`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Heading {
+    North,
+    East,
+    South,
+    West,
+}
+
+/// The neighbour face reached by a 90° ViewCube rotate in screen direction
+/// `dir`, starting from the current nearest face.
+///
+/// **Convention** (pinned here; Step 2/3 rendering + wiring MUST match). A
+/// rotate arrow steps the view 90° along one of two great circles:
+///
+///   * **Up / Down** walk the *vertical* great circle through the front:
+///     `FRONT → TOP → BACK → BOTTOM → FRONT` (Up advances forward, Down back).
+///   * **Left / Right** walk the *horizontal equator*:
+///     `FRONT → RIGHT → BACK → LEFT → FRONT` (Right advances, Left back).
+///
+/// The faces *off* each circle fall back to its poles: an equatorial face's
+/// Up/Down reach TOP/BOTTOM, and TOP/BOTTOM's Left/Right reach the LEFT/RIGHT
+/// equatorial faces (a spin about the vertical axis). Full table:
+///
+///   * FRONT (+Z): Up→Top,  Down→Bottom, Left→Left,  Right→Right
+///   * BACK (−Z):  Up→Bottom, Down→Top,  Left→Right, Right→Left
+///   * RIGHT (+X): Up→Top,  Down→Bottom, Left→Front, Right→Back
+///   * LEFT (−X):  Up→Top,  Down→Bottom, Left→Back,  Right→Front
+///   * TOP (+Y):   Up→Back, Down→Front,  Left→Left,  Right→Right
+///   * BOTTOM(−Y): Up→Front, Down→Back,  Left→Left,  Right→Right
+///
+/// Properties (proven in tests): the four neighbours of any face are distinct
+/// (never the face itself); four Up steps cycle the vertical circle and four
+/// Right steps cycle the equator; Up↔Down are mutual inverses on the four
+/// vertical-circle faces, and Left↔Right are mutual inverses on the four
+/// equatorial faces. (A *full* memoryless inverse over all 6×4 is geometrically
+/// impossible — stepping off and back onto a circle rolls the cube — so the
+/// inverse property is asserted only on each direction's own great circle.)
+pub fn adjacent_face(current: CubeFace, dir: ArrowDir) -> CubeFace {
+    use ArrowDir as A;
+    use CubeFace as F;
+    match (current, dir) {
+        (F::Front, A::Up) => F::Top,
+        (F::Front, A::Down) => F::Bottom,
+        (F::Front, A::Left) => F::Left,
+        (F::Front, A::Right) => F::Right,
+
+        (F::Back, A::Up) => F::Bottom,
+        (F::Back, A::Down) => F::Top,
+        (F::Back, A::Left) => F::Right,
+        (F::Back, A::Right) => F::Left,
+
+        (F::Right, A::Up) => F::Top,
+        (F::Right, A::Down) => F::Bottom,
+        (F::Right, A::Left) => F::Front,
+        (F::Right, A::Right) => F::Back,
+
+        (F::Left, A::Up) => F::Top,
+        (F::Left, A::Down) => F::Bottom,
+        (F::Left, A::Left) => F::Back,
+        (F::Left, A::Right) => F::Front,
+
+        (F::Top, A::Up) => F::Back,
+        (F::Top, A::Down) => F::Front,
+        (F::Top, A::Left) => F::Left,
+        (F::Top, A::Right) => F::Right,
+
+        (F::Bottom, A::Up) => F::Front,
+        (F::Bottom, A::Down) => F::Back,
+        (F::Bottom, A::Left) => F::Left,
+        (F::Bottom, A::Right) => F::Right,
+    }
+}
+
+/// The azimuth (`theta`) a compass heading snaps the camera to, consistent with
+/// the face theta convention in [`ViewCubeElement::snap_angles`]
+/// (FRONT/+Z→π/2, RIGHT/+X→0, BACK/−Z→−π/2, LEFT/−X→π). The heading→face map is
+/// the natural ground-compass one: **N = Front, E = Right, S = Back, W = Left**.
+///
+/// The four headings give distinct thetas exactly 90° apart, stepping by −π/2
+/// in N→E→S→W order: `N=π/2, E=0, S=−π/2, W=−π` (W ≡ Left's `π` mod 2π).
+pub fn compass_heading_to_theta(heading: Heading) -> f32 {
+    use std::f32::consts::FRAC_PI_2;
+    match heading {
+        Heading::North => FRAC_PI_2,       // Front (+Z)
+        Heading::East => 0.0,              // Right (+X)
+        Heading::South => -FRAC_PI_2,      // Back (−Z)
+        Heading::West => -std::f32::consts::PI, // Left (−X), ≡ +π mod 2π
+    }
+}
+
+/// A rectangle in window pixels (the ViewCube's on-screen region). `x`/`y` are
+/// the top-left corner; `size` is the side length (the cube viewport is square).
+/// Used by [`classify_cube_point`] so the chrome hit-zones and the Step-2
+/// renderer share one layout definition.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CubeRect {
+    pub x: f32,
+    pub y: f32,
+    pub size: f32,
+}
+
+/// A classified hit zone within (or just around) the ViewCube's screen rect.
+/// Step 1 only computes these; Step 2 renders the chrome in the SAME rects and
+/// Step 3 wires them to mouse events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CubeChromeZone {
+    /// The cube body proper — resolved to a face/edge/corner by the caller's
+    /// raycast picker (the existing `pick_view_cube_element`).
+    Element(ViewCubeElement),
+    /// A rotate-to-adjacent-face arrow in one of the four gutters.
+    RotateArrow(ArrowDir),
+    /// A roll arrow at a top corner.
+    RollArrow(RollDir),
+    /// A compass heading on the base ring.
+    Compass(Heading),
+    /// The Home button (top-left corner badge).
+    HomeButton,
+    /// The Fit button (next to Home).
+    FitButton,
+}
+
+/// **ViewCube chrome layout** — pure screen-space hit-testing over the cube's
+/// square `rect`. All zones are expressed as fractions of `rect.size` so Step 2
+/// draws them in the identical pixels. Documented fractions (origin = rect
+/// top-left, x right, y down):
+///
+/// ```text
+///   ┌─────────────────────────────┐  0.00
+///   │ H F      [ ▲ ]         ⟲  ⟳ │  Home/Fit badges (TL), roll arrows (TR)
+///   │  ┌───────────────────────┐  │  0.15   rotate-UP gutter  : x∈[.35,.65] y∈[.04,.15]
+///   │  │                       │  │         roll arrows       : y∈[.00,.13]
+///   │[◀]      cube body      [▶]│         CUBE BODY (raycast): [.15,.85]²
+///   │  │                       │  │         rotate-L/R gutters: y∈[.30,.70]
+///   │  └───────────────────────┘  │  0.85
+///   │ N    [ ▼ ]   E   S   W      │  rotate-DOWN gutter, then compass ring
+///   └─────────────────────────────┘  1.00   compass ring: y∈[.88,1.00]
+/// ```
+///
+/// Precedence (first match wins): Home/Fit badges, roll arrows, the four rotate
+/// gutters, the compass ring, then the central cube body (delegated to
+/// `body_picker`). A point inside `rect` that matches no chrome zone and whose
+/// `body_picker` returns `None` yields `None`; a point outside `rect` is `None`.
+///
+/// `body_picker` is the caller's raycast (`pick_view_cube_element`); it is
+/// invoked only for the central body region. In tests a stub picker stands in,
+/// keeping this function fully headless.
+pub fn classify_cube_point(
+    rect: CubeRect,
+    cursor_x: f32,
+    cursor_y: f32,
+    body_picker: impl FnOnce() -> Option<ViewCubeElement>,
+) -> Option<CubeChromeZone> {
+    // Normalised position within the rect (0..1 across each axis).
+    let u = (cursor_x - rect.x) / rect.size;
+    let v = (cursor_y - rect.y) / rect.size;
+    if !(0.0..=1.0).contains(&u) || !(0.0..=1.0).contains(&v) {
+        return None; // outside the cube rect entirely.
+    }
+
+    // --- Home / Fit badges: two small squares in the top-left corner. ---
+    const BADGE_TOP: f32 = 0.00;
+    const BADGE_BOTTOM: f32 = 0.12;
+    if (BADGE_TOP..BADGE_BOTTOM).contains(&v) {
+        if (0.00..0.12).contains(&u) {
+            return Some(CubeChromeZone::HomeButton);
+        }
+        if (0.12..0.24).contains(&u) {
+            return Some(CubeChromeZone::FitButton);
+        }
+    }
+
+    // --- Roll arrows: two small rects in the top-right corner. ---
+    const ROLL_TOP: f32 = 0.00;
+    const ROLL_BOTTOM: f32 = 0.13;
+    if (ROLL_TOP..ROLL_BOTTOM).contains(&v) {
+        if (0.74..0.87).contains(&u) {
+            return Some(CubeChromeZone::RollArrow(RollDir::Ccw));
+        }
+        if (0.87..1.00).contains(&u) {
+            return Some(CubeChromeZone::RollArrow(RollDir::Cw));
+        }
+    }
+
+    // --- Rotate arrows: 4 rects in the gutters just outside the cube body. ---
+    // The cube body occupies the central [.15, .85]² region; the gutters are the
+    // bands between the body and the rect edge, centred on each side.
+    const BODY_MIN: f32 = 0.15;
+    const BODY_MAX: f32 = 0.85;
+    const GUTTER_LO: f32 = 0.35; // along-side span of each rotate arrow
+    const GUTTER_HI: f32 = 0.65;
+    // UP gutter: above the body, horizontally centred.
+    if (0.04..BODY_MIN).contains(&v) && (GUTTER_LO..GUTTER_HI).contains(&u) {
+        return Some(CubeChromeZone::RotateArrow(ArrowDir::Up));
+    }
+    // DOWN gutter: below the body but above the compass ring.
+    if (BODY_MAX..0.88).contains(&v) && (GUTTER_LO..GUTTER_HI).contains(&u) {
+        return Some(CubeChromeZone::RotateArrow(ArrowDir::Down));
+    }
+    // LEFT gutter: left of the body, vertically centred.
+    if (0.02..BODY_MIN).contains(&u) && (GUTTER_LO..GUTTER_HI).contains(&v) {
+        return Some(CubeChromeZone::RotateArrow(ArrowDir::Left));
+    }
+    // RIGHT gutter: right of the body, vertically centred.
+    if (BODY_MAX..0.98).contains(&u) && (GUTTER_LO..GUTTER_HI).contains(&v) {
+        return Some(CubeChromeZone::RotateArrow(ArrowDir::Right));
+    }
+
+    // --- Compass ring: 4 rects along a band at the base (N/E/S/W L→R). ---
+    const COMPASS_TOP: f32 = 0.88;
+    if v >= COMPASS_TOP {
+        if (0.05..0.30).contains(&u) {
+            return Some(CubeChromeZone::Compass(Heading::North));
+        }
+        if (0.30..0.50).contains(&u) {
+            return Some(CubeChromeZone::Compass(Heading::East));
+        }
+        if (0.50..0.70).contains(&u) {
+            return Some(CubeChromeZone::Compass(Heading::South));
+        }
+        if (0.70..0.95).contains(&u) {
+            return Some(CubeChromeZone::Compass(Heading::West));
+        }
+        return None;
+    }
+
+    // --- Cube body: the central region, resolved by the caller's raycast. ---
+    if (BODY_MIN..=BODY_MAX).contains(&u) && (BODY_MIN..=BODY_MAX).contains(&v) {
+        return body_picker().map(CubeChromeZone::Element);
+    }
+
+    None
+}
+
+/// The saved "home" view (#13): the orbit angles + distance the Home button
+/// returns to. Defaults to the camera defaults (theta≈0.7, phi≈1.05, dist 10);
+/// `set_home_to_current` overwrites it from the live camera, and it persists via
+/// `AppConfig` (`home_theta`/`home_phi`/`home_distance`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HomeView {
+    pub theta: f32,
+    pub phi: f32,
+    pub distance: f32,
+}
+
+impl Default for HomeView {
+    fn default() -> Self {
+        let camera = OrbitCamera::default();
+        Self {
+            theta: camera.orbit_theta,
+            phi: camera.orbit_phi,
+            distance: camera.orbit_distance,
+        }
+    }
+}
+
+impl HomeView {
+    /// Capture the live camera's orbit angles + distance as the new home.
+    pub fn from_camera(camera: &OrbitCamera) -> Self {
+        Self {
+            theta: camera.orbit_theta,
+            phi: camera.orbit_phi,
+            distance: camera.orbit_distance,
+        }
+    }
+
+    /// Begin an eased snap from `camera`'s current angles toward this home view
+    /// (nearest-equivalent theta, so no long spin). The caller advances the
+    /// returned tween each frame and separately lerps/sets `orbit_distance`
+    /// (the tween animates angles only, matching `SnapTween`).
+    pub fn snap_tween(&self, camera: &OrbitCamera) -> SnapTween {
+        SnapTween {
+            theta_from: camera.orbit_theta,
+            phi_from: camera.orbit_phi,
+            theta_to: nearest_equivalent_theta(camera.orbit_theta, self.theta),
+            phi_to: self.phi,
+            elapsed_seconds: 0.0,
+            duration_seconds: SnapTween::DEFAULT_DURATION_SECONDS,
+        }
+    }
+}
+
 /// Pick the equivalent of `target_theta` (mod 2π) nearest to `current_theta`,
 /// so a snap never spins the long way round (ARCHITECTURE.md §4: "add/sub 2π
 /// before tweening"). Mirrors the prototype `snapTo` loop.
@@ -742,5 +1056,252 @@ mod tests {
         assert!(finished);
         assert!(approx(camera.orbit_theta, target_theta));
         assert!(approx(camera.orbit_phi, target_phi));
+    }
+
+    // ---- #13 Step 1: ViewCube chrome hit-math + Home/Fit logic ----
+
+    /// A square cube rect for the layout tests: top-left (100, 200), side 128px.
+    fn test_cube_rect() -> CubeRect {
+        CubeRect { x: 100.0, y: 200.0, size: 128.0 }
+    }
+
+    /// Window pixel at fractional `(u, v)` of the rect (matches the layout doc).
+    fn at(rect: CubeRect, u: f32, v: f32) -> (f32, f32) {
+        (rect.x + u * rect.size, rect.y + v * rect.size)
+    }
+
+    fn no_body() -> Option<ViewCubeElement> {
+        None
+    }
+
+    #[test]
+    fn classify_rotate_arrows_in_each_gutter() {
+        let rect = test_cube_rect();
+        // UP gutter (top centre), DOWN (bottom centre), LEFT, RIGHT.
+        let cases = [
+            (0.50, 0.10, ArrowDir::Up),
+            (0.50, 0.86, ArrowDir::Down),
+            (0.08, 0.50, ArrowDir::Left),
+            (0.92, 0.50, ArrowDir::Right),
+        ];
+        for (u, v, dir) in cases {
+            let (x, y) = at(rect, u, v);
+            assert_eq!(
+                classify_cube_point(rect, x, y, no_body),
+                Some(CubeChromeZone::RotateArrow(dir)),
+                "({u},{v}) should be RotateArrow({dir:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_roll_arrows_at_top_corners() {
+        let rect = test_cube_rect();
+        let (x, y) = at(rect, 0.80, 0.06);
+        assert_eq!(
+            classify_cube_point(rect, x, y, no_body),
+            Some(CubeChromeZone::RollArrow(RollDir::Ccw))
+        );
+        let (x, y) = at(rect, 0.93, 0.06);
+        assert_eq!(
+            classify_cube_point(rect, x, y, no_body),
+            Some(CubeChromeZone::RollArrow(RollDir::Cw))
+        );
+    }
+
+    #[test]
+    fn classify_compass_ring_headings_left_to_right() {
+        let rect = test_cube_rect();
+        let cases = [
+            (0.17, Heading::North),
+            (0.40, Heading::East),
+            (0.60, Heading::South),
+            (0.82, Heading::West),
+        ];
+        for (u, heading) in cases {
+            let (x, y) = at(rect, u, 0.94);
+            assert_eq!(
+                classify_cube_point(rect, x, y, no_body),
+                Some(CubeChromeZone::Compass(heading)),
+                "u={u} should be Compass({heading:?})"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_home_and_fit_badges() {
+        let rect = test_cube_rect();
+        let (x, y) = at(rect, 0.05, 0.06);
+        assert_eq!(
+            classify_cube_point(rect, x, y, no_body),
+            Some(CubeChromeZone::HomeButton)
+        );
+        let (x, y) = at(rect, 0.18, 0.06);
+        assert_eq!(
+            classify_cube_point(rect, x, y, no_body),
+            Some(CubeChromeZone::FitButton)
+        );
+    }
+
+    #[test]
+    fn classify_central_point_delegates_to_body_picker() {
+        let rect = test_cube_rect();
+        let (x, y) = at(rect, 0.5, 0.5);
+        // A stub picker returns a known element; the body case wraps it.
+        let element = ViewCubeElement::from_face(CubeFace::Front);
+        let zone = classify_cube_point(rect, x, y, || Some(element));
+        assert_eq!(zone, Some(CubeChromeZone::Element(element)));
+        // If the raycast misses (e.g. a corner of the body square off the cube),
+        // the body case yields None rather than a bogus chrome zone.
+        assert_eq!(classify_cube_point(rect, x, y, no_body), None);
+    }
+
+    #[test]
+    fn classify_outside_rect_is_none() {
+        let rect = test_cube_rect();
+        // Left of, above, right of, below the rect.
+        for (dx, dy) in [(-10.0, 0.0), (0.0, -10.0), (200.0, 0.0), (0.0, 200.0)] {
+            assert_eq!(
+                classify_cube_point(rect, rect.x + dx, rect.y + dy, no_body),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn adjacent_face_spot_checks() {
+        use ArrowDir::*;
+        assert_eq!(adjacent_face(CubeFace::Front, Right), CubeFace::Right);
+        assert_eq!(adjacent_face(CubeFace::Front, Up), CubeFace::Top);
+        assert_eq!(adjacent_face(CubeFace::Front, Left), CubeFace::Left);
+        assert_eq!(adjacent_face(CubeFace::Front, Down), CubeFace::Bottom);
+        assert_eq!(adjacent_face(CubeFace::Right, Left), CubeFace::Front);
+        assert_eq!(adjacent_face(CubeFace::Top, Down), CubeFace::Front);
+    }
+
+    #[test]
+    fn adjacent_face_four_up_steps_cycle() {
+        // FRONT --Up--> Top --Up--> Back --Up--> Bottom --Up--> FRONT.
+        let mut face = CubeFace::Front;
+        let visited: Vec<CubeFace> = (0..4)
+            .map(|_| {
+                face = adjacent_face(face, ArrowDir::Up);
+                face
+            })
+            .collect();
+        assert_eq!(
+            visited,
+            vec![CubeFace::Top, CubeFace::Back, CubeFace::Bottom, CubeFace::Front]
+        );
+    }
+
+    #[test]
+    fn adjacent_face_neighbours_are_distinct_and_exclude_self() {
+        let faces = [
+            CubeFace::Right,
+            CubeFace::Left,
+            CubeFace::Top,
+            CubeFace::Bottom,
+            CubeFace::Front,
+            CubeFace::Back,
+        ];
+        let dirs = [ArrowDir::Up, ArrowDir::Down, ArrowDir::Left, ArrowDir::Right];
+        for face in faces {
+            for dir in dirs {
+                assert_ne!(adjacent_face(face, dir), face, "{face:?} {dir:?} is a no-op");
+            }
+            // The four neighbours of a face are pairwise distinct.
+            let mut sorted: Vec<String> =
+                dirs.iter().map(|&d| format!("{:?}", adjacent_face(face, d))).collect();
+            sorted.sort();
+            sorted.dedup();
+            assert_eq!(sorted.len(), 4, "{face:?} must have 4 distinct neighbours");
+        }
+    }
+
+    #[test]
+    fn adjacent_face_inverses_hold_on_each_great_circle() {
+        // Up↔Down are mutual inverses on the VERTICAL circle (Front/Top/Back/Bottom).
+        for &face in &[CubeFace::Front, CubeFace::Top, CubeFace::Back, CubeFace::Bottom] {
+            let up = adjacent_face(face, ArrowDir::Up);
+            assert_eq!(adjacent_face(up, ArrowDir::Down), face, "Up/Down inverse at {face:?}");
+            let down = adjacent_face(face, ArrowDir::Down);
+            assert_eq!(adjacent_face(down, ArrowDir::Up), face, "Down/Up inverse at {face:?}");
+        }
+        // Left↔Right are mutual inverses on the EQUATOR (Front/Right/Back/Left).
+        for &face in &[CubeFace::Front, CubeFace::Right, CubeFace::Back, CubeFace::Left] {
+            let right = adjacent_face(face, ArrowDir::Right);
+            assert_eq!(adjacent_face(right, ArrowDir::Left), face, "R/L inverse at {face:?}");
+            let left = adjacent_face(face, ArrowDir::Left);
+            assert_eq!(adjacent_face(left, ArrowDir::Right), face, "L/R inverse at {face:?}");
+        }
+    }
+
+    #[test]
+    fn adjacent_face_four_right_steps_cycle_the_equator() {
+        // FRONT --Right--> Right --> Back --> Left --> FRONT.
+        let mut face = CubeFace::Front;
+        let visited: Vec<CubeFace> = (0..4)
+            .map(|_| {
+                face = adjacent_face(face, ArrowDir::Right);
+                face
+            })
+            .collect();
+        assert_eq!(
+            visited,
+            vec![CubeFace::Right, CubeFace::Back, CubeFace::Left, CubeFace::Front]
+        );
+    }
+
+    #[test]
+    fn compass_headings_are_distinct_and_90_apart() {
+        let n = compass_heading_to_theta(Heading::North);
+        let e = compass_heading_to_theta(Heading::East);
+        let s = compass_heading_to_theta(Heading::South);
+        let w = compass_heading_to_theta(Heading::West);
+        // Each consecutive step is −π/2 (N→E→S→W clockwise).
+        assert!(approx(n - e, FRAC_PI_2));
+        assert!(approx(e - s, FRAC_PI_2));
+        assert!(approx(s - w, FRAC_PI_2));
+        // Distinct mod 2π.
+        let thetas = [n, e, s, w];
+        for i in 0..4 {
+            for j in (i + 1)..4 {
+                let diff = (thetas[i] - thetas[j]).rem_euclid(2.0 * PI);
+                assert!(!approx(diff, 0.0), "headings {i},{j} collide");
+            }
+        }
+        // N maps to Front's theta, E to Right's, etc. (the pinned face map).
+        assert!(approx(n, CubeFace::Front.snap_angles().0));
+        assert!(approx(e, CubeFace::Right.snap_angles().0));
+        assert!(approx(s, CubeFace::Back.snap_angles().0));
+    }
+
+    #[test]
+    fn home_view_default_matches_camera_defaults() {
+        let home = HomeView::default();
+        let camera = OrbitCamera::default();
+        assert!(approx(home.theta, camera.orbit_theta));
+        assert!(approx(home.phi, camera.orbit_phi));
+        assert!(approx(home.distance, camera.orbit_distance));
+    }
+
+    #[test]
+    fn set_home_then_move_then_snap_targets_saved_angles() {
+        // Capture home at a custom view, then move the camera elsewhere.
+        let mut camera = OrbitCamera {
+            orbit_theta: 1.2,
+            orbit_phi: 0.8,
+            orbit_distance: 25.0,
+            ..OrbitCamera::default()
+        };
+        let home = HomeView::from_camera(&camera);
+        camera.orbit_theta = 3.0;
+        camera.orbit_phi = 1.5;
+        // Snapping home must land back on the saved angles.
+        let mut tween = home.snap_tween(&camera);
+        assert!(tween.advance(&mut camera, 1.0));
+        assert!(approx(camera.orbit_theta, home.theta), "theta {}", camera.orbit_theta);
+        assert!(approx(camera.orbit_phi, home.phi), "phi {}", camera.orbit_phi);
     }
 }

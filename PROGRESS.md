@@ -33,6 +33,25 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **ViewCube chrome hit-math + Home/Fit/set-home logic + persistence — Part of #13 (Step 1).**
+  Pure logic + data only — NO rendering, NO input wiring (Steps 2/3), app behaviour unchanged,
+  goldens byte-identical. In `camera.rs`: `CubeChromeZone` enum + `classify_cube_point(rect,
+  x, y, body_picker)` — a pure screen-space classifier over the cube's square rect (zones as
+  fractions of `rect.size` so Step 2 draws the chrome in the SAME pixels): Home/Fit badges
+  (top-left), roll arrows (top-right), four rotate-arrow gutters around the body, a base compass
+  ring (N/E/S/W L→R), and the central body delegated to the caller's raycast (`pick_view_cube_element`,
+  passed as a closure → fully headless tests). `adjacent_face(face, dir)` walks two great circles —
+  Up/Down vertical (Front→Top→Back→Bottom), Left/Right equator (Front→Right→Back→Left) — with
+  per-circle inverses + 4-cycles (a full memoryless 6×4 inverse is geometrically impossible; that
+  is documented). `compass_heading_to_theta`: N=Front(π/2), E=Right(0), S=Back(−π/2), W=Left(−π),
+  90° apart, consistent with `snap_angles`. `HomeView{theta,phi,distance}` (default = camera
+  defaults) + `from_camera`/`snap_tween`; `WindowedState` gains `home_view` + `set_home_to_current`
+  / `home_snap_tween` / `fit_to_view` (recentre target to `Vec3::ZERO` = recentred composite
+  centroid + `auto_framed_distance`, no geometry rebuild; `#[allow(dead_code)]` until Step 3 wires
+  them). Persistence: `AppConfig.home_theta/phi/distance` (`#[serde(default=…)]`, old configs load
+  with camera defaults); `capture` gains a `HomeView` arg, `home_view()` restores it. 15 new lib
+  tests (225 total, was 210); clippy clean; golden harness byte-identical.
+
 - **ViewCube/camera: true singular-frame up-vector (exact poles, no flip) — Part of #13 (Step 0).**
   Replaced the pole epsilon-clamp with a real singular-frame up so the camera can sit at the EXACT
   poles (phi = 0 / π) with no `look_at` degeneracy and no roll-flip. New `OrbitCamera::up_vector()`:

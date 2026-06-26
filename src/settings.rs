@@ -21,7 +21,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::camera::{OrbitCamera, ProjectionMode};
+use crate::camera::{HomeView, OrbitCamera, ProjectionMode};
 use crate::panel::{GeometryParams, LayerRange, MaterialChoice, PanelState};
 use crate::scene::Scene;
 
@@ -99,6 +99,17 @@ pub struct AppConfig {
     #[serde(default = "default_distance")]
     pub orbit_distance: f32,
 
+    // --- view-cube home view (#13) ---
+    // The Home button's saved view. New fields: `#[serde(default)]` so an OLD
+    // config without them loads with the camera defaults (theta≈0.7/phi≈1.05/
+    // distance 10) — serde fills each missing key from its default fn.
+    #[serde(default = "default_theta")]
+    pub home_theta: f32,
+    #[serde(default = "default_phi")]
+    pub home_phi: f32,
+    #[serde(default = "default_distance")]
+    pub home_distance: f32,
+
     // --- window ---
     #[serde(default = "default_window_size")]
     pub window_size: [u32; 2],
@@ -141,15 +152,23 @@ impl Default for AppConfig {
             orbit_theta: default_theta(),
             orbit_phi: default_phi(),
             orbit_distance: default_distance(),
+            home_theta: default_theta(),
+            home_phi: default_phi(),
+            home_distance: default_distance(),
             window_size: default_window_size(),
         }
     }
 }
 
 impl AppConfig {
-    /// Capture the persisted fields from the live [`PanelState`], [`OrbitCamera`]
-    /// and the current window size.
-    pub fn capture(panel: &PanelState, camera: &OrbitCamera, window_size: [u32; 2]) -> Self {
+    /// Capture the persisted fields from the live [`PanelState`], [`OrbitCamera`],
+    /// the saved [`HomeView`] (#13) and the current window size.
+    pub fn capture(
+        panel: &PanelState,
+        camera: &OrbitCamera,
+        home_view: HomeView,
+        window_size: [u32; 2],
+    ) -> Self {
         Self {
             // step 8: persist the whole scene (node tree + definitions + active
             // selection). issue #32: the legacy flat geometry mirror fields are gone;
@@ -170,7 +189,20 @@ impl AppConfig {
             orbit_theta: camera.orbit_theta,
             orbit_phi: camera.orbit_phi,
             orbit_distance: camera.orbit_distance,
+            home_theta: home_view.theta,
+            home_phi: home_view.phi,
+            home_distance: home_view.distance,
             window_size,
+        }
+    }
+
+    /// The persisted [`HomeView`] (#13) — the saved Home-button view restored on
+    /// load. Defaults to the camera defaults for an old config without the keys.
+    pub fn home_view(&self) -> HomeView {
+        HomeView {
+            theta: self.home_theta,
+            phi: self.home_phi,
+            distance: self.home_distance,
         }
     }
 
@@ -324,12 +356,44 @@ mod tests {
             orbit_theta: 1.23,
             orbit_phi: 0.95,
             orbit_distance: 42.0,
+            home_theta: 2.34,
+            home_phi: 1.11,
+            home_distance: 18.0,
             window_size: [1600, 900],
         };
 
         let json = serde_json::to_string_pretty(&config).expect("serialise");
         let restored: AppConfig = serde_json::from_str(&json).expect("deserialise");
         assert_eq!(config, restored);
+    }
+
+    /// #13: the home-view fields persist through capture→JSON→load, and an OLD
+    /// config WITHOUT them loads with the camera defaults (serde fills each
+    /// missing key from its `#[serde(default = ...)]` fn).
+    #[test]
+    fn home_view_persists_and_old_config_defaults() {
+        let mut panel = PanelState::with_view_cube_default();
+        panel.geometry.voxels_per_block = 8;
+        let camera = OrbitCamera::default();
+        let home = HomeView { theta: 2.5, phi: 0.6, distance: 33.0 };
+        let config = AppConfig::capture(&panel, &camera, home, [1280, 800]);
+
+        let json = serde_json::to_string_pretty(&config).expect("serialise");
+        let restored: AppConfig = serde_json::from_str(&json).expect("deserialise");
+        let restored_home = restored.home_view();
+        assert!((restored_home.theta - 2.5).abs() < 1e-5);
+        assert!((restored_home.phi - 0.6).abs() < 1e-5);
+        assert!((restored_home.distance - 33.0).abs() < 1e-5);
+
+        // An old config with no home_* keys loads with the camera defaults.
+        let old_json = r#"{ "voxels_per_block": 8 }"#;
+        let old: AppConfig =
+            serde_json::from_str(old_json).expect("old config without home_* parses");
+        let old_home = old.home_view();
+        let defaults = HomeView::default();
+        assert!((old_home.theta - defaults.theta).abs() < 1e-5);
+        assert!((old_home.phi - defaults.phi).abs() < 1e-5);
+        assert!((old_home.distance - defaults.distance).abs() < 1e-5);
     }
 
     /// issue #32: a config persists and reloads its `scene` correctly. A non-trivial
@@ -368,7 +432,7 @@ mod tests {
         panel.geometry.voxels_per_block = voxels_per_block;
         panel.scene = scene.clone();
         let camera = OrbitCamera::default();
-        let config = AppConfig::capture(&panel, &camera, [1280, 800]);
+        let config = AppConfig::capture(&panel, &camera, HomeView::default(), [1280, 800]);
         assert!(config.scene.is_some(), "capture persists the scene");
 
         let json = serde_json::to_string_pretty(&config).expect("serialise");
@@ -581,7 +645,7 @@ mod tests {
         panel.geometry.voxels_per_block = voxels_per_block;
         panel.scene = scene.clone();
         let camera = OrbitCamera::default();
-        let config = AppConfig::capture(&panel, &camera, [1280, 800]);
+        let config = AppConfig::capture(&panel, &camera, HomeView::default(), [1280, 800]);
         assert!(config.scene.is_some(), "capture persists the full scene");
 
         let json = serde_json::to_string_pretty(&config).expect("serialise");
@@ -754,7 +818,7 @@ mod tests {
         panel.geometry.voxels_per_block = 8;
         panel.scene = scene.clone();
         let camera = OrbitCamera::default();
-        let config = AppConfig::capture(&panel, &camera, [1280, 800]);
+        let config = AppConfig::capture(&panel, &camera, HomeView::default(), [1280, 800]);
 
         let json = serde_json::to_string_pretty(&config).expect("serialise");
         let restored: AppConfig = serde_json::from_str(&json).expect("deserialise");
@@ -790,7 +854,7 @@ mod tests {
         panel.scene.master_floor_grid = false;
         panel.material = MaterialChoice::Plain;
         let camera = OrbitCamera::default();
-        let config = AppConfig::capture(&panel, &camera, [1024, 768]);
+        let config = AppConfig::capture(&panel, &camera, HomeView::default(), [1024, 768]);
         let restored = config.to_panel_state();
         // The masters round-trip via `scene.master_*` — the single source of truth.
         assert_eq!(restored.scene.master_block_lattice, panel.scene.master_block_lattice);
@@ -865,7 +929,7 @@ mod tests {
         let mut panel = PanelState::with_view_cube_default();
         panel.scene = scene;
         let camera = OrbitCamera::default();
-        let config = AppConfig::capture(&panel, &camera, [1280, 800]);
+        let config = AppConfig::capture(&panel, &camera, HomeView::default(), [1280, 800]);
 
         let json = serde_json::to_string_pretty(&config).expect("serialise");
         let restored: AppConfig = serde_json::from_str(&json).expect("deserialise");
