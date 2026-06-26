@@ -141,6 +141,9 @@ v1 sidesteps by assuming the app default.
 
 ### Scale — the canvas is huge (target ~1024³ blocks, designed to go far beyond)
 
+> The engine phase (steps 5–7) is decomposed in its own sub-ADR:
+> [ADR 0002 — Engine phase: streaming, meshing & coordinates](0002-engine-streaming-meshing.md).
+
 This is the constraint that reshapes everything downstream of the seam. A 1024³-block canvas at
 density 16 is ~16384³ ≈ **4 trillion** voxels — there is **no monolithic resolved grid**, dense or
 sparse. The "resolved grid is the one truth" seam still holds, but the truth becomes **chunked and

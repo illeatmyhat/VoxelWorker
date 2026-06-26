@@ -33,6 +33,23 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **ADR 0002 (Proposed) — engine phase: streaming, meshing & coordinates — Part of #22** —
+  `docs/adr/0002-engine-streaming-meshing.md`, pointer added to `docs/adr/0001-…` Scale section.
+  Sub-ADR decomposing ADR 0001 steps 5–7 (issues #18/#19/#20). **Design only, no code.** Headlines:
+  (1) **Cuboid (box) decomposition** as the primary meshing direction over 2D greedy quads —
+  domain-matched to chiseled 16³ blocks, VS-proven (`BlockEntityMicroBlock.GenShape`), one material
+  per box, and the cuboid packing *doubles as* the step-7 palette/sparse compression (meshing +
+  storage collapse to one representation). **Per-block** merge for v1; per-chunk merge parked.
+  (2) A **feature-preservation matrix** making every instanced-cube feature (per-face textures,
+  per-voxel slice, position-based grid overlay, per-voxel material, layer-range clip, `--debug-faces`,
+  onion-fog occupancy) an explicit golden-image contract; highest-risk rows = the **per-voxel
+  texture slice** and the **onion-fog 3D occupancy texture**. (3) **Safe order:** land the
+  golden-image net (#24) FIRST, then chunk the *existing instanced* renderer (retire the 450k/6M
+  caps) BEFORE meshing, then drop the cuboid mesher in **behind a flag, A/B pixel-equivalence**
+  against the instanced path, flip the default only when goldens match. Status **Proposed** — open
+  forks (cuboid-vs-greedy, per-block-vs-per-chunk granularity, chunk size, order, fog fidelity at
+  scale) await sign-off before implementation. Build sanity: `cargo build --bins` green.
+
 - **CI + line-ending hygiene — Closes #23** — `.github/workflows/ci.yml`, `.gitattributes`,
   `Cargo.toml`, `tests/palette_click.rs`, `PROGRESS.md`. GitHub Actions workflow runs on push/PR to
   `main`: a `ubuntu-latest` job installs stable Rust + clippy, caches cargo (`Swatinem/rust-cache`),
