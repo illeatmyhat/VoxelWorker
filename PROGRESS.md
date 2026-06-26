@@ -33,6 +33,43 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **Fix infinite grid under orthographic projection (near/far ray unprojection + LOD) — Part of #29.**
+  The analytic infinite ground plane (`src/shaders/infinite_grid.wgsl`) rendered as a full-screen green
+  MOIRÉ cross-hatch — covering the whole background INCLUDING above the horizon ("the sky") — whenever the
+  camera was in **ORTHOGRAPHIC** projection. PERSPECTIVE looked fine. The user's camera was set to
+  Orthographic (the app's Perspective/Orthographic toggle), which is the trigger.
+  - **Reproduced headlessly** with `shot --proj ortho` (the flag already existed) at a zoomed-out ortho
+    view (`--dist 80`, grazing `--phi 1.05`): the whole frame was a green moiré field with the grid
+    painted over the sky. `--proj ortho` close (`--dist 30`) was uniformly noisy with no clean lines
+    anywhere; perspective at the same args resolved clean lines in the foreground.
+  - **Root cause #1 — eye-based ray reconstruction.** The fragment shader built the per-pixel view ray as
+    `ray_origin = grid.eye.xyz; ray_direction = normalize(far_world - near_world)`. Under perspective that
+    is fine (every ray shares the eye). Under ORTHOGRAPHIC it is wrong: ortho rays are PARALLEL (one
+    constant direction) and the ray ORIGIN varies per pixel. Using a single shared `eye` as the origin
+    gives the wrong plane-intersection `t` and hit point for every pixel → wrong `plane_coord` → garbage
+    grid that also fails the in-front test, so it bleeds over the sky. Fix: `ray_origin = near_world` (the
+    pixel's NDC unprojected at z=near) with `ray_dir = far_world - near_world` — the robust near/far
+    unprojection that is correct for BOTH projections. The hit point is identical to before for
+    perspective (so the perspective look is essentially unchanged), and correct under ortho.
+  - **Root cause #2 — LOD didn't dissolve sub-pixel tiers under ortho.** Ortho has UNIFORM world-scale
+    across the screen (no foreshortening), so when zoomed out EVERY pixel's cells are equally sub-pixel —
+    there is no near band where lines resolve. The old LOD (`1 - clamp(cells_per_pixel - 0.5)`) plus the
+    duty-cycle "keep the average grey" mix painted a constant grey sheet that the `fract` sampling beat
+    into moiré. Fix: drive the whole tier hard to zero once a cell is sub-pixel —
+    `lod = smoothstep(2.0, 4.0, pixels_per_cell)` (fully 0 below ~2 px/cell, 1 above ~4 px/cell), so a
+    tier dissolves cleanly BEFORE its AA lines can alias. Perspective is unaffected (its near cells are
+    many px, lod≈1).
+  - **Verification matrix** ({perspective, ortho} × {close `--dist 30`, far `--dist 80`} × {top-down
+    `--phi 0.2`, grazing `--phi 1.3`}), each READ: all 8 are clean thin lines (fine voxel tier fading to
+    nothing when sub-pixel, bold block tier persisting), clear sky, never solid, never moiré, faded toward
+    the horizon, and occluded by objects (`@builtin(frag_depth)` + LessEqual). The ortho zoomed-out repro
+    is fixed (before: full-screen moiré over the sky; after: clean block lines, fine tier dissolved, sky
+    clear). Residual: the tube/voxel STONE TEXTURE still shimmers at extreme zoom-out — that is the cube
+    pass's texture minification (unrelated to the grid), not grid moiré.
+  - **Golden:** only `demo-village-points` changed (4.0% — the LOD change fades the perspective fine tier
+    a touch earlier, a cleaner look, visually confirmed); regenerated. The other 6 goldens stay byte-
+    identical (all << 0.5%). `--shape`/material/fog/cloud paths untouched.
+
 - **Fix infinite grid solid-fill: derivative-normalized LOD coverage (resolution/angle-robust) — Part of #29.**
   The analytic infinite ground plane (`src/shaders/infinite_grid.wgsl`) rendered as a SOLID green
   sheet under the live windowed app's camera/resolution, while the headless golden (a specific

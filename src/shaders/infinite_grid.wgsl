@@ -5,10 +5,17 @@
 // standard fullscreen ray-plane technique:
 //
 //   * The vertex stage emits ONE oversized triangle covering the viewport.
-//   * The fragment stage reconstructs the world-space view ray for the pixel
-//     (inverse view-projection + eye) and intersects it with the Point's plane.
-//     Pixels whose ray does not hit the plane in front of the camera are discarded
-//     → the grid is truly infinite (it spans to the horizon) with NO finite border.
+//   * The fragment stage reconstructs the world-space view ray for the pixel by
+//     UNPROJECTING the pixel's NDC at z=near AND z=far through the inverse view-
+//     projection (perspective-dividing each), then ray_origin = near point,
+//     ray_dir = far - near. This is correct for BOTH perspective AND orthographic
+//     projection: under perspective every ray shares the eye; under ortho the rays
+//     are PARALLEL (constant direction) and the ORIGIN varies per pixel — an
+//     eye-based ray (`normalize(world - eye)`) is wrong under ortho and produces a
+//     full-screen moiré that even covers the sky. It intersects the ray with the
+//     Point's plane; pixels whose ray does not hit the plane in front of the camera
+//     are discarded → the grid is truly infinite (spans to the horizon) with NO
+//     finite border, and the sky stays clear under ortho too.
 //   * Grid coverage is computed analytically from screen-space derivatives
 //     (`fwidth`) of the plane's in-plane coordinates, so the lines are crisply
 //     anti-aliased at any distance/angle — two tiers: a fine VOXEL grid (spacing 1)
@@ -104,11 +111,22 @@ fn grid_coverage(coord: vec2<f32>, spacing: f32, line_pixels: f32) -> vec2<f32> 
     // Combine the two axes the pristine-grid way: a + b - a*b (a pixel on EITHER line
     // is lit), which avoids the over-bright corner of a naive max.
     let coverage = line2.x + line2.y - line2.x * line2.y;
-    // LOD visibility: 1 while the cell period spans > ~2 px, fading to 0 once the
-    // period drops to ~1 px (max cells/pixel ≥ ~1). Fading the whole tier out here is
-    // what guarantees the fine tier dissolves instead of becoming a flat sheet.
+    // LOD visibility: 1 while a cell still spans several pixels, fading to 0 as the
+    // cell period drops toward a pixel. `cells_per_pixel` = derivative (cells per
+    // screen pixel); its RECIPROCAL is the cell's on-screen PIXEL size. We fade the
+    // whole tier out over the window where a cell shrinks from ~4 px down to ~2 px
+    // and force it fully to 0 once a cell is < ~2 px, BEFORE the AA line can alias.
+    //
+    // This is the core of the ortho moiré fix: under orthographic the world scale is
+    // UNIFORM across the screen (no foreshortening), so when zoomed out EVERY pixel's
+    // cells are equally sub-pixel — there is no near band where the lines resolve.
+    // A duty-cycle "keep the average grey" trick then paints a constant sheet that
+    // the `fract` sampling turns into a beat/moiré pattern. Driving the tier hard to
+    // zero once it is sub-pixel dissolves it cleanly instead (perspective is
+    // unaffected: its near cells are many px and keep lod≈1).
     let cells_per_pixel = max(derivative.x, derivative.y);
-    let lod = 1.0 - clamp(cells_per_pixel - 0.5, 0.0, 1.0);
+    let pixels_per_cell = 1.0 / max(cells_per_pixel, 1e-8);
+    let lod = smoothstep(2.0, 4.0, pixels_per_cell);
     return vec2<f32>(clamp(coverage, 0.0, 1.0), lod);
 }
 
@@ -123,10 +141,19 @@ fn fragment_main(input: VsOut) -> FsOut {
 
     let ndc_xy = vec2<f32>(input.uv.x * 2.0 - 1.0, (1.0 - input.uv.y) * 2.0 - 1.0);
 
-    // Reconstruct the world-space view ray for this pixel.
+    // Reconstruct the world-space view ray for this pixel by UNPROJECTING the
+    // pixel's NDC at the near AND far planes through the inverse view-projection.
+    // The ray ORIGIN is the per-pixel near point and the DIRECTION is far - near.
+    // This is correct for BOTH projections: under perspective every ray passes
+    // through the shared eye; under ORTHOGRAPHIC the rays are parallel (one
+    // constant direction) and the origin varies per pixel — using `grid.eye` as a
+    // single shared origin (the old eye-based ray) is WRONG under ortho and yields
+    // a wrong plane hit per pixel → full-screen moiré covering the sky. `t` is then
+    // a parameter along this NORMALIZED ray; the near point already sits on the
+    // near plane so `t > 0` is "in front of the camera" for both projections.
     let near_world = unproject(vec3<f32>(ndc_xy, 0.0));
     let far_world = unproject(vec3<f32>(ndc_xy, 1.0));
-    let ray_origin = grid.eye.xyz;
+    let ray_origin = near_world;
     let ray_direction = normalize(far_world - near_world);
 
     // Intersect the ray with the Point's plane: normal · (p - origin) = 0.
@@ -137,7 +164,9 @@ fn fragment_main(input: VsOut) -> FsOut {
         discard;
     }
     let t = dot(grid.plane_origin.xyz - ray_origin, normal) / denom;
-    // Plane is behind the camera for this pixel: no hit in front → infinite sky.
+    // Plane is behind the camera (or behind the near plane) for this pixel: no hit
+    // in front → infinite sky. Discarding here is what keeps the grid off the sky
+    // under ortho (the parallel rays that miss the plane forward are dropped).
     if (t <= 0.0) {
         discard;
     }
