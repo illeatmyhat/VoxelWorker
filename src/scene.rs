@@ -318,9 +318,17 @@ pub struct Point {
     /// Whether the side reference plane (YZ) shows. Default false.
     #[serde(default)]
     pub plane_yz: bool,
-    /// Whether the axis lines show. Default **true**.
+    /// Whether the +X axis line shows. Default **true** (issue #29 fix: the single
+    /// `axes` toggle is split into per-axis X/Y/Z so each is independently
+    /// toggleable). An older config without this field defaults it true.
     #[serde(default = "default_true_bool")]
-    pub axes: bool,
+    pub axis_x: bool,
+    /// Whether the +Y axis line shows. Default **true**.
+    #[serde(default = "default_true_bool")]
+    pub axis_y: bool,
+    /// Whether the +Z axis line shows. Default **true**.
+    #[serde(default = "default_true_bool")]
+    pub axis_z: bool,
     /// Whether the Point is hidden (renders nothing). Default false. Works for the
     /// Origin too (the Origin is hideable, just not deletable).
     #[serde(default)]
@@ -347,7 +355,9 @@ impl Default for Point {
             plane_xz: true,
             plane_xy: false,
             plane_yz: false,
-            axes: true,
+            axis_x: true,
+            axis_y: true,
+            axis_z: true,
             hidden: false,
             is_origin: false,
         }
@@ -462,15 +472,28 @@ impl Scene {
                 plane_xz: true,
                 plane_xy: false,
                 plane_yz: false,
-                axes: true,
+                axis_x: true,
+                axis_y: true,
+                axis_z: true,
                 hidden: false,
                 is_origin: true,
             },
         );
     }
 
-    /// Append a reference [`Point`] to the scene (issue #29).
-    pub fn add_point(&mut self, point: Point) {
+    /// Append a reference [`Point`] to the scene (issue #29). A newly-added user
+    /// Point defaults to **all planes OFF** (XZ/XY/YZ) with its **axes ON** (issue
+    /// #29 fix): only the Origin keeps the ground (XZ) plane on by default (via
+    /// [`ensure_origin_point`](Self::ensure_origin_point)). The plane/axis flags on
+    /// the passed `point` are overridden here so every "+ Add Point" path gets the
+    /// clean default; the caller controls only the point's name/position/identity.
+    pub fn add_point(&mut self, mut point: Point) {
+        point.plane_xz = false;
+        point.plane_xy = false;
+        point.plane_yz = false;
+        point.axis_x = true;
+        point.axis_y = true;
+        point.axis_z = true;
         self.points.push(point);
     }
 
@@ -4131,7 +4154,7 @@ mod tests {
         assert_eq!(origin.name, "Origin");
         assert_eq!(origin.position_blocks, [0, 0, 0]);
         assert!(origin.plane_xz, "ground plane on by default");
-        assert!(origin.axes, "axes on by default");
+        assert!(origin.axis_x && origin.axis_y && origin.axis_z, "all axes on by default");
         assert!(!origin.plane_xy && !origin.plane_yz);
         assert!(!origin.hidden);
 
@@ -4152,6 +4175,34 @@ mod tests {
         scene.ensure_origin_point();
         assert_eq!(scene.points.len(), 2, "no Origin inserted when one exists");
         assert_eq!(scene.points.iter().filter(|p| p.is_origin).count(), 1);
+    }
+
+    /// `add_point` gives a newly-added user Point the clean default (issue #29 fix):
+    /// **all planes OFF** with **all three axes ON** — even if the caller passes a
+    /// Point with planes enabled. Only the Origin (built by `ensure_origin_point`,
+    /// not `add_point`) keeps the ground (XZ) plane on.
+    #[test]
+    fn add_point_defaults_planes_off_axes_on() {
+        let mut scene = Scene::default();
+        // Pass a Point with EVERY plane on; add_point must override them off.
+        scene.add_point(Point {
+            name: "User".to_string(),
+            plane_xz: true,
+            plane_xy: true,
+            plane_yz: true,
+            axis_x: false,
+            axis_y: false,
+            axis_z: false,
+            ..Point::default()
+        });
+        let point = &scene.points[0];
+        assert!(!point.plane_xz && !point.plane_xy && !point.plane_yz, "new point: all planes OFF");
+        assert!(point.axis_x && point.axis_y && point.axis_z, "new point: all axes ON");
+
+        // The Origin (via ensure_origin_point) still keeps the ground plane on.
+        let mut origin_scene = Scene::default();
+        origin_scene.ensure_origin_point();
+        assert!(origin_scene.points[0].plane_xz, "Origin keeps the ground plane");
     }
 
     /// `remove_point` deletes a normal Point but NO-OPS on the Origin (undeletable),
@@ -4215,13 +4266,17 @@ mod tests {
             ..Scene::default()
         };
         scene.ensure_origin_point();
-        scene.add_point(Point {
+        // Push directly (not via `add_point`, which overrides plane/axis flags to the
+        // new-point default) so the round-trip exercises non-default per-axis flags.
+        scene.points.push(Point {
             name: "Corner".to_string(),
             position_blocks: [3, 4, 5],
             plane_xz: false,
             plane_xy: true,
             plane_yz: true,
-            axes: false,
+            axis_x: true,
+            axis_y: false,
+            axis_z: true,
             hidden: true,
             ..Point::default()
         });
@@ -4235,6 +4290,8 @@ mod tests {
         assert!(restored.master_voxel_grid);
         assert_eq!(restored.points.len(), 2);
         assert_eq!(restored.points[1].position_blocks, [3, 4, 5]);
+        // Per-axis flags survive the round-trip (issue #29 fix: split axes).
+        assert!(restored.points[1].axis_x && !restored.points[1].axis_y && restored.points[1].axis_z);
     }
 
     /// Back-compat: an OLD serialized scene (no `grids`, no `points`, no masters)

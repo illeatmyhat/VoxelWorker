@@ -33,6 +33,38 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **Grid rework: floor meets lattice (depth bias) + new-point plane defaults + separable XYZ axes — Part of #29.**
+  Three smoke-test fixes for the grid rework.
+  - **Fix 1 — floor meets the block lattice at the base plane.** The floor grid was geometrically
+    dropped `FLOOR_PLANE_DROP_VOXELS = 0.25` voxel below the base to dodge z-fighting the model's
+    bottom face, leaving a visible gap below the lattice. Removed the drop: `floor_vertices_into`
+    now draws at the EXACT base plane `y = min[1]`, so its bold block lines coincide with the
+    lattice's bottom edges. Z-fighting is instead resolved with a **depth bias** toward the camera.
+    **Key finding:** wgpu rejects a hardware `DepthBiasState` on `LineList` topology ("Depth bias is
+    not compatible with non-triangle topology"), so the bias is applied in the line **shader**:
+    `LineUniforms` gained a `depth_bias` (NDC z offset, scaled by `w`); `line.wgsl` nudges `clip.z`.
+    `SceneGridRenderer` carries a second floor uniform buffer/bind-group uploading the same matrix
+    with `FLOOR_DEPTH_BIAS_NDC = -5e-4` (imperceptible spatially, far below the old 0.25 drop) while
+    the lattice uniform keeps bias 0. Headless sphere+lattice+floor PNG confirms the floor's block
+    grid meets the lattice's bottom rectangle with no vertical gap and no z-fight shimmer.
+  - **Fix 2 — new Points default to all planes OFF.** `Scene::add_point` now overrides the incoming
+    Point's plane/axis flags to **all planes off, all axes on**, so every "+ Add Point" path yields a
+    clean default. Only the Origin (built by `ensure_origin_point`, not `add_point`) keeps the XZ
+    ground plane on.
+  - **Fix 3 — separately-toggleable X / Y / Z axes.** Split `Point.axes: bool` into
+    `axis_x` / `axis_y` / `axis_z` (each `#[serde(default = "default_true_bool")]`, so an older
+    serialized Point missing them defaults each to true). `point_axes_into` takes a per-axis
+    `[bool; 3]` and emits a segment only for each enabled axis (X red, Y green, Z blue);
+    `points_line_batch` passes the three flags. `panel.rs` replaces the single "Axes" checkbox with a
+    compact `Axes  [X][Y][Z]` row. **Back-compat note:** `axes` was brand-new from S1 (this branch) and
+    unlikely persisted, so defaulting the three new fields to true (no `alias`/migration) is the chosen
+    handling; a persisted `axes: false` is not honored (acceptable per spec).
+  - **Tests + gate.** +2 CPU tests (`add_point_defaults_planes_off_axes_on`,
+    `points_axes_toggle_per_axis` — 3 axes ⇒ 3 segments, Y off ⇒ no green line, only-Y ⇒ green only);
+    updated the floor-base-height assertion (`y == min[1]`) and the settings round-trip to exercise
+    per-axis flags. `cargo test` 203 passed (was 201); all 7 goldens green (the points golden uses the
+    Origin — ground + all axes on — so it is unchanged); clippy clean.
+
 - **Fix per-object floor grid: voxel-edge lines + align to block lattice — Part of #29.** The
   interactive smoke-test surfaced two floor-grid bugs: (1) it drew lines only at BLOCK boundaries,
   not at voxel edges; (2) it read as "poorly aligned" with the per-object block lattice.

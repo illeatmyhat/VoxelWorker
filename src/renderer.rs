@@ -721,7 +721,10 @@ impl ViewCubeRenderer {
 
     /// Upload the view-cube camera matrix (`OrbitCamera::view_cube_view_projection`).
     pub fn update_uniforms(&self, queue: &wgpu::Queue, view_projection: glam::Mat4) {
-        let uniforms = LineUniforms { view_projection: view_projection.to_cols_array_2d() };
+        let uniforms = LineUniforms {
+            view_projection: view_projection.to_cols_array_2d(),
+            depth_bias: [0.0; 4],
+        };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
     }
 
@@ -1075,12 +1078,17 @@ struct LineVertex {
     color: [f32; 4],
 }
 
-/// Camera uniform for the line passes (gizmo + view-cube edges): just the
-/// view-projection matrix.
+/// Camera uniform for the line passes (gizmo + view-cube edges + lattice/floor +
+/// Points): the view-projection matrix plus a small NDC `depth_bias` (issue #29
+/// floor fix). The bias is zero for every pass except the floor grid, which uses a
+/// negative value to win the depth test against the model's coincident bottom face
+/// without a geometric drop (wgpu forbids a hardware depth bias on `LineList`).
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 struct LineUniforms {
     view_projection: [[f32; 4]; 4],
+    /// `[bias, 0, 0, 0]` — only `.x` is read; the rest pad to 16-byte alignment.
+    depth_bias: [f32; 4],
 }
 
 /// The transform gizmo (issue #29 S2): three coloured axis lines and three
@@ -1180,6 +1188,7 @@ impl TransformGizmoRenderer {
         let model = glam::Mat4::from_translation(pivot);
         let uniforms = LineUniforms {
             view_projection: (view_projection * model).to_cols_array_2d(),
+            depth_bias: [0.0; 4],
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
     }
@@ -1289,7 +1298,10 @@ fn line_uniform_bind_group(
 
 /// Build a `LineList` render pipeline (shared shader `line.wgsl`). `depth_tested`
 /// selects whether the pass writes/tests depth; the gizmo passes `false`
-/// (depth-test off so it shows through solids).
+/// (depth-test off so it shows through solids). Depth bias is applied in the SHADER
+/// (via [`LineUniforms::depth_bias`]) rather than the pipeline, because wgpu rejects
+/// a hardware `DepthBiasState` on `LineList` topology — the floor grid uses this to
+/// win coincident depth against the model's base face without a geometric drop.
 fn build_line_pipeline(
     device: &wgpu::Device,
     color_format: wgpu::TextureFormat,
@@ -1418,9 +1430,27 @@ pub struct SceneGridRenderer {
     floor_buffer: wgpu::Buffer,
     floor_vertex_count: u32,
     floor_capacity: u32,
+    /// Uniforms for the lattice draw — view-projection with ZERO depth bias.
     uniform_buffer: wgpu::Buffer,
     uniform_bind_group: wgpu::BindGroup,
+    /// Separate uniforms for the floor draw (issue #29 fix): the SAME
+    /// view-projection but a NEGATIVE [`LineUniforms::depth_bias`], so the floor
+    /// draws at the EXACT base plane `y = min[1]` (meeting the lattice's bottom
+    /// edges) yet wins the `Less` depth test against the model's coincident bottom
+    /// face — no z-fight shimmer, no geometric vertical drop. (A hardware
+    /// `DepthBiasState` is rejected by wgpu on `LineList`, so the bias is applied
+    /// in the line shader via this uniform.)
+    floor_uniform_buffer: wgpu::Buffer,
+    floor_uniform_bind_group: wgpu::BindGroup,
 }
+
+/// The NDC depth bias (issue #29 fix) the floor grid uploads in its
+/// [`LineUniforms::depth_bias`]: a small NEGATIVE offset pulls the floor lines a
+/// hair toward the camera so they win the `Less` depth test against the model's
+/// coincident bottom face. ~5e-4 in NDC is imperceptible spatially (far below the
+/// old 0.25-voxel geometric drop) yet reliably resolves coincident depth on the
+/// `Depth32Float` target.
+const FLOOR_DEPTH_BIAS_NDC: f32 = -5.0e-4;
 
 impl SceneGridRenderer {
     /// Create the renderer for a colour target. The line batches start empty —
@@ -1450,8 +1480,21 @@ impl SceneGridRenderer {
         let (uniform_bind_group_layout, uniform_bind_group) =
             line_uniform_bind_group(device, &uniform_buffer, "lattice");
 
+        // A SECOND uniform buffer for the floor draw, carrying the same matrix with a
+        // negative NDC depth bias (issue #29 fix) — wgpu rejects a hardware depth bias
+        // on LineList, so the floor biases its depth in the line shader via this buffer.
+        let floor_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("floor uniforms"),
+            size: std::mem::size_of::<LineUniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let (_floor_layout, floor_uniform_bind_group) =
+            line_uniform_bind_group(device, &floor_uniform_buffer, "floor");
+
         // Depth-tested (true) so the lattice/floor are occluded by the solid model
-        // — they read as a scaffold around/under it, not an overlay on top.
+        // — they read as a scaffold around/under it, not an overlay on top. The floor
+        // shares this pipeline; its depth bias comes from its uniform, not the pipeline.
         let pipeline = build_line_pipeline(
             device,
             color_format,
@@ -1471,6 +1514,8 @@ impl SceneGridRenderer {
             floor_capacity,
             uniform_buffer,
             uniform_bind_group,
+            floor_uniform_buffer,
+            floor_uniform_bind_group,
         }
     }
 
@@ -1522,28 +1567,39 @@ impl SceneGridRenderer {
         );
     }
 
-    /// Upload the camera matrix (same `view_projection` as the voxel pass).
+    /// Upload the camera matrix (same `view_projection` as the voxel pass) to BOTH
+    /// the lattice uniform (zero depth bias) and the floor uniform (a negative NDC
+    /// [`FLOOR_DEPTH_BIAS_NDC`] depth bias — issue #29 fix), so the floor wins
+    /// coincident depth against the model's base face without a geometric drop.
     pub fn update_uniforms(&self, queue: &wgpu::Queue, view_projection: glam::Mat4) {
-        let uniforms = LineUniforms {
-            view_projection: view_projection.to_cols_array_2d(),
+        let view_projection = view_projection.to_cols_array_2d();
+        let lattice = LineUniforms { view_projection, depth_bias: [0.0; 4] };
+        queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&lattice));
+        let floor = LineUniforms {
+            view_projection,
+            depth_bias: [FLOOR_DEPTH_BIAS_NDC, 0.0, 0.0, 0.0],
         };
-        queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
+        queue.write_buffer(&self.floor_uniform_buffer, 0, bytemuck::bytes_of(&floor));
     }
 
     /// Record the lattice + floor draws into an already-begun (MSAA) pass. Gating
     /// is done at batch-build time (issue #29 S3): only grid-enabled nodes
-    /// contributed lines, so empty batches simply draw nothing here.
+    /// contributed lines, so empty batches simply draw nothing here. Both draws use
+    /// the same line pipeline; the floor binds its own (depth-biased) uniform.
     pub fn draw(&self, render_pass: &mut wgpu::RenderPass<'_>) {
         if self.lattice_vertex_count == 0 && self.floor_vertex_count == 0 {
             return;
         }
         render_pass.set_pipeline(&self.pipeline);
-        render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
         if self.lattice_vertex_count > 0 {
+            render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
             render_pass.set_vertex_buffer(0, self.lattice_buffer.slice(..));
             render_pass.draw(0..self.lattice_vertex_count, 0..1);
         }
         if self.floor_vertex_count > 0 {
+            // Floor's own uniform carries the negative depth bias (issue #29 fix) so
+            // the base-plane floor wins coincident depth against the model's bottom face.
+            render_pass.set_bind_group(0, &self.floor_uniform_bind_group, &[]);
             render_pass.set_vertex_buffer(0, self.floor_buffer.slice(..));
             render_pass.draw(0..self.floor_vertex_count, 0..1);
         }
@@ -1692,16 +1748,8 @@ fn lattice_vertices_into(vertices: &mut Vec<LineVertex>, min: [f32; 3], max: [f3
     }
 }
 
-/// How far BELOW the node's base plane the floor grid sits, in voxels (issue #29
-/// fix). The enclosing-block box bottom is coincident with the model's lowest
-/// voxel face; drawing the depth-tested floor exactly there z-fights that face
-/// (the floor flickers / vanishes under the model). Dropping it a fraction of a
-/// voxel makes it read as the ground UNDER the object and removes the fight, while
-/// staying visually on the base plane.
-const FLOOR_PLANE_DROP_VOXELS: f32 = 0.25;
-
 /// Append a FINE floor grid for the box `[min, max]` (voxels) on its BASE plane
-/// (just below `y = min[1]`) into `vertices` (issue #29 fix). Two-tier, mirroring
+/// (exactly at `y = min[1]`) into `vertices` (issue #29 fix). Two-tier, mirroring
 /// the block lattice and the Point ground plane:
 ///
 /// * **Fine voxel lines** — one per voxel boundary (step 1), at the subtle
@@ -1714,12 +1762,14 @@ const FLOOR_PLANE_DROP_VOXELS: f32 = 0.25;
 /// EXACT coordinates of the block lattice's vertical lines
 /// ([`block_boundaries`]). The floor grid therefore shares the lattice's global
 /// frame and their lines coincide at the base plane. The base plane is the node's
-/// bottom (dropped [`FLOOR_PLANE_DROP_VOXELS`] to avoid z-fighting the model's
-/// coincident bottom face); the grid reads as the ground under the object.
+/// bottom EXACTLY (`y = min[1]`), so the floor's block lines meet the block
+/// lattice's bottom edges with no vertical gap; z-fighting against the model's
+/// coincident bottom face is avoided by the floor pipeline's depth bias
+/// ([`SceneGridRenderer::floor_pipeline`]) rather than a geometric drop.
 fn floor_vertices_into(vertices: &mut Vec<LineVertex>, min: [f32; 3], max: [f32; 3], step: u32) {
     let voxel_color = with_alpha(srgb_hex_to_linear(FLOOR_COLOR_HEX), FLOOR_VOXEL_ALPHA);
     let block_color = with_alpha(srgb_hex_to_linear(FLOOR_COLOR_HEX), FLOOR_ALPHA);
-    let y = min[1] - FLOOR_PLANE_DROP_VOXELS;
+    let y = min[1];
     let xs = voxel_boundaries(min[0], max[0], step);
     let zs = voxel_boundaries(min[2], max[2], step);
 
@@ -1909,11 +1959,18 @@ fn reference_plane_into(
     }
 }
 
-/// Append a Point's three coloured axis lines (issue #29 S5) through `origin_voxels`
-/// (the recentred render-frame position), reusing the gizmo axis colours. Each axis
-/// spans `±POINT_AXIS_HALF_BLOCKS` blocks. Depth-tested at draw time so opaque
-/// voxels occlude the parts behind them.
-fn point_axes_into(vertices: &mut Vec<LineVertex>, origin_voxels: [f32; 3], step: u32) {
+/// Append a Point's coloured axis lines (issue #29 S5; per-axis fix) through
+/// `origin_voxels` (the recentred render-frame position), reusing the gizmo axis
+/// colours. `enabled[axis]` gates each axis independently (X = red +X, Y = green
+/// +Y, Z = blue +Z), so e.g. turning Y off drops the green line and emits only the
+/// X and Z segments. Each enabled axis spans `±POINT_AXIS_HALF_BLOCKS` blocks.
+/// Depth-tested at draw time so opaque voxels occlude the parts behind them.
+fn point_axes_into(
+    vertices: &mut Vec<LineVertex>,
+    origin_voxels: [f32; 3],
+    step: u32,
+    enabled: [bool; 3],
+) {
     let half = POINT_AXIS_HALF_BLOCKS as f32 * step.max(1) as f32;
     let colors = [
         with_alpha(srgb_hex_to_linear(GIZMO_AXIS_X_HEX), POINT_AXIS_ALPHA),
@@ -1921,6 +1978,9 @@ fn point_axes_into(vertices: &mut Vec<LineVertex>, origin_voxels: [f32; 3], step
         with_alpha(srgb_hex_to_linear(GIZMO_AXIS_Z_HEX), POINT_AXIS_ALPHA),
     ];
     for axis in 0..3 {
+        if !enabled[axis] {
+            continue;
+        }
         let mut from = origin_voxels;
         let mut to = origin_voxels;
         from[axis] = origin_voxels[axis] - half;
@@ -1970,8 +2030,13 @@ fn points_line_batch(
         if point.plane_yz {
             reference_plane_into(&mut vertices, ReferencePlane::Yz, origin, camera_position, step);
         }
-        if point.axes {
-            point_axes_into(&mut vertices, origin, step);
+        if point.axis_x || point.axis_y || point.axis_z {
+            point_axes_into(
+                &mut vertices,
+                origin,
+                step,
+                [point.axis_x, point.axis_y, point.axis_z],
+            );
         }
     }
     vertices
@@ -2062,10 +2127,12 @@ impl PointsRenderer {
         );
     }
 
-    /// Upload the camera matrix (same `view_projection` as the voxel pass).
+    /// Upload the camera matrix (same `view_projection` as the voxel pass). Points
+    /// use no depth bias (only the floor grid does — issue #29 fix).
     pub fn update_uniforms(&self, queue: &wgpu::Queue, view_projection: glam::Mat4) {
         let uniforms = LineUniforms {
             view_projection: view_projection.to_cols_array_2d(),
+            depth_bias: [0.0; 4],
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
     }
@@ -3327,11 +3394,12 @@ mod tests {
             let mut floor = Vec::new();
             floor_vertices_into(&mut floor, min, max, step);
             assert!(!floor.is_empty(), "@step{step}: a sized box has floor lines");
-            // Floor sits a fixed small drop below the base plane (issue #29 fix:
-            // dropped off the model's coincident bottom face to avoid z-fighting),
-            // flat in Y, and is uniform across every vertex.
-            let floor_y = min[1] - FLOOR_PLANE_DROP_VOXELS;
-            assert!(floor.iter().all(|v| v.position[1] == floor_y), "floor on dropped base plane");
+            // Floor sits at the EXACT base plane `y = min[1]` (issue #29 fix: no
+            // geometric drop — the floor pipeline's depth bias avoids z-fighting the
+            // model's coincident bottom face), flat in Y, uniform across every vertex.
+            // This is what makes the floor's block lines meet the lattice's bottom edges.
+            let floor_y = min[1];
+            assert!(floor.iter().all(|v| v.position[1] == floor_y), "floor on exact base plane");
         }
     }
 
@@ -3393,15 +3461,29 @@ mod tests {
 
     use crate::scene::Point;
 
-    /// A scene carrying only an Origin Point with the given plane/axis flags.
+    /// A scene carrying only an Origin Point with the given plane flags; `axes`
+    /// sets all three per-axis flags together (the common "axes on/off" case).
     fn origin_point_scene(plane_xz: bool, plane_xy: bool, plane_yz: bool, axes: bool) -> Scene {
+        origin_point_scene_axes(plane_xz, plane_xy, plane_yz, [axes, axes, axes])
+    }
+
+    /// A scene carrying only an Origin Point with the given plane flags and explicit
+    /// per-axis X/Y/Z toggles (issue #29 fix: separable axes).
+    fn origin_point_scene_axes(
+        plane_xz: bool,
+        plane_xy: bool,
+        plane_yz: bool,
+        axes: [bool; 3],
+    ) -> Scene {
         let mut scene = Scene::default();
         scene.points.push(Point {
             name: "Origin".to_string(),
             plane_xz,
             plane_xy,
             plane_yz,
-            axes,
+            axis_x: axes[0],
+            axis_y: axes[1],
+            axis_z: axes[2],
             is_origin: true,
             ..Point::default()
         });
@@ -3444,6 +3526,44 @@ mod tests {
         let xz_xy = points_line_batch(&origin_point_scene(true, true, false, false), density, [0.0; 3]);
         assert!(!xz.is_empty(), "ground plane alone ⇒ lines");
         assert!(xz_xy.len() > xz.len(), "adding the XY plane grows the batch");
+    }
+
+    /// Per-axis gating (issue #29 fix): the X/Y/Z axes toggle independently. All three
+    /// on ⇒ three segments (one per colour); turning Y off drops the GREEN segment and
+    /// leaves the red (X) and blue (Z) ones; a single axis on ⇒ exactly one segment.
+    #[test]
+    fn points_axes_toggle_per_axis() {
+        for density in [1u32, 15, 16] {
+            let green = with_alpha(srgb_hex_to_linear(GIZMO_AXIS_Y_HEX), POINT_AXIS_ALPHA);
+            let is_green = |v: &LineVertex| v.color == green;
+
+            // All three axes on (planes off) → exactly 3 segments = 6 vertices, one green.
+            let all = points_line_batch(
+                &origin_point_scene_axes(false, false, false, [true, true, true]),
+                density,
+                [0.0; 3],
+            );
+            assert_eq!(all.len(), 6, "@d{density}: three axes ⇒ three segments");
+            assert_eq!(all.iter().filter(|v| is_green(v)).count(), 2, "@d{density}: one green (Y) segment, two vertices");
+
+            // Turn Y off → 2 segments, NO green line.
+            let no_y = points_line_batch(
+                &origin_point_scene_axes(false, false, false, [true, false, true]),
+                density,
+                [0.0; 3],
+            );
+            assert_eq!(no_y.len(), 4, "@d{density}: Y off ⇒ two segments");
+            assert!(!no_y.iter().any(is_green), "@d{density}: no green (Y) line when Y is off");
+
+            // Only Y on → exactly one (green) segment.
+            let only_y = points_line_batch(
+                &origin_point_scene_axes(false, false, false, [false, true, false]),
+                density,
+                [0.0; 3],
+            );
+            assert_eq!(only_y.len(), 2, "@d{density}: only Y ⇒ one segment");
+            assert!(only_y.iter().all(is_green), "@d{density}: the only line is green (Y)");
+        }
     }
 
     /// The ground tiling is SNAPPED to block multiples and CENTRED near the camera:
@@ -3498,7 +3618,7 @@ mod tests {
         scene.points.push(Point {
             position_blocks: [10, 0, -4],
             plane_xz: false,
-            axes: true,
+            // axis_x/y/z default true via Point::default() ⇒ all three axes on.
             is_origin: false,
             ..Point::default()
         });

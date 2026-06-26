@@ -540,8 +540,8 @@ fn build_node_list_section(
 /// The **Points** section (issue #29 S5): the world reference grid's frames. Lists
 /// every [`Point`] with a visibility checkbox (bound to `!hidden`) and a selectable
 /// name; **+ Add Point** appends a Point at the camera target (falling back to the
-/// origin); and — for the selected Point — XZ/XY/YZ plane checkboxes, an axes
-/// checkbox, a whole-block position editor (HIDDEN for the Origin), and a **Delete**
+/// origin); and — for the selected Point — XZ/XY/YZ plane checkboxes, per-axis
+/// X/Y/Z checkboxes, a whole-block position editor (HIDDEN for the Origin), and a **Delete**
 /// button (hidden for the Origin, which is undeletable). Mirrors the node list's
 /// deferred-mutation pattern: selection/delete are applied AFTER the read walk.
 fn build_points_section(ui: &mut egui::Ui, state: &mut PanelState, response: &mut PanelResponse) {
@@ -620,7 +620,13 @@ fn build_points_section(ui: &mut egui::Ui, state: &mut PanelState, response: &mu
             changed |= ui.checkbox(&mut point.plane_xz, "Ground plane (XZ)").changed();
             changed |= ui.checkbox(&mut point.plane_xy, "Front plane (XY)").changed();
             changed |= ui.checkbox(&mut point.plane_yz, "Side plane (YZ)").changed();
-            changed |= ui.checkbox(&mut point.axes, "Axes").changed();
+            // Per-axis toggles (issue #29 fix): X/Y/Z each toggle independently.
+            ui.horizontal(|ui| {
+                ui.label("Axes");
+                changed |= ui.checkbox(&mut point.axis_x, "X").changed();
+                changed |= ui.checkbox(&mut point.axis_y, "Y").changed();
+                changed |= ui.checkbox(&mut point.axis_z, "Z").changed();
+            });
 
             // Position editor — only for a user Point (the Origin is pinned at world 0).
             if !point.is_origin {

@@ -6,6 +6,15 @@
 
 struct LineUniforms {
     view_projection: mat4x4<f32>,
+    // A small NDC depth offset applied to every vertex (issue #29 floor fix).
+    // wgpu forbids a hardware DepthBiasState on LineList topology, so the floor
+    // grid biases its depth here instead: a NEGATIVE value pulls the line a hair
+    // toward the camera (smaller NDC z) so it wins the `Less` depth test against
+    // the model's coincident bottom face — letting the floor draw at the EXACT
+    // base plane with no z-fight and no geometric vertical drop. Zero for every
+    // other line pass (gizmo, lattice, view-cube edges, Points). `.yzw` pad to
+    // keep the 16-byte std140 alignment after the mat4.
+    depth_bias: vec4<f32>,
 };
 
 @group(0) @binding(0)
@@ -26,7 +35,11 @@ struct VertexOutput {
 @vertex
 fn vertex_main(vertex: VertexInput) -> VertexOutput {
     var output: VertexOutput;
-    output.clip_position = uniforms.view_projection * vec4<f32>(vertex.position, 1.0);
+    var clip = uniforms.view_projection * vec4<f32>(vertex.position, 1.0);
+    // Bias depth in NDC (post-perspective): scale by w so the offset is applied
+    // after the perspective divide. Negative `depth_bias` ⇒ closer to the camera.
+    clip.z = clip.z + uniforms.depth_bias.x * clip.w;
+    output.clip_position = clip;
     output.color = vertex.color;
     return output;
 }
