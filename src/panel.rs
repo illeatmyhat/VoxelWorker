@@ -264,6 +264,9 @@ impl PanelState {
         if self.scene.nodes.is_empty() {
             self.scene = Scene::from_geometry(self.geometry, self.material);
         }
+        // issue #29 (grid rework S1): every scene carries exactly one Origin Point.
+        // Idempotent, so calling it on an already-seeded scene is a no-op.
+        self.scene.ensure_origin_point();
     }
 
     /// Copy the active node's parameters into the inspector mirror

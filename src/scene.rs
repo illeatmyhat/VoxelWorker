@@ -201,6 +201,28 @@ pub enum NodeContent {
     Instance(DefId),
 }
 
+/// Per-node grid display settings (issue #29 grid rework, S1). Each grid type a
+/// node can show is gated by a scene-wide master ANDed with the node's own flag;
+/// these are the per-node flags. All default **off** — a freshly-added object
+/// carries no grids until the user turns them on (the spec's "default OFF for new
+/// objects"). The scene-wide masters live on [`Scene`] (`master_*`).
+///
+/// **S1 is data-model only:** these fields are persisted and tested but NOT yet
+/// read by any renderer (that wiring is S3/S4). The existing
+/// `PanelState.show_*` toggles keep driving the current renderers unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct NodeGrids {
+    /// Whether the on-face voxel grid overlay shows on this node (S4).
+    #[serde(default)]
+    pub voxel_grid_on_faces: bool,
+    /// Whether the per-object block lattice shows on this node (S3).
+    #[serde(default)]
+    pub block_lattice: bool,
+    /// Whether the per-object floor grid shows on this node (S3).
+    #[serde(default)]
+    pub floor_grid: bool,
+}
+
 /// One placed node in the assembly graph: a producer (or sub-assembly) plus its
 /// local placement and combine operation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -218,6 +240,10 @@ pub struct Node {
     /// Whether the node contributes to resolution (a hidden node stamps nothing).
     #[serde(default = "default_visible")]
     pub visible: bool,
+    /// Per-node grid display settings (issue #29). Defaults all-off; an older
+    /// config without this field deserialises to the all-off default.
+    #[serde(default)]
+    pub grids: NodeGrids,
     /// What the node is.
     pub content: NodeContent,
 }
@@ -229,13 +255,15 @@ fn default_visible() -> bool {
 }
 
 impl Node {
-    /// A visible, identity-placed, union node wrapping `content`.
+    /// A visible, identity-placed, union node wrapping `content`. A new node
+    /// carries NO grids (issue #29: grids default OFF for new objects).
     pub fn new(name: impl Into<String>, content: NodeContent) -> Self {
         Self {
             name: name.into(),
             transform: NodeTransform::identity(),
             operation: CombineOp::Union,
             visible: true,
+            grids: NodeGrids::default(),
             content,
         }
     }
@@ -256,6 +284,81 @@ pub struct AssemblyDef {
     pub children: Vec<Node>,
 }
 
+/// A world-anchored **reference element** (issue #29 grid rework): a named point
+/// in the world-block lattice that carries optional reference planes (ground /
+/// front / side) and axis lines. Distinct from the per-selection transform gizmo
+/// (S2) — a Point is a persistent annotation in world space.
+///
+/// Every scene has exactly one **Origin** Point (`is_origin = true`) synthesized
+/// on load ([`Scene::ensure_origin_point`]); it is undeletable but hideable. Users
+/// may add further Points.
+///
+/// **S1 is data-model only:** Points are persisted and tested but NOT yet rendered
+/// (that is S5).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Point {
+    /// Human-readable name (e.g. "Origin").
+    #[serde(default)]
+    pub name: String,
+    /// Position in the world-block lattice — the SAME frame as
+    /// [`NodeTransform::offset_blocks`] (whole blocks, `i64` for far-world
+    /// addressing).
+    #[serde(default)]
+    pub position_blocks: [i64; 3],
+    /// Sub-block offset in voxels (v1 keeps `[0, 0, 0]`; the field exists so a
+    /// future sub-block placement is a data change, not a rewrite).
+    #[serde(default)]
+    pub offset_voxels: [i32; 3],
+    /// Whether the ground reference plane (XZ) shows. Default **true**.
+    #[serde(default = "default_true_bool")]
+    pub plane_xz: bool,
+    /// Whether the front reference plane (XY) shows. Default false.
+    #[serde(default)]
+    pub plane_xy: bool,
+    /// Whether the side reference plane (YZ) shows. Default false.
+    #[serde(default)]
+    pub plane_yz: bool,
+    /// Whether the axis lines show. Default **true**.
+    #[serde(default = "default_true_bool")]
+    pub axes: bool,
+    /// Whether the Point is hidden (renders nothing). Default false. Works for the
+    /// Origin too (the Origin is hideable, just not deletable).
+    #[serde(default)]
+    pub hidden: bool,
+    /// Whether this is the (unique, undeletable) Origin Point. Default false.
+    #[serde(default)]
+    pub is_origin: bool,
+}
+
+/// Default `true` for serde defaults on `Point`'s ground/axes flags.
+fn default_true_bool() -> bool {
+    true
+}
+
+impl Default for Point {
+    /// A blank Point at the world origin with the spec defaults (ground + axes on,
+    /// other planes off, visible, NOT the Origin). [`Scene::ensure_origin_point`]
+    /// clones this and sets `is_origin`/`name`.
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            position_blocks: [0, 0, 0],
+            offset_voxels: [0, 0, 0],
+            plane_xz: true,
+            plane_xy: false,
+            plane_yz: false,
+            axes: true,
+            hidden: false,
+            is_origin: false,
+        }
+    }
+}
+
+/// Default `true` for the scene-wide block-lattice master (issue #29).
+fn default_master_block_lattice() -> bool {
+    true
+}
+
 /// The scene (assembly): a list of placed nodes resolved into the shared
 /// [`VoxelGrid`] truth. ADR 0001's full model carries reusable `definitions` too;
 /// step 2 added the flat node list plus the `active` selection that drives the
@@ -263,7 +366,7 @@ pub struct AssemblyDef {
 /// resolves the referenced [`AssemblyDef`] under its transform (reuse by
 /// reference: a village of identical houses is one definition placed by N
 /// instances).
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Scene {
     /// The top-level assembly's nodes, resolved in order (later nodes win on
     /// overlap under [`CombineOp::Union`]).
@@ -282,6 +385,46 @@ pub struct Scene {
     /// selected. Kept valid (re-clamped / dropped) across add / delete / group.
     #[serde(default)]
     pub active: Option<NodePath>,
+    /// World-anchored reference Points (issue #29). Always contains exactly one
+    /// Origin Point after [`ensure_origin_point`](Self::ensure_origin_point) runs
+    /// on load. An older config without this field deserialises to an empty list,
+    /// then gains its Origin on the load path.
+    #[serde(default)]
+    pub points: Vec<Point>,
+    /// Scene-wide master toggle for the block lattice (issue #29). Default
+    /// **true**. ANDed with each node's [`NodeGrids::block_lattice`] in S3.
+    /// Migrated from the legacy `AppConfig.show_block_lattice` on load.
+    #[serde(default = "default_master_block_lattice")]
+    pub master_block_lattice: bool,
+    /// Scene-wide master toggle for the on-face voxel grid (issue #29). Default
+    /// false. Migrated from the legacy `AppConfig.show_grid_overlay` on load.
+    #[serde(default)]
+    pub master_voxel_grid: bool,
+    /// Scene-wide master toggle for the floor grid (issue #29). Default false.
+    /// Migrated from the legacy `AppConfig.show_floor_grid` on load.
+    #[serde(default)]
+    pub master_floor_grid: bool,
+    /// The active/selected Point (index into [`points`](Self::points)), or `None`.
+    #[serde(default)]
+    pub active_point: Option<usize>,
+}
+
+impl Default for Scene {
+    /// An empty scene with the issue-#29 master defaults (block lattice on, voxel
+    /// grid + floor grid off) and no Points yet (the Origin is synthesized on the
+    /// load path via [`ensure_origin_point`](Self::ensure_origin_point)).
+    fn default() -> Self {
+        Self {
+            nodes: Vec::new(),
+            definitions: Vec::new(),
+            active: None,
+            points: Vec::new(),
+            master_block_lattice: true,
+            master_voxel_grid: false,
+            master_floor_grid: false,
+            active_point: None,
+        }
+    }
 }
 
 impl Scene {
@@ -290,8 +433,62 @@ impl Scene {
     pub fn single_node(node: Node) -> Self {
         Self {
             nodes: vec![node],
-            definitions: Vec::new(),
             active: Some(NodePath::root_index(0)),
+            ..Self::default()
+        }
+    }
+
+    /// Ensure the scene has exactly one **Origin** Point (issue #29). If no Point
+    /// has `is_origin == true`, insert one at index 0 with the spec defaults
+    /// (ground plane + axes on; positioned at the world origin). Idempotent: a
+    /// second call (or a load of a scene that already carries an Origin) does
+    /// nothing. Called on every load path so every scene gains its Origin.
+    pub fn ensure_origin_point(&mut self) {
+        if self.points.iter().any(|point| point.is_origin) {
+            return;
+        }
+        self.points.insert(
+            0,
+            Point {
+                name: "Origin".to_string(),
+                position_blocks: [0, 0, 0],
+                offset_voxels: [0, 0, 0],
+                plane_xz: true,
+                plane_xy: false,
+                plane_yz: false,
+                axes: true,
+                hidden: false,
+                is_origin: true,
+            },
+        );
+    }
+
+    /// Append a reference [`Point`] to the scene (issue #29).
+    pub fn add_point(&mut self, point: Point) {
+        self.points.push(point);
+    }
+
+    /// Remove the Point at `index` (issue #29). **No-op if it is the Origin** (the
+    /// Origin is undeletable) or the index is out of range. Hiding the Origin is
+    /// done by setting its `hidden` flag (see [`toggle_point_hidden`]), not by
+    /// removal.
+    ///
+    /// [`toggle_point_hidden`]: Self::toggle_point_hidden
+    pub fn remove_point(&mut self, index: usize) {
+        match self.points.get(index) {
+            Some(point) if !point.is_origin => {
+                self.points.remove(index);
+            }
+            _ => {}
+        }
+    }
+
+    /// Toggle the `hidden` flag of the Point at `index` (issue #29). Works for the
+    /// Origin too — the Origin is hideable (just not deletable). No-op for an
+    /// out-of-range index.
+    pub fn toggle_point_hidden(&mut self, index: usize) {
+        if let Some(point) = self.points.get_mut(index) {
+            point.hidden = !point.hidden;
         }
     }
 
@@ -1623,6 +1820,7 @@ mod tests {
             ],
             definitions: vec![house],
             active: Some(NodePath::root_index(0)),
+            ..Scene::default()
         };
         assert_equal(&village, 16, "demo-village");
     }
@@ -2103,6 +2301,7 @@ mod tests {
             nodes: vec![instance],
             definitions: vec![def],
             active: Some(NodePath::root_index(0)),
+            ..Scene::default()
         };
         let instanced_grid = instanced.resolve_region(region, voxels_per_block, 0);
 
@@ -2145,6 +2344,7 @@ mod tests {
             nodes: vec![Node::new("I", NodeContent::Instance(def_id))],
             definitions: vec![def.clone()],
             active: Some(NodePath::root_index(0)),
+            ..Scene::default()
         };
         let def_count = def_only
             .resolve_region(RegionBlocks::new([1, 1, 1]), voxels_per_block, 0)
@@ -2160,6 +2360,7 @@ mod tests {
             nodes: vec![house_a, house_b],
             definitions: vec![def],
             active: Some(NodePath::root_index(0)),
+            ..Scene::default()
         };
         let region = village.full_extent_blocks(voxels_per_block);
         let grid = village.resolve_region(region, voxels_per_block, 0);
@@ -2219,6 +2420,7 @@ mod tests {
             nodes: vec![Node::new("Root", NodeContent::Instance(def_id))],
             definitions: vec![def],
             active: Some(NodePath::root_index(0)),
+            ..Scene::default()
         };
 
         // Resolves (no overflow) and contributes the single box ONCE — the self-
@@ -2253,6 +2455,7 @@ mod tests {
             ],
             definitions: Vec::new(),
             active: Some(NodePath::root_index(0)),
+            ..Scene::default()
         }
     }
 
@@ -2317,6 +2520,7 @@ mod tests {
             nodes: vec![scene.nodes[0].clone()],
             definitions: scene.definitions.clone(),
             active: Some(NodePath::root_index(0)),
+            ..Scene::default()
         }
         .resolve_region(RegionBlocks::new([1, 1, 1]), voxels_per_block, 0)
         .occupied_count();
@@ -2607,6 +2811,7 @@ mod tests {
             ],
             definitions: vec![house],
             active: Some(NodePath::root_index(0)),
+            ..Scene::default()
         };
         assert_chunked_matches_monolithic(&scene, voxels_per_block, "demo-village");
     }
@@ -2986,6 +3191,7 @@ mod tests {
             ],
             definitions: vec![house],
             active: Some(NodePath::root_index(0)),
+            ..Scene::default()
         }
     }
 
@@ -3433,5 +3639,191 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ---- issue #29 (grid rework S1): per-node grids, Points, masters ----
+
+    /// A freshly-built node carries NO grids (issue #29: grids default OFF for new
+    /// objects). `NodeGrids::default()` is all-false, and `Node::new` adopts it.
+    #[test]
+    fn new_node_has_all_grids_off() {
+        let node = Node::new(
+            "Box",
+            NodeContent::Tool {
+                shape: SdfShape {
+                    kind: ShapeKind::Box,
+                    size_blocks: [1, 1, 1],
+                    voxels_per_block: 8,
+                    wall_blocks: 1,
+                },
+                material: MaterialChoice::Stone,
+            },
+        );
+        assert!(!node.grids.voxel_grid_on_faces);
+        assert!(!node.grids.block_lattice);
+        assert!(!node.grids.floor_grid);
+        assert_eq!(node.grids, NodeGrids::default());
+    }
+
+    /// An empty `Scene::default()` has the issue-#29 master defaults (block lattice
+    /// ON, voxel grid + floor grid OFF) and no Points yet.
+    #[test]
+    fn scene_default_master_grids() {
+        let scene = Scene::default();
+        assert!(scene.master_block_lattice, "block lattice master defaults ON");
+        assert!(!scene.master_voxel_grid, "voxel grid master defaults OFF");
+        assert!(!scene.master_floor_grid, "floor grid master defaults OFF");
+        assert!(scene.points.is_empty(), "no Points until ensure_origin_point");
+        assert_eq!(scene.active_point, None);
+    }
+
+    /// `ensure_origin_point` is idempotent and creates EXACTLY one Origin at index 0
+    /// with the spec defaults (ground plane + axes on); a second call (or a scene
+    /// that already has an Origin) does not duplicate it.
+    #[test]
+    fn ensure_origin_point_is_idempotent_and_creates_one_origin() {
+        let mut scene = Scene::default();
+        scene.ensure_origin_point();
+        assert_eq!(scene.points.len(), 1, "exactly one Point after first call");
+        let origin = &scene.points[0];
+        assert!(origin.is_origin, "the synthesized Point is the Origin");
+        assert_eq!(origin.name, "Origin");
+        assert_eq!(origin.position_blocks, [0, 0, 0]);
+        assert!(origin.plane_xz, "ground plane on by default");
+        assert!(origin.axes, "axes on by default");
+        assert!(!origin.plane_xy && !origin.plane_yz);
+        assert!(!origin.hidden);
+
+        // Idempotent: a second call does not add another Origin.
+        scene.ensure_origin_point();
+        assert_eq!(scene.points.len(), 1, "second call adds nothing");
+        assert_eq!(scene.points.iter().filter(|p| p.is_origin).count(), 1);
+    }
+
+    /// An existing Origin (anywhere in the list) is NOT duplicated by
+    /// `ensure_origin_point`; a scene that already carries one is left untouched.
+    #[test]
+    fn ensure_origin_point_does_not_duplicate_existing_origin() {
+        let mut scene = Scene::default();
+        // Seed a non-origin Point first, then an Origin at index 1.
+        scene.add_point(Point { name: "Marker".to_string(), ..Point::default() });
+        scene.add_point(Point { name: "Origin".to_string(), is_origin: true, ..Point::default() });
+        scene.ensure_origin_point();
+        assert_eq!(scene.points.len(), 2, "no Origin inserted when one exists");
+        assert_eq!(scene.points.iter().filter(|p| p.is_origin).count(), 1);
+    }
+
+    /// `remove_point` deletes a normal Point but NO-OPS on the Origin (undeletable),
+    /// and `toggle_point_hidden` hides the Origin (hideable).
+    #[test]
+    fn remove_point_spares_origin_which_is_hideable() {
+        let mut scene = Scene::default();
+        scene.ensure_origin_point(); // Origin at index 0
+        scene.add_point(Point { name: "Marker".to_string(), ..Point::default() }); // index 1
+
+        // Removing the Origin is a no-op.
+        scene.remove_point(0);
+        assert_eq!(scene.points.len(), 2, "the Origin is undeletable");
+        assert!(scene.points[0].is_origin);
+
+        // Removing a normal Point works.
+        scene.remove_point(1);
+        assert_eq!(scene.points.len(), 1, "a normal Point is removable");
+        assert!(scene.points[0].is_origin);
+
+        // Out-of-range removal is a no-op (never panics).
+        scene.remove_point(99);
+        assert_eq!(scene.points.len(), 1);
+
+        // The Origin is hideable: toggling its hidden flag works.
+        assert!(!scene.points[0].hidden);
+        scene.toggle_point_hidden(0);
+        assert!(scene.points[0].hidden, "the Origin can be hidden");
+        scene.toggle_point_hidden(0);
+        assert!(!scene.points[0].hidden, "and un-hidden");
+    }
+
+    /// Serde round-trip: a Scene whose node carries non-default `NodeGrids` plus a
+    /// custom Point round-trips through JSON byte-equal (structurally).
+    #[test]
+    fn scene_with_grids_and_points_round_trips() {
+        let mut node = Node::new(
+            "Box",
+            NodeContent::Tool {
+                shape: SdfShape {
+                    kind: ShapeKind::Box,
+                    size_blocks: [1, 1, 1],
+                    voxels_per_block: 8,
+                    wall_blocks: 1,
+                },
+                material: MaterialChoice::Stone,
+            },
+        );
+        node.grids = NodeGrids {
+            voxel_grid_on_faces: true,
+            block_lattice: false,
+            floor_grid: true,
+        };
+        let mut scene = Scene {
+            nodes: vec![node],
+            active: Some(NodePath::root_index(0)),
+            master_block_lattice: false,
+            master_voxel_grid: true,
+            master_floor_grid: true,
+            active_point: Some(1),
+            ..Scene::default()
+        };
+        scene.ensure_origin_point();
+        scene.add_point(Point {
+            name: "Corner".to_string(),
+            position_blocks: [3, 4, 5],
+            plane_xz: false,
+            plane_xy: true,
+            plane_yz: true,
+            axes: false,
+            hidden: true,
+            ..Point::default()
+        });
+
+        let json = serde_json::to_string_pretty(&scene).expect("serialise");
+        let restored: Scene = serde_json::from_str(&json).expect("deserialise");
+        assert_eq!(scene, restored, "scene with grids + points round-trips");
+        assert!(restored.nodes[0].grids.voxel_grid_on_faces);
+        assert!(restored.nodes[0].grids.floor_grid);
+        assert!(!restored.master_block_lattice);
+        assert!(restored.master_voxel_grid);
+        assert_eq!(restored.points.len(), 2);
+        assert_eq!(restored.points[1].position_blocks, [3, 4, 5]);
+    }
+
+    /// Back-compat: an OLD serialized scene (no `grids`, no `points`, no masters)
+    /// deserialises with the correct defaults — node grids all-off, masters at
+    /// their struct defaults (lattice on, others off), empty points.
+    #[test]
+    fn old_scene_json_loads_with_grid_defaults() {
+        let old_json = r#"{
+            "nodes": [
+                {
+                    "name": "Box",
+                    "transform": { "offset_blocks": [0, 0, 0] },
+                    "operation": "Union",
+                    "visible": true,
+                    "content": {
+                        "Tool": {
+                            "shape": { "kind": "Box", "size_blocks": [2,2,2], "voxels_per_block": 8, "wall_blocks": 1 },
+                            "material": "Stone"
+                        }
+                    }
+                }
+            ],
+            "active": { "indices": [0] }
+        }"#;
+        let scene: Scene = serde_json::from_str(old_json).expect("old scene parses");
+        assert_eq!(scene.nodes.len(), 1);
+        assert_eq!(scene.nodes[0].grids, NodeGrids::default(), "grids default off");
+        assert!(scene.master_block_lattice, "lattice master default on");
+        assert!(!scene.master_voxel_grid && !scene.master_floor_grid);
+        assert!(scene.points.is_empty(), "no points in the old document");
+        assert_eq!(scene.active_point, None);
     }
 }

@@ -252,6 +252,27 @@ impl AppConfig {
             }
             _ => state.seed_scene_from_geometry(),
         }
+        // issue #29 (grid rework S1): every loaded scene gains exactly one Origin
+        // Point (idempotent — a scene that already carries one is untouched), and
+        // the scene-wide grid MASTERS migrate from the legacy `show_*` config
+        // fields so an existing user's prefs carry over. We only seed the masters
+        // when the persisted scene predates them (an old config with no `scene`,
+        // or a scene whose masters are still at their struct default) — otherwise
+        // a scene saved by a #29-aware build keeps its own masters.
+        //
+        // NOTE: S1 does NOT rewire any renderer. The masters are data only; the
+        // existing `PanelState.show_*` toggles (set above) still drive the live
+        // renderers unchanged. Master→renderer wiring is S3/S4.
+        let scene_predates_points = match &self.scene {
+            Some(scene) => scene.points.is_empty() && !scene.nodes.is_empty(),
+            None => true,
+        };
+        if scene_predates_points {
+            state.scene.master_block_lattice = self.show_block_lattice;
+            state.scene.master_voxel_grid = self.show_grid_overlay;
+            state.scene.master_floor_grid = self.show_floor_grid;
+        }
+        state.scene.ensure_origin_point();
         state
     }
 
@@ -468,6 +489,7 @@ mod tests {
             nodes: vec![stone, clouds, group, instance],
             definitions: vec![def],
             active: Some(NodePath::from_indices(vec![2, 0])),
+            ..Scene::default()
         };
 
         // Build a panel carrying this scene and capture → JSON → restore.
@@ -683,5 +705,99 @@ mod tests {
         assert_eq!(restored.show_floor_grid, panel.show_floor_grid);
         assert_eq!(restored.material, panel.material);
         assert_eq!(restored.geometry, panel.geometry);
+    }
+
+    /// issue #29 (grid rework S1): loading an OLD config (no `scene` field — the
+    /// legacy flat geometry) gains exactly one Origin Point on the load path, and
+    /// the scene-wide grid masters MIGRATE from the legacy `show_*` fields so an
+    /// existing user's prefs carry over.
+    #[test]
+    fn old_config_gains_origin_point_and_migrates_masters() {
+        let old_json = r#"{
+            "shape": "Box",
+            "size_blocks": [2, 2, 2],
+            "voxels_per_block": 8,
+            "wall_blocks": 1,
+            "show_grid_overlay": true,
+            "show_block_lattice": false,
+            "show_floor_grid": true
+        }"#;
+        let config: AppConfig = serde_json::from_str(old_json).expect("old config parses");
+        assert!(config.scene.is_none(), "an old flat config carries no scene");
+
+        let panel = config.to_panel_state();
+        // Exactly one Origin Point synthesized on load.
+        assert_eq!(
+            panel.scene.points.iter().filter(|p| p.is_origin).count(),
+            1,
+            "the load path synthesizes exactly one Origin Point"
+        );
+        assert_eq!(panel.scene.points.len(), 1);
+        assert!(panel.scene.points[0].is_origin);
+        assert_eq!(panel.scene.points[0].name, "Origin");
+
+        // Masters migrated from the legacy show_* fields.
+        assert!(!panel.scene.master_block_lattice, "migrated from show_block_lattice=false");
+        assert!(panel.scene.master_voxel_grid, "migrated from show_grid_overlay=true");
+        assert!(panel.scene.master_floor_grid, "migrated from show_floor_grid=true");
+
+        // S1 does NOT rewire renderers: the legacy PanelState.show_* toggles still
+        // mirror the config exactly (they keep driving the live renderers).
+        assert!(!panel.show_block_lattice);
+        assert!(panel.show_grid_overlay);
+        assert!(panel.show_floor_grid);
+    }
+
+    /// issue #29: a scene saved by a #29-aware build (already carrying an Origin
+    /// Point and its own masters) keeps its masters on reload — the legacy `show_*`
+    /// migration only seeds masters for a scene that predates Points. The Origin is
+    /// not duplicated.
+    #[test]
+    fn modern_scene_keeps_its_masters_and_single_origin() {
+        use crate::scene::{Node, NodeContent, NodePath, Point, Scene};
+        use crate::voxel::SdfShape;
+
+        let node = Node::new(
+            "Box",
+            NodeContent::Tool {
+                shape: SdfShape { kind: ShapeKind::Box, size_blocks: [2, 2, 2], voxels_per_block: 8, wall_blocks: 1 },
+                material: MaterialChoice::Stone,
+            },
+        );
+        let mut scene = Scene {
+            nodes: vec![node],
+            active: Some(NodePath::root_index(0)),
+            master_block_lattice: false,
+            master_voxel_grid: true,
+            master_floor_grid: false,
+            ..Scene::default()
+        };
+        scene.ensure_origin_point();
+        scene.add_point(Point { name: "Marker".to_string(), ..Point::default() });
+
+        let mut panel = PanelState::with_view_cube_default();
+        panel.scene = scene;
+        // The legacy config show_* are the OPPOSITE of the scene masters, to prove
+        // they do NOT overwrite a modern scene's masters.
+        panel.show_block_lattice = true;
+        panel.show_grid_overlay = false;
+        panel.show_floor_grid = true;
+        let camera = OrbitCamera::default();
+        let config = AppConfig::capture(&panel, &camera, [1280, 800]);
+
+        let json = serde_json::to_string_pretty(&config).expect("serialise");
+        let restored: AppConfig = serde_json::from_str(&json).expect("deserialise");
+        let restored_panel = restored.to_panel_state();
+
+        // The scene's own masters survive (NOT overwritten by the legacy show_*).
+        assert!(!restored_panel.scene.master_block_lattice);
+        assert!(restored_panel.scene.master_voxel_grid);
+        assert!(!restored_panel.scene.master_floor_grid);
+        // Still exactly one Origin (not duplicated on reload).
+        assert_eq!(
+            restored_panel.scene.points.iter().filter(|p| p.is_origin).count(),
+            1
+        );
+        assert_eq!(restored_panel.scene.points.len(), 2, "Origin + Marker survive");
     }
 }

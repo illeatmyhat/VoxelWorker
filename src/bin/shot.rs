@@ -760,6 +760,7 @@ fn build_demo_village(voxels_per_block: u32) -> Scene {
         ],
         definitions: vec![house],
         active: Some(NodePath::root_index(0)),
+        ..Scene::default()
     }
 }
 
@@ -804,6 +805,7 @@ fn build_demo_groups(voxels_per_block: u32) -> Scene {
         nodes: vec![cluster, lone, widget_instance],
         definitions: vec![widget],
         active: Some(NodePath::root_index(0)),
+        ..Scene::default()
     }
 }
 

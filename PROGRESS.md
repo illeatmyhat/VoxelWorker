@@ -33,6 +33,29 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **Grid rework S1: per-node grid settings + Point elements + persistence — Part of #29.**
+  DATA MODEL + PERSISTENCE only (no render change → goldens stay green). Added, all serde
+  back-compatible (old scenes/configs load unchanged):
+  - **`NodeGrids`** `{ voxel_grid_on_faces, block_lattice, floor_grid }` (all default **false**),
+    `#[serde(default)] grids: NodeGrids` on `Node`; `Node::new` keeps them off (new objects → grids OFF).
+  - **`Point`** `{ name, position_blocks: [i64;3] (world-block lattice), offset_voxels: [i32;3],
+    plane_xz (default **true** = ground), plane_xy/plane_yz (false), axes (default **true**),
+    hidden (false), is_origin (false) }` — true-defaults via `#[serde(default = "…")]` helpers.
+  - On **`Scene`**: `points: Vec<Point>`, masters `master_block_lattice` (default **true**) /
+    `master_voxel_grid` / `master_floor_grid` (false), `active_point: Option<usize>`. Manual
+    `Default` impl so empty-scene masters match the serde defaults.
+  - **Methods:** `ensure_origin_point` (idempotent; inserts one undeletable `is_origin` Point at
+    index 0), `add_point`, `remove_point` (NO-OP on the Origin), `toggle_point_hidden` (Origin hideable).
+  - **Persistence:** the whole `Scene` rides `AppConfig.scene` with `#[serde(default)]`. On load
+    (`settings.rs::to_panel_state` and `panel.rs::seed_scene_from_geometry`) every scene calls
+    `ensure_origin_point`; masters migrate from the legacy `show_block_lattice/show_grid_overlay/
+    show_floor_grid` for scenes that predate Points. **No renderer rewired** — the existing
+    `PanelState.show_*` toggles still drive the live renderers; master→renderer wiring is S3/S4.
+  - Tests (+9 lib): grids-off-by-default, scene master defaults, `ensure_origin_point`
+    idempotent/no-duplicate, `remove_point` spares+hides Origin, grids+points round-trip,
+    old-scene-json defaults, old-config gains Origin + migrates masters, modern scene keeps masters.
+    **186 lib tests pass; 6 goldens green; clippy clean.**
+
 - **Density-parametrized shape-alignment + node-AABB follow tests — Part of #29.** Pure-CPU
   TEST augmentation (no behaviour change → goldens stay green). Generalized the #30 acceptance
   coverage across a representative density set and added the #29 grid/gizmo geometry-source tests:

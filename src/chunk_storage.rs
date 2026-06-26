@@ -761,6 +761,7 @@ mod tests {
             ],
             definitions: vec![house],
             active: Some(NodePath::root_index(0)),
+            ..Scene::default()
         };
 
         for (scene, label) in [(demo_scene, "demo-scene"), (village, "demo-village")] {

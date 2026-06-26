@@ -682,6 +682,7 @@ mod tests {
             ],
             definitions: vec![house],
             active: Some(NodePath::root_index(0)),
+            ..Scene::default()
         };
         assert_cache_region_matches_monolithic(&scene, voxels_per_block, "demo-village");
     }
@@ -1157,6 +1158,7 @@ mod tests {
             ],
             definitions: vec![house],
             active: Some(NodePath::root_index(0)),
+            ..Scene::default()
         };
         assert_render_chunks_match_resolve_region(&scene, vpb, "demo-village");
     }
@@ -1369,6 +1371,7 @@ mod tests {
             ],
             definitions: vec![house],
             active: Some(NodePath::root_index(0)),
+            ..Scene::default()
         };
         assert_region_widest_run_matches_whole_grid(&scene, vpb, "demo-village");
     }
