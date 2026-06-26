@@ -362,16 +362,20 @@ impl CuboidChunkMesh {
 ///
 /// `world_offset` is the world min-corner plane of absolute index `(0,0,0)` —
 /// `min(world_position) - 0.5` over EVERY voxel in EVERY chunk grid (the same cloud
-/// anchor [`region_from_voxel_cloud`] computes for the whole grid). `occupied` is
-/// the set of absolute indices `round(world - min_world)` of every voxel across all
-/// chunks. Both keyed off the GLOBAL cloud so a per-chunk region densified against
-/// `world_offset` lands its geometry on the EXACT world positions the whole-region
-/// mesher would (pixel parity), and a chunk's 1-voxel apron reads the true neighbour
-/// occupancy from `occupied` (so a seam face between two solid chunks is culled —
-/// the exposed-face set equals whole-region meshing's).
+/// anchor [`region_from_voxel_cloud`] computes for the whole grid). `occupied` is a
+/// DENSE row-major region (X fastest) of the union cloud, indexed DIRECTLY by the
+/// absolute global index `round(world - min_world)` (which is `>= 0` per axis since
+/// `min_world` is the per-axis minimum). `extent` is the union's per-axis index span.
+///
+/// A DENSE region (issue #20 perf) replaces the former `HashMap<[i64;3], u16>`: the
+/// apron build then copies a contiguous sub-window per chunk instead of doing a hash
+/// lookup per apron cell — the apron fill (per-cell `HashMap::get`) was the dominant
+/// rebuild cost. Building it dense is O(voxels) with no hashing, and the per-chunk
+/// window copy is row-major `memcpy`. The OUTPUT (occupancy queried) is identical.
 struct GlobalOccupancy {
     world_offset: [f32; 3],
-    occupied: std::collections::HashMap<[i64; 3], u16>,
+    extent: [u32; 3],
+    occupied: Vec<Option<u16>>,
 }
 
 /// Build the global occupancy + cloud anchor over all per-chunk grids (issue #20
@@ -380,34 +384,44 @@ struct GlobalOccupancy {
 /// grids IS the assembled whole grid, voxel-for-voxel, by the S6c-2a seam).
 fn global_occupancy_from_chunks(chunk_grids: &[([i32; 3], &VoxelGrid)]) -> GlobalOccupancy {
     let mut min_world = [f32::INFINITY; 3];
+    let mut max_world = [f32::NEG_INFINITY; 3];
     let mut any = false;
     for (_coord, grid) in chunk_grids {
         for voxel in &grid.occupied {
             any = true;
-            for (axis, min_axis) in min_world.iter_mut().enumerate() {
-                *min_axis = min_axis.min(voxel.world_position[axis]);
+            for axis in 0..3 {
+                min_world[axis] = min_world[axis].min(voxel.world_position[axis]);
+                max_world[axis] = max_world[axis].max(voxel.world_position[axis]);
             }
         }
     }
     if !any {
         return GlobalOccupancy {
             world_offset: [0.0; 3],
-            occupied: std::collections::HashMap::new(),
+            extent: [0, 0, 0],
+            occupied: Vec::new(),
         };
     }
-    let mut occupied = std::collections::HashMap::new();
+    // Max absolute index per axis = round(max_world - min_world); extent = max + 1.
+    let extent = [
+        ((max_world[0] - min_world[0]).round() as i64 + 1) as u32,
+        ((max_world[1] - min_world[1]).round() as i64 + 1) as u32,
+        ((max_world[2] - min_world[2]).round() as i64 + 1) as u32,
+    ];
+    let [w, h, d] = extent;
+    let mut occupied = vec![None; w as usize * h as usize * d as usize];
     for (_coord, grid) in chunk_grids {
         for voxel in &grid.occupied {
-            let index = [
-                (voxel.world_position[0] - min_world[0]).round() as i64,
-                (voxel.world_position[1] - min_world[1]).round() as i64,
-                (voxel.world_position[2] - min_world[2]).round() as i64,
-            ];
-            occupied.insert(index, voxel.material_id);
+            let x = (voxel.world_position[0] - min_world[0]).round() as u32;
+            let y = (voxel.world_position[1] - min_world[1]).round() as u32;
+            let z = (voxel.world_position[2] - min_world[2]).round() as u32;
+            let flat = (z as usize * h as usize + y as usize) * w as usize + x as usize;
+            occupied[flat] = Some(voxel.material_id);
         }
     }
     GlobalOccupancy {
         world_offset: [min_world[0] - 0.5, min_world[1] - 0.5, min_world[2] - 0.5],
+        extent,
         occupied,
     }
 }
@@ -513,22 +527,41 @@ fn build_chunk_meshes_with_apron(
         // GLOBAL occupancy, BAND-CLIPPED exactly as the interior — so a seam
         // neighbour that the band masked out reads as air and the cap face is
         // synthesised, identical to whole-region meshing under the same band.
+        //
+        // The global occupancy is a DENSE row-major region (issue #20 perf), so a
+        // chunk's apron window `[origin, origin+extent)` is a contiguous run per X
+        // row: copy each in-bounds, in-band row with `copy_from_slice` instead of a
+        // per-cell hash lookup (the former per-cell `HashMap::get` dominated the
+        // rebuild). Rows outside the global extent or out of band stay air. The
+        // queried occupancy — hence the meshed output — is identical.
         let mut apron = VoxelRegion::new_empty(extent);
+        let [gw, gh, gd] = global.extent;
+        let [aw, ah, _ad] = extent;
         for lz in 0..extent[2] {
+            let gz = origin[2] + lz as i64;
+            if gz < 0 || gz >= gd as i64 {
+                continue;
+            }
             for ly in 0..extent[1] {
-                for lx in 0..extent[0] {
-                    let g = [
-                        origin[0] + lx as i64,
-                        origin[1] + ly as i64,
-                        origin[2] + lz as i64,
-                    ];
-                    if !global_y_in_band(g[1]) {
-                        continue;
-                    }
-                    if let Some(material) = global.occupied.get(&g) {
-                        apron.set(lx, ly, lz, Some(*material));
-                    }
+                let gy = origin[1] + ly as i64;
+                if gy < 0 || gy >= gh as i64 || !global_y_in_band(gy) {
+                    continue;
                 }
+                // The apron row spans global X in `[origin.x, origin.x + aw)`; clip
+                // it to the global region's `[0, gw)` and copy the overlap directly.
+                let row_gx0 = origin[0].max(0);
+                let row_gx1 = (origin[0] + aw as i64).min(gw as i64);
+                if row_gx1 <= row_gx0 {
+                    continue;
+                }
+                let src_base =
+                    (gz as usize * gh as usize + gy as usize) * gw as usize + row_gx0 as usize;
+                let len = (row_gx1 - row_gx0) as usize;
+                let dst_lx = (row_gx0 - origin[0]) as u32;
+                let dst_base =
+                    (lz as usize * ah as usize + ly as usize) * aw as usize + dst_lx as usize;
+                apron.cells[dst_base..dst_base + len]
+                    .copy_from_slice(&global.occupied[src_base..src_base + len]);
             }
         }
 

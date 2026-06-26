@@ -33,6 +33,32 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **Speed up cuboid rebuild (perf) — Part of #20.** Dragging any slider with the DEFAULT cuboid
+  mesher was very laggy: every edit fully re-meshes all chunks. MEASURED the per-rebuild phases
+  (release, repeated re-resolve worst case) and found the apron mesher's `HashMap<[i64;3],u16>`
+  was the dominant cost — both building it (`global_occupancy`) and querying it once per apron
+  cell (`apron_fill`).
+  - **Before (release ms/rebuild):**
+    - sphere 5×1×5 d16 (default disc, 53.7k voxels, 8 chunks): resolve 8.8 + global_occupancy 3.5
+      + per-chunk-mesh 7.6 = **19.8 ms** (apron-fill ≈ all of the per-chunk-mesh).
+    - box 5×5×5 d16 (512k voxels, 8 chunks): resolve 36 + global_occupancy 58 + per-chunk-mesh 109
+      = **203 ms** (apron-fill ≈ 44 ms/build, densify+decompose+emit ≈ 1.5 ms — the HashMap was ~100%).
+  - **Fix:** replaced the global occupancy `HashMap` with a DENSE row-major `VoxelRegion` indexed
+    directly by the absolute global voxel index, built O(voxels) with no hashing. Each chunk's
+    apron is now filled by copying the contiguous global sub-window per X row with
+    `copy_from_slice` (band-clipped by Y row) instead of a per-cell `HashMap::get`. The occupancy
+    queried — hence the meshed output — is byte-identical.
+  - **After (release ms/rebuild):**
+    - sphere: global_occupancy 0.4 + per-chunk-mesh 1.5; cuboid-specific work 11.1 → **1.9 ms**;
+      TOTAL 19.8 → **10.5 ms** (resolve, shared with the instanced path, now dominates).
+    - box: global_occupancy 58 → 4, apron-fill 44 → 0.24, per-chunk-mesh 109 → 11; cuboid-specific
+      work 167 → **15 ms**; TOTAL 203 → **56 ms** (3.6× overall, ~11× on the cuboid-specific work).
+  - **Output unchanged:** the 3 apron parity tests (per-chunk apron exposed-face set == whole-region
+    ground truth, full + banded) stay green; goldens (6 images) byte-for-byte unchanged; a headless
+    `--mesher cuboid` sphere renders a complete silhouette. No incrementalism added (extent-changing
+    slider edits shift the recentre and force a full re-mesh regardless — same constraint as the
+    instanced S6c-2c path); this makes the unavoidable FULL rebuild fast. No rebasing change.
+
 - **Cuboid mesher: render applied/loaded VS block textures (per-face D2Array) — Part of #20.**
   The DEFAULT cuboid path could not show an applied/loaded VS block: it bound only the 3-material
   PROCEDURAL atlas, and `main.rs`/`shot.rs` set the cuboid bound material to `None` for a loaded block,
