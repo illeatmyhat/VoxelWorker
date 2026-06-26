@@ -33,6 +33,39 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **ViewCube: Step 6 — chrome polish + interaction fixes — Part of #13 (final pass before closing #13).**
+  Eight smoke-test items from the #13 feedback:
+  1. **Cube-drag horizontal sign FLIPPED** (`main.rs` CursorMoved): only the cube-drag path negates `delta_x`
+     before `orbit_by_drag` (the scene drag keeps its sign), so grabbing the cube turns the model the natural way.
+     *Interaction-feel — needs user verification.*
+  2. **Hover highlights ALL cube elements** (`camera.rs` `is_face_constrained` unused here; `renderer.rs`
+     `draw` + `viewcube.wgsl`). The cube uniform's `depth_bias.x` slot now packs a 6-bit hovered-face mask
+     (`cube_face_material_index`); the cube fragment shader tints matching faces teal, so a hovered face/edge/corner
+     (1–3 faces) glows. `main.rs` hover now passes the REAL body picker so faces/edges/corners resolve; arrows/badges
+     still light up. New shot form `--cube-hover element:<face|edge|corner>` injects a hovered element for goldens.
+     *Verified via shot PNGs: front face / front-top edge / front-top-right corner each glow the right faces.*
+  3. **Chrome aesthetic rework** (`renderer.rs` glyph rasterisers). `fill_triangle` now 2×2-supersamples to alpha
+     (anti-aliased edges); new `fill_rect`/`blend_pixel` helpers; Home = cleaner house, Fit = four corner brackets
+     (was a solid frame), roll arc disc is soft-edged, rotate triangles are crisper. *Verified via shot PNGs.*
+  4. **Home also FITS unless a home was explicitly set** (`camera.rs` `HomeView.explicitly_set`; `main.rs`
+     `home_snap_tween`; `settings.rs` `home_explicit`). The default home re-frames the model (auto-framed distance)
+     so it never zooms in too close; a user-captured home (`from_camera`) honours its saved distance verbatim.
+     Persisted as `home_explicit` (no back-compat shim). *Logic unit-tested; interactive re-fit needs user check.*
+  5. **Context-menu flicker FIXED** (`lib.rs` run_egui_frame). Click-away now fires only on `primary_clicked()`
+     (was `any_click()`), so the SECONDARY right-click that OPENS the menu no longer closes it the same frame.
+     *Interaction — needs user verification in the windowed app.*
+  6. **Rotate arrows only when face-constrained** (`camera.rs` `is_face_constrained`; `main.rs` hover + click gate).
+     The four rotate arrows are a face-relative 90°-step affordance, so they only appear/act when the view is
+     head-on to a face and upright (cos≤8° + roll≈0), matching Fusion. *Unit-tested; verified via shot.*
+  7. **Rotate-arrow glyphs flipped** (`renderer.rs` build_chrome_vertices). The gutter arrow now points the way the
+     cube content rolls (top-edge arrow points DOWN, etc.). *Direction semantics are subjective — needs user check.*
+  8. **Arrow gutter widened** (`camera.rs` classify_cube_point + `renderer.rs` positions). Rotate arrows hug the
+     rect edge (top/bottom/left/right bands `0..0.13` / `0.87..1.0`) instead of crowding the cube body. *Verified.*
+  Green: `cargo build --bins`, `cargo clippy --all-targets`, `cargo test --lib` (236, +2 new), and
+  `cargo test --features gpu --test golden` (9/9, max mismatch 0.037% on cube-chrome-hover, well under 0.5% — **no
+  goldens needed regeneration**; the `cube-chrome-hover` reference still passes but now shows the OLD chrome, so the
+  orchestrator may optionally refresh it to lock the new look).
+
 - **ViewCube: real roll DOF for roll arrows — Part of #13 (Step 5, final). #13 now feature-complete (pending interactive smoke-test).**
   Added `roll: f32` to `OrbitCamera` (radians about the forward/view axis, default 0, NOT persisted — transient
   view state). The old pole-aware up logic is now `up_vector_base()`; the new `up_vector()` folds roll ON TOP of

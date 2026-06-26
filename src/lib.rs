@@ -252,9 +252,16 @@ pub fn run_egui_frame(
             if cube_menu_request.is_some() {
                 *cube_context_menu_at = None;
             }
-            // Click-away: a primary click outside the menu's rect closes it.
+            // Click-away: only a PRIMARY (left) click that lands OUTSIDE the menu's
+            // rect closes it. #13 Step 6.5: the previous `any_click()` also fired on
+            // the SECONDARY (right) click that OPENS the menu — and on the open frame
+            // egui's `interact_pos` is the cursor at the menu's very corner, which the
+            // freshly-laid-out rect didn't yet count as "inside", so the menu closed
+            // the same frame it appeared (the flicker). Restricting the close to a
+            // primary click leaves the opening right-click alone, so the menu stays up
+            // until the user picks an item or left-clicks elsewhere.
             let pointer = &context.input(|i| i.pointer.clone());
-            if pointer.any_click() {
+            if pointer.primary_clicked() {
                 let clicked_in_menu = pointer
                     .interact_pos()
                     .map(|p| area.response.rect.contains(p))

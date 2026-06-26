@@ -109,6 +109,11 @@ pub struct AppConfig {
     pub home_phi: f32,
     #[serde(default = "default_distance")]
     pub home_distance: f32,
+    /// #13 Step 6.4: was the home view explicitly captured by the user? When
+    /// `false` (the default), the Home button re-frames the model instead of using
+    /// `home_distance`, so a default home never zooms in too close.
+    #[serde(default)]
+    pub home_explicit: bool,
 
     // --- window ---
     #[serde(default = "default_window_size")]
@@ -155,6 +160,7 @@ impl Default for AppConfig {
             home_theta: default_theta(),
             home_phi: default_phi(),
             home_distance: default_distance(),
+            home_explicit: false,
             window_size: default_window_size(),
         }
     }
@@ -192,6 +198,7 @@ impl AppConfig {
             home_theta: home_view.theta,
             home_phi: home_view.phi,
             home_distance: home_view.distance,
+            home_explicit: home_view.explicitly_set,
             window_size,
         }
     }
@@ -203,6 +210,7 @@ impl AppConfig {
             theta: self.home_theta,
             phi: self.home_phi,
             distance: self.home_distance,
+            explicitly_set: self.home_explicit,
         }
     }
 
@@ -359,6 +367,7 @@ mod tests {
             home_theta: 2.34,
             home_phi: 1.11,
             home_distance: 18.0,
+            home_explicit: true,
             window_size: [1600, 900],
         };
 
@@ -375,7 +384,7 @@ mod tests {
         let mut panel = PanelState::with_view_cube_default();
         panel.geometry.voxels_per_block = 8;
         let camera = OrbitCamera::default();
-        let home = HomeView { theta: 2.5, phi: 0.6, distance: 33.0 };
+        let home = HomeView { theta: 2.5, phi: 0.6, distance: 33.0, explicitly_set: true };
         let config = AppConfig::capture(&panel, &camera, home, [1280, 800]);
 
         let json = serde_json::to_string_pretty(&config).expect("serialise");
