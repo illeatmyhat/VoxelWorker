@@ -257,6 +257,9 @@ impl AppConfig {
             // Restored just below: the persisted full scene, or — for an old
             // config without one — a one-Tool-node scene seeded from the geometry.
             scene: Scene::default(),
+            // Issue #29 S5: refreshed each frame from the camera target by the windowed
+            // caller; defaults to the world origin (the headless harness keeps it 0).
+            point_add_position_blocks: [0, 0, 0],
         };
         // step 8: restore the persisted full scene when present and non-empty;
         // otherwise migrate the legacy single geometry into a one-Tool-node scene.

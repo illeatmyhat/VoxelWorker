@@ -51,7 +51,8 @@ pub use panel::{
 pub use assets::{CubeFaceSlot, FaceProvenance, FaceTextures};
 pub use renderer::{
     build_per_chunk_fog_occupancy, create_depth_view, create_msaa_color_view, ChunkFogVolume,
-    FogMode, LayerBand, MaterialSource, OnionFogParams, SceneGridRenderer, TransformGizmoRenderer,
+    FogMode, LayerBand, MaterialSource, OnionFogParams, PointsRenderer, SceneGridRenderer,
+    TransformGizmoRenderer,
     OnionFogRenderer, PerChunkFogOccupancy, ViewCubeRenderer, DEPTH_FORMAT,
     MSAA_SAMPLE_COUNT, VIEW_CUBE_VIEWPORT_PIXELS,
 };
@@ -246,6 +247,12 @@ pub struct FrameOverlays<'a> {
     /// holds only the grid-enabled nodes' lines (master AND per-object), so the draw
     /// is self-gating; `None` skips it entirely.
     pub scene_grid: Option<&'a renderer::SceneGridRenderer>,
+    /// The world reference grid (issue #29 S5): every visible Point's camera-relative
+    /// tiled reference planes + axis lines. Drawn in the MSAA pass (depth-tested) with
+    /// the scene-grid line batch, so opaque voxels occlude it. Its batch already holds
+    /// only the visible Points' enabled planes/axes (self-gating); `None` skips it
+    /// entirely (the `shot` default, so the existing goldens are unchanged).
+    pub points: Option<&'a renderer::PointsRenderer>,
     /// Onion-skin volumetric fog (issue #12): when `Some`, a fullscreen SDF
     /// raymarch composites a faint haze over the resolved scene for the layers
     /// around the displayed band. `None` when onion skin is off. Its uniforms must
@@ -346,6 +353,13 @@ pub fn render_frame(
         // depth-tested so the solid model occludes them (a scaffold around/under it).
         if let Some(scene_grid) = overlays.scene_grid {
             scene_grid.draw(&mut voxel_pass);
+        }
+
+        // World reference grid (issue #29 S5): the visible Points' tiled reference
+        // planes + axis lines, same MSAA pass, depth-tested so opaque voxels occlude
+        // them (subtle scaffold behind/under the model, not an overlay on top).
+        if let Some(points) = overlays.points {
+            points.draw(&mut voxel_pass);
         }
 
         // Origin gizmo: same MSAA pass, after the voxels, depth-test OFF so it

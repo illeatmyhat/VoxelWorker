@@ -28,7 +28,8 @@ use voxel_worker::{
     create_depth_view, create_msaa_color_view, procedural_material_average_color, render_frame,
     run_egui_frame, AssemblyDef, CubeFace, DefId, EguiPaintBridge, FogMode, FrameOverlays,
     GeometryParams,
-    GpuContext, LayerBand, LayerRange, MaterialChoice, MaterialSource, SceneGridRenderer,
+    GpuContext, LayerBand, LayerRange, MaterialChoice, MaterialSource, PointsRenderer,
+    SceneGridRenderer,
     Node, NodeContent, NodePath, OnionFogParams, OnionFogRenderer, OrbitCamera, PanelState, Part,
     ProjectionMode, RegionBlocks, Scene, SdfShape, ShapeKind, TransformGizmoRenderer,
     ViewCubeElement, VoxExport,
@@ -89,6 +90,11 @@ struct ShotOptions {
     show_block_lattice: bool,
     /// Whether the fine floor grid is drawn (M8 `--floor`).
     show_floor_grid: bool,
+    /// Whether the world reference grid (the Points: camera-relative tiled ground
+    /// plane + axes) is drawn (issue #29 S5 `--points`). DEFAULT OFF so the existing
+    /// goldens (which never pass `--points`) stay byte-identical; `--points` enables
+    /// the Origin Point (and any others) so a deliberate Points golden can be captured.
+    show_points: bool,
     /// Whether the voxel cubes render in face-orientation debug mode
     /// (`--debug-faces`): colour by outward face normal + back-facing marker,
     /// cull off. The standard way to verify face winding/culling.
@@ -205,6 +211,7 @@ impl Default for ShotOptions {
             select_node: None,
             show_block_lattice: false,
             show_floor_grid: false,
+            show_points: false,
             debug_face_orientation: false,
             export_vox_path: None,
             show_view_cube: true,
@@ -434,6 +441,9 @@ fn parse_options() -> ShotOptions {
             "--floor" => {
                 options.show_floor_grid = true;
             }
+            "--points" => {
+                options.show_points = true;
+            }
             "--debug-faces" => {
                 options.debug_face_orientation = true;
             }
@@ -544,7 +554,7 @@ fn parse_options() -> ShotOptions {
                      \x20            [--apply-block <substring>] [--list-perface]\n\
                      \x20            [--synthetic-block]\n\
                      \x20            [--force-demo-stem <texture/stem>]\n\
-                     \x20            [--gizmo] [--select-node <usize>] [--lattice] [--floor] [--no-viewcube]\n\
+                     \x20            [--gizmo] [--select-node <usize>] [--lattice] [--floor] [--points] [--no-viewcube]\n\
                      \x20            [--debug-faces] [--debug-chunks]\n\
                      \x20            [--demo-scene] [--demo-village] [--demo-groups]\n\
                      \x20            [--demo-far-offset] [--demo-far-offset-near]\n\
@@ -908,6 +918,15 @@ async fn run_capture(options: ShotOptions) {
     } else {
         Scene::from_geometry(options.geometry, options.material)
     };
+    // Issue #29 S5: Points are SUPPRESSED unless `--points`. The headless scenes do
+    // NOT synthesize an Origin Point (that runs on the windowed load/seed path), so by
+    // default `scene.points` is empty → nothing renders and the panel's Points section
+    // is zero-height (the 6 existing goldens stay byte-identical). `--points` adds the
+    // Origin (ground + axes on by default) so the deliberate Points golden shows the
+    // world reference grid.
+    if options.show_points {
+        scene.ensure_origin_point();
+    }
     panel_state.scene = scene.clone();
     // Issue #29 S2: `--select-node N` overrides the active selection so a headless
     // capture can place the transform gizmo on a chosen (non-origin) node and prove
@@ -1153,6 +1172,10 @@ async fn run_capture(options: ShotOptions) {
     // Per-object block lattice + floor grid (issue #29 S3): its line batch is built
     // from the scene's grid-enabled nodes below (after the camera is known).
     let mut scene_grid_renderer = SceneGridRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
+    // The world reference grid (issue #29 S5): SUPPRESSED by default (so the existing
+    // goldens are byte-identical); `--points` enables it. Its batch is built below
+    // from `scene.points` + the camera once the view matrix is known.
+    let mut points_renderer = PointsRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
     let view_cube_renderer = ViewCubeRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
     let mut onion_fog_renderer = OnionFogRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
     // Upload the resolved grid as the fog's occupancy field. PerChunk (DEFAULT since #28
@@ -1417,6 +1440,19 @@ async fn run_capture(options: ShotOptions) {
         options.geometry.voxels_per_block,
     );
     scene_grid_renderer.update_uniforms(&gpu.queue, view_projection);
+    // World reference grid (issue #29 S5): build the visible Points' tiled planes +
+    // axes, centred on the camera's projection onto each plane. Only wired into the
+    // overlays when `--points` is passed (default OFF keeps the goldens unchanged).
+    if options.show_points {
+        points_renderer.rebuild_from_scene(
+            &gpu.device,
+            &gpu.queue,
+            &panel_state.scene,
+            options.geometry.voxels_per_block,
+            camera.eye().to_array(),
+        );
+        points_renderer.update_uniforms(&gpu.queue, view_projection);
+    }
     view_cube_renderer.update_uniforms(&gpu.queue, camera.view_cube_view_projection());
     if onion_active {
         onion_fog_renderer.update(
@@ -1481,6 +1517,9 @@ async fn run_capture(options: ShotOptions) {
             None
         },
         scene_grid: Some(&scene_grid_renderer),
+        // Issue #29 S5: Points SUPPRESSED unless `--points` (keeps the 6 goldens
+        // byte-identical); the new `demo-village --points` golden enables them.
+        points: options.show_points.then_some(&points_renderer),
         onion_fog: if onion_active {
             Some(&onion_fog_renderer)
         } else {

@@ -33,6 +33,46 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **Grid rework S5: Points (camera-relative ground plane + axes, depth-tested) + Points UI — Part of #29.**
+  The world reference grid is live. A new `PointsRenderer` (`renderer.rs`) batches every VISIBLE
+  Point's reference geometry into ONE depth-tested, alpha-blended line buffer — the SAME pass family as
+  `SceneGridRenderer`, drawn in the MSAA pass before the (depth-OFF) transform gizmo — so opaque voxels
+  OCCLUDE the planes/axes while a node's on-face voxel grid (a fragment overlay) stays on top.
+  - **Camera-relative tiled ground plane.** Each frame `points_line_batch(scene, density, camera_eye)`
+    rebuilds, per visible Point, its enabled planes (XZ/XY/YZ) as a tiled grid CENTRED on the camera's
+    projection onto that plane, SNAPPED to the global block lattice (`origin + k·step`, step = density),
+    spanning `POINT_PLANE_RADIUS_BLOCKS` (48) each way. Per-VERTEX alpha fades over the last
+    `POINT_PLANE_FADE_BLOCKS` (16) toward the rim (`LineVertex.color.a`), so the plane dissolves into the
+    background — no hard finite edge as you orbit far. Two-tier BOLD block lines: every
+    `POINT_PLANE_MAJOR_EVERY_BLOCKS` (8) line is brighter/higher-alpha (major) over the dimmer per-block
+    minor lines. Subtle base alpha (minor 0.10 / major 0.22) so it doesn't fight per-object voxel grids.
+    Axes: three colored lines (reusing the gizmo axis colours) through the Point origin, `±6` blocks,
+    depth-tested. Each Point sits at `position_blocks·density − recentre` (the resolved-voxel frame).
+  - **Pass ordering / depth.** `FrameOverlays.points` is drawn in the MSAA pass right after the
+    scene-grid lattice, depth-tested (`build_line_pipeline(..., depth_tested=true)`); the transform gizmo
+    stays last + depth-OFF. Confirmed in `lib.rs::render_frame`.
+  - **Points UI (`panel.rs`).** A new **Points** section after the Scene list: each Point as a row
+    (visibility checkbox bound to `!hidden` + selectable name → `scene.active_point`), **+ Add Point**
+    (at the camera target, mirrored into `PanelState.point_add_position_blocks` from the camera each
+    frame in `main.rs`), and — for the selected Point — XZ/XY/YZ plane checkboxes, an axes checkbox, a
+    whole-block position editor (HIDDEN for the Origin), and a Delete button (HIDDEN for the Origin,
+    undeletable). Deferred-mutation pattern (select/delete applied after the read walk), mirroring the
+    node list. The section renders NOTHING when `scene.points` is empty.
+  - **shot `--points` + the new golden.** `shot` SUPPRESSES Points by default (the scenes it builds do
+    NOT synthesize the Origin, so `scene.points` is empty → no render AND a zero-height Points panel
+    section → the 6 existing goldens are BYTE-IDENTICAL). `--points` calls `ensure_origin_point` (ground
+    + axes default on) and wires the `PointsRenderer` into the overlays. New golden `demo-village-points`
+    (`--demo-village --points`) through the cuboid path: READ confirms the subtle teal ground plane
+    tiling under the four houses, OCCLUDED where each house base sits in front of it, fading toward the
+    edges with no finite border, the brighter major block lines over the dimmer minor ones, and the
+    origin X/Y/Z axes reading through the first house. A far-orbit render confirms the plane stays under
+    the camera.
+  - **Tests + gate.** 5 new CPU tests in `renderer.rs` (visible Point ⇒ non-empty batch / hidden ⇒ none;
+    plane+axis toggles gate independently; ground tiling snapped to block multiples + centred near the
+    camera; a second offset Point's frame at its world position; density-parametrized {1,15,16} block
+    spacing). `cargo test` 199 lib green; `cargo clippy --all-targets` clean; `cargo build --bins` ok;
+    `cargo test --features gpu --test golden` = the 6 existing byte-identical + the new points case.
+
 - **Remove the legacy instanced mesher; cuboid is the sole render path — Part of #20.**
   The cuboid box-decomposition mesher had reached full parity (shape, per-voxel +
   loaded-block per-face textures, multi-material atlas, layer band, debug-faces,

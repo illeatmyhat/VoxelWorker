@@ -19,7 +19,7 @@
 
 use crate::block_palette::BlockPalette;
 use crate::camera::ProjectionMode;
-use crate::scene::{DefId, Node, NodeContent, NodePath, Part, Scene};
+use crate::scene::{DefId, Node, NodeContent, NodePath, Part, Point, Scene};
 use crate::voxel::{SdfShape, ShapeKind};
 
 /// Geometry parameters — the *only* params that trigger a voxel rebuild.
@@ -218,6 +218,11 @@ pub struct PanelState {
     /// Layer-range scrubber state (issue #12): the visible band along Y plus the
     /// snap/onion controls. Bounds are clamped/rescaled to the grid on rebuild.
     pub layer_range: LayerRange,
+    /// Where **+ Add Point** drops a new Point (issue #29 S5), in whole world blocks.
+    /// The caller refreshes it each frame from the camera target (rounded to blocks)
+    /// so a new Point lands where the user is looking; it defaults to the world origin
+    /// (`[0, 0, 0]`) when the caller does not set it (e.g. the headless harness).
+    pub point_add_position_blocks: [i64; 3],
 }
 
 impl PanelState {
@@ -310,6 +315,12 @@ pub struct PanelResponse {
     /// [`geometry_changed`](Self::geometry_changed) (an inspector edit), though the
     /// caller treats both as "rebuild".
     pub scene_changed: bool,
+    /// A Point changed this frame (issue #29 S5): a Point was added/deleted/selected,
+    /// or one of its plane/axis/visibility/position fields toggled. The Point line
+    /// batch is rebuilt every frame anyway (it is camera-relative), so this is purely
+    /// informational — the caller may persist the scene on it. Does NOT trigger a
+    /// voxel re-resolve (Points are pure overlay, not geometry).
+    pub points_changed: bool,
 }
 
 /// Build the right-hand side panel into the root [`egui::Ui`] of the frame.
@@ -342,6 +353,7 @@ pub fn build_panel(
             ui.separator();
 
             build_node_list_section(ui, state, &mut response);
+            build_points_section(ui, state, &mut response);
             build_inspector_section(ui, state, &mut response);
             build_camera_section(ui, state);
             build_display_section(ui, state);
@@ -519,6 +531,145 @@ fn build_node_list_section(
             state.scene.active = Some(path);
             state.sync_mirror_from_active();
             response.scene_changed = true;
+        }
+    }
+
+    ui.separator();
+}
+
+/// The **Points** section (issue #29 S5): the world reference grid's frames. Lists
+/// every [`Point`] with a visibility checkbox (bound to `!hidden`) and a selectable
+/// name; **+ Add Point** appends a Point at the camera target (falling back to the
+/// origin); and — for the selected Point — XZ/XY/YZ plane checkboxes, an axes
+/// checkbox, a whole-block position editor (HIDDEN for the Origin), and a **Delete**
+/// button (hidden for the Origin, which is undeletable). Mirrors the node list's
+/// deferred-mutation pattern: selection/delete are applied AFTER the read walk.
+fn build_points_section(ui: &mut egui::Ui, state: &mut PanelState, response: &mut PanelResponse) {
+    // A scene with NO Points (the headless `shot` path builds scenes WITHOUT the
+    // synthesized Origin — `ensure_origin_point` runs only on the windowed load/seed
+    // path) renders nothing here, so the section adds zero height and the existing
+    // goldens stay byte-identical. The windowed app always carries the Origin Point,
+    // so the section always shows there.
+    if state.scene.points.is_empty() {
+        return;
+    }
+    ui.add_space(8.0);
+    ui.strong("Points");
+
+    let mut select: Option<usize> = None;
+    let mut delete: Option<usize> = None;
+    let mut toggle_hidden: Option<usize> = None;
+
+    // The Point rows: a visibility checkbox (bound to `!hidden`) + a selectable name.
+    for index in 0..state.scene.points.len() {
+        let (name, hidden, is_active) = {
+            let point = &state.scene.points[index];
+            let name = if point.name.is_empty() {
+                format!("Point {index}")
+            } else {
+                point.name.clone()
+            };
+            (name, point.hidden, state.scene.active_point == Some(index))
+        };
+        ui.horizontal(|ui| {
+            // Visibility is `!hidden`; toggling it flips the Point's `hidden` flag.
+            let mut visible = !hidden;
+            if ui.checkbox(&mut visible, "").on_hover_text("Visible").changed() {
+                toggle_hidden = Some(index);
+            }
+            if ui.selectable_label(is_active, name).clicked() {
+                select = Some(index);
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                // The Origin is undeletable — no ✕ button for it.
+                if !state.scene.points[index].is_origin
+                    && ui.small_button("✕").on_hover_text("Delete point").clicked()
+                {
+                    delete = Some(index);
+                }
+            });
+        });
+    }
+
+    // + Add Point — a fresh Point at the camera target (whole blocks), else the origin.
+    if ui
+        .button("+ Add Point")
+        .on_hover_text("Add a reference Point at the camera target")
+        .clicked()
+    {
+        let target = state.point_add_position_blocks;
+        let mut point = Point {
+            name: format!("Point {}", state.scene.points.len()),
+            position_blocks: target,
+            ..Point::default()
+        };
+        // A user Point is never the Origin (the Origin is synthesized on load).
+        point.is_origin = false;
+        state.scene.add_point(point);
+        state.scene.active_point = Some(state.scene.points.len() - 1);
+        response.points_changed = true;
+    }
+
+    // The selected Point's editor: plane/axis toggles, position (hidden for Origin),
+    // and a delete button (hidden for the Origin).
+    if let Some(active) = state.scene.active_point {
+        if let Some(point) = state.scene.points.get_mut(active) {
+            ui.add_space(4.0);
+            ui.separator();
+            let mut changed = false;
+            changed |= ui.checkbox(&mut point.plane_xz, "Ground plane (XZ)").changed();
+            changed |= ui.checkbox(&mut point.plane_xy, "Front plane (XY)").changed();
+            changed |= ui.checkbox(&mut point.plane_yz, "Side plane (YZ)").changed();
+            changed |= ui.checkbox(&mut point.axes, "Axes").changed();
+
+            // Position editor — only for a user Point (the Origin is pinned at world 0).
+            if !point.is_origin {
+                ui.horizontal(|ui| {
+                    ui.label("Pos (blocks)");
+                    for axis in 0..3 {
+                        changed |= ui
+                            .add(egui::DragValue::new(&mut point.position_blocks[axis]).speed(1.0))
+                            .changed();
+                    }
+                });
+                if ui.button("Delete point").clicked() {
+                    delete = Some(active);
+                }
+            } else {
+                ui.label(
+                    egui::RichText::new("Origin — pinned at world origin, undeletable")
+                        .small()
+                        .weak(),
+                );
+            }
+            if changed {
+                response.points_changed = true;
+            }
+        }
+    }
+
+    // Apply deferred mutations after the read/borrow walk.
+    if let Some(index) = toggle_hidden {
+        state.scene.toggle_point_hidden(index);
+        response.points_changed = true;
+    }
+    if let Some(index) = delete {
+        // `remove_point` is a no-op on the Origin (defensive — the UI already hides
+        // its delete affordances). Keep `active_point` valid after a removal.
+        let was_origin = state.scene.points.get(index).map(|p| p.is_origin).unwrap_or(false);
+        if !was_origin {
+            state.scene.remove_point(index);
+            state.scene.active_point = if state.scene.points.is_empty() {
+                None
+            } else {
+                Some(index.min(state.scene.points.len() - 1))
+            };
+            response.points_changed = true;
+        }
+    } else if let Some(index) = select {
+        if state.scene.active_point != Some(index) {
+            state.scene.active_point = Some(index);
+            response.points_changed = true;
         }
     }
 

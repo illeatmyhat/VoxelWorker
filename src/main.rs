@@ -20,7 +20,7 @@ use voxel_worker::{
     create_depth_view, create_msaa_color_view, procedural_material_average_color, render_frame,
     run_egui_frame, AppConfig, CubeFace, EguiPaintBridge, FogMode, FrameOverlays,
     TransformGizmoRenderer,
-    GpuContext, LayerBand, MaterialSource, OnionFogParams, SceneGridRenderer,
+    GpuContext, LayerBand, MaterialSource, OnionFogParams, PointsRenderer, SceneGridRenderer,
     OnionFogRenderer, OrbitCamera, PanelState, Scene, SdfShape, SnapTween, ViewCubeElement,
     VoxExport, ViewCubeRenderer, VoxelGrid, COLOR_TARGET_FORMAT,
     VIEW_CUBE_VIEWPORT_PIXELS,
@@ -55,6 +55,10 @@ struct WindowedState {
     /// Per-object block lattice + floor grid (issue #29 S3). Its line batch is
     /// rebuilt each frame from the visible nodes' enabled grids.
     scene_grid_renderer: SceneGridRenderer,
+    /// The world reference grid (issue #29 S5): every visible Point's camera-relative
+    /// tiled reference planes + axis lines. Its line batch is rebuilt each frame from
+    /// `scene.points` + the camera (so the tiled planes re-centre under the camera).
+    points_renderer: PointsRenderer,
     view_cube_renderer: ViewCubeRenderer,
     /// Onion-skin volumetric fog (issue #12).
     onion_fog_renderer: OnionFogRenderer,
@@ -351,6 +355,9 @@ impl WindowedState {
         // Per-object block lattice + floor grid (issue #29 S3): its line batch is
         // (re)built per frame from the grid-enabled nodes, so it starts empty.
         let scene_grid_renderer = SceneGridRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
+        // The world reference grid (issue #29 S5): the visible Points' tiled planes +
+        // axes. Its batch is rebuilt per frame from the scene + camera, so empty here.
+        let points_renderer = PointsRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
         let view_cube_renderer =
             ViewCubeRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
         let mut onion_fog_renderer = OnionFogRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
@@ -401,6 +408,7 @@ impl WindowedState {
             cuboid_mesh_renderer,
             transform_gizmo_renderer,
             scene_grid_renderer,
+            points_renderer,
             view_cube_renderer,
             onion_fog_renderer,
             fog_mode,
@@ -915,6 +923,24 @@ impl WindowedState {
             self.measured_band = current_band;
         }
 
+        // Issue #29 S5: tell the panel where **+ Add Point** should drop a new Point —
+        // the camera target, converted from the recentred render frame back to whole
+        // world blocks (`(target_voxels + recentre) / density`), so a new Point lands
+        // where the user is looking.
+        {
+            let density = self.panel_state.geometry.voxels_per_block.max(1) as i64;
+            let recentre = self
+                .panel_state
+                .scene
+                .recentre_voxels_for_resolve(self.panel_state.geometry.voxels_per_block);
+            let target = self.camera.target;
+            self.panel_state.point_add_position_blocks = [
+                ((target.x.round() as i64) + recentre[0]).div_euclid(density),
+                ((target.y.round() as i64) + recentre[1]).div_euclid(density),
+                ((target.z.round() as i64) + recentre[2]).div_euclid(density),
+            ];
+        }
+
         let prepared = run_egui_frame(
             &mut self.egui_bridge,
             &self.gpu.device,
@@ -1060,6 +1086,19 @@ impl WindowedState {
         );
         self.scene_grid_renderer
             .update_uniforms(&self.gpu.queue, view_projection);
+        // World reference grid (issue #29 S5): rebuild the visible Points' tiled
+        // reference planes + axes, centred on the camera's projection onto each plane
+        // (so the ground stays under the camera with no hard finite edge as you orbit
+        // far). The camera eye is fed in the recentred render frame the voxels live in.
+        self.points_renderer.rebuild_from_scene(
+            &self.gpu.device,
+            &self.gpu.queue,
+            &self.panel_state.scene,
+            self.panel_state.geometry.voxels_per_block,
+            self.camera.eye().to_array(),
+        );
+        self.points_renderer
+            .update_uniforms(&self.gpu.queue, view_projection);
         self.view_cube_renderer
             .update_uniforms(&self.gpu.queue, self.camera.view_cube_view_projection());
 
@@ -1085,6 +1124,9 @@ impl WindowedState {
                 None
             },
             scene_grid: Some(&self.scene_grid_renderer),
+            // Issue #29 S5: the windowed app always shows the Points (the Origin's
+            // ground+axes are on by default); the batch self-gates on hidden/off.
+            points: Some(&self.points_renderer),
             onion_fog: if onion_active {
                 Some(&self.onion_fog_renderer)
             } else {

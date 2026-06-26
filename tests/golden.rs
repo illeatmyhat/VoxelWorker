@@ -111,6 +111,18 @@ const CASES: &[GoldenCase] = &[
             "--fog", "perchunk",
         ],
     },
+    // Issue #29 S5: the world reference grid (Points). The same instanced village,
+    // now with the Origin Point's camera-relative tiled GROUND plane + axis lines on
+    // (`--points` enables Points, suppressed by default so the other goldens are
+    // unchanged). The ground plane is subtle (low base alpha, fading toward the rim
+    // with no hard finite edge), draws BOLD block-cell lines over the dimmer per-block
+    // lines, and is DEPTH-TESTED so the four houses occlude it where they sit in front.
+    // The origin axes (X/Y/Z) read through the first house. This pins the Point render
+    // path: tiled plane + fade + two-tier block lines + depth occlusion + axes.
+    GoldenCase {
+        name: "demo-village-points",
+        args: &["--demo-village", "--points"],
+    },
 ];
 
 /// Fixed orbit angles so the framing is identical to the committed reference. The
