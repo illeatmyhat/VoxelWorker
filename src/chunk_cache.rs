@@ -223,6 +223,63 @@ impl ChunkResolveCache {
         output
     }
 
+    /// **Per-chunk render accessor (issue #20 S6c step 4).** Bind the cache to the
+    /// composite recentre/floating-origin for `(scene, density, lod)` EXACTLY as
+    /// [`resolve_region`](Self::resolve_region) does, then return every covering
+    /// chunk as `([i32; 3] absolute_chunk_coord, &VoxelGrid rebased_grid)`.
+    ///
+    /// The returned grids are the SAME rebased per-chunk grids whose union
+    /// [`resolve_region`](Self::resolve_region) assembles — byte-identical (each one
+    /// is already rebased to the floating origin = composite recentre, with the
+    /// subtraction done in i64 inside
+    /// [`Scene::resolve_chunk_rebased`](crate::scene::Scene::resolve_chunk_rebased)
+    /// before the f32 downcast). The union of all returned chunks' occupied voxels
+    /// (position + `material_id`, in the recentred frame) therefore equals
+    /// `resolve_region`'s assembled grid voxel-for-voxel; this is the seam the
+    /// upcoming per-chunk renderer consumes instead of one monolithic grid.
+    ///
+    /// Each returned coord is the absolute chunk coord that OWNS that grid's voxels
+    /// (the half-open box `[c·E, (c+1)·E)` per axis, `E = CHUNK_BLOCKS × density`),
+    /// and the returned coord set equals the scene's
+    /// [`covering_chunk_range`](crate::scene::Scene::covering_chunk_range) for the
+    /// region (empty for a Part-only scene with no composite extent).
+    ///
+    /// The grids are **borrowed** from the cache (`&VoxelGrid`), so the returned
+    /// `Vec` borrows `self` immutably for its lifetime. Resolving misses needs
+    /// `&mut self`, so binding + resolving happens FIRST (in
+    /// [`bind_and_collect_region`](Self::bind_and_collect_region), all-mut), and the
+    /// borrows are gathered only AFTER every covering chunk is resident (so the
+    /// returned slice is all cache HITs — no interleaved mut/shared borrow). The
+    /// resolved chunks stay CACHED, so a later [`resolve_region`] reuses them.
+    pub fn resident_render_chunks(
+        &mut self,
+        scene: &Scene,
+        voxels_per_block: u32,
+        lod: u32,
+    ) -> Vec<([i32; 3], &VoxelGrid)> {
+        // Bind to the recentre + resolve/resident every covering chunk (the only
+        // step needing `&mut self`); after this the gather below is all HITs.
+        let _region_dimensions = self.bind_and_collect_region(scene, voxels_per_block, lod);
+
+        let Some((min_chunk, max_chunk)) = scene.covering_chunk_range(voxels_per_block) else {
+            return Vec::new();
+        };
+
+        let chunks = &self.chunks;
+        let mut rendered = Vec::new();
+        for chunk_z in min_chunk[2]..=max_chunk[2] {
+            for chunk_y in min_chunk[1]..=max_chunk[1] {
+                for chunk_x in min_chunk[0]..=max_chunk[0] {
+                    let coord = [chunk_x, chunk_y, chunk_z];
+                    if let Some(grid) = chunks.get(&ChunkCacheKey::new(coord, lod)) {
+                        rendered.push((coord, grid));
+                    }
+                }
+            }
+        }
+        rendered
+    }
+
     /// **Region-scoped diameter readout (issue #20 S6d).** Compute the widest
     /// occupied run in the layer band `[band_min, band_max]` (the scrubber/diameter
     /// readout) from the scene's per-chunk grids, WITHOUT assembling a monolithic
@@ -372,22 +429,37 @@ impl ChunkResolveCache {
     /// everything — but the caller [`main`] already falls back to [`clear`] for a
     /// density change, so this path is belt-and-braces.
     ///
+    /// **Returns the set of chunk-coords actually evicted** (those that were
+    /// resident AND intersected the edit AABB), so the GPU cache (issue #20 S6c) can
+    /// later evict exactly those coords in lockstep with this resolve cache. The
+    /// belt-and-braces density-mismatch path returns every coord that was resident
+    /// before the clear. An empty edit AABB (or a clear of an empty cache) returns an
+    /// empty `Vec`.
+    ///
     /// [`main`]: crate
-    pub fn invalidate_aabb(&mut self, edit_aabb: &VoxelAabb, voxels_per_block: u32) {
+    pub fn invalidate_aabb(&mut self, edit_aabb: &VoxelAabb, voxels_per_block: u32) -> Vec<[i32; 3]> {
         if let Some(bound) = self.bound_density {
             if bound != voxels_per_block {
+                // Density mismatch: everything is dropped, so the evicted set is
+                // every resident coord (gathered before the clear).
+                let evicted: Vec<[i32; 3]> = self.chunks.keys().map(|key| key.chunk_coord).collect();
                 self.clear();
-                return;
+                return evicted;
             }
         }
         let Some((min_chunk, max_chunk)) = edit_aabb.covering_chunk_range(voxels_per_block) else {
-            return; // empty edit AABB — nothing to invalidate.
+            return Vec::new(); // empty edit AABB — nothing to invalidate.
         };
+        let mut evicted = Vec::new();
         self.chunks.retain(|key, _| {
             let coord = key.chunk_coord;
             let inside = (0..3).all(|axis| coord[axis] >= min_chunk[axis] && coord[axis] <= max_chunk[axis]);
+            if inside {
+                evicted.push(coord);
+            }
             !inside
         });
+        evicted
     }
 
     /// Clear + re-bind the cache when the requested density OR floating origin differs
@@ -884,8 +956,222 @@ mod tests {
         let _ = cache.resolve_region(&scene, density, 0);
         let before = resident_coords(&cache);
         let empty = crate::spatial_index::VoxelAabb::new([0, 0, 0], [0, 0, 0]);
-        cache.invalidate_aabb(&empty, density);
+        let evicted = cache.invalidate_aabb(&empty, density);
+        assert!(evicted.is_empty(), "an empty edit AABB reports an empty evicted set");
         assert_eq!(resident_coords(&cache), before, "an empty edit AABB evicts nothing");
+    }
+
+    /// **S6c-2a: the evicted-set return.** `invalidate_aabb` returns exactly the
+    /// coords spanned by the edit AABB's `covering_chunk_range` that were resident —
+    /// the same set the cache actually drops — so the GPU cache can evict in lockstep.
+    #[test]
+    fn invalidate_aabb_returns_exactly_the_evicted_coords() {
+        let density = 16u32;
+        let scene_a = three_tool_scene(density, 40);
+        let mut cache = ChunkResolveCache::new();
+        let _ = cache.resolve_region(&scene_a, density, 0);
+        let all_resident = resident_coords(&cache);
+
+        let mut scene_b = scene_a.clone();
+        scene_b.nodes[1].transform.offset_blocks = [80, 0, 0];
+        let index_a = scene_a.build_leaf_spatial_index(density);
+        let index_b = scene_b.build_leaf_spatial_index(density);
+        let edit_aabb = index_b.edit_aabb_since(&index_a).expect("same density");
+
+        // The expected evicted set: resident coords inside the edit's chunk range.
+        let (min_chunk, max_chunk) = edit_aabb
+            .covering_chunk_range(density)
+            .expect("a non-empty edit AABB has a chunk range");
+        let mut expected: std::collections::BTreeSet<[i32; 3]> = std::collections::BTreeSet::new();
+        for &coord in &all_resident {
+            let inside = (0..3).all(|axis| coord[axis] >= min_chunk[axis] && coord[axis] <= max_chunk[axis]);
+            if inside {
+                expected.insert(coord);
+            }
+        }
+        assert!(!expected.is_empty(), "the move must dirty at least one resident chunk");
+
+        let returned: std::collections::BTreeSet<[i32; 3]> =
+            cache.invalidate_aabb(&edit_aabb, density).into_iter().collect();
+        assert_eq!(
+            returned, expected,
+            "the returned evicted set must equal exactly the resident coords inside \
+             the edit AABB's covering_chunk_range"
+        );
+        // And the returned set is exactly what was dropped.
+        let after = resident_coords(&cache);
+        for coord in &returned {
+            assert!(!after.contains(coord), "a returned coord must no longer be resident");
+        }
+        assert_eq!(
+            after.len() + returned.len(),
+            all_resident.len(),
+            "evicted + remaining must partition the originally-resident set"
+        );
+    }
+
+    /// A density mismatch (the belt-and-braces clear path) reports EVERY resident
+    /// coord as evicted.
+    #[test]
+    fn invalidate_aabb_density_mismatch_reports_all_resident_evicted() {
+        let scene = three_tool_scene(16, 8);
+        let mut cache = ChunkResolveCache::new();
+        let _ = cache.resolve_region(&scene, 16, 0);
+        let before = resident_coords(&cache);
+        assert!(!before.is_empty());
+
+        // Invalidate at a DIFFERENT density than the cache is bound to → clear path.
+        let aabb = crate::spatial_index::VoxelAabb::new([0, 0, 0], [16, 16, 16]);
+        let returned: std::collections::BTreeSet<[i32; 3]> =
+            cache.invalidate_aabb(&aabb, 8).into_iter().collect();
+        assert_eq!(returned, before, "a density mismatch evicts (and reports) every resident coord");
+        assert_eq!(cache.resident_chunk_count(), 0, "the cache is cleared");
+    }
+
+    // ===== Issue #20 S6c step 4: per-chunk render accessor ========================
+
+    /// (S6c-2a parity) The union of `resident_render_chunks` (occupied cells +
+    /// material_id, in each chunk's rebased frame) equals `resolve_region`'s
+    /// assembled grid BYTE-FOR-BYTE, AND each returned coord is the absolute chunk
+    /// coord that owns its grid's voxels, AND the coord set equals the scene's
+    /// `covering_chunk_range`.
+    fn assert_render_chunks_match_resolve_region(scene: &Scene, voxels_per_block: u32, label: &str) {
+        // The truth: the assembled monolithic grid the renderer consumes today.
+        let mut region_cache = ChunkResolveCache::new();
+        let assembled = region_cache.resolve_region(scene, voxels_per_block, 0);
+
+        let mut render_cache = ChunkResolveCache::new();
+        let chunks = render_cache.resident_render_chunks(scene, voxels_per_block, 0);
+
+        // Parity: the union of the per-chunk grids' occupied sets (already rebased,
+        // same frame as the assembled grid) is bit-identical to the assembled grid.
+        let mut union: std::collections::BTreeMap<([u32; 3], u16), usize> =
+            std::collections::BTreeMap::new();
+        for (_coord, grid) in &chunks {
+            for (key, count) in occupied_multiset(grid) {
+                *union.entry(key).or_insert(0) += count;
+            }
+        }
+        assert_eq!(
+            union,
+            occupied_multiset(&assembled),
+            "[{label}] union of resident_render_chunks must be BIT-IDENTICAL to \
+             resolve_region's assembled grid (same rebased frame)"
+        );
+
+        // Coord set equals the scene's covering_chunk_range.
+        let returned_coords: std::collections::BTreeSet<[i32; 3]> =
+            chunks.iter().map(|(coord, _)| *coord).collect();
+        let mut expected_coords: std::collections::BTreeSet<[i32; 3]> =
+            std::collections::BTreeSet::new();
+        if let Some((min_chunk, max_chunk)) = scene.covering_chunk_range(voxels_per_block) {
+            for chunk_z in min_chunk[2]..=max_chunk[2] {
+                for chunk_y in min_chunk[1]..=max_chunk[1] {
+                    for chunk_x in min_chunk[0]..=max_chunk[0] {
+                        expected_coords.insert([chunk_x, chunk_y, chunk_z]);
+                    }
+                }
+            }
+        }
+        assert_eq!(
+            returned_coords, expected_coords,
+            "[{label}] returned coord set must equal the scene's covering_chunk_range"
+        );
+
+        // Coord correctness: each returned coord is the absolute chunk coord that
+        // owns its grid's voxels. The accessor binds to the recentre, so a chunk
+        // coord `c` owns rebased voxels in `[c·E - recentre, (c+1)·E - recentre)`.
+        let chunk_extent = (crate::renderer::CHUNK_BLOCKS * voxels_per_block) as i64;
+        let recentre = scene.recentre_voxels_for_resolve(voxels_per_block);
+        for (coord, grid) in &chunks {
+            for voxel in &grid.occupied {
+                for axis in 0..3 {
+                    // Rebased absolute voxel index = floor(position) + recentre.
+                    let absolute = voxel.world_position[axis].floor() as i64 + recentre[axis];
+                    let owner = absolute.div_euclid(chunk_extent) as i32;
+                    assert_eq!(
+                        owner, coord[axis],
+                        "[{label}] voxel at {:?} (axis {axis}) must be owned by chunk \
+                         coord {coord:?}, not {owner}",
+                        voxel.world_position
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn render_chunks_match_resolve_region_for_all_shapes() {
+        for kind in [
+            ShapeKind::Sphere,
+            ShapeKind::Cylinder,
+            ShapeKind::Tube,
+            ShapeKind::Torus,
+            ShapeKind::Box,
+        ] {
+            let scene = shape_scene(kind, 16);
+            assert_render_chunks_match_resolve_region(&scene, 16, &format!("{kind:?}"));
+        }
+    }
+
+    #[test]
+    fn render_chunks_match_resolve_region_for_demo_scene() {
+        let scene = three_tool_scene(16, 8);
+        assert_render_chunks_match_resolve_region(&scene, 16, "demo-scene");
+    }
+
+    #[test]
+    fn render_chunks_match_resolve_region_for_demo_village() {
+        let vpb = 16u32;
+        let house_def_id = DefId(1);
+        let tool = |kind, size: [u32; 3], offset: [i64; 3], material| {
+            let shape = SdfShape {
+                kind,
+                size_blocks: size,
+                voxels_per_block: vpb,
+                wall_blocks: 1,
+            };
+            let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
+            node.transform.offset_blocks = offset;
+            node
+        };
+        let house = AssemblyDef {
+            id: house_def_id,
+            name: "House".to_string(),
+            children: vec![
+                tool(ShapeKind::Box, [2, 2, 2], [0, 0, 0], MaterialChoice::Stone),
+                tool(ShapeKind::Cylinder, [1, 2, 1], [0, 2, 0], MaterialChoice::Wood),
+            ],
+        };
+        let instance = |name: &str, offset: [i64; 3]| {
+            let mut node = Node::new(name, NodeContent::Instance(house_def_id));
+            node.transform.offset_blocks = offset;
+            node
+        };
+        let scene = Scene {
+            nodes: vec![
+                instance("House 1", [0, 0, 0]),
+                instance("House 2", [6, 0, 0]),
+                instance("House 3", [12, 0, 0]),
+                instance("House 4", [18, 0, 0]),
+            ],
+            definitions: vec![house],
+            active: Some(NodePath::root_index(0)),
+        };
+        assert_render_chunks_match_resolve_region(&scene, vpb, "demo-village");
+    }
+
+    /// A Part-only scene (no composite extent) yields an empty render-chunk set,
+    /// matching `resolve_region`'s empty grid.
+    #[test]
+    fn render_chunks_empty_for_part_only_scene() {
+        let scene = Scene::single_node(Node::new(
+            "Clouds",
+            NodeContent::Part(crate::scene::Part::DebugClouds { seed: 0 }),
+        ));
+        let mut cache = ChunkResolveCache::new();
+        let chunks = cache.resident_render_chunks(&scene, 16, 0);
+        assert!(chunks.is_empty(), "a Part-only scene has no covering chunks");
     }
 
     /// **ADR 0002 S4b — origin-rebased rendering, far-offset precision.** A box

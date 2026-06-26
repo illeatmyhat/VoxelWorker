@@ -496,7 +496,11 @@ impl WindowedState {
         let new_leaf_index = self.panel_state.scene.build_leaf_spatial_index(density);
         match self.previous_leaf_index.as_ref() {
             Some(previous) => match new_leaf_index.edit_aabb_since(previous) {
-                Some(edit_aabb) => self.chunk_resolve_cache.invalidate_aabb(&edit_aabb, density),
+                Some(edit_aabb) => {
+                    // The evicted chunk-coords are returned for the GPU cache to
+                    // evict in lockstep (issue #20 S6c); not wired to the GPU yet.
+                    let _evicted = self.chunk_resolve_cache.invalidate_aabb(&edit_aabb, density);
+                }
                 None => self.chunk_resolve_cache.clear(),
             },
             None => self.chunk_resolve_cache.clear(),

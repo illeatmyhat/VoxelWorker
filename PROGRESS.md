@@ -33,6 +33,32 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **Per-chunk render accessor + `invalidate_aabb` evicted-set (S6c-2a) — Part of #20 (step 4).**
+  Pure-CPU, additive, no render-path change → goldens untouched. Two seams the upcoming per-chunk
+  renderer + GPU cache need, exposed WITHOUT moving any draw path:
+  - **`ChunkResolveCache::resident_render_chunks(&mut self, scene, voxels_per_block, lod) ->
+    Vec<([i32;3], &VoxelGrid)>`.** Binds the cache to the composite recentre/floating-origin for
+    `(scene, density, lod)` EXACTLY as `resolve_region` does (via the existing `bind_and_collect_region`),
+    then returns each covering chunk as `(absolute_chunk_coord, &rebased_grid)`. The grids are the SAME
+    rebased per-chunk grids whose union `resolve_region` assembles — byte-identical (each already rebased
+    in i64 inside `resolve_chunk_rebased` before the f32 downcast). Borrow-checker shape: the grids are
+    BORROWED from `self.chunks` (`&VoxelGrid`), so resolving misses (needs `&mut self`) happens FIRST in
+    `bind_and_collect_region`, and the immutable borrows are gathered only AFTER every covering chunk is
+    resident (all cache HITs, no interleaved mut/shared borrow). The returned `Vec` borrows `self`
+    immutably for its lifetime — the renderer consumes it before the next `&mut` cache call.
+  - **`invalidate_aabb` now returns `Vec<[i32;3]>`** — exactly the chunk-coords evicted (resident coords
+    intersecting the edit AABB; or every resident coord on the belt-and-braces density-mismatch clear) so
+    the GPU cache can evict in lockstep. The one `main.rs` caller (`rebuild_geometry`) binds the result to
+    `_evicted` (not wired to the GPU yet).
+  - **Tests (+6, lib 158 → 164).** `render_chunks_match_resolve_region_for_{all_shapes,demo_scene,
+    demo_village}` (union of render chunks BIT-IDENTICAL to `resolve_region`'s assembled grid via the
+    `occupied_multiset` `f32::to_bits` helper, returned coord set == `covering_chunk_range`, each voxel
+    owned by its returned coord's half-open box `[c·E,(c+1)·E)`), `render_chunks_empty_for_part_only_scene`,
+    `invalidate_aabb_returns_exactly_the_evicted_coords`, `invalidate_aabb_density_mismatch_reports_all_resident_evicted`;
+    `empty_edit_aabb_evicts_nothing` extended to assert an empty returned set.
+  - **Gate green.** `cargo build --bins`, `cargo clippy --all-targets` (no new warnings), `cargo test`
+    (164 pass), `cargo test --features gpu --test golden` (6 goldens pixel-identical).
+
 - **Fix per-chunk fog silent holes past MAX_FOG_CHUNKS → graceful disable — Part of #20 (step 4).**
   Per-chunk onion fog is now the default. The CPU occupancy builder
   (`renderer.rs::build_per_chunk_fog_occupancy`) previously `keys.truncate(MAX_FOG_CHUNKS)`'d the resident
