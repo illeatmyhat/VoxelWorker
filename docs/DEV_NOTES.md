@@ -143,6 +143,28 @@ impl winit::application::ApplicationHandler for App {
 // main: let el = EventLoop::new()?; el.run_app(&mut App::default())?;
 ```
 
+## Golden-image regression tests (issue #24 — E0 safety net for ADR 0002)
+
+`tests/golden.rs` is a GPU-gated integration test (`#![cfg(feature = "gpu")]`, skipped by the
+GPU-less CI runner). It renders 5 canonical cases through the real `shot` binary (found via
+`CARGO_BIN_EXE_shot`) at a fixed `640×400` + fixed orbit angles, then tolerance-compares each PNG
+against a committed reference under `tests/golden/`. This proves the cuboid-mesher renderer rewrite
+does not change the pixels.
+
+```bash
+# Run the golden comparison (needs a real GPU):
+cargo test --features gpu --test golden
+
+# Regenerate the references after an INTENDED visual change, then visually check each PNG:
+UPDATE_GOLDENS=1 cargo test --features gpu --test golden
+```
+(PowerShell: `$env:UPDATE_GOLDENS = "1"; cargo test --features gpu --test golden`.)
+
+Tolerance: a pixel "differs" when its max per-channel abs diff exceeds 8/255; the test fails when
+more than 0.5% of pixels differ. On a mismatch, `<case>-actual.png` + `<case>-diff.png` are written
+to the temp dir and the mismatch fraction is printed. The 5 references live under `tests/golden/`
+(whitelisted in `.gitignore`'s `/shots/` rule).
+
 ## Verification protocol for each milestone
 
 1. `cargo build` (both bins) must succeed with no errors. Warnings: fix or justify.

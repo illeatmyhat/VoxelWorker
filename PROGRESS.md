@@ -33,6 +33,23 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **Golden-image regression harness — Closes #24 (E0 safety net for ADR 0002)** — added
+  `tests/golden.rs`, a GPU-gated (`#![cfg(feature = "gpu")]`) integration test that renders 5
+  canonical cases through the REAL `shot` binary (located via `CARGO_BIN_EXE_shot`) at a fixed
+  `--width 640 --height 400` and fixed orbit angles (`--theta 0.7 --phi 1.05`, auto-framed distance)
+  into temp PNGs, then tolerance-compares each against a committed reference under `tests/golden/`.
+  Cases: `sphere --debug-faces`, `cylinder`, `torus 8×2×8`, `--demo-village` (instanced scene graph),
+  `debug-clouds 64³ @density 2`. Tolerance: a pixel "differs" when its max per-channel abs diff > 8/255;
+  the test fails when > 0.5% of pixels differ (on this RTX machine all 5 cases render bit-exact run-to-run
+  — observed 0.00000% across two repeated runs). `UPDATE_GOLDENS=1` rewrites the references instead of
+  comparing (for intended visual changes). On failure it writes `<case>-actual.png` + `<case>-diff.png`
+  to a temp dir and prints the mismatch fraction. The 5 reference PNGs are committed under `tests/golden/`
+  (whitelisted in `.gitignore`). When the cuboid mesher replaces the renderer, these goldens prove the
+  pixels did not change. Verified: `cargo build --bins` + `cargo clippy --all-targets` + `cargo clippy
+  --features gpu --tests` all clean; default `cargo test` still 53 pass (golden correctly NOT compiled);
+  `cargo test --features gpu --test golden` passes twice with 0.00000% mismatch per case. Run/regen
+  documented in `docs/DEV_NOTES.md`.
+
 - **ADR 0002 — VS performance-techniques section — Part of #22** — appended "Performance techniques
   borrowed from Vintage Story" to `docs/adr/0002-…`: async meshing on a worker thread (off the
   render thread, E2/E3), texture-atlas → one draw per chunk (refines the material design; new open
