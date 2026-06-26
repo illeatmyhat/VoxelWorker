@@ -179,6 +179,12 @@ struct ShotOptions {
     /// INDENTED TREE (a Group with its children nested under it) and the
     /// Definitions list. Overrides --shape/--size/--density.
     demo_groups: bool,
+    /// `--synthetic-block` (part of #20 verification): build a LoadedMaterial from
+    /// SIX distinct solid-colour faces in-process (no VS install needed) and apply
+    /// it as the active material. Lets the headless harness prove the cuboid path
+    /// now renders a loaded per-face D2Array (and that cuboid vs instanced match per
+    /// face). Overrides --scan-vs/--apply-block material selection.
+    synthetic_block: bool,
     /// `--instanced-via-chunks` (issue #20 S6c-2b verification, instanced path
     /// only): after building the `VoxelRenderer` from the whole grid via the
     /// wrapper, REBUILD it from the resolve cache's PER-CHUNK accessor
@@ -229,6 +235,7 @@ impl Default for ShotOptions {
             demo_groups: false,
             far_offset: false,
             far_offset_near: false,
+            synthetic_block: false,
             instanced_via_chunks: false,
         }
     }
@@ -453,6 +460,9 @@ fn parse_options() -> ShotOptions {
             "--instanced-via-chunks" => {
                 options.instanced_via_chunks = true;
             }
+            "--synthetic-block" => {
+                options.synthetic_block = true;
+            }
             "--demo-far-offset" => {
                 options.far_offset = true;
             }
@@ -544,6 +554,7 @@ fn parse_options() -> ShotOptions {
                      \x20            [--mesher <instanced|cuboid>]\n\
                      \x20            [--scan-vs] [--apply-first-block]\n\
                      \x20            [--apply-block <substring>] [--list-perface]\n\
+                     \x20            [--synthetic-block]\n\
                      \x20            [--force-demo-stem <texture/stem>]\n\
                      \x20            [--gizmo] [--lattice] [--floor] [--no-viewcube]\n\
                      \x20            [--debug-faces] [--debug-chunks]\n\
@@ -1326,6 +1337,44 @@ async fn run_capture(options: ShotOptions) {
         }
     }
 
+    // Part of #20: synthetic loaded block — six distinct solid-colour faces built
+    // in-process (no VS install). Proves the cuboid path now renders a loaded
+    // per-face D2Array (layer selected by normal) and matches the instanced path
+    // per face. CubeFaceSlot order: 0 +X red, 1 -X green, 2 +Y blue, 3 -Y yellow,
+    // 4 +Z magenta, 5 -Z cyan.
+    if options.synthetic_block {
+        const FACE_SIZE: u32 = 16;
+        let face_colors: [[u8; 4]; 6] = [
+            [220, 40, 40, 255],   // +X red
+            [40, 200, 40, 255],   // -X green
+            [40, 80, 220, 255],   // +Y blue
+            [230, 210, 40, 255],  // -Y yellow
+            [210, 40, 210, 255],  // +Z magenta
+            [40, 210, 210, 255],  // -Z cyan
+        ];
+        let layer_bufs: Vec<Vec<u8>> = face_colors
+            .iter()
+            .map(|c| c.iter().copied().cycle().take((FACE_SIZE * FACE_SIZE * 4) as usize).collect())
+            .collect();
+        let layers: [&[u8]; 6] = [
+            &layer_bufs[0], &layer_bufs[1], &layer_bufs[2],
+            &layer_bufs[3], &layer_bufs[4], &layer_bufs[5],
+        ];
+        let material = LoadedMaterial::from_face_layers(
+            &gpu.device,
+            &gpu.queue,
+            voxel_renderer.material_bind_group_layout(),
+            voxel_renderer.material_sampler(),
+            FACE_SIZE,
+            FACE_SIZE,
+            &layers,
+            "synthetic".to_string(),
+        );
+        println!("applied synthetic 6-face block (per_face=true)");
+        panel_state.applied_block_label = Some("synthetic".to_string());
+        loaded_material = Some(material);
+    }
+
     let prepared = run_egui_frame(
         &mut egui_bridge,
         &gpu.device,
@@ -1375,9 +1424,11 @@ async fn run_capture(options: ShotOptions) {
     );
 
     // ADR 0002 E3b-1 (part of #18): upload the cuboid path's uniforms (camera +
-    // per-material base colours) and frustum-cull its mesh chunks. A loaded VS
-    // block renders as a single global material on the cuboid path for now, so
-    // modulation is off (None) in that case.
+    // per-material base colours) and frustum-cull its mesh chunks. A loaded VS block
+    // now textures the cuboid path per-face (its 6-layer D2Array is bound at draw
+    // time in `render_frame`, selecting the loaded pipeline — part of #20); `bound =
+    // None` here just disables the procedural per-box modulation the loaded pipeline
+    // ignores.
     if let Some(cuboid_mesh_renderer) = cuboid_mesh_renderer.as_mut() {
         let bound = match &loaded_material {
             Some(_) => None,

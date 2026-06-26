@@ -1060,8 +1060,10 @@ impl WindowedState {
                     geometry.voxels_per_block,
                 ));
             }
-            // A loaded VS block renders as a single global material on the cuboid
-            // path for now, so modulation is off in that case.
+            // A loaded VS block now textures the cuboid path per-face (its 6-layer
+            // D2Array is bound at DRAW time in `render_frame`, selecting the loaded
+            // pipeline — part of #20). `bound = None` here just disables the
+            // procedural per-box modulation/atlas, which the loaded pipeline ignores.
             let bound = match &self.loaded_material {
                 Some(_) => None,
                 None => Some(self.panel_state.material),

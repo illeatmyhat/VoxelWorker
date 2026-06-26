@@ -344,7 +344,15 @@ pub fn render_frame(
         // it INSTEAD of the instanced cubes. When `None` (the default), the
         // instanced path runs exactly as before — its output is unchanged.
         if let Some(cuboid_mesh) = overlays.cuboid_mesh {
-            cuboid_mesh.draw(&mut voxel_pass);
+            // Part of #20: when a VS block is applied, hand the cuboid path the
+            // block's 6-layer D2Array bind group so it textures the model per-face
+            // (selecting the layer by the face normal), matching the instanced path.
+            // No applied block → `None` keeps the procedural-atlas path unchanged.
+            let loaded_material = match material {
+                renderer::MaterialSource::Loaded(bind_group) => Some(bind_group),
+                renderer::MaterialSource::Procedural(_) => None,
+            };
+            cuboid_mesh.draw(&mut voxel_pass, loaded_material);
         } else {
             voxel_renderer.draw(&mut voxel_pass, material, overlays.debug_face_mode);
         }

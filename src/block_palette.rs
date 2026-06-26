@@ -291,6 +291,54 @@ pub struct LoadedMaterial {
 }
 
 impl LoadedMaterial {
+    /// Build a 6-layer material DIRECTLY from six raw RGBA8 face buffers (part of
+    /// #20 verification / synthetic blocks). Each `layers[i]` is a tightly-packed
+    /// `width*height*4` RGBA8 buffer in CubeFaceSlot order (0 +X, 1 -X, 2 +Y, 3 -Y,
+    /// 4 +Z, 5 -Z); the texture is uploaded as the SAME sRGB D2Array + bind-group
+    /// shape `from_faces` produces, so it is interchangeable on both render paths
+    /// without needing a real VS install. Used by the headless harness to apply six
+    /// distinct solid-colour faces and prove the cuboid path textures per-face.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_face_layers(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        material_bind_group_layout: &wgpu::BindGroupLayout,
+        sampler: &wgpu::Sampler,
+        width: u32,
+        height: u32,
+        layers: &[&[u8]; 6],
+        label: String,
+    ) -> Self {
+        let average_color = average_rgba(layers[0]);
+        let texture = crate::renderer::upload_face_material_texture(
+            device, queue, width, height, layers,
+        );
+        let view = texture.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("synthetic loaded block material bind group"),
+            layout: material_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(sampler),
+                },
+            ],
+        });
+        Self {
+            bind_group,
+            label,
+            is_per_face: true,
+            average_color,
+        }
+    }
+
     /// Build a 6-layer material from resolved per-face PNG paths (M7).
     ///
     /// Each face PNG is decoded and, if face sizes differ, rescaled to the

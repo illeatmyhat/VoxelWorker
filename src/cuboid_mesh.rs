@@ -817,6 +817,14 @@ pub struct CuboidMeshRenderer {
     /// Selected in `draw` when `debug_face_mode` is on — mirroring the instanced
     /// path's cull-off debug pipeline.
     debug_pipeline: wgpu::RenderPipeline,
+    /// Loaded-VS-block pipelines (part of #20): same vertex layout + uniform group,
+    /// but group(1) is a 6-layer D2Array (the block's per-face textures) instead of
+    /// the procedural atlas, and the shader (`cuboid_loaded.wgsl`) selects the face
+    /// layer FROM THE FACE NORMAL — exactly like the instanced loaded path. Selected
+    /// in `draw` when a loaded material's bind group is supplied (else the procedural
+    /// atlas pipelines above run, unchanged). The debug variant is cull-off.
+    loaded_pipeline: wgpu::RenderPipeline,
+    loaded_debug_pipeline: wgpu::RenderPipeline,
     /// Whether the last `update_uniforms` requested debug-faces mode (selects the
     /// cull-off pipeline in `draw`, matching the uploaded `debug_face_mode` flag).
     debug_face_mode: bool,
@@ -1069,6 +1077,76 @@ impl CuboidMeshRenderer {
         let pipeline = build_pipeline("cuboid pipeline", Some(wgpu::Face::Back));
         let debug_pipeline = build_pipeline("cuboid debug pipeline", None);
 
+        // --- Loaded-VS-block pipelines (part of #20) ---
+        // A second shader + pipeline pair that binds the applied block's 6-layer
+        // D2Array at group(1) (built externally by `LoadedMaterial`, against the
+        // SAME `build_face_material_layout` descriptor used here, so the bind group
+        // is layout-compatible) and selects the per-face layer by the face normal.
+        // It shares the uniform group(0) and the same vertex layout, so a loaded
+        // block renders pixel-aligned with the procedural geometry — only the
+        // texture source differs. The procedural atlas pipelines stay the default.
+        let loaded_material_layout = crate::renderer::build_face_material_layout(device);
+        let loaded_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("cuboid loaded-block shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/cuboid_loaded.wgsl").into()),
+        });
+        let loaded_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("cuboid loaded pipeline layout"),
+                bind_group_layouts: &[
+                    Some(&uniform_bind_group_layout),
+                    Some(&loaded_material_layout),
+                ],
+                immediate_size: 0,
+            });
+        let build_loaded_pipeline = |label: &str, cull_mode: Option<wgpu::Face>| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&loaded_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &loaded_shader,
+                    entry_point: Some("vertex_main"),
+                    buffers: std::slice::from_ref(&vertex_layout),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &loaded_shader,
+                    entry_point: Some("fragment_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: color_format,
+                        blend: Some(wgpu::BlendState::REPLACE),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    strip_index_format: None,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode,
+                    unclipped_depth: false,
+                    polygon_mode: wgpu::PolygonMode::Fill,
+                    conservative: false,
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DEPTH_FORMAT,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::Less),
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState::default(),
+                }),
+                multisample: wgpu::MultisampleState {
+                    count: MSAA_SAMPLE_COUNT,
+                    mask: !0,
+                    alpha_to_coverage_enabled: false,
+                },
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let loaded_pipeline = build_loaded_pipeline("cuboid loaded pipeline", Some(wgpu::Face::Back));
+        let loaded_debug_pipeline = build_loaded_pipeline("cuboid loaded debug pipeline", None);
+
         // Every resident chunk visible until the next frustum cull in `update_uniforms`.
         let mut visible_chunks: Vec<[i32; 3]> = chunk_buffers.keys().copied().collect();
         visible_chunks.sort_unstable();
@@ -1076,6 +1154,8 @@ impl CuboidMeshRenderer {
         Self {
             pipeline,
             debug_pipeline,
+            loaded_pipeline,
+            loaded_debug_pipeline,
             debug_face_mode: false,
             chunk_buffers,
             visible_chunks,
@@ -1150,8 +1230,10 @@ impl CuboidMeshRenderer {
     /// density (slice size + block-line period). `grid_overlay_enabled` reflects
     /// the Display toggle. `bound` is the active procedural material: it selects
     /// the bound texture (E3b-2) AND drives the relative base-colour modulation
-    /// (exactly like the instanced step-3b). `None` (a loaded VS block, rendered
-    /// as a single global material for now) binds Plain + disables modulation.
+    /// (exactly like the instanced step-3b). `None` means a loaded VS block is
+    /// active: modulation is disabled here, and the loaded-block pipeline selected in
+    /// `draw` (when its 6-layer D2Array bind group is supplied) ignores the
+    /// procedural atlas/modulation uniforms entirely (part of #20).
     #[allow(clippy::too_many_arguments)]
     pub fn update_uniforms(
         &mut self,
@@ -1248,24 +1330,50 @@ impl CuboidMeshRenderer {
     /// Record the cuboid draw into an already-begun render pass. Iterates the
     /// frustum-visible per-chunk buffers, one indexed draw per chunk over its own
     /// vertex/index buffer.
-    pub fn draw(&self, render_pass: &mut wgpu::RenderPass<'_>) {
+    ///
+    /// `loaded_material` (part of #20): when an applied/loaded VS block is active,
+    /// the caller passes the block's 6-layer D2Array bind group (`LoadedMaterial::
+    /// bind_group`); the cuboid path then selects the loaded-block pipeline + shader,
+    /// binding that D2Array at group(1) and selecting the per-face layer by the face
+    /// normal — so the cuboid path shows the SAME texture the instanced path shows.
+    /// `None` (no block applied) keeps the procedural-atlas path, unchanged.
+    pub fn draw(
+        &self,
+        render_pass: &mut wgpu::RenderPass<'_>,
+        loaded_material: Option<&wgpu::BindGroup>,
+    ) {
         if self.chunk_buffers.is_empty() {
             return;
         }
         // Debug-faces mode selects the cull-off pipeline (matching the uploaded
         // `debug_face_mode` flag) so back faces surviving a winding bug still draw
-        // and get the shader's stripe marker — same as the instanced path.
-        let pipeline = if self.debug_face_mode {
-            &self.debug_pipeline
-        } else {
-            &self.pipeline
+        // and get the shader's stripe marker — same as the instanced path. The
+        // pipeline pair is the loaded-block pair when a block is applied (binds its
+        // D2Array at group 1), else the procedural atlas pair.
+        let (pipeline, material_bind_group) = match loaded_material {
+            Some(loaded_bind_group) => (
+                if self.debug_face_mode {
+                    &self.loaded_debug_pipeline
+                } else {
+                    &self.loaded_pipeline
+                },
+                loaded_bind_group,
+            ),
+            None => (
+                if self.debug_face_mode {
+                    &self.debug_pipeline
+                } else {
+                    &self.pipeline
+                },
+                &self.atlas_bind_group,
+            ),
         };
         render_pass.set_pipeline(pipeline);
         render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
-        // ONE atlas bind group for ALL materials (E3c-1 / O8): the per-face
-        // `material_id` selects its atlas sub-rect in the shader, so a mixed-material
-        // chunk needs no per-material rebind — one bind, one draw per chunk.
-        render_pass.set_bind_group(1, &self.atlas_bind_group, &[]);
+        // group(1) is either the procedural ATLAS (per-face `material_id` → atlas
+        // sub-rect in the shader, one bind for a mixed-material chunk) or the loaded
+        // block's D2Array (per-face layer selected by normal). One bind, one draw/chunk.
+        render_pass.set_bind_group(1, material_bind_group, &[]);
         for coord in &self.visible_chunks {
             let Some(chunk) = self.chunk_buffers.get(coord) else {
                 continue;

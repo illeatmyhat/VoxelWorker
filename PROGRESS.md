@@ -33,6 +33,39 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **Cuboid mesher: render applied/loaded VS block textures (per-face D2Array) — Part of #20.**
+  The DEFAULT cuboid path could not show an applied/loaded VS block: it bound only the 3-material
+  PROCEDURAL atlas, and `main.rs`/`shot.rs` set the cuboid bound material to `None` for a loaded block,
+  so a "Granite"-applied model rendered as procedural Stone. The instanced path already showed it (it
+  binds the block's 6-layer D2Array and selects the per-face layer by normal). The cuboid path now does
+  the same.
+  - **Second pipeline (not a uniform flag).** Added a loaded-block shader (`shaders/cuboid_loaded.wgsl`)
+    + a pipeline pair (`loaded_pipeline` / `loaded_debug_pipeline`) on `CuboidMeshRenderer`, with group(1)
+    a 6-layer `texture_2d_array` instead of the procedural atlas. The shader reuses the EXACT
+    `CuboidUniforms` (camera/half-extent/overlay/band), the same vertex layout (so geometry is
+    pixel-aligned with the procedural path), the same per-voxel slice maths + per-face UV directions, and
+    `face_layer(normal)` (0 +X,1 -X,2 +Y,3 -Y,4 +Z,5 -Z — identical to `voxel.wgsl`), then
+    `textureSample(tex, samp, fract(texcoord), layer)`. A separate pipeline was chosen over a uniform
+    flag + dual bind groups so there are NO dead/unused bindings (the procedural atlas and the D2Array
+    have different group(1) layouts; one bind group is live per draw). The procedural atlas pipelines are
+    untouched, so the goldens' procedural path is byte-for-byte unchanged.
+  - **No new texture upload / no CPU-pixel retention needed.** `draw` now takes `Option<&wgpu::BindGroup>`;
+    `render_frame` passes the active `MaterialSource::Loaded(bind_group)` straight through, so the cuboid
+    path REUSES the very bind group `LoadedMaterial` already built (against `build_face_material_layout` —
+    layout-compatible with the cuboid loaded pipeline). `LoadedMaterial` discards its CPU pixels after
+    upload, but that's irrelevant here since we bind the existing GPU bind group; no retention change.
+  - **Plumbing.** `main.rs` + `shot.rs` keep `bound = None` for a loaded block (disables procedural
+    modulation/atlas, which the loaded pipeline ignores) — the loaded D2Array reaches the cuboid path via
+    `render_frame`'s `material` arg, not via `update_uniforms`.
+  - **Headless verification (no VS install).** New `LoadedMaterial::from_face_layers` (raw 6-face RGBA →
+    sRGB D2Array, same shape as `from_faces`) + a `shot --synthetic-block` flag that applies six distinct
+    solid-colour faces. Rendered a 2×2×2 box `--synthetic-block` on BOTH paths: cuboid shows the loaded
+    per-face colours (top blue +Y, right red +X, left magenta +Z) — NOT procedural Stone — and matches
+    the instanced path (viewport pixel-diff 0.034%, only AA at silhouette edges). Procedural box cuboid
+    (no block) still shows Stone, unchanged.
+  - **Gate.** `cargo build --bins`, `cargo clippy --all-targets` (no new warnings), `cargo test` (171
+    pass), `cargo test --features gpu --test golden` (6 cuboid goldens green). Instanced path unchanged.
+
 - **Cuboid mesher: apron-aware per-chunk meshing + per-chunk GPU buffers (S6c-2d) — Part of #20 (step 4).**
   The DEFAULT cuboid render path (the golden-covered one) now meshes PER CHUNK from per-chunk grids + a
   1-voxel neighbour apron, with one GPU vertex/index buffer per chunk, instead of densifying +
