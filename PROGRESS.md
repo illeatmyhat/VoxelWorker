@@ -33,6 +33,34 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **Fix cuboid mesher partial-silhouette bug: shift-invariant densification — Part of #18**
+  — the flag-gated cuboid path rendered the cylinder as ~1/4 of its disc (a wedge) while the instanced path
+  drew the full disc; sphere/village slipped through because they happened to render. **Root cause:**
+  `build_cuboid_mesh` densified the grid via `region_from_voxel_grid(grid, [0,0,0], dimensions)`, which uses
+  the project-wide `round(world + dimensions/2 - 0.5)` index convention anchored at index 0. That assumes the
+  voxel cloud is perfectly centred on `dimensions/2`. But `Scene::resolve_region` RECENTRES a composite by a
+  non-zero offset for odd block sizes (a 5-block axis shifts the cloud by 8 voxels — its `(min+max)/2` block
+  midpoint is +0.5 block off the node centre). The shifted cloud's convention indices ran negative / past
+  `dimensions`, so the densifier silently dropped every out-of-bounds voxel: the cylinder kept only
+  **36 032 of 80 384** voxels (~45%) → a wedge. The instanced path is immune because it draws raw
+  `world_position`s; only the cuboid path, which rebuilds geometry from the dense region, was affected. The
+  decomposition algorithm itself was never wrong (exact-cover holds on whatever region it is handed).
+  **Fix:** new `region_from_voxel_cloud(grid)` densifies anchored on the cloud's OWN minimum voxel
+  (`round(world - min_world_center)`, always ≥ 0) and returns the matching `world_offset = min_world − 0.5`
+  so the mesh sits exactly where the instanced voxels are. Shift-invariant — a recentred composite lands
+  fully in-bounds; a centred grid collapses to the old behaviour. **Regression test:**
+  `cuboid_covers_every_voxel_for_all_shapes` asserts the box set covers EXACTLY `grid.occupied.len()` voxels
+  for cylinder/sphere/torus/box/tube across three sizes AND a deliberately +8-shifted copy — directly
+  prevents partial-coverage for any shape. **Verify:** 81 lib tests pass (80 + new); clippy clean
+  (`--all-targets`, `--features gpu --tests`); all 5 goldens unchanged (instanced default untouched). Cuboid
+  cylinder now renders the FULL disc; silhouette A/B vs instanced dropped from a ~1/4-disc wedge to a
+  thin-rim 0.95% (just MSAA edge AA on merged-face triangulation). Regression-sweep silhouette mismatch
+  (foreground mask, cuboid vs instanced): cylinder 0.95%, sphere 0.17%, torus 0.76%, box 1.26%, tube 1.40%,
+  village 0.006%, clouds 0.003% — all full, correct silhouettes (residual is edge AA / surface texture
+  phase, not geometry). NB the cuboid path is not pixel-identical to instanced even where there was never a
+  bug (different triangulation + per-merged-face texture tiling), so full-frame A/B sits ~3–5%; the
+  geometry/silhouette is what this fix targets and it now matches.
+
 - **Cuboid faces: per-voxel texture slice + position-based grid overlay (ADR 0002 E3b-2) — Part of #18**
   — extends the flag-gated cuboid path (still default OFF; instanced path untouched) so a merged box face
   reads IDENTICAL to per-voxel cubes. **Per-voxel texture tiling:** each box-face fragment derives a UV in

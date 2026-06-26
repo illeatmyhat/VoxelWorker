@@ -32,7 +32,7 @@
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
-use crate::cuboid::{decompose_into_boxes, region_from_voxel_grid, VoxelBox, VoxelRegion};
+use crate::cuboid::{decompose_into_boxes, VoxelBox, VoxelRegion};
 use crate::frustum::{Aabb, Frustum};
 use crate::panel::MaterialChoice;
 use crate::renderer::{bucket_instances_into_chunks, DEPTH_FORMAT, MSAA_SAMPLE_COUNT};
@@ -172,8 +172,18 @@ pub fn build_cuboid_mesh(grid: &VoxelGrid, voxels_per_block: u32) -> CuboidMesh 
         return CuboidMesh::default();
     }
 
-    // Decompose the WHOLE grid (origin 0 → region-local index == absolute index).
-    let region = region_from_voxel_grid(grid, [0, 0, 0], grid.dimensions);
+    // Densify the WHOLE grid into a region anchored on the ACTUAL occupied voxel
+    // cloud rather than assuming it is perfectly centred at `dimensions/2`. The
+    // scene resolve path (`Scene::resolve_region`) can recentre a composite by a
+    // non-zero offset (an odd block size shifts the cloud off the geometric
+    // centre), so densifying with the project-wide `round(world + dimensions/2 -
+    // 0.5)` convention anchored at index 0 mapped the shifted cloud partly OUT of
+    // `[0, dimensions)` and silently dropped voxels — the cuboid cylinder lost
+    // ~55% of its voxels this way and rendered a wedge. The instanced path is
+    // immune because it draws raw `world_position`s; `region_from_voxel_cloud`
+    // makes the cuboid path likewise shift-invariant, and returns the world offset
+    // that places the mesh exactly where the instanced voxels sit.
+    let (region, world_offset) = region_from_voxel_cloud(grid);
     let boxes = decompose_into_boxes(&region);
 
     // Reuse the instanced chunk partition: bucket voxels into chunks and key each
@@ -183,11 +193,12 @@ pub fn build_cuboid_mesh(grid: &VoxelGrid, voxels_per_block: u32) -> CuboidMesh 
     // frustum test stays conservative (never a false negative).
     let (_instances, instanced_chunks) = bucket_instances_into_chunks(grid, voxels_per_block);
     let chunk_extent = (crate::renderer::CHUNK_BLOCKS * voxels_per_block.max(1)) as f32;
-    let half = [
-        grid_x as f32 / 2.0,
-        grid_y as f32 / 2.0,
-        grid_z as f32 / 2.0,
-    ];
+    // `world_offset` (from `occupied_index_bounds`) maps a REGION-LOCAL voxel index
+    // to its world min-corner plane at the EXACT location the instanced path draws
+    // that voxel, i.e. `min(world_position) - 0.5`. Adding it to a local index `l`
+    // gives `(min_voxel_min_plane) + l`, so the cuboid mesh sits pixel-for-pixel on
+    // top of the instanced voxels even when the scene recentred the cloud off the
+    // geometric centre. (A centred grid yields the old `-dimensions/2`.)
 
     // Map a chunk integer key → its position in `instanced_chunks` (same sort
     // order). We rebuild the key→slot map by recomputing each chunk's key from its
@@ -196,11 +207,11 @@ pub fn build_cuboid_mesh(grid: &VoxelGrid, voxels_per_block: u32) -> CuboidMesh 
     use std::collections::HashMap;
     let mut buckets: HashMap<[i32; 3], Vec<usize>> = HashMap::new();
     for (box_index, voxel_box) in boxes.iter().enumerate() {
-        // World centre of the box's min-corner voxel: index + 0.5 - half.
+        // World centre of the box's min-corner voxel: local index + 0.5 + offset.
         let key = [
-            ((voxel_box.min[0] as f32 + 0.5 - half[0]) / chunk_extent).floor() as i32,
-            ((voxel_box.min[1] as f32 + 0.5 - half[1]) / chunk_extent).floor() as i32,
-            ((voxel_box.min[2] as f32 + 0.5 - half[2]) / chunk_extent).floor() as i32,
+            ((voxel_box.min[0] as f32 + 0.5 + world_offset[0]) / chunk_extent).floor() as i32,
+            ((voxel_box.min[1] as f32 + 0.5 + world_offset[1]) / chunk_extent).floor() as i32,
+            ((voxel_box.min[2] as f32 + 0.5 + world_offset[2]) / chunk_extent).floor() as i32,
         ];
         buckets.entry(key).or_default().push(box_index);
     }
@@ -224,7 +235,7 @@ pub fn build_cuboid_mesh(grid: &VoxelGrid, voxels_per_block: u32) -> CuboidMesh 
         let mut aabb = Aabb::empty();
         for &box_index in box_indices {
             let voxel_box = &boxes[box_index];
-            emit_box_faces(voxel_box, &region, half, &mut vertices, &mut indices, &mut aabb);
+            emit_box_faces(voxel_box, &region, world_offset, &mut vertices, &mut indices, &mut aabb);
         }
         let index_count = indices.len() as u32 - index_start;
         chunks.push(MeshChunk {
@@ -242,6 +253,82 @@ pub fn build_cuboid_mesh(grid: &VoxelGrid, voxels_per_block: u32) -> CuboidMesh 
     }
 }
 
+/// Densify a whole [`VoxelGrid`]'s occupied set into a [`VoxelRegion`] anchored on
+/// the cloud's ACTUAL minimum voxel, returning the region plus the world-space
+/// min-corner plane of region-local index `(0,0,0)`.
+///
+/// Unlike [`region_from_voxel_grid`] — which uses the project-wide
+/// `round(world + dimensions/2 - 0.5)` index convention anchored at index 0 — this
+/// anchors region-local index 0 at the cloud's own minimum voxel
+/// (`round(world - min_world_center)`). That makes it **shift-invariant**: a
+/// composite recentred off `dimensions/2` (e.g. an odd block size, via
+/// `Scene::resolve_region`) still densifies into the region with no voxel falling
+/// out of bounds — the previous "anchor at 0" densification silently dropped the
+/// voxels whose shifted convention index went negative or past `dimensions` (the
+/// cuboid cylinder lost ~55% of its voxels and rendered a wedge).
+///
+/// The returned `world_offset` is `min(world_position) - 0.5` per axis: adding it
+/// to a region-local index reproduces the EXACT world position the instanced path
+/// draws that voxel at, so the cuboid mesh overlays the instanced one pixel-for-
+/// pixel. For a perfectly centred grid the indices and offset collapse to the old
+/// behaviour (`world_offset = [-w/2, -h/2, -d/2]`).
+///
+/// Two distinct voxels can only collide on the same region index if they already
+/// shared a world position (the grid is a set of distinct cells), so densification
+/// is lossless. The region extent is the cloud's per-axis index span, never larger
+/// than `grid.dimensions`.
+fn region_from_voxel_cloud(grid: &VoxelGrid) -> (VoxelRegion, [f32; 3]) {
+    if grid.occupied.is_empty() {
+        return (VoxelRegion::new_empty([0, 0, 0]), [0.0; 3]);
+    }
+
+    // Pass 1: the cloud's minimum voxel centre per axis (the anchor).
+    let mut min_world = [f32::INFINITY; 3];
+    for voxel in &grid.occupied {
+        for (axis, min_axis) in min_world.iter_mut().enumerate() {
+            *min_axis = min_axis.min(voxel.world_position[axis]);
+        }
+    }
+
+    // Region index of a voxel = round(world_center - min_world_center) (≥ 0).
+    let region_index = |world: [f32; 3]| -> [i64; 3] {
+        [
+            (world[0] - min_world[0]).round() as i64,
+            (world[1] - min_world[1]).round() as i64,
+            (world[2] - min_world[2]).round() as i64,
+        ]
+    };
+
+    // Pass 2: the max index → region extent.
+    let mut max_index = [0i64; 3];
+    for voxel in &grid.occupied {
+        let index = region_index(voxel.world_position);
+        for axis in 0..3 {
+            max_index[axis] = max_index[axis].max(index[axis]);
+        }
+    }
+    let extent = [
+        (max_index[0] + 1) as u32,
+        (max_index[1] + 1) as u32,
+        (max_index[2] + 1) as u32,
+    ];
+
+    // Pass 3: stamp materials into the dense region.
+    let mut region = VoxelRegion::new_empty(extent);
+    for voxel in &grid.occupied {
+        let [lx, ly, lz] = region_index(voxel.world_position);
+        region.set(lx as u32, ly as u32, lz as u32, Some(voxel.material_id));
+    }
+
+    // World min-corner plane of region-local index 0 = its centre minus 0.5.
+    let world_offset = [
+        min_world[0] - 0.5,
+        min_world[1] - 0.5,
+        min_world[2] - 0.5,
+    ];
+    (region, world_offset)
+}
+
 /// Emit the exposed faces of one box into the shared vertex/index buffers,
 /// expanding `aabb` to contain the box. A face is exposed when the voxel cell
 /// immediately beyond it (per axis, across the box's full extent on the other two
@@ -250,7 +337,7 @@ pub fn build_cuboid_mesh(grid: &VoxelGrid, voxels_per_block: u32) -> CuboidMesh 
 fn emit_box_faces(
     voxel_box: &VoxelBox,
     region: &VoxelRegion,
-    half: [f32; 3],
+    world_offset: [f32; 3],
     vertices: &mut Vec<CuboidVertex>,
     indices: &mut Vec<u32>,
     aabb: &mut Aabb,
@@ -265,9 +352,9 @@ fn emit_box_faces(
         (max_z + 1) as f32,
     ];
 
-    // Expand the chunk AABB to this box's world extent.
-    aabb.expand(glam::Vec3::new(lo[0] - half[0], lo[1] - half[1], lo[2] - half[2]));
-    aabb.expand(glam::Vec3::new(hi[0] - half[0], hi[1] - half[1], hi[2] - half[2]));
+    // Expand the chunk AABB to this box's world extent (local index + offset).
+    aabb.expand(glam::Vec3::new(lo[0] + world_offset[0], lo[1] + world_offset[1], lo[2] + world_offset[2]));
+    aabb.expand(glam::Vec3::new(hi[0] + world_offset[0], hi[1] + world_offset[1], hi[2] + world_offset[2]));
 
     for face in &FACE_TEMPLATES {
         if !face_is_exposed(voxel_box, region, face.neighbor_delta) {
@@ -277,9 +364,9 @@ fn emit_box_faces(
         for corner in &face.corners {
             // 0 → min plane (lo), 1 → max+1 plane (hi); shift into world space.
             let world = [
-                (if corner[0] == 0 { lo[0] } else { hi[0] }) - half[0],
-                (if corner[1] == 0 { lo[1] } else { hi[1] }) - half[1],
-                (if corner[2] == 0 { lo[2] } else { hi[2] }) - half[2],
+                (if corner[0] == 0 { lo[0] } else { hi[0] }) + world_offset[0],
+                (if corner[1] == 0 { lo[1] } else { hi[1] }) + world_offset[1],
+                (if corner[2] == 0 { lo[2] } else { hi[2] }) + world_offset[2],
             ];
             vertices.push(CuboidVertex {
                 position: world,
@@ -870,6 +957,73 @@ mod tests {
         let expected = [0, 1, 2, 3, 4, 5];
         for (face, &want) in FACE_TEMPLATES.iter().zip(expected.iter()) {
             assert_eq!(face_layer(face.normal), want, "normal {:?}", face.normal);
+        }
+    }
+
+    /// The cuboid decomposition must cover EVERY occupied voxel of the grid — the
+    /// box set's total voxel count equals `grid.occupied.len()` — for ANY shape AND
+    /// for a recentred cloud. This is the regression guard for the "partial
+    /// silhouette" bug (#18): the cuboid cylinder rendered ~1/4 of the disc because
+    /// the densifier anchored region index 0 at `dimensions/2` and silently dropped
+    /// the voxels of a recentred cloud (the scene resolve path shifts an odd-block
+    /// shape off-centre). A wedge means lost coverage; this asserts none is lost.
+    #[test]
+    fn cuboid_covers_every_voxel_for_all_shapes() {
+        use crate::voxel::{SdfShape, ShapeKind, VoxelProducer};
+
+        for &kind in &[
+            ShapeKind::Cylinder,
+            ShapeKind::Sphere,
+            ShapeKind::Torus,
+            ShapeKind::Box,
+            ShapeKind::Tube,
+        ] {
+            // 5×1×5 is the default disc (odd X/Z blocks → the recentre that exposed
+            // the bug); also exercise an odd-all-axes size to be thorough.
+            for &size in &[[5u32, 1, 5], [3, 3, 3], [5, 3, 7]] {
+                let shape = SdfShape {
+                    kind,
+                    size_blocks: size,
+                    voxels_per_block: 8,
+                    wall_blocks: 1,
+                };
+                // Shift-invariance: also run a deliberately recentred copy of the
+                // grid (every voxel +8 in each axis, like `resolve_region`'s
+                // off-centre composite) — coverage must be identical.
+                for shift in [0.0f32, 8.0] {
+                    let mut shifted = VoxelGrid::new(shape.grid_dimensions());
+                    shape.resolve(&mut shifted);
+                    if shifted.occupied.is_empty() {
+                        continue;
+                    }
+                    for voxel in &mut shifted.occupied {
+                        for axis in 0..3 {
+                            voxel.world_position[axis] += shift;
+                        }
+                    }
+
+                    let (region, _world_offset) = region_from_voxel_cloud(&shifted);
+                    let region_solid =
+                        region.cells.iter().filter(|c| c.is_some()).count();
+                    let boxes = decompose_into_boxes(&region);
+                    let covered: u64 = boxes.iter().map(|b| b.voxel_count()).sum();
+
+                    assert_eq!(
+                        region_solid,
+                        shifted.occupied.len(),
+                        "{kind:?} {size:?} shift={shift}: densified region lost \
+                         voxels ({region_solid} of {})",
+                        shifted.occupied.len()
+                    );
+                    assert_eq!(
+                        covered,
+                        shifted.occupied.len() as u64,
+                        "{kind:?} {size:?} shift={shift}: cuboid boxes cover \
+                         {covered} of {} voxels (a partial silhouette)",
+                        shifted.occupied.len()
+                    );
+                }
+            }
         }
     }
 
