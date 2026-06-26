@@ -643,6 +643,44 @@ mod tests {
     }
 
     #[test]
+    fn grid_overlay_bit_blocks_box_merge() {
+        // Issue #29 S4: the on-face-grid flag bit is folded into `material_id` BEFORE
+        // decomposition, so two otherwise-identical-material voxels that differ only
+        // in the flag bit are DIFFERENT materials to the greedy mesher and must NOT
+        // merge — the flagged voxels carry the grid onto their own faces, the
+        // unflagged ones don't.
+        use crate::voxel::GRID_OVERLAY_BIT;
+        let base = 1u16; // Wood
+        let flagged = base | GRID_OVERLAY_BIT;
+        // A 4×1×1 row: x<2 flagged, x>=2 plain — same base material, differing bit.
+        let extent = [4, 1, 1];
+        let region = region_from_fn(extent, |x, _y, _z| {
+            Some(if x < 2 { flagged } else { base })
+        });
+        let boxes = decompose_into_boxes(&region);
+        assert_eq!(
+            boxes.len(),
+            2,
+            "differing grid bit must split the row into two boxes (no merge)"
+        );
+        assert_invariants(&region, &boxes);
+        // Each box keeps its exact (bit-bearing) material id, so the bit travels onto
+        // the box's faces — masked off only at colour-lookup time in the shader.
+        let flagged_box = boxes.iter().find(|b| b.material_id == flagged).unwrap();
+        let plain_box = boxes.iter().find(|b| b.material_id == base).unwrap();
+        assert_eq!((flagged_box.min, flagged_box.max), ([0, 0, 0], [1, 0, 0]));
+        assert_eq!((plain_box.min, plain_box.max), ([2, 0, 0], [3, 0, 0]));
+        // A row that is UNIFORMLY flagged still merges to one box (the bit is not a
+        // per-voxel splitter, only a per-material one).
+        let uniform = region_from_fn(extent, |_x, _y, _z| Some(flagged));
+        assert_eq!(
+            decompose_into_boxes(&uniform).len(),
+            1,
+            "a uniformly-flagged row merges to one box"
+        );
+    }
+
+    #[test]
     fn round_trip_multiple_materials() {
         // A 4×4×2 region quartered into four distinct materials along X and Y, so a
         // correct decomposition can NEVER merge two materials into one box. The

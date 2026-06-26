@@ -65,11 +65,37 @@ pub enum ShapeKind {
     Box,
 }
 
+/// Per-object on-face-grid flag bit packed into a voxel's `material_id`
+/// (issue #29 S4). The material id only ever carries a small enum value
+/// (Stone/Wood/Plain ⇒ 0/1/2; the shaders clamp it to ≤2 before any colour
+/// lookup), so the high bit is free to flag "draw the on-face voxel grid on this
+/// voxel's faces". The resolver ORs this bit into a voxel's `material_id` iff the
+/// producing node has `grids.voxel_grid_on_faces`; the GPU-upload path strips it
+/// again when the scene-wide `master_voxel_grid` is OFF (the master AND); and the
+/// three mesh shaders read `(material_id & GRID_OVERLAY_BIT) != 0` to gate the
+/// on-face grid branch, masking the bit OFF (via [`material_id_color_index`])
+/// before any atlas / base-colour lookup so the flag never corrupts the colour.
+///
+/// **This constant is mirrored verbatim in `shaders/voxel.wgsl`,
+/// `shaders/cuboid.wgsl` and `shaders/cuboid_loaded.wgsl`** (`const
+/// GRID_OVERLAY_BIT: u32 = 32768u;`) — keep all four in sync.
+pub const GRID_OVERLAY_BIT: u16 = 1 << 15;
+
+/// Strip the [`GRID_OVERLAY_BIT`] from a `material_id`, leaving only the real
+/// material handle used for the colour / atlas lookup. The shaders perform the
+/// same mask (`material_id & ~GRID_OVERLAY_BIT`, then clamp to ≤2); this is the
+/// CPU mirror so tests can assert the colour index round-trips.
+#[inline]
+pub fn material_id_color_index(material_id: u16) -> u16 {
+    material_id & !GRID_OVERLAY_BIT
+}
+
 /// One occupied voxel in the resolved grid.
 ///
 /// `block_local_coord` is `(i % voxels_per_block, …)` — the voxel's position
-/// *within* its block, needed by the M4 texture-slice shader. `material_id` is
-/// reserved for M3+ and unused in M2.
+/// *within* its block, needed by the M4 texture-slice shader. `material_id`
+/// carries the real material handle in its low bits plus the optional
+/// [`GRID_OVERLAY_BIT`] flag (issue #29 S4) in its high bit.
 #[derive(Debug, Clone, Copy)]
 pub struct Voxel {
     /// World-centred voxel-grid coordinate of the voxel centre.
@@ -459,5 +485,36 @@ pub fn signed_distance(
             glam::Vec2::new(radial, point.y).length() - tube_radius
         }
         ShapeKind::Box => signed_distance_box(point, semi_axes),
+    }
+}
+
+#[cfg(test)]
+mod grid_overlay_bit_tests {
+    use super::*;
+
+    /// Issue #29 S4: the flag bit is the high bit (1 << 15), well clear of every
+    /// real material handle (Stone/Wood/Plain ⇒ 0/1/2), so masking it off recovers
+    /// the real id for the colour lookup and the bit round-trips independently.
+    #[test]
+    fn flag_bit_is_high_and_masks_cleanly() {
+        assert_eq!(GRID_OVERLAY_BIT, 0x8000);
+        for material in 0u16..=2 {
+            // The bit never collides with a real material id.
+            assert_eq!(material & GRID_OVERLAY_BIT, 0, "material {material} must not set the flag bit");
+            // OR the bit on, then mask it off → the original material id.
+            let flagged = material | GRID_OVERLAY_BIT;
+            assert_ne!(flagged, material, "the bit must change the raw id");
+            assert_eq!(
+                material_id_color_index(flagged),
+                material,
+                "masking the flag bit off must recover the real material id"
+            );
+            // The unflagged id masks to itself (idempotent).
+            assert_eq!(material_id_color_index(material), material);
+        }
+        // The masked id always clamps into the shader's [0, 2] colour range.
+        for raw in [GRID_OVERLAY_BIT, GRID_OVERLAY_BIT | 2, 2] {
+            assert!(material_id_color_index(raw).min(2) <= 2);
+        }
     }
 }

@@ -33,6 +33,52 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **Grid rework S4: per-object on-face voxel grid via material-id flag bit — Part of #29.**
+  The on-face voxel grid (the bold-block-line fragment overlay in the mesh shaders) is now PER OBJECT,
+  gated by the scene master `master_voxel_grid` ANDed with each node's own `grids.voxel_grid_on_faces`
+  (default OFF for new objects). Approach: pack a **"show on-face grid" flag bit** into the per-voxel
+  `material_id` so it rides through BOTH render paths (per-chunk instanced + cuboid) with no new vertex
+  attribute.
+  - **Bit constant.** `voxel::GRID_OVERLAY_BIT = 1 << 15` (the high bit of the `u16` material id;
+    real handles are only Stone/Wood/Plain ⇒ 0/1/2, so the bit is free), plus a CPU mirror
+    `voxel::material_id_color_index(id) = id & !GRID_OVERLAY_BIT`. **Mirrored verbatim** as
+    `const GRID_OVERLAY_BIT: u32 = 32768u;` in all three mesh shaders (`voxel.wgsl`, `cuboid.wgsl`,
+    `cuboid_loaded.wgsl`) — keep the four in sync.
+  - **Resolver (bit baked per-voxel).** `for_each_leaf`/`walk_nodes` now pass each leaf's
+    `voxel_grid_on_faces`; both `stamp_producer` and `stamp_producer_into_chunk` gained a `grid_overlay`
+    flag that ORs `GRID_OVERLAY_BIT` onto every stamped voxel's `material_id` (orthogonal to the
+    material override, so a Tool keeps its real id + bit, a Part keeps its own per-voxel material + bit).
+    The bit therefore survives chunk bucketing and the cuboid densify, travelling with each voxel.
+  - **Master AND (shader uniform).** The Display master maps to the existing `grid_overlay_enabled`
+    uniform; the shaders gate `on_face_grid_enabled = grid_overlay_enabled > 0.5 && (material_id & BIT)`.
+    Master OFF ⇒ no node draws; master ON ⇒ only flagged (opted-in) voxels — toggling the master is a
+    pure uniform write (no re-resolve, no re-upload). A NODE's flag flip DOES re-resolve (the bit is
+    baked at resolve), wired via `scene_changed`.
+  - **Cuboid path.** The flag bit is folded into the `material_id` BEFORE `decompose_into_boxes`, so two
+    same-material voxels differing only in the bit are DIFFERENT materials to the greedy mesher and
+    never merge (a uniformly-flagged run still merges to one box). Each box carries the bit onto its
+    faces; both cuboid shaders gate the overlay on it.
+  - **Mask-before-colour (correctness).** All three shaders mask the bit OFF before any colour/atlas
+    lookup (`material_color_index` / `material_base_colors_lookup`'s masked `min(…,2u)`), so the flag
+    can never push a flagged voxel's colour index past 2 and corrupt the material colour. Verified: the
+    Stone/Wood/Plain colours render unchanged on flagged voxels.
+  - **UI.** The inspector "Grids (this object)" section gains a **"Voxel grid on faces"** checkbox
+    (signals `scene_changed` — re-resolve). The Display checkbox is relabelled **"Voxel grid on faces
+    (master)"** and repointed at `scene.master_voxel_grid`; persistence (`AppConfig.show_grid_overlay`)
+    now mirrors the scene master. `main.rs`/`shot.rs` feed `scene.master_voxel_grid` to both meshers'
+    uniforms.
+  - **`shot`.** `--grid` now sets the scene master AND enables `voxel_grid_on_faces` on ONE node (the
+    `--select-node N` node, else node 0). Headless `--demo-scene --grid` PNGs in BOTH meshers
+    (`--mesher cuboid` default + `--mesher instanced`) confirm: the enabled node (Sphere, node 0) shows
+    bold block-edge + voxel grid lines on its faces while the sibling Box/Torus show none — per-object
+    gating, identical between meshers.
+  - **Tests.** +4 CPU tests (199 total): the bit is set iff a node opts in and stripped/clear otherwise
+    (density {1,15,16}); the masked colour id round-trips to ≤2; a 2-node scene flags exactly the enabled
+    node's voxels; `decompose_into_boxes` does NOT merge across differing grid bits. Goldens green — only
+    the two short-inspector cases (`demo-village`, `debug-clouds`) moved, and ONLY in the panel region
+    (the new inspector row + master relabel); a crop-compare proved the 3D viewport is byte-identical
+    (0.0000%), so the two reference PNGs were regenerated.
+
 - **Grid rework S3: per-object block lattice + floor (global-lattice snapped) — Part of #29.**
   The whole-region lattice/floor is gone; each grid is now PER OBJECT, gated by a scene master
   ANDed with the node's own toggle (default OFF for new objects → the windowed default now shows

@@ -684,7 +684,7 @@ impl Scene {
             std::slice::from_ref(target),
             parent_offset,
             &mut def_path,
-            &mut |leaf_offset, content| {
+            &mut |leaf_offset, content, _grid_on_faces| {
                 let Some(size_blocks) = leaf_size_blocks(content, voxels_per_block) else {
                     return;
                 };
@@ -960,7 +960,7 @@ impl Scene {
         let mut min_corner = [i64::MAX; 3];
         let mut max_corner = [i64::MIN; 3];
         let mut any = false;
-        self.for_each_leaf(&mut |world_offset, content| {
+        self.for_each_leaf(&mut |world_offset, content, _grid_on_faces| {
             let Some(size_blocks) = leaf_size_blocks(content, voxels_per_block) else {
                 return;
             };
@@ -988,7 +988,12 @@ impl Scene {
     /// reference an ancestor definition) lives in [`walk_nodes`].
     ///
     /// [`walk_nodes`]: Self::walk_nodes
-    fn for_each_leaf(&self, visitor: &mut dyn FnMut([i64; 3], &NodeContent)) {
+    /// The visitor receives, per visible leaf: its accumulated world block
+    /// offset, its content, and its own `grids.voxel_grid_on_faces` flag (issue
+    /// #29 S4 — the resolver ORs [`crate::voxel::GRID_OVERLAY_BIT`] into the
+    /// leaf's stamped `material_id` when this is set, so the on-face voxel grid
+    /// travels with each voxel through chunk bucketing).
+    fn for_each_leaf(&self, visitor: &mut dyn FnMut([i64; 3], &NodeContent, bool)) {
         let mut def_path: Vec<DefId> = Vec::new();
         self.walk_nodes(&self.nodes, [0, 0, 0], &mut def_path, visitor);
     }
@@ -1003,7 +1008,7 @@ impl Scene {
         nodes: &[Node],
         parent_offset: [i64; 3],
         def_path: &mut Vec<DefId>,
-        visitor: &mut dyn FnMut([i64; 3], &NodeContent),
+        visitor: &mut dyn FnMut([i64; 3], &NodeContent, bool),
     ) {
         for node in nodes {
             if !node.visible {
@@ -1016,7 +1021,7 @@ impl Scene {
             ];
             match &node.content {
                 NodeContent::Tool { .. } | NodeContent::Part(_) => {
-                    visitor(world_offset, &node.content);
+                    visitor(world_offset, &node.content, node.grids.voxel_grid_on_faces);
                 }
                 NodeContent::Group(children) => {
                     self.walk_nodes(children, world_offset, def_path, visitor);
@@ -1099,7 +1104,7 @@ impl Scene {
         // in i64 (S4a) so a far-placed node composes without overflow; the result
         // is downcast to f32 inside the stamp (the render frame stays f32 — S4b
         // makes the far case byte-identical via origin rebasing).
-        self.for_each_leaf(&mut |world_offset, content| {
+        self.for_each_leaf(&mut |world_offset, content, grid_on_faces| {
             // Snap a sized leaf onto the global block lattice (issue #30): an
             // odd-block leaf's producer grid straddles a block boundary by half a
             // block, so shift it by `leaf_lattice_shift_voxels` before placing. A
@@ -1120,6 +1125,10 @@ impl Scene {
                         region_dimensions,
                         translation_voxels,
                         material_id_for(*material),
+                        // Issue #29 S4: OR the on-face-grid flag bit onto every
+                        // stamped voxel iff this node opted in, so the bit travels
+                        // with each voxel (and survives chunk bucketing).
+                        grid_on_faces,
                         shape,
                     );
                 }
@@ -1138,6 +1147,9 @@ impl Scene {
                         // A Part brings its own per-voxel materials; today the
                         // cloud field emits material 0, so the stamp keeps that.
                         None,
+                        // Issue #29 S4: still OR the flag bit per-voxel when this
+                        // node wants the on-face grid (independent of material).
+                        grid_on_faces,
                         &producer,
                     );
                 }
@@ -1253,7 +1265,7 @@ impl Scene {
         let region_dimensions = self.placed_region_dimensions(voxels_per_block);
         let density = voxels_per_block.max(1) as i64;
         let chunk_box = VoxelAabb::new(chunk_min_voxels, chunk_max_voxels);
-        self.for_each_leaf(&mut |world_offset, content| {
+        self.for_each_leaf(&mut |world_offset, content, grid_on_faces| {
             // Issue #27 S3 optimisation: skip a leaf whose world-AABB doesn't touch
             // this chunk, so resolving one chunk costs ~the leaves that overlap it
             // (not the whole tree). This is BIT-IDENTICAL to stamping-then-clipping:
@@ -1311,6 +1323,10 @@ impl Scene {
                 translation_voxels,
                 floating_origin_voxels,
                 material_override,
+                // Issue #29 S4: OR the on-face-grid flag bit onto each kept voxel
+                // iff this node opted in, so the bit travels through the chunked
+                // render path exactly as it does through `resolve_region`.
+                grid_on_faces,
                 producer.as_ref(),
                 chunk_min_voxels,
                 chunk_max_voxels,
@@ -1443,7 +1459,7 @@ impl Scene {
         let mut min_corner = [i64::MAX; 3];
         let mut max_corner = [i64::MIN; 3];
         let mut any = false;
-        self.for_each_leaf(&mut |world_offset, content| {
+        self.for_each_leaf(&mut |world_offset, content, _grid_on_faces| {
             let Some(size_blocks) = leaf_size_blocks(content, voxels_per_block) else {
                 return;
             };
@@ -1520,7 +1536,7 @@ impl Scene {
         let density = voxels_per_block.max(1) as i64;
         let mut entries: Vec<LeafEntry> = Vec::new();
         let mut has_region_spanning_leaf = false;
-        self.for_each_leaf(&mut |world_offset, content| {
+        self.for_each_leaf(&mut |world_offset, content, _grid_on_faces| {
             match leaf_size_blocks(content, voxels_per_block) {
                 Some(size_blocks) => {
                     // The producer centres its `size·d` grid on the origin, then it
@@ -1704,6 +1720,7 @@ fn stamp_producer(
     region_dimensions: [u32; 3],
     translation_voxels: [i64; 3],
     material_override: Option<u16>,
+    grid_overlay: bool,
     producer: &dyn VoxelProducer,
 ) {
     // The producer sizes its own grid (`SdfShape::resolve` overwrites
@@ -1715,9 +1732,9 @@ fn stamp_producer(
 
     let zero_offset = translation_voxels == [0, 0, 0];
 
-    if zero_offset && material_override.is_none() {
-        // Fast path / exact identity: no translation and no material rewrite, so
-        // the local occupied set IS the output.
+    if zero_offset && material_override.is_none() && !grid_overlay {
+        // Fast path / exact identity: no translation, no material rewrite and no
+        // on-face-grid flag bit, so the local occupied set IS the output.
         if output.occupied.is_empty() {
             output.occupied = local.occupied;
             return;
@@ -1727,8 +1744,9 @@ fn stamp_producer(
     }
 
     // General stamp: translate each voxel into the composite (the producer's
-    // origin-centred position plus the node's recentred placement) and, for a
-    // Tool, overwrite its material id.
+    // origin-centred position plus the node's recentred placement), overwrite its
+    // material id for a Tool, then OR the on-face-grid flag bit (issue #29 S4) when
+    // this node opted in so it travels with each voxel.
     output.occupied.reserve(local.occupied.len());
     for mut voxel in local.occupied {
         if !zero_offset {
@@ -1738,6 +1756,9 @@ fn stamp_producer(
         }
         if let Some(id) = material_override {
             voxel.material_id = id;
+        }
+        if grid_overlay {
+            voxel.material_id |= crate::voxel::GRID_OVERLAY_BIT;
         }
         output.occupied.push(voxel);
     }
@@ -1772,6 +1793,7 @@ fn stamp_producer_into_chunk(
     translation_voxels: [i64; 3],
     floating_origin_voxels: [i64; 3],
     material_override: Option<u16>,
+    grid_overlay: bool,
     producer: &dyn VoxelProducer,
     chunk_min_voxels: [i64; 3],
     chunk_max_voxels: [i64; 3],
@@ -1812,6 +1834,9 @@ fn stamp_producer_into_chunk(
 
         if let Some(id) = material_override {
             voxel.material_id = id;
+        }
+        if grid_overlay {
+            voxel.material_id |= crate::voxel::GRID_OVERLAY_BIT;
         }
         output.occupied.push(voxel);
     }
@@ -2133,6 +2158,118 @@ mod tests {
         assert!(
             grid.occupied.iter().any(|voxel| voxel.material_id == wood_id),
             "the Wood node's voxels must carry the Wood id"
+        );
+    }
+
+    /// Issue #29 S4 (per-object on-face grid): the resolver ORs
+    /// [`crate::voxel::GRID_OVERLAY_BIT`] into a node's stamped `material_id`
+    /// **iff** that node's `grids.voxel_grid_on_faces` is set — and the masked
+    /// material id still round-trips to the real handle (≤2). Parametrized over
+    /// density {1, 15, 16} so the bit survives every density's chunk bucketing.
+    #[test]
+    fn voxel_grid_flag_bit_set_iff_node_opts_in() {
+        use crate::voxel::{material_id_color_index, GRID_OVERLAY_BIT};
+        for &voxels_per_block in &[1u32, 15, 16] {
+            let shape = SdfShape {
+                kind: ShapeKind::Box,
+                size_blocks: [1, 1, 1],
+                voxels_per_block,
+                wall_blocks: 1,
+            };
+            let wood_id = MaterialChoice::Wood.material_id();
+
+            // Node with the on-face grid ON → every voxel carries the flag bit, and
+            // the masked id is still the real Wood handle (the bit never corrupts it).
+            let mut on = Node::new(
+                "On",
+                NodeContent::Tool { shape, material: MaterialChoice::Wood },
+            );
+            on.grids.voxel_grid_on_faces = true;
+            let scene = Scene::single_node(on);
+            let grid = scene.resolve_region(RegionBlocks::new([1, 1, 1]), voxels_per_block, 0);
+            assert!(grid.occupied_count() > 0);
+            assert!(
+                grid.occupied
+                    .iter()
+                    .all(|v| v.material_id & GRID_OVERLAY_BIT != 0),
+                "density {voxels_per_block}: a node with voxel_grid_on_faces must flag every voxel"
+            );
+            assert!(
+                grid.occupied
+                    .iter()
+                    .all(|v| material_id_color_index(v.material_id) == wood_id),
+                "density {voxels_per_block}: the masked colour index must round-trip to Wood (≤2)"
+            );
+
+            // Same node with the flag OFF → no voxel carries the bit (the default).
+            let off = Node::new(
+                "Off",
+                NodeContent::Tool { shape, material: MaterialChoice::Wood },
+            );
+            let scene = Scene::single_node(off);
+            let grid = scene.resolve_region(RegionBlocks::new([1, 1, 1]), voxels_per_block, 0);
+            assert!(grid.occupied_count() > 0);
+            assert!(
+                grid.occupied
+                    .iter()
+                    .all(|v| v.material_id & GRID_OVERLAY_BIT == 0),
+                "density {voxels_per_block}: a node WITHOUT the flag must leave the bit clear"
+            );
+        }
+    }
+
+    /// Issue #29 S4: in a 2-node scene with the on-face grid enabled on ONE node
+    /// only, exactly that node's voxels carry the flag bit; the other node's don't —
+    /// the per-object gating the headless capture verifies. Also confirms the bit
+    /// travels through the chunked resolve path (`resolve_chunk`) identically.
+    #[test]
+    fn voxel_grid_flag_bit_is_per_object() {
+        use crate::voxel::{material_id_color_index, GRID_OVERLAY_BIT};
+        let voxels_per_block = 8u32;
+        let base = SdfShape {
+            kind: ShapeKind::Box,
+            size_blocks: [1, 1, 1],
+            voxels_per_block,
+            wall_blocks: 1,
+        };
+        // Stone node opts IN; Wood node opts OUT, placed disjointly.
+        let mut stone = Node::new(
+            "Stone",
+            NodeContent::Tool { shape: base, material: MaterialChoice::Stone },
+        );
+        stone.grids.voxel_grid_on_faces = true;
+        let wood = Node::new(
+            "Wood",
+            NodeContent::Tool { shape: base, material: MaterialChoice::Wood },
+        );
+        let mut wood = wood;
+        wood.transform.offset_blocks = [5, 0, 0];
+        let scene = Scene {
+            nodes: vec![stone, wood],
+            active: Some(NodePath::root_index(0)),
+            ..Scene::default()
+        };
+        let region = scene.full_extent_blocks(voxels_per_block);
+        let grid = scene.resolve_region(region, voxels_per_block, 0);
+
+        let stone_id = MaterialChoice::Stone.material_id();
+        let wood_id = MaterialChoice::Wood.material_id();
+        // Every flagged voxel is a Stone voxel; every Wood voxel is unflagged.
+        let stone_flagged = grid
+            .occupied
+            .iter()
+            .filter(|v| material_id_color_index(v.material_id) == stone_id)
+            .all(|v| v.material_id & GRID_OVERLAY_BIT != 0);
+        let wood_unflagged = grid
+            .occupied
+            .iter()
+            .filter(|v| material_id_color_index(v.material_id) == wood_id)
+            .all(|v| v.material_id & GRID_OVERLAY_BIT == 0);
+        assert!(stone_flagged, "the enabled (Stone) node's voxels must all be flagged");
+        assert!(wood_unflagged, "the disabled (Wood) node's voxels must all be unflagged");
+        assert!(
+            grid.occupied.iter().any(|v| v.material_id & GRID_OVERLAY_BIT != 0),
+            "at least one voxel (the Stone node's) must carry the flag"
         );
     }
 
@@ -3246,7 +3383,7 @@ mod tests {
     ) -> Vec<crate::spatial_index::VoxelAabb> {
         let density = voxels_per_block.max(1) as i64;
         let mut matched = Vec::new();
-        scene.for_each_leaf(&mut |world_offset, content| {
+        scene.for_each_leaf(&mut |world_offset, content, _grid_on_faces| {
             let Some(size_blocks) = leaf_size_blocks(content, voxels_per_block) else {
                 return; // region-spanning leaf — not an AABB match.
             };

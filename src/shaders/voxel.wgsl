@@ -55,6 +55,14 @@ struct VoxelUniforms {
 @group(0) @binding(0)
 var<uniform> uniforms: VoxelUniforms;
 
+// Per-object on-face-grid flag bit packed into `material_id` (issue #29 S4).
+// MIRRORS `crate::voxel::GRID_OVERLAY_BIT` (= 1 << 15) in `src/voxel.rs` and the
+// same const in `cuboid.wgsl` / `cuboid_loaded.wgsl`. The resolver ORs this bit
+// into a voxel's `material_id` iff its node enabled the on-face grid; the
+// fragment stage gates the grid branch on it (ANDed with the `grid_overlay_enabled`
+// master) and masks it OFF before any colour lookup so it never corrupts the colour.
+const GRID_OVERLAY_BIT: u32 = 32768u;
+
 // M7: the material is a 6-layer array, one layer per cube face. Layer order
 // matches the renderer's CubeFaceSlot: 0 +X(east), 1 -X(west), 2 +Y(up),
 // 3 -Y(down), 4 +Z(south), 5 -Z(north). A uniform material has the same image
@@ -82,8 +90,19 @@ fn face_layer(face_normal: vec3<f32>) -> i32 {
 // Look up a per-voxel material base colour by id, clamped into range so an
 // unexpected id can never index out of bounds (ADR 0001 step 3).
 fn material_base_colors_lookup(material_id: u32) -> vec3<f32> {
-    let index = min(material_id, 2u);
+    // Mask the on-face-grid flag bit (issue #29 S4) OFF before indexing so the
+    // flag never corrupts the colour index (it would otherwise push the id far
+    // past 2 and clamp every flagged voxel to material 2).
+    let index = min(material_id & ~GRID_OVERLAY_BIT, 2u);
     return uniforms.material_base_colors[index].rgb;
+}
+
+// Whether this voxel's on-face grid should draw: the per-object flag bit packed
+// into `material_id` (issue #29 S4) ANDed with the scene-wide master uniform
+// (`grid_overlay_enabled`). Master OFF ⇒ no node draws; master ON ⇒ only voxels
+// whose node opted in (bit set) draw — no re-resolve/re-upload to toggle the master.
+fn on_face_grid_enabled(material_id: u32) -> bool {
+    return uniforms.grid_overlay_enabled > 0.5 && (material_id & GRID_OVERLAY_BIT) != 0u;
 }
 
 struct VertexInput {
@@ -236,7 +255,9 @@ fn fragment_main(
     }
 
     // --- BUG 2 fix: grid overlay from absolute voxel position ---
-    if (uniforms.grid_overlay_enabled > 0.5) {
+    // Per-object (issue #29 S4): the master uniform ANDed with this voxel's flag
+    // bit. The bold-block-line maths (from the absolute position) is unchanged.
+    if (on_face_grid_enabled(input.material_id)) {
         let absolute = input.voxel_absolute_position;
         // 1 on the two in-plane axes, 0 on the face-normal axis.
         let in_plane = step(abs(input.world_normal), vec3<f32>(0.5));

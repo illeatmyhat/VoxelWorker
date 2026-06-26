@@ -41,6 +41,20 @@ struct CuboidUniforms {
 @group(0) @binding(0)
 var<uniform> uniforms: CuboidUniforms;
 
+// Per-object on-face-grid flag bit packed into `material_id` (issue #29 S4).
+// MIRRORS `crate::voxel::GRID_OVERLAY_BIT` (= 1 << 15) in `src/voxel.rs` and the
+// same const in `voxel.wgsl` / `cuboid.wgsl`. A loaded VS block is a single global
+// material, so this shader never indexes a colour by `material_id` (the per-face
+// texture layer comes from the outward normal) — the bit only gates the on-face
+// grid branch here, ANDed with the `grid_overlay_enabled` master.
+const GRID_OVERLAY_BIT: u32 = 32768u;
+
+// Whether this face's on-face grid should draw: the per-object flag bit ANDed with
+// the scene-wide master uniform (`grid_overlay_enabled`).
+fn on_face_grid_enabled(material_id: u32) -> bool {
+    return uniforms.grid_overlay_enabled > 0.5 && (material_id & GRID_OVERLAY_BIT) != 0u;
+}
+
 // The loaded block's 6-layer face texture array (one layer per cube face). Layer
 // order matches the renderer's CubeFaceSlot / `face_layer`: 0 +X(east), 1 -X(west),
 // 2 +Y(up), 3 -Y(down), 4 +Z(south), 5 -Z(north). A uniform block puts the same
@@ -167,7 +181,8 @@ fn fragment_main(
     // matching the instanced loaded path which disables modulation.
 
     // --- Position-based grid overlay (BUG 2 parity) ---
-    if (uniforms.grid_overlay_enabled > 0.5) {
+    // Per-object (issue #29 S4): master uniform ANDed with this face's flag bit.
+    if (on_face_grid_enabled(input.material_id)) {
         let in_plane = step(abs(input.world_normal), vec3<f32>(0.5));
         let voxel_distance = abs(absolute - floor(absolute + 0.5));
         let density = uniforms.voxels_per_block;

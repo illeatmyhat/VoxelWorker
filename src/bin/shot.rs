@@ -923,7 +923,7 @@ async fn run_capture(options: ShotOptions) {
     // scene — a Tool, or a DebugClouds Part when `--shape debug-clouds`. Seed the
     // panel's scene so the node-list section renders the nodes in the captured
     // panel.
-    let scene = if options.far_offset || options.far_offset_near {
+    let mut scene = if options.far_offset || options.far_offset_near {
         build_far_offset_scene(options.geometry.voxels_per_block, options.far_offset)
     } else if options.demo_groups {
         build_demo_groups(options.geometry.voxels_per_block)
@@ -961,6 +961,24 @@ async fn run_capture(options: ShotOptions) {
             node.grids.block_lattice = options.show_block_lattice;
             node.grids.floor_grid = options.show_floor_grid;
         }
+    }
+    // Issue #29 S4: the on-face voxel grid is likewise per-object now (master AND a
+    // node's own `voxel_grid_on_faces`). `--grid` sets the scene master AND turns the
+    // per-object flag on for ONE node — the `--select-node N` node (else node 0) — so
+    // a 2-node capture shows the enabled node's faces bearing bold block-edge grid
+    // lines while the sibling's faces show none. The bit is baked at resolve, so this
+    // must run BEFORE the resolve below.
+    if options.show_grid_overlay {
+        // Mutate the LOCAL `scene` — the resolve below reads it (not
+        // `panel_state.scene`), so the flag must be baked here for the bit to land
+        // on each voxel's `material_id`. Re-sync the panel copy so the inspector
+        // and per-frame uniforms agree.
+        scene.master_voxel_grid = true;
+        let grid_node = options.select_node.unwrap_or(0);
+        if let Some(node) = scene.nodes.get_mut(grid_node) {
+            node.grids.voxel_grid_on_faces = true;
+        }
+        panel_state.scene = scene.clone();
     }
     // The resolve region: for a placed multi-node scene this is the whole
     // composite extent (per-axis box over all node offsets ± sizes); for a single

@@ -76,6 +76,27 @@ struct CuboidUniforms {
 @group(0) @binding(0)
 var<uniform> uniforms: CuboidUniforms;
 
+// Per-object on-face-grid flag bit packed into `material_id` (issue #29 S4).
+// MIRRORS `crate::voxel::GRID_OVERLAY_BIT` (= 1 << 15) in `src/voxel.rs` and the
+// same const in `voxel.wgsl` / `cuboid_loaded.wgsl`. Folded into the box-
+// decomposition key on the CPU (so boxes never merge across differing grid bits),
+// it arrives here on each face's `material_id`; the fragment stage gates the grid
+// branch on it (ANDed with the `grid_overlay_enabled` master) and masks it OFF
+// before the atlas / base-colour lookup so it never corrupts the sampled colour.
+const GRID_OVERLAY_BIT: u32 = 32768u;
+
+// `material_id` with the on-face-grid flag bit masked off — the real material
+// handle used for every colour / atlas lookup (clamped to ≤2 at each call site).
+fn material_color_index(material_id: u32) -> u32 {
+    return material_id & ~GRID_OVERLAY_BIT;
+}
+
+// Whether this face's on-face grid should draw: the per-object flag bit ANDed with
+// the scene-wide master uniform (`grid_overlay_enabled`).
+fn on_face_grid_enabled(material_id: u32) -> bool {
+    return uniforms.grid_overlay_enabled > 0.5 && (material_id & GRID_OVERLAY_BIT) != 0u;
+}
+
 // ONE atlas texture for ALL materials (ADR 0002 E3c-1 / O8): every material tile
 // is packed into a single 2D image; the per-face material_id selects a sub-rect
 // (in `material_atlas_rects`) that the per-voxel slice tiles into. The sampler is
@@ -88,7 +109,7 @@ var material_texture: texture_2d<f32>;
 var material_sampler: sampler;
 
 fn material_base_colors_lookup(material_id: u32) -> vec3<f32> {
-    let index = min(material_id, 2u);
+    let index = min(material_color_index(material_id), 2u);
     return uniforms.material_base_colors[index].rgb;
 }
 
@@ -225,7 +246,7 @@ fn fragment_main(
     // ourselves and map it into THIS material's atlas sub-rect. `fract(texture_
     // coord)` is exactly what the Repeat sampler used to wrap to, so the sampled
     // slice is unchanged — just relocated into the packed atlas window.
-    let atlas_rect = uniforms.material_atlas_rects[min(input.material_id, 2u)];
+    let atlas_rect = uniforms.material_atlas_rects[min(material_color_index(input.material_id), 2u)];
     let tile_uv = fract(texture_coord);
     let atlas_uv = atlas_rect.xy + tile_uv * atlas_rect.zw;
     let sampled = textureSample(material_texture, material_sampler, atlas_uv).rgb;
@@ -248,7 +269,8 @@ fn fragment_main(
     // --- Position-based grid overlay (BUG 2 parity) ---
     // Identical maths/constants to voxel.wgsl: lines from the absolute voxel
     // position (not UVs), with the block line winning over the voxel line.
-    if (uniforms.grid_overlay_enabled > 0.5) {
+    // Per-object (issue #29 S4): master uniform ANDed with this face's flag bit.
+    if (on_face_grid_enabled(input.material_id)) {
         let in_plane = step(abs(input.world_normal), vec3<f32>(0.5));
         let voxel_distance = abs(absolute - floor(absolute + 0.5));
         let density = uniforms.voxels_per_block;

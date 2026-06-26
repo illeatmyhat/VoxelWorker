@@ -183,7 +183,10 @@ impl AppConfig {
             wall_blocks: panel.geometry.wall_blocks,
             projection_mode: panel.projection_mode,
             material: panel.material,
-            show_grid_overlay: panel.show_grid_overlay,
+            // Issue #29 S4: the on-face-grid master now lives on the scene
+            // (`master_voxel_grid`, driven by the Display checkbox); persist THAT as
+            // the legacy `show_grid_overlay` so an older build still reads the master.
+            show_grid_overlay: panel.scene.master_voxel_grid,
             show_block_lattice: panel.show_block_lattice,
             show_floor_grid: panel.show_floor_grid,
             show_view_cube: panel.show_view_cube,

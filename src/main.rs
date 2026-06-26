@@ -1033,7 +1033,10 @@ impl WindowedState {
             view_projection,
             grid_dimensions,
             geometry.voxels_per_block,
-            self.panel_state.show_grid_overlay,
+            // Issue #29 S4: the on-face-grid MASTER (Display checkbox →
+            // `scene.master_voxel_grid`). The shader ANDs it with each voxel's
+            // per-object flag bit packed into `material_id`.
+            self.panel_state.scene.master_voxel_grid,
             self.panel_state.debug_face_orientation,
             band,
             material,
@@ -1070,7 +1073,8 @@ impl WindowedState {
                     view_projection,
                     grid_dimensions,
                     geometry.voxels_per_block,
-                    self.panel_state.show_grid_overlay,
+                    // Issue #29 S4: on-face-grid master (see the instanced call above).
+                    self.panel_state.scene.master_voxel_grid,
                     bound,
                     band,
                     self.panel_state.debug_face_orientation,
