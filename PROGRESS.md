@@ -33,6 +33,35 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **ViewCube: real roll DOF for roll arrows — Part of #13 (Step 5, final). #13 now feature-complete (pending interactive smoke-test).**
+  Added `roll: f32` to `OrbitCamera` (radians about the forward/view axis, default 0, NOT persisted — transient
+  view state). The old pole-aware up logic is now `up_vector_base()`; the new `up_vector()` folds roll ON TOP of
+  it: it projects the base up onto the view plane (Gram–Schmidt against `forward = normalize(target − eye)`) and
+  rotates that screen-up by `roll` about forward (`glam::Quat::from_axis_angle`). roll=0 short-circuits to the raw
+  base up, so the fold is a no-op at the default (existing goldens stay byte-identical). BOTH `view_projection` and
+  `view_cube_view_projection` route through `up_vector()`, so the scene and the small ViewCube roll in lockstep.
+  **Roll arrows:** replaced the Step-3 `ChromeClickAction::RollNoop` stub with a real roll `Snap` tween.
+  `SnapTween` grew `roll_from`/`roll_to`; `advance` eases roll alongside theta/phi (same `ease_in_out_quad`). New
+  `SnapTween::roll(camera, RollDir)` holds the orbit angles and targets `roll ∓ π/2` (Cw = −π/2, Ccw = +π/2,
+  right-handed screen convention); `chrome_zone_left_click_action` maps `RollArrow(dir)` to it.
+  **Snap resets roll (documented choice):** every face/edge/corner snap (`to_face`/`to_element`) AND Home
+  (`HomeView::snap_tween`) tween `roll → 0` — a snap re-uprights the view; roll accumulates ONLY via the roll
+  arrows. At rest, `advance` normalises the settled roll to (−π, π] (`normalize_roll`, via `rem_euclid`) so
+  repeated arrow presses never grow it unbounded (4 quarter-turns net to ~0). `main.rs run_chrome_action` dropped
+  the `RollNoop` arm (roll is now a normal `Snap`).
+  **Headless:** `shot` gained `--roll <radians>` and `--roll-quarters <n>` (×π/2), folded into the camera literal.
+  Rendered `--demo-village` at roll=0 vs roll=π/2 and READ both: at π/2 the whole view twists 90° — the house row
+  recedes vertically, the chimneys point sideways, and the ViewCube's TOP label rotates to point sideways (scene +
+  cube in lockstep, no NaN/garbage). Added golden `roll-quarter.png` (`--demo-village --roll-quarters 1`) and READ
+  its 1280×720 reference (clean). **Pole interaction:** none observed — roll composes on top of the pole-blend base
+  up (the base handles the singular frame; roll just rotates the resulting screen-up), and `view_matrices_finite_under_roll`
+  proves both matrices stay finite at roll ∈ {0, π/2, π, −π/2}.
+  7 new camera unit tests (perpendicular screen-up at π/2, roll=0 ≡ base, finite/unit/⊥-view under roll, both
+  matrices finite, arrow targets ∓π/2, face/element snap resets roll→0, normalise + no unbounded growth).
+  Gate: `cargo build --bins` + `cargo clippy --all-targets --features gpu` clean (no new warnings), **234 lib tests**
+  pass (227 + 7), golden suite passes — the existing 8 are 0.00000% (byte-identical) and the new roll-quarter
+  golden matches. Roll-arrow FEEL (∓90° tween, snap re-uprighting) is INTERACTIVE — user verifies on return.
+
 - **ViewCube: live hover highlighting for chrome arrows — Part of #13 (Step 4).**
   Wired the LIVE hover so the rotate/roll arrows brighten when the cursor is over their zone
   (the render path already supported it: `ViewCubeRenderer::draw` brightens `hovered_zone`, and

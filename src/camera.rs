@@ -6,7 +6,7 @@
 //! uploaded to the shader uniform — render-target-agnostic, identical for the
 //! window and the headless capture.
 
-use glam::{Mat4, Vec3};
+use glam::{Mat4, Quat, Vec3};
 
 /// Field of view (vertical) for the perspective projection, in radians.
 const PERSPECTIVE_FOV_Y: f32 = std::f32::consts::FRAC_PI_4; // 45°
@@ -402,20 +402,17 @@ pub fn classify_cube_point(
 ///   * [`HomeButton`](CubeChromeZone::HomeButton) → `Home` (caller runs the home
 ///     tween, which also sets the home distance).
 ///   * [`FitButton`](CubeChromeZone::FitButton) → `Fit` (caller frames the model).
-///   * [`RollArrow`](CubeChromeZone::RollArrow) → `RollNoop`: a deliberate stub.
-///     The true camera-roll DOF is deferred to #13 Step 5; rolling here would need
-///     a roll field on the camera, which Step 5 introduces. Until then a roll
-///     arrow click is a no-op (the least-surprising stub: the view does not jump).
+///   * [`RollArrow`](CubeChromeZone::RollArrow) → a roll tween: twist the view ∓90°
+///     about the view axis (#13 Step 5; the real roll DOF that replaced the Step-3
+///     `RollNoop` stub). `Cw`/`Ccw` set the sign; the orbit angles are held.
 #[derive(Debug, Clone, Copy)]
 pub enum ChromeClickAction {
-    /// Start this eased snap tween (face / element).
+    /// Start this eased snap tween (face / element / roll).
     Snap(SnapTween),
     /// Run the Home action (eased snap to the saved home view + home distance).
     Home,
     /// Run the Fit-to-view action (re-frame the model).
     Fit,
-    /// A roll-arrow click: a documented no-op until the roll DOF lands in Step 5.
-    RollNoop,
 }
 
 /// Resolve a left-click on a ViewCube chrome `zone` into a [`ChromeClickAction`]
@@ -436,7 +433,10 @@ pub fn chrome_zone_left_click_action(
         }
         CubeChromeZone::HomeButton => ChromeClickAction::Home,
         CubeChromeZone::FitButton => ChromeClickAction::Fit,
-        CubeChromeZone::RollArrow(_) => ChromeClickAction::RollNoop,
+        // #13 Step 5: the real roll DOF — twist the view ∓90° about the view axis.
+        CubeChromeZone::RollArrow(direction) => {
+            ChromeClickAction::Snap(SnapTween::roll(camera, direction))
+        }
     }
 }
 
@@ -482,6 +482,9 @@ impl HomeView {
             phi_from: camera.orbit_phi,
             theta_to: nearest_equivalent_theta(camera.orbit_theta, self.theta),
             phi_to: self.phi,
+            // Home re-uprights too (#13 Step 5): tween roll back to 0.
+            roll_from: camera.roll,
+            roll_to: 0.0,
             elapsed_seconds: 0.0,
             duration_seconds: SnapTween::DEFAULT_DURATION_SECONDS,
         }
@@ -523,6 +526,11 @@ pub struct SnapTween {
     pub phi_from: f32,
     pub theta_to: f32,
     pub phi_to: f32,
+    /// Roll at the tween start (radians, #13 Step 5).
+    pub roll_from: f32,
+    /// Roll target (radians). Face/edge/corner/Home snaps re-upright (target 0);
+    /// a roll arrow tweens it by ∓π/2 off `roll_from`.
+    pub roll_to: f32,
     /// Seconds elapsed since the tween started.
     pub elapsed_seconds: f32,
     /// Total duration in seconds (~0.38 s, ARCHITECTURE.md §4).
@@ -542,6 +550,9 @@ impl SnapTween {
             phi_from: camera.orbit_phi,
             theta_to: nearest_equivalent_theta(camera.orbit_theta, target_theta),
             phi_to: target_phi,
+            // A face/edge/corner snap re-uprights: tween roll back to 0 (#13 Step 5).
+            roll_from: camera.roll,
+            roll_to: 0.0,
             elapsed_seconds: 0.0,
             duration_seconds: Self::DEFAULT_DURATION_SECONDS,
         }
@@ -556,6 +567,36 @@ impl SnapTween {
             phi_from: camera.orbit_phi,
             theta_to: nearest_equivalent_theta(camera.orbit_theta, target_theta),
             phi_to: target_phi,
+            // A face snap re-uprights: tween roll back to 0 (#13 Step 5).
+            roll_from: camera.roll,
+            roll_to: 0.0,
+            elapsed_seconds: 0.0,
+            duration_seconds: Self::DEFAULT_DURATION_SECONDS,
+        }
+    }
+
+    /// Begin a **roll** tween (#13 Step 5): twist the view by ∓π/2 about the view
+    /// axis without moving the orbit angles. `Cw` rolls the view clockwise on
+    /// screen, `Ccw` counter-clockwise. The orbit angles are held (`*_to == *_from`)
+    /// so only `roll` animates. The target is kept CONTINUOUS (it accumulates off
+    /// the live roll) so repeated arrow presses tween smoothly; a later face/Home
+    /// snap re-uprights to 0.
+    pub fn roll(camera: &OrbitCamera, direction: RollDir) -> Self {
+        use std::f32::consts::FRAC_PI_2;
+        // Screen convention: a Cw roll arrow twists the view clockwise, which is a
+        // NEGATIVE rotation of the up vector about the forward (look) axis in a
+        // right-handed frame; Ccw is positive.
+        let delta = match direction {
+            RollDir::Cw => -FRAC_PI_2,
+            RollDir::Ccw => FRAC_PI_2,
+        };
+        Self {
+            theta_from: camera.orbit_theta,
+            phi_from: camera.orbit_phi,
+            theta_to: camera.orbit_theta,
+            phi_to: camera.orbit_phi,
+            roll_from: camera.roll,
+            roll_to: camera.roll + delta,
             elapsed_seconds: 0.0,
             duration_seconds: Self::DEFAULT_DURATION_SECONDS,
         }
@@ -569,7 +610,31 @@ impl SnapTween {
         let eased = ease_in_out_quad(progress);
         camera.orbit_theta = self.theta_from + (self.theta_to - self.theta_from) * eased;
         camera.orbit_phi = self.phi_from + (self.phi_to - self.phi_from) * eased;
-        progress >= 1.0
+        camera.roll = self.roll_from + (self.roll_to - self.roll_from) * eased;
+        let finished = progress >= 1.0;
+        if finished {
+            // Normalise the settled roll to (−π, π] so repeated arrow presses never
+            // let it grow unbounded (the up vector is 2π-periodic anyway). Only at
+            // rest, so the in-flight interpolation stays continuous (no mid-tween jump).
+            camera.roll = normalize_roll(camera.roll);
+        }
+        finished
+    }
+}
+
+/// Normalise a roll angle to the half-open interval `(−π, π]`. Keeps accumulated
+/// roll bounded after repeated arrow presses (#13 Step 5) without affecting the
+/// rendered orientation (the up vector is 2π-periodic in roll).
+pub fn normalize_roll(roll: f32) -> f32 {
+    use std::f32::consts::PI;
+    let two_pi = 2.0 * PI;
+    // Map into [0, 2π) robustly (no float drift from repeated subtraction), then
+    // shift the upper half into the negative side so the result lands in (−π, π].
+    let wrapped = roll.rem_euclid(two_pi);
+    if wrapped > PI {
+        wrapped - two_pi
+    } else {
+        wrapped
     }
 }
 
@@ -597,6 +662,11 @@ pub struct OrbitCamera {
     pub orbit_phi: f32,
     /// Distance from `target` to the camera eye.
     pub orbit_distance: f32,
+    /// Roll about the forward/view axis (radians, #13 Step 5). Default 0 = the
+    /// pole-aware base up (`Vec3::Y` away from the poles). The ViewCube roll arrows
+    /// tween this by ∓90°; any face/edge/corner/Home snap re-uprights it to 0.
+    /// Transient view state — NOT persisted (default 0 on load).
+    pub roll: f32,
     /// Active projection (perspective by default). Display-only param.
     pub projection_mode: ProjectionMode,
 }
@@ -608,6 +678,7 @@ impl Default for OrbitCamera {
             orbit_theta: 0.7,
             orbit_phi: 1.05,
             orbit_distance: 10.0,
+            roll: 0.0,
             projection_mode: ProjectionMode::Perspective,
         }
     }
@@ -667,7 +738,11 @@ impl OrbitCamera {
     ///
     /// At the exact TOP snap (`θ = −π/2`, `phi = 0`) this yields up `≈ (0, 0, 1)`,
     /// consistent with the historical TOP/BOTTOM snap convention.
-    pub fn up_vector(&self) -> Vec3 {
+    ///
+    /// This is the **base** up (roll-free). [`Self::up_vector`] rotates it by
+    /// `roll` about the forward axis; both view matrices route through that one so
+    /// roll twists the scene AND the small cube together.
+    pub fn up_vector_base(&self) -> Vec3 {
         use std::f32::consts::PI;
         // Distance (in phi) from the nearest pole.
         let phi = self.orbit_phi;
@@ -691,6 +766,39 @@ impl OrbitCamera {
         // The two endpoints are orthogonal unit vectors, so the lerp is never
         // zero-length; normalise so `look_at_rh` gets a clean unit up.
         blended.normalize()
+    }
+
+    /// The up vector fed to `look_at_rh`, including the **roll DOF** (#13 Step 5).
+    ///
+    /// Composition: take the pole-aware base up ([`Self::up_vector_base`]) and
+    /// rotate it by `roll` radians about the FORWARD axis (`normalize(target −
+    /// eye)`), the axis the camera looks along. Rolling about forward keeps the up
+    /// perpendicular to the view direction, so `look_at_rh` never degenerates — the
+    /// whole view simply twists in screen space. `roll = 0` returns the base up
+    /// unchanged (existing goldens stay byte-identical). Both [`Self::view_projection`]
+    /// and [`Self::view_cube_view_projection`] use THIS, so the scene and the small
+    /// ViewCube roll in lockstep.
+    pub fn up_vector(&self) -> Vec3 {
+        let base = self.up_vector_base();
+        if self.roll == 0.0 {
+            return base;
+        }
+        // Forward axis = direction the camera looks (target − eye), i.e. the
+        // negation of `direction()` (which points target → eye).
+        let forward = -self.direction().normalize();
+        // Roll twists the SCREEN up. `look_at_rh` only uses the component of the up
+        // perpendicular to forward, so project base onto the view plane first
+        // (Gram–Schmidt) and roll THAT. This makes the roll a true in-screen
+        // rotation: at roll=π/2 the effective up is exactly 90° from roll=0, and the
+        // result is guaranteed ⊥ forward (no `look_at` degeneracy). If base happens
+        // to be parallel to forward (never, given the pole-blend), fall back to base.
+        let screen_up = base - forward * base.dot(forward);
+        let screen_up = screen_up.normalize_or_zero();
+        if screen_up == Vec3::ZERO {
+            return base;
+        }
+        let rolled = Quat::from_axis_angle(forward, self.roll) * screen_up;
+        rolled.normalize()
     }
 
     /// Orbit by a screen-space drag delta (left-drag): `phi -= dy * 0.01`, with
@@ -1310,7 +1418,8 @@ mod tests {
         assert!(approx(tween.phi_to, reference.phi_to));
     }
 
-    /// Home / Fit / Roll map to their dedicated (non-tween) actions.
+    /// Home / Fit map to their dedicated (non-tween) actions; a roll arrow now maps
+    /// to a real roll tween (#13 Step 5 — replaced the Step-3 `RollNoop` stub).
     #[test]
     fn home_fit_roll_zones_map_to_their_actions() {
         let camera = OrbitCamera::default();
@@ -1322,13 +1431,158 @@ mod tests {
             chrome_zone_left_click_action(CubeChromeZone::FitButton, &camera),
             ChromeClickAction::Fit
         ));
-        assert!(matches!(
-            chrome_zone_left_click_action(
-                CubeChromeZone::RollArrow(RollDir::Cw),
-                &camera
-            ),
-            ChromeClickAction::RollNoop
-        ));
+        // A roll arrow click is now a Snap tween that targets ∓π/2 of roll.
+        let action = chrome_zone_left_click_action(
+            CubeChromeZone::RollArrow(RollDir::Cw),
+            &camera,
+        );
+        let ChromeClickAction::Snap(tween) = action else {
+            panic!("expected Snap (roll tween), got {action:?}");
+        };
+        assert!(approx(tween.roll_to, -FRAC_PI_2), "Cw should target -π/2, got {}", tween.roll_to);
+    }
+
+    // ---- #13 Step 5: the roll DOF ----
+
+    /// `roll = π/2` rotates the SCREEN up exactly 90° about the forward axis. Roll
+    /// twists the in-screen up (the up component perpendicular to forward), so the
+    /// rolled up is unit, finite, and PERPENDICULAR to the unrolled SCREEN up — a
+    /// true quarter-turn in screen space. (The raw base up `Vec3::Y` is itself not
+    /// generally ⊥ forward at a tilted view, so we compare the screen-ups.)
+    #[test]
+    fn up_vector_roll_quarter_is_perpendicular_to_unrolled() {
+        let camera0 = OrbitCamera { roll: 0.0, ..OrbitCamera::default() };
+        let rolled = OrbitCamera { roll: FRAC_PI_2, ..OrbitCamera::default() }.up_vector();
+        // The unrolled SCREEN up: base up projected ⊥ forward (what look_at uses).
+        let forward = -camera0.direction().normalize();
+        let base = camera0.up_vector_base();
+        let screen_up0 = (base - forward * base.dot(forward)).normalize();
+        assert!(rolled.is_finite(), "rolled up not finite: {rolled:?}");
+        assert!(approx(rolled.length(), 1.0), "rolled up not unit: {}", rolled.length());
+        // 90° apart → dot ≈ 0.
+        assert!(
+            screen_up0.dot(rolled).abs() < 1e-3,
+            "roll=π/2 up not perpendicular to roll=0 screen up: dot {}",
+            screen_up0.dot(rolled)
+        );
+    }
+
+    /// `roll = 0` returns the base up unchanged (goldens stay byte-identical).
+    #[test]
+    fn up_vector_roll_zero_equals_base() {
+        for &phi in &[0.1f32, 0.5, 1.05, FRAC_PI_2, 2.5] {
+            let camera = OrbitCamera { orbit_phi: phi, roll: 0.0, ..OrbitCamera::default() };
+            assert_eq!(camera.up_vector(), camera.up_vector_base(), "phi={phi}");
+        }
+    }
+
+    /// The rolled up stays unit-length, finite and perpendicular to the view
+    /// direction across a range of roll angles (so `look_at_rh` never degenerates).
+    #[test]
+    fn up_vector_finite_unit_and_non_parallel_under_roll() {
+        for &roll in &[0.0f32, FRAC_PI_2, PI, -FRAC_PI_2, 0.3] {
+            let camera = OrbitCamera { roll, ..OrbitCamera::default() };
+            let up = camera.up_vector();
+            assert!(up.is_finite(), "up not finite at roll={roll}: {up:?}");
+            assert!(approx(up.length(), 1.0), "up not unit at roll={roll}: {}", up.length());
+            // For any NONZERO roll the up is orthogonalised against forward (rolled
+            // screen-up), so it is exactly ⊥ the view direction — `look_at_rh` never
+            // degenerates. (roll=0 keeps the raw base up, which look_at re-orthogonalises
+            // itself; it need not be ⊥ forward, matching pre-roll behaviour.)
+            if roll != 0.0 {
+                let view_dir = -camera.direction();
+                assert!(
+                    up.dot(view_dir).abs() < 1e-3,
+                    "rolled up not perpendicular to view at roll={roll}: {}",
+                    up.dot(view_dir)
+                );
+            }
+        }
+    }
+
+    /// Both view matrices are all-finite at every roll in {0, π/2, π, −π/2}.
+    #[test]
+    fn view_matrices_finite_under_roll() {
+        for &roll in &[0.0f32, FRAC_PI_2, PI, -FRAC_PI_2] {
+            let camera = OrbitCamera { roll, ..OrbitCamera::default() };
+            let vp = camera.view_projection(1.0);
+            assert!(
+                vp.to_cols_array().iter().all(|v| v.is_finite()),
+                "view_projection not finite at roll={roll}"
+            );
+            let cube = camera.view_cube_view_projection();
+            assert!(
+                cube.to_cols_array().iter().all(|v| v.is_finite()),
+                "view_cube_view_projection not finite at roll={roll}"
+            );
+        }
+    }
+
+    /// A `RollArrow(Cw)` click tweens roll by −π/2; `Ccw` by +π/2. The orbit angles
+    /// are held (theta/phi targets == sources).
+    #[test]
+    fn roll_arrow_tweens_roll_by_quarter_turn() {
+        let camera = OrbitCamera::default();
+        let cw = SnapTween::roll(&camera, RollDir::Cw);
+        assert!(approx(cw.roll_to, -FRAC_PI_2), "Cw roll_to {}", cw.roll_to);
+        assert!(approx(cw.theta_to, camera.orbit_theta), "Cw must hold theta");
+        assert!(approx(cw.phi_to, camera.orbit_phi), "Cw must hold phi");
+        let ccw = SnapTween::roll(&camera, RollDir::Ccw);
+        assert!(approx(ccw.roll_to, FRAC_PI_2), "Ccw roll_to {}", ccw.roll_to);
+
+        // Advancing a Cw roll tween lands roll exactly on −π/2.
+        let mut camera = OrbitCamera::default();
+        let mut tween = SnapTween::roll(&camera, RollDir::Cw);
+        assert!(tween.advance(&mut camera, 1.0));
+        assert!(approx(camera.roll, -FRAC_PI_2), "settled roll {}", camera.roll);
+    }
+
+    /// A face snap tweens roll back to 0 (re-uprights), regardless of the start roll.
+    #[test]
+    fn face_snap_resets_roll_to_zero() {
+        let mut camera = OrbitCamera { roll: FRAC_PI_2, ..OrbitCamera::default() };
+        let mut tween = SnapTween::to_face(&camera, CubeFace::Front);
+        assert!(approx(tween.roll_to, 0.0), "face snap roll_to {}", tween.roll_to);
+        assert!(tween.advance(&mut camera, 1.0));
+        assert!(approx(camera.roll, 0.0), "roll after face snap {}", camera.roll);
+
+        // An element (edge) snap also re-uprights.
+        let mut camera = OrbitCamera { roll: -0.9, ..OrbitCamera::default() };
+        let element = ViewCubeElement::from_edge(CubeFace::Front, CubeFace::Top);
+        let mut tween = SnapTween::to_element(&camera, element);
+        assert!(approx(tween.roll_to, 0.0));
+        assert!(tween.advance(&mut camera, 1.0));
+        assert!(approx(camera.roll, 0.0));
+    }
+
+    /// Roll normalises to (−π, π] at rest, so repeated arrow presses never grow it
+    /// unbounded. Four Ccw quarter-turns net to ≈0, not 2π.
+    #[test]
+    fn roll_normalizes_and_does_not_grow_unbounded() {
+        assert!(approx(normalize_roll(0.0), 0.0));
+        assert!(approx(normalize_roll(PI), PI));
+        // Add/subtract 2π is a no-op (mod 2π); avoid the exact ±π boundary, which is
+        // float-ambiguous between +π and −π.
+        assert!(approx(normalize_roll(2.0), 2.0));
+        assert!(approx(normalize_roll(2.0 + 2.0 * PI), 2.0));
+        assert!(approx(normalize_roll(2.0 - 2.0 * PI), 2.0));
+        assert!(approx(normalize_roll(-2.5), -2.5));
+        assert!(approx(normalize_roll(-2.5 + 4.0 * PI), -2.5));
+        assert!(approx(normalize_roll(2.0 * PI), 0.0));
+        // Result is always within (−π, π].
+        for &r in &[5.0f32, -5.0, 10.0, -10.0, 100.0] {
+            let n = normalize_roll(r);
+            assert!(n > -PI - 1e-4 && n <= PI + 1e-4, "normalize_roll({r}) = {n} out of range");
+        }
+
+        // Four Ccw quarter-turns: settled roll wraps back near 0, magnitude ≤ π.
+        let mut camera = OrbitCamera::default();
+        for _ in 0..4 {
+            let mut tween = SnapTween::roll(&camera, RollDir::Ccw);
+            assert!(tween.advance(&mut camera, 1.0));
+            assert!(camera.roll.abs() <= PI + 1e-4, "roll grew unbounded: {}", camera.roll);
+        }
+        assert!(approx(camera.roll, 0.0), "four quarter-turns should net ~0, got {}", camera.roll);
     }
 
     #[test]

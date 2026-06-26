@@ -861,14 +861,12 @@ impl WindowedState {
     /// Execute a [`ChromeClickAction`] resolved from a chrome-zone left-click
     /// (#13 Step 3). The pure mapping lives in `chrome_zone_left_click_action`; this
     /// only carries out the side effects (start a tween, run Home/Fit). A roll-arrow
-    /// click is a documented no-op until the roll DOF lands in Step 5.
+    /// click resolves to a roll `Snap` tween (#13 Step 5: the real roll DOF).
     fn run_chrome_action(&mut self, action: ChromeClickAction) {
         match action {
             ChromeClickAction::Snap(tween) => self.snap_tween = Some(tween),
             ChromeClickAction::Home => self.snap_tween = Some(self.home_snap_tween()),
             ChromeClickAction::Fit => self.fit_to_view(),
-            // Roll DOF deferred to #13 Step 5: intentionally do nothing.
-            ChromeClickAction::RollNoop => {}
         }
     }
 

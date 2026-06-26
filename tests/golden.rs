@@ -132,6 +132,17 @@ const CASES: &[GoldenCase] = &[
         name: "cube-chrome-hover",
         args: &["--demo-village", "--cube-hover", "rotate-left"],
     },
+    // #13 Step 5: the real roll DOF. The same instanced village, rolled a quarter
+    // turn (`--roll-quarters 1` = +π/2) about the view axis. The WHOLE view twists
+    // 90° — the house row and the small ViewCube rotate together (the cube's TOP
+    // label now points sideways). Pins the roll path: `up_vector` folds roll on top
+    // of the pole-aware base up, and BOTH the scene and the ViewCube route through
+    // the rolled up so they stay in lockstep. roll=0 (every other golden) is
+    // byte-identical to before, proving the fold is a no-op at the default.
+    GoldenCase {
+        name: "roll-quarter",
+        args: &["--demo-village", "--roll-quarters", "1"],
+    },
 ];
 
 /// Fixed orbit angles so the framing is identical to the committed reference. The

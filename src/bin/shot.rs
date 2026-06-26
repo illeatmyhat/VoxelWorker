@@ -123,6 +123,9 @@ struct ShotOptions {
     theta: f32,
     /// Orbit polar angle from +Y (radians). Default 1.05.
     phi: f32,
+    /// View roll about the forward axis (radians, #13 Step 5). Default 0 (upright).
+    /// `--roll <radians>` twists the whole scene AND the ViewCube together.
+    roll: f32,
     /// Orbit distance. `None` = auto-frame from the grid.
     distance: Option<f32>,
     /// Run the VS auto-detect + scan synchronously before rendering (M6) so the
@@ -230,6 +233,7 @@ impl Default for ShotOptions {
             cube_hover: None,
             theta: 0.7,
             phi: 1.05,
+            roll: 0.0,
             distance: None,
             scan_vs: false,
             apply_first_block: false,
@@ -580,6 +584,22 @@ fn parse_options() -> ShotOptions {
                     .parse()
                     .expect("--phi must be a float (radians)");
             }
+            "--roll" => {
+                options.roll = args
+                    .next()
+                    .expect("--roll requires a value")
+                    .parse()
+                    .expect("--roll must be a float (radians)");
+            }
+            "--roll-quarters" => {
+                // Convenience for the headless roll golden: N quarter-turns (×π/2).
+                let quarters: f32 = args
+                    .next()
+                    .expect("--roll-quarters requires a value")
+                    .parse()
+                    .expect("--roll-quarters must be a number");
+                options.roll = quarters * std::f32::consts::FRAC_PI_2;
+            }
             "--dist" => {
                 options.distance = Some(
                     args.next()
@@ -610,7 +630,7 @@ fn parse_options() -> ShotOptions {
                      \x20            [--fog <wholegrid|perchunk>]\n\
                      \x20            [--export-vox <path.vox>]\n\
                      \x20            [--snap <face|edge|corner>  e.g. front, front-top, front-top-right]\n\
-                     \x20            [--theta <f32>] [--phi <f32>] [--dist <f32>]\n\
+                     \x20            [--theta <f32>] [--phi <f32>] [--roll <f32>] [--roll-quarters <n>] [--dist <f32>]\n\
                      Defaults: --out shots/m1.png --width 1280 --height 800\n\
                      \x20         --shape cylinder --size-x 5 --size-y 1 --size-z 5\n\
                      \x20         --density 16 --wall 1 --proj perspective\n\
@@ -1308,6 +1328,8 @@ async fn run_capture(options: ShotOptions) {
         orbit_distance: options
             .distance
             .unwrap_or_else(|| OrbitCamera::auto_framed_distance(region_dimensions)),
+        // #13 Step 5: `--roll <radians>` twists the whole view about the view axis.
+        roll: options.roll,
         projection_mode: options.projection_mode,
     };
     // Issue #25: ALL uniform uploads (camera matrix → gizmo/lattice/view-cube/fog
