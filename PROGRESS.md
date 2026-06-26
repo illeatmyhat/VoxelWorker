@@ -33,6 +33,34 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **Delete vestigial config back-compat husks; single master source of truth — Closes #31.**
+  Resolves the S6 loose end. The user does NOT want config back-compat, so the husks are deleted
+  outright (no `#[serde(alias)]`, no migration shim). Behavior-preserving; goldens byte-identical.
+  - **Deleted fields:**
+    - `PanelState.show_grid_overlay` / `show_block_lattice` / `show_floor_grid` (panel.rs) — the three
+      vestigial mirror fields. Since grid-rework S3/S4 the per-grid master checkboxes drive
+      `scene.master_voxel_grid` / `master_block_lattice` / `master_floor_grid` directly, and the
+      renderers read those scene masters, so these `PanelState` mirrors drove nothing.
+    - `AppConfig.show_grid_overlay` / `show_block_lattice` / `show_floor_grid` (settings.rs) — the
+      legacy serde mirror fields plus their `Default`/`capture`/`to_panel_state` plumbing and the
+      "migrate masters from legacy `show_*`" block.
+  - **Single source of truth:** the three grid masters now live ONLY on `scene.master_*`. `capture`
+    persists them via the whole-`scene` field (no separate mirror to drift); `to_panel_state` restores
+    them from the scene directly (a persisted scene carries its own masters; a scene-less/legacy config
+    falls back to the one-Tool-node seed whose `Scene::default()` masters all default ON). This fixes
+    #31's stale-mirror asymmetry by construction — there is no mirror left to go stale.
+  - **Back-compat (passive):** no `#[serde(deny_unknown_fields)]`, so an existing on-disk config still
+    carrying the removed `show_grid_overlay`/`show_block_lattice`/`show_floor_grid` keys loads fine —
+    serde ignores the now-unknown keys; the scene's own masters are authoritative. No migration code.
+  - **Tests:** updated the 5 settings tests that referenced the removed fields (renamed
+    `*_removed_grid_show_keys_still_loads`, `*_gains_origin_point_with_default_masters`,
+    `capture_then_to_panel_state_preserves_masters_and_toggles`, and adjusted the modern-scene +
+    round-trip tests to assert masters via `scene.master_*`). 204 lib tests green.
+  - **shot.rs:** dropped the three dead `PanelState` mirror inits from its headless construction; its
+    own `Options.show_*` CLI flags (driven by `--grid`/`--lattice`/`--floor`) still set `scene.master_*`
+    directly, unchanged. shot renders of `--demo-scene` and `--demo-scene --points` look unchanged; all
+    7 goldens byte-identical; `cargo clippy --all-targets` clean.
+
 - **Grid rework S6: cleanup dead composite-bbox/grid remnants — Closes #29.** Final conservative
   cleanup pass after S1–S5 + the infinite-grid fixes. Behavior-preserving; goldens unmoved; old
   configs still load.

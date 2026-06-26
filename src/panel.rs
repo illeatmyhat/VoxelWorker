@@ -193,16 +193,8 @@ pub struct PanelState {
     pub projection_mode: ProjectionMode,
     /// Material selection (display-only: selects the M4 procedural texture).
     pub material: MaterialChoice,
-    /// Whether the voxel/block grid overlay is drawn (M4 Display toggle).
-    pub show_grid_overlay: bool,
     /// Whether the corner view cube is drawn (M5 Display toggle, ON by default).
     pub show_view_cube: bool,
-    /// Whether the block lattice (box lattice at block boundaries) is drawn (M8
-    /// Display toggle, ON by default — matches the prototype `showLattice`).
-    pub show_block_lattice: bool,
-    /// Whether the fine floor grid (bottom-plane grid) is drawn (M8 Display
-    /// toggle, OFF by default — matches the prototype `showFloor`).
-    pub show_floor_grid: bool,
     /// Whether the voxel cubes render in face-orientation debug mode (colour by
     /// outward face normal + a back-facing marker, cull off). Display toggle, OFF
     /// by default; the standard way to verify face winding/culling.
@@ -231,9 +223,6 @@ impl PanelState {
     pub fn with_view_cube_default() -> Self {
         let mut state = Self {
             show_view_cube: true,
-            // Block lattice defaults ON (prototype `showLattice: true`); the fine
-            // floor grid defaults OFF (`showFloor: false`).
-            show_block_lattice: true,
             ..Self::default()
         };
         state.seed_scene_from_geometry();

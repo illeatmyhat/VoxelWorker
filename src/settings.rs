@@ -68,16 +68,12 @@ pub struct AppConfig {
     pub projection_mode: ProjectionMode,
     #[serde(default)]
     pub material: MaterialChoice,
-    // Issue #29 grid-rework fix: these legacy `show_*` mirrors seed the scene-wide
-    // grid masters, which all default ON. A legacy config that OMITS one of these
-    // keys therefore defaults it true too (so masters stay on); a legacy config that
-    // carries an explicit value still seeds the master from that value.
-    #[serde(default = "default_true")]
-    pub show_grid_overlay: bool,
-    #[serde(default = "default_true")]
-    pub show_block_lattice: bool,
-    #[serde(default = "default_true")]
-    pub show_floor_grid: bool,
+    // Issue #31: the three legacy grid `show_*` mirror fields
+    // (`show_grid_overlay` / `show_block_lattice` / `show_floor_grid`) were deleted.
+    // The grid masters now persist as the single source of truth on the `scene`
+    // field (`scene.master_voxel_grid` / `master_block_lattice` / `master_floor_grid`).
+    // No `deny_unknown_fields`, so an OLD config still carrying those keys loads fine
+    // (serde ignores the now-unknown keys); the scene's own masters are authoritative.
     #[serde(default = "default_true")]
     pub show_view_cube: bool,
     // NOTE: the legacy `show_origin_gizmo` field was removed in the issue #29 S6
@@ -154,15 +150,6 @@ impl Default for AppConfig {
             wall_blocks: default_wall(),
             projection_mode: ProjectionMode::default(),
             material: MaterialChoice::default(),
-            // Issue #29 grid-rework fix: the scene-wide grid MASTERS all default ON
-            // (per-object flags stay OFF). These legacy `show_*` mirrors seed the
-            // masters on a config that predates the scene field, so they default
-            // true too — a brand-new user (no config file) gets all masters on,
-            // while a genuine legacy config still seeds from its own persisted
-            // `show_*` JSON values.
-            show_grid_overlay: true,
-            show_block_lattice: true,
-            show_floor_grid: true,
             show_view_cube: true,
             applied_block_label: None,
             snap_to_blocks: true,
@@ -191,12 +178,10 @@ impl AppConfig {
             wall_blocks: panel.geometry.wall_blocks,
             projection_mode: panel.projection_mode,
             material: panel.material,
-            // Issue #29 S4: the on-face-grid master now lives on the scene
-            // (`master_voxel_grid`, driven by the Display checkbox); persist THAT as
-            // the legacy `show_grid_overlay` so an older build still reads the master.
-            show_grid_overlay: panel.scene.master_voxel_grid,
-            show_block_lattice: panel.show_block_lattice,
-            show_floor_grid: panel.show_floor_grid,
+            // Issue #31: the three grid masters persist as the single source of
+            // truth on the `scene` field above (`scene.master_*`). The legacy
+            // `show_grid_overlay` / `show_block_lattice` / `show_floor_grid` mirror
+            // fields were deleted, so there is no stale mirror to drift out of sync.
             show_view_cube: panel.show_view_cube,
             applied_block_label: panel.applied_block_label.clone(),
             snap_to_blocks: panel.layer_range.snap_to_blocks,
@@ -228,9 +213,6 @@ impl AppConfig {
             },
             projection_mode: self.projection_mode,
             material: self.material,
-            show_grid_overlay: self.show_grid_overlay,
-            show_block_lattice: self.show_block_lattice,
-            show_floor_grid: self.show_floor_grid,
             show_view_cube: self.show_view_cube,
             // Face-orientation debug is a transient verification mode; it is not
             // persisted, so it always starts off.
@@ -266,25 +248,13 @@ impl AppConfig {
             _ => state.seed_scene_from_geometry(),
         }
         // issue #29 (grid rework S1): every loaded scene gains exactly one Origin
-        // Point (idempotent — a scene that already carries one is untouched), and
-        // the scene-wide grid MASTERS migrate from the legacy `show_*` config
-        // fields so an existing user's prefs carry over. We only seed the masters
-        // when the persisted scene predates them (an old config with no `scene`,
-        // or a scene whose masters are still at their struct default) — otherwise
-        // a scene saved by a #29-aware build keeps its own masters.
+        // Point (idempotent — a scene that already carries one is untouched).
         //
-        // NOTE: S1 does NOT rewire any renderer. The masters are data only; the
-        // existing `PanelState.show_*` toggles (set above) still drive the live
-        // renderers unchanged. Master→renderer wiring is S3/S4.
-        let scene_predates_points = match &self.scene {
-            Some(scene) => scene.points.is_empty() && !scene.nodes.is_empty(),
-            None => true,
-        };
-        if scene_predates_points {
-            state.scene.master_block_lattice = self.show_block_lattice;
-            state.scene.master_voxel_grid = self.show_grid_overlay;
-            state.scene.master_floor_grid = self.show_floor_grid;
-        }
+        // issue #31: the grid masters are no longer migrated from legacy `show_*`
+        // config fields (those mirrors were deleted). The scene's own `master_*`
+        // fields are the single source of truth: a persisted scene carries them
+        // directly, and a fresh/legacy config with no scene falls back to the
+        // one-Tool-node seed whose `Scene::default()` masters all default ON.
         state.scene.ensure_origin_point();
         state
     }
@@ -366,9 +336,6 @@ mod tests {
             wall_blocks: 2,
             projection_mode: ProjectionMode::Orthographic,
             material: MaterialChoice::Wood,
-            show_grid_overlay: true,
-            show_block_lattice: false,
-            show_floor_grid: true,
             show_view_cube: false,
             applied_block_label: Some("Granite".to_string()),
             snap_to_blocks: false,
@@ -396,13 +363,15 @@ mod tests {
         assert!(serde_json::from_str::<AppConfig>("not json at all}{").is_err());
     }
 
-    /// issue #29 S6 cleanup: the legacy `show_origin_gizmo` field was removed from
-    /// `AppConfig`. There is no `deny_unknown_fields`, so an OLD config that still
-    /// carries `"show_origin_gizmo"` (and the other legacy `show_*` keys) must keep
-    /// deserializing cleanly — serde ignores the now-unknown key — and migrate its
-    /// grid masters as before.
+    /// issue #31: the legacy grid `show_*` mirror fields (`show_grid_overlay` /
+    /// `show_block_lattice` / `show_floor_grid`) and the older `show_origin_gizmo`
+    /// were all removed from `AppConfig`. There is no `deny_unknown_fields`, so an
+    /// OLD config still carrying those keys must keep deserializing cleanly — serde
+    /// ignores the now-unknown keys. The masters no longer migrate from them: a
+    /// scene-less config falls back to the one-Tool-node seed whose `Scene::default()`
+    /// masters all default ON.
     #[test]
-    fn old_config_with_removed_show_origin_gizmo_still_loads() {
+    fn old_config_with_removed_grid_show_keys_still_loads() {
         let old_json = r#"{
             "shape": "Box",
             "size_blocks": [2, 2, 2],
@@ -413,16 +382,16 @@ mod tests {
             "show_floor_grid": true,
             "show_origin_gizmo": true
         }"#;
-        let config: AppConfig =
-            serde_json::from_str(old_json).expect("old config with show_origin_gizmo still parses");
+        let config: AppConfig = serde_json::from_str(old_json)
+            .expect("old config with removed grid show_* keys still parses");
         assert!(config.scene.is_none());
 
         let panel = config.to_panel_state();
-        // Masters still migrate from the legacy show_* fields; the removed gizmo key
-        // is simply ignored.
-        assert!(!panel.scene.master_block_lattice, "migrated from show_block_lattice=false");
-        assert!(panel.scene.master_voxel_grid, "migrated from show_grid_overlay=true");
-        assert!(panel.scene.master_floor_grid, "migrated from show_floor_grid=true");
+        // The removed `show_*` keys are simply ignored — they no longer seed the
+        // masters. A scene-less config seeds a fresh scene whose masters all default ON.
+        assert!(panel.scene.master_block_lattice, "fresh scene masters default ON");
+        assert!(panel.scene.master_voxel_grid, "fresh scene masters default ON");
+        assert!(panel.scene.master_floor_grid, "fresh scene masters default ON");
         // Exactly one Origin Point, as on any load path.
         assert_eq!(panel.scene.points.iter().filter(|p| p.is_origin).count(), 1);
     }
@@ -762,26 +731,35 @@ mod tests {
         );
     }
 
+    /// issue #31: the grid masters are the single source of truth on `scene.master_*`
+    /// and round-trip through `capture → JSON → to_panel_state` directly (no legacy
+    /// `show_*` mirror). Non-default master values must survive the round-trip.
     #[test]
-    fn capture_then_to_panel_state_preserves_toggles() {
+    fn capture_then_to_panel_state_preserves_masters_and_toggles() {
         let mut panel = PanelState::with_view_cube_default();
-        panel.show_floor_grid = true;
+        // Drive non-default master values directly on the scene (the UI checkboxes do
+        // the same). Mixed values prove each master persists independently.
+        panel.scene.master_block_lattice = false;
+        panel.scene.master_voxel_grid = true;
+        panel.scene.master_floor_grid = false;
         panel.material = MaterialChoice::Plain;
         let camera = OrbitCamera::default();
         let config = AppConfig::capture(&panel, &camera, [1024, 768]);
         let restored = config.to_panel_state();
-        assert_eq!(restored.show_block_lattice, panel.show_block_lattice);
-        assert_eq!(restored.show_floor_grid, panel.show_floor_grid);
+        // The masters round-trip via `scene.master_*` — the single source of truth.
+        assert_eq!(restored.scene.master_block_lattice, panel.scene.master_block_lattice);
+        assert_eq!(restored.scene.master_voxel_grid, panel.scene.master_voxel_grid);
+        assert_eq!(restored.scene.master_floor_grid, panel.scene.master_floor_grid);
         assert_eq!(restored.material, panel.material);
         assert_eq!(restored.geometry, panel.geometry);
     }
 
-    /// issue #29 (grid rework S1): loading an OLD config (no `scene` field — the
-    /// legacy flat geometry) gains exactly one Origin Point on the load path, and
-    /// the scene-wide grid masters MIGRATE from the legacy `show_*` fields so an
-    /// existing user's prefs carry over.
+    /// issue #29 (grid rework S1) + issue #31: loading an OLD config (no `scene`
+    /// field — the legacy flat geometry) gains exactly one Origin Point on the load
+    /// path. The grid masters no longer migrate from legacy `show_*` keys (deleted in
+    /// #31); the scene-less config seeds a fresh scene whose masters all default ON.
     #[test]
-    fn old_config_gains_origin_point_and_migrates_masters() {
+    fn old_config_gains_origin_point_with_default_masters() {
         let old_json = r#"{
             "shape": "Box",
             "size_blocks": [2, 2, 2],
@@ -805,22 +783,16 @@ mod tests {
         assert!(panel.scene.points[0].is_origin);
         assert_eq!(panel.scene.points[0].name, "Origin");
 
-        // Masters migrated from the legacy show_* fields.
-        assert!(!panel.scene.master_block_lattice, "migrated from show_block_lattice=false");
-        assert!(panel.scene.master_voxel_grid, "migrated from show_grid_overlay=true");
-        assert!(panel.scene.master_floor_grid, "migrated from show_floor_grid=true");
-
-        // S1 does NOT rewire renderers: the legacy PanelState.show_* toggles still
-        // mirror the config exactly (they keep driving the live renderers).
-        assert!(!panel.show_block_lattice);
-        assert!(panel.show_grid_overlay);
-        assert!(panel.show_floor_grid);
+        // The removed legacy `show_*` keys are ignored — masters default ON from
+        // `Scene::default()` (NOT migrated from the stale `show_block_lattice=false`).
+        assert!(panel.scene.master_block_lattice, "fresh scene masters default ON");
+        assert!(panel.scene.master_voxel_grid, "fresh scene masters default ON");
+        assert!(panel.scene.master_floor_grid, "fresh scene masters default ON");
     }
 
-    /// issue #29: a scene saved by a #29-aware build (already carrying an Origin
-    /// Point and its own masters) keeps its masters on reload — the legacy `show_*`
-    /// migration only seeds masters for a scene that predates Points. The Origin is
-    /// not duplicated.
+    /// issue #29 + #31: a scene carrying its own masters keeps them on reload — the
+    /// masters persist directly on the `scene` field (the single source of truth),
+    /// not via any legacy `show_*` mirror. The Origin is not duplicated.
     #[test]
     fn modern_scene_keeps_its_masters_and_single_origin() {
         use crate::scene::{Node, NodeContent, NodePath, Point, Scene};
@@ -846,11 +818,6 @@ mod tests {
 
         let mut panel = PanelState::with_view_cube_default();
         panel.scene = scene;
-        // The legacy config show_* are the OPPOSITE of the scene masters, to prove
-        // they do NOT overwrite a modern scene's masters.
-        panel.show_block_lattice = true;
-        panel.show_grid_overlay = false;
-        panel.show_floor_grid = true;
         let camera = OrbitCamera::default();
         let config = AppConfig::capture(&panel, &camera, [1280, 800]);
 

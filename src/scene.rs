@@ -405,17 +405,21 @@ pub struct Scene {
     pub points: Vec<Point>,
     /// Scene-wide master toggle for the block lattice (issue #29). Default
     /// **true**. ANDed with each node's [`NodeGrids::block_lattice`] in S3.
-    /// Migrated from the legacy `AppConfig.show_block_lattice` on load.
+    /// The single source of truth for this master (persisted directly via the
+    /// `scene` field; the legacy `AppConfig.show_block_lattice` mirror was deleted
+    /// in #31).
     #[serde(default = "default_master_grid")]
     pub master_block_lattice: bool,
     /// Scene-wide master toggle for the on-face voxel grid (issue #29). Default
     /// **true** (grid-rework fix: all masters on so a per-object toggle shows
-    /// immediately). Migrated from the legacy `AppConfig.show_grid_overlay` on load.
+    /// immediately). The single source of truth for this master (the legacy
+    /// `AppConfig.show_grid_overlay` mirror was deleted in #31).
     #[serde(default = "default_master_grid")]
     pub master_voxel_grid: bool,
     /// Scene-wide master toggle for the floor grid (issue #29). Default **true**
     /// (grid-rework fix: all masters on so a per-object toggle shows immediately).
-    /// Migrated from the legacy `AppConfig.show_floor_grid` on load.
+    /// The single source of truth for this master (the legacy
+    /// `AppConfig.show_floor_grid` mirror was deleted in #31).
     #[serde(default = "default_master_grid")]
     pub master_floor_grid: bool,
     /// The active/selected Point (index into [`points`](Self::points)), or `None`.

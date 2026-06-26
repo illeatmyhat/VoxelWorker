@@ -905,10 +905,10 @@ async fn run_capture(options: ShotOptions) {
         geometry: options.geometry,
         projection_mode: options.projection_mode,
         material: options.material,
-        show_grid_overlay: options.show_grid_overlay,
         show_view_cube: options.show_view_cube,
-        show_block_lattice: options.show_block_lattice,
-        show_floor_grid: options.show_floor_grid,
+        // Issue #31: the grid masters are no longer mirrored onto PanelState. The CLI
+        // `--grid`/`--lattice`/`--floor` flags drive `scene.master_*` directly below
+        // (the single source of truth); the scene's masters otherwise default ON.
         debug_face_orientation: options.debug_face_orientation,
         layer_range,
         ..PanelState::default()
