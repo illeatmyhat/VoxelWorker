@@ -20,8 +20,11 @@
 //     (`fwidth`) of the plane's in-plane coordinates, so the lines are crisply
 //     anti-aliased at any distance/angle — two tiers: a fine VOXEL grid (spacing 1)
 //     and a bold BLOCK grid (spacing = density).
-//   * Alpha fades to 0 with distance from the camera (toward the horizon) so the
-//     plane dissolves into the background — infinite, no hard rim.
+//   * Each tier fades out via its OWN per-pixel LOD (cells-per-pixel from `fwidth`)
+//     once its cells go sub-pixel — finer tiers fading before coarser ones — so the
+//     plane dissolves into the background at the horizon with no hard world-distance
+//     rim and no hard horizon line. There is NO grazing-angle fade and NO fixed
+//     world-distance fade (both were removed: they caused the zoom-out vanish).
 //   * `@builtin(frag_depth)` is written to the plane-hit point's clip depth and the
 //     pipeline depth-tests LessEqual, so opaque objects (drawn earlier in the SAME
 //     MSAA pass) OCCLUDE the grid. The grid reads as subtle world scaffold behind /
@@ -45,21 +48,13 @@ struct GridUniforms {
     // clarity / future tuning).
     line_color: vec4<f32>,
     // Grid tuning: x = block spacing (= density, voxels per block), y = minor (per
-    // voxel) base alpha, z = major (per block) base alpha, w = fade distance (in
-    // voxels) over which alpha ramps to zero.
+    // voxel) base alpha, z = major (per block) base alpha. w = legacy fade distance,
+    // now UNUSED (the fixed world-distance fade was removed; fading is per-tier LOD
+    // only) but kept in the layout for uniform-buffer stability.
     params: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> grid: GridUniforms;
-
-// Grazing-angle (horizon) fade threshold: the grid's alpha ramps from 0 to full as
-// `abs(dot(ray_direction, plane_normal))` (the sine of the ray's elevation above the
-// plane) rises from 0 to this value. Below it the view ray is grazing the plane —
-// approaching the horizon — so the grid dissolves smoothly into the background
-// instead of cutting off at a hard horizontal line. ~0.10 ≈ within ~5.7° of edge-on;
-// large enough to kill the hard ortho/shallow cutoff, small enough that the grid
-// still reads as receding far toward the horizon before it fades.
-const GRAZING_FADE_START: f32 = 0.10;
 
 struct VsOut {
     @builtin(position) clip_position: vec4<f32>,
@@ -173,13 +168,28 @@ fn fragment_main(input: VsOut) -> FsOut {
         discard;
     }
     let t = dot(grid.plane_origin.xyz - ray_origin, normal) / denom;
-    // Plane is behind the camera (or behind the near plane) for this pixel: no hit
-    // in front → infinite sky. Discarding here is what keeps the grid off the sky
-    // under ortho (the parallel rays that miss the plane forward are dropped).
-    if (t <= 0.0) {
+    let hit = ray_origin + ray_direction * t;
+
+    // HORIZON / SKY discard in CLIP SPACE. Project the plane-hit point through the
+    // view-projection and reject the fragment when it lands BEHIND the camera, i.e.
+    // `clip.w <= 0`:
+    //   * Under PERSPECTIVE, clip.w is the camera-space depth in front of the eye;
+    //     it is positive for points the eye can see and goes negative for plane hits
+    //     that lie above the horizon (the ray would have to travel BACKWARD to reach
+    //     them). This is exactly the sky region, so it is correctly culled.
+    //   * Under ORTHOGRAPHIC, clip.w is a CONSTANT positive value (the projection has
+    //     no perspective divide), so NOTHING is wrongly culled — every plane hit,
+    //     foreground or far, is kept. This is what makes the near/foreground band of
+    //     the ortho ground render instead of being cut off.
+    // Note: we deliberately do NOT cull on the ray parameter `t` (a `t <= 0` test
+    // from the per-pixel near-plane origin) — under ortho the near-plane origin can
+    // already sit below the plane for foreground pixels, so a `t` test wrongly culls
+    // the foreground and produces the hard near-side cutoff. `clip.w` is the correct,
+    // projection-aware behind-camera test.
+    let clip = grid.view_projection * vec4<f32>(hit, 1.0);
+    if (clip.w <= 0.0) {
         discard;
     }
-    let hit = ray_origin + ray_direction * t;
 
     // In-plane coordinates relative to the Point origin (so grid lines land on the
     // GLOBAL lattice: origin + k·spacing). The two basis axes are unit world axes.
@@ -189,68 +199,55 @@ fn fragment_main(input: VsOut) -> FsOut {
     let block_spacing = grid.params.x;
     let minor_alpha = grid.params.y;
     let major_alpha = grid.params.z;
-    let fade_distance = grid.params.w;
 
-    // Two-tier coverage: fine per-VOXEL lines (spacing 1) and bold per-BLOCK lines.
-    // Each returns (coverage, lod_visibility); the lod factor fades the tier OUT as
-    // its cells drop below ~1 pixel so a tier NEVER saturates into a solid sheet.
+    // THREE-tier coverage, each at a coarser spacing than the last:
+    //   * minor  — fine per-VOXEL lines (spacing 1),
+    //   * major  — bold per-BLOCK lines (spacing = density),
+    //   * coarse — a per-8-BLOCK lattice that only carries weight once the finer tiers
+    //     have gone sub-pixel.
+    // Each `grid_coverage` returns (coverage, lod_visibility); the lod factor fades a
+    // tier OUT as its cells drop below ~1 pixel so a tier NEVER saturates into a solid
+    // sheet (the ortho moiré fix) AND so each tier dissolves on its OWN schedule.
+    //
+    // The per-tier LOD fade is now the WHOLE fade story — the old fixed world-DISTANCE
+    // fade and the grazing-angle fade were both removed (they caused the dist-700
+    // zoom-out vanish). A tier stays fully visible until its own cells are genuinely
+    // sub-pixel, then dissolves; this imposes NO hard world-distance edge and NO hard
+    // horizon line. The grid simply recedes — finer tiers fading before coarser ones,
+    // all the way to the perspective horizon. When zoomed very far out in ortho, the
+    // coarse 8-block tier keeps block-scale structure visible after the per-block tier
+    // has gone sub-pixel.
+    let coarse_spacing = block_spacing * 8.0;
     let minor = grid_coverage(plane_coord, 1.0, 1.0);
     let major = grid_coverage(plane_coord, block_spacing, 1.0);
+    let coarse = grid_coverage(plane_coord, coarse_spacing, 1.0);
 
-    // Apply each tier's LOD fade to its own alpha: the fine voxel tier dissolves
-    // first (its cells go sub-pixel sooner), the bold block tier persists longer and
-    // also fades toward the horizon. This is the core fix for the solid-fill bug.
+    // Apply each tier's LOD fade to its own alpha. The coarse tier borrows the bold
+    // (major) base alpha so that, once the block tier fades out when zoomed far, the
+    // coarse 8-block lattice still reads at a comparable weight rather than vanishing.
     let minor_contribution = minor.x * minor_alpha * minor.y;
     let major_contribution = major.x * major_alpha * major.y;
+    let coarse_contribution = coarse.x * major_alpha * coarse.y;
 
-    // Combine: the block lines are bolder (higher base alpha); the voxel lines are
-    // subtle. Take the stronger contribution so a block line (which is also a voxel
-    // line) reads at the bold alpha rather than summing past it.
-    let alpha = max(minor_contribution, major_contribution);
-    if (alpha < 0.002) {
-        discard;
-    }
-
-    // Distance fade toward the horizon: the farther the hit is from the camera, the
-    // more the grid dissolves into the background. Linear ramp to zero at
-    // `fade_distance`, so the plane is truly infinite with no hard edge.
-    let hit_distance = length(hit - ray_origin);
-    let distance_fade = clamp(1.0 - hit_distance / max(fade_distance, 1.0), 0.0, 1.0);
-
-    // HORIZON (grazing-angle) fade — the real fix for the shallow-angle hard cutoff
-    // (issue #29). At the horizon the view ray becomes PARALLEL to the plane, so it
-    // hits at an unboundedly large `t` and the lattice compresses into a single screen
-    // row. `denom = dot(ray_direction, normal)` is the sine of the ray's elevation
-    // above the plane; it goes to 0 exactly AT the horizon. The pure distance fade is
-    // not enough on its own: under ORTHOGRAPHIC the whole visible ground sits at nearly
-    // constant world distance (no foreshortening), so the distance ramp barely moves
-    // across the screen and the grid stays near-full-alpha right up to the horizon —
-    // reading as a HARD horizontal cutoff line (and, with a dense block size, the same
-    // happens at shallow perspective). Fading alpha out as the ray grazes (abs(denom)
-    // → 0) dissolves the grid smoothly INTO the horizon for BOTH projections, with no
-    // hard edge and independent of distance / density — the grid truly recedes.
-    let grazing_fade = smoothstep(0.0, GRAZING_FADE_START, abs(denom));
-
-    let fade = distance_fade * grazing_fade;
-    let final_alpha = alpha * fade;
+    // Take the strongest contribution so a line shared by several tiers reads at the
+    // bold alpha rather than summing past it.
+    let final_alpha = max(max(minor_contribution, major_contribution), coarse_contribution);
     if (final_alpha < 0.002) {
         discard;
     }
 
-    // Depth-correct occlusion: write the plane-hit point's clip depth so the
-    // pipeline's LessEqual test lets opaque voxels (already in the depth buffer)
-    // occlude the grid, with no z-fighting against itself.
+    // Depth-correct occlusion: write the plane-hit point's clip depth so the pipeline's
+    // LessEqual test lets opaque voxels (already in the depth buffer) occlude the grid,
+    // with no z-fighting against itself.
     //
-    // The written depth is CLAMPED into [0,1] as a defensive guard: at grazing /
-    // orthographic angles the far band of the infinite plane can project to a clip
-    // depth just OUTSIDE [0,1] (beyond the far plane, or, very close to the camera, in
-    // front of the near plane), and with `unclipped_depth: false` the hardware would
-    // DISCARD those fragments. The grazing fade above has already dissolved the grid's
-    // alpha to ~0 by then, so this clamp only affects an otherwise-invisible tail — but
-    // it guarantees no stray hard depth-clip seam can ever reappear at the horizon.
+    // The written depth is CLAMPED into [0,1] as a defensive guard: at shallow /
+    // orthographic angles the far (or very near) band of the infinite plane can project
+    // to a clip depth just OUTSIDE [0,1]. With `unclipped_depth: false` the hardware
+    // would otherwise DISCARD those fragments, reintroducing exactly the kind of hard
+    // near/far depth-clip seam this rework removes. Clamping keeps those hits drawn.
     // Occlusion still holds: real objects sit at a SMALLER depth than the clamped far
-    // value, so they still win the LessEqual test and occlude the grid.
-    let clip = grid.view_projection * vec4<f32>(hit, 1.0);
+    // value, so they win the LessEqual test and occlude the grid. (`clip` was computed
+    // above for the behind-camera / horizon discard.)
     out.depth = clamp(clip.z / clip.w, 0.0, 1.0);
 
     out.color = vec4<f32>(grid.line_color.xyz, final_alpha);

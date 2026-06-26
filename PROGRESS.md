@@ -33,6 +33,45 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **Rework infinite grid fade/depth: fix near-side cutoff + zoom-out vanish — Part of #29.**
+  Two confirmed live-testing bugs in the analytic infinite ground plane
+  (`src/shaders/infinite_grid.wgsl` + `InfiniteGridRenderer` in `renderer.rs`), both REPRODUCED
+  headless via `shot` and READ before/after.
+  - **Bug 1 — near-side cutoff at shallow ortho angles (root cause).** At a shallow ORTHO angle
+    (`--proj ortho --phi 1.45–1.50 --dist 120–260`) the FOREGROUND (near, lower-screen) band of the
+    ground was missing behind a hard horizontal edge while the far part rendered. Cause: the fragment
+    discarded on the ray parameter `t <= 0` measured from the PER-PIXEL near-plane origin. Under ortho
+    the rays are parallel and each pixel's near-plane origin can already sit BELOW the plane for
+    foreground pixels, so `t` goes negative there and the foreground was wrongly culled.
+  - **Bug 2 — entire grid vanishes when zoomed far out (root cause).** At `--proj ortho --phi 1.45
+    --dist 700` the WHOLE ground grid disappeared (only axes + object left). Two compounding fades did
+    it: (a) the GRAZING-ANGLE fade `smoothstep(0, 0.10, abs(denom))` added by the previous entry — a
+    zoomed-out shallow ortho view is near-grazing across the ENTIRE screen, so it faded everything to
+    zero; and (b) a fixed WORLD-DISTANCE fade (~80 blocks) that vanished the grid once the view spanned
+    more than that.
+  - **Fix.** (1) Horizon/sky discard now uses CLIP SPACE: project the plane hit and `discard` when
+    `clip.w <= 0` (behind camera). Under perspective this culls the above-horizon sky correctly; under
+    ortho `clip.w` is constant positive so NOTHING is wrongly culled and the foreground renders.
+    Removed the `t <= 0` foreground cull entirely. (2) REMOVED the grazing-angle fade and the fixed
+    world-distance fade — the only fade is now the per-tier per-pixel LOD (cells-per-pixel from
+    `fwidth`): a tier dissolves only when its OWN cells go sub-pixel, imposing no hard world-distance
+    edge and no hard horizon line. (3) Added a COARSE third tier (lines every 8 blocks, borrowing the
+    bold block alpha) so block-scale structure stays visible once the per-block tier goes sub-pixel at
+    large ortho zoom-out — this is what keeps the grid present at `--dist 700` instead of vanishing.
+    (4) Kept the defensive `frag_depth = clamp(clip.z/clip.w, 0, 1)` so near/far hits projecting just
+    outside `[0,1]` are not depth-clipped into a hard seam; object occlusion (`LessEqual`) unaffected.
+    Kept the two existing tiers (voxel + block), AA, subtle alpha, ortho-moiré LOD, object occlusion;
+    perspective not regressed. `params.w` (the old fade-distance uniform) is now unused but left in the
+    layout for stability.
+  - **Verified (PNGs READ).** Both repro cases before→after: near cutoff gone (foreground renders at
+    shallow ortho `--dist 120/160/300`); zoom-out vanish gone (block/coarse lines clearly visible at
+    `--proj ortho --phi 1.45 --dist 700`). Full matrix {perspective, ortho} × {120, 300, 700} ×
+    {shallow ~1.45, medium ~1.0}: foreground always renders, block lines visible at 700, no moiré, no
+    solid, no hard near/far cutoff, sky clear above the perspective horizon, tube always occludes the
+    grid. 203 lib tests + clippy (no new warnings) green; 6 goldens byte-identical, `demo-village-points`
+    REGENERATED (legitimate look change: the grid now recedes to the horizon behind the far houses
+    instead of vanishing at the old fixed ~80-block distance — READ and confirmed correct).
+
 - **Fix infinite grid shallow-angle hard cutoff (grazing-angle horizon fade) — Part of #29.**
   The analytic infinite ground plane (`src/shaders/infinite_grid.wgsl`) HARD-CUT OFF at a straight
   horizontal line at shallow viewing angles — most dramatic in ORTHOGRAPHIC (`--proj ortho --phi
