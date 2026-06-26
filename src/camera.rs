@@ -436,6 +436,71 @@ pub fn classify_cube_point(
     None
 }
 
+/// The camera-side outcome of a **left-click on a ViewCube chrome zone** (#13
+/// Step 3). This is the PURE half of the click dispatch: given a classified
+/// [`CubeChromeZone`] and the current camera, [`chrome_zone_left_click_action`]
+/// resolves *what should happen* without touching any winit/state plumbing, so
+/// the mapping is unit-testable headlessly. The windowed caller then EXECUTES the
+/// action (starts the returned tween, or runs `home_snap_tween` / `fit_to_view`).
+///
+///   * [`RotateArrow`](CubeChromeZone::RotateArrow) → a face snap toward
+///     `adjacent_face(nearest_face, dir)`.
+///   * [`Compass`](CubeChromeZone::Compass) → a theta-only tween toward
+///     `compass_heading_to_theta(heading)` (current phi preserved), shortest path.
+///   * [`Element`](CubeChromeZone::Element) → the existing element snap.
+///   * [`HomeButton`](CubeChromeZone::HomeButton) → `Home` (caller runs the home
+///     tween, which also sets the home distance).
+///   * [`FitButton`](CubeChromeZone::FitButton) → `Fit` (caller frames the model).
+///   * [`RollArrow`](CubeChromeZone::RollArrow) → `RollNoop`: a deliberate stub.
+///     The true camera-roll DOF is deferred to #13 Step 5; rolling here would need
+///     a roll field on the camera, which Step 5 introduces. Until then a roll
+///     arrow click is a no-op (the least-surprising stub: the view does not jump).
+#[derive(Debug, Clone, Copy)]
+pub enum ChromeClickAction {
+    /// Start this eased snap tween (face / element / compass).
+    Snap(SnapTween),
+    /// Run the Home action (eased snap to the saved home view + home distance).
+    Home,
+    /// Run the Fit-to-view action (re-frame the model).
+    Fit,
+    /// A roll-arrow click: a documented no-op until the roll DOF lands in Step 5.
+    RollNoop,
+}
+
+/// Resolve a left-click on a ViewCube chrome `zone` into a [`ChromeClickAction`]
+/// against the current `camera` (#13 Step 3, the PURE dispatch). See
+/// [`ChromeClickAction`] for the per-zone mapping. This never mutates the camera;
+/// the caller executes the returned action.
+pub fn chrome_zone_left_click_action(
+    zone: CubeChromeZone,
+    camera: &OrbitCamera,
+) -> ChromeClickAction {
+    match zone {
+        CubeChromeZone::Element(element) => {
+            ChromeClickAction::Snap(SnapTween::to_element(camera, element))
+        }
+        CubeChromeZone::RotateArrow(dir) => {
+            let target = adjacent_face(camera.nearest_face(), dir);
+            ChromeClickAction::Snap(SnapTween::to_face(camera, target))
+        }
+        CubeChromeZone::Compass(heading) => {
+            let target_theta = compass_heading_to_theta(heading);
+            ChromeClickAction::Snap(SnapTween {
+                theta_from: camera.orbit_theta,
+                phi_from: camera.orbit_phi,
+                theta_to: nearest_equivalent_theta(camera.orbit_theta, target_theta),
+                // Compass only changes azimuth — keep the current polar angle.
+                phi_to: camera.orbit_phi,
+                elapsed_seconds: 0.0,
+                duration_seconds: SnapTween::DEFAULT_DURATION_SECONDS,
+            })
+        }
+        CubeChromeZone::HomeButton => ChromeClickAction::Home,
+        CubeChromeZone::FitButton => ChromeClickAction::Fit,
+        CubeChromeZone::RollArrow(_) => ChromeClickAction::RollNoop,
+    }
+}
+
 /// The saved "home" view (#13): the orbit angles + distance the Home button
 /// returns to. Defaults to the camera defaults (theta≈0.7, phi≈1.05, dist 10);
 /// `set_home_to_current` overwrites it from the live camera, and it persists via
@@ -629,6 +694,25 @@ impl OrbitCamera {
     /// Camera eye position: `target + direction * distance`.
     pub fn eye(&self) -> Vec3 {
         self.target + self.direction() * self.orbit_distance
+    }
+
+    /// The cube **face** the camera is currently looking at most head-on: the face
+    /// whose outward normal is nearest (largest dot product) to the eye direction
+    /// (target→eye). Used by the rotate arrows (#13 Step 3) to pick the face a 90°
+    /// step rotates *from*. Ties (exactly edge-/corner-on views) resolve to the
+    /// first face in `CUBE_FACES` order, which is deterministic and good enough —
+    /// the rotate target is then `adjacent_face` of that face.
+    pub fn nearest_face(&self) -> CubeFace {
+        let direction = self.direction();
+        CUBE_FACES
+            .iter()
+            .map(|(face, _)| *face)
+            .max_by(|a, b| {
+                let da = direction.dot(a.normal());
+                let db = direction.dot(b.normal());
+                da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .unwrap_or(CubeFace::Front)
     }
 
     /// The up vector for `look_at_rh`, well-defined and CONTINUOUS through the
@@ -1275,6 +1359,105 @@ mod tests {
         assert!(approx(n, CubeFace::Front.snap_angles().0));
         assert!(approx(e, CubeFace::Right.snap_angles().0));
         assert!(approx(s, CubeFace::Back.snap_angles().0));
+    }
+
+    // ---- #13 Step 3: pure chrome-click dispatch (zone → action) ----
+
+    /// At each face's snap orientation the camera's nearest face is that face.
+    #[test]
+    fn nearest_face_at_each_face_snap_is_that_face() {
+        for (face, _) in CUBE_FACES {
+            let (theta, phi) = face.snap_angles();
+            let camera = OrbitCamera {
+                orbit_theta: theta,
+                orbit_phi: phi,
+                ..OrbitCamera::default()
+            };
+            assert_eq!(camera.nearest_face(), face, "nearest at {face:?} snap");
+        }
+    }
+
+    /// A RotateArrow(Right) click from a FRONT-facing camera tweens toward
+    /// `adjacent_face(Front, Right) = Right`'s angles (shortest theta).
+    #[test]
+    fn rotate_arrow_right_from_front_targets_right_face() {
+        let (theta, phi) = CubeFace::Front.snap_angles();
+        let camera = OrbitCamera {
+            orbit_theta: theta,
+            orbit_phi: phi,
+            ..OrbitCamera::default()
+        };
+        let action = chrome_zone_left_click_action(
+            CubeChromeZone::RotateArrow(ArrowDir::Right),
+            &camera,
+        );
+        let ChromeClickAction::Snap(tween) = action else {
+            panic!("expected Snap, got {action:?}");
+        };
+        let (right_theta, right_phi) = CubeFace::Right.snap_angles();
+        assert!(approx(tween.theta_to, nearest_equivalent_theta(theta, right_theta)));
+        assert!(approx(tween.phi_to, right_phi));
+    }
+
+    /// A Compass(North) click tweens theta toward `compass_heading_to_theta(North)`
+    /// by the shortest path and keeps the current phi (azimuth-only).
+    #[test]
+    fn compass_north_click_tweens_theta_keeping_phi() {
+        let camera = OrbitCamera {
+            orbit_theta: 3.0,
+            orbit_phi: 0.9,
+            ..OrbitCamera::default()
+        };
+        let action = chrome_zone_left_click_action(
+            CubeChromeZone::Compass(Heading::North),
+            &camera,
+        );
+        let ChromeClickAction::Snap(tween) = action else {
+            panic!("expected Snap, got {action:?}");
+        };
+        let target = compass_heading_to_theta(Heading::North);
+        assert!(approx(tween.theta_to, nearest_equivalent_theta(3.0, target)));
+        // Shortest path: never spins more than π.
+        assert!((tween.theta_to - 3.0).abs() <= PI + 1e-4);
+        // Phi unchanged.
+        assert!(approx(tween.phi_to, 0.9));
+        assert!(approx(tween.phi_from, 0.9));
+    }
+
+    /// An Element click reproduces the existing element snap.
+    #[test]
+    fn element_click_matches_element_snap() {
+        let camera = OrbitCamera::default();
+        let element = ViewCubeElement::from_edge(CubeFace::Front, CubeFace::Top);
+        let action =
+            chrome_zone_left_click_action(CubeChromeZone::Element(element), &camera);
+        let ChromeClickAction::Snap(tween) = action else {
+            panic!("expected Snap, got {action:?}");
+        };
+        let reference = SnapTween::to_element(&camera, element);
+        assert!(approx(tween.theta_to, reference.theta_to));
+        assert!(approx(tween.phi_to, reference.phi_to));
+    }
+
+    /// Home / Fit / Roll map to their dedicated (non-tween) actions.
+    #[test]
+    fn home_fit_roll_zones_map_to_their_actions() {
+        let camera = OrbitCamera::default();
+        assert!(matches!(
+            chrome_zone_left_click_action(CubeChromeZone::HomeButton, &camera),
+            ChromeClickAction::Home
+        ));
+        assert!(matches!(
+            chrome_zone_left_click_action(CubeChromeZone::FitButton, &camera),
+            ChromeClickAction::Fit
+        ));
+        assert!(matches!(
+            chrome_zone_left_click_action(
+                CubeChromeZone::RollArrow(RollDir::Cw),
+                &camera
+            ),
+            ChromeClickAction::RollNoop
+        ));
     }
 
     #[test]

@@ -33,6 +33,33 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **ViewCube: wire chrome clicks + right-click context menu — Part of #13 (Step 3).**
+  INPUT wiring only (no new visuals → goldens byte-identical). **Left-click on a chrome zone:** in
+  the left-release handler, a STATIONARY release inside the cube rect now runs `classify_cube_point`
+  on a shared `WindowedState::cube_rect()` (same offset/size as `position_in_view_cube`), then a new
+  PURE dispatch `camera::chrome_zone_left_click_action(zone, &camera) -> ChromeClickAction` maps the
+  zone to an outcome: RotateArrow→`SnapTween::to_face(adjacent_face(camera.nearest_face(), dir))`
+  (new `OrbitCamera::nearest_face()` = face whose normal best matches the eye dir); Compass→theta-only
+  tween to `compass_heading_to_theta(heading)` keeping phi (shortest path); Element→the existing
+  element snap (body region still delegates to `pick_view_cube_element` via the `body_picker` closure);
+  HomeButton→`Home`; FitButton→`Fit`; RollArrow→`RollNoop`. The windowed `run_chrome_action` executes
+  it. **Drag-orbit & element-snap stay intact:** a cube drag sets `view_cube_drag_active` (gated out of
+  the release path), so orbiting still wins; only the body region resolves to Element, so gutters/badges
+  never hijack a body snap. **Roll-arrow stub:** a documented no-op (`RollNoop`) — the true roll DOF
+  needs a camera roll field, deferred to #13 Step 5; the least-surprising stub (view doesn't jump).
+  **Right-click context menu:** a right-press inside the cube rect (and `!egui_consumed`) sets
+  `WindowedState::context_menu_open_at` (physical px); `run_egui_frame` draws an `egui::Area` menu there
+  (Home / Fit / Orthographic↔Perspective / Set current as home). The ortho item flips
+  `panel_state.projection_mode` — the SAME field the side panel binds, so menu + panel stay in SYNC.
+  egui owns the menu's hit-testing so its clicks never leak to the snap path; the menu closes on
+  selection or click-away. Menu selections return via `PreparedEguiFrame::cube_menu_request`
+  (`ViewCubeMenuRequest::{Home,Fit,SetHome}`); the headless `shot` passes `&mut None` (no menu, so
+  goldens unaffected). **Tests:** +5 pure dispatch tests in `camera.rs` (nearest_face at each face snap;
+  RotateArrow(Right) from Front → Right angles; Compass(North) tweens theta keeping phi, shortest path;
+  Element matches element snap; Home/Fit/Roll map to their actions). 230 lib tests (was 225) + 8 goldens
+  byte-identical. **Interactive (user smoke-test on return):** the click FEEL, the right-click menu
+  popup/placement/click-away, and the ortho toggle syncing both ways.
+
 - **ViewCube chrome rendering: compass ring + Home/Fit + hover arrows — Part of #13 (Step 2).**
   RENDER only (no input wiring — that is Step 3). New **screen-space chrome overlay** path in
   `ViewCubeRenderer` (`renderer.rs` + `shaders/viewcube_chrome.wgsl`): alpha-blended textured glyph

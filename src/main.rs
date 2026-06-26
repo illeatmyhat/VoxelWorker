@@ -17,12 +17,15 @@ use voxel_worker::scan_worker::{
     spawn_auto_scan, spawn_custom_folder_scan, FaceResolver, ScanHandle, ScanMessage,
 };
 use voxel_worker::{
-    create_depth_view, create_msaa_color_view, procedural_material_average_color, render_frame,
-    run_egui_frame, AppConfig, CubeFace, EguiPaintBridge, FogMode, FrameOverlays,
+    chrome_zone_left_click_action, classify_cube_point, create_depth_view, create_msaa_color_view,
+    procedural_material_average_color, render_frame,
+    run_egui_frame, AppConfig, ChromeClickAction, CubeFace, CubeRect, EguiPaintBridge, FogMode,
+    FrameOverlays,
     TransformGizmoRenderer,
     GpuContext, InfiniteGridRenderer, LayerBand, MaterialSource, OnionFogParams, PointsRenderer,
     SceneGridRenderer,
     HomeView, OnionFogRenderer, OrbitCamera, PanelState, Scene, SdfShape, SnapTween, ViewCubeElement,
+    ViewCubeMenuRequest,
     VoxExport, ViewCubeRenderer, VoxelGrid, COLOR_TARGET_FORMAT,
     VIEW_CUBE_VIEWPORT_PIXELS,
 };
@@ -150,6 +153,11 @@ struct WindowedState {
     /// events, outside `render`) needs the cube's top-left corner, which is offset
     /// into this central rect — so we cache the rect each frame.
     last_viewport_px: [u32; 4],
+    /// #13 Step 3: the screen position (window pixels) of an open ViewCube
+    /// right-click context menu, or `None` when no menu is open. Set on a
+    /// right-press inside the cube rect; the egui pass draws a small menu there and
+    /// clears it on selection or click-away.
+    context_menu_open_at: Option<egui::Pos2>,
 }
 
 #[derive(Default)]
@@ -454,6 +462,7 @@ impl WindowedState {
             view_cube_drag_active: false,
             // Default to the full target until the first frame fills it in.
             last_viewport_px: [0, 0, width, height],
+            context_menu_open_at: None,
         }
     }
 
@@ -783,10 +792,7 @@ impl WindowedState {
     }
 
     /// #13: save the live camera orbit as the new Home view (the right-click
-    /// "set current view as home" action; wired to input in a later step).
-    // Step 1 ships the logic only; Step 3 wires it to the context menu, so it is
-    // intentionally unused for now.
-    #[allow(dead_code)]
+    /// "set current view as home" context-menu action; Step 3).
     fn set_home_to_current(&mut self) {
         self.home_view = HomeView::from_camera(&self.camera);
     }
@@ -794,9 +800,8 @@ impl WindowedState {
     /// #13: begin an eased snap toward the saved Home view and set the home
     /// distance directly (the tween animates the orbit angles; distance is a
     /// non-orbit param so it is applied immediately, matching the face-snap
-    /// path which never tweens distance). Wired to the Home button in a later
-    /// step; pure-ish here so the logic is testable.
-    #[allow(dead_code)]
+    /// path which never tweens distance). Wired to the Home button + context-menu
+    /// Home item in Step 3; pure-ish here so the logic is testable.
     fn home_snap_tween(&mut self) -> SnapTween {
         let tween = self.home_view.snap_tween(&self.camera);
         self.camera.orbit_distance = self.home_view.distance;
@@ -809,7 +814,6 @@ impl WindowedState {
     /// (`resolve_region` centres it), so the centroid is `Vec3::ZERO`. No geometry
     /// rebuild: only the camera distance + target change. The distance math is the
     /// same `auto_framed_distance` covered by camera tests.
-    #[allow(dead_code)]
     fn fit_to_view(&mut self) {
         let region_dimensions = region_dimensions_for(
             &self.panel_state.scene,
@@ -830,6 +834,33 @@ impl WindowedState {
         let corner_y = (viewport_y + VIEW_CUBE_VIEWPORT_MARGIN) as f64;
         let size = VIEW_CUBE_VIEWPORT_PIXELS as f64;
         x >= corner_x && x <= corner_x + size && y >= corner_y && y <= corner_y + size
+    }
+
+    /// The ViewCube's on-screen square in window pixels (#13 Step 3), so the chrome
+    /// hit-math ([`classify_cube_point`]) shares the SAME rect as
+    /// [`Self::position_in_view_cube`] and the renderer. Offset into the central 3D
+    /// viewport rect (issue #25), matching `pick_view_cube_element`.
+    fn cube_rect(&self) -> CubeRect {
+        let [viewport_x, viewport_y, _, _] = self.last_viewport_px;
+        CubeRect {
+            x: (viewport_x + VIEW_CUBE_VIEWPORT_MARGIN) as f32,
+            y: (viewport_y + VIEW_CUBE_VIEWPORT_MARGIN) as f32,
+            size: VIEW_CUBE_VIEWPORT_PIXELS as f32,
+        }
+    }
+
+    /// Execute a [`ChromeClickAction`] resolved from a chrome-zone left-click
+    /// (#13 Step 3). The pure mapping lives in `chrome_zone_left_click_action`; this
+    /// only carries out the side effects (start a tween, run Home/Fit). A roll-arrow
+    /// click is a documented no-op until the roll DOF lands in Step 5.
+    fn run_chrome_action(&mut self, action: ChromeClickAction) {
+        match action {
+            ChromeClickAction::Snap(tween) => self.snap_tween = Some(tween),
+            ChromeClickAction::Home => self.snap_tween = Some(self.home_snap_tween()),
+            ChromeClickAction::Fit => self.fit_to_view(),
+            // Roll DOF deferred to #13 Step 5: intentionally do nothing.
+            ChromeClickAction::RollNoop => {}
+        }
     }
 
     /// Ray-cast a click inside the view-cube viewport against the cube and return
@@ -1007,11 +1038,23 @@ impl WindowedState {
             raw_input,
             [self.surface_config.width, self.surface_config.height],
             pixels_per_point,
+            &mut self.context_menu_open_at,
         );
 
         // Issue #25: cache the central 3D viewport rect so the view-cube
         // hit-testing (run later, in mouse events) can offset the cube corner.
         self.last_viewport_px = prepared.viewport_px;
+
+        // #13 Step 3: execute a context-menu selection (egui drew + closed the
+        // menu; the ortho toggle already mutated `panel_state.projection_mode`).
+        match prepared.cube_menu_request {
+            Some(ViewCubeMenuRequest::Home) => {
+                self.snap_tween = Some(self.home_snap_tween());
+            }
+            Some(ViewCubeMenuRequest::Fit) => self.fit_to_view(),
+            Some(ViewCubeMenuRequest::SetHome) => self.set_home_to_current(),
+            None => {}
+        }
 
         // M6: react to palette interactions (apply a block, connect a folder,
         // revert to a procedural material).
@@ -1293,9 +1336,27 @@ impl ApplicationHandler for App {
                                 < VIEW_CUBE_DRAG_THRESHOLD_PIXELS
                                 && (up_y - down_y).abs() < VIEW_CUBE_DRAG_THRESHOLD_PIXELS;
                             if stationary && state.position_in_view_cube(up_x, up_y) {
-                                if let Some(element) = state.pick_view_cube_element(up_x, up_y) {
-                                    state.snap_tween =
-                                        Some(SnapTween::to_element(&state.camera, element));
+                                // #13 Step 3: classify the stationary release into a
+                                // chrome zone (rotate / roll / compass / Home / Fit /
+                                // cube body). The body region delegates to the same
+                                // raycast picker as before, so a body click still
+                                // resolves to an Element snap; the gutters/badges map
+                                // to their actions. A drag-orbit never reaches here
+                                // (it sets `view_cube_drag_active`, gated above), so
+                                // orbiting still wins over a click.
+                                let rect = state.cube_rect();
+                                let zone = classify_cube_point(
+                                    rect,
+                                    up_x as f32,
+                                    up_y as f32,
+                                    || state.pick_view_cube_element(up_x, up_y),
+                                );
+                                if let Some(zone) = zone {
+                                    let action = chrome_zone_left_click_action(
+                                        zone,
+                                        &state.camera,
+                                    );
+                                    state.run_chrome_action(action);
                                 }
                             }
                         }
@@ -1304,6 +1365,29 @@ impl ApplicationHandler for App {
                     state.last_cursor_position = None;
                     state.press_in_view_cube = false;
                     state.view_cube_drag_active = false;
+                }
+            }
+            WindowEvent::MouseInput {
+                state: button_state,
+                button: MouseButton::Right,
+                ..
+            } => {
+                // #13 Step 3: a right-press inside the cube rect (not on egui) opens
+                // the ViewCube context menu at the cursor. The menu itself is drawn
+                // by egui in `run_egui_frame`; egui swallows its own clicks, so the
+                // menu items never leak to the left-click snap path. Any other
+                // right-press closes a menu that was open.
+                if button_state == ElementState::Pressed && !egui_consumed {
+                    let position = state.last_cursor_position;
+                    let in_cube = state.panel_state.show_view_cube
+                        && position
+                            .map(|(x, y)| state.position_in_view_cube(x, y))
+                            .unwrap_or(false);
+                    state.context_menu_open_at = if in_cube {
+                        position.map(|(x, y)| egui::pos2(x as f32, y as f32))
+                    } else {
+                        None
+                    };
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {

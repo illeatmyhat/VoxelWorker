@@ -1485,6 +1485,8 @@ async fn run_capture(options: ShotOptions) {
         raw_input,
         [options.width, options.height],
         pixels_per_point,
+        // #13 Step 3: the headless path never opens the ViewCube context menu.
+        &mut None,
     );
 
     // Issue #25: now that egui has laid out its panels, derive the camera aspect

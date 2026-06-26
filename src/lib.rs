@@ -40,8 +40,9 @@ pub use cuboid_mesh::{build_cuboid_mesh, CuboidMesh, CuboidMeshRenderer};
 pub use texture_atlas::{AtlasSubRect, MaterialAtlas};
 pub use debug_clouds::DebugCloudField;
 pub use camera::{
-    adjacent_face, classify_cube_point, compass_heading_to_theta, nearest_equivalent_theta,
-    ArrowDir, CubeChromeZone, CubeFace, CubeRect, Heading, HomeView, OrbitCamera, ProjectionMode,
+    adjacent_face, chrome_zone_left_click_action, classify_cube_point, compass_heading_to_theta,
+    nearest_equivalent_theta, ArrowDir, ChromeClickAction, CubeChromeZone, CubeFace, CubeRect,
+    Heading, HomeView, OrbitCamera, ProjectionMode,
     RollDir, SnapTween, ViewCubeElement, CUBE_FACES, POLE_EPSILON,
 };
 pub use gpu::GpuContext;
@@ -119,6 +120,22 @@ impl EguiPaintBridge {
     }
 }
 
+/// A ViewCube right-click context-menu item the user chose this frame (#13
+/// Step 3). The windowed caller executes it after `run_egui_frame` returns; egui
+/// draws the menu and swallows its own clicks, so these never leak to the
+/// left-click snap path. `OrthographicToggle` is handled INSIDE `run_egui_frame`
+/// (it just flips `panel_state.projection_mode`, the same field the side panel
+/// binds, keeping the two in sync), so it is not surfaced here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ViewCubeMenuRequest {
+    /// "Home" — snap to the saved home view.
+    Home,
+    /// "Fit" — frame the model.
+    Fit,
+    /// "Set current as home" — capture the live camera as the home view.
+    SetHome,
+}
+
 /// The fully-prepared egui draw data for one frame.
 ///
 /// Produced by [`run_egui_frame`] and consumed by [`render_frame`]. Keeping it
@@ -140,6 +157,10 @@ pub struct PreparedEguiFrame {
     /// cube) to this rect, so the model is centred in the VISIBLE 3D area instead
     /// of the whole window (which the panels would otherwise cover).
     pub viewport_px: [u32; 4],
+    /// The ViewCube context-menu item chosen this frame (#13 Step 3), if any. The
+    /// caller runs Home/Fit/SetHome; the ortho toggle is applied in-place to
+    /// `panel_state.projection_mode` and is not reported here.
+    pub cube_menu_request: Option<ViewCubeMenuRequest>,
 }
 
 /// Run the egui pass for one frame: build the panel, upload changed textures to
@@ -160,8 +181,14 @@ pub fn run_egui_frame(
     raw_input: egui::RawInput,
     size_in_pixels: [u32; 2],
     pixels_per_point: f32,
+    // #13 Step 3: position (in egui points) of an open ViewCube right-click
+    // context menu, or `None`. Drawn inside the egui pass so egui swallows the
+    // menu's clicks. The menu clears this (`= None`) on selection or click-away.
+    // The headless `shot` path passes `&mut None` (no menu).
+    cube_context_menu_at: &mut Option<egui::Pos2>,
 ) -> PreparedEguiFrame {
     let mut panel_response = PanelResponse::default();
+    let mut cube_menu_request: Option<ViewCubeMenuRequest> = None;
     // Issue #25: the central 3D viewport rect, in egui points. `build_panel` shows
     // the right side panel + bottom palette dock INSIDE `ui`; whatever room those
     // panels leave is the central area where the 3D scene should be centred. We
@@ -176,6 +203,67 @@ pub fn run_egui_frame(
         // After both panels have been shown inside the root ui, the remaining
         // space is the central viewport.
         central_rect_points = ui.available_rect_before_wrap();
+
+        // #13 Step 3: the ViewCube right-click context menu. Drawn as a floating
+        // egui Area at the press position when open. egui owns its hit-testing, so
+        // its buttons swallow the click (no leak to the snap path). A click on an
+        // item runs the action and closes the menu; a click anywhere OUTSIDE the
+        // menu (detected via the area response) closes it without acting.
+        if let Some(menu_pos_px) = *cube_context_menu_at {
+            // `cube_context_menu_at` is stored in PHYSICAL pixels (the winit cursor
+            // space); egui positions in points, so divide by pixels_per_point.
+            let menu_pos = egui::pos2(
+                menu_pos_px.x / pixels_per_point,
+                menu_pos_px.y / pixels_per_point,
+            );
+            let context = ui.ctx().clone();
+            let area = egui::Area::new(egui::Id::new("view_cube_context_menu"))
+                .order(egui::Order::Foreground)
+                .fixed_pos(menu_pos)
+                .show(&context, |ui| {
+                    egui::Frame::menu(ui.style()).show(ui, |ui| {
+                        ui.set_min_width(180.0);
+                        if ui.button("Home").clicked() {
+                            cube_menu_request = Some(ViewCubeMenuRequest::Home);
+                        }
+                        if ui.button("Fit").clicked() {
+                            cube_menu_request = Some(ViewCubeMenuRequest::Fit);
+                        }
+                        // Ortho ↔ Perspective: toggle the SAME field the side panel
+                        // binds, so the menu and the panel stay in sync.
+                        let projection_label = match panel_state.projection_mode {
+                            ProjectionMode::Perspective => "Orthographic",
+                            ProjectionMode::Orthographic => "Perspective",
+                        };
+                        if ui.button(projection_label).clicked() {
+                            panel_state.projection_mode = match panel_state.projection_mode {
+                                ProjectionMode::Perspective => ProjectionMode::Orthographic,
+                                ProjectionMode::Orthographic => ProjectionMode::Perspective,
+                            };
+                            *cube_context_menu_at = None;
+                        }
+                        ui.separator();
+                        if ui.button("Set current as home").clicked() {
+                            cube_menu_request = Some(ViewCubeMenuRequest::SetHome);
+                        }
+                    });
+                });
+            // Close on selection (an item set a request or toggled projection).
+            if cube_menu_request.is_some() {
+                *cube_context_menu_at = None;
+            }
+            // Click-away: a primary click outside the menu's rect closes it.
+            let pointer = &context.input(|i| i.pointer.clone());
+            if pointer.any_click() {
+                let clicked_in_menu = pointer
+                    .interact_pos()
+                    .map(|p| area.response.rect.contains(p))
+                    .unwrap_or(false);
+                if !clicked_in_menu {
+                    *cube_context_menu_at = None;
+                }
+            }
+        }
     });
 
     // Convert the central rect from egui points to physical pixels, then clamp it
@@ -214,6 +302,7 @@ pub fn run_egui_frame(
         platform_output: full_output.platform_output,
         panel_response,
         viewport_px,
+        cube_menu_request,
     }
 }
 
