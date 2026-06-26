@@ -33,6 +33,27 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **Central 3D viewport — Closes #25** — the 3D pass used to render into the FULL window with the
+  camera aspect computed from the whole window, so the egui right side panel + bottom palette dock
+  (painted on top) covered part of the render and the model sat off-centre, partly hidden behind the
+  side panel. Fix: after egui lays out its panels in `run_egui_frame`, capture the post-panel central
+  area (`ui.available_rect_before_wrap()` × `pixels_per_point`, clamped into the target) and return it
+  on `PreparedEguiFrame` as `viewport_px: [u32;4]` (x, y, w, h, physical px). Both callers now compute
+  the camera aspect from `viewport_px` w/h (reordered so uniforms upload AFTER egui runs — `shot.rs`
+  moved its whole camera/overlay/voxel uniform upload below `run_egui_frame`). In `render_frame` the
+  voxel/gizmo/lattice MSAA pass, the onion-fog pass, and the view-cube pass all `set_viewport` +
+  `set_scissor_rect` to the central rect (the target is still CLEARED full-screen to the workshop
+  colour, so any uncovered sliver isn't garbage; only the 3D draws are confined). The view cube is
+  positioned at the central rect's top-left + margin (not the window's), and the windowed view-cube
+  hit-testing (`position_in_view_cube` / `pick_view_cube_element`) offsets by the cached
+  `last_viewport_px` so clicking the cube still works. The origin gizmo follows automatically (centred
+  via the camera). Files: `src/lib.rs`, `src/main.rs`, `src/bin/shot.rs`, `src/renderer.rs`,
+  `PROGRESS.md`, and 5 regenerated `tests/golden/*.png` (layout changed intentionally — re-verified
+  centred + golden test green). No CentralPanel background was added (the centre stays see-through to
+  the 3D, per scope). build/clippy(`--all-targets`, `--features gpu --tests`)/test all clean; the
+  sphere/village/gizmo shots confirm the model is centred LEFT of the panel with the view cube
+  repositioned to the central top-left.
+
 - **Golden-image regression harness — Closes #24 (E0 safety net for ADR 0002)** — added
   `tests/golden.rs`, a GPU-gated (`#![cfg(feature = "gpu")]`) integration test that renders 5
   canonical cases through the REAL `shot` binary (located via `CARGO_BIN_EXE_shot`) at a fixed

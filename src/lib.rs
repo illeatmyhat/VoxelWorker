@@ -109,6 +109,14 @@ pub struct PreparedEguiFrame {
     /// What the user changed in the panel this frame (M3): drives the geometry
     /// rebuild + camera auto-frame in the caller.
     pub panel_response: PanelResponse,
+    /// The central 3D viewport rect in PHYSICAL PIXELS (issue #25): `[x, y, w, h]`
+    /// = the window/target area LEFT of the right side panel and ABOVE the bottom
+    /// palette dock. Derived from egui's post-panel `available_rect` × the frame's
+    /// `pixels_per_point`, then clamped into the target. The caller computes the
+    /// camera aspect from `w/h` and confines the 3D pass (voxels, gizmo, fog, view
+    /// cube) to this rect, so the model is centred in the VISIBLE 3D area instead
+    /// of the whole window (which the panels would otherwise cover).
+    pub viewport_px: [u32; 4],
 }
 
 /// Run the egui pass for one frame: build the panel, upload changed textures to
@@ -131,9 +139,37 @@ pub fn run_egui_frame(
     pixels_per_point: f32,
 ) -> PreparedEguiFrame {
     let mut panel_response = PanelResponse::default();
+    // Issue #25: the central 3D viewport rect, in egui points. `build_panel` shows
+    // the right side panel + bottom palette dock INSIDE `ui`; whatever room those
+    // panels leave is the central area where the 3D scene should be centred. We
+    // read it AFTER the panels are laid out (`available_rect`), so a resized panel
+    // moves the viewport with it.
+    let mut central_rect_points = egui::Rect::from_min_size(
+        egui::pos2(0.0, 0.0),
+        egui::vec2(size_in_pixels[0] as f32, size_in_pixels[1] as f32),
+    );
     let full_output = bridge.context.run_ui(raw_input, |ui| {
         panel_response = build_panel(ui, panel_state, grid_y, measured_diameter, palette);
+        // After both panels have been shown inside the root ui, the remaining
+        // space is the central viewport.
+        central_rect_points = ui.available_rect_before_wrap();
     });
+
+    // Convert the central rect from egui points to physical pixels, then clamp it
+    // inside the target so the viewport/scissor below are always valid.
+    let viewport_px = {
+        let to_px = |value: f32| (value * pixels_per_point).round();
+        let left = to_px(central_rect_points.min.x).max(0.0) as u32;
+        let top = to_px(central_rect_points.min.y).max(0.0) as u32;
+        let right = to_px(central_rect_points.max.x).max(0.0) as u32;
+        let bottom = to_px(central_rect_points.max.y).max(0.0) as u32;
+        let x = left.min(size_in_pixels[0]);
+        let y = top.min(size_in_pixels[1]);
+        // Always leave at least a 1×1 viewport so set_viewport never gets 0 dims.
+        let width = right.min(size_in_pixels[0]).saturating_sub(x).max(1);
+        let height = bottom.min(size_in_pixels[1]).saturating_sub(y).max(1);
+        [x, y, width, height]
+    };
 
     for (texture_id, image_delta) in &full_output.textures_delta.set {
         bridge
@@ -154,6 +190,7 @@ pub fn run_egui_frame(
         textures_to_free: full_output.textures_delta.free,
         platform_output: full_output.platform_output,
         panel_response,
+        viewport_px,
     }
 }
 
@@ -262,6 +299,21 @@ pub fn render_frame(
             multiview_mask: None,
         });
 
+        // Issue #25: confine the 3D geometry to the central viewport rect (the
+        // window minus the side panel + bottom dock). The MSAA target was still
+        // CLEARED to the workshop colour across the WHOLE target above, so any
+        // sliver not covered by egui isn't garbage; only the draws are scissored.
+        let [viewport_x, viewport_y, viewport_width, viewport_height] = prepared.viewport_px;
+        voxel_pass.set_viewport(
+            viewport_x as f32,
+            viewport_y as f32,
+            viewport_width as f32,
+            viewport_height as f32,
+            0.0,
+            1.0,
+        );
+        voxel_pass.set_scissor_rect(viewport_x, viewport_y, viewport_width, viewport_height);
+
         voxel_renderer.draw(&mut voxel_pass, material, overlays.debug_face_mode);
 
         // Block lattice + fine floor grid (M8): same MSAA pass, depth-tested so
@@ -284,7 +336,7 @@ pub fn render_frame(
     // aren't fogged). Depth-tested against the 3D pass's MSAA depth so the displayed
     // opaque slice occludes the onion layers behind it (like Minecraft's clouds).
     if let Some(onion_fog) = overlays.onion_fog {
-        onion_fog.draw(device, &mut encoder, target_view, depth_view);
+        onion_fog.draw(device, &mut encoder, target_view, depth_view, prepared.viewport_px);
     }
 
     // === Pass 1b: view cube into a scissored top-left corner (its own depth).
@@ -296,6 +348,7 @@ pub fn render_frame(
             target_view,
             overlays.target_width,
             overlays.target_height,
+            prepared.viewport_px,
         );
     }
 

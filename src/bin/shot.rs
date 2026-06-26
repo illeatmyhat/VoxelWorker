@@ -922,26 +922,13 @@ async fn run_capture(options: ShotOptions) {
             .unwrap_or_else(|| OrbitCamera::auto_framed_distance(grid.dimensions)),
         projection_mode: options.projection_mode,
     };
-    let aspect_ratio = options.width as f32 / options.height as f32;
-    let view_projection = camera.view_projection(aspect_ratio);
-    // The material that will be bound at draw time (ADR 0001 step 3): a loaded VS
-    // block overrides the procedural choice — but it isn't resolved until the
-    // optional VS scan below, so the voxel uniform upload (which needs the bound
-    // material to drive per-voxel material modulation) is deferred to just before
-    // `run_egui_frame`. The overlay uniforms have no such dependency.
-    gizmo_renderer.update_uniforms(&gpu.queue, view_projection);
-    grid_lattice_renderer.update_uniforms(&gpu.queue, view_projection);
-    view_cube_renderer.update_uniforms(&gpu.queue, camera.view_cube_view_projection());
-
-    // Issue #12: onion-skin volumetric fog params (active when --onion > 0 and not
-    // in debug-face mode).
+    // Issue #25: ALL uniform uploads (camera matrix → gizmo/lattice/view-cube/fog
+    // and the voxel pass) are deferred to AFTER `run_egui_frame`, because the
+    // camera aspect must come from the CENTRAL 3D viewport rect (window minus the
+    // side panel + bottom dock), which egui only reports once its panels are laid
+    // out. The view-cube matrix is aspect-independent but uploaded alongside for
+    // simplicity. `onion_active` is needed earlier for the overlays struct.
     let onion_active = layer_range.onion_skin && !options.debug_face_orientation;
-    if onion_active {
-        onion_fog_renderer.update(
-            &gpu.queue,
-            onion_fog_params(view_projection, grid_dimensions, layer_range),
-        );
-    }
 
     // egui driven WITHOUT winit: build RawInput by hand.
     let mut egui_bridge = EguiPaintBridge::new(&gpu.device, COLOR_TARGET_FORMAT);
@@ -1057,9 +1044,39 @@ async fn run_capture(options: ShotOptions) {
         }
     }
 
-    // Deferred voxel uniform upload (see note above): now that any VS block has
-    // been resolved, pick the bound material and upload — it drives per-voxel
-    // material modulation (ADR 0001 step 3) and must match the draw-time binding.
+    let prepared = run_egui_frame(
+        &mut egui_bridge,
+        &gpu.device,
+        &gpu.queue,
+        &mut panel_state,
+        render_grid_y,
+        measured_diameter,
+        &palette,
+        raw_input,
+        [options.width, options.height],
+        pixels_per_point,
+    );
+
+    // Issue #25: now that egui has laid out its panels, derive the camera aspect
+    // from the CENTRAL 3D viewport rect (window minus side panel + bottom dock) so
+    // the model is centred in the visible 3D area instead of partly hidden behind
+    // the side panel. Then upload every uniform that depends on the camera matrix.
+    let [_, _, viewport_width, viewport_height] = prepared.viewport_px;
+    let aspect_ratio = viewport_width as f32 / viewport_height.max(1) as f32;
+    let view_projection = camera.view_projection(aspect_ratio);
+    gizmo_renderer.update_uniforms(&gpu.queue, view_projection);
+    grid_lattice_renderer.update_uniforms(&gpu.queue, view_projection);
+    view_cube_renderer.update_uniforms(&gpu.queue, camera.view_cube_view_projection());
+    if onion_active {
+        onion_fog_renderer.update(
+            &gpu.queue,
+            onion_fog_params(view_projection, grid_dimensions, layer_range),
+        );
+    }
+
+    // Deferred voxel uniform upload: now that any VS block has been resolved, pick
+    // the bound material and upload — it drives per-voxel material modulation (ADR
+    // 0001 step 3) and must match the draw-time binding.
     let uniform_material = match &loaded_material {
         Some(loaded) => MaterialSource::Loaded(&loaded.bind_group),
         None => MaterialSource::Procedural(options.material),
@@ -1073,19 +1090,6 @@ async fn run_capture(options: ShotOptions) {
         options.debug_face_orientation,
         band,
         uniform_material,
-    );
-
-    let prepared = run_egui_frame(
-        &mut egui_bridge,
-        &gpu.device,
-        &gpu.queue,
-        &mut panel_state,
-        render_grid_y,
-        measured_diameter,
-        &palette,
-        raw_input,
-        [options.width, options.height],
-        pixels_per_point,
     );
 
     // M6: the active material is a loaded VS block when one was applied,

@@ -101,6 +101,11 @@ struct WindowedState {
     /// Whether a press that started on the view cube has moved past the drag
     /// threshold and is now orbiting the main camera (so the release snaps nothing).
     view_cube_drag_active: bool,
+    /// Issue #25: the central 3D viewport rect ([x, y, w, h], physical pixels) from
+    /// the most recent rendered frame. The view-cube hit-testing (run in mouse
+    /// events, outside `render`) needs the cube's top-left corner, which is offset
+    /// into this central rect — so we cache the rect each frame.
+    last_viewport_px: [u32; 4],
 }
 
 #[derive(Default)]
@@ -332,6 +337,8 @@ impl WindowedState {
             press_position: None,
             press_in_view_cube: false,
             view_cube_drag_active: false,
+            // Default to the full target until the first frame fills it in.
+            last_viewport_px: [0, 0, width, height],
         }
     }
 
@@ -565,11 +572,16 @@ impl WindowedState {
         config.save();
     }
 
-    /// Is the pixel `(x, y)` inside the top-left view-cube viewport?
+    /// Is the pixel `(x, y)` inside the view-cube viewport? Issue #25: the cube's
+    /// corner is offset into the central 3D viewport rect (cached from the last
+    /// frame), so the hit rect tracks the cube's actual on-screen position rather
+    /// than the window's top-left.
     fn position_in_view_cube(&self, x: f64, y: f64) -> bool {
-        let margin = VIEW_CUBE_VIEWPORT_MARGIN as f64;
+        let [viewport_x, viewport_y, _, _] = self.last_viewport_px;
+        let corner_x = (viewport_x + VIEW_CUBE_VIEWPORT_MARGIN) as f64;
+        let corner_y = (viewport_y + VIEW_CUBE_VIEWPORT_MARGIN) as f64;
         let size = VIEW_CUBE_VIEWPORT_PIXELS as f64;
-        x >= margin && x <= margin + size && y >= margin && y <= margin + size
+        x >= corner_x && x <= corner_x + size && y >= corner_y && y <= corner_y + size
     }
 
     /// Ray-cast a click inside the view-cube viewport against the cube and return
@@ -580,11 +592,14 @@ impl WindowedState {
     /// thresholds): centre → the face, an edge zone → this face + the neighbour the
     /// zone points toward, a corner zone → this face + both neighbours.
     fn pick_view_cube_element(&self, x: f64, y: f64) -> Option<ViewCubeElement> {
-        let margin = VIEW_CUBE_VIEWPORT_MARGIN as f32;
+        // Issue #25: the cube's corner is offset into the central viewport rect.
+        let [viewport_x, viewport_y, _, _] = self.last_viewport_px;
+        let corner_x = (viewport_x + VIEW_CUBE_VIEWPORT_MARGIN) as f32;
+        let corner_y = (viewport_y + VIEW_CUBE_VIEWPORT_MARGIN) as f32;
         let size = VIEW_CUBE_VIEWPORT_PIXELS as f32;
         // NDC inside the cube rect (y up).
-        let ndc_x = ((x as f32 - margin) / size) * 2.0 - 1.0;
-        let ndc_y = -(((y as f32 - margin) / size) * 2.0 - 1.0);
+        let ndc_x = ((x as f32 - corner_x) / size) * 2.0 - 1.0;
+        let ndc_y = -(((y as f32 - corner_y) / size) * 2.0 - 1.0);
 
         let view_projection = self.camera.view_cube_view_projection();
         let inverse = view_projection.inverse();
@@ -721,6 +736,10 @@ impl WindowedState {
             pixels_per_point,
         );
 
+        // Issue #25: cache the central 3D viewport rect so the view-cube
+        // hit-testing (run later, in mouse events) can offset the cube corner.
+        self.last_viewport_px = prepared.viewport_px;
+
         // M6: react to palette interactions (apply a block, connect a folder,
         // revert to a procedural material).
         self.handle_palette_response(&prepared.panel_response);
@@ -759,8 +778,12 @@ impl WindowedState {
         // Upload the per-frame uniforms before drawing: camera matrix, grid
         // half-extent + density (per-voxel slice + overlay), and the overlay
         // toggle. The grid dims are the current geometry's voxel-space size.
-        let aspect_ratio =
-            self.surface_config.width as f32 / self.surface_config.height.max(1) as f32;
+        // Issue #25: the camera aspect comes from the CENTRAL 3D viewport rect (the
+        // window minus the side panel + bottom dock), not the whole window, so the
+        // model is centred in the visible 3D area instead of partly hidden behind
+        // the side panel. `prepared.viewport_px` = [x, y, w, h] in physical pixels.
+        let [_, _, viewport_width, viewport_height] = prepared.viewport_px;
+        let aspect_ratio = viewport_width as f32 / viewport_height.max(1) as f32;
         let geometry = self.panel_state.geometry;
         // The grid dims come from the ACTUALLY resolved scene grid (the composited
         // region's extent), not the active node's geometry — with several nodes the

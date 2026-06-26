@@ -1187,9 +1187,15 @@ impl ViewCubeRenderer {
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
     }
 
-    /// Draw the cube into a scissored top-left corner of `target_view` (its own
-    /// render pass, with a freshly-cleared private depth texture). The colour
-    /// attachment loads the already-resolved scene so only the corner is touched.
+    /// Draw the cube into a scissored corner of `target_view` (its own render pass,
+    /// with a freshly-cleared private depth texture). The colour attachment loads
+    /// the already-resolved scene so only the corner is touched.
+    ///
+    /// Issue #25: the corner is the top-left of the CENTRAL 3D viewport rect
+    /// (`viewport_x/y/w/h`, physical pixels), NOT the whole window — so the cube
+    /// lines up with the visible 3D area instead of hiding behind the side panel.
+    /// `target_width/height` are the full target dims (the colour + depth
+    /// attachments span the whole target; the scissor confines the draw).
     pub fn draw(
         &self,
         device: &wgpu::Device,
@@ -1197,11 +1203,20 @@ impl ViewCubeRenderer {
         target_view: &wgpu::TextureView,
         target_width: u32,
         target_height: u32,
+        viewport: [u32; 4],
     ) {
+        let [viewport_x, viewport_y, viewport_width, viewport_height] = viewport;
         let margin = VIEW_CUBE_VIEWPORT_MARGIN;
         let size = VIEW_CUBE_VIEWPORT_PIXELS;
-        // Bail if the target is too small to host the corner viewport.
-        if target_width < margin + size || target_height < margin + size {
+        // Bail if the central viewport is too small to host the corner cube.
+        if viewport_width < margin + size || viewport_height < margin + size {
+            return;
+        }
+        // The cube's top-left corner, offset into the central viewport.
+        let corner_x = viewport_x + margin;
+        let corner_y = viewport_y + margin;
+        // Bail if the cube would fall outside the actual target (defensive).
+        if corner_x + size > target_width || corner_y + size > target_height {
             return;
         }
         // The depth attachment must match the colour attachment's size, so this
@@ -1235,8 +1250,8 @@ impl ViewCubeRenderer {
             multiview_mask: None,
         });
 
-        pass.set_viewport(margin as f32, margin as f32, size as f32, size as f32, 0.0, 1.0);
-        pass.set_scissor_rect(margin, margin, size, size);
+        pass.set_viewport(corner_x as f32, corner_y as f32, size as f32, size as f32, 0.0, 1.0);
+        pass.set_scissor_rect(corner_x, corner_y, size, size);
 
         pass.set_pipeline(&self.face_pipeline);
         pass.set_bind_group(0, &self.uniform_bind_group, &[]);
@@ -2342,12 +2357,17 @@ impl OnionFogRenderer {
     /// MSAA depth) so the displayed opaque slice occludes the onion layers behind
     /// it. A no-op until a grid has been uploaded (`upload_grid`). Its own render
     /// pass loads the existing colour and composites the haze over it.
+    /// Issue #25: `viewport` (`[x, y, w, h]`, physical pixels) confines the
+    /// fullscreen raymarch to the central 3D viewport rect. The fog reconstructs
+    /// world rays from the central-aspect `inverse_view_projection`, so it is only
+    /// valid inside that rect; the scissor keeps it off the panels.
     pub fn draw(
         &self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
         target_view: &wgpu::TextureView,
         depth_view: &wgpu::TextureView,
+        viewport: [u32; 4],
     ) {
         if !self.active {
             return;
@@ -2391,6 +2411,9 @@ impl OnionFogRenderer {
             occlusion_query_set: None,
             multiview_mask: None,
         });
+        let [vx, vy, vw, vh] = viewport;
+        pass.set_viewport(vx as f32, vy as f32, vw as f32, vh as f32, 0.0, 1.0);
+        pass.set_scissor_rect(vx, vy, vw, vh);
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &bind_group, &[]);
         pass.draw(0..3, 0..1);
