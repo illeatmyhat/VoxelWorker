@@ -1,5 +1,9 @@
 //! Regression guard for the windowed palette-click apply path (BUG 2).
 //!
+//! This whole test requires a real wgpu device (it builds GPU-backed palette
+//! tiles), so it is gated behind the off-by-default `gpu` feature. CI runners
+//! have no GPU; run locally with `cargo test --features gpu`.
+//!
 //! We cannot click the live window from a test, but egui's interaction is
 //! deterministic given a `RawInput` event stream. This test populates a real
 //! `BlockPalette` with GPU-rendered thumbnail tiles, runs the SHARED
@@ -12,6 +16,7 @@
 //! The tile rect is discovered by sweeping candidate points over the bottom-left
 //! palette dock (the dock height + tile size are layout details that should not
 //! be hard-coded), so the test stays robust to small layout tweaks.
+#![cfg(feature = "gpu")]
 
 use egui::{pos2, vec2, Event, PointerButton, Pos2, RawInput, Rect};
 

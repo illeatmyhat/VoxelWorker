@@ -1,0 +1,30 @@
+# Normalize all text files to LF in the repo; git checks out per platform.
+# This stops the "LF will be replaced by CRLF" warnings on Windows.
+* text=auto
+
+# Explicit text types (normalized to LF in the repo).
+*.rs    text
+*.toml  text
+*.lock  text
+*.md    text
+*.yml   text
+*.yaml  text
+*.json  text
+*.html  text
+*.wgsl  text
+*.glsl  text
+*.txt   text
+*.gitattributes text
+*.gitignore     text
+
+# Binary types — never munge line endings.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.vox   binary
+*.ttf   binary
+*.otf   binary
+*.bin   binary
+*.zip   binary

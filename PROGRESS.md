@@ -33,6 +33,20 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **CI + line-ending hygiene — Closes #23** — `.github/workflows/ci.yml`, `.gitattributes`,
+  `Cargo.toml`, `tests/palette_click.rs`, `PROGRESS.md`. GitHub Actions workflow runs on push/PR to
+  `main`: a `ubuntu-latest` job installs stable Rust + clippy, caches cargo (`Swatinem/rust-cache`),
+  installs Linux GUI build deps, then runs `cargo build --bins`, `cargo clippy --all-targets -- -D
+  warnings`, and `cargo test`; plus an optional `windows-latest` build-only job. **No-GPU
+  constraint:** GitHub runners have no GPU. Of the 54 tests, exactly one needs a wgpu device —
+  `windowed_palette_tile_click_reaches_apply_path` in `tests/palette_click.rs` (calls
+  `GpuContext::new`). It is now gated behind a new off-by-default `gpu` cargo feature (file-level
+  `#![cfg(feature = "gpu")]`), so default `cargo test` runs the 53 CPU tests green on a GPU-less
+  runner while the GPU test stays runnable locally via `cargo test --features gpu`. The `shot`
+  binary is built but never executed in CI. **Line endings:** added `.gitattributes` (`* text=auto`
+  + explicit text/binary types) to stop the "LF will be replaced by CRLF" warnings; ran `git add
+  --renormalize .` (index was already LF-normalized, so no existing files changed).
+
 - **ADR 0001 step 4 (UI half): author groups, definitions & instances — COMPLETES step 4 / Closes
   #17** — `src/scene.rs`, `src/panel.rs`, `src/lib.rs`, `src/bin/shot.rs`, `PROGRESS.md`. Adds the
   UI to AUTHOR the recursion the resolve already supported (4a). **Tree node list:** the Scene

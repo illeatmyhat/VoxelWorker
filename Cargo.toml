@@ -15,6 +15,13 @@ path = "src/main.rs"
 name = "shot"
 path = "src/bin/shot.rs"
 
+[features]
+# Off by default so `cargo test` is green on GPU-less CI runners.
+# Enable locally with `cargo test --features gpu` to run the windowed
+# (GPU-device-dependent) integration tests.
+default = []
+gpu = []
+
 [dependencies]
 winit = "0.30.13"
 wgpu = "29.0.3"
