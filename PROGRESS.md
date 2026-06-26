@@ -33,6 +33,29 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **Delete flat-geometry config back-compat fields + no-scene migration — Closes #32.**
+  Follow-up to #31: the user does NOT want config back-compat. `AppConfig` still carried flat
+  `shape` / `size_blocks` / `wall_blocks` geometry mirror fields "kept for back-compat migration",
+  used ONLY to synthesize a one-Tool-node scene when a loaded config had no `scene`. The current
+  build always writes a `scene`, so they were dead for live configs. Deleted outright (no
+  `#[serde(alias)]`/shim); behavior-preserving for normal use; goldens byte-identical.
+  - **Deleted (settings.rs):** the flat `shape` / `size_blocks` / `wall_blocks` fields + their
+    `default_shape`/`default_size`/`default_wall` helpers and their `Default`/`capture`/`to_panel_state`
+    plumbing. The app-level `voxels_per_block` (density) STAYS — the scene reads it at resolve time.
+  - **No-scene path:** removed the migration fallback that built a scene from the flat fields. A loaded
+    config with no `scene` now loads the DEFAULT seed scene (the same one a brand-new config gets) via
+    `seed_scene_from_geometry`; only the persisted density (and `material`) carry over. `to_panel_state`
+    seeds `geometry` from `GeometryParams::default()` overridden by the config's `voxels_per_block`.
+  - **Back-compat (passive):** no `deny_unknown_fields`, so an existing on-disk config still carrying
+    the removed `shape`/`size_blocks`/`wall_blocks` keys (and `debug_clouds`/`mesher`/legacy `show_*`)
+    loads fine — serde ignores the now-unknown keys. No migration code.
+  - **Tests:** updated the 3 settings tests that referenced the removed `AppConfig` fields
+    (`old_config_with_removed_keys_still_loads` [renamed], `old_config_with_debug_clouds_field_still_loads`,
+    `old_config_with_mesher_field_still_loads`) to assert old keys are ignored + a scene-less config loads
+    the default seed scene; trimmed the round-trip test's removed fields; ADDED
+    `config_persists_and_reloads_its_scene` proving a non-trivial scene survives capture→JSON→load with
+    identical occupancy. **205 lib tests green; 7 goldens byte-identical; clippy --all-targets clean.**
+
 - **Delete vestigial config back-compat husks; single master source of truth — Closes #31.**
   Resolves the S6 loose end. The user does NOT want config back-compat, so the husks are deleted
   outright (no `#[serde(alias)]`, no migration shim). Behavior-preserving; goldens byte-identical.

@@ -24,7 +24,6 @@ use serde::{Deserialize, Serialize};
 use crate::camera::{OrbitCamera, ProjectionMode};
 use crate::panel::{GeometryParams, LayerRange, MaterialChoice, PanelState};
 use crate::scene::Scene;
-use crate::voxel::ShapeKind;
 
 /// The whole persisted configuration. Every field is `#[serde(default)]` so a
 /// partial or older config still loads.
@@ -33,13 +32,21 @@ pub struct AppConfig {
     // --- scene (ADR 0001 step 8: full scene persistence) ---
     // The whole assembly (node tree + reusable definitions + the active
     // selection) is persisted here. `#[serde(default)]` means an OLD config with
-    // no `scene` field deserialises to `None`, which triggers the migration path
-    // in `to_panel_state` (the flat `shape/size_blocks/...` fields below build a
-    // one-Tool-node scene). A malformed/partial `scene` value can never reach this
-    // field as garbage: serde tolerates missing inner fields (every scene field is
-    // `#[serde(default)]`), and an outright unparseable config is rejected wholesale
-    // by `load()` → defaults. Density (`voxels_per_block`) stays an app-level field
-    // below; the scene reads it at resolve time (ADR 0001 "Density").
+    // no `scene` field deserialises to `None`, which loads the default seed scene
+    // in `to_panel_state` (the same one a brand-new config gets). A malformed/partial
+    // `scene` value can never reach this field as garbage: serde tolerates missing
+    // inner fields (every scene field is `#[serde(default)]`), and an outright
+    // unparseable config is rejected wholesale by `load()` → defaults. Density
+    // (`voxels_per_block`) stays an app-level field below; the scene reads it at
+    // resolve time (ADR 0001 "Density").
+    //
+    // issue #32: the flat `shape` / `size_blocks` / `wall_blocks` geometry mirror
+    // fields were deleted (no config back-compat — see #31). They previously built a
+    // one-Tool-node scene when `scene` was absent, but the current build always
+    // writes a `scene`, so they were dead for live configs. An OLD config still
+    // carrying those keys (plus the old `debug_clouds`) loads fine: there is no
+    // `deny_unknown_fields`, so serde ignores the now-unknown keys, and a scene-less
+    // config just loads the default seed scene.
     //
     // regional export: deferred to the chunking milestone (ADR 0001 step 8's
     // "regional/streamed .vox export" sub-part — meaningless until chunking; the
@@ -47,21 +54,9 @@ pub struct AppConfig {
     #[serde(default)]
     pub scene: Option<Scene>,
 
-    // --- geometry (legacy single-Tool mirror; kept for back-compat migration) ---
-    // Before step 8 the config persisted only the active/first Tool node's
-    // geometry. These flat fields are still written (so a NEW config also opens in
-    // an OLDER build that only reads them) and are the SOLE source when `scene` is
-    // absent: an old config with no `scene` field migrates to a one-Tool-node scene
-    // built from these. The old `debug_clouds: bool` field was dropped; an old
-    // config carrying it still loads (serde ignores the now-unknown field).
-    #[serde(default = "default_shape")]
-    pub shape: ShapeKind,
-    #[serde(default = "default_size")]
-    pub size_blocks: [u32; 3],
+    // --- density (app-level; the scene reads it at resolve time, ADR 0001) ---
     #[serde(default = "default_density")]
     pub voxels_per_block: u32,
-    #[serde(default = "default_wall")]
-    pub wall_blocks: u32,
 
     // --- display / material ---
     #[serde(default)]
@@ -109,17 +104,8 @@ pub struct AppConfig {
     pub window_size: [u32; 2],
 }
 
-fn default_shape() -> ShapeKind {
-    ShapeKind::Cylinder
-}
-fn default_size() -> [u32; 3] {
-    [5, 1, 5]
-}
 fn default_density() -> u32 {
     16
-}
-fn default_wall() -> u32 {
-    1
 }
 fn default_true() -> bool {
     true
@@ -144,10 +130,7 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             scene: None,
-            shape: default_shape(),
-            size_blocks: default_size(),
             voxels_per_block: default_density(),
-            wall_blocks: default_wall(),
             projection_mode: ProjectionMode::default(),
             material: MaterialChoice::default(),
             show_view_cube: true,
@@ -169,13 +152,10 @@ impl AppConfig {
     pub fn capture(panel: &PanelState, camera: &OrbitCamera, window_size: [u32; 2]) -> Self {
         Self {
             // step 8: persist the whole scene (node tree + definitions + active
-            // selection). The legacy flat geometry fields below keep mirroring the
-            // active-Tool inspector so a NEW config still opens in an older build.
+            // selection). issue #32: the legacy flat geometry mirror fields are gone;
+            // only the app-level density rides alongside the scene.
             scene: Some(panel.scene.clone()),
-            shape: panel.geometry.shape,
-            size_blocks: panel.geometry.size_blocks,
             voxels_per_block: panel.geometry.voxels_per_block,
-            wall_blocks: panel.geometry.wall_blocks,
             projection_mode: panel.projection_mode,
             material: panel.material,
             // Issue #31: the three grid masters persist as the single source of
@@ -198,18 +178,20 @@ impl AppConfig {
     ///
     /// step 8 (ADR 0001): the full scene (node tree + definitions + active
     /// selection) is restored from [`scene`](Self::scene) when present. When it is
-    /// absent — an OLD config that predates scene persistence — the flat
-    /// `shape/size_blocks/...` fields **migrate** to a one-Tool-node scene via
-    /// [`PanelState::seed_scene_from_geometry`]. A restored scene that resolves to
-    /// no nodes (a malformed/empty persisted scene) also falls back to that seed,
-    /// so loading never yields an empty document and never panics.
+    /// absent — an OLD config that predates scene persistence (issue #32 deleted the
+    /// flat geometry mirror fields) — the default seed scene is loaded, the same one
+    /// a brand-new config gets, via [`PanelState::seed_scene_from_geometry`]. A
+    /// restored scene that resolves to no nodes (a malformed/empty persisted scene)
+    /// also falls back to that seed, so loading never yields an empty document and
+    /// never panics. Only the app-level density carries over from the config.
     pub fn to_panel_state(&self) -> PanelState {
         let mut state = PanelState {
+            // issue #32: the flat geometry mirror fields are gone. The inspector
+            // mirror starts at its defaults, overridden only by the persisted
+            // app-level density; it is re-synced from the active node after the seed.
             geometry: GeometryParams {
-                shape: self.shape,
-                size_blocks: self.size_blocks,
                 voxels_per_block: self.voxels_per_block,
-                wall_blocks: self.wall_blocks,
+                ..GeometryParams::default()
             },
             projection_mode: self.projection_mode,
             material: self.material,
@@ -231,16 +213,16 @@ impl AppConfig {
                 onion_depth: self.onion_depth.clamp(1, 8),
             },
             // Restored just below: the persisted full scene, or — for an old
-            // config without one — a one-Tool-node scene seeded from the geometry.
+            // config without one — the default seed scene.
             scene: Scene::default(),
             // Issue #29 S5: refreshed each frame from the camera target by the windowed
             // caller; defaults to the world origin (the headless harness keeps it 0).
             point_add_position_blocks: [0, 0, 0],
         };
         // step 8: restore the persisted full scene when present and non-empty;
-        // otherwise migrate the legacy single geometry into a one-Tool-node scene.
-        // A `Some(scene)` with no nodes (a malformed/empty persisted scene) is
-        // treated as absent, so the seed always produces a usable document.
+        // otherwise (a scene-less old config, or a `Some(scene)` with no nodes — a
+        // malformed/empty persisted scene) load the default seed scene, the same one
+        // a brand-new config gets, so the seed always produces a usable document.
         match &self.scene {
             Some(scene) if !scene.nodes.is_empty() => {
                 state.scene = scene.clone();
@@ -254,7 +236,7 @@ impl AppConfig {
         // config fields (those mirrors were deleted). The scene's own `master_*`
         // fields are the single source of truth: a persisted scene carries them
         // directly, and a fresh/legacy config with no scene falls back to the
-        // one-Tool-node seed whose `Scene::default()` masters all default ON.
+        // default seed scene whose `Scene::default()` masters all default ON.
         state.scene.ensure_origin_point();
         state
     }
@@ -325,15 +307,13 @@ impl AppConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::voxel::ShapeKind;
 
     #[test]
     fn config_round_trips_through_json() {
         let config = AppConfig {
             scene: None,
-            shape: ShapeKind::Torus,
-            size_blocks: [7, 3, 9],
             voxels_per_block: 24,
-            wall_blocks: 2,
             projection_mode: ProjectionMode::Orthographic,
             material: MaterialChoice::Wood,
             show_view_cube: false,
@@ -352,6 +332,63 @@ mod tests {
         assert_eq!(config, restored);
     }
 
+    /// issue #32: a config persists and reloads its `scene` correctly. A non-trivial
+    /// scene (two offset Tool nodes with distinct materials) survives
+    /// `capture → JSON → deserialize → to_panel_state` with the same node count,
+    /// active selection, and resolved occupancy — the `scene` field is the single
+    /// source of truth now that the flat geometry mirror fields are gone.
+    #[test]
+    fn config_persists_and_reloads_its_scene() {
+        use crate::scene::{Node, NodeContent, NodePath, Scene};
+        use crate::voxel::SdfShape;
+
+        let voxels_per_block = 8u32;
+        let unit_box = |kind| SdfShape {
+            kind,
+            size_blocks: [1, 1, 1],
+            voxels_per_block,
+            wall_blocks: 1,
+        };
+        let stone = Node::new(
+            "Stone",
+            NodeContent::Tool { shape: unit_box(ShapeKind::Box), material: MaterialChoice::Stone },
+        );
+        let mut wood = Node::new(
+            "Wood",
+            NodeContent::Tool { shape: unit_box(ShapeKind::Box), material: MaterialChoice::Wood },
+        );
+        wood.transform.offset_blocks = [3, 0, 0];
+        let scene = Scene {
+            nodes: vec![stone, wood],
+            active: Some(NodePath::root_index(1)),
+            ..Scene::default()
+        };
+
+        let mut panel = PanelState::with_view_cube_default();
+        panel.geometry.voxels_per_block = voxels_per_block;
+        panel.scene = scene.clone();
+        let camera = OrbitCamera::default();
+        let config = AppConfig::capture(&panel, &camera, [1280, 800]);
+        assert!(config.scene.is_some(), "capture persists the scene");
+
+        let json = serde_json::to_string_pretty(&config).expect("serialise");
+        let restored: AppConfig = serde_json::from_str(&json).expect("deserialise");
+        let restored_panel = restored.to_panel_state();
+
+        assert_eq!(restored_panel.scene.nodes.len(), 2, "both nodes survive the reload");
+        assert_eq!(restored_panel.scene.active, scene.active, "the active selection survives");
+        assert_eq!(restored_panel.scene.nodes[1].transform.offset_blocks, [3, 0, 0]);
+
+        let region = scene.full_extent_blocks(voxels_per_block);
+        let before = scene.resolve_region(region, voxels_per_block, 0).occupied_count();
+        let after_region = restored_panel.scene.full_extent_blocks(voxels_per_block);
+        let after = restored_panel
+            .scene
+            .resolve_region(after_region, voxels_per_block, 0)
+            .occupied_count();
+        assert_eq!(before, after, "the restored scene resolves identically");
+    }
+
     #[test]
     fn bad_json_falls_back_without_panicking() {
         // An empty object still parses thanks to the per-field defaults.
@@ -363,15 +400,16 @@ mod tests {
         assert!(serde_json::from_str::<AppConfig>("not json at all}{").is_err());
     }
 
-    /// issue #31: the legacy grid `show_*` mirror fields (`show_grid_overlay` /
-    /// `show_block_lattice` / `show_floor_grid`) and the older `show_origin_gizmo`
-    /// were all removed from `AppConfig`. There is no `deny_unknown_fields`, so an
-    /// OLD config still carrying those keys must keep deserializing cleanly — serde
-    /// ignores the now-unknown keys. The masters no longer migrate from them: a
-    /// scene-less config falls back to the one-Tool-node seed whose `Scene::default()`
-    /// masters all default ON.
+    /// issue #31 + #32: the legacy grid `show_*` mirror fields (`show_grid_overlay` /
+    /// `show_block_lattice` / `show_floor_grid`), the older `show_origin_gizmo`, AND
+    /// the flat geometry mirror fields (`shape` / `size_blocks` / `wall_blocks`) were
+    /// all removed from `AppConfig`. There is no `deny_unknown_fields`, so an OLD
+    /// config still carrying those keys must keep deserializing cleanly — serde
+    /// ignores the now-unknown keys. The masters no longer migrate from the grid
+    /// keys, and a scene-less config simply loads the default seed scene whose
+    /// `Scene::default()` masters all default ON.
     #[test]
-    fn old_config_with_removed_grid_show_keys_still_loads() {
+    fn old_config_with_removed_keys_still_loads() {
         let old_json = r#"{
             "shape": "Box",
             "size_blocks": [2, 2, 2],
@@ -383,12 +421,15 @@ mod tests {
             "show_origin_gizmo": true
         }"#;
         let config: AppConfig = serde_json::from_str(old_json)
-            .expect("old config with removed grid show_* keys still parses");
+            .expect("old config with removed keys still parses");
         assert!(config.scene.is_none());
+        // The app-level density key is the one flat field still read.
+        assert_eq!(config.voxels_per_block, 8);
 
         let panel = config.to_panel_state();
-        // The removed `show_*` keys are simply ignored — they no longer seed the
-        // masters. A scene-less config seeds a fresh scene whose masters all default ON.
+        // The removed keys are simply ignored — they no longer seed the masters or
+        // the geometry. A scene-less config loads the default seed scene whose
+        // masters all default ON.
         assert!(panel.scene.master_block_lattice, "fresh scene masters default ON");
         assert!(panel.scene.master_voxel_grid, "fresh scene masters default ON");
         assert!(panel.scene.master_floor_grid, "fresh scene masters default ON");
@@ -396,9 +437,12 @@ mod tests {
         assert_eq!(panel.scene.points.iter().filter(|p| p.is_origin).count(), 1);
     }
 
-    /// step 2 migration: an OLD config that still carries the dropped
-    /// `debug_clouds` boolean must load gracefully — serde ignores the now-unknown
-    /// field, and every other field round-trips to its persisted value.
+    /// issue #32: an OLD config carrying the dropped `debug_clouds` boolean AND the
+    /// removed flat geometry mirror fields (`shape` / `size_blocks` / `wall_blocks`)
+    /// must load gracefully — serde ignores the now-unknown keys. The persisted
+    /// app-level density (`voxels_per_block`) and `material` still round-trip, and a
+    /// scene-less config loads the DEFAULT seed scene (no longer a scene built from
+    /// the removed flat params).
     #[test]
     fn old_config_with_debug_clouds_field_still_loads() {
         let old_json = r#"{
@@ -411,28 +455,29 @@ mod tests {
         }"#;
         let restored: AppConfig =
             serde_json::from_str(old_json).expect("old config (with debug_clouds) must still parse");
-        assert_eq!(restored.shape, ShapeKind::Sphere);
-        assert_eq!(restored.size_blocks, [3, 4, 5]);
+        // The flat geometry keys are ignored; only density + material survive.
         assert_eq!(restored.voxels_per_block, 20);
         assert_eq!(restored.material, MaterialChoice::Wood);
-        // step 8: an old config has NO `scene` field, so it deserialises to `None`,
-        // which is exactly what triggers the migration to a one-Tool-node scene.
+        // An old config has NO `scene` field, so it deserialises to `None`, which now
+        // loads the default seed scene (the same one a brand-new config gets).
         assert!(restored.scene.is_none(), "an old flat config carries no scene");
 
-        // It migrates to a one-Tool-node scene built from the flat geometry (no
-        // Clouds Part — the boolean is dropped; Clouds is now an Add-a-Part action),
-        // and that node's shape matches the persisted flat params.
+        // It loads the DEFAULT seed scene (a one-Tool-node Cylinder, NOT a scene built
+        // from the removed flat `shape`/`size_blocks`/`wall_blocks`). Only the density
+        // carries over from the config.
         let panel = restored.to_panel_state();
         assert_eq!(panel.scene.nodes.len(), 1);
         match panel.scene.active_node().map(|node| &node.content) {
             Some(crate::scene::NodeContent::Tool { shape, material }) => {
-                assert_eq!(shape.kind, ShapeKind::Sphere);
-                assert_eq!(shape.size_blocks, [3, 4, 5]);
+                // The default seed geometry, NOT the persisted flat params.
+                assert_eq!(shape.kind, ShapeKind::Cylinder);
+                assert_eq!(shape.size_blocks, [5, 1, 5]);
+                // Density DID carry over from the config (app-level field).
                 assert_eq!(shape.voxels_per_block, 20);
-                assert_eq!(shape.wall_blocks, 2);
+                // The persisted `material` rides the seed (it is still an AppConfig field).
                 assert_eq!(*material, MaterialChoice::Wood);
             }
-            other => panic!("migration must build a one Tool node, got {other:?}"),
+            other => panic!("the seed must build a one Tool node, got {other:?}"),
         }
     }
 
@@ -454,10 +499,11 @@ mod tests {
         }"#;
         let restored: AppConfig = serde_json::from_str(old_json)
             .expect("old config (with mesher) must still parse");
-        assert_eq!(restored.shape, ShapeKind::Cylinder);
-        assert_eq!(restored.size_blocks, [5, 1, 5]);
+        // The flat geometry keys are ignored (issue #32); density + material survive.
+        assert_eq!(restored.voxels_per_block, 8);
         assert_eq!(restored.material, MaterialChoice::Stone);
-        // It migrates cleanly to a one-Tool-node scene (the dropped field is ignored).
+        // It loads cleanly to the default one-Tool-node seed scene (the stray `mesher`
+        // and the removed flat geometry keys are all ignored).
         let panel = restored.to_panel_state();
         assert_eq!(panel.scene.nodes.len(), 1);
     }
