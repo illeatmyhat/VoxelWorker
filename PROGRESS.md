@@ -33,6 +33,43 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **Far-offset demo scene + CPU placement test + precision baseline (S1) — Part of #18 (ADR 0002
+  streaming)** — creates the TEST CONDITION that makes 64-bit coords + origin-rebasing provable in
+  S4. Mostly observational/test-only; **no render math, no recentre, no `offset_blocks` type change
+  touched** (those are S4). Goldens stay green.
+  - **New `shot` flags** (`src/bin/shot.rs`): `--demo-far-offset` builds a small 4³ stone box at
+    `offset_blocks = [100_000, 0, 0]` (1.6M voxels out at density 16); `--demo-far-offset-near`
+    builds the SAME box at the origin for A/B comparison. A `FAR_OFFSET_BLOCKS` const documents the
+    offset. Both go through the single-node resolve path; `placed_scene` includes them so the region
+    is the box's own 4³ extent.
+  - **What the two PNGs show** (`shots/s1_far_offset.png` vs `shots/s1_far_offset_near.png`):
+    geometrically IDENTICAL — a crisp grey box, clean edges, NO geometric jitter/wobble/distortion,
+    nothing missing. The box silhouette is pixel-identical. This is because **`resolve_region`
+    recentres the composite on its own centre**, so a lone far box is mapped straight back to the
+    origin before meshing; the mesh vertices are tiny chunk-local f32 values → no far-lands jitter in
+    geometry. **HOWEVER**, the PNGs are NOT byte-identical: ~0.207% of pixels differ (max channel
+    delta 228) as a faint procedural-surface-noise SPECKLE. Cause: the per-voxel `world_position` is
+    stored as f32 at ~1.6M (ULP ≈ 0.125) BEFORE the recentre subtraction, so the recentred near-zero
+    position carries a tiny rounding error that shifts the position-keyed surface-noise phase on a
+    scatter of surface pixels. So pre-rebasing f32 precision loss IS observable today, but only as
+    subtle shading speckle, not as geometric jitter — the geometry recenter hides the structural
+    jitter until S4 removes the recentre.
+  - **Durable artifact — pure-CPU test** `scene::tests::far_offset_node_resolves_to_absolute_coords_near_100k`
+    (in `src/scene.rs`): via the S0 absolute-coord chunk path (`resolve_region_via_chunks` /
+    `covering_chunk_range`, which do NOT recentre), asserts the far box really lands far in absolute
+    space — every voxel's absolute X is in `[99_998·d, 100_002·d)`, mean absolute X ≈ 1_600_000
+    voxels (block 100_000 × 16), owning chunk-X > 1000 (chunk ≈ 25_000), and `recentre_voxels[0] ==
+    100_000 × density` exactly. Cross-checks that the recentred render box and the absolute far box
+    are the SAME shape differing ONLY by the recentre (= the far placement) — pinning that the
+    recentre is exactly what S4 will remove.
+  - **Absolute coords the far node resolves to** (density 16): voxels at absolute X ≈ 1_598_000 …
+    1_602_000 (box centred on 1_600_000), Y/Z centred on 0; owning chunk-X ≈ 25_000
+    (chunk_extent = 4·16 = 64 voxels). **For S4:** prove "no jitter at distance" by re-rendering
+    `--demo-far-offset` after the recentre is replaced by 64-bit/camera-relative rebasing and
+    asserting it stays geometrically crisp AND the procedural speckle disappears (the far and near
+    PNGs become byte-identical once positions are rebased to small chunk-local values before f32
+    downcast) — i.e. the S1 ~0.2% pixel diff regressing to 0 is the S4 success signal.
+
 - **Chunk-addressable resolve (additive, behaviourally identical) (S0) — Part of #27** — the first,
   safest step toward deep chunked resolve (issue #27). **Purely additive: the live render path is
   untouched** (`Scene::resolve_region` still allocates one whole-region grid AND recentres the

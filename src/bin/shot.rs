@@ -152,6 +152,21 @@ struct ShotOptions {
     /// can be verified headlessly. Zooming/rotating a large scene off-screen draws
     /// fewer chunks; a small scene draws all of them.
     debug_chunks: bool,
+    /// `--demo-far-offset` (ADR 0002 streaming S1, part of #18): build a small
+    /// recognizable box placed at a LARGE block offset (`offset_blocks =
+    /// [100_000, 0, 0]`) so the far-lands f32-precision question can be observed.
+    /// This is the precision baseline the S4 64-bit/origin-rebasing work regresses
+    /// against. NOTE: today's `resolve_region` recentres the composite on its own
+    /// centre, so a LONE far node is recentred back to the origin — see the S1
+    /// PROGRESS note. The durable artifact is the CPU placement test in `scene.rs`
+    /// (the node resolves to absolute coords around 100_000); this render flag is
+    /// the visual baseline that S4 must keep jitter-free once the recentre is
+    /// removed. Overrides --shape/--size/--density.
+    far_offset: bool,
+    /// `--demo-far-offset-near` (ADR 0002 streaming S1): the SAME small box as
+    /// `--demo-far-offset` but placed at the ORIGIN (`offset_blocks = [0, 0, 0]`),
+    /// for A/B comparison against the far render. Overrides --shape/--size/--density.
+    far_offset_near: bool,
     /// `--demo-groups` (ADR 0001 step 4, UI verification): build a scene with a
     /// top-level `Group` that has two child Tools, plus a sibling top-level Tool
     /// and one `Instance` of a definition — so the headless PANEL capture shows the
@@ -194,9 +209,16 @@ impl Default for ShotOptions {
             demo_scene: false,
             demo_village: false,
             demo_groups: false,
+            far_offset: false,
+            far_offset_near: false,
         }
     }
 }
+
+/// The block offset of the far-offset demo box (ADR 0002 streaming S1): a large
+/// but i32-range offset (`offset_blocks` is `[i32; 3]` today — S4 widens it). At
+/// density 16 this is 1.6M voxels from the origin in absolute composite space.
+const FAR_OFFSET_BLOCKS: [i32; 3] = [100_000, 0, 0];
 
 /// Parse a single face name into a [`CubeFace`].
 fn parse_face_name(value: &str) -> CubeFace {
@@ -403,6 +425,12 @@ fn parse_options() -> ShotOptions {
             "--demo-groups" => {
                 options.demo_groups = true;
             }
+            "--demo-far-offset" => {
+                options.far_offset = true;
+            }
+            "--demo-far-offset-near" => {
+                options.far_offset_near = true;
+            }
             "--layer-lower" => {
                 options.layer_lower = Some(
                     args.next()
@@ -477,6 +505,7 @@ fn parse_options() -> ShotOptions {
                      \x20            [--gizmo] [--lattice] [--floor] [--no-viewcube]\n\
                      \x20            [--debug-faces] [--debug-chunks]\n\
                      \x20            [--demo-scene] [--demo-village] [--demo-groups]\n\
+                     \x20            [--demo-far-offset] [--demo-far-offset-near]\n\
                      \x20            [--layer-lower <u32>] [--layer-upper <u32>] [--onion <u32>]\n\
                      \x20            [--export-vox <path.vox>]\n\
                      \x20            [--snap <face|edge|corner>  e.g. front, front-top, front-top-right]\n\
@@ -499,7 +528,12 @@ fn parse_options() -> ShotOptions {
                      \x20  --demo-groups build a scene with a top-level Group (2 child\n\
                      \x20                Tools), a sibling Tool and an Instance, so the\n\
                      \x20                captured PANEL shows the indented tree + Definitions\n\
-                     \x20                (ADR 0001 step 4 UI). Overrides --shape/--size/--density."
+                     \x20                (ADR 0001 step 4 UI). Overrides --shape/--size/--density.\n\
+                     \x20  --demo-far-offset      build a small 4³ box at offset [100_000,0,0]\n\
+                     \x20                blocks (ADR 0002 streaming S1). Precision baseline:\n\
+                     \x20                today's recentre maps it to the origin, so far jitter\n\
+                     \x20                is hidden until S4. Overrides --shape/--size/--density.\n\
+                     \x20  --demo-far-offset-near the SAME box at the origin, for A/B compare."
                 );
                 std::process::exit(0);
             }
@@ -717,6 +751,39 @@ fn build_demo_groups(voxels_per_block: u32) -> Scene {
     }
 }
 
+/// Build the `--demo-far-offset` / `--demo-far-offset-near` scene (ADR 0002
+/// streaming S1, part of #18): a single small recognizable box Tool placed either
+/// at the FAR offset ([`FAR_OFFSET_BLOCKS`], i.e. 100_000 blocks in X) or at the
+/// ORIGIN, for an A/B precision baseline.
+///
+/// The box is a 4³-block solid (a crisp, unambiguous shape that frames cleanly).
+/// At density 16 the far placement sits 1.6M voxels from the origin in ABSOLUTE
+/// composite space — which the CPU placement test in `scene.rs` asserts directly.
+///
+/// IMPORTANT (today's render math): `Scene::resolve_region` recentres the
+/// composite on its OWN centre, so a lone far box is recentred straight back to
+/// the origin before rendering. The far and near renders therefore look identical
+/// today — f32 jitter from the large offset cannot show up in the live render
+/// until S4 removes the recentre / adds origin-rebasing. This flag exists to be
+/// the visual regression target for S4 (it must STAY jitter-free once S4 lands).
+fn build_far_offset_scene(voxels_per_block: u32, far: bool) -> Scene {
+    let shape = SdfShape {
+        kind: ShapeKind::Box,
+        size_blocks: [4, 4, 4],
+        voxels_per_block,
+        wall_blocks: 1,
+    };
+    let mut node = Node::new(
+        if far { "Far box" } else { "Near box" },
+        NodeContent::Tool {
+            shape,
+            material: MaterialChoice::Stone,
+        },
+    );
+    node.transform.offset_blocks = if far { FAR_OFFSET_BLOCKS } else { [0, 0, 0] };
+    Scene::single_node(node)
+}
+
 async fn run_capture(options: ShotOptions) {
     assert!(options.width > 0 && options.height > 0, "capture size must be non-zero");
 
@@ -782,7 +849,9 @@ async fn run_capture(options: ShotOptions) {
     // scene — a Tool, or a DebugClouds Part when `--shape debug-clouds`. Seed the
     // panel's scene so the node-list section renders the nodes in the captured
     // panel.
-    let scene = if options.demo_groups {
+    let scene = if options.far_offset || options.far_offset_near {
+        build_far_offset_scene(options.geometry.voxels_per_block, options.far_offset)
+    } else if options.demo_groups {
         build_demo_groups(options.geometry.voxels_per_block)
     } else if options.demo_village {
         build_demo_village(options.geometry.voxels_per_block)
@@ -802,7 +871,16 @@ async fn run_capture(options: ShotOptions) {
     // node it equals the node's own size (the step-2 region).
     // A placed/instanced scene (demo-scene or demo-village) resolves its whole
     // composite extent; a single-node scene uses its own block size (step-2 region).
-    let placed_scene = options.demo_scene || options.demo_village || options.demo_groups;
+    // The far-offset demo also resolves its full composite extent (a single 4³
+    // box). `full_extent_blocks` returns the box's own size (4³) for a lone node,
+    // and `resolve_region` recentres it — so even at a 100_000-block offset the
+    // grid stays a tiny 4³ box at the origin (the recentre maps it home). See the
+    // S1 PROGRESS note: this is why far-offset jitter is hidden until S4.
+    let placed_scene = options.demo_scene
+        || options.demo_village
+        || options.demo_groups
+        || options.far_offset
+        || options.far_offset_near;
     let region = if placed_scene {
         scene.full_extent_blocks(options.geometry.voxels_per_block)
     } else {
@@ -840,7 +918,17 @@ async fn run_capture(options: ShotOptions) {
     // The voxel-space grid dimensions actually resolved (the composite region for
     // a placed scene), used for camera framing, the layer track and the uniforms.
     let grid_dimensions = grid.dimensions;
-    if options.demo_groups {
+    if options.far_offset || options.far_offset_near {
+        println!(
+            "resolved {} voxels for demo-far-offset ({}, offset {:?} blocks, region {:?} blocks) \
+             — NOTE: resolve_region recentres the composite, so the box renders at the origin \
+             regardless of offset (far-offset jitter is hidden until S4)",
+            grid.occupied_count(),
+            if options.far_offset { "far" } else { "near" },
+            if options.far_offset { FAR_OFFSET_BLOCKS } else { [0, 0, 0] },
+            region.size_blocks
+        );
+    } else if options.demo_groups {
         println!(
             "resolved {} voxels for demo-groups ({} top-level nodes, {} definition(s), region {:?} blocks)",
             grid.occupied_count(),

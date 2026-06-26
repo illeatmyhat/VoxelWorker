@@ -2214,4 +2214,130 @@ mod tests {
         let scene = shape_scene(ShapeKind::Torus, 8);
         assert_chunked_matches_monolithic(&scene, 8, "torus@8");
     }
+
+    // ---- S1: far-offset placement (ADR 0002 streaming, part of #18) -----------
+    //
+    // The durable artifact for streaming S1: a node placed at a LARGE block offset
+    // (matching `shot --demo-far-offset`'s 100_000 blocks) really lands far away in
+    // ABSOLUTE composite space, independent of the live render recentre. This is
+    // proved via the S0 absolute-coordinate chunk path (`resolve_chunk` /
+    // `resolve_region_via_chunks`), which — unlike `resolve_region` — does NOT
+    // recentre, so its voxel positions ARE the scene's true composite coordinates.
+    //
+    // `offset_blocks` is `[i32; 3]` today (S4 widens to i64); 100_000 blocks is
+    // comfortably in i32 range, and at density 16 lands the box ~1.6M voxels out.
+
+    /// A far-offset node resolves to absolute voxel/chunk coordinates around
+    /// 100_000 blocks: the box's voxels sit at absolute X ≈ 100_000 × density, the
+    /// owning chunks are around `100_000 × density / chunk_extent`, and the box is
+    /// genuinely placed far away (the absolute coords are NOT near the origin —
+    /// only the recentred render path maps it home). Independent of any render math.
+    #[test]
+    fn far_offset_node_resolves_to_absolute_coords_near_100k() {
+        let voxels_per_block = 16u32;
+        let offset_blocks = 100_000i32;
+        // A 4³ box — the same recognizable shape `shot --demo-far-offset` builds.
+        let shape = SdfShape {
+            kind: ShapeKind::Box,
+            size_blocks: [4, 4, 4],
+            voxels_per_block,
+            wall_blocks: 1,
+        };
+        let mut node = Node::new(
+            "Far box",
+            NodeContent::Tool { shape, material: MaterialChoice::Stone },
+        );
+        node.transform.offset_blocks = [offset_blocks, 0, 0];
+        let scene = Scene::single_node(node);
+
+        // The ABSOLUTE-coordinate chunk path (no recentre): these positions are the
+        // scene's TRUE composite coordinates, so they reveal the far placement that
+        // the render recentre hides.
+        let absolute = scene.resolve_region_via_chunks(voxels_per_block, 0);
+        assert!(
+            absolute.occupied_count() > 0,
+            "the far box must resolve to voxels"
+        );
+
+        // Every voxel's absolute X centre lands in the far block's voxel span. The
+        // 4-block box centred on block 100_000 spans blocks [99_998, 100_002), i.e.
+        // absolute voxels [99_998·d, 100_002·d). (Y/Z are centred on 0, unchanged.)
+        let density = voxels_per_block as f32;
+        let span_lo = (offset_blocks - 2) as f32 * density;
+        let span_hi = (offset_blocks + 2) as f32 * density;
+        let expected_centre_voxels = offset_blocks as f32 * density; // 1_600_000
+        for voxel in &absolute.occupied {
+            let x = voxel.world_position[0];
+            assert!(
+                x >= span_lo && x < span_hi,
+                "far-box voxel X={x} must lie in the absolute span [{span_lo}, {span_hi}) \
+                 around 100_000 blocks — NOT near the origin"
+            );
+        }
+        // The box is genuinely ~1.6M voxels out (sanity: not collapsed to origin).
+        assert!(
+            expected_centre_voxels > 1_000_000.0,
+            "at density {voxels_per_block}, 100_000 blocks is >1M voxels from the origin"
+        );
+
+        // Mean absolute X is within half a block of the far centre (the box is
+        // symmetric about block 100_000), confirming the placement, not the recentre.
+        let mean_x: f64 = absolute
+            .occupied
+            .iter()
+            .map(|v| v.world_position[0] as f64)
+            .sum::<f64>()
+            / absolute.occupied_count() as f64;
+        assert!(
+            (mean_x - expected_centre_voxels as f64).abs() <= (density / 2.0) as f64,
+            "the far box's mean absolute X ({mean_x}) must sit at ~{expected_centre_voxels} \
+             voxels (block 100_000 × density), proving far placement in absolute space"
+        );
+
+        // The owning chunk coordinates are around 100_000 × density / chunk_extent,
+        // i.e. far from chunk 0 — the chunk addressing places it far away too.
+        let chunk_extent_voxels =
+            (crate::renderer::CHUNK_BLOCKS * voxels_per_block) as i32;
+        let expected_chunk_x = (offset_blocks * voxels_per_block as i32) / chunk_extent_voxels;
+        let (min_chunk, max_chunk) = scene
+            .covering_chunk_range(voxels_per_block)
+            .expect("the far box has an intrinsic size → a covering chunk range");
+        assert!(
+            min_chunk[0] <= expected_chunk_x && expected_chunk_x <= max_chunk[0],
+            "the far box's owning chunk-X range [{}, {}] must bracket chunk {expected_chunk_x} \
+             (≈100_000 blocks out), not chunk 0",
+            min_chunk[0],
+            max_chunk[0]
+        );
+        assert!(
+            min_chunk[0] > 1000,
+            "the far box must be owned by a high chunk coordinate (>1000), proving it is \
+             far from the origin in chunk space (got {})",
+            min_chunk[0]
+        );
+
+        // Cross-check: the ABSOLUTE chunk path and the RECENTRED render path agree
+        // on the box's SHAPE — they differ ONLY by the recentre offset, which is
+        // exactly the far placement. This pins that the render recentre is what maps
+        // the far box home (and is the exact thing S4 will remove), while the
+        // absolute path keeps it far.
+        let recentre = scene.recentre_voxels(voxels_per_block);
+        assert_eq!(
+            recentre[0],
+            offset_blocks * voxels_per_block as i32,
+            "the recentre offset equals the full far placement — it is what hides the \
+             far offset from the live render today (S4 removes it)"
+        );
+        let monolithic = scene.resolve_region(
+            scene.full_extent_blocks(voxels_per_block),
+            voxels_per_block,
+            0,
+        );
+        assert_eq!(
+            occupied_multiset(&monolithic, recentre),
+            occupied_multiset(&absolute, [0, 0, 0]),
+            "the recentred render box and the absolute far box are the SAME shape, \
+             offset by exactly the recentre (the far placement)"
+        );
+    }
 }
