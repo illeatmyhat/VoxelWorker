@@ -72,13 +72,13 @@ pub enum ShapeKind {
 /// voxel's faces". The resolver ORs this bit into a voxel's `material_id` iff the
 /// producing node has `grids.voxel_grid_on_faces`; the GPU-upload path strips it
 /// again when the scene-wide `master_voxel_grid` is OFF (the master AND); and the
-/// three mesh shaders read `(material_id & GRID_OVERLAY_BIT) != 0` to gate the
+/// both mesh shaders read `(material_id & GRID_OVERLAY_BIT) != 0` to gate the
 /// on-face grid branch, masking the bit OFF (via [`material_id_color_index`])
 /// before any atlas / base-colour lookup so the flag never corrupts the colour.
 ///
-/// **This constant is mirrored verbatim in `shaders/voxel.wgsl`,
-/// `shaders/cuboid.wgsl` and `shaders/cuboid_loaded.wgsl`** (`const
-/// GRID_OVERLAY_BIT: u32 = 32768u;`) — keep all four in sync.
+/// **This constant is mirrored verbatim in `shaders/cuboid.wgsl` and
+/// `shaders/cuboid_loaded.wgsl`** (`const GRID_OVERLAY_BIT: u32 = 32768u;`) — keep
+/// all three in sync.
 pub const GRID_OVERLAY_BIT: u16 = 1 << 15;
 
 /// Strip the [`GRID_OVERLAY_BIT`] from a `material_id`, leaving only the real

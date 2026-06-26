@@ -32,9 +32,9 @@ use voxel_worker::{
     Node, NodeContent, NodePath, OnionFogParams, OnionFogRenderer, OrbitCamera, PanelState, Part,
     ProjectionMode, RegionBlocks, Scene, SdfShape, ShapeKind, TransformGizmoRenderer,
     ViewCubeElement, VoxExport,
-    ViewCubeRenderer, VoxelGrid, VoxelRenderer, COLOR_TARGET_FORMAT,
+    ViewCubeRenderer, VoxelGrid, COLOR_TARGET_FORMAT,
 };
-use voxel_worker::{CuboidMeshRenderer, MesherChoice};
+use voxel_worker::CuboidMeshRenderer;
 
 /// Build the onion-skin fog parameters (issue #12) from the camera, grid, and
 /// layer-range. World-Y of layer `j` spans `[j - grid_y/2, j+1 - grid_y/2]`; the
@@ -126,10 +126,6 @@ struct ShotOptions {
     /// its texture stem (e.g. `wood/treetrunk/oak`) even if it is outside the
     /// chiselable allow-list, to demonstrate per-face rendering on a known block.
     force_demo_stem: Option<String>,
-    /// Which render path draws the voxels (ADR 0002, part of #18): `Cuboid`
-    /// (default, the box-decomposition mesher) or `Instanced` (legacy one-cube-
-    /// per-voxel fallback, `--mesher instanced`).
-    mesher: MesherChoice,
     /// Layer-range scrubber lower bound (issue #12), a voxel Y-layer index. When
     /// `None`, defaults to the full range (0). Raw voxel index — no snapping.
     layer_lower: Option<u32>,
@@ -193,13 +189,6 @@ struct ShotOptions {
     /// now renders a loaded per-face D2Array (and that cuboid vs instanced match per
     /// face). Overrides --scan-vs/--apply-block material selection.
     synthetic_block: bool,
-    /// `--instanced-via-chunks` (issue #20 S6c-2b verification, instanced path
-    /// only): after building the `VoxelRenderer` from the whole grid via the
-    /// wrapper, REBUILD it from the resolve cache's PER-CHUNK accessor
-    /// (`resident_render_chunks` + `rebuild_all_from_chunks`) — exactly what
-    /// `main.rs::rebuild_geometry` does. Lets the headless A/B confirm the
-    /// accessor-driven main path is pixel-identical to the whole-grid wrapper path.
-    instanced_via_chunks: bool,
 }
 
 impl Default for ShotOptions {
@@ -217,7 +206,6 @@ impl Default for ShotOptions {
             show_block_lattice: false,
             show_floor_grid: false,
             debug_face_orientation: false,
-            mesher: MesherChoice::default(),
             export_vox_path: None,
             show_view_cube: true,
             snap_element: None,
@@ -245,7 +233,6 @@ impl Default for ShotOptions {
             far_offset: false,
             far_offset_near: false,
             synthetic_block: false,
-            instanced_via_chunks: false,
         }
     }
 }
@@ -320,15 +307,6 @@ fn parse_material(value: &str) -> MaterialChoice {
         "wood" => MaterialChoice::Wood,
         "plain" => MaterialChoice::Plain,
         other => panic!("--material must be stone|wood|plain, got '{other}'"),
-    }
-}
-
-/// Parse a `--mesher` value into a [`MesherChoice`] (ADR 0002 E3b-1, part of #18).
-fn parse_mesher(value: &str) -> MesherChoice {
-    match value.to_ascii_lowercase().as_str() {
-        "instanced" => MesherChoice::Instanced,
-        "cuboid" => MesherChoice::Cuboid,
-        other => panic!("--mesher must be instanced|cuboid, got '{other}'"),
     }
 }
 
@@ -419,9 +397,6 @@ fn parse_options() -> ShotOptions {
                 options.material =
                     parse_material(&args.next().expect("--material requires a value"));
             }
-            "--mesher" => {
-                options.mesher = parse_mesher(&args.next().expect("--mesher requires a value"));
-            }
             "--grid" => {
                 options.show_grid_overlay = true;
             }
@@ -473,9 +448,6 @@ fn parse_options() -> ShotOptions {
             }
             "--demo-groups" => {
                 options.demo_groups = true;
-            }
-            "--instanced-via-chunks" => {
-                options.instanced_via_chunks = true;
             }
             "--synthetic-block" => {
                 options.synthetic_block = true;
@@ -568,7 +540,6 @@ fn parse_options() -> ShotOptions {
                      \x20            [--density <u32>] [--wall <u32>]\n\
                      \x20            [--proj <perspective|ortho>]\n\
                      \x20            [--material <stone|wood|plain>] [--grid]\n\
-                     \x20            [--mesher <instanced|cuboid>]\n\
                      \x20            [--scan-vs] [--apply-first-block]\n\
                      \x20            [--apply-block <substring>] [--list-perface]\n\
                      \x20            [--synthetic-block]\n\
@@ -577,7 +548,6 @@ fn parse_options() -> ShotOptions {
                      \x20            [--debug-faces] [--debug-chunks]\n\
                      \x20            [--demo-scene] [--demo-village] [--demo-groups]\n\
                      \x20            [--demo-far-offset] [--demo-far-offset-near]\n\
-                     \x20            [--instanced-via-chunks]\n\
                      \x20            [--layer-lower <u32>] [--layer-upper <u32>] [--onion <u32>]\n\
                      \x20            [--fog <wholegrid|perchunk>]\n\
                      \x20            [--export-vox <path.vox>]\n\
@@ -586,7 +556,7 @@ fn parse_options() -> ShotOptions {
                      Defaults: --out shots/m1.png --width 1280 --height 800\n\
                      \x20         --shape cylinder --size-x 5 --size-y 1 --size-z 5\n\
                      \x20         --density 16 --wall 1 --proj perspective\n\
-                     \x20         --material stone (grid off) --mesher cuboid\n\
+                     \x20         --material stone (grid off)\n\
                      \x20         --theta 0.7 --phi 1.05 --dist <auto-framed>\n\
                      \n\
                      \x20  --demo-scene  build a hardcoded multi-node placed scene\n\
@@ -913,7 +883,6 @@ async fn run_capture(options: ShotOptions) {
         show_block_lattice: options.show_block_lattice,
         show_floor_grid: options.show_floor_grid,
         debug_face_orientation: options.debug_face_orientation,
-        mesher: options.mesher,
         layer_range,
         ..PanelState::default()
     };
@@ -1133,67 +1102,31 @@ async fn run_capture(options: ShotOptions) {
         return;
     }
 
-    let mut voxel_renderer = VoxelRenderer::new(
-        &gpu.device,
-        &gpu.queue,
-        COLOR_TARGET_FORMAT,
-        &grid,
-        options.geometry.voxels_per_block,
-    );
-    // Issue #20 S6c-2b verification: optionally REBUILD the instanced renderer from
-    // the per-chunk accessor (exactly as `main.rs::rebuild_geometry` does), so the
-    // headless A/B can confirm the accessor-driven MAIN path is pixel-identical to
-    // the whole-grid wrapper path the line above uses. Only meaningful for a
-    // chunkable scene; a Part-only scene has no covering chunks (the accessor
-    // returns an empty Vec → an empty renderer, which would be wrong, so we guard).
-    if options.instanced_via_chunks && scene.has_chunkable_extent(density) {
-        let mut chunk_resolve_cache = voxel_worker::chunk_cache::ChunkResolveCache::new();
-        let render_chunks = chunk_resolve_cache.resident_render_chunks(&scene, density, 0);
-        voxel_renderer.rebuild_all_from_chunks(&gpu.device, &gpu.queue, &render_chunks);
-        drop(render_chunks);
-        // Issue #20 S6c-2c verification: also drive the INCREMENTAL path with an empty
-        // edit (no evicted chunks → every covering chunk is a HIT, so nothing is
-        // rebuilt) on top of the full build above. The resulting GPU cache must be
-        // unchanged, so the headless A/B confirms the incremental dirty-chunk path is
-        // pixel-identical to both the full per-chunk rebuild and the whole-grid wrapper.
-        let render_chunks = chunk_resolve_cache.resident_render_chunks(&scene, density, 0);
-        voxel_renderer.incremental_rebuild_from_chunks(&gpu.device, &render_chunks, &[]);
-        drop(render_chunks);
-        eprintln!(
-            "instanced-via-chunks: incremental rebuild touched {} chunk(s) (expected 0 — all hits)",
-            voxel_renderer.last_rebuilt_chunk_count()
-        );
-    }
-    // ADR 0002 E3b-1 (part of #18): the cuboid mesh path (the DEFAULT mesher). Since
-    // issue #20 S6c-2d it meshes PER CHUNK with a 1-voxel neighbour apron: built from
-    // the resolve cache's per-chunk accessor (`resident_render_chunks`) so the goldens
+    // Part of #20: the cuboid mesh path is the sole voxel renderer. Since issue #20
+    // S6c-2d it meshes PER CHUNK with a 1-voxel neighbour apron: built from the
+    // resolve cache's per-chunk accessor (`resident_render_chunks`) so the goldens
     // exercise the per-chunk path, falling back to the whole-grid wrapper when the
     // scene has no chunkable extent (the wrapper buckets internally → identical mesh).
-    let mut cuboid_mesh_renderer = if options.mesher == MesherChoice::Cuboid {
-        if scene.has_chunkable_extent(density) {
-            let mut cuboid_resolve_cache =
-                voxel_worker::chunk_cache::ChunkResolveCache::new();
-            let render_chunks = cuboid_resolve_cache.resident_render_chunks(&scene, density, 0);
-            let renderer = CuboidMeshRenderer::new_from_chunks(
-                &gpu.device,
-                &gpu.queue,
-                COLOR_TARGET_FORMAT,
-                &render_chunks,
-                grid_dimensions,
-            );
-            drop(render_chunks);
-            Some(renderer)
-        } else {
-            Some(CuboidMeshRenderer::new(
-                &gpu.device,
-                &gpu.queue,
-                COLOR_TARGET_FORMAT,
-                &grid,
-                options.geometry.voxels_per_block,
-            ))
-        }
+    let mut cuboid_mesh_renderer = if scene.has_chunkable_extent(density) {
+        let mut cuboid_resolve_cache = voxel_worker::chunk_cache::ChunkResolveCache::new();
+        let render_chunks = cuboid_resolve_cache.resident_render_chunks(&scene, density, 0);
+        let renderer = CuboidMeshRenderer::new_from_chunks(
+            &gpu.device,
+            &gpu.queue,
+            COLOR_TARGET_FORMAT,
+            &render_chunks,
+            grid_dimensions,
+        );
+        drop(render_chunks);
+        renderer
     } else {
-        None
+        CuboidMeshRenderer::new(
+            &gpu.device,
+            &gpu.queue,
+            COLOR_TARGET_FORMAT,
+            &grid,
+            options.geometry.voxels_per_block,
+        )
     };
     // Transform gizmo (issue #29 S2): when `--gizmo` is passed, place it ON the
     // active/selected node — sized to the node's own extent, positioned at its
@@ -1388,8 +1321,8 @@ async fn run_capture(options: ShotOptions) {
             let material = LoadedMaterial::from_faces(
                 &gpu.device,
                 &gpu.queue,
-                voxel_renderer.material_bind_group_layout(),
-                voxel_renderer.material_sampler(),
+                cuboid_mesh_renderer.material_bind_group_layout(),
+                cuboid_mesh_renderer.material_sampler(),
                 &faces,
                 label.clone(),
             );
@@ -1439,8 +1372,8 @@ async fn run_capture(options: ShotOptions) {
         let material = LoadedMaterial::from_face_layers(
             &gpu.device,
             &gpu.queue,
-            voxel_renderer.material_bind_group_layout(),
-            voxel_renderer.material_sampler(),
+            cuboid_mesh_renderer.material_bind_group_layout(),
+            cuboid_mesh_renderer.material_sampler(),
             FACE_SIZE,
             FACE_SIZE,
             &layers,
@@ -1492,64 +1425,42 @@ async fn run_capture(options: ShotOptions) {
         );
     }
 
-    // Deferred voxel uniform upload: now that any VS block has been resolved, pick
-    // the bound material and upload — it drives per-voxel material modulation (ADR
-    // 0001 step 3) and must match the draw-time binding.
-    let uniform_material = match &loaded_material {
-        Some(loaded) => MaterialSource::Loaded(&loaded.bind_group),
-        None => MaterialSource::Procedural(options.material),
+    // Part of #20: upload the cuboid path's uniforms (camera + per-material base
+    // colours + band clip) and frustum-cull its mesh chunks. A loaded VS block
+    // textures the cuboid path per-face (its 6-layer D2Array is bound at draw time in
+    // `render_frame`, selecting the loaded pipeline); `bound = None` here just
+    // disables the procedural per-box modulation the loaded pipeline ignores.
+    let bound = match &loaded_material {
+        Some(_) => None,
+        None => Some(options.material),
     };
-    voxel_renderer.update_uniforms(
+    cuboid_mesh_renderer.update_uniforms(
+        &gpu.device,
         &gpu.queue,
         view_projection,
         grid_dimensions,
         options.geometry.voxels_per_block,
         options.show_grid_overlay,
-        options.debug_face_orientation,
+        bound,
         band,
-        uniform_material,
+        options.debug_face_orientation,
     );
-
-    // ADR 0002 E3b-1 (part of #18): upload the cuboid path's uniforms (camera +
-    // per-material base colours) and frustum-cull its mesh chunks. A loaded VS block
-    // now textures the cuboid path per-face (its 6-layer D2Array is bound at draw
-    // time in `render_frame`, selecting the loaded pipeline — part of #20); `bound =
-    // None` here just disables the procedural per-box modulation the loaded pipeline
-    // ignores.
-    if let Some(cuboid_mesh_renderer) = cuboid_mesh_renderer.as_mut() {
-        let bound = match &loaded_material {
-            Some(_) => None,
-            None => Some(options.material),
-        };
-        cuboid_mesh_renderer.update_uniforms(
-            &gpu.device,
-            &gpu.queue,
-            view_projection,
-            grid_dimensions,
-            options.geometry.voxels_per_block,
-            options.show_grid_overlay,
-            bound,
-            band,
-            options.debug_face_orientation,
-        );
-        println!(
-            "cuboid mesher: {} boxes → {} exposed faces ({} triangles), {} chunks (vs {} instanced voxels)",
-            cuboid_mesh_renderer.box_count(),
-            cuboid_mesh_renderer.face_count(),
-            cuboid_mesh_renderer.triangle_count(),
-            cuboid_mesh_renderer.chunk_count(),
-            voxel_renderer.instance_count(),
-        );
-    }
+    println!(
+        "cuboid mesher: {} boxes → {} exposed faces ({} triangles), {} chunks",
+        cuboid_mesh_renderer.box_count(),
+        cuboid_mesh_renderer.face_count(),
+        cuboid_mesh_renderer.triangle_count(),
+        cuboid_mesh_renderer.chunk_count(),
+    );
 
     // ADR 0002 E2 (#19): the frustum cull ran inside `update_uniforms`. Report the
     // drawn/total chunk counts so the chunking + culling are verifiable headlessly.
     if options.debug_chunks {
         println!(
-            "chunks: drew {} / {} ({} instances total)",
-            voxel_renderer.visible_chunk_count(),
-            voxel_renderer.chunk_count(),
-            voxel_renderer.instance_count(),
+            "chunks: drew {} / {} ({} boxes total)",
+            cuboid_mesh_renderer.visible_chunk_count(),
+            cuboid_mesh_renderer.chunk_count(),
+            cuboid_mesh_renderer.box_count(),
         );
     }
 
@@ -1570,13 +1481,12 @@ async fn run_capture(options: ShotOptions) {
             None
         },
         scene_grid: Some(&scene_grid_renderer),
-        debug_face_mode: options.debug_face_orientation,
         onion_fog: if onion_active {
             Some(&onion_fog_renderer)
         } else {
             None
         },
-        cuboid_mesh: cuboid_mesh_renderer.as_ref(),
+        cuboid_mesh: &cuboid_mesh_renderer,
         target_width: options.width,
         target_height: options.height,
     };
@@ -1589,7 +1499,6 @@ async fn run_capture(options: ShotOptions) {
         &capture_view,
         &msaa_color_view,
         &depth_view,
-        &voxel_renderer,
         material,
         &overlays,
         &prepared,

@@ -33,6 +33,52 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **Remove the legacy instanced mesher; cuboid is the sole render path — Part of #20.**
+  The cuboid box-decomposition mesher had reached full parity (shape, per-voxel +
+  loaded-block per-face textures, multi-material atlas, layer band, debug-faces,
+  per-object grids) and was already the default, so the legacy one-cube-per-voxel
+  instanced renderer is now DELETED outright rather than kept as a fallback.
+  - **Removed.** `renderer::VoxelRenderer` (struct + entire impl: the per-chunk
+    `InstancedChunkBuffers` cache, `bucket_instances_into_chunks`, `instances_for_chunk`,
+    `rebuild_chunk`/`evict_chunk`/`rebuild_all_from_chunks`/`incremental_rebuild_from_chunks`/
+    `rebuild_instances`, the frustum-cull/draw, `instance_count`/`visible_chunk_count`/
+    `last_rebuilt_chunk_count`), plus `VoxelInstance`, `Chunk`, `CubeVertex`,
+    `unit_cube_geometry`, the `VoxelUniforms` struct, and the now-dead `material_index` /
+    `neutral_material_base_colors` helpers. Deleted the instanced shader
+    `src/shaders/voxel.wgsl` (the cuboid shaders are self-contained — they carry their own
+    on-face-grid + `GRID_OVERLAY_BIT` copies; WGSL has no includes). Dropped the
+    `MesherChoice` enum, the `PanelState.mesher` field, the "Cuboid mesher (default; off =
+    legacy instanced)" panel checkbox, the `shot` `--mesher` + `--instanced-via-chunks`
+    flags (and `parse_mesher`), and the 6 instanced-only unit tests (chunk bucketing /
+    per-chunk-instances / AABB / `voxel_cube_is_ccw_outward`).
+  - **Kept (shared infrastructure).** The whole resolve / `ChunkResolveCache` / `Voxel` /
+    material system / `MaterialSource` / `MaterialSource::Loaded` / `texture_atlas` (the
+    cuboid atlas still calls `procedural_material_pixels`) / per-object grids /
+    `SceneGridRenderer` / transform gizmo / onion fog / disk store / chunk storage. The
+    pure `incremental_rebuild_plan` + `IncrementalRebuildPlan` stay as the resolve cache's
+    dirty-chunk planner (the chunk-cache tests drive them; they reference no instanced
+    type). The shared face-material layout + sampler moved onto `CuboidMeshRenderer`
+    (`material_bind_group_layout()` / `material_sampler()`), so `apply_block_variant` /
+    `shot` build `LoadedMaterial` against the cuboid renderer instead of the deleted one.
+  - **Wiring.** `render_frame` lost its `voxel_renderer` param and the branch; `cuboid_mesh`
+    is now a mandatory `&CuboidMeshRenderer`. `main.rs`/`shot.rs` always build the cuboid
+    renderer (from the resolve cache's per-chunk accessor; whole-grid wrapper at startup);
+    `main::rebuild_geometry` keeps the resolve cache's `invalidate_aabb`/`clear` side
+    effects but no longer needs the instanced dirty-set / full-rebuild flag.
+  - **Persistence.** `MesherChoice` was never an `AppConfig` field (session-only in
+    `PanelState`, reset to default on load), so old configs are unaffected; added a
+    round-trip test that an old config carrying a stray top-level `mesher` field still
+    loads (serde ignores unknown fields).
+  - **Result.** renderer.rs 4052 → 2901 lines; ~1.3k net lines removed plus the deleted
+    shader. `cargo build --bins`, `cargo clippy --all-targets` (no warnings), and
+    `cargo test --features gpu` all green: **194 lib tests** (was 199, −6 instanced +1
+    config test), the 6-case golden (byte-identical — cuboid 3D path unchanged), and the
+    palette-click test. Headless `--demo-scene` / `--demo-village` / textured cylinder /
+    `--synthetic-block` (loaded per-face D2Array) / `--demo-groups --lattice --floor` all
+    render correctly via the sole cuboid path; READ the demo-scene + synthetic-block +
+    grid PNGs to confirm. The old `--mesher` flag now no-ops with an "ignoring unknown
+    argument" warning.
+
 - **Grid rework: fix per-object floor grid + default masters ON — Part of #29.** Two
   smoke-test fixes from interactive feedback.
   - **Floor grid root cause + fix.** The per-object floor grid (S3) *was* rendering, but read as

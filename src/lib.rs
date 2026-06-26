@@ -45,14 +45,14 @@ pub use camera::{
 };
 pub use gpu::GpuContext;
 pub use panel::{
-    build_panel, GeometryParams, LayerRange, MaterialChoice, MesherChoice, PanelResponse,
+    build_panel, GeometryParams, LayerRange, MaterialChoice, PanelResponse,
     PanelState,
 };
 pub use assets::{CubeFaceSlot, FaceProvenance, FaceTextures};
 pub use renderer::{
     build_per_chunk_fog_occupancy, create_depth_view, create_msaa_color_view, ChunkFogVolume,
     FogMode, LayerBand, MaterialSource, OnionFogParams, SceneGridRenderer, TransformGizmoRenderer,
-    OnionFogRenderer, PerChunkFogOccupancy, ViewCubeRenderer, VoxelRenderer, DEPTH_FORMAT,
+    OnionFogRenderer, PerChunkFogOccupancy, ViewCubeRenderer, DEPTH_FORMAT,
     MSAA_SAMPLE_COUNT, VIEW_CUBE_VIEWPORT_PIXELS,
 };
 pub use renderer::procedural_material_average_color;
@@ -246,21 +246,15 @@ pub struct FrameOverlays<'a> {
     /// holds only the grid-enabled nodes' lines (master AND per-object), so the draw
     /// is self-gating; `None` skips it entirely.
     pub scene_grid: Option<&'a renderer::SceneGridRenderer>,
-    /// Face-orientation debug mode: the voxel cubes are drawn with the cull-off
-    /// debug pipeline (colour by outward normal + back-facing marker). Must match
-    /// the `debug_face_mode` flag passed to `VoxelRenderer::update_uniforms`.
-    pub debug_face_mode: bool,
     /// Onion-skin volumetric fog (issue #12): when `Some`, a fullscreen SDF
     /// raymarch composites a faint haze over the resolved scene for the layers
     /// around the displayed band. `None` when onion skin is off. Its uniforms must
     /// already be uploaded via `OnionFogRenderer::update`.
     pub onion_fog: Option<&'a renderer::OnionFogRenderer>,
-    /// ADR 0002 E3b-1 (part of #18): when `Some`, the experimental cuboid mesh
-    /// path draws the voxels INSTEAD of the instanced renderer (flag-gated, default
-    /// OFF). `None` (the default) leaves the instanced path byte-for-byte
-    /// unchanged. The caller sets this only when the cuboid mesher flag is on; its
+    /// The cuboid mesh renderer — the sole voxel render path (part of #20; the legacy
+    /// instanced mesher was removed). Draws the voxels as a box-decomposed mesh; its
     /// uniforms must already be uploaded via `CuboidMeshRenderer::update_uniforms`.
-    pub cuboid_mesh: Option<&'a cuboid_mesh::CuboidMeshRenderer>,
+    pub cuboid_mesh: &'a cuboid_mesh::CuboidMeshRenderer,
     /// Target dimensions (needed to place the view-cube corner viewport).
     pub target_width: u32,
     pub target_height: u32,
@@ -274,7 +268,6 @@ pub fn render_frame(
     target_view: &wgpu::TextureView,
     msaa_color_view: &wgpu::TextureView,
     depth_view: &wgpu::TextureView,
-    voxel_renderer: &renderer::VoxelRenderer,
     material: renderer::MaterialSource,
     overlays: &FrameOverlays,
     prepared: &PreparedEguiFrame,
@@ -339,22 +332,15 @@ pub fn render_frame(
         );
         voxel_pass.set_scissor_rect(viewport_x, viewport_y, viewport_width, viewport_height);
 
-        // ADR 0002 E3b-1 (part of #18): when the cuboid mesh path is selected, draw
-        // it INSTEAD of the instanced cubes. When `None` (the default), the
-        // instanced path runs exactly as before — its output is unchanged.
-        if let Some(cuboid_mesh) = overlays.cuboid_mesh {
-            // Part of #20: when a VS block is applied, hand the cuboid path the
-            // block's 6-layer D2Array bind group so it textures the model per-face
-            // (selecting the layer by the face normal), matching the instanced path.
-            // No applied block → `None` keeps the procedural-atlas path unchanged.
-            let loaded_material = match material {
-                renderer::MaterialSource::Loaded(bind_group) => Some(bind_group),
-                renderer::MaterialSource::Procedural(_) => None,
-            };
-            cuboid_mesh.draw(&mut voxel_pass, loaded_material);
-        } else {
-            voxel_renderer.draw(&mut voxel_pass, material, overlays.debug_face_mode);
-        }
+        // The cuboid mesh path is the sole voxel renderer (part of #20). When a VS
+        // block is applied, hand it the block's 6-layer D2Array bind group so it
+        // textures the model per-face (selecting the layer by the face normal); no
+        // applied block → `None` keeps the procedural-atlas path.
+        let loaded_material = match material {
+            renderer::MaterialSource::Loaded(bind_group) => Some(bind_group),
+            renderer::MaterialSource::Procedural(_) => None,
+        };
+        overlays.cuboid_mesh.draw(&mut voxel_pass, loaded_material);
 
         // Per-object block lattice + floor grid (issue #29 S3): same MSAA pass,
         // depth-tested so the solid model occludes them (a scaffold around/under it).

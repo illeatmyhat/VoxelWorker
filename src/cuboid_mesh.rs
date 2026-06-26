@@ -899,6 +899,15 @@ pub struct CuboidMeshRenderer {
     /// Total boxes across all chunks the last build produced (diagnostic).
     total_box_count: u32,
     current_band: LayerBand,
+    /// The loaded-VS-block material bind-group layout (a 6-layer D2Array + sampler,
+    /// from [`crate::renderer::build_face_material_layout`]). Retained so a
+    /// runtime-loaded block (M6/M7) can build a bind group of the SAME shape via
+    /// [`Self::material_bind_group_layout`] and be drawn by the loaded pipeline.
+    loaded_material_layout: wgpu::BindGroupLayout,
+    /// The shared material sampler (nearest, clamp-to-edge) reused by loaded
+    /// materials so they slice/filter exactly like the procedural atlas. Exposed via
+    /// [`Self::material_sampler`].
+    loaded_material_sampler: wgpu::Sampler,
 }
 
 impl CuboidMeshRenderer {
@@ -1119,6 +1128,19 @@ impl CuboidMeshRenderer {
         // block renders pixel-aligned with the procedural geometry — only the
         // texture source differs. The procedural atlas pipelines stay the default.
         let loaded_material_layout = crate::renderer::build_face_material_layout(device);
+        // The shared material sampler (nearest, clamp-to-edge) — reused by loaded VS
+        // blocks so they slice/filter exactly like the procedural atlas. Retained on
+        // the renderer and exposed so the app can build a `LoadedMaterial` against it.
+        let loaded_material_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("cuboid loaded material sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
+        });
         let loaded_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("cuboid loaded-block shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/cuboid_loaded.wgsl").into()),
@@ -1201,7 +1223,22 @@ impl CuboidMeshRenderer {
             source_grid_dimensions: grid_dimensions,
             total_box_count,
             current_band: LayerBand::FULL,
+            loaded_material_layout,
+            loaded_material_sampler,
         }
+    }
+
+    /// The loaded-VS-block material bind-group layout (6-layer D2Array texture +
+    /// sampler). Exposed so a runtime-loaded block (M6) can build a bind group of the
+    /// SAME shape (via `LoadedMaterial`) and be drawn by the loaded pipeline.
+    pub fn material_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
+        &self.loaded_material_layout
+    }
+
+    /// The shared material sampler (nearest, clamp-to-edge) — reused by loaded
+    /// materials so they slice/filter exactly like the procedural atlas.
+    pub fn material_sampler(&self) -> &wgpu::Sampler {
+        &self.loaded_material_sampler
     }
 
     /// Re-mesh the stored per-chunk grids CLIPPED to `band` (issue #12 parity) and

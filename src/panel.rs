@@ -89,20 +89,6 @@ impl MaterialChoice {
     }
 }
 
-/// Which render path draws the voxels (ADR 0002 E3, part of #18). `Cuboid` is now
-/// the DEFAULT (Vintage-Story-style box decomposition, ~37× fewer primitives, full
-/// feature + multi-material parity per ADR 0002 E3c); `Instanced` is the legacy
-/// one-cube-per-voxel path, kept fully working behind `--mesher instanced` / the
-/// panel toggle as a debug fallback.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
-pub enum MesherChoice {
-    /// The legacy instanced-cube renderer (one cube per voxel), kept as a fallback.
-    Instanced,
-    /// The cuboid mesh path — now the default (ADR 0002 E3c-2).
-    #[default]
-    Cuboid,
-}
-
 /// Layer-range scrubber state (issue #12).
 ///
 /// The layer-range scrubber subsumes the old 2D mid-Y slice map. Layers run along
@@ -221,11 +207,6 @@ pub struct PanelState {
     /// outward face normal + a back-facing marker, cull off). Display toggle, OFF
     /// by default; the standard way to verify face winding/culling.
     pub debug_face_orientation: bool,
-    /// Which render path draws the voxels (ADR 0002 E3, part of #18). Default
-    /// [`MesherChoice::Instanced`] (the unchanged instanced-cube renderer);
-    /// [`MesherChoice::Cuboid`] selects the experimental cuboid mesh path. Not
-    /// persisted yet (a session-only experimental toggle).
-    pub mesher: MesherChoice,
     /// When `Some`, the 3D rebuild was skipped because the grid exceeds the
     /// voxel cap; the panel shows a warning. Set by the caller after it decides
     /// whether to rebuild. Value is the would-be voxel count (in millions).
@@ -1056,20 +1037,6 @@ fn build_display_section(ui: &mut egui::Ui, state: &mut PanelState) {
     // Issue #29 S2: the transform gizmo is now selection-driven (drawn on the
     // active node), so it no longer has a Display toggle.
     ui.checkbox(&mut state.debug_face_orientation, "Debug: face orientation");
-    // ADR 0002 E3c-2 (part of #18): the cuboid mesh path is now the DEFAULT. The
-    // checkbox (checked ⇒ cuboid) is left enabled so the legacy instanced path can
-    // be selected as a fallback by unchecking it.
-    let mut use_cuboid = state.mesher == MesherChoice::Cuboid;
-    if ui
-        .checkbox(&mut use_cuboid, "Cuboid mesher (default; off = legacy instanced)")
-        .changed()
-    {
-        state.mesher = if use_cuboid {
-            MesherChoice::Cuboid
-        } else {
-            MesherChoice::Instanced
-        };
-    }
     ui.separator();
 }
 

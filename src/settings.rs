@@ -241,9 +241,6 @@ impl AppConfig {
             // Face-orientation debug is a transient verification mode; it is not
             // persisted, so it always starts off.
             debug_face_orientation: false,
-            // The mesher choice is a session-only toggle (ADR 0002, part of #18);
-            // not persisted, so it always starts at the default (now cuboid).
-            mesher: crate::panel::MesherChoice::default(),
             voxel_cap_warning_millions: None,
             // Re-applied lazily/best-effort: only the label is restored (for the
             // panel readout); the material itself reverts to procedural.
@@ -441,6 +438,32 @@ mod tests {
             }
             other => panic!("migration must build a one Tool node, got {other:?}"),
         }
+    }
+
+    /// Part of #20: the legacy instanced mesher was removed along with the
+    /// `MesherChoice` toggle. The choice was never a persisted `AppConfig` field
+    /// (it lived only in the session-only `PanelState`), but defend the migration
+    /// regardless: an OLD config JSON that carried a stray top-level `mesher` field
+    /// (e.g. hand-edited) must STILL load — serde ignores the now-unknown field —
+    /// and every real field round-trips.
+    #[test]
+    fn old_config_with_mesher_field_still_loads() {
+        let old_json = r#"{
+            "shape": "Cylinder",
+            "size_blocks": [5, 1, 5],
+            "voxels_per_block": 8,
+            "wall_blocks": 1,
+            "mesher": "Instanced",
+            "material": "Stone"
+        }"#;
+        let restored: AppConfig = serde_json::from_str(old_json)
+            .expect("old config (with mesher) must still parse");
+        assert_eq!(restored.shape, ShapeKind::Cylinder);
+        assert_eq!(restored.size_blocks, [5, 1, 5]);
+        assert_eq!(restored.material, MaterialChoice::Stone);
+        // It migrates cleanly to a one-Tool-node scene (the dropped field is ignored).
+        let panel = restored.to_panel_state();
+        assert_eq!(panel.scene.nodes.len(), 1);
     }
 
     /// step 8 round-trip: a NON-TRIVIAL scene (top-level Tool + Part nodes with

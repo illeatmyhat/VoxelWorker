@@ -22,10 +22,10 @@ use voxel_worker::{
     TransformGizmoRenderer,
     GpuContext, LayerBand, MaterialSource, OnionFogParams, SceneGridRenderer,
     OnionFogRenderer, OrbitCamera, PanelState, Scene, SdfShape, SnapTween, ViewCubeElement,
-    VoxExport, ViewCubeRenderer, VoxelGrid, VoxelRenderer, COLOR_TARGET_FORMAT,
+    VoxExport, ViewCubeRenderer, VoxelGrid, COLOR_TARGET_FORMAT,
     VIEW_CUBE_VIEWPORT_PIXELS,
 };
-use voxel_worker::{CuboidMeshRenderer, MesherChoice};
+use voxel_worker::CuboidMeshRenderer;
 
 /// Drag threshold (pixels) distinguishing a click (snap) from a drag (orbit) on
 /// the view cube, and the general orbit-start threshold.
@@ -47,11 +47,10 @@ struct WindowedState {
     egui_bridge: EguiPaintBridge,
     egui_winit_state: egui_winit::State,
     panel_state: PanelState,
-    voxel_renderer: VoxelRenderer,
-    /// ADR 0002 E3b-1 (part of #18): the experimental cuboid mesh renderer, built
-    /// lazily when the "Cuboid mesher" toggle is on and the grid changes. `None`
-    /// while the default instanced path is selected (the common case).
-    cuboid_mesh_renderer: Option<CuboidMeshRenderer>,
+    /// The cuboid mesh renderer — the sole voxel render path (part of #20; the legacy
+    /// instanced mesher was removed). Rebuilt from the resolve cache's per-chunk
+    /// accessor on every geometry change in `rebuild_geometry`.
+    cuboid_mesh_renderer: CuboidMeshRenderer,
     transform_gizmo_renderer: TransformGizmoRenderer,
     /// Per-object block lattice + floor grid (issue #29 S3). Its line batch is
     /// rebuilt each frame from the visible nodes' enabled grids.
@@ -333,7 +332,12 @@ impl WindowedState {
             shape.size_blocks,
             shape.voxels_per_block
         );
-        let voxel_renderer = VoxelRenderer::new(
+        // The cuboid mesh renderer is the sole voxel render path (part of #20). The
+        // whole-grid wrapper buckets `grid` into per-chunk sub-grids internally — the
+        // same result the resolve cache's per-chunk accessor produces — so a startup
+        // build from `grid` is byte-identical to the per-chunk rebuild path used on
+        // every later geometry change in `rebuild_geometry`.
+        let cuboid_mesh_renderer = CuboidMeshRenderer::new(
             &gpu.device,
             &gpu.queue,
             COLOR_TARGET_FORMAT,
@@ -394,10 +398,7 @@ impl WindowedState {
             egui_bridge,
             egui_winit_state,
             panel_state,
-            voxel_renderer,
-            // Default instanced path on startup; the cuboid renderer is built on
-            // demand when the experimental toggle flips on (ADR 0002 E3b-1).
-            cuboid_mesh_renderer: None,
+            cuboid_mesh_renderer,
             transform_gizmo_renderer,
             scene_grid_renderer,
             view_cube_renderer,
@@ -518,27 +519,25 @@ impl WindowedState {
             .panel_state
             .scene
             .recentre_voxels_for_resolve(density);
-        let recentre_changed = self.previous_recentre_voxels != Some(new_recentre);
-        let mut evicted_chunks: Vec<[i32; 3]> = Vec::new();
-        let mut full_rebuild = false;
+        let _recentre_changed = self.previous_recentre_voxels != Some(new_recentre);
+        // The cuboid renderer rebuilds every covering chunk wholesale below, so it
+        // needs no dirty set of its own — but the resolve cache's invalidation side
+        // effects ARE still required: `invalidate_aabb` evicts the edit's dirty chunks
+        // (so `resident_render_chunks` re-resolves them), and `clear()` handles the
+        // first build / density change / region-spanning edit where there is no
+        // localisable AABB. We keep the match for those side effects; its return
+        // values (the old instanced path's dirty set / full-rebuild flag) are unused.
         match self.previous_leaf_index.as_ref() {
             Some(previous) => match new_leaf_index.edit_aabb_since(previous) {
                 Some(edit_aabb) => {
-                    evicted_chunks = self.chunk_resolve_cache.invalidate_aabb(&edit_aabb, density);
-                    // A recentre shift invalidates every chunk's rebased contents, not
-                    // just the edit-AABB ones — fall back to a full GPU rebuild.
-                    if recentre_changed {
-                        full_rebuild = true;
-                    }
+                    self.chunk_resolve_cache.invalidate_aabb(&edit_aabb, density);
                 }
                 None => {
                     self.chunk_resolve_cache.clear();
-                    full_rebuild = true;
                 }
             },
             None => {
                 self.chunk_resolve_cache.clear();
-                full_rebuild = true;
             }
         }
         self.previous_recentre_voxels = Some(new_recentre);
@@ -552,39 +551,23 @@ impl WindowedState {
         // `placed_region_dimensions`); the renderer/mesher/fog below still consume
         // the assembled `grid` (that's S6c step 4).
         let region_dimensions = region_dimensions_for(&self.panel_state.scene, density, &grid);
-        // Issue #20 S6c-2c: drive the instanced render path from the resolve cache's
-        // PER-CHUNK accessor, maintaining one GPU instance buffer per resident chunk
-        // (instead of one monolithic buffer built from `grid`). The accessor returns
-        // a `Vec` holding an IMMUTABLE borrow of the cache, so it is consumed fully
-        // (every needed GPU buffer built) BEFORE any further `&mut` cache call.
-        //
-        // INCREMENTAL: for a localisable edit, rebuild ONLY the dirty chunks the
-        // resolve cache evicted (`evicted_chunks`) plus any brand-new covering chunk,
-        // and evict GPU buffers for coords the post-edit scene no longer covers — so
-        // a small recolour/move/add/remove re-uploads a handful of chunks, not all of
-        // them. The resulting GPU cache state is identical to a wholesale
-        // `rebuild_all_from_chunks` for the post-edit scene (untouched chunks are
-        // resolve-cache HITs → byte-identical grids → buffers already correct), so
-        // the rendered pixels are unchanged. The wholesale path is kept for the
-        // `full_rebuild` cases (first build / density change / region-spanning Part
-        // edit) where the resolve cache was cleared and there is no dirty set. The
-        // cuboid path still consumes the assembled `grid`.
+        // Part of #20: the cuboid mesh renderer is the sole voxel render path. Rebuild
+        // it from the resolve cache's PER-CHUNK accessor (`resident_render_chunks` —
+        // `(absolute_chunk_coord, &rebased_grid)` per covering chunk), so it meshes
+        // exactly the chunks the cache reports (1-voxel apron per chunk). The accessor
+        // returns a `Vec` holding an IMMUTABLE borrow of the cache, so it is consumed
+        // fully BEFORE any further `&mut` cache call. The cuboid path rebuilds every
+        // covering chunk wholesale (it has no per-chunk dirty cache of its own).
         let render_chunks = self
             .chunk_resolve_cache
             .resident_render_chunks(&self.panel_state.scene, density, 0);
-        if full_rebuild {
-            self.voxel_renderer.rebuild_all_from_chunks(
-                &self.gpu.device,
-                &self.gpu.queue,
-                &render_chunks,
-            );
-        } else {
-            self.voxel_renderer.incremental_rebuild_from_chunks(
-                &self.gpu.device,
-                &render_chunks,
-                &evicted_chunks,
-            );
-        }
+        self.cuboid_mesh_renderer = CuboidMeshRenderer::new_from_chunks(
+            &self.gpu.device,
+            &self.gpu.queue,
+            COLOR_TARGET_FORMAT,
+            &render_chunks,
+            grid.dimensions,
+        );
         drop(render_chunks);
         // Re-upload the fog's occupancy field for the new grid, using the active fog
         // mode (per-chunk by default since #28 S5b).
@@ -611,9 +594,6 @@ impl WindowedState {
             shape.voxels_per_block,
         );
         self.grid = grid;
-        // ADR 0002 E3b-1: invalidate the cuboid mesh so it re-decomposes from the
-        // new grid next frame (only rebuilt when the experimental toggle is on).
-        self.cuboid_mesh_renderer = None;
         self.measured_band = (u32::MAX, u32::MAX); // force a re-measure next frame.
 
         if auto_frame {
@@ -761,8 +741,8 @@ impl WindowedState {
         self.loaded_material = Some(LoadedMaterial::from_faces(
             &self.gpu.device,
             &self.gpu.queue,
-            self.voxel_renderer.material_bind_group_layout(),
-            self.voxel_renderer.material_sampler(),
+            self.cuboid_mesh_renderer.material_bind_group_layout(),
+            self.cuboid_mesh_renderer.material_sampler(),
             &faces,
             label.clone(),
         ));
@@ -1021,14 +1001,18 @@ impl WindowedState {
                 },
             }
         };
-        // The material that will be bound at draw time (ADR 0001 step 3): a loaded
-        // VS block overrides the procedural choice. It drives per-voxel material
-        // modulation in the uniforms, so it must match the draw-time selection.
-        let material = match &self.loaded_material {
-            Some(loaded) => MaterialSource::Loaded(&loaded.bind_group),
-            None => MaterialSource::Procedural(self.panel_state.material),
+        // Part of #20: the cuboid mesh path is the sole voxel renderer. Upload its
+        // per-frame uniforms (camera + per-material base colours + band clip). A
+        // loaded VS block textures it per-face (its 6-layer D2Array is bound at DRAW
+        // time in `render_frame`, selecting the loaded pipeline); `bound = None` then
+        // just disables the procedural per-box modulation/atlas, which the loaded
+        // pipeline ignores.
+        let bound = match &self.loaded_material {
+            Some(_) => None,
+            None => Some(self.panel_state.material),
         };
-        self.voxel_renderer.update_uniforms(
+        self.cuboid_mesh_renderer.update_uniforms(
+            &self.gpu.device,
             &self.gpu.queue,
             view_projection,
             grid_dimensions,
@@ -1037,52 +1021,10 @@ impl WindowedState {
             // `scene.master_voxel_grid`). The shader ANDs it with each voxel's
             // per-object flag bit packed into `material_id`.
             self.panel_state.scene.master_voxel_grid,
-            self.panel_state.debug_face_orientation,
+            bound,
             band,
-            material,
+            self.panel_state.debug_face_orientation,
         );
-
-        // ADR 0002 E3b-1 (part of #18): when the experimental "Cuboid mesher"
-        // toggle is on, ensure the cuboid renderer exists (build it from the
-        // current grid if it was invalidated by a rebuild or the toggle just
-        // flipped on) and upload its per-frame uniforms. When the toggle is off we
-        // drop it so the default instanced path runs unchanged.
-        let cuboid_active = self.panel_state.mesher == MesherChoice::Cuboid;
-        if cuboid_active {
-            if self.cuboid_mesh_renderer.is_none() {
-                self.cuboid_mesh_renderer = Some(CuboidMeshRenderer::new(
-                    &self.gpu.device,
-                    &self.gpu.queue,
-                    COLOR_TARGET_FORMAT,
-                    &self.grid,
-                    geometry.voxels_per_block,
-                ));
-            }
-            // A loaded VS block now textures the cuboid path per-face (its 6-layer
-            // D2Array is bound at DRAW time in `render_frame`, selecting the loaded
-            // pipeline — part of #20). `bound = None` here just disables the
-            // procedural per-box modulation/atlas, which the loaded pipeline ignores.
-            let bound = match &self.loaded_material {
-                Some(_) => None,
-                None => Some(self.panel_state.material),
-            };
-            if let Some(cuboid_mesh_renderer) = self.cuboid_mesh_renderer.as_mut() {
-                cuboid_mesh_renderer.update_uniforms(
-                    &self.gpu.device,
-                    &self.gpu.queue,
-                    view_projection,
-                    grid_dimensions,
-                    geometry.voxels_per_block,
-                    // Issue #29 S4: on-face-grid master (see the instanced call above).
-                    self.panel_state.scene.master_voxel_grid,
-                    bound,
-                    band,
-                    self.panel_state.debug_face_orientation,
-                );
-            }
-        } else {
-            self.cuboid_mesh_renderer = None;
-        }
         // Transform gizmo (issue #29 S2): it FOLLOWS the selected node. Size it to
         // the selected node's own extent and bake its recentred pivot into the
         // camera matrix. `None` (nothing selected, or selection has no extent) hides
@@ -1143,17 +1085,12 @@ impl WindowedState {
                 None
             },
             scene_grid: Some(&self.scene_grid_renderer),
-            debug_face_mode: self.panel_state.debug_face_orientation,
             onion_fog: if onion_active {
                 Some(&self.onion_fog_renderer)
             } else {
                 None
             },
-            cuboid_mesh: if cuboid_active {
-                self.cuboid_mesh_renderer.as_ref()
-            } else {
-                None
-            },
+            cuboid_mesh: &self.cuboid_mesh_renderer,
             target_width: self.surface_config.width,
             target_height: self.surface_config.height,
         };
@@ -1171,7 +1108,6 @@ impl WindowedState {
             &target_view,
             &self.msaa_color_view,
             &self.depth_view,
-            &self.voxel_renderer,
             material,
             &overlays,
             &prepared,
