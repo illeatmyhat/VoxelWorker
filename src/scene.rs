@@ -560,6 +560,112 @@ impl Scene {
         self.node_at_path_mut(&path)
     }
 
+    /// The transform gizmo's placement for the **active/selected** node, in the
+    /// SAME recentred render frame the resolved voxels live in (issue #29 S2).
+    /// `None` when nothing is selected (the gizmo is hidden) or the selection has
+    /// no intrinsic extent (e.g. a lone Part with no size).
+    ///
+    /// Returns `(pivot_voxels, extent_voxels)`:
+    /// * `pivot_voxels` — the **centre** of the node's block-aligned AABB in the
+    ///   recentred frame: `block_aabb_centre · density − recentre_voxels`. The
+    ///   gizmo is anchored here so it sits ON the object rather than at the
+    ///   composite origin. (We chose the AABB centre over the node's corner-origin
+    ///   so a single-axis-offset child still reads as "on the object".)
+    /// * `extent_voxels` — the node's own AABB size in voxels, so the gizmo is
+    ///   sized from the SELECTED node's extent (not the whole region).
+    ///
+    /// For a Group / Instance selection the AABB is the union of all leaves under
+    /// it (the same union [`placed_extent_blocks`] forms scene-wide, but rooted at
+    /// the selected node). Single-node scenes recentre that node onto the origin,
+    /// so its pivot is `[0, 0, 0]` — the gizmo only visibly *moves* with a
+    /// multi-node selection (which is the point of a per-selection manipulator).
+    pub fn active_gizmo_placement(
+        &self,
+        voxels_per_block: u32,
+    ) -> Option<([f32; 3], [f32; 3])> {
+        let path = self.active.as_ref()?;
+        let (min_corner, max_corner) = self.node_subtree_extent_blocks(path, voxels_per_block)?;
+        let recentre = self.recentre_voxels_for_resolve(voxels_per_block);
+        let density = voxels_per_block.max(1) as i64;
+        let mut pivot = [0.0f32; 3];
+        let mut extent = [0.0f32; 3];
+        for axis in 0..3 {
+            // Block-AABB centre (in voxels) minus the composite recentre — the same
+            // frame the resolved voxels sit in. The `* density` keeps it exact;
+            // dividing by 2 last avoids a half-voxel rounding bias.
+            let centre_voxels = (min_corner[axis] + max_corner[axis]) * density;
+            let pivot_voxels = centre_voxels - 2 * recentre[axis];
+            pivot[axis] = pivot_voxels as f32 / 2.0;
+            extent[axis] = ((max_corner[axis] - min_corner[axis]) * density) as f32;
+        }
+        Some((pivot, extent))
+    }
+
+    /// The block-aligned AABB (`min_corner, max_corner`, whole blocks) of the
+    /// subtree rooted at `path` — the union of every visible leaf under that node,
+    /// each leaf spanning `[off − floor(size/2), off − floor(size/2) + size)` (the
+    /// same split [`placed_extent_blocks`] uses scene-wide). The accumulated world
+    /// offset down to `path` seeds the walk so a Group/Instance child is measured at
+    /// its world location. `None` when the subtree has no intrinsic-size leaf.
+    fn node_subtree_extent_blocks(
+        &self,
+        path: &NodePath,
+        voxels_per_block: u32,
+    ) -> Option<([i64; 3], [i64; 3])> {
+        // Accumulate the world offset of every node ABOVE the target (the parent
+        // offset), and grab the target node itself. `walk_nodes` below re-adds the
+        // target's own offset, so we must stop accumulating at its parent.
+        let mut siblings: &[Node] = &self.nodes;
+        let mut parent_offset = [0i64; 3];
+        let mut target: Option<&Node> = None;
+        for (depth, &index) in path.indices.iter().enumerate() {
+            let node = siblings.get(index)?;
+            let is_last = depth + 1 == path.indices.len();
+            if is_last {
+                target = Some(node);
+            } else if let NodeContent::Group(children) = &node.content {
+                parent_offset = [
+                    parent_offset[0] + node.transform.offset_blocks[0],
+                    parent_offset[1] + node.transform.offset_blocks[1],
+                    parent_offset[2] + node.transform.offset_blocks[2],
+                ];
+                siblings = children;
+            } else {
+                return None;
+            }
+        }
+        let target = target?;
+        if !target.visible {
+            return None;
+        }
+
+        // Union the leaf boxes under the target. `walk_nodes` adds the target's own
+        // offset to `parent_offset`, giving the leaf its true world location.
+        let mut min_corner = [i64::MAX; 3];
+        let mut max_corner = [i64::MIN; 3];
+        let mut any = false;
+        let mut def_path: Vec<DefId> = Vec::new();
+        self.walk_nodes(
+            std::slice::from_ref(target),
+            parent_offset,
+            &mut def_path,
+            &mut |leaf_offset, content| {
+                let Some(size_blocks) = leaf_size_blocks(content, voxels_per_block) else {
+                    return;
+                };
+                any = true;
+                for axis in 0..3 {
+                    let half_low = (size_blocks[axis] / 2) as i64;
+                    let low = leaf_offset[axis] - half_low;
+                    let high = low + size_blocks[axis] as i64;
+                    min_corner[axis] = min_corner[axis].min(low);
+                    max_corner[axis] = max_corner[axis].max(high);
+                }
+            },
+        );
+        any.then_some((min_corner, max_corner))
+    }
+
     /// Append `node` to the TOP-LEVEL list and make it the active selection.
     /// Returns its top-level index.
     pub fn add_node(&mut self, node: Node) -> usize {
@@ -3825,5 +3931,138 @@ mod tests {
         assert!(!scene.master_voxel_grid && !scene.master_floor_grid);
         assert!(scene.points.is_empty(), "no points in the old document");
         assert_eq!(scene.active_point, None);
+    }
+
+    /// Issue #29 S2: the transform gizmo's pivot is the SELECTED node's block-AABB
+    /// centre in the recentred render frame — `block_aabb_centre·d − recentre` —
+    /// `None` when nothing is selected, across densities.
+    #[test]
+    fn active_gizmo_placement_follows_selected_node() {
+        let make_tool = |kind, size: [u32; 3], offset: [i64; 3]| {
+            let shape = SdfShape { kind, size_blocks: size, voxels_per_block: 16, wall_blocks: 1 };
+            let mut node = Node::new(
+                format!("{kind:?}"),
+                NodeContent::Tool { shape, material: MaterialChoice::Stone },
+            );
+            node.transform.offset_blocks = offset;
+            node
+        };
+
+        for vpb in [1u32, 15, 16] {
+            // Three even-sized boxes; box B sits +8X, box C sits +6Z. The block-AABB
+            // of a single 4-block box centred at `off` is `[off-2, off+2]`, centre `off`.
+            let mut scene = Scene {
+                nodes: vec![
+                    make_tool(ShapeKind::Box, [4, 4, 4], [0, 0, 0]),
+                    make_tool(ShapeKind::Box, [4, 4, 4], [8, 0, 0]),
+                    make_tool(ShapeKind::Box, [4, 4, 4], [0, 0, 6]),
+                ],
+                active: None,
+                ..Scene::default()
+            };
+
+            // Nothing selected → no gizmo.
+            assert_eq!(
+                scene.active_gizmo_placement(vpb),
+                None,
+                "no selection hides the gizmo (vpb={vpb})"
+            );
+
+            let recentre = scene.recentre_voxels_for_resolve(vpb);
+            let density = vpb as i64;
+
+            // Expected pivot for the node whose block-AABB centre is `centre_blocks`.
+            let expected_pivot = |centre_blocks: [i64; 3]| {
+                [
+                    (centre_blocks[0] * density - recentre[0]) as f32,
+                    (centre_blocks[1] * density - recentre[1]) as f32,
+                    (centre_blocks[2] * density - recentre[2]) as f32,
+                ]
+            };
+
+            // Select each node in turn; the gizmo pivot tracks it.
+            for (index, centre) in [([0, 0, 0]), ([8, 0, 0]), ([0, 0, 6])].into_iter().enumerate() {
+                scene.active = Some(NodePath::root_index(index));
+                let (pivot, extent) =
+                    scene.active_gizmo_placement(vpb).expect("selection shows the gizmo");
+                assert_eq!(
+                    pivot,
+                    expected_pivot(centre),
+                    "pivot == centre·d − recentre for node {index} (vpb={vpb})"
+                );
+                // Extent is the node's OWN 4-block AABB (not the whole region).
+                assert_eq!(
+                    extent,
+                    [(4 * density) as f32; 3],
+                    "gizmo sized from the node's own extent (vpb={vpb})"
+                );
+            }
+        }
+    }
+
+    /// Issue #29 S2: a SINGLE selected node recentres onto the origin, so its gizmo
+    /// pivot is exactly `[0, 0, 0]` (for an EVEN-sized node, whose block-AABB centre
+    /// lands on an integer voxel). The gizmo only visibly moves with a multi-node
+    /// selection. Guards against reading the pivot from absolute (un-recentred) space.
+    #[test]
+    fn single_even_selected_node_gizmo_sits_at_origin() {
+        let shape =
+            SdfShape { kind: ShapeKind::Box, size_blocks: [4, 2, 6], voxels_per_block: 16, wall_blocks: 1 };
+        let mut node =
+            Node::new("Box", NodeContent::Tool { shape, material: MaterialChoice::Stone });
+        node.transform.offset_blocks = [123, -45, 67];
+        let scene = Scene {
+            nodes: vec![node],
+            active: Some(NodePath::root_index(0)),
+            ..Scene::default()
+        };
+        for vpb in [1u32, 15, 16] {
+            let (pivot, _) = scene.active_gizmo_placement(vpb).expect("gizmo shown");
+            assert_eq!(
+                pivot,
+                [0.0, 0.0, 0.0],
+                "the lone even-sized selected node recentres onto the origin (vpb={vpb})"
+            );
+        }
+    }
+
+    /// Issue #29 S2: for an ODD-sized lone node the recentre truncates by half a
+    /// voxel (the producer's block-lattice shift), so the gizmo pivot sits at the
+    /// object's true geometric centre — half a voxel off the truncated origin — NOT
+    /// at exactly origin. Confirms the gizmo tracks the voxels' real centre.
+    #[test]
+    fn single_odd_selected_node_gizmo_is_half_voxel_off_origin() {
+        let shape =
+            SdfShape { kind: ShapeKind::Box, size_blocks: [3, 1, 5], voxels_per_block: 16, wall_blocks: 1 };
+        let mut node =
+            Node::new("Box", NodeContent::Tool { shape, material: MaterialChoice::Stone });
+        node.transform.offset_blocks = [123, -45, 67];
+        let scene = Scene {
+            nodes: vec![node],
+            active: Some(NodePath::root_index(0)),
+            ..Scene::default()
+        };
+        // Every axis size (3, 1, 5) is odd, so the recentre truncates by up to half a
+        // voxel. The lone node's pivot therefore stays WITHIN half a voxel of origin
+        // (it does not run off to the node's absolute offset of [123, -45, 67]·d) —
+        // exactly zero when the density is even (the product is even, recentre exact),
+        // and ±0.5 voxel when odd. The invariant: a lone selection sits ON the origin
+        // to sub-voxel precision, never at its un-recentred world position.
+        for vpb in [1u32, 15, 16] {
+            let (pivot, _) = scene.active_gizmo_placement(vpb).expect("gizmo shown");
+            for (axis, &component) in pivot.iter().enumerate() {
+                assert!(
+                    component.abs() <= 0.5,
+                    "lone odd-sized node pivot within half a voxel of origin \
+                     (axis {axis}, vpb={vpb}, got {component})"
+                );
+            }
+            if vpb % 2 == 0 {
+                assert_eq!(
+                    pivot, [0.0, 0.0, 0.0],
+                    "even density makes the lone-node recentre exact (vpb={vpb})"
+                );
+            }
+        }
     }
 }

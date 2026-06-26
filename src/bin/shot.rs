@@ -27,10 +27,11 @@ use voxel_worker::scan_worker::{run_auto_scan_blocking, FaceResolver};
 use voxel_worker::{
     create_depth_view, create_msaa_color_view, procedural_material_average_color, render_frame,
     run_egui_frame, AssemblyDef, CubeFace, DefId, EguiPaintBridge, FogMode, FrameOverlays,
-    GeometryParams, GizmoRenderer,
+    GeometryParams,
     GpuContext, GridLatticeRenderer, LayerBand, LayerRange, MaterialChoice, MaterialSource,
     Node, NodeContent, NodePath, OnionFogParams, OnionFogRenderer, OrbitCamera, PanelState, Part,
-    ProjectionMode, RegionBlocks, Scene, SdfShape, ShapeKind, ViewCubeElement, VoxExport,
+    ProjectionMode, RegionBlocks, Scene, SdfShape, ShapeKind, TransformGizmoRenderer,
+    ViewCubeElement, VoxExport,
     ViewCubeRenderer, VoxelGrid, VoxelRenderer, COLOR_TARGET_FORMAT,
 };
 use voxel_worker::{CuboidMeshRenderer, MesherChoice};
@@ -75,8 +76,15 @@ struct ShotOptions {
     material: MaterialChoice,
     /// Whether the voxel/block grid overlay is drawn.
     show_grid_overlay: bool,
-    /// Whether the origin gizmo is drawn (M5 `--gizmo`).
+    /// Whether `--gizmo` was passed: draw the transform gizmo ON the active/
+    /// selected node (issue #29 S2). No-op-safe when nothing is selected or the
+    /// selection has no extent. The field name is kept for minimal churn.
     show_origin_gizmo: bool,
+    /// `--select-node N` (issue #29 S2): override the scene's active selection to
+    /// the top-level node at index N, so a headless capture can prove the transform
+    /// gizmo FOLLOWS a chosen (non-origin) node. `None` keeps the scene's default
+    /// selection. Out-of-range clears the selection (gizmo hidden).
+    select_node: Option<usize>,
     /// Whether the block lattice is drawn (M8 `--lattice`).
     show_block_lattice: bool,
     /// Whether the fine floor grid is drawn (M8 `--floor`).
@@ -205,6 +213,7 @@ impl Default for ShotOptions {
             material: MaterialChoice::Stone,
             show_grid_overlay: false,
             show_origin_gizmo: false,
+            select_node: None,
             show_block_lattice: false,
             show_floor_grid: false,
             debug_face_orientation: false,
@@ -436,6 +445,14 @@ fn parse_options() -> ShotOptions {
             "--gizmo" => {
                 options.show_origin_gizmo = true;
             }
+            "--select-node" => {
+                options.select_node = Some(
+                    args.next()
+                        .expect("--select-node requires an index")
+                        .parse()
+                        .expect("--select-node index must be a non-negative integer"),
+                );
+            }
             "--lattice" => {
                 options.show_block_lattice = true;
             }
@@ -556,7 +573,7 @@ fn parse_options() -> ShotOptions {
                      \x20            [--apply-block <substring>] [--list-perface]\n\
                      \x20            [--synthetic-block]\n\
                      \x20            [--force-demo-stem <texture/stem>]\n\
-                     \x20            [--gizmo] [--lattice] [--floor] [--no-viewcube]\n\
+                     \x20            [--gizmo] [--select-node <usize>] [--lattice] [--floor] [--no-viewcube]\n\
                      \x20            [--debug-faces] [--debug-chunks]\n\
                      \x20            [--demo-scene] [--demo-village] [--demo-groups]\n\
                      \x20            [--demo-far-offset] [--demo-far-offset-near]\n\
@@ -893,7 +910,6 @@ async fn run_capture(options: ShotOptions) {
         material: options.material,
         show_grid_overlay: options.show_grid_overlay,
         show_view_cube: options.show_view_cube,
-        show_origin_gizmo: options.show_origin_gizmo,
         show_block_lattice: options.show_block_lattice,
         show_floor_grid: options.show_floor_grid,
         debug_face_orientation: options.debug_face_orientation,
@@ -924,6 +940,13 @@ async fn run_capture(options: ShotOptions) {
         Scene::from_geometry(options.geometry, options.material)
     };
     panel_state.scene = scene.clone();
+    // Issue #29 S2: `--select-node N` overrides the active selection so a headless
+    // capture can place the transform gizmo on a chosen (non-origin) node and prove
+    // it follows the selection. An out-of-range index clears the selection.
+    if let Some(index) = options.select_node {
+        panel_state.scene.active = (index < panel_state.scene.nodes.len())
+            .then(|| NodePath::root_index(index));
+    }
     // The resolve region: for a placed multi-node scene this is the whole
     // composite extent (per-axis box over all node offsets ± sizes); for a single
     // node it equals the node's own size (the step-2 region).
@@ -1139,7 +1162,28 @@ async fn run_capture(options: ShotOptions) {
     } else {
         None
     };
-    let gizmo_renderer = GizmoRenderer::new(&gpu.device, COLOR_TARGET_FORMAT, region_dimensions);
+    // Transform gizmo (issue #29 S2): when `--gizmo` is passed, place it ON the
+    // active/selected node — sized to the node's own extent, positioned at its
+    // recentred pivot. `None` (no selection / no extent) keeps `--gizmo` a no-op,
+    // and the goldens (which never pass `--gizmo`) are unaffected.
+    let gizmo_placement = if options.show_origin_gizmo {
+        panel_state
+            .scene
+            .active_gizmo_placement(options.geometry.voxels_per_block)
+    } else {
+        None
+    };
+    let gizmo_extent_dims = gizmo_placement
+        .map(|(_, extent)| {
+            [
+                extent[0].round().max(0.0) as u32,
+                extent[1].round().max(0.0) as u32,
+                extent[2].round().max(0.0) as u32,
+            ]
+        })
+        .unwrap_or(region_dimensions);
+    let transform_gizmo_renderer =
+        TransformGizmoRenderer::new(&gpu.device, COLOR_TARGET_FORMAT, gizmo_extent_dims);
     let grid_lattice_renderer = GridLatticeRenderer::new(
         &gpu.device,
         COLOR_TARGET_FORMAT,
@@ -1397,7 +1441,10 @@ async fn run_capture(options: ShotOptions) {
     let [_, _, viewport_width, viewport_height] = prepared.viewport_px;
     let aspect_ratio = viewport_width as f32 / viewport_height.max(1) as f32;
     let view_projection = camera.view_projection(aspect_ratio);
-    gizmo_renderer.update_uniforms(&gpu.queue, view_projection);
+    let gizmo_pivot = gizmo_placement
+        .map(|(pivot, _)| glam::Vec3::from_array(pivot))
+        .unwrap_or(glam::Vec3::ZERO);
+    transform_gizmo_renderer.update_uniforms(&gpu.queue, view_projection, gizmo_pivot);
     grid_lattice_renderer.update_uniforms(&gpu.queue, view_projection);
     view_cube_renderer.update_uniforms(&gpu.queue, camera.view_cube_view_projection());
     if onion_active {
@@ -1476,11 +1523,9 @@ async fn run_capture(options: ShotOptions) {
     };
 
     let overlays = FrameOverlays {
-        gizmo: if options.show_origin_gizmo {
-            Some(&gizmo_renderer)
-        } else {
-            None
-        },
+        gizmo: gizmo_placement
+            .is_some()
+            .then_some(&transform_gizmo_renderer),
         view_cube: if options.show_view_cube {
             Some(&view_cube_renderer)
         } else {

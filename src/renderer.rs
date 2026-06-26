@@ -1970,7 +1970,8 @@ pub fn create_msaa_color_view(
 }
 
 // ============================================================================
-// Origin gizmo (Milestone 5) — ARCHITECTURE.md §5.
+// Transform gizmo (Milestone 5 origin gizmo, repurposed in issue #29 S2) —
+// ARCHITECTURE.md §5.
 // ============================================================================
 
 /// X axis colour `#d9603f` (sRGB hex → linear).
@@ -2000,10 +2001,15 @@ struct LineUniforms {
     view_projection: [[f32; 4]; 4],
 }
 
-/// The origin gizmo: three coloured axis lines and three perpendicular square
-/// line-loops, drawn with **depth-test disabled** so it shows through a solid
-/// model (ARCHITECTURE.md §5). Drawn in the MSAA pass, after the voxels.
-pub struct GizmoRenderer {
+/// The transform gizmo (issue #29 S2): three coloured axis lines and three
+/// perpendicular square line-loops, drawn with **depth-test disabled** so it
+/// shows through a solid model (correct manipulator behavior — ARCHITECTURE.md
+/// §5). Drawn in the MSAA pass, after the voxels. Unlike the old origin gizmo it
+/// FOLLOWS the selected node: its pivot translation is baked into the uploaded
+/// view-projection (`view_projection · translate(pivot)`) so it sits ON the
+/// object, and it is sized from the selected node's own extent. The axis-triad
+/// geometry is kept for now; full TRS handles are future work.
+pub struct TransformGizmoRenderer {
     pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
     vertex_count: u32,
@@ -2012,9 +2018,10 @@ pub struct GizmoRenderer {
     uniform_bind_group: wgpu::BindGroup,
 }
 
-impl GizmoRenderer {
-    /// Create the gizmo renderer for a colour target format. `grid_dimensions`
-    /// sizes the gizmo (`L = max(dims) * 0.62`).
+impl TransformGizmoRenderer {
+    /// Create the transform gizmo renderer for a colour target format.
+    /// `grid_dimensions` sizes the gizmo (`L = max(dims) * 0.62`); the caller
+    /// rebuilds it to the SELECTED node's extent each frame.
     pub fn new(
         device: &wgpu::Device,
         color_format: wgpu::TextureFormat,
@@ -2077,10 +2084,20 @@ impl GizmoRenderer {
         self.vertex_count = vertex_count;
     }
 
-    /// Upload the camera matrix (same `view_projection` as the voxel pass).
-    pub fn update_uniforms(&self, queue: &wgpu::Queue, view_projection: glam::Mat4) {
+    /// Upload the camera matrix with the selected node's `pivot` translation baked
+    /// in (issue #29 S2): the shader does `view_projection · position`, so feeding
+    /// `view_projection · translate(pivot)` here moves the whole gizmo onto the
+    /// selected node WITHOUT touching the shared `LineUniforms` layout. `pivot` is
+    /// in the SAME recentred frame as the voxels, so the gizmo sits on the object.
+    pub fn update_uniforms(
+        &self,
+        queue: &wgpu::Queue,
+        view_projection: glam::Mat4,
+        pivot: glam::Vec3,
+    ) {
+        let model = glam::Mat4::from_translation(pivot);
         let uniforms = LineUniforms {
-            view_projection: view_projection.to_cols_array_2d(),
+            view_projection: (view_projection * model).to_cols_array_2d(),
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
     }

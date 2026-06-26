@@ -211,8 +211,6 @@ pub struct PanelState {
     pub show_grid_overlay: bool,
     /// Whether the corner view cube is drawn (M5 Display toggle, ON by default).
     pub show_view_cube: bool,
-    /// Whether the origin gizmo is drawn (M5 Display toggle, OFF by default).
-    pub show_origin_gizmo: bool,
     /// Whether the block lattice (box lattice at block boundaries) is drawn (M8
     /// Display toggle, ON by default — matches the prototype `showLattice`).
     pub show_block_lattice: bool,
@@ -1009,7 +1007,8 @@ fn build_display_section(ui: &mut egui::Ui, state: &mut PanelState) {
     ui.checkbox(&mut state.show_block_lattice, "Block lattice");
     ui.checkbox(&mut state.show_floor_grid, "Fine floor grid");
     ui.checkbox(&mut state.show_view_cube, "View cube");
-    ui.checkbox(&mut state.show_origin_gizmo, "Origin gizmo");
+    // Issue #29 S2: the transform gizmo is now selection-driven (drawn on the
+    // active node), so it no longer has a Display toggle.
     ui.checkbox(&mut state.debug_face_orientation, "Debug: face orientation");
     // ADR 0002 E3c-2 (part of #18): the cuboid mesh path is now the DEFAULT. The
     // checkbox (checked ⇒ cuboid) is left enabled so the legacy instanced path can

@@ -76,6 +76,10 @@ pub struct AppConfig {
     pub show_floor_grid: bool,
     #[serde(default = "default_true")]
     pub show_view_cube: bool,
+    /// Retained for config back-compat only (issue #29 S2). The old origin gizmo
+    /// was a Display toggle; the transform gizmo that replaced it is selection-
+    /// driven (shown on the active node), so this no longer drives any UI. Kept so
+    /// older saved configs still deserialize and the field round-trips.
     #[serde(default)]
     pub show_origin_gizmo: bool,
     /// Best-effort applied-block label (re-applied lazily; see module docs).
@@ -183,7 +187,10 @@ impl AppConfig {
             show_block_lattice: panel.show_block_lattice,
             show_floor_grid: panel.show_floor_grid,
             show_view_cube: panel.show_view_cube,
-            show_origin_gizmo: panel.show_origin_gizmo,
+            // Retained for config back-compat only (issue #29 S2): the transform
+            // gizmo is now selection-driven, not a Display toggle, so it no longer
+            // mirrors any PanelState field.
+            show_origin_gizmo: false,
             applied_block_label: panel.applied_block_label.clone(),
             snap_to_blocks: panel.layer_range.snap_to_blocks,
             onion_skin: panel.layer_range.onion_skin,
@@ -218,7 +225,6 @@ impl AppConfig {
             show_block_lattice: self.show_block_lattice,
             show_floor_grid: self.show_floor_grid,
             show_view_cube: self.show_view_cube,
-            show_origin_gizmo: self.show_origin_gizmo,
             // Face-orientation debug is a transient verification mode; it is not
             // persisted, so it always starts off.
             debug_face_orientation: false,

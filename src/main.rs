@@ -19,7 +19,7 @@ use voxel_worker::scan_worker::{
 use voxel_worker::{
     create_depth_view, create_msaa_color_view, procedural_material_average_color, render_frame,
     run_egui_frame, AppConfig, CubeFace, EguiPaintBridge, FogMode, FrameOverlays,
-    GizmoRenderer,
+    TransformGizmoRenderer,
     GpuContext, GridLatticeRenderer, LayerBand, MaterialSource, OnionFogParams,
     OnionFogRenderer, OrbitCamera, PanelState, Scene, SdfShape, SnapTween, ViewCubeElement,
     VoxExport, ViewCubeRenderer, VoxelGrid, VoxelRenderer, COLOR_TARGET_FORMAT,
@@ -52,7 +52,7 @@ struct WindowedState {
     /// lazily when the "Cuboid mesher" toggle is on and the grid changes. `None`
     /// while the default instanced path is selected (the common case).
     cuboid_mesh_renderer: Option<CuboidMeshRenderer>,
-    gizmo_renderer: GizmoRenderer,
+    transform_gizmo_renderer: TransformGizmoRenderer,
     /// Block lattice + fine floor grid (M8).
     grid_lattice_renderer: GridLatticeRenderer,
     view_cube_renderer: ViewCubeRenderer,
@@ -339,8 +339,10 @@ impl WindowedState {
             &grid,
             panel_state.geometry.voxels_per_block,
         );
-        let gizmo_renderer =
-            GizmoRenderer::new(&gpu.device, COLOR_TARGET_FORMAT, region_dimensions);
+        // The transform gizmo (issue #29 S2) is rebuilt/positioned to the SELECTED
+        // node each frame; seed it at the region size (overwritten on first frame).
+        let transform_gizmo_renderer =
+            TransformGizmoRenderer::new(&gpu.device, COLOR_TARGET_FORMAT, region_dimensions);
         let grid_lattice_renderer = GridLatticeRenderer::new(
             &gpu.device,
             COLOR_TARGET_FORMAT,
@@ -398,7 +400,7 @@ impl WindowedState {
             // Default instanced path on startup; the cuboid renderer is built on
             // demand when the experimental toggle flips on (ADR 0002 E3b-1).
             cuboid_mesh_renderer: None,
-            gizmo_renderer,
+            transform_gizmo_renderer,
             grid_lattice_renderer,
             view_cube_renderer,
             onion_fog_renderer,
@@ -596,9 +598,9 @@ impl WindowedState {
             &grid,
             density,
         );
-        // Keep the gizmo sized to the scene's region dimensions.
-        self.gizmo_renderer
-            .rebuild(&self.gpu.device, &self.gpu.queue, region_dimensions);
+        // The transform gizmo (issue #29 S2) is sized + positioned from the SELECTED
+        // node in the per-frame render path (it must track selection changes, which
+        // don't trigger a geometry rebuild), not here.
         // Keep the block lattice + floor grid sized to the region/density.
         self.grid_lattice_renderer.rebuild(
             &self.gpu.device,
@@ -1084,10 +1086,28 @@ impl WindowedState {
         } else {
             self.cuboid_mesh_renderer = None;
         }
-        // M5 overlay uniforms: gizmo shares the main camera matrix; the view cube
-        // uses its own orientation-mirroring matrix.
-        self.gizmo_renderer
-            .update_uniforms(&self.gpu.queue, view_projection);
+        // Transform gizmo (issue #29 S2): it FOLLOWS the selected node. Size it to
+        // the selected node's own extent and bake its recentred pivot into the
+        // camera matrix. `None` (nothing selected, or selection has no extent) hides
+        // it — visibility is selection-driven, no longer a Display toggle.
+        let gizmo_placement = self
+            .panel_state
+            .scene
+            .active_gizmo_placement(self.panel_state.geometry.voxels_per_block);
+        if let Some((pivot, extent)) = gizmo_placement {
+            let extent_dims = [
+                extent[0].round().max(0.0) as u32,
+                extent[1].round().max(0.0) as u32,
+                extent[2].round().max(0.0) as u32,
+            ];
+            self.transform_gizmo_renderer
+                .rebuild(&self.gpu.device, &self.gpu.queue, extent_dims);
+            self.transform_gizmo_renderer.update_uniforms(
+                &self.gpu.queue,
+                view_projection,
+                glam::Vec3::from_array(pivot),
+            );
+        }
         self.grid_lattice_renderer
             .update_uniforms(&self.gpu.queue, view_projection);
         self.view_cube_renderer
@@ -1106,11 +1126,9 @@ impl WindowedState {
         }
 
         let overlays = FrameOverlays {
-            gizmo: if self.panel_state.show_origin_gizmo {
-                Some(&self.gizmo_renderer)
-            } else {
-                None
-            },
+            gizmo: gizmo_placement
+                .is_some()
+                .then_some(&self.transform_gizmo_renderer),
             view_cube: if self.panel_state.show_view_cube {
                 Some(&self.view_cube_renderer)
             } else {

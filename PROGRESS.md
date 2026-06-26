@@ -33,6 +33,36 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **Grid rework S2: transform gizmo follows the selected node — Part of #29.**
+  Repurposed the origin gizmo into a per-selection manipulator (basis for future TRS handles):
+  - **Rename** `GizmoRenderer` → `TransformGizmoRenderer` (`gizmo_renderer` → `transform_gizmo_renderer`
+    in `main.rs`; same axis-triad geometry, **depth-test still OFF** so it shows through solids).
+  - **Follows the selection.** New `Scene::active_gizmo_placement(density) -> Option<([f32;3] pivot,
+    [f32;3] extent)>`: the gizmo is anchored at the active node's **block-AABB centre in the recentred
+    render frame** — `block_aabb_centre·d − recentre_voxels` — and **sized from that node's OWN extent**
+    (not the whole region). For a Group/Instance selection the AABB is the union of all leaves under it.
+    The pivot is baked into the uploaded matrix as `view_projection · translate(pivot)` (no shader/
+    `LineUniforms` change). Both the renderer's `update_uniforms` and the per-frame `rebuild` (extent)
+    run in the render path so a **selection change** (which does not trigger a geometry rebuild) moves
+    and resizes the gizmo. **Chose the AABB centre over the corner-origin** so the gizmo sits ON the
+    object even for a single-axis-offset child.
+  - **Visibility is selection-driven.** `scene.active == Some` → draw at that node; `None` (or a
+    selection with no extent) → not drawn. **Removed the "Origin gizmo" Display checkbox** (`panel.rs`)
+    and the `PanelState.show_origin_gizmo` field; `AppConfig.show_origin_gizmo` is kept serde-only for
+    config back-compat (round-trips, drives nothing).
+  - **`shot --gizmo`** now means "show the transform gizmo on the active/selected node" (no-op-safe
+    with no selection / no extent). New **`--select-node N`** picks the active top-level node for
+    headless captures (out-of-range clears the selection). Goldens never pass `--gizmo`, so they are
+    unaffected.
+  - **Single-node recentre invariance (expected):** a lone selected node recentres onto the origin,
+    so its gizmo pivot is `[0,0,0]` (even sizes) or within half a voxel (odd sizes, recentre truncation)
+    — the gizmo only visibly *moves* with a multi-node selection. Headless PNGs confirm: select node 0
+    (sphere) → gizmo on the centre sphere; select node 1 (box) → gizmo jumps onto the box; no selection
+    → no gizmo.
+  - Tests (+3 lib): pivot == `centre·d − recentre` tracking each selected node + node-own extent across
+    densities {1,15,16}; `None` when nothing selected; lone even-node pivot exactly origin; lone odd-node
+    pivot within half a voxel. **189 lib tests pass; 6 goldens green; clippy clean.**
+
 - **Grid rework S1: per-node grid settings + Point elements + persistence — Part of #29.**
   DATA MODEL + PERSISTENCE only (no render change → goldens stay green). Added, all serde
   back-compatible (old scenes/configs load unchanged):
