@@ -35,6 +35,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::debug_clouds::DebugCloudField;
 use crate::panel::{GeometryParams, MaterialChoice};
+use crate::spatial_index::{LeafEntry, LeafFingerprint, LeafSpatialIndex, VoxelAabb};
 use crate::voxel::{SdfShape, VoxelGrid, VoxelProducer};
 
 /// Default +X spacing (in blocks) between successive instances of the same
@@ -858,7 +859,31 @@ impl Scene {
         // WITHOUT the composite recentre, so positions are absolute. We then keep
         // only the voxels whose absolute centre falls in this chunk's box.
         let region_dimensions = self.placed_region_dimensions(voxels_per_block);
+        let density = voxels_per_block.max(1) as i32;
+        let chunk_box = VoxelAabb::new(chunk_min_voxels, chunk_max_voxels);
         self.for_each_leaf(&mut |world_offset, content| {
+            // Issue #27 S3 optimisation: skip a leaf whose world-AABB doesn't touch
+            // this chunk, so resolving one chunk costs ~the leaves that overlap it
+            // (not the whole tree). This is BIT-IDENTICAL to stamping-then-clipping:
+            // the leaf's AABB `[off·d − grid/2, off·d + grid/2)` is the exact span of
+            // its voxel centres, and `stamp_producer_into_chunk` keeps only centres
+            // inside `[chunk_min, chunk_max)`; if those two half-open boxes don't
+            // intersect, the stamp would have clipped EVERY voxel anyway. A
+            // region-spanning leaf (a Part, `leaf_size_blocks` → `None`) has no
+            // localisable AABB, so it is never skipped (it may emit anywhere).
+            if let Some(size_blocks) = leaf_size_blocks(content, voxels_per_block) {
+                let mut leaf_min = [0i32; 3];
+                let mut leaf_max = [0i32; 3];
+                for axis in 0..3 {
+                    let grid = size_blocks[axis] as i32 * density;
+                    let centre = world_offset[axis] * density;
+                    leaf_min[axis] = centre - grid / 2;
+                    leaf_max[axis] = leaf_min[axis] + grid;
+                }
+                if !VoxelAabb::new(leaf_min, leaf_max).intersects(&chunk_box) {
+                    return;
+                }
+            }
             let translation_voxels = [
                 world_offset[0] * voxels_per_block as i32,
                 world_offset[1] * voxels_per_block as i32,
@@ -1048,6 +1073,92 @@ impl Scene {
             max_chunk[axis] = (max_voxel - 1).div_euclid(chunk_extent_voxels);
         }
         Some((min_chunk, max_chunk))
+    }
+
+    /// Build a [`LeafSpatialIndex`](crate::spatial_index::LeafSpatialIndex) over the
+    /// scene's leaves at `voxels_per_block` (issue #27 S3).
+    ///
+    /// One `for_each_leaf` walk records, per visible leaf, its world-AABB in the
+    /// **absolute-voxel producer-true frame** — the SAME frame
+    /// [`resolve_chunk`](Self::resolve_chunk) and [`placed_extent_voxels`] use, so a
+    /// chunk derived from a leaf's index AABB is exactly a chunk that leaf's voxels
+    /// can land in. A leaf with an intrinsic size (a Tool) gets a concrete box
+    /// `[off·d − grid/2, off·d + grid/2)`; a region-spanning leaf (a Part, no
+    /// intrinsic size) gets an empty box and a
+    /// [`RegionSpanning`](crate::spatial_index::LeafFingerprint::RegionSpanning)
+    /// fingerprint (it cannot be chunk-localised; an edit touching it forces a
+    /// wholesale clear).
+    ///
+    /// By construction the index's entries ARE the leaves `for_each_leaf` yields, so
+    /// a query against the index returns the same leaf set as the full walk filtered
+    /// by AABB (proven in the spatial-index tests).
+    pub fn build_leaf_spatial_index(&self, voxels_per_block: u32) -> LeafSpatialIndex {
+        let density = voxels_per_block.max(1) as i32;
+        let mut entries: Vec<LeafEntry> = Vec::new();
+        let mut has_region_spanning_leaf = false;
+        self.for_each_leaf(&mut |world_offset, content| {
+            match leaf_size_blocks(content, voxels_per_block) {
+                Some(size_blocks) => {
+                    // The producer centres its `size·d` grid on the origin, then it
+                    // is placed at `world_offset·d`; its occupied voxel span per axis
+                    // is `[off·d − grid/2, off·d + grid/2)` — the producer-true
+                    // half-extent (`grid/2 = size·d/2`), identical to
+                    // `placed_extent_voxels`.
+                    let mut min = [0i32; 3];
+                    let mut max = [0i32; 3];
+                    for axis in 0..3 {
+                        let grid = size_blocks[axis] as i32 * density;
+                        let centre = world_offset[axis] * density;
+                        min[axis] = centre - grid / 2;
+                        max[axis] = min[axis] + grid;
+                    }
+                    entries.push(LeafEntry {
+                        world_aabb: VoxelAabb::new(min, max),
+                        fingerprint: LeafFingerprint::Bounded(leaf_content_fingerprint(
+                            world_offset,
+                            content,
+                        )),
+                    });
+                }
+                None => {
+                    // A region-spanning leaf (a Part): no intrinsic box. Record it
+                    // with an empty AABB + a region-spanning fingerprint so an edit
+                    // touching it forces a wholesale clear (it can't be localised).
+                    has_region_spanning_leaf = true;
+                    entries.push(LeafEntry {
+                        world_aabb: VoxelAabb::new([0; 3], [0; 3]),
+                        fingerprint: LeafFingerprint::RegionSpanning(leaf_content_fingerprint(
+                            world_offset,
+                            content,
+                        )),
+                    });
+                }
+            }
+        });
+        LeafSpatialIndex {
+            entries,
+            voxels_per_block,
+            has_region_spanning_leaf,
+        }
+    }
+}
+
+/// A content fingerprint for a leaf: the bytes (placement + content) that affect the
+/// voxels it resolves to. Two leaves with the same fingerprint at the same world
+/// position resolve to the same voxels, so the edit diff
+/// ([`LeafSpatialIndex::edit_aabb_since`](crate::spatial_index::LeafSpatialIndex::edit_aabb_since))
+/// treats them as unchanged. `world_offset` is included so a moved Tool whose box
+/// happens to coincide with another's still reads as distinct.
+fn leaf_content_fingerprint(world_offset: [i32; 3], content: &NodeContent) -> String {
+    match content {
+        NodeContent::Tool { shape, material } => {
+            format!("Tool@{world_offset:?}:{shape:?}:{material:?}")
+        }
+        NodeContent::Part(part) => format!("Part@{world_offset:?}:{part:?}"),
+        // for_each_leaf only ever yields leaf content (Tool / Part); Group / Instance
+        // are interior and never reach a visitor. Fingerprint defensively anyway.
+        NodeContent::Group(_) => format!("Group@{world_offset:?}"),
+        NodeContent::Instance(def_id) => format!("Instance@{world_offset:?}:{def_id:?}"),
     }
 }
 
@@ -2408,6 +2519,229 @@ mod tests {
             occupied_multiset(&absolute, [0, 0, 0]),
             "the recentred render box and the absolute far box are the SAME shape, \
              offset by exactly the recentre (the far placement)"
+        );
+    }
+
+    // ===== Issue #27 S3: leaf spatial index =====================================
+
+    /// The ground-truth leaf set a query AABB selects: a FULL `for_each_leaf` walk,
+    /// recomputing each leaf's producer-true voxel AABB inline (the same maths
+    /// `build_leaf_spatial_index` uses), filtered by overlap with `query`. The
+    /// spatial index must return exactly this set; that equality is the S3
+    /// correctness contract.
+    fn walk_leaf_aabbs_intersecting(
+        scene: &Scene,
+        voxels_per_block: u32,
+        query: &crate::spatial_index::VoxelAabb,
+    ) -> Vec<crate::spatial_index::VoxelAabb> {
+        let density = voxels_per_block.max(1) as i32;
+        let mut matched = Vec::new();
+        scene.for_each_leaf(&mut |world_offset, content| {
+            let Some(size_blocks) = leaf_size_blocks(content, voxels_per_block) else {
+                return; // region-spanning leaf — not an AABB match.
+            };
+            let mut min = [0i32; 3];
+            let mut max = [0i32; 3];
+            for axis in 0..3 {
+                let grid = size_blocks[axis] as i32 * density;
+                let centre = world_offset[axis] * density;
+                min[axis] = centre - grid / 2;
+                max[axis] = min[axis] + grid;
+            }
+            let aabb = crate::spatial_index::VoxelAabb::new(min, max);
+            if aabb.intersects(query) {
+                matched.push(aabb);
+            }
+        });
+        matched
+    }
+
+    fn sorted_aabbs(
+        mut boxes: Vec<crate::spatial_index::VoxelAabb>,
+    ) -> Vec<([i32; 3], [i32; 3])> {
+        boxes.sort_by_key(|b| (b.min, b.max));
+        boxes.into_iter().map(|b| (b.min, b.max)).collect()
+    }
+
+    fn demo_three_tool_scene(voxels_per_block: u32) -> Scene {
+        let make_tool = |kind, offset: [i32; 3], material| {
+            let shape = SdfShape {
+                kind,
+                size_blocks: [5, 5, 5],
+                voxels_per_block,
+                wall_blocks: 1,
+            };
+            let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
+            node.transform.offset_blocks = offset;
+            node
+        };
+        Scene {
+            nodes: vec![
+                make_tool(ShapeKind::Sphere, [0, 0, 0], MaterialChoice::Stone),
+                make_tool(ShapeKind::Box, [8, 0, 0], MaterialChoice::Wood),
+                make_tool(ShapeKind::Torus, [0, 0, 6], MaterialChoice::Plain),
+            ],
+            active: Some(NodePath::root_index(0)),
+            ..Scene::default()
+        }
+    }
+
+    fn demo_village_scene(voxels_per_block: u32) -> Scene {
+        let house_def_id = DefId(1);
+        let tool = |kind, size: [u32; 3], offset: [i32; 3], material| {
+            let shape = SdfShape {
+                kind,
+                size_blocks: size,
+                voxels_per_block,
+                wall_blocks: 1,
+            };
+            let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
+            node.transform.offset_blocks = offset;
+            node
+        };
+        let house = AssemblyDef {
+            id: house_def_id,
+            name: "House".to_string(),
+            children: vec![
+                tool(ShapeKind::Box, [2, 2, 2], [0, 0, 0], MaterialChoice::Stone),
+                tool(ShapeKind::Cylinder, [1, 2, 1], [0, 2, 0], MaterialChoice::Wood),
+            ],
+        };
+        let instance = |name: &str, offset: [i32; 3]| {
+            let mut node = Node::new(name, NodeContent::Instance(house_def_id));
+            node.transform.offset_blocks = offset;
+            node
+        };
+        Scene {
+            nodes: vec![
+                instance("House 1", [0, 0, 0]),
+                instance("House 2", [6, 0, 0]),
+                instance("House 3", [12, 0, 0]),
+                instance("House 4", [18, 0, 0]),
+            ],
+            definitions: vec![house],
+            active: Some(NodePath::root_index(0)),
+        }
+    }
+
+    /// The index query returns EXACTLY the leaves a full walk + AABB filter returns,
+    /// across several query boxes and several scenes (incl. instanced/recursive
+    /// `--demo-village`). This is the S3 spatial-index correctness proof.
+    #[test]
+    fn spatial_index_query_matches_full_walk() {
+        use crate::spatial_index::VoxelAabb;
+        let voxels_per_block = 16;
+        let scenes = [
+            ("single", Scene::from_geometry(
+                GeometryParams { shape: ShapeKind::Sphere, size_blocks: [5, 5, 5], voxels_per_block, wall_blocks: 1 },
+                MaterialChoice::Stone,
+            )),
+            ("three-tool", demo_three_tool_scene(voxels_per_block)),
+            ("village", demo_village_scene(voxels_per_block)),
+        ];
+        // A spread of query boxes: empty, tiny near origin, a slab, the whole scene,
+        // and a far-away box that should match nothing.
+        let queries = [
+            VoxelAabb::new([0, 0, 0], [0, 0, 0]),
+            VoxelAabb::new([-8, -8, -8], [8, 8, 8]),
+            VoxelAabb::new([0, -200, -200], [64, 200, 200]),
+            VoxelAabb::new([-5000, -5000, -5000], [5000, 5000, 5000]),
+            VoxelAabb::new([100_000, 0, 0], [100_064, 64, 64]),
+        ];
+        for (label, scene) in &scenes {
+            let index = scene.build_leaf_spatial_index(voxels_per_block);
+            for query in &queries {
+                let from_index: Vec<VoxelAabb> = index
+                    .leaves_intersecting(query)
+                    .into_iter()
+                    .map(|entry| entry.world_aabb)
+                    .collect();
+                let from_walk = walk_leaf_aabbs_intersecting(scene, voxels_per_block, query);
+                assert_eq!(
+                    sorted_aabbs(from_index),
+                    sorted_aabbs(from_walk),
+                    "[{label}] index query {query:?} must match the full walk + AABB filter"
+                );
+            }
+        }
+    }
+
+    /// The diff that drives invalidation: an edit's AABB is the union of the old and
+    /// new boxes of whatever changed.
+    #[test]
+    fn edit_aabb_diff_covers_old_and_new() {
+        let voxels_per_block = 16;
+        let scene_a = demo_three_tool_scene(voxels_per_block);
+        let index_a = scene_a.build_leaf_spatial_index(voxels_per_block);
+
+        // No change: empty edit AABB.
+        let index_a2 = scene_a.build_leaf_spatial_index(voxels_per_block);
+        let no_edit = index_a2.edit_aabb_since(&index_a).expect("same density");
+        assert!(no_edit.is_empty(), "an identical scene dirties nothing");
+
+        // Move the Box (node 1) from +8X to +40X: the edit AABB must span BOTH the
+        // old (+8) and new (+40) boxes.
+        let mut scene_b = scene_a.clone();
+        scene_b.nodes[1].transform.offset_blocks = [40, 0, 0];
+        let index_b = scene_b.build_leaf_spatial_index(voxels_per_block);
+        let moved = index_b.edit_aabb_since(&index_a).expect("same density");
+        assert!(!moved.is_empty());
+        // Old box centre: 8 blocks·16 = 128 voxels (±40). New: 40·16 = 640 (±40).
+        // The union must contain both.
+        assert!(moved.min[0] <= 128 - 40, "edit AABB must cover the OLD location");
+        assert!(moved.max[0] >= 640 + 40, "edit AABB must cover the NEW location");
+
+        // Recolour the Sphere (node 0, same box): edit AABB is just that box.
+        let mut scene_c = scene_a.clone();
+        if let NodeContent::Tool { material, .. } = &mut scene_c.nodes[0].content {
+            *material = MaterialChoice::Wood;
+        }
+        let index_c = scene_c.build_leaf_spatial_index(voxels_per_block);
+        let recoloured = index_c.edit_aabb_since(&index_a).expect("same density");
+        assert!(!recoloured.is_empty(), "a same-box content change is still dirty");
+        // Sphere centred on origin, 5 blocks·16 = 80 voxels → [-40, 40).
+        assert_eq!(recoloured, crate::spatial_index::VoxelAabb::new([-40, -40, -40], [40, 40, 40]));
+    }
+
+    /// A density change can't be localised: the diff returns `None` (clear).
+    #[test]
+    fn edit_aabb_diff_density_change_is_none() {
+        let scene = demo_three_tool_scene(16);
+        let index_16 = scene.build_leaf_spatial_index(16);
+        let index_8 = scene.build_leaf_spatial_index(8);
+        assert_eq!(
+            index_8.edit_aabb_since(&index_16),
+            None,
+            "a density change forces a wholesale clear"
+        );
+    }
+
+    /// A region-spanning Part edit can't be localised: the diff returns `None`.
+    #[test]
+    fn edit_aabb_diff_part_edit_is_none() {
+        let voxels_per_block = 16;
+        // A scene with a Tool plus a debug-cloud Part.
+        let mut tool = Node::new(
+            "Sphere",
+            NodeContent::Tool {
+                shape: SdfShape { kind: ShapeKind::Sphere, size_blocks: [5, 5, 5], voxels_per_block, wall_blocks: 1 },
+                material: MaterialChoice::Stone,
+            },
+        );
+        tool.transform.offset_blocks = [0, 0, 0];
+        let part = Node::new("Clouds", NodeContent::Part(Part::DebugClouds { seed: 1 }));
+        let scene_a = Scene { nodes: vec![tool.clone(), part], active: Some(NodePath::root_index(0)), ..Scene::default() };
+        let index_a = scene_a.build_leaf_spatial_index(voxels_per_block);
+        assert!(index_a.has_region_spanning_leaf);
+
+        // Change the Part's seed (a region-spanning content change).
+        let mut scene_b = scene_a.clone();
+        scene_b.nodes[1].content = NodeContent::Part(Part::DebugClouds { seed: 2 });
+        let index_b = scene_b.build_leaf_spatial_index(voxels_per_block);
+        assert_eq!(
+            index_b.edit_aabb_since(&index_a),
+            None,
+            "editing a region-spanning Part forces a wholesale clear"
         );
     }
 }

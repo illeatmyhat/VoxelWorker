@@ -85,10 +85,16 @@ struct WindowedState {
     grid: VoxelGrid,
     /// Per-chunk resolve cache (issue #27 S2): the resolve mechanism behind
     /// `rebuild_geometry`. Lazily resolves each covering chunk and reassembles the
-    /// SAME recentred monolithic grid the renderer consumes today. Cleared on every
-    /// rebuild for now (the S3 edit-AABB invalidation seam is not wired yet — see
-    /// `ChunkResolveCache::clear`).
+    /// SAME recentred monolithic grid the renderer consumes today. Issue #27 S3
+    /// gives it TARGETED invalidation: `rebuild_geometry` diffs the scene's leaf
+    /// spatial index against the previous one and evicts only the chunks the edit's
+    /// world-AABB touched (falling back to a wholesale clear for density changes /
+    /// Part edits / the first build).
     chunk_resolve_cache: voxel_worker::chunk_cache::ChunkResolveCache,
+    /// The leaf spatial index (issue #27 S3) the LAST rebuild resolved from, kept so
+    /// the next rebuild can diff against it to compute the edit's dirty world-AABB.
+    /// `None` before the first rebuild (which clears wholesale).
+    previous_leaf_index: Option<voxel_worker::spatial_index::LeafSpatialIndex>,
     /// Cached widest-run measurement + the band it was computed for, so we only
     /// re-measure when the band or grid actually changes.
     measured_diameter: u32,
@@ -345,6 +351,7 @@ impl WindowedState {
             face_resolver: FaceResolver::auto(),
             grid,
             chunk_resolve_cache: voxel_worker::chunk_cache::ChunkResolveCache::new(),
+            previous_leaf_index: None,
             measured_diameter,
             measured_band,
             depth_view,
@@ -399,12 +406,26 @@ impl WindowedState {
         self.panel_state.voxel_cap_warning_millions = None;
 
         let previous_grid_y = self.grid.dimensions[1];
-        // Route the resolve through the per-chunk cache (issue #27 S2). Until S3's
-        // edit-AABB invalidation lands, clear the cache each rebuild (the scene may
-        // have changed); the cache then lazily resolves each covering chunk and
-        // reassembles the SAME recentred monolithic grid the renderer consumed
-        // before — byte-identical output.
-        self.chunk_resolve_cache.clear();
+        // Route the resolve through the per-chunk cache (issue #27 S2/S3). S3 does
+        // TARGETED invalidation: build the new scene's leaf spatial index, diff it
+        // against the previous rebuild's index to get the edit's dirty world-AABB,
+        // and evict ONLY the chunks that AABB touches — every other cached chunk
+        // stays resident. A move dirties chunks around both the source and the
+        // destination (the diff unions the old AND new boxes). We fall back to a
+        // wholesale `clear()` when a precise AABB can't be computed: the first
+        // rebuild (no previous index), a density change, or a region-spanning Part
+        // edit (no localisable box) — see `LeafSpatialIndex::edit_aabb_since`. The
+        // reassembled grid is byte-identical either way (the same chunks are
+        // re-resolved; untouched chunks are reused verbatim).
+        let new_leaf_index = self.panel_state.scene.build_leaf_spatial_index(density);
+        match self.previous_leaf_index.as_ref() {
+            Some(previous) => match new_leaf_index.edit_aabb_since(previous) {
+                Some(edit_aabb) => self.chunk_resolve_cache.invalidate_aabb(&edit_aabb, density),
+                None => self.chunk_resolve_cache.clear(),
+            },
+            None => self.chunk_resolve_cache.clear(),
+        }
+        self.previous_leaf_index = Some(new_leaf_index);
         let grid = self
             .chunk_resolve_cache
             .resolve_region(&self.panel_state.scene, density, 0);

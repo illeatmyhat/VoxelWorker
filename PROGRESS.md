@@ -33,6 +33,54 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **Edit-AABB chunk invalidation + node spatial index (S3) — Part of #27 (ADR 0002 streaming,
+  Decision 3 "dirty-whole-chunk invalidation")** — retires the wholesale `clear()`-on-every-edit:
+  an edit now evicts ONLY the cache chunks its world-AABB touches. Render output stays
+  BYTE-IDENTICAL (goldens green, not rebaselined).
+  - **New `src/spatial_index.rs` — `LeafSpatialIndex` + `VoxelAabb`.** `VoxelAabb` is a half-open
+    integer **absolute-voxel** box `[min,max)` — the exact frame `resolve_chunk` / chunk ownership
+    (`floor(pos/chunk_extent)`) live in — with `intersects`, `union`, `covering_chunk_range`.
+    `LeafSpatialIndex` is a **flat `Vec<(leaf_world_aabb, fingerprint)>`** built by ONE `for_each_leaf`
+    walk (`Scene::build_leaf_spatial_index(density)`). Chose a flat list (not octree/grid) because the
+    correctness contract is "return the SAME leaf set as a full walk + AABB filter" — a flat list that
+    IS that walk, scanned linearly, is provably equal and obviously correct; leaf counts are small
+    (tens; low hundreds for instanced `--demo-village`) so the linear scan is free. API:
+    `leaves_intersecting(aabb)` (linear overlap), `edit_aabb_since(previous)` (the diff that drives
+    invalidation).
+  - **Targeted invalidation.** `edit_aabb_since` = union of every leaf whose `(world_aabb,
+    fingerprint)` pair is in the multiset symmetric difference of the two indices. This is uniform
+    across edit kinds: **move/offset** unions OLD and NEW boxes (dirties both endpoints), **add** =
+    new box, **remove** = old box, **edit-in-place** (resize/recolour/shape-swap) = old ∪ new (the
+    fingerprint includes shape + material + offset so a same-box content change is still detected).
+    `ChunkResolveCache::invalidate_aabb(aabb, density)` drops exactly the chunks `aabb.covering_chunk_range`
+    spans. **Wired in `main::rebuild_geometry`:** build the new leaf index, diff vs the previous
+    rebuild's index (kept in a new `previous_leaf_index` field), `invalidate_aabb` on `Some`, else
+    `clear()`. **Fallbacks to `clear()`** (documented): the first rebuild (no previous index), a
+    **density change** (every chunk's voxel extent changes), and a **region-spanning Part edit** (a
+    `DebugClouds` leaf has no localisable AABB — its dirty region is "everywhere"). Tool
+    add/remove/move/resize/recolour/shape-swap are all TARGETED.
+  - **`resolve_chunk` now uses the per-leaf AABB to skip non-overlapping leaves** (task 3): a leaf
+    whose world-AABB doesn't intersect the chunk box is skipped before resolving its producer, so
+    resolving one chunk costs ~the leaves touching it, not the whole tree. Proven BIT-IDENTICAL —
+    the leaf AABB is the exact span of its voxel centres and `stamp_producer_into_chunk` already
+    clips to the chunk box, so a non-intersecting leaf would have been clipped to zero anyway
+    (goldens unchanged; this is also why the big-scene lib tests got much faster).
+  - **Tests (10 new).** `spatial_index`: `intersects_is_half_open`, `union_ignores_empty`,
+    `covering_chunk_range_matches_chunk_ownership`. `scene`: `spatial_index_query_matches_full_walk`
+    (index == full `for_each_leaf` + AABB filter, across single/three-tool/`--demo-village`,
+    incl. empty + far + whole-scene queries), `edit_aabb_diff_covers_old_and_new` (move unions both
+    endpoints; recolour = same box; no-change = empty), `edit_aabb_diff_density_change_is_none`,
+    `edit_aabb_diff_part_edit_is_none`. `chunk_cache`:
+    `targeted_invalidation_evicts_only_intersecting_chunks` (exactly the intersecting chunks evicted,
+    all others stay resident, re-resolve == full fresh resolve), `move_invalidates_chunks_around_both_endpoints`,
+    `empty_edit_aabb_evicts_nothing`. **122 lib tests** (112 + 10), goldens green.
+  - **Slow S2 test shrunk (58s → ~7s lib wall-time).** `scene_exceeding_old_total_cap_resolves_under_per_chunk_bound`
+    was a row of 64 boxes spread 32 blocks apart in X (~500 chunks on one axis, 64 leaves walked
+    per chunk → ~54s alone). Replaced with TWO boxes at opposite corners of a 16-block cube: the
+    composite is a 17³-block cube = ~20M whole-region voxels (still ≫ the old 6M total cap, same
+    coverage intent), but only a ~5³ covering-chunk grid with one tiny box per corner → 0.14s. The
+    `resolve_chunk` leaf-skip above shaved the rest.
+
 - **Chunk cache + lazy per-chunk resolve + per-chunk cap (S2) — Part of #27 (ADR 0002 streaming,
   Decision 3)** — turns S0's chunk-addressable resolve into the resolve MECHANISM, retiring the 6M
   whole-scene total cap. Render output stays BYTE-IDENTICAL (goldens green, not rebaselined). The

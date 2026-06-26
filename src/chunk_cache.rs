@@ -22,11 +22,17 @@
 //!   assembled from cached chunks. The bytes downstream are unchanged (see the
 //!   module-level invariant in [`ChunkResolveCache::resolve_region`]).
 //!
+//! **S3 (#27) added smart invalidation** on top of this seam:
+//! [`ChunkResolveCache::invalidate_aabb`] evicts exactly the chunks an edit's
+//! world-AABB intersects (whole-chunk dirty granularity, ADR 0002 Decision 3). The
+//! edit AABB is computed by
+//! [`LeafSpatialIndex::edit_aabb_since`](crate::spatial_index::LeafSpatialIndex::edit_aabb_since)
+//! (diffing the scene's leaf spatial index before vs after the edit);
+//! [`ChunkResolveCache::clear`] remains the fallback for edits that can't be
+//! localised (a density change or a region-spanning Part edit).
+//!
 //! What is **deferred** (do NOT look for it here):
 //!
-//! * **Smart invalidation** (whole-chunk dirty on an edit's world-AABB) — S3 / #27.
-//!   The cache exposes a [`ChunkResolveCache::clear`] / [`ChunkResolveCache::invalidate_chunk`]
-//!   seam with a TODO, but does not yet track edit AABBs.
 //! * **Recentre removal, camera-relative rebasing, renderer consuming per-chunk
 //!   meshes directly** — S4 / #27. S2 still hands the renderer one recentred
 //!   monolithic grid.
@@ -34,6 +40,7 @@
 use std::collections::HashMap;
 
 use crate::scene::Scene;
+use crate::spatial_index::VoxelAabb;
 use crate::voxel::VoxelGrid;
 
 /// The cache key: a chunk coordinate (in `CHUNK_BLOCKS`-cell space) plus its
@@ -184,22 +191,57 @@ impl ChunkResolveCache {
 
     /// Drop every cached chunk (the all-or-nothing invalidation seam).
     ///
-    /// TODO(#27 S3): replace blanket clears with edit-world-AABB → dirty-chunk
-    /// invalidation (re-resolve only the chunks an edit's AABB intersects, ADR 0002
-    /// Decision 3 "dirty-whole-chunk invalidation"). Until S3 lands, any scene edit
-    /// must `clear()` the cache wholesale to stay correct.
+    /// Still used for the edit kinds [`invalidate_aabb`](Self::invalidate_aabb) can't
+    /// localise (a density change, or a region-spanning Part edit) and on the very
+    /// first rebuild (no previous scene to diff against). For a localisable edit,
+    /// prefer [`invalidate_aabb`].
     pub fn clear(&mut self) {
         self.chunks.clear();
         self.bound_density = None;
     }
 
-    /// Drop a single cached chunk across all LODs (a finer-grained seam for S3).
+    /// Drop a single cached chunk across all LODs (a finer-grained seam).
     ///
-    /// TODO(#27 S3): S3's edit-AABB invalidation will call this for each chunk an
-    /// edit touches; today nothing computes that set, so callers either leave the
-    /// cache alone (read-only) or [`clear`](Self::clear) it wholesale.
+    /// [`invalidate_aabb`](Self::invalidate_aabb) calls this for each chunk an edit's
+    /// world-AABB intersects.
     pub fn invalidate_chunk(&mut self, chunk_coord: [i32; 3]) {
         self.chunks.retain(|key, _| key.chunk_coord != chunk_coord);
+    }
+
+    /// **Targeted invalidation (issue #27 S3).** Drop exactly the cached chunks whose
+    /// half-open box intersects the edit world-AABB `edit_aabb` (in absolute voxels,
+    /// the producer-true frame), at `voxels_per_block` — ADR 0002 Decision 3's
+    /// whole-chunk dirty granularity. Every other cached chunk stays resident
+    /// untouched.
+    ///
+    /// `edit_aabb` is what
+    /// [`LeafSpatialIndex::edit_aabb_since`](crate::spatial_index::LeafSpatialIndex::edit_aabb_since)
+    /// returns: the union of the old and new boxes of whatever the edit changed
+    /// (moved / added / removed / edited leaves), so a moved node dirties chunks
+    /// around BOTH its source and destination. An empty `edit_aabb` (nothing changed)
+    /// evicts nothing.
+    ///
+    /// A density mismatch against the cache's bound density is treated
+    /// conservatively (the AABB was computed at a different chunk size) by clearing
+    /// everything — but the caller [`main`] already falls back to [`clear`] for a
+    /// density change, so this path is belt-and-braces.
+    ///
+    /// [`main`]: crate
+    pub fn invalidate_aabb(&mut self, edit_aabb: &VoxelAabb, voxels_per_block: u32) {
+        if let Some(bound) = self.bound_density {
+            if bound != voxels_per_block {
+                self.clear();
+                return;
+            }
+        }
+        let Some((min_chunk, max_chunk)) = edit_aabb.covering_chunk_range(voxels_per_block) else {
+            return; // empty edit AABB — nothing to invalidate.
+        };
+        self.chunks.retain(|key, _| {
+            let coord = key.chunk_coord;
+            let inside = (0..3).all(|axis| coord[axis] >= min_chunk[axis] && coord[axis] <= max_chunk[axis]);
+            !inside
+        });
     }
 
     /// Clear + re-bind the cache when the requested density differs from the one the
@@ -458,33 +500,41 @@ mod tests {
     /// cap, but whose individual chunks are each small, resolves successfully under
     /// the new PER-CHUNK bound — proving total scene size is no longer capped at 6M.
     ///
-    /// The scene is a long row of small boxes spread far apart in X. Its composite
-    /// AABB (and thus the old whole-region voxel count) is enormous, but each chunk
-    /// only ever contains one small box, so every chunk is far under the per-chunk
-    /// bound.
+    /// The scene is two small boxes pushed to opposite corners of a cube spaced 16
+    /// blocks apart on EVERY axis. The composite AABB is a 17³-block cube → at
+    /// density 16 that is `(17·16)³ ≈ 20M` whole-region voxels (well past the old 6M
+    /// total cap), yet only the two corner chunks hold any voxels and each holds one
+    /// tiny box — far under the per-chunk bound.
+    ///
+    /// (Spreading the boxes DIAGONALLY rather than in a long row keeps the same
+    /// "total ≫ 6M, chunks tiny" coverage while the covering-chunk grid stays a small
+    /// ~5³ cube — the row-of-64 form this replaced spanned ~500 chunks on one axis
+    /// and dominated the lib-test wall-time. See issue #27 S3.)
     #[test]
     fn scene_exceeding_old_total_cap_resolves_under_per_chunk_bound() {
         let voxels_per_block = 16u32;
-        // Each box is a 1-block stone cube; spaced 32 blocks apart so the composite
-        // spans a huge X extent while each individual chunk holds at most one box.
-        let spacing_blocks = 32i32;
-        let box_count = 64i32;
+        // Two 1-block stone cubes at opposite corners of a 16-block cube, so the
+        // composite spans a huge cubic extent while each chunk holds at most one box.
+        let spacing_blocks = 16i32;
         let shape = SdfShape {
             kind: ShapeKind::Box,
             size_blocks: [1, 1, 1],
             voxels_per_block,
             wall_blocks: 1,
         };
-        let nodes: Vec<Node> = (0..box_count)
-            .map(|i| {
-                let mut node =
-                    Node::new(format!("Box {i}"), NodeContent::Tool { shape, material: MaterialChoice::Stone });
-                node.transform.offset_blocks = [i * spacing_blocks, 0, 0];
-                node
-            })
-            .collect();
+        let corner = |label: &str, offset: [i32; 3]| {
+            let mut node = Node::new(
+                label,
+                NodeContent::Tool { shape, material: MaterialChoice::Stone },
+            );
+            node.transform.offset_blocks = offset;
+            node
+        };
         let scene = Scene {
-            nodes,
+            nodes: vec![
+                corner("Box lo", [0, 0, 0]),
+                corner("Box hi", [spacing_blocks, spacing_blocks, spacing_blocks]),
+            ],
             active: Some(NodePath::root_index(0)),
             ..Scene::default()
         };
@@ -558,6 +608,134 @@ mod tests {
             crate::voxel::chunk_extent_exceeds_bound(huge_density),
             "a chunk whose voxel capacity exceeds the per-chunk bound must be rejected"
         );
+    }
+
+    // ===== Issue #27 S3: targeted edit-AABB invalidation ========================
+
+    fn three_tool_scene(voxels_per_block: u32, box_offset_x: i32) -> Scene {
+        let make_tool = |kind, offset: [i32; 3], material| {
+            let shape = SdfShape {
+                kind,
+                size_blocks: [5, 5, 5],
+                voxels_per_block,
+                wall_blocks: 1,
+            };
+            let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
+            node.transform.offset_blocks = offset;
+            node
+        };
+        Scene {
+            nodes: vec![
+                make_tool(ShapeKind::Sphere, [0, 0, 0], MaterialChoice::Stone),
+                make_tool(ShapeKind::Box, [box_offset_x, 0, 0], MaterialChoice::Wood),
+                make_tool(ShapeKind::Torus, [0, 0, 6], MaterialChoice::Plain),
+            ],
+            active: Some(NodePath::root_index(0)),
+            ..Scene::default()
+        }
+    }
+
+    /// The set of chunk coords currently resident in the cache (for assertions).
+    fn resident_coords(cache: &ChunkResolveCache) -> std::collections::BTreeSet<[i32; 3]> {
+        cache.chunks.keys().map(|key| key.chunk_coord).collect()
+    }
+
+    /// After an edit at offset X, exactly the chunks intersecting the edit AABB are
+    /// evicted; every other chunk stays resident; and a re-resolve after the
+    /// targeted invalidation yields a grid IDENTICAL to a full fresh resolve.
+    #[test]
+    fn targeted_invalidation_evicts_only_intersecting_chunks() {
+        let density = 16u32;
+        // A scene spread far enough in X that the Box occupies chunks no other leaf
+        // touches (so moving it is a clean, localised edit).
+        let scene_a = three_tool_scene(density, 40);
+        let mut cache = ChunkResolveCache::new();
+        let _ = cache.resolve_region(&scene_a, density, 0);
+        let all_resident = resident_coords(&cache);
+        assert!(!all_resident.is_empty());
+
+        // Move the Box from +40X to +80X. Compute the edit AABB via the spatial-index
+        // diff, exactly as `main::rebuild_geometry` does.
+        let mut scene_b = scene_a.clone();
+        scene_b.nodes[1].transform.offset_blocks = [80, 0, 0];
+        let index_a = scene_a.build_leaf_spatial_index(density);
+        let index_b = scene_b.build_leaf_spatial_index(density);
+        let edit_aabb = index_b.edit_aabb_since(&index_a).expect("same density");
+
+        // The chunks the edit AABB intersects — the EXPECTED evicted set (those that
+        // were resident).
+        let (min_chunk, max_chunk) = edit_aabb
+            .covering_chunk_range(density)
+            .expect("a non-empty edit AABB has a chunk range");
+        let mut expected_evicted = std::collections::BTreeSet::new();
+        for &coord in &all_resident {
+            let inside = (0..3).all(|axis| coord[axis] >= min_chunk[axis] && coord[axis] <= max_chunk[axis]);
+            if inside {
+                expected_evicted.insert(coord);
+            }
+        }
+        assert!(!expected_evicted.is_empty(), "the move must dirty at least one resident chunk");
+
+        cache.invalidate_aabb(&edit_aabb, density);
+        let after = resident_coords(&cache);
+
+        // Every expected-evicted chunk is gone; every other chunk is still resident.
+        for coord in &expected_evicted {
+            assert!(!after.contains(coord), "chunk {coord:?} intersecting the edit must be evicted");
+        }
+        for coord in &all_resident {
+            if !expected_evicted.contains(coord) {
+                assert!(after.contains(coord), "chunk {coord:?} outside the edit must stay resident");
+            }
+        }
+
+        // A re-resolve after targeted invalidation == a full fresh resolve of B.
+        let reresolved = cache.resolve_region(&scene_b, density, 0);
+        let mut fresh_cache = ChunkResolveCache::new();
+        let fresh = fresh_cache.resolve_region(&scene_b, density, 0);
+        assert_eq!(
+            occupied_multiset(&reresolved),
+            occupied_multiset(&fresh),
+            "re-resolve after targeted invalidation must equal a full fresh resolve"
+        );
+    }
+
+    /// Moving a node from A to B invalidates chunks around BOTH A and B (the diff
+    /// unions the old and new boxes).
+    #[test]
+    fn move_invalidates_chunks_around_both_endpoints() {
+        let density = 16u32;
+        let scene_a = three_tool_scene(density, 40);
+        let mut cache = ChunkResolveCache::new();
+        let _ = cache.resolve_region(&scene_a, density, 0);
+
+        let mut scene_b = scene_a.clone();
+        scene_b.nodes[1].transform.offset_blocks = [80, 0, 0];
+        let index_a = scene_a.build_leaf_spatial_index(density);
+        let index_b = scene_b.build_leaf_spatial_index(density);
+        let edit_aabb = index_b.edit_aabb_since(&index_a).expect("same density");
+
+        // The chunk owning the OLD Box centre (40·16 = 640 voxels) and the chunk
+        // owning the NEW centre (80·16 = 1280 voxels) must BOTH be in the edit range.
+        let chunk_extent = (crate::renderer::CHUNK_BLOCKS * density) as i32;
+        let old_chunk_x = (640i32).div_euclid(chunk_extent);
+        let new_chunk_x = (1280i32).div_euclid(chunk_extent);
+        let (min_chunk, max_chunk) = edit_aabb.covering_chunk_range(density).unwrap();
+        assert!(min_chunk[0] <= old_chunk_x && old_chunk_x <= max_chunk[0], "edit range must cover OLD chunk");
+        assert!(min_chunk[0] <= new_chunk_x && new_chunk_x <= max_chunk[0], "edit range must cover NEW chunk");
+    }
+
+    /// An empty edit AABB (nothing changed) evicts nothing.
+    #[test]
+    fn empty_edit_aabb_evicts_nothing() {
+        let density = 16u32;
+        let scene = three_tool_scene(density, 8);
+        let mut cache = ChunkResolveCache::new();
+        let _ = cache.resolve_region(&scene, density, 0);
+        let before = resident_coords(&cache);
+        let empty = crate::spatial_index::VoxelAabb::new([0, 0, 0], [0, 0, 0]);
+        cache.invalidate_aabb(&empty, density);
+        assert_eq!(resident_coords(&cache), before, "an empty edit AABB evicts nothing");
     }
 
     /// A Part-only scene (no intrinsic-size leaf) resolves to an empty recentred

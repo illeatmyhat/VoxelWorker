@@ -26,6 +26,7 @@ pub mod renderer;
 pub mod scan_worker;
 pub mod scene;
 pub mod settings;
+pub mod spatial_index;
 pub mod texture_atlas;
 pub mod vox_export;
 pub mod voxel;
@@ -55,6 +56,7 @@ pub use scene::{
     Scene,
 };
 pub use settings::AppConfig;
+pub use spatial_index::{LeafEntry, LeafFingerprint, LeafSpatialIndex, VoxelAabb};
 pub use vox_export::VoxExport;
 pub use voxel::{SdfShape, ShapeKind, VoxelGrid, VoxelProducer};
 
