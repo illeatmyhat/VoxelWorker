@@ -344,6 +344,11 @@ pub struct FrameOverlays<'a> {
     /// arrows the cube draws and which glyph is highlighted. `None` = nothing
     /// hovered (the normal render: compass + Home/Fit only, no arrows).
     pub cube_hovered_zone: Option<camera::CubeChromeZone>,
+    /// #13 Step 6 follow-up: draw all four ViewCube rotate arrows PERSISTENTLY (set
+    /// when the view is face-constrained), with the hovered one brightened. `false`
+    /// (off-face view) draws no rotate arrows. Decoupled from `cube_hovered_zone` so
+    /// the arrows are a standing affordance, not a hover-only reveal.
+    pub cube_rotate_arrows_visible: bool,
     /// The per-object block lattice + floor grid (issue #29 S3). Drawn in the MSAA
     /// pass (depth-tested) before the gizmo. The renderer's per-frame batch already
     /// holds only the grid-enabled nodes' lines (master AND per-object), so the draw
@@ -509,6 +514,7 @@ pub fn render_frame(
             overlays.target_height,
             prepared.viewport_px,
             overlays.cube_hovered_zone,
+            overlays.cube_rotate_arrows_visible,
         );
     }
 

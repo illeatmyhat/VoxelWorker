@@ -815,8 +815,10 @@ impl ViewCubeRenderer {
     ///
     /// #13 Step 2: `hovered_zone` is the chrome zone currently under the cursor
     /// (from `classify_cube_point`). The Home/Fit badges are drawn ALWAYS; the
-    /// rotate/roll arrows are drawn ONLY when their zone is hovered, and the
-    /// hovered glyph is brightened. The chrome is a
+    /// roll arrows are drawn ONLY when their zone is hovered. #13 Step 6 follow-up:
+    /// the four rotate arrows are drawn PERSISTENTLY whenever `rotate_arrows_visible`
+    /// (the view is face-constrained), with the hovered one brightened. The chrome
+    /// is a
     /// screen-space overlay FIXED to the cube rect (it does NOT rotate with the
     /// cube), laid out in the same `rect.size` fractions Step 1 hit-tests against.
     #[allow(clippy::too_many_arguments)]
@@ -830,6 +832,7 @@ impl ViewCubeRenderer {
         target_height: u32,
         viewport: [u32; 4],
         hovered_zone: Option<crate::camera::CubeChromeZone>,
+        rotate_arrows_visible: bool,
     ) {
         // #13 Step 6.2: when a face/edge/corner ELEMENT is hovered, pack a 6-bit
         // face mask (bit = material index in +X,-X,+Y,-Y,+Z,-Z order) into the cube
@@ -908,7 +911,7 @@ impl ViewCubeRenderer {
         pass.draw(0..self.edge_vertex_count, 0..1);
 
         // --- #13 Step 2: screen-space chrome overlay, fixed to the cube rect. ---
-        let chrome = build_chrome_vertices(hovered_zone);
+        let chrome = build_chrome_vertices(hovered_zone, rotate_arrows_visible);
         if !chrome.is_empty() {
             let count = chrome.len().min(self.chrome_vertex_capacity as usize);
             queue.write_buffer(
@@ -1546,11 +1549,34 @@ fn build_chrome_overlay(
     (pipeline, bind_group)
 }
 
+/// The glyph + rect-fraction centre of the rotate arrow for `dir`. #13 Step 6.8:
+/// edge-hugging gutters; #13 Step 6.7: the glyph points the way the cube CONTENT
+/// rolls under the 90° step (OPPOSITE the edge it sits on), so it matches the
+/// action. Shared by the persistent draw and the hovered-highlight draw so the
+/// dim and bright states sit in identical pixels.
+fn rotate_arrow_layout(dir: crate::camera::ArrowDir) -> (ChromeGlyph, f32, f32) {
+    use crate::camera::ArrowDir;
+    match dir {
+        // TOP edge gutter v∈[0,.13]; the step pulls the top face down → ArrowDown.
+        ArrowDir::Up => (ChromeGlyph::ArrowDown, 0.5, 0.065),
+        // BOTTOM edge gutter v∈[.87,1.0]; pushes content up → ArrowUp.
+        ArrowDir::Down => (ChromeGlyph::ArrowUp, 0.5, 0.935),
+        // LEFT edge gutter u∈[0,.13]; rolls content rightward → ArrowRight.
+        ArrowDir::Left => (ChromeGlyph::ArrowRight, 0.065, 0.5),
+        // RIGHT edge gutter u∈[.87,1.0]; rolls content leftward → ArrowLeft.
+        ArrowDir::Right => (ChromeGlyph::ArrowLeft, 0.935, 0.5),
+    }
+}
+
 /// Build the per-frame chrome vertices (screen-space, NDC within the cube
-/// viewport). `hovered_zone` decides which arrows appear and which glyph is
-/// brightened. The layout fractions MUST match `classify_cube_point`.
+/// viewport). `hovered_zone` decides which glyph is brightened. #13 Step 6
+/// follow-up: `rotate_arrows_visible` (= the view is face-constrained) draws ALL
+/// FOUR rotate arrows PERSISTENTLY in their dim state (Fusion behaviour); the
+/// hovered one brightens. When `false` (off-face view) no rotate arrows draw at
+/// all. The layout fractions MUST match `classify_cube_point`.
 fn build_chrome_vertices(
     hovered_zone: Option<crate::camera::CubeChromeZone>,
+    rotate_arrows_visible: bool,
 ) -> Vec<ChromeVertex> {
     use crate::camera::{ArrowDir, CubeChromeZone, RollDir};
 
@@ -1573,23 +1599,14 @@ fn build_chrome_vertices(
     let fit_hovered = hovered_zone == Some(CubeChromeZone::FitButton);
     push_glyph_quad(&mut verts, ChromeGlyph::FitButton, 0.18, badge_y, badge_size, badge_size, tint(fit_hovered));
 
-    // --- Hover-only: the 4 rotate arrows in the gutters. Centres match Step-1's
-    // edge-hugging gutters (#13 Step 6.8). #13 Step 6.7: the glyph points the way
-    // the cube CONTENT rolls under the 90° step, which is OPPOSITE the screen edge
-    // it sits on — e.g. the top-edge arrow points DOWN (grab the top, roll it toward
-    // you), so the glyph now matches the action it performs. ---
-    if let Some(CubeChromeZone::RotateArrow(dir)) = hovered_zone {
-        let (glyph, cx, cy) = match dir {
-            // TOP edge gutter v∈[0,.13]; the step pulls the top face down → ArrowDown.
-            ArrowDir::Up => (ChromeGlyph::ArrowDown, 0.5, 0.065),
-            // BOTTOM edge gutter v∈[.87,1.0]; pushes content up → ArrowUp.
-            ArrowDir::Down => (ChromeGlyph::ArrowUp, 0.5, 0.935),
-            // LEFT edge gutter u∈[0,.13]; rolls content rightward → ArrowRight.
-            ArrowDir::Left => (ChromeGlyph::ArrowRight, 0.065, 0.5),
-            // RIGHT edge gutter u∈[.87,1.0]; rolls content leftward → ArrowLeft.
-            ArrowDir::Right => (ChromeGlyph::ArrowLeft, 0.935, 0.5),
-        };
-        push_glyph_quad(&mut verts, glyph, cx, cy, 0.075, 0.075, tint(true));
+    // --- The 4 rotate arrows: drawn PERSISTENTLY whenever the view is face-
+    // constrained (decoupled from hover); the hovered one is brightened. ---
+    if rotate_arrows_visible {
+        for dir in [ArrowDir::Up, ArrowDir::Down, ArrowDir::Left, ArrowDir::Right] {
+            let (glyph, cx, cy) = rotate_arrow_layout(dir);
+            let hovered = hovered_zone == Some(CubeChromeZone::RotateArrow(dir));
+            push_glyph_quad(&mut verts, glyph, cx, cy, 0.075, 0.075, tint(hovered));
+        }
     }
 
     // --- Hover-only: the 2 roll arrows (top-right). Step-1 u∈[.74,.87]/[.87,1.0], v∈[0,.13]. ---

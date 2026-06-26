@@ -1620,6 +1620,14 @@ async fn run_capture(options: ShotOptions) {
             None
         },
         cube_hovered_zone: options.cube_hover,
+        // #13 Step 6 follow-up: the four rotate arrows draw persistently when the view
+        // is face-constrained. A forced `--cube-hover rotate-*` also enables them so a
+        // golden can pin the arrow render even from a non-face camera.
+        cube_rotate_arrows_visible: camera.is_face_constrained()
+            || matches!(
+                options.cube_hover,
+                Some(voxel_worker::camera::CubeChromeZone::RotateArrow(_))
+            ),
         scene_grid: Some(&scene_grid_renderer),
         // Issue #29 S5: Points SUPPRESSED unless `--points` (keeps the 6 goldens
         // byte-identical); the new `demo-village --points` golden enables them.

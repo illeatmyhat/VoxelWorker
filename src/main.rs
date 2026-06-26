@@ -1254,6 +1254,10 @@ impl WindowedState {
             // cheaply in `CursorMoved`) so the hovered rotate/roll arrow brightens.
             // `None` when nothing's hovered or while orbiting/dragging.
             cube_hovered_zone: self.hovered_cube_zone,
+            // #13 Step 6 follow-up: the four rotate arrows are a standing affordance
+            // whenever the view is constrained to a face (not hover-gated), with the
+            // hovered one brightened. Off-face views show none.
+            cube_rotate_arrows_visible: self.camera.is_face_constrained(),
             scene_grid: Some(&self.scene_grid_renderer),
             // Issue #29 S5: the windowed app always shows the Points (the Origin's
             // ground+axes are on by default); the batch self-gates on hidden/off.
