@@ -3150,107 +3150,288 @@ mod tests {
         (min, max, grid.occupied.len())
     }
 
-    /// A 1×1×1-block box at the default density generates exactly `density³` voxels
-    /// occupying exactly ONE block-aligned cell: the min voxel corner sits on a
-    /// multiple of `density` per axis (no half-block straddle). The user's concrete
-    /// acceptance test for issue #30.
-    #[test]
-    fn one_block_box_generates_one_block_aligned_cell() {
-        let density = 16;
-        let (min, max, count) = absolute_box_extent([1, 1, 1], density);
-        assert_eq!(
-            count,
-            (density as usize).pow(3),
-            "a 1×1×1 box at density {density} must generate exactly density³ voxels"
-        );
-        for axis in 0..3 {
-            assert_eq!(
-                min[axis].rem_euclid(density as i64),
-                0,
-                "axis {axis}: the min voxel corner ({}) must sit on a block multiple \
-                 of {density} — no half-block straddle",
-                min[axis]
-            );
-            assert_eq!(
-                max[axis] - min[axis],
-                density as i64,
-                "axis {axis}: a 1-block box must span exactly one block ({density} voxels)"
-            );
-            // The whole occupied span is one block cell: [k·d, (k+1)·d).
-            assert_eq!(
-                max[axis].rem_euclid(density as i64),
-                0,
-                "axis {axis}: the max boundary must also fall on a block multiple"
-            );
-        }
-    }
-
-    /// An odd-sized shape (5×5×2) is block-lattice aligned: it generates
-    /// `80×80×32` voxels (at d16) whose every block boundary coincides with a
-    /// global block boundary (a multiple of `d`) — the off-centre-odd-size bug fix.
-    #[test]
-    fn odd_size_shape_is_block_lattice_aligned() {
-        let density = 16;
-        let size = [5u32, 5, 2];
+    /// Assert that a box of `size_blocks` resolved at `density` is block-lattice
+    /// aligned: it generates exactly `prod(size·d)` voxels and every occupied
+    /// block boundary (both the min corner and the max boundary, per axis) lands
+    /// on a global block multiple (a multiple of `d`) — no half-block straddle.
+    /// Shared by the density-parametrized generation tests below.
+    fn assert_box_block_aligned(size: [u32; 3], density: u32) {
         let (min, max, count) = absolute_box_extent(size, density);
-        let expected_count =
-            (size[0] * density) as usize * (size[1] * density) as usize * (size[2] * density) as usize;
+        let expected_count = (size[0] * density) as usize
+            * (size[1] * density) as usize
+            * (size[2] * density) as usize;
         assert_eq!(
             count, expected_count,
-            "a 5×5×2 box at density {density} must generate 80×80×32 voxels"
+            "a {size:?}-block box at density {density} must generate prod(size·d) voxels"
         );
-        for axis in 0..3 {
-            // Both the min and max BLOCK boundaries land on global block multiples.
+        for (axis, &size_axis) in size.iter().enumerate() {
             assert_eq!(
                 min[axis].rem_euclid(density as i64),
                 0,
-                "axis {axis}: min corner ({}) must be a block multiple — no half-block \
-                 offset for odd sizes",
+                "axis {axis}: min corner ({}) must sit on a block multiple of {density} \
+                 — no half-block straddle (size {size:?})",
                 min[axis]
             );
             assert_eq!(
                 max[axis].rem_euclid(density as i64),
                 0,
-                "axis {axis}: max boundary ({}) must be a block multiple",
+                "axis {axis}: max boundary ({}) must fall on a block multiple of {density} \
+                 (size {size:?})",
                 max[axis]
             );
             assert_eq!(
                 max[axis] - min[axis],
-                (size[axis] * density) as i64,
-                "axis {axis}: the span must be size·d voxels"
+                (size_axis * density) as i64,
+                "axis {axis}: the span must be size·d voxels (size {size:?} @ {density})"
             );
         }
     }
 
-    /// An even-sized shape (2×4×6) is also block-lattice aligned (it straddles the
-    /// origin symmetrically), confirming the convention holds for both parities.
+    /// A 1×1×1-block box at density `d` generates exactly `d³` voxels occupying
+    /// exactly ONE block-aligned cell `[k·d, (k+1)·d)` per axis (min corner on a
+    /// multiple of `d`, span exactly one block). The user's concrete acceptance
+    /// test for issue #30, generalized across the representative density set —
+    /// INCLUDING the requested **d=1** (→ 1 voxel) and **d=15** (→ 15³ = 3375),
+    /// plus d=2, d=16 (default, → 4096), d=32.
+    #[test]
+    fn one_block_box_aligns_across_densities() {
+        for density in [1u32, 2, 15, 16, 32] {
+            let (min, max, count) = absolute_box_extent([1, 1, 1], density);
+            assert_eq!(
+                count,
+                (density as usize).pow(3),
+                "a 1×1×1 box at density {density} must generate exactly density³ voxels"
+            );
+            for axis in 0..3 {
+                assert_eq!(
+                    min[axis].rem_euclid(density as i64),
+                    0,
+                    "axis {axis} @ d{density}: min voxel corner ({}) must sit on a block \
+                     multiple — no half-block straddle",
+                    min[axis]
+                );
+                assert_eq!(
+                    max[axis] - min[axis],
+                    density as i64,
+                    "axis {axis} @ d{density}: a 1-block box spans exactly one block"
+                );
+                assert_eq!(
+                    max[axis].rem_euclid(density as i64),
+                    0,
+                    "axis {axis} @ d{density}: max boundary must fall on a block multiple"
+                );
+            }
+        }
+    }
+
+    /// An odd-sized shape (5×5×2) is block-lattice aligned across densities: it
+    /// generates `(5d)×(5d)×(2d)` voxels whose every block boundary coincides with
+    /// a global block boundary — the off-centre-odd-size bug fix (#30) — at
+    /// d ∈ {1, 15, 16}.
+    #[test]
+    fn odd_size_shape_is_block_lattice_aligned() {
+        for density in [1u32, 15, 16] {
+            assert_box_block_aligned([5, 5, 2], density);
+        }
+    }
+
+    /// An even-sized shape (2×4×6) is also block-lattice aligned across densities
+    /// (it straddles the origin symmetrically), confirming the convention holds for
+    /// both parities at d ∈ {1, 15, 16}.
     #[test]
     fn even_size_shape_is_block_lattice_aligned() {
-        let density = 16;
-        let size = [2u32, 4, 6];
-        let (min, max, count) = absolute_box_extent(size, density);
-        let expected_count =
-            (size[0] * density) as usize * (size[1] * density) as usize * (size[2] * density) as usize;
-        assert_eq!(count, expected_count, "even box must generate size·d³ voxels");
-        for axis in 0..3 {
-            assert_eq!(
-                min[axis].rem_euclid(density as i64),
-                0,
-                "axis {axis}: even min corner ({}) must be a block multiple",
-                min[axis]
-            );
-            assert_eq!(
-                max[axis].rem_euclid(density as i64),
-                0,
-                "axis {axis}: even max boundary ({}) must be a block multiple",
-                max[axis]
-            );
+        for density in [1u32, 15, 16] {
+            assert_box_block_aligned([2, 4, 6], density);
             // An even size straddles the origin symmetrically: [-size/2·d, +size/2·d).
-            assert_eq!(
-                min[axis],
-                -((size[axis] / 2 * density) as i64),
-                "axis {axis}: an even box is symmetric about the origin"
-            );
+            let size = [2u32, 4, 6];
+            let (min, _max, _count) = absolute_box_extent(size, density);
+            for (axis, &size_axis) in size.iter().enumerate() {
+                assert_eq!(
+                    min[axis],
+                    -((size_axis / 2 * density) as i64),
+                    "axis {axis} @ d{density}: an even box is symmetric about the origin"
+                );
+            }
+        }
+    }
+
+    // ===== Issue #29 foundation: per-object block-aligned voxel AABB + pivot =====
+    //
+    // The grid rework (#29) positions each object's block lattice / floor / voxel
+    // grid and the transform gizmo from the node's BLOCK-ALIGNED VOXEL AABB and its
+    // pivot/origin, in the recentred frame, across densities. The renderers don't
+    // exist yet, but the geometry SOURCE does — `build_leaf_spatial_index` (the
+    // per-leaf world AABB) and `recentre_voxels_for_resolve` (the recentre). These
+    // tests pin that source. The RENDERER-level grid/lattice/gizmo-follow tests
+    // (drawing the actual lines and the gizmo) will be added with #29 sub-steps
+    // S3/S5, parametrized over the SAME density set {1, 15, 16}, once those
+    // renderers exist.
+
+    /// The single leaf's block-aligned voxel AABB, as `build_leaf_spatial_index`
+    /// records it (the #29 grids' geometry source).
+    fn single_leaf_aabb(size_blocks: [u32; 3], offset_blocks: [i64; 3], density: u32) -> VoxelAabb {
+        let shape = SdfShape {
+            kind: ShapeKind::Box,
+            size_blocks,
+            voxels_per_block: density,
+            wall_blocks: 1,
+        };
+        let mut node = Node::new("Box", NodeContent::Tool { shape, material: MaterialChoice::Stone });
+        node.transform.offset_blocks = offset_blocks;
+        let scene = Scene { nodes: vec![node], active: Some(NodePath::root_index(0)), ..Scene::default() };
+        let index = scene.build_leaf_spatial_index(density);
+        assert_eq!(index.entries.len(), 1, "one Tool leaf → one index entry");
+        index.entries[0].world_aabb
+    }
+
+    /// A `B`-block extent → a `B·d`-voxel AABB whose corners land on block
+    /// multiples of `d`, at each density. This is the geometry the per-object
+    /// block lattice / floor / voxel grid (#29) will span (expanded out to
+    /// enclosing whole blocks — here already whole-block, since generation is
+    /// block-aligned).
+    #[test]
+    fn node_block_aabb_scales_and_aligns_across_densities() {
+        let size = [5u32, 5, 2]; // a representative odd extent
+        let offset = [3i64, -2, 4];
+        for density in [1u32, 15, 16] {
+            let aabb = single_leaf_aabb(size, offset, density);
+            for (axis, &size_axis) in size.iter().enumerate() {
+                // Scales with density: a B-block extent → B·d voxels.
+                assert_eq!(
+                    aabb.max[axis] - aabb.min[axis],
+                    (size_axis * density) as i64,
+                    "axis {axis} @ d{density}: AABB extent must be size·d voxels"
+                );
+                // Corners land on block multiples of d (block-aligned, no half-block).
+                assert_eq!(
+                    aabb.min[axis].rem_euclid(density as i64),
+                    0,
+                    "axis {axis} @ d{density}: AABB min corner ({}) must be a block multiple",
+                    aabb.min[axis]
+                );
+                assert_eq!(
+                    aabb.max[axis].rem_euclid(density as i64),
+                    0,
+                    "axis {axis} @ d{density}: AABB max corner ({}) must be a block multiple",
+                    aabb.max[axis]
+                );
+            }
+        }
+    }
+
+    /// Follow-on-translate: translating the node by `+1 block` shifts its AABB by
+    /// exactly `d` voxels per axis (the grids/gizmo follow it), and the AABB stays
+    /// block-aligned, at each density. Offsets are whole blocks (`offset_blocks:
+    /// [i64; 3]`), so sub-block translation is not representable — whole-block
+    /// translation is the unit tested.
+    #[test]
+    fn node_aabb_follows_translation_at_each_density() {
+        let size = [5u32, 5, 2];
+        let base = [3i64, -2, 4];
+        for density in [1u32, 15, 16] {
+            let before = single_leaf_aabb(size, base, density);
+            for moved_axis in 0..3 {
+                let mut shifted = base;
+                shifted[moved_axis] += 1; // +1 block
+                let after = single_leaf_aabb(size, shifted, density);
+                for axis in 0..3 {
+                    let expected = if axis == moved_axis { density as i64 } else { 0 };
+                    assert_eq!(
+                        after.min[axis] - before.min[axis],
+                        expected,
+                        "axis {axis} @ d{density}: +1 block on axis {moved_axis} must shift \
+                         the AABB min by exactly d on that axis (0 elsewhere)"
+                    );
+                    assert_eq!(
+                        after.max[axis] - before.max[axis],
+                        expected,
+                        "axis {axis} @ d{density}: +1 block must shift the AABB max by d"
+                    );
+                    // Still block-aligned after the move.
+                    assert_eq!(
+                        after.min[axis].rem_euclid(density as i64),
+                        0,
+                        "axis {axis} @ d{density}: AABB stays block-aligned after translate"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The node pivot/origin the selection transform gizmo (#29) will track: the
+    /// node's world origin = `offset_blocks·d − recentre`, in the recentred frame.
+    /// Pinned across densities for two facets:
+    ///
+    /// 1. **Recentred-frame value.** For a SINGLE-node scene the recentre always
+    ///    re-centres that one node, so its pivot in the recentred frame is the
+    ///    node's own centre offset from the recentre — INVARIANT under translation
+    ///    (translating the lone node drags the auto-recentre with it). We pin the
+    ///    concrete value `offset·d − recentre` and assert it does NOT move when the
+    ///    node is translated alone. (This is why #29 positions grids in the GLOBAL
+    ///    lattice frame, not this auto-recentred composite — only a fixed frame
+    ///    makes "the gizmo follows the object" observable.)
+    /// 2. **Absolute-frame follow.** In the producer-true ABSOLUTE frame the node
+    ///    origin is `offset_blocks·d`; this DOES follow a `+1 block` translate by
+    ///    exactly `d` voxels per axis (the property the global-frame gizmo inherits).
+    #[test]
+    fn node_pivot_origin_tracks_offset_across_densities() {
+        let size = [5u32, 5, 2];
+        let base = [3i64, -2, 4];
+        for density in [1u32, 15, 16] {
+            let recentre_of = |offset: [i64; 3]| {
+                let shape = SdfShape {
+                    kind: ShapeKind::Box,
+                    size_blocks: size,
+                    voxels_per_block: density,
+                    wall_blocks: 1,
+                };
+                let mut node =
+                    Node::new("Box", NodeContent::Tool { shape, material: MaterialChoice::Stone });
+                node.transform.offset_blocks = offset;
+                let scene = Scene {
+                    nodes: vec![node],
+                    active: Some(NodePath::root_index(0)),
+                    ..Scene::default()
+                };
+                scene.recentre_voxels_for_resolve(density)
+            };
+            // Pivot in the recentred frame = offset·d − recentre.
+            let recentred_pivot = |offset: [i64; 3]| {
+                let recentre = recentre_of(offset);
+                [
+                    offset[0] * density as i64 - recentre[0],
+                    offset[1] * density as i64 - recentre[1],
+                    offset[2] * density as i64 - recentre[2],
+                ]
+            };
+            // Absolute-frame node origin = offset·d (no recentre).
+            let absolute_origin =
+                |offset: [i64; 3]| [offset[0] * density as i64, offset[1] * density as i64, offset[2] * density as i64];
+
+            let base_recentred = recentred_pivot(base);
+            let base_absolute = absolute_origin(base);
+            for moved_axis in 0..3 {
+                let mut shifted = base;
+                shifted[moved_axis] += 1; // +1 block
+                let moved_recentred = recentred_pivot(shifted);
+                let moved_absolute = absolute_origin(shifted);
+                for axis in 0..3 {
+                    // (1) Single-node recentred pivot is invariant under self-translation.
+                    assert_eq!(
+                        moved_recentred[axis], base_recentred[axis],
+                        "axis {axis} @ d{density}: a lone node's recentred pivot is invariant \
+                         under self-translation (the auto-recentre follows it)"
+                    );
+                    // (2) Absolute origin follows +1 block by exactly d on that axis.
+                    let expected = if axis == moved_axis { density as i64 } else { 0 };
+                    assert_eq!(
+                        moved_absolute[axis] - base_absolute[axis],
+                        expected,
+                        "axis {axis} @ d{density}: absolute node origin must follow a +1-block \
+                         translate on axis {moved_axis} by exactly d voxels (0 elsewhere)"
+                    );
+                }
+            }
         }
     }
 }

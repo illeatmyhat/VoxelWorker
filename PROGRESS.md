@@ -33,6 +33,30 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **Density-parametrized shape-alignment + node-AABB follow tests — Part of #29.** Pure-CPU
+  TEST augmentation (no behaviour change → goldens stay green). Generalized the #30 acceptance
+  coverage across a representative density set and added the #29 grid/gizmo geometry-source tests:
+  - **Generation, parametrized over density** (`scene.rs` tests): `one_block_box_aligns_across_densities`
+    (1×1×1 box → exactly `d³` voxels in ONE block-aligned cell `[k·d,(k+1)·d)`, over **d ∈ {1, 2,
+    15, 16, 32}** — incl. the requested d=1 → 1 voxel and d=15 → 3375); `odd_size_shape_is_block_lattice_aligned`
+    (5×5×2) and `even_size_shape_is_block_lattice_aligned` (2×4×6) now loop **d ∈ {1, 15, 16}** via a
+    shared `assert_box_block_aligned` helper (every block boundary on a multiple of `d`, no half-block).
+  - **#29 foundation "follow" tests** over the node's block-aligned voxel AABB (from
+    `build_leaf_spatial_index`) + recentre (`recentre_voxels_for_resolve`), d ∈ {1, 15, 16}:
+    `node_block_aabb_scales_and_aligns_across_densities` (B-block extent → B·d voxels, corners on
+    block multiples); `node_aabb_follows_translation_at_each_density` (+1 block shifts the AABB by
+    exactly `d` voxels on that axis, 0 elsewhere, stays block-aligned — offsets are whole blocks, so
+    whole-block translation is the unit; sub-block isn't representable); `node_pivot_origin_tracks_offset_across_densities`
+    (pivot = `offset·d − recentre`: for a LONE node the recentred pivot is invariant under
+    self-translation because the auto-recentre follows it — which is WHY #29 positions grids in the
+    GLOBAL lattice frame; the ABSOLUTE origin `offset·d` does follow +1 block by `d`).
+  - No helper exposure needed — `build_leaf_spatial_index`/`recentre_voxels_for_resolve` are already
+    `pub` and `VoxelAabb` fields are public; zero logic change. **177 lib tests** (was 174; +6 new,
+    −3 old merged), clippy clean, 6 goldens green.
+  - **NOTE:** the RENDERER-level grid/lattice/floor/voxel-grid + transform-gizmo follow tests (drawing
+    the actual lines/gizmo) will be added with **#29 sub-steps S3/S5**, parametrized over the SAME
+    density set {1, 15, 16}, once those renderers exist.
+
 - **Align shape generation to the global block lattice (Closes #30).** Generated shapes were
   off-centre for ODD block sizes: the producer (`SdfShape::resolve`, voxel.rs) centres its
   `grid = size·d` voxels on the origin (`idx + 0.5 − grid/2`), so an odd block count's span
