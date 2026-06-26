@@ -1095,16 +1095,34 @@ async fn run_capture(options: ShotOptions) {
             voxel_renderer.last_rebuilt_chunk_count()
         );
     }
-    // ADR 0002 E3b-1 (part of #18): the experimental cuboid mesh path, built only
-    // when `--mesher cuboid` is selected. The instanced path stays the default.
+    // ADR 0002 E3b-1 (part of #18): the cuboid mesh path (the DEFAULT mesher). Since
+    // issue #20 S6c-2d it meshes PER CHUNK with a 1-voxel neighbour apron: built from
+    // the resolve cache's per-chunk accessor (`resident_render_chunks`) so the goldens
+    // exercise the per-chunk path, falling back to the whole-grid wrapper when the
+    // scene has no chunkable extent (the wrapper buckets internally → identical mesh).
     let mut cuboid_mesh_renderer = if options.mesher == MesherChoice::Cuboid {
-        Some(CuboidMeshRenderer::new(
-            &gpu.device,
-            &gpu.queue,
-            COLOR_TARGET_FORMAT,
-            &grid,
-            options.geometry.voxels_per_block,
-        ))
+        if scene.has_chunkable_extent(density) {
+            let mut cuboid_resolve_cache =
+                voxel_worker::chunk_cache::ChunkResolveCache::new();
+            let render_chunks = cuboid_resolve_cache.resident_render_chunks(&scene, density, 0);
+            let renderer = CuboidMeshRenderer::new_from_chunks(
+                &gpu.device,
+                &gpu.queue,
+                COLOR_TARGET_FORMAT,
+                &render_chunks,
+                grid_dimensions,
+            );
+            drop(render_chunks);
+            Some(renderer)
+        } else {
+            Some(CuboidMeshRenderer::new(
+                &gpu.device,
+                &gpu.queue,
+                COLOR_TARGET_FORMAT,
+                &grid,
+                options.geometry.voxels_per_block,
+            ))
+        }
     } else {
         None
     };
@@ -1378,10 +1396,10 @@ async fn run_capture(options: ShotOptions) {
         );
         println!(
             "cuboid mesher: {} boxes → {} exposed faces ({} triangles), {} chunks (vs {} instanced voxels)",
-            cuboid_mesh_renderer.mesh().box_count(),
-            cuboid_mesh_renderer.mesh().face_count(),
-            cuboid_mesh_renderer.mesh().triangle_count(),
-            cuboid_mesh_renderer.mesh().chunk_count(),
+            cuboid_mesh_renderer.box_count(),
+            cuboid_mesh_renderer.face_count(),
+            cuboid_mesh_renderer.triangle_count(),
+            cuboid_mesh_renderer.chunk_count(),
             voxel_renderer.instance_count(),
         );
     }

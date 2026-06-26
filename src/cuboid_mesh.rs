@@ -35,7 +35,7 @@ use wgpu::util::DeviceExt;
 use crate::cuboid::{decompose_into_boxes, VoxelBox, VoxelRegion};
 use crate::frustum::{Aabb, Frustum};
 use crate::panel::MaterialChoice;
-use crate::renderer::{bucket_instances_into_chunks, LayerBand, DEPTH_FORMAT, MSAA_SAMPLE_COUNT};
+use crate::renderer::{LayerBand, DEPTH_FORMAT, MSAA_SAMPLE_COUNT};
 use crate::texture_atlas::MaterialAtlas;
 use crate::voxel::VoxelGrid;
 
@@ -106,24 +106,17 @@ const FACE_TEMPLATES: [FaceTemplate; 6] = [
     },
 ];
 
-/// A built CPU mesh of a grid's exposed cuboid faces, plus the per-chunk index
-/// ranges + world AABBs for frustum culling (reusing the instanced path's chunk
-/// partition).
+/// A built CPU mesh of a WHOLE grid's exposed cuboid faces (one flat vertex/index
+/// list). This is the structural REFERENCE for the per-chunk apron mesher — the
+/// parity test asserts the per-chunk-with-apron exposed-face SET equals this — and
+/// the CPU adapter the older `build_cuboid_mesh*` tests exercise. The live GPU path
+/// uses [`build_chunk_meshes_with_apron`] + per-chunk buffers, not this struct.
 #[derive(Debug, Default, Clone)]
 pub struct CuboidMesh {
     vertices: Vec<CuboidVertex>,
     indices: Vec<u32>,
-    /// One entry per render chunk: `(index_start, index_count, world AABB)`.
-    chunks: Vec<MeshChunk>,
     /// Number of boxes the grid decomposed into (diagnostic).
     box_count: u32,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct MeshChunk {
-    index_start: u32,
-    index_count: u32,
-    aabb: Aabb,
 }
 
 impl CuboidMesh {
@@ -150,11 +143,6 @@ impl CuboidMesh {
     /// Number of cuboid boxes the grid decomposed into.
     pub fn box_count(&self) -> u32 {
         self.box_count
-    }
-
-    /// Number of render chunks the mesh is partitioned into.
-    pub fn chunk_count(&self) -> u32 {
-        self.chunks.len() as u32
     }
 }
 
@@ -186,7 +174,7 @@ pub fn build_cuboid_mesh(grid: &VoxelGrid, voxels_per_block: u32) -> CuboidMesh 
 /// byte-identical to the unbanded path.
 pub fn build_cuboid_mesh_banded(
     grid: &VoxelGrid,
-    voxels_per_block: u32,
+    _voxels_per_block: u32,
     band: LayerBand,
 ) -> CuboidMesh {
     let [grid_x, grid_y, grid_z] = grid.dimensions;
@@ -237,94 +225,27 @@ pub fn build_cuboid_mesh_banded(
 
     let boxes = decompose_into_boxes(&region);
 
-    // Reuse the instanced chunk partition: bucket voxels into chunks and key each
-    // box to a chunk by its min-corner voxel. A box never straddles a material
-    // change, but it CAN straddle a chunk boundary; we assign it wholesale to the
-    // chunk of its min corner and expand that chunk's AABB to contain it, so the
-    // frustum test stays conservative (never a false negative).
-    let (_instances, instanced_chunks) = bucket_instances_into_chunks(grid, voxels_per_block);
-    let chunk_extent = (crate::renderer::CHUNK_BLOCKS * voxels_per_block.max(1)) as f32;
-    // `world_offset` (from `occupied_index_bounds`) maps a REGION-LOCAL voxel index
-    // to its world min-corner plane at the EXACT location the instanced path draws
-    // that voxel, i.e. `min(world_position) - 0.5`. Adding it to a local index `l`
-    // gives `(min_voxel_min_plane) + l`, so the cuboid mesh sits pixel-for-pixel on
-    // top of the instanced voxels even when the scene recentred the cloud off the
-    // geometric centre. (A centred grid yields the old `-dimensions/2`.)
-
-    // Map a chunk integer key → its position in `instanced_chunks` (same sort
-    // order). We rebuild the key→slot map by recomputing each chunk's key from its
-    // AABB centre is fragile; instead bucket boxes by key into our own map and
-    // build chunks from that, computing AABBs from the boxes themselves.
-    use std::collections::HashMap;
-    let mut buckets: HashMap<[i32; 3], Vec<usize>> = HashMap::new();
-    for (box_index, voxel_box) in boxes.iter().enumerate() {
-        // World centre of the box's min-corner voxel: local index + 0.5 + offset.
-        let key = [
-            ((voxel_box.min[0] as f32 + 0.5 + world_offset[0]) / chunk_extent).floor() as i32,
-            ((voxel_box.min[1] as f32 + 0.5 + world_offset[1]) / chunk_extent).floor() as i32,
-            ((voxel_box.min[2] as f32 + 0.5 + world_offset[2]) / chunk_extent).floor() as i32,
-        ];
-        buckets.entry(key).or_default().push(box_index);
-    }
-    // Deterministic chunk order (matches the instanced sort).
-    let mut keys: Vec<[i32; 3]> = buckets.keys().copied().collect();
-    keys.sort_unstable();
-    // Touch `instanced_chunks` so the partition source is unmistakably the shared
-    // one; the count is a useful invariant in debug builds.
-    debug_assert!(
-        instanced_chunks.len() >= keys.len() || boxes.is_empty(),
-        "cuboid chunks should not exceed instanced chunks"
-    );
-
+    // `world_offset` maps a REGION-LOCAL voxel index to its world min-corner plane at
+    // the EXACT location the instanced path draws that voxel, i.e.
+    // `min(world_position) - 0.5`. Adding it to a local index `l` gives the box's
+    // world corner, so the reference mesh sits pixel-for-pixel on the instanced
+    // voxels even when the scene recentred the cloud off the geometric centre.
+    //
+    // This WHOLE-GRID builder is the per-chunk mesher's structural REFERENCE (the
+    // parity test asserts the per-chunk-with-apron exposed-face SET equals this), so
+    // it emits one flat vertex/index list with no chunk partition (the per-chunk GPU
+    // buffers come from [`build_chunk_meshes_with_apron`]).
     let mut vertices: Vec<CuboidVertex> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
-    let mut chunks: Vec<MeshChunk> = Vec::new();
-
-    for key in keys {
-        let box_indices = &buckets[&key];
-        let index_start = indices.len() as u32;
-        let mut aabb = Aabb::empty();
-        for &box_index in box_indices {
-            let voxel_box = &boxes[box_index];
-            emit_box_faces(voxel_box, &region, world_offset, &mut vertices, &mut indices, &mut aabb);
-        }
-        let index_count = indices.len() as u32 - index_start;
-        chunks.push(MeshChunk {
-            index_start,
-            index_count,
-            aabb,
-        });
+    let mut aabb = Aabb::empty();
+    for voxel_box in &boxes {
+        emit_box_faces(voxel_box, &region, world_offset, &mut vertices, &mut indices, &mut aabb);
     }
 
     CuboidMesh {
         vertices,
         indices,
-        chunks,
         box_count: boxes.len() as u32,
-    }
-}
-
-/// The mesh's vertices, or a single zeroed placeholder vertex when the mesh is
-/// empty (so the GPU vertex buffer is never zero-sized — nothing is drawn anyway,
-/// since an empty mesh has no chunks).
-fn mesh_vertices_or_placeholder(mesh: &CuboidMesh) -> Vec<CuboidVertex> {
-    if mesh.vertices.is_empty() {
-        vec![CuboidVertex {
-            position: [0.0; 3],
-            normal: [0.0, 1.0, 0.0],
-            material_id: 0,
-        }]
-    } else {
-        mesh.vertices.clone()
-    }
-}
-
-/// The mesh's indices, or a single placeholder index when the mesh is empty.
-fn mesh_indices_or_placeholder(mesh: &CuboidMesh) -> Vec<u32> {
-    if mesh.indices.is_empty() {
-        vec![0u32]
-    } else {
-        mesh.indices.clone()
     }
 }
 
@@ -402,6 +323,244 @@ fn region_from_voxel_cloud(grid: &VoxelGrid) -> (VoxelRegion, [f32; 3]) {
         min_world[2] - 0.5,
     ];
     (region, world_offset)
+}
+
+/// A built CPU mesh of ONE render chunk's exposed cuboid faces (issue #20 S6c-2d):
+/// the chunk's absolute coord, its vertex/index buffers, and its world AABB for
+/// frustum culling. Produced by [`build_chunk_meshes_with_apron`] and uploaded to
+/// one [`CuboidChunkBuffers`] per chunk.
+#[derive(Debug, Clone)]
+pub struct CuboidChunkMesh {
+    /// Absolute chunk coord (the coord `resident_render_chunks` reports).
+    pub coord: [i32; 3],
+    /// The chunk's exposed-face vertices.
+    vertices: Vec<CuboidVertex>,
+    /// Triangle indices into `vertices`.
+    indices: Vec<u32>,
+    /// World-space AABB of the chunk's emitted geometry (frustum cull key).
+    aabb: Aabb,
+    /// Boxes the chunk's interior decomposed into (diagnostic).
+    box_count: u32,
+}
+
+impl CuboidChunkMesh {
+    /// Number of exposed quad faces (two triangles each).
+    pub fn face_count(&self) -> u32 {
+        (self.indices.len() / 6) as u32
+    }
+    /// Number of triangles.
+    pub fn triangle_count(&self) -> u32 {
+        (self.indices.len() / 3) as u32
+    }
+    /// Boxes the chunk's interior decomposed into.
+    pub fn box_count(&self) -> u32 {
+        self.box_count
+    }
+}
+
+/// Global absolute-voxel-index occupancy + anchor for a set of per-chunk grids.
+///
+/// `world_offset` is the world min-corner plane of absolute index `(0,0,0)` —
+/// `min(world_position) - 0.5` over EVERY voxel in EVERY chunk grid (the same cloud
+/// anchor [`region_from_voxel_cloud`] computes for the whole grid). `occupied` is
+/// the set of absolute indices `round(world - min_world)` of every voxel across all
+/// chunks. Both keyed off the GLOBAL cloud so a per-chunk region densified against
+/// `world_offset` lands its geometry on the EXACT world positions the whole-region
+/// mesher would (pixel parity), and a chunk's 1-voxel apron reads the true neighbour
+/// occupancy from `occupied` (so a seam face between two solid chunks is culled —
+/// the exposed-face set equals whole-region meshing's).
+struct GlobalOccupancy {
+    world_offset: [f32; 3],
+    occupied: std::collections::HashMap<[i64; 3], u16>,
+}
+
+/// Build the global occupancy + cloud anchor over all per-chunk grids (issue #20
+/// S6c-2d). The anchor is the union cloud's minimum voxel centre, identical to the
+/// whole-region path's [`region_from_voxel_cloud`] anchor (the union of the chunk
+/// grids IS the assembled whole grid, voxel-for-voxel, by the S6c-2a seam).
+fn global_occupancy_from_chunks(chunk_grids: &[([i32; 3], &VoxelGrid)]) -> GlobalOccupancy {
+    let mut min_world = [f32::INFINITY; 3];
+    let mut any = false;
+    for (_coord, grid) in chunk_grids {
+        for voxel in &grid.occupied {
+            any = true;
+            for (axis, min_axis) in min_world.iter_mut().enumerate() {
+                *min_axis = min_axis.min(voxel.world_position[axis]);
+            }
+        }
+    }
+    if !any {
+        return GlobalOccupancy {
+            world_offset: [0.0; 3],
+            occupied: std::collections::HashMap::new(),
+        };
+    }
+    let mut occupied = std::collections::HashMap::new();
+    for (_coord, grid) in chunk_grids {
+        for voxel in &grid.occupied {
+            let index = [
+                (voxel.world_position[0] - min_world[0]).round() as i64,
+                (voxel.world_position[1] - min_world[1]).round() as i64,
+                (voxel.world_position[2] - min_world[2]).round() as i64,
+            ];
+            occupied.insert(index, voxel.material_id);
+        }
+    }
+    GlobalOccupancy {
+        world_offset: [min_world[0] - 0.5, min_world[1] - 0.5, min_world[2] - 0.5],
+        occupied,
+    }
+}
+
+/// Apron-aware per-chunk cuboid meshing (issue #20 S6c-2d) — the DEFAULT render
+/// path, meshed one chunk at a time instead of densifying + greedy-decomposing the
+/// WHOLE region.
+///
+/// For each `(coord, &grid)` chunk:
+/// 1. Densify the chunk's OWN voxels into an interior region anchored on the global
+///    cloud (so emitted world positions are byte-identical to the whole-region
+///    mesher → pixel parity).
+/// 2. Build a co-located APRON region of the same extent whose every cell — interior
+///    AND the 1-voxel border — is filled from the GLOBAL occupancy. The apron is
+///    used ONLY for [`face_is_exposed`] (no apron geometry is emitted), so a seam
+///    face between two solid chunks is correctly culled and the chunk's exposed-face
+///    SET equals the whole-region mesher's.
+/// 3. Apply the layer-range band clip to the interior region per chunk (absolute
+///    layers; the band edge synthesises real cap faces inside the chunk).
+/// 4. `decompose_into_boxes` on the INTERIOR region (apron cells are air for
+///    decomposition, so no box ever spans into the apron), then `emit_box_faces`
+///    with exposure tested against the APRON region.
+///
+/// `grid_dimensions` is the whole composite grid's voxel dims; only the Y half is
+/// used (to map an absolute layer to the global region-local Y for the band clip).
+/// Chunks that mesh to zero faces are omitted from the result.
+fn build_chunk_meshes_with_apron(
+    chunk_grids: &[([i32; 3], &VoxelGrid)],
+    grid_dimensions: [u32; 3],
+    band: LayerBand,
+) -> Vec<CuboidChunkMesh> {
+    let global = global_occupancy_from_chunks(chunk_grids);
+    if global.occupied.is_empty() {
+        return Vec::new();
+    }
+    let world_offset = global.world_offset;
+
+    // The band clip works in GLOBAL absolute-index Y. A voxel's global index is
+    // `round(world - min_world)`; the instanced path clips by absolute layer
+    // `floor(world.y + half_y)`. With `world.y = global_index_y + min_world.y` and
+    // `min_world.y = world_offset.y + 0.5`, absolute layer = `global_index_y +
+    // base_layer`, `base_layer = floor(world_offset.y + 0.5 + half_y)`. So a global
+    // index Y is in-band iff `base_layer + gy ∈ [band_min, band_max]`.
+    let band_active = band.band_min > 0 || band.band_max != u32::MAX;
+    let half_y = grid_dimensions[1] as f32 / 2.0;
+    let base_layer = (world_offset[1] + 0.5 + half_y).floor() as i64;
+    let global_y_in_band = |gy: i64| -> bool {
+        if !band_active {
+            return true;
+        }
+        let layer = base_layer + gy;
+        layer >= band.band_min as i64 && layer <= band.band_max as i64
+    };
+
+    let mut meshes = Vec::new();
+    for (coord, grid) in chunk_grids {
+        if grid.occupied.is_empty() {
+            continue;
+        }
+        // The chunk's own voxels as global absolute indices (band-clipped).
+        let mut chunk_indices: Vec<([i64; 3], u16)> = Vec::with_capacity(grid.occupied.len());
+        let mut gmin = [i64::MAX; 3];
+        let mut gmax = [i64::MIN; 3];
+        for voxel in &grid.occupied {
+            let index = [
+                (voxel.world_position[0] - (world_offset[0] + 0.5)).round() as i64,
+                (voxel.world_position[1] - (world_offset[1] + 0.5)).round() as i64,
+                (voxel.world_position[2] - (world_offset[2] + 0.5)).round() as i64,
+            ];
+            if !global_y_in_band(index[1]) {
+                continue;
+            }
+            for axis in 0..3 {
+                gmin[axis] = gmin[axis].min(index[axis]);
+                gmax[axis] = gmax[axis].max(index[axis]);
+            }
+            chunk_indices.push((index, voxel.material_id));
+        }
+        if chunk_indices.is_empty() {
+            continue; // every voxel clipped away by the band
+        }
+
+        // Region-local origin = chunk min minus one apron cell; extent spans the
+        // chunk's voxels plus a 1-cell apron on every side.
+        let origin = [gmin[0] - 1, gmin[1] - 1, gmin[2] - 1];
+        let extent = [
+            (gmax[0] - gmin[0] + 3) as u32,
+            (gmax[1] - gmin[1] + 3) as u32,
+            (gmax[2] - gmin[2] + 3) as u32,
+        ];
+
+        // Interior region: ONLY this chunk's own voxels (apron stays air, so the
+        // decomposition never grows a box into the apron).
+        let mut interior = VoxelRegion::new_empty(extent);
+        for (index, material) in &chunk_indices {
+            let lx = (index[0] - origin[0]) as u32;
+            let ly = (index[1] - origin[1]) as u32;
+            let lz = (index[2] - origin[2]) as u32;
+            interior.set(lx, ly, lz, Some(*material));
+        }
+
+        // Apron region: same frame; every cell (interior + border) read from the
+        // GLOBAL occupancy, BAND-CLIPPED exactly as the interior — so a seam
+        // neighbour that the band masked out reads as air and the cap face is
+        // synthesised, identical to whole-region meshing under the same band.
+        let mut apron = VoxelRegion::new_empty(extent);
+        for lz in 0..extent[2] {
+            for ly in 0..extent[1] {
+                for lx in 0..extent[0] {
+                    let g = [
+                        origin[0] + lx as i64,
+                        origin[1] + ly as i64,
+                        origin[2] + lz as i64,
+                    ];
+                    if !global_y_in_band(g[1]) {
+                        continue;
+                    }
+                    if let Some(material) = global.occupied.get(&g) {
+                        apron.set(lx, ly, lz, Some(*material));
+                    }
+                }
+            }
+        }
+
+        // The world offset that maps this region's local index 0 to world space:
+        // global index 0 sits at `world_offset`, and local 0 = global `origin`, so
+        // the region's local offset is `world_offset + origin`.
+        let region_offset = [
+            world_offset[0] + origin[0] as f32,
+            world_offset[1] + origin[1] as f32,
+            world_offset[2] + origin[2] as f32,
+        ];
+
+        let boxes = decompose_into_boxes(&interior);
+        let mut vertices: Vec<CuboidVertex> = Vec::new();
+        let mut indices: Vec<u32> = Vec::new();
+        let mut aabb = Aabb::empty();
+        for voxel_box in &boxes {
+            // Decompose on the interior region but test exposure against the apron.
+            emit_box_faces(voxel_box, &apron, region_offset, &mut vertices, &mut indices, &mut aabb);
+        }
+        if indices.is_empty() {
+            continue;
+        }
+        meshes.push(CuboidChunkMesh {
+            coord: *coord,
+            vertices,
+            indices,
+            aabb,
+            box_count: boxes.len() as u32,
+        });
+    }
+    meshes
 }
 
 /// Emit the exposed faces of one box into the shared vertex/index buffers,
@@ -637,7 +796,19 @@ fn upload_atlas_texture(
     texture
 }
 
-/// All GPU resources for drawing the cuboid mesh (flag-gated alternate path).
+/// One render chunk's GPU buffers for the cuboid path (issue #20 S6c-2d): its own
+/// vertex + index buffer, the index count, and the world AABB for frustum culling.
+/// Mirrors the instanced [`crate::renderer::InstancedChunkBuffers`]. A chunk that
+/// meshes to zero faces is never stored (no buffer allocated).
+struct CuboidChunkBuffers {
+    vertex_buffer: wgpu::Buffer,
+    index_buffer: wgpu::Buffer,
+    index_count: u32,
+    aabb: Aabb,
+}
+
+/// All GPU resources for drawing the cuboid mesh (DEFAULT render path; per-chunk
+/// buffers since issue #20 S6c-2d).
 pub struct CuboidMeshRenderer {
     pipeline: wgpu::RenderPipeline,
     /// Face-orientation debug pipeline: identical to `pipeline` except
@@ -649,8 +820,15 @@ pub struct CuboidMeshRenderer {
     /// Whether the last `update_uniforms` requested debug-faces mode (selects the
     /// cull-off pipeline in `draw`, matching the uploaded `debug_face_mode` flag).
     debug_face_mode: bool,
-    vertex_buffer: wgpu::Buffer,
-    index_buffer: wgpu::Buffer,
+    /// Per-chunk GPU buffers (issue #20 S6c-2d), keyed by absolute chunk coord (the
+    /// coord `resident_render_chunks` reports). Replaces the single monolithic
+    /// vertex/index buffer + `CuboidMesh.chunks` index ranges: each chunk owns its
+    /// own buffers, meshed from its own per-chunk grid + a 1-voxel neighbour apron.
+    chunk_buffers: std::collections::HashMap<[i32; 3], CuboidChunkBuffers>,
+    /// Chunk coords (keys into `chunk_buffers`) that survived the last frustum cull;
+    /// computed in `update_uniforms`, consumed in `draw`. Sorted for a deterministic
+    /// draw order (cross-chunk order is pixel-irrelevant: opaque + depth-tested).
+    visible_chunks: Vec<[i32; 3]>,
     uniform_buffer: wgpu::Buffer,
     uniform_bind_group: wgpu::BindGroup,
     /// ONE atlas bind group (ADR 0002 E3c-1 / O8): all material textures packed
@@ -668,21 +846,28 @@ pub struct CuboidMeshRenderer {
     /// `update_uniforms` records it (drives the per-box base-colour modulation only;
     /// the atlas is bound once regardless of material).
     bound_material: MaterialChoice,
-    mesh: CuboidMesh,
-    /// Indices into `mesh.chunks` that survived the last frustum cull.
-    visible_chunks: Vec<usize>,
-    /// The grid + density the mesh was built from, retained so the mesh can be
-    /// rebuilt CLIPPED to a new layer-range band (issue #12 parity) without the
-    /// caller re-supplying the grid. The cuboid band clip masks the region before
-    /// decomposition (real cap faces), so a band change re-meshes; we cache the
-    /// last band and rebuild only when it differs.
-    source_grid: VoxelGrid,
-    source_voxels_per_block: u32,
+    /// The per-chunk grids the mesh was last built from (OWNED copies), retained so
+    /// the mesh can be re-built CLIPPED to a new layer-range band (issue #12 parity)
+    /// without the caller re-supplying them. The cuboid band clip masks each chunk's
+    /// region before decomposition (real cap faces), so a band change re-meshes; we
+    /// cache the last band and rebuild only when it differs.
+    source_chunk_grids: Vec<([i32; 3], VoxelGrid)>,
+    /// The whole composite grid's voxel dims (the band clip maps an absolute layer to
+    /// the global region-local Y; only the Y half is used).
+    source_grid_dimensions: [u32; 3],
+    /// Total boxes across all chunks the last build produced (diagnostic).
+    total_box_count: u32,
     current_band: LayerBand,
 }
 
 impl CuboidMeshRenderer {
-    /// Build the cuboid renderer from a grid, decomposing + meshing immediately.
+    /// Build the cuboid renderer from a WHOLE grid (the wrapper kept for `shot.rs`
+    /// and tests that have a monolithic grid). Buckets the grid into per-chunk
+    /// sub-grids by `floor(world_position / chunk_extent)` — the SAME key the
+    /// instanced [`crate::renderer::VoxelRenderer::rebuild_instances`] wrapper uses —
+    /// then meshes per chunk with an apron via [`Self::new_from_chunks`]. So a build
+    /// from the whole grid is byte-identical to a build from the resolve cache's
+    /// per-chunk accessor.
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -690,23 +875,39 @@ impl CuboidMeshRenderer {
         grid: &VoxelGrid,
         voxels_per_block: u32,
     ) -> Self {
-        let mesh = build_cuboid_mesh(grid, voxels_per_block);
+        let buckets = bucket_grid_into_chunk_grids(grid, voxels_per_block);
+        let chunk_refs: Vec<([i32; 3], &VoxelGrid)> =
+            buckets.iter().map(|(coord, g)| (*coord, g)).collect();
+        Self::new_from_chunks(
+            device,
+            queue,
+            color_format,
+            &chunk_refs,
+            grid.dimensions,
+        )
+    }
 
-        // Always allocate at least one (zeroed) vertex/index so the buffers are
-        // valid even for an empty grid (nothing is drawn — no chunks).
-        let vertices = mesh_vertices_or_placeholder(&mesh);
-        let raw_indices = mesh_indices_or_placeholder(&mesh);
-
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("cuboid mesh vertices"),
-            contents: bytemuck::cast_slice(&vertices),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("cuboid mesh indices"),
-            contents: bytemuck::cast_slice(&raw_indices),
-            usage: wgpu::BufferUsages::INDEX,
-        });
+    /// Build the cuboid renderer DIRECTLY from the resolve cache's per-chunk grids
+    /// (issue #20 S6c-2d). `chunk_grids` is `resident_render_chunks`'s output
+    /// (`(absolute_chunk_coord, &rebased_grid)` per covering chunk); `grid_dimensions`
+    /// is the whole composite grid's voxel dims (the band-clip layer mapping). Meshes
+    /// every chunk with a 1-voxel neighbour apron (see [`build_chunk_meshes_with_apron`])
+    /// and stores one [`CuboidChunkBuffers`] per non-empty chunk.
+    pub fn new_from_chunks(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        color_format: wgpu::TextureFormat,
+        chunk_grids: &[([i32; 3], &VoxelGrid)],
+        grid_dimensions: [u32; 3],
+    ) -> Self {
+        let source_chunk_grids: Vec<([i32; 3], VoxelGrid)> = chunk_grids
+            .iter()
+            .map(|(coord, grid)| (*coord, (*grid).clone()))
+            .collect();
+        let chunk_meshes =
+            build_chunk_meshes_with_apron(chunk_grids, grid_dimensions, LayerBand::FULL);
+        let total_box_count = chunk_meshes.iter().map(|m| m.box_count).sum();
+        let chunk_buffers = upload_chunk_meshes(device, &chunk_meshes);
 
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("cuboid uniforms"),
@@ -868,58 +1069,71 @@ impl CuboidMeshRenderer {
         let pipeline = build_pipeline("cuboid pipeline", Some(wgpu::Face::Back));
         let debug_pipeline = build_pipeline("cuboid debug pipeline", None);
 
-        let visible_chunks: Vec<usize> = (0..mesh.chunks.len()).collect();
+        // Every resident chunk visible until the next frustum cull in `update_uniforms`.
+        let mut visible_chunks: Vec<[i32; 3]> = chunk_buffers.keys().copied().collect();
+        visible_chunks.sort_unstable();
 
         Self {
             pipeline,
             debug_pipeline,
             debug_face_mode: false,
-            vertex_buffer,
-            index_buffer,
+            chunk_buffers,
+            visible_chunks,
             uniform_buffer,
             uniform_bind_group,
             atlas_bind_group,
             atlas_rects,
             bound_material: MaterialChoice::Plain,
-            mesh,
-            visible_chunks,
-            source_grid: grid.clone(),
-            source_voxels_per_block: voxels_per_block,
+            source_chunk_grids,
+            source_grid_dimensions: grid_dimensions,
+            total_box_count,
             current_band: LayerBand::FULL,
         }
     }
 
-    /// Re-mesh the stored grid CLIPPED to `band` (issue #12 parity) and re-upload
-    /// the vertex/index buffers, when `band` differs from the last build. The
-    /// cuboid band clip masks the region before decomposition so the band edges get
-    /// real cap faces, so it must rebuild geometry (a fragment discard would leave a
-    /// merged column's slab open-topped). No-op when the band is unchanged.
+    /// Re-mesh the stored per-chunk grids CLIPPED to `band` (issue #12 parity) and
+    /// re-upload every chunk's buffers, when `band` differs from the last build. The
+    /// cuboid band clip masks each chunk's region before decomposition so the band
+    /// edges get real cap faces, so it must rebuild geometry (a fragment discard
+    /// would leave a merged column's slab open-topped). No-op when the band is
+    /// unchanged.
     fn rebuild_for_band(&mut self, device: &wgpu::Device, band: LayerBand) {
         if band == self.current_band {
             return;
         }
         self.current_band = band;
-        self.mesh =
-            build_cuboid_mesh_banded(&self.source_grid, self.source_voxels_per_block, band);
-        let vertices = mesh_vertices_or_placeholder(&self.mesh);
-        let raw_indices = mesh_indices_or_placeholder(&self.mesh);
-        self.vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("cuboid mesh vertices"),
-            contents: bytemuck::cast_slice(&vertices),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-        self.index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("cuboid mesh indices"),
-            contents: bytemuck::cast_slice(&raw_indices),
-            usage: wgpu::BufferUsages::INDEX,
-        });
+        let chunk_refs: Vec<([i32; 3], &VoxelGrid)> = self
+            .source_chunk_grids
+            .iter()
+            .map(|(coord, g)| (*coord, g))
+            .collect();
+        let chunk_meshes =
+            build_chunk_meshes_with_apron(&chunk_refs, self.source_grid_dimensions, band);
+        self.total_box_count = chunk_meshes.iter().map(|m| m.box_count).sum();
+        self.chunk_buffers = upload_chunk_meshes(device, &chunk_meshes);
         // All chunks visible until the next frustum cull in `update_uniforms`.
-        self.visible_chunks = (0..self.mesh.chunks.len()).collect();
+        self.visible_chunks = self.chunk_buffers.keys().copied().collect();
+        self.visible_chunks.sort_unstable();
     }
 
-    /// The built mesh (for diagnostics: triangle/box/chunk counts).
-    pub fn mesh(&self) -> &CuboidMesh {
-        &self.mesh
+    /// Total exposed quad faces across all resident chunks (diagnostic).
+    pub fn face_count(&self) -> u32 {
+        self.chunk_buffers.values().map(|c| c.index_count / 6).sum()
+    }
+
+    /// Total triangles across all resident chunks (diagnostic).
+    pub fn triangle_count(&self) -> u32 {
+        self.chunk_buffers.values().map(|c| c.index_count / 3).sum()
+    }
+
+    /// Total boxes the last build decomposed into across all chunks (diagnostic).
+    pub fn box_count(&self) -> u32 {
+        self.total_box_count
+    }
+
+    /// Number of resident render chunks (non-empty cuboid meshes).
+    pub fn chunk_count(&self) -> u32 {
+        self.chunk_buffers.len() as u32
     }
 
     /// Number of chunks that survived the last frustum cull (will be drawn).
@@ -1018,20 +1232,24 @@ impl CuboidMeshRenderer {
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
 
-        // Frustum-cull the chunks (reusing the chunk world-AABBs).
+        // Frustum-cull the per-chunk buffers by their world AABBs (sorted for a
+        // deterministic draw order; cross-chunk order is pixel-irrelevant — opaque +
+        // depth-tested).
         let frustum = Frustum::from_view_projection(view_projection);
         self.visible_chunks.clear();
-        for (index, chunk) in self.mesh.chunks.iter().enumerate() {
+        for (coord, chunk) in &self.chunk_buffers {
             if frustum.intersects_aabb(&chunk.aabb) {
-                self.visible_chunks.push(index);
+                self.visible_chunks.push(*coord);
             }
         }
+        self.visible_chunks.sort_unstable();
     }
 
-    /// Record the cuboid draw into an already-begun render pass. Draws each
-    /// frustum-visible chunk as its own indexed range.
+    /// Record the cuboid draw into an already-begun render pass. Iterates the
+    /// frustum-visible per-chunk buffers, one indexed draw per chunk over its own
+    /// vertex/index buffer.
     pub fn draw(&self, render_pass: &mut wgpu::RenderPass<'_>) {
-        if self.mesh.indices.is_empty() {
+        if self.chunk_buffers.is_empty() {
             return;
         }
         // Debug-faces mode selects the cull-off pipeline (matching the uploaded
@@ -1048,18 +1266,82 @@ impl CuboidMeshRenderer {
         // `material_id` selects its atlas sub-rect in the shader, so a mixed-material
         // chunk needs no per-material rebind — one bind, one draw per chunk.
         render_pass.set_bind_group(1, &self.atlas_bind_group, &[]);
-        render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-        render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-        for &chunk_index in &self.visible_chunks {
-            let chunk = &self.mesh.chunks[chunk_index];
+        for coord in &self.visible_chunks {
+            let Some(chunk) = self.chunk_buffers.get(coord) else {
+                continue;
+            };
             if chunk.index_count == 0 {
                 continue;
             }
-            let start = chunk.index_start;
-            let end = start + chunk.index_count;
-            render_pass.draw_indexed(start..end, 0, 0..1);
+            render_pass.set_vertex_buffer(0, chunk.vertex_buffer.slice(..));
+            render_pass.set_index_buffer(chunk.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            render_pass.draw_indexed(0..chunk.index_count, 0, 0..1);
         }
     }
+}
+
+/// Upload built per-chunk meshes into GPU buffers, one [`CuboidChunkBuffers`] per
+/// non-empty chunk (issue #20 S6c-2d).
+fn upload_chunk_meshes(
+    device: &wgpu::Device,
+    chunk_meshes: &[CuboidChunkMesh],
+) -> std::collections::HashMap<[i32; 3], CuboidChunkBuffers> {
+    let mut buffers = std::collections::HashMap::new();
+    for mesh in chunk_meshes {
+        if mesh.indices.is_empty() {
+            continue;
+        }
+        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("cuboid chunk vertices"),
+            contents: bytemuck::cast_slice(&mesh.vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("cuboid chunk indices"),
+            contents: bytemuck::cast_slice(&mesh.indices),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+        buffers.insert(
+            mesh.coord,
+            CuboidChunkBuffers {
+                vertex_buffer,
+                index_buffer,
+                index_count: mesh.indices.len() as u32,
+                aabb: mesh.aabb,
+            },
+        );
+    }
+    buffers
+}
+
+/// Bucket a whole [`VoxelGrid`] into per-chunk sub-grids keyed by integer chunk
+/// coord `floor(world_position / chunk_extent)` (issue #20 S6c-2d) — the SAME key
+/// [`crate::renderer::VoxelRenderer::rebuild_instances`] uses, so the cuboid `new`
+/// wrapper's chunk partition matches the instanced one and the resolve cache's
+/// per-chunk accessor. A sub-grid carries only the occupied voxels (its `dimensions`
+/// is unused by the apron mesher, which keys off `world_position`).
+fn bucket_grid_into_chunk_grids(
+    grid: &VoxelGrid,
+    voxels_per_block: u32,
+) -> Vec<([i32; 3], VoxelGrid)> {
+    use std::collections::HashMap;
+    let chunk_extent = (crate::renderer::CHUNK_BLOCKS * voxels_per_block.max(1)) as f32;
+    let mut buckets: HashMap<[i32; 3], VoxelGrid> = HashMap::new();
+    for voxel in &grid.occupied {
+        let key = [
+            (voxel.world_position[0] / chunk_extent).floor() as i32,
+            (voxel.world_position[1] / chunk_extent).floor() as i32,
+            (voxel.world_position[2] / chunk_extent).floor() as i32,
+        ];
+        buckets
+            .entry(key)
+            .or_insert_with(|| VoxelGrid::new([0, 0, 0]))
+            .occupied
+            .push(*voxel);
+    }
+    let mut out: Vec<([i32; 3], VoxelGrid)> = buckets.into_iter().collect();
+    out.sort_unstable_by_key(|(coord, _)| *coord);
+    out
 }
 
 #[cfg(test)]
@@ -1449,6 +1731,478 @@ mod tests {
         assert_eq!(mesh.box_count(), 0);
         assert_eq!(mesh.face_count(), 0);
         assert_eq!(mesh.index_count(), 0);
-        assert_eq!(mesh.chunk_count(), 0);
+    }
+
+    // ---- Per-chunk apron meshing structural parity (issue #20 S6c-2d) ----
+
+    /// A single UNIT exposed face: the absolute integer plane coordinate on the
+    /// face's axis, the two in-plane unit-cell lower coords, and the face axis +
+    /// sign. Canonical regardless of how a co-planar face is split into abutting
+    /// quads, so it is the granularity at which whole-region meshing and per-chunk
+    /// apron meshing must produce the IDENTICAL set.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+    struct UnitFace {
+        /// 0 = X face, 1 = Y face, 2 = Z face.
+        axis: u8,
+        /// `+1` / `-1` outward direction along `axis`.
+        sign: i8,
+        /// Integer world plane on `axis` (the quad's constant coordinate).
+        plane: i64,
+        /// The two in-plane unit-cell lower coords (the axes other than `axis`).
+        cell: [i64; 2],
+    }
+
+    /// Round a world coordinate that must land on an integer plane (box corners are
+    /// integer planes in world space once the shift-invariant offset is folded in).
+    fn round_plane(value: f32) -> i64 {
+        let rounded = value.round();
+        assert!(
+            (value - rounded).abs() < 1e-3,
+            "vertex coord {value} is not on an integer world plane"
+        );
+        rounded as i64
+    }
+
+    /// Explode a vertex/index mesh into its SET of unit exposed faces (the canonical
+    /// granularity), in the GLOBAL INDEX frame. Mesh vertices live in world space at
+    /// `global_index + world_offset`, so subtracting `world_offset` recovers the
+    /// integer global-index planes the ground-truth `genuine_exposed_faces` keys off.
+    /// Each quad (6 indices) lies on a plane perpendicular to its normal; it is split
+    /// into the unit cells it covers in the two in-plane axes.
+    fn unit_faces_in_index_frame(
+        vertices: &[CuboidVertex],
+        indices: &[u32],
+        world_offset: [f32; 3],
+    ) -> std::collections::HashSet<UnitFace> {
+        let mut faces = std::collections::HashSet::new();
+        let to_index = |pos: [f32; 3]| -> [f32; 3] {
+            [
+                pos[0] - world_offset[0],
+                pos[1] - world_offset[1],
+                pos[2] - world_offset[2],
+            ]
+        };
+        // Each quad is two triangles emitted as [b, b+1, b+2, b, b+2, b+3], so the
+        // four distinct corner vertices are indices[i], [i+1], [i+2], [i+5].
+        let mut i = 0;
+        while i < indices.len() {
+            let corners = [
+                vertices[indices[i] as usize],
+                vertices[indices[i + 1] as usize],
+                vertices[indices[i + 2] as usize],
+                vertices[indices[i + 5] as usize],
+            ];
+            let normal = corners[0].normal;
+            let axis = if normal[0].abs() > 0.5 {
+                0usize
+            } else if normal[1].abs() > 0.5 {
+                1
+            } else {
+                2
+            };
+            let sign: i8 = if normal[axis] > 0.0 { 1 } else { -1 };
+            let (a, b) = match axis {
+                0 => (1usize, 2usize),
+                1 => (0usize, 2usize),
+                _ => (0usize, 1usize),
+            };
+            let plane = round_plane(to_index(corners[0].position)[axis]);
+            // The quad's span in the two in-plane axes (integer index planes).
+            let mut a_lo = i64::MAX;
+            let mut a_hi = i64::MIN;
+            let mut b_lo = i64::MAX;
+            let mut b_hi = i64::MIN;
+            for corner in &corners {
+                let idx = to_index(corner.position);
+                let av = round_plane(idx[a]);
+                let bv = round_plane(idx[b]);
+                a_lo = a_lo.min(av);
+                a_hi = a_hi.max(av);
+                b_lo = b_lo.min(bv);
+                b_hi = b_hi.max(bv);
+            }
+            for ca in a_lo..a_hi {
+                for cb in b_lo..b_hi {
+                    faces.insert(UnitFace {
+                        axis: axis as u8,
+                        sign,
+                        plane,
+                        cell: [ca, cb],
+                    });
+                }
+            }
+            i += 6;
+        }
+        faces
+    }
+
+    /// The world offset (`min_world - 0.5` per axis) the mesher anchors a grid's
+    /// vertices on — subtract it from a mesh vertex to get the integer global-index
+    /// frame `genuine_exposed_faces` uses.
+    fn grid_world_offset(grid: &VoxelGrid) -> [f32; 3] {
+        let mut min_world = [f32::INFINITY; 3];
+        for v in &grid.occupied {
+            for (axis, m) in min_world.iter_mut().enumerate() {
+                *m = m.min(v.world_position[axis]);
+            }
+        }
+        [min_world[0] - 0.5, min_world[1] - 0.5, min_world[2] - 0.5]
+    }
+
+    /// Bucket a whole grid into per-chunk sub-grids exactly as the renderer's `new`
+    /// wrapper does (`floor(world / chunk_extent)`), so the per-chunk mesher sees the
+    /// SAME partition the live path does.
+    fn bucket_for_test(grid: &VoxelGrid, voxels_per_block: u32) -> Vec<([i32; 3], VoxelGrid)> {
+        super::bucket_grid_into_chunk_grids(grid, voxels_per_block)
+    }
+
+    /// The set of GENUINELY-exposed unit faces of an occupancy set: a `(voxel,
+    /// direction)` whose neighbour cell is air. This is the VISIBLE silhouette — the
+    /// surface that survives back-face culling + depth testing. The cuboid mesher's
+    /// `face_is_exposed` emits a whole MERGED box face when ANY cell behind it is
+    /// air, so it OVER-DRAWS the sub-faces backed by solid; those over-draw quads are
+    /// always either back-face-culled or depth-occluded by the solid they are buried
+    /// in, so they never reach a pixel. The genuinely-exposed set is therefore the
+    /// invariant that determines the rendered image — and the structural parity claim:
+    /// it must be IDENTICAL for whole-region and per-chunk meshing. We derive it
+    /// straight from the occupancy (the ground truth) and also use it to filter an
+    /// emitted mesh's unit faces down to its visible subset.
+    fn genuine_exposed_faces(
+        occupied: &std::collections::HashSet<[i64; 3]>,
+    ) -> std::collections::HashSet<UnitFace> {
+        let dirs: [(usize, i8, [i64; 3]); 6] = [
+            (0, 1, [1, 0, 0]),
+            (0, -1, [-1, 0, 0]),
+            (1, 1, [0, 1, 0]),
+            (1, -1, [0, -1, 0]),
+            (2, 1, [0, 0, 1]),
+            (2, -1, [0, 0, -1]),
+        ];
+        let mut faces = std::collections::HashSet::new();
+        for &v in occupied {
+            for (axis, sign, delta) in dirs {
+                let neighbor = [v[0] + delta[0], v[1] + delta[1], v[2] + delta[2]];
+                if occupied.contains(&neighbor) {
+                    continue; // backed by solid → interior, not visible
+                }
+                // The face plane on `axis`: for +sign it's the voxel's far plane
+                // (v[axis] + 1), for -sign the near plane (v[axis]).
+                let plane = if sign > 0 { v[axis] + 1 } else { v[axis] };
+                let (a, b) = match axis {
+                    0 => (1usize, 2usize),
+                    1 => (0usize, 2usize),
+                    _ => (0usize, 1usize),
+                };
+                faces.insert(UnitFace {
+                    axis: axis as u8,
+                    sign,
+                    plane,
+                    cell: [v[a], v[b]],
+                });
+            }
+        }
+        faces
+    }
+
+    /// Filter an emitted mesh's unit faces down to the VISIBLE subset (those whose
+    /// `(plane, cell, axis, sign)` is a genuinely-exposed face), discarding the
+    /// over-draw quads `face_is_exposed` emits for partially-exposed merged boxes.
+    fn visible_unit_faces(
+        vertices: &[CuboidVertex],
+        indices: &[u32],
+        world_offset: [f32; 3],
+        genuine: &std::collections::HashSet<UnitFace>,
+    ) -> std::collections::HashSet<UnitFace> {
+        unit_faces_in_index_frame(vertices, indices, world_offset)
+            .into_iter()
+            .filter(|f| genuine.contains(f))
+            .collect()
+    }
+
+    /// Absolute integer occupancy (global indices `round(world - min_world)`) of a
+    /// grid — the same frame the cuboid mesher's vertices live in, so a `UnitFace`
+    /// derived from occupancy and one derived from a mesh vertex compare directly.
+    fn occupancy_indices(grid: &VoxelGrid) -> std::collections::HashSet<[i64; 3]> {
+        let mut min_world = [f32::INFINITY; 3];
+        for v in &grid.occupied {
+            for (axis, m) in min_world.iter_mut().enumerate() {
+                *m = m.min(v.world_position[axis]);
+            }
+        }
+        let mut set = std::collections::HashSet::new();
+        for v in &grid.occupied {
+            set.insert([
+                (v.world_position[0] - min_world[0]).round() as i64,
+                (v.world_position[1] - min_world[1]).round() as i64,
+                (v.world_position[2] - min_world[2]).round() as i64,
+            ]);
+        }
+        set
+    }
+
+    /// The CORE structural guarantee (the analogue of the decomposition round-trip):
+    /// the per-chunk-with-apron VISIBLE exposed-face SET equals the whole-region
+    /// mesher's — and both equal the ground-truth genuinely-exposed set derived
+    /// straight from occupancy — for many shapes/sizes INCLUDING shapes spanning
+    /// multiple chunks. This is what guarantees the RENDERED IMAGE is unchanged,
+    /// independent of the goldens: the apron makes seam faces between two solid
+    /// chunks culled (no extra visible interior quads), and co-planar seam-spanning
+    /// faces split into abutting quads covering the IDENTICAL visible unit-face set.
+    ///
+    /// "Visible" = the subset of emitted unit faces backed by air. The mesher emits a
+    /// whole MERGED box face when ANY cell behind it is air, over-drawing the
+    /// sub-faces backed by solid; those over-draw quads are always back-face-culled or
+    /// depth-occluded by the solid they are buried in, so they never reach a pixel and
+    /// their (merge-order-dependent) count is NOT a rendering invariant. The visible
+    /// set IS. We assert the visible set of BOTH paths equals the ground truth, AND
+    /// that every genuine face is actually emitted by each path (no real hole).
+    #[test]
+    fn per_chunk_apron_exposed_face_set_equals_whole_region() {
+        use crate::voxel::{SdfShape, ShapeKind, VoxelProducer};
+
+        let mut multi_chunk_seen = false;
+        // Densities chosen so shapes span MULTIPLE chunks (chunk = CHUNK_BLOCKS=4
+        // blocks × density voxels per axis = 32 voxels at density 8). An 8-block axis
+        // = 64 voxels = 2 chunks/axis, so the apron is exercised at real seams.
+        for &kind in &[
+            ShapeKind::Sphere,
+            ShapeKind::Cylinder,
+            ShapeKind::Torus,
+            ShapeKind::Box,
+            ShapeKind::Tube,
+        ] {
+            for &(size, density) in &[
+                ([5u32, 1, 5], 8u32), // the default disc (odd X/Z → recentred cloud)
+                ([3, 3, 3], 8),
+                ([8, 2, 8], 8), // 64×16×64 voxels → 2 chunks/axis in X/Z (multi-chunk)
+                ([5, 3, 7], 8),
+            ] {
+                let shape = SdfShape {
+                    kind,
+                    size_blocks: size,
+                    voxels_per_block: density,
+                    wall_blocks: 1,
+                };
+                let dims = shape.grid_dimensions();
+                let mut grid = VoxelGrid::new(dims);
+                shape.resolve(&mut grid);
+                if grid.occupied.is_empty() {
+                    continue;
+                }
+
+                // Ground-truth genuinely-exposed faces, straight from occupancy.
+                let occupancy = occupancy_indices(&grid);
+                let genuine = genuine_exposed_faces(&occupancy);
+                let world_offset = grid_world_offset(&grid);
+
+                // Whole-region reference mesh → its VISIBLE face subset.
+                let whole = build_cuboid_mesh(&grid, density);
+                let whole_visible =
+                    visible_unit_faces(&whole.vertices, &whole.indices, world_offset, &genuine);
+
+                // Per-chunk-with-apron mesh → its VISIBLE face subset (union over chunks).
+                let buckets = bucket_for_test(&grid, density);
+                let chunk_refs: Vec<([i32; 3], &VoxelGrid)> =
+                    buckets.iter().map(|(c, g)| (*c, g)).collect();
+                if buckets.len() > 1 {
+                    multi_chunk_seen = true;
+                }
+                let chunk_meshes =
+                    build_chunk_meshes_with_apron(&chunk_refs, dims, LayerBand::FULL);
+                let mut per_chunk_visible = std::collections::HashSet::new();
+                for mesh in &chunk_meshes {
+                    per_chunk_visible.extend(visible_unit_faces(
+                        &mesh.vertices,
+                        &mesh.indices,
+                        world_offset,
+                        &genuine,
+                    ));
+                }
+
+                // Both paths must emit EXACTLY the ground-truth visible surface — no
+                // missing genuine face (a hole), no spurious visible face (a stray
+                // seam quad). This is the rendering-determining invariant.
+                assert_eq!(
+                    whole_visible, genuine,
+                    "{kind:?} {size:?} density={density}: whole-region visible faces != ground truth"
+                );
+                assert_eq!(
+                    per_chunk_visible, genuine,
+                    "{kind:?} {size:?} density={density}: per-chunk apron visible faces != \
+                     ground truth ({} per-chunk vs {} genuine)",
+                    per_chunk_visible.len(),
+                    genuine.len()
+                );
+            }
+        }
+        assert!(
+            multi_chunk_seen,
+            "no test case actually spanned multiple chunks — apron never exercised at a seam"
+        );
+    }
+
+    /// A solid slab spanning a chunk seam must NOT emit interior seam faces — the
+    /// apron culls them. Two abutting solid 32-voxel chunks (density 8, 4 blocks ×
+    /// 8 = 32 voxels per chunk axis) form an 8×4×4-block solid box across the X
+    /// seam; the whole-region mesh is one box (6 faces' worth of unit faces), and
+    /// the per-chunk mesh (two boxes) must produce the IDENTICAL unit-face set with
+    /// no faces on the interior seam plane.
+    #[test]
+    fn solid_slab_across_chunk_seam_has_no_interior_faces() {
+        let density = 8u32;
+        let chunk_voxels = crate::renderer::CHUNK_BLOCKS * density; // 32
+        let nx = chunk_voxels * 2; // span two chunks in X
+        let ny = density; // 8
+        let nz = density; // 8
+        let dims = [nx, ny, nz];
+        let half = [nx as f32 / 2.0, ny as f32 / 2.0, nz as f32 / 2.0];
+        let mut grid = VoxelGrid::new(dims);
+        for k in 0..nz {
+            for j in 0..ny {
+                for i in 0..nx {
+                    grid.occupied.push(crate::voxel::Voxel {
+                        world_position: [
+                            i as f32 + 0.5 - half[0],
+                            j as f32 + 0.5 - half[1],
+                            k as f32 + 0.5 - half[2],
+                        ],
+                        block_local_coord: [0, 0, 0],
+                        material_id: 0,
+                    });
+                }
+            }
+        }
+
+        let buckets = bucket_for_test(&grid, density);
+        assert!(
+            buckets.len() >= 2,
+            "the solid slab must span at least two chunks in X (got {})",
+            buckets.len()
+        );
+
+        let occupancy = occupancy_indices(&grid);
+        let genuine = genuine_exposed_faces(&occupancy);
+        let world_offset = grid_world_offset(&grid);
+
+        let whole = build_cuboid_mesh(&grid, density);
+        let whole_visible =
+            visible_unit_faces(&whole.vertices, &whole.indices, world_offset, &genuine);
+
+        let chunk_refs: Vec<([i32; 3], &VoxelGrid)> =
+            buckets.iter().map(|(c, g)| (*c, g)).collect();
+        let chunk_meshes = build_chunk_meshes_with_apron(&chunk_refs, dims, LayerBand::FULL);
+        let mut per_chunk_visible = std::collections::HashSet::new();
+        for mesh in &chunk_meshes {
+            per_chunk_visible.extend(visible_unit_faces(
+                &mesh.vertices,
+                &mesh.indices,
+                world_offset,
+                &genuine,
+            ));
+        }
+
+        // The slab surface is exactly the box's 6 sides: 2*(nx*ny + nx*nz + ny*nz)
+        // unit faces. No interior seam plane faces.
+        let expected = 2 * (nx * ny + nx * nz + ny * nz) as usize;
+        assert_eq!(
+            genuine.len(),
+            expected,
+            "solid box surface should be {expected} unit faces"
+        );
+        assert_eq!(
+            whole_visible, genuine,
+            "solid cross-seam slab: whole-region visible faces != ground truth"
+        );
+        assert_eq!(
+            per_chunk_visible, genuine,
+            "solid cross-seam slab: per-chunk apron visible faces != ground truth (interior \
+             seam faces leaked or a side is missing)"
+        );
+    }
+
+    /// The per-chunk band clip must match the whole-region band clip's VISIBLE
+    /// exposed-face set (real caps at the band edges, per chunk). A torus clipped to a
+    /// sub-band that falls INSIDE the chunks must synthesise the cap faces identically
+    /// in both paths. Ground truth = the genuinely-exposed faces of the BAND-MASKED
+    /// occupancy (cells outside `[band_min, band_max]` removed, so the band edges are
+    /// real air boundaries → cap faces).
+    #[test]
+    fn per_chunk_band_clip_face_set_equals_whole_region() {
+        use crate::voxel::{SdfShape, ShapeKind, VoxelProducer};
+        let shape = SdfShape {
+            kind: ShapeKind::Torus,
+            size_blocks: [8, 2, 8],
+            voxels_per_block: 8,
+            wall_blocks: 1,
+        };
+        let dims = shape.grid_dimensions();
+        let mut grid = VoxelGrid::new(dims);
+        shape.resolve(&mut grid);
+        assert!(!grid.occupied.is_empty());
+
+        let band = LayerBand {
+            band_min: 4,
+            band_max: 11,
+            onion_depth: 0,
+        };
+
+        // Ground truth: genuinely-exposed faces of the BAND-MASKED occupancy. The
+        // band maps an absolute layer to a global index Y by `gy + base_layer` where
+        // base_layer = floor(min_world.y + half_y) and the global index uses
+        // `round(world - min_world)`. We mask occupancy to `base_layer + gy ∈ band`.
+        let mut min_world = [f32::INFINITY; 3];
+        for v in &grid.occupied {
+            for (axis, m) in min_world.iter_mut().enumerate() {
+                *m = m.min(v.world_position[axis]);
+            }
+        }
+        let half_y = dims[1] as f32 / 2.0;
+        let base_layer = (min_world[1] + half_y).floor() as i64;
+        let occupancy: std::collections::HashSet<[i64; 3]> = grid
+            .occupied
+            .iter()
+            .map(|v| {
+                [
+                    (v.world_position[0] - min_world[0]).round() as i64,
+                    (v.world_position[1] - min_world[1]).round() as i64,
+                    (v.world_position[2] - min_world[2]).round() as i64,
+                ]
+            })
+            .filter(|idx| {
+                let layer = base_layer + idx[1];
+                layer >= band.band_min as i64 && layer <= band.band_max as i64
+            })
+            .collect();
+        assert!(!occupancy.is_empty(), "band must keep some voxels");
+        let genuine = genuine_exposed_faces(&occupancy);
+        let world_offset = grid_world_offset(&grid);
+
+        let whole = build_cuboid_mesh_banded(&grid, 8, band);
+        let whole_visible =
+            visible_unit_faces(&whole.vertices, &whole.indices, world_offset, &genuine);
+
+        let buckets = bucket_for_test(&grid, 8);
+        assert!(buckets.len() > 1, "torus must span multiple chunks");
+        let chunk_refs: Vec<([i32; 3], &VoxelGrid)> =
+            buckets.iter().map(|(c, g)| (*c, g)).collect();
+        let chunk_meshes = build_chunk_meshes_with_apron(&chunk_refs, dims, band);
+        let mut per_chunk_visible = std::collections::HashSet::new();
+        for mesh in &chunk_meshes {
+            per_chunk_visible.extend(visible_unit_faces(
+                &mesh.vertices,
+                &mesh.indices,
+                world_offset,
+                &genuine,
+            ));
+        }
+
+        assert_eq!(
+            whole_visible, genuine,
+            "banded torus: whole-region visible faces != band-masked ground truth"
+        );
+        assert_eq!(
+            per_chunk_visible, genuine,
+            "banded torus: per-chunk apron visible faces != band-masked ground truth"
+        );
     }
 }

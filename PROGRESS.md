@@ -33,6 +33,57 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **Cuboid mesher: apron-aware per-chunk meshing + per-chunk GPU buffers (S6c-2d) — Part of #20 (step 4).**
+  The DEFAULT cuboid render path (the golden-covered one) now meshes PER CHUNK from per-chunk grids + a
+  1-voxel neighbour apron, with one GPU vertex/index buffer per chunk, instead of densifying +
+  greedy-decomposing the WHOLE region into one monolithic buffer. Goldens stayed green (all 6 within run
+  jitter, 0.002–0.03% < 0.5% threshold); per-chunk village + banded torus PNGs show no seam lines, correct
+  caps. INCREMENTAL dirty-only rebuild is the NEXT step (S6c-2e); this step rebuilds wholesale.
+  - **Apron-aware per-chunk meshing (`cuboid_mesh.rs::build_chunk_meshes_with_apron`).** For each
+    `(coord, &grid)` from `resident_render_chunks`: build a GLOBAL occupancy `HashMap<[i64;3],u16>` +
+    cloud anchor (`world_offset = min_world − 0.5`) over the UNION of all chunk grids (= the assembled
+    whole grid, by the S6c-2a seam), so emitted world positions are byte-identical to the whole-region
+    mesher (pixel parity). Then per chunk: densify its OWN voxels into an INTERIOR region (apron cells
+    air, so no box ever grows into the apron), and a co-located APRON region of the same extent whose
+    every cell — interior AND the 1-voxel border — is read from the GLOBAL occupancy. Decompose the
+    INTERIOR via `decompose_into_boxes`; `emit_box_faces` tests `face_is_exposed` against the APRON.
+    The apron makes a seam face between two solid chunks correctly culled, so the chunk's exposed-face
+    SET equals whole-region meshing's. The apron emits NO geometry.
+  - **Per-chunk band clip.** The layer-range band (absolute layers) is applied per chunk: a global index
+    Y is in-band iff `base_layer + gy ∈ [band_min, band_max]` (`base_layer = floor(world_offset.y + 0.5
+    + half_y)`). BOTH the interior and the apron are band-masked, so a band edge inside a chunk reads the
+    masked neighbour as air and synthesises the real slab CAP — identical to the whole-region region-mask
+    + re-mesh. `rebuild_for_band` re-meshes every chunk when the band changes (real caps, not a fragment
+    discard).
+  - **Per-chunk GPU buffer cache + draw (`CuboidMeshRenderer`).** Replaced the monolithic vertex/index
+    buffer + `CuboidMesh.chunks` index ranges with `HashMap<[i32;3], CuboidChunkBuffers>` (own
+    vertex+index buffer + count + world AABB per chunk, keyed by absolute chunk coord — mirrors the
+    instanced `InstancedChunkBuffers`). `update_uniforms` frustum-culls each chunk by its AABB (sorted
+    for deterministic draw order); `draw` does one `set_vertex_buffer`/`set_index_buffer`/`draw_indexed`
+    per visible chunk. `new_from_chunks(chunk_grids, grid_dimensions)` builds directly from the accessor;
+    `new(grid)` is kept as a WRAPPER that buckets the whole grid by `floor(world/chunk_extent)` (the
+    instanced key) → identical mesh. Rebasing/shader/atlas path unchanged.
+  - **Routing.** `shot.rs` builds the cuboid renderer via `resident_render_chunks` → `new_from_chunks`
+    (falls back to the whole-grid wrapper only when the scene has no chunkable extent), so the goldens
+    exercise the per-chunk accessor path. `main.rs` keeps `new(&self.grid, …)`, which now routes through
+    the same per-chunk apron mesher via the wrapper.
+  - **Whole-region builder kept as the structural REFERENCE.** `build_cuboid_mesh` /
+    `build_cuboid_mesh_banded` / `region_from_voxel_cloud` stay (simplified to one flat vertex/index
+    list, no chunk partition) as the parity test's reference + the older CPU tests' adapter.
+  - **STRUCTURAL test (durable proof, +3, lib 168 → 171).**
+    `per_chunk_apron_exposed_face_set_equals_whole_region` asserts the per-chunk-with-apron VISIBLE
+    exposed-face set == whole-region's == the ground-truth genuinely-exposed set (derived straight from
+    occupancy) for sphere/cylinder/torus/box/tube across sizes INCLUDING multi-chunk (8-block axes at
+    density 8 = 2 chunks/axis; asserts ≥1 case actually spanned multiple chunks). "Visible" = the subset
+    of emitted unit faces backed by air: the mesher emits a whole MERGED box face when ANY cell behind it
+    is air (over-drawing sub-faces backed by solid), and those over-draw quads are always back-face-culled
+    or depth-occluded — so the VISIBLE set, not the raw emitted-quad count, is the rendering invariant.
+    `solid_slab_across_chunk_seam_has_no_interior_faces` (a solid 2-chunk box → no leaked interior seam
+    faces, surface == 6 sides) and `per_chunk_band_clip_face_set_equals_whole_region` (banded torus, both
+    paths == band-masked ground truth) round it out.
+  - **Gate green.** `cargo build --bins`, `cargo clippy --all-targets` (no new warnings), `cargo test`
+    (171 lib pass), `cargo test --features gpu --test golden` (6 green, all within run jitter).
+
 - **Instanced render path: incremental dirty-chunk rebuild via evicted-set (S6c-2c) — Part of #20 (step 4).**
   `main.rs::rebuild_geometry` now rebuilds ONLY the per-chunk GPU buffers an edit touched, instead of
   clearing + rebuilding every chunk wholesale. A/B pixel-identical (0% diff, byte-identical PNGs); cuboid
