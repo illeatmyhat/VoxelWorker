@@ -1,6 +1,6 @@
 # ADR 0002 — Engine phase: streaming, meshing & coordinates
 
-- **Status:** Accepted (O1–O7 signed off 2026-06-25; **O8** — atlas-UV'd vs per-material mesh geometry — still open, due before the mesher/E3).
+- **Status:** Accepted (O1–O7 signed off 2026-06-25). **O8** (atlas-UV'd vs per-material mesh geometry) — **resolved DONE 2026-06-25**: the cuboid mesher emits atlas-UV'd geometry (E3c-1), and the **cuboid path is now the DEFAULT** (E3c-2). The instanced path is retained behind `--mesher instanced` as a debug fallback. **Acceptance note:** the goldens were **rebaselined from the cuboid path**, NOT pixel-matched to the instanced path — the ~3–5% full-frame difference (merged-face triangulation, edge AA, procedural-noise phase, surface shading) is expected and acceptable per the matrix below; the switch is gated on feature/material parity (E3b) + a visually-reviewed golden baseline, not pixel-equivalence.
 - **Date:** 2026-06-25
 - **Sub-ADR of:** [ADR 0001](0001-scene-graph-parts-and-tools.md) ("Scale" section, build-sequence steps 5–7).
 - **Issues:** Part of #14. Decomposes #18 (step 5), #19 (step 6), #20 (step 7). Leans on #24 (golden images).
@@ -168,7 +168,7 @@ order:
 | **E1** | **Coordinate model, single region.** Switch world addressing to i64 block + sub-voxel; f64/i64 transform composition; camera-relative (origin-rebased) f32 render matrices. **Still per-voxel-cube instanced, still one region.** Goldens unchanged. | The coordinate retrofit in isolation — no jitter, no visual change. The hardest-to-retrofit piece, proven before geometry changes. | #18 (part) |
 | **E2** | **Chunk the instanced renderer; retire the caps.** Partition the single region into chunks; per-chunk instance buffers keyed `(chunk_coord, lod=0)`; on-demand resolve + cache/invalidate; spatial index; frustum cull. **Geometry is still instanced cubes** — just chunked. `MAX_DRAWN_INSTANCES`/`MAX_GRID_VOXELS` become per-chunk bounds. | Streaming, culling, invalidation, the spatial index — all on **known-good geometry**. Large scenes that previously hit the cap now render. | #19 (most of it) |
 | **E3** | **Per-block cuboid mesher behind a flag, A/B.** Add the per-block cuboid decomposition as an **alternate per-chunk render item**, selected by a flag (`--mesh=cuboid` / runtime toggle), drawn alongside/instead of the instanced path. Re-implement the feature matrix on the mesh path (face-layer from normal, per-voxel slice via block-local UV + `Repeat`, absolute-position overlay varying, per-cuboid material, fragment band clip, debug-faces winding). | **Pixel-equivalence (goldens, E0) between instanced and cuboid paths**, row by row. This is where the matrix is cashed. Flag means a regression never ships — flip default only when green. | #18 (meshing) |
-| **E4** | **Make cuboid the default; remove the instanced path** (or keep it as a debug fallback). Per-chunk **onion-fog occupancy** becomes region-scoped volumes; scrubber/diameter/`.vox` export region-scoped. | The fog/consumer rows at chunk scale; the instanced renderer is no longer load-bearing. | #18/#19 (fog row) |
+| **E4** | **Make cuboid the default** ✅ (2026-06-25, E3c-2; instanced KEPT as a `--mesher instanced` debug fallback, not removed). Per-chunk **onion-fog occupancy** → region-scoped volumes; scrubber/diameter/`.vox` export region-scoped — *still to do.* | The fog/consumer rows at chunk scale; the instanced renderer is no longer load-bearing. | #18/#19 (fog row) |
 | **E5** | **Out-of-core store + the cuboid set AS the compressed form.** Disk-backed `(chunk_coord, lod)` store with eviction; the per-block cuboid/palette packing is both stored and meshed (Decision 1 §3). | Scene size decoupled from RAM; meshing+compression unified. | **#20** |
 | **(later)** | Per-chunk cross-block cuboid merge (whole-block-multiple, same-material). Optional 2D greedy pass over cuboid faces. | Further draw-call reduction *if* E4 is GPU-bound. | new sub-issue |
 
@@ -280,3 +280,6 @@ performance techniques worth lifting, each mapped to our engine steps. Sources:
 **New open question:** **O8 — atlas-UV'd cuboid geometry vs per-material binding for v1** (technique
 2). Recommend per-material binding through E3 (smaller green step, preserves the step-3b path),
 atlas as the draw-call optimization once cuboid meshing is proven. **Fork: atlas from E3, or later?**
+**RESOLVED (2026-06-25): atlas later** — per-material binding carried through E3a/E3b parity; the
+atlas landed in E3c-1, after which the cuboid path was made the default (E3c-2) with goldens
+rebaselined from the cuboid path (not pixel-matched).

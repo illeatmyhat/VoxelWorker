@@ -89,15 +89,17 @@ impl MaterialChoice {
     }
 }
 
-/// Which render path draws the voxels (ADR 0002 E3, part of #18). `Instanced` is
-/// the DEFAULT and unchanged (one cube per voxel); `Cuboid` is the experimental
-/// flag-gated cuboid-mesher path (exposed box faces, per-box material colour).
+/// Which render path draws the voxels (ADR 0002 E3, part of #18). `Cuboid` is now
+/// the DEFAULT (Vintage-Story-style box decomposition, ~37× fewer primitives, full
+/// feature + multi-material parity per ADR 0002 E3c); `Instanced` is the legacy
+/// one-cube-per-voxel path, kept fully working behind `--mesher instanced` / the
+/// panel toggle as a debug fallback.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum MesherChoice {
-    /// The default instanced-cube renderer (byte-for-byte unchanged).
-    #[default]
+    /// The legacy instanced-cube renderer (one cube per voxel), kept as a fallback.
     Instanced,
-    /// The experimental cuboid mesh path (E3b-1).
+    /// The cuboid mesh path — now the default (ADR 0002 E3c-2).
+    #[default]
     Cuboid,
 }
 
@@ -1006,12 +1008,12 @@ fn build_display_section(ui: &mut egui::Ui, state: &mut PanelState) {
     ui.checkbox(&mut state.show_view_cube, "View cube");
     ui.checkbox(&mut state.show_origin_gizmo, "Origin gizmo");
     ui.checkbox(&mut state.debug_face_orientation, "Debug: face orientation");
-    // ADR 0002 E3b-1 (part of #18): experimental cuboid mesh render path, default
-    // OFF. A simple checkbox mapped onto `mesher` (Instanced ↔ Cuboid). The
-    // instanced path stays the default; this only flips when checked.
+    // ADR 0002 E3c-2 (part of #18): the cuboid mesh path is now the DEFAULT. The
+    // checkbox (checked ⇒ cuboid) is left enabled so the legacy instanced path can
+    // be selected as a fallback by unchecking it.
     let mut use_cuboid = state.mesher == MesherChoice::Cuboid;
     if ui
-        .checkbox(&mut use_cuboid, "Cuboid mesher (experimental)")
+        .checkbox(&mut use_cuboid, "Cuboid mesher (default; off = legacy instanced)")
         .changed()
     {
         state.mesher = if use_cuboid {

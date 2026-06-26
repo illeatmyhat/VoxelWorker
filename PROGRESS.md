@@ -33,6 +33,34 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **Make cuboid the DEFAULT mesher; rebaseline goldens from the cuboid path (E3c-2) — Part of #18**
+  — with full feature + multi-material parity (E3b) and the texture atlas (E3c-1) done, the cuboid
+  box-decomposition path is now the **default** render path. `MesherChoice`'s `#[default]` flipped
+  `Instanced → Cuboid`, which cascades to the windowed app (`PanelState`/settings start cuboid) and
+  the `shot` binary (`ShotOptions::default()` now uses `MesherChoice::default()`). The legacy
+  instanced path is **kept fully working** behind `--mesher instanced` (and the panel checkbox,
+  relabeled "Cuboid mesher (default; off = legacy instanced)") as a debug fallback — verified it
+  still renders (sphere via `--mesher instanced` draws the per-voxel-cube disc, no cuboid log line).
+  - **Golden rebaseline (deliberate, NOT pixel-match).** Per ADR 0002 the cuboid path is ~3–5%
+    different full-frame from instanced (merged-face triangulation, edge AA, procedural-noise phase,
+    surface shading) — expected and acceptable. Regenerated all 5 references via
+    `UPDATE_GOLDENS=1 cargo test --features gpu --test golden`; each was produced by the cuboid path
+    (confirmed by the `cuboid mesher: N boxes → M faces` log per case). The win is visible in the
+    primitive counts: sphere 53 776 voxels → 545 boxes/2242 faces; cylinder 80 384 → 47 boxes;
+    torus 242 984 → 3575 boxes; village 157 696 → 40 boxes; clouds 147 588 → 5953 boxes.
+  - **Visual review (all 5 read + confirmed correct):** `sphere-debug-faces` — flattened disc with
+    correct outward-normal debug colours (green top, R/B/C/M sides), correct winding, no back-face
+    stripes; `cylinder` — solid stone disc, crisp silhouette; `torus` — clean stone ring with the
+    central hole; `demo-village` — 4 separated houses, stone body + wood chimney each (distinct
+    materials, no atlas bleed, reuse-by-reference); `debug-clouds` — several distinct stone blobs in
+    a mostly-empty volume. No blanks/corruption/missing textures.
+  - Files: `src/panel.rs` (`MesherChoice` default + checkbox label), `src/bin/shot.rs`
+    (`ShotOptions::default()` + help text), `src/settings.rs` (comment), `docs/adr/0002…` (O8/switch
+    marked done), `tests/golden/*.png` (5 rebaselined references).
+  - Green checkpoint: `cargo build --bins` clean; `cargo clippy --all-targets` no new warnings;
+    `cargo test` 95 lib tests pass; `cargo test --features gpu --test golden` GREEN against the new
+    cuboid baseline; `--mesher instanced` sanity render confirmed.
+
 - **Cuboid path reaches FULL parity: layer-range band clip + `--debug-faces` (E3b-3) — Part of #18**
   — added the last two features so the flag-gated cuboid mesher (`--mesher cuboid`) matches the instanced
   path on everything. The instanced path + goldens are untouched (default stays instanced; all 5 goldens

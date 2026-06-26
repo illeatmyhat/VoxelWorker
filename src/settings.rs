@@ -222,8 +222,8 @@ impl AppConfig {
             // Face-orientation debug is a transient verification mode; it is not
             // persisted, so it always starts off.
             debug_face_orientation: false,
-            // The cuboid mesher is a session-only experimental toggle (ADR 0002
-            // E3b-1, part of #18); not persisted, so it always starts instanced.
+            // The mesher choice is a session-only toggle (ADR 0002, part of #18);
+            // not persisted, so it always starts at the default (now cuboid).
             mesher: crate::panel::MesherChoice::default(),
             voxel_cap_warning_millions: None,
             // Re-applied lazily/best-effort: only the label is restored (for the

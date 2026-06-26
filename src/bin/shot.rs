@@ -118,8 +118,9 @@ struct ShotOptions {
     /// its texture stem (e.g. `wood/treetrunk/oak`) even if it is outside the
     /// chiselable allow-list, to demonstrate per-face rendering on a known block.
     force_demo_stem: Option<String>,
-    /// Which render path draws the voxels (ADR 0002 E3b-1, part of #18):
-    /// `Instanced` (default, unchanged) or `Cuboid` (experimental cuboid mesher).
+    /// Which render path draws the voxels (ADR 0002, part of #18): `Cuboid`
+    /// (default, the box-decomposition mesher) or `Instanced` (legacy one-cube-
+    /// per-voxel fallback, `--mesher instanced`).
     mesher: MesherChoice,
     /// Layer-range scrubber lower bound (issue #12), a voxel Y-layer index. When
     /// `None`, defaults to the full range (0). Raw voxel index — no snapping.
@@ -173,7 +174,7 @@ impl Default for ShotOptions {
             show_block_lattice: false,
             show_floor_grid: false,
             debug_face_orientation: false,
-            mesher: MesherChoice::Instanced,
+            mesher: MesherChoice::default(),
             export_vox_path: None,
             show_view_cube: true,
             snap_element: None,
@@ -483,7 +484,7 @@ fn parse_options() -> ShotOptions {
                      Defaults: --out shots/m1.png --width 1280 --height 800\n\
                      \x20         --shape cylinder --size-x 5 --size-y 1 --size-z 5\n\
                      \x20         --density 16 --wall 1 --proj perspective\n\
-                     \x20         --material stone (grid off) --mesher instanced\n\
+                     \x20         --material stone (grid off) --mesher cuboid\n\
                      \x20         --theta 0.7 --phi 1.05 --dist <auto-framed>\n\
                      \n\
                      \x20  --demo-scene  build a hardcoded multi-node placed scene\n\
