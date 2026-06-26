@@ -503,6 +503,69 @@ struct CubeLabelVertex {
     layer: u32,
 }
 
+/// Edge length of each square chrome-glyph texture (compass letters, Home/Fit
+/// badges, rotate/roll arrows). Smaller than the face labels — the glyphs are
+/// drawn at modest screen sizes in the margins.
+const CHROME_GLYPH_TEXTURE_SIZE: u32 = 64;
+
+/// One screen-space chrome-overlay vertex: NDC position (fixed to the cube rect,
+/// it does NOT rotate with the cube), glyph UV, a per-vertex tint (used to
+/// brighten a hovered arrow), and the glyph texture-array layer.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+struct ChromeVertex {
+    position: [f32; 2],
+    uv: [f32; 2],
+    color: [f32; 4],
+    layer: u32,
+}
+
+/// The chrome-glyph texture-array layers (#13 Step 2), in upload order. Compass
+/// letters + Home/Fit badges are ALWAYS drawn; the arrows are drawn only when the
+/// matching zone is hovered.
+#[derive(Debug, Clone, Copy)]
+enum ChromeGlyph {
+    CompassNorth,
+    CompassEast,
+    CompassSouth,
+    CompassWest,
+    HomeButton,
+    FitButton,
+    ArrowUp,
+    ArrowDown,
+    ArrowLeft,
+    ArrowRight,
+    RollCw,
+    RollCcw,
+    /// A fully-opaque white texel used by the compass ring (tinted by the vertex
+    /// colour). Not a letter/arrow — just a solid the ring annulus samples.
+    RingSolid,
+}
+
+impl ChromeGlyph {
+    /// Upload/lookup order for the texture array (must match `chrome_glyph_pixels`).
+    const ALL: [ChromeGlyph; 13] = [
+        ChromeGlyph::CompassNorth,
+        ChromeGlyph::CompassEast,
+        ChromeGlyph::CompassSouth,
+        ChromeGlyph::CompassWest,
+        ChromeGlyph::HomeButton,
+        ChromeGlyph::FitButton,
+        ChromeGlyph::ArrowUp,
+        ChromeGlyph::ArrowDown,
+        ChromeGlyph::ArrowLeft,
+        ChromeGlyph::ArrowRight,
+        ChromeGlyph::RollCw,
+        ChromeGlyph::RollCcw,
+        ChromeGlyph::RingSolid,
+    ];
+
+    /// This glyph's index in the texture array.
+    fn layer(self) -> u32 {
+        self as u32
+    }
+}
+
 /// The corner view cube: a labelled cube mirroring the main camera, plus a teal
 /// edge wireframe (ARCHITECTURE.md §4). Rendered into a scissored top-left
 /// viewport in its own pass (depth cleared there first).
@@ -517,6 +580,13 @@ pub struct ViewCubeRenderer {
     uniform_buffer: wgpu::Buffer,
     uniform_bind_group: wgpu::BindGroup,
     label_bind_group: wgpu::BindGroup,
+    // --- #13 Step 2: screen-space chrome overlay (compass + Home/Fit + arrows) ---
+    chrome_pipeline: wgpu::RenderPipeline,
+    chrome_bind_group: wgpu::BindGroup,
+    chrome_vertex_buffer: wgpu::Buffer,
+    /// Capacity (in vertices) of `chrome_vertex_buffer`; the per-frame glyph quads
+    /// fit within this fixed cap (12 glyphs × 6 verts + the compass ring fan).
+    chrome_vertex_capacity: u32,
 }
 
 impl ViewCubeRenderer {
@@ -705,6 +775,19 @@ impl ViewCubeRenderer {
             1,
         );
 
+        // --- #13 Step 2: screen-space chrome overlay pipeline + glyph textures ---
+        let (chrome_pipeline, chrome_bind_group) =
+            build_chrome_overlay(device, queue, color_format);
+        // Cap: 12 glyph quads (6 verts each) + a 64-segment compass ring as a
+        // triangle strip expressed as a triangle list (64 * 6 verts). Generous.
+        let chrome_vertex_capacity = 12 * 6 + 64 * 6;
+        let chrome_vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("view cube chrome vertices"),
+            size: (chrome_vertex_capacity as usize * std::mem::size_of::<ChromeVertex>()) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         Self {
             face_pipeline,
             edge_pipeline,
@@ -716,6 +799,10 @@ impl ViewCubeRenderer {
             uniform_buffer,
             uniform_bind_group,
             label_bind_group,
+            chrome_pipeline,
+            chrome_bind_group,
+            chrome_vertex_buffer,
+            chrome_vertex_capacity: chrome_vertex_capacity as u32,
         }
     }
 
@@ -737,14 +824,24 @@ impl ViewCubeRenderer {
     /// lines up with the visible 3D area instead of hiding behind the side panel.
     /// `target_width/height` are the full target dims (the colour + depth
     /// attachments span the whole target; the scissor confines the draw).
+    ///
+    /// #13 Step 2: `hovered_zone` is the chrome zone currently under the cursor
+    /// (from `classify_cube_point`). The compass ring + N/E/S/W letters and the
+    /// Home/Fit badges are drawn ALWAYS; the rotate/roll arrows are drawn ONLY when
+    /// their zone is hovered, and the hovered glyph is brightened. The chrome is a
+    /// screen-space overlay FIXED to the cube rect (it does NOT rotate with the
+    /// cube), laid out in the same `rect.size` fractions Step 1 hit-tests against.
+    #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &self,
         device: &wgpu::Device,
+        queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         target_view: &wgpu::TextureView,
         target_width: u32,
         target_height: u32,
         viewport: [u32; 4],
+        hovered_zone: Option<crate::camera::CubeChromeZone>,
     ) {
         let [viewport_x, viewport_y, viewport_width, viewport_height] = viewport;
         let margin = VIEW_CUBE_VIEWPORT_MARGIN;
@@ -805,6 +902,21 @@ impl ViewCubeRenderer {
         pass.set_bind_group(0, &self.uniform_bind_group, &[]);
         pass.set_vertex_buffer(0, self.edge_buffer.slice(..));
         pass.draw(0..self.edge_vertex_count, 0..1);
+
+        // --- #13 Step 2: screen-space chrome overlay, fixed to the cube rect. ---
+        let chrome = build_chrome_vertices(hovered_zone);
+        if !chrome.is_empty() {
+            let count = chrome.len().min(self.chrome_vertex_capacity as usize);
+            queue.write_buffer(
+                &self.chrome_vertex_buffer,
+                0,
+                bytemuck::cast_slice(&chrome[..count]),
+            );
+            pass.set_pipeline(&self.chrome_pipeline);
+            pass.set_bind_group(0, &self.chrome_bind_group, &[]);
+            pass.set_vertex_buffer(0, self.chrome_vertex_buffer.slice(..));
+            pass.draw(0..count as u32, 0..1);
+        }
     }
 }
 
@@ -1001,7 +1113,533 @@ fn glyph_bitmap(ch: char) -> [u8; 7] {
         'P' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000],
         'R' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001],
         'T' => [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100],
+        'S' => [0b01110, 0b10001, 0b10000, 0b01110, 0b00001, 0b10001, 0b01110],
+        'W' => [0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b11011, 0b10001],
         _ => [0; 7],
+    }
+}
+
+// ============================================================================
+// #13 Step 2 — ViewCube chrome overlay (compass ring + N/E/S/W + Home/Fit +
+// hover rotate/roll arrows). Screen-space, fixed to the cube rect; the layout
+// fractions mirror `camera::classify_cube_point` EXACTLY so the rendered glyphs
+// sit on the Step-1 hit zones.
+// ============================================================================
+
+/// Render one chrome glyph into an RGBA8 buffer (`CHROME_GLYPH_TEXTURE_SIZE`
+/// square) with a TRANSPARENT background so the glyph floats over the scene; the
+/// opaque pixels are white (tinted to parchment/teal by the vertex colour).
+fn chrome_glyph_pixels(glyph: ChromeGlyph) -> Vec<u8> {
+    let size = CHROME_GLYPH_TEXTURE_SIZE as usize;
+    let mut pixels = vec![0u8; size * size * 4]; // transparent
+    const INK: [u8; 4] = [0xff, 0xff, 0xff, 0xff];
+    match glyph {
+        ChromeGlyph::CompassNorth => draw_glyph_letter(&mut pixels, size, 'N'),
+        ChromeGlyph::CompassEast => draw_glyph_letter(&mut pixels, size, 'E'),
+        ChromeGlyph::CompassSouth => draw_glyph_letter(&mut pixels, size, 'S'),
+        ChromeGlyph::CompassWest => draw_glyph_letter(&mut pixels, size, 'W'),
+        ChromeGlyph::HomeButton => draw_home_icon(&mut pixels, size),
+        ChromeGlyph::FitButton => draw_fit_icon(&mut pixels, size),
+        ChromeGlyph::ArrowUp => draw_triangle_arrow(&mut pixels, size, ArrowFacing::Up),
+        ChromeGlyph::ArrowDown => draw_triangle_arrow(&mut pixels, size, ArrowFacing::Down),
+        ChromeGlyph::ArrowLeft => draw_triangle_arrow(&mut pixels, size, ArrowFacing::Left),
+        ChromeGlyph::ArrowRight => draw_triangle_arrow(&mut pixels, size, ArrowFacing::Right),
+        ChromeGlyph::RollCw => draw_roll_arc(&mut pixels, size, true),
+        ChromeGlyph::RollCcw => draw_roll_arc(&mut pixels, size, false),
+        ChromeGlyph::RingSolid => {
+            // A fully-opaque white field; the ring geometry samples its centre.
+            for pixel in pixels.chunks_exact_mut(4) {
+                pixel.copy_from_slice(&INK);
+            }
+        }
+    }
+    pixels
+}
+
+/// Draw a single large centred letter onto a transparent chrome buffer.
+fn draw_glyph_letter(pixels: &mut [u8], size: usize, ch: char) {
+    // Reuse the 5×7 face font, white ink, scaled to ~80% of the glyph box.
+    draw_centered_label(pixels, size, &ch.to_string(), [0xff, 0xff, 0xff, 0xff]);
+}
+
+/// Which way a rotate-arrow triangle points.
+#[derive(Clone, Copy)]
+enum ArrowFacing {
+    Up,
+    Down,
+    Left,
+    Right,
+}
+
+/// Draw a filled triangular rotate arrow pointing in `facing`, centred.
+fn draw_triangle_arrow(pixels: &mut [u8], size: usize, facing: ArrowFacing) {
+    const INK: [u8; 4] = [0xff, 0xff, 0xff, 0xff];
+    let s = size as f32;
+    // Triangle spanning ~64% of the box, centred.
+    let lo = s * 0.20;
+    let hi = s * 0.80;
+    let mid = s * 0.5;
+    // Three vertices depending on facing.
+    let (ax, ay, bx, by, cx, cy) = match facing {
+        ArrowFacing::Up => (mid, lo, lo, hi, hi, hi),
+        ArrowFacing::Down => (mid, hi, lo, lo, hi, lo),
+        ArrowFacing::Left => (lo, mid, hi, lo, hi, hi),
+        ArrowFacing::Right => (hi, mid, lo, lo, lo, hi),
+    };
+    fill_triangle(pixels, size, (ax, ay), (bx, by), (cx, cy), INK);
+}
+
+/// Fill a triangle (barycentric scan over its bounding box) onto an RGBA buffer.
+fn fill_triangle(
+    pixels: &mut [u8],
+    size: usize,
+    a: (f32, f32),
+    b: (f32, f32),
+    c: (f32, f32),
+    color: [u8; 4],
+) {
+    let min_x = a.0.min(b.0).min(c.0).floor().max(0.0) as usize;
+    let max_x = (a.0.max(b.0).max(c.0).ceil() as usize).min(size);
+    let min_y = a.1.min(b.1).min(c.1).floor().max(0.0) as usize;
+    let max_y = (a.1.max(b.1).max(c.1).ceil() as usize).min(size);
+    let area = edge(a, b, c);
+    if area.abs() < f32::EPSILON {
+        return;
+    }
+    for y in min_y..max_y {
+        for x in min_x..max_x {
+            let p = (x as f32 + 0.5, y as f32 + 0.5);
+            let w0 = edge(b, c, p) / area;
+            let w1 = edge(c, a, p) / area;
+            let w2 = edge(a, b, p) / area;
+            if w0 >= 0.0 && w1 >= 0.0 && w2 >= 0.0 {
+                let index = (y * size + x) * 4;
+                pixels[index..index + 4].copy_from_slice(&color);
+            }
+        }
+    }
+}
+
+/// Signed area of the triangle (a, b, c) — the edge function used for fill tests.
+fn edge(a: (f32, f32), b: (f32, f32), c: (f32, f32)) -> f32 {
+    (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0)
+}
+
+/// Draw a simple house silhouette (Home button): a triangular roof over a square.
+fn draw_home_icon(pixels: &mut [u8], size: usize) {
+    const INK: [u8; 4] = [0xff, 0xff, 0xff, 0xff];
+    let s = size as f32;
+    // Roof triangle.
+    fill_triangle(
+        pixels,
+        size,
+        (s * 0.5, s * 0.18),
+        (s * 0.16, s * 0.5),
+        (s * 0.84, s * 0.5),
+        INK,
+    );
+    // Body square.
+    let lo = (s * 0.28) as usize;
+    let hi = (s * 0.78) as usize;
+    let x0 = (s * 0.28) as usize;
+    let x1 = (s * 0.72) as usize;
+    for y in lo..hi.min(size) {
+        for x in x0..x1.min(size) {
+            let index = (y * size + x) * 4;
+            pixels[index..index + 4].copy_from_slice(&INK);
+        }
+    }
+}
+
+/// Draw a "fit to view" icon: a bold square frame (ring outline). Bracketed
+/// corners vanish at the small badge size, so a thick continuous frame reads
+/// better — clearly distinct from the Home house.
+fn draw_fit_icon(pixels: &mut [u8], size: usize) {
+    const INK: [u8; 4] = [0xff, 0xff, 0xff, 0xff];
+    let s = size as f32;
+    let lo = (s * 0.20) as usize;
+    let hi = (s * 0.80) as usize;
+    let thick = (s * 0.16).max(3.0) as usize; // bold so it survives downscaling
+    let put_block = |pixels: &mut [u8], x0: usize, y0: usize, w: usize, h: usize| {
+        for y in y0..(y0 + h).min(size) {
+            for x in x0..(x0 + w).min(size) {
+                let index = (y * size + x) * 4;
+                pixels[index..index + 4].copy_from_slice(&INK);
+            }
+        }
+    };
+    let span = hi - lo;
+    // Top, bottom, left, right bars of a hollow square.
+    put_block(pixels, lo, lo, span, thick); // top
+    put_block(pixels, lo, hi - thick, span, thick); // bottom
+    put_block(pixels, lo, lo, thick, span); // left
+    put_block(pixels, hi - thick, lo, thick, span); // right
+}
+
+/// Draw a roll arc with an arrowhead (CW or CCW) — a curved 270° stroke with a
+/// small triangular head, for the top-right roll buttons.
+fn draw_roll_arc(pixels: &mut [u8], size: usize, clockwise: bool) {
+    const INK: [u8; 4] = [0xff, 0xff, 0xff, 0xff];
+    let s = size as f32;
+    let cx = s * 0.5;
+    let cy = s * 0.5;
+    let radius = s * 0.30;
+    let thick = s * 0.09;
+    // Stroke a 270° arc (leave a gap so the curl reads).
+    let start = if clockwise { 0.6 } else { std::f32::consts::PI - 0.6 };
+    let sweep = std::f32::consts::TAU * 0.75;
+    let steps = 96;
+    for i in 0..=steps {
+        let frac = i as f32 / steps as f32;
+        let ang = if clockwise {
+            start + sweep * frac
+        } else {
+            start - sweep * frac
+        };
+        let px = cx + ang.cos() * radius;
+        let py = cy + ang.sin() * radius;
+        // Stamp a small filled disc for thickness.
+        let r = (thick * 0.5) as i32;
+        for dy in -r..=r {
+            for dx in -r..=r {
+                if (dx * dx + dy * dy) as f32 <= (thick * 0.5) * (thick * 0.5) {
+                    let x = px as i32 + dx;
+                    let y = py as i32 + dy;
+                    if x >= 0 && y >= 0 && (x as usize) < size && (y as usize) < size {
+                        let index = ((y as usize) * size + x as usize) * 4;
+                        pixels[index..index + 4].copy_from_slice(&INK);
+                    }
+                }
+            }
+        }
+    }
+    // Arrowhead at the arc's END.
+    let end_ang = if clockwise { start + sweep } else { start - sweep };
+    let hx = cx + end_ang.cos() * radius;
+    let hy = cy + end_ang.sin() * radius;
+    // Tangent direction at the end (perpendicular to radius, in sweep direction).
+    let tang = if clockwise {
+        end_ang + std::f32::consts::FRAC_PI_2
+    } else {
+        end_ang - std::f32::consts::FRAC_PI_2
+    };
+    let head = s * 0.16;
+    let tip = (hx + tang.cos() * head, hy + tang.sin() * head);
+    let left = (
+        hx + (tang + 2.4).cos() * head * 0.7,
+        hy + (tang + 2.4).sin() * head * 0.7,
+    );
+    let right = (
+        hx + (tang - 2.4).cos() * head * 0.7,
+        hy + (tang - 2.4).sin() * head * 0.7,
+    );
+    fill_triangle(pixels, size, tip, left, right, INK);
+}
+
+/// The glyph tint for the always-on chrome (parchment, matching the face text).
+const CHROME_GLYPH_RGB: [f32; 3] = [0.913, 0.882, 0.819]; // #e9e1d1
+/// A hovered arrow is brightened to teal-white so the highlight reads.
+const CHROME_HOVER_RGB: [f32; 3] = [0.6, 1.0, 0.9];
+
+/// Build the chrome overlay pipeline (alpha-blended screen-space textured quads)
+/// and its glyph-texture bind group.
+fn build_chrome_overlay(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    color_format: wgpu::TextureFormat,
+) -> (wgpu::RenderPipeline, wgpu::BindGroup) {
+    let layer_count = ChromeGlyph::ALL.len() as u32;
+    let glyph_size = CHROME_GLYPH_TEXTURE_SIZE;
+    let mut pixels = Vec::with_capacity((glyph_size * glyph_size * 4 * layer_count) as usize);
+    for glyph in ChromeGlyph::ALL {
+        pixels.extend_from_slice(&chrome_glyph_pixels(glyph));
+    }
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("view cube chrome textures"),
+        size: wgpu::Extent3d {
+            width: glyph_size,
+            height: glyph_size,
+            depth_or_array_layers: layer_count,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &pixels,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(4 * glyph_size),
+            rows_per_image: Some(glyph_size),
+        },
+        wgpu::Extent3d {
+            width: glyph_size,
+            height: glyph_size,
+            depth_or_array_layers: layer_count,
+        },
+    );
+    let view = texture.create_view(&wgpu::TextureViewDescriptor {
+        dimension: Some(wgpu::TextureViewDimension::D2Array),
+        ..Default::default()
+    });
+    let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("view cube chrome sampler"),
+        mag_filter: wgpu::FilterMode::Linear,
+        min_filter: wgpu::FilterMode::Linear,
+        ..Default::default()
+    });
+    let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("view cube chrome layout"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2Array,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
+    });
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("view cube chrome bind group"),
+        layout: &bind_group_layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Sampler(&sampler),
+            },
+        ],
+    });
+
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("view cube chrome shader"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("shaders/viewcube_chrome.wgsl").into()),
+    });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("view cube chrome pipeline layout"),
+        bind_group_layouts: &[Some(&bind_group_layout)],
+        immediate_size: 0,
+    });
+    let vertex_layout = wgpu::VertexBufferLayout {
+        array_stride: std::mem::size_of::<ChromeVertex>() as u64,
+        step_mode: wgpu::VertexStepMode::Vertex,
+        attributes: &[
+            wgpu::VertexAttribute { offset: 0, shader_location: 0, format: wgpu::VertexFormat::Float32x2 },
+            wgpu::VertexAttribute { offset: 8, shader_location: 1, format: wgpu::VertexFormat::Float32x2 },
+            wgpu::VertexAttribute { offset: 16, shader_location: 2, format: wgpu::VertexFormat::Float32x4 },
+            wgpu::VertexAttribute { offset: 32, shader_location: 3, format: wgpu::VertexFormat::Uint32 },
+        ],
+    };
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("view cube chrome pipeline"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vertex_main"),
+            buffers: &[vertex_layout],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fragment_main"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: color_format,
+                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            strip_index_format: None,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: None, // screen-space quads — don't cull on winding
+            unclipped_depth: false,
+            polygon_mode: wgpu::PolygonMode::Fill,
+            conservative: false,
+        },
+        // The view-cube pass binds a depth attachment, so this pipeline must carry
+        // a matching depth-stencil state — but with depth TEST and WRITE disabled so
+        // the chrome always paints on top of the cube/scene in the corner.
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: DEPTH_FORMAT,
+            depth_write_enabled: Some(false),
+            depth_compare: Some(wgpu::CompareFunction::Always),
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
+        multisample: wgpu::MultisampleState { count: 1, mask: !0, alpha_to_coverage_enabled: false },
+        multiview_mask: None,
+        cache: None,
+    });
+    (pipeline, bind_group)
+}
+
+/// Build the per-frame chrome vertices (screen-space, NDC within the cube
+/// viewport). `hovered_zone` decides which arrows appear and which glyph is
+/// brightened. The layout fractions MUST match `classify_cube_point`.
+fn build_chrome_vertices(
+    hovered_zone: Option<crate::camera::CubeChromeZone>,
+) -> Vec<ChromeVertex> {
+    use crate::camera::{ArrowDir, CubeChromeZone, Heading, RollDir};
+
+    let mut verts = Vec::new();
+
+    // The compass RING band sits at the base (Step-1 compass band y∈[.88,1.00]).
+    push_compass_ring(&mut verts);
+
+    // Helper: is THIS zone the hovered one? Picks the brighter tint.
+    let tint = |is_hovered: bool| {
+        if is_hovered {
+            with_alpha(CHROME_HOVER_RGB, 1.0)
+        } else {
+            with_alpha(CHROME_GLYPH_RGB, 1.0)
+        }
+    };
+
+    // --- Always-on: compass letters, centred in their Step-1 sub-rects. ---
+    // N: u∈[.05,.30], E: [.30,.50], S: [.50,.70], W: [.70,.95]; band y∈[.88,1.00].
+    let letter_y = (0.88 + 1.00) / 2.0;
+    let letter_h = 0.11;
+    let compass_letters = [
+        (Heading::North, ChromeGlyph::CompassNorth, (0.05 + 0.30) / 2.0),
+        (Heading::East, ChromeGlyph::CompassEast, (0.30 + 0.50) / 2.0),
+        (Heading::South, ChromeGlyph::CompassSouth, (0.50 + 0.70) / 2.0),
+        (Heading::West, ChromeGlyph::CompassWest, (0.70 + 0.95) / 2.0),
+    ];
+    for (heading, glyph, cx) in compass_letters {
+        let hovered = hovered_zone == Some(CubeChromeZone::Compass(heading));
+        push_glyph_quad(&mut verts, glyph, cx, letter_y, 0.085, letter_h, tint(hovered));
+    }
+
+    // --- Always-on: Home / Fit badges (top-left), Step-1 u∈[0,.12]/[.12,.24], v∈[0,.12]. ---
+    let badge_y = 0.07;
+    let badge_size = 0.12;
+    let home_hovered = hovered_zone == Some(CubeChromeZone::HomeButton);
+    push_glyph_quad(&mut verts, ChromeGlyph::HomeButton, 0.06, badge_y, badge_size, badge_size, tint(home_hovered));
+    let fit_hovered = hovered_zone == Some(CubeChromeZone::FitButton);
+    push_glyph_quad(&mut verts, ChromeGlyph::FitButton, 0.18, badge_y, badge_size, badge_size, tint(fit_hovered));
+
+    // --- Hover-only: the 4 rotate arrows in the gutters. Centres match Step-1. ---
+    if let Some(CubeChromeZone::RotateArrow(dir)) = hovered_zone {
+        let (glyph, cx, cy) = match dir {
+            // UP gutter v∈[.04,.15], u∈[.35,.65]
+            ArrowDir::Up => (ChromeGlyph::ArrowUp, 0.5, (0.04 + 0.15) / 2.0),
+            // DOWN gutter v∈[.85,.88], u∈[.35,.65]
+            ArrowDir::Down => (ChromeGlyph::ArrowDown, 0.5, (0.85 + 0.88) / 2.0),
+            // LEFT gutter u∈[.02,.15], v∈[.35,.65]
+            ArrowDir::Left => (ChromeGlyph::ArrowLeft, (0.02 + 0.15) / 2.0, 0.5),
+            // RIGHT gutter u∈[.85,.98], v∈[.35,.65]
+            ArrowDir::Right => (ChromeGlyph::ArrowRight, (0.85 + 0.98) / 2.0, 0.5),
+        };
+        push_glyph_quad(&mut verts, glyph, cx, cy, 0.11, 0.11, tint(true));
+    }
+
+    // --- Hover-only: the 2 roll arrows (top-right). Step-1 u∈[.74,.87]/[.87,1.0], v∈[0,.13]. ---
+    if let Some(CubeChromeZone::RollArrow(dir)) = hovered_zone {
+        let (glyph, cx) = match dir {
+            RollDir::Ccw => (ChromeGlyph::RollCcw, (0.74 + 0.87) / 2.0),
+            RollDir::Cw => (ChromeGlyph::RollCw, (0.87 + 1.00) / 2.0),
+        };
+        push_glyph_quad(&mut verts, glyph, cx, 0.065, 0.11, 0.11, tint(true));
+    }
+
+    verts
+}
+
+/// Push two triangles for a textured glyph quad. `(cx, cy)` is the centre and
+/// `(half_w, half_h)` the half-extents, ALL in rect fractions [0,1] (origin
+/// top-left, y down). Converts to NDC (x: f*2-1, y: 1-f*2) for the viewport.
+fn push_glyph_quad(
+    verts: &mut Vec<ChromeVertex>,
+    glyph: ChromeGlyph,
+    cx: f32,
+    cy: f32,
+    half_w: f32,
+    half_h: f32,
+    color: [f32; 4],
+) {
+    let to_ndc = |fx: f32, fy: f32| [fx * 2.0 - 1.0, 1.0 - fy * 2.0];
+    let layer = glyph.layer();
+    // Corners in rect-fraction space (TL, TR, BR, BL) with UV.
+    let corners = [
+        (cx - half_w, cy - half_h, 0.0, 0.0),
+        (cx + half_w, cy - half_h, 1.0, 0.0),
+        (cx + half_w, cy + half_h, 1.0, 1.0),
+        (cx - half_w, cy + half_h, 0.0, 1.0),
+    ];
+    let v = |i: usize| {
+        let (fx, fy, u, t) = corners[i];
+        ChromeVertex { position: to_ndc(fx, fy), uv: [u, t], color, layer }
+    };
+    // TL,TR,BR  +  TL,BR,BL
+    verts.extend_from_slice(&[v(0), v(1), v(2), v(0), v(2), v(3)]);
+}
+
+/// Push the compass RING — a thin teal annulus on the base band (Step-1 compass
+/// y∈[.88,1.00]), centred horizontally, as a triangle list approximating a ring.
+/// It does NOT rotate with the cube (screen-space), keeping N/E/S/W aligned with
+/// their hit zones. Each segment samples the fully-opaque `RingSolid` layer so the
+/// vertex tint (teal) is what shows.
+fn push_compass_ring(verts: &mut Vec<ChromeVertex>) {
+    // Centre at the horizontal middle, vertically on the base band. The ring is
+    // squashed vertically (the band is short) so it reads as a flat base disc seen
+    // from a low angle — like the AutoCAD/Inventor compass.
+    let center_x = 0.5;
+    let center_y = 0.93;
+    let radius_x = 0.45;
+    let radius_y = 0.05;
+    let thickness = 0.45; // fraction of radius forming the annulus width
+    let color = with_alpha(srgb_hex_to_linear(0x5f_b8_a4), 0.85);
+    const SEGMENTS: usize = 48;
+    let inner = 1.0 - thickness;
+    let to_ndc = |fx: f32, fy: f32| [fx * 2.0 - 1.0, 1.0 - fy * 2.0];
+    let layer = ChromeGlyph::RingSolid.layer();
+    let mk = |fx: f32, fy: f32| ChromeVertex {
+        position: to_ndc(fx, fy),
+        uv: [0.5, 0.5],
+        color,
+        layer,
+    };
+    for i in 0..SEGMENTS {
+        let a0 = (i as f32) / SEGMENTS as f32 * std::f32::consts::TAU;
+        let a1 = ((i + 1) as f32) / SEGMENTS as f32 * std::f32::consts::TAU;
+        let ring_pt = |ang: f32, r: f32| {
+            (
+                center_x + ang.cos() * radius_x * r,
+                center_y + ang.sin() * radius_y * r,
+            )
+        };
+        let (ox0, oy0) = ring_pt(a0, 1.0);
+        let (ox1, oy1) = ring_pt(a1, 1.0);
+        let (ix0, iy0) = ring_pt(a0, inner);
+        let (ix1, iy1) = ring_pt(a1, inner);
+        verts.extend_from_slice(&[
+            mk(ox0, oy0), mk(ox1, oy1), mk(ix1, iy1),
+            mk(ox0, oy0), mk(ix1, iy1), mk(ix0, iy0),
+        ]);
     }
 }
 

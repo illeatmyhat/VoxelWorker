@@ -123,6 +123,15 @@ const CASES: &[GoldenCase] = &[
         name: "demo-village-points",
         args: &["--demo-village", "--points"],
     },
+    // #13 Step 2: the ViewCube chrome with a hover. The same village, but the cube
+    // corner now carries the always-on compass ring + N/E/S/W + Home/Fit glyphs AND
+    // a HIGHLIGHTED rotate-left arrow (forced via `--cube-hover rotate-left`). Pins
+    // the screen-space chrome overlay path: the glyph quads sit on the Step-1 hit
+    // zones, the hovered arrow brightens, and the 3D viewport/panel are untouched.
+    GoldenCase {
+        name: "cube-chrome-hover",
+        args: &["--demo-village", "--cube-hover", "rotate-left"],
+    },
 ];
 
 /// Fixed orbit angles so the framing is identical to the committed reference. The

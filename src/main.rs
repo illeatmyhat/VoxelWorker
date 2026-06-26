@@ -1185,6 +1185,9 @@ impl WindowedState {
             } else {
                 None
             },
+            // #13 Step 2: chrome hover wiring is Step 3; the live app draws the
+            // always-on chrome (compass + Home/Fit) with no arrows for now.
+            cube_hovered_zone: None,
             scene_grid: Some(&self.scene_grid_renderer),
             // Issue #29 S5: the windowed app always shows the Points (the Origin's
             // ground+axes are on by default); the batch self-gates on hidden/off.

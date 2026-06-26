@@ -244,6 +244,10 @@ pub fn run_egui_frame(
 pub struct FrameOverlays<'a> {
     pub gizmo: Option<&'a renderer::TransformGizmoRenderer>,
     pub view_cube: Option<&'a renderer::ViewCubeRenderer>,
+    /// The ViewCube chrome zone under the cursor (#13 Step 2). Drives which hover
+    /// arrows the cube draws and which glyph is highlighted. `None` = nothing
+    /// hovered (the normal render: compass + Home/Fit only, no arrows).
+    pub cube_hovered_zone: Option<camera::CubeChromeZone>,
     /// The per-object block lattice + floor grid (issue #29 S3). Drawn in the MSAA
     /// pass (depth-tested) before the gizmo. The renderer's per-frame batch already
     /// holds only the grid-enabled nodes' lines (master AND per-object), so the draw
@@ -402,11 +406,13 @@ pub fn render_frame(
     if let Some(view_cube) = overlays.view_cube {
         view_cube.draw(
             device,
+            queue,
             &mut encoder,
             target_view,
             overlays.target_width,
             overlays.target_height,
             prepared.viewport_px,
+            overlays.cube_hovered_zone,
         );
     }
 

@@ -115,6 +115,10 @@ struct ShotOptions {
     /// headlessly (no tween). Faces, edges (`front-top`) and corners
     /// (`front-top-right`) are all accepted (#13a).
     snap_element: Option<ViewCubeElement>,
+    /// `--cube-hover <zone>` (#13 Step 2): force a ViewCube chrome zone to read as
+    /// hovered so a golden can show a highlighted rotate/roll arrow. `None` = the
+    /// normal render (compass + Home/Fit only, no arrows).
+    cube_hover: Option<voxel_worker::camera::CubeChromeZone>,
     /// Orbit azimuth (radians). Default 0.7.
     theta: f32,
     /// Orbit polar angle from +Y (radians). Default 1.05.
@@ -223,6 +227,7 @@ impl Default for ShotOptions {
             export_vox_path: None,
             show_view_cube: true,
             snap_element: None,
+            cube_hover: None,
             theta: 0.7,
             phi: 1.05,
             distance: None,
@@ -299,6 +304,31 @@ fn parse_snap_element(value: &str) -> ViewCubeElement {
         [a, b] => ViewCubeElement::from_edge(*a, *b),
         [a, b, c] => ViewCubeElement::from_corner(*a, *b, *c),
         _ => panic!("--snap must name 1 (face), 2 (edge) or 3 (corner) faces, got '{value}'"),
+    }
+}
+
+/// Parse a `--cube-hover` value (#13 Step 2) into the forced hovered chrome zone.
+/// Accepts the rotate/roll arrows, the compass headings, and the Home/Fit badges
+/// so a golden can show any highlighted chrome element.
+fn parse_cube_hover(value: &str) -> voxel_worker::camera::CubeChromeZone {
+    use voxel_worker::camera::{ArrowDir, CubeChromeZone, Heading, RollDir};
+    match value.to_ascii_lowercase().as_str() {
+        "rotate-up" | "up" => CubeChromeZone::RotateArrow(ArrowDir::Up),
+        "rotate-down" | "down" => CubeChromeZone::RotateArrow(ArrowDir::Down),
+        "rotate-left" | "left" => CubeChromeZone::RotateArrow(ArrowDir::Left),
+        "rotate-right" | "right" => CubeChromeZone::RotateArrow(ArrowDir::Right),
+        "roll-cw" | "cw" => CubeChromeZone::RollArrow(RollDir::Cw),
+        "roll-ccw" | "ccw" => CubeChromeZone::RollArrow(RollDir::Ccw),
+        "north" | "n" => CubeChromeZone::Compass(Heading::North),
+        "east" | "e" => CubeChromeZone::Compass(Heading::East),
+        "south" | "s" => CubeChromeZone::Compass(Heading::South),
+        "west" | "w" => CubeChromeZone::Compass(Heading::West),
+        "home" => CubeChromeZone::HomeButton,
+        "fit" => CubeChromeZone::FitButton,
+        other => panic!(
+            "--cube-hover must be one of rotate-up|rotate-down|rotate-left|rotate-right|\
+             roll-cw|roll-ccw|north|east|south|west|home|fit, got '{other}'"
+        ),
     }
 }
 
@@ -534,6 +564,11 @@ fn parse_options() -> ShotOptions {
             "--snap" => {
                 options.snap_element =
                     Some(parse_snap_element(&args.next().expect("--snap requires a value")));
+            }
+            "--cube-hover" => {
+                options.cube_hover = Some(parse_cube_hover(
+                    &args.next().expect("--cube-hover requires a value"),
+                ));
             }
             "--theta" => {
                 options.theta = args
@@ -1557,6 +1592,7 @@ async fn run_capture(options: ShotOptions) {
         } else {
             None
         },
+        cube_hovered_zone: options.cube_hover,
         scene_grid: Some(&scene_grid_renderer),
         // Issue #29 S5: Points SUPPRESSED unless `--points` (keeps the 6 goldens
         // byte-identical); the new `demo-village --points` golden enables them.

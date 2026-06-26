@@ -33,6 +33,29 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **ViewCube chrome rendering: compass ring + Home/Fit + hover arrows — Part of #13 (Step 2).**
+  RENDER only (no input wiring — that is Step 3). New **screen-space chrome overlay** path in
+  `ViewCubeRenderer` (`renderer.rs` + `shaders/viewcube_chrome.wgsl`): alpha-blended textured glyph
+  quads laid out in NDC within the scissored cube viewport, FIXED to the cube rect (they do NOT
+  rotate with the cube), distinct from the rotating `view_cube_view_projection`. The glyph quads sit
+  on EXACTLY the Step-1 `classify_cube_point` fractions (compass band y∈[.88,1], N/E/S/W sub-rects;
+  Home/Fit badges top-left; rotate gutters; roll arrows top-right). A 13-layer chrome texture array
+  (extends the face-label machinery) holds N/E/S/W (5×7 font, added `S`/`W` glyphs), a Home house
+  icon, a Fit square-frame icon, four triangular rotate arrows, two curved roll arcs, and a solid
+  layer the compass RING samples (a teal squashed-ellipse annulus on the base band, drawn as a
+  48-segment screen-space triangle list so N/E/S/W stay aligned with their hit zones).
+  **Always-on:** compass ring + N/E/S/W + Home/Fit (in every render). **Hover-only:** the 4 rotate
+  arrows + 2 roll arrows, drawn only when their zone is the `hovered_zone`, and the hovered glyph is
+  brightened to teal. `ViewCubeRenderer::draw` gains `queue` + `hovered_zone: Option<CubeChromeZone>`;
+  `FrameOverlays` gains `cube_hovered_zone` (the live app passes `None` until Step 3). New shot flag
+  `--cube-hover <rotate-up|down|left|right|roll-cw|ccw|north|…|home|fit>` forces a hovered zone for a
+  golden. The chrome sits only in the margins/gutters/base — TOP/FRONT/RIGHT faces + teal edges stay
+  readable. **Goldens: deliberate regen** (the cube corner gained chrome in all 7) + ONE new
+  `cube-chrome-hover.png` (highlighted rotate-left arrow). Verified the regen is corner-only: outside
+  the 170×170 cube box the old↔new goldens are 0.0000% changed (debug-clouds 0.0072%, pure AA jitter);
+  inside, exactly 1330 px changed in every case (the camera-independent chrome). Gate: `--bins` +
+  clippy clean, 225 lib tests, 8 golden cases pass (7 regen + hover).
+
 - **ViewCube chrome hit-math + Home/Fit/set-home logic + persistence — Part of #13 (Step 1).**
   Pure logic + data only — NO rendering, NO input wiring (Steps 2/3), app behaviour unchanged,
   goldens byte-identical. In `camera.rs`: `CubeChromeZone` enum + `classify_cube_point(rect,
