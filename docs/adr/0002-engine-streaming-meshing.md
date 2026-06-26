@@ -1,9 +1,10 @@
 # ADR 0002 — Engine phase: streaming, meshing & coordinates
 
-- **Status:** Proposed (awaiting sign-off — the forks in "Open questions" need a decision before implementation)
+- **Status:** Accepted (O1–O7 signed off 2026-06-25; **O8** — atlas-UV'd vs per-material mesh geometry — still open, due before the mesher/E3).
 - **Date:** 2026-06-25
 - **Sub-ADR of:** [ADR 0001](0001-scene-graph-parts-and-tools.md) ("Scale" section, build-sequence steps 5–7).
 - **Issues:** Part of #14. Decomposes #18 (step 5), #19 (step 6), #20 (step 7). Leans on #24 (golden images).
+- **Implementation note (2026-06-25):** E1 (coordinate retrofit / origin-rebasing) is **not testable in isolation** — no faraway geometry exists until chunking lands (a single resolved region can't span to a distant node without blowing the cap), so the 64-bit/rebased coordinate work is folded **into** E2 (chunking), not done before it. Revised order: goldens (E0 ✅) → **chunk the instanced renderer *with* the coordinate retrofit** → cuboid mesher (E3, A/B goldens) → region fog → out-of-core.
 
 ## Context
 
