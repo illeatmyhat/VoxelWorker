@@ -33,6 +33,20 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **Fix per-chunk fog silent holes past MAX_FOG_CHUNKS → graceful disable — Part of #20 (step 4).**
+  Per-chunk onion fog is now the default. The CPU occupancy builder
+  (`renderer.rs::build_per_chunk_fog_occupancy`) previously `keys.truncate(MAX_FOG_CHUNKS)`'d the resident
+  non-empty chunk list when it overflowed 1024; the dropped chunks then had no atlas tile, so the
+  raymarch's occupancy sample read 0 inside them → **fog silently vanished (holes)** in part of a large
+  scene rather than failing honestly. Now the builder detects `keys.len() > MAX_FOG_CHUNKS`, logs a
+  one-line `eprintln!`, and returns NO volumes — which makes `upload_grid_per_chunk` take its **existing**
+  `chunk_count == 0` graceful-disable path (`per_chunk_active = false`), CONSISTENT with the neighbouring
+  atlas-dimension-exceeded branch. Net: a too-large region shows NO fog (honest) instead of fog-with-holes
+  (wrong). Long-term fix (region-scope the fog to resident/visible chunks so the resident set stays small)
+  stays tracked in #20 step 4. New CPU test `per_chunk_fog_disables_past_max_fog_chunks` (1025 chunks →
+  empty; exactly 1024 → still renders). Headless: `--demo-scene --fog perchunk` (19 chunks) renders fog
+  correctly (unaffected); a 96³ debug-clouds scene (1816 chunks) now renders with NO fog, no holes.
+
 - **Decouple camera/gizmo/lattice/scrubber dims from the assembled grid (S6c-1) — Part of #20.**
   Behaviour-preserving refactor + prep for the per-chunk renderer (S6c step 4). The camera auto-frame,
   origin gizmo, block lattice, fine floor grid and layer scrubber no longer read the assembled monolithic

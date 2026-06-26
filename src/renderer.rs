@@ -2333,8 +2333,9 @@ pub struct ChunkFogVolume {
 pub struct PerChunkFogOccupancy {
     /// `CHUNK_BLOCKS * voxels_per_block` — the voxel extent of one chunk per axis.
     pub chunk_extent: u32,
-    /// The apron'd volumes, one per non-empty resident chunk (capped at
-    /// [`MAX_FOG_CHUNKS`]).
+    /// The apron'd volumes, one per non-empty resident chunk. Empty when the resident
+    /// non-empty chunk count exceeds [`MAX_FOG_CHUNKS`] (per-chunk fog disables itself
+    /// for that build rather than dropping chunks and rendering with holes).
     pub volumes: Vec<ChunkFogVolume>,
 }
 
@@ -2395,7 +2396,26 @@ pub fn build_per_chunk_fog_occupancy(
     }
     let mut keys: Vec<[i32; 3]> = chunk_coords.keys().copied().collect();
     keys.sort_unstable();
-    keys.truncate(MAX_FOG_CHUNKS);
+    // Too many resident non-empty chunks for the per-chunk atlas to hold. Degrade
+    // gracefully and CONSISTENTLY with `upload_grid_per_chunk`'s other overflow branch
+    // (atlas-dimension-exceeded): return NO volumes so the upload takes its existing
+    // `chunk_count == 0` disable path (per_chunk_active = false) → the region shows NO
+    // fog (honest) rather than fog-with-holes (wrong: a previous `keys.truncate` dropped
+    // the overflow chunks, whose raymarch occupancy then read 0 → silent fog holes).
+    // The proper long-term fix (region-scope the fog to resident/visible chunks so the
+    // resident set stays small) is tracked in #20 step 4.
+    if keys.len() > MAX_FOG_CHUNKS {
+        eprintln!(
+            "per-chunk fog: {} non-empty chunks exceeds MAX_FOG_CHUNKS ({}); disabling \
+             per-chunk fog for this build (no fog) rather than rendering with holes",
+            keys.len(),
+            MAX_FOG_CHUNKS,
+        );
+        return PerChunkFogOccupancy {
+            chunk_extent: chunk_extent as u32,
+            volumes: Vec::new(),
+        };
+    }
 
     let pad = (chunk_extent + 2) as usize; // apron: -1 .. extent (inclusive)
     let mut volumes = Vec::with_capacity(keys.len());
@@ -3281,6 +3301,44 @@ mod tests {
         // Empty grid → no volumes.
         let empty = VoxelGrid::new(dims);
         assert!(build_per_chunk_fog_occupancy(&empty, density).volumes.is_empty());
+    }
+
+    /// When the resident non-empty chunk count exceeds `MAX_FOG_CHUNKS`, the builder
+    /// disables per-chunk fog for that build (returns NO volumes) instead of dropping the
+    /// overflow chunks — which would render fog with silent holes. The empty result makes
+    /// `upload_grid_per_chunk` take its `chunk_count == 0` graceful-disable path. (#20 s4
+    /// region-scoping is the proper long-term fix that keeps the resident set small.)
+    #[test]
+    fn per_chunk_fog_disables_past_max_fog_chunks() {
+        let density = 1u32;
+        let extent = (CHUNK_BLOCKS * density) as i64; // 4 voxels per chunk per axis
+        // One occupied voxel in each of (MAX_FOG_CHUNKS + 1) distinct chunks along X.
+        let chunk_count = MAX_FOG_CHUNKS + 1;
+        let dims = [(extent as usize * chunk_count) as u32, extent as u32, extent as u32];
+        let coords: Vec<[u32; 3]> = (0..chunk_count)
+            .map(|chunk_index| [(chunk_index as i64 * extent) as u32, 0, 0])
+            .collect();
+        let grid = grid_with_voxels(dims, &coords);
+
+        let occ = build_per_chunk_fog_occupancy(&grid, density);
+        assert!(
+            occ.volumes.is_empty(),
+            "over MAX_FOG_CHUNKS resident chunks must disable fog (no volumes), not truncate"
+        );
+
+        // The common case (≤ MAX_FOG_CHUNKS) still produces volumes — exactly at the cap.
+        let coords_at_cap: Vec<[u32; 3]> = (0..MAX_FOG_CHUNKS)
+            .map(|chunk_index| [(chunk_index as i64 * extent) as u32, 0, 0])
+            .collect();
+        let dims_at_cap =
+            [(extent as usize * MAX_FOG_CHUNKS) as u32, extent as u32, extent as u32];
+        let grid_at_cap = grid_with_voxels(dims_at_cap, &coords_at_cap);
+        let occ_at_cap = build_per_chunk_fog_occupancy(&grid_at_cap, density);
+        assert_eq!(
+            occ_at_cap.volumes.len(),
+            MAX_FOG_CHUNKS,
+            "exactly MAX_FOG_CHUNKS resident chunks still renders (boundary is inclusive)"
+        );
     }
 
     #[test]
