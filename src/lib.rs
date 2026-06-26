@@ -15,6 +15,7 @@
 pub mod assets;
 pub mod block_palette;
 pub mod camera;
+pub mod cuboid;
 pub mod debug_clouds;
 pub mod frustum;
 pub mod gpu;

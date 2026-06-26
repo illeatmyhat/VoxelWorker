@@ -33,6 +33,31 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **Greedy cuboid (box) decomposition — pure CPU algorithm (ADR 0002 Decision 1, E3) — Part of #18**
+  — new `src/cuboid.rs` (registered in `lib.rs`). This is the box-decomposition algorithm ONLY (no
+  rendering / GPU / flag — those remain in #18). `decompose_into_boxes(region: &VoxelRegion) ->
+  Vec<VoxelBox>` turns a bounded region of solid, materialled voxels into a minimal-ish set of
+  axis-aligned, single-material cuboids, VS-style (`BlockEntityMicroBlock.GenShape`). **Input** is a
+  representation-agnostic dense `VoxelRegion { extent: [w,h,d], cells: Vec<Option<u16>> }` (row-major,
+  X fastest — the same `(z*h+y)*w+x` order as `renderer::upload_grid`'s occupancy volume; `Some(id)` =
+  solid, `None` = air). **`VoxelBox { min:[u32;3], max:[u32;3], material_id:u16 }` uses INCLUSIVE min
+  AND INCLUSIVE max** (a single voxel is `min == max`; documented on the type). **Algorithm:** scan
+  cells in fixed `(z, y, x)` order (deterministic); for each unconsumed solid seed, grow the run
+  greedily +X (same material, unconsumed), then grow the whole X-run +Y, then the whole XY-slab +Z,
+  mark all covered cells consumed, emit the box. **Adapter** `region_from_voxel_grid(grid, origin,
+  extent)` builds a region from a `VoxelGrid` sub-box using the project-wide
+  `round(world_position + dims/2 - 0.5)` index mapping, so the E3 rendering task can call it per
+  render-chunk. Core stays pure (no GPU, no `VoxelGrid` dependency in the algorithm itself).
+  **Verification:** `cargo build --bins`, `cargo clippy --all-targets`, `cargo clippy --features gpu
+  --tests` all clean; `cargo test` 73 pass (was 62; +11 new). 11 exhaustive `cuboid.rs` tests assert
+  the three invariants (exact cover / no overlap / single material) programmatically over every cell:
+  single voxel → 1 box, full block → 1 box (not W·H·D), two-material split → 2 boxes, L-shape +
+  5×5 ring (holes/concavity never covered), empty + zero-extent → 0 boxes, determinism (same input →
+  identical output), a deterministic-LCG randomized safety net over 7 extents × {1,2,3,5} materials ×
+  5 fill densities, and the box-count-reduction sanity (solid 4×4×4 → 1 box, not 64). Two adapter
+  tests round-trip the `VoxelGrid` index mapping (whole grid + offset sub-region). Does NOT touch the
+  renderer. Rendering the boxes + texture atlas remain open in #18.
+
 - **Chunked instanced rendering + per-chunk frustum culling (ADR 0002 E2) — Part of #19** — the
   instanced voxel renderer now partitions the single resolved `VoxelGrid` into spatial chunks and
   frustum-culls them per frame, retiring the 450k draw-side truncation. **Chunk size** is
