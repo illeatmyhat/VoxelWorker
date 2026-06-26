@@ -956,8 +956,32 @@ async fn run_capture(options: ShotOptions) {
         scene.resolve_region(region, density, 0)
     };
     // The voxel-space grid dimensions actually resolved (the composite region for
-    // a placed scene), used for camera framing, the layer track and the uniforms.
+    // a placed scene), used for the layer track and the uniforms / fog.
     let grid_dimensions = grid.dimensions;
+    // Issue #20 S6c-1: the camera auto-frame, origin gizmo, block lattice and fine
+    // floor grid are sized from the SCENE's region dimensions, not by reaching into
+    // the assembled grid object (prep for the per-chunk renderer, S6c step 4). For a
+    // chunkable scene this equals `grid.dimensions` exactly (the resolve sizes the
+    // grid to `placed_region_dimensions`, proven in
+    // `scene::tests::placed_region_dimensions_equals_assembled_grid`). A Part-only
+    // scene (`--shape debug-clouds`) has no composite extent, so it is resolved
+    // through the explicit-region path; we mirror that exact branch here (region ×
+    // density) rather than `placed_region_dimensions` (which is `[0,0,0]` for it),
+    // so the substitution stays byte-identical. The renderer / mesher / fog still
+    // consume the assembled `grid` (that's S6c step 4).
+    let region_dimensions = if scene.has_chunkable_extent(density) {
+        scene.placed_region_dimensions(density)
+    } else {
+        [
+            region.size_blocks[0] * density,
+            region.size_blocks[1] * density,
+            region.size_blocks[2] * density,
+        ]
+    };
+    debug_assert_eq!(
+        region_dimensions, grid_dimensions,
+        "S6c-1: scene region dimensions must equal the assembled grid the consumers used"
+    );
     if options.far_offset || options.far_offset_near {
         println!(
             "resolved {} voxels for demo-far-offset ({}, offset {:?} blocks, region {:?} blocks) \
@@ -1048,11 +1072,11 @@ async fn run_capture(options: ShotOptions) {
     } else {
         None
     };
-    let gizmo_renderer = GizmoRenderer::new(&gpu.device, COLOR_TARGET_FORMAT, grid.dimensions);
+    let gizmo_renderer = GizmoRenderer::new(&gpu.device, COLOR_TARGET_FORMAT, region_dimensions);
     let grid_lattice_renderer = GridLatticeRenderer::new(
         &gpu.device,
         COLOR_TARGET_FORMAT,
-        grid.dimensions,
+        region_dimensions,
         options.geometry.voxels_per_block,
     );
     let view_cube_renderer = ViewCubeRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
@@ -1123,7 +1147,7 @@ async fn run_capture(options: ShotOptions) {
         orbit_phi: phi,
         orbit_distance: options
             .distance
-            .unwrap_or_else(|| OrbitCamera::auto_framed_distance(grid.dimensions)),
+            .unwrap_or_else(|| OrbitCamera::auto_framed_distance(region_dimensions)),
         projection_mode: options.projection_mode,
     };
     // Issue #25: ALL uniform uploads (camera matrix → gizmo/lattice/view-cube/fog

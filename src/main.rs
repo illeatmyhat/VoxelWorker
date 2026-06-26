@@ -199,6 +199,28 @@ fn resolve_scene(scene: &Scene, voxels_per_block: u32) -> VoxelGrid {
     scene.resolve_region(region, voxels_per_block, 0)
 }
 
+/// The region dimensions (in voxels) the camera auto-frame, origin gizmo, block
+/// lattice, fine floor grid and layer scrubber are sized from — read from the
+/// SCENE, not by reaching into the assembled `VoxelGrid` (issue #20 S6c-1, prep
+/// for the per-chunk renderer of S6c step 4). This is a behaviour-preserving
+/// substitution: for a chunkable scene (every Tool scene, including the startup
+/// default) the assembled grid is literally sized to
+/// [`Scene::placed_region_dimensions`] — so this returns BYTE-IDENTICAL dimensions
+/// (proven in `scene::tests::placed_region_dimensions_equals_assembled_grid`).
+///
+/// A **Part-only** scene (e.g. a lone debug-cloud field) has no composite extent,
+/// so `placed_region_dimensions` would be `[0, 0, 0]`; that scene is resolved
+/// through the explicit-region path instead, so we fall back to the assembled
+/// grid's own dimensions — which (being the grid the consumers used before) is
+/// trivially identical to the old behaviour for that case.
+fn region_dimensions_for(scene: &Scene, density: u32, grid: &VoxelGrid) -> [u32; 3] {
+    if scene.has_chunkable_extent(density) {
+        scene.placed_region_dimensions(density)
+    } else {
+        grid.dimensions
+    }
+}
+
 impl WindowedState {
     fn new(event_loop: &ActiveEventLoop) -> Self {
         // M8: load persisted config (geometry, display, material, camera, window
@@ -271,8 +293,22 @@ impl WindowedState {
         };
         let shape = SdfShape::from_geometry(panel_state.geometry);
         let grid = resolve_scene(&panel_state.scene, panel_state.geometry.voxels_per_block);
+        // Issue #20 S6c-1: the camera auto-frame, origin gizmo, block lattice, fine
+        // floor grid and the layer scrubber are sized from the scene's region
+        // dimensions DIRECTLY, not by reaching into the assembled grid object. For a
+        // chunkable scene (the startup default + every Tool scene) this is
+        // BYTE-IDENTICAL to `grid.dimensions` — the assembled grid is literally sized
+        // to `placed_region_dimensions` (proven in
+        // `scene::tests::placed_region_dimensions_equals_assembled_grid`). The
+        // renderer / mesher / fog still consume the assembled `grid` (that's S6c
+        // step 4). `region_dimensions_for` keeps the Part-only fallback exact.
+        let region_dimensions = region_dimensions_for(
+            &panel_state.scene,
+            panel_state.geometry.voxels_per_block,
+            &grid,
+        );
         // Initialise the layer-range band to the full grid height (issue #12).
-        let grid_y = grid.dimensions[1];
+        let grid_y = region_dimensions[1];
         panel_state
             .layer_range
             .rescale_to_grid_y(0, grid_y, shape.voxels_per_block);
@@ -296,11 +332,11 @@ impl WindowedState {
             panel_state.geometry.voxels_per_block,
         );
         let gizmo_renderer =
-            GizmoRenderer::new(&gpu.device, COLOR_TARGET_FORMAT, grid.dimensions);
+            GizmoRenderer::new(&gpu.device, COLOR_TARGET_FORMAT, region_dimensions);
         let grid_lattice_renderer = GridLatticeRenderer::new(
             &gpu.device,
             COLOR_TARGET_FORMAT,
-            grid.dimensions,
+            region_dimensions,
             shape.voxels_per_block,
         );
         let view_cube_renderer =
@@ -329,7 +365,7 @@ impl WindowedState {
         let scan_handle = Some(spawn_auto_scan());
 
         let mut camera = OrbitCamera {
-            orbit_distance: OrbitCamera::auto_framed_distance(grid.dimensions),
+            orbit_distance: OrbitCamera::auto_framed_distance(region_dimensions),
             projection_mode: panel_state.projection_mode,
             ..OrbitCamera::default()
         };
@@ -469,6 +505,12 @@ impl WindowedState {
         let grid = self
             .chunk_resolve_cache
             .resolve_region(&self.panel_state.scene, density, 0);
+        // Issue #20 S6c-1: size the camera/gizmo/lattice/floor/scrubber from the
+        // SCENE's region dimensions, not the assembled grid object. For a chunkable
+        // scene this equals `grid.dimensions` exactly (the cache sizes its output to
+        // `placed_region_dimensions`); the renderer/mesher/fog below still consume
+        // the assembled `grid` (that's S6c step 4).
+        let region_dimensions = region_dimensions_for(&self.panel_state.scene, density, &grid);
         self.voxel_renderer
             .rebuild_instances(&self.gpu.device, &self.gpu.queue, &grid, density);
         // Re-upload the fog's occupancy field for the new grid, using the active fog
@@ -481,14 +523,14 @@ impl WindowedState {
             &grid,
             density,
         );
-        // Keep the gizmo sized to the grid.
+        // Keep the gizmo sized to the scene's region dimensions.
         self.gizmo_renderer
-            .rebuild(&self.gpu.device, &self.gpu.queue, grid.dimensions);
-        // Keep the block lattice + floor grid sized to the grid/density.
+            .rebuild(&self.gpu.device, &self.gpu.queue, region_dimensions);
+        // Keep the block lattice + floor grid sized to the region/density.
         self.grid_lattice_renderer.rebuild(
             &self.gpu.device,
             &self.gpu.queue,
-            grid.dimensions,
+            region_dimensions,
             shape.voxels_per_block,
         );
 
@@ -497,7 +539,7 @@ impl WindowedState {
         // cache so the readout re-measures against the new grid.
         self.panel_state.layer_range.rescale_to_grid_y(
             previous_grid_y,
-            grid.dimensions[1],
+            region_dimensions[1],
             shape.voxels_per_block,
         );
         self.grid = grid;
@@ -507,7 +549,7 @@ impl WindowedState {
         self.measured_band = (u32::MAX, u32::MAX); // force a re-measure next frame.
 
         if auto_frame {
-            self.camera.orbit_distance = OrbitCamera::auto_framed_distance(self.grid.dimensions);
+            self.camera.orbit_distance = OrbitCamera::auto_framed_distance(region_dimensions);
         }
     }
 
@@ -808,9 +850,16 @@ impl WindowedState {
         let raw_input = self.egui_winit_state.take_egui_input(&self.window);
         let pixels_per_point = self.egui_winit_state.egui_ctx().pixels_per_point();
 
-        // Issue #12: re-measure the band diameter only when the band changed (the
-        // grid rebuild path resets `measured_band` to force a re-measure).
-        let grid_y = self.grid.dimensions[1];
+        // Issue #12/#20 S6c-1: the layer scrubber's Y extent comes from the SCENE's
+        // region dimensions, not the assembled grid object — identical to
+        // `self.grid.dimensions[1]` for a chunkable scene (the grid is sized to
+        // `placed_region_dimensions`). The diameter re-measure below still reads the
+        // assembled `self.grid` (that's the diameter consumer, S6d).
+        let grid_y = region_dimensions_for(
+            &self.panel_state.scene,
+            self.panel_state.geometry.voxels_per_block,
+            &self.grid,
+        )[1];
         let current_band = (self.panel_state.layer_range.lower, self.panel_state.layer_range.upper);
         if current_band != self.measured_band {
             self.measured_diameter =

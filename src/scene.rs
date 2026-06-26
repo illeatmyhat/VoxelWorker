@@ -1031,9 +1031,25 @@ impl Scene {
 
     /// The full composite extent in voxels (`size_blocks × density`) — the size the
     /// whole-region grids ([`resolve_region`], [`resolve_region_via_chunks`]) and
-    /// the per-leaf local grids are seeded with. `pub(crate)` so the chunk cache
-    /// (issue #27 S2) seeds its reassembled grid to the same dimensions.
-    pub(crate) fn placed_region_dimensions(&self, voxels_per_block: u32) -> [u32; 3] {
+    /// the per-leaf local grids are seeded with. The chunk cache (issue #27 S2)
+    /// seeds its reassembled grid to the same dimensions.
+    ///
+    /// **This IS the size the assembled render grid takes** for a chunkable scene
+    /// (one with at least one intrinsic-size leaf): both [`resolve_region`] and
+    /// [`crate::chunk_cache::ChunkResolveCache::resolve_region`] size their output
+    /// to exactly this value. So the camera / gizmo / lattice / floor-grid /
+    /// layer-scrubber can read the region dimensions straight from the scene
+    /// (issue #20 S6c) instead of reaching into the assembled `VoxelGrid` —
+    /// the two are provably identical (asserted in
+    /// `placed_region_dimensions_equals_assembled_grid` below). `pub` so the `shot`
+    /// binary can do the same substitution.
+    ///
+    /// **Caveat — a Part-only scene** (no intrinsic-size leaf, e.g. a lone
+    /// debug-cloud field) returns `[0, 0, 0]` here because it has no composite
+    /// extent; such a scene is resolved through the *explicit-region* monolithic
+    /// path (sized to the caller's chosen region, not this), so a consumer of a
+    /// Part-only scene must use that explicit region — not this — as its dimensions.
+    pub fn placed_region_dimensions(&self, voxels_per_block: u32) -> [u32; 3] {
         let region = self.full_extent_blocks(voxels_per_block);
         [
             region.size_blocks[0] * voxels_per_block,
@@ -1445,6 +1461,116 @@ mod tests {
             bare.occupied_count(),
             "scene occupied count must match the bare producer"
         );
+    }
+
+    /// **Issue #20 S6c-1 equivalence proof.** `placed_region_dimensions(density)`
+    /// is exactly the size the assembled render grid takes — both the monolithic
+    /// [`resolve_region`] and the chunk-cache reassembly seed their output to it. So
+    /// the camera / gizmo / lattice / floor-grid / layer-scrubber may read the
+    /// region dimensions from the SCENE rather than from the assembled `VoxelGrid`,
+    /// with zero behavioural change. This pins that substitution across every
+    /// representative scene (all SDF shapes, flat/odd sizes, a placed multi-node
+    /// scene, and an instanced village) for BOTH resolve paths.
+    #[test]
+    fn placed_region_dimensions_equals_assembled_grid() {
+        use crate::chunk_cache::ChunkResolveCache;
+
+        let assert_equal = |scene: &Scene, vpb: u32, label: &str| {
+            let from_scene = scene.placed_region_dimensions(vpb);
+
+            // (1) The monolithic resolve_region (the initial-resolve path).
+            let region = scene.full_extent_blocks(vpb);
+            let monolithic = scene.resolve_region(region, vpb, 0);
+            assert_eq!(
+                from_scene, monolithic.dimensions,
+                "[{label}] placed_region_dimensions must equal the monolithic assembled grid"
+            );
+
+            // (2) The chunk-cache reassembly (the live rebuild path).
+            let mut cache = ChunkResolveCache::new();
+            let assembled = cache.resolve_region(scene, vpb, 0);
+            assert_eq!(
+                from_scene, assembled.dimensions,
+                "[{label}] placed_region_dimensions must equal the cache-assembled grid"
+            );
+        };
+
+        // All SDF shapes at the app default density.
+        for kind in [
+            ShapeKind::Sphere,
+            ShapeKind::Cylinder,
+            ShapeKind::Tube,
+            ShapeKind::Torus,
+            ShapeKind::Box,
+        ] {
+            let scene = Scene::from_geometry(
+                GeometryParams { shape: kind, size_blocks: [5, 5, 5], voxels_per_block: 16, wall_blocks: 1 },
+                MaterialChoice::Stone,
+            );
+            assert_equal(&scene, 16, &format!("{kind:?}"));
+        }
+
+        // Flat / odd sizes (the 5×1×5 app default and friends), several densities.
+        for vpb in [1u32, 8, 16] {
+            for size in [[5u32, 1, 5], [3, 1, 3], [5, 3, 5], [1, 1, 1]] {
+                let scene = Scene::from_geometry(
+                    GeometryParams { shape: ShapeKind::Cylinder, size_blocks: size, voxels_per_block: vpb, wall_blocks: 1 },
+                    MaterialChoice::Stone,
+                );
+                assert_equal(&scene, vpb, &format!("cylinder {size:?}@{vpb}"));
+            }
+        }
+
+        // A placed multi-node scene (sphere at origin + box +8X + torus +6Z).
+        let make_tool = |kind, offset: [i64; 3], material| {
+            let shape = SdfShape { kind, size_blocks: [5, 5, 5], voxels_per_block: 16, wall_blocks: 1 };
+            let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
+            node.transform.offset_blocks = offset;
+            node
+        };
+        let demo_scene = Scene {
+            nodes: vec![
+                make_tool(ShapeKind::Sphere, [0, 0, 0], MaterialChoice::Stone),
+                make_tool(ShapeKind::Box, [8, 0, 0], MaterialChoice::Wood),
+                make_tool(ShapeKind::Torus, [0, 0, 6], MaterialChoice::Plain),
+            ],
+            active: Some(NodePath::root_index(0)),
+            ..Scene::default()
+        };
+        assert_equal(&demo_scene, 16, "demo-scene");
+
+        // An instanced village (one house definition placed by four instances).
+        let house_def_id = DefId(1);
+        let tool = |kind, size: [u32; 3], offset: [i64; 3], material| {
+            let shape = SdfShape { kind, size_blocks: size, voxels_per_block: 16, wall_blocks: 1 };
+            let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
+            node.transform.offset_blocks = offset;
+            node
+        };
+        let house = AssemblyDef {
+            id: house_def_id,
+            name: "House".to_string(),
+            children: vec![
+                tool(ShapeKind::Box, [2, 2, 2], [0, 0, 0], MaterialChoice::Stone),
+                tool(ShapeKind::Cylinder, [1, 2, 1], [0, 2, 0], MaterialChoice::Wood),
+            ],
+        };
+        let instance = |name: &str, offset: [i64; 3]| {
+            let mut node = Node::new(name, NodeContent::Instance(house_def_id));
+            node.transform.offset_blocks = offset;
+            node
+        };
+        let village = Scene {
+            nodes: vec![
+                instance("House 1", [0, 0, 0]),
+                instance("House 2", [6, 0, 0]),
+                instance("House 3", [12, 0, 0]),
+                instance("House 4", [18, 0, 0]),
+            ],
+            definitions: vec![house],
+            active: Some(NodePath::root_index(0)),
+        };
+        assert_equal(&village, 16, "demo-village");
     }
 
     /// The same guarantee for a Part (the debug cloud field): a one-node Part

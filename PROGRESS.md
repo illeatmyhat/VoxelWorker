@@ -33,6 +33,34 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **Decouple camera/gizmo/lattice/scrubber dims from the assembled grid (S6c-1) — Part of #20.**
+  Behaviour-preserving refactor + prep for the per-chunk renderer (S6c step 4). The camera auto-frame,
+  origin gizmo, block lattice, fine floor grid and layer scrubber no longer read the assembled monolithic
+  `VoxelGrid::dimensions`; they now take the region dimensions straight from the SCENE. The renderer /
+  mesher / fog are UNCHANGED — they still consume the assembled grid (that switch is step 4). ZERO
+  behavioural change: the assembled grid is *literally* sized to `Scene::placed_region_dimensions(density)`
+  (both `resolve_region` and the chunk-cache reassembly seed their output to it), so the substituted values
+  are byte-identical.
+  - **Source of the dims now.** `main.rs`: a new `region_dimensions_for(scene, density, grid)` helper —
+    `scene.placed_region_dimensions(density)` for a chunkable scene, falling back to `grid.dimensions` for a
+    Part-only scene (no composite extent → `placed_region_dimensions` is `[0,0,0]`; the app's cache resolve
+    already yields `[0,0,0]` there, so the fallback is trivially identical). Wired into `new()` (initial
+    setup), `rebuild_geometry` (gizmo/lattice rebuild, scrubber rescale, camera re-frame) and the per-frame
+    scrubber `grid_y`. `shot.rs`: a `region_dimensions` computed next to the resolve mirroring the exact
+    resolve branch (`placed_region_dimensions` for chunkable, explicit `region × density` for the Part-only
+    `--shape debug-clouds` path) + a `debug_assert_eq!` against `grid.dimensions`; wired into the gizmo,
+    lattice/floor and camera auto-frame. `placed_region_dimensions` widened `pub(crate)` → `pub` so the
+    `shot` bin crate can call it.
+  - **Equivalence proof.** New CPU test `scene::tests::placed_region_dimensions_equals_assembled_grid`
+    asserts `placed_region_dimensions(density)` equals the assembled grid's `dimensions` for BOTH resolve
+    paths (monolithic `resolve_region` AND the chunk-cache reassembly) across all SDF shapes, flat/odd sizes
+    at several densities, a placed multi-node scene, and an instanced village. Lib tests 156 → 157.
+  - **Gate green.** `cargo build --bins`, `cargo clippy --all-targets` (no new warnings), `cargo test`
+    (157 pass), `cargo test --features gpu --test golden` PIXEL-IDENTICAL (the gizmo + lattice are visible
+    in the goldens — they did not move, confirming the dims were truly equal). Headless sanity: `--demo-scene
+    --gizmo --lattice --floor` read back correct (axes through centre, teal lattice on the composite box,
+    floor grid, all framed); the Part-only `--shape debug-clouds` overlay path also renders with no assert.
+
 - **Region-scoped whole-grid consumers: diameter readout + `.vox` export (S6d) — Part of #20 (folded in from #28).**
   Pure-CPU, additive, no render-path change → goldens untouched. The two consumers that today assume one whole
   recentred `VoxelGrid` now have region-scoped variants that operate over the cache's per-chunk grids and produce
