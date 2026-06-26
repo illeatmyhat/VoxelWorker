@@ -853,6 +853,7 @@ impl WindowedState {
             if self.cuboid_mesh_renderer.is_none() {
                 self.cuboid_mesh_renderer = Some(CuboidMeshRenderer::new(
                     &self.gpu.device,
+                    &self.gpu.queue,
                     COLOR_TARGET_FORMAT,
                     &self.grid,
                     geometry.voxels_per_block,
@@ -865,7 +866,14 @@ impl WindowedState {
                 None => Some(self.panel_state.material),
             };
             if let Some(cuboid_mesh_renderer) = self.cuboid_mesh_renderer.as_mut() {
-                cuboid_mesh_renderer.update_uniforms(&self.gpu.queue, view_projection, bound);
+                cuboid_mesh_renderer.update_uniforms(
+                    &self.gpu.queue,
+                    view_projection,
+                    grid_dimensions,
+                    geometry.voxels_per_block,
+                    self.panel_state.show_grid_overlay,
+                    bound,
+                );
             }
         } else {
             self.cuboid_mesh_renderer = None;

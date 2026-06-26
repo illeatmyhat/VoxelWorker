@@ -33,6 +33,34 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **Cuboid faces: per-voxel texture slice + position-based grid overlay (ADR 0002 E3b-2) — Part of #18**
+  — extends the flag-gated cuboid path (still default OFF; instanced path untouched) so a merged box face
+  reads IDENTICAL to per-voxel cubes. **Per-voxel texture tiling:** each box-face fragment derives a UV in
+  VOXEL units from its absolute voxel position (`world + grid_half_extent`) on the face's two in-plane axes;
+  a new `Repeat` material sampler tiles the block texture once per voxel, so a face spanning N voxels shows
+  N tiles phase-aligned to voxel/block boundaries. The per-face UV DIRECTION (and the block-local slice
+  offset) replicate the instanced `unit_cube_geometry` face UVs exactly (`coord_component(a, sign)` mirrors
+  the UV within each voxel for negative-direction faces), so even non-symmetric textures land texel-exact —
+  box-stone A/B dropped from ~9% to 0.09%, box-wood to 0.005%. **Per-face texture:** the cuboid path now
+  binds the SAME 6-layer `D2Array` material the instanced path uses (3 procedural Stone/Wood/Plain bind
+  groups, selected by the bound material), with `face_layer(normal)` picking the layer (same mapping as
+  instanced). **Grid overlay:** the per-voxel + per-block lines are drawn from the absolute voxel position
+  (NOT face UVs — honors the project guard) with the EXACT instanced colours/half-widths/alphas (exposed
+  via new `renderer::grid_overlay_params()`), respecting the `--grid` / Display toggle. **Material colour:**
+  the E3b-1 per-box modulation still multiplies the lit texture (texture × material × lighting), same as
+  instanced. **Files:** `src/cuboid_mesh.rs` (uniform grew to carry half-extent/density/overlay; new Repeat
+  sampler + per-face material bind groups; `update_uniforms` + `new` take queue/dims/density/overlay),
+  `src/shaders/cuboid.wgsl` (UV slice + layer + overlay), `src/renderer.rs` (3 new pub helpers: overlay
+  params, procedural pixels, texture size — instanced path itself unchanged), `src/bin/shot.rs` +
+  `src/main.rs` (call-site args). **Verification:** `cargo build --bins`, `cargo clippy --all-targets`
+  (+`--features gpu --tests`), `cargo test --lib` (80 pass incl. 2 new: per-face UV span 0..N, normal→layer
+  mapping) all clean; `cargo test --features gpu --test golden` — all 5 goldens UNCHANGED (4 bit-exact,
+  debug-clouds 0.21%). **A/B (cuboid vs instanced golden, golden metric):** torus **0.32%** and demo-village
+  **0.21%** now PASS the 0.5% tolerance; cylinder **3.35%** remains higher — but that residual is a
+  PRE-EXISTING E3b-1 geometry defect (the cuboid cylinder renders a quarter-disc wedge; confirmed identical
+  in the untouched-geometry baseline), NOT a texture/overlay gap (texture parity is exact). Read-back PNGs
+  confirm the block texture tiles per-voxel and the grid lines appear on cuboid faces.
+
 - **Cuboid mesh render path behind a flag (ADR 0002 E3b-1) — Part of #18**
   — new `src/cuboid_mesh.rs` + `src/shaders/cuboid.wgsl`; the experimental cuboid-mesher render path,
   default OFF, selected by a flag. The DEFAULT instanced path is byte-for-byte unchanged (all 5 goldens

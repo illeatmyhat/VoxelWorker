@@ -10,10 +10,15 @@
 //! normal-based lighting + per-material base-colour modulation the instanced
 //! path uses.
 //!
-//! SCOPE (this sub-step): SHAPE parity + per-box material colour + basic
-//! lighting. NO texture slice, NO grid overlay, NO layer clip, NO debug-faces —
-//! those land in later E3 sub-steps. The instanced path stays the DEFAULT and is
-//! untouched; this path is selected only when the `cuboid` mesher flag is on.
+//! SCOPE (E3b-1): SHAPE parity + per-box material colour + basic lighting.
+//! SCOPE (E3b-2, this sub-step): adds the per-voxel TEXTURE SLICE (block texture
+//! tiled once per voxel across a merged box face, via a voxel-unit UV + a Repeat
+//! sampler, replicating the instanced per-face UV direction so even non-symmetric
+//! textures land texel-exact), the per-face D2Array layer selection from the face
+//! normal, and the position-based per-voxel/per-block GRID OVERLAY — all matching
+//! the instanced path. STILL NO layer-range clip, NO debug-faces (later E3 sub-
+//! steps). The instanced path stays the DEFAULT and is untouched; this path is
+//! selected only when the `cuboid` mesher flag is on.
 //!
 //! ## Geometry / coordinate mapping
 //! A voxel at region-local index `(x, y, z)` occupies the world-space cell
@@ -351,16 +356,27 @@ fn face_is_exposed(voxel_box: &VoxelBox, region: &VoxelRegion, delta: [i32; 3]) 
     false
 }
 
-/// std140-safe uniform block for the cuboid pass. Mirrors only what this step
-/// needs: the camera matrix, the per-material base colours (reused from the
-/// instanced step-3b modulation), and a modulation toggle. Field order matches
-/// `CuboidUniforms` in `shaders/cuboid.wgsl`.
+/// std140-safe uniform block for the cuboid pass (ADR 0002 E3b-2). Carries the
+/// camera matrix, the grid half-extent and density (driving the per-voxel texture
+/// slice and the position-based grid overlay), the grid-overlay parameters, and
+/// the per-material base colours (reused from the instanced step-3b modulation).
+/// Every `vec3` is followed by a scalar so it never straddles a 16-byte boundary;
+/// the four grid-line scalars then fill the slot before the `vec4` array (which
+/// must be 16-aligned). Field order matches the WGSL `CuboidUniforms` exactly.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 struct CuboidUniforms {
     view_projection: [[f32; 4]; 4],
+    grid_half_extent: [f32; 3],
+    voxels_per_block: f32,
+    voxel_line_color: [f32; 3],
+    grid_overlay_enabled: f32,
+    block_line_color: [f32; 3],
     material_modulation_enabled: f32,
-    _pad: [f32; 3],
+    voxel_line_half_width: f32,
+    block_line_half_width: f32,
+    voxel_line_alpha: f32,
+    block_line_alpha: f32,
     material_base_colors: [[f32; 4]; MaterialChoice::MATERIAL_COUNT],
 }
 
@@ -371,6 +387,14 @@ pub struct CuboidMeshRenderer {
     index_buffer: wgpu::Buffer,
     uniform_buffer: wgpu::Buffer,
     uniform_bind_group: wgpu::BindGroup,
+    /// One per-face material bind group (Stone/Wood/Plain), indexed by
+    /// [`MaterialChoice`] order. Built from the SAME procedural textures the
+    /// instanced path uploads, but bound through a REPEAT sampler so the per-voxel
+    /// UV tiling repeats the block texture once per voxel across a merged face.
+    material_bind_groups: [wgpu::BindGroup; 3],
+    /// Which procedural material the per-frame uniforms were bound to (the bind
+    /// group selected in `draw`). `update_uniforms` records it.
+    bound_material: MaterialChoice,
     mesh: CuboidMesh,
     /// Indices into `mesh.chunks` that survived the last frustum cull.
     visible_chunks: Vec<usize>,
@@ -380,6 +404,7 @@ impl CuboidMeshRenderer {
     /// Build the cuboid renderer from a grid, decomposing + meshing immediately.
     pub fn new(
         device: &wgpu::Device,
+        queue: &wgpu::Queue,
         color_format: wgpu::TextureFormat,
         grid: &VoxelGrid,
         voxels_per_block: u32,
@@ -443,6 +468,60 @@ impl CuboidMeshRenderer {
             }],
         });
 
+        // --- Per-face material textures (E3b-2) ---
+        // Reuse the instanced path's 6-layer D2Array material layout + the SAME
+        // procedural Stone/Wood/Plain textures, but sample through a REPEAT sampler
+        // so the per-voxel UV (absolute voxel index / density) tiles the block
+        // texture once per voxel across a merged box face (matching the instanced
+        // per-voxel slice). Nearest filtering matches the instanced sampler so the
+        // texels land identically.
+        let material_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("cuboid material sampler"),
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            address_mode_w: wgpu::AddressMode::Repeat,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
+        });
+        let material_bind_group_layout = crate::renderer::build_face_material_layout(device);
+        let texture_size = crate::renderer::procedural_material_texture_size();
+        let material_bind_groups: [wgpu::BindGroup; 3] = crate::renderer::procedural_material_pixels()
+            .iter()
+            .map(|pixels| {
+                // Same procedural image on all six face layers (uniform material).
+                let layers: [&[u8]; 6] = [pixels, pixels, pixels, pixels, pixels, pixels];
+                let texture = crate::renderer::upload_face_material_texture(
+                    device,
+                    queue,
+                    texture_size,
+                    texture_size,
+                    &layers,
+                );
+                let view = texture.create_view(&wgpu::TextureViewDescriptor {
+                    dimension: Some(wgpu::TextureViewDimension::D2Array),
+                    ..Default::default()
+                });
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("cuboid material bind group"),
+                    layout: &material_bind_group_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(&view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(&material_sampler),
+                        },
+                    ],
+                })
+            })
+            .collect::<Vec<_>>()
+            .try_into()
+            .expect("exactly three material textures");
+
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("cuboid shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/cuboid.wgsl").into()),
@@ -450,7 +529,10 @@ impl CuboidMeshRenderer {
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("cuboid pipeline layout"),
-            bind_group_layouts: &[Some(&uniform_bind_group_layout)],
+            bind_group_layouts: &[
+                Some(&uniform_bind_group_layout),
+                Some(&material_bind_group_layout),
+            ],
             immediate_size: 0,
         });
 
@@ -528,6 +610,8 @@ impl CuboidMeshRenderer {
             index_buffer,
             uniform_buffer,
             uniform_bind_group,
+            material_bind_groups,
+            bound_material: MaterialChoice::Plain,
             mesh,
             visible_chunks,
         }
@@ -543,29 +627,62 @@ impl CuboidMeshRenderer {
         self.visible_chunks.len() as u32
     }
 
-    /// Upload the per-frame uniforms (camera matrix + per-material base colours)
-    /// and frustum-cull the mesh chunks. `bound` is the active procedural material
-    /// (drives the relative base-colour modulation, exactly like the instanced
-    /// path's step-3b). When `None`, modulation is off (neutral colours) — e.g. a
-    /// loaded VS block, which the cuboid path renders as a single global material
-    /// for now.
+    /// Upload the per-frame uniforms (camera matrix, grid half-extent + density
+    /// for the per-voxel texture slice + grid overlay, grid-overlay params +
+    /// toggle, per-material base colours) and frustum-cull the mesh chunks.
+    ///
+    /// `grid_dimensions` give the half-extent so `world + half` is the absolute
+    /// voxel position the UV slice + overlay key off. `voxels_per_block` is the
+    /// density (slice size + block-line period). `grid_overlay_enabled` reflects
+    /// the Display toggle. `bound` is the active procedural material: it selects
+    /// the bound texture (E3b-2) AND drives the relative base-colour modulation
+    /// (exactly like the instanced step-3b). `None` (a loaded VS block, rendered
+    /// as a single global material for now) binds Plain + disables modulation.
+    #[allow(clippy::too_many_arguments)]
     pub fn update_uniforms(
         &mut self,
         queue: &wgpu::Queue,
         view_projection: glam::Mat4,
+        grid_dimensions: [u32; 3],
+        voxels_per_block: u32,
+        grid_overlay_enabled: bool,
         bound: Option<MaterialChoice>,
     ) {
-        let (modulation_enabled, base_colors) = match bound {
+        // The bound procedural material drives BOTH the texture binding (selected
+        // in `draw`) and the per-box modulation. A `None` (loaded VS block) falls
+        // back to Plain's texture + neutral modulation for now (the cuboid path
+        // renders a loaded block as a single global material this sub-step).
+        let (modulation_enabled, base_colors, material) = match bound {
             Some(material) => (
                 true,
                 crate::renderer::relative_material_base_colors_public(material),
+                material,
             ),
-            None => (false, [[1.0, 1.0, 1.0, 0.0]; MaterialChoice::MATERIAL_COUNT]),
+            None => (
+                false,
+                [[1.0, 1.0, 1.0, 0.0]; MaterialChoice::MATERIAL_COUNT],
+                MaterialChoice::Plain,
+            ),
         };
+        self.bound_material = material;
+
+        let overlay = crate::renderer::grid_overlay_params();
         let uniforms = CuboidUniforms {
             view_projection: view_projection.to_cols_array_2d(),
+            grid_half_extent: [
+                grid_dimensions[0] as f32 / 2.0,
+                grid_dimensions[1] as f32 / 2.0,
+                grid_dimensions[2] as f32 / 2.0,
+            ],
+            voxels_per_block: voxels_per_block.max(1) as f32,
+            voxel_line_color: overlay.voxel_line_color,
+            grid_overlay_enabled: if grid_overlay_enabled { 1.0 } else { 0.0 },
+            block_line_color: overlay.block_line_color,
             material_modulation_enabled: if modulation_enabled { 1.0 } else { 0.0 },
-            _pad: [0.0; 3],
+            voxel_line_half_width: overlay.voxel_line_half_width,
+            block_line_half_width: overlay.block_line_half_width,
+            voxel_line_alpha: overlay.voxel_line_alpha,
+            block_line_alpha: overlay.block_line_alpha,
             material_base_colors: base_colors,
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
@@ -586,8 +703,14 @@ impl CuboidMeshRenderer {
         if self.mesh.indices.is_empty() {
             return;
         }
+        let material_index = match self.bound_material {
+            MaterialChoice::Stone => 0,
+            MaterialChoice::Wood => 1,
+            MaterialChoice::Plain => 2,
+        };
         render_pass.set_pipeline(&self.pipeline);
         render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+        render_pass.set_bind_group(1, &self.material_bind_groups[material_index], &[]);
         render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
         for &chunk_index in &self.visible_chunks {
@@ -696,6 +819,58 @@ mod tests {
             10,
             "the two faces between the adjacent boxes are culled"
         );
+    }
+
+    /// E3b-2: the per-voxel UV is the absolute voxel position on the face's two
+    /// in-plane axes, so a face spanning N voxels must have vertices whose
+    /// absolute index spans 0..N on those axes (the shader divides by density +
+    /// Repeat-tiles, giving one texture tile per voxel). Here a 3-voxel X-run in a
+    /// 5³ grid merges to one box; its top (+Y) face must span 3 voxels along X and
+    /// 1 along Z, i.e. world X-extent 3 and Z-extent 1.
+    #[test]
+    fn merged_face_spans_one_uv_unit_per_voxel() {
+        let grid = grid_from_indices([5, 5, 5], &[[1, 2, 2], [2, 2, 2], [3, 2, 2]], 0);
+        let mesh = build_cuboid_mesh(&grid, 1);
+        assert_eq!(mesh.box_count(), 1, "3-voxel X-run merges to one box");
+
+        // Absolute voxel position = world position + half (dims/2). The UV in the
+        // shader uses exactly this, so spanning 3 units in X across the face means
+        // the texture tiles 3× (once per voxel) with a Repeat sampler.
+        let half = [2.5f32, 2.5, 2.5];
+        let abs_x: Vec<f32> = mesh
+            .vertices
+            .iter()
+            .map(|v| v.position[0] + half[0])
+            .collect();
+        let min_x = abs_x.iter().cloned().fold(f32::INFINITY, f32::min);
+        let max_x = abs_x.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        // The run occupies absolute X voxels 1..=3 → planes at 1 and 4.
+        assert_eq!(min_x, 1.0, "box min X plane = first voxel index");
+        assert_eq!(max_x, 4.0, "box max+1 X plane = last voxel index + 1");
+        assert_eq!(max_x - min_x, 3.0, "face spans 3 voxel UV units along X");
+    }
+
+    /// E3b-2: the face-normal → texture-array layer mapping the cuboid shader uses
+    /// must match the instanced `face_layer` (0 +X, 1 -X, 2 +Y, 3 -Y, 4 +Z, 5 -Z).
+    /// Replicated here as a pure function so the mapping is regression-guarded.
+    #[test]
+    fn face_normal_to_layer_matches_instanced() {
+        fn face_layer(normal: [f32; 3]) -> i32 {
+            let m = [normal[0].abs(), normal[1].abs(), normal[2].abs()];
+            if m[0] > 0.5 {
+                if normal[0] > 0.0 { 0 } else { 1 }
+            } else if m[1] > 0.5 {
+                if normal[1] > 0.0 { 2 } else { 3 }
+            } else if normal[2] > 0.0 {
+                4
+            } else {
+                5
+            }
+        }
+        let expected = [0, 1, 2, 3, 4, 5];
+        for (face, &want) in FACE_TEMPLATES.iter().zip(expected.iter()) {
+            assert_eq!(face_layer(face.normal), want, "normal {:?}", face.normal);
+        }
     }
 
     #[test]

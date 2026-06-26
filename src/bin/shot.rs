@@ -911,6 +911,7 @@ async fn run_capture(options: ShotOptions) {
     let mut cuboid_mesh_renderer = if options.mesher == MesherChoice::Cuboid {
         Some(CuboidMeshRenderer::new(
             &gpu.device,
+            &gpu.queue,
             COLOR_TARGET_FORMAT,
             &grid,
             options.geometry.voxels_per_block,
@@ -1147,7 +1148,14 @@ async fn run_capture(options: ShotOptions) {
             Some(_) => None,
             None => Some(options.material),
         };
-        cuboid_mesh_renderer.update_uniforms(&gpu.queue, view_projection, bound);
+        cuboid_mesh_renderer.update_uniforms(
+            &gpu.queue,
+            view_projection,
+            grid_dimensions,
+            options.geometry.voxels_per_block,
+            options.show_grid_overlay,
+            bound,
+        );
         println!(
             "cuboid mesher: {} boxes → {} exposed faces ({} triangles), {} chunks (vs {} instanced voxels)",
             cuboid_mesh_renderer.mesh().box_count(),

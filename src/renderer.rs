@@ -1071,6 +1071,50 @@ pub fn relative_material_base_colors_public(
     relative_material_base_colors(bound)
 }
 
+/// The grid-overlay tuning the instanced voxel pass uses, exposed so the
+/// flag-gated cuboid mesh path (ADR 0002 E3b-2) draws the position-based grid
+/// overlay with the EXACT same colours/half-widths/alphas — keeping the merged
+/// box faces phase-aligned to the same per-voxel/per-block lines.
+#[derive(Debug, Clone, Copy)]
+pub struct GridOverlayParams {
+    pub voxel_line_color: [f32; 3],
+    pub block_line_color: [f32; 3],
+    pub voxel_line_half_width: f32,
+    pub block_line_half_width: f32,
+    pub voxel_line_alpha: f32,
+    pub block_line_alpha: f32,
+}
+
+/// The instanced path's grid-overlay parameters (colours in LINEAR space, the
+/// same the voxel shader receives), for the cuboid path to reuse verbatim.
+pub fn grid_overlay_params() -> GridOverlayParams {
+    GridOverlayParams {
+        voxel_line_color: srgb_hex_to_linear(VOXEL_LINE_COLOR_HEX),
+        block_line_color: srgb_hex_to_linear(BLOCK_LINE_COLOR_HEX),
+        voxel_line_half_width: VOXEL_LINE_HALF_WIDTH,
+        block_line_half_width: BLOCK_LINE_HALF_WIDTH,
+        voxel_line_alpha: VOXEL_LINE_ALPHA,
+        block_line_alpha: BLOCK_LINE_ALPHA,
+    }
+}
+
+/// Generate the three procedural material textures (Stone/Wood/Plain) as RGBA8
+/// sRGB pixel buffers, in `MaterialChoice` order, so the cuboid path (E3b-2) can
+/// upload the SAME procedural textures the instanced path binds.
+pub fn procedural_material_pixels() -> [Vec<u8>; 3] {
+    [
+        generate_stone_texture(),
+        generate_wood_texture(),
+        generate_plain_texture(),
+    ]
+}
+
+/// The edge length of every procedural material texture (square), exposed so the
+/// cuboid path uploads them at the matching size.
+pub fn procedural_material_texture_size() -> u32 {
+    MATERIAL_TEXTURE_SIZE
+}
+
 /// Grow `instances` to at least `capacity` entries with zeroed padding.
 fn pad_to_capacity(mut instances: Vec<VoxelInstance>, capacity: u32) -> Vec<VoxelInstance> {
     if (instances.len() as u32) < capacity {
