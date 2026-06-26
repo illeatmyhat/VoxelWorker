@@ -146,15 +146,35 @@ pub trait VoxelProducer {
 ///
 /// Sizes are stored in **whole blocks**; `voxels_per_block` (density) is fineness
 /// only and never changes object size (DATA.md "the density bug").
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SdfShape {
+    #[serde(default = "default_shape_kind")]
     pub kind: ShapeKind,
     /// Bounding-box size in whole blocks (X, Y, Z).
+    #[serde(default = "default_shape_size")]
     pub size_blocks: [u32; 3],
     /// Voxels per block (chisel fineness). Default 16.
+    #[serde(default = "default_shape_density")]
     pub voxels_per_block: u32,
     /// Tube wall thickness in whole blocks (used by [`ShapeKind::Tube`] only).
+    #[serde(default = "default_shape_wall")]
     pub wall_blocks: u32,
+}
+
+/// Persistence defaults for a partial [`SdfShape`] (a missing field falls back to
+/// a sane non-zero value so a tolerant config load never yields a degenerate
+/// zero-size shape).
+fn default_shape_kind() -> ShapeKind {
+    ShapeKind::Cylinder
+}
+fn default_shape_size() -> [u32; 3] {
+    [5, 1, 5]
+}
+fn default_shape_density() -> u32 {
+    16
+}
+fn default_shape_wall() -> u32 {
+    1
 }
 
 impl SdfShape {

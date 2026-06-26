@@ -23,18 +23,37 @@ use serde::{Deserialize, Serialize};
 
 use crate::camera::{OrbitCamera, ProjectionMode};
 use crate::panel::{GeometryParams, LayerRange, MaterialChoice, PanelState};
+use crate::scene::Scene;
 use crate::voxel::ShapeKind;
 
 /// The whole persisted configuration. Every field is `#[serde(default)]` so a
 /// partial or older config still loads.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AppConfig {
-    // --- geometry ---
-    // step 8: full multi-node scene persistence (the node list + extent/density)
-    // is ADR 0001 step 8. For now this persists only the active/first Tool node's
-    // geometry for back-compat — on load it becomes a one-Tool-node scene. The old
-    // `debug_clouds: bool` field was dropped; an old config carrying it still loads
-    // (serde ignores the now-unknown field) and migrates to a Tool-only scene.
+    // --- scene (ADR 0001 step 8: full scene persistence) ---
+    // The whole assembly (node tree + reusable definitions + the active
+    // selection) is persisted here. `#[serde(default)]` means an OLD config with
+    // no `scene` field deserialises to `None`, which triggers the migration path
+    // in `to_panel_state` (the flat `shape/size_blocks/...` fields below build a
+    // one-Tool-node scene). A malformed/partial `scene` value can never reach this
+    // field as garbage: serde tolerates missing inner fields (every scene field is
+    // `#[serde(default)]`), and an outright unparseable config is rejected wholesale
+    // by `load()` → defaults. Density (`voxels_per_block`) stays an app-level field
+    // below; the scene reads it at resolve time (ADR 0001 "Density").
+    //
+    // regional export: deferred to the chunking milestone (ADR 0001 step 8's
+    // "regional/streamed .vox export" sub-part — meaningless until chunking; the
+    // current full-grid `.vox` export already covers bounded scenes).
+    #[serde(default)]
+    pub scene: Option<Scene>,
+
+    // --- geometry (legacy single-Tool mirror; kept for back-compat migration) ---
+    // Before step 8 the config persisted only the active/first Tool node's
+    // geometry. These flat fields are still written (so a NEW config also opens in
+    // an OLDER build that only reads them) and are the SOLE source when `scene` is
+    // absent: an old config with no `scene` field migrates to a one-Tool-node scene
+    // built from these. The old `debug_clouds: bool` field was dropped; an old
+    // config carrying it still loads (serde ignores the now-unknown field).
     #[serde(default = "default_shape")]
     pub shape: ShapeKind,
     #[serde(default = "default_size")]
@@ -121,6 +140,7 @@ fn default_onion_depth() -> u32 {
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
+            scene: None,
             shape: default_shape(),
             size_blocks: default_size(),
             voxels_per_block: default_density(),
@@ -149,6 +169,10 @@ impl AppConfig {
     /// and the current window size.
     pub fn capture(panel: &PanelState, camera: &OrbitCamera, window_size: [u32; 2]) -> Self {
         Self {
+            // step 8: persist the whole scene (node tree + definitions + active
+            // selection). The legacy flat geometry fields below keep mirroring the
+            // active-Tool inspector so a NEW config still opens in an older build.
+            scene: Some(panel.scene.clone()),
             shape: panel.geometry.shape,
             size_blocks: panel.geometry.size_blocks,
             voxels_per_block: panel.geometry.voxels_per_block,
@@ -173,9 +197,13 @@ impl AppConfig {
 
     /// Build the [`PanelState`] this config describes.
     ///
-    /// step 8: only the single persisted geometry is restored here; it becomes the
-    /// scene's one Tool node (via [`PanelState::seed_scene_from_geometry`] below).
-    /// Full multi-node scene persistence is deferred to ADR 0001 step 8.
+    /// step 8 (ADR 0001): the full scene (node tree + definitions + active
+    /// selection) is restored from [`scene`](Self::scene) when present. When it is
+    /// absent — an OLD config that predates scene persistence — the flat
+    /// `shape/size_blocks/...` fields **migrate** to a one-Tool-node scene via
+    /// [`PanelState::seed_scene_from_geometry`]. A restored scene that resolves to
+    /// no nodes (a malformed/empty persisted scene) also falls back to that seed,
+    /// so loading never yields an empty document and never panics.
     pub fn to_panel_state(&self) -> PanelState {
         let mut state = PanelState {
             geometry: GeometryParams {
@@ -207,11 +235,20 @@ impl AppConfig {
                 onion_skin: self.onion_skin,
                 onion_depth: self.onion_depth.clamp(1, 8),
             },
-            // Seeded just below from the restored geometry (a one-Tool-node scene).
-            scene: crate::scene::Scene::default(),
+            // Restored just below: the persisted full scene, or — for an old
+            // config without one — a one-Tool-node scene seeded from the geometry.
+            scene: Scene::default(),
         };
-        // step 8: the persisted single geometry becomes the scene's one Tool node.
-        state.seed_scene_from_geometry();
+        // step 8: restore the persisted full scene when present and non-empty;
+        // otherwise migrate the legacy single geometry into a one-Tool-node scene.
+        // A `Some(scene)` with no nodes (a malformed/empty persisted scene) is
+        // treated as absent, so the seed always produces a usable document.
+        match &self.scene {
+            Some(scene) if !scene.nodes.is_empty() => {
+                state.scene = scene.clone();
+            }
+            _ => state.seed_scene_from_geometry(),
+        }
         state
     }
 
@@ -285,6 +322,7 @@ mod tests {
     #[test]
     fn config_round_trips_through_json() {
         let config = AppConfig {
+            scene: None,
             shape: ShapeKind::Torus,
             size_blocks: [7, 3, 9],
             voxels_per_block: 24,
@@ -341,15 +379,176 @@ mod tests {
         assert_eq!(restored.size_blocks, [3, 4, 5]);
         assert_eq!(restored.voxels_per_block, 20);
         assert_eq!(restored.material, MaterialChoice::Wood);
+        // step 8: an old config has NO `scene` field, so it deserialises to `None`,
+        // which is exactly what triggers the migration to a one-Tool-node scene.
+        assert!(restored.scene.is_none(), "an old flat config carries no scene");
 
-        // It migrates to a one-Tool-node scene (no Clouds Part — the boolean is
-        // dropped; Clouds is now an explicit Add-a-Part action).
+        // It migrates to a one-Tool-node scene built from the flat geometry (no
+        // Clouds Part — the boolean is dropped; Clouds is now an Add-a-Part action),
+        // and that node's shape matches the persisted flat params.
         let panel = restored.to_panel_state();
         assert_eq!(panel.scene.nodes.len(), 1);
+        match panel.scene.active_node().map(|node| &node.content) {
+            Some(crate::scene::NodeContent::Tool { shape, material }) => {
+                assert_eq!(shape.kind, ShapeKind::Sphere);
+                assert_eq!(shape.size_blocks, [3, 4, 5]);
+                assert_eq!(shape.voxels_per_block, 20);
+                assert_eq!(shape.wall_blocks, 2);
+                assert_eq!(*material, MaterialChoice::Wood);
+            }
+            other => panic!("migration must build a one Tool node, got {other:?}"),
+        }
+    }
+
+    /// step 8 round-trip: a NON-TRIVIAL scene (top-level Tool + Part nodes with
+    /// non-zero offsets and distinct materials, a Group with children, an
+    /// `AssemblyDef`, and an `Instance` of it) survives
+    /// `capture → JSON → deserialize → to_panel_state` structurally intact and
+    /// resolves to the SAME occupied count.
+    #[test]
+    fn full_scene_round_trips_through_json() {
+        use crate::scene::{
+            AssemblyDef, CombineOp, DefId, Node, NodeContent, NodePath, Part, Scene,
+        };
+        use crate::voxel::SdfShape;
+
+        let voxels_per_block = 8u32;
+        let unit_box = |kind| SdfShape {
+            kind,
+            size_blocks: [1, 1, 1],
+            voxels_per_block,
+            wall_blocks: 1,
+        };
+
+        // A definition (the reusable "house" body): a single Wood box.
+        let def_id = DefId(3);
+        let def = AssemblyDef {
+            id: def_id,
+            name: "House".to_string(),
+            children: vec![Node::new(
+                "Body",
+                NodeContent::Tool {
+                    shape: unit_box(ShapeKind::Box),
+                    material: MaterialChoice::Wood,
+                },
+            )],
+        };
+
+        // Top-level node 0: a Stone Tool at the origin.
+        let stone = Node::new(
+            "Stone",
+            NodeContent::Tool {
+                shape: unit_box(ShapeKind::Box),
+                material: MaterialChoice::Stone,
+            },
+        );
+        // Top-level node 1: a Clouds Part, offset.
+        let mut clouds = Node::new("Clouds", NodeContent::Part(Part::DebugClouds { seed: 7 }));
+        clouds.transform.offset_blocks = [3, 0, 0];
+        // Top-level node 2: a Group containing a Plain Tool offset within it.
+        let mut grouped_leaf = Node::new(
+            "Leaf",
+            NodeContent::Tool {
+                shape: unit_box(ShapeKind::Sphere),
+                material: MaterialChoice::Plain,
+            },
+        );
+        grouped_leaf.transform.offset_blocks = [1, 0, 0];
+        let mut group = Node::new("Group", NodeContent::Group(vec![grouped_leaf]));
+        group.transform.offset_blocks = [6, 0, 0];
+        group.operation = CombineOp::Union;
+        // Top-level node 3: an Instance of the def, offset disjointly.
+        let mut instance = Node::new("House instance", NodeContent::Instance(def_id));
+        instance.transform.offset_blocks = [-6, 0, 0];
+
+        let scene = Scene {
+            nodes: vec![stone, clouds, group, instance],
+            definitions: vec![def],
+            active: Some(NodePath::from_indices(vec![2, 0])),
+        };
+
+        // Build a panel carrying this scene and capture → JSON → restore.
+        let mut panel = PanelState::with_view_cube_default();
+        panel.geometry.voxels_per_block = voxels_per_block;
+        panel.scene = scene.clone();
+        let camera = OrbitCamera::default();
+        let config = AppConfig::capture(&panel, &camera, [1280, 800]);
+        assert!(config.scene.is_some(), "capture persists the full scene");
+
+        let json = serde_json::to_string_pretty(&config).expect("serialise");
+        let restored: AppConfig = serde_json::from_str(&json).expect("deserialise");
+        let restored_panel = restored.to_panel_state();
+
+        // Structural equality: same node tree, definitions, and active selection.
+        assert_eq!(
+            restored_panel.scene.nodes.len(),
+            scene.nodes.len(),
+            "all top-level nodes survive"
+        );
+        assert_eq!(restored_panel.scene.definitions.len(), 1, "the def survives");
+        assert_eq!(
+            restored_panel.scene.active,
+            scene.active,
+            "the active selection survives"
+        );
+        // The Group's child and the def's body survive with their offsets/materials.
+        match &restored_panel.scene.nodes[2].content {
+            NodeContent::Group(children) => {
+                assert_eq!(children.len(), 1);
+                assert_eq!(children[0].transform.offset_blocks, [1, 0, 0]);
+            }
+            other => panic!("node 2 must stay a Group, got {other:?}"),
+        }
         assert!(matches!(
-            panel.scene.active_node().map(|node| &node.content),
-            Some(crate::scene::NodeContent::Tool { .. })
+            restored_panel.scene.nodes[3].content,
+            NodeContent::Instance(id) if id == def_id
         ));
+
+        // Same resolved occupancy (the document means the same thing on reload).
+        let region = scene.full_extent_blocks(voxels_per_block);
+        let before = scene
+            .resolve_region(region, voxels_per_block, 0)
+            .occupied_count();
+        let after_region = restored_panel.scene.full_extent_blocks(voxels_per_block);
+        let after = restored_panel
+            .scene
+            .resolve_region(after_region, voxels_per_block, 0)
+            .occupied_count();
+        assert_eq!(before, after, "the restored scene resolves identically");
+    }
+
+    /// step 8 (never panic on load): a config whose `scene` value is broken/partial
+    /// still loads. A scene object missing its inner fields deserialises to an
+    /// empty-node scene (every scene field is `#[serde(default)]`), which
+    /// `to_panel_state` treats as absent → falls back to the one-Tool-node seed.
+    #[test]
+    fn malformed_scene_falls_back_to_default_without_panicking() {
+        // A `scene` present but EMPTY (no nodes) — a partial/degenerate persisted
+        // value. It parses (defaults fill the missing fields) and migrates.
+        let partial = r#"{
+            "scene": {},
+            "shape": "Box",
+            "size_blocks": [2, 2, 2],
+            "voxels_per_block": 12,
+            "wall_blocks": 1
+        }"#;
+        let restored: AppConfig =
+            serde_json::from_str(partial).expect("a partial scene object still parses");
+        let panel = restored.to_panel_state();
+        assert_eq!(
+            panel.scene.nodes.len(),
+            1,
+            "an empty persisted scene falls back to the one-Tool-node seed"
+        );
+
+        // A `scene` whose nodes contain a content variant missing fields is a clean
+        // parse error wholesale → `load()` would return None → caller uses defaults.
+        // We assert it never panics: the deserialize is an Err, not an unwind.
+        let broken = r#"{ "scene": { "nodes": [ { "content": "NotAVariant" } ] } }"#;
+        assert!(
+            serde_json::from_str::<AppConfig>(broken).is_err(),
+            "a structurally broken scene is a clean Err (load → defaults), never a panic"
+        );
     }
 
     #[test]

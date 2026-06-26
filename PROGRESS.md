@@ -33,6 +33,26 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **Scene persistence + migration (ADR 0001 step 8) — Closes #21** — the whole scene now persists,
+  not just the single active-Tool geometry. Added `serde::{Serialize, Deserialize}` (+ `PartialEq`)
+  to the scene model: `Scene`, `Node`, `NodeContent`, `Part`, `AssemblyDef`, `NodeTransform`,
+  `CombineOp`, `DefId`, `NodePath`, and `SdfShape`. Every field is `#[serde(default)]` (with named
+  default fns where the type has no `Default`, e.g. `SdfShape::kind`, `Node::visible`), honoring the
+  flat-tolerant-mirror convention: a missing field falls back to default and loading never panics.
+  `AppConfig` gained `scene: Option<Scene>`; `capture()` serializes `panel.scene`, and the legacy
+  flat `shape/size_blocks/voxels_per_block/wall_blocks` fields are still written so a new config also
+  opens in an older build. **Migration:** an OLD config with no `scene` field deserializes to `None`,
+  which `to_panel_state()` routes through `seed_scene_from_geometry()` → a one-Tool-node scene from
+  the flat params. A `Some(scene)` that resolves to no nodes (a malformed/empty persisted scene) is
+  treated as absent → same seed, so load never yields an empty document. `voxels_per_block` stays an
+  app-level field (ADR 0001 "Density"). **Deferred:** regional/streamed `.vox` export — meaningless
+  until the chunking milestone; the current full-grid export already covers bounded scenes (noted in
+  `settings.rs`). Tests: full non-trivial scene round-trip (Tool+Part+Group+AssemblyDef+Instance,
+  structural equality + identical resolved occupancy), extended migration test (flat config →
+  one-Tool-node matching the params), and a malformed-scene fallback test. `cargo build --bins` +
+  `clippy --all-targets` + `clippy --features gpu --tests` clean; 55 tests pass; `shot --shape
+  sphere` unchanged (53776 voxels).
+
 - **Central 3D viewport — Closes #25** — the 3D pass used to render into the FULL window with the
   camera aspect computed from the whole window, so the egui right side panel + bottom palette dock
   (painted on top) covered part of the render and the model sat off-centre, partly hidden behind the

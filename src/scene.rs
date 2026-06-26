@@ -31,6 +31,8 @@
 //! `SdfShape::resolve` / `DebugCloudField::resolve` produce today (same
 //! dimensions, same occupied set). See `tool_scene_matches_bare_producer` below.
 
+use serde::{Deserialize, Serialize};
+
 use crate::debug_clouds::DebugCloudField;
 use crate::panel::{GeometryParams, MaterialChoice};
 use crate::voxel::{SdfShape, VoxelGrid, VoxelProducer};
@@ -60,7 +62,7 @@ impl RegionBlocks {
 /// A reusable identifier for a [`Tool`-or-`Part`](NodeContent) definition that an
 /// [`NodeContent::Instance`] points at (ADR 0001: reuse by reference). Step 1
 /// never constructs an Instance, so this is a forward-declared type only.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct DefId(pub u32);
 
 /// A path to a node anywhere in the **top-level assembly** (ADR 0001 step 4 UI).
@@ -77,9 +79,10 @@ pub struct DefId(pub u32);
 /// top-level node that lives in that definition is not possible in this UI — a
 /// definition is edited via its instances' shared body). The path therefore never
 /// descends through an `Instance`.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct NodePath {
     /// Child indices from the top-level node list down through Group children.
+    #[serde(default)]
     pub indices: Vec<usize>,
 }
 
@@ -122,7 +125,7 @@ impl NodePath {
 /// constructs [`CombineOp::Union`]; the enum exists so subtract / intersect /
 /// override become a data change on the node rather than a re-architecture
 /// (ADR 0001 decision 1).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum CombineOp {
     /// Additive: the output occupied set is the OR of the contributing nodes; on
     /// overlap the later node wins the material.
@@ -135,9 +138,10 @@ pub enum CombineOp {
 /// type targets a full affine (translation + rotation + scale) so rotation /
 /// scale (with voxel resampling) slot in later without a rewrite (ADR 0001
 /// decision 3). In step 1 the offset is always `[0, 0, 0]`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct NodeTransform {
     /// Translation in whole blocks (X, Y, Z).
+    #[serde(default)]
     pub offset_blocks: [i32; 3],
     // future: rotation, scale → a general affine.
 }
@@ -152,12 +156,13 @@ impl NodeTransform {
 /// A *static* voxel body with no meaningful generation parameters — dropped in
 /// as-is (ADR 0001). v1 has one variant; future variants are saved chiseled
 /// blocks and imported `.vox` bodies, each carrying baked per-voxel materials.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Part {
     /// The debug cloud field (several distinct billowy fBm blobs) — "a part with
     /// one trivial knob" (the seed).
     DebugClouds {
         /// Seed for the deterministic placement + noise permutation.
+        #[serde(default)]
         seed: u32,
     },
     // future: SavedBody(VoxelBlob), ImportedVox(...).
@@ -169,7 +174,7 @@ pub enum Part {
 /// Step 1 resolves only the two leaf kinds; `Group` / `Instance` are present as
 /// types but unimplemented in [`Scene::resolve_region`] (recursion + instancing
 /// arrive in step 4).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum NodeContent {
     /// A parametric producer (an [`SdfShape`]) plus the single material the Tool
     /// assigns to every voxel it emits. Step 1 keeps the existing
@@ -190,19 +195,29 @@ pub enum NodeContent {
 
 /// One placed node in the assembly graph: a producer (or sub-assembly) plus its
 /// local placement and combine operation.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Node {
     /// Human-readable name (for the future node-list UI).
+    #[serde(default)]
     pub name: String,
     /// LOCAL transform; composes with ancestors' (`world = parent ∘ local`).
     /// Step 1 only ever uses the identity (zero offset).
+    #[serde(default)]
     pub transform: NodeTransform,
     /// How this node combines with earlier ones. v1: always [`CombineOp::Union`].
+    #[serde(default)]
     pub operation: CombineOp,
     /// Whether the node contributes to resolution (a hidden node stamps nothing).
+    #[serde(default = "default_visible")]
     pub visible: bool,
     /// What the node is.
     pub content: NodeContent,
+}
+
+/// A node missing its `visible` flag in an older/partial config defaults to
+/// visible (the common case — a hidden node is the exception, explicitly set).
+fn default_visible() -> bool {
+    true
 }
 
 impl Node {
@@ -221,13 +236,15 @@ impl Node {
 /// A reusable sub-assembly (e.g. "house") placed by [`NodeContent::Instance`]
 /// (ADR 0001). Step 1 never constructs or resolves one; it exists so the model is
 /// complete. The top-level assembly is also an `AssemblyDef` (its `root`).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AssemblyDef {
     /// The definition's identifier (referenced by an `Instance`).
     pub id: DefId,
     /// Human-readable name.
+    #[serde(default)]
     pub name: String,
     /// The nodes that make up this assembly.
+    #[serde(default)]
     pub children: Vec<Node>,
 }
 
@@ -238,21 +255,24 @@ pub struct AssemblyDef {
 /// resolves the referenced [`AssemblyDef`] under its transform (reuse by
 /// reference: a village of identical houses is one definition placed by N
 /// instances).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct Scene {
     /// The top-level assembly's nodes, resolved in order (later nodes win on
     /// overlap under [`CombineOp::Union`]).
+    #[serde(default)]
     pub nodes: Vec<Node>,
     /// Reusable sub-assemblies referenced by [`NodeContent::Instance`]. A
     /// definition is stored ONCE here regardless of how many instances place it
     /// (ADR 0001 "Nesting & reuse"). Looked up by [`DefId`] via [`def_by_id`].
     ///
     /// [`def_by_id`]: Self::def_by_id
+    #[serde(default)]
     pub definitions: Vec<AssemblyDef>,
     /// Path to the active/selected node — the one the inspector edits (ADR 0001
     /// step 4: selection reaches any depth, so a [`Group`](NodeContent::Group)
     /// child is selectable, not just a top-level node). `None` when nothing is
     /// selected. Kept valid (re-clamped / dropped) across add / delete / group.
+    #[serde(default)]
     pub active: Option<NodePath>,
 }
 
