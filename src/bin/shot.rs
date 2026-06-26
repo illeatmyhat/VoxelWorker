@@ -26,8 +26,8 @@ use voxel_worker::block_palette::{BlockPalette, LoadedMaterial, ThumbnailRendere
 use voxel_worker::scan_worker::{run_auto_scan_blocking, FaceResolver};
 use voxel_worker::{
     create_depth_view, create_msaa_color_view, procedural_material_average_color, render_frame,
-    run_egui_frame, AssemblyDef, CubeFace, DefId, EguiPaintBridge, FrameOverlays, GeometryParams,
-    GizmoRenderer,
+    run_egui_frame, AssemblyDef, CubeFace, DefId, EguiPaintBridge, FogMode, FrameOverlays,
+    GeometryParams, GizmoRenderer,
     GpuContext, GridLatticeRenderer, LayerBand, LayerRange, MaterialChoice, MaterialSource,
     Node, NodeContent, NodePath, OnionFogParams, OnionFogRenderer, OrbitCamera, PanelState, Part,
     ProjectionMode, RegionBlocks, Scene, SdfShape, ShapeKind, ViewCubeElement, VoxExport,
@@ -131,6 +131,9 @@ struct ShotOptions {
     /// Onion-skin depth (issue #12): 0 = off (hard band clip), N = ghost N layers
     /// on each side of the band with screen-door dither.
     onion_depth: u32,
+    /// Onion-fog occupancy mode (issue #28 S5a): `WholeGrid` (default — one whole-grid
+    /// 3D texture) or `PerChunk` (one apron'd volume per resident chunk; `--fog=perchunk`).
+    fog_mode: FogMode,
     /// `--shape debug-clouds`: replace the parametric producer with the debug
     /// cloud field (several distinct billowy blobs in a mostly-empty volume) at
     /// the requested size/density. The grid dims still come from size×density.
@@ -204,6 +207,7 @@ impl Default for ShotOptions {
             layer_lower: None,
             layer_upper: None,
             onion_depth: 0,
+            fog_mode: FogMode::WholeGrid,
             debug_clouds: false,
             debug_chunks: false,
             demo_scene: false,
@@ -460,6 +464,20 @@ fn parse_options() -> ShotOptions {
                     .parse()
                     .expect("--onion must be a non-negative integer (0 = off)");
             }
+            // Issue #28 S5a: select the onion-fog occupancy source. Accepts both
+            // `--fog perchunk` and `--fog=perchunk`. Default stays `wholegrid`.
+            other_fog if other_fog == "--fog" || other_fog.starts_with("--fog=") => {
+                let value = if let Some(eq) = other_fog.strip_prefix("--fog=") {
+                    eq.to_string()
+                } else {
+                    args.next().expect("--fog requires a value (wholegrid|perchunk)")
+                };
+                options.fog_mode = match value.to_ascii_lowercase().as_str() {
+                    "wholegrid" | "whole-grid" | "whole" => FogMode::WholeGrid,
+                    "perchunk" | "per-chunk" | "chunk" => FogMode::PerChunk,
+                    other => panic!("--fog must be wholegrid|perchunk, got '{other}'"),
+                };
+            }
             "--export-vox" => {
                 options.export_vox_path = Some(PathBuf::from(
                     args.next().expect("--export-vox requires a path argument"),
@@ -513,6 +531,7 @@ fn parse_options() -> ShotOptions {
                      \x20            [--demo-scene] [--demo-village] [--demo-groups]\n\
                      \x20            [--demo-far-offset] [--demo-far-offset-near]\n\
                      \x20            [--layer-lower <u32>] [--layer-upper <u32>] [--onion <u32>]\n\
+                     \x20            [--fog <wholegrid|perchunk>]\n\
                      \x20            [--export-vox <path.vox>]\n\
                      \x20            [--snap <face|edge|corner>  e.g. front, front-top, front-top-right]\n\
                      \x20            [--theta <f32>] [--phi <f32>] [--dist <f32>]\n\
@@ -1030,8 +1049,36 @@ async fn run_capture(options: ShotOptions) {
     );
     let view_cube_renderer = ViewCubeRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
     let mut onion_fog_renderer = OnionFogRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
-    // Upload the resolved grid as the fog's 3D occupancy field (issue #12).
-    onion_fog_renderer.upload_grid(&gpu.device, &gpu.queue, &grid);
+    // Upload the resolved grid as the fog's occupancy field. WholeGrid (default, issue
+    // #12) densifies one whole-grid 3D texture; PerChunk (#28 S5a, `--fog=perchunk`)
+    // builds one apron'd volume per resident chunk so a scene too large for a single
+    // whole-grid 3D texture still renders fog.
+    match options.fog_mode {
+        FogMode::WholeGrid => {
+            onion_fog_renderer.upload_grid(&gpu.device, &gpu.queue, &grid);
+        }
+        FogMode::PerChunk => {
+            onion_fog_renderer.upload_grid_per_chunk(
+                &gpu.device,
+                &gpu.queue,
+                &grid,
+                options.geometry.voxels_per_block,
+            );
+            let occ = voxel_worker::build_per_chunk_fog_occupancy(
+                &grid,
+                options.geometry.voxels_per_block,
+            );
+            println!(
+                "fog: per-chunk mode — {} resident chunk volume(s){}",
+                occ.volumes.len(),
+                if onion_fog_renderer.per_chunk_active() {
+                    " (atlas active)"
+                } else {
+                    " (atlas EMPTY/too-large — fog disabled)"
+                }
+            );
+        }
+    }
     // The voxel-space grid_y of the ACTUALLY resolved grid (the composite for a
     // placed scene), used for the band clip + uniforms so a demo scene that grew
     // past the single-shape `grid_y` is not clipped or mis-sized.

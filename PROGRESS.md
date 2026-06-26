@@ -33,6 +33,30 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **Per-chunk onion-fog occupancy behind `--fog=perchunk` (S5a) — Part of #28 (ADR 0002 matrix
+  row 7 / O6 fog, the highest-risk row).** Additive + flagged: a `FogMode` selector (`wholegrid`
+  DEFAULT, `perchunk` new) wired through `shot` (`--fog=perchunk`). The default is unchanged —
+  the app and every golden still take the whole-grid path; goldens stay **green** (0.00000%).
+  - **Per-chunk storage + binding.** `build_per_chunk_fog_occupancy` buckets the SAME recentred
+    grid the whole-grid path uploads into one apron'd `R8` volume per resident chunk (keyed by
+    chunk coord), then `upload_grid_per_chunk` packs them into ONE small 3D **atlas** (a cubic-ish
+    tile grid, one `(extent+2)³` tile per chunk) plus a metadata uniform of per-chunk world origins
+    + tile indices. The shader (`onion_fog_perchunk.wgsl`) marches in recentred world space and at
+    each sample **candidate-samples** the owning chunk's tile (compute chunk coord → find record →
+    one trilinear sample). Chosen over per-chunk multi-bind because WGSL has no `texture_3d` array
+    and a variable bind-count loop; one atlas keeps it a single sample with a bounded uniform.
+  - **1-voxel apron / seam smoothness.** Each tile's border layer (`-1..=extent`) is filled from
+    the GLOBAL occupancy (the true neighbour voxel, not a clamp), so a ray crossing a chunk seam
+    trilinear-interpolates against the real neighbour density — no banding/discontinuity at seams.
+    CPU test `per_chunk_apron_reflects_neighbour_and_boundary` pins this (+ world-origin test).
+  - **Dodges the single-3D-texture limit.** The atlas dimension is bounded by the chunk COUNT
+    (`cbrt`, ×pad), NOT the whole-grid extent. **Scale proof:** a `box 200×2×2 @16` (X axis 3200 vx
+    > `max_texture_dimension_3d` 2048) **disables** the whole-grid fog (no haze) yet renders fog
+    via 50 per-chunk volumes.
+  - **A/B match:** same fogged sphere & wide torus (9 chunk volumes, fog crossing 2 seams/axis) —
+    `perchunk` vs `wholegrid` diff **0.0000%** (max channel ≤ 3/255), NO seam artifact. NOT yet
+    region-scoped (scrubber/diameter/.vox stays whole-grid — that is S5b).
+
 - **Origin-rebased (camera-relative) rendering; far-offset precision fixed (S4b) — Part of #18
   (ADR 0002 Decision 2, "origin-rebased (camera-relative) f32 rendering" + matrix row 3).**
   Replaces the recentre-AFTER-f32 path with a **floating-origin rebase done in i64 BEFORE the f32

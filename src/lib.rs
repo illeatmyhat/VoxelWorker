@@ -46,8 +46,9 @@ pub use panel::{
 };
 pub use assets::{CubeFaceSlot, FaceProvenance, FaceTextures};
 pub use renderer::{
-    create_depth_view, create_msaa_color_view, GizmoRenderer, GridLatticeRenderer, LayerBand,
-    MaterialSource, OnionFogParams, OnionFogRenderer, ViewCubeRenderer, VoxelRenderer, DEPTH_FORMAT,
+    build_per_chunk_fog_occupancy, create_depth_view, create_msaa_color_view, ChunkFogVolume,
+    FogMode, GizmoRenderer, GridLatticeRenderer, LayerBand, MaterialSource, OnionFogParams,
+    OnionFogRenderer, PerChunkFogOccupancy, ViewCubeRenderer, VoxelRenderer, DEPTH_FORMAT,
     MSAA_SAMPLE_COUNT, VIEW_CUBE_VIEWPORT_PIXELS,
 };
 pub use renderer::procedural_material_average_color;

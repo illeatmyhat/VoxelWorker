@@ -2288,6 +2288,167 @@ struct OnionFogUniforms {
 const ONION_FOG_COLOR_HEX: u32 = 0x9c_b4_d8;
 const ONION_FOG_STRENGTH: f32 = 0.10;
 
+/// Which occupancy source the onion fog raymarches (issue #28 S5a).
+///
+/// * [`WholeGrid`](FogMode::WholeGrid) (DEFAULT) — the original path: ONE whole-grid
+///   `D3 R8` occupancy texture densified from the entire sparse list, disabled when
+///   any axis exceeds `max_texture_dimension_3d`.
+/// * [`PerChunk`](FogMode::PerChunk) — one apron'd `R8` occupancy volume per resident
+///   chunk, packed into a small 3D atlas scoped to the active region, so a scene too
+///   large for a single whole-grid 3D texture still renders fog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FogMode {
+    #[default]
+    WholeGrid,
+    PerChunk,
+}
+
+/// Cap on the number of resident chunk volumes the per-chunk fog tracks in one frame
+/// (issue #28 S5a). Each chunk contributes a `[u32; 4]` record to the metadata uniform
+/// (1024 × 16 B = 16 KiB, well under the 64 KiB uniform limit) and one apron'd tile in
+/// the atlas. A region scene stays far under this; the scrubber region-scoping (S5b)
+/// keeps it that way once the default flips.
+pub const MAX_FOG_CHUNKS: usize = 1024;
+
+/// One resident chunk's apron'd occupancy plus where it lives, in the per-chunk fog
+/// path (issue #28 S5a). The occupancy is stored at `(extent + 2)³` so a **1-voxel
+/// apron** on every face replicates the neighbour occupancy and trilinear sampling
+/// stays smooth across chunk seams (no banding at the boundary).
+#[derive(Debug, Clone)]
+pub struct ChunkFogVolume {
+    /// The chunk's integer coordinate in `CHUNK_BLOCKS`-cell space.
+    pub chunk_coord: [i32; 3],
+    /// The world-space (recentred) coordinate of this chunk's `[0,0,0]` voxel CORNER
+    /// (i.e. the apron's interior origin), so the shader maps a world sample into the
+    /// chunk's local `[0, extent)` voxel space.
+    pub world_origin: [f32; 3],
+    /// The apron'd occupancy, `(extent + 2)³` bytes in `(k*pad + j)*pad + i` order
+    /// where local apron index `0` is the apron voxel at chunk-local `-1`.
+    pub occupancy: Vec<u8>,
+}
+
+/// The CPU result of bucketing a recentred whole grid into apron'd per-chunk fog
+/// volumes (issue #28 S5a): the per-chunk volumes plus the shared chunk voxel extent.
+#[derive(Debug, Clone, Default)]
+pub struct PerChunkFogOccupancy {
+    /// `CHUNK_BLOCKS * voxels_per_block` — the voxel extent of one chunk per axis.
+    pub chunk_extent: u32,
+    /// The apron'd volumes, one per non-empty resident chunk (capped at
+    /// [`MAX_FOG_CHUNKS`]).
+    pub volumes: Vec<ChunkFogVolume>,
+}
+
+/// Bucket a recentred [`VoxelGrid`] into one apron'd `R8` occupancy volume per
+/// non-empty chunk (issue #28 S5a, the per-chunk fog path).
+///
+/// This reads the SAME recentred grid the whole-grid path uploads and uses the SAME
+/// `world → voxel` mapping (`round(world + half - 0.5)`), so the per-chunk occupancy
+/// is voxel-for-voxel identical to the whole-grid volume — the A/B match is exact by
+/// construction. Each chunk's volume carries a **1-voxel apron**: the border layer is
+/// filled from the global occupancy (the true neighbour voxel, NOT a clamp), so a ray
+/// crossing a chunk seam trilinear-interpolates against the real neighbour density and
+/// shows no discontinuity.
+///
+/// `chunk_coord = floor(voxel_index / chunk_extent)`; the chunk's interior origin in
+/// recentred world space is `chunk_coord * chunk_extent - half_grid` (voxel CORNER),
+/// so a world sample maps to chunk-local voxel space by `world - world_origin`.
+pub fn build_per_chunk_fog_occupancy(
+    grid: &VoxelGrid,
+    voxels_per_block: u32,
+) -> PerChunkFogOccupancy {
+    let chunk_extent = (CHUNK_BLOCKS * voxels_per_block.max(1)) as i64;
+    let [grid_x, grid_y, grid_z] = grid.dimensions;
+    if grid_x == 0 || grid_y == 0 || grid_z == 0 {
+        return PerChunkFogOccupancy {
+            chunk_extent: chunk_extent as u32,
+            volumes: Vec::new(),
+        };
+    }
+    let half = [grid_x as f32 / 2.0, grid_y as f32 / 2.0, grid_z as f32 / 2.0];
+
+    // First pass: integer voxel coords of every occupied voxel (the SAME mapping the
+    // whole-grid upload uses), bucketed by chunk coordinate. We keep a per-chunk set of
+    // local voxel coords so the apron can be filled exactly (a neighbour voxel that
+    // belongs to an adjacent chunk still lands in THIS chunk's apron layer).
+    use std::collections::{HashMap, HashSet};
+    let mut occupied_voxels: HashSet<[i64; 3]> = HashSet::new();
+    for voxel in &grid.occupied {
+        let i = (voxel.world_position[0] + half[0] - 0.5).round() as i64;
+        let j = (voxel.world_position[1] + half[1] - 0.5).round() as i64;
+        let k = (voxel.world_position[2] + half[2] - 0.5).round() as i64;
+        if i < 0 || j < 0 || k < 0 || i >= grid_x as i64 || j >= grid_y as i64 || k >= grid_z as i64
+        {
+            continue;
+        }
+        occupied_voxels.insert([i, j, k]);
+    }
+
+    // Which chunks contain at least one occupied voxel.
+    let mut chunk_coords: HashMap<[i32; 3], ()> = HashMap::new();
+    for &[i, j, k] in &occupied_voxels {
+        let coord = [
+            narrow_chunk_coord_local(i.div_euclid(chunk_extent)),
+            narrow_chunk_coord_local(j.div_euclid(chunk_extent)),
+            narrow_chunk_coord_local(k.div_euclid(chunk_extent)),
+        ];
+        chunk_coords.insert(coord, ());
+    }
+    let mut keys: Vec<[i32; 3]> = chunk_coords.keys().copied().collect();
+    keys.sort_unstable();
+    keys.truncate(MAX_FOG_CHUNKS);
+
+    let pad = (chunk_extent + 2) as usize; // apron: -1 .. extent (inclusive)
+    let mut volumes = Vec::with_capacity(keys.len());
+    for coord in keys {
+        let chunk_min = [
+            coord[0] as i64 * chunk_extent,
+            coord[1] as i64 * chunk_extent,
+            coord[2] as i64 * chunk_extent,
+        ];
+        let mut occupancy = vec![0u8; pad * pad * pad];
+        // Fill the apron'd box `[-1, extent]` per axis from the GLOBAL occupancy, so the
+        // border layer carries the true neighbour voxel (seam-smooth trilinear).
+        for local_k in -1..=chunk_extent {
+            for local_j in -1..=chunk_extent {
+                for local_i in -1..=chunk_extent {
+                    let global = [
+                        chunk_min[0] + local_i,
+                        chunk_min[1] + local_j,
+                        chunk_min[2] + local_k,
+                    ];
+                    if occupied_voxels.contains(&global) {
+                        let ai = (local_i + 1) as usize;
+                        let aj = (local_j + 1) as usize;
+                        let ak = (local_k + 1) as usize;
+                        occupancy[(ak * pad + aj) * pad + ai] = 255;
+                    }
+                }
+            }
+        }
+        volumes.push(ChunkFogVolume {
+            chunk_coord: coord,
+            // Interior origin (voxel CORNER of local [0,0,0]) in recentred world space.
+            world_origin: [
+                chunk_min[0] as f32 - half[0],
+                chunk_min[1] as f32 - half[1],
+                chunk_min[2] as f32 - half[2],
+            ],
+            occupancy,
+        });
+    }
+
+    PerChunkFogOccupancy {
+        chunk_extent: chunk_extent as u32,
+        volumes,
+    }
+}
+
+/// Narrow an i64 chunk-coordinate quotient to i32 (saturating). Chunk coords stay tiny
+/// in practice; this mirrors `scene::narrow_chunk_coord` without exposing it.
+fn narrow_chunk_coord_local(value: i64) -> i32 {
+    value.clamp(i32::MIN as i64, i32::MAX as i64) as i32
+}
+
 /// Fullscreen volumetric-fog renderer for the onion skin (issue #12). Raymarches
 /// the resolved voxel grid (uploaded as a 3D occupancy texture) as a cloud.
 pub struct OnionFogRenderer {
@@ -2302,6 +2463,48 @@ pub struct OnionFogRenderer {
     max_grid_dimension: u32,
     /// Whether the current grid uploaded successfully (else `draw` is a no-op).
     active: bool,
+    /// Which occupancy source the next `draw` raymarches (issue #28 S5a). Set per
+    /// upload (`upload_grid` → `WholeGrid`, `upload_grid_per_chunk` → `PerChunk`).
+    mode: FogMode,
+    // --- Per-chunk path (issue #28 S5a) ---
+    /// Pipeline that raymarches the per-chunk atlas (separate WGSL entry point).
+    per_chunk_pipeline: wgpu::RenderPipeline,
+    /// Bind group layout for the per-chunk path: shared camera uniform, atlas D3
+    /// texture, sampler, scene depth, plus the per-chunk metadata uniform.
+    per_chunk_bind_group_layout: wgpu::BindGroupLayout,
+    /// The packed apron'd per-chunk occupancy atlas (one tile per resident chunk).
+    per_chunk_atlas_view: wgpu::TextureView,
+    /// Per-chunk metadata uniform (atlas tiling + per-chunk world origin / tile coord).
+    per_chunk_meta_buffer: wgpu::Buffer,
+    /// Whether the last per-chunk upload produced a renderable atlas.
+    per_chunk_active: bool,
+}
+
+/// std140 per-chunk fog metadata (issue #28 S5a). The shader walks the ray, and at
+/// each sample point computes the chunk coord, looks up that chunk's atlas tile from
+/// `chunks[]`, and samples the apron'd tile. Field order matches the WGSL
+/// `PerChunkMeta` struct exactly.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+struct PerChunkFogMeta {
+    /// Number of resident chunk records in `chunks` (≤ [`MAX_FOG_CHUNKS`]).
+    chunk_count: u32,
+    /// Voxel extent of one chunk per axis (`CHUNK_BLOCKS * voxels_per_block`).
+    chunk_extent: f32,
+    /// Padded interior tile extent in the atlas (`chunk_extent + 2`, the apron).
+    pad_extent: f32,
+    /// Number of tiles per axis in the (cubic-ish) atlas tile grid.
+    tiles_per_axis: u32,
+    /// Atlas dimension in texels per axis (`tiles_per_axis * pad_extent`).
+    atlas_dim: f32,
+    _pad0: f32,
+    _pad1: f32,
+    _pad2: f32,
+    /// One record per resident chunk: `[world_origin.xyz, packed_tile_index]`. The
+    /// world origin is the chunk's interior `[0,0,0]` voxel CORNER in recentred world
+    /// space; `packed_tile_index` is the linear atlas tile index (decode to a 3D tile
+    /// coord in the shader). Unused entries are zeroed.
+    chunks: [[f32; 4]; MAX_FOG_CHUNKS],
 }
 
 impl OnionFogRenderer {
@@ -2431,6 +2634,122 @@ impl OnionFogRenderer {
         // `upload_grid`. `active` stays false until a real grid lands.
         let grid_view = create_empty_occupancy_view(device);
 
+        // --- Per-chunk path (issue #28 S5a) ---
+        let per_chunk_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("onion fog per-chunk shader"),
+            source: wgpu::ShaderSource::Wgsl(
+                include_str!("shaders/onion_fog_perchunk.wgsl").into(),
+            ),
+        });
+        let per_chunk_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("onion fog per-chunk bind group layout"),
+                entries: &[
+                    // 0: shared camera/band uniform (same OnionFogUniforms).
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // 1: the packed apron'd per-chunk occupancy atlas (R8, trilinear).
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D3,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    // 2: occupancy sampler (trilinear).
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                    // 3: MSAA scene depth (depth-tested like the whole-grid path).
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Depth,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: true,
+                        },
+                        count: None,
+                    },
+                    // 4: per-chunk metadata uniform (atlas tiling + chunk records).
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                ],
+            });
+        let per_chunk_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("onion fog per-chunk pipeline layout"),
+                bind_group_layouts: &[Some(&per_chunk_bind_group_layout)],
+                immediate_size: 0,
+            });
+        let per_chunk_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("onion fog per-chunk pipeline"),
+                layout: Some(&per_chunk_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &per_chunk_shader,
+                    entry_point: Some("vertex_main"),
+                    buffers: &[],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &per_chunk_shader,
+                    entry_point: Some("fragment_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: color_format,
+                        blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    strip_index_format: None,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode: None,
+                    unclipped_depth: false,
+                    polygon_mode: wgpu::PolygonMode::Fill,
+                    conservative: false,
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState {
+                    count: 1,
+                    mask: !0,
+                    alpha_to_coverage_enabled: false,
+                },
+                multiview_mask: None,
+                cache: None,
+            });
+        let per_chunk_atlas_view = create_empty_occupancy_view(device);
+        let per_chunk_meta_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("onion fog per-chunk meta"),
+            size: std::mem::size_of::<PerChunkFogMeta>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
         Self {
             pipeline,
             uniform_buffer,
@@ -2439,6 +2758,12 @@ impl OnionFogRenderer {
             grid_view,
             max_grid_dimension: device.limits().max_texture_dimension_3d,
             active: false,
+            mode: FogMode::WholeGrid,
+            per_chunk_pipeline,
+            per_chunk_bind_group_layout,
+            per_chunk_atlas_view,
+            per_chunk_meta_buffer,
+            per_chunk_active: false,
         }
     }
 
@@ -2521,6 +2846,139 @@ impl OnionFogRenderer {
         );
         self.grid_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         self.active = true;
+        self.mode = FogMode::WholeGrid;
+    }
+
+    /// Upload the resolved grid as PER-CHUNK apron'd occupancy volumes packed into a
+    /// small 3D atlas (issue #28 S5a, `--fog=perchunk`). Unlike [`upload_grid`], the
+    /// atlas size is bounded by the number of resident chunks, NOT the whole-grid
+    /// extent, so a scene whose whole-grid axis would exceed `max_texture_dimension_3d`
+    /// (and thus disable the whole-grid fog) still renders fog here.
+    ///
+    /// Each chunk's tile is `(chunk_extent + 2)³` (a 1-voxel apron filled from the
+    /// global occupancy), so trilinear sampling is seam-smooth across chunk boundaries.
+    /// The shader marches in recentred world space and, at each sample, maps the world
+    /// point into the owning chunk's tile via the metadata records.
+    pub fn upload_grid_per_chunk(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        grid: &VoxelGrid,
+        voxels_per_block: u32,
+    ) {
+        let occupancy = build_per_chunk_fog_occupancy(grid, voxels_per_block);
+        let pad = occupancy.chunk_extent as usize + 2;
+        let chunk_count = occupancy.volumes.len();
+        if chunk_count == 0 || pad == 0 {
+            self.per_chunk_active = false;
+            self.mode = FogMode::PerChunk;
+            return;
+        }
+
+        // Arrange the resident chunk tiles into a cubic-ish 3D tile grid, so the atlas
+        // dimension per axis (`tiles_per_axis * pad`) stays small — bounded by the chunk
+        // COUNT, not the whole-grid extent. This is the core of why per-chunk dodges the
+        // single-3D-texture limit.
+        let tiles_per_axis = (chunk_count as f64).cbrt().ceil() as u32;
+        let tiles_per_axis = tiles_per_axis.max(1);
+        let atlas_dim = tiles_per_axis * pad as u32;
+        if atlas_dim > self.max_grid_dimension {
+            // The active region has too many chunks for the atlas to fit the 3D limit;
+            // fall back to disabled fog rather than failing. (S5b's region scoping keeps
+            // the resident set small; a region this large is out of S5a scope.)
+            self.per_chunk_active = false;
+            self.mode = FogMode::PerChunk;
+            return;
+        }
+
+        // Pack every chunk's apron'd occupancy into the atlas at its tile slot, and
+        // record each chunk's world origin + linear tile index in the metadata.
+        let atlas_texels = (atlas_dim as usize).pow(3);
+        let mut atlas = vec![0u8; atlas_texels];
+        let mut meta = PerChunkFogMeta {
+            chunk_count: chunk_count as u32,
+            chunk_extent: occupancy.chunk_extent as f32,
+            pad_extent: pad as f32,
+            tiles_per_axis,
+            atlas_dim: atlas_dim as f32,
+            _pad0: 0.0,
+            _pad1: 0.0,
+            _pad2: 0.0,
+            chunks: [[0.0; 4]; MAX_FOG_CHUNKS],
+        };
+        for (tile_index, volume) in occupancy.volumes.iter().enumerate() {
+            // Linear tile index → 3D tile coord in the atlas.
+            let tx = (tile_index as u32) % tiles_per_axis;
+            let ty = ((tile_index as u32) / tiles_per_axis) % tiles_per_axis;
+            let tz = (tile_index as u32) / (tiles_per_axis * tiles_per_axis);
+            let base = [tx as usize * pad, ty as usize * pad, tz as usize * pad];
+            for local_z in 0..pad {
+                for local_y in 0..pad {
+                    for local_x in 0..pad {
+                        let src = (local_z * pad + local_y) * pad + local_x;
+                        let ax = base[0] + local_x;
+                        let ay = base[1] + local_y;
+                        let az = base[2] + local_z;
+                        let dst = (az * atlas_dim as usize + ay) * atlas_dim as usize + ax;
+                        atlas[dst] = volume.occupancy[src];
+                    }
+                }
+            }
+            meta.chunks[tile_index] = [
+                volume.world_origin[0],
+                volume.world_origin[1],
+                volume.world_origin[2],
+                tile_index as f32,
+            ];
+        }
+
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("onion fog per-chunk atlas"),
+            size: wgpu::Extent3d {
+                width: atlas_dim,
+                height: atlas_dim,
+                depth_or_array_layers: atlas_dim,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D3,
+            format: wgpu::TextureFormat::R8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &atlas,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(atlas_dim),
+                rows_per_image: Some(atlas_dim),
+            },
+            wgpu::Extent3d {
+                width: atlas_dim,
+                height: atlas_dim,
+                depth_or_array_layers: atlas_dim,
+            },
+        );
+        self.per_chunk_atlas_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        queue.write_buffer(&self.per_chunk_meta_buffer, 0, bytemuck::bytes_of(&meta));
+        self.per_chunk_active = true;
+        self.mode = FogMode::PerChunk;
+    }
+
+    /// The fog mode the last upload selected (issue #28 S5a).
+    pub fn mode(&self) -> FogMode {
+        self.mode
+    }
+
+    /// Whether the per-chunk path has a renderable atlas (diagnostic / tests).
+    pub fn per_chunk_active(&self) -> bool {
+        self.per_chunk_active
     }
 
     /// Upload this frame's fog parameters.
@@ -2556,31 +3014,73 @@ impl OnionFogRenderer {
         depth_view: &wgpu::TextureView,
         viewport: [u32; 4],
     ) {
-        if !self.active {
-            return;
-        }
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("onion fog bind group"),
-            layout: &self.bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: self.uniform_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&self.grid_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: wgpu::BindingResource::TextureView(depth_view),
-                },
-            ],
-        });
+        // Build the bind group + pick the pipeline for the active mode. Both modes share
+        // the camera uniform (binding 0), occupancy texture (1), sampler (2) and depth
+        // (3); the per-chunk path adds the metadata uniform (4).
+        let (pipeline, bind_group) = match self.mode {
+            FogMode::WholeGrid => {
+                if !self.active {
+                    return;
+                }
+                let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("onion fog bind group"),
+                    layout: &self.bind_group_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: self.uniform_buffer.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::TextureView(&self.grid_view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: wgpu::BindingResource::Sampler(&self.sampler),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 3,
+                            resource: wgpu::BindingResource::TextureView(depth_view),
+                        },
+                    ],
+                });
+                (&self.pipeline, bind_group)
+            }
+            FogMode::PerChunk => {
+                if !self.per_chunk_active {
+                    return;
+                }
+                let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("onion fog per-chunk bind group"),
+                    layout: &self.per_chunk_bind_group_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: self.uniform_buffer.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::TextureView(
+                                &self.per_chunk_atlas_view,
+                            ),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: wgpu::BindingResource::Sampler(&self.sampler),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 3,
+                            resource: wgpu::BindingResource::TextureView(depth_view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 4,
+                            resource: self.per_chunk_meta_buffer.as_entire_binding(),
+                        },
+                    ],
+                });
+                (&self.per_chunk_pipeline, bind_group)
+            }
+        };
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("onion fog pass"),
@@ -2601,7 +3101,7 @@ impl OnionFogRenderer {
         let [vx, vy, vw, vh] = viewport;
         pass.set_viewport(vx as f32, vy as f32, vw as f32, vh as f32, 0.0, 1.0);
         pass.set_scissor_rect(vx, vy, vw, vh);
-        pass.set_pipeline(&self.pipeline);
+        pass.set_pipeline(pipeline);
         pass.set_bind_group(0, &bind_group, &[]);
         pass.draw(0..3, 0..1);
     }
@@ -2687,6 +3187,100 @@ mod tests {
         let positions: Vec<[f32; 3]> = vertices.iter().map(|v| v.position).collect();
         let normals: Vec<[f32; 3]> = vertices.iter().map(|v| v.normal).collect();
         assert_ccw_outward(&positions, &normals, &indices);
+    }
+
+    // ===== Issue #28 S5a: per-chunk fog apron generation ========================
+
+    /// Build a recentred [`VoxelGrid`] of `dims` voxels with the given integer voxel
+    /// coords occupied, using the SAME `voxel ↔ world` mapping the fog upload uses
+    /// (world = i + 0.5 - dim/2). So `build_per_chunk_fog_occupancy` reads them back at
+    /// the exact integer coords here.
+    fn grid_with_voxels(dims: [u32; 3], coords: &[[u32; 3]]) -> VoxelGrid {
+        let mut grid = VoxelGrid::new(dims);
+        let half = [dims[0] as f32 / 2.0, dims[1] as f32 / 2.0, dims[2] as f32 / 2.0];
+        for &[i, j, k] in coords {
+            grid.occupied.push(Voxel {
+                world_position: [
+                    i as f32 + 0.5 - half[0],
+                    j as f32 + 0.5 - half[1],
+                    k as f32 + 0.5 - half[2],
+                ],
+                block_local_coord: [0, 0, 0],
+                material_id: 0,
+            });
+        }
+        grid
+    }
+
+    /// Read the apron'd occupancy of `volume` at chunk-LOCAL coord `(li, lj, lk)`
+    /// (`-1 ..= extent`), where `0` is the chunk's interior `[0,0,0]` voxel.
+    fn apron_at(volume: &ChunkFogVolume, extent: i64, local: [i64; 3]) -> u8 {
+        let pad = (extent + 2) as usize;
+        let a = [
+            (local[0] + 1) as usize,
+            (local[1] + 1) as usize,
+            (local[2] + 1) as usize,
+        ];
+        volume.occupancy[(a[2] * pad + a[1]) * pad + a[0]]
+    }
+
+    /// The apron of a chunk reflects a NEIGHBOUR chunk's boundary occupancy (seam
+    /// smoothness), and an interior/edge voxel of the chunk shows up in its own volume.
+    #[test]
+    fn per_chunk_apron_reflects_neighbour_and_boundary() {
+        // density 1 → CHUNK_BLOCKS * 1 = 4 voxels/chunk. A 2-chunk-wide grid in X so a
+        // voxel in chunk 1 sits in chunk 0's +X apron.
+        let density = 1u32;
+        let extent = (CHUNK_BLOCKS * density) as i64; // 4
+        let dims = [(extent * 2) as u32, extent as u32, extent as u32]; // 8x4x4
+        // Occupy: chunk-0 boundary voxel at x=3 (its own +X edge), and chunk-1's first
+        // voxel at x=4 (the neighbour that must appear in chunk-0's apron).
+        let grid = grid_with_voxels(dims, &[[3, 0, 0], [4, 0, 0]]);
+
+        let occ = build_per_chunk_fog_occupancy(&grid, density);
+        assert_eq!(occ.chunk_extent, extent as u32);
+        // Two chunks are occupied (x=3 in chunk 0, x=4 in chunk 1).
+        assert_eq!(occ.volumes.len(), 2, "two chunks hold voxels");
+
+        let chunk0 = occ
+            .volumes
+            .iter()
+            .find(|v| v.chunk_coord == [0, 0, 0])
+            .expect("chunk 0 resident");
+        // Its own edge voxel (local x=3) is occupied.
+        assert_eq!(apron_at(chunk0, extent, [3, 0, 0]), 255, "chunk-0 own edge voxel");
+        // The neighbour voxel (chunk-1 x=4 → chunk-0 local x=extent) sits in the +X
+        // apron and is filled from the global occupancy → seam-smooth trilinear.
+        assert_eq!(
+            apron_at(chunk0, extent, [extent, 0, 0]),
+            255,
+            "chunk-0 +X apron carries the neighbour chunk's boundary voxel"
+        );
+        // An empty apron cell stays 0 (e.g. -1 in X, outside everything).
+        assert_eq!(apron_at(chunk0, extent, [-1, 0, 0]), 0, "empty apron stays empty");
+    }
+
+    /// An empty grid yields no volumes (fog disables itself), and the world origin of a
+    /// chunk is its interior `[0,0,0]` voxel corner in recentred world space.
+    #[test]
+    fn per_chunk_world_origin_is_recentred_corner() {
+        let density = 1u32;
+        let extent = (CHUNK_BLOCKS * density) as i64; // 4
+        let dims = [(extent * 2) as u32, extent as u32, extent as u32]; // 8x4x4
+        let half = dims[0] as f32 / 2.0; // 4
+        let grid = grid_with_voxels(dims, &[[5, 0, 0]]); // chunk 1 in X
+        let occ = build_per_chunk_fog_occupancy(&grid, density);
+        let chunk1 = occ
+            .volumes
+            .iter()
+            .find(|v| v.chunk_coord == [1, 0, 0])
+            .expect("chunk 1 resident");
+        // Chunk 1's interior origin = chunk_coord*extent - half = 4 - 4 = 0 in X.
+        assert!((chunk1.world_origin[0] - (extent as f32 - half)).abs() < 1e-6);
+
+        // Empty grid → no volumes.
+        let empty = VoxelGrid::new(dims);
+        assert!(build_per_chunk_fog_occupancy(&empty, density).volumes.is_empty());
     }
 
     #[test]
