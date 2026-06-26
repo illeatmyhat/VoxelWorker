@@ -33,6 +33,37 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **ViewCube: remove compass ring (modern Fusion has none) — Part of #13.**
+  The N/E/S/W compass ring at the cube's base (added in #13 Steps 1–3) is REMOVED
+  entirely — modern Fusion 360 has no such ring and at the cube's tiny scale it read
+  oddly. Everything else stays: Home/Fit badges, the four rotate arrows, the two roll
+  arrows, and the cube faces/edges. Removed cleanly across the three layers:
+  - **Render (`renderer.rs` + `viewcube_chrome.wgsl`):** deleted the teal base-band
+    annulus geometry (`push_compass_ring` + the `RingSolid` solid layer) and the four
+    N/E/S/W glyph quads. The chrome-glyph texture array dropped from **13 → 8** layers
+    (now Home, Fit, 4 rotate arrows, 2 roll arrows, contiguous); removed the
+    compass-only `CompassNorth/East/South/West` enum variants, the `draw_glyph_letter`
+    helper, and the `'S'`/`'W'` font bitmaps that were added solely for the compass
+    (`'N'`/`'E'` stay — used by the FRONT/RIGHT face labels). The base band is now free
+    (no chrome).
+  - **Hit-math (`camera.rs`):** removed the `Compass` variant from `CubeChromeZone`, the
+    base-ring rects from `classify_cube_point` (the DOWN gutter now extends to the rect
+    base), the `Heading` enum, and `compass_heading_to_theta`.
+  - **Dispatch (`camera.rs`):** removed the `Compass(heading)` arm from
+    `chrome_zone_left_click_action` (Home/Fit + rotate/roll unchanged).
+  - **Tests/flags/docs:** deleted the 3 compass unit tests (ring classify, heading
+    distinctness, compass-click tween); dropped the `--cube-hover north|east|south|west`
+    options from `shot.rs` (rotate/roll/home/fit kept); updated the Step-1 layout comment,
+    `lib.rs` re-exports, and `cube-chrome-hover` golden comment.
+  - **Verified.** `cargo build --bins` + `cargo clippy --all-targets` clean (no `#[allow]`,
+    dead code removed); **227 lib tests** (was 230, −3 compass); all **8 goldens
+    regenerated + pass**. Region check (old↔new): every golden changed by exactly **874 px**
+    (873 for points, AA jitter) in one tight box **(23,129)–(136,142)** — the cube-corner
+    base band where the ring/letters sat; the entire 3D viewport, side panel, and the rest
+    of the cube are byte-identical. READ `cube-chrome-hover.png` (compass gone; Home/Fit +
+    highlighted rotate-left arrow intact; houses + panel unchanged) and `cylinder.png`
+    (no base ring; cube faces readable; viewport/panel unchanged).
+
 - **ViewCube: wire chrome clicks + right-click context menu — Part of #13 (Step 3).**
   INPUT wiring only (no new visuals → goldens byte-identical). **Left-click on a chrome zone:** in
   the left-release handler, a STATIONARY release inside the cube rect now runs `classify_cube_point`

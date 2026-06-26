@@ -503,9 +503,9 @@ struct CubeLabelVertex {
     layer: u32,
 }
 
-/// Edge length of each square chrome-glyph texture (compass letters, Home/Fit
-/// badges, rotate/roll arrows). Smaller than the face labels — the glyphs are
-/// drawn at modest screen sizes in the margins.
+/// Edge length of each square chrome-glyph texture (Home/Fit badges, rotate/roll
+/// arrows). Smaller than the face labels — the glyphs are drawn at modest screen
+/// sizes in the margins.
 const CHROME_GLYPH_TEXTURE_SIZE: u32 = 64;
 
 /// One screen-space chrome-overlay vertex: NDC position (fixed to the cube rect,
@@ -520,15 +520,11 @@ struct ChromeVertex {
     layer: u32,
 }
 
-/// The chrome-glyph texture-array layers (#13 Step 2), in upload order. Compass
-/// letters + Home/Fit badges are ALWAYS drawn; the arrows are drawn only when the
-/// matching zone is hovered.
+/// The chrome-glyph texture-array layers (#13 Step 2), in upload order. The
+/// Home/Fit badges are ALWAYS drawn; the arrows are drawn only when the matching
+/// zone is hovered.
 #[derive(Debug, Clone, Copy)]
 enum ChromeGlyph {
-    CompassNorth,
-    CompassEast,
-    CompassSouth,
-    CompassWest,
     HomeButton,
     FitButton,
     ArrowUp,
@@ -537,18 +533,11 @@ enum ChromeGlyph {
     ArrowRight,
     RollCw,
     RollCcw,
-    /// A fully-opaque white texel used by the compass ring (tinted by the vertex
-    /// colour). Not a letter/arrow — just a solid the ring annulus samples.
-    RingSolid,
 }
 
 impl ChromeGlyph {
     /// Upload/lookup order for the texture array (must match `chrome_glyph_pixels`).
-    const ALL: [ChromeGlyph; 13] = [
-        ChromeGlyph::CompassNorth,
-        ChromeGlyph::CompassEast,
-        ChromeGlyph::CompassSouth,
-        ChromeGlyph::CompassWest,
+    const ALL: [ChromeGlyph; 8] = [
         ChromeGlyph::HomeButton,
         ChromeGlyph::FitButton,
         ChromeGlyph::ArrowUp,
@@ -557,7 +546,6 @@ impl ChromeGlyph {
         ChromeGlyph::ArrowRight,
         ChromeGlyph::RollCw,
         ChromeGlyph::RollCcw,
-        ChromeGlyph::RingSolid,
     ];
 
     /// This glyph's index in the texture array.
@@ -580,12 +568,12 @@ pub struct ViewCubeRenderer {
     uniform_buffer: wgpu::Buffer,
     uniform_bind_group: wgpu::BindGroup,
     label_bind_group: wgpu::BindGroup,
-    // --- #13 Step 2: screen-space chrome overlay (compass + Home/Fit + arrows) ---
+    // --- #13 Step 2: screen-space chrome overlay (Home/Fit + hover arrows) ---
     chrome_pipeline: wgpu::RenderPipeline,
     chrome_bind_group: wgpu::BindGroup,
     chrome_vertex_buffer: wgpu::Buffer,
     /// Capacity (in vertices) of `chrome_vertex_buffer`; the per-frame glyph quads
-    /// fit within this fixed cap (12 glyphs × 6 verts + the compass ring fan).
+    /// fit within this fixed cap (4 glyphs × 6 verts, generous).
     chrome_vertex_capacity: u32,
 }
 
@@ -778,9 +766,9 @@ impl ViewCubeRenderer {
         // --- #13 Step 2: screen-space chrome overlay pipeline + glyph textures ---
         let (chrome_pipeline, chrome_bind_group) =
             build_chrome_overlay(device, queue, color_format);
-        // Cap: 12 glyph quads (6 verts each) + a 64-segment compass ring as a
-        // triangle strip expressed as a triangle list (64 * 6 verts). Generous.
-        let chrome_vertex_capacity = 12 * 6 + 64 * 6;
+        // Cap: at most Home + Fit + one hovered arrow on screen at once; size
+        // generously for all glyph quads (6 verts each).
+        let chrome_vertex_capacity = 12 * 6;
         let chrome_vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("view cube chrome vertices"),
             size: (chrome_vertex_capacity as usize * std::mem::size_of::<ChromeVertex>()) as u64,
@@ -826,9 +814,9 @@ impl ViewCubeRenderer {
     /// attachments span the whole target; the scissor confines the draw).
     ///
     /// #13 Step 2: `hovered_zone` is the chrome zone currently under the cursor
-    /// (from `classify_cube_point`). The compass ring + N/E/S/W letters and the
-    /// Home/Fit badges are drawn ALWAYS; the rotate/roll arrows are drawn ONLY when
-    /// their zone is hovered, and the hovered glyph is brightened. The chrome is a
+    /// (from `classify_cube_point`). The Home/Fit badges are drawn ALWAYS; the
+    /// rotate/roll arrows are drawn ONLY when their zone is hovered, and the
+    /// hovered glyph is brightened. The chrome is a
     /// screen-space overlay FIXED to the cube rect (it does NOT rotate with the
     /// cube), laid out in the same `rect.size` fractions Step 1 hit-tests against.
     #[allow(clippy::too_many_arguments)]
@@ -1113,17 +1101,15 @@ fn glyph_bitmap(ch: char) -> [u8; 7] {
         'P' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000],
         'R' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001],
         'T' => [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100],
-        'S' => [0b01110, 0b10001, 0b10000, 0b01110, 0b00001, 0b10001, 0b01110],
-        'W' => [0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b11011, 0b10001],
         _ => [0; 7],
     }
 }
 
 // ============================================================================
-// #13 Step 2 — ViewCube chrome overlay (compass ring + N/E/S/W + Home/Fit +
-// hover rotate/roll arrows). Screen-space, fixed to the cube rect; the layout
-// fractions mirror `camera::classify_cube_point` EXACTLY so the rendered glyphs
-// sit on the Step-1 hit zones.
+// #13 Step 2 — ViewCube chrome overlay (Home/Fit + hover rotate/roll arrows).
+// Screen-space, fixed to the cube rect; the layout fractions mirror
+// `camera::classify_cube_point` EXACTLY so the rendered glyphs sit on the Step-1
+// hit zones.
 // ============================================================================
 
 /// Render one chrome glyph into an RGBA8 buffer (`CHROME_GLYPH_TEXTURE_SIZE`
@@ -1132,12 +1118,7 @@ fn glyph_bitmap(ch: char) -> [u8; 7] {
 fn chrome_glyph_pixels(glyph: ChromeGlyph) -> Vec<u8> {
     let size = CHROME_GLYPH_TEXTURE_SIZE as usize;
     let mut pixels = vec![0u8; size * size * 4]; // transparent
-    const INK: [u8; 4] = [0xff, 0xff, 0xff, 0xff];
     match glyph {
-        ChromeGlyph::CompassNorth => draw_glyph_letter(&mut pixels, size, 'N'),
-        ChromeGlyph::CompassEast => draw_glyph_letter(&mut pixels, size, 'E'),
-        ChromeGlyph::CompassSouth => draw_glyph_letter(&mut pixels, size, 'S'),
-        ChromeGlyph::CompassWest => draw_glyph_letter(&mut pixels, size, 'W'),
         ChromeGlyph::HomeButton => draw_home_icon(&mut pixels, size),
         ChromeGlyph::FitButton => draw_fit_icon(&mut pixels, size),
         ChromeGlyph::ArrowUp => draw_triangle_arrow(&mut pixels, size, ArrowFacing::Up),
@@ -1146,20 +1127,8 @@ fn chrome_glyph_pixels(glyph: ChromeGlyph) -> Vec<u8> {
         ChromeGlyph::ArrowRight => draw_triangle_arrow(&mut pixels, size, ArrowFacing::Right),
         ChromeGlyph::RollCw => draw_roll_arc(&mut pixels, size, true),
         ChromeGlyph::RollCcw => draw_roll_arc(&mut pixels, size, false),
-        ChromeGlyph::RingSolid => {
-            // A fully-opaque white field; the ring geometry samples its centre.
-            for pixel in pixels.chunks_exact_mut(4) {
-                pixel.copy_from_slice(&INK);
-            }
-        }
     }
     pixels
-}
-
-/// Draw a single large centred letter onto a transparent chrome buffer.
-fn draw_glyph_letter(pixels: &mut [u8], size: usize, ch: char) {
-    // Reuse the 5×7 face font, white ink, scaled to ~80% of the glyph box.
-    draw_centered_label(pixels, size, &ch.to_string(), [0xff, 0xff, 0xff, 0xff]);
 }
 
 /// Which way a rotate-arrow triangle points.
@@ -1503,12 +1472,9 @@ fn build_chrome_overlay(
 fn build_chrome_vertices(
     hovered_zone: Option<crate::camera::CubeChromeZone>,
 ) -> Vec<ChromeVertex> {
-    use crate::camera::{ArrowDir, CubeChromeZone, Heading, RollDir};
+    use crate::camera::{ArrowDir, CubeChromeZone, RollDir};
 
     let mut verts = Vec::new();
-
-    // The compass RING band sits at the base (Step-1 compass band y∈[.88,1.00]).
-    push_compass_ring(&mut verts);
 
     // Helper: is THIS zone the hovered one? Picks the brighter tint.
     let tint = |is_hovered: bool| {
@@ -1518,21 +1484,6 @@ fn build_chrome_vertices(
             with_alpha(CHROME_GLYPH_RGB, 1.0)
         }
     };
-
-    // --- Always-on: compass letters, centred in their Step-1 sub-rects. ---
-    // N: u∈[.05,.30], E: [.30,.50], S: [.50,.70], W: [.70,.95]; band y∈[.88,1.00].
-    let letter_y = (0.88 + 1.00) / 2.0;
-    let letter_h = 0.11;
-    let compass_letters = [
-        (Heading::North, ChromeGlyph::CompassNorth, (0.05 + 0.30) / 2.0),
-        (Heading::East, ChromeGlyph::CompassEast, (0.30 + 0.50) / 2.0),
-        (Heading::South, ChromeGlyph::CompassSouth, (0.50 + 0.70) / 2.0),
-        (Heading::West, ChromeGlyph::CompassWest, (0.70 + 0.95) / 2.0),
-    ];
-    for (heading, glyph, cx) in compass_letters {
-        let hovered = hovered_zone == Some(CubeChromeZone::Compass(heading));
-        push_glyph_quad(&mut verts, glyph, cx, letter_y, 0.085, letter_h, tint(hovered));
-    }
 
     // --- Always-on: Home / Fit badges (top-left), Step-1 u∈[0,.12]/[.12,.24], v∈[0,.12]. ---
     let badge_y = 0.07;
@@ -1596,51 +1547,6 @@ fn push_glyph_quad(
     };
     // TL,TR,BR  +  TL,BR,BL
     verts.extend_from_slice(&[v(0), v(1), v(2), v(0), v(2), v(3)]);
-}
-
-/// Push the compass RING — a thin teal annulus on the base band (Step-1 compass
-/// y∈[.88,1.00]), centred horizontally, as a triangle list approximating a ring.
-/// It does NOT rotate with the cube (screen-space), keeping N/E/S/W aligned with
-/// their hit zones. Each segment samples the fully-opaque `RingSolid` layer so the
-/// vertex tint (teal) is what shows.
-fn push_compass_ring(verts: &mut Vec<ChromeVertex>) {
-    // Centre at the horizontal middle, vertically on the base band. The ring is
-    // squashed vertically (the band is short) so it reads as a flat base disc seen
-    // from a low angle — like the AutoCAD/Inventor compass.
-    let center_x = 0.5;
-    let center_y = 0.93;
-    let radius_x = 0.45;
-    let radius_y = 0.05;
-    let thickness = 0.45; // fraction of radius forming the annulus width
-    let color = with_alpha(srgb_hex_to_linear(0x5f_b8_a4), 0.85);
-    const SEGMENTS: usize = 48;
-    let inner = 1.0 - thickness;
-    let to_ndc = |fx: f32, fy: f32| [fx * 2.0 - 1.0, 1.0 - fy * 2.0];
-    let layer = ChromeGlyph::RingSolid.layer();
-    let mk = |fx: f32, fy: f32| ChromeVertex {
-        position: to_ndc(fx, fy),
-        uv: [0.5, 0.5],
-        color,
-        layer,
-    };
-    for i in 0..SEGMENTS {
-        let a0 = (i as f32) / SEGMENTS as f32 * std::f32::consts::TAU;
-        let a1 = ((i + 1) as f32) / SEGMENTS as f32 * std::f32::consts::TAU;
-        let ring_pt = |ang: f32, r: f32| {
-            (
-                center_x + ang.cos() * radius_x * r,
-                center_y + ang.sin() * radius_y * r,
-            )
-        };
-        let (ox0, oy0) = ring_pt(a0, 1.0);
-        let (ox1, oy1) = ring_pt(a1, 1.0);
-        let (ix0, iy0) = ring_pt(a0, inner);
-        let (ix1, iy1) = ring_pt(a1, inner);
-        verts.extend_from_slice(&[
-            mk(ox0, oy0), mk(ox1, oy1), mk(ix1, iy1),
-            mk(ox0, oy0), mk(ix1, iy1), mk(ix0, iy0),
-        ]);
-    }
 }
 
 /// Create a single-sample depth texture view (used by the view-cube pass).

@@ -117,7 +117,7 @@ struct ShotOptions {
     snap_element: Option<ViewCubeElement>,
     /// `--cube-hover <zone>` (#13 Step 2): force a ViewCube chrome zone to read as
     /// hovered so a golden can show a highlighted rotate/roll arrow. `None` = the
-    /// normal render (compass + Home/Fit only, no arrows).
+    /// normal render (Home/Fit only, no arrows).
     cube_hover: Option<voxel_worker::camera::CubeChromeZone>,
     /// Orbit azimuth (radians). Default 0.7.
     theta: f32,
@@ -308,10 +308,10 @@ fn parse_snap_element(value: &str) -> ViewCubeElement {
 }
 
 /// Parse a `--cube-hover` value (#13 Step 2) into the forced hovered chrome zone.
-/// Accepts the rotate/roll arrows, the compass headings, and the Home/Fit badges
-/// so a golden can show any highlighted chrome element.
+/// Accepts the rotate/roll arrows and the Home/Fit badges so a golden can show
+/// any highlighted chrome element.
 fn parse_cube_hover(value: &str) -> voxel_worker::camera::CubeChromeZone {
-    use voxel_worker::camera::{ArrowDir, CubeChromeZone, Heading, RollDir};
+    use voxel_worker::camera::{ArrowDir, CubeChromeZone, RollDir};
     match value.to_ascii_lowercase().as_str() {
         "rotate-up" | "up" => CubeChromeZone::RotateArrow(ArrowDir::Up),
         "rotate-down" | "down" => CubeChromeZone::RotateArrow(ArrowDir::Down),
@@ -319,15 +319,11 @@ fn parse_cube_hover(value: &str) -> voxel_worker::camera::CubeChromeZone {
         "rotate-right" | "right" => CubeChromeZone::RotateArrow(ArrowDir::Right),
         "roll-cw" | "cw" => CubeChromeZone::RollArrow(RollDir::Cw),
         "roll-ccw" | "ccw" => CubeChromeZone::RollArrow(RollDir::Ccw),
-        "north" | "n" => CubeChromeZone::Compass(Heading::North),
-        "east" | "e" => CubeChromeZone::Compass(Heading::East),
-        "south" | "s" => CubeChromeZone::Compass(Heading::South),
-        "west" | "w" => CubeChromeZone::Compass(Heading::West),
         "home" => CubeChromeZone::HomeButton,
         "fit" => CubeChromeZone::FitButton,
         other => panic!(
             "--cube-hover must be one of rotate-up|rotate-down|rotate-left|rotate-right|\
-             roll-cw|roll-ccw|north|east|south|west|home|fit, got '{other}'"
+             roll-cw|roll-ccw|home|fit, got '{other}'"
         ),
     }
 }

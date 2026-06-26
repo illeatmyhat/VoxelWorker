@@ -1229,7 +1229,7 @@ impl WindowedState {
                 None
             },
             // #13 Step 2: chrome hover wiring is Step 3; the live app draws the
-            // always-on chrome (compass + Home/Fit) with no arrows for now.
+            // always-on chrome (Home/Fit) with no arrows for now.
             cube_hovered_zone: None,
             scene_grid: Some(&self.scene_grid_renderer),
             // Issue #29 S5: the windowed app always shows the Points (the Origin's
@@ -1337,7 +1337,7 @@ impl ApplicationHandler for App {
                                 && (up_y - down_y).abs() < VIEW_CUBE_DRAG_THRESHOLD_PIXELS;
                             if stationary && state.position_in_view_cube(up_x, up_y) {
                                 // #13 Step 3: classify the stationary release into a
-                                // chrome zone (rotate / roll / compass / Home / Fit /
+                                // chrome zone (rotate / roll / Home / Fit /
                                 // cube body). The body region delegates to the same
                                 // raycast picker as before, so a body click still
                                 // resolves to an Element snap; the gutters/badges map

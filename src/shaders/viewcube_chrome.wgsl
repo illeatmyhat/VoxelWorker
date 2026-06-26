@@ -1,8 +1,8 @@
 // View-cube CHROME overlay shader (#13 Step 2).
 //
-// Draws screen-space textured glyph quads (compass N/E/S/W letters, Home/Fit
-// button badges, and the hover rotate/roll arrows) that are FIXED to the cube
-// rect — they do NOT rotate with the cube. Positions arrive already in NDC
+// Draws screen-space textured glyph quads (Home/Fit button badges and the hover
+// rotate/roll arrows) that are FIXED to the cube rect — they do NOT rotate with
+// the cube. Positions arrive already in NDC
 // (computed on the CPU from the Step-1 layout fractions, within the scissored
 // cube viewport), so the vertex stage is a pass-through. Each glyph samples its
 // own layer from a 2D texture array and is tinted by a per-vertex colour (used

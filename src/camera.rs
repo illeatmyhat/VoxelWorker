@@ -201,16 +201,6 @@ pub enum RollDir {
     Ccw,
 }
 
-/// A compass heading on the ViewCube base ring (AutoCAD/Inventor style). The
-/// mapping to faces / theta is pinned in [`compass_heading_to_theta`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Heading {
-    North,
-    East,
-    South,
-    West,
-}
-
 /// The neighbour face reached by a 90° ViewCube rotate in screen direction
 /// `dir`, starting from the current nearest face.
 ///
@@ -276,23 +266,6 @@ pub fn adjacent_face(current: CubeFace, dir: ArrowDir) -> CubeFace {
     }
 }
 
-/// The azimuth (`theta`) a compass heading snaps the camera to, consistent with
-/// the face theta convention in [`ViewCubeElement::snap_angles`]
-/// (FRONT/+Z→π/2, RIGHT/+X→0, BACK/−Z→−π/2, LEFT/−X→π). The heading→face map is
-/// the natural ground-compass one: **N = Front, E = Right, S = Back, W = Left**.
-///
-/// The four headings give distinct thetas exactly 90° apart, stepping by −π/2
-/// in N→E→S→W order: `N=π/2, E=0, S=−π/2, W=−π` (W ≡ Left's `π` mod 2π).
-pub fn compass_heading_to_theta(heading: Heading) -> f32 {
-    use std::f32::consts::FRAC_PI_2;
-    match heading {
-        Heading::North => FRAC_PI_2,       // Front (+Z)
-        Heading::East => 0.0,              // Right (+X)
-        Heading::South => -FRAC_PI_2,      // Back (−Z)
-        Heading::West => -std::f32::consts::PI, // Left (−X), ≡ +π mod 2π
-    }
-}
-
 /// A rectangle in window pixels (the ViewCube's on-screen region). `x`/`y` are
 /// the top-left corner; `size` is the side length (the cube viewport is square).
 /// Used by [`classify_cube_point`] so the chrome hit-zones and the Step-2
@@ -316,8 +289,6 @@ pub enum CubeChromeZone {
     RotateArrow(ArrowDir),
     /// A roll arrow at a top corner.
     RollArrow(RollDir),
-    /// A compass heading on the base ring.
-    Compass(Heading),
     /// The Home button (top-left corner badge).
     HomeButton,
     /// The Fit button (next to Home).
@@ -337,12 +308,12 @@ pub enum CubeChromeZone {
 ///   │[◀]      cube body      [▶]│         CUBE BODY (raycast): [.15,.85]²
 ///   │  │                       │  │         rotate-L/R gutters: y∈[.30,.70]
 ///   │  └───────────────────────┘  │  0.85
-///   │ N    [ ▼ ]   E   S   W      │  rotate-DOWN gutter, then compass ring
-///   └─────────────────────────────┘  1.00   compass ring: y∈[.88,1.00]
+///   │        [ ▼ ]                │  rotate-DOWN gutter
+///   └─────────────────────────────┘  1.00
 /// ```
 ///
 /// Precedence (first match wins): Home/Fit badges, roll arrows, the four rotate
-/// gutters, the compass ring, then the central cube body (delegated to
+/// gutters, then the central cube body (delegated to
 /// `body_picker`). A point inside `rect` that matches no chrome zone and whose
 /// `body_picker` returns `None` yields `None`; a point outside `rect` is `None`.
 ///
@@ -397,8 +368,8 @@ pub fn classify_cube_point(
     if (0.04..BODY_MIN).contains(&v) && (GUTTER_LO..GUTTER_HI).contains(&u) {
         return Some(CubeChromeZone::RotateArrow(ArrowDir::Up));
     }
-    // DOWN gutter: below the body but above the compass ring.
-    if (BODY_MAX..0.88).contains(&v) && (GUTTER_LO..GUTTER_HI).contains(&u) {
+    // DOWN gutter: below the body.
+    if (BODY_MAX..0.96).contains(&v) && (GUTTER_LO..GUTTER_HI).contains(&u) {
         return Some(CubeChromeZone::RotateArrow(ArrowDir::Down));
     }
     // LEFT gutter: left of the body, vertically centred.
@@ -408,24 +379,6 @@ pub fn classify_cube_point(
     // RIGHT gutter: right of the body, vertically centred.
     if (BODY_MAX..0.98).contains(&u) && (GUTTER_LO..GUTTER_HI).contains(&v) {
         return Some(CubeChromeZone::RotateArrow(ArrowDir::Right));
-    }
-
-    // --- Compass ring: 4 rects along a band at the base (N/E/S/W L→R). ---
-    const COMPASS_TOP: f32 = 0.88;
-    if v >= COMPASS_TOP {
-        if (0.05..0.30).contains(&u) {
-            return Some(CubeChromeZone::Compass(Heading::North));
-        }
-        if (0.30..0.50).contains(&u) {
-            return Some(CubeChromeZone::Compass(Heading::East));
-        }
-        if (0.50..0.70).contains(&u) {
-            return Some(CubeChromeZone::Compass(Heading::South));
-        }
-        if (0.70..0.95).contains(&u) {
-            return Some(CubeChromeZone::Compass(Heading::West));
-        }
-        return None;
     }
 
     // --- Cube body: the central region, resolved by the caller's raycast. ---
@@ -445,8 +398,6 @@ pub fn classify_cube_point(
 ///
 ///   * [`RotateArrow`](CubeChromeZone::RotateArrow) → a face snap toward
 ///     `adjacent_face(nearest_face, dir)`.
-///   * [`Compass`](CubeChromeZone::Compass) → a theta-only tween toward
-///     `compass_heading_to_theta(heading)` (current phi preserved), shortest path.
 ///   * [`Element`](CubeChromeZone::Element) → the existing element snap.
 ///   * [`HomeButton`](CubeChromeZone::HomeButton) → `Home` (caller runs the home
 ///     tween, which also sets the home distance).
@@ -457,7 +408,7 @@ pub fn classify_cube_point(
 ///     arrow click is a no-op (the least-surprising stub: the view does not jump).
 #[derive(Debug, Clone, Copy)]
 pub enum ChromeClickAction {
-    /// Start this eased snap tween (face / element / compass).
+    /// Start this eased snap tween (face / element).
     Snap(SnapTween),
     /// Run the Home action (eased snap to the saved home view + home distance).
     Home,
@@ -482,18 +433,6 @@ pub fn chrome_zone_left_click_action(
         CubeChromeZone::RotateArrow(dir) => {
             let target = adjacent_face(camera.nearest_face(), dir);
             ChromeClickAction::Snap(SnapTween::to_face(camera, target))
-        }
-        CubeChromeZone::Compass(heading) => {
-            let target_theta = compass_heading_to_theta(heading);
-            ChromeClickAction::Snap(SnapTween {
-                theta_from: camera.orbit_theta,
-                phi_from: camera.orbit_phi,
-                theta_to: nearest_equivalent_theta(camera.orbit_theta, target_theta),
-                // Compass only changes azimuth — keep the current polar angle.
-                phi_to: camera.orbit_phi,
-                elapsed_seconds: 0.0,
-                duration_seconds: SnapTween::DEFAULT_DURATION_SECONDS,
-            })
         }
         CubeChromeZone::HomeButton => ChromeClickAction::Home,
         CubeChromeZone::FitButton => ChromeClickAction::Fit,
@@ -1194,25 +1133,6 @@ mod tests {
     }
 
     #[test]
-    fn classify_compass_ring_headings_left_to_right() {
-        let rect = test_cube_rect();
-        let cases = [
-            (0.17, Heading::North),
-            (0.40, Heading::East),
-            (0.60, Heading::South),
-            (0.82, Heading::West),
-        ];
-        for (u, heading) in cases {
-            let (x, y) = at(rect, u, 0.94);
-            assert_eq!(
-                classify_cube_point(rect, x, y, no_body),
-                Some(CubeChromeZone::Compass(heading)),
-                "u={u} should be Compass({heading:?})"
-            );
-        }
-    }
-
-    #[test]
     fn classify_home_and_fit_badges() {
         let rect = test_cube_rect();
         let (x, y) = at(rect, 0.05, 0.06);
@@ -1337,30 +1257,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn compass_headings_are_distinct_and_90_apart() {
-        let n = compass_heading_to_theta(Heading::North);
-        let e = compass_heading_to_theta(Heading::East);
-        let s = compass_heading_to_theta(Heading::South);
-        let w = compass_heading_to_theta(Heading::West);
-        // Each consecutive step is −π/2 (N→E→S→W clockwise).
-        assert!(approx(n - e, FRAC_PI_2));
-        assert!(approx(e - s, FRAC_PI_2));
-        assert!(approx(s - w, FRAC_PI_2));
-        // Distinct mod 2π.
-        let thetas = [n, e, s, w];
-        for i in 0..4 {
-            for j in (i + 1)..4 {
-                let diff = (thetas[i] - thetas[j]).rem_euclid(2.0 * PI);
-                assert!(!approx(diff, 0.0), "headings {i},{j} collide");
-            }
-        }
-        // N maps to Front's theta, E to Right's, etc. (the pinned face map).
-        assert!(approx(n, CubeFace::Front.snap_angles().0));
-        assert!(approx(e, CubeFace::Right.snap_angles().0));
-        assert!(approx(s, CubeFace::Back.snap_angles().0));
-    }
-
     // ---- #13 Step 3: pure chrome-click dispatch (zone → action) ----
 
     /// At each face's snap orientation the camera's nearest face is that face.
@@ -1397,31 +1293,6 @@ mod tests {
         let (right_theta, right_phi) = CubeFace::Right.snap_angles();
         assert!(approx(tween.theta_to, nearest_equivalent_theta(theta, right_theta)));
         assert!(approx(tween.phi_to, right_phi));
-    }
-
-    /// A Compass(North) click tweens theta toward `compass_heading_to_theta(North)`
-    /// by the shortest path and keeps the current phi (azimuth-only).
-    #[test]
-    fn compass_north_click_tweens_theta_keeping_phi() {
-        let camera = OrbitCamera {
-            orbit_theta: 3.0,
-            orbit_phi: 0.9,
-            ..OrbitCamera::default()
-        };
-        let action = chrome_zone_left_click_action(
-            CubeChromeZone::Compass(Heading::North),
-            &camera,
-        );
-        let ChromeClickAction::Snap(tween) = action else {
-            panic!("expected Snap, got {action:?}");
-        };
-        let target = compass_heading_to_theta(Heading::North);
-        assert!(approx(tween.theta_to, nearest_equivalent_theta(3.0, target)));
-        // Shortest path: never spins more than π.
-        assert!((tween.theta_to - 3.0).abs() <= PI + 1e-4);
-        // Phi unchanged.
-        assert!(approx(tween.phi_to, 0.9));
-        assert!(approx(tween.phi_from, 0.9));
     }
 
     /// An Element click reproduces the existing element snap.

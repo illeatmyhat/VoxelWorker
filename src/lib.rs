@@ -40,9 +40,9 @@ pub use cuboid_mesh::{build_cuboid_mesh, CuboidMesh, CuboidMeshRenderer};
 pub use texture_atlas::{AtlasSubRect, MaterialAtlas};
 pub use debug_clouds::DebugCloudField;
 pub use camera::{
-    adjacent_face, chrome_zone_left_click_action, classify_cube_point, compass_heading_to_theta,
+    adjacent_face, chrome_zone_left_click_action, classify_cube_point,
     nearest_equivalent_theta, ArrowDir, ChromeClickAction, CubeChromeZone, CubeFace, CubeRect,
-    Heading, HomeView, OrbitCamera, ProjectionMode,
+    HomeView, OrbitCamera, ProjectionMode,
     RollDir, SnapTween, ViewCubeElement, CUBE_FACES, POLE_EPSILON,
 };
 pub use gpu::GpuContext;
