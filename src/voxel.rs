@@ -21,7 +21,36 @@ pub const SURFACE_ISOLEVEL: f32 = 0.0;
 /// Stability cap on the sampling grid volume (ARCHITECTURE.md §7). If
 /// `grid_x * grid_y * grid_z` exceeds this, the 3D rebuild is skipped (the panel
 /// shows a warning) so dragging a sphere to 16×16×16 @32 can't freeze the app.
+///
+/// **Issue #27 S2 — no longer a whole-scene total cap.** The resolve is now
+/// chunked + lazy (see [`crate::chunk_cache`]), so the guard moved to a *per-chunk*
+/// bound: [`MAX_CHUNK_VOXELS`]. A scene whose TOTAL voxel count is far beyond this
+/// 6M figure now resolves fine, as long as each individual chunk is small. This
+/// constant is retained because [`exceeds_voxel_cap`](SdfShape::exceeds_voxel_cap)
+/// still uses it as a single-shape sanity guard (a lone shape resolved outside the
+/// chunk path), and the S2 tests reference it as the OLD total ceiling.
 pub const MAX_GRID_VOXELS: u64 = 6_000_000;
+
+/// Per-chunk voxel bound (ADR 0002 Decision 3, issue #27 S2): the most voxels a
+/// SINGLE chunk may hold. The deep chunked resolve ([`crate::chunk_cache`]) caps
+/// each chunk, not the whole scene — so total scene size is bounded only by how
+/// many chunks resolve, not by one 6M ceiling.
+///
+/// One chunk's voxel CAPACITY is `(CHUNK_BLOCKS × voxels_per_block)³`: at the app
+/// default density 16 that is `64³ = 262_144` voxels, comfortably under this bound.
+/// The bound exists so a pathological density (where one chunk's capacity alone
+/// would blow memory) is still rejected — see [`chunk_extent_exceeds_bound`].
+pub const MAX_CHUNK_VOXELS: u64 = 6_000_000;
+
+/// Whether one chunk's voxel CAPACITY at `voxels_per_block`
+/// (`(CHUNK_BLOCKS × voxels_per_block)³`) exceeds the per-chunk bound
+/// [`MAX_CHUNK_VOXELS`] (issue #27 S2). The chunked-resolve call sites reject a
+/// density this large (a single chunk alone would exceed the bound) instead of
+/// resolving it.
+pub fn chunk_extent_exceeds_bound(voxels_per_block: u32) -> bool {
+    let extent = (crate::renderer::CHUNK_BLOCKS * voxels_per_block.max(1)) as u64;
+    extent.saturating_mul(extent).saturating_mul(extent) > MAX_CHUNK_VOXELS
+}
 
 /// The parametric primitive kinds (ARCHITECTURE.md §2 dispatcher).
 ///

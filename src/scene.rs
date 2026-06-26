@@ -936,6 +936,17 @@ impl Scene {
     /// to the other. `[0, 0, 0]` for a scene with no intrinsic-size leaf.
     #[cfg(test)]
     pub(crate) fn recentre_voxels(&self, voxels_per_block: u32) -> [i32; 3] {
+        self.recentre_voxels_for_resolve(voxels_per_block)
+    }
+
+    /// The recentre offset (in voxels) that [`resolve_region`] subtracts from every
+    /// voxel to centre the composite on the origin (issue #27 S2). This is the
+    /// SAME computation [`resolve_region`] inlines; the chunk cache
+    /// ([`crate::chunk_cache::ChunkResolveCache::resolve_region`]) calls it to apply
+    /// the identical offset when reassembling the recentred monolithic grid from
+    /// absolute per-chunk pieces, so the assembled output is bit-identical. `[0, 0,
+    /// 0]` for a scene with no intrinsic-size leaf.
+    pub(crate) fn recentre_voxels_for_resolve(&self, voxels_per_block: u32) -> [i32; 3] {
         match self.placed_extent_blocks(voxels_per_block) {
             Some((min_corner, max_corner)) => [
                 ((min_corner[0] + max_corner[0]) * voxels_per_block as i32) / 2,
@@ -948,8 +959,9 @@ impl Scene {
 
     /// The full composite extent in voxels (`size_blocks × density`) — the size the
     /// whole-region grids ([`resolve_region`], [`resolve_region_via_chunks`]) and
-    /// the per-leaf local grids are seeded with.
-    fn placed_region_dimensions(&self, voxels_per_block: u32) -> [u32; 3] {
+    /// the per-leaf local grids are seeded with. `pub(crate)` so the chunk cache
+    /// (issue #27 S2) seeds its reassembled grid to the same dimensions.
+    pub(crate) fn placed_region_dimensions(&self, voxels_per_block: u32) -> [u32; 3] {
         let region = self.full_extent_blocks(voxels_per_block);
         [
             region.size_blocks[0] * voxels_per_block,
@@ -958,22 +970,80 @@ impl Scene {
         ]
     }
 
+    /// Whether the scene has at least one intrinsic-size leaf (a Tool), so it has a
+    /// composite AABB that the chunked resolve ([`crate::chunk_cache`]) can cover.
+    /// `false` for a Part-only scene (e.g. a lone debug-cloud field), which has no
+    /// AABB of its own and must be resolved through the explicit-region monolithic
+    /// path instead. Public so the `shot` binary can pick the right resolve path
+    /// (issue #27 S2).
+    pub fn has_chunkable_extent(&self, voxels_per_block: u32) -> bool {
+        self.covering_chunk_range(voxels_per_block).is_some()
+    }
+
+    /// The composite occupied AABB in **absolute voxel** space, as the producers
+    /// actually emit it. Each leaf producer fills its own grid (`size_blocks ×
+    /// density` voxels) **centred on the origin**, then placed at `world_offset ×
+    /// density`; so a leaf occupies the half-open absolute-voxel box
+    /// `[world_offset·d − grid/2, world_offset·d + grid/2)` per axis, where
+    /// `grid = size_blocks · d`. The composite is the union of those boxes.
+    ///
+    /// This is the **producer-true** frame the chunk ownership (`floor(position /
+    /// chunk_extent)`) lives in — distinct from [`placed_extent_blocks`], whose
+    /// `floor(size/2)`-per-block split is shifted by up to half a block from the
+    /// producer's centre for **odd** block sizes (e.g. a 5- or 1-block axis). The
+    /// chunk path must cover the producer-true voxel extent (not the block-AABB
+    /// frame) or it drops the voxels living in the chunks the block-AABB misses —
+    /// the cause of the flat-shape (Y = 1 block) half-drop. `None` when no leaf has
+    /// an intrinsic size.
+    fn placed_extent_voxels(&self, voxels_per_block: u32) -> Option<([i32; 3], [i32; 3])> {
+        let density = voxels_per_block.max(1) as i32;
+        let mut min_corner = [i32::MAX; 3];
+        let mut max_corner = [i32::MIN; 3];
+        let mut any = false;
+        self.for_each_leaf(&mut |world_offset, content| {
+            let Some(size_blocks) = leaf_size_blocks(content, voxels_per_block) else {
+                return;
+            };
+            any = true;
+            for axis in 0..3 {
+                let grid = size_blocks[axis] as i32 * density;
+                // The producer centres its grid on the origin (voxel centres at
+                // `idx + 0.5 − grid/2`), so its occupied voxel span is `[−grid/2,
+                // grid/2)`; placed at `world_offset·d` it spans `[off − grid/2, off +
+                // grid/2)` — using the SAME `grid/2 = size·d/2` half-extent the
+                // producer uses, not a block-floored half.
+                let centre = world_offset[axis] * density;
+                let low = centre - grid / 2;
+                let high = low + grid;
+                min_corner[axis] = min_corner[axis].min(low);
+                max_corner[axis] = max_corner[axis].max(high);
+            }
+        });
+        any.then_some((min_corner, max_corner))
+    }
+
     /// The inclusive range of chunk coordinates `[min_chunk, max_chunk]` whose
-    /// half-open boxes cover the composite AABB in **absolute** voxel space.
-    /// `None` when no leaf has an intrinsic size (no AABB to cover).
-    fn covering_chunk_range(&self, voxels_per_block: u32) -> Option<([i32; 3], [i32; 3])> {
-        let (min_corner_blocks, max_corner_blocks) =
-            self.placed_extent_blocks(voxels_per_block)?;
+    /// half-open boxes cover the composite occupied AABB in **absolute** voxel
+    /// space. `None` when no leaf has an intrinsic size (no AABB to cover).
+    /// `pub(crate)` so the chunk cache (issue #27 S2) iterates the covering chunks
+    /// for reassembly.
+    ///
+    /// Derived from [`placed_extent_voxels`](Self::placed_extent_voxels) — the
+    /// producer-true voxel frame — so it covers every chunk a voxel can land in,
+    /// including the chunks an odd/flat block size straddles (which the block-AABB
+    /// frame would miss).
+    pub(crate) fn covering_chunk_range(&self, voxels_per_block: u32) -> Option<([i32; 3], [i32; 3])> {
+        let (min_voxel_corner, max_voxel_corner) = self.placed_extent_voxels(voxels_per_block)?;
         let chunk_extent_voxels = (crate::renderer::CHUNK_BLOCKS * voxels_per_block.max(1)) as i32;
 
         let mut min_chunk = [0i32; 3];
         let mut max_chunk = [0i32; 3];
         for axis in 0..3 {
-            let min_voxel = min_corner_blocks[axis] * voxels_per_block as i32;
+            let min_voxel = min_voxel_corner[axis];
             // The AABB is the half-open box `[min, max)`; its last occupied voxel
             // centre is at `max_voxel - 1 + 0.5`, so the highest chunk is the one
             // owning `max_voxel - 1`.
-            let max_voxel = max_corner_blocks[axis] * voxels_per_block as i32;
+            let max_voxel = max_voxel_corner[axis];
             min_chunk[axis] = min_voxel.div_euclid(chunk_extent_voxels);
             max_chunk[axis] = (max_voxel - 1).div_euclid(chunk_extent_voxels);
         }

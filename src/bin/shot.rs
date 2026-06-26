@@ -886,34 +886,40 @@ async fn run_capture(options: ShotOptions) {
     } else {
         RegionBlocks::new(options.geometry.size_blocks)
     };
-    let region_voxel_count = region.size_blocks[0] as u64
-        * region.size_blocks[1] as u64
-        * region.size_blocks[2] as u64
-        * options.geometry.voxels_per_block as u64
-        * options.geometry.voxels_per_block as u64
-        * options.geometry.voxels_per_block as u64;
-    let grid = if !placed_scene && shape.exceeds_voxel_cap() {
-        panel_state.voxel_cap_warning_millions =
-            Some(shape.grid_voxel_count() as f32 / 1_000_000.0);
+    // Issue #27 S2: the old whole-region `MAX_GRID_VOXELS` total cap is now a
+    // PER-CHUNK bound — a scene whose TOTAL voxel count is far beyond 6M resolves
+    // fine as long as each chunk is small. Only a pathological density (one chunk's
+    // voxel capacity alone exceeds the bound) is rejected.
+    let density = options.geometry.voxels_per_block;
+    let grid = if voxel_worker::voxel::chunk_extent_exceeds_bound(density) {
+        let chunk_extent = (voxel_worker::renderer::CHUNK_BLOCKS * density.max(1)) as u64;
+        let chunk_voxels = chunk_extent * chunk_extent * chunk_extent;
+        panel_state.voxel_cap_warning_millions = Some(chunk_voxels as f32 / 1_000_000.0);
         eprintln!(
-            "3D paused — {:.1}M voxels exceeds the cap; rendering empty grid",
-            shape.grid_voxel_count() as f32 / 1_000_000.0
-        );
-        VoxelGrid::new(shape.grid_dimensions())
-    } else if region_voxel_count > voxel_worker::voxel::MAX_GRID_VOXELS {
-        panel_state.voxel_cap_warning_millions =
-            Some(region_voxel_count as f32 / 1_000_000.0);
-        eprintln!(
-            "3D paused — {:.1}M composited voxels exceeds the cap; rendering empty grid",
-            region_voxel_count as f32 / 1_000_000.0
+            "3D paused — one chunk is {:.1}M voxels, exceeding the per-chunk bound; \
+             rendering empty grid",
+            chunk_voxels as f32 / 1_000_000.0
         );
         VoxelGrid::new([
-            region.size_blocks[0] * options.geometry.voxels_per_block,
-            region.size_blocks[1] * options.geometry.voxels_per_block,
-            region.size_blocks[2] * options.geometry.voxels_per_block,
+            region.size_blocks[0] * density,
+            region.size_blocks[1] * density,
+            region.size_blocks[2] * density,
         ])
+    } else if scene.has_chunkable_extent(density) {
+        // Route the resolve through the per-chunk cache (issue #27 S2). The cache
+        // lazily resolves each covering chunk and reassembles the SAME recentred
+        // monolithic grid the renderer/mesher/fog consumed before — byte-identical.
+        // (`resolve_region` here resolves the scene's full composite extent, which
+        // for a single zero-offset shape equals `region` — so single-shape goldens
+        // are unchanged.)
+        let mut chunk_resolve_cache = voxel_worker::chunk_cache::ChunkResolveCache::new();
+        chunk_resolve_cache.resolve_region(&scene, density, 0)
     } else {
-        scene.resolve_region(region, options.geometry.voxels_per_block, 0)
+        // A Part-only scene (e.g. `--shape debug-clouds`) has no intrinsic-size
+        // leaf, so there is no composite AABB to chunk — the cloud field sizes
+        // itself to the EXPLICIT region. Resolve it directly through the monolithic
+        // path, exactly as before (unchanged output).
+        scene.resolve_region(region, density, 0)
     };
     // The voxel-space grid dimensions actually resolved (the composite region for
     // a placed scene), used for camera framing, the layer track and the uniforms.

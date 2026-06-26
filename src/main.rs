@@ -83,6 +83,12 @@ struct WindowedState {
     /// The resolved voxel grid, kept so the layer-range diameter readout (issue
     /// #12) can re-measure the widest occupied run in the active band on demand.
     grid: VoxelGrid,
+    /// Per-chunk resolve cache (issue #27 S2): the resolve mechanism behind
+    /// `rebuild_geometry`. Lazily resolves each covering chunk and reassembles the
+    /// SAME recentred monolithic grid the renderer consumes today. Cleared on every
+    /// rebuild for now (the S3 edit-AABB invalidation seam is not wired yet — see
+    /// `ChunkResolveCache::clear`).
+    chunk_resolve_cache: voxel_worker::chunk_cache::ChunkResolveCache,
     /// Cached widest-run measurement + the band it was computed for, so we only
     /// re-measure when the band or grid actually changes.
     measured_diameter: u32,
@@ -338,6 +344,7 @@ impl WindowedState {
             loaded_material: None,
             face_resolver: FaceResolver::auto(),
             grid,
+            chunk_resolve_cache: voxel_worker::chunk_cache::ChunkResolveCache::new(),
             measured_diameter,
             measured_band,
             depth_view,
@@ -376,27 +383,31 @@ impl WindowedState {
     /// camera distance is re-framed; shape switches never move the camera.
     fn rebuild_geometry(&mut self, auto_frame: bool) {
         let density = self.panel_state.geometry.voxels_per_block;
-        // The cap is evaluated against the resolved region (the per-axis max of the
-        // scene's node extents at the app density), not a single shape — multiple
-        // nodes share one grid (ADR 0001 step 2).
-        let region = self.panel_state.scene.full_extent_blocks(density);
-        let region_voxel_count = region.size_blocks[0] as u64
-            * region.size_blocks[1] as u64
-            * region.size_blocks[2] as u64
-            * density as u64
-            * density as u64
-            * density as u64;
         let shape = SdfShape::from_geometry(self.panel_state.geometry);
 
-        if shape.exceeds_voxel_cap() || region_voxel_count > voxel_worker::voxel::MAX_GRID_VOXELS {
-            self.panel_state.voxel_cap_warning_millions =
-                Some(region_voxel_count.max(shape.grid_voxel_count()) as f32 / 1_000_000.0);
+        // Issue #27 S2: the resolve is now chunked + lazy, so the 6M figure is a
+        // PER-CHUNK bound, not a whole-scene total. A scene whose total voxel count
+        // is far beyond 6M now resolves fine as long as each chunk is small; only a
+        // pathological density (one chunk's voxel capacity alone exceeds the bound)
+        // is rejected.
+        if voxel_worker::voxel::chunk_extent_exceeds_bound(density) {
+            let chunk_extent = (voxel_worker::renderer::CHUNK_BLOCKS * density.max(1)) as u64;
+            let chunk_voxels = chunk_extent * chunk_extent * chunk_extent;
+            self.panel_state.voxel_cap_warning_millions = Some(chunk_voxels as f32 / 1_000_000.0);
             return;
         }
         self.panel_state.voxel_cap_warning_millions = None;
 
         let previous_grid_y = self.grid.dimensions[1];
-        let grid = resolve_scene(&self.panel_state.scene, density);
+        // Route the resolve through the per-chunk cache (issue #27 S2). Until S3's
+        // edit-AABB invalidation lands, clear the cache each rebuild (the scene may
+        // have changed); the cache then lazily resolves each covering chunk and
+        // reassembles the SAME recentred monolithic grid the renderer consumed
+        // before — byte-identical output.
+        self.chunk_resolve_cache.clear();
+        let grid = self
+            .chunk_resolve_cache
+            .resolve_region(&self.panel_state.scene, density, 0);
         self.voxel_renderer
             .rebuild_instances(&self.gpu.device, &self.gpu.queue, &grid, density);
         // Re-upload the fog's 3D occupancy field for the new grid (issue #12).

@@ -33,6 +33,60 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **Chunk cache + lazy per-chunk resolve + per-chunk cap (S2) — Part of #27 (ADR 0002 streaming,
+  Decision 3)** — turns S0's chunk-addressable resolve into the resolve MECHANISM, retiring the 6M
+  whole-scene total cap. Render output stays BYTE-IDENTICAL (goldens green, not rebaselined). The
+  recentre removal / camera-relative rebasing / renderer consuming per-chunk meshes are still S4.
+  - **New `src/chunk_cache.rs` — `ChunkResolveCache`.** Key `ChunkCacheKey { chunk_coord: [i32;3],
+    lod: u32 }` → resolved per-chunk `VoxelGrid` (absolute coords, from `Scene::resolve_chunk`). API:
+    `chunk(coord, scene, density, lod)` returns the cached grid, resolving + storing on a miss and
+    returning the cached one on a hit; `resolve_region(scene, density, lod)` reassembles the whole
+    recentred monolithic grid from cached chunks; `clear()` / `invalidate_chunk(coord)` are the
+    invalidation seam. Plain in-memory `HashMap`; a density change clears + re-binds (a chunk's voxel
+    extent depends on density). Exported from `lib.rs`.
+  - **S3 invalidation seam (TODO left, NOT implemented).** `clear()` and `invalidate_chunk()` carry
+    explicit `TODO(#27 S3)` notes: S3 adds edit-world-AABB → dirty-whole-chunk invalidation on top of
+    this seam. Until then, every scene edit must `clear()` wholesale (which `main.rs::rebuild_geometry`
+    does each rebuild).
+  - **Bit-identical assembly (how).** `resolve_region` is the render truth: it sizes the output to the
+    composite extent and RECENTRES by subtracting `recentre_voxels` from every voxel. The cache pulls
+    each covering chunk (absolute coords) and subtracts the SAME `recentre_voxels`
+    (`Scene::recentre_voxels_for_resolve`, the exact value `resolve_region` inlines). For all
+    near-origin scenes (every golden + every parity scene) the positions are exactly representable in
+    f32, so the subtraction is exact → output is byte-for-byte identical. Parity tests key on raw
+    `f32::to_bits()` (not rounded voxel indices), so they assert true byte-identity, not just the same
+    voxel set.
+  - **Latent S0 bug found + fixed (flat/odd shapes).** S0's `covering_chunk_range` derived the chunk
+    range from the BLOCK-AABB (`placed_extent_blocks`, `floor(size/2)` per block), but producers emit
+    voxels CENTRED on the origin — for an odd/flat axis (e.g. the default 5×1×5 cylinder, Y=1 block)
+    the single layer straddles chunks Y=−1 and Y=0, and the block-AABB range covered only Y=0,
+    **dropping half the voxels**. The S0 [5,5,5] tests never exercised a flat axis so it slipped
+    through. Fixed by computing the covering range from a new `placed_extent_voxels` (the producer-true
+    voxel frame, `grid/2 = size·d/2` half-extent), so `resolve_region_via_chunks` and the cache now
+    cover every chunk a voxel can land in. The RECENTRE still uses the block frame (to match
+    `resolve_region` exactly). New test `cache_region_matches_monolithic_for_flat_and_odd_shapes` pins
+    it; the debug-clouds golden (which had silently resolved 0 voxels via the broken chunk path during
+    development) is back to 147588.
+  - **Per-chunk cap (`src/voxel.rs`).** Added `MAX_CHUNK_VOXELS = 6_000_000` (per-chunk bound) +
+    `chunk_extent_exceeds_bound(density)` (true when one chunk's voxel CAPACITY,
+    `(CHUNK_BLOCKS·density)³`, exceeds the bound). `MAX_GRID_VOXELS` is retained but documented as no
+    longer a whole-scene total cap (still used by `SdfShape::exceeds_voxel_cap` for the single-shape
+    `.vox`-export guard). **Call sites** (`main.rs::rebuild_geometry`, `shot.rs`): the old
+    `region_voxel_count > MAX_GRID_VOXELS` rejection is gone — they now reject ONLY a pathological
+    density via `chunk_extent_exceeds_bound`, with updated user-facing "one chunk is N.NM voxels …"
+    messages. **Net effect:** a scene whose TOTAL exceeds 6M but whose chunks are small now resolves
+    (proven by `scene_exceeding_old_total_cap_resolves_under_per_chunk_bound`: 64 boxes spread over an
+    8.2M-voxel composite AABB, each chunk tiny). At density 16 one chunk is 64³ = 262k voxels (far
+    under the bound); only a degenerate density (≥~63) trips the per-chunk guard.
+  - **Routing.** `main.rs::rebuild_geometry` resolves via a persistent `ChunkResolveCache` field
+    (cleared each rebuild pending S3); `shot.rs` resolves placed/single-shape scenes through a cache,
+    and keeps the explicit-region monolithic path for a Part-only (`--shape debug-clouds`) scene (it
+    has no composite AABB to chunk — `Scene::has_chunkable_extent` picks the path).
+  - **Gate:** `cargo build --bins` ✅, `cargo clippy --all-targets` ✅ (no new warnings),
+    `cargo test` ✅ (112 lib tests: 102 + 10 new), `cargo test --features gpu --test golden` ✅ GREEN
+    (NOT rebaselined). Headless `shot --demo-scene` renders correctly (read the PNG: sphere + sphere +
+    box, clean geometry, full panel).
+
 - **Far-offset demo scene + CPU placement test + precision baseline (S1) — Part of #18 (ADR 0002
   streaming)** — creates the TEST CONDITION that makes 64-bit coords + origin-rebasing provable in
   S4. Mostly observational/test-only; **no render math, no recentre, no `offset_blocks` type change
