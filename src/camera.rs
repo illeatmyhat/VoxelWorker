@@ -359,25 +359,27 @@ pub fn classify_cube_point(
 
     // --- Rotate arrows: 4 rects in the gutters just outside the cube body. ---
     // The cube body occupies the central [.15, .85]² region; the gutters are the
-    // bands between the body and the rect edge, centred on each side.
+    // bands between the body and the rect edge, centred on each side. #13 Step 6.8:
+    // the rotate arrows are pushed OUT to the rect edge (a wider gutter band) so they
+    // no longer crowd the cube — they sit clearly in the margin, Fusion-style.
     const BODY_MIN: f32 = 0.15;
     const BODY_MAX: f32 = 0.85;
-    const GUTTER_LO: f32 = 0.35; // along-side span of each rotate arrow
-    const GUTTER_HI: f32 = 0.65;
-    // UP gutter: above the body, horizontally centred.
-    if (0.04..BODY_MIN).contains(&v) && (GUTTER_LO..GUTTER_HI).contains(&u) {
+    const GUTTER_LO: f32 = 0.38; // along-side span of each rotate arrow
+    const GUTTER_HI: f32 = 0.62;
+    // UP gutter: hugging the TOP rect edge, horizontally centred.
+    if (0.00..0.13).contains(&v) && (GUTTER_LO..GUTTER_HI).contains(&u) {
         return Some(CubeChromeZone::RotateArrow(ArrowDir::Up));
     }
-    // DOWN gutter: below the body.
-    if (BODY_MAX..0.96).contains(&v) && (GUTTER_LO..GUTTER_HI).contains(&u) {
+    // DOWN gutter: hugging the BOTTOM rect edge.
+    if (0.87..1.00).contains(&v) && (GUTTER_LO..GUTTER_HI).contains(&u) {
         return Some(CubeChromeZone::RotateArrow(ArrowDir::Down));
     }
-    // LEFT gutter: left of the body, vertically centred.
-    if (0.02..BODY_MIN).contains(&u) && (GUTTER_LO..GUTTER_HI).contains(&v) {
+    // LEFT gutter: hugging the LEFT rect edge, vertically centred.
+    if (0.00..0.13).contains(&u) && (GUTTER_LO..GUTTER_HI).contains(&v) {
         return Some(CubeChromeZone::RotateArrow(ArrowDir::Left));
     }
-    // RIGHT gutter: right of the body, vertically centred.
-    if (BODY_MAX..0.98).contains(&u) && (GUTTER_LO..GUTTER_HI).contains(&v) {
+    // RIGHT gutter: hugging the RIGHT rect edge, vertically centred.
+    if (0.87..1.00).contains(&u) && (GUTTER_LO..GUTTER_HI).contains(&v) {
         return Some(CubeChromeZone::RotateArrow(ArrowDir::Right));
     }
 
@@ -449,6 +451,13 @@ pub struct HomeView {
     pub theta: f32,
     pub phi: f32,
     pub distance: f32,
+    /// Did the USER explicitly capture this home (#13 Step 6.4)? `false` for the
+    /// default home — in which case the Home button FRAMES the model (re-fits the
+    /// distance) instead of using the canned default distance, so Home never zooms
+    /// in too close on a model of a different size. `true` once
+    /// [`Self::from_camera`] records the live view, and then the saved distance is
+    /// honoured verbatim.
+    pub explicitly_set: bool,
 }
 
 impl Default for HomeView {
@@ -458,17 +467,20 @@ impl Default for HomeView {
             theta: camera.orbit_theta,
             phi: camera.orbit_phi,
             distance: camera.orbit_distance,
+            explicitly_set: false,
         }
     }
 }
 
 impl HomeView {
-    /// Capture the live camera's orbit angles + distance as the new home.
+    /// Capture the live camera's orbit angles + distance as the new home. This is
+    /// an EXPLICIT user home, so its saved distance is honoured by Home (no re-fit).
     pub fn from_camera(camera: &OrbitCamera) -> Self {
         Self {
             theta: camera.orbit_theta,
             phi: camera.orbit_phi,
             distance: camera.orbit_distance,
+            explicitly_set: true,
         }
     }
 
@@ -723,6 +735,23 @@ impl OrbitCamera {
                 da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
             })
             .unwrap_or(CubeFace::Front)
+    }
+
+    /// Is the view currently **constrained to a single face** (looking nearly
+    /// head-on at one of the 6 faces, upright)? #13 Step 6.6: the ViewCube rotate
+    /// arrows are a face-relative 90°-step affordance, so — matching Fusion — they
+    /// are only offered when the view is face-on. An edge/corner/arbitrary-orbit
+    /// view returns `false` (no rotate arrows). The test: the eye direction is
+    /// within ~8° of the nearest face's outward normal AND the view is roughly
+    /// upright (roll ≈ 0), so the four screen-aligned arrows map cleanly to the
+    /// face's four neighbours.
+    pub fn is_face_constrained(&self) -> bool {
+        // cos(8°) ≈ 0.990 — a tight cone around the face normal.
+        const FACE_ALIGN_COS: f32 = 0.990;
+        let aligned = self.direction().dot(self.nearest_face().normal()) >= FACE_ALIGN_COS;
+        // Upright within ~8° of roll (the rotate arrows assume a screen-aligned face).
+        let upright = normalize_roll(self.roll).abs() <= 0.14;
+        aligned && upright
     }
 
     /// The up vector for `look_at_rh`, well-defined and CONTINUOUS through the
@@ -1210,10 +1239,10 @@ mod tests {
         let rect = test_cube_rect();
         // UP gutter (top centre), DOWN (bottom centre), LEFT, RIGHT.
         let cases = [
-            (0.50, 0.10, ArrowDir::Up),
-            (0.50, 0.86, ArrowDir::Down),
-            (0.08, 0.50, ArrowDir::Left),
-            (0.92, 0.50, ArrowDir::Right),
+            (0.50, 0.06, ArrowDir::Up),
+            (0.50, 0.94, ArrowDir::Down),
+            (0.06, 0.50, ArrowDir::Left),
+            (0.94, 0.50, ArrowDir::Right),
         ];
         for (u, v, dir) in cases {
             let (x, y) = at(rect, u, v);
@@ -1583,6 +1612,46 @@ mod tests {
             assert!(camera.roll.abs() <= PI + 1e-4, "roll grew unbounded: {}", camera.roll);
         }
         assert!(approx(camera.roll, 0.0), "four quarter-turns should net ~0, got {}", camera.roll);
+    }
+
+    /// #13 Step 6.6: the view is face-constrained at each face snap (upright,
+    /// head-on) and NOT at an edge/corner view or a rolled view.
+    #[test]
+    fn is_face_constrained_only_at_upright_face_views() {
+        for (face, _) in CUBE_FACES {
+            let (theta, phi) = face.snap_angles();
+            let camera = OrbitCamera { orbit_theta: theta, orbit_phi: phi, ..OrbitCamera::default() };
+            assert!(camera.is_face_constrained(), "should be face-on at {face:?}");
+        }
+        // An edge view (front-top) is NOT face-constrained.
+        let (theta, phi) =
+            ViewCubeElement::from_edge(CubeFace::Front, CubeFace::Top).snap_angles();
+        let edge_camera = OrbitCamera { orbit_theta: theta, orbit_phi: phi, ..OrbitCamera::default() };
+        assert!(!edge_camera.is_face_constrained(), "edge view must not be face-on");
+        // A corner view is NOT face-constrained.
+        let (theta, phi) =
+            ViewCubeElement::from_corner(CubeFace::Front, CubeFace::Top, CubeFace::Right)
+                .snap_angles();
+        let corner_camera = OrbitCamera { orbit_theta: theta, orbit_phi: phi, ..OrbitCamera::default() };
+        assert!(!corner_camera.is_face_constrained(), "corner view must not be face-on");
+        // Face-on but ROLLED 90° is not constrained (the screen arrows wouldn't align).
+        let (theta, phi) = CubeFace::Front.snap_angles();
+        let rolled = OrbitCamera {
+            orbit_theta: theta,
+            orbit_phi: phi,
+            roll: FRAC_PI_2,
+            ..OrbitCamera::default()
+        };
+        assert!(!rolled.is_face_constrained(), "rolled face view must not be face-on");
+    }
+
+    /// #13 Step 6.4: the default home is NOT explicitly set (so Home re-fits), while
+    /// a home captured from the camera IS explicitly set (so Home uses its distance).
+    #[test]
+    fn home_view_explicit_flag_tracks_origin() {
+        assert!(!HomeView::default().explicitly_set, "default home is implicit");
+        let camera = OrbitCamera::default();
+        assert!(HomeView::from_camera(&camera).explicitly_set, "captured home is explicit");
     }
 
     #[test]
