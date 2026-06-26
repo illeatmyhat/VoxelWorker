@@ -51,15 +51,16 @@ pub use panel::{
 pub use assets::{CubeFaceSlot, FaceProvenance, FaceTextures};
 pub use renderer::{
     build_per_chunk_fog_occupancy, create_depth_view, create_msaa_color_view, ChunkFogVolume,
-    FogMode, LayerBand, MaterialSource, OnionFogParams, PointsRenderer, SceneGridRenderer,
+    FogMode, InfiniteGridRenderer, LayerBand, MaterialSource, OnionFogParams, PointsRenderer,
+    SceneGridRenderer,
     TransformGizmoRenderer,
     OnionFogRenderer, PerChunkFogOccupancy, ViewCubeRenderer, DEPTH_FORMAT,
     MSAA_SAMPLE_COUNT, VIEW_CUBE_VIEWPORT_PIXELS,
 };
 pub use renderer::procedural_material_average_color;
 pub use scene::{
-    AssemblyDef, CombineOp, DefId, Node, NodeContent, NodePath, NodeTransform, Part, RegionBlocks,
-    Scene,
+    AssemblyDef, CombineOp, DefId, Node, NodeContent, NodePath, NodeTransform, Part, Point,
+    RegionBlocks, Scene,
 };
 pub use settings::AppConfig;
 pub use spatial_index::{LeafEntry, LeafFingerprint, LeafSpatialIndex, VoxelAabb};
@@ -247,12 +248,18 @@ pub struct FrameOverlays<'a> {
     /// holds only the grid-enabled nodes' lines (master AND per-object), so the draw
     /// is self-gating; `None` skips it entirely.
     pub scene_grid: Option<&'a renderer::SceneGridRenderer>,
-    /// The world reference grid (issue #29 S5): every visible Point's camera-relative
-    /// tiled reference planes + axis lines. Drawn in the MSAA pass (depth-tested) with
-    /// the scene-grid line batch, so opaque voxels occlude it. Its batch already holds
-    /// only the visible Points' enabled planes/axes (self-gating); `None` skips it
-    /// entirely (the `shot` default, so the existing goldens are unchanged).
+    /// The world reference AXES (issue #29 S5): every visible Point's axis lines.
+    /// Drawn in the MSAA pass (depth-tested) with the scene-grid line batch, so opaque
+    /// voxels occlude them. Its batch already holds only the visible Points' enabled
+    /// axes (self-gating); `None` skips it entirely (the `shot` default, so the
+    /// existing goldens are unchanged).
     pub points: Option<&'a renderer::PointsRenderer>,
+    /// The analytic infinite reference grid (issue #29 Points fast-follow): every
+    /// visible Point's enabled PLANES, drawn as fullscreen ray-plane passes in the
+    /// MSAA pass after the voxels (depth-tested via `frag_depth`), so opaque objects
+    /// occlude the grid. Replaces the old finite tiled-line ground plane. Self-gating
+    /// (no enabled plane → no draw); `None` skips it (the `shot` default).
+    pub infinite_grid: Option<&'a renderer::InfiniteGridRenderer>,
     /// Onion-skin volumetric fog (issue #12): when `Some`, a fullscreen SDF
     /// raymarch composites a faint haze over the resolved scene for the layers
     /// around the displayed band. `None` when onion skin is off. Its uniforms must
@@ -355,9 +362,19 @@ pub fn render_frame(
             scene_grid.draw(&mut voxel_pass);
         }
 
-        // World reference grid (issue #29 S5): the visible Points' tiled reference
-        // planes + axis lines, same MSAA pass, depth-tested so opaque voxels occlude
-        // them (subtle scaffold behind/under the model, not an overlay on top).
+        // Analytic infinite reference grid (issue #29 Points fast-follow): the visible
+        // Points' enabled PLANES as fullscreen ray-plane passes, AFTER the voxels (so
+        // the depth buffer holds the model) and depth-tested via `frag_depth` so opaque
+        // objects occlude the grid. Replaces the old finite tiled-line ground plane —
+        // the grid now extends smoothly to the horizon with no finite edge / near-clip
+        // cutoff at shallow angles, fading with distance.
+        if let Some(infinite_grid) = overlays.infinite_grid {
+            infinite_grid.draw(&mut voxel_pass);
+        }
+
+        // World reference AXES (issue #29 S5): the visible Points' axis lines, same
+        // MSAA pass, depth-tested so opaque voxels occlude them (subtle frame markers
+        // behind/under the model, not an overlay on top).
         if let Some(points) = overlays.points {
             points.draw(&mut voxel_pass);
         }

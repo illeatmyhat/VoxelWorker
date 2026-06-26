@@ -20,7 +20,8 @@ use voxel_worker::{
     create_depth_view, create_msaa_color_view, procedural_material_average_color, render_frame,
     run_egui_frame, AppConfig, CubeFace, EguiPaintBridge, FogMode, FrameOverlays,
     TransformGizmoRenderer,
-    GpuContext, LayerBand, MaterialSource, OnionFogParams, PointsRenderer, SceneGridRenderer,
+    GpuContext, InfiniteGridRenderer, LayerBand, MaterialSource, OnionFogParams, PointsRenderer,
+    SceneGridRenderer,
     OnionFogRenderer, OrbitCamera, PanelState, Scene, SdfShape, SnapTween, ViewCubeElement,
     VoxExport, ViewCubeRenderer, VoxelGrid, COLOR_TARGET_FORMAT,
     VIEW_CUBE_VIEWPORT_PIXELS,
@@ -55,10 +56,13 @@ struct WindowedState {
     /// Per-object block lattice + floor grid (issue #29 S3). Its line batch is
     /// rebuilt each frame from the visible nodes' enabled grids.
     scene_grid_renderer: SceneGridRenderer,
-    /// The world reference grid (issue #29 S5): every visible Point's camera-relative
-    /// tiled reference planes + axis lines. Its line batch is rebuilt each frame from
-    /// `scene.points` + the camera (so the tiled planes re-centre under the camera).
+    /// The world reference AXES (issue #29 S5): every visible Point's axis lines. Its
+    /// line batch is rebuilt each frame from `scene.points`.
     points_renderer: PointsRenderer,
+    /// The analytic infinite reference grid (issue #29 Points fast-follow): every
+    /// visible Point's enabled PLANES, drawn as fullscreen ray-plane passes. Replaces
+    /// the old finite tiled-line ground plane.
+    infinite_grid_renderer: InfiniteGridRenderer,
     view_cube_renderer: ViewCubeRenderer,
     /// Onion-skin volumetric fog (issue #12).
     onion_fog_renderer: OnionFogRenderer,
@@ -358,6 +362,7 @@ impl WindowedState {
         // The world reference grid (issue #29 S5): the visible Points' tiled planes +
         // axes. Its batch is rebuilt per frame from the scene + camera, so empty here.
         let points_renderer = PointsRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
+        let infinite_grid_renderer = InfiniteGridRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
         let view_cube_renderer =
             ViewCubeRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
         let mut onion_fog_renderer = OnionFogRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
@@ -409,6 +414,7 @@ impl WindowedState {
             transform_gizmo_renderer,
             scene_grid_renderer,
             points_renderer,
+            infinite_grid_renderer,
             view_cube_renderer,
             onion_fog_renderer,
             fog_mode,
@@ -1086,19 +1092,26 @@ impl WindowedState {
         );
         self.scene_grid_renderer
             .update_uniforms(&self.gpu.queue, view_projection);
-        // World reference grid (issue #29 S5): rebuild the visible Points' tiled
-        // reference planes + axes, centred on the camera's projection onto each plane
-        // (so the ground stays under the camera with no hard finite edge as you orbit
-        // far). The camera eye is fed in the recentred render frame the voxels live in.
+        // World reference AXES (issue #29 S5): rebuild the visible Points' axis lines.
         self.points_renderer.rebuild_from_scene(
             &self.gpu.device,
             &self.gpu.queue,
             &self.panel_state.scene,
             self.panel_state.geometry.voxels_per_block,
-            self.camera.eye().to_array(),
         );
         self.points_renderer
             .update_uniforms(&self.gpu.queue, view_projection);
+        // Analytic infinite reference grid (issue #29 Points fast-follow): rebuild the
+        // visible Points' enabled PLANES with the camera matrices (recentred frame) so
+        // the fullscreen ray-plane shader intersects each pixel's ray with the plane —
+        // the grid extends to the horizon with no finite edge, fading with distance.
+        self.infinite_grid_renderer.rebuild_from_scene(
+            &self.gpu.queue,
+            &self.panel_state.scene,
+            self.panel_state.geometry.voxels_per_block,
+            view_projection,
+            self.camera.eye().to_array(),
+        );
         self.view_cube_renderer
             .update_uniforms(&self.gpu.queue, self.camera.view_cube_view_projection());
 
@@ -1127,6 +1140,9 @@ impl WindowedState {
             // Issue #29 S5: the windowed app always shows the Points (the Origin's
             // ground+axes are on by default); the batch self-gates on hidden/off.
             points: Some(&self.points_renderer),
+            // Issue #29 Points fast-follow: the analytic infinite grid (Points' planes);
+            // self-gates on no enabled plane.
+            infinite_grid: Some(&self.infinite_grid_renderer),
             onion_fog: if onion_active {
                 Some(&self.onion_fog_renderer)
             } else {

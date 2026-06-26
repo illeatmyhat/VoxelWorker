@@ -33,6 +33,39 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **Grid rework: analytic infinite ground plane (replaces finite tiled grid) — Part of #29.**
+  Replaced the Points' camera-relative finite tiled-LINE ground plane (`POINT_PLANE_RADIUS_BLOCKS = 48`
+  + per-vertex rim fade) — which cut off at a hard finite edge / near-clip and looked bad at shallow
+  grazing angles — with a true **analytic infinite grid** via the standard fullscreen ray-plane shader.
+  - **Technique (`src/shaders/infinite_grid.wgsl` + `InfiniteGridRenderer` in `renderer.rs`).** For each
+    visible Point × enabled plane, draw ONE fullscreen triangle; the FRAGMENT shader reconstructs the
+    per-pixel world ray (inverse view-projection + eye), intersects it with the plane (`normal·(p−o)=0`),
+    and DISCARDS where the ray misses / hits behind the camera → the grid spans to the horizon with no
+    finite border. Grid coverage is computed analytically from screen-space derivatives (`fwidth` of the
+    in-plane coords) → crisp anti-aliased lines at any distance/angle, **two tiers**: fine VOXEL lines
+    (spacing 1, low alpha `POINT_PLANE_MINOR_ALPHA = 0.10`) and bold BLOCK lines (spacing = density,
+    `POINT_PLANE_MAJOR_ALPHA = 0.30`). Alpha **fades linearly to 0** over `POINT_PLANE_FADE_BLOCKS = 80`
+    blocks toward the horizon, so it is truly infinite with NO hard edge and distant lines never alias
+    into a sheet.
+  - **Depth-correct occlusion.** The pass runs INSIDE the 4× MSAA voxel pass, AFTER the voxels, writing
+    `@builtin(frag_depth)` = the plane-hit's clip depth and depth-testing **LessEqual** (depth-WRITE off,
+    alpha-blended). Opaque objects (already in the depth buffer) thus OCCLUDE the grid with no z-fighting.
+    This avoids the resolved-target depth-sampling dance the onion fog needs and gets MSAA edge AA for
+    free. One dynamic-offset uniform buffer holds all planes; `draw` binds each plane's slice (≤ 32).
+  - **Planes vs axes.** Only the PLANES became the analytic grid; the **axes stay as lines** (unchanged).
+    `points_line_batch` is now AXES-only; the new pure `enabled_grid_planes(scene, density)` selects every
+    visible Point's enabled XZ/XY/YZ plane (origin + orthonormal basis, normals +Y/+Z/+X) in the recentred
+    frame. Multiple Points each contribute their own plane(s) at their own world height (verified headless).
+  - **Verification (headless PNGs READ).** Shallow grazing angle (`--phi 1.50`): the ground extends
+    smoothly to the horizon, **cutoff gone**, fading with distance, houses occluding it. A second offset
+    Point (`--point-at 0 3 0`, new shot flag) shows a second grid plane at that height. `demo-village
+    --points` shows the subtle two-tier infinite grid occluded by the four houses with origin axes — the
+    new look.
+  - **Tests + goldens.** Reworked the renderer CPU tests around `enabled_grid_planes` (plane gating,
+    orientation/basis, offset-point world position, block-spacing = density) — 203 lib tests pass. Golden
+    suite: the 6 non-`--points` goldens stay **byte-identical**; only `demo-village-points.png` was
+    deliberately regenerated (READ + confirmed) for the new infinite-grid look.
+
 - **Grid rework: floor meets lattice (depth bias) + new-point plane defaults + separable XYZ axes — Part of #29.**
   Three smoke-test fixes for the grid rework.
   - **Fix 1 — floor meets the block lattice at the base plane.** The floor grid was geometrically

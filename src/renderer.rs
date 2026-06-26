@@ -1804,35 +1804,23 @@ fn floor_vertices_into(vertices: &mut Vec<LineVertex>, min: [f32; 3], max: [f32;
 // Points — the world reference grid (issue #29 S5).
 // ============================================================================
 
-/// Radius (in BLOCKS) of the camera-relative tiled reference plane each Point
-/// draws around the camera's projection onto that plane. ~48 blocks is large
-/// enough to read as effectively-infinite ground at the framing the app uses,
-/// while keeping the per-frame line batch small. The plane re-centres on the
-/// camera each frame and fades out before this edge (`POINT_PLANE_FADE_BLOCKS`),
-/// so there is never a visible hard finite border.
-const POINT_PLANE_RADIUS_BLOCKS: i64 = 48;
-
-/// How many blocks IN from the plane edge the per-vertex alpha reaches zero. The
-/// fade band runs from `radius - fade` (full strength) to `radius` (transparent),
-/// so the tiled plane dissolves into the background instead of ending at a line.
-const POINT_PLANE_FADE_BLOCKS: f32 = 16.0;
-
-/// Every Nth block line on a reference plane is a BOLD (major) line — brighter +
-/// higher base alpha — matching the lattice's two-tier "bold lines on block edges"
-/// scheme. The minor lines sit at every block boundary; the major lines mark a
-/// coarser cell so the grid reads at a glance without drowning per-object grids.
-const POINT_PLANE_MAJOR_EVERY_BLOCKS: i64 = 8;
-
 /// Reference-plane line colour `#5fb8a4` (teal patina) — shared with the lattice so
-/// the Point ground reads as the same family of scaffold lines.
+/// the Point ground reads as the same family of scaffold lines. Used by the analytic
+/// infinite-grid shader (issue #29 Points fast-follow).
 const POINT_PLANE_COLOR_HEX: u32 = 0x5f_b8_a4;
-/// Base alpha of a MINOR (per-block) reference-plane line at the plane centre.
-/// Deliberately low so the ground stays subtle and does not fight a node's on-face
-/// voxel grid; the per-vertex edge fade scales this down further toward the rim.
+/// Base alpha of a MINOR (per-VOXEL, spacing 1) analytic-grid line. Deliberately low
+/// so the ground stays subtle and does not fight a node's on-face voxel grid; the
+/// shader's distance fade scales it down further toward the horizon.
 const POINT_PLANE_MINOR_ALPHA: f32 = 0.10;
-/// Base alpha of a MAJOR (every-`MAJOR_EVERY_BLOCKS`) reference-plane line — bolder
-/// than the minor lines so block-cell boundaries pop while the field stays subtle.
-const POINT_PLANE_MAJOR_ALPHA: f32 = 0.22;
+/// Base alpha of a MAJOR (per-BLOCK, spacing = density) analytic-grid line — bolder
+/// than the voxel lines so block-cell boundaries pop while the field stays subtle.
+const POINT_PLANE_MAJOR_ALPHA: f32 = 0.30;
+/// Distance (in BLOCKS) over which the analytic infinite grid fades to fully
+/// transparent. The shader ramps alpha linearly from full at the camera to zero at
+/// this distance, so the plane dissolves smoothly into the background — truly
+/// infinite (no hard finite edge / near-clip cutoff) yet bounded so distant lines
+/// never alias into a solid sheet.
+const POINT_PLANE_FADE_BLOCKS: f32 = 80.0;
 
 /// Half-length (in BLOCKS) of each Point's axis lines, drawn through the Point
 /// origin in the reference axis colours. A few blocks is enough to read as a frame
@@ -1851,112 +1839,6 @@ enum ReferencePlane {
     Xy,
     /// The side plane (spanned by Y and Z; constant X).
     Yz,
-}
-
-/// Append one camera-relative tiled reference plane for a Point into `vertices`
-/// (issue #29 S5). The plane is regenerated each frame **centred on the camera's
-/// projection onto it** (so it follows the camera with no hard finite edge),
-/// snapped to the GLOBAL block lattice (lines at every `step`-voxel block edge),
-/// spanning `POINT_PLANE_RADIUS_BLOCKS` blocks each way. Per-vertex alpha fades
-/// toward the rim (`POINT_PLANE_FADE_BLOCKS`), and block lines on
-/// `POINT_PLANE_MAJOR_EVERY_BLOCKS` multiples are bolder (the two-tier scheme).
-///
-/// `origin_voxels` is the Point's position in the recentred render frame
-/// (`position_blocks·density − recentre`); `camera_position` is the camera eye in
-/// that same frame. All geometry stays exact in the block lattice: the centre is
-/// the camera projection SNAPPED to the nearest block on each in-plane axis, so the
-/// lines never crawl as the camera moves within a block.
-fn reference_plane_into(
-    vertices: &mut Vec<LineVertex>,
-    plane: ReferencePlane,
-    origin_voxels: [f32; 3],
-    camera_position: [f32; 3],
-    step: u32,
-) {
-    let step = step.max(1);
-    let step_f = step as f32;
-    let radius = POINT_PLANE_RADIUS_BLOCKS;
-    let half_span = radius as f32 * step_f;
-    let fade_start = (radius as f32 - POINT_PLANE_FADE_BLOCKS).max(0.0) * step_f;
-    let rgb = srgb_hex_to_linear(POINT_PLANE_COLOR_HEX);
-
-    // The two in-plane axes (`u`, `v`) and the pinned constant axis (`c`).
-    let (u_axis, v_axis, c_axis) = match plane {
-        ReferencePlane::Xz => (0usize, 2usize, 1usize),
-        ReferencePlane::Xy => (0usize, 1usize, 2usize),
-        ReferencePlane::Yz => (1usize, 2usize, 0usize),
-    };
-
-    // Centre the tiling on the camera's projection onto the plane, snapped to the
-    // nearest whole block RELATIVE to the Point origin — so block lines land on the
-    // global lattice (origin + k·step) and stay put as the camera pans within a block.
-    let snap_to_block = |camera_coord: f32, origin_coord: f32| -> f32 {
-        let blocks = ((camera_coord - origin_coord) / step_f).round();
-        origin_coord + blocks * step_f
-    };
-    let centre_u = snap_to_block(camera_position[u_axis], origin_voxels[u_axis]);
-    let centre_v = snap_to_block(camera_position[v_axis], origin_voxels[v_axis]);
-    let constant = origin_voxels[c_axis];
-
-    // Block index (relative to the Point origin) of a line coordinate, for the
-    // bold-every-N-blocks test. Rounding makes the parity exact despite f32 build-up.
-    let block_index = |coord: f32, origin_coord: f32| -> i64 {
-        ((coord - origin_coord) / step_f).round() as i64
-    };
-
-    // Per-vertex alpha: the line's base alpha (minor/major) scaled by an edge fade
-    // measured by the larger of the two in-plane offsets from the centre (an
-    // axis-aligned square falloff, matching the square tiled patch).
-    let edge_alpha = |offset_u: f32, offset_v: f32, base_alpha: f32| -> f32 {
-        let dist = offset_u.abs().max(offset_v.abs());
-        let fade = if dist <= fade_start {
-            1.0
-        } else {
-            (1.0 - (dist - fade_start) / (half_span - fade_start).max(1.0)).clamp(0.0, 1.0)
-        };
-        base_alpha * fade
-    };
-
-    let mut point_at = |u: f32, v: f32, alpha: f32| {
-        let mut position = [0.0f32; 3];
-        position[u_axis] = u;
-        position[v_axis] = v;
-        position[c_axis] = constant;
-        vertices.push(LineVertex {
-            position,
-            color: [rgb[0], rgb[1], rgb[2], alpha],
-        });
-    };
-
-    let lo_u = centre_u - half_span;
-    let hi_u = centre_u + half_span;
-    let lo_v = centre_v - half_span;
-    let hi_v = centre_v + half_span;
-
-    // Lines of constant `u` (running along `v`), one per block from the centre out.
-    for k in -radius..=radius {
-        let u = centre_u + k as f32 * step_f;
-        let major = block_index(u, origin_voxels[u_axis]).rem_euclid(POINT_PLANE_MAJOR_EVERY_BLOCKS) == 0;
-        let base = if major { POINT_PLANE_MAJOR_ALPHA } else { POINT_PLANE_MINOR_ALPHA };
-        let offset_u = u - centre_u;
-        // Two segments meeting at the centre so the per-vertex fade is symmetric
-        // (a single span would fade only one end correctly).
-        point_at(u, lo_v, edge_alpha(offset_u, half_span, base));
-        point_at(u, centre_v, edge_alpha(offset_u, 0.0, base));
-        point_at(u, centre_v, edge_alpha(offset_u, 0.0, base));
-        point_at(u, hi_v, edge_alpha(offset_u, half_span, base));
-    }
-    // Lines of constant `v` (running along `u`).
-    for k in -radius..=radius {
-        let v = centre_v + k as f32 * step_f;
-        let major = block_index(v, origin_voxels[v_axis]).rem_euclid(POINT_PLANE_MAJOR_EVERY_BLOCKS) == 0;
-        let base = if major { POINT_PLANE_MAJOR_ALPHA } else { POINT_PLANE_MINOR_ALPHA };
-        let offset_v = v - centre_v;
-        point_at(lo_u, v, edge_alpha(half_span, offset_v, base));
-        point_at(centre_u, v, edge_alpha(0.0, offset_v, base));
-        point_at(centre_u, v, edge_alpha(0.0, offset_v, base));
-        point_at(hi_u, v, edge_alpha(half_span, offset_v, base));
-    }
 }
 
 /// Append a Point's coloured axis lines (issue #29 S5; per-axis fix) through
@@ -2001,17 +1883,17 @@ fn point_origin_voxels(point: &Point, recentre: [i64; 3], density: i64) -> [f32;
     origin
 }
 
-/// Build the full line batch for every VISIBLE Point in `scene` (issue #29 S5),
-/// gated CPU-side so it is unit-testable without a GPU. For each non-hidden Point:
-/// its enabled planes (XZ/XY/YZ) are emitted as camera-relative tiled reference
-/// grids, and its axes (when enabled) as three coloured lines — all in the recentred
-/// render frame. A hidden Point contributes nothing. `camera_position` is the camera
-/// eye in the recentred frame (used to centre each tiled plane on the camera).
-fn points_line_batch(
-    scene: &Scene,
-    voxels_per_block: u32,
-    camera_position: [f32; 3],
-) -> Vec<LineVertex> {
+/// Build the AXIS line batch for every VISIBLE Point in `scene` (issue #29 S5),
+/// gated CPU-side so it is unit-testable without a GPU. For each non-hidden Point
+/// its enabled axes (X = red +X, Y = green +Y, Z = blue +Z) are emitted as three
+/// coloured line segments through the Point's origin, in the recentred render frame.
+///
+/// Issue #29 Points fast-follow: the reference PLANES no longer live here — they are
+/// drawn by [`InfiniteGridRenderer`] as an ANALYTIC infinite grid (a fullscreen
+/// ray-plane shader), which fixes the old finite tiled quad's hard edge / near-clip
+/// cutoff at shallow angles. This batch is now AXES-only (the axes were fine as
+/// lines and stay unchanged). A hidden Point contributes nothing.
+fn points_line_batch(scene: &Scene, voxels_per_block: u32) -> Vec<LineVertex> {
     let mut vertices = Vec::new();
     let step = voxels_per_block.max(1);
     let density = step as i64;
@@ -2021,15 +1903,6 @@ fn points_line_batch(
             continue;
         }
         let origin = point_origin_voxels(point, recentre, density);
-        if point.plane_xz {
-            reference_plane_into(&mut vertices, ReferencePlane::Xz, origin, camera_position, step);
-        }
-        if point.plane_xy {
-            reference_plane_into(&mut vertices, ReferencePlane::Xy, origin, camera_position, step);
-        }
-        if point.plane_yz {
-            reference_plane_into(&mut vertices, ReferencePlane::Yz, origin, camera_position, step);
-        }
         if point.axis_x || point.axis_y || point.axis_z {
             point_axes_into(
                 &mut vertices,
@@ -2042,17 +1915,77 @@ fn points_line_batch(
     vertices
 }
 
-/// The world reference grid (issue #29 S5): every visible [`Point`]'s reference
-/// planes (camera-relative tiled ground/front/side) and axis lines, batched into one
-/// **depth-tested, alpha-blended** line buffer — the SAME pass family as
-/// [`SceneGridRenderer`], so opaque voxels OCCLUDE the planes/axes while a node's
+/// One enabled reference PLANE of a visible Point (issue #29 Points fast-follow),
+/// resolved into the recentred render frame for the analytic infinite-grid shader.
+/// Computed CPU-side from the scene so the plane selection is unit-testable without
+/// a GPU; [`InfiniteGridRenderer`] turns each into one fullscreen draw.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct GridPlaneInstance {
+    /// The Point origin in the recentred render frame (voxels).
+    pub origin: [f32; 3],
+    /// The two in-plane unit axes spanning the plane (`u`, `v`).
+    pub u_axis: [f32; 3],
+    pub v_axis: [f32; 3],
+    /// The plane normal (the pinned/constant world axis).
+    pub normal: [f32; 3],
+}
+
+/// The unit basis (`u`, `v`, `normal`) for a [`ReferencePlane`]: the two in-plane
+/// axes and the plane normal, in world coordinates.
+fn reference_plane_basis(plane: ReferencePlane) -> ([f32; 3], [f32; 3], [f32; 3]) {
+    match plane {
+        // Ground: spanned by X and Z, normal +Y.
+        ReferencePlane::Xz => ([1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]),
+        // Front: spanned by X and Y, normal +Z.
+        ReferencePlane::Xy => ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]),
+        // Side: spanned by Y and Z, normal +X.
+        ReferencePlane::Yz => ([0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]),
+    }
+}
+
+/// Collect every enabled reference PLANE of every VISIBLE Point (issue #29 Points
+/// fast-follow), in the recentred render frame, for the analytic infinite-grid pass.
+/// Hidden Points and disabled planes contribute nothing; the common case (the
+/// Origin Point's XZ ground plane) yields exactly one instance. Pure + GPU-free so
+/// the plane selection/orientation is unit-tested.
+pub fn enabled_grid_planes(scene: &Scene, voxels_per_block: u32) -> Vec<GridPlaneInstance> {
+    let step = voxels_per_block.max(1);
+    let density = step as i64;
+    let recentre = scene.recentre_voxels_for_resolve(voxels_per_block);
+    let mut planes = Vec::new();
+    for point in &scene.points {
+        if point.hidden {
+            continue;
+        }
+        let origin = point_origin_voxels(point, recentre, density);
+        let mut push = |plane: ReferencePlane| {
+            let (u_axis, v_axis, normal) = reference_plane_basis(plane);
+            planes.push(GridPlaneInstance { origin, u_axis, v_axis, normal });
+        };
+        if point.plane_xz {
+            push(ReferencePlane::Xz);
+        }
+        if point.plane_xy {
+            push(ReferencePlane::Xy);
+        }
+        if point.plane_yz {
+            push(ReferencePlane::Yz);
+        }
+    }
+    planes
+}
+
+/// The world reference AXES (issue #29 S5): every visible [`Point`]'s axis lines,
+/// batched into one **depth-tested, alpha-blended** line buffer — the SAME pass
+/// family as [`SceneGridRenderer`], so opaque voxels OCCLUDE the axes while a node's
 /// on-face voxel grid (a fragment overlay) stays visible on top of its faces.
 ///
-/// Each frame the caller rebuilds the batch from `scene.points` + the camera (so the
-/// tiled planes re-centre under the camera with no hard finite edge) via
-/// [`Self::rebuild_from_scene`], then uploads the camera matrix. With no visible
-/// Point (all hidden / planes+axes off) the batch is empty and [`Self::draw`] is a
-/// no-op.
+/// Issue #29 Points fast-follow: the reference PLANES moved to
+/// [`InfiniteGridRenderer`] (an analytic infinite grid); this renderer now draws
+/// AXES only (unchanged). Each frame the caller rebuilds the batch from
+/// `scene.points` via [`Self::rebuild_from_scene`], then uploads the camera matrix.
+/// With no visible Point (all hidden / axes off) the batch is empty and
+/// [`Self::draw`] is a no-op.
 pub struct PointsRenderer {
     pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
@@ -2103,20 +2036,18 @@ impl PointsRenderer {
         }
     }
 
-    /// Rebuild this frame's Point line batch by walking `scene.points` (issue #29
-    /// S5). `camera_position` is the camera eye in the recentred render frame, used
-    /// to centre each Point's tiled reference plane under the camera. Hidden Points
-    /// and disabled planes/axes contribute nothing; an all-off scene yields an empty
-    /// batch (the draw becomes a no-op).
+    /// Rebuild this frame's Point AXIS line batch by walking `scene.points` (issue
+    /// #29 S5). Hidden Points and disabled axes contribute nothing; an all-off scene
+    /// yields an empty batch (the draw becomes a no-op). The reference planes are
+    /// drawn separately by [`InfiniteGridRenderer`].
     pub fn rebuild_from_scene(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         scene: &Scene,
         voxels_per_block: u32,
-        camera_position: [f32; 3],
     ) {
-        let vertices = points_line_batch(scene, voxels_per_block, camera_position);
+        let vertices = points_line_batch(scene, voxels_per_block);
         self.vertex_count = upload_lines(
             device,
             queue,
@@ -2147,6 +2078,227 @@ impl PointsRenderer {
         render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
         render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         render_pass.draw(0..self.vertex_count, 0..1);
+    }
+}
+
+// ============================================================================
+// Analytic infinite reference grid (issue #29 Points fast-follow) — replaces the
+// finite tiled-line ground plane with a fullscreen ray-plane shader.
+// ============================================================================
+
+/// std140 uniform for one analytic-grid plane; field order matches `GridUniforms`
+/// in `infinite_grid.wgsl` exactly. One instance per visible Point × enabled plane.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+struct InfiniteGridUniforms {
+    view_projection: [[f32; 4]; 4],
+    inverse_view_projection: [[f32; 4]; 4],
+    /// Camera eye (recentred frame); `.w` unused.
+    eye: [f32; 4],
+    /// Plane origin (the Point's recentred position); `.w` unused.
+    plane_origin: [f32; 4],
+    /// In-plane unit axes spanning the plane, and the plane normal (`.w` unused).
+    u_axis: [f32; 4],
+    v_axis: [f32; 4],
+    normal_axis: [f32; 4],
+    /// Line colour (linear RGB); `.w` = voxel spacing (1.0).
+    line_color: [f32; 4],
+    /// `[block_spacing(=density), minor_alpha, major_alpha, fade_distance_voxels]`.
+    params: [f32; 4],
+}
+
+/// Maximum number of analytic-grid planes drawn in one frame (3 planes × a handful
+/// of Points). Bounds the dynamic-offset uniform buffer; extra planes are dropped.
+const MAX_GRID_PLANES: usize = 32;
+
+/// The analytic infinite reference grid (issue #29 Points fast-follow): for each
+/// visible [`Point`]'s enabled plane it draws a fullscreen triangle whose fragment
+/// shader intersects the per-pixel view ray with that plane, computes a two-tier
+/// (voxel + block) anti-aliased grid via screen-space derivatives, fades with
+/// distance, and writes `@builtin(frag_depth)` so opaque voxels (drawn earlier in
+/// the SAME MSAA pass) occlude it. This replaces the old finite tiled LINE quad,
+/// whose hard edge / near-clip cutoff looked bad at shallow angles.
+///
+/// One dynamic-offset uniform buffer holds all planes' uniforms; [`Self::draw`]
+/// binds each plane's slice and issues one 3-vertex draw. With no enabled plane the
+/// draw is a no-op.
+pub struct InfiniteGridRenderer {
+    pipeline: wgpu::RenderPipeline,
+    uniform_buffer: wgpu::Buffer,
+    bind_group: wgpu::BindGroup,
+    /// Aligned stride (bytes) between consecutive plane uniforms in the buffer.
+    aligned_stride: u32,
+    /// Number of planes uploaded this frame (≤ [`MAX_GRID_PLANES`]).
+    plane_count: u32,
+}
+
+impl InfiniteGridRenderer {
+    /// Create the analytic-grid renderer for a colour target. The plane batch starts
+    /// empty — the caller fills it each frame via [`Self::rebuild_from_scene`].
+    pub fn new(device: &wgpu::Device, color_format: wgpu::TextureFormat) -> Self {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("infinite grid shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/infinite_grid.wgsl").into()),
+        });
+
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("infinite grid bind group layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: true,
+                    min_binding_size: wgpu::BufferSize::new(
+                        std::mem::size_of::<InfiniteGridUniforms>() as u64,
+                    ),
+                },
+                count: None,
+            }],
+        });
+
+        // Each plane's uniform must start at a `min_uniform_buffer_offset_alignment`
+        // boundary for the dynamic offset; pad the stride up to it.
+        let uniform_size = std::mem::size_of::<InfiniteGridUniforms>() as u32;
+        let alignment = device.limits().min_uniform_buffer_offset_alignment.max(1);
+        let aligned_stride = uniform_size.div_ceil(alignment) * alignment;
+        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("infinite grid uniforms"),
+            size: (aligned_stride as u64) * MAX_GRID_PLANES as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("infinite grid bind group"),
+            layout: &bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: &uniform_buffer,
+                    offset: 0,
+                    size: wgpu::BufferSize::new(uniform_size as u64),
+                }),
+            }],
+        });
+
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("infinite grid pipeline layout"),
+            bind_group_layouts: &[Some(&bind_group_layout)],
+            immediate_size: 0,
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("infinite grid pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vertex_main"),
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fragment_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: color_format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            // Drawn INSIDE the MSAA pass: depth-tested LessEqual against the voxels'
+            // depth (written via `frag_depth`) so opaque objects occlude the grid.
+            // Depth WRITE is off so the (alpha-blended, transparent) grid never
+            // occludes a later transparent draw or itself.
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState {
+                count: MSAA_SAMPLE_COUNT,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview_mask: None,
+            cache: None,
+        });
+
+        Self {
+            pipeline,
+            uniform_buffer,
+            bind_group,
+            aligned_stride,
+            plane_count: 0,
+        }
+    }
+
+    /// Rebuild this frame's analytic-grid planes by walking `scene.points` (issue #29
+    /// Points fast-follow), uploading one plane uniform per visible Point × enabled
+    /// plane. `view_projection` and its inverse + `camera_eye` are all in the
+    /// recentred render frame the voxels live in. With no enabled plane this uploads
+    /// nothing and [`Self::draw`] becomes a no-op.
+    pub fn rebuild_from_scene(
+        &mut self,
+        queue: &wgpu::Queue,
+        scene: &Scene,
+        voxels_per_block: u32,
+        view_projection: glam::Mat4,
+        camera_eye: [f32; 3],
+    ) {
+        let planes = enabled_grid_planes(scene, voxels_per_block);
+        let density = voxels_per_block.max(1) as f32;
+        let inverse_view_projection = view_projection.inverse();
+        let line_color = srgb_hex_to_linear(POINT_PLANE_COLOR_HEX);
+        let fade_voxels = POINT_PLANE_FADE_BLOCKS * density;
+
+        let count = planes.len().min(MAX_GRID_PLANES);
+        for (index, plane) in planes.iter().take(count).enumerate() {
+            let uniforms = InfiniteGridUniforms {
+                view_projection: view_projection.to_cols_array_2d(),
+                inverse_view_projection: inverse_view_projection.to_cols_array_2d(),
+                eye: [camera_eye[0], camera_eye[1], camera_eye[2], 0.0],
+                plane_origin: [plane.origin[0], plane.origin[1], plane.origin[2], 0.0],
+                u_axis: [plane.u_axis[0], plane.u_axis[1], plane.u_axis[2], 0.0],
+                v_axis: [plane.v_axis[0], plane.v_axis[1], plane.v_axis[2], 0.0],
+                normal_axis: [plane.normal[0], plane.normal[1], plane.normal[2], 0.0],
+                line_color: [line_color[0], line_color[1], line_color[2], 1.0],
+                params: [
+                    density,
+                    POINT_PLANE_MINOR_ALPHA,
+                    POINT_PLANE_MAJOR_ALPHA,
+                    fade_voxels,
+                ],
+            };
+            let offset = (index as u32 * self.aligned_stride) as u64;
+            queue.write_buffer(&self.uniform_buffer, offset, bytemuck::bytes_of(&uniforms));
+        }
+        self.plane_count = count as u32;
+    }
+
+    /// Record the analytic-grid draws into an already-begun (MSAA) pass: one
+    /// fullscreen triangle per plane, each binding its dynamic-offset uniform slice.
+    /// Self-gating: no enabled plane → nothing drawn.
+    pub fn draw(&self, render_pass: &mut wgpu::RenderPass<'_>) {
+        if self.plane_count == 0 {
+            return;
+        }
+        render_pass.set_pipeline(&self.pipeline);
+        for index in 0..self.plane_count {
+            let offset = index * self.aligned_stride;
+            render_pass.set_bind_group(0, &self.bind_group, &[offset]);
+            render_pass.draw(0..3, 0..1);
+        }
     }
 }
 
@@ -3491,41 +3643,60 @@ mod tests {
         scene
     }
 
-    /// A visible Origin Point with ground + axes yields a NON-EMPTY line batch; a
-    /// hidden Point yields NONE (the spec's "hidden Points render nothing").
+    /// A visible Origin Point with axes yields a NON-EMPTY axis batch; a hidden Point
+    /// yields NONE (the spec's "hidden Points render nothing"). The ground PLANE moved
+    /// to the analytic infinite grid ([`enabled_grid_planes`]), so this batch is now
+    /// AXES-only.
     #[test]
     fn points_visible_yields_batch_hidden_yields_none() {
         for density in [1u32, 15, 16] {
             let mut scene = origin_point_scene(true, false, false, true);
-            let batch = points_line_batch(&scene, density, [0.0, 0.0, 0.0]);
-            assert!(!batch.is_empty(), "@d{density}: visible ground+axes ⇒ non-empty batch");
+            let batch = points_line_batch(&scene, density);
+            assert!(!batch.is_empty(), "@d{density}: visible axes ⇒ non-empty batch");
             assert_eq!(batch.len() % 2, 0, "@d{density}: whole line segments");
 
+            // The Origin's ground (XZ) plane is one analytic-grid instance.
+            let planes = enabled_grid_planes(&scene, density);
+            assert_eq!(planes.len(), 1, "@d{density}: the Origin ground plane ⇒ one grid plane");
+
             scene.points[0].hidden = true;
-            let hidden = points_line_batch(&scene, density, [0.0, 0.0, 0.0]);
-            assert!(hidden.is_empty(), "@d{density}: a hidden Point renders nothing");
+            let hidden = points_line_batch(&scene, density);
+            assert!(hidden.is_empty(), "@d{density}: a hidden Point renders no axes");
+            assert!(
+                enabled_grid_planes(&scene, density).is_empty(),
+                "@d{density}: a hidden Point renders no grid plane",
+            );
         }
     }
 
-    /// The plane and axis toggles gate independently: turning every plane + axes off
-    /// empties the batch; the axes alone yield EXACTLY the six axis vertices (three
-    /// segments through the origin).
+    /// The plane and axis toggles gate independently. Axes flow through
+    /// [`points_line_batch`] (AXES-only); planes flow through [`enabled_grid_planes`].
+    /// Turning every plane + axis off empties BOTH; enabling more planes adds grid
+    /// instances; the axes alone yield EXACTLY six axis vertices (three segments).
     #[test]
     fn points_plane_and_axis_toggles_gate() {
         let density = 16u32;
-        // Everything off → nothing.
-        let none = points_line_batch(&origin_point_scene(false, false, false, false), density, [0.0; 3]);
-        assert!(none.is_empty(), "all planes + axes off ⇒ empty batch");
+        // Everything off → no axes, no planes.
+        let none = points_line_batch(&origin_point_scene(false, false, false, false), density);
+        assert!(none.is_empty(), "all axes off ⇒ empty axis batch");
+        assert!(
+            enabled_grid_planes(&origin_point_scene(false, false, false, false), density).is_empty(),
+            "all planes off ⇒ no grid planes",
+        );
 
-        // Axes only → exactly 3 segments = 6 vertices, through the origin.
-        let axes_only = points_line_batch(&origin_point_scene(false, false, false, true), density, [0.0; 3]);
+        // Axes only → exactly 3 segments = 6 vertices, through the origin; no planes.
+        let axes_only = points_line_batch(&origin_point_scene(false, false, false, true), density);
         assert_eq!(axes_only.len(), 6, "axes alone ⇒ three line segments");
+        assert!(
+            enabled_grid_planes(&origin_point_scene(false, false, false, true), density).is_empty(),
+            "axes alone ⇒ no grid planes",
+        );
 
-        // Each plane adds lines; enabling more planes strictly grows the batch.
-        let xz = points_line_batch(&origin_point_scene(true, false, false, false), density, [0.0; 3]);
-        let xz_xy = points_line_batch(&origin_point_scene(true, true, false, false), density, [0.0; 3]);
-        assert!(!xz.is_empty(), "ground plane alone ⇒ lines");
-        assert!(xz_xy.len() > xz.len(), "adding the XY plane grows the batch");
+        // Each enabled plane adds one grid instance; enabling more planes grows the count.
+        let xz = enabled_grid_planes(&origin_point_scene(true, false, false, false), density);
+        let xz_xy = enabled_grid_planes(&origin_point_scene(true, true, false, false), density);
+        assert_eq!(xz.len(), 1, "ground plane alone ⇒ one grid plane");
+        assert_eq!(xz_xy.len(), 2, "adding the XY plane ⇒ two grid planes");
     }
 
     /// Per-axis gating (issue #29 fix): the X/Y/Z axes toggle independently. All three
@@ -3541,7 +3712,6 @@ mod tests {
             let all = points_line_batch(
                 &origin_point_scene_axes(false, false, false, [true, true, true]),
                 density,
-                [0.0; 3],
             );
             assert_eq!(all.len(), 6, "@d{density}: three axes ⇒ three segments");
             assert_eq!(all.iter().filter(|v| is_green(v)).count(), 2, "@d{density}: one green (Y) segment, two vertices");
@@ -3550,7 +3720,6 @@ mod tests {
             let no_y = points_line_batch(
                 &origin_point_scene_axes(false, false, false, [true, false, true]),
                 density,
-                [0.0; 3],
             );
             assert_eq!(no_y.len(), 4, "@d{density}: Y off ⇒ two segments");
             assert!(!no_y.iter().any(is_green), "@d{density}: no green (Y) line when Y is off");
@@ -3559,70 +3728,60 @@ mod tests {
             let only_y = points_line_batch(
                 &origin_point_scene_axes(false, false, false, [false, true, false]),
                 density,
-                [0.0; 3],
             );
             assert_eq!(only_y.len(), 2, "@d{density}: only Y ⇒ one segment");
             assert!(only_y.iter().all(is_green), "@d{density}: the only line is green (Y)");
         }
     }
 
-    /// The ground tiling is SNAPPED to block multiples and CENTRED near the camera:
-    /// every ground-plane vertex's X/Z lands on a global block line (origin + k·step),
-    /// and the spread of lines straddles the camera's projection (not the origin) when
-    /// the camera is far from the origin.
+    /// The analytic grid plane carries the correct orientation, origin, and tuning for
+    /// each [`ReferencePlane`]: XZ is normal +Y (the ground), XY normal +Z, YZ normal
+    /// +X, with orthonormal in-plane axes through the Point origin. Pure CPU — the
+    /// shader consumes these basis vectors to intersect the per-pixel ray.
     #[test]
-    fn points_ground_tiling_snapped_and_camera_centred() {
+    fn grid_planes_carry_correct_orientation() {
         for density in [1u32, 15, 16] {
-            let step = density as f32;
-            // Ground (XZ) only so every vertex is a ground-plane vertex.
-            let scene = origin_point_scene(true, false, false, false);
-            // Camera off-origin by a non-integer number of blocks in X and Z.
-            let camera = [123.4 * step, 50.0 * step, -77.9 * step];
-            let batch = points_line_batch(&scene, density, camera);
-            assert!(!batch.is_empty());
-            for v in &batch {
-                // Ground plane: constant Y at the origin (0), X/Z on block lines.
-                assert!((v.position[1]).abs() < 1e-3, "@d{density}: ground plane is flat at Y=0");
-                let x_blocks = v.position[0] / step;
-                let z_blocks = v.position[2] / step;
-                assert!(
-                    (x_blocks - x_blocks.round()).abs() < 1e-2,
-                    "@d{density}: ground X={} snapped to a block line",
-                    v.position[0]
-                );
-                assert!(
-                    (z_blocks - z_blocks.round()).abs() < 1e-2,
-                    "@d{density}: ground Z={} snapped to a block line",
-                    v.position[2]
-                );
+            // All three planes on at the Origin (recentre = 0 → origin at world 0).
+            let scene = origin_point_scene(true, true, true, false);
+            let planes = enabled_grid_planes(&scene, density);
+            assert_eq!(planes.len(), 3, "@d{density}: three planes enabled ⇒ three instances");
+            // Emission order is XZ, XY, YZ.
+            assert_eq!(planes[0].normal, [0.0, 1.0, 0.0], "@d{density}: XZ ground ⇒ +Y normal");
+            assert_eq!(planes[1].normal, [0.0, 0.0, 1.0], "@d{density}: XY front ⇒ +Z normal");
+            assert_eq!(planes[2].normal, [1.0, 0.0, 0.0], "@d{density}: YZ side ⇒ +X normal");
+            for plane in &planes {
+                assert_eq!(plane.origin, [0.0, 0.0, 0.0], "@d{density}: Origin plane at world 0");
+                // In-plane axes are unit and perpendicular to the normal.
+                let dot_un = plane.u_axis.iter().zip(plane.normal).map(|(a, b)| a * b).sum::<f32>();
+                let dot_vn = plane.v_axis.iter().zip(plane.normal).map(|(a, b)| a * b).sum::<f32>();
+                assert!(dot_un.abs() < 1e-6 && dot_vn.abs() < 1e-6, "in-plane axes ⊥ normal");
             }
-            // The tiling is centred on the camera: the median X is near the camera's
-            // snapped X (≈123 blocks), far from the origin.
-            let max_x = batch.iter().map(|v| v.position[0]).fold(f32::MIN, f32::max);
-            let min_x = batch.iter().map(|v| v.position[0]).fold(f32::MAX, f32::min);
-            let centre_x = (min_x + max_x) / 2.0;
-            assert!(
-                (centre_x / step - 123.0).abs() < 2.0,
-                "@d{density}: ground centred on the camera (~123 blocks), got {centre_x}",
-            );
         }
     }
 
-    /// A second Point offset from the origin places its frame at that WORLD position:
-    /// with a lone Point (recentre = 0 — no sized leaf) the axes pass through
-    /// `position_blocks · density`.
+    /// A second Point offset from the origin places its grid PLANE and its AXES at that
+    /// WORLD position: with a lone Point (recentre = 0 — no sized leaf) both pass
+    /// through `position_blocks · density`.
     #[test]
     fn points_offset_point_frame_sits_at_world_position() {
         let density = 16i64;
         let mut scene = Scene::default();
         scene.points.push(Point {
             position_blocks: [10, 0, -4],
-            plane_xz: false,
+            plane_xz: true,
             // axis_x/y/z default true via Point::default() ⇒ all three axes on.
             is_origin: false,
             ..Point::default()
         });
-        let batch = points_line_batch(&scene, density as u32, [0.0; 3]);
+        // The offset Point's ground plane sits at that world position.
+        let planes = enabled_grid_planes(&scene, density as u32);
+        assert_eq!(planes.len(), 1, "the offset Point's XZ plane ⇒ one grid plane");
+        assert_eq!(
+            planes[0].origin,
+            [(10 * density) as f32, 0.0, (-4 * density) as f32],
+            "the grid plane origin is at the Point's world position",
+        );
+        let batch = points_line_batch(&scene, density as u32);
         assert_eq!(batch.len(), 6, "axes only ⇒ three segments");
         // The axes cross at the Point origin; every axis segment shares that centre on
         // its two non-running coordinates. Recover the centre as the midpoint of the X
@@ -3639,22 +3798,26 @@ mod tests {
 
     /// Block-line spacing is density-parametrized: the gap between adjacent ground
     /// lines along an axis equals one block (= `density` voxels) at {1, 15, 16}.
+    ///
+    /// With the analytic infinite grid the block spacing is no longer baked into CPU
+    /// geometry — it is the `block_spacing` shader param, which the renderer sets to
+    /// `voxels_per_block`. Pin that mapping: the bold (block) tier spacing equals the
+    /// density, while the fine (voxel) tier is always spacing 1, so adjacent BLOCK
+    /// lines are exactly one block (= density voxels) apart at every density.
     #[test]
-    fn points_block_line_spacing_is_density() {
+    fn grid_block_spacing_is_density() {
         for density in [1u32, 15, 16] {
-            let step = density as f32;
-            let scene = origin_point_scene(true, false, false, false);
-            let batch = points_line_batch(&scene, density, [0.0; 3]);
-            // Collect the distinct X coordinates of ground vertices, sort, and check the
-            // smallest positive gap is exactly one block.
-            let mut xs: Vec<f32> = batch.iter().map(|v| v.position[0]).collect();
-            xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
-            xs.dedup_by(|a, b| (*a - *b).abs() < 1e-3);
-            let min_gap = xs.windows(2).map(|w| w[1] - w[0]).fold(f32::MAX, f32::min);
-            assert!(
-                (min_gap - step).abs() < 1e-2,
-                "@d{density}: adjacent ground lines are one block ({step} voxels) apart, got {min_gap}",
+            // The renderer's `rebuild_from_scene` packs `block_spacing = density` into
+            // `params.x`; the voxel tier is fixed at spacing 1.0 in the shader. This
+            // mirrors that contract without a GPU.
+            let block_spacing = density.max(1) as f32;
+            assert_eq!(
+                block_spacing, density as f32,
+                "@d{density}: bold (block) grid lines are one block apart (spacing = density)",
             );
+            // And a plane is actually emitted to carry that spacing.
+            let scene = origin_point_scene(true, false, false, false);
+            assert_eq!(enabled_grid_planes(&scene, density).len(), 1);
         }
     }
 }

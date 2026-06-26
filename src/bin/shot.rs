@@ -28,9 +28,10 @@ use voxel_worker::{
     create_depth_view, create_msaa_color_view, procedural_material_average_color, render_frame,
     run_egui_frame, AssemblyDef, CubeFace, DefId, EguiPaintBridge, FogMode, FrameOverlays,
     GeometryParams,
-    GpuContext, LayerBand, LayerRange, MaterialChoice, MaterialSource, PointsRenderer,
-    SceneGridRenderer,
+    GpuContext, InfiniteGridRenderer, LayerBand, LayerRange, MaterialChoice, MaterialSource,
+    PointsRenderer, SceneGridRenderer,
     Node, NodeContent, NodePath, OnionFogParams, OnionFogRenderer, OrbitCamera, PanelState, Part,
+    Point,
     ProjectionMode, RegionBlocks, Scene, SdfShape, ShapeKind, TransformGizmoRenderer,
     ViewCubeElement, VoxExport,
     ViewCubeRenderer, VoxelGrid, COLOR_TARGET_FORMAT,
@@ -90,11 +91,16 @@ struct ShotOptions {
     show_block_lattice: bool,
     /// Whether the fine floor grid is drawn (M8 `--floor`).
     show_floor_grid: bool,
-    /// Whether the world reference grid (the Points: camera-relative tiled ground
-    /// plane + axes) is drawn (issue #29 S5 `--points`). DEFAULT OFF so the existing
+    /// Whether the world reference grid (the Points: analytic infinite ground plane
+    /// + axes) is drawn (issue #29 S5 `--points`). DEFAULT OFF so the existing
     /// goldens (which never pass `--points`) stay byte-identical; `--points` enables
     /// the Origin Point (and any others) so a deliberate Points golden can be captured.
     show_points: bool,
+    /// An OPTIONAL extra Point at the given world BLOCK position (issue #29 Points
+    /// fast-follow `--point-at X Y Z`), with its XZ ground plane + axes ON, so a
+    /// headless capture can verify a second analytic grid plane at a different height
+    /// / offset. Only meaningful together with `--points`.
+    extra_point_blocks: Option<[i64; 3]>,
     /// Whether the voxel cubes render in face-orientation debug mode
     /// (`--debug-faces`): colour by outward face normal + back-facing marker,
     /// cull off. The standard way to verify face winding/culling.
@@ -212,6 +218,7 @@ impl Default for ShotOptions {
             show_block_lattice: false,
             show_floor_grid: false,
             show_points: false,
+            extra_point_blocks: None,
             debug_face_orientation: false,
             export_vox_path: None,
             show_view_cube: true,
@@ -444,6 +451,16 @@ fn parse_options() -> ShotOptions {
             "--points" => {
                 options.show_points = true;
             }
+            "--point-at" => {
+                // Three BLOCK coordinates for an extra Point (XZ plane + axes on).
+                let x = args.next().expect("--point-at requires X Y Z").parse()
+                    .expect("--point-at X must be an integer");
+                let y = args.next().expect("--point-at requires X Y Z").parse()
+                    .expect("--point-at Y must be an integer");
+                let z = args.next().expect("--point-at requires X Y Z").parse()
+                    .expect("--point-at Z must be an integer");
+                options.extra_point_blocks = Some([x, y, z]);
+            }
             "--debug-faces" => {
                 options.debug_face_orientation = true;
             }
@@ -554,7 +571,7 @@ fn parse_options() -> ShotOptions {
                      \x20            [--apply-block <substring>] [--list-perface]\n\
                      \x20            [--synthetic-block]\n\
                      \x20            [--force-demo-stem <texture/stem>]\n\
-                     \x20            [--gizmo] [--select-node <usize>] [--lattice] [--floor] [--points] [--no-viewcube]\n\
+                     \x20            [--gizmo] [--select-node <usize>] [--lattice] [--floor] [--points] [--point-at <X Y Z>] [--no-viewcube]\n\
                      \x20            [--debug-faces] [--debug-chunks]\n\
                      \x20            [--demo-scene] [--demo-village] [--demo-groups]\n\
                      \x20            [--demo-far-offset] [--demo-far-offset-near]\n\
@@ -926,6 +943,17 @@ async fn run_capture(options: ShotOptions) {
     // world reference grid.
     if options.show_points {
         scene.ensure_origin_point();
+        // An optional extra Point (issue #29 Points fast-follow) at a chosen world
+        // block position with its XZ ground plane + axes on, so a headless capture can
+        // verify a second analytic grid plane at a different height/offset.
+        if let Some(position_blocks) = options.extra_point_blocks {
+            scene.points.push(Point {
+                name: "Extra".to_string(),
+                position_blocks,
+                plane_xz: true,
+                ..Point::default()
+            });
+        }
     }
     panel_state.scene = scene.clone();
     // Issue #29 S2: `--select-node N` overrides the active selection so a headless
@@ -1176,6 +1204,10 @@ async fn run_capture(options: ShotOptions) {
     // goldens are byte-identical); `--points` enables it. Its batch is built below
     // from `scene.points` + the camera once the view matrix is known.
     let mut points_renderer = PointsRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
+    // The analytic infinite reference grid (issue #29 Points fast-follow): the Points'
+    // enabled planes. SUPPRESSED by default with the rest of Points; `--points` enables
+    // it. Built below from `scene.points` + the camera once the view matrix is known.
+    let mut infinite_grid_renderer = InfiniteGridRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
     let view_cube_renderer = ViewCubeRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
     let mut onion_fog_renderer = OnionFogRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
     // Upload the resolved grid as the fog's occupancy field. PerChunk (DEFAULT since #28
@@ -1449,9 +1481,18 @@ async fn run_capture(options: ShotOptions) {
             &gpu.queue,
             &panel_state.scene,
             options.geometry.voxels_per_block,
-            camera.eye().to_array(),
         );
         points_renderer.update_uniforms(&gpu.queue, view_projection);
+        // The analytic infinite grid (issue #29 Points fast-follow): build the visible
+        // Points' planes with the camera matrices (recentred frame) so the fullscreen
+        // ray-plane shader can intersect each pixel's view ray with the plane.
+        infinite_grid_renderer.rebuild_from_scene(
+            &gpu.queue,
+            &panel_state.scene,
+            options.geometry.voxels_per_block,
+            view_projection,
+            camera.eye().to_array(),
+        );
     }
     view_cube_renderer.update_uniforms(&gpu.queue, camera.view_cube_view_projection());
     if onion_active {
@@ -1520,6 +1561,9 @@ async fn run_capture(options: ShotOptions) {
         // Issue #29 S5: Points SUPPRESSED unless `--points` (keeps the 6 goldens
         // byte-identical); the new `demo-village --points` golden enables them.
         points: options.show_points.then_some(&points_renderer),
+        // Issue #29 Points fast-follow: the analytic infinite grid (Points' planes),
+        // suppressed with the rest of Points unless `--points`.
+        infinite_grid: options.show_points.then_some(&infinite_grid_renderer),
         onion_fog: if onion_active {
             Some(&onion_fog_renderer)
         } else {
