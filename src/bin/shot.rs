@@ -325,9 +325,15 @@ fn parse_cube_hover(value: &str) -> voxel_worker::camera::CubeChromeZone {
         "roll-ccw" | "ccw" => CubeChromeZone::RollArrow(RollDir::Ccw),
         "home" => CubeChromeZone::HomeButton,
         "fit" => CubeChromeZone::FitButton,
+        // #13 Step 6.2: an `element:<spec>` value forces a hovered face/edge/corner
+        // so a golden can show the element highlight on the cube body. Reuses the
+        // `--snap` element parser (`front`, `front-top`, `front-top-right`).
+        other if other.starts_with("element:") => {
+            CubeChromeZone::Element(parse_snap_element(&other["element:".len()..]))
+        }
         other => panic!(
             "--cube-hover must be one of rotate-up|rotate-down|rotate-left|rotate-right|\
-             roll-cw|roll-ccw|home|fit, got '{other}'"
+             roll-cw|roll-ccw|home|fit|element:<face|edge|corner>, got '{other}'"
         ),
     }
 }
@@ -630,6 +636,7 @@ fn parse_options() -> ShotOptions {
                      \x20            [--fog <wholegrid|perchunk>]\n\
                      \x20            [--export-vox <path.vox>]\n\
                      \x20            [--snap <face|edge|corner>  e.g. front, front-top, front-top-right]\n\
+                     \x20            [--cube-hover <rotate-up|rotate-down|rotate-left|rotate-right|roll-cw|roll-ccw|home|fit|element:<face|edge|corner>>]\n\
                      \x20            [--theta <f32>] [--phi <f32>] [--roll <f32>] [--roll-quarters <n>] [--dist <f32>]\n\
                      Defaults: --out shots/m1.png --width 1280 --height 800\n\
                      \x20         --shape cylinder --size-x 5 --size-y 1 --size-z 5\n\

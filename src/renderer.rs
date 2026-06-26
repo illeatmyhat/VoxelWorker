@@ -831,6 +831,22 @@ impl ViewCubeRenderer {
         viewport: [u32; 4],
         hovered_zone: Option<crate::camera::CubeChromeZone>,
     ) {
+        // #13 Step 6.2: when a face/edge/corner ELEMENT is hovered, pack a 6-bit
+        // face mask (bit = material index in +X,-X,+Y,-Y,+Z,-Z order) into the cube
+        // uniform's `depth_bias.x` slot (byte offset 64) so the cube shader brightens
+        // the hovered element. Any non-Element hover (arrow/badge) clears the mask.
+        let highlight_mask = match hovered_zone {
+            Some(crate::camera::CubeChromeZone::Element(element)) => {
+                let mut mask = 0u32;
+                for face in element.faces() {
+                    mask |= 1 << cube_face_material_index(*face);
+                }
+                mask as f32
+            }
+            _ => 0.0,
+        };
+        queue.write_buffer(&self.uniform_buffer, 64, bytemuck::bytes_of(&highlight_mask));
+
         let [viewport_x, viewport_y, viewport_width, viewport_height] = viewport;
         let margin = VIEW_CUBE_VIEWPORT_MARGIN;
         let size = VIEW_CUBE_VIEWPORT_PIXELS;
@@ -908,6 +924,20 @@ impl ViewCubeRenderer {
     }
 }
 
+/// The material-index (`+X,-X,+Y,-Y,+Z,-Z`) of a [`crate::camera::CubeFace`], i.e.
+/// its layer in the cube's face-label texture array and its bit in the hover mask.
+fn cube_face_material_index(face: crate::camera::CubeFace) -> u32 {
+    use crate::camera::CubeFace;
+    match face {
+        CubeFace::Right => 0,
+        CubeFace::Left => 1,
+        CubeFace::Top => 2,
+        CubeFace::Bottom => 3,
+        CubeFace::Front => 4,
+        CubeFace::Back => 5,
+    }
+}
+
 /// Uniform bind group for the view cube (binding 0 = view-projection).
 fn cube_uniform_bind_group(
     device: &wgpu::Device,
@@ -917,7 +947,9 @@ fn cube_uniform_bind_group(
         label: Some("view cube uniform layout"),
         entries: &[wgpu::BindGroupLayoutEntry {
             binding: 0,
-            visibility: wgpu::ShaderStages::VERTEX,
+            // #13 Step 6.2: the cube fragment shader now reads `highlight` from this
+            // uniform too, so it must be visible to BOTH stages.
+            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
             ty: wgpu::BindingType::Buffer {
                 ty: wgpu::BufferBindingType::Uniform,
                 has_dynamic_offset: false,
@@ -1140,25 +1172,31 @@ enum ArrowFacing {
     Right,
 }
 
-/// Draw a filled triangular rotate arrow pointing in `facing`, centred.
+/// Draw a clean filled triangular rotate arrow pointing in `facing`, centred.
+/// #13 Step 6.3: a crisp equilateral-ish head (apex ~78% across the box, base
+/// ~28%..72%) reads as a sharp directional cue at the small gutter size, with
+/// anti-aliased edges from `fill_triangle`.
 fn draw_triangle_arrow(pixels: &mut [u8], size: usize, facing: ArrowFacing) {
     const INK: [u8; 4] = [0xff, 0xff, 0xff, 0xff];
     let s = size as f32;
-    // Triangle spanning ~64% of the box, centred.
-    let lo = s * 0.20;
-    let hi = s * 0.80;
-    let mid = s * 0.5;
-    // Three vertices depending on facing.
+    let apex = s * 0.22; // distance of the apex from its edge
+    let base = s * 0.74; // the flat base
+    let near = s * 0.28; // base extent low
+    let far = s * 0.72; // base extent high
+    // Three vertices depending on facing (apex first).
     let (ax, ay, bx, by, cx, cy) = match facing {
-        ArrowFacing::Up => (mid, lo, lo, hi, hi, hi),
-        ArrowFacing::Down => (mid, hi, lo, lo, hi, lo),
-        ArrowFacing::Left => (lo, mid, hi, lo, hi, hi),
-        ArrowFacing::Right => (hi, mid, lo, lo, lo, hi),
+        ArrowFacing::Up => (s * 0.5, apex, near, base, far, base),
+        ArrowFacing::Down => (s * 0.5, base, near, apex, far, apex),
+        ArrowFacing::Left => (apex, s * 0.5, base, near, base, far),
+        ArrowFacing::Right => (base, s * 0.5, apex, near, apex, far),
     };
     fill_triangle(pixels, size, (ax, ay), (bx, by), (cx, cy), INK);
 }
 
 /// Fill a triangle (barycentric scan over its bounding box) onto an RGBA buffer.
+/// #13 Step 6.3: edges are anti-aliased by 2×2 supersampling each pixel and writing
+/// fractional coverage into the alpha channel, so the small glyphs read as clean
+/// shapes instead of jagged stair-steps when scaled to the badge size.
 fn fill_triangle(
     pixels: &mut [u8],
     size: usize,
@@ -1175,18 +1213,48 @@ fn fill_triangle(
     if area.abs() < f32::EPSILON {
         return;
     }
+    // 2×2 supersample offsets within each pixel.
+    const SAMPLES: [(f32, f32); 4] = [(0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)];
     for y in min_y..max_y {
         for x in min_x..max_x {
-            let p = (x as f32 + 0.5, y as f32 + 0.5);
-            let w0 = edge(b, c, p) / area;
-            let w1 = edge(c, a, p) / area;
-            let w2 = edge(a, b, p) / area;
-            if w0 >= 0.0 && w1 >= 0.0 && w2 >= 0.0 {
-                let index = (y * size + x) * 4;
-                pixels[index..index + 4].copy_from_slice(&color);
+            let mut covered = 0u32;
+            for (ox, oy) in SAMPLES {
+                let p = (x as f32 + ox, y as f32 + oy);
+                let w0 = edge(b, c, p) / area;
+                let w1 = edge(c, a, p) / area;
+                let w2 = edge(a, b, p) / area;
+                if w0 >= 0.0 && w1 >= 0.0 && w2 >= 0.0 {
+                    covered += 1;
+                }
+            }
+            if covered > 0 {
+                blend_pixel(pixels, size, x, y, color, covered as f32 / 4.0);
             }
         }
     }
+}
+
+/// Alpha-composite `color` (scaled by `coverage` 0..1) over the existing pixel at
+/// `(x, y)`. Used by the anti-aliased glyph rasterisers so overlapping strokes and
+/// soft edges accumulate cleanly on the transparent glyph buffer.
+fn blend_pixel(pixels: &mut [u8], size: usize, x: usize, y: usize, color: [u8; 4], coverage: f32) {
+    if x >= size || y >= size {
+        return;
+    }
+    let index = (y * size + x) * 4;
+    let src_a = (color[3] as f32 / 255.0) * coverage.clamp(0.0, 1.0);
+    if src_a <= 0.0 {
+        return;
+    }
+    for channel in 0..3 {
+        let dst = pixels[index + channel] as f32 / 255.0;
+        let src = color[channel] as f32 / 255.0;
+        let out = src * src_a + dst * (1.0 - src_a);
+        pixels[index + channel] = (out * 255.0).round().clamp(0.0, 255.0) as u8;
+    }
+    let dst_a = pixels[index + 3] as f32 / 255.0;
+    let out_a = src_a + dst_a * (1.0 - src_a);
+    pixels[index + 3] = (out_a * 255.0).round().clamp(0.0, 255.0) as u8;
 }
 
 /// Signed area of the triangle (a, b, c) — the edge function used for fill tests.
@@ -1194,55 +1262,65 @@ fn edge(a: (f32, f32), b: (f32, f32), c: (f32, f32)) -> f32 {
     (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0)
 }
 
-/// Draw a simple house silhouette (Home button): a triangular roof over a square.
-fn draw_home_icon(pixels: &mut [u8], size: usize) {
-    const INK: [u8; 4] = [0xff, 0xff, 0xff, 0xff];
-    let s = size as f32;
-    // Roof triangle.
-    fill_triangle(
-        pixels,
-        size,
-        (s * 0.5, s * 0.18),
-        (s * 0.16, s * 0.5),
-        (s * 0.84, s * 0.5),
-        INK,
-    );
-    // Body square.
-    let lo = (s * 0.28) as usize;
-    let hi = (s * 0.78) as usize;
-    let x0 = (s * 0.28) as usize;
-    let x1 = (s * 0.72) as usize;
-    for y in lo..hi.min(size) {
-        for x in x0..x1.min(size) {
-            let index = (y * size + x) * 4;
-            pixels[index..index + 4].copy_from_slice(&INK);
+/// Fill an axis-aligned rectangle (in float coordinates) with anti-aliased edges.
+fn fill_rect(pixels: &mut [u8], size: usize, x0: f32, y0: f32, x1: f32, y1: f32, color: [u8; 4]) {
+    let min_x = x0.floor().max(0.0) as usize;
+    let max_x = (x1.ceil() as usize).min(size);
+    let min_y = y0.floor().max(0.0) as usize;
+    let max_y = (y1.ceil() as usize).min(size);
+    for y in min_y..max_y {
+        for x in min_x..max_x {
+            // Per-pixel coverage = overlap of the pixel cell with the rect.
+            let cover_x = ((x as f32 + 1.0).min(x1) - (x as f32).max(x0)).clamp(0.0, 1.0);
+            let cover_y = ((y as f32 + 1.0).min(y1) - (y as f32).max(y0)).clamp(0.0, 1.0);
+            let coverage = cover_x * cover_y;
+            if coverage > 0.0 {
+                blend_pixel(pixels, size, x, y, color, coverage);
+            }
         }
     }
 }
 
-/// Draw a "fit to view" icon: a bold square frame (ring outline). Bracketed
-/// corners vanish at the small badge size, so a thick continuous frame reads
-/// better — clearly distinct from the Home house.
+/// Draw a simple house silhouette (Home button): a triangular roof over a square.
+fn draw_home_icon(pixels: &mut [u8], size: usize) {
+    const INK: [u8; 4] = [0xff, 0xff, 0xff, 0xff];
+    let s = size as f32;
+    // Roof triangle (slightly overhanging the body for a cleaner house read).
+    fill_triangle(
+        pixels,
+        size,
+        (s * 0.5, s * 0.16),
+        (s * 0.14, s * 0.52),
+        (s * 0.86, s * 0.52),
+        INK,
+    );
+    // Body square, anti-aliased.
+    fill_rect(pixels, size, s * 0.28, s * 0.46, s * 0.72, s * 0.82, INK);
+}
+
+/// Draw a "fit to view" icon: four corner brackets (a crop/frame mark). #13 Step
+/// 6.3: corner brackets read as "frame the model" and are clearly distinct from
+/// the Home house, while staying legible at the small badge size.
 fn draw_fit_icon(pixels: &mut [u8], size: usize) {
     const INK: [u8; 4] = [0xff, 0xff, 0xff, 0xff];
     let s = size as f32;
-    let lo = (s * 0.20) as usize;
-    let hi = (s * 0.80) as usize;
-    let thick = (s * 0.16).max(3.0) as usize; // bold so it survives downscaling
-    let put_block = |pixels: &mut [u8], x0: usize, y0: usize, w: usize, h: usize| {
-        for y in y0..(y0 + h).min(size) {
-            for x in x0..(x0 + w).min(size) {
-                let index = (y * size + x) * 4;
-                pixels[index..index + 4].copy_from_slice(&INK);
-            }
-        }
-    };
-    let span = hi - lo;
-    // Top, bottom, left, right bars of a hollow square.
-    put_block(pixels, lo, lo, span, thick); // top
-    put_block(pixels, lo, hi - thick, span, thick); // bottom
-    put_block(pixels, lo, lo, thick, span); // left
-    put_block(pixels, hi - thick, lo, thick, span); // right
+    let lo = s * 0.18;
+    let hi = s * 0.82;
+    let thick = (s * 0.12).max(2.0);
+    let arm = s * 0.26; // length of each bracket arm
+    // Four L-shaped corner brackets (each = a horizontal + a vertical bar).
+    // Top-left.
+    fill_rect(pixels, size, lo, lo, lo + arm, lo + thick, INK);
+    fill_rect(pixels, size, lo, lo, lo + thick, lo + arm, INK);
+    // Top-right.
+    fill_rect(pixels, size, hi - arm, lo, hi, lo + thick, INK);
+    fill_rect(pixels, size, hi - thick, lo, hi, lo + arm, INK);
+    // Bottom-left.
+    fill_rect(pixels, size, lo, hi - thick, lo + arm, hi, INK);
+    fill_rect(pixels, size, lo, hi - arm, lo + thick, hi, INK);
+    // Bottom-right.
+    fill_rect(pixels, size, hi - arm, hi - thick, hi, hi, INK);
+    fill_rect(pixels, size, hi - thick, hi - arm, hi, hi, INK);
 }
 
 /// Draw a roll arc with an arrowhead (CW or CCW) — a curved 270° stroke with a
@@ -1267,16 +1345,18 @@ fn draw_roll_arc(pixels: &mut [u8], size: usize, clockwise: bool) {
         };
         let px = cx + ang.cos() * radius;
         let py = cy + ang.sin() * radius;
-        // Stamp a small filled disc for thickness.
-        let r = (thick * 0.5) as i32;
+        // Stamp a small soft-edged disc for thickness (anti-aliased rim).
+        let half = thick * 0.5;
+        let r = (half + 1.0) as i32;
         for dy in -r..=r {
             for dx in -r..=r {
-                if (dx * dx + dy * dy) as f32 <= (thick * 0.5) * (thick * 0.5) {
+                let dist = ((dx * dx + dy * dy) as f32).sqrt();
+                let coverage = (half - dist + 0.5).clamp(0.0, 1.0);
+                if coverage > 0.0 {
                     let x = px as i32 + dx;
                     let y = py as i32 + dy;
-                    if x >= 0 && y >= 0 && (x as usize) < size && (y as usize) < size {
-                        let index = ((y as usize) * size + x as usize) * 4;
-                        pixels[index..index + 4].copy_from_slice(&INK);
+                    if x >= 0 && y >= 0 {
+                        blend_pixel(pixels, size, x as usize, y as usize, INK, coverage);
                     }
                 }
             }
@@ -1493,19 +1573,23 @@ fn build_chrome_vertices(
     let fit_hovered = hovered_zone == Some(CubeChromeZone::FitButton);
     push_glyph_quad(&mut verts, ChromeGlyph::FitButton, 0.18, badge_y, badge_size, badge_size, tint(fit_hovered));
 
-    // --- Hover-only: the 4 rotate arrows in the gutters. Centres match Step-1. ---
+    // --- Hover-only: the 4 rotate arrows in the gutters. Centres match Step-1's
+    // edge-hugging gutters (#13 Step 6.8). #13 Step 6.7: the glyph points the way
+    // the cube CONTENT rolls under the 90° step, which is OPPOSITE the screen edge
+    // it sits on — e.g. the top-edge arrow points DOWN (grab the top, roll it toward
+    // you), so the glyph now matches the action it performs. ---
     if let Some(CubeChromeZone::RotateArrow(dir)) = hovered_zone {
         let (glyph, cx, cy) = match dir {
-            // UP gutter v∈[.04,.15], u∈[.35,.65]
-            ArrowDir::Up => (ChromeGlyph::ArrowUp, 0.5, (0.04 + 0.15) / 2.0),
-            // DOWN gutter v∈[.85,.88], u∈[.35,.65]
-            ArrowDir::Down => (ChromeGlyph::ArrowDown, 0.5, (0.85 + 0.88) / 2.0),
-            // LEFT gutter u∈[.02,.15], v∈[.35,.65]
-            ArrowDir::Left => (ChromeGlyph::ArrowLeft, (0.02 + 0.15) / 2.0, 0.5),
-            // RIGHT gutter u∈[.85,.98], v∈[.35,.65]
-            ArrowDir::Right => (ChromeGlyph::ArrowRight, (0.85 + 0.98) / 2.0, 0.5),
+            // TOP edge gutter v∈[0,.13]; the step pulls the top face down → ArrowDown.
+            ArrowDir::Up => (ChromeGlyph::ArrowDown, 0.5, 0.065),
+            // BOTTOM edge gutter v∈[.87,1.0]; pushes content up → ArrowUp.
+            ArrowDir::Down => (ChromeGlyph::ArrowUp, 0.5, 0.935),
+            // LEFT edge gutter u∈[0,.13]; rolls content rightward → ArrowRight.
+            ArrowDir::Left => (ChromeGlyph::ArrowRight, 0.065, 0.5),
+            // RIGHT edge gutter u∈[.87,1.0]; rolls content leftward → ArrowLeft.
+            ArrowDir::Right => (ChromeGlyph::ArrowLeft, 0.935, 0.5),
         };
-        push_glyph_quad(&mut verts, glyph, cx, cy, 0.11, 0.11, tint(true));
+        push_glyph_quad(&mut verts, glyph, cx, cy, 0.075, 0.075, tint(true));
     }
 
     // --- Hover-only: the 2 roll arrows (top-right). Step-1 u∈[.74,.87]/[.87,1.0], v∈[0,.13]. ---
