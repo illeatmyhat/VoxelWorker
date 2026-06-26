@@ -52,6 +52,15 @@ struct GridUniforms {
 
 @group(0) @binding(0) var<uniform> grid: GridUniforms;
 
+// Grazing-angle (horizon) fade threshold: the grid's alpha ramps from 0 to full as
+// `abs(dot(ray_direction, plane_normal))` (the sine of the ray's elevation above the
+// plane) rises from 0 to this value. Below it the view ray is grazing the plane —
+// approaching the horizon — so the grid dissolves smoothly into the background
+// instead of cutting off at a hard horizontal line. ~0.10 ≈ within ~5.7° of edge-on;
+// large enough to kill the hard ortho/shallow cutoff, small enough that the grid
+// still reads as receding far toward the horizon before it fades.
+const GRAZING_FADE_START: f32 = 0.10;
+
 struct VsOut {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) uv: vec2<f32>,
@@ -206,7 +215,23 @@ fn fragment_main(input: VsOut) -> FsOut {
     // more the grid dissolves into the background. Linear ramp to zero at
     // `fade_distance`, so the plane is truly infinite with no hard edge.
     let hit_distance = length(hit - ray_origin);
-    let fade = clamp(1.0 - hit_distance / max(fade_distance, 1.0), 0.0, 1.0);
+    let distance_fade = clamp(1.0 - hit_distance / max(fade_distance, 1.0), 0.0, 1.0);
+
+    // HORIZON (grazing-angle) fade — the real fix for the shallow-angle hard cutoff
+    // (issue #29). At the horizon the view ray becomes PARALLEL to the plane, so it
+    // hits at an unboundedly large `t` and the lattice compresses into a single screen
+    // row. `denom = dot(ray_direction, normal)` is the sine of the ray's elevation
+    // above the plane; it goes to 0 exactly AT the horizon. The pure distance fade is
+    // not enough on its own: under ORTHOGRAPHIC the whole visible ground sits at nearly
+    // constant world distance (no foreshortening), so the distance ramp barely moves
+    // across the screen and the grid stays near-full-alpha right up to the horizon —
+    // reading as a HARD horizontal cutoff line (and, with a dense block size, the same
+    // happens at shallow perspective). Fading alpha out as the ray grazes (abs(denom)
+    // → 0) dissolves the grid smoothly INTO the horizon for BOTH projections, with no
+    // hard edge and independent of distance / density — the grid truly recedes.
+    let grazing_fade = smoothstep(0.0, GRAZING_FADE_START, abs(denom));
+
+    let fade = distance_fade * grazing_fade;
     let final_alpha = alpha * fade;
     if (final_alpha < 0.002) {
         discard;
@@ -215,8 +240,18 @@ fn fragment_main(input: VsOut) -> FsOut {
     // Depth-correct occlusion: write the plane-hit point's clip depth so the
     // pipeline's LessEqual test lets opaque voxels (already in the depth buffer)
     // occlude the grid, with no z-fighting against itself.
+    //
+    // The written depth is CLAMPED into [0,1] as a defensive guard: at grazing /
+    // orthographic angles the far band of the infinite plane can project to a clip
+    // depth just OUTSIDE [0,1] (beyond the far plane, or, very close to the camera, in
+    // front of the near plane), and with `unclipped_depth: false` the hardware would
+    // DISCARD those fragments. The grazing fade above has already dissolved the grid's
+    // alpha to ~0 by then, so this clamp only affects an otherwise-invisible tail — but
+    // it guarantees no stray hard depth-clip seam can ever reappear at the horizon.
+    // Occlusion still holds: real objects sit at a SMALLER depth than the clamped far
+    // value, so they still win the LessEqual test and occlude the grid.
     let clip = grid.view_projection * vec4<f32>(hit, 1.0);
-    out.depth = clip.z / clip.w;
+    out.depth = clamp(clip.z / clip.w, 0.0, 1.0);
 
     out.color = vec4<f32>(grid.line_color.xyz, final_alpha);
     return out;

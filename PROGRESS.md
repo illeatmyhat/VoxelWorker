@@ -33,6 +33,33 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **Fix infinite grid shallow-angle hard cutoff (grazing-angle horizon fade) — Part of #29.**
+  The analytic infinite ground plane (`src/shaders/infinite_grid.wgsl`) HARD-CUT OFF at a straight
+  horizontal line at shallow viewing angles — most dramatic in ORTHOGRAPHIC (`--proj ortho --phi
+  1.45–1.52`), also a hard top edge at shallow PERSPECTIVE — instead of receding smoothly to the
+  horizon. **Root cause (diagnosed by flooding the shader to magenta with fade/discard bypassed):**
+  it is NOT depth-clipping of `frag_depth` as first suspected — the flood proved the ray/plane
+  intersection reaches the TRUE mathematical horizon (denom→0) in BOTH projections with no premature
+  cut. The real cause was the DISTANCE FADE alone being insufficient: it ramps alpha to zero over
+  `fade_distance` (= 80 blocks × density, e.g. 1280 voxels at 16 vx/block). Under orthographic there
+  is no foreshortening, so the entire visible ground sits at nearly constant world distance — the
+  distance ramp barely moves across the screen and the grid stays near-full-alpha right up to the
+  horizon, reading as a HARD horizontal line where the plane meets the horizon (same at shallow
+  perspective with a dense block size). **Fix:** add a GRAZING-ANGLE (horizon) fade — multiply alpha
+  by `smoothstep(0, 0.10, abs(dot(ray_direction, plane_normal)))`. `abs(denom)` is the sine of the
+  ray's elevation above the plane and goes to 0 exactly AT the horizon, so the grid now dissolves
+  smoothly INTO the horizon for both projections, independent of distance/density — no hard edge.
+  Also defensively CLAMPED the written `frag_depth` into `[0,1]` (`clamp(clip.z/clip.w, 0, 1)`) so a
+  far/near plane hit that projects just outside the depth range can never reappear as a stray
+  depth-clip seam; the grazing fade has already taken alpha to ~0 there, and object occlusion is
+  unaffected (real objects sit at a smaller depth and still win the `LessEqual` test). Kept the
+  two-tier voxel/block lines, the LOD anti-moiré fade (ortho moiré fix NOT regressed), the distance
+  fade, the subtle alpha, and object occlusion. Verified across {perspective, ortho} × {shallow,
+  medium} × {close, far}: grid recedes smoothly to the horizon everywhere, never moiré, never solid,
+  never over the sky, always occluded by the tube. All 203 lib tests + 7 goldens pass byte-identical
+  (the `demo-village-points` golden's moderate angle leaves the grazing fade a no-op in its visible
+  region, so it is unchanged).
+
 - **Fix infinite grid under orthographic projection (near/far ray unprojection + LOD) — Part of #29.**
   The analytic infinite ground plane (`src/shaders/infinite_grid.wgsl`) rendered as a full-screen green
   MOIRÉ cross-hatch — covering the whole background INCLUDING above the horizon ("the sky") — whenever the
