@@ -20,6 +20,7 @@ pub mod chunk_storage;
 pub mod cuboid;
 pub mod cuboid_mesh;
 pub mod debug_clouds;
+pub mod disk_chunk_store;
 pub mod frustum;
 pub mod gpu;
 pub mod panel;
@@ -34,6 +35,7 @@ pub mod voxel;
 
 pub use chunk_cache::{ChunkCacheKey, ChunkResolveCache};
 pub use chunk_storage::{compress, decompress, CompressedChunk, Occupancy, SparseCell};
+pub use disk_chunk_store::{DiskChunkStore, DiskChunkStoreStats};
 pub use cuboid_mesh::{build_cuboid_mesh, CuboidMesh, CuboidMeshRenderer};
 pub use texture_atlas::{AtlasSubRect, MaterialAtlas};
 pub use debug_clouds::DebugCloudField;

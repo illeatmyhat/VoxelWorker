@@ -33,6 +33,49 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **Disk-backed chunk store + bounded-RAM LRU eviction (standalone) (S6b) — Part of #20 (out-of-core, part 2).**
+  Pure-CPU, standalone component (`src/disk_chunk_store.rs`): `DiskChunkStore` keeps at most a configured
+  number of chunks resident in RAM and evicts the **least-recently-used** ones to disk as serialised
+  `CompressedChunk`s (S6a's shape), transparently reloading on access. NOT wired into the live
+  resolve/render path — that integration is S6c (when the monolithic-grid bridge is removed and the
+  floating-origin/rebasing coupling is reworked), so goldens are untouched.
+  - **API.** `DiskChunkStore::new(dir, capacity)` (idempotent `create_dir_all`; panics on capacity 0);
+    `put(key, CompressedChunk)`, `get(key) -> io::Result<Option<CompressedChunk>>`, `contains`,
+    `capacity`, `resident_count`, `stats`. Key is `ChunkCacheKey { chunk_coord: [i32;3], lod: u32 }`
+    (exact cache key shape). `get` returns a clone (the reload path mutates/evicts — clean borrow story;
+    `CompressedChunk` is a compact struct).
+  - **Capacity model = resident chunk COUNT** (not a byte budget): gives a crisp, always-true invariant
+    `resident_count() <= capacity` and matches the unit the future `ChunkResolveCache` thinks in; a byte
+    budget would need a fuzzy per-chunk size estimate. Justified inline.
+  - **Serialisation = `serde_json`** (existing dep, already S6a round-trip-tested through JSON; **no new
+    dep**). Codec isolated behind `write_chunk_file`/`read_chunk_file` (a binary `bincode` is a
+    two-function swap — noted for S6c, JSON is fine standalone).
+  - **LRU mechanism.** Monotonic logical clock; each `put`/`get` stamps the touched chunk's `last_used`,
+    eviction picks `min_by_key(last_used)`. Over-capacity `put` (new key) or a reload evicts exactly one
+    LRU resident chunk first, so the bound is never breached. Overwriting a resident key never evicts
+    (the set didn't grow) and refreshes its LRU. Re-putting an evicted key brings it resident and deletes
+    the stale disk file (sets stay disjoint).
+  - **Observability (`DiskChunkStoreStats`).** `evictions`, `disk_reloads` (bumps ONLY on a `get` for an
+    evicted key — the "no needless reloads" proof), `resident_count`, `on_disk_count`.
+  - **Windows handling.** Path-safe filenames (`chunk_<x>_<y>_<z>__lod<n>.json`, negatives encoded with
+    an `n` prefix via unsigned magnitude so `i32::MIN` is safe — only `[0-9a-z_]`, injective). No file
+    handle held across calls (`fs::write`/`fs::read` open+close internally) → no lock issues on
+    delete/rewrite. Idempotent `create_dir_all`.
+  - **Tests (10 new, lib total 138 → 148, all green).** `capacity_zero_panics`,
+    `put_then_get_resident_does_not_count_as_reload`, `round_trip_through_disk_eviction_preserves_grid`,
+    `bounded_ram_invariant_and_all_evicted_retrievable`, `lru_touch_survives_and_least_recent_is_evicted`,
+    `negative_and_large_coords_round_trip_distinctly`, `reload_counter_only_on_evicted_access`,
+    `overwrite_resident_key_does_not_evict`, `reput_evicted_key_supersedes_disk_copy`,
+    `directory_creation_is_idempotent`. Temp dirs are unique-per-test under the system temp and
+    auto-cleaned via an RAII `TempDir` guard (verified 0 left behind). Goldens 6/6 still green (path
+    untouched).
+  - **S6c wiring note.** Back `ChunkResolveCache`'s `HashMap<ChunkCacheKey, VoxelGrid>` with a
+    `DiskChunkStore<CompressedChunk>` — but the store is keyed/serialised in the cache's **current**
+    density+floating-origin binding, and a rebind (`rebind_if_changed`) currently `clear()`s every chunk.
+    So S6c must either re-key the disk store on rebind (origin/density are part of the on-disk identity)
+    or store **origin-independent** chunks and apply the rebase on load; otherwise an evicted chunk would
+    reload at a stale origin and mis-place far geometry (the S4b precision fix). Pick one before persisting.
+
 - **Per-chunk material palette + sparse storage (lossless) (S6a) — Part of #20 (out-of-core, part 1).**
   Pure-CPU, additive data structure (`src/chunk_storage.rs`) — the future out-of-core store's on-disk
   shape for one resolved chunk grid. NOT yet wired into the resolve/render path (store integration +
