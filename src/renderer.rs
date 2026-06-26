@@ -2300,9 +2300,14 @@ fn build_line_pipeline(
 /// Block lattice colour `#5fb8a4` (teal patina) at ~0.28 alpha.
 const LATTICE_COLOR_HEX: u32 = 0x5f_b8_a4;
 const LATTICE_ALPHA: f32 = 0.28;
-/// Fine floor grid colour `#6b5f4a` (dim warm) at ~0.16 alpha.
-const FLOOR_COLOR_HEX: u32 = 0x6b_5f_4a;
-const FLOOR_ALPHA: f32 = 0.16;
+/// Floor grid colour `#b8a47a` (warm sand) at 0.55 alpha. Issue #29 fix: the
+/// floor grid was previously a very dim `#6b5f4a` at 0.16 alpha — coincident with
+/// the model's depth-tested base plane and near-black against the background, so
+/// it read as "nothing" when toggled on. A brighter colour at a lattice-comparable
+/// opacity makes the base-plane grid clearly visible (it still hugs the node's
+/// enclosing-block XZ footprint, snapped to the global block lattice).
+const FLOOR_COLOR_HEX: u32 = 0xb8_a4_7a;
+const FLOOR_ALPHA: f32 = 0.55;
 
 /// The per-object block lattice and floor grid (ARCHITECTURE.md §6 / prototype
 /// `buildGrids`), drawn through the shared alpha-blended, depth-tested line
@@ -2573,13 +2578,21 @@ fn lattice_vertices_into(vertices: &mut Vec<LineVertex>, min: [f32; 3], max: [f3
     }
 }
 
+/// How far BELOW the node's base plane the floor grid sits, in voxels (issue #29
+/// fix). The enclosing-block box bottom is coincident with the model's lowest
+/// voxel face; drawing the depth-tested floor exactly there z-fights that face
+/// (the floor flickers / vanishes under the model). Dropping it a fraction of a
+/// voxel makes it read as the ground UNDER the object and removes the fight, while
+/// staying visually on the base plane.
+const FLOOR_PLANE_DROP_VOXELS: f32 = 0.25;
+
 /// Append a floor grid for the box `[min, max]` (voxels) on its BASE plane
-/// (`y = min[1]`) — lines at every BLOCK boundary (spacing = `step`), snapped to the
-/// same global block lines as the lattice (issue #29 S3). The base plane is the
-/// node's bottom; the grid reads as the ground under the object.
+/// (just below `y = min[1]`) — lines at every BLOCK boundary (spacing = `step`),
+/// snapped to the same global block lines as the lattice (issue #29 S3). The base
+/// plane is the node's bottom; the grid reads as the ground under the object.
 fn floor_vertices_into(vertices: &mut Vec<LineVertex>, min: [f32; 3], max: [f32; 3], step: u32) {
     let color = with_alpha(srgb_hex_to_linear(FLOOR_COLOR_HEX), FLOOR_ALPHA);
-    let y = min[1];
+    let y = min[1] - FLOOR_PLANE_DROP_VOXELS;
     let xs = block_boundaries(min[0], max[0], step);
     let zs = block_boundaries(min[2], max[2], step);
 
@@ -3975,8 +3988,11 @@ mod tests {
             let mut floor = Vec::new();
             floor_vertices_into(&mut floor, min, max, step);
             assert!(!floor.is_empty(), "@step{step}: a sized box has floor lines");
-            // Floor sits on the base plane y = min[1] for every vertex.
-            assert!(floor.iter().all(|v| v.position[1] == min[1]), "floor on base plane");
+            // Floor sits a fixed small drop below the base plane (issue #29 fix:
+            // dropped off the model's coincident bottom face to avoid z-fighting),
+            // flat in Y, and is uniform across every vertex.
+            let floor_y = min[1] - FLOOR_PLANE_DROP_VOXELS;
+            assert!(floor.iter().all(|v| v.position[1] == floor_y), "floor on dropped base plane");
         }
     }
 

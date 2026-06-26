@@ -33,6 +33,29 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **Grid rework: fix per-object floor grid + default masters ON — Part of #29.** Two
+  smoke-test fixes from interactive feedback.
+  - **Floor grid root cause + fix.** The per-object floor grid (S3) *was* rendering, but read as
+    "nothing": it drew at `#6b5f4a` @ **0.16** alpha (near-black vs the dark viewport) on a plane
+    EXACTLY coincident with the model's depth-tested bottom face, so the solid model occluded all of
+    it bar the thin enclosing-block margin. Fix in `renderer.rs`: brighter warm-sand `#b8a47a` @
+    **0.55** alpha (lattice-comparable), and drop the floor plane `0.25` voxel below the base
+    (`FLOOR_PLANE_DROP_VOXELS`) so it no longer z-fights the bottom voxel face and reads as the ground
+    under the object. Footprint unchanged (the node's enclosing-block XZ extent, snapped to the global
+    block lattice). Headless `--floor` PNG: floor grid now clearly visible; `--lattice --floor --grid`
+    on one node shows the teal enclosing lattice + sand base grid + on-face voxel grid together.
+  - **Masters default ON.** All three scene-wide masters (`master_block_lattice`, `master_voxel_grid`,
+    `master_floor_grid`) now default `true` (serde `default_master_grid` + manual `Default for Scene`),
+    so flipping a per-object grid toggle shows immediately; per-object flags stay default OFF so the
+    default view is still clean. `settings.rs`: legacy `show_*` mirrors (which seed the masters for a
+    pre-Points config) now default `true` too (struct default + serde `default_true`), so a brand-new
+    user with no config gets all masters on, while a genuine legacy config still seeds each master from
+    its own persisted `show_*` value.
+  - **Tests.** Updated `scene_default_master_grids` (all three ON) and `old_scene_json_loads_with_grid_defaults`
+    (all masters default ON); updated the floor-geometry assertion to the dropped base plane. 199 lib
+    tests green, 6 goldens byte-identical (no per-object grid is enabled in any golden case, so the 3D
+    viewport is unchanged — no regen needed). Clippy clean.
+
 - **Grid rework S4: per-object on-face voxel grid via material-id flag bit — Part of #29.**
   The on-face voxel grid (the bold-block-line fragment overlay in the mesh shaders) is now PER OBJECT,
   gated by the scene master `master_voxel_grid` ANDed with each node's own `grids.voxel_grid_on_faces`

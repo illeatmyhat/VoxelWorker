@@ -354,8 +354,10 @@ impl Default for Point {
     }
 }
 
-/// Default `true` for the scene-wide block-lattice master (issue #29).
-fn default_master_block_lattice() -> bool {
+/// Default `true` for the scene-wide grid masters (issue #29 grid-rework fix: all
+/// three masters default ON so enabling a per-object toggle shows immediately,
+/// while the per-object flags stay default OFF — the default view is still clean).
+fn default_master_grid() -> bool {
     true
 }
 
@@ -394,15 +396,17 @@ pub struct Scene {
     /// Scene-wide master toggle for the block lattice (issue #29). Default
     /// **true**. ANDed with each node's [`NodeGrids::block_lattice`] in S3.
     /// Migrated from the legacy `AppConfig.show_block_lattice` on load.
-    #[serde(default = "default_master_block_lattice")]
+    #[serde(default = "default_master_grid")]
     pub master_block_lattice: bool,
     /// Scene-wide master toggle for the on-face voxel grid (issue #29). Default
-    /// false. Migrated from the legacy `AppConfig.show_grid_overlay` on load.
-    #[serde(default)]
+    /// **true** (grid-rework fix: all masters on so a per-object toggle shows
+    /// immediately). Migrated from the legacy `AppConfig.show_grid_overlay` on load.
+    #[serde(default = "default_master_grid")]
     pub master_voxel_grid: bool,
-    /// Scene-wide master toggle for the floor grid (issue #29). Default false.
+    /// Scene-wide master toggle for the floor grid (issue #29). Default **true**
+    /// (grid-rework fix: all masters on so a per-object toggle shows immediately).
     /// Migrated from the legacy `AppConfig.show_floor_grid` on load.
-    #[serde(default)]
+    #[serde(default = "default_master_grid")]
     pub master_floor_grid: bool,
     /// The active/selected Point (index into [`points`](Self::points)), or `None`.
     #[serde(default)]
@@ -410,9 +414,11 @@ pub struct Scene {
 }
 
 impl Default for Scene {
-    /// An empty scene with the issue-#29 master defaults (block lattice on, voxel
-    /// grid + floor grid off) and no Points yet (the Origin is synthesized on the
-    /// load path via [`ensure_origin_point`](Self::ensure_origin_point)).
+    /// An empty scene with the issue-#29 master defaults — **all three masters ON**
+    /// (grid-rework fix), while every node's per-object grid flag stays default OFF,
+    /// so enabling a per-object toggle shows immediately yet the default view is
+    /// clean. No Points yet (the Origin is synthesized on the load path via
+    /// [`ensure_origin_point`](Self::ensure_origin_point)).
     fn default() -> Self {
         Self {
             nodes: Vec::new(),
@@ -420,8 +426,8 @@ impl Default for Scene {
             active: None,
             points: Vec::new(),
             master_block_lattice: true,
-            master_voxel_grid: false,
-            master_floor_grid: false,
+            master_voxel_grid: true,
+            master_floor_grid: true,
             active_point: None,
         }
     }
@@ -4100,14 +4106,14 @@ mod tests {
         assert_eq!(node.grids, NodeGrids::default());
     }
 
-    /// An empty `Scene::default()` has the issue-#29 master defaults (block lattice
-    /// ON, voxel grid + floor grid OFF) and no Points yet.
+    /// An empty `Scene::default()` has the issue-#29 grid-rework master defaults:
+    /// ALL THREE masters ON (per-object flags stay OFF), and no Points yet.
     #[test]
     fn scene_default_master_grids() {
         let scene = Scene::default();
         assert!(scene.master_block_lattice, "block lattice master defaults ON");
-        assert!(!scene.master_voxel_grid, "voxel grid master defaults OFF");
-        assert!(!scene.master_floor_grid, "floor grid master defaults OFF");
+        assert!(scene.master_voxel_grid, "voxel grid master defaults ON");
+        assert!(scene.master_floor_grid, "floor grid master defaults ON");
         assert!(scene.points.is_empty(), "no Points until ensure_origin_point");
         assert_eq!(scene.active_point, None);
     }
@@ -4232,8 +4238,8 @@ mod tests {
     }
 
     /// Back-compat: an OLD serialized scene (no `grids`, no `points`, no masters)
-    /// deserialises with the correct defaults — node grids all-off, masters at
-    /// their struct defaults (lattice on, others off), empty points.
+    /// deserialises with the correct defaults — node grids all-off, all three
+    /// masters at their struct default (ON, issue #29 grid-rework fix), empty points.
     #[test]
     fn old_scene_json_loads_with_grid_defaults() {
         let old_json = r#"{
@@ -4257,7 +4263,7 @@ mod tests {
         assert_eq!(scene.nodes.len(), 1);
         assert_eq!(scene.nodes[0].grids, NodeGrids::default(), "grids default off");
         assert!(scene.master_block_lattice, "lattice master default on");
-        assert!(!scene.master_voxel_grid && !scene.master_floor_grid);
+        assert!(scene.master_voxel_grid && scene.master_floor_grid, "all masters default on");
         assert!(scene.points.is_empty(), "no points in the old document");
         assert_eq!(scene.active_point, None);
     }

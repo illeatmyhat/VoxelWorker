@@ -68,11 +68,15 @@ pub struct AppConfig {
     pub projection_mode: ProjectionMode,
     #[serde(default)]
     pub material: MaterialChoice,
-    #[serde(default)]
+    // Issue #29 grid-rework fix: these legacy `show_*` mirrors seed the scene-wide
+    // grid masters, which all default ON. A legacy config that OMITS one of these
+    // keys therefore defaults it true too (so masters stay on); a legacy config that
+    // carries an explicit value still seeds the master from that value.
+    #[serde(default = "default_true")]
     pub show_grid_overlay: bool,
     #[serde(default = "default_true")]
     pub show_block_lattice: bool,
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub show_floor_grid: bool,
     #[serde(default = "default_true")]
     pub show_view_cube: bool,
@@ -151,9 +155,15 @@ impl Default for AppConfig {
             wall_blocks: default_wall(),
             projection_mode: ProjectionMode::default(),
             material: MaterialChoice::default(),
-            show_grid_overlay: false,
+            // Issue #29 grid-rework fix: the scene-wide grid MASTERS all default ON
+            // (per-object flags stay OFF). These legacy `show_*` mirrors seed the
+            // masters on a config that predates the scene field, so they default
+            // true too — a brand-new user (no config file) gets all masters on,
+            // while a genuine legacy config still seeds from its own persisted
+            // `show_*` JSON values.
+            show_grid_overlay: true,
             show_block_lattice: true,
-            show_floor_grid: false,
+            show_floor_grid: true,
             show_view_cube: true,
             show_origin_gizmo: false,
             applied_block_label: None,
