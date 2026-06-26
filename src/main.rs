@@ -25,6 +25,7 @@ use voxel_worker::{
     VoxExport, ViewCubeRenderer, VoxelGrid, VoxelRenderer, COLOR_TARGET_FORMAT,
     VIEW_CUBE_VIEWPORT_PIXELS,
 };
+use voxel_worker::{CuboidMeshRenderer, MesherChoice};
 
 /// Drag threshold (pixels) distinguishing a click (snap) from a drag (orbit) on
 /// the view cube, and the general orbit-start threshold.
@@ -47,6 +48,10 @@ struct WindowedState {
     egui_winit_state: egui_winit::State,
     panel_state: PanelState,
     voxel_renderer: VoxelRenderer,
+    /// ADR 0002 E3b-1 (part of #18): the experimental cuboid mesh renderer, built
+    /// lazily when the "Cuboid mesher" toggle is on and the grid changes. `None`
+    /// while the default instanced path is selected (the common case).
+    cuboid_mesh_renderer: Option<CuboidMeshRenderer>,
     gizmo_renderer: GizmoRenderer,
     /// Block lattice + fine floor grid (M8).
     grid_lattice_renderer: GridLatticeRenderer,
@@ -317,6 +322,9 @@ impl WindowedState {
             egui_winit_state,
             panel_state,
             voxel_renderer,
+            // Default instanced path on startup; the cuboid renderer is built on
+            // demand when the experimental toggle flips on (ADR 0002 E3b-1).
+            cuboid_mesh_renderer: None,
             gizmo_renderer,
             grid_lattice_renderer,
             view_cube_renderer,
@@ -414,6 +422,9 @@ impl WindowedState {
             shape.voxels_per_block,
         );
         self.grid = grid;
+        // ADR 0002 E3b-1: invalidate the cuboid mesh so it re-decomposes from the
+        // new grid next frame (only rebuilt when the experimental toggle is on).
+        self.cuboid_mesh_renderer = None;
         self.measured_band = (u32::MAX, u32::MAX); // force a re-measure next frame.
 
         if auto_frame {
@@ -831,6 +842,34 @@ impl WindowedState {
             band,
             material,
         );
+
+        // ADR 0002 E3b-1 (part of #18): when the experimental "Cuboid mesher"
+        // toggle is on, ensure the cuboid renderer exists (build it from the
+        // current grid if it was invalidated by a rebuild or the toggle just
+        // flipped on) and upload its per-frame uniforms. When the toggle is off we
+        // drop it so the default instanced path runs unchanged.
+        let cuboid_active = self.panel_state.mesher == MesherChoice::Cuboid;
+        if cuboid_active {
+            if self.cuboid_mesh_renderer.is_none() {
+                self.cuboid_mesh_renderer = Some(CuboidMeshRenderer::new(
+                    &self.gpu.device,
+                    COLOR_TARGET_FORMAT,
+                    &self.grid,
+                    geometry.voxels_per_block,
+                ));
+            }
+            // A loaded VS block renders as a single global material on the cuboid
+            // path for now, so modulation is off in that case.
+            let bound = match &self.loaded_material {
+                Some(_) => None,
+                None => Some(self.panel_state.material),
+            };
+            if let Some(cuboid_mesh_renderer) = self.cuboid_mesh_renderer.as_mut() {
+                cuboid_mesh_renderer.update_uniforms(&self.gpu.queue, view_projection, bound);
+            }
+        } else {
+            self.cuboid_mesh_renderer = None;
+        }
         // M5 overlay uniforms: gizmo shares the main camera matrix; the view cube
         // uses its own orientation-mirroring matrix.
         self.gizmo_renderer
@@ -869,6 +908,11 @@ impl WindowedState {
             debug_face_mode: self.panel_state.debug_face_orientation,
             onion_fog: if onion_active {
                 Some(&self.onion_fog_renderer)
+            } else {
+                None
+            },
+            cuboid_mesh: if cuboid_active {
+                self.cuboid_mesh_renderer.as_ref()
             } else {
                 None
             },

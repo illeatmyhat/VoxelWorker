@@ -89,6 +89,18 @@ impl MaterialChoice {
     }
 }
 
+/// Which render path draws the voxels (ADR 0002 E3, part of #18). `Instanced` is
+/// the DEFAULT and unchanged (one cube per voxel); `Cuboid` is the experimental
+/// flag-gated cuboid-mesher path (exposed box faces, per-box material colour).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum MesherChoice {
+    /// The default instanced-cube renderer (byte-for-byte unchanged).
+    #[default]
+    Instanced,
+    /// The experimental cuboid mesh path (E3b-1).
+    Cuboid,
+}
+
 /// Layer-range scrubber state (issue #12).
 ///
 /// The layer-range scrubber subsumes the old 2D mid-Y slice map. Layers run along
@@ -209,6 +221,11 @@ pub struct PanelState {
     /// outward face normal + a back-facing marker, cull off). Display toggle, OFF
     /// by default; the standard way to verify face winding/culling.
     pub debug_face_orientation: bool,
+    /// Which render path draws the voxels (ADR 0002 E3, part of #18). Default
+    /// [`MesherChoice::Instanced`] (the unchanged instanced-cube renderer);
+    /// [`MesherChoice::Cuboid`] selects the experimental cuboid mesh path. Not
+    /// persisted yet (a session-only experimental toggle).
+    pub mesher: MesherChoice,
     /// When `Some`, the 3D rebuild was skipped because the grid exceeds the
     /// voxel cap; the panel shows a warning. Set by the caller after it decides
     /// whether to rebuild. Value is the would-be voxel count (in millions).
@@ -989,6 +1006,20 @@ fn build_display_section(ui: &mut egui::Ui, state: &mut PanelState) {
     ui.checkbox(&mut state.show_view_cube, "View cube");
     ui.checkbox(&mut state.show_origin_gizmo, "Origin gizmo");
     ui.checkbox(&mut state.debug_face_orientation, "Debug: face orientation");
+    // ADR 0002 E3b-1 (part of #18): experimental cuboid mesh render path, default
+    // OFF. A simple checkbox mapped onto `mesher` (Instanced ↔ Cuboid). The
+    // instanced path stays the default; this only flips when checked.
+    let mut use_cuboid = state.mesher == MesherChoice::Cuboid;
+    if ui
+        .checkbox(&mut use_cuboid, "Cuboid mesher (experimental)")
+        .changed()
+    {
+        state.mesher = if use_cuboid {
+            MesherChoice::Cuboid
+        } else {
+            MesherChoice::Instanced
+        };
+    }
     ui.separator();
 }
 

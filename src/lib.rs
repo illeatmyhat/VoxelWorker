@@ -16,6 +16,7 @@ pub mod assets;
 pub mod block_palette;
 pub mod camera;
 pub mod cuboid;
+pub mod cuboid_mesh;
 pub mod debug_clouds;
 pub mod frustum;
 pub mod gpu;
@@ -27,13 +28,17 @@ pub mod settings;
 pub mod vox_export;
 pub mod voxel;
 
+pub use cuboid_mesh::{build_cuboid_mesh, CuboidMesh, CuboidMeshRenderer};
 pub use debug_clouds::DebugCloudField;
 pub use camera::{
     nearest_equivalent_theta, CubeFace, OrbitCamera, ProjectionMode, SnapTween, ViewCubeElement,
     CUBE_FACES, POLE_EPSILON,
 };
 pub use gpu::GpuContext;
-pub use panel::{build_panel, GeometryParams, LayerRange, MaterialChoice, PanelResponse, PanelState};
+pub use panel::{
+    build_panel, GeometryParams, LayerRange, MaterialChoice, MesherChoice, PanelResponse,
+    PanelState,
+};
 pub use assets::{CubeFaceSlot, FaceProvenance, FaceTextures};
 pub use renderer::{
     create_depth_view, create_msaa_color_view, GizmoRenderer, GridLatticeRenderer, LayerBand,
@@ -238,6 +243,12 @@ pub struct FrameOverlays<'a> {
     /// around the displayed band. `None` when onion skin is off. Its uniforms must
     /// already be uploaded via `OnionFogRenderer::update`.
     pub onion_fog: Option<&'a renderer::OnionFogRenderer>,
+    /// ADR 0002 E3b-1 (part of #18): when `Some`, the experimental cuboid mesh
+    /// path draws the voxels INSTEAD of the instanced renderer (flag-gated, default
+    /// OFF). `None` (the default) leaves the instanced path byte-for-byte
+    /// unchanged. The caller sets this only when the cuboid mesher flag is on; its
+    /// uniforms must already be uploaded via `CuboidMeshRenderer::update_uniforms`.
+    pub cuboid_mesh: Option<&'a cuboid_mesh::CuboidMeshRenderer>,
     /// Target dimensions (needed to place the view-cube corner viewport).
     pub target_width: u32,
     pub target_height: u32,
@@ -316,7 +327,14 @@ pub fn render_frame(
         );
         voxel_pass.set_scissor_rect(viewport_x, viewport_y, viewport_width, viewport_height);
 
-        voxel_renderer.draw(&mut voxel_pass, material, overlays.debug_face_mode);
+        // ADR 0002 E3b-1 (part of #18): when the cuboid mesh path is selected, draw
+        // it INSTEAD of the instanced cubes. When `None` (the default), the
+        // instanced path runs exactly as before — its output is unchanged.
+        if let Some(cuboid_mesh) = overlays.cuboid_mesh {
+            cuboid_mesh.draw(&mut voxel_pass);
+        } else {
+            voxel_renderer.draw(&mut voxel_pass, material, overlays.debug_face_mode);
+        }
 
         // Block lattice + fine floor grid (M8): same MSAA pass, depth-tested so
         // the solid model occludes them (a scaffold around/under it).

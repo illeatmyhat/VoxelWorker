@@ -1060,6 +1060,17 @@ fn relative_material_base_colors(
     colors
 }
 
+/// Public access to the per-material relative base colours (step 3b) for the
+/// flag-gated cuboid mesh path (ADR 0002 E3b-1), so it modulates per-box material
+/// colour with the EXACT same array the instanced path uses. Returns each
+/// material's average colour relative to `bound`'s average (the bound material's
+/// own slot is ~neutral white).
+pub fn relative_material_base_colors_public(
+    bound: MaterialChoice,
+) -> [[f32; 4]; MaterialChoice::MATERIAL_COUNT] {
+    relative_material_base_colors(bound)
+}
+
 /// Grow `instances` to at least `capacity` entries with zeroed padding.
 fn pad_to_capacity(mut instances: Vec<VoxelInstance>, capacity: u32) -> Vec<VoxelInstance> {
     if (instances.len() as u32) < capacity {

@@ -33,6 +33,7 @@ use voxel_worker::{
     ProjectionMode, RegionBlocks, Scene, SdfShape, ShapeKind, ViewCubeElement, VoxExport,
     ViewCubeRenderer, VoxelGrid, VoxelRenderer, COLOR_TARGET_FORMAT,
 };
+use voxel_worker::{CuboidMeshRenderer, MesherChoice};
 
 /// Build the onion-skin fog parameters (issue #12) from the camera, grid, and
 /// layer-range. World-Y of layer `j` spans `[j - grid_y/2, j+1 - grid_y/2]`; the
@@ -117,6 +118,9 @@ struct ShotOptions {
     /// its texture stem (e.g. `wood/treetrunk/oak`) even if it is outside the
     /// chiselable allow-list, to demonstrate per-face rendering on a known block.
     force_demo_stem: Option<String>,
+    /// Which render path draws the voxels (ADR 0002 E3b-1, part of #18):
+    /// `Instanced` (default, unchanged) or `Cuboid` (experimental cuboid mesher).
+    mesher: MesherChoice,
     /// Layer-range scrubber lower bound (issue #12), a voxel Y-layer index. When
     /// `None`, defaults to the full range (0). Raw voxel index — no snapping.
     layer_lower: Option<u32>,
@@ -169,6 +173,7 @@ impl Default for ShotOptions {
             show_block_lattice: false,
             show_floor_grid: false,
             debug_face_orientation: false,
+            mesher: MesherChoice::Instanced,
             export_vox_path: None,
             show_view_cube: true,
             snap_element: None,
@@ -251,6 +256,15 @@ fn parse_material(value: &str) -> MaterialChoice {
         "wood" => MaterialChoice::Wood,
         "plain" => MaterialChoice::Plain,
         other => panic!("--material must be stone|wood|plain, got '{other}'"),
+    }
+}
+
+/// Parse a `--mesher` value into a [`MesherChoice`] (ADR 0002 E3b-1, part of #18).
+fn parse_mesher(value: &str) -> MesherChoice {
+    match value.to_ascii_lowercase().as_str() {
+        "instanced" => MesherChoice::Instanced,
+        "cuboid" => MesherChoice::Cuboid,
+        other => panic!("--mesher must be instanced|cuboid, got '{other}'"),
     }
 }
 
@@ -340,6 +354,9 @@ fn parse_options() -> ShotOptions {
             "--material" => {
                 options.material =
                     parse_material(&args.next().expect("--material requires a value"));
+            }
+            "--mesher" => {
+                options.mesher = parse_mesher(&args.next().expect("--mesher requires a value"));
             }
             "--grid" => {
                 options.show_grid_overlay = true;
@@ -452,6 +469,7 @@ fn parse_options() -> ShotOptions {
                      \x20            [--density <u32>] [--wall <u32>]\n\
                      \x20            [--proj <perspective|ortho>]\n\
                      \x20            [--material <stone|wood|plain>] [--grid]\n\
+                     \x20            [--mesher <instanced|cuboid>]\n\
                      \x20            [--scan-vs] [--apply-first-block]\n\
                      \x20            [--apply-block <substring>] [--list-perface]\n\
                      \x20            [--force-demo-stem <texture/stem>]\n\
@@ -465,7 +483,7 @@ fn parse_options() -> ShotOptions {
                      Defaults: --out shots/m1.png --width 1280 --height 800\n\
                      \x20         --shape cylinder --size-x 5 --size-y 1 --size-z 5\n\
                      \x20         --density 16 --wall 1 --proj perspective\n\
-                     \x20         --material stone (grid off)\n\
+                     \x20         --material stone (grid off) --mesher instanced\n\
                      \x20         --theta 0.7 --phi 1.05 --dist <auto-framed>\n\
                      \n\
                      \x20  --demo-scene  build a hardcoded multi-node placed scene\n\
@@ -753,6 +771,7 @@ async fn run_capture(options: ShotOptions) {
         show_block_lattice: options.show_block_lattice,
         show_floor_grid: options.show_floor_grid,
         debug_face_orientation: options.debug_face_orientation,
+        mesher: options.mesher,
         layer_range,
         ..PanelState::default()
     };
@@ -887,6 +906,18 @@ async fn run_capture(options: ShotOptions) {
         &grid,
         options.geometry.voxels_per_block,
     );
+    // ADR 0002 E3b-1 (part of #18): the experimental cuboid mesh path, built only
+    // when `--mesher cuboid` is selected. The instanced path stays the default.
+    let mut cuboid_mesh_renderer = if options.mesher == MesherChoice::Cuboid {
+        Some(CuboidMeshRenderer::new(
+            &gpu.device,
+            COLOR_TARGET_FORMAT,
+            &grid,
+            options.geometry.voxels_per_block,
+        ))
+    } else {
+        None
+    };
     let gizmo_renderer = GizmoRenderer::new(&gpu.device, COLOR_TARGET_FORMAT, grid.dimensions);
     let grid_lattice_renderer = GridLatticeRenderer::new(
         &gpu.device,
@@ -1107,6 +1138,26 @@ async fn run_capture(options: ShotOptions) {
         uniform_material,
     );
 
+    // ADR 0002 E3b-1 (part of #18): upload the cuboid path's uniforms (camera +
+    // per-material base colours) and frustum-cull its mesh chunks. A loaded VS
+    // block renders as a single global material on the cuboid path for now, so
+    // modulation is off (None) in that case.
+    if let Some(cuboid_mesh_renderer) = cuboid_mesh_renderer.as_mut() {
+        let bound = match &loaded_material {
+            Some(_) => None,
+            None => Some(options.material),
+        };
+        cuboid_mesh_renderer.update_uniforms(&gpu.queue, view_projection, bound);
+        println!(
+            "cuboid mesher: {} boxes → {} exposed faces ({} triangles), {} chunks (vs {} instanced voxels)",
+            cuboid_mesh_renderer.mesh().box_count(),
+            cuboid_mesh_renderer.mesh().face_count(),
+            cuboid_mesh_renderer.mesh().triangle_count(),
+            cuboid_mesh_renderer.mesh().chunk_count(),
+            voxel_renderer.instance_count(),
+        );
+    }
+
     // ADR 0002 E2 (#19): the frustum cull ran inside `update_uniforms`. Report the
     // drawn/total chunk counts so the chunking + culling are verifiable headlessly.
     if options.debug_chunks {
@@ -1145,6 +1196,7 @@ async fn run_capture(options: ShotOptions) {
         } else {
             None
         },
+        cuboid_mesh: cuboid_mesh_renderer.as_ref(),
         target_width: options.width,
         target_height: options.height,
     };

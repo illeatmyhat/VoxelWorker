@@ -33,6 +33,41 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **Cuboid mesh render path behind a flag (ADR 0002 E3b-1) — Part of #18**
+  — new `src/cuboid_mesh.rs` + `src/shaders/cuboid.wgsl`; the experimental cuboid-mesher render path,
+  default OFF, selected by a flag. The DEFAULT instanced path is byte-for-byte unchanged (all 5 goldens
+  pass: 4 bit-exact, debug-clouds 0.21% < 0.5%). **Flag:** `MesherChoice::{Instanced,Cuboid}` (new in
+  `panel.rs`, default `Instanced`); `shot --mesher <instanced|cuboid>`; a Display-section checkbox
+  "Cuboid mesher (experimental)" in the app (session-only, not persisted). **Boxes→mesh:** when cuboid
+  is selected, the whole grid is `region_from_voxel_grid` + `decompose_into_boxes`'d into single-material
+  boxes (`src/cuboid.rs`), then `build_cuboid_mesh` emits a triangle quad per **exposed** box face only —
+  a face is culled when every neighbour cell just beyond it (scanned across the face's two in-plane axes)
+  is solid; box-internal faces and faces backed by adjacent solid voxels (even of a different material)
+  are dropped, so the silhouette is the solid set's outer surface. Each face vertex carries the box's
+  `material_id` + the face's outward normal, CCW-wound (matching the instanced cube), `cull_mode: Back`.
+  Boxes are bucketed into the SAME `CHUNK_BLOCKS=4` chunk partition the instanced path uses (keyed by the
+  box min-corner voxel), each chunk's world-AABB frustum-culled per frame (reusing `frustum.rs`). **Shader
+  reuse:** `cuboid.wgsl` flat-shades with the SAME directional+ambient lighting constants as `voxel.wgsl`
+  and the SAME step-3b per-material relative base-colour modulation (exposed via
+  `renderer::relative_material_base_colors_public`) — NO texture slice / grid overlay / layer clip /
+  debug-faces yet (later E3 sub-steps), so the cuboid render is flat colour + lighting, not golden-matching
+  by design. **Selection in `render_frame`:** new `FrameOverlays::cuboid_mesh: Option<&CuboidMeshRenderer>`
+  — when `Some` it draws INSTEAD of `voxel_renderer.draw` in the same MSAA pass; `None` (default) leaves the
+  instanced draw untouched. **Verification:** `cargo build --bins`, `clippy --all-targets` (+ `--features gpu
+  --tests`), `cargo test` (78 lib + 5 new `cuboid_mesh` unit tests) all clean; goldens pass UNCHANGED.
+  Mesh sanity tests: a 1-voxel cube → 1 box → 6 faces / 12 tris / 36 indices / 24 verts; a 2-voxel run → 1
+  merged box → still 6 faces; a solid 4³ block → 1 box → 6 faces; two adjacent boxes of different materials
+  → 10 faces (the 2 shared faces culled). **Primitive reduction (the point):** sphere 6×6×6@16 = 463,400
+  instanced voxels → **3,083 boxes / 12,350 exposed faces / 24,700 triangles** (~37× fewer); demo-village =
+  157,696 voxels → **40 boxes / 172 faces / 344 triangles**. Shape-parity shots confirmed visually: the
+  cuboid silhouette matches the instanced one for both sphere and village (4 houses, correct shapes +
+  per-box stone/wood materials), flat-shaded with no texture/grid as expected
+  (`shots/e3b1-{sphere,village}-{instanced,cuboid}.png`). Risk/subtlety: a merged box face is emitted
+  whole if ANY neighbour cell beyond it is air (over-draw of at most one box face, never a hole — fine for
+  shape parity); face winding reuses the instanced CCW-from-outside convention so `cull_mode: Back` keeps
+  outward faces. A WGSL std140 gotcha was hit + fixed: a trailing `vec3` pad forces 16-byte alignment
+  (144-byte struct) vs the Rust 128-byte buffer — replaced with three f32 scalars.
+
 - **Greedy cuboid (box) decomposition — pure CPU algorithm (ADR 0002 Decision 1, E3) — Part of #18**
   — new `src/cuboid.rs` (registered in `lib.rs`). This is the box-decomposition algorithm ONLY (no
   rendering / GPU / flag — those remain in #18). `decompose_into_boxes(region: &VoxelRegion) ->
