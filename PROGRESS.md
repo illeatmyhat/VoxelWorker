@@ -33,6 +33,32 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **Fix per-object floor grid: voxel-edge lines + align to block lattice — Part of #29.** The
+  interactive smoke-test surfaced two floor-grid bugs: (1) it drew lines only at BLOCK boundaries,
+  not at voxel edges; (2) it read as "poorly aligned" with the per-object block lattice.
+  - **Root cause (alignment).** The floor box and the lattice box are the SAME box
+    (`node_block_lattice_box_recentred`) at the SAME `step`, so their block lines already coincided —
+    but with only block-spacing lines drawn, there was nothing fine to read the alignment against, and
+    a future voxel-line scheme that snapped to the GLOBAL voxel grid (multiples of 1 from 0) would NOT
+    pass through the block-aligned box corners. The fix pins both tiers to walk from the block-aligned
+    box `min` with a 1-voxel stride, so every `step`-th voxel line lands on `min + k·step` — the EXACT
+    coordinates of the lattice's vertical lines (`block_boundaries(min, max, step)`). Floor and lattice
+    now share one global-lattice frame and their lines coincide at the base plane.
+  - **Two-tier fine floor grid.** `floor_vertices_into` now emits FINE voxel lines (one per voxel
+    boundary, step 1, subtle `FLOOR_VOXEL_ALPHA = 0.16`) PLUS BOLD block lines (step = density, bright
+    `FLOOR_ALPHA = 0.55`, drawn on top), mirroring the block lattice / Point ground plane minor+major
+    scheme. New helper `voxel_boundaries(lo, hi, step) -> Vec<(coord, is_block)>` walks voxel-by-voxel
+    and tags each `step`-th line as a block edge. The small `0.25`-voxel base-plane drop is kept (no
+    z-fight with the model's bottom face); the footprint is still the node's enclosing-block XZ extent.
+  - **Verify (headless).** A flat-disc sphere with `--lattice --floor` at density 4 shows the floor's
+    fine warm voxel grid filling each block cell, with the bold block lines coincident with the teal
+    block-lattice verticals at the base — aligned. At density 16 the voxel lines are visibly denser.
+  - **Tests.** `voxel_boundaries_tag_block_lines_at_lattice_positions` (the floor's block-tagged lines
+    equal `block_boundaries`; voxel lines denser at coarse density) and
+    `floor_grid_is_two_tier_and_aligns_with_lattice` (floor X/Z lines are a superset of the lattice's
+    vertical lines; two alpha tiers; denser than the lattice). Density-parametrized `{1, 15, 16}`. 201
+    lib tests; 7 goldens byte-identical (floor default-off in `shot`, viewport unchanged).
+
 - **Grid rework S5: Points (camera-relative ground plane + axes, depth-tested) + Points UI — Part of #29.**
   The world reference grid is live. A new `PointsRenderer` (`renderer.rs`) batches every VISIBLE
   Point's reference geometry into ONE depth-tested, alpha-blended line buffer — the SAME pass family as

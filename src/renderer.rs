@@ -1388,7 +1388,16 @@ const LATTICE_ALPHA: f32 = 0.28;
 /// opacity makes the base-plane grid clearly visible (it still hugs the node's
 /// enclosing-block XZ footprint, snapped to the global block lattice).
 const FLOOR_COLOR_HEX: u32 = 0xb8_a4_7a;
+/// Alpha of a BOLD (block-edge) floor line — the major tier of the two-tier fine
+/// floor grid (issue #29 fix). These lines sit at every block boundary and so
+/// coincide exactly with the block lattice's vertical lines at the base plane.
 const FLOOR_ALPHA: f32 = 0.55;
+/// Alpha of a fine VOXEL-edge floor line — the minor tier (issue #29 fix). One
+/// line per voxel boundary (step = 1) at a deliberately low opacity, so the floor
+/// reads as a dense fine grid under the object without drowning the bold block
+/// lines or the model. Mirrors the Point ground plane's minor/major two-tier
+/// scheme (`POINT_PLANE_MINOR_ALPHA` vs `POINT_PLANE_MAJOR_ALPHA`).
+const FLOOR_VOXEL_ALPHA: f32 = 0.16;
 
 /// The per-object block lattice and floor grid (ARCHITECTURE.md §6 / prototype
 /// `buildGrids`), drawn through the shared alpha-blended, depth-tested line
@@ -1625,6 +1634,30 @@ fn block_boundaries(lo: f32, hi: f32, step: u32) -> Vec<f32> {
     values
 }
 
+/// VOXEL-boundary coordinates `[lo, lo+1, …, hi]` along one axis, each tagged with
+/// whether it is also a BLOCK boundary (`is_block`). The walk steps one voxel at a
+/// time from the block-aligned `lo`, so every `step`-th line is flagged as a block
+/// edge — meaning the bold (block) floor lines land on EXACTLY the same coordinates
+/// as the block lattice's vertical lines (which `block_boundaries(lo, hi, step)`
+/// places at `lo + k·step`). This is what makes the fine floor grid align with the
+/// block lattice: the two share the block-aligned `lo` origin and the same stride.
+fn voxel_boundaries(lo: f32, hi: f32, step: u32) -> Vec<(f32, bool)> {
+    let step = step.max(1);
+    let mut values = Vec::new();
+    let mut index = 0i64;
+    loop {
+        let coord = lo + index as f32;
+        // Closing guard: never overshoot `hi`; the final line is the block-aligned `hi`.
+        if coord >= hi - 0.5 {
+            values.push((hi, true));
+            break;
+        }
+        values.push((coord, index.rem_euclid(step as i64) == 0));
+        index += 1;
+    }
+    values
+}
+
 /// Append a 3D block lattice for the box `[min, max]` (voxels) — grid lines at every
 /// BLOCK boundary (spacing = `step`) — into `vertices` (issue #29 S3, per-object).
 /// Port of the prototype `buildGrids` lattice loop, now spanning an arbitrary box.
@@ -1667,28 +1700,53 @@ fn lattice_vertices_into(vertices: &mut Vec<LineVertex>, min: [f32; 3], max: [f3
 /// staying visually on the base plane.
 const FLOOR_PLANE_DROP_VOXELS: f32 = 0.25;
 
-/// Append a floor grid for the box `[min, max]` (voxels) on its BASE plane
-/// (just below `y = min[1]`) — lines at every BLOCK boundary (spacing = `step`),
-/// snapped to the same global block lines as the lattice (issue #29 S3). The base
-/// plane is the node's bottom; the grid reads as the ground under the object.
+/// Append a FINE floor grid for the box `[min, max]` (voxels) on its BASE plane
+/// (just below `y = min[1]`) into `vertices` (issue #29 fix). Two-tier, mirroring
+/// the block lattice and the Point ground plane:
+///
+/// * **Fine voxel lines** — one per voxel boundary (step 1), at the subtle
+///   [`FLOOR_VOXEL_ALPHA`].
+/// * **Bold block lines** — at every block boundary (step = `step`), at the
+///   brighter [`FLOOR_ALPHA`], drawn ON TOP so block edges read clearly.
+///
+/// Both tiers walk from the BLOCK-ALIGNED `min` corner with a 1-voxel stride
+/// ([`voxel_boundaries`]), so the bold block lines land on `min + k·step` — the
+/// EXACT coordinates of the block lattice's vertical lines
+/// ([`block_boundaries`]). The floor grid therefore shares the lattice's global
+/// frame and their lines coincide at the base plane. The base plane is the node's
+/// bottom (dropped [`FLOOR_PLANE_DROP_VOXELS`] to avoid z-fighting the model's
+/// coincident bottom face); the grid reads as the ground under the object.
 fn floor_vertices_into(vertices: &mut Vec<LineVertex>, min: [f32; 3], max: [f32; 3], step: u32) {
-    let color = with_alpha(srgb_hex_to_linear(FLOOR_COLOR_HEX), FLOOR_ALPHA);
+    let voxel_color = with_alpha(srgb_hex_to_linear(FLOOR_COLOR_HEX), FLOOR_VOXEL_ALPHA);
+    let block_color = with_alpha(srgb_hex_to_linear(FLOOR_COLOR_HEX), FLOOR_ALPHA);
     let y = min[1] - FLOOR_PLANE_DROP_VOXELS;
-    let xs = block_boundaries(min[0], max[0], step);
-    let zs = block_boundaries(min[2], max[2], step);
+    let xs = voxel_boundaries(min[0], max[0], step);
+    let zs = voxel_boundaries(min[2], max[2], step);
 
-    let mut add = |from: [f32; 3], to: [f32; 3]| {
+    let mut add = |from: [f32; 3], to: [f32; 3], color: [f32; 4]| {
         vertices.push(LineVertex { position: from, color });
         vertices.push(LineVertex { position: to, color });
     };
 
-    // Lines parallel to Z, at every X block boundary.
-    for &x in &xs {
-        add([x, y, min[2]], [x, y, max[2]]);
+    // Minor pass: fine voxel lines (one per voxel boundary), subtle.
+    // Lines parallel to Z, at every X voxel boundary.
+    for &(x, _) in &xs {
+        add([x, y, min[2]], [x, y, max[2]], voxel_color);
     }
-    // Lines parallel to X, at every Z block boundary.
-    for &z in &zs {
-        add([min[0], y, z], [max[0], y, z]);
+    // Lines parallel to X, at every Z voxel boundary.
+    for &(z, _) in &zs {
+        add([min[0], y, z], [max[0], y, z], voxel_color);
+    }
+    // Major pass: bold block lines, on top, coincident with the block lattice.
+    for &(x, is_block) in &xs {
+        if is_block {
+            add([x, y, min[2]], [x, y, max[2]], block_color);
+        }
+    }
+    for &(z, is_block) in &zs {
+        if is_block {
+            add([min[0], y, z], [max[0], y, z], block_color);
+        }
     }
 }
 
@@ -3153,6 +3211,105 @@ mod tests {
             // REMOVE a whole block (shrink by step): exactly one fewer plane.
             let two = block_boundaries(0.0, 2.0 * s, step);
             assert_eq!(two.len(), 3, "@step{step}: -1 enclosing block ⇒ -1 lattice plane");
+        }
+    }
+
+    /// `voxel_boundaries` walks one voxel at a time from the block-aligned `lo` to
+    /// `hi`, tagging every `step`-th line as a BLOCK edge. So a `B`-block box yields
+    /// `B·step + 1` voxel lines, of which exactly `B + 1` are block lines — and those
+    /// block lines sit on the SAME coordinates as `block_boundaries(lo, hi, step)`.
+    /// This is the alignment guarantee: the fine floor's bold lines coincide with the
+    /// block lattice's vertical lines.
+    #[test]
+    fn voxel_boundaries_tag_block_lines_at_lattice_positions() {
+        for step in [1u32, 15, 16] {
+            let s = step as f32;
+            // A 3-block box: 3·step voxel cells ⇒ 3·step + 1 voxel boundaries.
+            let lines = voxel_boundaries(0.0, 3.0 * s, step);
+            assert_eq!(
+                lines.len(),
+                3 * step as usize + 1,
+                "@step{step}: a 3-block box has 3·step+1 voxel boundaries",
+            );
+            // The BLOCK-tagged lines are exactly the block-boundary planes.
+            let block_lines: Vec<f32> =
+                lines.iter().filter(|(_, b)| *b).map(|(c, _)| *c).collect();
+            assert_eq!(
+                block_lines,
+                block_boundaries(0.0, 3.0 * s, step),
+                "@step{step}: floor's bold (block) lines coincide with the lattice block lines",
+            );
+            // At density 1 EVERY voxel line is a block line (voxel == block).
+            if step == 1 {
+                assert!(lines.iter().all(|(_, b)| *b), "@step1: every voxel line is a block line");
+            } else {
+                // Otherwise the voxel lines strictly outnumber the block lines.
+                assert!(
+                    block_lines.len() < lines.len(),
+                    "@step{step}: voxel lines are denser than block lines",
+                );
+            }
+        }
+    }
+
+    /// The fine floor grid is two-tier and aligns with the block lattice (issue #29
+    /// fix). For a node box, this asserts three properties. First, the floor's
+    /// DISTINCT X/Z line coordinates form a superset of — and at the block positions
+    /// coincide with — the lattice's vertical-line coordinates. Second, the floor
+    /// uses exactly two alphas (a subtle voxel tier and a bold block tier). Third, at
+    /// a coarse density the voxel lines visibly outnumber the block lines.
+    #[test]
+    fn floor_grid_is_two_tier_and_aligns_with_lattice() {
+        // Distinct X coordinates among the Z-running lines of a floor/lattice batch.
+        let distinct_xs = |verts: &[LineVertex]| -> Vec<i64> {
+            let mut xs: Vec<i64> = verts
+                .iter()
+                .map(|v| (v.position[0] * 256.0).round() as i64)
+                .collect();
+            xs.sort_unstable();
+            xs.dedup();
+            xs
+        };
+        for step in [1u32, 15, 16] {
+            let s = step as f32;
+            // A box NOT at the origin (min ≠ 0), to catch a frame/offset mismatch.
+            let (min, max) = ([s, 0.0, 2.0 * s], [4.0 * s, s, 5.0 * s]);
+            let mut lattice = Vec::new();
+            lattice_vertices_into(&mut lattice, min, max, step);
+            let mut floor = Vec::new();
+            floor_vertices_into(&mut floor, min, max, step);
+
+            // (2) Exactly two distinct alphas — the subtle voxel tier and the bold
+            // block tier. At step 1 every line is both a voxel and a block line, so
+            // it is drawn twice (subtle then bold) and BOTH alphas are still present.
+            let mut alphas: Vec<i64> =
+                floor.iter().map(|v| (v.color[3] * 1024.0).round() as i64).collect();
+            alphas.sort_unstable();
+            alphas.dedup();
+            assert_eq!(
+                alphas.len(),
+                2,
+                "@step{step}: floor has two alpha tiers (subtle voxel + bold block)",
+            );
+
+            // (1) The lattice's vertical X lines must ALL appear among the floor's
+            // X lines (the floor X set is a superset coinciding at the block lines).
+            let lattice_xs = distinct_xs(&lattice);
+            let floor_xs = distinct_xs(&floor);
+            for x in &lattice_xs {
+                assert!(
+                    floor_xs.contains(x),
+                    "@step{step}: lattice vertical line x={x} has a coincident floor line",
+                );
+            }
+            // (3) At a coarse density the floor has strictly more distinct X lines
+            // than the lattice (the extra ones are the fine voxel lines).
+            if step > 1 {
+                assert!(
+                    floor_xs.len() > lattice_xs.len(),
+                    "@step{step}: floor (voxel-resolution) has denser X lines than the lattice",
+                );
+            }
         }
     }
 
