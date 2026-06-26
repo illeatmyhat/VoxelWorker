@@ -264,8 +264,13 @@ impl WindowedState {
             shape.size_blocks,
             shape.voxels_per_block
         );
-        let voxel_renderer =
-            VoxelRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT, &grid);
+        let voxel_renderer = VoxelRenderer::new(
+            &gpu.device,
+            &gpu.queue,
+            COLOR_TARGET_FORMAT,
+            &grid,
+            panel_state.geometry.voxels_per_block,
+        );
         let gizmo_renderer =
             GizmoRenderer::new(&gpu.device, COLOR_TARGET_FORMAT, grid.dimensions);
         let grid_lattice_renderer = GridLatticeRenderer::new(
@@ -385,7 +390,7 @@ impl WindowedState {
         let previous_grid_y = self.grid.dimensions[1];
         let grid = resolve_scene(&self.panel_state.scene, density);
         self.voxel_renderer
-            .rebuild_instances(&self.gpu.device, &self.gpu.queue, &grid);
+            .rebuild_instances(&self.gpu.device, &self.gpu.queue, &grid, density);
         // Re-upload the fog's 3D occupancy field for the new grid (issue #12).
         self.onion_fog_renderer
             .upload_grid(&self.gpu.device, &self.gpu.queue, &grid);

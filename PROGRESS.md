@@ -33,6 +33,32 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **Chunked instanced rendering + per-chunk frustum culling (ADR 0002 E2) — Part of #19** — the
+  instanced voxel renderer now partitions the single resolved `VoxelGrid` into spatial chunks and
+  frustum-culls them per frame, retiring the 450k draw-side truncation. **Chunk size** is
+  `CHUNK_BLOCKS = 4` blocks/axis (= `4 * voxels_per_block` voxels/axis; ADR 0002 Decision 3).
+  `bucket_instances_into_chunks(grid, voxels_per_block)` (new in `renderer.rs`) buckets every occupied
+  voxel by `floor(world_position / chunk_extent)`, lays the single instance buffer out chunk-by-chunk
+  (chunk keys sorted so the layout — and thus the goldens — is deterministic), and records each
+  chunk's instance range + world AABB. `MAX_DRAWN_INSTANCES` (the 450k cap + `instances_from_grid`'s
+  `.take()`) is **deleted** — every voxel in a visible chunk draws, so a scene up to the unchanged 6M
+  `MAX_GRID_VOXELS` resolve cap renders fully instead of being cut at ~450k. New `src/frustum.rs`:
+  Gribb–Hartmann plane extraction from the camera `view_projection` + a positive-vertex AABB test
+  (never a false negative, so on-screen geometry is never wrongly culled); `update_uniforms` (now
+  `&mut self`, already had the matrix) runs the cull and stores the visible-chunk list, and `draw`
+  emits one `draw_indexed` per visible chunk over its instance range. All per-voxel attributes
+  (position, block-local coord, material_id) and every shipped feature — per-face textures, per-voxel
+  slice, grid overlay, layer band clip, `--debug-faces`, onion fog (still samples the untouched
+  single-grid occupancy texture) — carry through per-chunk transparently. New `--debug-chunks` shot
+  flag prints `chunks: drew X / Y`. **Verification:** `cargo build --bins`, `clippy --all-targets`
+  (+ `--features gpu --tests`), `cargo test` (62 pass incl. new bucketing/AABB + frustum unit tests)
+  all clean; **all 5 golden cases pixel-identical** (`cargo test --features gpu --test golden`);
+  `sphere 6×6×6 @16` = 463,400 voxels (> old 450k cap) now renders a COMPLETE sphere across 8/8
+  chunks; a zoomed-in `--demo-village` drew **8 / 16** chunks (off-screen half culled) with the
+  on-screen geometry intact. SCOPE held: no chunked resolve, no coord rebasing, no meshing, no fog/UI
+  changes. Files: `src/renderer.rs`, `src/frustum.rs` (new), `src/lib.rs`, `src/main.rs`,
+  `src/bin/shot.rs`.
+
 - **Scene persistence + migration (ADR 0001 step 8) — Closes #21** — the whole scene now persists,
   not just the single active-Tool geometry. Added `serde::{Serialize, Deserialize}` (+ `PartialEq`)
   to the scene model: `Scene`, `Node`, `NodeContent`, `Part`, `AssemblyDef`, `NodeTransform`,

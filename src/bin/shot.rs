@@ -142,6 +142,11 @@ struct ShotOptions {
     /// repeated assembly appears at multiple separated locations from a single
     /// stored definition (reuse by reference).
     demo_village: bool,
+    /// `--debug-chunks` (ADR 0002 E2, part of #19): after the per-frame frustum
+    /// cull, print `chunks: drew X / Y` (visible / total) so the chunking + cull
+    /// can be verified headlessly. Zooming/rotating a large scene off-screen draws
+    /// fewer chunks; a small scene draws all of them.
+    debug_chunks: bool,
     /// `--demo-groups` (ADR 0001 step 4, UI verification): build a scene with a
     /// top-level `Group` that has two child Tools, plus a sibling top-level Tool
     /// and one `Instance` of a definition — so the headless PANEL capture shows the
@@ -179,6 +184,7 @@ impl Default for ShotOptions {
             layer_upper: None,
             onion_depth: 0,
             debug_clouds: false,
+            debug_chunks: false,
             demo_scene: false,
             demo_village: false,
             demo_groups: false,
@@ -367,6 +373,9 @@ fn parse_options() -> ShotOptions {
             "--debug-faces" => {
                 options.debug_face_orientation = true;
             }
+            "--debug-chunks" => {
+                options.debug_chunks = true;
+            }
             "--demo-scene" => {
                 options.demo_scene = true;
             }
@@ -447,7 +456,8 @@ fn parse_options() -> ShotOptions {
                      \x20            [--apply-block <substring>] [--list-perface]\n\
                      \x20            [--force-demo-stem <texture/stem>]\n\
                      \x20            [--gizmo] [--lattice] [--floor] [--no-viewcube]\n\
-                     \x20            [--debug-faces] [--demo-scene] [--demo-village] [--demo-groups]\n\
+                     \x20            [--debug-faces] [--debug-chunks]\n\
+                     \x20            [--demo-scene] [--demo-village] [--demo-groups]\n\
                      \x20            [--layer-lower <u32>] [--layer-upper <u32>] [--onion <u32>]\n\
                      \x20            [--export-vox <path.vox>]\n\
                      \x20            [--snap <face|edge|corner>  e.g. front, front-top, front-top-right]\n\
@@ -870,8 +880,13 @@ async fn run_capture(options: ShotOptions) {
         return;
     }
 
-    let voxel_renderer =
-        VoxelRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT, &grid);
+    let mut voxel_renderer = VoxelRenderer::new(
+        &gpu.device,
+        &gpu.queue,
+        COLOR_TARGET_FORMAT,
+        &grid,
+        options.geometry.voxels_per_block,
+    );
     let gizmo_renderer = GizmoRenderer::new(&gpu.device, COLOR_TARGET_FORMAT, grid.dimensions);
     let grid_lattice_renderer = GridLatticeRenderer::new(
         &gpu.device,
@@ -1091,6 +1106,17 @@ async fn run_capture(options: ShotOptions) {
         band,
         uniform_material,
     );
+
+    // ADR 0002 E2 (#19): the frustum cull ran inside `update_uniforms`. Report the
+    // drawn/total chunk counts so the chunking + culling are verifiable headlessly.
+    if options.debug_chunks {
+        println!(
+            "chunks: drew {} / {} ({} instances total)",
+            voxel_renderer.visible_chunk_count(),
+            voxel_renderer.chunk_count(),
+            voxel_renderer.instance_count(),
+        );
+    }
 
     // M6: the active material is a loaded VS block when one was applied,
     // otherwise the procedural choice.
