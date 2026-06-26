@@ -148,6 +148,43 @@ pub fn bucket_instances_into_chunks(
     (instances, chunks)
 }
 
+/// Build the instance list + world-space AABB for ONE chunk's voxels (issue #20
+/// S6c-2b). The per-chunk render accessor (`ChunkResolveCache::resident_render_chunks`)
+/// already hands each chunk as its own [`VoxelGrid`] in render (recentred) coords,
+/// so unlike [`bucket_instances_into_chunks`] there is no spatial grouping to do:
+/// every occupied voxel becomes one [`VoxelInstance`] and the AABB is the union of
+/// their cubes (centres ±0.5 per axis).
+///
+/// The produced bytes are identical to the slice `bucket_instances_into_chunks`
+/// produces for this chunk from the assembled whole grid — bucketing a single
+/// per-chunk grid yields exactly that chunk's instances (proven in S6c-2a:
+/// per-chunk grids are byte-identical to the corresponding slices of the assembled
+/// grid). Returns `None` when the chunk has zero voxels (the caller skips it — no
+/// buffer is allocated).
+fn instances_for_chunk(grid: &VoxelGrid) -> Option<(Vec<VoxelInstance>, Aabb)> {
+    if grid.occupied.is_empty() {
+        return None;
+    }
+    let mut instances = Vec::with_capacity(grid.occupied.len());
+    let mut aabb = Aabb::empty();
+    for voxel in &grid.occupied {
+        // A voxel cube spans ±0.5 around its centre world position.
+        let center = glam::Vec3::from(voxel.world_position);
+        aabb.expand(center - glam::Vec3::splat(0.5));
+        aabb.expand(center + glam::Vec3::splat(0.5));
+        instances.push(VoxelInstance {
+            world_position: voxel.world_position,
+            block_local_coord: [
+                voxel.block_local_coord[0] as f32,
+                voxel.block_local_coord[1] as f32,
+                voxel.block_local_coord[2] as f32,
+            ],
+            material_id: voxel.material_id as u32,
+        });
+    }
+    Some((instances, aabb))
+}
+
 /// The uniform block uploaded to the shader.
 ///
 /// std140-safe: every `vec3` (`[f32; 3]`) is immediately followed by a scalar so
@@ -306,6 +343,24 @@ impl LayerBand {
     };
 }
 
+/// One render chunk's own GPU buffers (issue #20 S6c-2b): an instance
+/// `wgpu::Buffer` holding exactly this chunk's voxels, the instance count, and
+/// the chunk's world-space AABB for frustum culling. Each resident chunk owns its
+/// buffer independently, so a per-chunk dirty rebuild replaces one entry without
+/// touching the rest (the incremental path lands in S6c-2c; this step rebuilds
+/// every chunk wholesale via [`VoxelRenderer::rebuild_all_from_chunks`]).
+///
+/// A chunk that resolves to zero voxels is never stored (no buffer is allocated),
+/// so every entry in the cache has `instance_count > 0`.
+pub struct InstancedChunkBuffers {
+    /// This chunk's instance buffer (one [`VoxelInstance`] per voxel).
+    instance_buffer: wgpu::Buffer,
+    /// Number of instances (voxels) in this chunk's buffer.
+    instance_count: u32,
+    /// World-space AABB of the chunk's voxel cubes (centres ±0.5 per axis).
+    aabb: Aabb,
+}
+
 /// All GPU resources for drawing the voxel grid as textured instanced cubes.
 pub struct VoxelRenderer {
     pipeline: wgpu::RenderPipeline,
@@ -317,19 +372,19 @@ pub struct VoxelRenderer {
     cube_vertex_buffer: wgpu::Buffer,
     cube_index_buffer: wgpu::Buffer,
     cube_index_count: u32,
-    instance_buffer: wgpu::Buffer,
-    instance_count: u32,
-    /// Number of instances the current `instance_buffer` can hold without a
-    /// reallocation. `rebuild_instances` grows the buffer only when exceeded.
-    instance_capacity: u32,
-    /// The spatial chunks (ADR 0002 E2, part of #19): per-chunk instance ranges
-    /// into `instance_buffer` + world AABBs. Rebuilt from the grid alongside the
-    /// instance buffer; frustum-culled each frame in `update_uniforms`.
-    chunks: Vec<Chunk>,
-    /// Indices into `chunks` that survived the last frustum cull (computed in
-    /// `update_uniforms`, consumed in `draw`). Starts as "all chunks visible" so
-    /// a first draw before any uniform upload still shows everything.
-    visible_chunks: Vec<usize>,
+    /// The per-chunk GPU buffer cache (issue #20 S6c-2b): one
+    /// [`InstancedChunkBuffers`] per resident chunk, keyed by ABSOLUTE chunk
+    /// coordinate (the coord the resolve cache's accessor reports). Replaces the
+    /// single grown monolithic instance buffer + `Vec<Chunk>` ranges: each chunk
+    /// now owns its own instance buffer, built from its own per-chunk
+    /// [`VoxelGrid`]. Frustum-culled per frame in `update_uniforms`; one
+    /// `draw_indexed` per visible chunk over its own buffer in `draw`.
+    chunk_buffers: HashMap<[i32; 3], InstancedChunkBuffers>,
+    /// The chunk coords (keys into `chunk_buffers`) that survived the last frustum
+    /// cull (computed in `update_uniforms`, consumed in `draw`). Reset to "every
+    /// resident chunk visible" on every rebuild so a first draw before any uniform
+    /// upload still shows everything.
+    visible_chunks: Vec<[i32; 3]>,
     uniform_buffer: wgpu::Buffer,
     uniform_bind_group: wgpu::BindGroup,
     /// One bind group per material (Stone/Wood/Plain), indexed by
@@ -364,18 +419,6 @@ impl VoxelRenderer {
             label: Some("voxel cube indices"),
             contents: bytemuck::cast_slice(&indices),
             usage: wgpu::BufferUsages::INDEX,
-        });
-
-        let (instances, chunks) = bucket_instances_into_chunks(grid, voxels_per_block);
-        let visible_chunks: Vec<usize> = (0..chunks.len()).collect();
-        let instance_count = instances.len() as u32;
-        let instance_capacity = instance_count.max(1);
-        let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("voxel instances"),
-            // Always allocate room for at least one instance so an initially empty
-            // grid still has a valid (zero-drawn) buffer to grow from.
-            contents: bytemuck::cast_slice(&pad_to_capacity(instances, instance_capacity)),
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         });
 
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -585,23 +628,25 @@ impl VoxelRenderer {
         // (Onion skin is a separate volumetric fog pass — see `OnionFogRenderer`
         // — so the voxel renderer no longer needs a translucent ghost pipeline.)
 
-        Self {
+        let mut renderer = Self {
             pipeline,
             debug_pipeline,
             cube_vertex_buffer,
             cube_index_buffer,
             cube_index_count: indices.len() as u32,
-            instance_buffer,
-            instance_count,
-            instance_capacity,
-            chunks,
-            visible_chunks,
+            chunk_buffers: HashMap::new(),
+            visible_chunks: Vec::new(),
             uniform_buffer,
             uniform_bind_group,
             material_bind_groups,
             material_bind_group_layout,
             material_sampler,
-        }
+        };
+        // Build the per-chunk GPU buffer cache from the initial whole grid via the
+        // wrapper (it buckets the grid into per-chunk groups and builds one buffer
+        // per chunk — issue #20 S6c-2b).
+        renderer.rebuild_instances(device, queue, grid, voxels_per_block);
+        renderer
     }
 
     /// The material bind-group layout (texture @ binding 0, sampler @ binding 1).
@@ -616,49 +661,125 @@ impl VoxelRenderer {
         &self.material_sampler
     }
 
-    /// Number of voxel instances currently drawn from the buffer.
+    /// Number of voxel instances currently drawn across all resident chunk
+    /// buffers (issue #20 S6c-2b): the sum of every chunk's instance count.
     pub fn instance_count(&self) -> u32 {
-        self.instance_count
+        self.chunk_buffers
+            .values()
+            .map(|buffers| buffers.instance_count)
+            .sum()
     }
 
-    /// Rebuild the instance buffer + spatial chunks FROM a freshly-resolved grid
-    /// (M3 live edit). The voxels are bucketed into `CHUNK_BLOCKS³`-block chunks
-    /// (ADR 0002 E2): the instance buffer is laid out chunk-by-chunk and each
-    /// chunk's range + world AABB is recorded for per-frame frustum culling.
+    /// Build (or replace) ONE chunk's GPU buffers from its per-chunk
+    /// [`VoxelGrid`] (issue #20 S6c-2b), keyed by its ABSOLUTE chunk `coord`. A
+    /// chunk that resolves to zero voxels is EVICTED (no buffer allocated); any
+    /// previous buffer for `coord` is dropped + replaced. `voxels_per_block` is
+    /// unused here (the per-chunk grid is already in render coords) but kept on the
+    /// signature for symmetry with the resolve seam and the dirty-rebuild step.
+    pub fn rebuild_chunk(
+        &mut self,
+        device: &wgpu::Device,
+        coord: [i32; 3],
+        chunk_grid: &VoxelGrid,
+    ) {
+        match instances_for_chunk(chunk_grid) {
+            Some((instances, aabb)) => {
+                let instance_buffer =
+                    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                        label: Some("voxel chunk instances"),
+                        contents: bytemuck::cast_slice(&instances),
+                        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                    });
+                self.chunk_buffers.insert(
+                    coord,
+                    InstancedChunkBuffers {
+                        instance_buffer,
+                        instance_count: instances.len() as u32,
+                        aabb,
+                    },
+                );
+            }
+            // Zero voxels: don't allocate, and drop any stale buffer for this coord.
+            None => {
+                self.chunk_buffers.remove(&coord);
+            }
+        }
+    }
+
+    /// Evict one chunk's GPU buffers (issue #20 S6c-2b), dropping its instance
+    /// buffer. A no-op if the chunk was not resident. Used by the dirty-rebuild
+    /// path (S6c-2c) to evict exactly the coords the resolve cache evicted.
+    pub fn evict_chunk(&mut self, coord: [i32; 3]) {
+        self.chunk_buffers.remove(&coord);
+    }
+
+    /// Clear every resident chunk buffer and rebuild from the per-chunk grids the
+    /// resolve cache's accessor hands out (issue #20 S6c-2b). This step rebuilds
+    /// the WHOLE cache wholesale; the incremental dirty-only rebuild is the next
+    /// step (S6c-2c). `chunk_grids` is exactly
+    /// `ChunkResolveCache::resident_render_chunks`'s output: `(absolute_chunk_coord,
+    /// &rebased_grid)` per covering chunk. Zero-voxel chunks are skipped by
+    /// [`rebuild_chunk`].
+    pub fn rebuild_all_from_chunks(
+        &mut self,
+        device: &wgpu::Device,
+        _queue: &wgpu::Queue,
+        chunk_grids: &[([i32; 3], &VoxelGrid)],
+    ) {
+        self.chunk_buffers.clear();
+        for (coord, grid) in chunk_grids {
+            self.rebuild_chunk(device, *coord, grid);
+        }
+        self.reset_visible_to_all();
+    }
+
+    /// Rebuild the per-chunk GPU buffer cache FROM a freshly-resolved WHOLE grid
+    /// (the wrapper kept for `shot.rs` and tests that have a monolithic grid —
+    /// issue #20 S6c-2b). Buckets the whole grid into `CHUNK_BLOCKS³`-block chunks
+    /// (ADR 0002 E2) and builds one buffer per chunk via [`rebuild_chunk`], so the
+    /// per-chunk buffer contents equal today's per-chunk slices of the monolithic
+    /// buffer. The chunk coord key is `floor(world_position / chunk_extent)` — the
+    /// same key `bucket_instances_into_chunks` uses.
     pub fn rebuild_instances(
         &mut self,
         device: &wgpu::Device,
-        queue: &wgpu::Queue,
+        _queue: &wgpu::Queue,
         grid: &VoxelGrid,
         voxels_per_block: u32,
     ) {
-        let (instances, chunks) = bucket_instances_into_chunks(grid, voxels_per_block);
-        let instance_count = instances.len() as u32;
-
-        if instance_count <= self.instance_capacity {
-            if instance_count > 0 {
-                queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(&instances));
-            }
-        } else {
-            // Grow: allocate exactly the new count. A `create_buffer_init` keeps
-            // the COPY_DST usage so subsequent rebuilds can reuse it again.
-            self.instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("voxel instances"),
-                contents: bytemuck::cast_slice(&instances),
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            });
-            self.instance_capacity = instance_count;
+        let chunk_extent = (CHUNK_BLOCKS * voxels_per_block.max(1)) as f32;
+        // Group the whole grid's voxels into per-chunk sub-grids keyed by integer
+        // chunk coord, then build one buffer per chunk. A sub-grid carries only the
+        // occupied voxels — `instances_for_chunk` ignores `dimensions`.
+        let mut buckets: HashMap<[i32; 3], VoxelGrid> = HashMap::new();
+        for voxel in &grid.occupied {
+            let key = [
+                (voxel.world_position[0] / chunk_extent).floor() as i32,
+                (voxel.world_position[1] / chunk_extent).floor() as i32,
+                (voxel.world_position[2] / chunk_extent).floor() as i32,
+            ];
+            buckets
+                .entry(key)
+                .or_insert_with(|| VoxelGrid::new([0, 0, 0]))
+                .occupied
+                .push(*voxel);
         }
-        self.instance_count = instance_count;
-        // Default to all chunks visible until the next `update_uniforms` runs the
-        // frustum cull, so a draw between rebuild and uniform upload is correct.
-        self.visible_chunks = (0..chunks.len()).collect();
-        self.chunks = chunks;
+        self.chunk_buffers.clear();
+        for (coord, sub_grid) in &buckets {
+            self.rebuild_chunk(device, *coord, sub_grid);
+        }
+        self.reset_visible_to_all();
     }
 
-    /// Total number of spatial chunks the current grid was bucketed into.
+    /// Reset the visible-chunk set to "every resident chunk", so a draw between a
+    /// rebuild and the next `update_uniforms` frustum cull shows everything.
+    fn reset_visible_to_all(&mut self) {
+        self.visible_chunks = self.chunk_buffers.keys().copied().collect();
+    }
+
+    /// Total number of resident render chunks (issue #20 S6c-2b).
     pub fn chunk_count(&self) -> u32 {
-        self.chunks.len() as u32
+        self.chunk_buffers.len() as u32
     }
 
     /// Number of chunks that survived the last frustum cull (i.e. will be drawn).
@@ -730,19 +851,22 @@ impl VoxelRenderer {
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
 
-        // Frustum-cull the chunks for this frame (ADR 0002 E2): extract the six
-        // camera planes from `view_projection` and keep only chunks whose world
-        // AABB intersects the frustum. At small scale every chunk is visible →
-        // identical output to the old single un-culled draw. The positive-vertex
-        // test never produces a false NEGATIVE, so on-screen geometry is never
-        // wrongly dropped.
+        // Frustum-cull the resident per-chunk buffers for this frame (ADR 0002 E2):
+        // extract the six camera planes from `view_projection` and keep only chunks
+        // whose world AABB intersects the frustum. At small scale every chunk is
+        // visible → identical output to the old single un-culled draw. The
+        // positive-vertex test never produces a false NEGATIVE, so on-screen
+        // geometry is never wrongly dropped. The kept coords are sorted so the draw
+        // order is deterministic (it is pixel-irrelevant — the pass is opaque +
+        // depth-tested — but a stable order keeps `--debug-chunks` reproducible).
         let frustum = Frustum::from_view_projection(view_projection);
         self.visible_chunks.clear();
-        for (index, chunk) in self.chunks.iter().enumerate() {
-            if frustum.intersects_aabb(&chunk.aabb) {
-                self.visible_chunks.push(index);
+        for (coord, buffers) in &self.chunk_buffers {
+            if frustum.intersects_aabb(&buffers.aabb) {
+                self.visible_chunks.push(*coord);
             }
         }
+        self.visible_chunks.sort_unstable();
     }
 
     /// Record the voxel draw into an already-begun render pass.
@@ -763,7 +887,7 @@ impl VoxelRenderer {
         material: MaterialSource<'_>,
         debug_face_mode: bool,
     ) {
-        if self.instance_count == 0 {
+        if self.chunk_buffers.is_empty() {
             return;
         }
         let material_bind_group = match material {
@@ -779,24 +903,27 @@ impl VoxelRenderer {
         render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
         render_pass.set_bind_group(1, material_bind_group, &[]);
         render_pass.set_vertex_buffer(0, self.cube_vertex_buffer.slice(..));
-        render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
         render_pass.set_index_buffer(self.cube_index_buffer.slice(..), wgpu::IndexFormat::Uint16);
 
-        // Draw each frustum-visible chunk as its own instanced range (ADR 0002
-        // E2). Every voxel in a visible chunk is drawn — no draw-side truncation
-        // — so a scene up to the 6M resolve cap renders fully. The instance
+        // Draw each frustum-visible chunk from its OWN instance buffer (issue #20
+        // S6c-2b): one `draw_indexed` per visible chunk over its full instance
+        // range. Every voxel in a visible chunk is drawn — no draw-side truncation
+        // — so a scene up to the per-chunk resolve cap renders fully. The instance
         // attributes (position, block-local coord, material_id) and every shader
-        // feature carry through per-chunk unchanged; chunking only groups the
-        // draws spatially. If `update_uniforms` has not run yet, `visible_chunks`
-        // still lists all chunks, so nothing is dropped.
-        for &chunk_index in &self.visible_chunks {
-            let chunk = &self.chunks[chunk_index];
-            if chunk.instance_count == 0 {
+        // feature carry through per-chunk unchanged; the per-chunk buffer contents
+        // equal today's per-chunk slices of the old monolithic buffer, and
+        // cross-chunk draw order is pixel-irrelevant (opaque, depth-tested). If
+        // `update_uniforms` has not run yet, `visible_chunks` still lists every
+        // resident chunk, so nothing is dropped.
+        for coord in &self.visible_chunks {
+            let Some(buffers) = self.chunk_buffers.get(coord) else {
+                continue;
+            };
+            if buffers.instance_count == 0 {
                 continue;
             }
-            let start = chunk.instance_start;
-            let end = start + chunk.instance_count;
-            render_pass.draw_indexed(0..self.cube_index_count, 0, start..end);
+            render_pass.set_vertex_buffer(1, buffers.instance_buffer.slice(..));
+            render_pass.draw_indexed(0..self.cube_index_count, 0, 0..buffers.instance_count);
         }
     }
 }
@@ -1113,21 +1240,6 @@ pub fn procedural_material_pixels() -> [Vec<u8>; 3] {
 /// cuboid path uploads them at the matching size.
 pub fn procedural_material_texture_size() -> u32 {
     MATERIAL_TEXTURE_SIZE
-}
-
-/// Grow `instances` to at least `capacity` entries with zeroed padding.
-fn pad_to_capacity(mut instances: Vec<VoxelInstance>, capacity: u32) -> Vec<VoxelInstance> {
-    if (instances.len() as u32) < capacity {
-        instances.resize(
-            capacity as usize,
-            VoxelInstance {
-                world_position: [0.0; 3],
-                block_local_coord: [0.0; 3],
-                material_id: 0,
-            },
-        );
-    }
-    instances
 }
 
 // ============================================================================
@@ -3454,6 +3566,106 @@ mod tests {
         let (instances, chunks) = bucket_instances_into_chunks(&grid, 4);
         assert!(instances.is_empty());
         assert!(chunks.is_empty());
+    }
+
+    /// Issue #20 S6c-2b: the per-chunk buffer build (`instances_for_chunk` over a
+    /// single chunk's grid — the seam the per-chunk GPU cache uses) must produce
+    /// EXACTLY the instances the old monolithic `bucket_instances_into_chunks`
+    /// produced for that chunk. We verify the strong invariant: grouping the whole
+    /// grid into per-chunk sub-grids by the SAME chunk key the wrapper uses, then
+    /// running `instances_for_chunk` per group, yields a per-chunk-coord →
+    /// instance-multiset map IDENTICAL to slicing `bucket_instances_into_chunks`'s
+    /// reordered instance list along its chunk ranges. (Order within a chunk is
+    /// HashMap-iteration-dependent for the sub-grid build, so we compare multisets;
+    /// within-chunk order is pixel-irrelevant — same depth-tested cubes.)
+    #[test]
+    fn per_chunk_instances_match_monolithic_bucketing_per_chunk() {
+        let density = 4u32;
+        let dims = [8 * density, 2 * density, 4 * density];
+        let grid = solid_grid(dims);
+        let chunk_extent = (CHUNK_BLOCKS * density) as f32;
+
+        let chunk_key = |p: [f32; 3]| {
+            [
+                (p[0] / chunk_extent).floor() as i32,
+                (p[1] / chunk_extent).floor() as i32,
+                (p[2] / chunk_extent).floor() as i32,
+            ]
+        };
+        // An order-independent fingerprint of one instance (bit-exact position +
+        // block-local coord + material id).
+        let fingerprint = |inst: &VoxelInstance| {
+            (
+                [
+                    inst.world_position[0].to_bits(),
+                    inst.world_position[1].to_bits(),
+                    inst.world_position[2].to_bits(),
+                ],
+                [
+                    inst.block_local_coord[0].to_bits(),
+                    inst.block_local_coord[1].to_bits(),
+                    inst.block_local_coord[2].to_bits(),
+                ],
+                inst.material_id,
+            )
+        };
+        type Fp = ([u32; 3], [u32; 3], u32);
+        type Multiset = std::collections::BTreeMap<Fp, usize>;
+
+        // (1) The TRUTH: the monolithic bucketing, sliced into per-chunk multisets
+        // keyed by chunk coord.
+        let (mono_instances, mono_chunks) = bucket_instances_into_chunks(&grid, density);
+        let mut truth: HashMap<[i32; 3], Multiset> = HashMap::new();
+        for chunk in &mono_chunks {
+            let coord = chunk_key(mono_instances[chunk.instance_start as usize].world_position);
+            let entry = truth.entry(coord).or_default();
+            for index in chunk.instance_start..chunk.instance_start + chunk.instance_count {
+                *entry.entry(fingerprint(&mono_instances[index as usize])).or_insert(0) += 1;
+            }
+        }
+
+        // (2) The per-chunk seam: group the whole grid into per-chunk sub-grids
+        // (exactly as the `rebuild_instances` wrapper does), then build each chunk's
+        // instances via `instances_for_chunk`.
+        let mut sub_grids: HashMap<[i32; 3], VoxelGrid> = HashMap::new();
+        for voxel in &grid.occupied {
+            sub_grids
+                .entry(chunk_key(voxel.world_position))
+                .or_insert_with(|| VoxelGrid::new([0, 0, 0]))
+                .occupied
+                .push(*voxel);
+        }
+        let mut from_chunks: HashMap<[i32; 3], Multiset> = HashMap::new();
+        for (coord, sub_grid) in &sub_grids {
+            let (instances, _aabb) =
+                instances_for_chunk(sub_grid).expect("a non-empty sub-grid yields instances");
+            let entry = from_chunks.entry(*coord).or_default();
+            for inst in &instances {
+                *entry.entry(fingerprint(inst)).or_insert(0) += 1;
+            }
+        }
+
+        // Same set of chunk coords, and each chunk's instance multiset is identical.
+        assert_eq!(
+            from_chunks.keys().copied().collect::<std::collections::BTreeSet<_>>(),
+            truth.keys().copied().collect::<std::collections::BTreeSet<_>>(),
+            "per-chunk seam must cover exactly the monolithic bucketing's chunk coords"
+        );
+        for (coord, truth_multiset) in &truth {
+            assert_eq!(
+                from_chunks.get(coord),
+                Some(truth_multiset),
+                "chunk {coord:?}: per-chunk instances must equal the monolithic slice"
+            );
+        }
+    }
+
+    /// `instances_for_chunk` returns `None` (no buffer allocated) for an empty
+    /// chunk grid — the zero-voxel skip the per-chunk GPU cache relies on.
+    #[test]
+    fn instances_for_chunk_is_none_when_empty() {
+        let empty = VoxelGrid::new([0, 0, 0]);
+        assert!(instances_for_chunk(&empty).is_none());
     }
 
     /// Each chunk's AABB must contain all its voxel cubes (centre ±0.5) and no

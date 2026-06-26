@@ -179,6 +179,13 @@ struct ShotOptions {
     /// INDENTED TREE (a Group with its children nested under it) and the
     /// Definitions list. Overrides --shape/--size/--density.
     demo_groups: bool,
+    /// `--instanced-via-chunks` (issue #20 S6c-2b verification, instanced path
+    /// only): after building the `VoxelRenderer` from the whole grid via the
+    /// wrapper, REBUILD it from the resolve cache's PER-CHUNK accessor
+    /// (`resident_render_chunks` + `rebuild_all_from_chunks`) — exactly what
+    /// `main.rs::rebuild_geometry` does. Lets the headless A/B confirm the
+    /// accessor-driven main path is pixel-identical to the whole-grid wrapper path.
+    instanced_via_chunks: bool,
 }
 
 impl Default for ShotOptions {
@@ -222,6 +229,7 @@ impl Default for ShotOptions {
             demo_groups: false,
             far_offset: false,
             far_offset_near: false,
+            instanced_via_chunks: false,
         }
     }
 }
@@ -442,6 +450,9 @@ fn parse_options() -> ShotOptions {
             "--demo-groups" => {
                 options.demo_groups = true;
             }
+            "--instanced-via-chunks" => {
+                options.instanced_via_chunks = true;
+            }
             "--demo-far-offset" => {
                 options.far_offset = true;
             }
@@ -538,6 +549,7 @@ fn parse_options() -> ShotOptions {
                      \x20            [--debug-faces] [--debug-chunks]\n\
                      \x20            [--demo-scene] [--demo-village] [--demo-groups]\n\
                      \x20            [--demo-far-offset] [--demo-far-offset-near]\n\
+                     \x20            [--instanced-via-chunks]\n\
                      \x20            [--layer-lower <u32>] [--layer-upper <u32>] [--onion <u32>]\n\
                      \x20            [--fog <wholegrid|perchunk>]\n\
                      \x20            [--export-vox <path.vox>]\n\
@@ -1059,6 +1071,18 @@ async fn run_capture(options: ShotOptions) {
         &grid,
         options.geometry.voxels_per_block,
     );
+    // Issue #20 S6c-2b verification: optionally REBUILD the instanced renderer from
+    // the per-chunk accessor (exactly as `main.rs::rebuild_geometry` does), so the
+    // headless A/B can confirm the accessor-driven MAIN path is pixel-identical to
+    // the whole-grid wrapper path the line above uses. Only meaningful for a
+    // chunkable scene; a Part-only scene has no covering chunks (the accessor
+    // returns an empty Vec → an empty renderer, which would be wrong, so we guard).
+    if options.instanced_via_chunks && scene.has_chunkable_extent(density) {
+        let mut chunk_resolve_cache = voxel_worker::chunk_cache::ChunkResolveCache::new();
+        let render_chunks = chunk_resolve_cache.resident_render_chunks(&scene, density, 0);
+        voxel_renderer.rebuild_all_from_chunks(&gpu.device, &gpu.queue, &render_chunks);
+        drop(render_chunks);
+    }
     // ADR 0002 E3b-1 (part of #18): the experimental cuboid mesh path, built only
     // when `--mesher cuboid` is selected. The instanced path stays the default.
     let mut cuboid_mesh_renderer = if options.mesher == MesherChoice::Cuboid {

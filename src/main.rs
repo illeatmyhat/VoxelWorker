@@ -515,8 +515,24 @@ impl WindowedState {
         // `placed_region_dimensions`); the renderer/mesher/fog below still consume
         // the assembled `grid` (that's S6c step 4).
         let region_dimensions = region_dimensions_for(&self.panel_state.scene, density, &grid);
-        self.voxel_renderer
-            .rebuild_instances(&self.gpu.device, &self.gpu.queue, &grid, density);
+        // Issue #20 S6c-2b: drive the instanced render path from the resolve cache's
+        // PER-CHUNK accessor, maintaining one GPU instance buffer per resident chunk
+        // (instead of one monolithic buffer built from `grid`). The accessor returns
+        // a `Vec` holding an IMMUTABLE borrow of the cache, so it is consumed fully
+        // (every chunk's GPU buffer built) BEFORE any further `&mut` cache call.
+        // `rebuild_all_from_chunks` clears + rebuilds every chunk wholesale this step
+        // (incremental dirty-only rebuild is S6c-2c). The per-chunk grids are
+        // byte-identical to the corresponding slices of `grid`, so the rendered
+        // pixels are unchanged. The cuboid path still consumes the assembled `grid`.
+        let render_chunks = self
+            .chunk_resolve_cache
+            .resident_render_chunks(&self.panel_state.scene, density, 0);
+        self.voxel_renderer.rebuild_all_from_chunks(
+            &self.gpu.device,
+            &self.gpu.queue,
+            &render_chunks,
+        );
+        drop(render_chunks);
         // Re-upload the fog's occupancy field for the new grid, using the active fog
         // mode (per-chunk by default since #28 S5b).
         Self::upload_fog_occupancy(

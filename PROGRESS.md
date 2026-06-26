@@ -33,6 +33,46 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **Instanced render path: per-chunk GPU buffer cache (S6c-2b) — Part of #20 (step 4).**
+  The instanced FALLBACK (`--mesher instanced`; cuboid is the default + the only golden-covered path)
+  now maintains ONE GPU instance buffer per resident chunk instead of a single grown monolithic buffer
+  built from the whole grid. The cuboid path is untouched this step. A/B pixel-identical (0% diff).
+  - **`InstancedChunkBuffers` + a `HashMap<[i32;3], InstancedChunkBuffers>` cache (renderer.rs).** Each
+    entry owns its own instance `wgpu::Buffer` + `instance_count` + world `Aabb`, keyed by ABSOLUTE chunk
+    coord (the coord the resolve cache's `resident_render_chunks` reports). Replaces the old single
+    `instance_buffer` + `instance_capacity` + `Vec<Chunk>` ranges. A zero-voxel chunk is skipped (no
+    buffer allocated); every cache entry has `instance_count > 0`.
+  - **Methods.** `rebuild_chunk(&device, coord, &chunk_grid)` builds/replaces one chunk's buffer (or
+    evicts it if the grid is empty); `evict_chunk(coord)` drops one chunk's buffer (for the S6c-2c
+    dirty path); `rebuild_all_from_chunks(&device,&queue,&[([i32;3],&VoxelGrid)])` clears + rebuilds
+    every chunk wholesale (the path used THIS step). New `instances_for_chunk(grid) -> Option<(Vec<
+    VoxelInstance>, Aabb)>` turns one per-chunk grid into its instances + AABB (`None` when empty).
+  - **`rebuild_instances` WRAPPER kept** (so `shot.rs` + tests with a whole grid work unchanged): it
+    buckets the whole grid into per-chunk sub-grids by `floor(world_position / chunk_extent)` (the same
+    key `bucket_instances_into_chunks` uses) and calls `rebuild_chunk` for each. `VoxelRenderer::new`
+    now builds the cache through this wrapper.
+  - **`update_uniforms` cull + `draw`.** The frustum cull iterates the resident per-chunk buffers,
+    keeping the coords whose `Aabb` intersects the frustum (sorted for a deterministic, `--debug-chunks`-
+    reproducible order — cross-chunk order is pixel-irrelevant: opaque + depth-tested). `draw` does one
+    `set_vertex_buffer(1, …)` + `draw_indexed(.., 0..instance_count)` per visible chunk over its OWN
+    buffer.
+  - **`main.rs::rebuild_geometry` drives it via the accessor.** The instanced branch now calls
+    `chunk_resolve_cache.resident_render_chunks(scene, density, 0)` then `rebuild_all_from_chunks`,
+    consuming the returned `Vec` (which holds an immutable borrow of the cache) FULLY — all GPU buffers
+    built — before `drop`ping it, so no further `&mut` cache call overlaps the borrow. The assembled
+    `grid` is still resolved (the fog / cuboid / scrubber consume it).
+  - **A/B pixel-identical (REQUIRED, passed at 0%).** `--mesher instanced` for `--demo-scene`,
+    `--demo-village`, `--shape sphere`: HEAD `cd874a0` (monolithic) vs the new wrapper path are
+    BYTE-for-byte identical; and a new hidden `shot --instanced-via-chunks` flag (rebuilds the renderer
+    through the accessor exactly as `main.rs` does) renders BYTE-for-byte identical to the wrapper path
+    for all three — so monolithic == wrapper == accessor/main path, all 0% diff. PNG visually correct.
+  - **Tests (+2, lib 164 → 166).** `per_chunk_instances_match_monolithic_bucketing_per_chunk` (per-chunk
+    seam's instances, grouped by chunk coord, == the monolithic `bucket_instances_into_chunks` slice per
+    chunk, as a bit-exact multiset) and `instances_for_chunk_is_none_when_empty` (the zero-voxel skip).
+  - **Gate green.** `cargo build --bins`, `cargo clippy --all-targets` (no new warnings), `cargo test`
+    (166 pass), `cargo test --features gpu --test golden` (6 cuboid goldens pixel-identical — cuboid
+    path untouched).
+
 - **Per-chunk render accessor + `invalidate_aabb` evicted-set (S6c-2a) — Part of #20 (step 4).**
   Pure-CPU, additive, no render-path change → goldens untouched. Two seams the upcoming per-chunk
   renderer + GPU cache need, exposed WITHOUT moving any draw path:
