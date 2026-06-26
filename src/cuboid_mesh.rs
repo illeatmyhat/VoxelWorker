@@ -36,6 +36,7 @@ use crate::cuboid::{decompose_into_boxes, VoxelBox, VoxelRegion};
 use crate::frustum::{Aabb, Frustum};
 use crate::panel::MaterialChoice;
 use crate::renderer::{bucket_instances_into_chunks, LayerBand, DEPTH_FORMAT, MSAA_SAMPLE_COUNT};
+use crate::texture_atlas::MaterialAtlas;
 use crate::voxel::VoxelGrid;
 
 /// One mesh vertex of a cuboid face: world position, the face's outward normal,
@@ -546,6 +547,94 @@ struct CuboidUniforms {
     debug_face_mode: f32,
     _band_pad: f32,
     material_base_colors: [[f32; 4]; MaterialChoice::MATERIAL_COUNT],
+    /// Per-material atlas sub-rect (ADR 0002 E3c-1 / O8), indexed by `material_id`:
+    /// `[inset_min_u, inset_min_v, inset_size_u, inset_size_v]`. The shader maps the
+    /// per-voxel slice's `fract`-tiled UV into this window of the single atlas, so a
+    /// chunk of mixed materials is ONE mesh = ONE draw (no per-material texture
+    /// bind). Each `vec4` is naturally 16-aligned.
+    material_atlas_rects: [[f32; 4]; MaterialChoice::MATERIAL_COUNT],
+}
+
+/// Convert a packed [`MaterialAtlas`]'s per-material sub-rects into the uniform
+/// array layout `[inset_min_u, inset_min_v, inset_size_u, inset_size_v]` the shader
+/// indexes by `material_id`. Materials without a packed sub-rect (should not happen
+/// for the procedural set) fall back to the WHOLE atlas (`[0,0,1,1]`), so a missing
+/// id degrades to "sample the atlas" rather than panicking.
+fn atlas_rects_from(atlas: &MaterialAtlas) -> [[f32; 4]; MaterialChoice::MATERIAL_COUNT] {
+    let mut rects = [[0.0, 0.0, 1.0, 1.0]; MaterialChoice::MATERIAL_COUNT];
+    for (slot, sub_rect) in rects.iter_mut().zip(atlas.sub_rects.iter()) {
+        let [size_u, size_v] = sub_rect.inset_size();
+        *slot = [sub_rect.inset_min_u, sub_rect.inset_min_v, size_u, size_v];
+    }
+    rects
+}
+
+/// The cuboid atlas bind-group layout: a single 2D texture (binding 0) + sampler
+/// (binding 1). One atlas for ALL materials replaces the former per-material
+/// D2Array binds (ADR 0002 O8).
+fn build_atlas_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("cuboid atlas bind group layout"),
+        entries: &[
+            wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            },
+            wgpu::BindGroupLayoutEntry {
+                binding: 1,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+        ],
+    })
+}
+
+/// Upload a packed [`MaterialAtlas`] image as a single RGBA8 sRGB 2D texture
+/// (Nearest, no mipmaps), matching the instanced path's sRGB decode so lighting +
+/// overlay run in linear space and the sRGB target re-encodes on write.
+fn upload_atlas_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    atlas: &MaterialAtlas,
+) -> wgpu::Texture {
+    let size = wgpu::Extent3d {
+        width: atlas.width.max(1),
+        height: atlas.height.max(1),
+        depth_or_array_layers: 1,
+    };
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("cuboid material atlas"),
+        size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &atlas.pixels,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(4 * atlas.width.max(1)),
+            rows_per_image: Some(atlas.height.max(1)),
+        },
+        size,
+    );
+    texture
 }
 
 /// All GPU resources for drawing the cuboid mesh (flag-gated alternate path).
@@ -564,13 +653,20 @@ pub struct CuboidMeshRenderer {
     index_buffer: wgpu::Buffer,
     uniform_buffer: wgpu::Buffer,
     uniform_bind_group: wgpu::BindGroup,
-    /// One per-face material bind group (Stone/Wood/Plain), indexed by
-    /// [`MaterialChoice`] order. Built from the SAME procedural textures the
-    /// instanced path uploads, but bound through a REPEAT sampler so the per-voxel
-    /// UV tiling repeats the block texture once per voxel across a merged face.
-    material_bind_groups: [wgpu::BindGroup; 3],
-    /// Which procedural material the per-frame uniforms were bound to (the bind
-    /// group selected in `draw`). `update_uniforms` records it.
+    /// ONE atlas bind group (ADR 0002 E3c-1 / O8): all material textures packed
+    /// into a single 2D atlas texture + sampler. Replaces the former per-material
+    /// D2Array binds — a chunk of mixed materials is now one mesh = one draw, with
+    /// the shader mapping each face's `material_id` to its atlas sub-rect (carried
+    /// in the uniforms). Clamp-to-edge sampler: the shader tiles the per-voxel slice
+    /// itself via `fract` mapped into the sub-rect (a Repeat sampler would wrap into
+    /// a neighbouring material's cell).
+    atlas_bind_group: wgpu::BindGroup,
+    /// The packed atlas's per-material sub-rects (inset sampling window), uploaded
+    /// in the per-frame uniforms so the shader maps `material_id` → atlas window.
+    atlas_rects: [[f32; 4]; MaterialChoice::MATERIAL_COUNT],
+    /// Which procedural material the per-frame modulation was bound to.
+    /// `update_uniforms` records it (drives the per-box base-colour modulation only;
+    /// the atlas is bound once regardless of material).
     bound_material: MaterialChoice,
     mesh: CuboidMesh,
     /// Indices into `mesh.chunks` that survived the last frustum cull.
@@ -641,59 +737,47 @@ impl CuboidMeshRenderer {
             }],
         });
 
-        // --- Per-face material textures (E3b-2) ---
-        // Reuse the instanced path's 6-layer D2Array material layout + the SAME
-        // procedural Stone/Wood/Plain textures, but sample through a REPEAT sampler
-        // so the per-voxel UV (absolute voxel index / density) tiles the block
-        // texture once per voxel across a merged box face (matching the instanced
-        // per-voxel slice). Nearest filtering matches the instanced sampler so the
-        // texels land identically.
-        let material_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("cuboid material sampler"),
-            address_mode_u: wgpu::AddressMode::Repeat,
-            address_mode_v: wgpu::AddressMode::Repeat,
-            address_mode_w: wgpu::AddressMode::Repeat,
+        // --- Material texture ATLAS (E3c-1 / ADR 0002 O8) ---
+        // Pack ALL material textures (Stone/Wood/Plain) into ONE atlas image and
+        // bind it as a SINGLE 2D texture, so a chunk of mixed materials is one mesh
+        // = one draw (the Vintage Story approach) — no per-material texture bind.
+        // Each face's `material_id` maps to its atlas sub-rect (uploaded in the
+        // uniforms); the shader tiles the per-voxel slice INTO that sub-rect.
+        //
+        // Sampler is CLAMP-to-edge + Nearest (matching the instanced texel grid).
+        // The per-voxel tiling can NOT use a Repeat sampler here — Repeat would wrap
+        // to the WHOLE atlas, i.e. into a neighbour material — so the shader does the
+        // `fract`-tiling into the sub-rect itself, and the atlas's replicated-edge
+        // gutter + half-texel inset (see `texture_atlas`) defend the cell borders.
+        let atlas = MaterialAtlas::from_procedural_materials();
+        let atlas_rects = atlas_rects_from(&atlas);
+        let atlas_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("cuboid atlas sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Nearest,
             min_filter: wgpu::FilterMode::Nearest,
             mipmap_filter: wgpu::MipmapFilterMode::Nearest,
             ..Default::default()
         });
-        let material_bind_group_layout = crate::renderer::build_face_material_layout(device);
-        let texture_size = crate::renderer::procedural_material_texture_size();
-        let material_bind_groups: [wgpu::BindGroup; 3] = crate::renderer::procedural_material_pixels()
-            .iter()
-            .map(|pixels| {
-                // Same procedural image on all six face layers (uniform material).
-                let layers: [&[u8]; 6] = [pixels, pixels, pixels, pixels, pixels, pixels];
-                let texture = crate::renderer::upload_face_material_texture(
-                    device,
-                    queue,
-                    texture_size,
-                    texture_size,
-                    &layers,
-                );
-                let view = texture.create_view(&wgpu::TextureViewDescriptor {
-                    dimension: Some(wgpu::TextureViewDimension::D2Array),
-                    ..Default::default()
-                });
-                device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("cuboid material bind group"),
-                    layout: &material_bind_group_layout,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: wgpu::BindingResource::TextureView(&view),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: wgpu::BindingResource::Sampler(&material_sampler),
-                        },
-                    ],
-                })
-            })
-            .collect::<Vec<_>>()
-            .try_into()
-            .expect("exactly three material textures");
+        let atlas_bind_group_layout = build_atlas_bind_group_layout(device);
+        let atlas_texture = upload_atlas_texture(device, queue, &atlas);
+        let atlas_view = atlas_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let atlas_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("cuboid atlas bind group"),
+            layout: &atlas_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&atlas_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&atlas_sampler),
+                },
+            ],
+        });
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("cuboid shader"),
@@ -704,7 +788,7 @@ impl CuboidMeshRenderer {
             label: Some("cuboid pipeline layout"),
             bind_group_layouts: &[
                 Some(&uniform_bind_group_layout),
-                Some(&material_bind_group_layout),
+                Some(&atlas_bind_group_layout),
             ],
             immediate_size: 0,
         });
@@ -794,7 +878,8 @@ impl CuboidMeshRenderer {
             index_buffer,
             uniform_buffer,
             uniform_bind_group,
-            material_bind_groups,
+            atlas_bind_group,
+            atlas_rects,
             bound_material: MaterialChoice::Plain,
             mesh,
             visible_chunks,
@@ -929,6 +1014,7 @@ impl CuboidMeshRenderer {
             debug_face_mode: if debug_face_mode { 1.0 } else { 0.0 },
             _band_pad: 0.0,
             material_base_colors: base_colors,
+            material_atlas_rects: self.atlas_rects,
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
 
@@ -948,11 +1034,6 @@ impl CuboidMeshRenderer {
         if self.mesh.indices.is_empty() {
             return;
         }
-        let material_index = match self.bound_material {
-            MaterialChoice::Stone => 0,
-            MaterialChoice::Wood => 1,
-            MaterialChoice::Plain => 2,
-        };
         // Debug-faces mode selects the cull-off pipeline (matching the uploaded
         // `debug_face_mode` flag) so back faces surviving a winding bug still draw
         // and get the shader's stripe marker — same as the instanced path.
@@ -963,7 +1044,10 @@ impl CuboidMeshRenderer {
         };
         render_pass.set_pipeline(pipeline);
         render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
-        render_pass.set_bind_group(1, &self.material_bind_groups[material_index], &[]);
+        // ONE atlas bind group for ALL materials (E3c-1 / O8): the per-face
+        // `material_id` selects its atlas sub-rect in the shader, so a mixed-material
+        // chunk needs no per-material rebind — one bind, one draw per chunk.
+        render_pass.set_bind_group(1, &self.atlas_bind_group, &[]);
         render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
         for &chunk_index in &self.visible_chunks {

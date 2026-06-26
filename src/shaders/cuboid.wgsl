@@ -19,9 +19,12 @@
 //     derived from the ABSOLUTE voxel position (NOT face UVs — project guard), so
 //     they fall on the same boundaries the instanced overlay draws.
 //
-// The per-face D2Array texture layer is picked from the face normal (same mapping
-// as instanced), and the per-box material modulation from E3b-1 still multiplies
-// the lit texture colour. Layer-range clip + debug-faces are still later sub-steps.
+// E3c-1 (ADR 0002 O8) replaces the former per-material D2Array bind with ONE
+// texture ATLAS: all material tiles are packed into a single 2D image and each
+// face's material_id selects its sub-rect (uniform `material_atlas_rects`); the
+// per-voxel slice is `fract`-tiled INTO that sub-rect. A chunk of mixed materials
+// is therefore one mesh = one draw. The per-box material modulation from E3b-1
+// still multiplies the lit texture colour; layer-range clip + debug-faces unchanged.
 
 // std140-safe; field order matches `CuboidUniforms` in cuboid_mesh.rs.
 struct CuboidUniforms {
@@ -61,32 +64,28 @@ struct CuboidUniforms {
     // Per-material base colours ([r,g,b,_pad], LINEAR), relative to the bound
     // texture's average — identical to the instanced path's step-3b array.
     material_base_colors: array<vec4<f32>, 3>,
+    // Per-material atlas sub-rect (ADR 0002 E3c-1 / O8), indexed by material_id:
+    // [inset_min_u, inset_min_v, inset_size_u, inset_size_v]. The per-voxel slice's
+    // fract-tiled UV is mapped into this window of the single atlas, so a chunk of
+    // mixed materials samples ONE atlas texture (one draw) instead of binding a
+    // per-material texture. The inset (half-texel) window keeps the fract-tiling off
+    // the cell's outer edge; the atlas's replicated-edge gutter absorbs any spill.
+    material_atlas_rects: array<vec4<f32>, 3>,
 };
 
 @group(0) @binding(0)
 var<uniform> uniforms: CuboidUniforms;
 
-// Same 6-layer face-material array the instanced path binds (one layer per cube
-// face). Layer order matches the renderer's CubeFaceSlot: 0 +X(east), 1 -X(west),
-// 2 +Y(up), 3 -Y(down), 4 +Z(south), 5 -Z(north). The sampler MUST use a Repeat
-// address mode so the per-voxel UV tiling repeats once per voxel.
+// ONE atlas texture for ALL materials (ADR 0002 E3c-1 / O8): every material tile
+// is packed into a single 2D image; the per-face material_id selects a sub-rect
+// (in `material_atlas_rects`) that the per-voxel slice tiles into. The sampler is
+// CLAMP-to-edge (NOT Repeat): the shader tiles the slice itself via `fract` mapped
+// into the sub-rect, because a Repeat sampler would wrap to the whole atlas (i.e.
+// into a neighbouring material's cell).
 @group(1) @binding(0)
-var material_texture: texture_2d_array<f32>;
+var material_texture: texture_2d<f32>;
 @group(1) @binding(1)
 var material_sampler: sampler;
-
-// Pick the texture-array layer for a face from its outward normal (identical to
-// the instanced `face_layer`).
-fn face_layer(face_normal: vec3<f32>) -> i32 {
-    let axis_magnitude = abs(face_normal);
-    if (axis_magnitude.x > 0.5) {
-        return select(1, 0, face_normal.x > 0.0);
-    } else if (axis_magnitude.y > 0.5) {
-        return select(3, 2, face_normal.y > 0.0);
-    } else {
-        return select(5, 4, face_normal.z > 0.0);
-    }
-}
 
 fn material_base_colors_lookup(material_id: u32) -> vec3<f32> {
     let index = min(material_id, 2u);
@@ -132,8 +131,6 @@ struct VertexOutput {
     // Absolute voxel position (world + grid half-extent): voxel boundaries fall on
     // integers. Drives both the per-voxel UV slice and the grid overlay.
     @location(2) voxel_absolute_position: vec3<f32>,
-    // The texture-array layer for this face (flat — constant per face).
-    @location(3) @interpolate(flat) face_texture_layer: i32,
 };
 
 @vertex
@@ -147,7 +144,6 @@ fn vertex_main(vertex: VertexInput) -> VertexOutput {
     // spanning N voxels runs 0..N). Dividing the in-plane axes by the density in
     // the fragment stage + a Repeat sampler tiles the block texture once per voxel.
     output.voxel_absolute_position = vertex.world_position + uniforms.grid_half_extent;
-    output.face_texture_layer = face_layer(vertex.face_normal);
     return output;
 }
 
@@ -222,12 +218,17 @@ fn fragment_main(
     }
     let texture_coord = vec2<f32>(u_value, v_value) / uniforms.voxels_per_block;
 
-    let sampled = textureSample(
-        material_texture,
-        material_sampler,
-        texture_coord,
-        input.face_texture_layer,
-    ).rgb;
+    // --- Per-voxel slice → atlas sub-rect (E3c-1 / O8) ---
+    // The former path divided by density and let a Repeat sampler take `fract`,
+    // tiling the material's tile once per voxel. With one shared atlas we can't
+    // Repeat (it would wrap into a neighbouring material), so take the `fract`
+    // ourselves and map it into THIS material's atlas sub-rect. `fract(texture_
+    // coord)` is exactly what the Repeat sampler used to wrap to, so the sampled
+    // slice is unchanged — just relocated into the packed atlas window.
+    let atlas_rect = uniforms.material_atlas_rects[min(input.material_id, 2u)];
+    let tile_uv = fract(texture_coord);
+    let atlas_uv = atlas_rect.xy + tile_uv * atlas_rect.zw;
+    let sampled = textureSample(material_texture, material_sampler, atlas_uv).rgb;
 
     // Directional + ambient lighting — identical constants to voxel.wgsl.
     let light_direction = normalize(vec3<f32>(0.4, 0.9, 0.5));

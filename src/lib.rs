@@ -25,10 +25,12 @@ pub mod renderer;
 pub mod scan_worker;
 pub mod scene;
 pub mod settings;
+pub mod texture_atlas;
 pub mod vox_export;
 pub mod voxel;
 
 pub use cuboid_mesh::{build_cuboid_mesh, CuboidMesh, CuboidMeshRenderer};
+pub use texture_atlas::{AtlasSubRect, MaterialAtlas};
 pub use debug_clouds::DebugCloudField;
 pub use camera::{
     nearest_equivalent_theta, CubeFace, OrbitCamera, ProjectionMode, SnapTween, ViewCubeElement,
