@@ -29,7 +29,7 @@ use voxel_worker::{
     run_egui_frame, AssemblyDef, CubeFace, DefId, EguiPaintBridge, FrameOverlays, GeometryParams,
     GizmoRenderer,
     GpuContext, GridLatticeRenderer, LayerBand, LayerRange, MaterialChoice, MaterialSource,
-    Node, NodeContent, OnionFogParams, OnionFogRenderer, OrbitCamera, PanelState, Part,
+    Node, NodeContent, NodePath, OnionFogParams, OnionFogRenderer, OrbitCamera, PanelState, Part,
     ProjectionMode, RegionBlocks, Scene, SdfShape, ShapeKind, ViewCubeElement, VoxExport,
     ViewCubeRenderer, VoxelGrid, VoxelRenderer, COLOR_TARGET_FORMAT,
 };
@@ -142,6 +142,12 @@ struct ShotOptions {
     /// repeated assembly appears at multiple separated locations from a single
     /// stored definition (reuse by reference).
     demo_village: bool,
+    /// `--demo-groups` (ADR 0001 step 4, UI verification): build a scene with a
+    /// top-level `Group` that has two child Tools, plus a sibling top-level Tool
+    /// and one `Instance` of a definition — so the headless PANEL capture shows the
+    /// INDENTED TREE (a Group with its children nested under it) and the
+    /// Definitions list. Overrides --shape/--size/--density.
+    demo_groups: bool,
 }
 
 impl Default for ShotOptions {
@@ -175,6 +181,7 @@ impl Default for ShotOptions {
             debug_clouds: false,
             demo_scene: false,
             demo_village: false,
+            demo_groups: false,
         }
     }
 }
@@ -366,6 +373,9 @@ fn parse_options() -> ShotOptions {
             "--demo-village" => {
                 options.demo_village = true;
             }
+            "--demo-groups" => {
+                options.demo_groups = true;
+            }
             "--layer-lower" => {
                 options.layer_lower = Some(
                     args.next()
@@ -437,7 +447,7 @@ fn parse_options() -> ShotOptions {
                      \x20            [--apply-block <substring>] [--list-perface]\n\
                      \x20            [--force-demo-stem <texture/stem>]\n\
                      \x20            [--gizmo] [--lattice] [--floor] [--no-viewcube]\n\
-                     \x20            [--debug-faces] [--demo-scene] [--demo-village]\n\
+                     \x20            [--debug-faces] [--demo-scene] [--demo-village] [--demo-groups]\n\
                      \x20            [--layer-lower <u32>] [--layer-upper <u32>] [--onion <u32>]\n\
                      \x20            [--export-vox <path.vox>]\n\
                      \x20            [--snap <face|edge|corner>  e.g. front, front-top, front-top-right]\n\
@@ -456,7 +466,11 @@ fn parse_options() -> ShotOptions {
                      \x20  --demo-village build an INSTANCED scene: one 'house' definition\n\
                      \x20                placed by 4 Instances at 4 offsets, proving reuse-\n\
                      \x20                by-reference (ADR 0001 step 4). Overrides\n\
-                     \x20                --shape/--size/--density."
+                     \x20                --shape/--size/--density.\n\
+                     \x20  --demo-groups build a scene with a top-level Group (2 child\n\
+                     \x20                Tools), a sibling Tool and an Instance, so the\n\
+                     \x20                captured PANEL shows the indented tree + Definitions\n\
+                     \x20                (ADR 0001 step 4 UI). Overrides --shape/--size/--density."
                 );
                 std::process::exit(0);
             }
@@ -567,7 +581,7 @@ fn build_demo_scene(voxels_per_block: u32) -> Scene {
             make_tool(ShapeKind::Box, [8, 0, 0], MaterialChoice::Wood),
             make_tool(ShapeKind::Torus, [0, 0, 6], MaterialChoice::Plain),
         ],
-        active: Some(0),
+        active: Some(NodePath::root_index(0)),
         ..Scene::default()
     }
 }
@@ -626,7 +640,51 @@ fn build_demo_village(voxels_per_block: u32) -> Scene {
             instance("House 4", [18, 0, 0]),
         ],
         definitions: vec![house],
-        active: Some(0),
+        active: Some(NodePath::root_index(0)),
+    }
+}
+
+/// Build the `--demo-groups` (ADR 0001 step 4, UI verification): a scene that
+/// exercises the indented TREE in the panel. A top-level `Group` ("Cluster") holds
+/// two child Tools (a Sphere + a Box at a small offset); a sibling top-level Box
+/// Tool sits beside it; and one `Instance` of a small "Widget" definition sits
+/// beyond. So the captured panel node list shows: the Group with its two children
+/// nested+indented under it, a top-level Tool, and an Instance row, plus the
+/// Definitions list — the whole authoring surface this step adds.
+fn build_demo_groups(voxels_per_block: u32) -> Scene {
+    let tool = |kind, size: [u32; 3], offset: [i32; 3], material, name: &str| {
+        let shape = SdfShape { kind, size_blocks: size, voxels_per_block, wall_blocks: 1 };
+        let mut node = Node::new(name, NodeContent::Tool { shape, material });
+        node.transform.offset_blocks = offset;
+        node
+    };
+
+    let widget_def_id = DefId(1);
+    let widget = AssemblyDef {
+        id: widget_def_id,
+        name: "Widget".to_string(),
+        children: vec![tool(ShapeKind::Sphere, [2, 2, 2], [0, 0, 0], MaterialChoice::Plain, "Ball")],
+    };
+
+    // A Group with two children, placed at the origin; the children carry their own
+    // local offsets relative to the Group.
+    let mut cluster = Node::new(
+        "Cluster",
+        NodeContent::Group(vec![
+            tool(ShapeKind::Sphere, [2, 2, 2], [0, 0, 0], MaterialChoice::Stone, "Core"),
+            tool(ShapeKind::Box, [2, 2, 2], [3, 0, 0], MaterialChoice::Wood, "Shell"),
+        ]),
+    );
+    cluster.transform.offset_blocks = [0, 0, 0];
+
+    let lone = tool(ShapeKind::Box, [2, 2, 2], [8, 0, 0], MaterialChoice::Wood, "Lone");
+    let mut widget_instance = Node::new("Widget instance", NodeContent::Instance(widget_def_id));
+    widget_instance.transform.offset_blocks = [12, 0, 0];
+
+    Scene {
+        nodes: vec![cluster, lone, widget_instance],
+        definitions: vec![widget],
+        active: Some(NodePath::root_index(0)),
     }
 }
 
@@ -694,7 +752,9 @@ async fn run_capture(options: ShotOptions) {
     // scene — a Tool, or a DebugClouds Part when `--shape debug-clouds`. Seed the
     // panel's scene so the node-list section renders the nodes in the captured
     // panel.
-    let scene = if options.demo_village {
+    let scene = if options.demo_groups {
+        build_demo_groups(options.geometry.voxels_per_block)
+    } else if options.demo_village {
         build_demo_village(options.geometry.voxels_per_block)
     } else if options.demo_scene {
         build_demo_scene(options.geometry.voxels_per_block)
@@ -712,7 +772,7 @@ async fn run_capture(options: ShotOptions) {
     // node it equals the node's own size (the step-2 region).
     // A placed/instanced scene (demo-scene or demo-village) resolves its whole
     // composite extent; a single-node scene uses its own block size (step-2 region).
-    let placed_scene = options.demo_scene || options.demo_village;
+    let placed_scene = options.demo_scene || options.demo_village || options.demo_groups;
     let region = if placed_scene {
         scene.full_extent_blocks(options.geometry.voxels_per_block)
     } else {
@@ -750,7 +810,15 @@ async fn run_capture(options: ShotOptions) {
     // The voxel-space grid dimensions actually resolved (the composite region for
     // a placed scene), used for camera framing, the layer track and the uniforms.
     let grid_dimensions = grid.dimensions;
-    if options.demo_village {
+    if options.demo_groups {
+        println!(
+            "resolved {} voxels for demo-groups ({} top-level nodes, {} definition(s), region {:?} blocks)",
+            grid.occupied_count(),
+            scene.nodes.len(),
+            scene.definitions.len(),
+            region.size_blocks
+        );
+    } else if options.demo_village {
         println!(
             "resolved {} voxels for demo-village ({} instances of {} definition(s), region {:?} blocks)",
             grid.occupied_count(),

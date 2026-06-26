@@ -35,6 +35,11 @@ use crate::debug_clouds::DebugCloudField;
 use crate::panel::{GeometryParams, MaterialChoice};
 use crate::voxel::{SdfShape, VoxelGrid, VoxelProducer};
 
+/// Default +X spacing (in blocks) between successive instances of the same
+/// definition added via [`Scene::add_instance`], so a freshly-placed village
+/// house lands clear of the previous one instead of exactly on top of it.
+const DEFAULT_INSTANCE_SPACING_BLOCKS: i32 = 6;
+
 /// The working volume the scene resolves into, expressed in **whole blocks**
 /// (ADR 0001 "Scale": the canvas is the user-set stock / build volume). Step 1
 /// always resolves the whole extent as a single region, so this equals the lone
@@ -57,6 +62,61 @@ impl RegionBlocks {
 /// never constructs an Instance, so this is a forward-declared type only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DefId(pub u32);
+
+/// A path to a node anywhere in the **top-level assembly** (ADR 0001 step 4 UI).
+///
+/// The path is a list of child indices walked from [`Scene::nodes`] down through
+/// [`NodeContent::Group`] children: an empty-ish single element `[i]` selects the
+/// top-level node `i`; `[i, j]` selects the `j`-th child of the Group at top-level
+/// `i`; and so on to any depth. A path is **always non-empty** for a real
+/// selection (the empty path would be "the whole scene", which has no inspector).
+///
+/// Selection stops at Group boundaries: an [`NodeContent::Instance`] references a
+/// definition stored separately in [`Scene::definitions`], so its *children* are
+/// not addressable by a `NodePath` (you edit the definition's nodes by selecting a
+/// top-level node that lives in that definition is not possible in this UI — a
+/// definition is edited via its instances' shared body). The path therefore never
+/// descends through an `Instance`.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct NodePath {
+    /// Child indices from the top-level node list down through Group children.
+    pub indices: Vec<usize>,
+}
+
+impl NodePath {
+    /// A path selecting the top-level node at `index`.
+    pub fn root_index(index: usize) -> Self {
+        Self { indices: vec![index] }
+    }
+
+    /// Build a path from an explicit list of child indices.
+    pub fn from_indices(indices: Vec<usize>) -> Self {
+        Self { indices }
+    }
+
+    /// Whether this path addresses a top-level node (one index, no descent).
+    pub fn is_top_level(&self) -> bool {
+        self.indices.len() == 1
+    }
+
+    /// The path of this node's parent (drops the last index), or `None` when this
+    /// is already a top-level node (its parent is the scene root).
+    pub fn parent(&self) -> Option<NodePath> {
+        if self.indices.len() <= 1 {
+            None
+        } else {
+            Some(NodePath {
+                indices: self.indices[..self.indices.len() - 1].to_vec(),
+            })
+        }
+    }
+
+    /// The last index in the path (the node's position among its siblings), or
+    /// `None` for an empty path.
+    pub fn last_index(&self) -> Option<usize> {
+        self.indices.last().copied()
+    }
+}
 
 /// How a node combines with the nodes resolved before it. v1 only ever
 /// constructs [`CombineOp::Union`]; the enum exists so subtract / intersect /
@@ -189,10 +249,11 @@ pub struct Scene {
     ///
     /// [`def_by_id`]: Self::def_by_id
     pub definitions: Vec<AssemblyDef>,
-    /// Index into [`nodes`](Self::nodes) of the active/selected node — the one the
-    /// inspector edits. `None` when the scene is empty. Step 2 keeps this valid
-    /// (clamped) across add/delete.
-    pub active: Option<usize>,
+    /// Path to the active/selected node — the one the inspector edits (ADR 0001
+    /// step 4: selection reaches any depth, so a [`Group`](NodeContent::Group)
+    /// child is selectable, not just a top-level node). `None` when nothing is
+    /// selected. Kept valid (re-clamped / dropped) across add / delete / group.
+    pub active: Option<NodePath>,
 }
 
 impl Scene {
@@ -202,7 +263,7 @@ impl Scene {
         Self {
             nodes: vec![node],
             definitions: Vec::new(),
-            active: Some(0),
+            active: Some(NodePath::root_index(0)),
         }
     }
 
@@ -213,46 +274,264 @@ impl Scene {
         self.definitions.iter().find(|def| def.id == id)
     }
 
+    /// The node at `path`, walking from [`nodes`](Self::nodes) down through Group
+    /// children. `None` when any index along the path is out of range or the path
+    /// tries to descend through a non-Group (a Tool / Part / Instance has no
+    /// addressable children).
+    pub fn node_at_path(&self, path: &NodePath) -> Option<&Node> {
+        let mut siblings: &[Node] = &self.nodes;
+        let mut found: Option<&Node> = None;
+        for (depth, &index) in path.indices.iter().enumerate() {
+            let node = siblings.get(index)?;
+            let is_last = depth + 1 == path.indices.len();
+            if is_last {
+                found = Some(node);
+            } else if let NodeContent::Group(children) = &node.content {
+                siblings = children;
+            } else {
+                return None;
+            }
+        }
+        found
+    }
+
+    /// The node at `path`, mutably (the inspector edits through this).
+    pub fn node_at_path_mut(&mut self, path: &NodePath) -> Option<&mut Node> {
+        let mut siblings: &mut Vec<Node> = &mut self.nodes;
+        let count = path.indices.len();
+        for (depth, &index) in path.indices.iter().enumerate() {
+            let is_last = depth + 1 == count;
+            if is_last {
+                return siblings.get_mut(index);
+            }
+            match siblings.get_mut(index)?.content {
+                NodeContent::Group(ref mut children) => siblings = children,
+                _ => return None,
+            }
+        }
+        None
+    }
+
+    /// Flatten the top-level assembly into a depth-first list of `(path, depth)`
+    /// rows for the tree UI (ADR 0001 step 4): every top-level node, and — for a
+    /// [`NodeContent::Group`] — its children recursively at increasing depth. The
+    /// rows are in display order (a parent immediately precedes its children).
+    /// `Instance` nodes are leaves here (their definition's body is stored
+    /// separately and rendered in the Definitions list, not inlined into the tree).
+    pub fn tree_rows(&self) -> Vec<(NodePath, usize)> {
+        let mut rows = Vec::new();
+        collect_tree_rows(&self.nodes, &mut Vec::new(), 0, &mut rows);
+        rows
+    }
+
     /// The active node, if any.
     pub fn active_node(&self) -> Option<&Node> {
-        self.active.and_then(|index| self.nodes.get(index))
+        self.active.as_ref().and_then(|path| self.node_at_path(path))
     }
 
     /// The active node mutably, if any (the inspector edits through this).
     pub fn active_node_mut(&mut self) -> Option<&mut Node> {
-        match self.active {
-            Some(index) => self.nodes.get_mut(index),
+        let path = self.active.clone()?;
+        self.node_at_path_mut(&path)
+    }
+
+    /// Append `node` to the TOP-LEVEL list and make it the active selection.
+    /// Returns its top-level index.
+    pub fn add_node(&mut self, node: Node) -> usize {
+        self.nodes.push(node);
+        let index = self.nodes.len() - 1;
+        self.active = Some(NodePath::root_index(index));
+        index
+    }
+
+    /// Append `node` as a child of the Group at `group_path` and select it.
+    /// Returns `true` if the target was a Group and the node was added. A no-op
+    /// (returns `false`) when the path does not resolve to a Group.
+    pub fn add_child_to_group(&mut self, group_path: &NodePath, node: Node) -> bool {
+        let Some(group_node) = self.node_at_path_mut(group_path) else {
+            return false;
+        };
+        let NodeContent::Group(children) = &mut group_node.content else {
+            return false;
+        };
+        children.push(node);
+        let child_index = children.len() - 1;
+        let mut indices = group_path.indices.clone();
+        indices.push(child_index);
+        self.active = Some(NodePath::from_indices(indices));
+        true
+    }
+
+    /// Remove the node at `path` (top-level or a Group child), keeping the `active`
+    /// selection sensible: after a removal the selection falls back to the removed
+    /// node's parent (so a Group's last child deletion selects the Group), or to a
+    /// surviving top-level node, or `None` when the scene empties. Out-of-range
+    /// paths are ignored.
+    pub fn remove_node(&mut self, path: &NodePath) {
+        let Some((&last_index, parent_indices)) = path.indices.split_last() else {
+            return;
+        };
+        // Borrow the sibling list that owns the target node.
+        let removed = {
+            let parent_path = NodePath::from_indices(parent_indices.to_vec());
+            let siblings = self.siblings_mut(&parent_path);
+            match siblings {
+                Some(siblings) if last_index < siblings.len() => {
+                    siblings.remove(last_index);
+                    true
+                }
+                _ => false,
+            }
+        };
+        if !removed {
+            return;
+        }
+        // Re-derive a valid selection. Prefer the parent (a Group, or the scene
+        // root → a surviving top-level node); fall back to None when empty.
+        self.active = self.fallback_selection_after_remove(parent_indices, last_index);
+    }
+
+    /// The mutable sibling list addressed by `parent_path` (the empty path → the
+    /// top-level [`nodes`](Self::nodes); otherwise the children of the Group the
+    /// path resolves to). `None` when the path does not resolve to a Group.
+    fn siblings_mut(&mut self, parent_path: &NodePath) -> Option<&mut Vec<Node>> {
+        if parent_path.indices.is_empty() {
+            return Some(&mut self.nodes);
+        }
+        match self.node_at_path_mut(parent_path) {
+            Some(node) => match &mut node.content {
+                NodeContent::Group(children) => Some(children),
+                _ => None,
+            },
             None => None,
         }
     }
 
-    /// Append `node` and make it the active selection. Returns the new index.
-    pub fn add_node(&mut self, node: Node) -> usize {
-        self.nodes.push(node);
-        let index = self.nodes.len() - 1;
-        self.active = Some(index);
-        index
+    /// Choose a valid `active` path after removing the child at `removed_index`
+    /// from the sibling list at `parent_indices`.
+    fn fallback_selection_after_remove(
+        &self,
+        parent_indices: &[usize],
+        removed_index: usize,
+    ) -> Option<NodePath> {
+        let parent_path = NodePath::from_indices(parent_indices.to_vec());
+        let sibling_count = if parent_indices.is_empty() {
+            self.nodes.len()
+        } else {
+            match self.node_at_path(&parent_path).map(|n| &n.content) {
+                Some(NodeContent::Group(children)) => children.len(),
+                _ => 0,
+            }
+        };
+        if sibling_count > 0 {
+            // Select the sibling now occupying the removed slot (clamped to last).
+            let new_index = removed_index.min(sibling_count - 1);
+            let mut indices = parent_indices.to_vec();
+            indices.push(new_index);
+            Some(NodePath::from_indices(indices))
+        } else if parent_indices.is_empty() {
+            // The whole scene emptied.
+            None
+        } else {
+            // A Group lost its last child — select the (now empty) Group itself.
+            Some(parent_path)
+        }
     }
 
-    /// Remove the node at `index`, keeping the `active` selection valid: the
-    /// active index shifts down when a node before it is removed, clamps to the new
-    /// last node when the removed node was the active (or last) one, and becomes
-    /// `None` when the scene empties. Out-of-range indices are ignored.
-    pub fn remove_node(&mut self, index: usize) {
-        if index >= self.nodes.len() {
-            return;
+    /// Wrap the active node in a new [`NodeContent::Group`] in place (ADR 0001
+    /// step 4 authoring): the active node becomes the sole child of a fresh Group
+    /// that takes its slot among its siblings. The Group inherits an identity
+    /// transform (the child keeps its own offset, so the composite is unchanged),
+    /// and the wrapped child becomes the new active selection. Returns the Group's
+    /// path on success; `None` when there is no active node.
+    ///
+    /// Grouping a node that is itself a Group simply nests it one level deeper —
+    /// the recursion handles arbitrary depth.
+    pub fn group_active(&mut self) -> Option<NodePath> {
+        let path = self.active.clone()?;
+        let (&index, parent_indices) = path.indices.split_last()?;
+        let parent_path = NodePath::from_indices(parent_indices.to_vec());
+        let siblings = self.siblings_mut(&parent_path)?;
+        if index >= siblings.len() {
+            return None;
         }
-        self.nodes.remove(index);
-        if self.nodes.is_empty() {
-            self.active = None;
-            return;
-        }
-        let last = self.nodes.len() - 1;
-        self.active = Some(match self.active {
-            Some(active) if active > index => active - 1,
-            Some(active) => active.min(last),
-            None => last,
+        let child = siblings.remove(index);
+        let group = Node::new("Group", NodeContent::Group(vec![child]));
+        siblings.insert(index, group);
+        // The Group sits at the old slot; its single child is index 0 within it.
+        let group_path = NodePath::from_indices({
+            let mut v = parent_indices.to_vec();
+            v.push(index);
+            v
         });
+        let mut child_indices = group_path.indices.clone();
+        child_indices.push(0);
+        self.active = Some(NodePath::from_indices(child_indices));
+        Some(group_path)
+    }
+
+    /// The smallest unused [`DefId`] (one past the current max, or `DefId(1)` when
+    /// there are no definitions — id 0 is reserved/unused for clarity).
+    pub fn next_def_id(&self) -> DefId {
+        let max = self
+            .definitions
+            .iter()
+            .map(|def| def.id.0)
+            .max()
+            .unwrap_or(0);
+        DefId(max + 1)
+    }
+
+    /// Turn the active node into a reusable [`AssemblyDef`] and REPLACE it with an
+    /// [`NodeContent::Instance`] of that definition (ADR 0001 step 4: "make
+    /// definition from this Group/node"). The active node's content moves into the
+    /// new definition's children (a Group's children become the def body; a single
+    /// leaf becomes a one-node def); the active node keeps its transform but its
+    /// content becomes an `Instance(new_def_id)`. Returns the new [`DefId`] on
+    /// success; `None` when there is no active node.
+    ///
+    /// After this, the active selection stays on the (now-instance) node, and the
+    /// definition can be placed again via [`add_instance`](Self::add_instance) —
+    /// the village workflow: one stored body, many placements.
+    pub fn make_definition_from_active(&mut self, name: impl Into<String>) -> Option<DefId> {
+        let def_id = self.next_def_id();
+        let path = self.active.clone()?;
+        let node = self.node_at_path_mut(&path)?;
+        // The definition body: a Group donates its children; any other content
+        // becomes a single-node body wrapping a clone of the node's content.
+        let children = match &mut node.content {
+            NodeContent::Group(children) => std::mem::take(children),
+            other => vec![Node::new("Body", other.clone())],
+        };
+        node.content = NodeContent::Instance(def_id);
+        self.definitions.push(AssemblyDef {
+            id: def_id,
+            name: name.into(),
+            children,
+        });
+        Some(def_id)
+    }
+
+    /// Place another [`NodeContent::Instance`] of the definition `def_id` as a new
+    /// top-level node (ADR 0001 step 4: "Add Instance"). The instance is named
+    /// after the definition and gets a default offset that nudges it clear of
+    /// earlier instances of the same def (so a freshly-added village house does not
+    /// land exactly on top of the previous one). Selects the new node. Returns its
+    /// path, or `None` when no definition carries `def_id`.
+    pub fn add_instance(&mut self, def_id: DefId) -> Option<NodePath> {
+        let def = self.def_by_id(def_id)?;
+        let name = format!("{} instance", def.name);
+        // Nudge each new instance of this def along +X so it does not overlap the
+        // previous one. Count existing top-level instances of this def for the step.
+        let existing = self
+            .nodes
+            .iter()
+            .filter(|node| matches!(node.content, NodeContent::Instance(id) if id == def_id))
+            .count();
+        let mut node = Node::new(name, NodeContent::Instance(def_id));
+        node.transform.offset_blocks = [(existing as i32 + 1) * DEFAULT_INSTANCE_SPACING_BLOCKS, 0, 0];
+        let index = self.add_node(node);
+        Some(NodePath::root_index(index))
     }
 
     /// Build the one-node Tool scene that reproduces today's single-shape
@@ -490,6 +769,25 @@ impl Scene {
     }
 }
 
+/// Depth-first worker for [`Scene::tree_rows`]: append `(path, depth)` for each
+/// node in `nodes`, descending into Group children (a Group's children follow it
+/// at `depth + 1`). `prefix` is the path of the assembly that owns `nodes`.
+fn collect_tree_rows(
+    nodes: &[Node],
+    prefix: &mut Vec<usize>,
+    depth: usize,
+    rows: &mut Vec<(NodePath, usize)>,
+) {
+    for (index, node) in nodes.iter().enumerate() {
+        prefix.push(index);
+        rows.push((NodePath::from_indices(prefix.clone()), depth));
+        if let NodeContent::Group(children) = &node.content {
+            collect_tree_rows(children, prefix, depth + 1, rows);
+        }
+        prefix.pop();
+    }
+}
+
 /// The whole-block extent of a leaf node's producer, or `None` for a non-leaf /
 /// not-yet-implemented content kind.
 fn leaf_size_blocks(content: &NodeContent, voxels_per_block: u32) -> Option<[u32; 3]> {
@@ -686,7 +984,7 @@ mod tests {
         // Both nodes composited.
         let scene = Scene {
             nodes: vec![sphere, cube],
-            active: Some(0),
+            active: Some(NodePath::root_index(0)),
             ..Scene::default()
         };
         let union = scene.resolve_region(region, voxels_per_block, 0);
@@ -763,7 +1061,7 @@ mod tests {
         wood.transform.offset_blocks = [5, 0, 0];
         let scene = Scene {
             nodes: vec![stone, wood],
-            active: Some(0),
+            active: Some(NodePath::root_index(0)),
             ..Scene::default()
         };
         let region = scene.full_extent_blocks(voxels_per_block);
@@ -857,7 +1155,7 @@ mod tests {
 
         let scene = Scene {
             nodes: vec![at_zero, at_n],
-            active: Some(0),
+            active: Some(NodePath::root_index(0)),
             ..Scene::default()
         };
         let grid = scene.resolve_region(region, voxels_per_block, 0);
@@ -931,7 +1229,7 @@ mod tests {
 
         let scene = Scene {
             nodes: vec![a, b],
-            active: Some(0),
+            active: Some(NodePath::root_index(0)),
             ..Scene::default()
         };
         // Region spans the full composite (offset 0..5, each 1 block) → 6 blocks X.
@@ -983,7 +1281,7 @@ mod tests {
         offset_box.transform.offset_blocks = [4, 0, 0];
         let two = Scene {
             nodes: vec![origin_box, offset_box],
-            active: Some(0),
+            active: Some(NodePath::root_index(0)),
             ..Scene::default()
         };
         let extent = two.full_extent_blocks(voxels_per_block);
@@ -1042,7 +1340,7 @@ mod tests {
         group.transform.offset_blocks = [a, 0, 0];
         let grouped = Scene {
             nodes: vec![group],
-            active: Some(0),
+            active: Some(NodePath::root_index(0)),
             ..Scene::default()
         };
         let grouped_grid = grouped.resolve_region(region, voxels_per_block, 0);
@@ -1087,7 +1385,7 @@ mod tests {
         let instanced = Scene {
             nodes: vec![instance],
             definitions: vec![def],
-            active: Some(0),
+            active: Some(NodePath::root_index(0)),
         };
         let instanced_grid = instanced.resolve_region(region, voxels_per_block, 0);
 
@@ -1129,7 +1427,7 @@ mod tests {
         let def_only = Scene {
             nodes: vec![Node::new("I", NodeContent::Instance(def_id))],
             definitions: vec![def.clone()],
-            active: Some(0),
+            active: Some(NodePath::root_index(0)),
         };
         let def_count = def_only
             .resolve_region(RegionBlocks::new([1, 1, 1]), voxels_per_block, 0)
@@ -1144,7 +1442,7 @@ mod tests {
         let village = Scene {
             nodes: vec![house_a, house_b],
             definitions: vec![def],
-            active: Some(0),
+            active: Some(NodePath::root_index(0)),
         };
         let region = village.full_extent_blocks(voxels_per_block);
         let grid = village.resolve_region(region, voxels_per_block, 0);
@@ -1203,7 +1501,7 @@ mod tests {
         let scene = Scene {
             nodes: vec![Node::new("Root", NodeContent::Instance(def_id))],
             definitions: vec![def],
-            active: Some(0),
+            active: Some(NodePath::root_index(0)),
         };
 
         // Resolves (no overflow) and contributes the single box ONCE — the self-
@@ -1220,5 +1518,179 @@ mod tests {
             one_box,
             "a self-instancing def contributes its leaves finitely (cycle skipped)"
         );
+    }
+
+    /// A small flat scene of two box Tools, the first selected — the fixture the
+    /// tree-mutation UI helper tests build on.
+    fn two_box_scene(voxels_per_block: u32) -> Scene {
+        Scene {
+            nodes: vec![
+                Node::new(
+                    "A",
+                    NodeContent::Tool { shape: unit_box_shape(voxels_per_block), material: MaterialChoice::Stone },
+                ),
+                Node::new(
+                    "B",
+                    NodeContent::Tool { shape: unit_box_shape(voxels_per_block), material: MaterialChoice::Wood },
+                ),
+            ],
+            definitions: Vec::new(),
+            active: Some(NodePath::root_index(0)),
+        }
+    }
+
+    /// ADR 0001 step 4 (UI helper): `group_active` wraps the active node in a new
+    /// Group, so the active node becomes a CHILD of that Group. After grouping, the
+    /// top-level node at the old slot is a `Group` whose sole child is the original
+    /// node, and the active selection points at that child (path `[0, 0]`).
+    #[test]
+    fn group_active_nests_node_under_new_group() {
+        let mut scene = two_box_scene(8);
+        scene.active = Some(NodePath::root_index(0));
+
+        let group_path = scene.group_active().expect("there is an active node to group");
+        assert_eq!(group_path, NodePath::root_index(0), "the Group takes the old slot");
+
+        // The top-level node is now a Group with exactly one child (the old "A").
+        match &scene.nodes[0].content {
+            NodeContent::Group(children) => {
+                assert_eq!(children.len(), 1, "the Group holds exactly the wrapped node");
+                assert_eq!(children[0].name, "A", "the wrapped child is the original node");
+            }
+            other => panic!("expected a Group at slot 0, got {other:?}"),
+        }
+        // The wrapped child is now the active selection.
+        assert_eq!(scene.active, Some(NodePath::from_indices(vec![0, 0])));
+        // The second node is untouched.
+        assert_eq!(scene.nodes.len(), 2);
+        assert!(matches!(scene.nodes[1].content, NodeContent::Tool { .. }));
+    }
+
+    /// ADR 0001 step 4 (UI helper): `make_definition_from_active` creates an
+    /// `AssemblyDef` in `scene.definitions` and replaces the active node with an
+    /// `Instance` of it. The resolved occupancy is unchanged (one stored body
+    /// resolved via one instance == the original single node).
+    #[test]
+    fn make_definition_creates_def_and_instance() {
+        let voxels_per_block = 8u32;
+        let mut scene = two_box_scene(voxels_per_block);
+        scene.active = Some(NodePath::root_index(0));
+
+        // Occupancy of just the active node before the change (resolved alone).
+        let before = Scene::single_node(scene.nodes[0].clone())
+            .resolve_region(RegionBlocks::new([1, 1, 1]), voxels_per_block, 0)
+            .occupied_count();
+        assert!(before > 0);
+
+        let def_id = scene
+            .make_definition_from_active("House")
+            .expect("there is an active node to define");
+
+        // A definition now exists, named, with the node's body as its children.
+        assert_eq!(scene.definitions.len(), 1, "a definition appears in scene.definitions");
+        let def = scene.def_by_id(def_id).expect("the new def is looked up by id");
+        assert_eq!(def.name, "House");
+        assert_eq!(def.children.len(), 1, "a single leaf becomes a one-node body");
+
+        // The former node is now an Instance of that def.
+        assert!(matches!(scene.nodes[0].content, NodeContent::Instance(id) if id == def_id));
+
+        // Resolving the (now-instanced) node reproduces the original occupancy.
+        let after = Scene {
+            nodes: vec![scene.nodes[0].clone()],
+            definitions: scene.definitions.clone(),
+            active: Some(NodePath::root_index(0)),
+        }
+        .resolve_region(RegionBlocks::new([1, 1, 1]), voxels_per_block, 0)
+        .occupied_count();
+        assert_eq!(after, before, "an instance of the def equals the original node");
+    }
+
+    /// ADR 0001 step 4 (UI helper, the village): after `make_definition_from_active`,
+    /// `add_instance` appends another `Instance` node referencing the SAME def, and
+    /// the scene resolves with the EXPECTED MULTIPLIED occupancy — two disjoint
+    /// instances of a one-box def give 2× the box's voxel count.
+    #[test]
+    fn add_instance_multiplies_occupancy_via_one_definition() {
+        let voxels_per_block = 8u32;
+        // Start from a single box node, make it a definition (→ one instance), then
+        // add a second instance.
+        let mut scene = Scene::single_node(Node::new(
+            "House",
+            NodeContent::Tool { shape: unit_box_shape(voxels_per_block), material: MaterialChoice::Stone },
+        ));
+        let def_id = scene.make_definition_from_active("House").expect("active node");
+        assert_eq!(scene.definitions.len(), 1);
+        assert_eq!(scene.nodes.len(), 1, "the original node became one instance");
+
+        // The def's own voxel count (one box).
+        let one = scene
+            .resolve_region(RegionBlocks::new([1, 1, 1]), voxels_per_block, 0)
+            .occupied_count();
+        assert!(one > 0);
+
+        // Add a second instance — an Instance node referencing the same def appears.
+        let path = scene.add_instance(def_id).expect("the def exists");
+        assert_eq!(scene.nodes.len(), 2, "an Instance node referencing the def appears");
+        assert!(matches!(
+            scene.node_at_path(&path).map(|n| &n.content),
+            Some(NodeContent::Instance(id)) if *id == def_id
+        ));
+        // Still exactly ONE stored definition (reuse by reference).
+        assert_eq!(scene.definitions.len(), 1, "the body is stored once, not copied");
+
+        // The two instances are placed disjointly (add_instance nudges +X), so the
+        // scene resolves to 2× the def's occupancy.
+        let region = scene.full_extent_blocks(voxels_per_block);
+        let total = scene.resolve_region(region, voxels_per_block, 0).occupied_count();
+        assert_eq!(total, 2 * one, "two instances of one def → 2× the def's voxel count");
+    }
+
+    /// ADR 0001 step 4 (UI helper): `tree_rows` flattens the assembly depth-first,
+    /// a parent immediately preceding its Group children at increasing depth, so the
+    /// tree UI can render an indented list with selectable child nodes.
+    #[test]
+    fn tree_rows_lists_group_children_indented() {
+        let mut scene = two_box_scene(8);
+        // Group node A, then add a child into the Group, so the tree is:
+        //   [0]          Group           depth 0
+        //   [0, 0]         A (wrapped)    depth 1
+        //   [0, 1]         child          depth 1
+        //   [1]          B                depth 0
+        scene.active = Some(NodePath::root_index(0));
+        let group_path = scene.group_active().expect("active node");
+        let added = scene.add_child_to_group(
+            &group_path,
+            Node::new("child", NodeContent::Part(Part::DebugClouds { seed: 0 })),
+        );
+        assert!(added, "the wrapped node is a Group so a child can be added");
+
+        let rows = scene.tree_rows();
+        let paths: Vec<(Vec<usize>, usize)> =
+            rows.iter().map(|(p, d)| (p.indices.clone(), *d)).collect();
+        assert_eq!(
+            paths,
+            vec![
+                (vec![0], 0),    // Group
+                (vec![0, 0], 1), // wrapped A
+                (vec![0, 1], 1), // added child
+                (vec![1], 0),    // B
+            ],
+            "tree_rows is depth-first with Group children indented under their parent"
+        );
+    }
+
+    /// Selecting a node by path reaches a Group child (not just top-level nodes) —
+    /// the inspector can therefore edit a node at any depth.
+    #[test]
+    fn node_at_path_reaches_group_child() {
+        let mut scene = two_box_scene(8);
+        scene.active = Some(NodePath::root_index(0));
+        scene.group_active();
+        // The active selection now points at the wrapped child [0, 0].
+        let active = scene.active.clone().expect("a child is selected after grouping");
+        assert_eq!(active, NodePath::from_indices(vec![0, 0]));
+        let node = scene.node_at_path(&active).expect("the child resolves by path");
+        assert_eq!(node.name, "A", "the path reaches the wrapped child node");
     }
 }

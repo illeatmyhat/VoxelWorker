@@ -33,6 +33,38 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **ADR 0001 step 4 (UI half): author groups, definitions & instances — COMPLETES step 4 / Closes
+  #17** — `src/scene.rs`, `src/panel.rs`, `src/lib.rs`, `src/bin/shot.rs`, `PROGRESS.md`. Adds the
+  UI to AUTHOR the recursion the resolve already supported (4a). **Tree node list:** the Scene
+  section now renders the assembly as an INDENTED TREE (`Scene::tree_rows` → depth-first `(NodePath,
+  depth)` rows; a Group's children nest one indent level under it), so Group children are visible +
+  selectable at ANY depth, not just top-level nodes. Each row keeps its visibility checkbox + delete
+  ✕; selecting a node (any depth) sets it active for the inspector. **Selection model:** `Scene.active`
+  changed from `Option<usize>` to `Option<NodePath>` (a `Vec<usize>` of child indices through
+  `nodes`/Group children); `active_node[_mut]`, `add_node`, `remove_node` are now path-based (remove
+  falls back to parent/sibling/None), plus `node_at_path[_mut]`. **Group:** a **Group** button wraps
+  the active node in a new `Group` (`group_active`); when a Group is active, **+ Add child** appends a
+  Tool/Part into it (`add_child_to_group`). **Definitions + Instances (village workflow):** **Make
+  definition** turns the active Group/node into an `AssemblyDef` in `scene.definitions` and replaces
+  it with an `Instance` of it (`make_definition_from_active`); a new **Definitions** list shows each
+  def with an **Add instance** button (`add_instance`, nudged +X so placements don't overlap) — one
+  stored body placed by N instances. **Inspector** extended: Group/Instance active nodes show name (+
+  the referenced def for an Instance) and the shared Offset editor; Tool/Part unchanged. **Scope:**
+  in-memory only (tree persistence is step 8 — `// step 8` notes); no rotation/scale; resolve/model
+  semantics from 4a untouched (only added mutation helpers). 5 new unit tests: `group_active` nests
+  the active node under a new Group (active → the wrapped child `[0,0]`); `make_definition` puts a def
+  in `scene.definitions` + replaces the node with an Instance (occupancy preserved); `add_instance`
+  appends an Instance of that def and the scene resolves to 2× the def's occupancy from ONE stored
+  body; `tree_rows` lists Group children indented depth-first; `node_at_path` reaches a Group child.
+  Green: `cargo build --bins` clean, `cargo clippy --all-targets` clean, `cargo test` 53 lib + 1
+  integration pass. New `shot --demo-groups` (top-level Group of 2 children + a sibling Tool + an
+  Instance + a Definition): `shots/groups_tree.png` shows the INDENTED tree (Cluster·Group(2) with
+  Core/Shell nested under it, Lone·Box, Widget instance) + the Definitions list + Group inspector;
+  `shots/village_tree.png` (`--demo-village`) shows 4 Instance rows + `House (2 node)` def with Add
+  instance. Honest note: interactive clicks (group/make-def/add-instance buttons) can't be exercised
+  headlessly — they're covered by the helper unit tests; the shots prove the tree + Definitions list
+  RENDER.
+
 - **ADR 0001 step 4 (model + resolve half): recursion + instancing — Part of #17** —
   `src/scene.rs`, `src/bin/shot.rs`, `PROGRESS.md`. Makes `Group`/`Instance`/`AssemblyDef` WORK in
   `Scene::resolve_region` (they were typed no-ops). Added `Scene.definitions: Vec<AssemblyDef>` +

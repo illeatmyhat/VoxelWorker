@@ -19,7 +19,7 @@
 
 use crate::block_palette::BlockPalette;
 use crate::camera::ProjectionMode;
-use crate::scene::{Node, NodeContent, Part, Scene};
+use crate::scene::{DefId, Node, NodeContent, NodePath, Part, Scene};
 use crate::voxel::{SdfShape, ShapeKind};
 
 /// Geometry parameters — the *only* params that trigger a voxel rebuild.
@@ -420,11 +420,38 @@ fn build_palette_dock(
         });
 }
 
-/// The scene node list (ADR 0001 step 2): a vertical list of selectable rows
-/// (name + visibility checkbox + per-row delete ✕), plus an "+ Add" control that
-/// appends a Tool of a chosen shape or a Clouds Part. No drag-reorder — a simple
-/// list. Each node composites into the one resolved region (union); selecting a
-/// node makes it the inspector's active node.
+/// A label for a node row, switching on its content kind. Falls back to the
+/// content-kind name when the node's own name is empty.
+fn node_row_label(node: &Node) -> String {
+    let kind = match &node.content {
+        NodeContent::Tool { shape, .. } => format!("{:?}", shape.kind),
+        NodeContent::Part(Part::DebugClouds { .. }) => "Clouds".to_string(),
+        NodeContent::Group(children) => format!("Group ({})", children.len()),
+        NodeContent::Instance(_) => "Instance".to_string(),
+    };
+    if node.name.is_empty() {
+        kind
+    } else {
+        format!("{} · {}", node.name, kind)
+    }
+}
+
+/// The scene node list (ADR 0001 step 4): the assembly rendered as an INDENTED
+/// TREE so [`Group`](NodeContent::Group) children are visible and selectable at
+/// any depth (not just top-level nodes). Each row carries a visibility checkbox, a
+/// selectable name (indented by depth), and a per-row delete ✕. Beneath the tree:
+///
+///   * **+ Add** — append a Tool (any shape) or a Clouds Part at top level.
+///   * **Group** — wrap the active node in a new Group (then add children to it
+///     via "+ Add child").
+///   * **+ Add child** — when the active node is a Group, append a Tool/Part into
+///     it.
+///   * **Make definition** — turn the active Group/node into a reusable
+///     [`AssemblyDef`] and replace it with an `Instance` of it.
+///   * a **Definitions** list with an **Add instance** button per definition (the
+///     village workflow: one stored body, many placements).
+///
+/// Selecting any node (at any depth) makes it the inspector's active node.
 fn build_node_list_section(
     ui: &mut egui::Ui,
     state: &mut PanelState,
@@ -433,35 +460,37 @@ fn build_node_list_section(
     ui.add_space(8.0);
     ui.strong("Scene");
 
-    let mut select: Option<usize> = None;
-    let mut delete: Option<usize> = None;
+    let mut select: Option<NodePath> = None;
+    let mut delete: Option<NodePath> = None;
+    let mut visibility_toggled = false;
 
-    for (index, node) in state.scene.nodes.iter_mut().enumerate() {
-        let is_active = state.scene.active == Some(index);
+    // Walk the tree depth-first; each row is indented by its depth.
+    let rows = state.scene.tree_rows();
+    for (path, depth) in &rows {
+        let is_active = state.scene.active.as_ref() == Some(path);
+        // Read the node by path; mutate visibility in place via a separate lookup
+        // so the borrow of `nodes` does not span the whole row.
+        let label = match state.scene.node_at_path(path) {
+            Some(node) => node_row_label(node),
+            None => continue,
+        };
         ui.horizontal(|ui| {
-            // Visibility checkbox (toggles the node's contribution to resolution).
-            if ui
-                .checkbox(&mut node.visible, "")
-                .on_hover_text("Visible")
-                .changed()
-            {
-                response.scene_changed = true;
+            ui.add_space(*depth as f32 * 14.0);
+            if let Some(node) = state.scene.node_at_path_mut(path) {
+                if ui
+                    .checkbox(&mut node.visible, "")
+                    .on_hover_text("Visible")
+                    .changed()
+                {
+                    visibility_toggled = true;
+                }
             }
-            // Selectable name row.
-            let label = match &node.content {
-                NodeContent::Tool { shape, .. } => format!("{:?}", shape.kind),
-                NodeContent::Part(Part::DebugClouds { .. }) => "Clouds".to_string(),
-                NodeContent::Group(_) => "Group".to_string(),
-                NodeContent::Instance(_) => "Instance".to_string(),
-            };
-            let name = if node.name.is_empty() { label } else { node.name.clone() };
-            if ui.selectable_label(is_active, name).clicked() {
-                select = Some(index);
+            if ui.selectable_label(is_active, label).clicked() {
+                select = Some(path.clone());
             }
-            // Right-aligned per-row delete.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.small_button("✕").on_hover_text("Delete node").clicked() {
-                    delete = Some(index);
+                    delete = Some(path.clone());
                 }
             });
         });
@@ -471,23 +500,62 @@ fn build_node_list_section(
         ui.label(egui::RichText::new("(no nodes — add one below)").small().weak());
     }
 
+    if visibility_toggled {
+        response.scene_changed = true;
+    }
+
+    build_node_actions(ui, state, response);
+    build_definitions_section(ui, state, response);
+
+    // Apply the deferred selection / delete after the walk (can't mutate the
+    // active path while borrowing through the tree).
+    if let Some(path) = delete {
+        state.scene.remove_node(&path);
+        state.sync_mirror_from_active();
+        response.scene_changed = true;
+    } else if let Some(path) = select {
+        if state.scene.active.as_ref() != Some(&path) {
+            state.scene.active = Some(path);
+            state.sync_mirror_from_active();
+            response.scene_changed = true;
+        }
+    }
+
+    ui.separator();
+}
+
+/// A fresh Tool node of the given shape, inheriting the current size/density so it
+/// renders immediately.
+fn new_tool_node(kind: ShapeKind, label: &str, state: &PanelState) -> Node {
+    let shape = SdfShape {
+        kind,
+        size_blocks: state.geometry.size_blocks,
+        voxels_per_block: state.geometry.voxels_per_block,
+        wall_blocks: state.geometry.wall_blocks,
+    };
+    Node::new(label, NodeContent::Tool { shape, material: state.material })
+}
+
+/// Build the action buttons under the tree: **+ Add** (top-level), **+ Add child**
+/// (into the active Group), **Group** (wrap the active node), and **Make
+/// definition** (turn the active node into a reusable [`AssemblyDef`] + Instance).
+fn build_node_actions(ui: &mut egui::Ui, state: &mut PanelState, response: &mut PanelResponse) {
     ui.add_space(4.0);
+
+    // Whether the active node is a Group (gates "+ Add child").
+    let active_is_group = matches!(
+        state.scene.active_node().map(|node| &node.content),
+        Some(NodeContent::Group(_))
+    );
+    let has_active = state.scene.active.is_some();
+
     ui.horizontal_wrapped(|ui| {
+        // + Add — a top-level Tool or Clouds Part.
         ui.menu_button("+ Add", |ui| {
             for (kind, label) in SHAPE_CHIPS {
                 if ui.button(*label).clicked() {
-                    // A new Tool node inherits the current density/size so it is
-                    // visible immediately; its own shape is the chosen one.
-                    let shape = SdfShape {
-                        kind: *kind,
-                        size_blocks: state.geometry.size_blocks,
-                        voxels_per_block: state.geometry.voxels_per_block,
-                        wall_blocks: state.geometry.wall_blocks,
-                    };
-                    state.scene.add_node(Node::new(
-                        *label,
-                        NodeContent::Tool { shape, material: state.material },
-                    ));
+                    let node = new_tool_node(*kind, label, state);
+                    state.scene.add_node(node);
                     state.sync_mirror_from_active();
                     response.scene_changed = true;
                     ui.close();
@@ -495,31 +563,130 @@ fn build_node_list_section(
             }
             ui.separator();
             if ui.button("Clouds (Part)").clicked() {
-                state.scene.add_node(Node::new(
-                    "Clouds",
-                    NodeContent::Part(Part::DebugClouds { seed: 0 }),
-                ));
+                state
+                    .scene
+                    .add_node(Node::new("Clouds", NodeContent::Part(Part::DebugClouds { seed: 0 })));
                 response.scene_changed = true;
                 ui.close();
             }
         });
-    });
 
-    // Apply the deferred selection / delete after the iteration (can't mutate the
-    // active index while borrowing `nodes`).
-    if let Some(index) = delete {
-        state.scene.remove_node(index);
-        state.sync_mirror_from_active();
-        response.scene_changed = true;
-    } else if let Some(index) = select {
-        if state.scene.active != Some(index) {
-            state.scene.active = Some(index);
+        // + Add child — into the active Group (only shown when one is selected).
+        if active_is_group {
+            let group_path = state.scene.active.clone();
+            ui.menu_button("+ Add child", |ui| {
+                for (kind, label) in SHAPE_CHIPS {
+                    if ui.button(*label).clicked() {
+                        let node = new_tool_node(*kind, label, state);
+                        if let Some(path) = &group_path {
+                            state.scene.add_child_to_group(path, node);
+                            state.sync_mirror_from_active();
+                            response.scene_changed = true;
+                        }
+                        ui.close();
+                    }
+                }
+                ui.separator();
+                if ui.button("Clouds (Part)").clicked() {
+                    if let Some(path) = &group_path {
+                        state.scene.add_child_to_group(
+                            path,
+                            Node::new("Clouds", NodeContent::Part(Part::DebugClouds { seed: 0 })),
+                        );
+                        response.scene_changed = true;
+                    }
+                    ui.close();
+                }
+            });
+        }
+
+        // Group — wrap the active node in a new Group.
+        if ui
+            .add_enabled(has_active, egui::Button::new("Group"))
+            .on_hover_text("Wrap the selected node in a new Group")
+            .clicked()
+        {
+            state.scene.group_active();
             state.sync_mirror_from_active();
             response.scene_changed = true;
         }
+
+        // Make definition — the active node becomes a reusable AssemblyDef and is
+        // replaced by an Instance of it.
+        if ui
+            .add_enabled(has_active, egui::Button::new("Make definition"))
+            .on_hover_text("Turn the selected Group/node into a reusable definition, placed by an Instance")
+            .clicked()
+        {
+            let def_name = state
+                .scene
+                .active_node()
+                .map(|node| {
+                    if node.name.is_empty() {
+                        "Definition".to_string()
+                    } else {
+                        node.name.clone()
+                    }
+                })
+                .unwrap_or_else(|| "Definition".to_string());
+            state.scene.make_definition_from_active(def_name);
+            state.sync_mirror_from_active();
+            response.scene_changed = true;
+        }
+    });
+}
+
+/// The **Definitions** list (ADR 0001 step 4): the reusable [`AssemblyDef`]s, each
+/// with an **Add instance** button that places another `Instance` of it at a
+/// nudged offset (the village workflow: one stored body placed at several offsets).
+fn build_definitions_section(
+    ui: &mut egui::Ui,
+    state: &mut PanelState,
+    response: &mut PanelResponse,
+) {
+    if state.scene.definitions.is_empty() {
+        return;
+    }
+    ui.add_space(6.0);
+    ui.strong("Definitions");
+
+    // Collect (id, label) first so the per-row button can mutate the scene without
+    // borrowing `definitions` across the click.
+    let defs: Vec<(DefId, String)> = state
+        .scene
+        .definitions
+        .iter()
+        .map(|def| {
+            let label = if def.name.is_empty() {
+                format!("Def {}", def.id.0)
+            } else {
+                def.name.clone()
+            };
+            (def.id, format!("{} ({} node)", label, def.children.len()))
+        })
+        .collect();
+
+    let mut add_instance_of: Option<DefId> = None;
+    for (id, label) in &defs {
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(label).small());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .small_button("Add instance")
+                    .on_hover_text("Place another instance of this definition")
+                    .clicked()
+                {
+                    add_instance_of = Some(*id);
+                }
+            });
+        });
     }
 
-    ui.separator();
+    if let Some(id) = add_instance_of {
+        state.scene.add_instance(id);
+        state.sync_mirror_from_active();
+        response.scene_changed = true;
+    }
 }
 
 /// The inspector: switches on the active node. A **Tool** shows the shape chips,
@@ -531,8 +698,24 @@ fn build_inspector_section(
     state: &mut PanelState,
     response: &mut PanelResponse,
 ) {
-    match state.scene.active_node().map(|node| matches!(node.content, NodeContent::Tool { .. })) {
-        Some(true) => {
+    /// Which inspector to show for the active node.
+    enum ActiveKind {
+        Tool,
+        Part,
+        Group,
+        Instance,
+        None,
+    }
+    let kind = match state.scene.active_node().map(|node| &node.content) {
+        Some(NodeContent::Tool { .. }) => ActiveKind::Tool,
+        Some(NodeContent::Part(_)) => ActiveKind::Part,
+        Some(NodeContent::Group(_)) => ActiveKind::Group,
+        Some(NodeContent::Instance(_)) => ActiveKind::Instance,
+        None => ActiveKind::None,
+    };
+
+    match kind {
+        ActiveKind::Tool => {
             build_shape_section(ui, state, response);
             build_size_section(ui, state, response);
             build_density_section(ui, state, response);
@@ -545,14 +728,22 @@ fn build_inspector_section(
             }
             // Placement (ADR 0001 step 3) is on the node's transform, not the
             // geometry mirror, so it is edited AFTER the mirror write-back (which
-            // only touches shape + material) and is common to Tools and Parts.
+            // only touches shape + material) and is common to all node kinds.
             build_offset_section(ui, state, response);
         }
-        Some(false) => {
+        ActiveKind::Part => {
             build_part_inspector_section(ui, state, response);
             build_offset_section(ui, state, response);
         }
-        None => {
+        ActiveKind::Group => {
+            build_group_inspector_section(ui, state, "Group");
+            build_offset_section(ui, state, response);
+        }
+        ActiveKind::Instance => {
+            build_group_inspector_section(ui, state, "Instance");
+            build_offset_section(ui, state, response);
+        }
+        ActiveKind::None => {
             ui.add_space(8.0);
             ui.label(
                 egui::RichText::new("Select or add a node to edit it.")
@@ -562,6 +753,43 @@ fn build_inspector_section(
             ui.separator();
         }
     }
+}
+
+/// Inspector for a Group or Instance active node (ADR 0001 step 4): its name (and,
+/// for an Instance, the definition it references). The offset is edited by the
+/// shared [`build_offset_section`], so Group/Instance get at least name + offset.
+fn build_group_inspector_section(ui: &mut egui::Ui, state: &mut PanelState, heading: &str) {
+    ui.add_space(8.0);
+    ui.strong(heading);
+    // Capture the def label (immutable borrow) before taking the mutable node.
+    let def_label = match state.scene.active_node().map(|n| &n.content) {
+        Some(NodeContent::Instance(def_id)) => state
+            .scene
+            .def_by_id(*def_id)
+            .map(|def| {
+                if def.name.is_empty() {
+                    format!("Def {}", def.id.0)
+                } else {
+                    def.name.clone()
+                }
+            })
+            .or_else(|| Some(format!("Def {} (missing)", def_id.0))),
+        _ => None,
+    };
+    if let Some(node) = state.scene.active_node_mut() {
+        ui.horizontal(|ui| {
+            ui.label("Name");
+            ui.text_edit_singleline(&mut node.name);
+        });
+    }
+    if let Some(label) = def_label {
+        ui.label(
+            egui::RichText::new(format!("references: {label}"))
+                .small()
+                .weak(),
+        );
+    }
+    ui.separator();
 }
 
 /// Inspector for a Clouds Part active node: its name and seed (its one knob). A

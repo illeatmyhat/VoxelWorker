@@ -40,7 +40,8 @@ pub use renderer::{
 };
 pub use renderer::procedural_material_average_color;
 pub use scene::{
-    AssemblyDef, CombineOp, DefId, Node, NodeContent, NodeTransform, Part, RegionBlocks, Scene,
+    AssemblyDef, CombineOp, DefId, Node, NodeContent, NodePath, NodeTransform, Part, RegionBlocks,
+    Scene,
 };
 pub use settings::AppConfig;
 pub use vox_export::VoxExport;
