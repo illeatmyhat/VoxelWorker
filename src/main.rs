@@ -18,7 +18,7 @@ use voxel_worker::scan_worker::{
 };
 use voxel_worker::{
     create_depth_view, create_msaa_color_view, procedural_material_average_color, render_frame,
-    run_egui_frame, AppConfig, CubeFace, EguiPaintBridge, FrameOverlays,
+    run_egui_frame, AppConfig, CubeFace, EguiPaintBridge, FogMode, FrameOverlays,
     GizmoRenderer,
     GpuContext, GridLatticeRenderer, LayerBand, MaterialSource, OnionFogParams,
     OnionFogRenderer, OrbitCamera, PanelState, Scene, SdfShape, SnapTween, ViewCubeElement,
@@ -58,6 +58,13 @@ struct WindowedState {
     view_cube_renderer: ViewCubeRenderer,
     /// Onion-skin volumetric fog (issue #12).
     onion_fog_renderer: OnionFogRenderer,
+    /// Onion-fog occupancy mode (issue #28). `PerChunk` is the DEFAULT since S5b
+    /// (one apron'd volume per resident chunk packed into a small 3D atlas, so fog
+    /// still renders at scale where a single whole-grid 3D texture would exceed
+    /// `max_texture_dimension_3d` and disable itself). The legacy `WholeGrid` path is
+    /// retained as a fallback. Used by `upload_fog_occupancy` for both the initial
+    /// upload and every `rebuild_geometry` re-upload so the two stay in sync.
+    fog_mode: FogMode,
     /// Offscreen renderer for the 45° palette cube thumbnails (M6).
     thumbnail_renderer: ThumbnailRenderer,
     /// The palette of scanned VS blocks (tiles + status + click counter, M6).
@@ -299,8 +306,18 @@ impl WindowedState {
         let view_cube_renderer =
             ViewCubeRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
         let mut onion_fog_renderer = OnionFogRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
-        // Upload the resolved grid as the fog's 3D occupancy field (issue #12).
-        onion_fog_renderer.upload_grid(&gpu.device, &gpu.queue, &grid);
+        // Upload the resolved grid as the fog's occupancy field. Per-chunk is the
+        // DEFAULT (issue #28 S5b): one apron'd volume per resident chunk so fog still
+        // renders at scale where a single whole-grid 3D texture would disable itself.
+        let fog_mode = FogMode::PerChunk;
+        Self::upload_fog_occupancy(
+            &mut onion_fog_renderer,
+            fog_mode,
+            &gpu.device,
+            &gpu.queue,
+            &grid,
+            panel_state.geometry.voxels_per_block,
+        );
         let thumbnail_renderer = ThumbnailRenderer::new(&gpu.device, &gpu.queue);
 
         // Kick off the VS auto-detect + scan on a background thread immediately;
@@ -341,6 +358,7 @@ impl WindowedState {
             grid_lattice_renderer,
             view_cube_renderer,
             onion_fog_renderer,
+            fog_mode,
             thumbnail_renderer,
             palette,
             scan_handle,
@@ -386,6 +404,28 @@ impl WindowedState {
     /// Re-resolve the current panel geometry into a fresh grid and rebuild the
     /// instance buffer. Honours the voxel cap (ARCHITECTURE.md §7): if the grid
     /// is too large the 3D rebuild is skipped and the panel shows a warning.
+    /// Upload the resolved grid into the fog renderer's occupancy field, dispatching
+    /// on the active [`FogMode`] (issue #28). Per-chunk (the S5b default) builds one
+    /// apron'd volume per resident chunk packed into a small 3D atlas — so fog still
+    /// renders at scale where the legacy whole-grid single 3D texture would exceed
+    /// `max_texture_dimension_3d` and disable itself. Shared by the initial upload and
+    /// every `rebuild_geometry` re-upload so both code paths honour the same mode.
+    fn upload_fog_occupancy(
+        onion_fog_renderer: &mut OnionFogRenderer,
+        fog_mode: FogMode,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        grid: &VoxelGrid,
+        voxels_per_block: u32,
+    ) {
+        match fog_mode {
+            FogMode::WholeGrid => onion_fog_renderer.upload_grid(device, queue, grid),
+            FogMode::PerChunk => {
+                onion_fog_renderer.upload_grid_per_chunk(device, queue, grid, voxels_per_block)
+            }
+        }
+    }
+
     /// When `auto_frame` is set (size/density change, NOT shape change) the
     /// camera distance is re-framed; shape switches never move the camera.
     fn rebuild_geometry(&mut self, auto_frame: bool) {
@@ -431,9 +471,16 @@ impl WindowedState {
             .resolve_region(&self.panel_state.scene, density, 0);
         self.voxel_renderer
             .rebuild_instances(&self.gpu.device, &self.gpu.queue, &grid, density);
-        // Re-upload the fog's 3D occupancy field for the new grid (issue #12).
-        self.onion_fog_renderer
-            .upload_grid(&self.gpu.device, &self.gpu.queue, &grid);
+        // Re-upload the fog's occupancy field for the new grid, using the active fog
+        // mode (per-chunk by default since #28 S5b).
+        Self::upload_fog_occupancy(
+            &mut self.onion_fog_renderer,
+            self.fog_mode,
+            &self.gpu.device,
+            &self.gpu.queue,
+            &grid,
+            density,
+        );
         // Keep the gizmo sized to the grid.
         self.gizmo_renderer
             .rebuild(&self.gpu.device, &self.gpu.queue, grid.dimensions);

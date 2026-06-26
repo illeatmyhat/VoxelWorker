@@ -56,10 +56,10 @@ struct GoldenCase {
     args: &'static [&'static str],
 }
 
-/// The canonical cases. Kept small (5) and chosen to exercise distinct paths:
+/// The canonical cases. Kept small (6) and chosen to exercise distinct paths:
 /// flat face-orientation debug (most deterministic), a default-material shaded
-/// solid, a non-trivial SDF (torus), the instanced scene graph (village), and the
-/// debug cloud field.
+/// solid, a non-trivial SDF (torus), the instanced scene graph (village), the
+/// debug cloud field, and (since #28 S5b) per-chunk onion fog.
 const CASES: &[GoldenCase] = &[
     GoldenCase {
         name: "sphere-debug-faces",
@@ -92,6 +92,23 @@ const CASES: &[GoldenCase] = &[
             "64",
             "--density",
             "2",
+        ],
+    },
+    // Issue #28 S5b: lock the PER-CHUNK onion fog (now the default) with a clearly-
+    // fogged scene. An 8³-block sphere (grid 128³, 8 resident chunk volumes — 2 per
+    // axis) with an onion-skinned equatorial band: layers [56,72] render as the crisp
+    // solid stone disk, while the sphere's volume ABOVE and BELOW the band ghosts as a
+    // soft blue/grey haze (8 onion layers each side). The haze is sampled from the
+    // per-chunk fog atlas (the S5b default) and crosses every chunk seam, so this golden
+    // proves the per-chunk path produces CONTINUOUS fog with no seam lines at a fixed
+    // camera. `--fog=perchunk` is explicit so the case stays pinned to the per-chunk
+    // path even if the default is ever changed again.
+    GoldenCase {
+        name: "onion-fog-perchunk",
+        args: &[
+            "--shape", "sphere", "--size-x", "8", "--size-y", "8", "--size-z", "8",
+            "--onion", "8", "--layer-lower", "56", "--layer-upper", "72",
+            "--fog", "perchunk",
         ],
     },
 ];

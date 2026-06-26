@@ -131,8 +131,11 @@ struct ShotOptions {
     /// Onion-skin depth (issue #12): 0 = off (hard band clip), N = ghost N layers
     /// on each side of the band with screen-door dither.
     onion_depth: u32,
-    /// Onion-fog occupancy mode (issue #28 S5a): `WholeGrid` (default — one whole-grid
-    /// 3D texture) or `PerChunk` (one apron'd volume per resident chunk; `--fog=perchunk`).
+    /// Onion-fog occupancy mode (issue #28). `PerChunk` (DEFAULT since S5b — one apron'd
+    /// volume per resident chunk, packed into a small 3D atlas) or `WholeGrid` (the legacy
+    /// single whole-grid 3D texture, `--fog=wholegrid`, which disables itself past the
+    /// single-3D-texture limit). Per-chunk is A/B-identical on normal scenes and renders
+    /// fog at scale where whole-grid cannot.
     fog_mode: FogMode,
     /// `--shape debug-clouds`: replace the parametric producer with the debug
     /// cloud field (several distinct billowy blobs in a mostly-empty volume) at
@@ -207,7 +210,11 @@ impl Default for ShotOptions {
             layer_lower: None,
             layer_upper: None,
             onion_depth: 0,
-            fog_mode: FogMode::WholeGrid,
+            // Issue #28 S5b: per-chunk fog is now the DEFAULT. It is visually identical
+            // to whole-grid on normal scenes (A/B 0.0000%) and strictly better at scale
+            // (whole-grid disables fog past `max_texture_dimension_3d`; per-chunk doesn't).
+            // `--fog=wholegrid` selects the legacy whole-grid path.
+            fog_mode: FogMode::PerChunk,
             debug_clouds: false,
             debug_chunks: false,
             demo_scene: false,
@@ -464,8 +471,9 @@ fn parse_options() -> ShotOptions {
                     .parse()
                     .expect("--onion must be a non-negative integer (0 = off)");
             }
-            // Issue #28 S5a: select the onion-fog occupancy source. Accepts both
-            // `--fog perchunk` and `--fog=perchunk`. Default stays `wholegrid`.
+            // Issue #28: select the onion-fog occupancy source. Accepts both
+            // `--fog perchunk` and `--fog=perchunk`. Default is `perchunk` (S5b);
+            // `--fog=wholegrid` selects the legacy whole-grid path.
             other_fog if other_fog == "--fog" || other_fog.starts_with("--fog=") => {
                 let value = if let Some(eq) = other_fog.strip_prefix("--fog=") {
                     eq.to_string()
@@ -1049,10 +1057,10 @@ async fn run_capture(options: ShotOptions) {
     );
     let view_cube_renderer = ViewCubeRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
     let mut onion_fog_renderer = OnionFogRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
-    // Upload the resolved grid as the fog's occupancy field. WholeGrid (default, issue
-    // #12) densifies one whole-grid 3D texture; PerChunk (#28 S5a, `--fog=perchunk`)
-    // builds one apron'd volume per resident chunk so a scene too large for a single
-    // whole-grid 3D texture still renders fog.
+    // Upload the resolved grid as the fog's occupancy field. PerChunk (DEFAULT since #28
+    // S5b) builds one apron'd volume per resident chunk so a scene too large for a single
+    // whole-grid 3D texture still renders fog; WholeGrid (`--fog=wholegrid`, legacy, issue
+    // #12) densifies one whole-grid 3D texture and disables itself past the 3D-texture limit.
     match options.fog_mode {
         FogMode::WholeGrid => {
             onion_fog_renderer.upload_grid(&gpu.device, &gpu.queue, &grid);
