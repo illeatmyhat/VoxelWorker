@@ -72,7 +72,48 @@ impl VoxExport {
     /// `representative_rgba` is the single palette colour every voxel references
     /// (e.g. the average colour of the active material texture).
     pub fn from_grid(grid: &VoxelGrid, representative_rgba: [u8; 4]) -> Self {
-        let [grid_x, grid_y, grid_z] = grid.dimensions;
+        // One bucketing path: the whole-grid case is the region case with a single
+        // grid covering the whole region (issue #20 S6d). Keeping ONE code path
+        // guarantees the region-scoped export can never drift from the whole-grid
+        // export — they are literally the same function.
+        Self::from_region_voxels(
+            grid.dimensions,
+            std::iter::once(&grid.occupied[..]),
+            representative_rgba,
+        )
+    }
+
+    /// **Region-scoped `.vox` export (issue #20 S6d).** Build the SAME export
+    /// [`from_grid`](Self::from_grid) would build for the assembled monolithic
+    /// region grid, but from a SET of per-chunk voxel slices — so the export
+    /// consumer no longer needs the whole grid materialised once the S6c
+    /// monolithic bridge is gone.
+    ///
+    /// `region_dimensions` are the region's voxel dimensions (exactly the assembled
+    /// monolithic grid's `dimensions`): they define the tiling, the model sizes and
+    /// the half-extents used to recover integer grid indices from each voxel's
+    /// centred `world_position`. `chunk_voxels` yields each covering chunk's
+    /// `occupied` slice; the chunks' voxels are in the SAME (recentred) coordinate
+    /// frame the monolithic grid uses.
+    ///
+    /// ## Why this equals the whole-grid export
+    ///
+    /// The union of the per-chunk occupied slices is EXACTLY the monolithic region
+    /// grid's occupied set (the S2 cache-assembly equivalence proof), and every
+    /// voxel is bucketed by the identical `i = round(world_x + grid_x/2 − 0.5)`
+    /// arithmetic [`from_grid`](Self::from_grid) uses, against the same
+    /// `region_dimensions`. Each voxel therefore lands in the same model at the same
+    /// local coordinate. The per-model voxel SET (and the model sizes, palette and
+    /// counts) is identical; only the per-model voxel emission ORDER may differ
+    /// (chunk-iteration order vs the monolithic stamp order), which a MagicaVoxel
+    /// reader treats as the same model. The region export test asserts model-set
+    /// equality.
+    pub fn from_region_voxels<'voxels>(
+        region_dimensions: [u32; 3],
+        chunk_voxels: impl IntoIterator<Item = &'voxels [crate::voxel::Voxel]>,
+        representative_rgba: [u8; 4],
+    ) -> Self {
+        let [grid_x, grid_y, grid_z] = region_dimensions;
         let half_x = grid_x as f32 / 2.0;
         let half_y = grid_y as f32 / 2.0;
         let half_z = grid_z as f32 / 2.0;
@@ -109,7 +150,7 @@ impl VoxExport {
         }
 
         let mut voxel_count = 0usize;
-        for voxel in &grid.occupied {
+        for voxel in chunk_voxels.into_iter().flatten() {
             // Recover non-negative integer grid indices from the world-centred
             // voxel-centre position: `i = round(world_x + dim_x/2 - 0.5)`.
             let i = (voxel.world_position[0] + half_x - 0.5).round();
@@ -327,5 +368,130 @@ mod tests {
         for model in &parsed.models {
             assert!(model.size.x <= 256 && model.size.y <= 256 && model.size.z <= 256);
         }
+    }
+
+    // ===== Issue #20 S6d: region-scoped `.vox` export ============================
+
+    use crate::chunk_cache::ChunkResolveCache;
+    use crate::panel::{GeometryParams, MaterialChoice};
+    use crate::scene::{Node, NodeContent, NodePath, Scene};
+
+    /// Parse a `.vox` byte stream into a per-model SORTED multiset of
+    /// `(size, voxel (x, y, z, color))`, so two exports compare equal regardless of
+    /// per-model voxel emission ORDER (chunk-iteration order vs monolithic stamp
+    /// order) — a MagicaVoxel reader treats reordered voxels as the same model.
+    type ModelVoxelSet = std::collections::BTreeSet<(u8, u8, u8, u8)>;
+    type ModelSets = std::collections::BTreeSet<([u32; 3], ModelVoxelSet)>;
+    fn parsed_model_sets(bytes: &[u8]) -> ModelSets {
+        let parsed = dot_vox::load_bytes(bytes).expect("dot_vox should parse our file");
+        parsed
+            .models
+            .iter()
+            .map(|model| {
+                let size = [model.size.x, model.size.y, model.size.z];
+                let voxels = model
+                    .voxels
+                    .iter()
+                    .map(|v| (v.x, v.y, v.z, v.i))
+                    .collect::<std::collections::BTreeSet<_>>();
+                (size, voxels)
+            })
+            .collect()
+    }
+
+    fn assert_region_vox_export_equals_whole_grid(scene: &Scene, vpb: u32, label: &str) {
+        let rgba = [132, 126, 118, 255];
+
+        // Whole-grid export: assemble the monolithic region grid, export via the
+        // existing `from_grid` path.
+        let region = scene.full_extent_blocks(vpb);
+        let whole = scene.resolve_region(region, vpb, 0);
+        let whole_export = VoxExport::from_grid(&whole, rgba);
+
+        // Region export: from the per-chunk grids, no monolithic grid assembled.
+        let mut cache = ChunkResolveCache::new();
+        let region_export = cache.vox_export(scene, vpb, 0, rgba);
+
+        assert_eq!(
+            region_export.voxel_count(),
+            whole_export.voxel_count(),
+            "[{label}] region export voxel count must equal whole-grid"
+        );
+        assert_eq!(
+            region_export.model_count(),
+            whole_export.model_count(),
+            "[{label}] region export model count must equal whole-grid"
+        );
+        assert_eq!(
+            parsed_model_sets(&region_export.to_bytes()),
+            parsed_model_sets(&whole_export.to_bytes()),
+            "[{label}] region export model-set (sizes + voxels) must equal whole-grid"
+        );
+    }
+
+    fn shape_scene(kind: ShapeKind, vpb: u32, size: [u32; 3]) -> Scene {
+        Scene::from_geometry(
+            GeometryParams {
+                shape: kind,
+                size_blocks: size,
+                voxels_per_block: vpb,
+                wall_blocks: 1,
+            },
+            MaterialChoice::Stone,
+        )
+    }
+
+    /// The region-scoped `.vox` export equals the whole-grid export for the bounded
+    /// SDF shapes (single-model cases).
+    #[test]
+    fn region_vox_export_equals_whole_grid_for_shapes() {
+        for kind in [
+            ShapeKind::Sphere,
+            ShapeKind::Cylinder,
+            ShapeKind::Tube,
+            ShapeKind::Torus,
+            ShapeKind::Box,
+        ] {
+            let scene = shape_scene(kind, 16, [5, 5, 5]);
+            assert_region_vox_export_equals_whole_grid(&scene, 16, &format!("{kind:?}"));
+        }
+    }
+
+    /// The region-scoped `.vox` export equals the whole-grid export even when the
+    /// region is wide enough to FORCE a 256-split into multiple models — proving the
+    /// per-chunk bucketing tiles identically to the monolithic path.
+    #[test]
+    fn region_vox_export_equals_whole_grid_when_split_over_256() {
+        // 20 blocks × 16 = 320 voxels > 256 on X → splits into 2 models.
+        let scene = shape_scene(ShapeKind::Box, 16, [20, 1, 1]);
+        assert_region_vox_export_equals_whole_grid(&scene, 16, "wide-box-split");
+    }
+
+    /// A multi-leaf demo scene (spans several chunks across leaves) exports
+    /// identically through the region path.
+    #[test]
+    fn region_vox_export_equals_whole_grid_for_demo_scene() {
+        let vpb = 16u32;
+        let make_tool = |kind, offset: [i64; 3], material| {
+            let shape = SdfShape {
+                kind,
+                size_blocks: [5, 5, 5],
+                voxels_per_block: vpb,
+                wall_blocks: 1,
+            };
+            let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
+            node.transform.offset_blocks = offset;
+            node
+        };
+        let scene = Scene {
+            nodes: vec![
+                make_tool(ShapeKind::Sphere, [0, 0, 0], MaterialChoice::Stone),
+                make_tool(ShapeKind::Box, [8, 0, 0], MaterialChoice::Wood),
+                make_tool(ShapeKind::Torus, [0, 0, 6], MaterialChoice::Plain),
+            ],
+            active: Some(NodePath::root_index(0)),
+            ..Scene::default()
+        };
+        assert_region_vox_export_equals_whole_grid(&scene, vpb, "demo-scene");
     }
 }

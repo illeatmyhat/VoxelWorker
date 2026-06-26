@@ -160,6 +160,87 @@ impl VoxelGrid {
     }
 }
 
+/// **Region-scoped diameter readout (issue #20 S6d).** Compute the SAME value as
+/// [`VoxelGrid::widest_run_in_band`] would return for the whole region, but from a
+/// SET of per-chunk grids instead of one assembled monolithic grid — so the
+/// scrubber/diameter consumer no longer needs the whole grid materialised once the
+/// S6c monolithic bridge is gone.
+///
+/// `region_dimensions` are the region's voxel dimensions (`[grid_x, grid_y,
+/// grid_z]`), exactly what the assembled monolithic grid's `dimensions` would be —
+/// they define the X-axis width of each scan row and the half-extents used to
+/// recover integer grid indices from a voxel's centred `world_position`. The
+/// `chunk_grids` iterator yields each covering per-chunk grid whose voxels are in
+/// the SAME (recentred) coordinate frame the monolithic grid uses; only their
+/// `occupied` lists are read (each chunk's own `dimensions` are irrelevant here).
+///
+/// ## How runs are stitched across chunk seams (the subtle part)
+///
+/// A run of occupied voxels that crosses a chunk boundary must count as ONE run,
+/// not two. We do not merge per-chunk partial runs after the fact (that would need
+/// careful seam bookkeeping and is easy to get subtly wrong); instead we bucket
+/// **every** voxel from **every** chunk into a SINGLE shared occupancy row per
+/// `(y, z)` keyed by the voxel's GLOBAL X index (`i = round(world_x + grid_x/2 −
+/// 0.5)`), the very same index the whole-grid function computes. Because two
+/// voxels straddling a chunk seam land at adjacent global X positions in the same
+/// shared row bitset, the seam simply vanishes — the contiguous-run scan sees one
+/// uninterrupted span. The result is therefore identical to the whole-grid
+/// computation by construction: the set of bucketed voxels is the union of the
+/// chunk occupied sets (= the monolithic occupied set), and the bucketing /
+/// run-scan arithmetic is byte-for-byte the same as
+/// [`VoxelGrid::widest_run_in_band`].
+pub fn widest_run_in_band_over_chunks<'grid>(
+    region_dimensions: [u32; 3],
+    chunk_grids: impl IntoIterator<Item = &'grid VoxelGrid>,
+    band_min: u32,
+    band_max: u32,
+) -> u32 {
+    let [grid_x, grid_y, grid_z] = region_dimensions;
+    if grid_x == 0 || grid_y == 0 || grid_z == 0 {
+        return 0;
+    }
+    let width = grid_x as usize;
+    let half_x = grid_x as f32 / 2.0;
+    let half_y = grid_y as f32 / 2.0;
+    let half_z = grid_z as f32 / 2.0;
+
+    // ONE shared occupancy row (length grid_x) per (y, z) row that touches the
+    // band — shared across ALL chunks, so a run spanning a chunk seam is one
+    // contiguous span in the same bitset. Keyed by a flat (y, z) index, built
+    // sparsely so an empty band is cheap.
+    let mut rows: std::collections::HashMap<u64, Vec<bool>> = std::collections::HashMap::new();
+    for grid in chunk_grids {
+        for voxel in &grid.occupied {
+            let j = (voxel.world_position[1] + half_y - 0.5).round() as i64;
+            if j < band_min as i64 || j > band_max as i64 {
+                continue;
+            }
+            let i = (voxel.world_position[0] + half_x - 0.5).round() as i64;
+            let k = (voxel.world_position[2] + half_z - 0.5).round() as i64;
+            if i < 0 || i >= width as i64 || k < 0 || k >= grid_z as i64 {
+                continue;
+            }
+            let key = (j as u64) << 32 | (k as u64);
+            let row = rows.entry(key).or_insert_with(|| vec![false; width]);
+            row[i as usize] = true;
+        }
+    }
+
+    let mut widest = 0u32;
+    for row in rows.values() {
+        let mut run = 0u32;
+        for &occupied in row {
+            if occupied {
+                run += 1;
+                widest = widest.max(run);
+            } else {
+                run = 0;
+            }
+        }
+    }
+    widest
+}
+
 /// Anything that can resolve itself into the shared [`VoxelGrid`].
 ///
 /// v1 has a single implementor ([`SdfShape`]); the trait exists so a sculpt

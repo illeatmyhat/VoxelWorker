@@ -33,6 +33,30 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **Region-scoped whole-grid consumers: diameter readout + `.vox` export (S6d) — Part of #20 (folded in from #28).**
+  Pure-CPU, additive, no render-path change → goldens untouched. The two consumers that today assume one whole
+  recentred `VoxelGrid` now have region-scoped variants that operate over the cache's per-chunk grids and produce
+  results provably identical to the whole-grid computation — so the S6c monolithic-bridge removal won't change what
+  they report. The old whole-grid paths are left intact (the app still calls them; the switch is S6c).
+  - **`widest_run_in_band` region variant.** New free fn `voxel::widest_run_in_band_over_chunks(region_dimensions,
+    chunk_grids, band_min, band_max)` + cache method `ChunkResolveCache::widest_run_in_band(scene, vpb, lod, lo, hi)`.
+    **Cross-seam stitching (the subtle part):** rather than combine per-chunk partial runs, EVERY voxel from EVERY
+    covering chunk is bucketed into ONE shared per-`(y, z)` occupancy row keyed by the GLOBAL X index
+    (`i = round(world_x + grid_x/2 − 0.5)`, identical to the whole-grid fn). Two voxels straddling a chunk seam land
+    at adjacent global X in the same shared bitset, so the seam vanishes and the run-scan sees one contiguous span.
+    Equal to whole-grid by construction (chunk union == monolithic occupied set; identical bucketing/scan arithmetic).
+  - **`.vox` export region variant.** `from_grid` now delegates to a new core `VoxExport::from_region_voxels(
+    region_dimensions, chunk_voxels_iter, rgba)` (ONE bucketing path → region & whole-grid exports can't drift);
+    cache method `ChunkResolveCache::vox_export(...)` assembles the active region from per-chunk grids and exports.
+    Equal because the chunk union == the monolithic occupied set and the index-recovery/tiling arithmetic is identical;
+    only per-model voxel ORDER differs (chunk vs stamp order), which a MagicaVoxel reader treats as the same model.
+    Active-region scoping kept; streamed multi-region export still deferred.
+  - **Tests (+8, 148 → 156).** `chunk_cache`: `region_widest_run_matches_whole_grid_for_{all_shapes,demo_scene,
+    demo_village}`, `region_widest_run_stitches_runs_across_chunk_seams` (a 20-block bar = 320 voxels crossing ~5
+    chunk seams; asserts run > one chunk extent AND == whole-grid), `region_widest_run_single_voxel_and_empty_band`.
+    `vox_export`: `region_vox_export_equals_whole_grid_for_{shapes,demo_scene}` and `...when_split_over_256`
+    (forces a multi-model 256-split). Goldens green (`cargo test --features gpu --test golden`).
+
 - **Disk-backed chunk store + bounded-RAM LRU eviction (standalone) (S6b) — Part of #20 (out-of-core, part 2).**
   Pure-CPU, standalone component (`src/disk_chunk_store.rs`): `DiskChunkStore` keeps at most a configured
   number of chunks resident in RAM and evicts the **least-recently-used** ones to disk as serialised

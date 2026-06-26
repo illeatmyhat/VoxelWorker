@@ -63,7 +63,9 @@ pub use scene::{
 pub use settings::AppConfig;
 pub use spatial_index::{LeafEntry, LeafFingerprint, LeafSpatialIndex, VoxelAabb};
 pub use vox_export::VoxExport;
-pub use voxel::{SdfShape, ShapeKind, VoxelGrid, VoxelProducer};
+pub use voxel::{
+    widest_run_in_band_over_chunks, SdfShape, ShapeKind, Voxel, VoxelGrid, VoxelProducer,
+};
 
 /// Surface / offscreen colour format used everywhere in the project.
 ///
