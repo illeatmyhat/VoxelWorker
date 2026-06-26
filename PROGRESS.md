@@ -33,6 +33,29 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **Align shape generation to the global block lattice (Closes #30).** Generated shapes were
+  off-centre for ODD block sizes: the producer (`SdfShape::resolve`, voxel.rs) centres its
+  `grid = size·d` voxels on the origin (`idx + 0.5 − grid/2`), so an odd block count's span
+  `[−grid/2, grid/2)` is an odd multiple of `d/2` and straddles a block boundary by half a block
+  (a 1-block box at offset 0 landed on `[−d/2, d/2)` instead of one whole-block cell). The render
+  path *looked* aligned because its recentre used a different, block-floored frame
+  (`placed_extent_blocks`, `floor(size/2)` per block), but the **producer-true / absolute** frame
+  that the per-object grids (#29) and the chunk resolve read disagreed by half a block for odd
+  sizes (documented at scene.rs `placed_extent_voxels`). **Fix:** snap each sized leaf onto the
+  block lattice with `leaf_lattice_shift_voxels = grid/2 − floor(size/2)·d` (0 for even, `d/2` for
+  odd — an integer voxel count, so every centre keeps its `n + 0.5` fraction and the chunk-storage
+  index recovery is untouched). Applied at all four local→world sites: `resolve_region`,
+  `resolve_chunk_rebased` (translation + skip-AABB), `placed_extent_voxels`,
+  `build_leaf_spatial_index`. After the shift the producer-true and block-AABB frames coincide, so
+  recentre / chunk ownership / spatial index / grids all agree. **Convention:** a `B`-block axis
+  occupies the whole-block range `[off − floor(B/2), off − floor(B/2) + B)` blocks → voxels
+  `[(off−floor(B/2))·d, …)`, min corner always on a block multiple. Voxel ranges at offset 0,
+  d16: **1-block → [0, 16)** (one block cell); **2-block → [−16, 16)**; **5-block → [−32, 48)**.
+  Acceptance tests added (`one_block_box_generates_one_block_aligned_cell`,
+  `odd_size_shape_is_block_lattice_aligned`, `even_size_shape_is_block_lattice_aligned`); 174 lib
+  tests pass; goldens rebaselined (cylinder & sphere-debug-faces are correct shapes shifted half a
+  block — the intended alignment change; chunked-resolve parity tests still green).
+
 - **Speed up cuboid rebuild (perf) — Part of #20.** Dragging any slider with the DEFAULT cuboid
   mesher was very laggy: every edit fully re-meshes all chunks. MEASURED the per-rebuild phases
   (release, repeated re-resolve worst case) and found the apron mesher's `HashMap<[i64;3],u16>`

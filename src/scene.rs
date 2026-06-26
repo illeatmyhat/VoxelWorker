@@ -762,10 +762,18 @@ impl Scene {
         // is downcast to f32 inside the stamp (the render frame stays f32 — S4b
         // makes the far case byte-identical via origin rebasing).
         self.for_each_leaf(&mut |world_offset, content| {
+            // Snap a sized leaf onto the global block lattice (issue #30): an
+            // odd-block leaf's producer grid straddles a block boundary by half a
+            // block, so shift it by `leaf_lattice_shift_voxels` before placing. A
+            // Part (no intrinsic size) has no lattice frame, so its shift is zero.
+            let lattice_shift = match leaf_size_blocks(content, voxels_per_block) {
+                Some(size_blocks) => leaf_lattice_shift_voxels(size_blocks, voxels_per_block),
+                None => [0i64; 3],
+            };
             let translation_voxels = [
-                world_offset[0] * voxels_per_block as i64 - recentre_voxels[0],
-                world_offset[1] * voxels_per_block as i64 - recentre_voxels[1],
-                world_offset[2] * voxels_per_block as i64 - recentre_voxels[2],
+                world_offset[0] * voxels_per_block as i64 + lattice_shift[0] - recentre_voxels[0],
+                world_offset[1] * voxels_per_block as i64 + lattice_shift[1] - recentre_voxels[1],
+                world_offset[2] * voxels_per_block as i64 + lattice_shift[2] - recentre_voxels[2],
             ];
             match content {
                 NodeContent::Tool { shape, material } => {
@@ -917,13 +925,22 @@ impl Scene {
             // intersect, the stamp would have clipped EVERY voxel anyway. A
             // region-spanning leaf (a Part, `leaf_size_blocks` → `None`) has no
             // localisable AABB, so it is never skipped (it may emit anywhere).
+            // Lattice snap (issue #30): the producer grid is shifted onto whole
+            // blocks before placement, so the leaf's absolute AABB is
+            // `[off·d − grid/2 + shift, …)` — equivalently the whole-block range
+            // `[(off − floor(size/2))·d, …)`. Both the skip-AABB and the stamp
+            // translation use the SAME shift so they stay consistent.
+            let lattice_shift = match leaf_size_blocks(content, voxels_per_block) {
+                Some(size_blocks) => leaf_lattice_shift_voxels(size_blocks, voxels_per_block),
+                None => [0i64; 3],
+            };
             if let Some(size_blocks) = leaf_size_blocks(content, voxels_per_block) {
                 let mut leaf_min = [0i64; 3];
                 let mut leaf_max = [0i64; 3];
                 for axis in 0..3 {
                     let grid = size_blocks[axis] as i64 * density;
                     let centre = world_offset[axis] * density;
-                    leaf_min[axis] = centre - grid / 2;
+                    leaf_min[axis] = centre - grid / 2 + lattice_shift[axis];
                     leaf_max[axis] = leaf_min[axis] + grid;
                 }
                 if !VoxelAabb::new(leaf_min, leaf_max).intersects(&chunk_box) {
@@ -931,9 +948,9 @@ impl Scene {
                 }
             }
             let translation_voxels = [
-                world_offset[0] * voxels_per_block as i64,
-                world_offset[1] * voxels_per_block as i64,
-                world_offset[2] * voxels_per_block as i64,
+                world_offset[0] * voxels_per_block as i64 + lattice_shift[0],
+                world_offset[1] * voxels_per_block as i64 + lattice_shift[1],
+                world_offset[2] * voxels_per_block as i64 + lattice_shift[2],
             ];
             let (material_override, producer): (Option<u16>, Box<dyn VoxelProducer>) = match content
             {
@@ -1093,15 +1110,17 @@ impl Scene {
                 return;
             };
             any = true;
+            let lattice_shift = leaf_lattice_shift_voxels(size_blocks, voxels_per_block);
             for axis in 0..3 {
                 let grid = size_blocks[axis] as i64 * density;
                 // The producer centres its grid on the origin (voxel centres at
                 // `idx + 0.5 − grid/2`), so its occupied voxel span is `[−grid/2,
-                // grid/2)`; placed at `world_offset·d` it spans `[off − grid/2, off +
-                // grid/2)` — using the SAME `grid/2 = size·d/2` half-extent the
-                // producer uses, not a block-floored half.
+                // grid/2)`; placed at `world_offset·d` and snapped onto the block
+                // lattice (issue #30) it spans `[off·d − grid/2 + shift, …)`, i.e.
+                // the whole-block range `[(off − floor(size/2))·d, …)`. Using the
+                // SAME shift the resolve path applies keeps every frame consistent.
                 let centre = world_offset[axis] * density;
-                let low = centre - grid / 2;
+                let low = centre - grid / 2 + lattice_shift[axis];
                 let high = low + grid;
                 min_corner[axis] = min_corner[axis].min(low);
                 max_corner[axis] = max_corner[axis].max(high);
@@ -1173,10 +1192,11 @@ impl Scene {
                     // `placed_extent_voxels`. Absolute voxels are i64 (S4a).
                     let mut min = [0i64; 3];
                     let mut max = [0i64; 3];
+                    let lattice_shift = leaf_lattice_shift_voxels(size_blocks, voxels_per_block);
                     for axis in 0..3 {
                         let grid = size_blocks[axis] as i64 * density;
                         let centre = world_offset[axis] * density;
-                        min[axis] = centre - grid / 2;
+                        min[axis] = centre - grid / 2 + lattice_shift[axis];
                         max[axis] = min[axis] + grid;
                     }
                     entries.push(LeafEntry {
@@ -1286,6 +1306,40 @@ fn leaf_size_blocks(content: &NodeContent, voxels_per_block: u32) -> Option<[u32
         }
         NodeContent::Group(_) | NodeContent::Instance(_) => None,
     }
+}
+
+/// Per-axis voxel shift that snaps a leaf's producer-emitted grid onto the **global
+/// block lattice** (issue #30).
+///
+/// The producer ([`SdfShape::resolve`]) centres its `grid = size·d` voxels on the
+/// origin: centres at `idx + 0.5 − grid/2`, so its occupied span is `[−grid/2,
+/// grid/2)`. For an **odd** block count `grid/2 = size·d/2` is an odd multiple of
+/// `d/2`, so that span straddles a block boundary by **half a block** — a 1-block
+/// box at offset 0 lands on `[−d/2, d/2)` instead of a whole block cell. The grids
+/// (#29) read this producer-true frame, so the half-block straddle makes them
+/// mis-read.
+///
+/// We snap by translating the leaf so it occupies the whole-block range
+/// `[off − floor(size/2), off − floor(size/2) + size)` **blocks** — exactly the
+/// frame [`Scene::placed_extent_blocks`] already uses. The shift per axis is the
+/// difference between the producer's half-extent and that block-floored half:
+///
+/// `shift = grid/2 − floor(size/2)·d = (size·d)/2 − floor(size/2)·d`
+///
+/// which is `0` for an even size and `d/2` for an odd one. Because `d/2` is an
+/// **integer** number of voxels, every voxel centre keeps its `n + 0.5` fractional
+/// part, so the chunk-storage / index-recovery arithmetic (which depends on that
+/// fraction) is untouched. After this shift the producer-true voxel frame and the
+/// block-AABB frame coincide, so the recentre, chunk ownership, spatial index and
+/// per-object grids all agree and odd sizes are no longer off-centre.
+fn leaf_lattice_shift_voxels(size_blocks: [u32; 3], voxels_per_block: u32) -> [i64; 3] {
+    let density = voxels_per_block.max(1) as i64;
+    let mut shift = [0i64; 3];
+    for axis in 0..3 {
+        let size = size_blocks[axis] as i64;
+        shift[axis] = (size * density) / 2 - (size / 2) * density;
+    }
+    shift
 }
 
 /// Map a Tool's [`MaterialChoice`] to the `material_id` it stamps (ADR 0001 step 3
@@ -2789,22 +2843,22 @@ mod tests {
             ..Scene::default()
         };
 
-        // The producer-true voxel AABB (pure i64) is centred on the composed offset
-        // × density. A 1-block box spans `[centre − d/2, centre + d/2)`.
+        // The producer-true voxel AABB (pure i64) is block-lattice aligned (issue
+        // #30): a 1-block box occupies the whole-block range `[off, off + 1)` in
+        // blocks, so in voxels `[off·d, off·d + d)` — the min sits ON a block
+        // multiple, NOT half a block below the composed centre.
         let index = scene.build_leaf_spatial_index(voxels_per_block);
         assert_eq!(index.entries.len(), 1, "exactly one leaf is indexed");
         let aabb = index.entries[0].world_aabb;
         let composed_voxels = composed_blocks * density; // 48_000_000_000 — past i32 too
-        let half = density / 2;
         assert_eq!(
-            aabb.min[0], composed_voxels - half,
-            "the composed leaf min-X must equal (group+leaf)·density − d/2, with NO i32 \
-             overflow (got {}, want {})",
-            aabb.min[0],
-            composed_voxels - half
+            aabb.min[0], composed_voxels,
+            "the composed leaf min-X must equal (group+leaf)·density (block-aligned), \
+             with NO i32 overflow (got {}, want {})",
+            aabb.min[0], composed_voxels
         );
         assert_eq!(
-            aabb.max[0], composed_voxels - half + density,
+            aabb.max[0], composed_voxels + density,
             "the composed leaf max-X must be exact in i64"
         );
         // Sanity: this absolute voxel coordinate genuinely exceeds the i32 range, so
@@ -2852,10 +2906,11 @@ mod tests {
             };
             let mut min = [0i64; 3];
             let mut max = [0i64; 3];
+            let lattice_shift = leaf_lattice_shift_voxels(size_blocks, voxels_per_block);
             for axis in 0..3 {
                 let grid = size_blocks[axis] as i64 * density;
                 let centre = world_offset[axis] * density;
-                min[axis] = centre - grid / 2;
+                min[axis] = centre - grid / 2 + lattice_shift[axis];
                 max[axis] = min[axis] + grid;
             }
             let aabb = crate::spatial_index::VoxelAabb::new(min, max);
@@ -2996,10 +3051,12 @@ mod tests {
         let index_b = scene_b.build_leaf_spatial_index(voxels_per_block);
         let moved = index_b.edit_aabb_since(&index_a).expect("same density");
         assert!(!moved.is_empty());
-        // Old box centre: 8 blocks·16 = 128 voxels (±40). New: 40·16 = 640 (±40).
-        // The union must contain both.
-        assert!(moved.min[0] <= 128 - 40, "edit AABB must cover the OLD location");
-        assert!(moved.max[0] >= 640 + 40, "edit AABB must cover the NEW location");
+        // A 5-block (odd) box is block-lattice aligned (issue #30): it occupies the
+        // block range `[off − 2, off + 3)`, i.e. voxels `[(off−2)·16, (off+3)·16)`.
+        // Old at +8: [(8−2)·16, (8+3)·16) = [96, 176). New at +40: [608, 688). The
+        // union must contain both.
+        assert!(moved.min[0] <= (8 - 2) * 16, "edit AABB must cover the OLD location");
+        assert!(moved.max[0] >= (40 + 3) * 16, "edit AABB must cover the NEW location");
 
         // Recolour the Sphere (node 0, same box): edit AABB is just that box.
         let mut scene_c = scene_a.clone();
@@ -3009,8 +3066,9 @@ mod tests {
         let index_c = scene_c.build_leaf_spatial_index(voxels_per_block);
         let recoloured = index_c.edit_aabb_since(&index_a).expect("same density");
         assert!(!recoloured.is_empty(), "a same-box content change is still dirty");
-        // Sphere centred on origin, 5 blocks·16 = 80 voxels → [-40, 40).
-        assert_eq!(recoloured, crate::spatial_index::VoxelAabb::new([-40, -40, -40], [40, 40, 40]));
+        // Sphere at origin, 5 blocks (odd) → block range [-2, 3) → voxels [-32, 48)
+        // (block-lattice aligned, issue #30).
+        assert_eq!(recoloured, crate::spatial_index::VoxelAabb::new([-32, -32, -32], [48, 48, 48]));
     }
 
     /// A density change can't be localised: the diff returns `None` (clear).
@@ -3053,5 +3111,146 @@ mod tests {
             None,
             "editing a region-spanning Part forces a wholesale clear"
         );
+    }
+
+    // ===== Issue #30: shape generation aligns to the global block lattice ========
+
+    /// Resolve a single Box leaf of `size_blocks` at the origin and return its
+    /// occupied voxels' **absolute** (producer-true, non-recentred) integer-index
+    /// bounding box `(min_corner, max_corner_exclusive)` plus the occupied count. A
+    /// Box fully fills its bounding box, so the count is `prod(size·d)` and the box
+    /// is the exact placed extent — letting the lattice-alignment tests read where
+    /// generation actually lands relative to block multiples (multiples of `d`).
+    fn absolute_box_extent(
+        size_blocks: [u32; 3],
+        voxels_per_block: u32,
+    ) -> ([i64; 3], [i64; 3], usize) {
+        let scene = Scene::from_geometry(
+            GeometryParams {
+                shape: ShapeKind::Box,
+                size_blocks,
+                voxels_per_block,
+                wall_blocks: 1,
+            },
+            MaterialChoice::Stone,
+        );
+        // `resolve_region_via_chunks` keeps ABSOLUTE (non-recentred) positions, so
+        // its voxels are in the producer-true frame the per-object grids (#29) read.
+        let grid = scene.resolve_region_via_chunks(voxels_per_block, 0);
+        let mut min = [i64::MAX; 3];
+        let mut max = [i64::MIN; 3];
+        for voxel in &grid.occupied {
+            for axis in 0..3 {
+                // Voxel centres sit at `n + 0.5`; `floor` recovers the cell index.
+                let index = voxel.world_position[axis].floor() as i64;
+                min[axis] = min[axis].min(index);
+                max[axis] = max[axis].max(index + 1); // half-open upper bound
+            }
+        }
+        (min, max, grid.occupied.len())
+    }
+
+    /// A 1×1×1-block box at the default density generates exactly `density³` voxels
+    /// occupying exactly ONE block-aligned cell: the min voxel corner sits on a
+    /// multiple of `density` per axis (no half-block straddle). The user's concrete
+    /// acceptance test for issue #30.
+    #[test]
+    fn one_block_box_generates_one_block_aligned_cell() {
+        let density = 16;
+        let (min, max, count) = absolute_box_extent([1, 1, 1], density);
+        assert_eq!(
+            count,
+            (density as usize).pow(3),
+            "a 1×1×1 box at density {density} must generate exactly density³ voxels"
+        );
+        for axis in 0..3 {
+            assert_eq!(
+                min[axis].rem_euclid(density as i64),
+                0,
+                "axis {axis}: the min voxel corner ({}) must sit on a block multiple \
+                 of {density} — no half-block straddle",
+                min[axis]
+            );
+            assert_eq!(
+                max[axis] - min[axis],
+                density as i64,
+                "axis {axis}: a 1-block box must span exactly one block ({density} voxels)"
+            );
+            // The whole occupied span is one block cell: [k·d, (k+1)·d).
+            assert_eq!(
+                max[axis].rem_euclid(density as i64),
+                0,
+                "axis {axis}: the max boundary must also fall on a block multiple"
+            );
+        }
+    }
+
+    /// An odd-sized shape (5×5×2) is block-lattice aligned: it generates
+    /// `80×80×32` voxels (at d16) whose every block boundary coincides with a
+    /// global block boundary (a multiple of `d`) — the off-centre-odd-size bug fix.
+    #[test]
+    fn odd_size_shape_is_block_lattice_aligned() {
+        let density = 16;
+        let size = [5u32, 5, 2];
+        let (min, max, count) = absolute_box_extent(size, density);
+        let expected_count =
+            (size[0] * density) as usize * (size[1] * density) as usize * (size[2] * density) as usize;
+        assert_eq!(
+            count, expected_count,
+            "a 5×5×2 box at density {density} must generate 80×80×32 voxels"
+        );
+        for axis in 0..3 {
+            // Both the min and max BLOCK boundaries land on global block multiples.
+            assert_eq!(
+                min[axis].rem_euclid(density as i64),
+                0,
+                "axis {axis}: min corner ({}) must be a block multiple — no half-block \
+                 offset for odd sizes",
+                min[axis]
+            );
+            assert_eq!(
+                max[axis].rem_euclid(density as i64),
+                0,
+                "axis {axis}: max boundary ({}) must be a block multiple",
+                max[axis]
+            );
+            assert_eq!(
+                max[axis] - min[axis],
+                (size[axis] * density) as i64,
+                "axis {axis}: the span must be size·d voxels"
+            );
+        }
+    }
+
+    /// An even-sized shape (2×4×6) is also block-lattice aligned (it straddles the
+    /// origin symmetrically), confirming the convention holds for both parities.
+    #[test]
+    fn even_size_shape_is_block_lattice_aligned() {
+        let density = 16;
+        let size = [2u32, 4, 6];
+        let (min, max, count) = absolute_box_extent(size, density);
+        let expected_count =
+            (size[0] * density) as usize * (size[1] * density) as usize * (size[2] * density) as usize;
+        assert_eq!(count, expected_count, "even box must generate size·d³ voxels");
+        for axis in 0..3 {
+            assert_eq!(
+                min[axis].rem_euclid(density as i64),
+                0,
+                "axis {axis}: even min corner ({}) must be a block multiple",
+                min[axis]
+            );
+            assert_eq!(
+                max[axis].rem_euclid(density as i64),
+                0,
+                "axis {axis}: even max boundary ({}) must be a block multiple",
+                max[axis]
+            );
+            // An even size straddles the origin symmetrically: [-size/2·d, +size/2·d).
+            assert_eq!(
+                min[axis],
+                -((size[axis] / 2 * density) as i64),
+                "axis {axis}: an even box is symmetric about the origin"
+            );
+        }
     }
 }
