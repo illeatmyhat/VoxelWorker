@@ -33,6 +33,24 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **ViewCube/camera: true singular-frame up-vector (exact poles, no flip) — Part of #13 (Step 0).**
+  Replaced the pole epsilon-clamp with a real singular-frame up so the camera can sit at the EXACT
+  poles (phi = 0 / π) with no `look_at` degeneracy and no roll-flip. New `OrbitCamera::up_vector()`:
+  `Vec3::Y` away from the poles, and within a small smoothstep band (`UP_BLEND_BAND = 0.05` rad of
+  each pole) it blends to an **azimuth-derived horizontal up** — the exact limit of "Y projected onto
+  the view plane, normalised" as phi → 0/π, i.e. `(−cos θ, 0, −sin θ)` at the top pole and
+  `(cos θ, 0, sin θ)` at the bottom. That makes the screen-up CONTINUOUS through the singular frame
+  (no 1-frame inversion). Both `view_projection` AND `view_cube_view_projection` now route through
+  `up_vector()` (same up → cube and scene stay in sync at the pole). The drag clamp is loosened to
+  the exact `[0, π]` and the TOP/BOTTOM snaps target exact `0.0` / `π` (theta keeps the historical
+  `−π/2` convention). `POLE_EPSILON` is now unused by the math (retained as a back-compat constant).
+  Tests (+6, 210 lib total): up is finite/unit/non-parallel-to-view at phi ∈ {0, 0.0001, π};
+  continuity (dense sweep, no jump across the band); exact-pole up matches the convention
+  ((0,0,1)/(0,0,-1)); away-from-pole up is exactly `Vec3::Y`; both view matrices all-finite at the
+  poles; drag clamp reaches exactly 0/π. All 7 goldens byte-identical (non-pole views unaffected, up
+  stays exactly `Vec3::Y` there). Headless `--snap top` shot confirms a clean top-down disc — no
+  flip/garbage at the exact pole.
+
 - **Delete flat-geometry config back-compat fields + no-scene migration — Closes #32.**
   Follow-up to #31: the user does NOT want config back-compat. `AppConfig` still carried flat
   `shape` / `size_blocks` / `wall_blocks` geometry mirror fields "kept for back-compat migration",

@@ -11,19 +11,26 @@ use glam::{Mat4, Vec3};
 /// Field of view (vertical) for the perspective projection, in radians.
 const PERSPECTIVE_FOV_Y: f32 = std::f32::consts::FRAC_PI_4; // 45°
 
-/// Tiny epsilon used at the poles so the look direction never becomes exactly
-/// parallel to the up vector (which would make `look_at_rh` degenerate). Both the
-/// view-cube TOP/BOTTOM snaps and the Fusion-style "constrained orbit" drag clamp
-/// land on this value, so a drag can reach effectively-dead-center top/bottom and
-/// STOP there (no inversion past the pole).
+/// Historical pole epsilon. **No longer used by the camera math** — the snaps and
+/// the drag clamp now reach the EXACT poles (`0` / `π`) and rely on
+/// [`OrbitCamera::up_vector`] for a true singular-frame up instead of nudging
+/// `phi` a hair short. Retained as a public constant for back-compat; a later
+/// step (#13) may remove it once nothing downstream references it.
 pub const POLE_EPSILON: f32 = 0.0001;
 
-/// Drag clamp for `orbit_phi`. Unlike the old `[0.05, π−0.05]` clamp (which
-/// stopped a drag well short of the poles), the drag now reaches `POLE_EPSILON`
-/// from each pole — the same epsilon the snaps target — so dragging can park the
-/// camera looking straight down/up and stay there.
-const PHI_MIN: f32 = POLE_EPSILON;
-const PHI_MAX: f32 = std::f32::consts::PI - POLE_EPSILON;
+/// Drag clamp for `orbit_phi`. The drag now reaches the EXACT poles (`0.0` /
+/// `π`) and stops there: the view matrix no longer degenerates at the pole
+/// because [`OrbitCamera::up_vector`] supplies a true singular-frame up. The old
+/// `[POLE_EPSILON, π−POLE_EPSILON]` clamp (which stopped a hair short) is gone.
+const PHI_MIN: f32 = 0.0;
+const PHI_MAX: f32 = std::f32::consts::PI;
+
+/// Half-width of the smoothstep band (in `phi` radians) over which the up vector
+/// blends from `Vec3::Y` to the azimuth-derived horizontal up. Inside `[0, BAND]`
+/// of the top pole (and `[π−BAND, π]` of the bottom) the blend runs; outside it
+/// the up is exactly `Vec3::Y`. Small enough to be invisible, wide enough that
+/// the blend is smooth (no 1-frame flip) right through the singular frame.
+const UP_BLEND_BAND: f32 = 0.05;
 
 /// Orthographic half-height factor relative to `orbit_distance`
 /// (ARCHITECTURE.md §4: `vh = distance * 0.42`, chosen so toggling perspective ↔
@@ -143,15 +150,17 @@ impl ViewCubeElement {
     ///
     /// Unified spherical conversion `phi = acos(dir.y)`, `theta = atan2(dir.z,
     /// dir.x)` — works for faces, edges AND corners. The pure poles (dir = ±Y)
-    /// special-case theta (undefined there) and clamp phi to `POLE_EPSILON` /
-    /// `π − POLE_EPSILON` so the view matrix never degenerates, matching the
-    /// historical TOP/BOTTOM snap table.
+    /// special-case theta (undefined there) and snap phi to the EXACT pole
+    /// (`0` / `π`): the view matrix no longer degenerates there because
+    /// [`OrbitCamera::up_vector`] supplies a true singular-frame up. Theta keeps
+    /// the historical TOP/BOTTOM convention (`−π/2`) so the pole-up limit
+    /// `(−cos θ, 0, −sin θ)` lands on a stable screen orientation.
     pub fn snap_angles(&self) -> (f32, f32) {
         use std::f32::consts::{FRAC_PI_2, PI};
         if self.is_pole() {
             return match self.faces[0] {
-                CubeFace::Top => (-FRAC_PI_2, POLE_EPSILON),
-                _ => (-FRAC_PI_2, PI - POLE_EPSILON),
+                CubeFace::Top => (-FRAC_PI_2, 0.0),
+                _ => (-FRAC_PI_2, PI),
             };
         }
         let direction = self.snap_direction().normalize();
@@ -308,9 +317,49 @@ impl OrbitCamera {
         self.target + self.direction() * self.orbit_distance
     }
 
+    /// The up vector for `look_at_rh`, well-defined and CONTINUOUS through the
+    /// poles (no `look_at` degeneracy, no roll-flip).
+    ///
+    /// Away from the poles this is just `Vec3::Y`. Within [`UP_BLEND_BAND`] of a
+    /// pole it smoothly blends to an **azimuth-derived horizontal up** — the exact
+    /// limit of "`Vec3::Y` projected onto the view plane, normalised" as
+    /// `phi → 0/π`. That limit is `(−cos θ, 0, −sin θ)` at the top pole and
+    /// `(cos θ, 0, sin θ)` at the bottom, so the screen "up" the user sees is the
+    /// direction the camera would tilt toward, and it never jumps as the drag
+    /// crosses the singular frame.
+    ///
+    /// At the exact TOP snap (`θ = −π/2`, `phi = 0`) this yields up `≈ (0, 0, 1)`,
+    /// consistent with the historical TOP/BOTTOM snap convention.
+    pub fn up_vector(&self) -> Vec3 {
+        use std::f32::consts::PI;
+        // Distance (in phi) from the nearest pole.
+        let phi = self.orbit_phi;
+        let distance_from_pole = phi.min(PI - phi);
+        if distance_from_pole >= UP_BLEND_BAND {
+            return Vec3::Y;
+        }
+        // Horizontal up: the limit of projected-Y as phi → the near pole.
+        // Top pole (phi≈0): (−cosθ, 0, −sinθ); bottom (phi≈π): (cosθ, 0, sinθ).
+        let (sin_theta, cos_theta) = self.orbit_theta.sin_cos();
+        let near_top = phi < PI - phi;
+        let horizontal_up = if near_top {
+            Vec3::new(-cos_theta, 0.0, -sin_theta)
+        } else {
+            Vec3::new(cos_theta, 0.0, sin_theta)
+        };
+        // smoothstep from horizontal_up (at the pole) to Vec3::Y (at the band edge).
+        let t = (distance_from_pole / UP_BLEND_BAND).clamp(0.0, 1.0);
+        let weight = t * t * (3.0 - 2.0 * t); // smoothstep
+        let blended = horizontal_up.lerp(Vec3::Y, weight);
+        // The two endpoints are orthogonal unit vectors, so the lerp is never
+        // zero-length; normalise so `look_at_rh` gets a clean unit up.
+        blended.normalize()
+    }
+
     /// Orbit by a screen-space drag delta (left-drag): `phi -= dy * 0.01`, with
-    /// `phi` clamped to `[PHI_MIN, PHI_MAX]` (now `POLE_EPSILON`-tight, so a drag
-    /// reaches the poles and stops there — Fusion "Constrained Orbit").
+    /// `phi` clamped to `[0, π]` — the drag reaches the EXACT poles and stops
+    /// there (Fusion "Constrained Orbit"). No degeneracy: [`Self::up_vector`]
+    /// supplies a true singular-frame up at the pole.
     ///
     /// Azimuth (`theta`) is damped by `sin(phi)` so the view doesn't "whip"
     /// sideways as it approaches a pole: the same horizontal drag sweeps a smaller
@@ -334,7 +383,7 @@ impl OrbitCamera {
     /// orthographic frustum tracks `orbit_distance` so zoom keeps working and the
     /// framing is preserved when toggling (ARCHITECTURE.md §4).
     pub fn view_projection(&self, aspect_ratio: f32) -> Mat4 {
-        let view = Mat4::look_at_rh(self.eye(), self.target, Vec3::Y);
+        let view = Mat4::look_at_rh(self.eye(), self.target, self.up_vector());
         // Near/far chosen generously relative to the auto-framed distance so the
         // grid never clips at any zoom we allow.
         let near = (self.orbit_distance * 0.01).max(0.05);
@@ -365,7 +414,9 @@ impl OrbitCamera {
     /// current main view. Independent of `orbit_distance` / projection mode.
     pub fn view_cube_view_projection(&self) -> Mat4 {
         let eye = self.direction() * 4.0;
-        let view = Mat4::look_at_rh(eye, Vec3::ZERO, Vec3::Y);
+        // MUST share the main camera's up (`up_vector`) or the cube and the scene
+        // desync at the pole — same singular-frame up, same orientation.
+        let view = Mat4::look_at_rh(eye, Vec3::ZERO, self.up_vector());
         // Half-extent 1.35 frames a cube of side 1.4 with a little margin
         // (prototype `OrthographicCamera(-1.35, 1.35, 1.35, -1.35, …)`).
         let projection = Mat4::orthographic_rh(-1.35, 1.35, -1.35, 1.35, 0.1, 100.0);
@@ -459,22 +510,21 @@ mod tests {
     }
 
     #[test]
-    fn drag_clamp_reaches_pole_epsilon_not_old_limit() {
-        // Dragging straight up from near-pole should clamp to POLE_EPSILON (the
-        // tight, snap-matching limit), NOT the old 0.05 floor.
+    fn drag_clamp_reaches_exact_poles() {
+        // Dragging straight up from near-pole should clamp to the EXACT top pole
+        // (phi = 0), not POLE_EPSILON and not the old 0.05 floor.
         let mut camera = OrbitCamera {
             orbit_phi: 0.2,
             ..OrbitCamera::default()
         };
         // A big upward drag (negative dy reduces phi toward the top pole).
         camera.orbit_by_drag(0.0, 1000.0);
-        assert!(approx(camera.orbit_phi, POLE_EPSILON), "phi = {}", camera.orbit_phi);
-        assert!(camera.orbit_phi < 0.05, "drag must now pass the old 0.05 floor");
+        assert!(approx(camera.orbit_phi, 0.0), "phi = {}", camera.orbit_phi);
 
-        // And the bottom pole.
+        // And the bottom pole — exact π.
         let mut camera = OrbitCamera::default();
         camera.orbit_by_drag(0.0, -1000.0);
-        assert!(approx(camera.orbit_phi, PI - POLE_EPSILON));
+        assert!(approx(camera.orbit_phi, PI), "phi = {}", camera.orbit_phi);
     }
 
     #[test]
@@ -483,8 +533,8 @@ mod tests {
         let expected = [
             (CubeFace::Right, (0.0, FRAC_PI_2)),
             (CubeFace::Left, (PI, FRAC_PI_2)),
-            (CubeFace::Top, (-FRAC_PI_2, POLE_EPSILON)),
-            (CubeFace::Bottom, (-FRAC_PI_2, PI - POLE_EPSILON)),
+            (CubeFace::Top, (-FRAC_PI_2, 0.0)),
+            (CubeFace::Bottom, (-FRAC_PI_2, PI)),
             (CubeFace::Front, (FRAC_PI_2, FRAC_PI_2)),
             (CubeFace::Back, (-FRAC_PI_2, FRAC_PI_2)),
         ];
@@ -538,6 +588,147 @@ mod tests {
         assert!(tween.advance(&mut camera, 1.0));
         assert!(approx(camera.orbit_theta, target_theta));
         assert!(approx(camera.orbit_phi, target_phi));
+    }
+
+    /// At every phi the up vector must be finite, unit-length, and not parallel
+    /// to the view direction (else `look_at_rh` degenerates).
+    #[test]
+    fn up_vector_is_finite_unit_and_non_parallel_to_view() {
+        for &phi in &[0.0f32, 0.0001, 0.04, 0.06, FRAC_PI_2, PI - 0.0001, PI] {
+            let camera = OrbitCamera {
+                orbit_theta: -FRAC_PI_2,
+                orbit_phi: phi,
+                ..OrbitCamera::default()
+            };
+            let up = camera.up_vector();
+            assert!(up.is_finite(), "up not finite at phi={phi}: {up:?}");
+            assert!(approx(up.length(), 1.0), "up not unit at phi={phi}: len {}", up.length());
+            // View direction is -direction() (camera looks from eye toward target).
+            let view_dir = -camera.direction();
+            let parallelism = up.dot(view_dir).abs();
+            assert!(
+                parallelism < 0.999,
+                "up parallel to view at phi={phi}: dot {parallelism}"
+            );
+        }
+    }
+
+    /// Continuity across the blend band: the up vector must be CONTINUOUS through
+    /// the singular frame — no 1-frame flip. Two proofs:
+    ///  1. A close pair straddling the band edge (0.04 inside, 0.06 outside) stays
+    ///     close — contrast the OLD epsilon-clamp, which would flip up ~180° on
+    ///     crossing the pole.
+    ///  2. A dense sweep over the whole [0, band+ε] range: no adjacent sample pair
+    ///     ever jumps more than a small Lipschitz bound (proves smoothness, not
+    ///     just endpoint agreement).
+    #[test]
+    fn up_vector_is_continuous_across_pole_band() {
+        let make = |phi: f32| OrbitCamera {
+            orbit_theta: 0.7,
+            orbit_phi: phi,
+            ..OrbitCamera::default()
+        }
+        .up_vector();
+        // Straddle the band edge (UP_BLEND_BAND = 0.05): close, never a flip.
+        let inside = make(0.04);
+        let outside = make(0.06);
+        assert!(
+            (inside - outside).length() < 0.15,
+            "up flipped across band edge: {inside:?} vs {outside:?}"
+        );
+        // Dense sweep: every 0.002-rad step changes up by less than the smooth
+        // Lipschitz bound (no jump). The up traces a quarter-arc (π/2) across the
+        // band via smoothstep; max |d(up)/dphi| ≈ (π/2)·1.5/BAND, so a 0.002 step
+        // moves the chord by at most ~0.1. A real flip would be ~2.0 (180°), so a
+        // 0.12 ceiling proves continuity while staying far below any flip.
+        const STEP_CEILING: f32 = 0.12;
+        let mut previous = make(0.0);
+        let mut phi = 0.0f32;
+        while phi <= UP_BLEND_BAND + 0.02 {
+            let current = make(phi);
+            assert!(
+                (current - previous).length() < STEP_CEILING,
+                "up jumped between phi steps near {phi}: {previous:?} -> {current:?}"
+            );
+            previous = current;
+            phi += 0.002;
+        }
+        // Bottom pole sweep behaves identically.
+        let mut previous = make(PI);
+        let mut phi = PI;
+        while phi >= PI - UP_BLEND_BAND - 0.02 {
+            let current = make(phi);
+            assert!(
+                (current - previous).length() < STEP_CEILING,
+                "bottom up jumped near {phi}: {previous:?} -> {current:?}"
+            );
+            previous = current;
+            phi -= 0.002;
+        }
+    }
+
+    /// At the exact TOP snap (theta=-π/2, phi=0) the up limit is (0,0,1) and at
+    /// the BOTTOM snap (theta=-π/2, phi=π) it is (0,0,-1) — the documented
+    /// convention.
+    #[test]
+    fn up_vector_at_exact_pole_snaps_matches_convention() {
+        let top = OrbitCamera {
+            orbit_theta: -FRAC_PI_2,
+            orbit_phi: 0.0,
+            ..OrbitCamera::default()
+        }
+        .up_vector();
+        // (-cos(-π/2), 0, -sin(-π/2)) = (0, 0, 1).
+        assert!(approx(top.x, 0.0) && approx(top.y, 0.0) && approx(top.z, 1.0), "{top:?}");
+
+        let bottom = OrbitCamera {
+            orbit_theta: -FRAC_PI_2,
+            orbit_phi: PI,
+            ..OrbitCamera::default()
+        }
+        .up_vector();
+        // (cos(-π/2), 0, sin(-π/2)) = (0, 0, -1).
+        assert!(
+            approx(bottom.x, 0.0) && approx(bottom.y, 0.0) && approx(bottom.z, -1.0),
+            "{bottom:?}"
+        );
+    }
+
+    /// Away from the poles the up vector is exactly Vec3::Y (no behavioural
+    /// change to non-pole views — goldens stay byte-identical).
+    #[test]
+    fn up_vector_away_from_poles_is_exactly_y() {
+        for &phi in &[0.1f32, 0.5, 1.05, FRAC_PI_2, 2.5, PI - 0.1] {
+            let up = OrbitCamera {
+                orbit_phi: phi,
+                ..OrbitCamera::default()
+            }
+            .up_vector();
+            assert_eq!(up, Vec3::Y, "phi={phi} should give exact Vec3::Y");
+        }
+    }
+
+    /// Both view matrices are all-finite (no NaN/inf) at the exact poles — the
+    /// old degeneracy is gone.
+    #[test]
+    fn view_matrices_finite_at_exact_poles() {
+        for &phi in &[0.0f32, PI] {
+            let camera = OrbitCamera {
+                orbit_theta: -FRAC_PI_2,
+                orbit_phi: phi,
+                ..OrbitCamera::default()
+            };
+            let vp = camera.view_projection(1.0);
+            assert!(
+                vp.to_cols_array().iter().all(|v| v.is_finite()),
+                "view_projection not finite at phi={phi}: {vp:?}"
+            );
+            let cube = camera.view_cube_view_projection();
+            assert!(
+                cube.to_cols_array().iter().all(|v| v.is_finite()),
+                "view_cube_view_projection not finite at phi={phi}: {cube:?}"
+            );
+        }
     }
 
     #[test]
