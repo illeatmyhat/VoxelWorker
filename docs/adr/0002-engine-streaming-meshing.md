@@ -209,7 +209,10 @@ order:
   coarser/region-only fog. **Fork: accept possible fog-fidelity scope reduction at canvas scale?**
 - **O7 — LOD stays parked.** This ADR builds none; it only honors the `(chunk_coord, lod)` seam.
   Confirm LOD remains out of scope for the engine phase. (ADR 0001 decision 8 — restated for
-  completeness.)
+  completeness.) Note even VS itself runs **per-frame frustum cull + distance LOD** ("draw or cull
+  based on distance and the mesh's level of detail"), which reinforces that parking LOD *while
+  keeping the `(chunk, lod)` seam* is the right call — and that minimal distance-based chunk
+  dropping may be worth a small follow-up eventually (cheap, rides the same seam).
 
 ## Consequences
 
@@ -222,3 +225,57 @@ order:
   per-chunk fog) is real work; the coordinate retrofit (E1) touches `Voxel`, the renderer, and the
   camera. The golden-image net (E0) is upfront cost that pays for itself the first time it catches a
   meshing regression.
+
+## Performance techniques borrowed from Vintage Story
+
+VS solves exactly our problem class (chunked, chiseled-voxel world at scale). These are the
+performance techniques worth lifting, each mapped to our engine steps. Sources:
+[Render_Stages](https://wiki.vintagestory.at/Modding:Render_Stages),
+[Texture_Atlas](https://wiki.vintagestory.at/Modding:Texture_Atlas),
+[storage systems](https://deepwiki.com/anegostudios/vssurvivalmod/5-storage-and-container-systems).
+
+1. **Async meshing on a worker thread (request → complete queue).** VS tessellates chunks on a
+   separate `tesselateterrain` thread: a request queue feeds tessellation, finished meshes land on a
+   completion queue, and the main thread only does the GPU upload — rendering **never blocks on
+   meshing**. → **Adopt at E2/E3 (issue #19):** mesh (cuboid-decompose) chunks **off the render
+   thread**, so editing/orbiting never hitches during a chunk rebuild. Request→complete queue with
+   main-thread upload; the `(chunk_coord, lod)` cache is the completion sink.
+
+2. **Texture atlas → one mesh / one draw per chunk.** VS packs all block textures into one atlas
+   (default 4096×2048); a whole chunk's blocks then combine into a **single `MeshData`** ≈ **one
+   draw call per render pass**. → **Refines our material design.** Today we bind per-material
+   (`MaterialSource`) and modulate by the step-3b `material_base_colors` array. At scale, instead
+   pack material textures into an **atlas** and emit **atlas UVs per cuboid**, so a chunk of
+   mixed-material boxes is **one draw**. This is the draw-call answer at canvas scale. **Interaction
+   with per-voxel `material_id` (matrix row 4):** `material_id` would resolve to an atlas sub-rect at
+   mesh time rather than indexing a uniform array at draw time — the id is consumed by the mesher,
+   not the shader. The per-voxel slice (BUG 1) composes by slicing *within* the atlas sub-rect.
+   **Open refinement O8 (flagged): does the cuboid mesher emit atlas-UV'd geometry from E3, or do we
+   keep per-material binding for v1 and atlas later?** Atlas-from-E3 is more work but is the real
+   draw-call win; per-material-first is the smaller green step.
+
+3. **Dirty-whole-chunk invalidation + mesh cache.** VS: "if any block in the chunk is dirty, the
+   **entire chunk** is re-tessellated." → **Validates our coarse invalidation granularity
+   (Decision 3):** an edit dirties only the chunks its world-AABB intersects, and we re-mesh just
+   those — whole-chunk, not per-voxel-diff. Simpler beats finer-grained; no incremental mesh
+   patching.
+
+4. **Pooled GPU mesh buffers keyed by (render pass × atlas)** (VS `MeshDataPoolManager`s). → **Adopt
+   at E2/E5:** reuse vertex/index allocations across frames and chunks via a pool keyed by
+   (pass × atlas) instead of alloc/free churn at thousands of chunks. Complements the out-of-core
+   store (E5): evicting a chunk returns its buffers to the pool.
+
+5. **Per-vertex baked AO / light at mesh time.** Compute ambient-occlusion / light **once per
+   re-tessellation** and store it **in the vertices**, not per-frame. → **Optional cheap quality win
+   riding on the cuboid mesher (E3+):** bake AO into mesh vertices since we already re-mesh
+   whole-chunk on edit. *(Not explicitly confirmed in the cited VS docs — standard for this engine
+   class; noted as a borrowed pattern, not a VS citation.)* Out of scope for v1; a clean add later.
+
+6. **Separate opaque vs OIT-transparent passes** (VS: Opaque → OIT). → **We already do this** — the
+   onion-skin fog is its own translucent fullscreen pass (`OnionFogRenderer`), composited after the
+   opaque resolve. VS validates keeping transparency in a **dedicated pass** rather than alpha-blended
+   inline; our split stays as-is through the engine phase (matrix row 7).
+
+**New open question:** **O8 — atlas-UV'd cuboid geometry vs per-material binding for v1** (technique
+2). Recommend per-material binding through E3 (smaller green step, preserves the step-3b path),
+atlas as the draw-call optimization once cuboid meshing is proven. **Fork: atlas from E3, or later?**

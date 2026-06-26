@@ -33,6 +33,14 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **ADR 0002 — VS performance-techniques section — Part of #22** — appended "Performance techniques
+  borrowed from Vintage Story" to `docs/adr/0002-…`: async meshing on a worker thread (off the
+  render thread, E2/E3), texture-atlas → one draw per chunk (refines the material design; new open
+  question O8: atlas-UV'd cuboid geometry vs per-material binding), dirty-whole-chunk invalidation
+  (validates coarse granularity), pooled GPU mesh buffers, optional per-vertex baked AO, and the
+  already-present opaque/OIT pass split. Plus a note under O7 that VS itself runs per-frame frustum
+  cull + distance LOD, reinforcing the parked-LOD-with-seam call. Design only.
+
 - **ADR 0002 (Proposed) — engine phase: streaming, meshing & coordinates — Part of #22** —
   `docs/adr/0002-engine-streaming-meshing.md`, pointer added to `docs/adr/0001-…` Scale section.
   Sub-ADR decomposing ADR 0001 steps 5–7 (issues #18/#19/#20). **Design only, no code.** Headlines:
