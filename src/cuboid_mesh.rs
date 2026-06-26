@@ -35,7 +35,7 @@ use wgpu::util::DeviceExt;
 use crate::cuboid::{decompose_into_boxes, VoxelBox, VoxelRegion};
 use crate::frustum::{Aabb, Frustum};
 use crate::panel::MaterialChoice;
-use crate::renderer::{bucket_instances_into_chunks, DEPTH_FORMAT, MSAA_SAMPLE_COUNT};
+use crate::renderer::{bucket_instances_into_chunks, LayerBand, DEPTH_FORMAT, MSAA_SAMPLE_COUNT};
 use crate::voxel::VoxelGrid;
 
 /// One mesh vertex of a cuboid face: world position, the face's outward normal,
@@ -167,6 +167,27 @@ impl CuboidMesh {
 /// box AND faces against an adjacent solid voxel/box — the silhouette is the
 /// outer surface of the solid set.
 pub fn build_cuboid_mesh(grid: &VoxelGrid, voxels_per_block: u32) -> CuboidMesh {
+    build_cuboid_mesh_banded(grid, voxels_per_block, LayerBand::FULL)
+}
+
+/// Build the exposed-face mesh CLIPPED to a layer-range band (issue #12 parity).
+///
+/// Where the instanced path discards fragments outside the band per voxel layer,
+/// the cuboid path masks the densified region to the band's absolute Y-layer range
+/// `[band.band_min, band.band_max]` (INCLUSIVE) BEFORE decomposition. Masking (not
+/// a fragment discard) is required so the band's top/bottom voxels expose real CAP
+/// faces: a single tall merged column has only one +Y face — at the model's true
+/// top — so discarding its out-of-band fragments would leave the displayed slab
+/// open-topped. Masking makes the cells just outside the band air, so the greedy
+/// mesher caps the slab exactly like the instanced slab's top/bottom voxel faces.
+///
+/// `LayerBand::FULL` (band_max = u32::MAX) masks nothing — the full model is built,
+/// byte-identical to the unbanded path.
+pub fn build_cuboid_mesh_banded(
+    grid: &VoxelGrid,
+    voxels_per_block: u32,
+    band: LayerBand,
+) -> CuboidMesh {
     let [grid_x, grid_y, grid_z] = grid.dimensions;
     if grid_x == 0 || grid_y == 0 || grid_z == 0 || grid.occupied.is_empty() {
         return CuboidMesh::default();
@@ -183,7 +204,36 @@ pub fn build_cuboid_mesh(grid: &VoxelGrid, voxels_per_block: u32) -> CuboidMesh 
     // immune because it draws raw `world_position`s; `region_from_voxel_cloud`
     // makes the cuboid path likewise shift-invariant, and returns the world offset
     // that places the mesh exactly where the instanced voxels sit.
-    let (region, world_offset) = region_from_voxel_cloud(grid);
+    let (mut region, world_offset) = region_from_voxel_cloud(grid);
+
+    // --- Layer-range band clip (issue #12 parity) ---
+    // Mask region cells whose ABSOLUTE Y-layer falls outside `[band_min, band_max]`
+    // to air, so the greedy mesher below produces real cap faces at the band edges
+    // (see `build_cuboid_mesh_banded`). The instanced path clips by the absolute
+    // layer `floor(world_position.y + half_y)`; a region-local Y index `ly` maps to
+    // that absolute layer by a constant `base_layer = floor(min_world.y + half_y)`
+    // (= `floor(world_offset.y + 0.5 + half_y)`), so absolute layer = `base_layer +
+    // ly`. We invert the band into region-local Y and clear everything outside it.
+    if band.band_min > 0 || band.band_max != u32::MAX {
+        let half_y = grid_y as f32 / 2.0;
+        let base_layer = (world_offset[1] + 0.5 + half_y).floor() as i64;
+        // Region-local Y range that maps into [band_min, band_max] (inclusive).
+        let local_lo = band.band_min as i64 - base_layer;
+        let local_hi = band.band_max as i64 - base_layer;
+        let [rx, ry, rz] = region.extent;
+        for ly in 0..ry {
+            let in_band = (ly as i64) >= local_lo && (ly as i64) <= local_hi;
+            if in_band {
+                continue;
+            }
+            for lz in 0..rz {
+                for lx in 0..rx {
+                    region.set(lx, ly, lz, None);
+                }
+            }
+        }
+    }
+
     let boxes = decompose_into_boxes(&region);
 
     // Reuse the instanced chunk partition: bucket voxels into chunks and key each
@@ -250,6 +300,30 @@ pub fn build_cuboid_mesh(grid: &VoxelGrid, voxels_per_block: u32) -> CuboidMesh 
         indices,
         chunks,
         box_count: boxes.len() as u32,
+    }
+}
+
+/// The mesh's vertices, or a single zeroed placeholder vertex when the mesh is
+/// empty (so the GPU vertex buffer is never zero-sized — nothing is drawn anyway,
+/// since an empty mesh has no chunks).
+fn mesh_vertices_or_placeholder(mesh: &CuboidMesh) -> Vec<CuboidVertex> {
+    if mesh.vertices.is_empty() {
+        vec![CuboidVertex {
+            position: [0.0; 3],
+            normal: [0.0, 1.0, 0.0],
+            material_id: 0,
+        }]
+    } else {
+        mesh.vertices.clone()
+    }
+}
+
+/// The mesh's indices, or a single placeholder index when the mesh is empty.
+fn mesh_indices_or_placeholder(mesh: &CuboidMesh) -> Vec<u32> {
+    if mesh.indices.is_empty() {
+        vec![0u32]
+    } else {
+        mesh.indices.clone()
     }
 }
 
@@ -464,12 +538,28 @@ struct CuboidUniforms {
     block_line_half_width: f32,
     voxel_line_alpha: f32,
     block_line_alpha: f32,
+    // Layer-range band clip (issue #12 parity) + debug-faces flag. The two band
+    // bounds plus the debug flag plus a pad fill one 16-byte slot, so the colour
+    // array below stays 16-aligned (matching the WGSL `CuboidUniforms`).
+    band_min: f32,
+    band_max: f32,
+    debug_face_mode: f32,
+    _band_pad: f32,
     material_base_colors: [[f32; 4]; MaterialChoice::MATERIAL_COUNT],
 }
 
 /// All GPU resources for drawing the cuboid mesh (flag-gated alternate path).
 pub struct CuboidMeshRenderer {
     pipeline: wgpu::RenderPipeline,
+    /// Face-orientation debug pipeline: identical to `pipeline` except
+    /// `cull_mode: None`, so a back face that is the nearest surface (a winding
+    /// bug) still draws and is flagged by the shader's `front_facing` marker.
+    /// Selected in `draw` when `debug_face_mode` is on — mirroring the instanced
+    /// path's cull-off debug pipeline.
+    debug_pipeline: wgpu::RenderPipeline,
+    /// Whether the last `update_uniforms` requested debug-faces mode (selects the
+    /// cull-off pipeline in `draw`, matching the uploaded `debug_face_mode` flag).
+    debug_face_mode: bool,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     uniform_buffer: wgpu::Buffer,
@@ -485,6 +575,14 @@ pub struct CuboidMeshRenderer {
     mesh: CuboidMesh,
     /// Indices into `mesh.chunks` that survived the last frustum cull.
     visible_chunks: Vec<usize>,
+    /// The grid + density the mesh was built from, retained so the mesh can be
+    /// rebuilt CLIPPED to a new layer-range band (issue #12 parity) without the
+    /// caller re-supplying the grid. The cuboid band clip masks the region before
+    /// decomposition (real cap faces), so a band change re-meshes; we cache the
+    /// last band and rebuild only when it differs.
+    source_grid: VoxelGrid,
+    source_voxels_per_block: u32,
+    current_band: LayerBand,
 }
 
 impl CuboidMeshRenderer {
@@ -500,20 +598,8 @@ impl CuboidMeshRenderer {
 
         // Always allocate at least one (zeroed) vertex/index so the buffers are
         // valid even for an empty grid (nothing is drawn — no chunks).
-        let vertices = if mesh.vertices.is_empty() {
-            vec![CuboidVertex {
-                position: [0.0; 3],
-                normal: [0.0, 1.0, 0.0],
-                material_id: 0,
-            }]
-        } else {
-            mesh.vertices.clone()
-        };
-        let raw_indices = if mesh.indices.is_empty() {
-            vec![0u32]
-        } else {
-            mesh.indices.clone()
-        };
+        let vertices = mesh_vertices_or_placeholder(&mesh);
+        let raw_indices = mesh_indices_or_placeholder(&mesh);
 
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("cuboid mesh vertices"),
@@ -645,54 +731,65 @@ impl CuboidMeshRenderer {
             ],
         };
 
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("cuboid pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vertex_main"),
-                buffers: &[vertex_layout],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fragment_main"),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: color_format,
-                    blend: Some(wgpu::BlendState::REPLACE),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: Some(wgpu::Face::Back),
-                unclipped_depth: false,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                conservative: false,
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: DEPTH_FORMAT,
-                depth_write_enabled: Some(true),
-                depth_compare: Some(wgpu::CompareFunction::Less),
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
-            multisample: wgpu::MultisampleState {
-                count: MSAA_SAMPLE_COUNT,
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            },
-            multiview_mask: None,
-            cache: None,
-        });
+        // Build the render pipeline, parameterized by cull mode: the normal pass
+        // back-culls; the debug-faces pass disables culling so a back face that is
+        // the nearest surface (a winding bug) still draws and is flagged by the
+        // shader's `front_facing` marker — exactly like the instanced path's
+        // cull-on / cull-off pipeline pair.
+        let build_pipeline = |label: &str, cull_mode: Option<wgpu::Face>| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vertex_main"),
+                    buffers: std::slice::from_ref(&vertex_layout),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fragment_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: color_format,
+                        blend: Some(wgpu::BlendState::REPLACE),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    strip_index_format: None,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode,
+                    unclipped_depth: false,
+                    polygon_mode: wgpu::PolygonMode::Fill,
+                    conservative: false,
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DEPTH_FORMAT,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::Less),
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState::default(),
+                }),
+                multisample: wgpu::MultisampleState {
+                    count: MSAA_SAMPLE_COUNT,
+                    mask: !0,
+                    alpha_to_coverage_enabled: false,
+                },
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let pipeline = build_pipeline("cuboid pipeline", Some(wgpu::Face::Back));
+        let debug_pipeline = build_pipeline("cuboid debug pipeline", None);
 
         let visible_chunks: Vec<usize> = (0..mesh.chunks.len()).collect();
 
         Self {
             pipeline,
+            debug_pipeline,
+            debug_face_mode: false,
             vertex_buffer,
             index_buffer,
             uniform_buffer,
@@ -701,7 +798,38 @@ impl CuboidMeshRenderer {
             bound_material: MaterialChoice::Plain,
             mesh,
             visible_chunks,
+            source_grid: grid.clone(),
+            source_voxels_per_block: voxels_per_block,
+            current_band: LayerBand::FULL,
         }
+    }
+
+    /// Re-mesh the stored grid CLIPPED to `band` (issue #12 parity) and re-upload
+    /// the vertex/index buffers, when `band` differs from the last build. The
+    /// cuboid band clip masks the region before decomposition so the band edges get
+    /// real cap faces, so it must rebuild geometry (a fragment discard would leave a
+    /// merged column's slab open-topped). No-op when the band is unchanged.
+    fn rebuild_for_band(&mut self, device: &wgpu::Device, band: LayerBand) {
+        if band == self.current_band {
+            return;
+        }
+        self.current_band = band;
+        self.mesh =
+            build_cuboid_mesh_banded(&self.source_grid, self.source_voxels_per_block, band);
+        let vertices = mesh_vertices_or_placeholder(&self.mesh);
+        let raw_indices = mesh_indices_or_placeholder(&self.mesh);
+        self.vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("cuboid mesh vertices"),
+            contents: bytemuck::cast_slice(&vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        self.index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("cuboid mesh indices"),
+            contents: bytemuck::cast_slice(&raw_indices),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+        // All chunks visible until the next frustum cull in `update_uniforms`.
+        self.visible_chunks = (0..self.mesh.chunks.len()).collect();
     }
 
     /// The built mesh (for diagnostics: triangle/box/chunk counts).
@@ -728,21 +856,41 @@ impl CuboidMeshRenderer {
     #[allow(clippy::too_many_arguments)]
     pub fn update_uniforms(
         &mut self,
+        device: &wgpu::Device,
         queue: &wgpu::Queue,
         view_projection: glam::Mat4,
         grid_dimensions: [u32; 3],
         voxels_per_block: u32,
         grid_overlay_enabled: bool,
         bound: Option<MaterialChoice>,
+        band: LayerBand,
+        debug_face_mode: bool,
     ) {
+        // Layer-range band clip (issue #12 parity): re-mesh the grid clipped to the
+        // band (real cap faces at the band edges) when it changed. Debug-faces mode
+        // bypasses the band (the instanced check sees the whole model), so force the
+        // full band while it is on.
+        let effective_band = if debug_face_mode {
+            LayerBand::FULL
+        } else {
+            band
+        };
+        self.rebuild_for_band(device, effective_band);
         // The bound procedural material drives BOTH the texture binding (selected
         // in `draw`) and the per-box modulation. A `None` (loaded VS block) falls
         // back to Plain's texture + neutral modulation for now (the cuboid path
         // renders a loaded block as a single global material this sub-step).
+        // Debug-faces mode forces modulation off (the shader bypasses it anyway),
+        // matching the instanced path.
         let (modulation_enabled, base_colors, material) = match bound {
-            Some(material) => (
+            Some(material) if !debug_face_mode => (
                 true,
                 crate::renderer::relative_material_base_colors_public(material),
+                material,
+            ),
+            Some(material) => (
+                false,
+                [[1.0, 1.0, 1.0, 0.0]; MaterialChoice::MATERIAL_COUNT],
                 material,
             ),
             None => (
@@ -752,6 +900,8 @@ impl CuboidMeshRenderer {
             ),
         };
         self.bound_material = material;
+        // Record the debug flag so `draw` selects the matching cull-off pipeline.
+        self.debug_face_mode = debug_face_mode;
 
         let overlay = crate::renderer::grid_overlay_params();
         let uniforms = CuboidUniforms {
@@ -770,6 +920,14 @@ impl CuboidMeshRenderer {
             block_line_half_width: overlay.block_line_half_width,
             voxel_line_alpha: overlay.voxel_line_alpha,
             block_line_alpha: overlay.block_line_alpha,
+            // Layer-range band clip (issue #12 parity): the shader keeps fragments
+            // whose voxel layer is in [band_min, band_max] (both INCLUSIVE),
+            // matching the instanced voxel pass. `LayerBand::FULL` uses band_max =
+            // u32::MAX, so `as f32` (≈ 4.29e9) leaves every layer unclipped.
+            band_min: band.band_min as f32,
+            band_max: band.band_max as f32,
+            debug_face_mode: if debug_face_mode { 1.0 } else { 0.0 },
+            _band_pad: 0.0,
             material_base_colors: base_colors,
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
@@ -795,7 +953,15 @@ impl CuboidMeshRenderer {
             MaterialChoice::Wood => 1,
             MaterialChoice::Plain => 2,
         };
-        render_pass.set_pipeline(&self.pipeline);
+        // Debug-faces mode selects the cull-off pipeline (matching the uploaded
+        // `debug_face_mode` flag) so back faces surviving a winding bug still draw
+        // and get the shader's stripe marker — same as the instanced path.
+        let pipeline = if self.debug_face_mode {
+            &self.debug_pipeline
+        } else {
+            &self.pipeline
+        };
+        render_pass.set_pipeline(pipeline);
         render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
         render_pass.set_bind_group(1, &self.material_bind_groups[material_index], &[]);
         render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
@@ -1025,6 +1191,74 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// E3b-3: the layer-range band clip masks the densified region to the band's
+    /// absolute Y-layer range BEFORE decomposition, so clipping a solid block to a
+    /// sub-band yields a thinner block — with NEW cap faces at the band edges, just
+    /// like the instanced slab's per-voxel top/bottom faces (a fragment discard on
+    /// the single merged column would leave it open-topped, with no caps). Here a
+    /// solid 4×4×4 block (one tall box) clipped to a 2-layer band must mesh as a
+    /// 4×2×4 box: still 6 faces, but spanning exactly 2 voxels in Y.
+    #[test]
+    fn band_clip_masks_region_and_caps_the_slab() {
+        let mut cells = Vec::new();
+        for z in 0..4 {
+            for y in 0..4 {
+                for x in 0..4 {
+                    cells.push([x, y, z]);
+                }
+            }
+        }
+        // A centred 4³ block: half_y = 2, so absolute layer == region-local Y here.
+        let grid = grid_from_indices([4, 4, 4], &cells, 0);
+
+        // Full band → the whole block: 1 box, 6 faces, Y-span 4.
+        let full = build_cuboid_mesh_banded(&grid, 1, LayerBand::FULL);
+        assert_eq!(full.box_count(), 1);
+        assert_eq!(full.face_count(), 6);
+
+        // Band [1, 2] (inclusive) → only layers 1 and 2 survive: a 4×2×4 slab.
+        let band = LayerBand {
+            band_min: 1,
+            band_max: 2,
+            onion_depth: 0,
+        };
+        let clipped = build_cuboid_mesh_banded(&grid, 1, band);
+        assert_eq!(clipped.box_count(), 1, "the clipped slab is still one box");
+        assert_eq!(
+            clipped.face_count(),
+            6,
+            "the band edges get real cap faces (top + bottom), so still 6 faces"
+        );
+
+        // The clipped slab spans EXACTLY 2 voxels in Y (the band height), with new
+        // caps — confirming masking, not a fragment discard.
+        let half_y = 2.0f32;
+        let abs_y: Vec<f32> = clipped
+            .vertices
+            .iter()
+            .map(|v| v.position[1] + half_y)
+            .collect();
+        let min_y = abs_y.iter().cloned().fold(f32::INFINITY, f32::min);
+        let max_y = abs_y.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        assert_eq!(min_y, 1.0, "slab bottom cap at the band's lower layer");
+        assert_eq!(max_y, 3.0, "slab top cap at the band's upper layer + 1");
+        assert_eq!(max_y - min_y, 2.0, "slab is exactly the 2-layer band tall");
+    }
+
+    /// A band entirely OUTSIDE the occupied layers clips everything away.
+    #[test]
+    fn band_clip_outside_occupied_layers_is_empty() {
+        let grid = grid_from_indices([4, 4, 4], &[[1, 1, 1], [2, 2, 2]], 0);
+        let band = LayerBand {
+            band_min: 10,
+            band_max: 12,
+            onion_depth: 0,
+        };
+        let mesh = build_cuboid_mesh_banded(&grid, 1, band);
+        assert_eq!(mesh.box_count(), 0, "no voxel falls in the band");
+        assert_eq!(mesh.face_count(), 0);
     }
 
     #[test]

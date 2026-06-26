@@ -867,12 +867,15 @@ impl WindowedState {
             };
             if let Some(cuboid_mesh_renderer) = self.cuboid_mesh_renderer.as_mut() {
                 cuboid_mesh_renderer.update_uniforms(
+                    &self.gpu.device,
                     &self.gpu.queue,
                     view_projection,
                     grid_dimensions,
                     geometry.voxels_per_block,
                     self.panel_state.show_grid_overlay,
                     bound,
+                    band,
+                    self.panel_state.debug_face_orientation,
                 );
             }
         } else {

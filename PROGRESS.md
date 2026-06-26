@@ -33,6 +33,37 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **Cuboid path reaches FULL parity: layer-range band clip + `--debug-faces` (E3b-3) — Part of #18**
+  — added the last two features so the flag-gated cuboid mesher (`--mesher cuboid`) matches the instanced
+  path on everything. The instanced path + goldens are untouched (default stays instanced; all 5 goldens
+  pass unchanged).
+  - **Layer-range band clip:** the instanced shader discards fragments per voxel-layer, but a fragment
+    discard on the cuboid path's *merged* boxes leaves the displayed slab **open-topped** — a single tall
+    column's only +Y face is at the model's true top, so it gets clipped away with no cap. So the cuboid
+    path clips the band at **mesh-build time**: it masks the densified region to the band's absolute
+    Y-layer range `[band_min, band_max]` (inclusive) *before* decomposition, so the greedy mesher caps the
+    slab with real top/bottom faces exactly like the instanced slab's per-voxel faces. Region-local Y maps
+    to the absolute layer by a constant `base_layer = floor(world_offset.y + 0.5 + half_y)`. The mesh
+    re-builds only when the band changes (cached `current_band`), re-uploading the vertex/index buffers;
+    the band uniforms are still carried for std140 parity but unused by the shader. Verified A/B
+    (`sphere 6³ --layer-lower 48 --layer-upper 48`, plus a `box 4³` mid-band slab): the cuboid slice is
+    **pixel-identical** to the instanced slice (foreground sym-diff = 0 over 183k px).
+  - **`--debug-faces`:** ported the instanced cull-off debug pipeline + shader to the cuboid path —
+    a second `cull_mode: None` pipeline (selected when the uploaded `debug_face_mode` is on) plus the
+    identical `debug_face_color` normal→colour palette (+X red, -X cyan, +Y green, -Y magenta, +Z blue,
+    -Z yellow) and the back-facing black-stripe marker; texture/material/overlay/band-clip are all bypassed
+    in that mode (matching instanced). Verified A/B (`sphere --debug-faces`): same R/G/B outward faces, no
+    back-face stripe (correct winding/cull), palette mismatch 0.07% (AA edges only).
+  - **Result:** the cuboid path now supports texture slice + grid overlay + per-voxel material + layer
+    clip + debug-faces — **full feature parity** with the instanced path (next step is the texture atlas).
+  - Files: `src/cuboid_mesh.rs`, `src/shaders/cuboid.wgsl`, `src/renderer.rs` (`LayerBand: PartialEq`),
+    `src/voxel.rs` (`VoxelGrid: Clone`), `src/bin/shot.rs`, `src/main.rs`. New unit tests:
+    `band_clip_masks_region_and_caps_the_slab`, `band_clip_outside_occupied_layers_is_empty`.
+  - Green checkpoint: `cargo build --bins` clean; `cargo clippy --all-targets` + `--features gpu --tests`
+    clean; `cargo test` 83 pass; goldens (`--features gpu --test golden --lib`) all pass. (`cargo test`
+    golden relink hit `voxel_worker.exe` "Access is denied" because the windowed app was running, so the
+    goldens were run with `--lib` to skip the bin relink.)
+
 - **Fix cuboid mesher partial-silhouette bug: shift-invariant densification — Part of #18**
   — the flag-gated cuboid path rendered the cylinder as ~1/4 of its disc (a wedge) while the instanced path
   drew the full disc; sphere/village slipped through because they happened to render. **Root cause:**

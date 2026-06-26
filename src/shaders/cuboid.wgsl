@@ -40,11 +40,24 @@ struct CuboidUniforms {
     // 1 = modulate the lit colour by material_base_colors[material_id], 0 = off.
     material_modulation_enabled: f32,
     // Grid-line half-widths (voxel units) and blend alphas. These four floats
-    // exactly fill the 16-byte slot, so the array below starts 16-aligned.
+    // exactly fill the 16-byte slot, so the band slot below starts 16-aligned.
     voxel_line_half_width: f32,
     block_line_half_width: f32,
     voxel_line_alpha: f32,
     block_line_alpha: f32,
+    // --- Layer-range band clip (issue #12 parity) ---
+    // The visible band, in voxel Y-layer indices. A fragment is kept when its
+    // layer satisfies `band_min <= layer <= band_max` (BOTH ends INCLUSIVE),
+    // matching the instanced voxel pass. Full range = band_min 0, band_max huge.
+    band_min: f32,
+    band_max: f32,
+    // Face-orientation debug flag (0 = normal render, 1 = colour-by-normal debug),
+    // matching the instanced `debug_face_mode`: colours faces by outward normal,
+    // draws a back-face stripe (with culling off), and disables band-clip /
+    // texture / material / overlay. A trailing pad fills the 16-byte slot so the
+    // array below stays 16-aligned.
+    debug_face_mode: f32,
+    _band_pad: f32,
     // Per-material base colours ([r,g,b,_pad], LINEAR), relative to the bound
     // texture's average — identical to the instanced path's step-3b array.
     material_base_colors: array<vec4<f32>, 3>,
@@ -91,6 +104,21 @@ fn coord_component(a: f32, sign: f32) -> f32 {
     return base + select(1.0 - frac, frac, sign > 0.0);
 }
 
+// Map an outward normal to a signed-axis debug colour — IDENTICAL to the
+// instanced `debug_face_color` in voxel.wgsl so the cuboid debug-faces output
+// matches the instanced reference:
+//   +X red, -X cyan; +Y green, -Y magenta; +Z blue, -Z yellow.
+fn debug_face_color(face_normal: vec3<f32>) -> vec3<f32> {
+    let axis_magnitude = abs(face_normal);
+    if (axis_magnitude.x > axis_magnitude.y && axis_magnitude.x > axis_magnitude.z) {
+        return select(vec3<f32>(0.0, 1.0, 1.0), vec3<f32>(1.0, 0.0, 0.0), face_normal.x > 0.0);
+    } else if (axis_magnitude.y > axis_magnitude.z) {
+        return select(vec3<f32>(1.0, 0.0, 1.0), vec3<f32>(0.0, 1.0, 0.0), face_normal.y > 0.0);
+    } else {
+        return select(vec3<f32>(1.0, 1.0, 0.0), vec3<f32>(0.0, 0.0, 1.0), face_normal.z > 0.0);
+    }
+}
+
 struct VertexInput {
     @location(0) world_position: vec3<f32>,
     @location(1) face_normal: vec3<f32>,
@@ -124,7 +152,35 @@ fn vertex_main(vertex: VertexInput) -> VertexOutput {
 }
 
 @fragment
-fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
+fn fragment_main(
+    input: VertexOutput,
+    @builtin(front_facing) is_front_facing: bool,
+) -> @location(0) vec4<f32> {
+    // NOTE on the layer-range band clip (issue #12 parity): unlike the instanced
+    // path (which discards per-fragment by voxel layer), the cuboid path clips the
+    // band at MESH-BUILD time — the densified region is masked to the band's
+    // Y-range before decomposition, so the band's top/bottom voxels expose real CAP
+    // faces (a fragment discard on a single merged column would leave the band open-
+    // topped, since the merged box's only +Y face is the model's true top). The
+    // `band_*` uniforms are therefore unused by the shader and kept only for std140
+    // layout/debug parity.
+    let absolute = input.voxel_absolute_position;
+
+    // --- Face-orientation debug mode (cull-off parity) ---
+    // Colour each fragment by its outward face normal (signed-axis palette),
+    // bypassing texture + lighting + material + overlay. Any fragment that is NOT
+    // front-facing (a back face that survived because culling is off in the debug
+    // pipeline) is flagged with bold black diagonal stripes — identical to the
+    // instanced debug shader so the cuboid winding/cull check matches.
+    if (uniforms.debug_face_mode > 0.5) {
+        var debug_color = debug_face_color(input.world_normal);
+        if (!is_front_facing) {
+            let stripe = step(0.5, fract((input.clip_position.x + input.clip_position.y) * 0.06));
+            debug_color = mix(vec3<f32>(1.0, 1.0, 1.0), vec3<f32>(0.0, 0.0, 0.0), stripe);
+        }
+        return vec4<f32>(debug_color, 1.0);
+    }
+
     // --- Per-voxel texture slice (BUG 1 parity) ---
     // Reproduce the instanced per-voxel slice EXACTLY, including the per-face UV
     // direction the instanced cube geometry bakes in (`unit_cube_geometry`), so a
@@ -140,7 +196,8 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
     // (the block multiples wash out under the Repeat sampler, so `floor(a)` already
     // carries the `block_local_coord mod density` slice). `coord_component` returns
     // it; `sign > 0` ⇒ `a`, `sign < 0` ⇒ the mirrored `floor(a) + 1 - fract(a)`.
-    let absolute = input.voxel_absolute_position;
+    // `absolute` (the absolute voxel position) was bound at the top of the fn for
+    // the band clip; reuse it here.
     let axis_magnitude = abs(input.world_normal);
     // Per-face (U axis, U sign) and (V axis, V sign), matching the instanced
     // unit-cube face UVs: +X U=+z V=-y; -X U=-z V=-y; +Y U=+x V=-z; -Y U=+x V=+z;

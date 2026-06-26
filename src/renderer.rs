@@ -289,7 +289,7 @@ fn with_alpha(rgb: [f32; 3], alpha: f32) -> [f32; 4] {
 ///
 /// Pass [`LayerBand::FULL`] (or any band whose `band_max >= grid_y - 1` and
 /// `band_min == 0`) to draw the whole model unclipped.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LayerBand {
     pub band_min: u32,
     pub band_max: u32,

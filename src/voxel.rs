@@ -57,7 +57,7 @@ pub struct Voxel {
 /// voxels only. For a filled 5×1×5@16 disc this is ~800k entries which is
 /// memory-friendly compared with a dense 80×16×80 bitfield-plus-payload, and it
 /// is exactly the iteration set the instance buffer needs.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct VoxelGrid {
     /// Grid dimensions in voxels: `size_blocks * voxels_per_block`.
     pub dimensions: [u32; 3],

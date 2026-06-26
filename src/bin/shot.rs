@@ -1149,12 +1149,15 @@ async fn run_capture(options: ShotOptions) {
             None => Some(options.material),
         };
         cuboid_mesh_renderer.update_uniforms(
+            &gpu.device,
             &gpu.queue,
             view_projection,
             grid_dimensions,
             options.geometry.voxels_per_block,
             options.show_grid_overlay,
             bound,
+            band,
+            options.debug_face_orientation,
         );
         println!(
             "cuboid mesher: {} boxes → {} exposed faces ({} triangles), {} chunks (vs {} instanced voxels)",
