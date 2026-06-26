@@ -1261,6 +1261,103 @@ mod tests {
         assert_eq!(mesh.face_count(), 0);
     }
 
+    /// Vertex-position ↔ voxel-extent correspondence: every emitted face vertex
+    /// must land on one of a box's integer corner planes — `min` (the box's
+    /// min-corner) or `max + 1` (its exclusive far plane) on each axis — once the
+    /// shift-invariant `world_offset` is subtracted back out. This proves the
+    /// geometry the mesher emits matches the integer box bounds the decomposition
+    /// produced (no off-by-one / wrong-plane vertex), as a pure CPU assertion.
+    #[test]
+    fn vertex_positions_match_box_voxel_extents() {
+        use std::collections::HashSet;
+
+        // A few irregular shapes so vertices come from boxes of varied extents and
+        // a multi-box decomposition (different materials force a split).
+        let single = grid_from_indices([3, 3, 3], &[[1, 1, 1]], 0);
+        let run = grid_from_indices([5, 5, 5], &[[1, 2, 2], [2, 2, 2], [3, 2, 2]], 0);
+        // Two adjacent boxes of different materials (a 2-box decomposition).
+        let mut two_box = grid_from_indices([4, 3, 3], &[[1, 1, 1]], 0);
+        let half = [2.0f32, 1.5, 1.5];
+        two_box.occupied.push(Voxel {
+            world_position: [2.0 + 0.5 - half[0], 1.0 + 0.5 - half[1], 1.0 + 0.5 - half[2]],
+            block_local_coord: [0, 0, 0],
+            material_id: 1,
+        });
+
+        for grid in [single, run, two_box] {
+            let mesh = build_cuboid_mesh(&grid, 1);
+            // Recover the exact region + offset + boxes the mesher used.
+            let (region, world_offset) = region_from_voxel_cloud(&grid);
+            let boxes = decompose_into_boxes(&region);
+            assert!(!boxes.is_empty(), "test shape must decompose to ≥1 box");
+
+            // The set of valid corner planes per axis = {min} ∪ {max+1} over boxes.
+            let mut valid_plane: [HashSet<i64>; 3] =
+                [HashSet::new(), HashSet::new(), HashSet::new()];
+            for voxel_box in &boxes {
+                for (axis, planes) in valid_plane.iter_mut().enumerate() {
+                    planes.insert(voxel_box.min[axis] as i64);
+                    planes.insert(voxel_box.max[axis] as i64 + 1);
+                }
+            }
+
+            for vertex in &mesh.vertices {
+                for axis in 0..3 {
+                    // Undo the world offset → region-local integer plane.
+                    let local_plane = (vertex.position[axis] - world_offset[axis]).round() as i64;
+                    // The round must be exact (planes are integers in local space).
+                    assert!(
+                        (vertex.position[axis] - world_offset[axis] - local_plane as f32).abs()
+                            < 1e-4,
+                        "vertex {:?} axis {axis} not on an integer local plane",
+                        vertex.position
+                    );
+                    assert!(
+                        valid_plane[axis].contains(&local_plane),
+                        "vertex {:?} axis {axis} local plane {local_plane} is not a box \
+                         min or max+1 plane (valid: {:?})",
+                        vertex.position,
+                        valid_plane[axis]
+                    );
+                }
+            }
+
+            // Per-box: the box's OWN min and max+1 corner planes must each appear in
+            // the emitted vertex set (the box actually contributes its extents).
+            let emitted: HashSet<[i64; 3]> = mesh
+                .vertices
+                .iter()
+                .map(|vertex| {
+                    [
+                        (vertex.position[0] - world_offset[0]).round() as i64,
+                        (vertex.position[1] - world_offset[1]).round() as i64,
+                        (vertex.position[2] - world_offset[2]).round() as i64,
+                    ]
+                })
+                .collect();
+            for voxel_box in &boxes {
+                let min_corner = [
+                    voxel_box.min[0] as i64,
+                    voxel_box.min[1] as i64,
+                    voxel_box.min[2] as i64,
+                ];
+                let max_corner = [
+                    voxel_box.max[0] as i64 + 1,
+                    voxel_box.max[1] as i64 + 1,
+                    voxel_box.max[2] as i64 + 1,
+                ];
+                assert!(
+                    emitted.contains(&min_corner),
+                    "box {voxel_box:?} min corner {min_corner:?} missing from vertices"
+                );
+                assert!(
+                    emitted.contains(&max_corner),
+                    "box {voxel_box:?} max+1 corner {max_corner:?} missing from vertices"
+                );
+            }
+        }
+    }
+
     #[test]
     fn empty_grid_has_no_mesh() {
         let grid = VoxelGrid::new([4, 4, 4]);

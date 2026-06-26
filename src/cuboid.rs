@@ -566,6 +566,230 @@ mod tests {
         assert_invariants(&region, &boxes);
     }
 
+    /// Expand a decomposition back into the SET of `(x, y, z)` cells it covers,
+    /// paired with the covering box's `material_id`. The structural round-trip
+    /// tests compare this against the region's own solid cells.
+    fn expand_boxes_to_cells(boxes: &[VoxelBox]) -> std::collections::HashMap<[u32; 3], u16> {
+        let mut cells = std::collections::HashMap::new();
+        for voxel_box in boxes {
+            for z in voxel_box.min[2]..=voxel_box.max[2] {
+                for y in voxel_box.min[1]..=voxel_box.max[1] {
+                    for x in voxel_box.min[0]..=voxel_box.max[0] {
+                        let previous = cells.insert([x, y, z], voxel_box.material_id);
+                        assert!(
+                            previous.is_none(),
+                            "cell ({x},{y},{z}) covered by more than one box (overlap)"
+                        );
+                    }
+                }
+            }
+        }
+        cells
+    }
+
+    /// Collect a region's solid cells as a `(x, y, z) -> material_id` map.
+    fn region_solid_cells(region: &VoxelRegion) -> std::collections::HashMap<[u32; 3], u16> {
+        let [w, h, d] = region.extent;
+        let mut cells = std::collections::HashMap::new();
+        for z in 0..d {
+            for y in 0..h {
+                for x in 0..w {
+                    if let Some(material) = region.material_at(x, y, z) {
+                        cells.insert([x, y, z], material);
+                    }
+                }
+            }
+        }
+        cells
+    }
+
+    /// The full structural round-trip: decompose, expand the boxes back to cells,
+    /// and assert the expanded cell+material map EXACTLY equals the region's solid
+    /// cells. This subsumes exact-cover, no-overlap (checked in `expand_boxes_to_cells`),
+    /// and per-cell material correctness (no merging across differing materials) in
+    /// one set-equality assertion. Returns the box count for sanity follow-ups.
+    fn assert_round_trip_exact(region: &VoxelRegion) -> usize {
+        let boxes = decompose_into_boxes(region);
+        let expanded = expand_boxes_to_cells(&boxes);
+        let original = region_solid_cells(region);
+        assert_eq!(
+            expanded, original,
+            "expanded box cells (with materials) must exactly equal the region's solid cells"
+        );
+        // Belt-and-braces against the existing per-axis invariant checker.
+        assert_invariants(region, &boxes);
+        boxes.len()
+    }
+
+    #[test]
+    fn round_trip_single_voxel() {
+        let region = region_from_fn([3, 3, 3], |x, y, z| {
+            if [x, y, z] == [1, 1, 1] {
+                Some(7)
+            } else {
+                None
+            }
+        });
+        assert_eq!(assert_round_trip_exact(&region), 1);
+    }
+
+    #[test]
+    fn round_trip_empty_and_full() {
+        let empty = VoxelRegion::new_empty([4, 4, 4]);
+        assert_eq!(assert_round_trip_exact(&empty), 0);
+
+        let full = region_from_fn([4, 3, 5], |_x, _y, _z| Some(2));
+        assert_eq!(assert_round_trip_exact(&full), 1, "solid block → one box");
+    }
+
+    #[test]
+    fn round_trip_multiple_materials() {
+        // A 4×4×2 region quartered into four distinct materials along X and Y, so a
+        // correct decomposition can NEVER merge two materials into one box. The
+        // round-trip's per-cell material equality is the guard.
+        let extent = [4, 4, 2];
+        let region = region_from_fn(extent, |x, y, _z| {
+            let material = match (x < 2, y < 2) {
+                (true, true) => 11,
+                (false, true) => 22,
+                (true, false) => 33,
+                (false, false) => 44,
+            };
+            Some(material)
+        });
+        let count = assert_round_trip_exact(&region);
+        // Four material quadrants → at least four boxes (greedy may not exceed the
+        // solid-cell count, but must distinguish all four materials).
+        assert!(count >= 4, "four materials must yield at least four boxes, got {count}");
+        let materials: std::collections::HashSet<u16> =
+            decompose_into_boxes(&region).iter().map(|b| b.material_id).collect();
+        assert_eq!(
+            materials,
+            [11, 22, 33, 44].into_iter().collect(),
+            "every material must survive into the boxes"
+        );
+    }
+
+    #[test]
+    fn round_trip_handmade_concave_shapes() {
+        // A handful of irregular/concave outlines whose holes and notches no box may
+        // cover. The round-trip set-equality enforces that exactly.
+
+        // (1) L-shape across depth 2.
+        let l_shape = region_from_fn([3, 3, 2], |x, y, _z| {
+            if y == 0 || x == 0 {
+                Some(4)
+            } else {
+                None
+            }
+        });
+        assert_round_trip_exact(&l_shape);
+
+        // (2) 5×5 ring (hollow centre) over depth 1.
+        let ring = region_from_fn([5, 5, 1], |x, y, _z| {
+            if x == 0 || y == 0 || x == 4 || y == 4 {
+                Some(3)
+            } else {
+                None
+            }
+        });
+        assert_round_trip_exact(&ring);
+
+        // (3) A "plus"/cross silhouette with a concave notch at each corner, two
+        //     materials in the arms, extruded over depth 3.
+        let cross = region_from_fn([5, 5, 3], |x, y, _z| {
+            let on_vertical_arm = x == 2;
+            let on_horizontal_arm = y == 2;
+            if on_vertical_arm || on_horizontal_arm {
+                Some(if on_vertical_arm { 8 } else { 9 })
+            } else {
+                None
+            }
+        });
+        assert_round_trip_exact(&cross);
+
+        // (4) A diagonal staircase: a concave shape with single-cell steps.
+        let staircase = region_from_fn([4, 4, 1], |x, y, _z| {
+            if y <= x {
+                Some(1)
+            } else {
+                None
+            }
+        });
+        assert_round_trip_exact(&staircase);
+    }
+
+    #[test]
+    fn round_trip_sdf_shapes_via_adapter() {
+        // Resolve real SDF primitives (sphere, cylinder, box, torus, tube) into a
+        // VoxelGrid, densify with the adapter, and round-trip-verify. These grids
+        // are origin-centred (SdfShape::resolve), so `region_from_voxel_grid`'s
+        // anchor-at-0 convention maps every voxel into bounds losslessly; the test
+        // first asserts no voxel was dropped, THEN the structural round-trip.
+        use crate::voxel::{SdfShape, ShapeKind, VoxelProducer};
+
+        for &kind in &[
+            ShapeKind::Sphere,
+            ShapeKind::Cylinder,
+            ShapeKind::Box,
+            ShapeKind::Torus,
+            ShapeKind::Tube,
+        ] {
+            for &size in &[[3u32, 3, 3], [5, 1, 5], [4, 2, 3]] {
+                let shape = SdfShape {
+                    kind,
+                    size_blocks: size,
+                    voxels_per_block: 4,
+                    wall_blocks: 1,
+                };
+                let dimensions = shape.grid_dimensions();
+                let mut grid = VoxelGrid::new(dimensions);
+                shape.resolve(&mut grid);
+                if grid.occupied.is_empty() {
+                    continue;
+                }
+                let region = region_from_voxel_grid(&grid, [0, 0, 0], dimensions);
+                // The adapter must not drop any voxel for an origin-centred grid.
+                let region_solid = region.cells.iter().filter(|c| c.is_some()).count();
+                assert_eq!(
+                    region_solid,
+                    grid.occupied.len(),
+                    "{kind:?} {size:?}: adapter dropped voxels ({region_solid} of {})",
+                    grid.occupied.len()
+                );
+                // Full structural round-trip: boxes expand back to exactly the
+                // region's solid cells, with materials, no overlap, no holes.
+                let count = assert_round_trip_exact(&region);
+                assert!(
+                    count as u64 <= region_solid as u64,
+                    "{kind:?} {size:?}: box count {count} exceeds solid cells {region_solid}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn round_trip_randomized_multi_material() {
+        // Pseudo-random multi-material fills over varied extents: the structural
+        // round-trip (set + material equality, no overlap) on every sample, the
+        // real safety net for the greedy growth + material split logic.
+        let mut lcg = Lcg(0xfeed_face_dead_beef);
+        let extents = [[1, 1, 1], [6, 4, 5], [9, 2, 7], [3, 8, 4], [7, 7, 7]];
+        for &extent in &extents {
+            for materials in [1u32, 2, 4] {
+                for fill_percent in [25u32, 55, 100] {
+                    let mut region = VoxelRegion::new_empty(extent);
+                    for cell in region.cells.iter_mut() {
+                        if (lcg.next_u32() % 100) < fill_percent {
+                            *cell = Some((lcg.next_u32() % materials) as u16);
+                        }
+                    }
+                    assert_round_trip_exact(&region);
+                }
+            }
+        }
+    }
+
     #[test]
     fn adapter_subregion_offset() {
         // A 4×4×4 grid, fill the high-X half (i>=2) with material 8; extract just
