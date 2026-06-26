@@ -750,18 +750,22 @@ fn build_inspector_section(
             // geometry mirror, so it is edited AFTER the mirror write-back (which
             // only touches shape + material) and is common to all node kinds.
             build_offset_section(ui, state, response);
+            build_node_grids_section(ui, state);
         }
         ActiveKind::Part => {
             build_part_inspector_section(ui, state, response);
             build_offset_section(ui, state, response);
+            build_node_grids_section(ui, state);
         }
         ActiveKind::Group => {
             build_group_inspector_section(ui, state, "Group");
             build_offset_section(ui, state, response);
+            build_node_grids_section(ui, state);
         }
         ActiveKind::Instance => {
             build_group_inspector_section(ui, state, "Instance");
             build_offset_section(ui, state, response);
+            build_node_grids_section(ui, state);
         }
         ActiveKind::None => {
             ui.add_space(8.0);
@@ -875,6 +879,23 @@ fn build_offset_section(ui: &mut egui::Ui, state: &mut PanelState, response: &mu
         // scene change so the caller auto-frames the whole composited extent).
         response.scene_changed = true;
     }
+    ui.separator();
+}
+
+/// Per-node grid toggles (issue #29 S3): the active node's own `block_lattice` /
+/// `floor_grid` flags, each ANDed with its scene-wide master (in the Display
+/// section) to decide whether that node draws the grid. Toggling either only needs
+/// a per-frame batch rebuild — the lattice/floor lines are re-walked from the scene
+/// every frame — so NO scene re-resolve (`scene_changed`) is signalled, keeping a
+/// grid flip cheap. (`voxel_grid_on_faces` is wired in S4.)
+fn build_node_grids_section(ui: &mut egui::Ui, state: &mut PanelState) {
+    let Some(node) = state.scene.active_node_mut() else {
+        return;
+    };
+    ui.add_space(8.0);
+    ui.strong("Grids (this object)");
+    ui.checkbox(&mut node.grids.block_lattice, "Block lattice");
+    ui.checkbox(&mut node.grids.floor_grid, "Floor grid");
     ui.separator();
 }
 
@@ -1004,8 +1025,12 @@ fn build_display_section(ui: &mut egui::Ui, state: &mut PanelState) {
     ui.add_space(8.0);
     ui.strong("Display");
     ui.checkbox(&mut state.show_grid_overlay, "Voxel grid on faces");
-    ui.checkbox(&mut state.show_block_lattice, "Block lattice");
-    ui.checkbox(&mut state.show_floor_grid, "Fine floor grid");
+    // Issue #29 S3: these are now scene-wide MASTERS for the per-object grids — each
+    // is ANDed with a node's own toggle (in the inspector) to decide if that node
+    // draws the grid. They drive `Scene::master_*` directly (no scene re-resolve;
+    // the per-frame batch reads them), replacing the old whole-region `show_*`.
+    ui.checkbox(&mut state.scene.master_block_lattice, "Block lattice (master)");
+    ui.checkbox(&mut state.scene.master_floor_grid, "Floor grid (master)");
     ui.checkbox(&mut state.show_view_cube, "View cube");
     // Issue #29 S2: the transform gizmo is now selection-driven (drawn on the
     // active node), so it no longer has a Display toggle.

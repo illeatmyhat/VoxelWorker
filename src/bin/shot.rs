@@ -28,7 +28,7 @@ use voxel_worker::{
     create_depth_view, create_msaa_color_view, procedural_material_average_color, render_frame,
     run_egui_frame, AssemblyDef, CubeFace, DefId, EguiPaintBridge, FogMode, FrameOverlays,
     GeometryParams,
-    GpuContext, GridLatticeRenderer, LayerBand, LayerRange, MaterialChoice, MaterialSource,
+    GpuContext, LayerBand, LayerRange, MaterialChoice, MaterialSource, SceneGridRenderer,
     Node, NodeContent, NodePath, OnionFogParams, OnionFogRenderer, OrbitCamera, PanelState, Part,
     ProjectionMode, RegionBlocks, Scene, SdfShape, ShapeKind, TransformGizmoRenderer,
     ViewCubeElement, VoxExport,
@@ -947,6 +947,21 @@ async fn run_capture(options: ShotOptions) {
         panel_state.scene.active = (index < panel_state.scene.nodes.len())
             .then(|| NodePath::root_index(index));
     }
+    // Issue #29 S3: the per-object block lattice + floor grid are now gated by a
+    // scene master ANDed with each NODE's own toggle (default OFF), so a headless
+    // capture must enable them explicitly. `--lattice`/`--floor` set the matching
+    // scene master AND turn the per-object flag on for ONE node — the
+    // `--select-node N` node (else the top-level node 0). This proves the grid
+    // hugs that node's enclosing blocks while a sibling shows none.
+    if options.show_block_lattice || options.show_floor_grid {
+        panel_state.scene.master_block_lattice = options.show_block_lattice;
+        panel_state.scene.master_floor_grid = options.show_floor_grid;
+        let grid_node = options.select_node.unwrap_or(0);
+        if let Some(node) = panel_state.scene.nodes.get_mut(grid_node) {
+            node.grids.block_lattice = options.show_block_lattice;
+            node.grids.floor_grid = options.show_floor_grid;
+        }
+    }
     // The resolve region: for a placed multi-node scene this is the whole
     // composite extent (per-axis box over all node offsets ± sizes); for a single
     // node it equals the node's own size (the step-2 region).
@@ -1184,12 +1199,9 @@ async fn run_capture(options: ShotOptions) {
         .unwrap_or(region_dimensions);
     let transform_gizmo_renderer =
         TransformGizmoRenderer::new(&gpu.device, COLOR_TARGET_FORMAT, gizmo_extent_dims);
-    let grid_lattice_renderer = GridLatticeRenderer::new(
-        &gpu.device,
-        COLOR_TARGET_FORMAT,
-        region_dimensions,
-        options.geometry.voxels_per_block,
-    );
+    // Per-object block lattice + floor grid (issue #29 S3): its line batch is built
+    // from the scene's grid-enabled nodes below (after the camera is known).
+    let mut scene_grid_renderer = SceneGridRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
     let view_cube_renderer = ViewCubeRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
     let mut onion_fog_renderer = OnionFogRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
     // Upload the resolved grid as the fog's occupancy field. PerChunk (DEFAULT since #28
@@ -1445,7 +1457,15 @@ async fn run_capture(options: ShotOptions) {
         .map(|(pivot, _)| glam::Vec3::from_array(pivot))
         .unwrap_or(glam::Vec3::ZERO);
     transform_gizmo_renderer.update_uniforms(&gpu.queue, view_projection, gizmo_pivot);
-    grid_lattice_renderer.update_uniforms(&gpu.queue, view_projection);
+    // Build this capture's per-object grid batch from the scene's grid-enabled nodes
+    // (issue #29 S3), then upload the camera matrix.
+    scene_grid_renderer.rebuild_from_scene(
+        &gpu.device,
+        &gpu.queue,
+        &panel_state.scene,
+        options.geometry.voxels_per_block,
+    );
+    scene_grid_renderer.update_uniforms(&gpu.queue, view_projection);
     view_cube_renderer.update_uniforms(&gpu.queue, camera.view_cube_view_projection());
     if onion_active {
         onion_fog_renderer.update(
@@ -1531,9 +1551,7 @@ async fn run_capture(options: ShotOptions) {
         } else {
             None
         },
-        grid_lattice: Some(&grid_lattice_renderer),
-        show_lattice: options.show_block_lattice,
-        show_floor: options.show_floor_grid,
+        scene_grid: Some(&scene_grid_renderer),
         debug_face_mode: options.debug_face_orientation,
         onion_fog: if onion_active {
             Some(&onion_fog_renderer)

@@ -23,6 +23,7 @@ use wgpu::util::DeviceExt;
 
 use crate::frustum::{Aabb, Frustum};
 use crate::panel::MaterialChoice;
+use crate::scene::Scene;
 use crate::voxel::VoxelGrid;
 
 /// Depth format used by the voxel pass and the depth texture.
@@ -2303,12 +2304,18 @@ const LATTICE_ALPHA: f32 = 0.28;
 const FLOOR_COLOR_HEX: u32 = 0x6b_5f_4a;
 const FLOOR_ALPHA: f32 = 0.16;
 
-/// The block lattice and fine floor grid (ARCHITECTURE.md §6 / prototype
+/// The per-object block lattice and floor grid (ARCHITECTURE.md §6 / prototype
 /// `buildGrids`), drawn through the shared alpha-blended, depth-tested line
-/// pipeline in the MSAA pass. The lattice is a 3D box lattice with lines at every
-/// BLOCK boundary (spacing = `voxels_per_block`); the floor is a flat grid on the
-/// bottom plane. Each is toggled independently by the caller.
-pub struct GridLatticeRenderer {
+/// pipeline in the MSAA pass.
+///
+/// Issue #29 S3: this is no longer ONE whole-region lattice. Each frame the caller
+/// walks the scene and, for every node whose grids are enabled (the scene master
+/// ANDed with the node's own toggle), appends that node's block lattice and/or
+/// floor lines into the renderer's per-frame batch via [`Self::set_batch`]. A
+/// lattice box is a 3D box lattice with lines at every BLOCK boundary (spacing =
+/// density) spanning the node's enclosing-block AABB; the floor is the horizontal
+/// grid at the node's base plane, snapped to the same global block lines.
+pub struct SceneGridRenderer {
     pipeline: wgpu::RenderPipeline,
     lattice_buffer: wgpu::Buffer,
     lattice_vertex_count: u32,
@@ -2320,29 +2327,22 @@ pub struct GridLatticeRenderer {
     uniform_bind_group: wgpu::BindGroup,
 }
 
-impl GridLatticeRenderer {
-    /// Create the renderer for a colour target, sized to the current grid.
-    pub fn new(
-        device: &wgpu::Device,
-        color_format: wgpu::TextureFormat,
-        grid_dimensions: [u32; 3],
-        voxels_per_block: u32,
-    ) -> Self {
-        let lattice = lattice_vertices(grid_dimensions, voxels_per_block);
-        let floor = floor_vertices(grid_dimensions);
-        let lattice_vertex_count = lattice.len() as u32;
-        let floor_vertex_count = floor.len() as u32;
-        let lattice_capacity = lattice_vertex_count.max(1);
-        let floor_capacity = floor_vertex_count.max(1);
+impl SceneGridRenderer {
+    /// Create the renderer for a colour target. The line batches start empty —
+    /// the caller fills them each frame via [`Self::set_batch`] from the visible
+    /// nodes' enabled grids.
+    pub fn new(device: &wgpu::Device, color_format: wgpu::TextureFormat) -> Self {
+        let lattice_capacity = 1u32;
+        let floor_capacity = 1u32;
 
         let lattice_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("lattice line vertices"),
-            contents: bytemuck::cast_slice(&pad_lines(lattice, lattice_capacity)),
+            contents: bytemuck::cast_slice(&pad_lines(Vec::new(), lattice_capacity)),
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         });
         let floor_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("floor line vertices"),
-            contents: bytemuck::cast_slice(&pad_lines(floor, floor_capacity)),
+            contents: bytemuck::cast_slice(&pad_lines(Vec::new(), floor_capacity)),
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         });
 
@@ -2369,32 +2369,62 @@ impl GridLatticeRenderer {
         Self {
             pipeline,
             lattice_buffer,
-            lattice_vertex_count,
+            lattice_vertex_count: 0,
             lattice_capacity,
             floor_buffer,
-            floor_vertex_count,
+            floor_vertex_count: 0,
             floor_capacity,
             uniform_buffer,
             uniform_bind_group,
         }
     }
 
-    /// Rebuild both line sets for a freshly-resolved grid (matches the voxel
-    /// rebuild; `buildGrids` keyed on the same dims/density).
-    pub fn rebuild(
+    /// Rebuild this frame's lattice + floor line batches by walking `scene` (issue
+    /// #29 S3). For every visible node whose grids are enabled — the scene-wide
+    /// master ANDed with that node's own per-object toggle — the node's
+    /// enclosing-block lattice box ([`Scene::node_block_lattice_box_recentred`]) is
+    /// appended to the corresponding batch:
+    ///
+    /// * `master_block_lattice && node.grids.block_lattice` → block lattice lines.
+    /// * `master_floor_grid && node.grids.floor_grid` → base-plane floor lines.
+    ///
+    /// A node with no intrinsic extent (size-less Part / empty subtree) yields no
+    /// box and is skipped. When NOTHING is enabled both batches are empty and
+    /// [`Self::draw`] becomes a no-op — the new default, where per-object grids are
+    /// off until the user turns them on.
+    pub fn rebuild_from_scene(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        grid_dimensions: [u32; 3],
+        scene: &Scene,
         voxels_per_block: u32,
     ) {
-        let lattice = lattice_vertices(grid_dimensions, voxels_per_block);
-        let floor = floor_vertices(grid_dimensions);
-
-        self.lattice_vertex_count =
-            upload_lines(device, queue, &mut self.lattice_buffer, &mut self.lattice_capacity, lattice, "lattice line vertices");
-        self.floor_vertex_count =
-            upload_lines(device, queue, &mut self.floor_buffer, &mut self.floor_capacity, floor, "floor line vertices");
+        let step = voxels_per_block.max(1);
+        let (lattice_boxes, floor_boxes) = scene_grid_boxes(scene, voxels_per_block);
+        let mut lattice: Vec<LineVertex> = Vec::new();
+        let mut floor: Vec<LineVertex> = Vec::new();
+        for (min, max) in lattice_boxes {
+            lattice_vertices_into(&mut lattice, min, max, step);
+        }
+        for (min, max) in floor_boxes {
+            floor_vertices_into(&mut floor, min, max, step);
+        }
+        self.lattice_vertex_count = upload_lines(
+            device,
+            queue,
+            &mut self.lattice_buffer,
+            &mut self.lattice_capacity,
+            lattice,
+            "lattice line vertices",
+        );
+        self.floor_vertex_count = upload_lines(
+            device,
+            queue,
+            &mut self.floor_buffer,
+            &mut self.floor_capacity,
+            floor,
+            "floor line vertices",
+        );
     }
 
     /// Upload the camera matrix (same `view_projection` as the voxel pass).
@@ -2405,18 +2435,20 @@ impl GridLatticeRenderer {
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
     }
 
-    /// Record the lattice and/or floor draws into an already-begun (MSAA) pass.
-    pub fn draw(&self, render_pass: &mut wgpu::RenderPass<'_>, show_lattice: bool, show_floor: bool) {
-        if !show_lattice && !show_floor {
+    /// Record the lattice + floor draws into an already-begun (MSAA) pass. Gating
+    /// is done at batch-build time (issue #29 S3): only grid-enabled nodes
+    /// contributed lines, so empty batches simply draw nothing here.
+    pub fn draw(&self, render_pass: &mut wgpu::RenderPass<'_>) {
+        if self.lattice_vertex_count == 0 && self.floor_vertex_count == 0 {
             return;
         }
         render_pass.set_pipeline(&self.pipeline);
         render_pass.set_bind_group(0, &self.uniform_bind_group, &[]);
-        if show_lattice && self.lattice_vertex_count > 0 {
+        if self.lattice_vertex_count > 0 {
             render_pass.set_vertex_buffer(0, self.lattice_buffer.slice(..));
             render_pass.draw(0..self.lattice_vertex_count, 0..1);
         }
-        if show_floor && self.floor_vertex_count > 0 {
+        if self.floor_vertex_count > 0 {
             render_pass.set_vertex_buffer(0, self.floor_buffer.slice(..));
             render_pass.draw(0..self.floor_vertex_count, 0..1);
         }
@@ -2448,32 +2480,74 @@ fn upload_lines(
     count
 }
 
-/// Block lattice line segments: a 3D box lattice with grid lines at every BLOCK
-/// boundary (spacing = `voxels_per_block`). Port of the prototype `buildGrids`
-/// lattice loop. World-centred so it aligns with the voxel grid.
-fn lattice_vertices(grid_dimensions: [u32; 3], voxels_per_block: u32) -> Vec<LineVertex> {
-    let [grid_x, grid_y, grid_z] = grid_dimensions;
-    let half_x = grid_x as f32 / 2.0;
-    let half_y = grid_y as f32 / 2.0;
-    let half_z = grid_z as f32 / 2.0;
-    let step = voxels_per_block.max(1);
-    let color = with_alpha(srgb_hex_to_linear(LATTICE_COLOR_HEX), LATTICE_ALPHA);
-
-    // Block-boundary planes along each axis (0, D, 2D, …, N), world-centred.
-    let boundaries = |extent: u32, half: f32| -> Vec<f32> {
-        let mut values = Vec::new();
-        let mut g = 0u32;
-        while g <= extent {
-            values.push(g as f32 - half);
-            g += step;
+/// The per-object grid boxes for a scene (issue #29 S3), gated CPU-side so the walk
+/// is unit-testable without a GPU. Returns `(lattice_boxes, floor_boxes)` where each
+/// box is the `(min, max)` enclosing-block AABB (recentred voxels) of a node whose
+/// grid is enabled — the scene-wide master ANDed with the node's own per-object
+/// toggle. A node with no intrinsic extent contributes no box. When a master is off,
+/// or a node's flag is off, that node contributes nothing to that batch (gating).
+#[allow(clippy::type_complexity)]
+pub(crate) fn scene_grid_boxes(
+    scene: &Scene,
+    voxels_per_block: u32,
+) -> (Vec<([f32; 3], [f32; 3])>, Vec<([f32; 3], [f32; 3])>) {
+    let mut lattice_boxes = Vec::new();
+    let mut floor_boxes = Vec::new();
+    let want_lattice_master = scene.master_block_lattice;
+    let want_floor_master = scene.master_floor_grid;
+    if !want_lattice_master && !want_floor_master {
+        return (lattice_boxes, floor_boxes);
+    }
+    for (path, _depth) in scene.tree_rows() {
+        let Some(node) = scene.node_at_path(&path) else {
+            continue;
+        };
+        let want_lattice = want_lattice_master && node.grids.block_lattice;
+        let want_floor = want_floor_master && node.grids.floor_grid;
+        if !want_lattice && !want_floor {
+            continue;
         }
-        values
-    };
-    let xs = boundaries(grid_x, half_x);
-    let ys = boundaries(grid_y, half_y);
-    let zs = boundaries(grid_z, half_z);
+        let Some(node_box) = scene.node_block_lattice_box_recentred(&path, voxels_per_block) else {
+            continue;
+        };
+        if want_lattice {
+            lattice_boxes.push(node_box);
+        }
+        if want_floor {
+            floor_boxes.push(node_box);
+        }
+    }
+    (lattice_boxes, floor_boxes)
+}
 
-    let mut vertices = Vec::new();
+/// Block-boundary coordinates `[lo, lo+step, …, hi]` along one axis. The corners
+/// `lo`/`hi` are block-aligned (the caller supplies an enclosing-block box), so the
+/// `step`-stride walk lands exactly on `hi`; a final clamp guards float drift so the
+/// closing block plane is always present.
+fn block_boundaries(lo: f32, hi: f32, step: u32) -> Vec<f32> {
+    let step = step.max(1) as f32;
+    let mut values = Vec::new();
+    let mut g = lo;
+    // `+ step * 0.5` tolerance: include the plane at (or fractionally past) `hi`.
+    while g <= hi + step * 0.5 {
+        values.push(g.min(hi));
+        g += step;
+    }
+    if values.last().copied() != Some(hi) {
+        values.push(hi);
+    }
+    values
+}
+
+/// Append a 3D block lattice for the box `[min, max]` (voxels) — grid lines at every
+/// BLOCK boundary (spacing = `step`) — into `vertices` (issue #29 S3, per-object).
+/// Port of the prototype `buildGrids` lattice loop, now spanning an arbitrary box.
+fn lattice_vertices_into(vertices: &mut Vec<LineVertex>, min: [f32; 3], max: [f32; 3], step: u32) {
+    let color = with_alpha(srgb_hex_to_linear(LATTICE_COLOR_HEX), LATTICE_ALPHA);
+    let xs = block_boundaries(min[0], max[0], step);
+    let ys = block_boundaries(min[1], max[1], step);
+    let zs = block_boundaries(min[2], max[2], step);
+
     let mut add = |from: [f32; 3], to: [f32; 3]| {
         vertices.push(LineVertex { position: from, color });
         vertices.push(LineVertex { position: to, color });
@@ -2482,50 +2556,46 @@ fn lattice_vertices(grid_dimensions: [u32; 3], voxels_per_block: u32) -> Vec<Lin
     // Lines along Y at every (x, z) lattice node.
     for &x in &xs {
         for &z in &zs {
-            add([x, -half_y, z], [x, half_y, z]);
+            add([x, min[1], z], [x, max[1], z]);
         }
     }
     // Lines along X at every (y, z) lattice node.
     for &y in &ys {
         for &z in &zs {
-            add([-half_x, y, z], [half_x, y, z]);
+            add([min[0], y, z], [max[0], y, z]);
         }
     }
     // Lines along Z at every (x, y) lattice node.
     for &x in &xs {
         for &y in &ys {
-            add([x, y, -half_z], [x, y, half_z]);
+            add([x, y, min[2]], [x, y, max[2]]);
         }
     }
-    vertices
 }
 
-/// Fine floor grid: a flat grid on the bottom plane (`y = -grid_y/2`) at 1-VOXEL
-/// spacing (prototype `buildGrids` floor loop steps `g += 1`; "fine" = per-voxel).
-fn floor_vertices(grid_dimensions: [u32; 3]) -> Vec<LineVertex> {
-    let [grid_x, grid_y, grid_z] = grid_dimensions;
-    let half_x = grid_x as f32 / 2.0;
-    let half_z = grid_z as f32 / 2.0;
-    let y = -(grid_y as f32 / 2.0);
+/// Append a floor grid for the box `[min, max]` (voxels) on its BASE plane
+/// (`y = min[1]`) — lines at every BLOCK boundary (spacing = `step`), snapped to the
+/// same global block lines as the lattice (issue #29 S3). The base plane is the
+/// node's bottom; the grid reads as the ground under the object.
+fn floor_vertices_into(vertices: &mut Vec<LineVertex>, min: [f32; 3], max: [f32; 3], step: u32) {
     let color = with_alpha(srgb_hex_to_linear(FLOOR_COLOR_HEX), FLOOR_ALPHA);
+    let y = min[1];
+    let xs = block_boundaries(min[0], max[0], step);
+    let zs = block_boundaries(min[2], max[2], step);
 
-    let mut vertices = Vec::new();
     let mut add = |from: [f32; 3], to: [f32; 3]| {
         vertices.push(LineVertex { position: from, color });
         vertices.push(LineVertex { position: to, color });
     };
 
-    // Lines parallel to Z, stepping along X.
-    for g in 0..=grid_x {
-        let c = g as f32 - half_x;
-        add([c, y, -half_z], [c, y, half_z]);
+    // Lines parallel to Z, at every X block boundary.
+    for &x in &xs {
+        add([x, y, min[2]], [x, y, max[2]]);
     }
-    // Lines parallel to X, stepping along Z.
-    for g in 0..=grid_z {
-        let c = g as f32 - half_z;
-        add([-half_x, y, c], [half_x, y, c]);
+    // Lines parallel to X, at every Z block boundary.
+    for &z in &zs {
+        add([min[0], y, z], [max[0], y, z]);
     }
-    vertices
 }
 
 // ============================================================================
@@ -3858,6 +3928,109 @@ mod tests {
                 assert!(lo.cmpge(chunk.aabb.min).all(), "voxel below chunk AABB min");
                 assert!(hi.cmple(chunk.aabb.max).all(), "voxel above chunk AABB max");
             }
+        }
+    }
+
+    // ---- issue #29 S3: per-object grid line geometry + gating ----
+
+    use crate::panel::MaterialChoice as Mc;
+    use crate::scene::{Node, NodeContent, NodePath};
+    use crate::voxel::ShapeKind;
+    use crate::voxel::SdfShape;
+
+    /// `block_boundaries` returns the closing plane at `hi` (the box is enclosed in
+    /// whole blocks), so a `B`-block box yields `B + 1` planes — and EXPANDING the
+    /// box by one block on an axis adds exactly one boundary plane there. This is the
+    /// geometry that makes "add/remove a whole block" fall out: a box grown by one
+    /// enclosing block gains one lattice plane; shrunk by one, it loses one.
+    #[test]
+    fn block_boundaries_count_tracks_enclosing_blocks() {
+        for step in [1u32, 15, 16] {
+            let s = step as f32;
+            // A 3-block box [0, 3·step] → planes at 0, step, 2·step, 3·step = 4.
+            let three = block_boundaries(0.0, 3.0 * s, step);
+            assert_eq!(three.len(), 4, "@step{step}: a 3-block box has 4 boundary planes");
+            assert_eq!(*three.first().unwrap(), 0.0);
+            assert_eq!(*three.last().unwrap(), 3.0 * s, "closing plane lands exactly on hi");
+            // ADD a whole block (expand by +step): exactly one more plane.
+            let four = block_boundaries(0.0, 4.0 * s, step);
+            assert_eq!(four.len(), 5, "@step{step}: +1 enclosing block ⇒ +1 lattice plane");
+            // REMOVE a whole block (shrink by step): exactly one fewer plane.
+            let two = block_boundaries(0.0, 2.0 * s, step);
+            assert_eq!(two.len(), 3, "@step{step}: -1 enclosing block ⇒ -1 lattice plane");
+        }
+    }
+
+    /// One node's lattice/floor box → a non-empty line set at every density; the
+    /// vertex count is a multiple of 2 (whole segments).
+    #[test]
+    fn lattice_and_floor_vertices_nonempty_per_box() {
+        for step in [1u32, 15, 16] {
+            let s = step as f32;
+            let (min, max) = ([0.0, 0.0, 0.0], [2.0 * s, s, 3.0 * s]);
+            let mut lattice = Vec::new();
+            lattice_vertices_into(&mut lattice, min, max, step);
+            assert!(!lattice.is_empty(), "@step{step}: a sized box has lattice lines");
+            assert_eq!(lattice.len() % 2, 0, "lattice lines are whole segments");
+            let mut floor = Vec::new();
+            floor_vertices_into(&mut floor, min, max, step);
+            assert!(!floor.is_empty(), "@step{step}: a sized box has floor lines");
+            // Floor sits on the base plane y = min[1] for every vertex.
+            assert!(floor.iter().all(|v| v.position[1] == min[1]), "floor on base plane");
+        }
+    }
+
+    fn box_node(name: &str, offset: [i64; 3], density: u32) -> Node {
+        let shape = SdfShape {
+            kind: ShapeKind::Box,
+            size_blocks: [2, 2, 2],
+            voxels_per_block: density,
+            wall_blocks: 1,
+        };
+        let mut node = Node::new(name, NodeContent::Tool { shape, material: Mc::Stone });
+        node.transform.offset_blocks = offset;
+        node
+    }
+
+    /// Gating (issue #29 S3): a node's lattice box appears in the batch ONLY when the
+    /// master AND the node's per-object toggle are both ON; turning EITHER off drops
+    /// it. A two-node scene with the grid enabled on ONE node yields exactly ONE
+    /// lattice box (the other node contributes none).
+    #[test]
+    fn scene_grid_boxes_gated_by_master_and_per_object() {
+        for density in [1u32, 15, 16] {
+            let mut scene = Scene {
+                nodes: vec![
+                    box_node("A", [0, 0, 0], density),
+                    box_node("B", [8, 0, 0], density),
+                ],
+                active: Some(NodePath::root_index(0)),
+                ..Scene::default()
+            };
+            scene.master_block_lattice = true;
+            scene.master_floor_grid = true;
+
+            // Both per-object toggles OFF → no boxes regardless of masters.
+            let (lat, flr) = scene_grid_boxes(&scene, density);
+            assert!(lat.is_empty() && flr.is_empty(), "@d{density}: per-object OFF ⇒ no boxes");
+
+            // Enable block lattice on node A ONLY.
+            scene.nodes[0].grids.block_lattice = true;
+            let (lat, flr) = scene_grid_boxes(&scene, density);
+            assert_eq!(lat.len(), 1, "@d{density}: one node enabled ⇒ exactly one lattice box");
+            assert!(flr.is_empty(), "@d{density}: floor still off");
+
+            // Master OFF cancels it even though the node's flag is on.
+            scene.master_block_lattice = false;
+            let (lat, _flr) = scene_grid_boxes(&scene, density);
+            assert!(lat.is_empty(), "@d{density}: master OFF ⇒ no lattice box (AND gating)");
+
+            // Floor: node B's flag on + master on → one floor box, no lattice.
+            scene.master_floor_grid = true;
+            scene.nodes[1].grids.floor_grid = true;
+            let (lat, flr) = scene_grid_boxes(&scene, density);
+            assert!(lat.is_empty(), "@d{density}: lattice master still off");
+            assert_eq!(flr.len(), 1, "@d{density}: one floor box from node B");
         }
     }
 }

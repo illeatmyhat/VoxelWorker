@@ -601,6 +601,41 @@ impl Scene {
         Some((pivot, extent))
     }
 
+    /// The per-object **block lattice box** for the node at `path`, in the SAME
+    /// recentred render frame the resolved voxels live in (issue #29 S3). Returns
+    /// `(min_corner, max_corner)` in voxels.
+    ///
+    /// The box is the node's block-aligned voxel AABB **expanded out to enclosing
+    /// whole blocks** — i.e. the union of every visible leaf under the node, each
+    /// leaf snapped to the whole-block range `[off − floor(size/2), … + size)` (the
+    /// same split [`node_subtree_extent_blocks`] forms), then scaled by `density`
+    /// and shifted by `− recentre_voxels_for_resolve`. Because the corners are taken
+    /// in WHOLE blocks before scaling, a sub-block (1-voxel) translate that crosses a
+    /// block boundary moves the enclosing-block box by exactly one whole block — the
+    /// spec's "a 1-voxel translate adds/removes a whole block" requirement falls out
+    /// of the expand-to-block on the shifted box.
+    ///
+    /// For a Group / Instance node the box is the union of all leaves under it.
+    /// A size-less node (a Part-only / empty subtree, or a path that descends
+    /// through a non-Group) returns `None` — there is no block lattice to draw.
+    pub fn node_block_lattice_box_recentred(
+        &self,
+        path: &NodePath,
+        voxels_per_block: u32,
+    ) -> Option<([f32; 3], [f32; 3])> {
+        let (min_corner, max_corner) = self.node_subtree_extent_blocks(path, voxels_per_block)?;
+        let recentre = self.recentre_voxels_for_resolve(voxels_per_block);
+        let density = voxels_per_block.max(1) as i64;
+        let mut min_box = [0.0f32; 3];
+        let mut max_box = [0.0f32; 3];
+        for axis in 0..3 {
+            // Whole-block corners → voxels (exact), then into the recentred frame.
+            min_box[axis] = (min_corner[axis] * density - recentre[axis]) as f32;
+            max_box[axis] = (max_corner[axis] * density - recentre[axis]) as f32;
+        }
+        Some((min_box, max_box))
+    }
+
     /// The block-aligned AABB (`min_corner, max_corner`, whole blocks) of the
     /// subtree rooted at `path` — the union of every visible leaf under that node,
     /// each leaf spanning `[off − floor(size/2), off − floor(size/2) + size)` (the
@@ -3744,6 +3779,163 @@ mod tests {
                     );
                 }
             }
+        }
+    }
+
+    // ---- issue #29 (grid rework S3): per-object block lattice box (renderer-follow) ----
+
+    /// Build a single-Box-node scene at `offset`, return its
+    /// `node_block_lattice_box_recentred` for node 0 at `density`.
+    fn single_node_lattice_box(
+        size_blocks: [u32; 3],
+        offset_blocks: [i64; 3],
+        density: u32,
+    ) -> ([f32; 3], [f32; 3]) {
+        let shape = SdfShape {
+            kind: ShapeKind::Box,
+            size_blocks,
+            voxels_per_block: density,
+            wall_blocks: 1,
+        };
+        let mut node = Node::new("Box", NodeContent::Tool { shape, material: MaterialChoice::Stone });
+        node.transform.offset_blocks = offset_blocks;
+        let scene = Scene {
+            nodes: vec![node],
+            active: Some(NodePath::root_index(0)),
+            ..Scene::default()
+        };
+        scene
+            .node_block_lattice_box_recentred(&NodePath::root_index(0), density)
+            .expect("a sized Box node has a lattice box")
+    }
+
+    /// The per-object lattice box spans the node's enclosing-block AABB and SCALES
+    /// with density: a `B`-block extent → a `B·d`-voxel box, at each density
+    /// {1, 15, 16} (the explicit user ask).
+    ///
+    /// "Corners on block multiples" is asserted in the GLOBAL (pre-recentre) frame
+    /// via `node_block_aabb_scales_and_aligns_across_densities` — in the RECENTRED
+    /// frame the box is shifted by the composite recentre, which for an odd composite
+    /// span is itself a non-block-multiple, so the recentred corners need not be
+    /// block multiples; the block-aligned STRUCTURE (extent = B·d, planes step d) is
+    /// what survives the recentre, and that is what this asserts.
+    #[test]
+    fn lattice_box_spans_enclosing_blocks_and_scales_with_density() {
+        let size = [5u32, 3, 2];
+        let offset = [3i64, -2, 4];
+        for density in [1u32, 15, 16] {
+            let (min, max) = single_node_lattice_box(size, offset, density);
+            for (axis, &size_axis) in size.iter().enumerate() {
+                // Box extent = size · density voxels (B-block extent → B·d voxels).
+                assert_eq!(
+                    (max[axis] - min[axis]) as i64,
+                    (size_axis * density) as i64,
+                    "axis {axis} @ d{density}: lattice box extent must be size·d voxels"
+                );
+                // The extent is an exact multiple of a block, so the box encloses
+                // exactly `size_axis` whole blocks along each axis.
+                assert_eq!(
+                    ((max[axis] - min[axis]) as i64).rem_euclid(density as i64),
+                    0,
+                    "axis {axis} @ d{density}: box extent spans whole blocks"
+                );
+            }
+        }
+    }
+
+    /// Follow-on-translate: translating the node by `+1 block` shifts its lattice box
+    /// by exactly `density` voxels per axis (the lattice follows the object), at each
+    /// density {1, 15, 16}. Because `offset_blocks` is whole-block, a SUB-block
+    /// (1-voxel) translate is NOT representable at the node level, so the
+    /// "add/remove a whole block on a sub-block move" requirement cannot be
+    /// constructed here; the whole-block follow IS the unit tested. (The
+    /// expand-to-block that WOULD turn a sub-block shift into a whole-block box
+    /// change is exercised directly on `block_boundaries`/`*_vertices_into` in the
+    /// renderer tests.)
+    #[test]
+    fn lattice_box_follows_whole_block_translate_at_each_density() {
+        let size = [5u32, 3, 2];
+        let base = [3i64, -2, 4];
+        for density in [1u32, 15, 16] {
+            // A SECOND, LARGE anchor node (centred at the origin, ±100 blocks on
+            // every axis) dominates the composite AABB on all axes, so the small
+            // moving node never touches a composite corner and the recentre stays
+            // FIXED. Observed in that fixed frame, moving the node by +1 block shifts
+            // its box by exactly d — the "lattice follows the object in the global
+            // lattice frame" property. (A lone node would drag its own recentre, so
+            // the box would NOT appear to move — see `node_pivot_origin_*`.)
+            let make_scene = |offset: [i64; 3]| {
+                let shape = SdfShape {
+                    kind: ShapeKind::Box,
+                    size_blocks: size,
+                    voxels_per_block: density,
+                    wall_blocks: 1,
+                };
+                let mut moving = Node::new(
+                    "Moving",
+                    NodeContent::Tool { shape, material: MaterialChoice::Stone },
+                );
+                moving.transform.offset_blocks = offset;
+                let anchor_shape = SdfShape {
+                    kind: ShapeKind::Box,
+                    size_blocks: [200, 200, 200],
+                    voxels_per_block: density,
+                    wall_blocks: 1,
+                };
+                let mut anchor = Node::new(
+                    "Anchor",
+                    NodeContent::Tool { shape: anchor_shape, material: MaterialChoice::Stone },
+                );
+                anchor.transform.offset_blocks = [0, 0, 0];
+                Scene {
+                    nodes: vec![moving, anchor],
+                    active: Some(NodePath::root_index(0)),
+                    ..Scene::default()
+                }
+            };
+            let box_of = |offset: [i64; 3]| {
+                make_scene(offset)
+                    .node_block_lattice_box_recentred(&NodePath::root_index(0), density)
+                    .expect("moving node has a lattice box")
+            };
+            let before = box_of(base);
+            for moved_axis in 0..3 {
+                let mut shifted = base;
+                shifted[moved_axis] += 1; // +1 block
+                let after = box_of(shifted);
+                for axis in 0..3 {
+                    let expected = if axis == moved_axis { density as f32 } else { 0.0 };
+                    assert_eq!(
+                        after.0[axis] - before.0[axis],
+                        expected,
+                        "axis {axis} @ d{density}: +1 block on axis {moved_axis} must shift the \
+                         lattice box min by exactly d (0 elsewhere)"
+                    );
+                    assert_eq!(
+                        after.1[axis] - before.1[axis],
+                        expected,
+                        "axis {axis} @ d{density}: +1 block must shift the lattice box max by d"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A size-less node (a Part with no intrinsic extent — `DebugClouds`) has NO
+    /// lattice box: `node_block_lattice_box_recentred` returns `None` (nothing to
+    /// draw), at each density.
+    #[test]
+    fn sizeless_node_has_no_lattice_box() {
+        for density in [1u32, 15, 16] {
+            let scene = Scene::single_node(Node::new(
+                "Clouds",
+                NodeContent::Part(Part::DebugClouds { seed: 0 }),
+            ));
+            assert_eq!(
+                scene.node_block_lattice_box_recentred(&NodePath::root_index(0), density),
+                None,
+                "@ d{density}: a size-less node yields no lattice box"
+            );
         }
     }
 

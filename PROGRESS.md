@@ -33,6 +33,48 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **Grid rework S3: per-object block lattice + floor (global-lattice snapped) — Part of #29.**
+  The whole-region lattice/floor is gone; each grid is now PER OBJECT, gated by a scene master
+  ANDed with the node's own toggle (default OFF for new objects → the windowed default now shows
+  NO per-object lattice until you enable one).
+  - **Geometry source.** New `Scene::node_block_lattice_box_recentred(path, density) -> Option<([f32;3]
+    min, [f32;3] max)>`: the node's block-aligned voxel AABB **expanded to enclosing whole blocks**
+    (reuses `node_subtree_extent_blocks` — the same `[off − floor(size/2), … + size)` per-block split),
+    scaled by density and shifted `− recentre_voxels_for_resolve`, in the recentred render frame. Group/
+    Instance → union of its leaves; a size-less node → `None`. The expand-to-block on the shifted box is
+    what makes "a 1-voxel translate adds/removes a whole block" fall out (sub-block offsets aren't
+    representable yet — `offset_blocks` is whole-block; the property is pinned on the geometry directly).
+  - **Renderer rename + box refactor.** `GridLatticeRenderer` → **`SceneGridRenderer`** (now owns the
+    per-frame lattice + floor line BATCHES, not one region-sized set). `lattice_vertices`/`floor_vertices`
+    → `lattice_vertices_into`/`floor_vertices_into(&mut Vec, min, max, step)` taking an arbitrary
+    `(min,max)` box + block `step` (= density) instead of a centred `grid_dimensions`. Floor is now the
+    horizontal grid on the box's BASE plane (`y = min[1]`) at block spacing, snapped to the same global
+    block lines as the lattice. Block edges are the lattice lines (the existing block-tier scheme).
+  - **Per-frame batch + gating.** Each frame `SceneGridRenderer::rebuild_from_scene(scene, density)` walks
+    `tree_rows()`; the gate is extracted into a pure, CPU-testable `scene_grid_boxes(scene, density) ->
+    (lattice_boxes, floor_boxes)` collecting one box per node where `master_block_lattice &&
+    node.grids.block_lattice` (and same for floor). Depth-tested + alpha-blended as before, so opaque
+    voxels occlude the lines. Empty batches → `draw` is a no-op. Removed `FrameOverlays.show_lattice/
+    show_floor` (gating is now at batch-build time).
+  - **UI.** Inspector gains a **"Grids (this object)"** section (`block_lattice` + `floor_grid` bound to
+    `node.grids.*`) for every node kind — toggling needs only a per-frame batch rebuild, NOT a scene
+    re-resolve, so no `scene_changed` is signalled. The Display master checkboxes are relabelled
+    **"Block lattice (master)"** / **"Floor grid (master)"** and repointed at `scene.master_*` (the old
+    `PanelState.show_block_lattice/show_floor_grid` are now serde-only config back-compat, drive nothing).
+    Voxel-grid-on-faces master/toggle left for S4.
+  - **`shot`.** `--lattice`/`--floor` now set the matching scene master AND enable that grid on ONE node
+    (the `--select-node N` node, else node 0), so a headless capture proves per-object gating. Headless
+    2-node demo-scene PNGs confirm: `--lattice --select-node 1` → lattice hugs the BOX's enclosing blocks,
+    sphere/clouds bare; no `--lattice` → no lattice anywhere; node-0 lattice+floor → grid on the sphere
+    only (depth-occluded by the overlapping box).
+  - Tests (+6): density-parametrized {1,15,16} — lattice box extent = B·d and spans whole blocks;
+    follow-on-whole-block-translate shifts the box by exactly d (anchored against a large fixed node so
+    the recentre doesn't drag); size-less node → `None`; `block_boundaries` plane count tracks enclosing
+    blocks (+1 block ⇒ +1 plane, the add/remove-a-whole-block geometry); per-box line sets non-empty +
+    floor on the base plane; `scene_grid_boxes` gated by master AND per-object (no box when either off,
+    exactly one when one node enabled). **195 lib tests pass; 6 goldens green (3D viewport pixel-identical;
+    the goldens' panel region was regenerated for the new inspector section); clippy clean.**
+
 - **Grid rework S2: transform gizmo follows the selected node — Part of #29.**
   Repurposed the origin gizmo into a per-selection manipulator (basis for future TRS handles):
   - **Rename** `GizmoRenderer` → `TransformGizmoRenderer` (`gizmo_renderer` → `transform_gizmo_renderer`

@@ -20,7 +20,7 @@ use voxel_worker::{
     create_depth_view, create_msaa_color_view, procedural_material_average_color, render_frame,
     run_egui_frame, AppConfig, CubeFace, EguiPaintBridge, FogMode, FrameOverlays,
     TransformGizmoRenderer,
-    GpuContext, GridLatticeRenderer, LayerBand, MaterialSource, OnionFogParams,
+    GpuContext, LayerBand, MaterialSource, OnionFogParams, SceneGridRenderer,
     OnionFogRenderer, OrbitCamera, PanelState, Scene, SdfShape, SnapTween, ViewCubeElement,
     VoxExport, ViewCubeRenderer, VoxelGrid, VoxelRenderer, COLOR_TARGET_FORMAT,
     VIEW_CUBE_VIEWPORT_PIXELS,
@@ -53,8 +53,9 @@ struct WindowedState {
     /// while the default instanced path is selected (the common case).
     cuboid_mesh_renderer: Option<CuboidMeshRenderer>,
     transform_gizmo_renderer: TransformGizmoRenderer,
-    /// Block lattice + fine floor grid (M8).
-    grid_lattice_renderer: GridLatticeRenderer,
+    /// Per-object block lattice + floor grid (issue #29 S3). Its line batch is
+    /// rebuilt each frame from the visible nodes' enabled grids.
+    scene_grid_renderer: SceneGridRenderer,
     view_cube_renderer: ViewCubeRenderer,
     /// Onion-skin volumetric fog (issue #12).
     onion_fog_renderer: OnionFogRenderer,
@@ -343,12 +344,9 @@ impl WindowedState {
         // node each frame; seed it at the region size (overwritten on first frame).
         let transform_gizmo_renderer =
             TransformGizmoRenderer::new(&gpu.device, COLOR_TARGET_FORMAT, region_dimensions);
-        let grid_lattice_renderer = GridLatticeRenderer::new(
-            &gpu.device,
-            COLOR_TARGET_FORMAT,
-            region_dimensions,
-            shape.voxels_per_block,
-        );
+        // Per-object block lattice + floor grid (issue #29 S3): its line batch is
+        // (re)built per frame from the grid-enabled nodes, so it starts empty.
+        let scene_grid_renderer = SceneGridRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
         let view_cube_renderer =
             ViewCubeRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
         let mut onion_fog_renderer = OnionFogRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
@@ -401,7 +399,7 @@ impl WindowedState {
             // demand when the experimental toggle flips on (ADR 0002 E3b-1).
             cuboid_mesh_renderer: None,
             transform_gizmo_renderer,
-            grid_lattice_renderer,
+            scene_grid_renderer,
             view_cube_renderer,
             onion_fog_renderer,
             fog_mode,
@@ -600,14 +598,9 @@ impl WindowedState {
         );
         // The transform gizmo (issue #29 S2) is sized + positioned from the SELECTED
         // node in the per-frame render path (it must track selection changes, which
-        // don't trigger a geometry rebuild), not here.
-        // Keep the block lattice + floor grid sized to the region/density.
-        self.grid_lattice_renderer.rebuild(
-            &self.gpu.device,
-            &self.gpu.queue,
-            region_dimensions,
-            shape.voxels_per_block,
-        );
+        // don't trigger a geometry rebuild), not here. The per-object block lattice +
+        // floor grid (issue #29 S3) is likewise (re)batched per frame from the
+        // grid-enabled nodes — a per-node toggle needs no scene re-resolve.
 
         // Issue #12: clamp/rescale the layer band to the new grid_y (re-snapping
         // to block multiples when snapping is on), then invalidate the diameter
@@ -1108,7 +1101,18 @@ impl WindowedState {
                 glam::Vec3::from_array(pivot),
             );
         }
-        self.grid_lattice_renderer
+        // Per-object block lattice + floor grid (issue #29 S3): rebuild this frame's
+        // line batch from the scene — for every node whose grids are enabled (the
+        // scene master ANDed with the node's own toggle), its enclosing-block lattice
+        // / base-plane floor lines. Empty when no node enables a grid (the new
+        // default — per-object grids are OFF until the user turns them on).
+        self.scene_grid_renderer.rebuild_from_scene(
+            &self.gpu.device,
+            &self.gpu.queue,
+            &self.panel_state.scene,
+            self.panel_state.geometry.voxels_per_block,
+        );
+        self.scene_grid_renderer
             .update_uniforms(&self.gpu.queue, view_projection);
         self.view_cube_renderer
             .update_uniforms(&self.gpu.queue, self.camera.view_cube_view_projection());
@@ -1134,9 +1138,7 @@ impl WindowedState {
             } else {
                 None
             },
-            grid_lattice: Some(&self.grid_lattice_renderer),
-            show_lattice: self.panel_state.show_block_lattice,
-            show_floor: self.panel_state.show_floor_grid,
+            scene_grid: Some(&self.scene_grid_renderer),
             debug_face_mode: self.panel_state.debug_face_orientation,
             onion_fog: if onion_active {
                 Some(&self.onion_fog_renderer)
