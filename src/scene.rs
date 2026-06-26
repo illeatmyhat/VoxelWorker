@@ -173,13 +173,22 @@ pub struct AssemblyDef {
 
 /// The scene (assembly): a list of placed nodes resolved into the shared
 /// [`VoxelGrid`] truth. ADR 0001's full model carries reusable `definitions` too;
-/// step 2 adds the flat node list plus the `active` selection that drives the
-/// inspector. `definitions` (recursion + instancing) stay deferred to step 4.
+/// step 2 added the flat node list plus the `active` selection that drives the
+/// inspector. **Step 4** wires up `definitions` so a [`NodeContent::Instance`]
+/// resolves the referenced [`AssemblyDef`] under its transform (reuse by
+/// reference: a village of identical houses is one definition placed by N
+/// instances).
 #[derive(Debug, Clone, Default)]
 pub struct Scene {
     /// The top-level assembly's nodes, resolved in order (later nodes win on
     /// overlap under [`CombineOp::Union`]).
     pub nodes: Vec<Node>,
+    /// Reusable sub-assemblies referenced by [`NodeContent::Instance`]. A
+    /// definition is stored ONCE here regardless of how many instances place it
+    /// (ADR 0001 "Nesting & reuse"). Looked up by [`DefId`] via [`def_by_id`].
+    ///
+    /// [`def_by_id`]: Self::def_by_id
+    pub definitions: Vec<AssemblyDef>,
     /// Index into [`nodes`](Self::nodes) of the active/selected node — the one the
     /// inspector edits. `None` when the scene is empty. Step 2 keeps this valid
     /// (clamped) across add/delete.
@@ -192,8 +201,16 @@ impl Scene {
     pub fn single_node(node: Node) -> Self {
         Self {
             nodes: vec![node],
+            definitions: Vec::new(),
             active: Some(0),
         }
+    }
+
+    /// Look up a reusable definition by its [`DefId`] (ADR 0001 step 4). Returns
+    /// `None` when no definition carries that id — an `Instance` pointing at a
+    /// missing definition resolves to nothing.
+    pub fn def_by_id(&self, id: DefId) -> Option<&AssemblyDef> {
+        self.definitions.iter().find(|def| def.id == id)
     }
 
     /// The active node, if any.
@@ -293,21 +310,89 @@ impl Scene {
         let mut min_corner = [i32::MAX; 3];
         let mut max_corner = [i32::MIN; 3];
         let mut any = false;
-        for node in &self.nodes {
-            let Some(size_blocks) = leaf_size_blocks(&node.content, voxels_per_block) else {
-                continue;
+        self.for_each_leaf(&mut |world_offset, content| {
+            let Some(size_blocks) = leaf_size_blocks(content, voxels_per_block) else {
+                return;
             };
             any = true;
-            let offset = node.transform.offset_blocks;
             for axis in 0..3 {
                 let half_low = (size_blocks[axis] / 2) as i32;
-                let low = offset[axis] - half_low;
+                let low = world_offset[axis] - half_low;
                 let high = low + size_blocks[axis] as i32;
                 min_corner[axis] = min_corner[axis].min(low);
                 max_corner[axis] = max_corner[axis].max(high);
             }
-        }
+        });
         any.then_some((min_corner, max_corner))
+    }
+
+    /// Walk the whole node tree depth-first, invoking `visitor(world_offset, leaf)`
+    /// once for every **visible leaf** (`Tool` / `Part`) with its accumulated
+    /// **world** block offset (`parent_offset + node.offset_blocks`, summed down the
+    /// tree — translation-only composition, ADR 0001 step 4).
+    ///
+    /// `Group` children inherit the group's world offset; an `Instance(def)` resolves
+    /// the referenced [`AssemblyDef`]'s children under the instance's world offset, so
+    /// the SAME definition placed by N instances is visited N times at N locations
+    /// (the village-of-reused-houses case). The cycle guard (an `Instance` may not
+    /// reference an ancestor definition) lives in [`walk_nodes`].
+    ///
+    /// [`walk_nodes`]: Self::walk_nodes
+    fn for_each_leaf(&self, visitor: &mut dyn FnMut([i32; 3], &NodeContent)) {
+        let mut def_path: Vec<DefId> = Vec::new();
+        self.walk_nodes(&self.nodes, [0, 0, 0], &mut def_path, visitor);
+    }
+
+    /// Recursive worker for [`for_each_leaf`](Self::for_each_leaf). `parent_offset`
+    /// is the accumulated world block offset of the assembly that owns `nodes`;
+    /// `def_path` is the stack of definition ids currently being expanded (for the
+    /// cycle guard — an `Instance` that would re-enter a definition already on the
+    /// path is skipped instead of recursing forever).
+    fn walk_nodes(
+        &self,
+        nodes: &[Node],
+        parent_offset: [i32; 3],
+        def_path: &mut Vec<DefId>,
+        visitor: &mut dyn FnMut([i32; 3], &NodeContent),
+    ) {
+        for node in nodes {
+            if !node.visible {
+                continue;
+            }
+            let world_offset = [
+                parent_offset[0] + node.transform.offset_blocks[0],
+                parent_offset[1] + node.transform.offset_blocks[1],
+                parent_offset[2] + node.transform.offset_blocks[2],
+            ];
+            match &node.content {
+                NodeContent::Tool { .. } | NodeContent::Part(_) => {
+                    visitor(world_offset, &node.content);
+                }
+                NodeContent::Group(children) => {
+                    self.walk_nodes(children, world_offset, def_path, visitor);
+                }
+                NodeContent::Instance(def_id) => {
+                    // Cycle guard: an Instance may not reference an ancestor
+                    // definition. If this id is already being expanded on the
+                    // current path, skip it (never recurse into a cycle).
+                    if def_path.contains(def_id) {
+                        eprintln!(
+                            "scene: skipping Instance({def_id:?}) — cyclic reference \
+                             to an ancestor definition (path {def_path:?})"
+                        );
+                        continue;
+                    }
+                    let Some(def) = self.def_by_id(*def_id) else {
+                        // An Instance pointing at a missing definition resolves to
+                        // nothing (no panic — the model stays robust to dangling ids).
+                        continue;
+                    };
+                    def_path.push(*def_id);
+                    self.walk_nodes(&def.children, world_offset, def_path, visitor);
+                    def_path.pop();
+                }
+            }
+        }
     }
 
     /// Resolve `region` into a fresh [`VoxelGrid`] by a union tree-walk: each
@@ -358,19 +443,16 @@ impl Scene {
             None => [0, 0, 0],
         };
 
-        for node in &self.nodes {
-            if !node.visible {
-                continue;
-            }
-            // The translation applied to this node's producer voxels: its block
-            // offset (× density) minus the composite recentre, both in voxels.
-            let offset = node.transform.offset_blocks;
+        // Walk the whole tree (groups + instances recurse, composing world
+        // translation down — ADR 0001 step 4). Each visited leaf is stamped under
+        // its WORLD offset (× density) minus the composite recentre.
+        self.for_each_leaf(&mut |world_offset, content| {
             let translation_voxels = [
-                offset[0] * voxels_per_block as i32 - recentre_voxels[0],
-                offset[1] * voxels_per_block as i32 - recentre_voxels[1],
-                offset[2] * voxels_per_block as i32 - recentre_voxels[2],
+                world_offset[0] * voxels_per_block as i32 - recentre_voxels[0],
+                world_offset[1] * voxels_per_block as i32 - recentre_voxels[1],
+                world_offset[2] * voxels_per_block as i32 - recentre_voxels[2],
             ];
-            match &node.content {
+            match content {
                 NodeContent::Tool { shape, material } => {
                     stamp_producer(
                         &mut output,
@@ -398,13 +480,11 @@ impl Scene {
                         &producer,
                     );
                 }
-                // step 4: recurse into owned sub-assemblies, composing transforms
-                // down (`world = parent ∘ local`).
-                NodeContent::Group(_children) => {}
-                // step 4: resolve the referenced definition under this transform.
-                NodeContent::Instance(_def_id) => {}
+                // `for_each_leaf` only ever yields leaf content (Tool / Part); the
+                // interior kinds were already recursed through by the walk.
+                NodeContent::Group(_) | NodeContent::Instance(_) => {}
             }
-        }
+        });
 
         output
     }
@@ -607,6 +687,7 @@ mod tests {
         let scene = Scene {
             nodes: vec![sphere, cube],
             active: Some(0),
+            ..Scene::default()
         };
         let union = scene.resolve_region(region, voxels_per_block, 0);
 
@@ -683,6 +764,7 @@ mod tests {
         let scene = Scene {
             nodes: vec![stone, wood],
             active: Some(0),
+            ..Scene::default()
         };
         let region = scene.full_extent_blocks(voxels_per_block);
         let grid = scene.resolve_region(region, voxels_per_block, 0);
@@ -776,6 +858,7 @@ mod tests {
         let scene = Scene {
             nodes: vec![at_zero, at_n],
             active: Some(0),
+            ..Scene::default()
         };
         let grid = scene.resolve_region(region, voxels_per_block, 0);
 
@@ -849,6 +932,7 @@ mod tests {
         let scene = Scene {
             nodes: vec![a, b],
             active: Some(0),
+            ..Scene::default()
         };
         // Region spans the full composite (offset 0..5, each 1 block) → 6 blocks X.
         let region = scene.full_extent_blocks(voxels_per_block);
@@ -900,12 +984,241 @@ mod tests {
         let two = Scene {
             nodes: vec![origin_box, offset_box],
             active: Some(0),
+            ..Scene::default()
         };
         let extent = two.full_extent_blocks(voxels_per_block);
         assert_eq!(
             extent.size_blocks,
             [6, 2, 2],
             "the offset node widens the composite extent in X from 2 to 6 blocks"
+        );
+    }
+
+    /// A 1×1×1 box Tool shape, used as a leaf in the step-4 recursion/instancing
+    /// tests (the node carries the material; the shape does not).
+    fn unit_box_shape(voxels_per_block: u32) -> SdfShape {
+        SdfShape {
+            kind: ShapeKind::Box,
+            size_blocks: [1, 1, 1],
+            voxels_per_block,
+            wall_blocks: 1,
+        }
+    }
+
+    /// Key a grid's occupied voxels by exact half-integer voxel position (×2 → an
+    /// exact integer, no float-equality fragility). Used to compare voxel SETS.
+    fn position_keys(grid: &VoxelGrid) -> std::collections::HashSet<[i64; 3]> {
+        grid.occupied
+            .iter()
+            .map(|v| {
+                [
+                    (v.world_position[0] * 2.0) as i64,
+                    (v.world_position[1] * 2.0) as i64,
+                    (v.world_position[2] * 2.0) as i64,
+                ]
+            })
+            .collect()
+    }
+
+    /// ADR 0001 step 4 (nested transform composition): a leaf inside a `Group`
+    /// offset by `+A` blocks, with the leaf itself offset `+B`, lands at world
+    /// `A + B` (× density). We compare the grouped scene against a FLAT scene whose
+    /// single node sits directly at `A + B` — same composite, so the recentre is
+    /// identical and the voxel sets must match exactly.
+    #[test]
+    fn nested_group_composes_transforms_down() {
+        let voxels_per_block = 8u32;
+        let region = RegionBlocks::new([10, 1, 1]);
+        let a = 3i32; // group offset
+        let b = 2i32; // leaf offset within the group
+
+        // Grouped: a Group at +A containing a box at +B.
+        let mut leaf = Node::new(
+            "Leaf",
+            NodeContent::Tool { shape: unit_box_shape(voxels_per_block), material: MaterialChoice::Stone },
+        );
+        leaf.transform.offset_blocks = [b, 0, 0];
+        let mut group = Node::new("Group", NodeContent::Group(vec![leaf]));
+        group.transform.offset_blocks = [a, 0, 0];
+        let grouped = Scene {
+            nodes: vec![group],
+            active: Some(0),
+            ..Scene::default()
+        };
+        let grouped_grid = grouped.resolve_region(region, voxels_per_block, 0);
+
+        // Flat reference: the same box placed directly at A + B.
+        let mut flat_leaf = Node::new(
+            "Flat",
+            NodeContent::Tool { shape: unit_box_shape(voxels_per_block), material: MaterialChoice::Stone },
+        );
+        flat_leaf.transform.offset_blocks = [a + b, 0, 0];
+        let flat = Scene::single_node(flat_leaf);
+        let flat_grid = flat.resolve_region(region, voxels_per_block, 0);
+
+        assert!(grouped_grid.occupied_count() > 0, "the grouped leaf must emit voxels");
+        assert_eq!(
+            position_keys(&grouped_grid),
+            position_keys(&flat_grid),
+            "a leaf at +B inside a Group at +A must land at world A+B (× density)"
+        );
+    }
+
+    /// ADR 0001 step 4 (instancing): an `Instance` of a 1-node definition placed at
+    /// offset `T` resolves to the SAME voxels as that node placed directly at `T`.
+    #[test]
+    fn instance_matches_direct_placement() {
+        let voxels_per_block = 8u32;
+        let region = RegionBlocks::new([10, 1, 1]);
+        let t = 4i32;
+        let def_id = DefId(7);
+
+        // Definition: a single box at the origin (within the def).
+        let def = AssemblyDef {
+            id: def_id,
+            name: "Body".to_string(),
+            children: vec![Node::new(
+                "Box",
+                NodeContent::Tool { shape: unit_box_shape(voxels_per_block), material: MaterialChoice::Wood },
+            )],
+        };
+        let mut instance = Node::new("I", NodeContent::Instance(def_id));
+        instance.transform.offset_blocks = [t, 0, 0];
+        let instanced = Scene {
+            nodes: vec![instance],
+            definitions: vec![def],
+            active: Some(0),
+        };
+        let instanced_grid = instanced.resolve_region(region, voxels_per_block, 0);
+
+        // Direct: the same box placed directly at T.
+        let mut direct = Node::new(
+            "Direct",
+            NodeContent::Tool { shape: unit_box_shape(voxels_per_block), material: MaterialChoice::Wood },
+        );
+        direct.transform.offset_blocks = [t, 0, 0];
+        let direct_grid = Scene::single_node(direct).resolve_region(region, voxels_per_block, 0);
+
+        assert!(instanced_grid.occupied_count() > 0, "the instance must emit voxels");
+        assert_eq!(
+            position_keys(&instanced_grid),
+            position_keys(&direct_grid),
+            "an Instance of a 1-node def at T equals that node placed directly at T"
+        );
+    }
+
+    /// ADR 0001 step 4 (village): a 2-instance scene (the SAME def placed at two
+    /// different offsets) yields `occupied_count == 2 × the def's own count`, at two
+    /// DISJOINT locations (the two voxel clusters never overlap).
+    #[test]
+    fn two_instance_village_doubles_occupancy_disjointly() {
+        let voxels_per_block = 8u32;
+        let def_id = DefId(2);
+
+        // The "house": a single 1-block box (so its count is easy to reason about).
+        let def = AssemblyDef {
+            id: def_id,
+            name: "House".to_string(),
+            children: vec![Node::new(
+                "Box",
+                NodeContent::Tool { shape: unit_box_shape(voxels_per_block), material: MaterialChoice::Stone },
+            )],
+        };
+
+        // The def's own occupied count (resolved alone at the origin).
+        let def_only = Scene {
+            nodes: vec![Node::new("I", NodeContent::Instance(def_id))],
+            definitions: vec![def.clone()],
+            active: Some(0),
+        };
+        let def_count = def_only
+            .resolve_region(RegionBlocks::new([1, 1, 1]), voxels_per_block, 0)
+            .occupied_count();
+        assert!(def_count > 0);
+
+        // Two instances 6 blocks apart in X (a 1-block house → 5-block gap: disjoint).
+        let mut house_a = Node::new("A", NodeContent::Instance(def_id));
+        house_a.transform.offset_blocks = [0, 0, 0];
+        let mut house_b = Node::new("B", NodeContent::Instance(def_id));
+        house_b.transform.offset_blocks = [6, 0, 0];
+        let village = Scene {
+            nodes: vec![house_a, house_b],
+            definitions: vec![def],
+            active: Some(0),
+        };
+        let region = village.full_extent_blocks(voxels_per_block);
+        let grid = village.resolve_region(region, voxels_per_block, 0);
+
+        assert_eq!(
+            grid.occupied_count(),
+            2 * def_count,
+            "two disjoint instances of one def → 2× the def's voxel count"
+        );
+
+        // Disjoint: split the occupied set at the composite centre; each half is a
+        // full house, and the two halves share no voxel position.
+        let xs: Vec<f32> = grid.occupied.iter().map(|v| v.world_position[0]).collect();
+        let split_x = (xs.iter().cloned().fold(f32::MAX, f32::min)
+            + xs.iter().cloned().fold(f32::MIN, f32::max))
+            / 2.0;
+        let low: std::collections::HashSet<[i64; 3]> = grid
+            .occupied
+            .iter()
+            .filter(|v| v.world_position[0] < split_x)
+            .map(|v| [(v.world_position[0] * 2.0) as i64, (v.world_position[1] * 2.0) as i64, (v.world_position[2] * 2.0) as i64])
+            .collect();
+        let high: std::collections::HashSet<[i64; 3]> = grid
+            .occupied
+            .iter()
+            .filter(|v| v.world_position[0] >= split_x)
+            .map(|v| [(v.world_position[0] * 2.0) as i64, (v.world_position[1] * 2.0) as i64, (v.world_position[2] * 2.0) as i64])
+            .collect();
+        assert_eq!(low.len(), def_count, "the low cluster is one full house");
+        assert_eq!(high.len(), def_count, "the high cluster is one full house");
+        assert!(low.is_disjoint(&high), "the two houses occupy disjoint locations");
+    }
+
+    /// ADR 0001 step 4 (cycle guard): a definition that instances ITSELF resolves
+    /// without stack overflow. The self-instance is skipped on re-entry, so the def
+    /// contributes only its non-cyclic leaves finitely (here: one box) — never
+    /// infinitely.
+    #[test]
+    fn self_referential_definition_does_not_overflow() {
+        let voxels_per_block = 8u32;
+        let def_id = DefId(1);
+
+        // A definition whose children are (a) a real box leaf and (b) an Instance of
+        // ITSELF — the cycle the guard must break.
+        let def = AssemblyDef {
+            id: def_id,
+            name: "Recursive".to_string(),
+            children: vec![
+                Node::new(
+                    "Box",
+                    NodeContent::Tool { shape: unit_box_shape(voxels_per_block), material: MaterialChoice::Stone },
+                ),
+                Node::new("Self", NodeContent::Instance(def_id)),
+            ],
+        };
+        let scene = Scene {
+            nodes: vec![Node::new("Root", NodeContent::Instance(def_id))],
+            definitions: vec![def],
+            active: Some(0),
+        };
+
+        // Resolves (no overflow) and contributes the single box ONCE — the self-
+        // instance is skipped, so the count is finite and equals one box's voxels.
+        let grid = scene.resolve_region(RegionBlocks::new([1, 1, 1]), voxels_per_block, 0);
+        let one_box = Scene::single_node(Node::new(
+            "Box",
+            NodeContent::Tool { shape: unit_box_shape(voxels_per_block), material: MaterialChoice::Stone },
+        ))
+        .resolve_region(RegionBlocks::new([1, 1, 1]), voxels_per_block, 0)
+        .occupied_count();
+        assert_eq!(
+            grid.occupied_count(),
+            one_box,
+            "a self-instancing def contributes its leaves finitely (cycle skipped)"
         );
     }
 }

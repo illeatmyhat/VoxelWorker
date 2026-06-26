@@ -33,6 +33,36 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **ADR 0001 step 4 (model + resolve half): recursion + instancing — Part of #17** —
+  `src/scene.rs`, `src/bin/shot.rs`, `PROGRESS.md`. Makes `Group`/`Instance`/`AssemblyDef` WORK in
+  `Scene::resolve_region` (they were typed no-ops). Added `Scene.definitions: Vec<AssemblyDef>` +
+  `def_by_id(DefId)` lookup. Resolution + extent now both flow through one recursive tree-walk
+  (`for_each_leaf` → `walk_nodes`): it descends `Group(children)` and `Instance(DefId)`, composing
+  **world translation DOWN** the tree (`world = parent_offset + node.offset_blocks`, translation
+  only — rotation/scale stay later), and visits every visible **leaf** (Tool/Part) with its
+  accumulated world offset. An `Instance` resolves the referenced definition's children under the
+  instance's transform, so ONE stored definition placed by N instances stamps at N locations (the
+  village-of-reused-houses case; definitions stored once). **Cycle guard:** `walk_nodes` carries a
+  `def_path` stack of the definition ids currently expanding; an `Instance` whose id is already on
+  the path is skipped (logged) instead of recursing — a self-instancing def resolves finitely, never
+  overflows. A dangling `Instance(id)` (no matching def) resolves to nothing. `full_extent_blocks`
+  recurses too (gathers all leaf world-AABBs, so nested + instanced positions widen the composite).
+  Existing flat-scene behaviour is bit-for-bit identical (the leaf walk over a flat list with zero
+  parent offset reproduces the old per-node loop; same recentre). **No new UI** (the node list still
+  shows only top-level nodes — that's the step-4b follow-up). 4 new unit tests: nested-Group
+  transform composition (leaf at +B inside Group at +A lands at world A+B×density, matching a flat
+  node at A+B); Instance-of-1-node-def at T == that node placed directly at T; 2-instance village ==
+  2× the def's voxel count at two disjoint clusters; self-referential def resolves without overflow,
+  contributing its leaves once. `shot` gains `--demo-village`: one small "house" `AssemblyDef` (a
+  2³ stone Box body + a 1×2×1 wood Cylinder chimney composed as a Group, so the chimney offset is
+  relative to the house) placed by FOUR `Instance` nodes in a row. Green: `cargo build --bins` clean,
+  `cargo clippy --all-targets` clean, `cargo test` 48 pass; `shots/village.png` shows all four
+  houses (stone body + wood chimney) at four separated locations from the single stored definition;
+  `shots/sphere_check.png` confirms a normal `--shape sphere` shot is unchanged. NOTE (renderer cap,
+  not a model issue): the renderer draws only the first `MAX_DRAWN_INSTANCES` (450k) voxels, so the
+  demo house body is deliberately 2³ (4 houses ≈ 158k voxels) to keep all four under the draw cap;
+  the model resolves all instances regardless (proven by the village unit test's 4× count).
+
 - **ADR 0001 step 3 (per-voxel material half): COMPLETES step 3 / closes #16** —
   `src/panel.rs`, `src/scene.rs`, `src/renderer.rs`, `src/shaders/voxel.wgsl`, `src/main.rs`,
   `src/bin/shot.rs`. Distinct nodes now render in distinct materials, driven by `Voxel.material_id`.

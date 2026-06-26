@@ -26,7 +26,7 @@ use voxel_worker::block_palette::{BlockPalette, LoadedMaterial, ThumbnailRendere
 use voxel_worker::scan_worker::{run_auto_scan_blocking, FaceResolver};
 use voxel_worker::{
     create_depth_view, create_msaa_color_view, procedural_material_average_color, render_frame,
-    run_egui_frame, CubeFace, EguiPaintBridge, FrameOverlays, GeometryParams,
+    run_egui_frame, AssemblyDef, CubeFace, DefId, EguiPaintBridge, FrameOverlays, GeometryParams,
     GizmoRenderer,
     GpuContext, GridLatticeRenderer, LayerBand, LayerRange, MaterialChoice, MaterialSource,
     Node, NodeContent, OnionFogParams, OnionFogRenderer, OrbitCamera, PanelState, Part,
@@ -136,6 +136,12 @@ struct ShotOptions {
     /// confirm nodes appear separated in space (not overlapping at the origin).
     /// Useful for future headless multi-node checks.
     demo_scene: bool,
+    /// `--demo-village` (ADR 0001 step 4): ignore the single-shape options and
+    /// build an INSTANCED scene — one "house" `AssemblyDef` placed by four
+    /// `Instance` nodes at four offsets — so the headless capture can confirm the
+    /// repeated assembly appears at multiple separated locations from a single
+    /// stored definition (reuse by reference).
+    demo_village: bool,
 }
 
 impl Default for ShotOptions {
@@ -168,6 +174,7 @@ impl Default for ShotOptions {
             onion_depth: 0,
             debug_clouds: false,
             demo_scene: false,
+            demo_village: false,
         }
     }
 }
@@ -356,6 +363,9 @@ fn parse_options() -> ShotOptions {
             "--demo-scene" => {
                 options.demo_scene = true;
             }
+            "--demo-village" => {
+                options.demo_village = true;
+            }
             "--layer-lower" => {
                 options.layer_lower = Some(
                     args.next()
@@ -427,7 +437,7 @@ fn parse_options() -> ShotOptions {
                      \x20            [--apply-block <substring>] [--list-perface]\n\
                      \x20            [--force-demo-stem <texture/stem>]\n\
                      \x20            [--gizmo] [--lattice] [--floor] [--no-viewcube]\n\
-                     \x20            [--debug-faces] [--demo-scene]\n\
+                     \x20            [--debug-faces] [--demo-scene] [--demo-village]\n\
                      \x20            [--layer-lower <u32>] [--layer-upper <u32>] [--onion <u32>]\n\
                      \x20            [--export-vox <path.vox>]\n\
                      \x20            [--snap <face|edge|corner>  e.g. front, front-top, front-top-right]\n\
@@ -442,6 +452,10 @@ fn parse_options() -> ShotOptions {
                      \x20                (sphere at origin + box offset +8 blocks in X\n\
                      \x20                + clouds offset in Z) to verify separated, non-\n\
                      \x20                overlapping placement (ADR 0001 step 3). Overrides\n\
+                     \x20                --shape/--size/--density.\n\
+                     \x20  --demo-village build an INSTANCED scene: one 'house' definition\n\
+                     \x20                placed by 4 Instances at 4 offsets, proving reuse-\n\
+                     \x20                by-reference (ADR 0001 step 4). Overrides\n\
                      \x20                --shape/--size/--density."
                 );
                 std::process::exit(0);
@@ -554,6 +568,65 @@ fn build_demo_scene(voxels_per_block: u32) -> Scene {
             make_tool(ShapeKind::Torus, [0, 0, 6], MaterialChoice::Plain),
         ],
         active: Some(0),
+        ..Scene::default()
+    }
+}
+
+/// Build the `--demo-village` (ADR 0001 step 4): an **instanced** scene that
+/// proves reuse-by-reference. One small "house" [`AssemblyDef`] (a Box body Tool
+/// with a Cylinder "chimney" Tool offset on top, as a `Group`) is stored ONCE in
+/// `definitions`; the top-level scene places it by FOUR [`NodeContent::Instance`]
+/// nodes at four different X/Z offsets. The four houses appear at four separated
+/// locations from a single definition — the village-of-reused-houses case. The
+/// headless capture confirms the repeated assembly shows up at multiple disjoint
+/// locations.
+fn build_demo_village(voxels_per_block: u32) -> Scene {
+    let house_def_id = DefId(1);
+    let tool = |kind, size: [u32; 3], offset: [i32; 3], material| {
+        let shape = SdfShape {
+            kind,
+            size_blocks: size,
+            voxels_per_block,
+            wall_blocks: 1,
+        };
+        let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
+        node.transform.offset_blocks = offset;
+        node
+    };
+
+    // The house: a 2³ stone body with a 1×2×1 wood "chimney" sitting on top, so the
+    // chimney's local offset is RELATIVE to the house (it composes down through the
+    // instance + group transforms). The body is kept small (2 blocks) so that four
+    // instances stay well under the renderer's drawn-instance cap and all four draw.
+    let house = AssemblyDef {
+        id: house_def_id,
+        name: "House".to_string(),
+        children: vec![
+            tool(ShapeKind::Box, [2, 2, 2], [0, 0, 0], MaterialChoice::Stone),
+            tool(ShapeKind::Cylinder, [1, 2, 1], [0, 2, 0], MaterialChoice::Wood),
+        ],
+    };
+
+    // Four instances of the SAME definition in a straight row, 8 blocks apart in X
+    // (a 4-block house → 4-block gap between neighbours). A row (not a 2×2 grid, in
+    // which diagonal pairs self-occlude from an isometric angle) keeps all four
+    // houses non-overlapping in screen space when viewed perpendicular to the row,
+    // so the headless PNG unambiguously shows the repeated assembly at four
+    // separated locations from a single stored definition.
+    let instance = |name: &str, offset: [i32; 3]| {
+        let mut node = Node::new(name, NodeContent::Instance(house_def_id));
+        node.transform.offset_blocks = offset;
+        node
+    };
+    Scene {
+        nodes: vec![
+            instance("House 1", [0, 0, 0]),
+            instance("House 2", [6, 0, 0]),
+            instance("House 3", [12, 0, 0]),
+            instance("House 4", [18, 0, 0]),
+        ],
+        definitions: vec![house],
+        active: Some(0),
     }
 }
 
@@ -621,7 +694,9 @@ async fn run_capture(options: ShotOptions) {
     // scene — a Tool, or a DebugClouds Part when `--shape debug-clouds`. Seed the
     // panel's scene so the node-list section renders the nodes in the captured
     // panel.
-    let scene = if options.demo_scene {
+    let scene = if options.demo_village {
+        build_demo_village(options.geometry.voxels_per_block)
+    } else if options.demo_scene {
         build_demo_scene(options.geometry.voxels_per_block)
     } else if options.debug_clouds {
         Scene::single_node(Node::new(
@@ -635,7 +710,10 @@ async fn run_capture(options: ShotOptions) {
     // The resolve region: for a placed multi-node scene this is the whole
     // composite extent (per-axis box over all node offsets ± sizes); for a single
     // node it equals the node's own size (the step-2 region).
-    let region = if options.demo_scene {
+    // A placed/instanced scene (demo-scene or demo-village) resolves its whole
+    // composite extent; a single-node scene uses its own block size (step-2 region).
+    let placed_scene = options.demo_scene || options.demo_village;
+    let region = if placed_scene {
         scene.full_extent_blocks(options.geometry.voxels_per_block)
     } else {
         RegionBlocks::new(options.geometry.size_blocks)
@@ -646,7 +724,7 @@ async fn run_capture(options: ShotOptions) {
         * options.geometry.voxels_per_block as u64
         * options.geometry.voxels_per_block as u64
         * options.geometry.voxels_per_block as u64;
-    let grid = if !options.demo_scene && shape.exceeds_voxel_cap() {
+    let grid = if !placed_scene && shape.exceeds_voxel_cap() {
         panel_state.voxel_cap_warning_millions =
             Some(shape.grid_voxel_count() as f32 / 1_000_000.0);
         eprintln!(
@@ -672,7 +750,15 @@ async fn run_capture(options: ShotOptions) {
     // The voxel-space grid dimensions actually resolved (the composite region for
     // a placed scene), used for camera framing, the layer track and the uniforms.
     let grid_dimensions = grid.dimensions;
-    if options.demo_scene {
+    if options.demo_village {
+        println!(
+            "resolved {} voxels for demo-village ({} instances of {} definition(s), region {:?} blocks)",
+            grid.occupied_count(),
+            scene.nodes.len(),
+            scene.definitions.len(),
+            region.size_blocks
+        );
+    } else if options.demo_scene {
         println!(
             "resolved {} voxels for demo-scene (region {:?} blocks)",
             grid.occupied_count(),
@@ -736,7 +822,7 @@ async fn run_capture(options: ShotOptions) {
     // Issue #12: the layer-range band for the 3D clip + the measured-diameter
     // readout (widest occupied run in the active band). The demo scene always
     // renders the full band (placement, not layer-scrubbing, is what it verifies).
-    let band = if options.demo_scene
+    let band = if placed_scene
         || (layer_range.is_full_range(render_grid_y) && !layer_range.onion_skin)
     {
         LayerBand::FULL
