@@ -33,6 +33,42 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **Per-chunk material palette + sparse storage (lossless) (S6a) — Part of #20 (out-of-core, part 1).**
+  Pure-CPU, additive data structure (`src/chunk_storage.rs`) — the future out-of-core store's on-disk
+  shape for one resolved chunk grid. NOT yet wired into the resolve/render path (store integration +
+  dropping the monolithic bridge are later S6 steps), so goldens are untouched.
+  - **`CompressedChunk` layout.** `dimensions` + occupied bounding box (`min_corner_voxels: [i64;3]`,
+    `box_spans: [u32;3]`) + `centre_fraction: [f32;3]` (the per-axis shared sub-integer offset of every
+    voxel centre — `.5` for even-dim axes, `.0` for odd) + a first-seen-order de-duplicated
+    `material_palette: Vec<u16>` + an `Occupancy` enum. serde-serialisable (`Serialize`/`Deserialize`),
+    `Eq` dropped because of the `f32` fraction (`PartialEq` kept — fractions are exact constants).
+  - **Encoding = sparse default with a dense bit-packed fallback (per-chunk heuristic).** Sparse stores
+    `(local_linear_index, palette_index, block_local_coord)` per occupied cell; dense stores a
+    `ceil(log2(palette+1))`-bit palette index per cell over the occupied box (air = reserved slot 0) +
+    one `block_local_coord` per occupied cell in scan order. `compress` builds both and keeps whichever
+    has the smaller **binary** layout (the heuristic measures the compact on-disk byte size, NOT JSON).
+    For solid SDF shapes dense wins (~5×); for genuinely sporadic occupancy (<~cells/48 voxels) sparse
+    wins. Both are exact inverses of `decompress`.
+  - **Lossless proof.** Positions are reconstructed as `(min_corner + local_offset) as f32 +
+    centre_fraction`, reproducing the producer's own `i + 0.5 − half` + integer-translation arithmetic,
+    so the round-trip is **byte-identical** on the f32 bits (keyed via `to_bits`), `block_local_coord`,
+    and `material_id`. `compress`/`decompress` exported from `lib.rs`.
+  - **Measured ratios (binary on-disk model, raw = 17 B/occupied voxel).** sphere 5³@16 whole grid
+    **5.25×** (dense); box 4³@16 solid **5.44×** (dense); per-chunk sphere/torus pieces **5.25×** aggregate;
+    a 0.5%-fill 40³ grid **1.85×** (sparse); demo-village non-empty chunks **5.37×** aggregate.
+  - **Tests (10 new, lib total 128 → 138, all green).** `round_trip_empty_chunk`,
+    `round_trip_full_single_material_chunk`, `round_trip_multi_material_chunk`,
+    `round_trip_real_resolved_chunks_across_shapes` (all 5 SDF kinds, every covering chunk),
+    `round_trip_demo_scene_and_village_chunks`, `round_trip_part_only_debug_clouds_grid`,
+    `round_trip_randomized_fuzz_varied_fill_and_materials` (varied extent/fill%/material count),
+    `palette_has_no_duplicates_and_covers_every_material`,
+    `serde_round_trip_through_json_equals_original_grid`, `report_compression_ratios_on_real_chunks`.
+    Goldens: 6/6 still **0.00000%** (path untouched).
+  - **Surprise/learning.** Resolved grids with an ODD-dimensioned axis centre voxels on integers
+    (`n + 0.0`), not `n + 0.5` — the producer's `i + 0.5 − half` with a half-integer `half`. The first
+    naïve "centres are always n+0.5" assumption was lossy for `[1,1,1]`-style grids; `centre_fraction`
+    (uniform per axis within one grid) fixes it and is debug-asserted in `compress`.
+
 - **Per-chunk onion fog is now the DEFAULT + fog golden (S5b) — Part of #28 (ADR 0002 matrix row 7
   / O6 fog).** Flips the S5a-added per-chunk path from opt-in to default; the legacy whole-grid path
   is KEPT as a fallback. O6 is now RESOLVED (per-chunk, no fidelity reduction — see ADR 0002).
