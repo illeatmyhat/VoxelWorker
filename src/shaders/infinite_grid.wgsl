@@ -71,21 +71,45 @@ fn unproject(ndc: vec3<f32>) -> vec3<f32> {
     return world.xyz / world.w;
 }
 
-// Analytic anti-aliased grid coverage for one tier at the given spacing. Returns a
-// value in [0,1] that is ~1 ON a line and 0 between lines, with the line width
-// driven by the screen-space derivative of the in-plane coordinate so it stays one
-// pixel wide at any distance/angle (the standard `fwidth` grid AA from
-// "Best Darn Grid" / Inigo Quilez `filteredGrid`).
-fn grid_coverage(coord: vec2<f32>, spacing: f32) -> f32 {
+// Robust anti-aliased "pristine grid" coverage for one tier at the given spacing
+// (Ben Golus, "The Best Darn Grid Shader (Yet)"). Returns a value in [0,1] that is
+// ~1 ON a line and 0 between lines, with the line kept ~`line_pixels` wide via the
+// screen-space derivative of the in-plane coordinate. The critical property over a
+// naive `1 - dist/fwidth` grid: when a tier's cells shrink below ~1 pixel (grazing,
+// far, or coarse pixels) the per-axis coverage FADES toward the line's duty cycle
+// instead of saturating to 1, so the grid NEVER fills solid. `line_pixels` is the
+// target on-screen line half-extent in pixels (≈1 for crisp AA lines).
+//
+// Returns vec2(coverage, lod_visibility): `.x` is the line coverage in [0,1]; `.y`
+// is an LOD visibility factor in [0,1] that goes to 0 as the cells drop below a
+// pixel, so the caller can fade the tier OUT (rather than letting it become a sheet)
+// when its period is sub-pixel.
+fn grid_coverage(coord: vec2<f32>, spacing: f32, line_pixels: f32) -> vec2<f32> {
     let scaled = coord / spacing;
-    // Derivative of the scaled coordinate → cells per pixel; the line half-width is
-    // tied to this so distant cells don't alias into solid fill.
+    // Per-axis derivative of the scaled coordinate → cells per pixel.
     let derivative = fwidth(scaled);
-    // Distance to the nearest grid line on each axis, normalised by the derivative.
-    let grid_dist = abs(fract(scaled - 0.5) - 0.5) / max(derivative, vec2<f32>(1e-6));
-    let line = min(grid_dist.x, grid_dist.y);
-    // 1 on the line, fading to 0 one (derivative-scaled) pixel away.
-    return 1.0 - clamp(line, 0.0, 1.0);
+    let inv_derivative = 1.0 / max(derivative, vec2<f32>(1e-8));
+    // Target line half-width in CELL units per axis (line_pixels worth of pixels).
+    let half_width = derivative * line_pixels;
+    // Triangle-wave distance to the nearest grid line, in [0, 0.5] cell units.
+    let dist_to_line = abs(fract(scaled - 0.5) - 0.5);
+    // Antialiased line: 1 inside the half-width, ramping to 0 over one pixel. This is
+    // the standard `smoothstep`-free analytic AA: coverage = clamp((hw - d)/fw + 0.5).
+    var line2 = clamp((half_width - dist_to_line) * inv_derivative + 0.5, vec2<f32>(0.0), vec2<f32>(1.0));
+    // KEY anti-saturation step: as cells approach sub-pixel (derivative → large), the
+    // line can no longer be resolved; fade each axis' coverage toward its DUTY CYCLE
+    // (2*half_width, the fraction of the cell the line covers) rather than letting it
+    // clamp to 1 everywhere. This keeps the average grey constant instead of solid.
+    line2 = mix(line2, clamp(half_width * 2.0, vec2<f32>(0.0), vec2<f32>(1.0)), clamp(derivative - 1.0, vec2<f32>(0.0), vec2<f32>(1.0)));
+    // Combine the two axes the pristine-grid way: a + b - a*b (a pixel on EITHER line
+    // is lit), which avoids the over-bright corner of a naive max.
+    let coverage = line2.x + line2.y - line2.x * line2.y;
+    // LOD visibility: 1 while the cell period spans > ~2 px, fading to 0 once the
+    // period drops to ~1 px (max cells/pixel ≥ ~1). Fading the whole tier out here is
+    // what guarantees the fine tier dissolves instead of becoming a flat sheet.
+    let cells_per_pixel = max(derivative.x, derivative.y);
+    let lod = 1.0 - clamp(cells_per_pixel - 0.5, 0.0, 1.0);
+    return vec2<f32>(clamp(coverage, 0.0, 1.0), lod);
 }
 
 struct FsOut {
@@ -130,13 +154,21 @@ fn fragment_main(input: VsOut) -> FsOut {
     let fade_distance = grid.params.w;
 
     // Two-tier coverage: fine per-VOXEL lines (spacing 1) and bold per-BLOCK lines.
-    let minor = grid_coverage(plane_coord, 1.0);
-    let major = grid_coverage(plane_coord, block_spacing);
+    // Each returns (coverage, lod_visibility); the lod factor fades the tier OUT as
+    // its cells drop below ~1 pixel so a tier NEVER saturates into a solid sheet.
+    let minor = grid_coverage(plane_coord, 1.0, 1.0);
+    let major = grid_coverage(plane_coord, block_spacing, 1.0);
+
+    // Apply each tier's LOD fade to its own alpha: the fine voxel tier dissolves
+    // first (its cells go sub-pixel sooner), the bold block tier persists longer and
+    // also fades toward the horizon. This is the core fix for the solid-fill bug.
+    let minor_contribution = minor.x * minor_alpha * minor.y;
+    let major_contribution = major.x * major_alpha * major.y;
 
     // Combine: the block lines are bolder (higher base alpha); the voxel lines are
     // subtle. Take the stronger contribution so a block line (which is also a voxel
     // line) reads at the bold alpha rather than summing past it.
-    let alpha = max(minor * minor_alpha, major * major_alpha);
+    let alpha = max(minor_contribution, major_contribution);
     if (alpha < 0.002) {
         discard;
     }

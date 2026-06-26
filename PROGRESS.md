@@ -33,6 +33,37 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **Fix infinite grid solid-fill: derivative-normalized LOD coverage (resolution/angle-robust) — Part of #29.**
+  The analytic infinite ground plane (`src/shaders/infinite_grid.wgsl`) rendered as a SOLID green
+  sheet under the live windowed app's camera/resolution, while the headless golden (a specific
+  size + framing) looked fine — so the coverage math was resolution/camera/aspect-dependent.
+  - **Reproduced headlessly** via `shot --demo-village --points` at GRAZING angles (`--phi 1.5`) and
+    FAR distances (`--dist 200`–`400`): the lower half / mid-screen band saturated to a solid greenish
+    sheet (limited only by the distance fade, so it formed a band rather than the whole screen). It
+    appears at any resolution/aspect once the viewing angle is shallow or the camera far enough.
+  - **Root cause.** The old `grid_coverage` was `1 - clamp(min(abs(fract(coord-0.5)-0.5)/fwidth(coord)))`.
+    When `fwidth(scaled)` (cells per pixel) grows past ~1 — exactly what happens at grazing angles, far
+    distances, or coarse/high-DPI pixels — the derivative-normalized distance-to-line is ≤ ~0.5
+    EVERYWHERE, so `min(...) → 0` and coverage → 1 for every pixel ⇒ solid fill. There was NO LOD
+    fadeout: when a tier's cells drop below a pixel it saturated instead of dissolving. The golden's
+    size + framing kept the derivative small, hiding the bug. (No coordinate-scale or aspect/inverse-VP
+    bug — the ray reconstruction already uses the actual view-proj, correct for any aspect; verified
+    across 16:9, 2560×1440, tall 1000×1400, ultra-wide 1920×600.)
+  - **Fix (Ben Golus "pristine grid").** `grid_coverage` now (1) keeps the line a target ~1px wide via
+    `clamp((half_width - dist_to_line)/fwidth + 0.5)` per axis, (2) **anti-saturates**: as
+    `fwidth > 1` it mixes each axis' coverage toward the line's DUTY CYCLE (`2*half_width`) instead of
+    1, so the average grey stays constant rather than going solid, (3) combines axes with `a+b-a*b`
+    (not `max`), and (4) returns an **LOD visibility** factor `1 - clamp(cells_per_pixel - 0.5, 0, 1)`
+    that fades the whole tier OUT as its period drops to ~1px. The fragment shader multiplies each
+    tier's alpha by its own LOD factor, so the fine VOXEL tier dissolves first and the bold BLOCK tier
+    persists longer, both still fading to the horizon. Depth occlusion (`frag_depth`) unchanged.
+  - **Verified (PNGs READ)** across {close, medium, far} × {top-down, grazing} × {1280×720, 2560×1440,
+    1000×1400, 1920×600}: always clean thin two-tier lines fading at the horizon, NEVER solid, still
+    occluded by the houses — including the exact grazing/far case that reproduced the solid fill.
+  - **Goldens.** `demo-village-points.png` regenerated (coverage changed, 27.99% delta — READ, correct
+    robust grid); the other 6 stay byte-identical (`demo-village` 0.00000%). 203 lib tests pass; clippy
+    has no NEW warnings (2 pre-existing doc-indent warnings in `shot.rs` on clean HEAD).
+
 - **Grid rework: analytic infinite ground plane (replaces finite tiled grid) — Part of #29.**
   Replaced the Points' camera-relative finite tiled-LINE ground plane (`POINT_PLANE_RADIUS_BLOCKS = 48`
   + per-vertex rim fade) — which cut off at a hard finite edge / near-clip and looked bad at shallow
