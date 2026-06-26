@@ -1082,6 +1082,18 @@ async fn run_capture(options: ShotOptions) {
         let render_chunks = chunk_resolve_cache.resident_render_chunks(&scene, density, 0);
         voxel_renderer.rebuild_all_from_chunks(&gpu.device, &gpu.queue, &render_chunks);
         drop(render_chunks);
+        // Issue #20 S6c-2c verification: also drive the INCREMENTAL path with an empty
+        // edit (no evicted chunks → every covering chunk is a HIT, so nothing is
+        // rebuilt) on top of the full build above. The resulting GPU cache must be
+        // unchanged, so the headless A/B confirms the incremental dirty-chunk path is
+        // pixel-identical to both the full per-chunk rebuild and the whole-grid wrapper.
+        let render_chunks = chunk_resolve_cache.resident_render_chunks(&scene, density, 0);
+        voxel_renderer.incremental_rebuild_from_chunks(&gpu.device, &render_chunks, &[]);
+        drop(render_chunks);
+        eprintln!(
+            "instanced-via-chunks: incremental rebuild touched {} chunk(s) (expected 0 — all hits)",
+            voxel_renderer.last_rebuilt_chunk_count()
+        );
     }
     // ADR 0002 E3b-1 (part of #18): the experimental cuboid mesh path, built only
     // when `--mesher cuboid` is selected. The instanced path stays the default.

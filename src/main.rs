@@ -102,6 +102,14 @@ struct WindowedState {
     /// the next rebuild can diff against it to compute the edit's dirty world-AABB.
     /// `None` before the first rebuild (which clears wholesale).
     previous_leaf_index: Option<voxel_worker::spatial_index::LeafSpatialIndex>,
+    /// The composite recentre (floating origin, in voxels) the LAST rebuild resolved
+    /// at (issue #20 S6c-2c). Every cached chunk's voxel positions are rebased to
+    /// this origin, so when it CHANGES (a move shifts the active region's composite
+    /// extent) every chunk's contents shift — even chunks far from the edit. An
+    /// incremental dirty-only GPU rebuild would then keep stale (old-origin) buffers
+    /// for the untouched chunks, so a recentre change forces a wholesale rebuild.
+    /// `None` before the first rebuild.
+    previous_recentre_voxels: Option<[i64; 3]>,
     /// Cached widest-run measurement + the band it was computed for, so we only
     /// re-measure when the band or grid actually changes.
     measured_diameter: u32,
@@ -406,6 +414,7 @@ impl WindowedState {
             grid,
             chunk_resolve_cache: voxel_worker::chunk_cache::ChunkResolveCache::new(),
             previous_leaf_index: None,
+            previous_recentre_voxels: None,
             measured_diameter,
             measured_band,
             depth_view,
@@ -493,18 +502,46 @@ impl WindowedState {
         // edit (no localisable box) — see `LeafSpatialIndex::edit_aabb_since`. The
         // reassembled grid is byte-identical either way (the same chunks are
         // re-resolved; untouched chunks are reused verbatim).
+        // The dirty absolute chunk-coords this edit evicted from the resolve cache
+        // (issue #20 S6c-2c); the GPU instance cache rebuilds EXACTLY these (plus any
+        // brand-new covering chunks) below, instead of clearing every per-chunk
+        // buffer. `full_rebuild` forces a wholesale GPU rebuild for the cases the
+        // resolve cache itself falls back to a `clear()` for — the first rebuild (no
+        // previous index), a density change, or a region-spanning Part edit (no
+        // localisable AABB) — where there is no meaningful dirty set.
         let new_leaf_index = self.panel_state.scene.build_leaf_spatial_index(density);
+        // The new composite recentre (floating origin). If it differs from the last
+        // rebuild's, EVERY cached chunk's rebased contents shift, so the incremental
+        // GPU path (which keeps untouched chunks verbatim) would leave stale buffers —
+        // force a wholesale rebuild in that case (see `previous_recentre_voxels`).
+        let new_recentre = self
+            .panel_state
+            .scene
+            .recentre_voxels_for_resolve(density);
+        let recentre_changed = self.previous_recentre_voxels != Some(new_recentre);
+        let mut evicted_chunks: Vec<[i32; 3]> = Vec::new();
+        let mut full_rebuild = false;
         match self.previous_leaf_index.as_ref() {
             Some(previous) => match new_leaf_index.edit_aabb_since(previous) {
                 Some(edit_aabb) => {
-                    // The evicted chunk-coords are returned for the GPU cache to
-                    // evict in lockstep (issue #20 S6c); not wired to the GPU yet.
-                    let _evicted = self.chunk_resolve_cache.invalidate_aabb(&edit_aabb, density);
+                    evicted_chunks = self.chunk_resolve_cache.invalidate_aabb(&edit_aabb, density);
+                    // A recentre shift invalidates every chunk's rebased contents, not
+                    // just the edit-AABB ones — fall back to a full GPU rebuild.
+                    if recentre_changed {
+                        full_rebuild = true;
+                    }
                 }
-                None => self.chunk_resolve_cache.clear(),
+                None => {
+                    self.chunk_resolve_cache.clear();
+                    full_rebuild = true;
+                }
             },
-            None => self.chunk_resolve_cache.clear(),
+            None => {
+                self.chunk_resolve_cache.clear();
+                full_rebuild = true;
+            }
         }
+        self.previous_recentre_voxels = Some(new_recentre);
         self.previous_leaf_index = Some(new_leaf_index);
         let grid = self
             .chunk_resolve_cache
@@ -515,23 +552,39 @@ impl WindowedState {
         // `placed_region_dimensions`); the renderer/mesher/fog below still consume
         // the assembled `grid` (that's S6c step 4).
         let region_dimensions = region_dimensions_for(&self.panel_state.scene, density, &grid);
-        // Issue #20 S6c-2b: drive the instanced render path from the resolve cache's
+        // Issue #20 S6c-2c: drive the instanced render path from the resolve cache's
         // PER-CHUNK accessor, maintaining one GPU instance buffer per resident chunk
         // (instead of one monolithic buffer built from `grid`). The accessor returns
         // a `Vec` holding an IMMUTABLE borrow of the cache, so it is consumed fully
-        // (every chunk's GPU buffer built) BEFORE any further `&mut` cache call.
-        // `rebuild_all_from_chunks` clears + rebuilds every chunk wholesale this step
-        // (incremental dirty-only rebuild is S6c-2c). The per-chunk grids are
-        // byte-identical to the corresponding slices of `grid`, so the rendered
-        // pixels are unchanged. The cuboid path still consumes the assembled `grid`.
+        // (every needed GPU buffer built) BEFORE any further `&mut` cache call.
+        //
+        // INCREMENTAL: for a localisable edit, rebuild ONLY the dirty chunks the
+        // resolve cache evicted (`evicted_chunks`) plus any brand-new covering chunk,
+        // and evict GPU buffers for coords the post-edit scene no longer covers — so
+        // a small recolour/move/add/remove re-uploads a handful of chunks, not all of
+        // them. The resulting GPU cache state is identical to a wholesale
+        // `rebuild_all_from_chunks` for the post-edit scene (untouched chunks are
+        // resolve-cache HITs → byte-identical grids → buffers already correct), so
+        // the rendered pixels are unchanged. The wholesale path is kept for the
+        // `full_rebuild` cases (first build / density change / region-spanning Part
+        // edit) where the resolve cache was cleared and there is no dirty set. The
+        // cuboid path still consumes the assembled `grid`.
         let render_chunks = self
             .chunk_resolve_cache
             .resident_render_chunks(&self.panel_state.scene, density, 0);
-        self.voxel_renderer.rebuild_all_from_chunks(
-            &self.gpu.device,
-            &self.gpu.queue,
-            &render_chunks,
-        );
+        if full_rebuild {
+            self.voxel_renderer.rebuild_all_from_chunks(
+                &self.gpu.device,
+                &self.gpu.queue,
+                &render_chunks,
+            );
+        } else {
+            self.voxel_renderer.incremental_rebuild_from_chunks(
+                &self.gpu.device,
+                &render_chunks,
+                &evicted_chunks,
+            );
+        }
         drop(render_chunks);
         // Re-upload the fog's occupancy field for the new grid, using the active fog
         // mode (per-chunk by default since #28 S5b).

@@ -185,6 +185,76 @@ fn instances_for_chunk(grid: &VoxelGrid) -> Option<(Vec<VoxelInstance>, Aabb)> {
     Some((instances, aabb))
 }
 
+/// The dirty-chunk rebuild plan (issue #20 S6c-2c): which per-chunk GPU buffers an
+/// incremental edit must (re)build, and which it must evict.
+///
+/// Computed purely from coord SETS — the GPU-cache resident coords, the edit's
+/// evicted (dirty) coords, and the post-edit covering coords — so it is unit-tested
+/// without a GPU device, yet [`VoxelRenderer::incremental_rebuild_from_chunks`]
+/// drives the real cache from exactly this plan. Applying it makes the resident set
+/// equal the covering set and every rebuilt chunk's contents match a fresh resolve,
+/// so the post-edit GPU cache is identical to a wholesale rebuild.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct IncrementalRebuildPlan {
+    /// Covering coords whose buffer must be (re)built: DIRTY (evicted by this edit)
+    /// or NEW (no resident buffer yet). Their grids are the only resolve-cache
+    /// MISSES; every other covering chunk is a HIT (byte-identical → keep).
+    pub rebuild: Vec<[i32; 3]>,
+    /// Resident coords the post-edit scene no longer covers (a removed/shrunk node
+    /// vacated them) — their buffers must be dropped.
+    pub evict: Vec<[i32; 3]>,
+}
+
+/// Compute the incremental dirty-chunk rebuild plan (issue #20 S6c-2c) from coord
+/// sets alone (no GPU).
+///
+/// `resident` is the GPU cache's current coord set (only NON-empty chunks ever have
+/// a buffer — [`VoxelRenderer::rebuild_chunk`] allocates nothing for a zero-voxel
+/// chunk). `occupied_covering` is the set of post-edit covering coords that resolve
+/// to a NON-EMPTY grid (so deserve a buffer); empty covering chunks are excluded
+/// here so they are never treated as "new" work nor kept resident. `evicted` is the
+/// edit's dirty coords from the resolve cache.
+///
+/// A coord is REBUILT iff it is occupied-covering AND (dirty OR not currently
+/// resident). A resident coord is EVICTED iff it is no longer occupied-covering —
+/// which captures BOTH a vacated chunk (a removed/shrunk node) AND a chunk that an
+/// edit turned empty (dirty + now zero voxels). Occupied coords that are
+/// resident-and-not-dirty are kept untouched (resolve-cache hits → byte-identical →
+/// buffers already correct).
+///
+/// Applying this plan and making every rebuilt entry equal its fresh grid yields
+/// EXACTLY the occupied-covering coord set with fresh contents — identical to a
+/// wholesale rebuild (which also stores only non-empty chunks). The returned vectors
+/// are sorted so the plan is deterministic and the rebuild count is order-independent.
+pub fn incremental_rebuild_plan(
+    resident: &[[i32; 3]],
+    evicted: &[[i32; 3]],
+    occupied_covering: &[[i32; 3]],
+) -> IncrementalRebuildPlan {
+    let resident_set: std::collections::HashSet<[i32; 3]> = resident.iter().copied().collect();
+    let evicted_set: std::collections::HashSet<[i32; 3]> = evicted.iter().copied().collect();
+    let covering_set: std::collections::HashSet<[i32; 3]> =
+        occupied_covering.iter().copied().collect();
+
+    let mut rebuild: Vec<[i32; 3]> = occupied_covering
+        .iter()
+        .copied()
+        .filter(|coord| evicted_set.contains(coord) || !resident_set.contains(coord))
+        .collect();
+    rebuild.sort_unstable();
+    rebuild.dedup();
+
+    let mut evict: Vec<[i32; 3]> = resident
+        .iter()
+        .copied()
+        .filter(|coord| !covering_set.contains(coord))
+        .collect();
+    evict.sort_unstable();
+    evict.dedup();
+
+    IncrementalRebuildPlan { rebuild, evict }
+}
+
 /// The uniform block uploaded to the shader.
 ///
 /// std140-safe: every `vec3` (`[f32; 3]`) is immediately followed by a scalar so
@@ -385,6 +455,13 @@ pub struct VoxelRenderer {
     /// resident chunk visible" on every rebuild so a first draw before any uniform
     /// upload still shows everything.
     visible_chunks: Vec<[i32; 3]>,
+    /// Observability counter (issue #20 S6c-2c): how many per-chunk GPU buffers the
+    /// LAST rebuild actually (re)built. After an incremental dirty-chunk rebuild
+    /// this is the number of chunks rebuilt (dirty ∪ new); after a wholesale
+    /// `rebuild_all_from_chunks` / `rebuild_instances` it is every chunk built. A
+    /// smoke-test reads it via [`VoxelRenderer::last_rebuilt_chunk_count`] to confirm
+    /// a localised edit rebuilt only N chunks, not the whole scene.
+    last_rebuilt_chunk_count: u32,
     uniform_buffer: wgpu::Buffer,
     uniform_bind_group: wgpu::BindGroup,
     /// One bind group per material (Stone/Wood/Plain), indexed by
@@ -636,6 +713,7 @@ impl VoxelRenderer {
             cube_index_count: indices.len() as u32,
             chunk_buffers: HashMap::new(),
             visible_chunks: Vec::new(),
+            last_rebuilt_chunk_count: 0,
             uniform_buffer,
             uniform_bind_group,
             material_bind_groups,
@@ -730,6 +808,74 @@ impl VoxelRenderer {
         for (coord, grid) in chunk_grids {
             self.rebuild_chunk(device, *coord, grid);
         }
+        // A wholesale rebuild touches every covering chunk (the input slice).
+        self.last_rebuilt_chunk_count = chunk_grids.len() as u32;
+        self.reset_visible_to_all();
+    }
+
+    /// **Incremental dirty-chunk rebuild (issue #20 S6c-2c).** Rebuild ONLY the
+    /// chunks an edit touched, instead of clearing + rebuilding every per-chunk
+    /// buffer. `render_chunks` is the freshly-resolved per-chunk accessor output
+    /// (`(absolute_chunk_coord, &rebased_grid)` for every covering chunk, exactly
+    /// `ChunkResolveCache::resident_render_chunks`); `evicted` is the set of
+    /// absolute chunk-coords the resolve cache evicted for this edit
+    /// (`ChunkResolveCache::invalidate_aabb`'s return).
+    ///
+    /// For each covering chunk this rebuilds its GPU buffer ONLY if the chunk is
+    /// DIRTY (`coord ∈ evicted`, so the resolve cache re-resolved it) or NEW (the
+    /// GPU cache has no buffer for `coord` yet). A covering chunk that is neither is
+    /// a resolve-cache HIT — its rebased grid is byte-identical to what produced the
+    /// existing buffer, so the buffer is already correct and is kept untouched.
+    /// Then any GPU-cache entry for a coord NOT in `render_chunks` is evicted (a
+    /// node removed / shrunk the region, vacating chunks the post-edit scene no
+    /// longer covers).
+    ///
+    /// The result is IDENTICAL to [`rebuild_all_from_chunks`] for the post-edit
+    /// scene — same resident coord set, same per-chunk instance contents — but it
+    /// only re-uploads the dirty/new chunks. [`last_rebuilt_chunk_count`] records
+    /// how many chunks were actually (re)built (dirty ∪ new), for the smoke-test /
+    /// `--debug-chunks` readout.
+    ///
+    /// `render_chunks` is consumed fully (every needed buffer built) BEFORE the
+    /// eviction pass, honouring the S6c-2a borrow rule (the slice borrows the cache
+    /// immutably for its lifetime).
+    ///
+    /// [`last_rebuilt_chunk_count`]: VoxelRenderer::last_rebuilt_chunk_count
+    pub fn incremental_rebuild_from_chunks(
+        &mut self,
+        device: &wgpu::Device,
+        render_chunks: &[([i32; 3], &VoxelGrid)],
+        evicted: &[[i32; 3]],
+    ) {
+        let resident: Vec<[i32; 3]> = self.chunk_buffers.keys().copied().collect();
+        // Only NON-EMPTY covering chunks deserve a buffer; an empty covering chunk is
+        // never "new work" and never kept resident (a wholesale rebuild stores none
+        // either — `rebuild_chunk` allocates nothing for zero voxels).
+        let occupied_covering: Vec<[i32; 3]> = render_chunks
+            .iter()
+            .filter(|(_, grid)| !grid.occupied.is_empty())
+            .map(|(coord, _)| *coord)
+            .collect();
+        let plan = incremental_rebuild_plan(&resident, evicted, &occupied_covering);
+
+        // 1. Rebuild only DIRTY (evicted) or NEW (no GPU buffer yet) occupied chunks.
+        //    `render_chunks` is consumed fully here, before the eviction pass.
+        let rebuild_set: std::collections::HashSet<[i32; 3]> =
+            plan.rebuild.iter().copied().collect();
+        for (coord, grid) in render_chunks {
+            if rebuild_set.contains(coord) {
+                self.rebuild_chunk(device, *coord, grid);
+            }
+        }
+
+        // 2. Evict any GPU-cache entry for a coord that is no longer an occupied
+        //    covering chunk — a removed/shrunk node VACATED it, or an edit turned it
+        //    EMPTY (both must drop their stale buffer).
+        for coord in &plan.evict {
+            self.chunk_buffers.remove(coord);
+        }
+
+        self.last_rebuilt_chunk_count = plan.rebuild.len() as u32;
         self.reset_visible_to_all();
     }
 
@@ -768,6 +914,7 @@ impl VoxelRenderer {
         for (coord, sub_grid) in &buckets {
             self.rebuild_chunk(device, *coord, sub_grid);
         }
+        self.last_rebuilt_chunk_count = self.chunk_buffers.len() as u32;
         self.reset_visible_to_all();
     }
 
@@ -780,6 +927,16 @@ impl VoxelRenderer {
     /// Total number of resident render chunks (issue #20 S6c-2b).
     pub fn chunk_count(&self) -> u32 {
         self.chunk_buffers.len() as u32
+    }
+
+    /// How many per-chunk GPU buffers the LAST rebuild actually (re)built (issue
+    /// #20 S6c-2c). After an incremental dirty-chunk rebuild this is `|dirty ∪ new|`
+    /// (so a localised edit reads a small number well under
+    /// [`chunk_count`](Self::chunk_count)); after a wholesale rebuild it is every
+    /// chunk. The smoke-test / `--debug-chunks` readout uses it to confirm an edit
+    /// rebuilt only the chunks it touched.
+    pub fn last_rebuilt_chunk_count(&self) -> u32 {
+        self.last_rebuilt_chunk_count
     }
 
     /// Number of chunks that survived the last frustum cull (i.e. will be drawn).

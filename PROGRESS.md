@@ -33,6 +33,40 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **Instanced render path: incremental dirty-chunk rebuild via evicted-set (S6c-2c) — Part of #20 (step 4).**
+  `main.rs::rebuild_geometry` now rebuilds ONLY the per-chunk GPU buffers an edit touched, instead of
+  clearing + rebuilding every chunk wholesale. A/B pixel-identical (0% diff, byte-identical PNGs); cuboid
+  path + goldens untouched.
+  - **Incremental logic.** The resolve cache's `invalidate_aabb(&edit_aabb, density)` returns the dirty
+    absolute chunk-coords (`evicted_chunks`). After resolving, `resident_render_chunks` hands every covering
+    chunk's freshly-rebased grid. The new `VoxelRenderer::incremental_rebuild_from_chunks(device, render_chunks,
+    evicted)` (re)builds a chunk's buffer ONLY if it is DIRTY (`coord ∈ evicted`) or NEW (no GPU buffer yet);
+    every other covering chunk is a resolve-cache HIT → byte-identical grid → its existing buffer is kept
+    untouched. The decision is a pure, GPU-free function `renderer::incremental_rebuild_plan(resident, evicted,
+    occupied_covering) -> {rebuild, evict}` that both the renderer and the CPU test drive.
+  - **Vacated-coord eviction.** A coord that is no longer an OCCUPIED covering chunk — a removed/shrunk node
+    vacated it, OR an edit turned it empty — is dropped from `chunk_buffers` (`plan.evict`). Only non-empty
+    covering chunks are ever stored (a zero-voxel chunk allocates no buffer, exactly as a wholesale rebuild).
+  - **Fallback-to-full cases.** The wholesale `rebuild_all_from_chunks` is kept for: the first build (no
+    previous index), a density change / region-spanning Part edit (`edit_aabb_since` → `None`), AND — the
+    stale-chunk fix below — a composite-recentre shift.
+  - **Stale-chunk risk handled (the surprising part).** Every cached chunk's voxel positions are rebased to
+    the scene's composite RECENTRE (floating origin). A move that shifts the active region's extent changes the
+    recentre, which rebases EVERY chunk's contents — even chunks far from the edit — so an incremental rebuild
+    would keep stale (old-origin) buffers for the untouched chunks. `rebuild_geometry` now tracks
+    `previous_recentre_voxels` and forces a FULL rebuild when the recentre changes (`Scene::recentre_voxels_for_resolve`
+    made `pub`). The CPU test mirrors this: a recentre shift → full rebuild.
+  - **Observability.** `VoxelRenderer::last_rebuilt_chunk_count()` reports `|dirty ∪ new|` after an incremental
+    rebuild (every chunk after a wholesale one). Wired into shot's `--instanced-via-chunks` diagnostic.
+  - **Tests (168 lib, +2).** `incremental_rebuild_equals_full_rebuild_for_every_edit_kind` models the GPU cache
+    on CPU as `coord → occupied multiset` (the byte-identical buffer proxy), drives it through the SAME
+    `incremental_rebuild_plan`, and asserts the post-edit cache (coords + each chunk's instance multiset) is
+    IDENTICAL to a full wholesale rebuild for scene B — across recolor / resize / move / add / remove, all with
+    the recentre pinned by static anchor nodes, plus a strict `rebuilt < total` (genuinely incremental) check.
+    `localized_recolor_rebuilds_few_chunks` pins that a small far node recolor rebuilds < half the chunks.
+    A/B headless (`--mesher instanced` ± `--instanced-via-chunks`, which now also exercises the incremental path
+    with an empty edit → 0 rebuilt): byte-identical. 6 cuboid goldens green.
+
 - **Instanced render path: per-chunk GPU buffer cache (S6c-2b) — Part of #20 (step 4).**
   The instanced FALLBACK (`--mesher instanced`; cuboid is the default + the only golden-covered path)
   now maintains ONE GPU instance buffer per resident chunk instead of a single grown monolithic buffer

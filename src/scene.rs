@@ -1018,7 +1018,7 @@ impl Scene {
     /// the identical offset when reassembling the recentred monolithic grid from
     /// absolute per-chunk pieces, so the assembled output is bit-identical. `[0, 0,
     /// 0]` for a scene with no intrinsic-size leaf.
-    pub(crate) fn recentre_voxels_for_resolve(&self, voxels_per_block: u32) -> [i64; 3] {
+    pub fn recentre_voxels_for_resolve(&self, voxels_per_block: u32) -> [i64; 3] {
         match self.placed_extent_blocks(voxels_per_block) {
             Some((min_corner, max_corner)) => [
                 ((min_corner[0] + max_corner[0]) * voxels_per_block as i64) / 2,
