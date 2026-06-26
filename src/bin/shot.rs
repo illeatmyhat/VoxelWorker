@@ -92,7 +92,7 @@ struct ShotOptions {
     /// Whether the fine floor grid is drawn (M8 `--floor`).
     show_floor_grid: bool,
     /// Whether the world reference grid (the Points: analytic infinite ground plane
-    /// + axes) is drawn (issue #29 S5 `--points`). DEFAULT OFF so the existing
+    /// plus axes) is drawn (issue #29 S5 `--points`). DEFAULT OFF so the existing
     /// goldens (which never pass `--points`) stay byte-identical; `--points` enables
     /// the Origin Point (and any others) so a deliberate Points golden can be captured.
     show_points: bool,

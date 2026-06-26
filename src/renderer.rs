@@ -1815,12 +1815,6 @@ const POINT_PLANE_MINOR_ALPHA: f32 = 0.10;
 /// Base alpha of a MAJOR (per-BLOCK, spacing = density) analytic-grid line — bolder
 /// than the voxel lines so block-cell boundaries pop while the field stays subtle.
 const POINT_PLANE_MAJOR_ALPHA: f32 = 0.30;
-/// Distance (in BLOCKS) over which the analytic infinite grid fades to fully
-/// transparent. The shader ramps alpha linearly from full at the camera to zero at
-/// this distance, so the plane dissolves smoothly into the background — truly
-/// infinite (no hard finite edge / near-clip cutoff) yet bounded so distant lines
-/// never alias into a solid sheet.
-const POINT_PLANE_FADE_BLOCKS: f32 = 80.0;
 
 /// Half-length (in BLOCKS) of each Point's axis lines, drawn through the Point
 /// origin in the reference axis colours. A few blocks is enough to read as a frame
@@ -2103,7 +2097,10 @@ struct InfiniteGridUniforms {
     normal_axis: [f32; 4],
     /// Line colour (linear RGB); `.w` = voxel spacing (1.0).
     line_color: [f32; 4],
-    /// `[block_spacing(=density), minor_alpha, major_alpha, fade_distance_voxels]`.
+    /// `[block_spacing(=density), minor_alpha, major_alpha, reserved]`. The shader
+    /// reads only `.x/.y/.z`; `.w` is a reserved padding slot (the old fixed
+    /// world-distance fade was removed — fading is now per-tier LOD in the shader).
+    /// Kept as `vec4` for the std140 16-byte uniform alignment.
     params: [f32; 4],
 }
 
@@ -2260,7 +2257,6 @@ impl InfiniteGridRenderer {
         let density = voxels_per_block.max(1) as f32;
         let inverse_view_projection = view_projection.inverse();
         let line_color = srgb_hex_to_linear(POINT_PLANE_COLOR_HEX);
-        let fade_voxels = POINT_PLANE_FADE_BLOCKS * density;
 
         let count = planes.len().min(MAX_GRID_PLANES);
         for (index, plane) in planes.iter().take(count).enumerate() {
@@ -2273,11 +2269,13 @@ impl InfiniteGridRenderer {
                 v_axis: [plane.v_axis[0], plane.v_axis[1], plane.v_axis[2], 0.0],
                 normal_axis: [plane.normal[0], plane.normal[1], plane.normal[2], 0.0],
                 line_color: [line_color[0], line_color[1], line_color[2], 1.0],
+                // `.w` is a reserved padding slot (the shader reads only x/y/z); the
+                // old world-distance fade was removed in favour of per-tier LOD fade.
                 params: [
                     density,
                     POINT_PLANE_MINOR_ALPHA,
                     POINT_PLANE_MAJOR_ALPHA,
-                    fade_voxels,
+                    0.0,
                 ],
             };
             let offset = (index as u32 * self.aligned_stride) as u64;

@@ -80,12 +80,11 @@ pub struct AppConfig {
     pub show_floor_grid: bool,
     #[serde(default = "default_true")]
     pub show_view_cube: bool,
-    /// Retained for config back-compat only (issue #29 S2). The old origin gizmo
-    /// was a Display toggle; the transform gizmo that replaced it is selection-
-    /// driven (shown on the active node), so this no longer drives any UI. Kept so
-    /// older saved configs still deserialize and the field round-trips.
-    #[serde(default)]
-    pub show_origin_gizmo: bool,
+    // NOTE: the legacy `show_origin_gizmo` field was removed in the issue #29 S6
+    // cleanup. The old origin-gizmo Display toggle was replaced by the
+    // selection-driven transform gizmo, so the field drove nothing. There is no
+    // `deny_unknown_fields`, so an OLD config still carrying `"show_origin_gizmo"`
+    // continues to deserialize cleanly (serde ignores the now-unknown key).
     /// Best-effort applied-block label (re-applied lazily; see module docs).
     #[serde(default)]
     pub applied_block_label: Option<String>,
@@ -165,7 +164,6 @@ impl Default for AppConfig {
             show_block_lattice: true,
             show_floor_grid: true,
             show_view_cube: true,
-            show_origin_gizmo: false,
             applied_block_label: None,
             snap_to_blocks: true,
             onion_skin: false,
@@ -200,10 +198,6 @@ impl AppConfig {
             show_block_lattice: panel.show_block_lattice,
             show_floor_grid: panel.show_floor_grid,
             show_view_cube: panel.show_view_cube,
-            // Retained for config back-compat only (issue #29 S2): the transform
-            // gizmo is now selection-driven, not a Display toggle, so it no longer
-            // mirrors any PanelState field.
-            show_origin_gizmo: false,
             applied_block_label: panel.applied_block_label.clone(),
             snap_to_blocks: panel.layer_range.snap_to_blocks,
             onion_skin: panel.layer_range.onion_skin,
@@ -376,7 +370,6 @@ mod tests {
             show_block_lattice: false,
             show_floor_grid: true,
             show_view_cube: false,
-            show_origin_gizmo: true,
             applied_block_label: Some("Granite".to_string()),
             snap_to_blocks: false,
             onion_skin: true,
@@ -401,6 +394,37 @@ mod tests {
         // Outright invalid JSON must be a clean Err (the caller turns it into a
         // defaults fallback), never a panic.
         assert!(serde_json::from_str::<AppConfig>("not json at all}{").is_err());
+    }
+
+    /// issue #29 S6 cleanup: the legacy `show_origin_gizmo` field was removed from
+    /// `AppConfig`. There is no `deny_unknown_fields`, so an OLD config that still
+    /// carries `"show_origin_gizmo"` (and the other legacy `show_*` keys) must keep
+    /// deserializing cleanly — serde ignores the now-unknown key — and migrate its
+    /// grid masters as before.
+    #[test]
+    fn old_config_with_removed_show_origin_gizmo_still_loads() {
+        let old_json = r#"{
+            "shape": "Box",
+            "size_blocks": [2, 2, 2],
+            "voxels_per_block": 8,
+            "wall_blocks": 1,
+            "show_grid_overlay": true,
+            "show_block_lattice": false,
+            "show_floor_grid": true,
+            "show_origin_gizmo": true
+        }"#;
+        let config: AppConfig =
+            serde_json::from_str(old_json).expect("old config with show_origin_gizmo still parses");
+        assert!(config.scene.is_none());
+
+        let panel = config.to_panel_state();
+        // Masters still migrate from the legacy show_* fields; the removed gizmo key
+        // is simply ignored.
+        assert!(!panel.scene.master_block_lattice, "migrated from show_block_lattice=false");
+        assert!(panel.scene.master_voxel_grid, "migrated from show_grid_overlay=true");
+        assert!(panel.scene.master_floor_grid, "migrated from show_floor_grid=true");
+        // Exactly one Origin Point, as on any load path.
+        assert_eq!(panel.scene.points.iter().filter(|p| p.is_origin).count(), 1);
     }
 
     /// step 2 migration: an OLD config that still carries the dropped

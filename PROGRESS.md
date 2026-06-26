@@ -33,6 +33,58 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **Grid rework S6: cleanup dead composite-bbox/grid remnants — Closes #29.** Final conservative
+  cleanup pass after S1–S5 + the infinite-grid fixes. Behavior-preserving; goldens unmoved; old
+  configs still load.
+  - **Removed (genuinely dead):**
+    - `AppConfig.show_origin_gizmo` (settings.rs) — a pure serde back-compat HUSK. The old
+      origin-gizmo Display toggle was replaced by the selection-driven transform gizmo at S2, so the
+      field drove nothing (only ever written as `false`, never read into `PanelState`). There is no
+      `#[serde(deny_unknown_fields)]` anywhere, so an OLD config still carrying `"show_origin_gizmo"`
+      keeps deserialising cleanly (serde ignores the now-unknown key). Locked by a new test
+      `old_config_with_removed_show_origin_gizmo_still_loads` (mirrors the existing
+      `*_debug_clouds_field_*` / `*_mesher_field_*` back-compat tests).
+    - `POINT_PLANE_FADE_BLOCKS` constant + the `fade_voxels` computation in
+      `InfiniteGridRenderer::rebuild_from_scene` (renderer.rs). The old fixed world-distance fade was
+      removed during the infinite-grid fixes (fading is now per-tier per-pixel LOD in
+      `infinite_grid.wgsl`), so this constant only fed the now-unused `params.w`. `params.w` is now
+      written as a literal `0.0` reserved slot.
+  - **Conservatively KEPT (with comments) — back-compat / layout, NOT dead:**
+    - `InfiniteGridUniforms.params` stays `[f32; 4]`: the shader reads `.x/.y/.z` (block spacing,
+      minor/major alpha) and `.w` is a std140 16-byte-alignment padding slot. Shrinking the vec4
+      would break the uniform layout, so `.w` is documented as reserved, not removed.
+    - The legacy `AppConfig.show_grid_overlay` / `show_block_lattice` / `show_floor_grid` serde
+      fields stay: they MIGRATE an old config's grid prefs into the scene-wide masters on load, and
+      keep a NEW config readable by an older build. Removing them would break that round-trip.
+    - All `region_dimensions` / `placed_region_dimensions` uses audited — every remaining use is
+      LEGITIMATE (camera auto-frame, onion fog `grid_y`, voxel-grid assembly, `.vox` export,
+      `shot`'s auto-frame), none were the old composite-bbox gizmo/lattice/floor sizing. Left intact.
+    - `shot.rs`'s own `Options.show_origin_gizmo` is LIVE (driven by `--gizmo`, drives the transform
+      gizmo); the field name is kept "for minimal churn" per its existing doc comment.
+  - **Loose end found (reported, NOT force-fixed to keep this pass behavior-preserving):** the
+    settings round-trip is asymmetric. `AppConfig::capture` reads `show_grid_overlay` from the LIVE
+    `scene.master_voxel_grid` but reads `show_block_lattice` / `show_floor_grid` from the now-STALE
+    `PanelState.show_block_lattice` / `show_floor_grid` mirror fields (which the UI no longer writes —
+    the per-grid checkboxes drive `scene.master_block_lattice` / `master_floor_grid` directly since
+    S3). So on SAVE the legacy lattice/floor `show_*` keys can persist a stale value. This is only
+    observable to an OLDER build reading a NEW config (this build restores masters from the `scene`
+    field regardless), so it is a latent inconsistency, not a live bug. The clean fix is to route all
+    three legacy `show_*` through `scene.master_*` in `capture` and delete the three vestigial
+    `PanelState` mirror fields — left for a follow-up since it is a round-trip refactor rather than
+    dead-code removal.
+  - **Also:** fixed the 2 pre-existing `doc_lazy_continuation` clippy warnings in `shot.rs`
+    (`--points` doc comment — a line beginning `+ axes)` was misread as a markdown list item; reworded
+    to `plus axes`). No `#[allow]` used anywhere.
+  - **Verified.** `cargo build --bin shot` clean (the default `voxel_worker.exe` could NOT be relinked
+    — the windowed app was RUNNING this session, PID held the exe; reported, not killed; `shot` is the
+    verification path per the task). `cargo clippy --lib --bin shot --tests --features gpu`: ZERO
+    warnings. `cargo test --lib`: 204 pass (was 203; +1 back-compat test). Goldens: rendered all 7 via
+    the freshly-built `shot` and byte-compared against `tests/golden/` — 6/7 byte-identical;
+    `debug-clouds` differs by 64 px (0.007%), but a clean-HEAD (`f2f19b3`) `shot` produces the SAME
+    bytes as the post-cleanup `shot` (verified by stash + rebuild + compare), so this drift PREDATES
+    this pass and is unrelated; it is far under the golden test's 0.5% tolerance, so
+    `cargo test golden` still passes all 7. Old-config round-trip green. **#29 is feature-complete.**
+
 - **Rework infinite grid fade/depth: fix near-side cutoff + zoom-out vanish — Part of #29.**
   Two confirmed live-testing bugs in the analytic infinite ground plane
   (`src/shaders/infinite_grid.wgsl` + `InfiniteGridRenderer` in `renderer.rs`), both REPRODUCED
