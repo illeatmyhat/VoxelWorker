@@ -811,9 +811,24 @@ impl WindowedState {
     /// non-orbit param so it is applied immediately, matching the face-snap
     /// path which never tweens distance). Wired to the Home button + context-menu
     /// Home item in Step 3; pure-ish here so the logic is testable.
+    ///
+    /// #13 Step 6.4: a USER-set home (`explicitly_set`) restores its saved distance
+    /// verbatim. The DEFAULT home (never set by the user) instead FRAMES the model —
+    /// the canned default distance (10) zooms in far too close on a large model — so
+    /// Home re-fits the auto-framed distance, matching the Fit button's distance.
     fn home_snap_tween(&mut self) -> SnapTween {
         let tween = self.home_view.snap_tween(&self.camera);
-        self.camera.orbit_distance = self.home_view.distance;
+        self.camera.orbit_distance = if self.home_view.explicitly_set {
+            self.home_view.distance
+        } else {
+            let region_dimensions = region_dimensions_for(
+                &self.panel_state.scene,
+                self.panel_state.geometry.voxels_per_block,
+                &self.grid,
+            );
+            self.camera.target = glam::Vec3::ZERO;
+            OrbitCamera::auto_framed_distance(region_dimensions)
+        };
         tween
     }
 
@@ -1359,7 +1374,14 @@ impl ApplicationHandler for App {
                                     up_y as f32,
                                     || state.pick_view_cube_element(up_x, up_y),
                                 );
-                                if let Some(zone) = zone {
+                                // #13 Step 6.6: a rotate-arrow click only acts when the
+                                // view is face-constrained (the arrows are hidden
+                                // otherwise, so a stray gutter click is a no-op).
+                                let rotate_disabled = matches!(
+                                    zone,
+                                    Some(CubeChromeZone::RotateArrow(_))
+                                ) && !state.camera.is_face_constrained();
+                                if let (Some(zone), false) = (zone, rotate_disabled) {
                                     let action = chrome_zone_left_click_action(
                                         zone,
                                         &state.camera,
@@ -1420,8 +1442,17 @@ impl ApplicationHandler for App {
                 let orbiting = state.left_button_held || state.view_cube_drag_active;
                 if orbiting {
                     if let Some((previous_x, previous_y)) = state.last_cursor_position {
-                        let delta_x = (current.0 - previous_x) as f32;
+                        let mut delta_x = (current.0 - previous_x) as f32;
                         let delta_y = (current.1 - previous_y) as f32;
+                        // #13 Step 6.1: a cube drag GRABS the cube and turns it with
+                        // the cursor, so the camera must orbit the OPPOSITE way round
+                        // the model from a scene drag (dragging the cube's right edge
+                        // leftward spins the model to show its right face). The scene
+                        // drag keeps its existing sign; only the cube-drag path flips
+                        // the horizontal component.
+                        if state.view_cube_drag_active {
+                            delta_x = -delta_x;
+                        }
                         if delta_x != 0.0 || delta_y != 0.0 {
                             // A manual orbit cancels any in-progress snap tween.
                             state.snap_tween = None;
@@ -1451,12 +1482,22 @@ impl ApplicationHandler for App {
                         state.cube_rect(),
                         current.0 as f32,
                         current.1 as f32,
-                        || None,
+                        || state.pick_view_cube_element(current.0, current.1),
                     ) {
-                        // The body delegates to the (skipped) raycast and yields
-                        // `None`; only arrow/button zones light up on hover.
-                        Some(CubeChromeZone::Element(_)) | None => None,
+                        // #13 Step 6.6: rotate arrows are a face-relative affordance —
+                        // only offer them when the view is constrained to a face
+                        // (Fusion behaviour). Off-face hovers over a rotate gutter
+                        // don't light up.
+                        Some(CubeChromeZone::RotateArrow(_))
+                            if !state.camera.is_face_constrained() =>
+                        {
+                            None
+                        }
+                        // #13 Step 6.2: faces/edges/corners DO highlight on hover now
+                        // (the body picker resolves the hovered element); arrows and
+                        // badges highlight as before.
                         Some(zone) => Some(zone),
+                        None => None,
                     }
                 };
             }
