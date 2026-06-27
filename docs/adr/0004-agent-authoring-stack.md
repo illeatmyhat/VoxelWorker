@@ -6,19 +6,23 @@
   foundation phases are underway** (concretely: the Phase C `Intent` door + Phase H `query`/`diagnostics`
   surface + the `scene` joint DATA seam must exist first — this ADR is the SOLVER and the producers and
   the agent loop that those reserved seams were reserved *for*). This ADR consumes ADR 0003 seams and
-  mostly drops onto them additively — **with two crisp exceptions: it requires two cheap DATA-seam edits
-  back to ADR 0003 (joint arity + a stable `JointId`), flagged explicitly in Foundation-fit.** Everywhere
-  else, additions are additive enum variants or new downward-depending crates.
+  mostly drops onto them additively. It needed a handful of cheap ADR 0003 DATA-seam / resolve-ordering
+  edits (joint arity + a stable `JointId`; and three Thread-4 override/composition seams — N ordered
+  override layers, ordered assembly composition, scene-root assembly-scoped overrides) — **all now
+  reconciled INTO ADR 0003 in this same amendment, so Foundation-fit shows ZERO outstanding flags.**
+  Everywhere else, additions are additive enum variants or new downward-depending crates.
 
 ## Context
 
 ADR 0003 locked a foundation whose single door for all mutation is a serializable `Intent` enum
 (`AppCore::apply_intent`), with a structured read surface (`query(SpatialQuery) -> Answer`), a
 machine-and-human-readable check surface (`diagnostics() -> Vec<Issue>`), multi-view `render_png`, a
-`scene` that is a node tree **plus a relationship/constraint graph** (`Node.joints: Vec<Joint>`
-referencing other nodes by stable `NodeId` — ADR 0003 §1, lines 197–203), a Fusion-360 part/assembly
-model (definitions own geometry + sculpt overrides in a local frame; instances are reference +
-24-orientation lattice rotation + i64 translation), a `VoxelProducer` registry with chunk-windowed
+`scene` that is a node tree **plus a relationship/constraint graph** (scene-owned, id-keyed, **N-ary**
+`Joint`s referencing other nodes by stable `NodeId`/`JointId` — ADR 0003 §1), a Fusion-360 part/assembly
+model (definitions own producer geometry + sculpt overrides in a local frame; **arbitrary-angle geometry
+is a producer parameter, SDF-exact at resolve, NOT a transform limit**; instances are reference +
+24-orientation lattice rotation *of baked data* + i64 translation; plus scene-root assembly-scoped
+override layers for this-site-only patches), a `VoxelProducer` registry with chunk-windowed
 `resolve_into`, an ordered add/subtract layer compositor, a categorical per-voxel `block_id` + `attrs`
 cell, and a streaming async store. ADR 0003 **deliberately reserved** the joint graph DATA seam but built
 **no solver** (§1, lines 206–210), and deferred WFC narrowly to "a seeded detail/material FILL producer,
@@ -89,13 +93,40 @@ a coupled joint graph* — is probed before any kit or any AppCore plumbing is b
 ## Decision
 
 One coherent stack across five areas. Every type below is **new code in new modules that depend
-downward on `app_core`/`scene`/`store`/`core_geom`** (ADR 0003 §0 layering); the only foundation-type
-touches are the two flagged DATA-seam edits in Foundation-fit (joint arity + `JointId`).
+downward on `app_core`/`scene`/`store`/`core_geom`** (ADR 0003 §0 layering); the foundation-type touches
+are the flagged DATA-seam edits in Foundation-fit (joint arity + `JointId`, plus the three Thread-4
+override/composition seams now reconciled into ADR 0003 in this same amendment).
+
+### The three-tier authoring model (the spine that unifies everything)
+
+Every feature in this stack — and every seam it consumes from ADR 0003 — falls into exactly one of
+three authoring tiers. Naming them makes the rest of this ADR (and ADR 0003 §3, which cross-references
+this section) coherent:
+
+- **Parametric (producers).** Arbitrary geometry — **angles, curves, terrain-following sweeps** —
+  generated SDF-exact and **re-voxelized at resolve** (staircased on the voxel grid, inherent to
+  voxels). Lives in part definitions / massing producers (ADR 0003 §3b/§3d producer layer stack). This
+  is where *any-angle* geometry lives: an angled bastion or a curved wall is a producer **parameter**,
+  not a transform — there is no 24-orientation limit on geometry (see F).
+- **Relational (joints / solver).** How parts **place and connect** — the assembly graph, integer-
+  lattice transforms (24-orientation `LatticeOrientation` + i64), solve + validate, overlap detection.
+  Lives in the joint graph (ADR 0003 §1) + the solver (B). This tier is integer-exact precisely because
+  it transforms *already-baked* parts on the lattice, never geometry-at-an-angle.
+- **Corrective (override / patch layers).** Local **block replacement** — ordered layers, **later
+  wins** (ADR 0003 §3b). Two scopes: **part-local sculpt** (belongs to a definition, propagates to all
+  its instances) AND **assembly-scoped patches** (scene-root, world-frame, this-site-only, does NOT
+  propagate — ADR 0003 §1). This is where bespoke junctions and agent block-replacement live (F).
+
+The three tiers map one-to-one onto the foundation: parametric ↔ §3b/§3d producers; relational ↔ §1
+joint graph; corrective ↔ §3b/§3e layer stack + the §1 assembly-scoped override layers. Each tier has
+the *right* machinery for its job, and conflating them is the recurring design error this ADR avoids
+(it is the same shape as the macro/micro split below, viewed across authoring rather than validity).
 
 ### A. The architectural kit + the cross-scale ARCH seam
 
-A **kit** is a registry of **parametric modules** — wall segments, tower rings, parapet/merlon
-courses, gatehouses, bastion wedges, arch pieces. Architecturally each module is **either** a part
+A **kit** is a registry of **parametric modules** — wall segments (incl. the path-swept `Wall`, below),
+tower rings, parapet/merlon courses, gatehouses, bastion wedges, arch pieces, and **junction modules**
+(corner bond, T-junction, X-crossing, tower-at-crossing — F2) whose connectors mate two crossing walls. Architecturally each module is **either** a part
 *definition generator* (it builds an `AssemblyDef` from parameters: producer layer-stack + part-local
 sculpt + named connector frames) **or** a *composite generator* (it instantiates and joints other
 modules). It is **driven entirely through `Intent`** — a module never touches `scene` directly; it
@@ -147,14 +178,53 @@ rather than letting them propagate as phantom "satisfied" joints.
   existing `LatticeOrientation` + i64 translation; sub-block curve uses the existing sculpt override
   layer; `SubBlockSnap` is a kit-side quantization helper, not a foundation field.
 
+- **Walls that climb terrain — the path-swept wall producer (parametric tier).** A wall is **not** a
+  box + length; it is a **cross-section `profile` swept along a 3D `path`**:
+
+  ```rust
+  pub struct Wall { pub path: Vec<[i64; 3]>, pub profile: WallProfile }  // a VoxelProducer
+  ```
+
+  A wall that climbs a hill is just a **path with rising Y**. All path complexity (the rise, bends,
+  taper) lives **INSIDE the producer** as an SDF sweep, so it is arbitrary-shaped and re-voxelized
+  exactly at resolve (the parametric tier — consistent with F: geometry is a producer parameter, never
+  a transform angle). Critically, the producer's instance transform stays a clean lattice placement and
+  its **endpoint connectors stay lattice-clean** (block-aligned springs at the path ends), so the joint
+  solver (B) still mates walls by **integer connector position** — the climbing geometry never leaks
+  into the relational tier.
+
+- **Terrain is IMPORTED, not authored.** Terrain is modeled as an imported `VoxelProducer` (e.g. a
+  heightmap producer registered like any other, ADR 0003 §3d). **OPEN RESEARCH ITEM — flagged, NOT
+  decided:** Vintage Story has **no known terrain-export path**, so the import format must be
+  **searched / invented / adapted**. Candidate formats: a heightmap (PNG / RAW / GeoTIFF) or a voxel
+  format (`.vox` / `.schematic`). **This is a flagged research spike (TBD)** — we are *not* pretending
+  the import format is settled; the spike must establish whether VS data can be extracted at all and in
+  which format before the heightmap producer is specified.
+
+- **Ground query — `GroundHeightAt` (drape on terrain at the massing/agent layer).** Add a surface-
+  sample query to the **extensible** `SpatialQuery` taxonomy (ADR 0003 §6 / C below):
+  `GroundHeightAt { x: i64, z: i64 }` (or a surface-sample variant) returns the terrain surface Y at an
+  XZ column. The **massing / agent layer** uses it to compute a wall's 3D `path` by **draping** the wall
+  across the terrain (sampling ground height along the run) **BEFORE** handing the finished path to the
+  `Wall` producer. This keeps producers **pure** — there is **no producer→producer coupling** (the wall
+  producer never reads the terrain producer); the agent layer does the draping and passes a concrete
+  path down. If terrain isn't present, the agent supplies the 3D `path` directly. `GroundHeightAt` rides
+  the async-resolved half (it reads the imported terrain's resolved occupancy).
+
+- **Footing / skirt sub-producer + diagnostic.** Over uneven terrain a swept wall can leave voids
+  beneath it (the flat-bottomed profile bridges a dip). An **optional footing/skirt sub-producer** fills
+  the voids under a wall down to the ground surface. The matching diagnostic — **"wall base doesn't meet
+  ground / floating segment"** — is added to the `Issue` taxonomy (C) as `Issue::WallBaseGap` so the
+  agent can detect an under-wall void and add the footing (or adjust the path).
+
 ### B. The constraint / joint SOLVER — solve + validate + conflict-detection
 
 This is the spine. It consumes the reserved `Node.joints` seam (ADR 0003 §1) and adds solve/validate
 logic in a new `solve` crate (depends on `scene` + `app_core`). The `Joint`/`JointKind` DATA serialize
 with the document; the solver reads them and *emits placement `Intent`s* (or `Issue`s), never mutating
-`scene` directly. **Note:** the spine requires two cheap edits to the §1 joint DATA seam — n-ary joint
-refs and a stable `JointId` — flagged in Foundation-fit. They are pure data-shape changes with no
-solver/behavior impact on the foundation, and are best made now while ADR 0003 is still Proposed.
+`scene` directly. **Note:** the spine required two cheap edits to the §1 joint DATA seam — n-ary joint
+refs and a stable `JointId` — now **reconciled into ADR 0003 §1** in this same amendment (Foundation-fit
+FLAG 1/2). They are pure data-shape changes with no solver/behavior impact on the foundation.
 
 **Joint vocabulary** (the agent's macro grammar — `JointKind` values; closed serialized enum per the
 ADR 0003 traits-vs-enums rule):
@@ -216,12 +286,16 @@ explicit checks:**
   by **every incoming joint independently** and asserts they agree **i64-exact**. Any mismatch emits
   `Issue::OverConstrained { node, joints, demanded: Vec<Transform> }` instead of silently picking one
   demand. (Plain incompatible cyclic demands report the same way.)
-- **Volumetric interpenetration (async broad-phase — H3).** The transform solver is blind to a part
-  *forced where another already occupies space*. So standing `diagnostics()` runs a **broad-phase AABB
-  overlap pass** over all parts' world-AABBs; any overlapping pair triggers `Issue::PartsOverlap { a, b,
-  overlap_aabb }`. (Broad-phase AABB is cheap metadata; a narrow-phase voxel check is only run on the
-  flagged pair if disambiguation is needed.) This is the check that makes "detects conflicts, never
-  silent garbage" actually true — a graph solver alone cannot see interpenetration.
+- **Volumetric overlap — conflict vs JUNCTION (async broad-phase — H3, F).** The transform solver is
+  blind to a part *occupying the same space as another*. So standing `diagnostics()` runs a
+  **broad-phase AABB overlap pass** over all parts' world-AABBs; any overlapping pair triggers
+  `Issue::PartsOverlap`. **The overlap is not assumed to be a conflict** — geometric union of the two
+  parts is automatic, but a *good* junction is not, so the solver **classifies** the overlap (`kind:
+  OverlapKind`) and, for a resolvable crossing, **proposes a resolution** (a kit junction module or a
+  patch — `proposed: Some(Intent)`). See F for the full junction model. (Broad-phase AABB is cheap
+  metadata; a narrow-phase voxel check is only run on the flagged pair if disambiguation is needed.)
+  This is the check that makes "detects conflicts/junctions, never silent garbage" actually true — a
+  graph solver alone cannot see interpenetration.
 - **Termination (H5 — see the loop, C).** The propagation runs a **bounded retry budget**; convergence
   is budgeted best-effort, governed by a residual-magnitude potential plus an oscillation guard, **not**
   claimed as a proof. A group that exhausts the budget reports `Issue::SolveDidNotConverge` rather than
@@ -254,6 +328,8 @@ pub enum SpatialQuery {
     Gap       { a: NodeId, b: NodeId },                      // nearest resolved-surface distance + face pair
     Overhang  { node: NodeId },                              // unsupported voxels (no block below)
     Occupancy { region: Aabb64 },                            // categorical block fill of a region
+    GroundHeightAt { x: i64, z: i64 },                       // imported-terrain surface Y at an XZ column (A) —
+                                                            // agent drapes a wall's 3D path on terrain before the producer
 }
 ```
 
@@ -284,12 +360,18 @@ pub enum Issue {
     },
     OverConstrained   { node: NodeId, joints: Vec<JointId>, demanded: Vec<Transform> },
     SolveDidNotConverge { scc: Vec<NodeId>, iterations: u32, residual_blocks: i64 },
-    PartsOverlap      { a: NodeId, b: NodeId, overlap_aabb: Aabb64 },
+    PartsOverlap      {                                   // a "junction-to-resolve", NOT pure conflict (F)
+        a: NodeId, b: NodeId, overlap_aabb: Aabb64,
+        kind: OverlapKind,                               // Conflict (over-constrained) | Junction (resolvable)
+        proposed: Option<Intent>,                        // solver's proposed resolution (kit module / patch)
+    },
     ConnectorOffSurface { node: NodeId, connector: ConnectorName }, // connector-validity (H6)
     Disconnected      { components: Vec<Vec<NodeId>> },             // fort is in N pieces (graph)
     Unsupported       { node: NodeId, floating_voxels: u64 },
+    WallBaseGap       { node: NodeId, gap_aabb: Aabb64 },          // wall base doesn't meet ground / floating segment (A)
     WfcContradiction  { region: Aabb64, cell: [i64; 3] },          // see D
 }
+pub enum OverlapKind { Conflict, Junction }   // see F: union is automatic; a GOOD junction is not
 ```
 
 **Self-describing + well-ordered (H7).** Each `Issue` carries its own inline geometry — connector/face
@@ -385,23 +467,76 @@ material-tileset authoring are bespoke.
   photo." It is never in the inner solve/validate loop and never the primary feedback (which stays
   data-primary, C). Image conditioning is a flavor knob, not the spine.
 
-### F. The 24-orientation limit vs angled bastions (confronted — H8)
+### F. Angled bastions (a producer parameter, NOT a limit) + intersecting-wall junctions
 
-A star fort's defining feature is the **angled bastion** (e.g. a 45° wedge), but ADR 0003 reserves only
-24 orthogonal `LatticeOrientation`s — the discrete transform space cannot express 45°. This is confronted
-head-on rather than left as a latent contradiction:
+#### F1. Angled bastions are a producer-parameter concern — there is no geometry limit
 
-**Chosen approach — bake the bastion angle INTO the part definition.** The angled geometry is treated as
-**intra-part sub-lattice detail**: the bastion module's `AssemblyDef` contains the 45° wedge as producer
-geometry + part-local sculpt, with its connector frames still **block-aligned** (the flanks expose
-axis-aligned connector faces even though the wedge surface between them is angled). Joints therefore stay
-**axis-aligned** — the solver only ever mates block-aligned connectors, and the discrete transform space
-is **never asked to express 45°**. The angle lives entirely inside one part, below the joint layer.
+A star fort's defining feature is the **angled bastion** (e.g. a 45° wedge). This is **fully supported
+and not a limitation**: an angled bastion is **parametric geometry** (the parametric tier of the
+three-tier model). The bastion module's `AssemblyDef` produces the wedge as an **SDF rotated by the
+desired angle and voxelized fresh at resolve** — exact-from-the-field, just staircased on the voxel grid
+(inherent to voxels, and exactly what VS chiseling looks like). Curves, tapers, and any angle are the
+same kind of producer parameter. **The angle is geometry, expressed in the producer; it is never a
+transform rotation**, so the discrete `LatticeOrientation` transform space is **never asked to express
+45°** and there is no contradiction to confront.
 
-**Alternative (noted, not chosen now):** enrich the reserved rotation set beyond 24 orthogonal
-orientations if a future need genuinely requires inter-part angled mates. That would be a foundation
-change to `LatticeOrientation` and is deliberately avoided here — baking the angle into the part keeps the
-foundation's discrete rotation space intact.
+The reason the 24-orientation lattice does **not** limit this: `LatticeOrientation` constrains only the
+**instance-transform rotation of already-baked voxel data** (the relational tier — an exact index
+permutation, lossless/byte-stable, which is what keeps the sculpt-override layer intact and the solver
+integer-exact; ADR 0003 §3f). It was **never** a geometry limit. The bastion's connector frames stay
+**block-aligned** (its flanks expose axis-aligned connector faces even though the wedge surface between
+them is angled), so the solver only ever mates block-aligned connectors and joints stay axis-aligned —
+while the *geometry* between those connectors is any angle the producer wants.
+
+**Deferred opt-in (the only place angle meets the transform):** rotating a **sculpted** (non-parametric)
+part to a **non-lattice** angle would require **lossy resampling** of its sparse override layer; that is
+a deferred, flagged opt-in ("this resamples/bakes the sculpt layer" warning), never the default (ADR
+0003 §3f case 3 / Deferred). A *parametric* angled part has no such cost — it re-voxelizes from the field
+for free. Enriching `LatticeOrientation` beyond 24 for inter-part angled mates of *baked* data remains
+the noted alternative (a foundation change, deliberately avoided), but it is **not needed** for angled
+bastions, which are producer geometry.
+
+#### F2. Intersecting walls & junctions — overlap is a "junction-to-resolve", not pure conflict
+
+When two walls cross, the **geometric union is automatic** (the compositor unions the parts). A **GOOD
+junction**, however — proper bonding/coursing, matched material, or inserting a tower at the crossing —
+**is not automatic**. The honest model:
+
+- **`PartsOverlap` is reframed from pure-conflict to "junction-to-resolve."** The broad-phase AABB
+  overlap pass (B / G4) **detects** the crossing; the solver then **classifies** it
+  (`OverlapKind::{Conflict, Junction}`) and, for a junction, **PROPOSES a resolution**
+  (`PartsOverlap.proposed: Some(Intent)`). A `Conflict` is a real over-constraint (a part forced into
+  space that cannot host a sensible junction); a `Junction` is a resolvable crossing.
+- **Common junctions are parametric kit MODULES.** Corner bond, T-junction, X-crossing, and
+  tower-at-crossing are `KitModule`s whose connectors **mate both crossing walls** (the relational tier
+  resolves them via joints). The solver's proposed `Intent` instantiates the appropriate junction module
+  and joints it to both walls.
+- **Bespoke junctions are handled by override / patch layers (corrective tier).** Where no kit module
+  fits, the case is resolved by an **assembly-scoped override layer** (ADR 0003 §1 — world-frame,
+  this-site-only). This is the same wrinkle as agent block-replacement (F3) and is placement-specific,
+  so it must NOT change other instances of either wall — exactly what the assembly-scoped (not
+  part-local) override layer provides.
+- **Honest scope:** overlaps are **always detected**; **common cases are auto-handled by kit modules**;
+  **bespoke cases are handled by agent/human patches**; it is **never silently wrong.** Full-generality
+  *automatic aesthetic* junction resolution (a system that always produces a beautiful bond for any
+  crossing) is a **hard, unsolved problem** — this ADR does **not** claim it; it claims detect +
+  common-case-kit + bespoke-patch + never-silent.
+
+#### F3. Agent block-replacement = ordered override / patch layers (corrective tier)
+
+"Layer in replacement blocks in a section" is exactly the **override layer at REGION granularity**:
+replace the `block_id`s over a region, composited **LAST so it wins** (ADR 0003 §3b later-wins +
+§4 ordered assembly composition). For a placement-specific junction this is an **assembly-scoped**
+override (ADR 0003 §1), so it does not propagate to other instances. It runs through the **same
+Intent / loop** as everything else: a `PartsOverlap`/junction diagnostic → the agent places a patch
+(or the proposed junction module) → re-solve → re-diagnose, under the bounded retry budget (C).
+
+This is the wrinkle that drove the three ADR 0003 seam additions (now reconciled — see Foundation-fit):
+an intersection is between two **instances in the assembly**, but the §3e sculpt layer is **part-local**
+(propagates to all instances). A junction is **placement-specific** and must not change other instances,
+which is why ADR 0003 now makes explicit: (1) **N ordered override/patch layers, later-wins** (§3b);
+(2) **ordered/prioritized assembly composition** so a junction module / patch wins over the walls in its
+region (§4); (3) **scene-root assembly-scoped override layers** that do not propagate to definitions (§1).
 
 ## Acceptance criteria — G1–G10 walkthrough
 
@@ -410,47 +545,65 @@ foundation's discrete rotation space intact.
 | **G1** | "build me a star fort" end-to-end; does the loop TERMINATE? | LLM emits rough macro layout + kit-instantiation + joint `Intent`s (E/A) → solver propagates transforms over the discrete lattice (B, SYNC) → chunks resolve off-thread (§7) → async `diagnostics()` → local corrections → re-solve. Termination is **budgeted best-effort (H5)**, NOT a proof: a **residual-MAGNITUDE potential** (sum of `gap_blocks`) + an **oscillation guard** (diagnostics-multiset hash) + a **bounded retry budget**. **Converges or reports — empirically measured by P0, never claimed as guaranteed.** |
 | **G2** | The named failure: tower doesn't connect to parapet | `diagnostics()` emits `Issue::UnsatisfiedJoint` carrying the **exact connector pair + `gap_blocks` + intended joint + `fix_hint`** (C/H7) — and if no joint is declared yet, `NearestConnector` (H6) tells the agent which connectors SHOULD mate. Gap diagnosis is exact **connector frame-math** (`ConnectorGap`), not a voxel scan. Agent fixes with ONE local `Intent` (often the `fix_hint` verbatim), not a re-roll. **Precise + local + self-describing.** |
 | **G3** | Move/rotate a whole bastion | The bastion is an assembly instance; its joints, connectors, sculpt, and materials are **part-local** (ADR 0003 §3f) so they follow under the `LatticeOrientation` + i64 transform for free; **dependent joints re-solve** (B emits new placement intents) or, if now conflicting, **report drift** via `UnsatisfiedJoint`/`OverConstrained`. A curtain `Span` between two moved bastions re-closes **ONE-SHOT** from the new `|A − B|` (H4), never stretch-after-place. |
-| **G4** | Over-constrained / conflicting joints | Two real blind-spots are both checked: **fan-in over-constraint** — solving a node, the solver asserts EVERY incoming joint's implied transform agrees **i64-exact**; mismatch → `Issue::OverConstrained` (H3, catches the not-a-cycle case cycle-detection misses); **volumetric interpenetration** — a **broad-phase AABB overlap pass** in standing `diagnostics()` → `Issue::PartsOverlap` (H3, catches a part forced into occupied space — invisible to a graph-only solver). Plus the bounded budget + oscillation guard (H5) so it **never loops forever**. **"Detects conflicts, never silent garbage" is now actually true.** |
+| **G4** | Over-constrained / conflicting joints AND intersecting-wall junctions | Two real blind-spots are both checked: **fan-in over-constraint** — solving a node, the solver asserts EVERY incoming joint's implied transform agrees **i64-exact**; mismatch → `Issue::OverConstrained` (H3, catches the not-a-cycle case cycle-detection misses); **volumetric overlap** — a **broad-phase AABB overlap pass** in standing `diagnostics()` → `Issue::PartsOverlap`, **classified `OverlapKind::{Conflict, Junction}`** (F2): a **conflict** is a real over-constraint; a **junction** (two walls crossing) is *resolvable* — the geometric union is automatic, a good junction is not, so the solver **proposes** a kit junction module (corner/T/X/tower-at-crossing) or, for bespoke cases, an **assembly-scoped override patch** (corrective tier). Always detected; common cases auto-handled; bespoke handled by agent/human patches; **never silently wrong** (full-generality automatic aesthetic junctioning is a hard problem, not claimed). Plus the bounded budget + oscillation guard (H5) so it **never loops forever**. |
 | **G5** | WFC fill within a curtain-wall surface (bands + merlons) | Merlon **RHYTHM is KIT geometry** (`Parapet`/`PatternAlong` param — survives macro intent by construction, H9); **WFC does ONLY material banding within FIXED occupancy** (never solid/void); cross-part band continuity uses a **shared world-Y-keyed deterministic rule, NOT a WFC region across the joint** (kills the corner-seam washout, H9). Bounded part-local region, seeded (deterministic); a contradiction is `Issue::WfcContradiction`, not soup. (D) |
 | **G6** | Feedback bandwidth: minimal sufficient query set, cheap? | The `SpatialQuery` set (C) is split by cost: **cheap-synchronous** connector/joint-graph math (`Connectors`/`ConnectorGap`/`NearestConnector`/`JointResidual`/`Connectivity`/`AnchorFrame`) and **async-resolved** occupancy reads (`Bounds`/`Contact`/`Gap`/`Overhang`/`Occupancy`) over the region-scoped path. **`Connectivity` is a zero-residual joint-PATH over the graph, NOT a voxel flood-fill** (H6) — cheap and precise. Data-primary; `render_png` secondary. |
 | **G7** | Determinism / replay | Everything flows through the serializable `Intent` door (ADR 0003 §6a); solver math is exact integer lattice arithmetic; WFC is `seed`+fixed-occupancy deterministic. **Same intent script → same building**, undoable/retryable. |
 | **G8** | Scale: fort over large XZ; loop stays responsive | Queries/diagnostics split sync vs async (§7); the SYNC solve works on transforms/connectors (cheap metadata), the async VALIDATE uses the **region-scoped** store read (ADR 0003 §4) and never forces a full resolve; broad-phase overlap is AABB-only; WFC fill is a per-chunk producer job under the existing **per-frame budget** (ADR 0003 §7). The loop **does not fight the budget**. |
-| **G9** | The macro/micro ARCH seam | Opening spans full blocks (kit connectors on the block lattice, `LatticeOrientation`+i64 placement); curve is sub-block chisel detail (part-local sculpt override, `SubBlockSnap` to the chisel sub-grid). The kit handles cross-scale placement block-relative; **no new payload/transform** (A). The angled-bastion case is resolved the same way — angle baked into the part, connectors block-aligned (F/H8). |
+| **G9** | The macro/micro ARCH seam + arbitrary-angle geometry | Opening spans full blocks (kit connectors on the block lattice, `LatticeOrientation`+i64 placement); curve is sub-block chisel detail (part-local sculpt override, `SubBlockSnap` to the chisel sub-grid). The kit handles cross-scale placement block-relative; **no new payload/transform** (A). **Arbitrary-angle geometry (45° bastion wedge, curves) is NOT a limit** — it is **parametric producer geometry**, SDF-rotated and re-voxelized exact-from-the-field at resolve (staircased, as voxels are); the 24-orientation `LatticeOrientation` constrains only **instance rotation of already-baked data** (relational tier, lossless index permutation), never geometry. Connectors stay block-aligned so joints stay axis-aligned while the geometry between them is any angle (F1). The only transform-meets-angle case — non-lattice rotation of a *sculpted* part — is a deferred flagged lossy-resample opt-in (ADR 0003 §3f). |
 | **G10** | The cheap load-bearing probe FIRST | Yes — and it is now **foundation-free** (H10): a pure `solve(&Scene) -> Vec<TransformResult>` unit test on **hand-built structs**, zero AppCore/Intent/diagnostics plumbing, isolating the one novel spine risk (does discrete integer propagation converge). The full Intent-script probe is gated behind ADR 0003 Phases C/F/H. (P0/P1 below.) |
 
 ## Foundation-fit
 
-**Foundation-fit: two required ADR 0003 seam changes (flagged), otherwise consumes existing seams.**
-The stack is overwhelmingly additive — additive enum variants on growth surfaces + new downward crates —
-**except for two cheap DATA-seam edits back to ADR 0003 §1**, both flagged below. Both are pure
-data-shape changes (no solver, no behavior, no resolve-path impact in the foundation), and both are best
-made **now while ADR 0003 is still Proposed**, before the joint serialization format is frozen.
+**Foundation-fit: ZERO outstanding flags — all required ADR 0003 seam changes are reconciled into 0003
+in this same amendment; everything else consumes existing seams.** The stack is overwhelmingly additive
+— additive enum variants on growth surfaces + new downward crates. The five DATA-seam edits it needs
+back to ADR 0003 — the **joint arity** + stable **`JointId`** (§1), and the three Thread-4 items
+(**N ordered override layers** §3b, **ordered/prioritized assembly composition** §4, **scene-root
+assembly-scoped override layers** §1) — are **all now present in ADR 0003** (added by this same pass,
+while 0003 is still Proposed). All are pure data-shape / resolve-ordering changes with no solver impact;
+**none remains outstanding**. The two original flags are retained below for the record, now marked
+**RECONCILED**.
 
-### REQUIRED ADR 0003 seam changes (flagged)
+### ADR 0003 seam changes — RECONCILED (no longer outstanding)
 
-- **FLAG 1 — Joint arity: the reserved `Joint` is UNARY and cannot encode an n-ary `Span`.** ADR 0003
-  §1 (line 202) reserves `pub struct Joint { pub other: NodeId, pub kind: JointKind, /* params */ }` —
-  a **single** `other: NodeId`. A curtain wall bridging **two** fixed bastions is **one joint referencing
-  ≥2 other nodes** (the wall + its two end anchors). The unary shape cannot express it. **Required
-  change:** widen the joint to n-ary references, e.g. `pub struct Joint { pub refs: Vec<NodeId>, pub
-  kind: JointKind, … }`, or split `JointKind` into unary and n-ary families. This is a data-seam edit
-  only — ADR 0003 builds no solver (§1 lines 206–210), so nothing in the foundation reads or acts on the
-  arity; it is pure serialization shape.
+- **FLAG 1 — Joint arity (RECONCILED).** The reserved `Joint` was UNARY (`pub other: NodeId`) and could
+  not encode an n-ary `Span` (a curtain wall bridging **two** fixed bastions is **one joint referencing
+  ≥2 nodes**). **ADR 0003 §1 now defines `pub struct Joint { pub id: JointId, pub refs: Vec<NodeId>, pub
+  kind: JointKind, … }` — scene-owned, id-keyed, and N-ary** (see §1 "Constraint / joint data seam"). The
+  n-ary `Span` is expressible; this flag is closed. (Pure serialization shape — ADR 0003 builds no
+  solver.)
 
-- **FLAG 2 — Stable `JointId`: joints are positionally addressed in `Vec<Joint>` with no stable id.**
-  ADR 0003 §1 (line 201) stores joints as `pub joints: Vec<Joint>` on `Node` — addressed **positionally
-  by index**, with no stable identity (in contrast to `NodeId`, which §1 mints precisely so references
-  survive undo/structural edits, lines 160–176). An `Issue::UnsatisfiedJoint { joint: JointId, … }` or a
-  `SpatialQuery::JointResidual(JointId)` cannot **durably reference an individual joint** across undo or
-  structural edits if the joint's only identity is its `Vec` index (which shifts when a joint is
-  inserted/removed). **Required change:** mint a stable `JointId` (like `NodeId`, from a document-owned
-  counter) and key joints by it. Again a pure data-seam edit — the foundation does not consume `JointId`
-  behaviorally; it just needs to exist and serialize so this ADR's `Issue`/`SpatialQuery` surface can
-  name a joint stably.
+- **FLAG 2 — Stable `JointId` (RECONCILED).** Joints were positionally addressed in a per-node
+  `Vec<Joint>` with no stable id, so `Issue::UnsatisfiedJoint { joint: JointId, … }` /
+  `SpatialQuery::JointResidual(JointId)` could not durably name a joint across undo. **ADR 0003 §1 now
+  mints a stable `JointId` (like `NodeId`, from a document-owned counter) and stores joints in a
+  scene-owned `joints: SlotMap<JointId, Joint>`.** This ADR's `Issue`/`SpatialQuery` surface names joints
+  stably; this flag is closed.
 
-Both are **cheap DATA-seam changes with no solver/behavior impact on the foundation**, and making them
-now (while 0003 is Proposed) avoids a schema cascade later. Everything else in this stack consumes
-existing seams with no foundation change.
+- **FLAG 4 — N ordered override/patch layers, later-wins (RECONCILED — Thread-4 item 1).** A junction
+  needs the part-local sculpt layer and **multiple agent patch layers** to coexist deterministically.
+  **ADR 0003 §3b now makes the layer-stack semantics explicit: a `Vec<Layer>` of arbitrary length,
+  applied in order, LATER LAYERS WIN** — sculpt + N agent patches compose deterministically. Closed.
+
+- **FLAG 5 — Ordered/prioritized assembly composition (RECONCILED — Thread-4 item 2).** The resolve
+  previously **unioned all leaves** with no precedence, so a junction module / patch could not win over
+  the walls it crosses. **ADR 0003 §4 now specifies the assembly resolve composes leaves in defined
+  order, later-wins, with scene-root assembly overrides composited LAST** over the parts in their region.
+  Closed.
+
+- **FLAG 6 — Scene-root assembly-scoped override layers (RECONCILED — Thread-4 item 3).** An
+  intersection is between two **instances**, but §3e sculpt is **part-local** (propagates to all
+  instances); a placement-specific junction must NOT change other instances. **ADR 0003 §1 now adds
+  scene-root `assembly_overrides: Vec<Layer>` — world-frame, this-site-only, does NOT propagate to
+  definitions** (a deliberate, clearly-distinguished bend of the def-only-geometry rule; Fusion
+  assembly-context-feature precedent), serialized via the same override codec (§5) and composited last
+  (§4). Closed.
+
+All six are **cheap DATA-seam / resolve-ordering changes with no solver/behavior impact on the
+foundation**, and all were made **now while 0003 is Proposed**, avoiding a schema cascade later.
+Everything else in this stack consumes existing seams with no foundation change. **No flag remains
+outstanding.**
 
 **ADR 0003 seams consumed (no change required):**
 
@@ -462,11 +615,14 @@ existing seams with no foundation change.
   bounds", line 566).
 - **`diagnostics() -> Vec<Issue>`** (§6, lines 558/568) — the C `Issue` taxonomy adds *variants*; ADR
   0003 already declared this surface carries "unsatisfied joints" and orphaned overrides (line 570).
-- **`scene` joint graph** (§1) — `Node.joints` / `Joint` / `JointKind` are consumed as the solver's
-  input; ADR 0003 reserved the DATA seam and explicitly left the SOLVER to "their own future design doc"
-  (lines 206–210) — this is that doc. (Consumed *as amended by FLAG 1 + FLAG 2*.)
-- **Part/assembly model** (§1, §3f) — kit modules generate `AssemblyDef`s; placement is the existing
-  `LatticeOrientation` + i64 translation; sculpt overrides are the existing part-local layer.
+- **`scene` joint graph** (§1) — the scene-owned, id-keyed, **N-ary** `Joint` / `JointKind` are consumed
+  as the solver's input; ADR 0003 reserved the DATA seam and explicitly left the SOLVER to "their own
+  future design doc" — this is that doc. (Consumed *as amended/reconciled by FLAG 1 + FLAG 2*.)
+- **Part/assembly model + override layers** (§1, §3b, §3e, §3f) — kit modules generate `AssemblyDef`s;
+  placement is the existing `LatticeOrientation` + i64 translation; **arbitrary-angle geometry is a
+  producer parameter, not a transform** (F1, §3f case 1); part-local sculpt is the existing layer;
+  **junctions/agent block-replacement consume the now-explicit N ordered layers (§3b), ordered assembly
+  composition (§4), and scene-root assembly-scoped override layers (§1)** — reconciled as FLAG 4/5/6.
 - **`VoxelProducer` registry + `resolve_into`** (§3d) — `WfcFill` is one registrant.
 - **Categorical `block_id` + `attrs` cell** (§3a) — WFC material output and kit material bands write
   through it (exactly the "named blocks, not 0/1/2" capability §3a foundationalized for this).
@@ -518,15 +674,24 @@ so the very first probe must not depend on any of that plumbing.
   diagnostics — exercising the joint DATA seam → solver → query/issue → corrective-intent loop through the
   real door. **Build:** the additive `SpatialQuery`/`Issue`/`Intent`/`JointKind` variants; the broad-phase
   overlap + connector-validity passes.
-- **P3 — conflict & convergence hardening (G4):** add `Concentric`/`Flush`/n-ary `Span`, cyclic curtain
-  rings (bounded fixpoint), the **fan-in over-constraint** check (i64-exact agreement of all incoming
-  joints), the **broad-phase AABB overlap** pass, and `OverConstrained`/`SolveDidNotConverge`/
-  `PartsOverlap`/`ConnectorOffSurface`. Stress with a deliberately over-constrained gatehouse-vs-tower
-  AND a fan-in node mated to two anchors.
-- **P4 — the architectural kit:** author the first modules (wall segment, tower ring, parapet course with
-  the `Parapet`/`PatternAlong` merlon rhythm, gatehouse, **angled bastion wedge with the angle baked in +
-  block-aligned connectors**, ARCH with cross-scale springline connectors + sub-block curve). **Reuse:**
-  parametric-prototype → module-extraction pattern (kit modules double as P1's WFC tiles).
+- **P3 — conflict, junction & convergence hardening (G4):** add `Concentric`/`Flush`/n-ary `Span`, cyclic
+  curtain rings (bounded fixpoint), the **fan-in over-constraint** check (i64-exact agreement of all
+  incoming joints), the **broad-phase AABB overlap** pass with **`OverlapKind` classification +
+  `proposed` resolution** (F2), and `OverConstrained`/`SolveDidNotConverge`/`PartsOverlap`/
+  `ConnectorOffSurface`. Stress with a deliberately over-constrained gatehouse-vs-tower AND a fan-in node
+  mated to two anchors AND **two crossing walls (junction-to-resolve, not conflict)**. (Consumes ADR 0003
+  §3b N-layers + §4 ordered composition + §1 assembly overrides for bespoke-junction patches.)
+- **P3-terrain (research spike, FLAGGED — Thread 3):** the **VS terrain-import format spike** — establish
+  whether/how VS terrain can be extracted (heightmap PNG/RAW/GeoTIFF vs `.vox`/`.schematic`), then a
+  minimal **imported heightmap `VoxelProducer`** + the `GroundHeightAt` query + a path-swept `Wall`
+  draped on it + the footing/skirt sub-producer and `Issue::WallBaseGap`. **Format is TBD until the spike
+  lands** — do not specify the heightmap producer before it.
+- **P4 — the architectural kit:** author the first modules (wall segment, **path-swept `Wall`**, tower
+  ring, parapet course with the `Parapet`/`PatternAlong` merlon rhythm, gatehouse, **angled bastion wedge
+  as parametric producer geometry + block-aligned connectors** (F1), **junction modules — corner / T / X
+  / tower-at-crossing — mating two walls** (F2), ARCH with cross-scale springline connectors + sub-block
+  curve). **Reuse:** parametric-prototype → module-extraction pattern (kit modules double as P1's WFC
+  tiles).
 - **P5 — the full agent loop:** wire the LLM to the documented kit/joint/query/issue vocabulary (RAG over
   `params_schema()` + the taxonomies), with the LLM owning rough macro layout; run G1 "star fort"
   end-to-end with the bounded retry budget + oscillation guard. **Reuse:** generate → validate → repair
@@ -536,8 +701,12 @@ so the very first probe must not depend on any of that plumbing.
 **Reuse-vs-build summary:** *reuse* — the entire ADR 0003 control surface, joint DATA seam (as amended by
 FLAG 1/2), producer registry, categorical cell, async/region-scoped read path, an off-the-shelf WFC
 engine, and the documented-library-LLM + generate-validate-repair patterns. *Build* — the discrete-lattice
-joint solver with fan-in + broad-phase overlap checks (B), the kit modules (A), the WFC fixed-occupancy +
-world-Y band key + material tileset (D), and the additive query/issue/intent/joint enum variants.
+joint solver with fan-in + broad-phase overlap (incl. **junction classification + proposed resolution**)
+checks (B/F2), the kit modules incl. **path-swept walls + junction modules** (A/F2), the WFC
+fixed-occupancy + world-Y band key + material tileset (D), the **imported-terrain heightmap producer +
+`GroundHeightAt` + footing/skirt** (A — gated on the flagged VS-export research spike), and the additive
+query/issue/intent/joint enum variants. *Research (TBD)* — the **VS terrain-import format** (no known
+export path; spike before specifying).
 
 ## Consequences
 
@@ -557,13 +726,17 @@ world-Y band key + material tileset (D), and the additive query/issue/intent/joi
   AppCore/Intent plumbing or kit/WFC authoring exists.
 
 **Costs more**
-- Two required (cheap) ADR 0003 seam edits (joint arity + `JointId`) must be reconciled into the
-  foundation before the solver lands — best done now while 0003 is Proposed.
+- Several cheap ADR 0003 DATA-seam / resolve-ordering edits (joint arity + `JointId`; the three Thread-4
+  override/composition seams) were reconciled into the foundation in this same amendment while 0003 is
+  Proposed — so the solver and the junction/patch work land with **zero outstanding foundation flags**.
 - A discrete constraint solver with **fan-in over-constraint detection, broad-phase volumetric overlap,
   and cyclic-graph convergence** is real engineering (P0/P3), even bounded to the lattice — and its
   convergence is empirical, not proven.
-- Authoring the kit modules (incl. angle-baked bastions) and the WFC material tilesets/adjacency is
-  ongoing content work, not just code.
+- Authoring the kit modules (incl. parametric angled bastions, path-swept walls, and junction modules)
+  and the WFC material tilesets/adjacency is ongoing content work, not just code.
+- **Terrain import is an OPEN research item:** Vintage Story has no known terrain-export, so the import
+  format (heightmap PNG/RAW/GeoTIFF vs `.vox`/`.schematic`) must be searched/invented/adapted by a spike
+  before the heightmap producer can be specified — it is **not decided**.
 - New enum taxonomies (`SpatialQuery`/`Issue`/`JointKind`) plus their query implementations split across
   the cheap-synchronous and async-resolved read paths, plus connector-validity sampling.
 - The LLM grounding (RAG over schemas) and the optional VLM critic are external-model integration with
@@ -571,14 +744,23 @@ world-Y band key + material tileset (D), and the additive query/issue/intent/joi
 
 **Deferred**
 - Free (non-lattice) joint placement / continuous IK — the solver stays discrete-lattice exact;
-  arbitrary-angle *inter-part* mates are out (the angled bastion is handled by baking the angle into the
-  part, F/H8). Enriching the `LatticeOrientation` set beyond 24 is the noted alternative if a future need
-  forces it.
+  arbitrary-angle *inter-part* mates of *baked* data are out. **(Arbitrary-angle *geometry* is NOT
+  deferred — it is a producer parameter, SDF-exact at resolve; the angled bastion is producer geometry
+  with block-aligned connectors, F1.)** Enriching the `LatticeOrientation` set beyond 24 for inter-part
+  angled mates of baked voxel data is the noted alternative if a future need forces it. **Non-lattice
+  rotation of a *sculpted* part** is a deferred flagged lossy-resample opt-in (ADR 0003 §3f case 3).
 - Learned adjacency (auto-extracting WFC rules from example builds) — start with authored tilesets.
 - Multi-objective outer optimization beyond the single VLM critic slot.
 - Cross-part WFC (WFC spanning a whole assembly, or one WFC region across a joint) — explicitly out;
   WFC stays per-surface/per-part, with cross-part band continuity carried by the shared world-Y key, not
   by propagation across a boundary (H9).
+- **Full-generality automatic aesthetic junction resolution** (a system that always produces a correct,
+  beautiful bond for any arbitrary wall crossing) — a hard, unsolved problem, explicitly NOT claimed.
+  The scope is: overlaps always detected, common junctions auto-handled by kit modules, bespoke handled
+  by agent/human override patches, never silently wrong (F2).
+- **Terrain authoring** (modeling terrain inside the app) — out; terrain is **imported** as a
+  `VoxelProducer`, and the **import format is an open research spike** (no known VS export; F / build
+  plan P3-terrain).
 
 ## Alternatives considered
 
@@ -607,9 +789,12 @@ world-Y band key + material tileset (D), and the additive query/issue/intent/joi
 - **Continuous numeric constraint solver / general IK.** Rejected: introduces float drift, breaks
   determinism/replay, and is incompatible with the lattice transform domain (`LatticeOrientation` + i64).
   The discrete propagation solver is exact and bounded.
-- **Inter-part angled (45°) mates via an enriched rotation set.** Noted as the alternative to H8 but not
-  chosen: it would change the foundation's `LatticeOrientation`. Instead the angle is baked into the part
-  (block-aligned connectors, axis-aligned joints), keeping the discrete rotation space intact.
+- **Inter-part angled (45°) mates via an enriched rotation set.** Noted as the alternative but not
+  chosen: it would change the foundation's `LatticeOrientation` (the lossless rotation of *baked* voxel
+  data). It is **not needed for angled bastions** — those are **parametric producer geometry** (any
+  angle, SDF-exact at resolve, block-aligned connectors so joints stay axis-aligned; F1). Enriching the
+  rotation set is reserved only for a future need to losslessly mate *baked* parts at a non-lattice
+  angle, which the angled-bastion case does not require.
 - **A new foundation field for anchors/sub-block snap.** Rejected as unnecessary: connectors live in the
   part-local frame and the ARCH sub-block curve reuses the existing part-local sculpt override layer. (The
   two genuinely required foundation edits are the joint *arity* and *`JointId`* DATA-seam changes, flagged

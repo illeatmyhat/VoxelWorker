@@ -213,6 +213,31 @@ constraint/joint **SOLVER and the parametric architectural kit are features-on-t
 their own future design doc; we do **not** build the solver here — only the data seam so that
 adding it later is not a schema cascade.
 
+**Assembly-scoped (scene-root) override layers — a world-frame, this-site-only patch.** Surfaced by
+ADR 0004's intersecting-wall junctions (an intersection is between two *instances in the assembly*,
+but the §3e sculpt layer is **part-local** and propagates to ALL instances of a definition — a
+junction is placement-specific and must NOT change other instances), the scene gains override layers
+that live **on the scene root, in the world/assembly frame**, not on a part definition:
+
+```rust
+// scene root carries assembly-scoped override layers, distinct from def-local sculpt:
+pub struct Scene {
+    // …defs/nodes arenas, joints SlotMap as above…
+    pub assembly_overrides: Vec<Layer>,   // world-frame, this-site-only; does NOT propagate to defs
+}
+```
+
+These **assembly patches** are address-anchored in the **world frame** (not a definition's local
+frame), serialize with the document (§5), and are composited at assembly resolve (§4) — they patch a
+specific spot in *this* scene (e.g. a wall-meets-bastion junction) and **never touch the part
+definition**, so other instances of the same wall are unaffected. This **deliberately bends the
+"geometry lives only in definitions" purity** of the Fusion rule (constraint 2) and is **clearly
+distinguished from def-local sculpt**: def-local sculpt belongs to a definition and propagates to its
+instances; an assembly override belongs to the scene root and propagates to nothing. The precedent is
+**Fusion's assembly-context features** (edits made in the assembly that are scoped to that assembly,
+not pushed back into the component). This is the third of the three Thread-4 seam items ADR 0004
+requires (see §3b layer-stack semantics and §4 ordered composition).
+
 ### 2. Command / undo: linear journal with inverse commands
 
 Per locked constraint 3 — a **linear stack**, no event-sourcing/CRDT.
@@ -249,6 +274,14 @@ pub struct CommandStack {
   Invalidation fans out to all instance placements (§4). This is **S2**.
 
 ### 3. Compositor: chunk-local payload, ordered override layers, producer registry, rotation, orphan policy
+
+These compositor seams are the foundation's slot in a **three-tier authoring model** spelled out in
+[ADR 0004 Decision](0004-agent-authoring-stack.md): **parametric** (producers — arbitrary geometry,
+angles, curves, SDF-exact and re-voxelized at resolve; §3b/§3d/§3f case 1), **relational**
+(joints/solver — how parts place and connect; §1), and **corrective** (override/patch layers — ordered
+local block replacement, later-wins; §3b/§3e and the assembly-scoped layers added below). The
+foundation provides the parametric and corrective tiers and reserves the relational data seam (§1);
+ADR 0004 builds the relational solver and the parametric kit on top.
 
 #### 3a. Per-voxel payload becomes chunk-local integer + categorical block-palette cell (load-bearing — G1 + materials FOUNDATIONAL)
 
@@ -304,7 +337,8 @@ far-scene goldens added first (§G3 / Phase D0).
 
 #### 3b. Composition stops being union-only
 
-A part definition resolves as an **ordered layer stack**:
+A part definition resolves as an **ordered layer stack** — a `Vec<Layer>`, explicitly permitting
+**N ordered override/patch layers, not just a single `Sculpt`**:
 
 ```rust
 pub enum Layer {                                       // ENUM, deliberately (see traits-vs-enums)
@@ -314,9 +348,17 @@ pub enum Layer {                                       // ENUM, deliberately (se
 pub enum CombineOp { Union, Subtract, Intersect }   // the existing enum, finally exercised
 ```
 
-Resolution of a chunk = fold the layers in order: producers stamp under their `CombineOp`; the
-sculpt override is applied **last** (force-on sets occupancy + categorical `block_id`; force-off
-clears).
+Resolution of a chunk = fold the layers in order: producers stamp under their `CombineOp`; each
+override/`Sculpt` layer is applied in stack order (force-on sets occupancy + categorical `block_id`;
+force-off clears).
+
+**Layer-stack semantics are explicit: the stack is a `Vec<Layer>` of arbitrary length, applied in
+order, and LATER LAYERS WIN.** The part-local sculpt layer and **multiple agent patch layers coexist
+deterministically** — they are simply additional override layers later in the same fold, each
+overwriting the cells it touches. (The `Vec<Layer>` representation already permits this; this clause
+makes the *semantics* — N layers, ordered, later-wins — load-bearing rather than implicit, because
+ADR 0004's junction/patch work stacks several corrective layers on one definition and on the assembly
+root, §1. Surfaced by ADR 0004's requirements — see the joint-arity cross-reference.)
 
 The **`Layer` kind** (`Producer` vs `Sculpt`) and **`CombineOp`** are kept as ENUMs **on purpose**
 (see "Traits vs enums", §3h): both are closed, small, serialized, and exhaustively matched in the
@@ -378,7 +420,34 @@ encoded with a **dedicated integer-delta codec** (§5 G2) — explicitly **not**
 `chunk_storage::compress`, which consumes an f32 `VoxelGrid` and debug-asserts a uniform
 `centre_fraction` that integer force-on/force-off deltas do not satisfy.
 
-#### 3f. Rotation is its own milestone (G4)
+#### 3f. Rotation is its own milestone (G4) — three-way angle model (geometry is NOT 24-limited)
+
+**Arbitrary angle is a PRODUCER-PARAMETER concern, not a transform limit.** A common
+misreading is that the 24-orientation lattice below limits *geometry* to axis-aligned shapes —
+that an angled star-fort bastion or a curved wall is impossible. It is not. There are three
+distinct cases, and only one of them is the 24-orientation case:
+
+1. **Producer/parametric geometry can be ANY angle, exact.** An `SdfShape` (or any
+   `VoxelProducer`) rotated by an arbitrary angle and **voxelized fresh at resolve** is
+   exact-from-the-field: the SDF is sampled at the chunk lattice, so a 45° wedge, a 30° bastion
+   flank, or a curve is produced exactly — just *staircased* on the voxel grid, which is inherent
+   to voxels and is exactly what VS chiseling looks like. Arbitrary angles, curves, and tapers are
+   therefore **producer parameters** inside a part definition, fully supported, with no transform
+   change at all.
+2. **Instance-transform ROTATION of already-baked voxel data stays the 24-orientation lattice**
+   (part (a) below). This was **never a geometry limit** — only a "losslessly rotate
+   *already-voxelized* data" limit: an axis-aligned rotation is an **exact index permutation**
+   (lossless, byte-stable, reversible), which is what keeps the sparse sculpt-override layer
+   intact and the future joint solver integer-exact.
+3. **Rotating a *sculpted* (non-parametric) part to a non-lattice angle** would require **lossy
+   resampling** of the sparse override layer onto the rotated lattice. This is a **deferred,
+   flagged opt-in** ("this resamples/bakes the sculpt layer" warning) — not the default and not a
+   silent operation (see Deferred). Parametric parts have no such cost (case 1 re-voxelizes from
+   the field).
+
+So: angle/curve = producer parameters (exact from the field); lossless instance rotation of baked
+data = the 24-orientation enum; non-lattice rotation of a *sculpted* part = deferred lossy-resample
+opt-in. The `LatticeOrientation` enum below governs **only** case 2.
 
 Today `NodeTransform` is **translation-only** (`scene.rs`: `offset_blocks: [i64; 3]`, with a
 `// future: rotation, scale` marker) and the resolver composes placement by **pure i64 addition**
@@ -399,7 +468,12 @@ one-substep change; it is a **dedicated milestone** (Phase F-rot) with three gol
 - Because overrides live in the **part-local** frame, moving/rotating an instance moves its overrides
   for free — the transform composes down the tree in i64, and rebasing happens at consumption (§4).
   This is **S4**.
-- **Free / non-lattice affine + voxel resampling stays explicitly deferred** (see Deferred).
+- **Non-lattice rotation of a *sculpted* part = a deferred, flagged lossy-resample opt-in** (case 3
+  above): it bakes/resamples the sparse override layer onto the rotated lattice and is surfaced with a
+  "this resamples the sculpt layer" warning, never silent, never the default. A *parametric* part needs
+  no such opt-in — it is simply a producer-angle parameter re-voxelized from the field (case 1). General
+  free/non-lattice affine of baked voxel data + interpolating resampling stays explicitly deferred
+  (see Deferred).
 
 #### 3g. Orphan-override policy (S5) — PRESERVE-AND-FLAG, never silently drop
 
@@ -486,10 +560,21 @@ that moves the recentre invalidates *everything*. The fix:
   no other chunk's stored coordinate changes, so **the cache is not nuked**. This is **S8** (and is
   what makes **S1**'s far edit O(stroke)).
 
+**Assembly composition is ORDERED / PRIORITIZED, not a plain union.** Today the resolve **unions all
+leaves** (`scene.rs::walk_nodes` composes placement by pure i64 addition with no precedence). The
+refinement: the assembly resolve in `store` composes leaves **in a defined order with later-wins
+precedence**, and the scene-root **assembly override layers (§1) composite LAST** over the unioned
+parts in their region. This is what lets a **junction module or an assembly patch WIN over the walls
+it sits across** — without it, an intersecting wall and a tower-at-the-crossing module would merely
+union, and a bespoke world-frame patch could not override the parts beneath it. (Surfaced by ADR
+0004's overlap-as-junction handling; it slots into the migration sequence near the compositor/layer
+work, below.) Per-part layer folding (§3b) stays as-is; this clause governs **inter-part / assembly**
+precedence, the level above it.
+
 **Incremental re-mesh is finally CONSUMED.** `incremental_rebuild_plan` (computed-but-ignored today)
 becomes the load-bearing path: an edit's world-AABB → set of dirty `(chunk_coord)` → those chunks
-re-resolve (fold layers via `resolve_into`, §3d) and re-mesh; **all other chunks keep their cached
-buffers**. The renderer stops re-meshing wholesale on edit. Region-scoped consumers (diameter, layer
+re-resolve (fold layers via `resolve_into`, §3d, then apply assembly-scoped overrides in order) and
+re-mesh; **all other chunks keep their cached buffers**. The renderer stops re-meshing wholesale on edit. Region-scoped consumers (diameter, layer
 scrubber, `.vox` export) read the per-chunk store over the active region, never an assembled
 whole-grid. Scrubbing the layer-band is a **per-fragment clip on absolute-Y** (ADR 0002 matrix row) —
 no re-mesh — so a 10k-XZ scrub is interactive. This is **S7**.
@@ -507,7 +592,8 @@ tag exists so we can *introduce* migration the day we leave pre-alpha, not befor
 struct ProjectFile {
     magic: [u8; 4],            // b"VXWP" — reject anything else immediately
     epoch: u32,               // format/epoch tag; the loader hard-errors on an unrecognized value
-    scene: Scene,             // arena of defs/nodes (NodeId), layer stacks, sculpt overrides, joints
+    scene: Scene,             // arena of defs/nodes (NodeId), per-def layer stacks, sculpt overrides,
+                              // joints, AND the scene-root assembly-scoped override layers (§1)
 }
 ```
 
@@ -533,6 +619,9 @@ struct ProjectFile {
     **S9** golden (encode → bytes → decode → byte-identical override layer + bytes stable across
     runs).
   - Large overrides stay compact (sorted keys + delta-varint + palette) and reload byte-identical.
+  - The **same codec serializes both the part-local sculpt overrides and the scene-root
+    assembly-scoped override layers (§1)** — they differ only in anchoring frame (definition-local
+    vs world), not in encoding — so assembly patches reload byte-identical too.
   This is **S9**.
 
 - **No migration code is written yet (V0 pre-alpha).** The loader's whole contract right now is:
@@ -748,20 +837,28 @@ the `shot.rs` parallel path and the second LRU.
   **This precedes the sculpt and residency-dependent incremental claims** (S1/S2/S8) — without the
   chunk window, "re-resolve dirty chunks" is O(part_volume × dirty_chunks). **Parallelizable** with
   D/E (different module) but must land **before** Phase G.
-10. Exercise `CombineOp::{Subtract,Intersect}` in the layer fold; **move the overlay flag to a
-    per-draw uniform** (not a per-vertex attribute) and **delete `GRID_OVERLAY_BIT` from both shaders**
-    (`cuboid.wgsl` + `cuboid_loaded.wgsl`) — the payload already dropped it in D6 — keeping
-    `decompose_into_boxes` representation-agnostic. Golden-gated.
+10. Exercise `CombineOp::{Subtract,Intersect}` in the layer fold; **make the per-def layer stack an
+    explicit ordered N-layer fold (later-wins, §3b)**; **make assembly composition ordered/prioritized
+    (later-wins, not plain union, §4)** so a junction module / assembly patch can win over the walls in
+    its region; **move the overlay flag to a per-draw uniform** (not a per-vertex attribute) and
+    **delete `GRID_OVERLAY_BIT` from both shaders** (`cuboid.wgsl` + `cuboid_loaded.wgsl`) — the payload
+    already dropped it in D6 — keeping `decompose_into_boxes` representation-agnostic. Golden-gated.
 11. **Rotation milestone (G4 — its own milestone, golden-gated):** promote `NodeTransform` with a
     **24-orientation `LatticeOrientation` enum** (type-level, not general affine); add
     (a) exact index-permutation resampling, (b) rotated-chunk conservative-cover fan-out,
     (c) rotation-aware AABB-skip + spatial-index fingerprint. **(S4.)**
 
 **Phase G — Sculpt override layer.**
-12. Add `SculptOverride` (sparse, chunk-keyed) as the last layer, using the **dedicated integer-delta
+12. Add `SculptOverride` (sparse, chunk-keyed) as an override layer, using the **dedicated integer-delta
     codec** (sorted force-on keys + palette, separate sorted force-off set — §5), **not**
     `chunk_storage::compress`; `SculptStroke` command with sparse inverse delta. **(S1/S2.)** Add the
     orphan policy + prune command. **(S5.)** (Depends on F0's `resolve_into` for O(stroke).)
+12b. **Extend the override-layer phase to ASSEMBLY scope (§1):** add the scene-root
+    `assembly_overrides: Vec<Layer>` (world-frame, this-site-only, does NOT propagate to defs), composite
+    them LAST at assembly resolve (§4), serialize them with the document via the same override codec (§5).
+    This is the third Thread-4 seam that ADR 0004's placement-specific junction patches consume; it is a
+    deliberate, clearly-distinguished bend of the def-only-geometry rule (Fusion assembly-context-feature
+    precedent). (Depends on step 10's ordered assembly composition.)
 
 **Phase H — Part/assembly edit modes + `Tool` registry + control-surface queries/diagnostics.**
 13. `EditTarget` state machine; instance-edit rejection + "Open definition". **(S3.)** Introduce the
@@ -832,6 +929,13 @@ the Phase C `Intent` door + the §6 query/diagnostics surface (H13).
 - **The `scene` layer is a node tree + a relationship/constraint graph** (nodes reference joints to
   other `NodeId`s), reserving the seam for human assembly-constraints and agent-driven building
   without committing to a solver now.
+- **Composition is the foundation's parametric + corrective tiers of a three-tier authoring model**
+  (parametric producers / relational joints / corrective override layers — ADR 0004): the layer stack
+  is explicitly **N ordered layers, later-wins** (§3b), assembly composition is **ordered/prioritized,
+  not plain union** (§4), and override layers exist at **two scopes** — part-local sculpt (propagates to
+  instances) and **scene-root assembly-scoped patches** (world-frame, this-site-only, do NOT propagate;
+  a deliberate, clearly-bounded bend of the def-only-geometry rule, Fusion assembly-context precedent).
+  These let placement-specific junctions/patches win locally without disturbing other instances.
 
 **Costs more**
 - Up-front extraction (Phase A), the `NodeId` arena (Phase B), the **chunk-local payload migration
@@ -853,9 +957,15 @@ the Phase C `Intent` door + the §6 query/diagnostics surface (H13).
 - **LOD / impostors** — seam preserved via the `(chunk_coord, lod)` key (ADR 0002 O7); not built.
 - **Per-chunk cross-block cuboid merge** and an optional 2D greedy pass over cuboid faces (ADR 0002,
   pursue only if GPU-bound).
-- **Free (non-lattice) rotation/scale with voxel resampling** — the rotation milestone (§3f) ships
-  only the 24 axis-aligned lattice rotations as a type-level enum (exact index permutation,
-  byte-stable serialization); arbitrary affine + interpolating resampling is a later layer.
+- **Free (non-lattice) rotation/scale of a *sculpted* part with voxel resampling** — the rotation
+  milestone (§3f) ships only the 24 axis-aligned lattice rotations as a type-level enum for the
+  lossless instance-rotation case (exact index permutation, byte-stable serialization). Rotating a
+  **sculpted** (non-parametric) part to a non-lattice angle is a **deferred, flagged lossy-resample
+  opt-in** ("this resamples/bakes the sculpt layer" warning), never silent and never the default
+  (§3f case 3); arbitrary affine + interpolating resampling of baked voxel data is a later layer.
+  **Note:** arbitrary-angle *parametric* geometry (angled bastions, curves) is **NOT deferred** — it is
+  a producer parameter, SDF-exact and re-voxelized at resolve (§3f case 1), available with no transform
+  change.
 - **The full VS block-palette table / picker UI** (the rich palette *content*). The per-voxel
   categorical CAPABILITY (`block_id`+attrs) is **foundational** (§3a) and **not** deferred — only the
   populated palette table + picker UI is.
@@ -903,10 +1013,15 @@ retrofit cascade later; building the features is separate design-doc work.
   insurance (magic + `epoch` tag + hard-error on an unrecognized tag), and defer all migration code
   until we declare a stable format. The tag is the seam that makes adding migration later a dispatch,
   not a rewrite.
-- **World-space sculpting / world-anchored overrides.** Rejected: it breaks the part/assembly rule
-  (overrides must live in the definition's local frame to propagate to instances — S2) and breaks S4
-  (overrides would not follow a moved/rotated part). Part-local, address-anchored overrides are
-  mandatory for both fidelity dimensions (D3) and the orphan policy (S5).
+- **World-space sculpting as the DEFAULT / only override scope.** Rejected as the default: a
+  *definition's* sculpt must live in its local frame to propagate to instances (S2) and to follow a
+  moved/rotated part (S4). Part-local, address-anchored overrides are mandatory for both fidelity
+  dimensions (D3) and the orphan policy (S5). **However**, a *second, explicitly-scoped* world-frame
+  override layer is **deliberately allowed at ASSEMBLY scope** (scene-root `assembly_overrides`, §1):
+  this-site-only patches that **do NOT propagate** to definitions, distinct from def-local sculpt and
+  required for placement-specific junctions (ADR 0004 F2/F3). It is not a contradiction — it is a
+  second, clearly-distinguished tier (Fusion assembly-context-feature precedent), not a replacement of
+  the part-local rule.
 - **Reusing `chunk_storage::compress` for sculpt overrides.** Rejected: `compress` consumes an f32
   `VoxelGrid` and debug-asserts a uniform per-axis `centre_fraction` (`chunk_storage.rs`), which
   integer force-on / force-off deltas do not satisfy. A dedicated integer-delta codec (sorted keys +
