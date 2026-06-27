@@ -536,7 +536,7 @@ impl WindowedState {
         // pathological density (one chunk's voxel capacity alone exceeds the bound)
         // is rejected.
         if voxel_worker::voxel::chunk_extent_exceeds_bound(density) {
-            let chunk_extent = (voxel_worker::renderer::CHUNK_BLOCKS * density.max(1)) as u64;
+            let chunk_extent = (voxel_worker::core_geom::CHUNK_BLOCKS * density.max(1)) as u64;
             let chunk_voxels = chunk_extent * chunk_extent * chunk_extent;
             self.panel_state.voxel_cap_warning_millions = Some(chunk_voxels as f32 / 1_000_000.0);
             return;

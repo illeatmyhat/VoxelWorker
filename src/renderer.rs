@@ -18,6 +18,7 @@
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
+use crate::core_geom::CHUNK_BLOCKS;
 use crate::panel::MaterialChoice;
 use crate::scene::{Point, Scene};
 use crate::voxel::VoxelGrid;
@@ -32,15 +33,6 @@ pub const MSAA_SAMPLE_COUNT: u32 = 4;
 
 /// Edge length of every procedural material texture (square, no mipmaps).
 const MATERIAL_TEXTURE_SIZE: u32 = 32;
-
-/// Edge length of a render chunk, in BLOCKS (ADR 0002 Decision 3, part of #19).
-/// A chunk therefore spans `CHUNK_BLOCKS * voxels_per_block` voxels per axis
-/// (e.g. 4 blocks × density 16 = 64 voxels/axis). Chosen as a small whole-block
-/// multiple so a chunk stays a phase-aligned, frustum-cullable unit while the
-/// draw-call count stays sane. The resolved grid's occupied voxels are bucketed
-/// into these chunks at rebuild time; each frame only the chunks whose world
-/// AABB intersects the camera frustum are drawn.
-pub const CHUNK_BLOCKS: u32 = 4;
 
 /// The dirty-chunk rebuild plan (issue #20 S6c-2c): which per-chunk render buffers an
 /// incremental edit must (re)build, and which it must evict.

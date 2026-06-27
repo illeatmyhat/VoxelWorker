@@ -1503,7 +1503,7 @@ fn bucket_grid_into_chunk_grids(
     voxels_per_block: u32,
 ) -> Vec<([i32; 3], VoxelGrid)> {
     use std::collections::HashMap;
-    let chunk_extent = (crate::renderer::CHUNK_BLOCKS * voxels_per_block.max(1)) as f32;
+    let chunk_extent = (crate::core_geom::CHUNK_BLOCKS * voxels_per_block.max(1)) as f32;
     let mut buckets: HashMap<[i32; 3], VoxelGrid> = HashMap::new();
     for voxel in &grid.occupied {
         let key = [
@@ -2228,7 +2228,7 @@ mod tests {
     #[test]
     fn solid_slab_across_chunk_seam_has_no_interior_faces() {
         let density = 8u32;
-        let chunk_voxels = crate::renderer::CHUNK_BLOCKS * density; // 32
+        let chunk_voxels = crate::core_geom::CHUNK_BLOCKS * density; // 32
         let nx = chunk_voxels * 2; // span two chunks in X
         let ny = density; // 8
         let nz = density; // 8

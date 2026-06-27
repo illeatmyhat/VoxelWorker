@@ -30,7 +30,7 @@
 //! keep it flat and provably-equal-to-the-walk; if scenes ever grow to where the
 //! linear scan dominates, the structure can be swapped behind this same API.
 
-use crate::renderer::CHUNK_BLOCKS;
+use crate::core_geom::CHUNK_BLOCKS;
 
 /// A half-open integer box `[min, max)` in **absolute voxel** coordinates — the
 /// frame the chunk decomposition owns (a voxel at absolute position `p` belongs to

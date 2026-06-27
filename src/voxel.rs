@@ -48,7 +48,7 @@ pub const MAX_CHUNK_VOXELS: u64 = 6_000_000;
 /// density this large (a single chunk alone would exceed the bound) instead of
 /// resolving it.
 pub fn chunk_extent_exceeds_bound(voxels_per_block: u32) -> bool {
-    let extent = (crate::renderer::CHUNK_BLOCKS * voxels_per_block.max(1)) as u64;
+    let extent = (crate::core_geom::CHUNK_BLOCKS * voxels_per_block.max(1)) as u64;
     extent.saturating_mul(extent).saturating_mul(extent) > MAX_CHUNK_VOXELS
 }
 

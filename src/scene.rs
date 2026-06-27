@@ -1207,7 +1207,7 @@ impl Scene {
     /// [`recentre_voxels`](Self::recentre_voxels)).
     ///
     /// A chunk is a `CHUNK_BLOCKS³`-block cell (`CHUNK_BLOCKS = 4`,
-    /// [`crate::renderer::CHUNK_BLOCKS`]); one chunk therefore spans
+    /// [`crate::core_geom::CHUNK_BLOCKS`]); one chunk therefore spans
     /// `CHUNK_BLOCKS * voxels_per_block` voxels per axis. `chunk_coord` is that
     /// cell's integer coordinate, so the chunk covers the **half-open** absolute
     /// voxel box
@@ -1266,7 +1266,7 @@ impl Scene {
 
         // Chunk extent fits i64 trivially; the chunk's absolute-voxel corners can be
         // large (a far-placed chunk), so they are computed in i64 (S4a).
-        let chunk_extent_voxels = (crate::renderer::CHUNK_BLOCKS * voxels_per_block.max(1)) as i64;
+        let chunk_extent_voxels = (crate::core_geom::CHUNK_BLOCKS * voxels_per_block.max(1)) as i64;
 
         // The chunk's half-open absolute-voxel box `[min, max)` per axis.
         let chunk_min_voxels = [
@@ -1532,7 +1532,7 @@ impl Scene {
         // small; the block→chunk division therefore happens in i64 and the QUOTIENT
         // (the chunk coordinate) narrows to i32 safely — for offsets up to ±10⁹
         // blocks at density 16 a chunk coord is ≤ ±2.5×10⁸, well inside i32 (S4a).
-        let chunk_extent_voxels = (crate::renderer::CHUNK_BLOCKS * voxels_per_block.max(1)) as i64;
+        let chunk_extent_voxels = (crate::core_geom::CHUNK_BLOCKS * voxels_per_block.max(1)) as i64;
 
         let mut min_chunk = [0i32; 3];
         let mut max_chunk = [0i32; 3];
@@ -2989,7 +2989,7 @@ mod tests {
         // Each per-chunk resolve must keep every voxel inside its OWN chunk AABB
         // (exactly-one-chunk ownership). Walk the covering range and re-resolve.
         let chunk_extent_voxels =
-            (crate::renderer::CHUNK_BLOCKS * voxels_per_block.max(1)) as i32;
+            (crate::core_geom::CHUNK_BLOCKS * voxels_per_block.max(1)) as i32;
         if let Some((min_chunk, max_chunk)) = scene.covering_chunk_range(voxels_per_block) {
             let mut total_from_chunks = 0usize;
             for chunk_z in min_chunk[2]..=max_chunk[2] {
@@ -3170,7 +3170,7 @@ mod tests {
         // A chunk far outside the (origin-area) composite AABB.
         let chunk = scene.resolve_chunk([1000, 1000, 1000], 16, 0);
         assert_eq!(chunk.occupied_count(), 0, "a far-off chunk must be empty");
-        let chunk_extent = crate::renderer::CHUNK_BLOCKS * 16;
+        let chunk_extent = crate::core_geom::CHUNK_BLOCKS * 16;
         assert_eq!(
             chunk.dimensions,
             [chunk_extent, chunk_extent, chunk_extent],
@@ -3271,7 +3271,7 @@ mod tests {
         // The owning chunk coordinates are around 100_000 × density / chunk_extent,
         // i.e. far from chunk 0 — the chunk addressing places it far away too.
         let chunk_extent_voxels =
-            (crate::renderer::CHUNK_BLOCKS * voxels_per_block) as i64;
+            (crate::core_geom::CHUNK_BLOCKS * voxels_per_block) as i64;
         let expected_chunk_x = ((offset_blocks * voxels_per_block as i64) / chunk_extent_voxels) as i32;
         let (min_chunk, max_chunk) = scene
             .covering_chunk_range(voxels_per_block)
@@ -3387,7 +3387,7 @@ mod tests {
 
         // The covering chunk range also derives correctly (chunk coord narrows to i32
         // safely): chunk-X = composed_voxels / chunk_extent, well inside i32.
-        let chunk_extent = (crate::renderer::CHUNK_BLOCKS as i64) * density;
+        let chunk_extent = (crate::core_geom::CHUNK_BLOCKS as i64) * density;
         let expected_chunk_x = composed_voxels.div_euclid(chunk_extent);
         assert!(
             expected_chunk_x <= i32::MAX as i64,

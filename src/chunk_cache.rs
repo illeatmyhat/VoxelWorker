@@ -1059,7 +1059,7 @@ mod tests {
         // extent cubed). A density large enough that one chunk's capacity exceeds
         // the bound must be rejected by the guard helper.
         let chunk_capacity_at = |voxels_per_block: u32| -> u64 {
-            let extent = (crate::renderer::CHUNK_BLOCKS * voxels_per_block) as u64;
+            let extent = (crate::core_geom::CHUNK_BLOCKS * voxels_per_block) as u64;
             extent * extent * extent
         };
         // Density 16: chunk extent = 64 voxels → 64³ = 262_144 voxels/chunk, well
@@ -1190,7 +1190,7 @@ mod tests {
 
         // The chunk owning the OLD Box centre (40·16 = 640 voxels) and the chunk
         // owning the NEW centre (80·16 = 1280 voxels) must BOTH be in the edit range.
-        let chunk_extent = (crate::renderer::CHUNK_BLOCKS * density) as i32;
+        let chunk_extent = (crate::core_geom::CHUNK_BLOCKS * density) as i32;
         let old_chunk_x = (640i32).div_euclid(chunk_extent);
         let new_chunk_x = (1280i32).div_euclid(chunk_extent);
         let (min_chunk, max_chunk) = edit_aabb.covering_chunk_range(density).unwrap();
@@ -1332,7 +1332,7 @@ mod tests {
         // Coord correctness: each returned coord is the absolute chunk coord that
         // owns its grid's voxels. The accessor binds to the recentre, so a chunk
         // coord `c` owns rebased voxels in `[c·E - recentre, (c+1)·E - recentre)`.
-        let chunk_extent = (crate::renderer::CHUNK_BLOCKS * voxels_per_block) as i64;
+        let chunk_extent = (crate::core_geom::CHUNK_BLOCKS * voxels_per_block) as i64;
         let recentre = scene.recentre_voxels_for_resolve(voxels_per_block);
         for (coord, grid) in &chunks {
             for voxel in &grid.occupied {
@@ -1712,7 +1712,7 @@ mod tests {
         let mut cache = ChunkResolveCache::new();
         let actual = cache.widest_run_in_band(&scene, vpb, 0, band.0, band.1);
 
-        let chunk_extent_voxels = crate::renderer::CHUNK_BLOCKS * vpb; // 64
+        let chunk_extent_voxels = crate::core_geom::CHUNK_BLOCKS * vpb; // 64
         assert!(
             expected > chunk_extent_voxels,
             "the bar's widest run ({expected}) must exceed one chunk's voxel extent \
@@ -2235,7 +2235,7 @@ mod tests {
         // `invalidate_aabb` expects.
         let region_aabb = {
             let (lo, hi) = scene.covering_chunk_range(density).unwrap();
-            let chunk_extent = (crate::renderer::CHUNK_BLOCKS * density) as i64;
+            let chunk_extent = (crate::core_geom::CHUNK_BLOCKS * density) as i64;
             let min_v = [
                 lo[0] as i64 * chunk_extent,
                 lo[1] as i64 * chunk_extent,

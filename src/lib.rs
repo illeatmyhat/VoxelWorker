@@ -16,6 +16,8 @@ pub mod assets;
 pub mod block_palette;
 pub mod camera;
 pub mod chunk_cache;
+// ADR 0003 bottom layer: dependency-free geometry primitives + the streaming quantum.
+pub mod core_geom;
 pub mod chunk_storage;
 pub mod cuboid;
 pub mod cuboid_mesh;

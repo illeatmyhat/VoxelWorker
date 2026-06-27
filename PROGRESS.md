@@ -33,6 +33,8 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **Foundation A1a: move `CHUNK_BLOCKS` → new `core_geom` module (Part of #34, epic #33).** Pure relocation, zero behaviour change: lifted the streaming-quantum constant out of the GPU module (`renderer.rs`) into a new dependency-free `src/core_geom.rs` (ADR 0003 bottom layer), and repointed every importer (`renderer`, `spatial_index`, `chunk_cache`, `cuboid_mesh`, `scene`, `voxel`, `main`, `bin/shot`) at `core_geom::CHUNK_BLOCKS`. No re-export from `renderer`. Gate green: 248 lib tests, clippy clean, goldens 9/9 byte-identical.
+
 - **Wire region-scoped `.vox` export + diameter readout into the live app (Step 2) — Part of #20.**
   The interactive export button and the diameter/scrubber readout now call the parity-proven
   region-scoped (per-chunk) methods instead of the monolithic whole-grid path — decoupling those two
