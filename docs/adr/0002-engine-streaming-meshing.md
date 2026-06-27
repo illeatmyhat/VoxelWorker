@@ -185,6 +185,72 @@ order:
 - **New issue: per-chunk onion-fog occupancy** (matrix row 7) — the one consumer that is not "read a
   resolved grid"; deserves its own ticket under #19.
 
+## Current status — safe ordering recap (updated 2026-06-26)
+
+This section was added to fully absorb **#22** ("draft a sub-ADR decomposing steps 5–7 into a SAFE
+incremental order that preserves the renderer's features"). The decomposition itself lives above
+(Decision 4 checkpoints E0–E5 + the feature-preservation matrix); this recap restates the order in
+dependency sequence with **current DONE/REMAINING status**, and records the one piece of the original
+framing that has since changed.
+
+**Framing change — the instanced renderer is GONE (resolved context).** ADR 0001 and the E0–E4
+checkpoints above were written around an *instanced-cube-first* strategy: chunk and origin-rebase the
+**known-good instanced renderer** first (E1/E2), then introduce the cuboid mesher behind a flag and
+A/B it against the instanced draw (E3), then flip the default (E4). That strategy did its job and is
+now spent. The cuboid box-decomposition mesher reached full feature/material parity, became the
+default (E3c-2), and the legacy one-cube-per-voxel instanced renderer was then **deleted outright**
+(`31a9383`, 2026-06-26): `VoxelRenderer`, `VoxelInstance`, `MesherChoice`, the `--mesher`/`--instanced-via-chunks`
+flags and `src/shaders/voxel.wgsl` are gone. **Consequence:** the **cuboid path is now the SOLE render
+path**, so #22's original "preserve the *instanced* renderer's features" wording no longer applies as
+written. The correct standing invariant is: **the cuboid path must RETAIN the full feature matrix
+through the remaining streaming work** — there is no longer a second path to A/B against, so the
+golden-image net (E0, #24) is the sole regression guard from here on.
+
+**Safe order in dependency sequence, with status:**
+
+1. **E0 — Golden-image net (#24).** ✅ **DONE.** Reference PNGs from the headless `shot` tool + a
+   re-render-and-compare-within-tolerance test. Now the *only* regression net (no instanced A/B left).
+2. **E1 — 64-bit coordinate model + origin-rebased rendering (Step 5 remainder, #18).** ✅ **DONE.**
+   i64 block addressing (S4a) + camera-relative (origin-rebased) f32 render matrices (S4b): near-camera
+   goldens pixel-identical, far geometry byte-identical.
+3. **E2 — Chunked rendering + frustum cull, caps retired (Step 6, #19).** ✅ **DONE.** Per-chunk render
+   items keyed `(chunk_coord, lod=0)`, on-demand resolve, frustum cull; the 450k `MAX_DRAWN_INSTANCES`
+   cap is retired.
+4. **Deep chunked resolve beyond the 6M cap (#27).** ✅ **DONE.** Lazy per-chunk resolve + cache +
+   edit-AABB invalidation + spatial index; `MAX_GRID_VOXELS` is now a per-chunk bound.
+5. **E3 — Cuboid (box-decomposition) mesher + texture atlas (#18 meshing, #26 tests, O8 atlas).**
+   ✅ **DONE and now the SOLE path.** Full feature-matrix parity (per-voxel + loaded-block per-face
+   textures, multi-material atlas, layer band clip, debug-faces winding, per-object grids); goldens
+   rebaselined from the cuboid path; instanced path subsequently removed (`31a9383`).
+6. **Per-chunk onion-fog occupancy (#28).** ✅ **DONE and now the DEFAULT.** Per-chunk occupancy
+   volumes packed into one small 3D atlas + apron-from-global-occupancy raymarch; A/B-identical
+   (0.0000%) to the legacy whole-grid fog on normal scenes; legacy kept as `--fog=wholegrid`. (Matrix
+   row 7, formerly the second-highest risk, is closed.)
+7. **E5 — Out-of-core store + palette/sparse (Step 7, #20).** 🟡 **IN PROGRESS — building blocks
+   landed, final wiring remains.** Done: per-chunk material palette + sparse storage (S6a, lossless
+   round-trip); standalone `DiskChunkStore` (S6b); region-scoped `widest_run_in_band` + `.vox` export,
+   parity-proven vs whole-grid (S6d); consumers read `placed_region_dimensions` not the assembled grid
+   (S6c-1); disk-spill of resident chunks wired into `ChunkResolveCache` behind an opt-in resident cap
+   (Step 3, `534849b`). **Remaining (each preserves the cuboid feature matrix; gated by the E0 goldens
+   + interactive smoke-test):**
+   - **Wire the region-scoped consumers into the live app** ("Step 2"): route the interactive diameter
+     readout and `.vox` export through the region-scoped / rebased path (`ChunkResolveCache::vox_export`)
+     instead of the monolithic `resolve_scene`/`from_grid` path — far-offset scenes currently lose the
+     voxel-centre `.5` on export. Parity-proven; interactive-only verification.
+   - **Per-chunk GPU residency + remove the monolithic assembly** ("Step 4"): make the cuboid renderer
+     rebuild only dirty chunks and consume per-chunk grids, then delete the monolithic
+     `resolve_region`/`resolve_scene` whole-grid assembly. This is what actually decouples peak RAM from
+     scene size (disk-spill or assembly-removal *alone* does not); the borrow-returning whole-region
+     gather methods will need a reload-then-borrow pass under a real resident cap. Dominated by
+     interactive paths the static goldens cannot exercise → needs the windowed app for smoke-testing.
+8. **(later) Per-chunk cross-block cuboid merge + optional 2D greedy pass over cuboid faces.** ⛔
+   **PARKED.** Whole-block-multiple, same-material only; pursue only if E5 proves GPU-bound. **LOD
+   stays parked** (seam preserved via the `(chunk_coord, lod)` key; O7).
+
+**Net:** of #22's steps 5–7, everything except the final out-of-core wiring (#20 Step 2 + Step 4) is
+DONE, and the safe-ordering risk that motivated #22 — switching the render path without regressing the
+feature matrix — is fully retired (the switch happened, was golden-verified, and the old path is gone).
+
 ## Risks + open questions (need sign-off — this is Proposed)
 
 - **O1 — Cuboid vs 2D greedy as primary.** This ADR recommends cuboid decomposition (domain-matched,
