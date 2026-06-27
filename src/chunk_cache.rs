@@ -39,6 +39,8 @@
 
 use std::collections::HashMap;
 
+use crate::chunk_storage::{compress, decompress};
+use crate::disk_chunk_store::DiskChunkStore;
 use crate::scene::Scene;
 use crate::spatial_index::VoxelAabb;
 use crate::voxel::VoxelGrid;
@@ -94,17 +96,104 @@ pub struct ChunkResolveCache {
     /// different origin clears + re-binds (every cached chunk's stored positions are
     /// relative to it). `resolve_region` binds it to the composite recentre.
     bound_floating_origin: [i64; 3],
+
+    // ===== Out-of-core spill (issue #20 Step 3) ==============================
+    /// The maximum number of resolved chunks that may stay **resident** in RAM at
+    /// once. `None` (the default, [`new`](Self::new)) means UNBOUNDED — the cache
+    /// never spills and behaves exactly as before this step (every existing caller,
+    /// every golden, every parity test). When `Some(cap)`, a resident insert that
+    /// would push the resident count over `cap` spills the least-recently-used
+    /// resident chunk to [`disk_store`](Self::disk_store) (compressing it), and a
+    /// later access reloads it transparently.
+    max_resident_chunks: Option<usize>,
+    /// The backing disk store for spilled chunks. `None` until the first spill is
+    /// possible (i.e. only ever created when [`max_resident_chunks`](Self::max_resident_chunks)
+    /// is set). Keyed by [`ChunkCacheKey`] in the cache's CURRENT density+origin
+    /// binding: a [`rebind_if_changed`](Self::rebind_if_changed) (density / origin
+    /// change) clears BOTH the resident map and this store, so a reloaded chunk can
+    /// never carry a stale binding (the S6c wiring note's correctness condition).
+    disk_store: Option<DiskChunkStore>,
+    /// Per-resident-chunk last-use tick, for least-recently-used spill selection.
+    /// A monotonically increasing logical clock ([`access_clock`](Self::access_clock))
+    /// stamps the touched chunk on every access; the resident chunk with the smallest
+    /// tick is the spill victim. Only populated when spilling is active.
+    last_used_tick: HashMap<ChunkCacheKey, u64>,
+    /// The monotonic logical clock backing [`last_used_tick`](Self::last_used_tick).
+    access_clock: u64,
+    /// Lifetime count of chunks spilled from RAM to disk (one per over-cap insert).
+    spill_count: u64,
+    /// Lifetime count of chunks reloaded from disk back into RAM (a hit on a spilled
+    /// chunk — NOT a recompute, NOT a resident hit).
+    disk_reload_count: u64,
+    /// Lifetime count of chunks resolved from scratch via the scene resolver (a miss
+    /// in BOTH the resident map and the disk store).
+    recompute_count: u64,
 }
 
 impl ChunkResolveCache {
-    /// A fresh, empty cache.
+    /// A fresh, empty cache that NEVER spills (unbounded resident set). This is the
+    /// behaviour every existing caller relies on (the renderer, `shot`, `vox_export`,
+    /// every golden and parity test) — identical to before issue #20 Step 3.
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Number of chunks currently resident (for tests / diagnostics).
+    /// A fresh, empty cache that keeps at most `max_resident_chunks` resolved chunks
+    /// resident in RAM, **spilling the least-recently-used to disk** (issue #20 Step 3)
+    /// under `disk_store_directory` and reloading them transparently on the next
+    /// access. The public chunk-fetch API and the data returned are UNCHANGED — a
+    /// chunk fetched after a spill+reload is byte-identical to one that stayed
+    /// resident (the spill compresses via [`crate::chunk_storage`], whose round-trip
+    /// is lossless to the f32 bit).
+    ///
+    /// # Panics
+    /// Panics if `max_resident_chunks == 0` (a cache that can hold nothing resident
+    /// is a misconfiguration — same contract as [`DiskChunkStore::new`]).
+    ///
+    /// # Errors
+    /// Returns the I/O error if the disk-store directory cannot be created.
+    pub fn with_resident_cap(
+        max_resident_chunks: usize,
+        disk_store_directory: impl AsRef<std::path::Path>,
+    ) -> std::io::Result<Self> {
+        assert!(
+            max_resident_chunks >= 1,
+            "ChunkResolveCache resident cap must be at least 1"
+        );
+        // The disk store needs its own resident cap; it is only ever used as cold
+        // storage (the cache spills INTO it and reloads OUT of it), so give it the
+        // same cap — its own internal LRU is harmless here because every chunk handed
+        // to it is immediately one we dropped from RAM.
+        let disk_store = DiskChunkStore::new(disk_store_directory, max_resident_chunks)?;
+        Ok(Self {
+            max_resident_chunks: Some(max_resident_chunks),
+            disk_store: Some(disk_store),
+            ..Self::default()
+        })
+    }
+
+    /// Number of chunks currently resident in RAM (for tests / diagnostics). When a
+    /// resident cap is set this never exceeds it.
     pub fn resident_chunk_count(&self) -> usize {
         self.chunks.len()
+    }
+
+    /// Lifetime count of chunks spilled from RAM to disk (issue #20 Step 3). Always
+    /// `0` for an unbounded cache.
+    pub fn spill_count(&self) -> u64 {
+        self.spill_count
+    }
+
+    /// Lifetime count of chunks reloaded from disk back into RAM (a hit on a spilled
+    /// chunk). Always `0` for an unbounded cache.
+    pub fn disk_reload_count(&self) -> u64 {
+        self.disk_reload_count
+    }
+
+    /// Lifetime count of chunks resolved from scratch via the scene resolver (a miss
+    /// in BOTH the resident map and the disk store).
+    pub fn recompute_count(&self) -> u64 {
+        self.recompute_count
     }
 
     /// The per-chunk resolved grid for `chunk_coord` at `lod`, resolving + caching
@@ -143,10 +232,107 @@ impl ChunkResolveCache {
         lod: u32,
     ) -> &VoxelGrid {
         let key = ChunkCacheKey::new(chunk_coord, lod);
-        let origin = self.bound_floating_origin;
+        self.ensure_resident(key, scene, voxels_per_block);
+        // `ensure_resident` guarantees the key is in `self.chunks`; the borrow is split
+        // out here so the spill (which also borrows `self` mutably) is already done.
         self.chunks
-            .entry(key)
-            .or_insert_with(|| scene.resolve_chunk_rebased(chunk_coord, voxels_per_block, lod, origin))
+            .get(&key)
+            .expect("ensure_resident left the requested chunk resident")
+    }
+
+    /// Guarantee the chunk for `key` is **resident** in `self.chunks`, counting the
+    /// access for LRU and (when a resident cap is set) spilling the least-recently-used
+    /// OTHER resident chunk to disk if the insert would breach the cap.
+    ///
+    /// The three lookup tiers (issue #20 Step 3):
+    /// 1. **Resident hit** — already in RAM. Just refresh its LRU tick.
+    /// 2. **Disk hit** — spilled earlier: decompress it back to a [`VoxelGrid`] and
+    ///    promote it to resident (counts as `disk_reload`).
+    /// 3. **Miss in both** — resolve it from scratch via the scene (counts as a
+    ///    `recompute`).
+    ///
+    /// For an unbounded cache (`max_resident_chunks == None`) this is exactly the old
+    /// `entry().or_insert_with()` resolve-on-miss with no disk tier and no LRU
+    /// bookkeeping.
+    fn ensure_resident(&mut self, key: ChunkCacheKey, scene: &Scene, voxels_per_block: u32) {
+        // Tier 1: resident hit.
+        if self.chunks.contains_key(&key) {
+            self.touch_resident(key);
+            return;
+        }
+
+        let origin = self.bound_floating_origin;
+
+        // Tier 2: spilled to disk? Reload + decompress. (Only possible when spilling.)
+        if let Some(store) = self.disk_store.as_mut() {
+            if let Some(compressed) = store
+                .get(key)
+                .expect("disk store reload must not fail")
+            {
+                let grid = decompress(&compressed);
+                self.disk_reload_count += 1;
+                self.insert_resident(key, grid);
+                return;
+            }
+        }
+
+        // Tier 3: miss in both — resolve from scratch.
+        let grid = scene.resolve_chunk_rebased(key.chunk_coord, voxels_per_block, key.lod, origin);
+        self.recompute_count += 1;
+        self.insert_resident(key, grid);
+    }
+
+    /// Insert a freshly-resident `grid` under `key`, stamping its LRU tick and, if a
+    /// resident cap is set and this insert breaches it, first spilling the
+    /// least-recently-used OTHER resident chunk to disk.
+    fn insert_resident(&mut self, key: ChunkCacheKey, grid: VoxelGrid) {
+        if self.max_resident_chunks.is_some() {
+            self.spill_until_room_for_one();
+        }
+        self.chunks.insert(key, grid);
+        self.touch_resident(key);
+    }
+
+    /// Stamp `key` with the next LRU clock tick (its most-recent use). A no-op when
+    /// spilling is disabled (no LRU bookkeeping is needed for an unbounded cache).
+    fn touch_resident(&mut self, key: ChunkCacheKey) {
+        if self.max_resident_chunks.is_none() {
+            return;
+        }
+        self.access_clock += 1;
+        self.last_used_tick.insert(key, self.access_clock);
+    }
+
+    /// While the resident set is at (or over) the cap, spill the single
+    /// least-recently-used resident chunk to disk. Called BEFORE a new resident insert
+    /// so the post-insert resident count never exceeds the cap.
+    fn spill_until_room_for_one(&mut self) {
+        let Some(cap) = self.max_resident_chunks else {
+            return;
+        };
+        while self.chunks.len() >= cap {
+            let Some(victim_key) = self
+                .last_used_tick
+                .iter()
+                .filter(|(key, _)| self.chunks.contains_key(key))
+                .min_by_key(|(_, &tick)| tick)
+                .map(|(&key, _)| key)
+            else {
+                break; // Nothing resident to spill (cap == 0 is rejected at construction).
+            };
+            let grid = self
+                .chunks
+                .remove(&victim_key)
+                .expect("the LRU victim was just observed resident");
+            self.last_used_tick.remove(&victim_key);
+            let compressed = compress(&grid);
+            self.disk_store
+                .as_mut()
+                .expect("a cap implies a disk store")
+                .put(victim_key, compressed)
+                .expect("spilling a chunk to disk must not fail");
+            self.spill_count += 1;
+        }
     }
 
     /// Rebuild the SAME recentred monolithic [`VoxelGrid`] the renderer, mesher and
@@ -401,14 +587,50 @@ impl ChunkResolveCache {
         self.chunks.clear();
         self.bound_density = None;
         self.bound_floating_origin = [0, 0, 0];
+        // Purge spilled chunks + LRU state too, so a stale spilled chunk can never
+        // resurface across a clear (issue #20 Step 3).
+        self.last_used_tick.clear();
+        if let Some(store) = self.disk_store.as_mut() {
+            store.clear().expect("clearing the disk store must not fail");
+        }
     }
 
-    /// Drop a single cached chunk across all LODs (a finer-grained seam).
+    /// Drop a single cached chunk across all LODs (a finer-grained seam) — from BOTH
+    /// the resident set AND the disk store, so an edit can never let a stale spilled
+    /// chunk resurface (issue #20 Step 3).
     ///
     /// [`invalidate_aabb`](Self::invalidate_aabb) calls this for each chunk an edit's
     /// world-AABB intersects.
     pub fn invalidate_chunk(&mut self, chunk_coord: [i32; 3]) {
+        self.evict_coord_everywhere(chunk_coord);
+    }
+
+    /// Purge every cached entry (resident, spilled, and LRU bookkeeping) for
+    /// `chunk_coord` across all LODs. The disk-store purge is what stops a stale
+    /// spilled chunk from reloading after an edit (issue #20 Step 3).
+    fn evict_coord_everywhere(&mut self, chunk_coord: [i32; 3]) {
+        // Gather the keys at this coord BEFORE mutating (a coord can hold several LODs).
+        let purged: Vec<ChunkCacheKey> = self
+            .chunks
+            .keys()
+            .copied()
+            .filter(|key| key.chunk_coord == chunk_coord)
+            .collect();
         self.chunks.retain(|key, _| key.chunk_coord != chunk_coord);
+        self.last_used_tick.retain(|key, _| key.chunk_coord != chunk_coord);
+        if let Some(store) = self.disk_store.as_mut() {
+            // The disk store may hold this coord at LODs not currently resident, so
+            // purge the resident-derived keys AND defensively re-derive nothing extra:
+            // a chunk is only ever spilled under the same key it was resident at, and
+            // the only LOD in use today is 0, so the resident-key sweep covers it. Purge
+            // each known key, plus lod 0 unconditionally (the parked LOD seam).
+            for key in &purged {
+                store.remove(*key).expect("disk store remove must not fail");
+            }
+            store
+                .remove(ChunkCacheKey::new(chunk_coord, 0))
+                .expect("disk store remove must not fail");
+        }
     }
 
     /// **Targeted invalidation (issue #27 S3).** Drop exactly the cached chunks whose
@@ -450,6 +672,7 @@ impl ChunkResolveCache {
         let Some((min_chunk, max_chunk)) = edit_aabb.covering_chunk_range(voxels_per_block) else {
             return Vec::new(); // empty edit AABB — nothing to invalidate.
         };
+        // Resident coords inside the edit range — the reported (and dropped) set.
         let mut evicted = Vec::new();
         self.chunks.retain(|key, _| {
             let coord = key.chunk_coord;
@@ -459,6 +682,26 @@ impl ChunkResolveCache {
             }
             !inside
         });
+        self.last_used_tick.retain(|key, _| {
+            let coord = key.chunk_coord;
+            !(0..3).all(|axis| coord[axis] >= min_chunk[axis] && coord[axis] <= max_chunk[axis])
+        });
+        // Purge spilled chunks across the edit range too, so an evicted-then-spilled
+        // chunk cannot reload stale after an edit (issue #20 Step 3). A spilled chunk
+        // is NOT in `self.chunks`, so it does not appear in `evicted` (the reported
+        // resident set is unchanged), but it must still be dropped from disk. The store
+        // exposes no key iterator, so purge by walking the (bounded) edit coord range.
+        if let Some(store) = self.disk_store.as_mut() {
+            for chunk_x in min_chunk[0]..=max_chunk[0] {
+                for chunk_y in min_chunk[1]..=max_chunk[1] {
+                    for chunk_z in min_chunk[2]..=max_chunk[2] {
+                        store
+                            .remove(ChunkCacheKey::new([chunk_x, chunk_y, chunk_z], 0))
+                            .expect("disk store remove must not fail");
+                    }
+                }
+            }
+        }
         evicted
     }
 
@@ -473,8 +716,15 @@ impl ChunkResolveCache {
             return;
         }
         if self.bound_density.is_some() && !(density_matches && origin_matches) {
-            // Re-binding from a previous binding: drop the now-stale chunks.
+            // Re-binding from a previous binding: drop the now-stale chunks from RAM,
+            // disk and LRU state. A spilled chunk is keyed/serialised in the OLD
+            // binding, so it must not survive a rebind (the S6c wiring-note correctness
+            // condition — otherwise a far chunk would reload mis-placed; issue #20 Step 3).
             self.chunks.clear();
+            self.last_used_tick.clear();
+            if let Some(store) = self.disk_store.as_mut() {
+                store.clear().expect("clearing the disk store must not fail");
+            }
         }
         self.bound_density = Some(voxels_per_block);
         self.bound_floating_origin = floating_origin;
@@ -1746,5 +1996,273 @@ mod tests {
         );
         // And the result still matches a full rebuild.
         assert_eq!(render_cache, full_render_cache(&scene_b, density));
+    }
+
+    // ===== Issue #20 Step 3: out-of-core spill to DiskChunkStore ==================
+
+    /// A unique temp directory under the system temp dir, removed on drop so no spill
+    /// test leaves disk litter (mirrors the disk-store tests' RAII guard).
+    struct TempDir {
+        path: std::path::PathBuf,
+    }
+    impl TempDir {
+        fn new(label: &str) -> Self {
+            use std::sync::atomic::{AtomicU64, Ordering};
+            static COUNTER: AtomicU64 = AtomicU64::new(0);
+            let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "voxelworker_chunk_cache_spill_test_{label}_{}_{unique}",
+                std::process::id()
+            ));
+            let _ = std::fs::remove_dir_all(&path);
+            Self { path }
+        }
+    }
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+
+    /// The covering chunk coords of `scene` at `density`, in chunk order.
+    fn covering_coords(scene: &Scene, density: u32) -> Vec<[i32; 3]> {
+        let mut coords = Vec::new();
+        if let Some((min_chunk, max_chunk)) = scene.covering_chunk_range(density) {
+            for chunk_z in min_chunk[2]..=max_chunk[2] {
+                for chunk_y in min_chunk[1]..=max_chunk[1] {
+                    for chunk_x in min_chunk[0]..=max_chunk[0] {
+                        coords.push([chunk_x, chunk_y, chunk_z]);
+                    }
+                }
+            }
+        }
+        coords
+    }
+
+    /// (a) A chunk fetched AFTER being spilled-and-reloaded is BYTE-IDENTICAL (every
+    /// f32 position bit + material) to the resident result — the spill/reload round-trip
+    /// is transparent. A capacity of 1 forces every-other access to spill the prior.
+    #[test]
+    fn spilled_and_reloaded_chunk_is_byte_identical() {
+        let density = 16u32;
+        // A scene spread across several chunks in X so we have >1 covering chunk.
+        let scene = three_tool_scene(density, 40);
+        let coords = covering_coords(&scene, density);
+        assert!(coords.len() >= 2, "need at least two covering chunks to force a spill");
+
+        // The reference: every covering chunk's grid from an UNBOUNDED cache (no spill).
+        let mut reference = ChunkResolveCache::new();
+        let expected: std::collections::HashMap<[i32; 3], _> = coords
+            .iter()
+            .map(|&coord| (coord, occupied_multiset(reference.chunk(coord, &scene, density, 0))))
+            .collect();
+
+        // A capacity-1 spilling cache: fetch every coord once (filling + spilling), then
+        // re-fetch every coord — each re-fetch reloads from disk (or recomputes) and
+        // must equal the unbounded reference byte-for-byte.
+        let temp = TempDir::new("byte_identical");
+        let mut cache = ChunkResolveCache::with_resident_cap(1, &temp.path).unwrap();
+        for &coord in &coords {
+            let _ = cache.chunk(coord, &scene, density, 0);
+            assert!(cache.resident_chunk_count() <= 1, "capacity 1 keeps at most one resident");
+        }
+        assert!(cache.spill_count() >= 1, "filling past capacity 1 must spill");
+
+        for &coord in &coords {
+            let got = occupied_multiset(cache.chunk(coord, &scene, density, 0));
+            assert_eq!(
+                got, expected[&coord],
+                "chunk {coord:?} after spill+reload must be byte-identical to the resident result"
+            );
+        }
+    }
+
+    /// (b) The resident cap is honored: under sustained load over many chunks the
+    /// resident count NEVER exceeds the cap, and every chunk remains correct.
+    #[test]
+    fn resident_cap_is_never_exceeded() {
+        let density = 16u32;
+        let cap = 3usize;
+        let scene = three_tool_scene(density, 80); // a wide spread → many chunks.
+        let coords = covering_coords(&scene, density);
+        assert!(coords.len() > cap, "the scene must have more chunks than the cap to exercise spill");
+
+        let temp = TempDir::new("cap_honored");
+        let mut cache = ChunkResolveCache::with_resident_cap(cap, &temp.path).unwrap();
+        // Repeat the sweep twice so reloads (which also insert) are stress-tested.
+        for _ in 0..2 {
+            for &coord in &coords {
+                let _ = cache.chunk(coord, &scene, density, 0);
+                assert!(
+                    cache.resident_chunk_count() <= cap,
+                    "resident count {} exceeded cap {cap}",
+                    cache.resident_chunk_count()
+                );
+            }
+        }
+        assert_eq!(cache.resident_chunk_count(), cap.min(coords.len()), "fills to the cap");
+    }
+
+    /// (c) LRU order: the LEAST-recently-used chunk is the one spilled. Touch A, then B,
+    /// then fetch a third over a cap of 2 — A (the LRU) is the spill victim, not B.
+    #[test]
+    fn least_recently_used_chunk_is_spilled() {
+        let density = 16u32;
+        let scene = three_tool_scene(density, 80);
+        let coords = covering_coords(&scene, density);
+        assert!(coords.len() >= 3, "need at least three covering chunks");
+        let (a, b, c) = (coords[0], coords[1], coords[2]);
+
+        let temp = TempDir::new("lru_order");
+        let mut cache = ChunkResolveCache::with_resident_cap(2, &temp.path).unwrap();
+
+        // Fetch A then B (both resident, cap 2); A is now the LRU.
+        let _ = cache.chunk(a, &scene, density, 0);
+        let _ = cache.chunk(b, &scene, density, 0);
+        assert_eq!(cache.resident_chunk_count(), 2);
+        assert_eq!(cache.spill_count(), 0, "two chunks fit the cap of 2");
+
+        // Fetch C over capacity → A (the LRU) is spilled, B stays resident.
+        let _ = cache.chunk(c, &scene, density, 0);
+        assert_eq!(cache.spill_count(), 1, "exactly one chunk spilled");
+        assert_eq!(cache.resident_chunk_count(), 2);
+
+        // Re-fetch B: resident → NO reload. Re-fetch A: spilled → exactly one reload.
+        let reloads_before = cache.disk_reload_count();
+        let _ = cache.chunk(b, &scene, density, 0);
+        assert_eq!(
+            cache.disk_reload_count(), reloads_before,
+            "B stayed resident (A was the LRU victim) — no reload"
+        );
+        let _ = cache.chunk(a, &scene, density, 0);
+        assert_eq!(
+            cache.disk_reload_count(), reloads_before + 1,
+            "A was the spilled LRU — fetching it reloads exactly once"
+        );
+    }
+
+    /// (d) Invalidation purges BOTH resident and disk: a spilled chunk that an edit
+    /// dirties must NOT resurface (a later fetch recomputes it, it does not reload the
+    /// stale disk copy). Verified through both `invalidate_chunk` and `invalidate_aabb`.
+    #[test]
+    fn invalidation_purges_resident_and_disk() {
+        let density = 16u32;
+        let scene = three_tool_scene(density, 80);
+        let coords = covering_coords(&scene, density);
+        assert!(coords.len() >= 2);
+
+        // --- invalidate_chunk path ---
+        let temp = TempDir::new("invalidate_chunk");
+        let mut cache = ChunkResolveCache::with_resident_cap(1, &temp.path).unwrap();
+        // Fill so coords[0] gets spilled to disk (cap 1, fetch a second coord after).
+        let _ = cache.chunk(coords[0], &scene, density, 0);
+        let _ = cache.chunk(coords[1], &scene, density, 0);
+        assert!(cache.spill_count() >= 1, "coords[0] must be spilled to disk");
+        let reloads_before = cache.disk_reload_count();
+
+        // Invalidate the spilled coord, then fetch it: it must RECOMPUTE, not reload.
+        cache.invalidate_chunk(coords[0]);
+        let recomputes_before = cache.recompute_count();
+        let _ = cache.chunk(coords[0], &scene, density, 0);
+        assert_eq!(
+            cache.disk_reload_count(), reloads_before,
+            "an invalidated spilled chunk must NOT reload the stale disk copy"
+        );
+        assert_eq!(
+            cache.recompute_count(), recomputes_before + 1,
+            "the invalidated chunk is recomputed from the scene"
+        );
+
+        // --- invalidate_aabb path ---
+        let temp2 = TempDir::new("invalidate_aabb");
+        let mut cache2 = ChunkResolveCache::with_resident_cap(1, &temp2.path).unwrap();
+        let _ = cache2.resolve_region(&scene, density, 0); // resolves + spills all but one.
+        assert!(cache2.spill_count() >= 1, "resolve_region over cap 1 must spill");
+
+        // An edit AABB spanning the whole covering chunk grid purges every chunk
+        // (resident + disk). The AABB is in absolute (producer-true) voxels, the frame
+        // `invalidate_aabb` expects.
+        let region_aabb = {
+            let (lo, hi) = scene.covering_chunk_range(density).unwrap();
+            let chunk_extent = (crate::renderer::CHUNK_BLOCKS * density) as i64;
+            let min_v = [
+                lo[0] as i64 * chunk_extent,
+                lo[1] as i64 * chunk_extent,
+                lo[2] as i64 * chunk_extent,
+            ];
+            let max_v = [
+                (hi[0] as i64 + 1) * chunk_extent,
+                (hi[1] as i64 + 1) * chunk_extent,
+                (hi[2] as i64 + 1) * chunk_extent,
+            ];
+            crate::spatial_index::VoxelAabb::new(min_v, max_v)
+        };
+        let _ = cache2.invalidate_aabb(&region_aabb, density);
+        let reloads_before2 = cache2.disk_reload_count();
+        // Re-resolve: every chunk must recompute, none reload a purged disk copy.
+        let _ = cache2.resolve_region(&scene, density, 0);
+        assert_eq!(
+            cache2.disk_reload_count(), reloads_before2,
+            "after invalidate_aabb no chunk reloads a stale spilled copy"
+        );
+    }
+
+    /// (e) Counters tally an expected access sequence: spill / reload / recompute counts
+    /// match a hand-traced sequence over a capacity-1 cache and two distinct chunks.
+    #[test]
+    fn counters_tally_an_expected_access_sequence() {
+        let density = 16u32;
+        let scene = three_tool_scene(density, 80);
+        let coords = covering_coords(&scene, density);
+        assert!(coords.len() >= 2);
+        let (a, b) = (coords[0], coords[1]);
+
+        let temp = TempDir::new("counters");
+        let mut cache = ChunkResolveCache::with_resident_cap(1, &temp.path).unwrap();
+
+        // 1. Fetch A (miss in both → recompute 1; nothing to spill yet).
+        let _ = cache.chunk(a, &scene, density, 0);
+        assert_eq!((cache.recompute_count(), cache.spill_count(), cache.disk_reload_count()), (1, 0, 0));
+
+        // 2. Fetch A again (resident hit → no counter moves).
+        let _ = cache.chunk(a, &scene, density, 0);
+        assert_eq!((cache.recompute_count(), cache.spill_count(), cache.disk_reload_count()), (1, 0, 0));
+
+        // 3. Fetch B (recompute 2; inserting over cap 1 spills A → spill 1).
+        let _ = cache.chunk(b, &scene, density, 0);
+        assert_eq!((cache.recompute_count(), cache.spill_count(), cache.disk_reload_count()), (2, 1, 0));
+
+        // 4. Fetch A (spilled → reload 1; inserting over cap 1 spills B → spill 2).
+        let _ = cache.chunk(a, &scene, density, 0);
+        assert_eq!((cache.recompute_count(), cache.spill_count(), cache.disk_reload_count()), (2, 2, 1));
+
+        // 5. Fetch B (spilled → reload 2; spills A → spill 3). No recompute (both exist).
+        let _ = cache.chunk(b, &scene, density, 0);
+        assert_eq!((cache.recompute_count(), cache.spill_count(), cache.disk_reload_count()), (2, 3, 2));
+    }
+
+    /// An unbounded cache (the default `new()`) NEVER spills, reloads or tracks LRU —
+    /// proving the live path / goldens are untouched by Step 3.
+    #[test]
+    fn unbounded_cache_never_spills() {
+        let density = 16u32;
+        let scene = three_tool_scene(density, 80);
+        let mut cache = ChunkResolveCache::new();
+        let _ = cache.resolve_region(&scene, density, 0);
+        assert!(cache.resident_chunk_count() > 1, "an unbounded cache keeps every chunk resident");
+        assert_eq!(cache.spill_count(), 0);
+        assert_eq!(cache.disk_reload_count(), 0);
+        assert!(cache.recompute_count() > 0, "recompute count tracks first-time resolves");
+    }
+
+    /// A zero resident cap is rejected at construction (a cache that holds nothing
+    /// resident is a misconfiguration).
+    #[test]
+    fn zero_resident_cap_panics() {
+        let temp = TempDir::new("zero_cap");
+        let result = std::panic::catch_unwind(|| {
+            ChunkResolveCache::with_resident_cap(0, &temp.path)
+        });
+        assert!(result.is_err(), "a zero resident cap must panic");
     }
 }

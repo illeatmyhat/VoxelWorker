@@ -33,6 +33,46 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **Out-of-core: spill resident chunks to `DiskChunkStore` (Step 3) — Part of #20.** Wires the
+  standalone `DiskChunkStore` (S6b) into `ChunkResolveCache` so an over-cap resident set spills its
+  least-recently-used chunks to disk (compressed via `chunk_storage`) and reloads them transparently on
+  the next access. Pure CPU; fully verified headlessly. Render output unchanged — goldens 6/6 still green.
+  - **Opt-in, default unchanged.** `ChunkResolveCache::new()` stays UNBOUNDED (never spills) — the live
+    path (renderer, `shot`, `vox_export`) and every golden/parity test behave exactly as before. A new
+    `ChunkResolveCache::with_resident_cap(max_resident_chunks, disk_dir)` opts into spilling (panics on cap
+    0; errors if the dir can't be created). All spill logic is gated behind `max_resident_chunks.is_some()`.
+  - **Three-tier lookup (`ensure_resident`).** (1) resident hit → refresh LRU; (2) disk hit → decompress +
+    promote back to resident (`disk_reload_count`); (3) miss in both → resolve via the scene
+    (`recompute_count`). `insert_resident` spills the LRU OTHER chunk first when an insert would breach the
+    cap, so `resident_chunk_count() <= cap` ALWAYS. LRU is a per-key `last_used_tick` + monotonic clock;
+    the smallest-tick resident chunk is the spill victim (`spill_count`).
+  - **Invalidation purges BOTH RAM and disk** so a stale spilled chunk never resurfaces: `clear` and a
+    rebind (`rebind_if_changed`, density/origin change) call `disk_store.clear()`; `invalidate_chunk`
+    (`evict_coord_everywhere`) and `invalidate_aabb` purge the disk store across the dirtied coord(s). A
+    rebind MUST drop disk too — a spilled chunk is keyed/serialised in the OLD binding (the S6c wiring-note
+    correctness condition: a far chunk would otherwise reload mis-placed).
+  - **New `DiskChunkStore` API.** `remove(key)` (forget from RAM + delete disk file, idempotent) and
+    `clear()` (forget every key + delete all files) — the cache needs targeted/total purge for invalidation
+    (the store had only put/get/contains). +2 store tests.
+  - **Compression is lossless to the f32 bit** (`chunk_storage` round-trip), so spill+reload returns a
+    byte-identical grid — proven by the new test.
+  - **Tests (7 cache + 2 store = 9 new; lib 236 → 245, all green).** Cache:
+    `spilled_and_reloaded_chunk_is_byte_identical` (a, f32::to_bits parity vs the unbounded reference),
+    `resident_cap_is_never_exceeded` (b), `least_recently_used_chunk_is_spilled` (c),
+    `invalidation_purges_resident_and_disk` (d, both `invalidate_chunk` + `invalidate_aabb` → recompute not
+    reload), `counters_tally_an_expected_access_sequence` (e, hand-traced spill/reload/recompute),
+    `unbounded_cache_never_spills`, `zero_resident_cap_panics`. Store: `remove_forgets_resident_and_spilled_keys`,
+    `clear_empties_resident_and_disk`. Temp dirs are unique-per-test, RAII-cleaned. `cargo clippy
+    --all-targets` clean.
+  - **Step 4 / renderer note.** No renderer/main change made or needed — the renderer still calls the
+    same cache API (`new()`, unbounded). The borrow-returning whole-region gather methods
+    (`resident_render_chunks`, `covering_chunk_grids`) hand out ALL covering chunks at once, so they assume
+    every covering chunk is resident simultaneously; they remain correct for the unbounded default and for
+    a bounded cache only when the cap ≥ covering-chunk count. The spill path proper is `chunk()` /
+    `resolve_region` (each chunk consumed immediately), which is fully spill-safe. When Step 4 makes the
+    renderer consume per-chunk meshes under a real cap, those gather methods will need a reload-then-borrow
+    pass (cannot return borrows to more chunks than the cap holds).
+
 - **ViewCube: Step 6 — chrome polish + interaction fixes — Part of #13 (final pass before closing #13).**
   Eight smoke-test items from the #13 feedback:
   1. **Cube-drag horizontal sign FLIPPED** (`main.rs` CursorMoved): only the cube-drag path negates `delta_x`

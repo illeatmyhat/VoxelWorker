@@ -160,6 +160,35 @@ impl DiskChunkStore {
         self.resident.contains_key(&key) || self.on_disk.contains(&key)
     }
 
+    /// Forget `key` entirely — drop it from RAM and delete its on-disk file if it was
+    /// spilled. Idempotent (a no-op for a key the store never held). Used by the cache
+    /// to purge a chunk on invalidation so a stale spilled copy can never resurface
+    /// (issue #20 Step 3).
+    ///
+    /// # Errors
+    /// Returns an I/O error if deleting the stale disk file fails.
+    pub fn remove(&mut self, key: ChunkCacheKey) -> std::io::Result<()> {
+        self.resident.remove(&key);
+        if self.on_disk.remove(&key) {
+            remove_file_if_present(&self.path_for(key))?;
+        }
+        Ok(())
+    }
+
+    /// Forget EVERY key — drop all resident chunks and delete every on-disk file,
+    /// leaving the store empty (the directory itself is kept). Used by the cache on a
+    /// rebind / full clear so no spilled chunk outlives its binding (issue #20 Step 3).
+    ///
+    /// # Errors
+    /// Returns an I/O error if deleting a stale disk file fails.
+    pub fn clear(&mut self) -> std::io::Result<()> {
+        self.resident.clear();
+        for key in std::mem::take(&mut self.on_disk) {
+            remove_file_if_present(&self.path_for(key))?;
+        }
+        Ok(())
+    }
+
     /// Store `chunk` under `key`, making it the most-recently-used resident chunk.
     ///
     /// If `key` was already on disk, it is brought resident (and removed from disk;
@@ -657,5 +686,52 @@ mod tests {
         // Constructing again on the same (now-existing) directory must succeed.
         let store_b = DiskChunkStore::new(&temp.path, 2);
         assert!(store_b.is_ok(), "re-creating the store on an existing dir is a no-op");
+    }
+
+    /// `remove` forgets a key from BOTH RAM and disk: after removing a spilled key,
+    /// a later get returns None (no stale disk copy resurfaces). Idempotent for a key
+    /// the store never held.
+    #[test]
+    fn remove_forgets_resident_and_spilled_keys() {
+        let temp = TempDir::new("remove_key");
+        let mut store = DiskChunkStore::new(&temp.path, 1).unwrap();
+        store.put(key([0, 0, 0]), make_chunk(0)).unwrap();
+        store.put(key([1, 0, 0]), make_chunk(1)).unwrap(); // evicts [0] to disk
+        assert!(store.contains(key([0, 0, 0])), "[0] is on disk");
+
+        // Remove the spilled key: it must vanish, and a get must not reload it.
+        store.remove(key([0, 0, 0])).unwrap();
+        assert!(!store.contains(key([0, 0, 0])), "[0] is forgotten");
+        let reloads_before = store.stats().disk_reloads;
+        assert!(store.get(key([0, 0, 0])).unwrap().is_none(), "a removed key returns None");
+        assert_eq!(store.stats().disk_reloads, reloads_before, "a removed key does not reload");
+
+        // Remove the resident key too, then idempotently remove a never-held key.
+        store.remove(key([1, 0, 0])).unwrap();
+        assert!(!store.contains(key([1, 0, 0])));
+        store.remove(key([9, 9, 9])).unwrap(); // no-op, must not error.
+    }
+
+    /// `clear` forgets EVERY key (resident + spilled) and deletes the disk files,
+    /// leaving the store empty but usable.
+    #[test]
+    fn clear_empties_resident_and_disk() {
+        let temp = TempDir::new("clear_store");
+        let mut store = DiskChunkStore::new(&temp.path, 2).unwrap();
+        for index in 0..6u16 {
+            store.put(key([index as i32, 0, 0]), make_chunk(index)).unwrap();
+        }
+        assert!(store.stats().on_disk_count >= 1, "some chunks spilled to disk");
+
+        store.clear().unwrap();
+        let stats = store.stats();
+        assert_eq!(stats.resident_count, 0, "clear empties RAM");
+        assert_eq!(stats.on_disk_count, 0, "clear empties the disk set");
+        for index in 0..6u16 {
+            assert!(store.get(key([index as i32, 0, 0])).unwrap().is_none(), "all keys forgotten");
+        }
+        // The store is still usable after a clear.
+        store.put(key([0, 0, 0]), make_chunk(42)).unwrap();
+        assert!(store.get(key([0, 0, 0])).unwrap().is_some());
     }
 }
