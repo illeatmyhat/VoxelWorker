@@ -494,4 +494,128 @@ mod tests {
         };
         assert_region_vox_export_equals_whole_grid(&scene, vpb, "demo-scene");
     }
+
+    // ===== Issue #20 Step 2: far-offset export ===================================
+
+    /// Build a two-node scene whose composite is centred FAR from the world origin:
+    /// one node at the origin and one node `offset_blocks` away on X. The composite
+    /// centre lands at the midpoint, so each node sits ~`offset/2 × vpb` voxels from
+    /// the recentred frame's origin.
+    fn far_offset_two_box_scene(vpb: u32, offset_blocks: i64) -> Scene {
+        let make_box = |offset: [i64; 3], material| {
+            let shape = SdfShape {
+                kind: ShapeKind::Box,
+                size_blocks: [3, 3, 3],
+                voxels_per_block: vpb,
+                wall_blocks: 1,
+            };
+            let mut node = Node::new("Box", NodeContent::Tool { shape, material });
+            node.transform.offset_blocks = offset;
+            node
+        };
+        Scene {
+            nodes: vec![
+                make_box([0, 0, 0], MaterialChoice::Stone),
+                make_box([offset_blocks, 0, 0], MaterialChoice::Wood),
+            ],
+            active: Some(NodePath::root_index(0)),
+            ..Scene::default()
+        }
+    }
+
+    /// **The rewired export is behaviour-equivalent to the old monolithic export, far
+    /// from the origin (issue #20 Step 2).** The live export button now routes through
+    /// `ChunkResolveCache::vox_export` instead of `resolve_scene` + `from_grid`. This
+    /// proves the rewiring is safe at far offset: for a scene whose composite is
+    /// centred ~250,000 blocks out (4e6 voxels — well into the f32 large-magnitude
+    /// regime), the region-scoped export's model SET (sizes + per-model voxels) equals
+    /// the old whole-grid export's, AND both keep the full voxel count (the per-chunk
+    /// ground truth). So the wiring change is a true no-op on the written file.
+    ///
+    /// NOTE (finding, issue #20 Low #1): routing through `vox_export` does NOT make a
+    /// genuinely region-WIDE far scene more accurate than the monolithic path. Both
+    /// bucket into the region-relative `[0, grid_x)` frame, so both add `half_x` (≈ the
+    /// region half-width) in f32; once the region exceeds ~2^24 voxels on an axis the
+    /// voxel-centre `.5` is unrepresentable and BOTH paths collapse identically (the
+    /// exports stay model-set-equal). The f32-`.5` loss is inherent to the f32
+    /// `world_position` at large magnitude, not to which assembly path is used. The
+    /// rewiring's value is the Step-4 decoupling from the monolithic grid, not a
+    /// far-offset accuracy gain.
+    #[test]
+    fn far_offset_region_export_equals_monolithic() {
+        let vpb = 16u32;
+        // 500,000-block separation → composite centred ~250,000 blocks out → each box
+        // ~4e6 voxels from origin. Region grid stays under 2^24 voxels wide so the full
+        // voxel set survives (the per-chunk ground truth is matched exactly).
+        let scene = far_offset_two_box_scene(vpb, 500_000);
+        let rgba = [132, 126, 118, 255];
+
+        // Ground-truth voxel count (frame-independent): the per-chunk assembly rebases
+        // each chunk in i64, so its occupied count is the TRUE distinct-voxel count.
+        let expected_voxels = scene.resolve_region_via_chunks(vpb, 0).occupied_count();
+
+        // New (region-scoped) path — what the export button now calls.
+        let mut cache = ChunkResolveCache::new();
+        let region_export = cache.vox_export(&scene, vpb, 0, rgba);
+        assert_eq!(
+            region_export.voxel_count(),
+            expected_voxels,
+            "region export must keep every voxel at this far offset"
+        );
+
+        // Old (monolithic) path the button used before.
+        let region = scene.full_extent_blocks(vpb);
+        let whole = scene.resolve_region(region, vpb, 0);
+        let monolithic_export = VoxExport::from_grid(&whole, rgba);
+
+        // The rewiring is a no-op on the written file: same model set (sizes + voxels),
+        // same counts. (Per-model voxel ORDER may differ — chunk-iteration vs
+        // monolithic stamp order — which a MagicaVoxel reader treats as the same model.)
+        assert_eq!(
+            region_export.voxel_count(),
+            monolithic_export.voxel_count(),
+            "rewired export voxel count must equal the old monolithic export far out"
+        );
+        assert_eq!(
+            parsed_model_sets(&region_export.to_bytes()),
+            parsed_model_sets(&monolithic_export.to_bytes()),
+            "rewired export model-set must equal the old monolithic export far out"
+        );
+    }
+
+    /// The far-offset region export, once parsed and re-read, round-trips to the same
+    /// total voxel count the per-chunk ground truth holds — exercising the full
+    /// build → serialise → `dot_vox::load_bytes` path the export button drives (minus
+    /// the file dialog), so the wiring is verified end to end headlessly.
+    #[test]
+    fn far_offset_region_export_round_trips_full_voxel_set() {
+        let vpb = 16u32;
+        let scene = far_offset_two_box_scene(vpb, 500_000);
+        let rgba = [132, 126, 118, 255];
+
+        let mut cache = ChunkResolveCache::new();
+        let region_export = cache.vox_export(&scene, vpb, 0, rgba);
+
+        let parsed = dot_vox::load_bytes(&region_export.to_bytes())
+            .expect("dot_vox should parse the far-offset export");
+
+        let expected_voxels = scene.resolve_region_via_chunks(vpb, 0).occupied_count();
+        let total: usize = parsed.models.iter().map(|model| model.voxels.len()).sum();
+        assert_eq!(
+            total, expected_voxels,
+            "far-offset export must round-trip every voxel"
+        );
+
+        // The two far-separated boxes occupy different 256-tiles on X, so the parsed
+        // file must contain at least two non-empty models.
+        let nonempty_models = parsed
+            .models
+            .iter()
+            .filter(|model| !model.voxels.is_empty())
+            .count();
+        assert!(
+            nonempty_models >= 2,
+            "the two far-separated boxes must land in >=2 distinct tiles (got {nonempty_models})"
+        );
+    }
 }

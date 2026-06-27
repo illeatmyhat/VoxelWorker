@@ -1544,6 +1544,57 @@ mod tests {
         }
     }
 
+    /// **Far-offset diameter (issue #20 Step 2).** Two 3-block boxes 20,000 blocks
+    /// apart on X: the composite is centred ~10,000 blocks out, so each box sits
+    /// ~160,000 voxels from the recentred origin — far beyond any object the camera
+    /// frames, while keeping the whole-grid reference cheap. The live diameter readout
+    /// now routes through
+    /// the region-scoped `widest_run_in_band`; it must report the box's TRUE width (a
+    /// 48-voxel face row), confirming the rewired readout is correct far from the
+    /// origin. It also equals the whole-grid value (the parity reference) — the two
+    /// stay in lockstep until the region grid exceeds ~2^24 voxels on an axis, beyond
+    /// which f32 collapses both identically (see the export test's NOTE).
+    #[test]
+    fn region_widest_run_correct_at_far_offset() {
+        let vpb = 16u32;
+        let make_box = |offset: [i64; 3]| {
+            let shape = SdfShape {
+                kind: ShapeKind::Box,
+                size_blocks: [3, 3, 3],
+                voxels_per_block: vpb,
+                wall_blocks: 1,
+            };
+            let mut node = Node::new("box", NodeContent::Tool { shape, material: MaterialChoice::Stone });
+            node.transform.offset_blocks = offset;
+            node
+        };
+        // 20,000-block separation → composite centred ~10,000 blocks out → each box
+        // ~160,000 voxels from the origin (far beyond any normal scene), while the
+        // whole-grid reference (an O(grid_x)-per-row bitset) stays cheap to assemble.
+        let scene = Scene {
+            nodes: vec![make_box([0, 0, 0]), make_box([20_000, 0, 0])],
+            active: Some(NodePath::root_index(0)),
+            ..Scene::default()
+        };
+
+        let dims = scene.placed_region_dimensions(vpb);
+        let band = (0, dims[1].saturating_sub(1)); // whole Y stack (both boxes are at y=0).
+        let true_box_width = 3 * vpb; // each box spans a full 48-voxel face row.
+
+        let mut cache = ChunkResolveCache::new();
+        let region = cache.widest_run_in_band(&scene, vpb, 0, band.0, band.1);
+        assert_eq!(
+            region, true_box_width,
+            "region widest_run must report the box's true 48-voxel width at far offset"
+        );
+        // And it equals the whole-grid reference at this (still f32-safe) far offset.
+        assert_eq!(
+            region,
+            whole_grid_widest_run(&scene, vpb, band),
+            "region widest_run must equal whole-grid at far offset"
+        );
+    }
+
     #[test]
     fn region_widest_run_matches_whole_grid_for_all_shapes() {
         for kind in [

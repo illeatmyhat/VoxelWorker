@@ -27,7 +27,7 @@ use voxel_worker::{
     SceneGridRenderer,
     HomeView, OnionFogRenderer, OrbitCamera, PanelState, Scene, SdfShape, SnapTween, ViewCubeElement,
     ViewCubeMenuRequest,
-    VoxExport, ViewCubeRenderer, VoxelGrid, COLOR_TARGET_FORMAT,
+    ViewCubeRenderer, VoxelGrid, COLOR_TARGET_FORMAT,
     VIEW_CUBE_VIEWPORT_PIXELS,
 };
 use voxel_worker::CuboidMeshRenderer;
@@ -348,11 +348,21 @@ impl WindowedState {
         panel_state
             .layer_range
             .rescale_to_grid_y(0, grid_y, shape.voxels_per_block);
-        let measured_diameter = grid.widest_run_in_band(
-            panel_state.layer_range.lower,
-            panel_state.layer_range.upper,
-        );
+        // Issue #20 Step 2: the diameter / scrubber readout reads the region-scoped,
+        // per-chunk `widest_run_in_band` (cross-seam stitched) rather than the
+        // assembled grid's whole-grid method — returning the SAME value (parity-proven
+        // in `chunk_cache::tests`) without depending on the monolithic grid object.
+        // We build the resolve cache here so the startup readout uses the same path the
+        // per-frame re-measure does; the chunks it resolves are cached for later reuse.
+        let mut chunk_resolve_cache = voxel_worker::chunk_cache::ChunkResolveCache::new();
         let measured_band = (panel_state.layer_range.lower, panel_state.layer_range.upper);
+        let measured_diameter = chunk_resolve_cache.widest_run_in_band(
+            &panel_state.scene,
+            panel_state.geometry.voxels_per_block,
+            0,
+            measured_band.0,
+            measured_band.1,
+        );
         println!(
             "resolved {} voxels for {:?} {:?}@{}",
             grid.occupied_count(),
@@ -452,7 +462,7 @@ impl WindowedState {
             loaded_material: None,
             face_resolver: FaceResolver::auto(),
             grid,
-            chunk_resolve_cache: voxel_worker::chunk_cache::ChunkResolveCache::new(),
+            chunk_resolve_cache,
             previous_leaf_index: None,
             previous_recentre_voxels: None,
             measured_diameter,
@@ -742,7 +752,6 @@ impl WindowedState {
             eprintln!("export .vox: grid exceeds the voxel cap; not exporting");
             return;
         }
-        let grid = resolve_scene(&self.panel_state.scene, self.panel_state.geometry.voxels_per_block);
 
         let representative = match &self.loaded_material {
             Some(loaded) => loaded.average_color,
@@ -757,7 +766,19 @@ impl WindowedState {
         else {
             return;
         };
-        let export = VoxExport::from_grid(&grid, representative);
+        // Issue #20 Step 2: build the `.vox` from the region-scoped, per-chunk path
+        // (`ChunkResolveCache::vox_export`) rather than the monolithic
+        // `resolve_scene` + `VoxExport::from_grid`. Each chunk's voxels are rebased
+        // to the composite recentre in i64 BEFORE the f32 downcast, so a far-offset
+        // scene preserves the voxel-centre `.5` instead of losing it to f32 rounding
+        // at large magnitude (the monolithic path's far-offset bug). For a near scene
+        // the two paths are byte-identical (proven by the vox-export parity tests).
+        let export = self.chunk_resolve_cache.vox_export(
+            &self.panel_state.scene,
+            self.panel_state.geometry.voxels_per_block,
+            0,
+            representative,
+        );
         match export.write(&path) {
             Ok(bytes) => println!(
                 "wrote {} ({} voxels, {} model(s), {} bytes)",
@@ -1017,8 +1038,7 @@ impl WindowedState {
         // Issue #12/#20 S6c-1: the layer scrubber's Y extent comes from the SCENE's
         // region dimensions, not the assembled grid object — identical to
         // `self.grid.dimensions[1]` for a chunkable scene (the grid is sized to
-        // `placed_region_dimensions`). The diameter re-measure below still reads the
-        // assembled `self.grid` (that's the diameter consumer, S6d).
+        // `placed_region_dimensions`).
         let grid_y = region_dimensions_for(
             &self.panel_state.scene,
             self.panel_state.geometry.voxels_per_block,
@@ -1026,8 +1046,18 @@ impl WindowedState {
         )[1];
         let current_band = (self.panel_state.layer_range.lower, self.panel_state.layer_range.upper);
         if current_band != self.measured_band {
-            self.measured_diameter =
-                self.grid.widest_run_in_band(current_band.0, current_band.1);
+            // Issue #20 Step 2: re-measure the diameter through the region-scoped,
+            // per-chunk `widest_run_in_band` (cross-seam stitched), NOT the assembled
+            // `self.grid`. Returns the SAME value as the whole-grid method
+            // (parity-proven) while consuming only the per-chunk grids. The chunks are
+            // already resident from the geometry rebuild, so this is cache HITs.
+            self.measured_diameter = self.chunk_resolve_cache.widest_run_in_band(
+                &self.panel_state.scene,
+                self.panel_state.geometry.voxels_per_block,
+                0,
+                current_band.0,
+                current_band.1,
+            );
             self.measured_band = current_band;
         }
 

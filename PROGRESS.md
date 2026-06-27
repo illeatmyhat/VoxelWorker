@@ -33,6 +33,41 @@ Autonomous build log. Orchestrator updates this after each milestone. Newest at 
 
 ## Log
 
+- **Wire region-scoped `.vox` export + diameter readout into the live app (Step 2) — Part of #20.**
+  The interactive export button and the diameter/scrubber readout now call the parity-proven
+  region-scoped (per-chunk) methods instead of the monolithic whole-grid path — decoupling those two
+  consumers from the assembled grid (Step-4 prep). Pure CPU; fully headless. Goldens 9/9 unchanged
+  (export/diameter don't touch rendering).
+  - **Export.** `main.rs::WindowedState::export_vox` now calls `ChunkResolveCache::vox_export` (drops
+    `resolve_scene` + `VoxExport::from_grid`; removed the now-unused `VoxExport` import from `main.rs`).
+  - **Diameter.** Both readout call sites now use `ChunkResolveCache::widest_run_in_band`: the startup
+    seed in `WindowedState::new` (the resolve cache is now built BEFORE the diameter so the startup
+    readout uses the same path, caching the chunks for reuse) and the per-frame re-measure in
+    `render`. `self.grid.widest_run_in_band(..)` is gone from `main.rs`.
+  - **FINDING — Low #1's "far-offset export fix" does not hold.** Routing export through `vox_export`
+    is behaviour-EQUIVALENT to the monolithic path, not a far-offset accuracy fix. Empirical sweep
+    (offsets 1k→1M blocks): region and monolithic exports are model-set-IDENTICAL at every offset
+    (same voxel set, only emission order differs), and at very large offsets BOTH lose the voxel-centre
+    `.5` identically. Reason: `.vox` export must bucket into the region-relative `[0, grid_x)` frame, so
+    both paths add `half_x` (≈ region half-width) in f32; once an axis exceeds ~2^24 voxels the `.5` is
+    unrepresentable regardless of path. The i64-rebase-before-downcast trick only helps the RENDER
+    frame (camera-relative floating origin keeps near chunks small), not export (which needs
+    absolute-ish coords). The rewiring's real value is the Step-4 decoupling. Tests reflect the truth:
+    `vox_export::far_offset_region_export_equals_monolithic` (model-set equality far out, both keep the
+    full per-chunk voxel count at a still-f32-safe offset) + `far_offset_region_export_round_trips_full_voxel_set`
+    (build → bytes → `dot_vox::load_bytes`, exercising the export wiring end-to-end minus the dialog),
+    and `chunk_cache::region_widest_run_correct_at_far_offset` (region readout == true 48-voxel box
+    width == whole-grid, far out). +3 lib tests (245 → 248, all green; clippy clean).
+  - **No dead-code deletions.** Both whole-grid methods are still consumed and so were LEFT:
+    `VoxelGrid::widest_run_in_band` (used by `src/bin/shot.rs`, `tests/palette_click.rs`, and as the
+    parity ground-truth) and `VoxExport::from_grid` (used by `shot.rs` and the parity tests). The
+    monolithic `resolve_scene`/`resolve_region` assembly stays — the renderer/fog still consume it
+    (Step 4, deferred).
+  - **Still needs an interactive smoke-test (user-AFK gap):** click File→Export `.vox`, confirm the
+    save dialog appears + writes a parseable `.vox`; and read the diameter stat in the panel as you
+    drag the layer-band scrubber to confirm it updates. The pure scene→`.vox` core and the diameter
+    function are verified headlessly; only the egui file-dialog + on-screen readout plumbing is untested.
+
 - **Out-of-core: spill resident chunks to `DiskChunkStore` (Step 3) — Part of #20.** Wires the
   standalone `DiskChunkStore` (S6b) into `ChunkResolveCache` so an over-cap resident set spills its
   least-recently-used chunks to disk (compressed via `chunk_storage`) and reloads them transparently on
