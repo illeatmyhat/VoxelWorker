@@ -189,17 +189,21 @@ in `edit`:**
   factory returns `Err(EditError::InstanceNotEditable { def: DefId })`), and the UI offers "Open
   definition" (which switches `EditTarget` to `OpenDefinition(def)`). This is **S3**.
 
-**Constraint / joint data seam (reserved now; solver is a future feature).** A node may carry
-**constraints/joints that reference other nodes by `NodeId`** — the foundation already mints stable
-ids, so the references are durable across undo/structural edits. We **reserve only the DATA seam**
-now: nodes can hold/reference joints to other `NodeId`s, and these serialize with the document.
+**Constraint / joint data seam (reserved now; solver is a future feature).** The scene carries
+**joints — N-ary relationships referencing other nodes by `NodeId`** — the foundation already mints
+stable ids, so the references are durable across undo/structural edits. We **reserve only the DATA
+seam** now (it serializes with the document); the SOLVER is a future feature (see ADR 0004).
+**Refined by ADR 0004's stress-test:** joints are **scene-owned and id-keyed** (not a per-node
+`Vec`) and **n-ary** — a curtain wall must `Span` ≥2 bastions, and an ADR 0004 `Issue`/`SpatialQuery`
+must be able to name an individual joint durably across undo; neither is expressible with a unary,
+positionally-addressed per-node joint.
 
 ```rust
-pub struct Node {
-    // …content/transform as above…
-    pub joints: Vec<Joint>,   // reserved seam: references to other nodes by NodeId
-}
-pub struct Joint { pub other: NodeId, pub kind: JointKind, /* params */ }
+pub struct JointId(u64);          // stable, minted from a document-owned counter (like NodeId)
+pub struct Node { /* …content/transform as above… */ }
+// A joint is a relationship, not a property of one node → scene-owned, id-keyed, and N-ary.
+pub struct Joint { pub id: JointId, pub refs: Vec<NodeId>, pub kind: JointKind, /* params */ }
+// scene owns `joints: SlotMap<JointId, Joint>` alongside the node arena.
 ```
 
 This makes `scene` a node tree **plus a relationship graph**, which is the common enabler for both
@@ -765,7 +769,7 @@ the `shot.rs` parallel path and the second LRU.
     then sculpt) onto it. Add the **control-surface `query(SpatialQuery)` + `diagnostics()`**
     (§6/G3) — contact/gap/overhang/connectivity/bounds over the region-scoped read path, plus the
     orphaned-override / unsatisfied-joint issue list. **Reserve the constraint/joint DATA seam**
-    (`Node.joints` referencing other `NodeId`s, §1) in the `scene` schema — **no solver**. *(These
+    (the scene-owned, id-keyed, n-ary joint graph referencing `NodeId`s, §1) — **no solver**. *(These
     are what the agent feedback loop and the future architectural-kit / constraint-solver features
     consume; the solver + kit are a separate future design doc.)*
 
