@@ -22,8 +22,10 @@
 use serde::{Deserialize, Serialize};
 
 use crate::camera::{HomeView, OrbitCamera, ProjectionMode};
-use crate::panel::{GeometryParams, LayerRange, MaterialChoice, PanelState};
+use crate::core_geom::MaterialChoice;
+use crate::panel::{LayerRange, PanelState};
 use crate::scene::Scene;
+use crate::voxel::GeometryParams;
 
 /// The whole persisted configuration. Every field is `#[serde(default)]` so a
 /// partial or older config still loads.

@@ -32,9 +32,9 @@
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
+use crate::core_geom::MaterialChoice;
 use crate::cuboid::{decompose_into_boxes, VoxelBox, VoxelRegion};
 use crate::frustum::{Aabb, Frustum};
-use crate::panel::MaterialChoice;
 use crate::renderer::{LayerBand, DEPTH_FORMAT, MSAA_SAMPLE_COUNT};
 use crate::texture_atlas::MaterialAtlas;
 use crate::voxel::VoxelGrid;

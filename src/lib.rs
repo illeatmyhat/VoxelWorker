@@ -48,8 +48,9 @@ pub use camera::{
     RollDir, SnapTween, ViewCubeElement, CUBE_FACES, POLE_EPSILON,
 };
 pub use gpu::GpuContext;
+pub use core_geom::MaterialChoice;
 pub use panel::{
-    build_panel, GeometryParams, LayerRange, MaterialChoice, PanelResponse,
+    build_panel, LayerRange, PanelResponse,
     PanelState,
 };
 pub use assets::{CubeFaceSlot, FaceProvenance, FaceTextures};
@@ -70,7 +71,8 @@ pub use settings::AppConfig;
 pub use spatial_index::{LeafEntry, LeafFingerprint, LeafSpatialIndex, VoxelAabb};
 pub use vox_export::VoxExport;
 pub use voxel::{
-    widest_run_in_band_over_chunks, SdfShape, ShapeKind, Voxel, VoxelGrid, VoxelProducer,
+    widest_run_in_band_over_chunks, GeometryParams, SdfShape, ShapeKind, Voxel, VoxelGrid,
+    VoxelProducer,
 };
 
 /// Surface / offscreen colour format used everywhere in the project.

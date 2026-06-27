@@ -488,9 +488,9 @@ fn compressed_binary_size(compressed: &CompressedChunk) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::panel::{GeometryParams, MaterialChoice};
+    use crate::core_geom::MaterialChoice;
     use crate::scene::{AssemblyDef, DefId, Node, NodeContent, NodePath, Part, Scene};
-    use crate::voxel::{SdfShape, ShapeKind, Voxel, VoxelGrid, VoxelProducer};
+    use crate::voxel::{GeometryParams, SdfShape, ShapeKind, Voxel, VoxelGrid, VoxelProducer};
 
     /// A pseudo-random generator (the same Numerical-Recipes LCG `cuboid.rs` uses),
     /// so the fuzz tests are deterministic without pulling in a `rand` dependency.

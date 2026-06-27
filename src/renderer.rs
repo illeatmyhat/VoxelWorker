@@ -18,8 +18,7 @@
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
-use crate::core_geom::CHUNK_BLOCKS;
-use crate::panel::MaterialChoice;
+use crate::core_geom::{MaterialChoice, CHUNK_BLOCKS};
 use crate::scene::{Point, Scene};
 use crate::voxel::VoxelGrid;
 
@@ -4040,7 +4039,7 @@ mod tests {
 
     // ---- issue #29 S3: per-object grid line geometry + gating ----
 
-    use crate::panel::MaterialChoice as Mc;
+    use crate::core_geom::MaterialChoice as Mc;
     use crate::scene::{Node, NodeContent, NodePath};
     use crate::voxel::ShapeKind;
     use crate::voxel::SdfShape;

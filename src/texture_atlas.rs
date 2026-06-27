@@ -42,7 +42,7 @@
 //! The packer therefore returns BOTH the full tile UV rect (for diagnostics) and
 //! the half-texel-inset sampling window the shader actually uses.
 
-use crate::panel::MaterialChoice;
+use crate::core_geom::MaterialChoice;
 
 /// Texels of replicated-edge gutter padded around every tile in the atlas. One
 /// texel is enough to absorb a single-texel filter/derivative spill at a cell

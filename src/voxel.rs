@@ -278,6 +278,34 @@ pub trait VoxelProducer {
     fn resolve(&self, grid: &mut VoxelGrid);
 }
 
+/// Geometry parameters — the *only* params that trigger a voxel rebuild.
+///
+/// The UI-side mirror of [`SdfShape`] (the panel edits this; `SdfShape::from_geometry`
+/// turns it into a producer). Sizes are in **whole blocks**; `voxels_per_block` is
+/// fineness only and never changes the object's block size (DATA.md "the density bug").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GeometryParams {
+    /// Selected primitive.
+    pub shape: ShapeKind,
+    /// Bounding-box size in whole blocks (X, Y, Z).
+    pub size_blocks: [u32; 3],
+    /// Voxels per block (chisel fineness). Default 16.
+    pub voxels_per_block: u32,
+    /// Tube wall thickness in whole blocks (used by [`ShapeKind::Tube`] only).
+    pub wall_blocks: u32,
+}
+
+impl Default for GeometryParams {
+    fn default() -> Self {
+        Self {
+            shape: ShapeKind::Cylinder,
+            size_blocks: [5, 1, 5],
+            voxels_per_block: 16,
+            wall_blocks: 1,
+        }
+    }
+}
+
 /// A single parametric SDF primitive: the first (and, in M2, only) producer.
 ///
 /// Sizes are stored in **whole blocks**; `voxels_per_block` (density) is fineness
@@ -314,11 +342,11 @@ fn default_shape_wall() -> u32 {
 }
 
 impl SdfShape {
-    /// Build the shape from the panel's [`GeometryParams`](crate::panel::GeometryParams).
+    /// Build the shape from the UI-side [`GeometryParams`].
     ///
     /// This is the single place geometry params become a producer; the split in
     /// `panel.rs` guarantees display/camera params never reach here.
-    pub fn from_geometry(geometry: crate::panel::GeometryParams) -> Self {
+    pub fn from_geometry(geometry: GeometryParams) -> Self {
         Self {
             kind: geometry.shape,
             size_blocks: geometry.size_blocks,

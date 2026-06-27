@@ -373,8 +373,9 @@ mod tests {
     // ===== Issue #20 S6d: region-scoped `.vox` export ============================
 
     use crate::chunk_cache::ChunkResolveCache;
-    use crate::panel::{GeometryParams, MaterialChoice};
+    use crate::core_geom::MaterialChoice;
     use crate::scene::{Node, NodeContent, NodePath, Scene};
+    use crate::voxel::GeometryParams;
 
     /// Parse a `.vox` byte stream into a per-model SORTED multiset of
     /// `(size, voxel (x, y, z, color))`, so two exports compare equal regardless of

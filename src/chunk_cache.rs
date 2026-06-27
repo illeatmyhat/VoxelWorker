@@ -734,7 +734,8 @@ impl ChunkResolveCache {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::panel::{GeometryParams, MaterialChoice};
+    use crate::core_geom::MaterialChoice;
+    use crate::voxel::GeometryParams;
     use crate::scene::{
         AssemblyDef, DefId, Node, NodeContent, NodePath, RegionBlocks,
     };

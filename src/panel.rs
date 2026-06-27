@@ -19,75 +19,9 @@
 
 use crate::block_palette::BlockPalette;
 use crate::camera::ProjectionMode;
+use crate::core_geom::MaterialChoice;
 use crate::scene::{DefId, Node, NodeContent, NodePath, Part, Point, Scene};
-use crate::voxel::{SdfShape, ShapeKind};
-
-/// Geometry parameters — the *only* params that trigger a voxel rebuild.
-///
-/// Sizes are in **whole blocks**; `voxels_per_block` is fineness only and never
-/// changes the object's block size (DATA.md "the density bug").
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct GeometryParams {
-    /// Selected primitive.
-    pub shape: ShapeKind,
-    /// Bounding-box size in whole blocks (X, Y, Z).
-    pub size_blocks: [u32; 3],
-    /// Voxels per block (chisel fineness). Default 16.
-    pub voxels_per_block: u32,
-    /// Tube wall thickness in whole blocks (used by [`ShapeKind::Tube`] only).
-    pub wall_blocks: u32,
-}
-
-impl Default for GeometryParams {
-    fn default() -> Self {
-        Self {
-            shape: ShapeKind::Cylinder,
-            size_blocks: [5, 1, 5],
-            voxels_per_block: 16,
-            wall_blocks: 1,
-        }
-    }
-}
-
-/// Procedural material choice. Selects which procedural texture (Stone/Wood/
-/// Plain) binds in the M4 texture-slice shader.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
-pub enum MaterialChoice {
-    #[default]
-    Stone,
-    Wood,
-    Plain,
-}
-
-impl MaterialChoice {
-    /// The number of distinct procedural materials (Stone/Wood/Plain). The
-    /// renderer's per-voxel base-colour uniform array is sized to this, and a
-    /// `material_id` is always `< MATERIAL_COUNT`.
-    pub const MATERIAL_COUNT: usize = 3;
-
-    /// The per-voxel `material_id` this choice stamps onto its voxels (ADR 0001
-    /// step 3 "Materials"). Stable, dense (`0..MATERIAL_COUNT`), so it indexes both
-    /// the renderer's base-colour uniform array and the procedural-texture table.
-    /// Stone = 0, Wood = 1, Plain = 2.
-    pub fn material_id(self) -> u16 {
-        match self {
-            MaterialChoice::Stone => 0,
-            MaterialChoice::Wood => 1,
-            MaterialChoice::Plain => 2,
-        }
-    }
-
-    /// The inverse of [`material_id`](Self::material_id): the choice for a stamped
-    /// id. Ids outside the known set fall back to [`Stone`](Self::Stone).
-    pub fn from_material_id(id: u16) -> Self {
-        match id {
-            0 => MaterialChoice::Stone,
-            1 => MaterialChoice::Wood,
-            2 => MaterialChoice::Plain,
-            _ => MaterialChoice::Stone,
-        }
-    }
-}
+use crate::voxel::{GeometryParams, SdfShape, ShapeKind};
 
 /// Layer-range scrubber state (issue #12).
 ///

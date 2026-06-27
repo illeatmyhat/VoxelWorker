@@ -1,7 +1,7 @@
 //! The scene (assembly) model — ADR 0001, sequence step 1.
 //!
 //! Today the app has exactly one producer, smuggled in through
-//! [`GeometryParams`](crate::panel::GeometryParams) (the SDF shape) plus a
+//! [`GeometryParams`](crate::voxel::GeometryParams) (the SDF shape) plus a
 //! `debug_clouds: bool` selector. ADR 0001 replaces that single-producer
 //! assumption with a **Scene**: an assembly graph of **nodes**, each wrapping a
 //! producer plus a placement. This module introduces that model and routes ALL
@@ -33,10 +33,10 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::core_geom::MaterialChoice;
 use crate::debug_clouds::DebugCloudField;
-use crate::panel::{GeometryParams, MaterialChoice};
 use crate::spatial_index::{LeafEntry, LeafFingerprint, LeafSpatialIndex, VoxelAabb};
-use crate::voxel::{SdfShape, VoxelGrid, VoxelProducer};
+use crate::voxel::{GeometryParams, SdfShape, VoxelGrid, VoxelProducer};
 
 /// Default +X spacing (in blocks) between successive instances of the same
 /// definition added via [`Scene::add_instance`], so a freshly-placed village
