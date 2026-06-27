@@ -12,10 +12,13 @@
 
 ## Context
 
-The app is v1 feature-complete: a Vintage Story chiseling planner (wgpu 29 / egui 0.34 / winit
-0.30) that composes parametric shapes into a 3D model and exports `.vox`. We are doing a
-**foundation rework before hundreds of features stack on top**. Correctness and extensibility
-dominate effort/token minimization.
+The app is feature-complete for its first workflow: a Vintage Story chiseling planner (wgpu 29 /
+egui 0.34 / winit 0.30) that composes parametric shapes into a 3D model and exports `.vox`. The
+project is **V0 pre-alpha** — nothing here is a shipped "v1"/"v2", and **breaking changes are
+allowed until further notice**. We are doing a **foundation rework before hundreds of features
+stack on top**, the largest of which is **AI agents composing arbitrarily complex buildings**
+through the `Intent` boundary (§6a). Correctness and extensibility dominate effort/token
+minimization.
 
 ### Locked trajectory constraints (decided by the product owner — not relitigated here)
 
@@ -31,9 +34,13 @@ dominate effort/token minimization.
    `AssemblyDef`/`DefId` + `NodeContent::Instance(DefId)` + `Group` recursion to build on.
 3. **No real-time collaboration, ever.** A simple **linear command stack with inverse commands**
    for undo/redo. No event-sourcing, no CRDTs.
-4. **Users save & share PROJECT FILES.** The document format is a **published interface**: version
-   tag + forward migration from v1. (This is the *opposite* of config back-compat, which the owner
-   explicitly does not care about — configs may break freely; shared documents may not.)
+4. **Users save & share PROJECT FILES.** The document format carries a **magic header + a
+   version/epoch tag from day one** (cheap insurance) and the loader **hard-errors on an
+   unrecognized tag** — it never silently misreads. But the project is **V0 pre-alpha: no migration
+   code is written yet, and pre-alpha project files may break freely** (the same posture as config —
+   memory: no-config-back-compat) until we declare a stable format. The tag is the seam that lets us
+   *introduce* migration the day we leave pre-alpha; it is not a promise of cross-version
+   compatibility now.
 5. **Anisotropic large scenes:** routinely >10,000 blocks horizontal (XZ), but vertical (Y) bounded
    to ~1,000–2,000 blocks. **Out-of-core horizontal streaming is foundational** — tile by XZ
    distance, keep full-Y columns resident. At this extent f32 precision dies, so the existing
@@ -66,10 +73,15 @@ consumption**.
 
 ### The debt this foundation must fix or supersede
 
-- **God-objects.** `Scene` (document + selection + resolve/chunk/frame-math/gizmo engine);
+- **God-objects.** The **legacy `Scene` god-object** (today's monolithic `scene.rs::Scene`:
+  document + selection + resolve/chunk/frame-math/gizmo engine — everything in one type);
   `WindowedState` (124 fields, 321-line `render()`, no controller/intent layer); `ChunkResolveCache`
   (a cache that accreted export/scrubber/renderer methods + a **second LRU** on top of
-  `DiskChunkStore`'s).
+  `DiskChunkStore`'s). This ADR **dissolves the legacy `Scene`** and **reclaims the name**: the new
+  clean, logic-free data layer is `scene::Scene` (§0/§1), and the legacy Scene decomposes INTO it
+  alongside `store` + `app_core`. Throughout this ADR, "legacy `Scene`" / "today's monolithic
+  `Scene`" means the god-object being dissolved; an unqualified `scene::Scene` means the new data
+  layer.
 - **`shot.rs` is a ~1700-line parallel re-implementation of the windowed render path** — the golden
   harness tests a *copy*, not the real app; every interactive bug escaped it. A shared headless
   **`AppCore`** used by BOTH the window and the screenshot tool is the keystone.
@@ -106,30 +118,45 @@ modules.
 
 ```
 core_geom    : VoxelGrid/VoxelRegion, Voxel, SdfShape, cuboid decompose, classify_cube_point,
-               material table, AND the streaming quantum CHUNK_BLOCKS (moved out of renderer.rs).
-               Pure; no egui/wgpu/winit.
-doc          : the document model — stable ids (NodeId/DefId), scene graph, part definitions,
-               sculpt override layers, producer registry, serialization (versioned). Pure.
+               block-palette/material table, AND the streaming quantum CHUNK_BLOCKS (moved out of
+               renderer.rs). Pure; no egui/wgpu/winit.
+scene        : the document DATA layer — stable ids (NodeId/DefId), scene-graph node tree PLUS a
+               relationship/constraint graph (nodes reference joints to other NodeIds, §1), part
+               definitions, sculpt override layers, producer registry, serialization (tagged). The
+               root type is `scene::Scene`. Clean & logic-free; reclaims the name from the dissolved
+               legacy `Scene` god-object. Pure.
 edit         : the command stack — Command trait + inverse, the linear journal, edit-mode/open-def
-               state machine. Depends on doc + core_geom. Pure.
-store        : per-part chunked sparse store, DiskChunkStore, residency manager, override+producer
-               compositor, resolve_region/resolve_chunk. Depends on doc + core_geom. Pure
-               (no GPU); this is where ChunkResolveCache's data role goes.
-app_core     : headless orchestrator (AppCore) — owns doc + edit + store + camera; applies commands,
-               drives invalidation→remesh, produces opaque per-chunk render items + occupancy.
-               Pure of windowing; depends on all above.  <-- THE KEYSTONE
+               state machine. Depends on scene + core_geom. Pure.
+store        : per-part chunked sparse store, ChunkStore backend trait (DiskChunkStore is one impl),
+               residency manager, override+producer compositor, resolve_region/resolve_chunk.
+               Depends on scene + core_geom. Pure (no GPU); this is where ChunkResolveCache's data
+               role goes.
+app_core     : headless orchestrator (AppCore) — owns scene + edit + store + camera; applies
+               intents→commands, answers spatial queries + diagnostics, drives invalidation→remesh,
+               produces opaque per-chunk render items + occupancy. Pure of windowing; depends on all
+               above.  <-- THE KEYSTONE
 gpu          : wgpu mesh upload/draw, fog, atlas. Consumes AppCore's opaque render items.
-ui           : egui panels/gizmo. Emits intents → commands. Depends on app_core (NOT vice-versa).
-bin/main     : windowed shell (winit) = AppCore + gpu + ui.
-bin/shot     : headless shell = AppCore + gpu (offscreen). SAME AppCore as main.
+ui/gizmos    : 3D-overlay interactive handles that hit-test in world/screen space — transform
+               gizmo, the ViewCube widget, point/axis manipulators. They share a uniform
+               hover/drag → Intent contract. Depends on app_core.
+ui/panels    : egui 2D surfaces — inspector, tree, export, layers. Emit intents. Depends on
+               app_core.
+bin/main     : windowed shell (winit) = AppCore + gpu + ui/{gizmos,panels} + live control socket.
+bin/shot     : headless shell = AppCore + gpu (offscreen), replays an Intent script. SAME AppCore.
 ```
 
-Resolves: god-objects (`Scene`/`WindowedState`/`ChunkResolveCache` decompose into doc + edit +
-store + app_core); wrong-way deps (`scene.rs→panel.rs` becomes `ui→app_core`; `CHUNK_BLOCKS`
-relocates to `core_geom`; `chunk_cache→vox_export` becomes `store`/`vox_export` both under
-`core_geom`). The shared `AppCore` retires `shot.rs`'s parallel render path.
+Resolves: god-objects (the legacy `Scene` / `WindowedState` / `ChunkResolveCache` decompose into
+`scene` + edit + store + app_core); wrong-way deps (`scene.rs→panel.rs` becomes `ui→app_core`;
+`CHUNK_BLOCKS` relocates to `core_geom`; `chunk_cache→vox_export` becomes `store`/`vox_export` both
+under `core_geom`). The shared `AppCore` retires `shot.rs`'s parallel render path. Note `ui` is two
+sibling sub-layers — `ui/gizmos` (3D, world/screen hit-testing) and `ui/panels` (2D egui) — that
+both depend only on `app_core` and both speak the same `Intent` boundary downward.
 
-### 1. Identity, scene graph & part/assembly modes
+### 1. Identity, scene graph (+ relationship graph) & part/assembly modes
+
+The `scene` layer is the clean data layer the legacy `Scene` god-object dissolves into. The root
+type is `scene::Scene`. It is a **node tree PLUS a relationship/constraint graph** (see "Constraint
+/ joint data seam" below).
 
 **Stable `NodeId` replaces positional `NodePath` as the identity of record.** `NodePath` was a
 positional path that invalidated on every structural edit; it cannot survive undo, multi-select, or
@@ -162,6 +189,26 @@ in `edit`:**
   factory returns `Err(EditError::InstanceNotEditable { def: DefId })`), and the UI offers "Open
   definition" (which switches `EditTarget` to `OpenDefinition(def)`). This is **S3**.
 
+**Constraint / joint data seam (reserved now; solver is a future feature).** A node may carry
+**constraints/joints that reference other nodes by `NodeId`** — the foundation already mints stable
+ids, so the references are durable across undo/structural edits. We **reserve only the DATA seam**
+now: nodes can hold/reference joints to other `NodeId`s, and these serialize with the document.
+
+```rust
+pub struct Node {
+    // …content/transform as above…
+    pub joints: Vec<Joint>,   // reserved seam: references to other nodes by NodeId
+}
+pub struct Joint { pub other: NodeId, pub kind: JointKind, /* params */ }
+```
+
+This makes `scene` a node tree **plus a relationship graph**, which is the common enabler for both
+**human assembly-constraints** (Fusion-style mate/joint) and **agent-driven building** (an agent
+expresses "this wall meets that floor" structurally, not by absolute coordinates). The
+constraint/joint **SOLVER and the parametric architectural kit are features-on-top** and belong in
+their own future design doc; we do **not** build the solver here — only the data seam so that
+adding it later is not a schema cascade.
+
 ### 2. Command / undo: linear journal with inverse commands
 
 Per locked constraint 3 — a **linear stack**, no event-sourcing/CRDT.
@@ -169,7 +216,7 @@ Per locked constraint 3 — a **linear stack**, no event-sourcing/CRDT.
 ```rust
 pub trait Command {
     /// Apply to the document + store; return the inverse needed to undo exactly.
-    fn apply(&self, doc: &mut Doc, store: &mut Store) -> Result<Box<dyn Command>, EditError>;
+    fn apply(&self, scene: &mut Scene, store: &mut Store) -> Result<Box<dyn Command>, EditError>;
     fn label(&self) -> &str;            // for the undo menu
     fn coalesce_key(&self) -> Option<CoalesceKey>;  // e.g. one drag = one undo
 }
@@ -180,9 +227,10 @@ pub struct CommandStack {
 }
 ```
 
-- **All document mutation flows through commands.** `ui` emits an *intent*; `app_core` turns it into
-  a `Command`, applies it, pushes the captured inverse. This is the single consistency point for
-  threading (§10).
+- **All document mutation flows through commands.** `ui/{gizmos,panels}` emit a serializable
+  *`Intent`* (§6a); `app_core` turns it into a `Command`, applies it, pushes the captured inverse.
+  This is the single consistency point for threading (§7) and the single automation/test/agent
+  surface (§6a).
 - **Sculpt strokes capture a sparse inverse delta, not a snapshot.** A `SculptStroke` command stores
   only the `(voxel_addr → prior_override_state)` pairs it overwrote (typically a few thousand), so
   undo is **O(stroke)**, touching only the chunks the stroke intersected. This is **S1**.
@@ -198,24 +246,41 @@ pub struct CommandStack {
 
 ### 3. Compositor: chunk-local payload, ordered override layers, producer registry, rotation, orphan policy
 
-#### 3a. Per-voxel payload becomes chunk-local integer (load-bearing representation change — G1)
+#### 3a. Per-voxel payload becomes chunk-local integer + categorical block-palette cell (load-bearing — G1 + materials FOUNDATIONAL)
 
 This is a **prerequisite** of the absolute-i64 store (§4) and of the override codec (§5), not a
-detail. Today `voxel.rs::Voxel` stores `world_position: [f32; 3]` (the absolute voxel centre);
-`chunk_storage::compress` already has to *reverse-engineer* the integer index out of that f32 (it
-debug-asserts a uniform per-axis `centre_fraction` and `floor()`s the position — `chunk_storage.rs`).
-At XZ~10k the f32 itself is lossy, so absolute storage in f32 is unsound.
+detail. Today `voxel.rs::Voxel` stores `world_position: [f32; 3]` (the absolute voxel centre, see
+`voxel.rs:99-107`); `chunk_storage::compress` already has to *reverse-engineer* the integer index
+out of that f32 (it debug-asserts a uniform per-axis `centre_fraction` and `floor()`s the position —
+`chunk_storage.rs`). At XZ~10k the f32 itself is lossy, so absolute storage in f32 is unsound.
 
-**Decision:** the per-voxel payload is **chunk-local integer coordinates + material**:
+**The categorical material/attribute model is ELEVATED from deferred to FOUNDATIONAL.** Today a
+voxel carries `material_id: u16` (`voxel.rs:106`) that is really a **3-value enum** (Stone/Wood/Plain
+⇒ 0/1/2, clamped ≤2 — `voxel.rs:71-72`) **plus the `GRID_OVERLAY_BIT` (`1 << 15`) render flag jammed
+into the same field** (`voxel.rs:82`, mirrored in two shaders). This is the wrong representation for
+agent-composed buildings, and it cannot be retrofitted later without touching the payload, the
+override codec, serialization, and meshing all at once — so it is foundational. The per-voxel cell
+carries a **block-palette ID + attributes**, replacing both the 3-material enum and the
+`GRID_OVERLAY_BIT`-in-`material_id` hack (the flag moves to a per-draw uniform, §3c).
+
+**Decision:** the per-voxel payload is **chunk-local integer coordinates + a categorical
+block-palette cell**:
 
 ```rust
 pub struct Voxel {
     pub local: [u16; 3],          // voxel index WITHIN the chunk (u8 suffices at the app default
                                   // density 16 → chunk extent 64; u16 leaves headroom for denser)
     pub block_local_coord: [u8; 3],
-    pub material_id: u16,         // real material only — the GRID_OVERLAY_BIT leak is gone (3c)
+    pub block_id: BlockId,        // categorical block-palette id (replaces the 3-material enum;
+                                  // foundational — the rich VS palette CONTENT is the deferred part)
+    pub attrs: BlockAttrs,        // per-voxel attributes (e.g. rotation/variant flags)
 }
 ```
+
+- The per-voxel categorical **capability** (a palette id + attributes, not a 3-value enum) is
+  **foundational**; only the *full VS block-palette table / picker UI* (the rich palette content)
+  stays a deferred feature. The `GRID_OVERLAY_BIT` is **not** in this payload at all — it is a
+  per-draw uniform (§3c).
 
 - The **absolute i64 origin lives ONLY in the chunk key** (`chunk_coord: [i64; 3]`), never in the
   per-voxel record. A chunk's stored content is position-independent of where the chunk sits.
@@ -226,6 +291,9 @@ pub struct Voxel {
 - This is what makes "absolute-i64 storage + i64-rebase-before-downcast" **exact** rather than merely
   "exact for near scenes". The region-scoped consumers (diameter / scrubber / `.vox` export) recover
   their integer indices directly from `local + chunk_coord` instead of `round(world_position + …)`.
+- The categorical `block_id` rides through the store, override codec (§5), and meshing as an opaque
+  palette index; `.vox` export maps it through the active block palette. This is exactly the per-voxel
+  CAPABILITY the agent-composition work consumes (it builds with named blocks, not 0/1/2).
 
 This change is sequenced as a **prerequisite of the absolute-storage phase** (Phase D), gated by the
 far-scene goldens added first (§G3 / Phase D0).
@@ -235,26 +303,34 @@ far-scene goldens added first (§G3 / Phase D0).
 A part definition resolves as an **ordered layer stack**:
 
 ```rust
-pub enum Layer {
-    Producer { producer: Box<dyn VoxelProducer>, op: CombineOp, material: MaterialId },
+pub enum Layer {                                       // ENUM, deliberately (see traits-vs-enums)
+    Producer { producer: Box<dyn VoxelProducer>, op: CombineOp, block: BlockId },
     Sculpt(SculptOverride),   // sparse force-on / force-off deltas, part-local (see 3e / §5)
 }
 pub enum CombineOp { Union, Subtract, Intersect }   // the existing enum, finally exercised
 ```
 
 Resolution of a chunk = fold the layers in order: producers stamp under their `CombineOp`; the
-sculpt override is applied **last** (force-on sets occupancy+material; force-off clears).
+sculpt override is applied **last** (force-on sets occupancy + categorical `block_id`; force-off
+clears).
+
+The **`Layer` kind** (`Producer` vs `Sculpt`) and **`CombineOp`** are kept as ENUMs **on purpose**
+(see "Traits vs enums", §3h): both are closed, small, serialized, and exhaustively matched in the
+fold — a trait object here would only add `dyn` indirection + `erased_serde` ceremony with no
+extension benefit. The *open* extension point (producers) is the trait `dyn VoxelProducer` nested
+inside the `Producer` arm.
 
 #### 3c. The `GRID_OVERLAY_BIT` leak is removed — overlay flag becomes a per-DRAW uniform
 
-The existing per-voxel `material_id` becomes the carrier of the **real material only**; the
-`GRID_OVERLAY_BIT` (`voxel.rs`, mirrored in `cuboid.wgsl` + `cuboid_loaded.wgsl`) is removed from the
-data field. The on-face-grid overlay is a **per-node render concern**, so it is carried as a
+The per-voxel cell carries the **categorical `block_id` only** (§3a); the `GRID_OVERLAY_BIT`
+(`1 << 15`, `voxel.rs:82`, mirrored in `cuboid.wgsl` + `cuboid_loaded.wgsl`) is removed from the
+data field entirely. The on-face-grid overlay is a **per-node render concern**, so it is carried as a
 **per-draw uniform** (one bool per chunk-mesh draw, set from the owning node's
 `grids.voxel_grid_on_faces`), **not** as a per-vertex attribute. Keeping it a per-draw uniform means
-`cuboid::decompose_into_boxes` stays **representation-agnostic** (it never sees the flag), the high
-bit is returned to `material_id`, and the 2-shader mirror is killed. (A per-vertex attribute would
-re-pollute the mesh vertex format with a render flag — the same category of leak we are removing.)
+`cuboid::decompose_into_boxes` stays **representation-agnostic** (it never sees the flag), the data
+field is freed for a real categorical id (not a 3-value enum sharing space with a render flag), and
+the 2-shader mirror is killed. (A per-vertex attribute would re-pollute the mesh vertex format with
+a render flag — the same category of leak we are removing.)
 
 #### 3d. Producer registry + chunk-windowed resolve (kills the 3-match-arm footgun; G5 precondition)
 
@@ -272,7 +348,7 @@ pub trait VoxelProducer: Send + Sync {
     /// A bounded producer lets invalidation/residency touch only intersecting chunks; an
     /// unbounded producer (e.g. DebugClouds) returns None and falls back to a wholesale clear.
     fn world_aabb_blocks(&self, xf: &NodeTransform) -> Option<Aabb64>;
-    fn serialize(&self) -> ProducerData;                                  // versioned (§5)
+    fn serialize(&self) -> ProducerData;                                  // tagged format (§5)
 }
 ```
 
@@ -287,7 +363,8 @@ pub trait VoxelProducer: Send + Sync {
   (`DebugClouds`) returns `None` and keeps the **wholesale-clear fallback** (its edits invalidate the
   whole resident region — acceptable because it is a debug/static field, not a sculpt target).
 - Adding a producer = register one impl. The existing `SdfShape` and `DebugClouds` become the first
-  two registrants.
+  two registrants. `VoxelProducer` is a **trait** (not an enum) precisely because it is an open,
+  extensible set with uniform behavior and real polymorphism (§3h).
 
 #### 3e. Sculpt overrides — part-local, address-anchored (codec specified in §5)
 
@@ -335,11 +412,38 @@ producer already fills, or a force-off sits where the producer no longer fills:
   (itself undoable). **Policy: never auto-delete; preserve, flag, offer one-click prune.** This is
   **S5**.
 
+#### 3h. Traits vs enums — the dispatch principle, applied
+
+A single rule decides every "trait or enum?" call in this foundation:
+
+> **Open, extensible set + uniform behavior + real polymorphism → trait. Closed, small,
+> serialized/matched set → enum.** Over-using `dyn` has real cost: pointer indirection,
+> non-inlineable calls, and (for anything serialized) `erased_serde`/type-registry ceremony — so a
+> trait object must earn its keep with genuine open-ended extension.
+
+**Traits** (open extension points):
+- **`VoxelProducer`** (§3d) — anyone can add a producer kind; uniform `resolve_into`.
+- **`Command`** (§2) — already a trait; an open, growing family of edits with a uniform apply/inverse.
+- **`Tool`** — interactive tools (sculpt / select / move / measure) sharing
+  `activate / handle_intent / preview / commit → Command`. **Many future features are tools**, so a
+  `Tool` trait + a tool registry is the deliberate extension point (the same shape as the producer
+  registry). A tool consumes `Intent`s and emits `Command`s; it never mutates the document directly.
+- **`ChunkStore` backend trait** — the residency layer talks to storage through a trait;
+  `DiskChunkStore` (RAM-LRU + disk spill) becomes **one impl**, leaving room for a future packed /
+  network-backed store without touching the residency manager.
+
+**Enums** (closed, serialized, exhaustively matched — kept as enums *on purpose*):
+- **`Intent`** (§6a) — it is the **replay/control boundary**; a trait object would wreck scripting
+  (no clean serialize, no exhaustive match, no stable on-disk form). Enum is mandatory here.
+- **The `Layer` kind** (`Producer` vs `Sculpt`, §3b) — a fixed two-arm fold.
+- **`CombineOp`** (`Union`/`Subtract`/`Intersect`) — a fixed, matched, serialized set.
+
 ### 4. Chunked sparse streaming store: anisotropic tiling, rebase-at-consume, unified residency
 
 **One residency layer, not two.** `ChunkResolveCache`'s second LRU (stacked on `DiskChunkStore`'s
-LRU) is removed. There is a single `ResidencyManager` owning the resident set; `DiskChunkStore`
-becomes its spill backend, not an independent cache. Eviction returns GPU buffers to a pool (ADR
+LRU) is removed. There is a single `ResidencyManager` owning the resident set; it talks to storage
+through the **`ChunkStore` backend trait** (§3h), with `DiskChunkStore` (RAM-LRU + disk spill) as the
+first impl — its spill backend, not an independent cache. Eviction returns GPU buffers to a pool (ADR
 0002 borrowed technique 4).
 
 **Anisotropic tiling (constraint 5).** Chunks remain `CHUNK_BLOCKS`-cubed for *meshing/storage*, but
@@ -386,21 +490,27 @@ scrubber, `.vox` export) read the per-chunk store over the active region, never 
 whole-grid. Scrubbing the layer-band is a **per-fragment clip on absolute-Y** (ADR 0002 matrix row) —
 no re-mesh — so a 10k-XZ scrub is interactive. This is **S7**.
 
-### 5. Serialization, versioning & migration (the published document interface)
+### 5. Serialization & format tagging (V0 pre-alpha — tag now, migrate later)
 
-Project files are a **versioned, additive document format**; configs remain free to break (memory:
-no-config-back-compat).
+The project is **V0 pre-alpha**: project files carry a **magic header + a version/epoch tag from day
+one** (cheap), the loader **hard-errors on an unrecognized tag** (never silently misreads), but **no
+migration code is written yet** and **pre-alpha files may break freely** — the same posture as config
+(memory: no-config-back-compat) — until we declare a stable format. There is no "v1→v2" anything; the
+tag exists so we can *introduce* migration the day we leave pre-alpha, not before.
 
 ```rust
 #[derive(Serialize, Deserialize)]
 struct ProjectFile {
-    format: &'static str,      // "voxelworker.project"
-    version: u32,              // 2 (this foundation). v1 had no tag → detected & migrated.
-    doc: DocV2,                // arena of defs/nodes (NodeId), layer stacks, sculpt overrides
+    magic: [u8; 4],            // b"VXWP" — reject anything else immediately
+    epoch: u32,               // format/epoch tag; the loader hard-errors on an unrecognized value
+    scene: Scene,             // arena of defs/nodes (NodeId), layer stacks, sculpt overrides, joints
 }
 ```
 
-- **Format:** a top-level header (magic + `version`) + the document body.
+- **Format:** a top-level header (magic + `epoch` tag) + the document body. The loader matches the
+  `magic` and the `epoch` and **returns a clear error on any unrecognized tag** rather than
+  attempting to reinterpret bytes. **No migration is written now**; cross-version migration is
+  deferred until we leave pre-alpha.
 
 - **Sculpt overrides use a DEDICATED sparse override codec (G2), not `chunk_storage::compress`.**
   The existing `chunk_storage::compress`/`decompress` consume an **f32 `VoxelGrid`** and
@@ -409,10 +519,10 @@ struct ProjectFile {
   not a centred resolved grid). So overrides keep the *conceptual* "sparse, chunk-keyed storage"
   reuse but get their own codec:
   - **force-on:** a per-chunk set of **sorted integer voxel keys** (chunk-local `[u16; 3]` packed to
-    a single sorted `u64` or delta-varint key list) + a **material palette** (palette index per
-    force-on key).
+    a single sorted `u64` or delta-varint key list) + a **block palette** (a `block_id` + attrs
+    palette index per force-on key — the categorical cell of §3a, not a 3-value material).
   - **force-off:** a **separate sorted key set** — force-off MUST be its own set, **NEVER a reserved
-    palette slot / sentinel material**. A sentinel material would re-pollute the very `material_id`
+    palette slot / sentinel block**. A sentinel block would re-pollute the very categorical `block_id`
     field §3c is cleaning, re-introducing a "meaning packed into a data field" leak.
   - **byte order is deterministic** (keys ascending, palette in first-seen order) so the encoding is
     canonical, and the codec has its **own round-trip byte-identity test** — that test **is** the
@@ -421,13 +531,13 @@ struct ProjectFile {
   - Large overrides stay compact (sorted keys + delta-varint + palette) and reload byte-identical.
   This is **S9**.
 
-- **Migration is a forward chain** `migrate_v1_to_v2(...) → migrate_v2_to_v3(...)`. v1 (no version
-  tag, single-geometry / `NodePath`-positional scene) loads via a v1 reader that builds a v2 doc: one
-  `AssemblyDef` with one `Producer` layer, fresh `NodeId`s minted. The loader **refuses to silently
-  reinterpret** an unknown future version (hard error with a clear message) rather than corrupt. This
-  is **S6**.
-- Each migration step has a **fixture test**: a checked-in v1 file → load → assert the resulting v2
-  doc. The published-interface contract is thus regression-guarded.
+- **No migration code is written yet (V0 pre-alpha).** The loader's whole contract right now is:
+  match `magic`, match `epoch`, and **hard-error on an unrecognized tag** with a clear message rather
+  than silently misread. Pre-alpha project files may break freely between epochs — we are not
+  promising cross-version compatibility until we leave pre-alpha. This is **S6**.
+- The seam that makes future migration cheap is exactly the tag: when we *do* declare a stable
+  format, an unrecognized older `epoch` becomes a dispatch into a forward-migration step instead of an
+  error. We pay nothing for that now beyond writing the four magic bytes and the `epoch` u32.
 
 ### 6. Headless `AppCore` + testing strategy (the keystone)
 
@@ -437,15 +547,27 @@ render path is **deleted**; `bin/shot` and `bin/main` both construct the same `A
 
 ```rust
 pub struct AppCore {
-    doc: Doc, edits: CommandStack, store: Store, camera: OrbitCamera,
+    scene: Scene, edits: CommandStack, store: Store, camera: OrbitCamera,
 }
 impl AppCore {
-    pub fn apply(&mut self, intent: Intent) -> Result<(), EditError>; // builds+applies a Command
+    // --- the control surface: intents + queries + diagnostics + render ---
+    pub fn apply_intent(&mut self, intent: Intent) -> Result<(), EditError>; // builds+applies a Command
     pub fn undo(&mut self); pub fn redo(&mut self);
+    pub fn get_state(&self) -> StateSnapshot;                  // serializable doc/selection snapshot
+    pub fn query(&self, q: SpatialQuery) -> Answer;           // structured, machine-readable (G3)
+    pub fn diagnostics(&self) -> Vec<Issue>;                  // machine- AND human-readable (G3)
     pub fn render_items(&mut self, frustum: &Frustum) -> Vec<ChunkRenderItem>; // opaque to gpu
+    pub fn render_png(&mut self, view: &ViewParams) -> Png;    // multi-view gestalt channel
     pub fn occupancy_region(&mut self, region: Aabb64) -> Occupancy;           // fog/scrubber/export
 }
 ```
+
+- **`query(SpatialQuery) -> Answer`** returns structured, machine-readable geometry/relationship
+  facts over the **resolved grid + scene** — contact / gap / overhang / connectivity / bounds — built
+  on the same region-scoped read path the existing diameter / scrubber / export consumers use (§4).
+- **`diagnostics() -> Vec<Issue>`** returns constraint + structural checks as a list that is BOTH
+  machine-readable (an agent's correct-step input) and human-readable (the same list surfaces in the
+  inspector for a person). Orphaned-override flags (§3g) and unsatisfied joints (§1) report here.
 
 - **The golden net becomes real:** because the screenshot tool now drives the *actual* `AppCore`,
   the golden PNGs test the real interactive path. Interactive bugs can no longer escape into the gap
@@ -458,44 +580,105 @@ impl AppCore {
   the §4 rebase-free store), we **add XZ~10k far-scene golden fixtures first** (e.g. a
   `--demo-village` placed at `offset_blocks ≈ [10000, 0, 10000]`), so the precision refactor ships
   **guarded** rather than unverified. This is **Phase D0**, a gate before the store/payload phase.
-- **Test layers:** (a) pure unit tests on `core_geom`/`doc`/`edit`/`store` (command inverse
-  round-trips, layer-fold correctness, the override-codec byte-identity round-trip = S9, migration
-  fixtures); (b) the golden-PNG harness over `AppCore` for the render feature matrix (ADR 0002),
-  **now including the far-scene fixtures**; (c) **stress-case integration tests S1–S10** as named
-  tests against `AppCore` headless (no GPU needed for S1/S2/S5/S6/S8/S9/S10; S4/S7 add a golden).
+- **Test layers:** (a) pure unit tests on `core_geom`/`scene`/`edit`/`store` (command inverse
+  round-trips, layer-fold correctness, the override-codec byte-identity round-trip = S9, the
+  tag/hard-error loader check); (b) the golden-PNG harness over `AppCore` for the render feature
+  matrix (ADR 0002), **now including the far-scene fixtures**; (c) **stress-case integration tests
+  S1–S10 as Intent scripts** against `AppCore` headless (the §6a scripted mode — no GPU needed for
+  S1/S2/S5/S6/S8/S9/S10; S4/S7 add a golden).
 
-### 7. Threading / ownership model (S10)
+### 6a. The `Intent` boundary — the automation / test / agent-control surface
 
-- **`AppCore` owns the document and the command stack on the main thread.** It is the **sole writer**
-  of `doc`/`edits`. No background thread mutates the document.
-- **Background work is read-only or produces detached artifacts handed back via a completion queue**
-  (ADR 0002 borrowed technique 1): asset scanning (`scan_worker`) and chunk meshing run on workers,
-  consuming an **immutable snapshot** (Arc) of the relevant def/chunk inputs, returning
-  `(chunk_coord, MeshData)` to the main thread for GPU upload.
-- **Edit-during-mesh consistency uses a per-scope monotonic revision stamped into the cache ENTRY,
-  not a global doc version.** A global doc version would mark *every* resident chunk stale on any
-  edit, starving far-chunk re-meshing (a far edit would force near chunks to re-mesh and vice-versa).
-  Instead each cache **entry** carries a per-scope (per-chunk / per-def-scope) monotonic revision; a
-  completion is stamped with the revision it was computed against; a stale completion (revision older
-  than the entry's current revision) is **discarded** and the chunk re-queued. A chunk is marked
-  **clean only when an epoch-matched result is INTEGRATED** (not when the job is dispatched). The
-  command stack is therefore never blocked by, and never inconsistent with, background
-  meshing/scanning. This is **S10**.
+`Intent` is a **serializable enum** and it is **THE single boundary through which all mutation
+flows**: `ui/gizmos` and `ui/panels` both emit `Intent`s, `AppCore::apply_intent` is the only door,
+and `Command` (the inverse-bearing journal entry) is built *from* an `Intent` (§2). Because there is
+exactly one serializable door, several capabilities **fall out with no new mechanisms**:
+
+1. **`shot` = replay an intent script → PNG.** Today's screenshot is just the **empty-script** case;
+   the general tool loads an `Intent` script, replays it through the real `AppCore`, and renders. No
+   parallel path (the §6 keystone), no new harness.
+2. **Scripted interaction tests.** The **S1–S10 cases become intent scripts**, so the golden harness
+   gains a **scripted mode**: interaction bugs (drag, select, open-definition, sculpt) are caught
+   **headlessly**, not just static-scene renders. This is the same net §6 describes, expressed as the
+   §6a scripts.
+3. **A live control socket (loopback).** The windowed app exposes a loopback socket that **pumps
+   received `Intent`s into its own event loop** — so an external driver controls the running app
+   through the identical door a human's gizmo drag uses.
+4. **An MCP server thin-wrapping that socket** — `apply_intent` / `undo` / `get_state` /
+   `screenshot` (and the §6 `query` / `diagnostics`). It is a *thin* wrapper: all logic lives in
+   `AppCore`; MCP only marshals.
+
+**Phasing:** (i) serializable `Intent` + headless replay first — this **doubles as the interaction
+test net**; (ii) then the live loopback socket; (iii) then the MCP wrapper.
+
+This makes the **`AppCore` keystone pull triple duty**: the real app, the test net, and the agent
+driver, all behind one door. The hard requirement that buys all three is that the surface be
+**deterministic and replayable** — an `Intent` script must reproduce the same scene (and, with a
+fixed view, the same pixels) every run. (This is why `Intent` is an enum, not a trait object — §3h.)
+
+### 7. Async / responsiveness model (S10)
+
+The whole point is that **edits, undo/redo, and camera always feel instant**, even mid-rebuild on a
+10k-XZ scene. The model splits work across thread classes by cost and bounds every main-thread touch.
+
+**Main thread — only cheap, bounded work:**
+- input → `Intent` → `Command::apply`, where `apply` **ONLY** mutates the node tree, writes the
+  sparse sculpt delta, and **MARKS chunks dirty** — it does **NOT** resolve or mesh inline. (That is
+  what makes undo/redo and edits feel instant: an edit is a tree mutation + a dirty mark, never a
+  re-resolve.)
+- run egui UI; issue GPU draws;
+- drain a **budgeted** slice of completed worker results;
+- submit a **bounded** amount of GPU upload.
+
+**Worker pool — heavy, embarrassingly parallel per chunk (rayon-style):**
+- **resolve** (producers via `resolve_into` + override fold, §3b/§3d) and **mesh** (cuboid
+  decomposition, ADR 0002) as **per-chunk jobs**, each consuming an **immutable `Arc` snapshot** of
+  the relevant def/chunk inputs (no background thread ever mutates the document — `AppCore` is the
+  sole writer of `scene`/`edits`).
+- **prioritized:** in-frustum / nearest-camera / just-edited chunks first.
+- **cancellable via a revision stamp:** a job is computed against a revision; a **stale-epoch result
+  is discarded** and the chunk re-queued. A chunk is **clean only when an epoch-matched result is
+  INTEGRATED**, never at dispatch.
+
+**I/O threads — never on the main thread:**
+- chunk spill/load, project save, and `.vox` export run off-thread.
+- for **>10k-XZ scenes, prefetch chunks ahead of horizontal camera motion** and **evict behind** (the
+  anisotropic XZ residency policy, §4).
+
+**Integration discipline (this is what kills hitches):**
+- drain completions under a **per-frame time budget (~2 ms)** plus a **bounded GPU-upload budget**, so
+  a big rebuild **amortizes across frames** instead of stalling one.
+- **never `device.poll(Wait)` on the main thread;** use **async readback** for `shot` / export.
+
+**Optimistic sculpt feedback (the one feel special-case):** on a sculpt stroke, render the touched
+stroke region **immediately** — a tiny bounded local remesh or a lightweight overlay — while the full
+per-chunk re-resolve completes off-thread and then **replaces** the optimistic patch.
+
+**Tie back to S10 (the per-scope revision invariant — unchanged, this is its model):** `AppCore` as
+the **sole document writer** + **`Arc` snapshots** to workers + the **revision-stamped completion
+queue** IS exactly this model. Edit-during-mesh consistency uses a **per-scope monotonic revision
+stamped into the cache ENTRY, not a global doc version** — a global version would mark *every*
+resident chunk stale on any edit, starving far-chunk re-meshing (a far edit forcing near chunks to
+re-mesh and vice-versa). Each cache **entry** carries a per-scope (per-chunk / per-def-scope)
+revision; a completion is stamped with the revision it was computed against; a stale completion is
+**discarded** and the chunk re-queued; a chunk is **clean only when an epoch-matched result is
+INTEGRATED**. The command stack is therefore never blocked by, and never inconsistent with,
+background meshing/scanning. This is **S10**.
 
 ## Acceptance criteria — stress-case walkthrough (S1–S10)
 
 | # | Stress case | How the design satisfies it |
 |---|---|---|
-| **S1** | Undo a single sculpt stroke on a FAR chunk (XZ ~10k) | `SculptStroke` stored a **sparse inverse delta** (only overwritten `(addr→prior)` pairs); undo applies it, dirtying only the stroke's chunks → `incremental_rebuild_plan` re-meshes just those via `resolve_into(chunk_box)` (§3d). Chunk-local integer payload (§3a) + absolute-i64 store means the far edit is exact and never touched other chunks. **O(stroke), exact restore.** (§2, §3a, §3d, §4) |
+| **S1** | Undo a single sculpt stroke on a FAR chunk (XZ ~10k) | `SculptStroke` stored a **sparse inverse delta** (only overwritten `(addr→prior cell)` pairs, the cell being the categorical `block_id`+attrs of §3a); undo applies it, dirtying only the stroke's chunks → `incremental_rebuild_plan` re-meshes just those via `resolve_into(chunk_box)` (§3d). Chunk-local integer payload (§3a) + absolute-i64 store means the far edit is exact and never touched other chunks. **O(stroke), exact restore.** (§2, §3a, §3d, §4) |
 | **S2** | Edit a def with ~50 instances | One `Command` mutates the `AssemblyDef`. Instances *reference* the def, so propagation is free; invalidation fans out to the 50 instance placements' world-AABBs (via `world_aabb_blocks`, §3d) → only **intersected chunks** re-mesh. **One undoable command.** (§1, §2, §3d, §4) |
 | **S3** | Sculpt an INSTANCE | `EditTarget::Assembly` disables geometry tools; the command factory returns `EditError::InstanceNotEditable`; UI offers **"Open definition"** → `EditTarget::OpenDefinition(def)`. **Disallowed, redirected.** (§1) |
 | **S4** | Move + 90° rotate a SCULPTED part | Overrides are **part-local**; the `NodeTransform` gains a **24-orientation lattice rotation enum** (§3f, its own milestone) that composes in i64 and rebases at consumption; resampling is an exact index permutation, serialization stays byte-stable. **Overrides move with the part; positions exact.** (§3f, §4) |
 | **S5** | Change base producer with anchored overrides | Overrides are **address-anchored, not occupancy-anchored**: kept verbatim, redundant/no-op ones retained, out-of-AABB ones **flagged `orphaned`** and rendered; explicit undoable **prune** offered. **Never silently dropped.** (§3g) |
-| **S6** | Load v1 file into v2 build | Header `version` detected (v1 = absent tag); `migrate_v1_to_v2` builds a v2 doc (one def, one producer layer, fresh `NodeId`s); unknown future version = hard error, never silent corruption. **Migrates cleanly.** (§5) |
+| **S6** | Load a file written by a different format epoch | The format is **tagged (magic + `epoch`)** and the loader **refuses to silently misread**: a recognized tag loads, an unrecognized tag is a **hard error** with a clear message — never silent corruption. **Cross-version migration is deferred until we leave pre-alpha** (V0: pre-alpha files may break freely). **Tagged, never misread.** (§5) |
 | **S7** | Scrub layer-band on 10k-XZ scene | Band clip is a **per-fragment discard on absolute-Y** — no re-mesh; consumers read the **region-scoped** store, not a whole-grid. **Interactive, no full re-mesh.** (§4) |
 | **S8** | Sculpt stroke that GROWS the bbox | Chunks keyed by **absolute i64** coords with chunk-local integer payload (§3a); store is rebase-free; the floating origin is **sticky/quantized** (§4) so growing the extent does not move it; only touched chunks change. **Cache not nuked.** (§3a, §4) |
-| **S9** | Save/share large sculpt overrides | Overrides use the **dedicated integer-delta codec** (§5): sorted force-on keys + palette, a **separate** sorted force-off set (no sentinel material), deterministic byte order, **own byte-identity round-trip test**. **Compact, exact.** (§5) |
-| **S10** | Scan assets + mesh while editing | `AppCore` is sole document writer (main thread); workers consume **Arc snapshots**, return completions stamped with a **per-scope cache-entry revision**; a chunk is clean only when an **epoch-matched result is integrated**; stale completions discarded. **Command stack stays consistent; far chunks not starved.** (§7) |
+| **S9** | Save/share large sculpt overrides | Overrides use the **dedicated integer-delta codec** (§5): sorted force-on keys + a **block palette** (categorical `block_id`+attrs), a **separate** sorted force-off set (no sentinel block), deterministic byte order, **own byte-identity round-trip test**. **Compact, exact.** (§5) |
+| **S10** | Scan assets + mesh while editing | `Command::apply` only mutates the tree + marks chunks dirty (no inline resolve/mesh), so edits feel instant; resolve + mesh run as **prioritized, cancellable per-chunk worker jobs** on **Arc snapshots**; completions drain under a **~2 ms + bounded-GPU-upload per-frame budget** (never `poll(Wait)` on main); results are stamped with a **per-scope cache-entry revision**, a chunk is clean only when an **epoch-matched result is integrated**, stale completions discarded. **Always responsive; command stack consistent; far chunks not starved.** (§7) |
 
 ## Migration sequence (incremental, behind the golden net)
 
@@ -505,11 +688,12 @@ where a feature row explicitly allows it.** Reuse is maximized; the only outrigh
 the `shot.rs` parallel path and the second LRU.
 
 **Phase A — Layering + `AppCore` extraction (no behavior change). [ships first; gates everything]**
-1. Move `CHUNK_BLOCKS` → `core_geom`; move domain types out of `panel.rs` into `doc`; break
-   `chunk_cache→vox_export` by relocating both under the new layering. (Pure moves; goldens prove
-   no change.)
-2. Extract `AppCore` from `WindowedState`/`Scene`: pull the resolve/chunk/frame-math out of the
-   god-objects into `app_core`/`store`. `WindowedState` becomes a thin shell.
+1. Move `CHUNK_BLOCKS` → `core_geom`; move domain types out of `panel.rs` into the new `scene` layer;
+   break `chunk_cache→vox_export` by relocating both under the new layering. **Dissolve the legacy
+   `Scene` god-object and reclaim the name:** the clean data layer is `scene::Scene`; split `ui` into
+   `ui/gizmos` (3D) + `ui/panels` (2D). (Pure moves; goldens prove no change.)
+2. Extract `AppCore` from `WindowedState` / the legacy `Scene`: pull the resolve/chunk/frame-math out
+   of the god-objects into `app_core`/`store`. `WindowedState` becomes a thin shell.
 3. **Re-point `bin/shot` at `AppCore`; delete its parallel render path.** *(This makes the golden net
    real — the single highest-leverage step; do it as early as possible so every later phase is
    guarded by the actual path.)* **Reuse:** cuboid mesher, fog, camera math, `DiskChunkStore`.
@@ -520,22 +704,32 @@ the `shot.rs` parallel path and the second LRU.
    ephemeral tree-render projection. **Parallelizable** with C once A lands. **Reuse:** existing tree
    widget (recompute paths on render).
 
-**Phase C — Command stack + intent→command wiring.**
-5. Add the `Command` trait + `CommandStack`; route the existing `PanelResponse` intents through
-   `AppCore::apply`/`undo`/`redo`. Convert today's in-place mutations to commands incrementally
+**Phase C — Serializable `Intent` boundary + command stack + the headless replay/test net.**
+5. Define the **serializable `Intent` enum** (§6a) and route the existing `PanelResponse` intents (now
+   from both `ui/gizmos` and `ui/panels`) through `AppCore::apply_intent`/`undo`/`redo`; add the
+   `Command` trait + `CommandStack`. Convert today's in-place mutations to commands incrementally
    (move/add/delete/rename first — each a small command with an obvious inverse).
+5b. **Headless `Intent`-script replay + scripted interaction tests (§6a, phase i).** Make `shot` a
+   general intent-script replay (the old screenshot = empty script), and recast **S1–S10 as intent
+   scripts** so the golden harness gains a scripted mode. This is the interaction test net; it lands
+   **early** so every later phase is guarded by scripted-interaction goldens, not just static renders.
+   *(The live loopback socket and the MCP wrapper, §6a phases ii/iii, come after the foundation is in
+   place — they are pure thin wrappers over this same door.)*
 
 **Phase D — Store unification + chunk-local payload + rebase-free + incremental remesh consumed.**
 - **D0 (GATE — G3): add XZ~10k far-scene golden fixtures FIRST.** Before any payload/store change,
   add far-scene goldens (e.g. `--demo-village` at `offset ≈ [10000, 0, 10000]`) so the keystone
   precision refactor ships **guarded**. The current goldens are near-only (`tests/golden.rs`).
-6. **Chunk-local integer payload (G1, prerequisite):** change `Voxel` from f32 `world_position` to
-   chunk-local integer `local` + material; the absolute i64 origin lives only in the chunk key; f32
-   is produced only at consumption. (Unblocks exact absolute storage and the §5 override codec.)
-7. Collapse the two LRUs into one `ResidencyManager` over `DiskChunkStore`; key chunks by **absolute
-   i64**; stop pre-rebasing on store, rebase at consumption only; make the floating origin
-   **sticky/quantized** and decoupled from composite extent; **keep density as a cache-clearing
-   key**. **(Fixes S8/cache-nuke.)**
+6. **Chunk-local integer payload + categorical cell (G1, prerequisite; materials FOUNDATIONAL):**
+   change `Voxel` from f32 `world_position` to chunk-local integer `local`, and replace the 3-value
+   `material_id` (+ the `GRID_OVERLAY_BIT` hack) with a categorical **`block_id` + `attrs`** cell; the
+   absolute i64 origin lives only in the chunk key; f32 is produced only at consumption. (Unblocks
+   exact absolute storage, the §5 override codec, and agent-composed buildings. The rich VS palette
+   table / picker UI stays the deferred feature.)
+7. Collapse the two LRUs into one `ResidencyManager` over the **`ChunkStore` backend trait**
+   (`DiskChunkStore` as the first impl); key chunks by **absolute i64**; stop pre-rebasing on store,
+   rebase at consumption only; make the floating origin **sticky/quantized** and decoupled from
+   composite extent; **keep density as a cache-clearing key**. **(Fixes S8/cache-nuke.)**
 8. **Consume `incremental_rebuild_plan`:** renderer re-meshes only dirty chunks. (This completes ADR
    0002 #20 Step 4, the deferred per-chunk GPU residency.) **Reuse:** `incremental_rebuild_plan`
    (finally wired), `DiskChunkStore`, the per-chunk mesher.
@@ -550,9 +744,10 @@ the `shot.rs` parallel path and the second LRU.
   **This precedes the sculpt and residency-dependent incremental claims** (S1/S2/S8) — without the
   chunk window, "re-resolve dirty chunks" is O(part_volume × dirty_chunks). **Parallelizable** with
   D/E (different module) but must land **before** Phase G.
-10. Exercise `CombineOp::{Subtract,Intersect}` in the layer fold; **remove `GRID_OVERLAY_BIT` from
-    `material_id`** — move the overlay flag to a **per-draw uniform** (not a per-vertex attribute),
-    keeping `decompose_into_boxes` representation-agnostic; update both shaders. Golden-gated.
+10. Exercise `CombineOp::{Subtract,Intersect}` in the layer fold; **move the overlay flag to a
+    per-draw uniform** (not a per-vertex attribute) and **delete `GRID_OVERLAY_BIT` from both shaders**
+    (`cuboid.wgsl` + `cuboid_loaded.wgsl`) — the payload already dropped it in D6 — keeping
+    `decompose_into_boxes` representation-agnostic. Golden-gated.
 11. **Rotation milestone (G4 — its own milestone, golden-gated):** promote `NodeTransform` with a
     **24-orientation `LatticeOrientation` enum** (type-level, not general affine); add
     (a) exact index-permutation resampling, (b) rotated-chunk conservative-cover fan-out,
@@ -564,23 +759,43 @@ the `shot.rs` parallel path and the second LRU.
     `chunk_storage::compress`; `SculptStroke` command with sparse inverse delta. **(S1/S2.)** Add the
     orphan policy + prune command. **(S5.)** (Depends on F0's `resolve_into` for O(stroke).)
 
-**Phase H — Part/assembly edit modes.**
-13. `EditTarget` state machine; instance-edit rejection + "Open definition". **(S3.)**
+**Phase H — Part/assembly edit modes + `Tool` registry + control-surface queries/diagnostics.**
+13. `EditTarget` state machine; instance-edit rejection + "Open definition". **(S3.)** Introduce the
+    **`Tool` trait + registry** (§3h) and port the existing interactive tools (select/move/measure,
+    then sculpt) onto it. Add the **control-surface `query(SpatialQuery)` + `diagnostics()`**
+    (§6/G3) — contact/gap/overhang/connectivity/bounds over the region-scoped read path, plus the
+    orphaned-override / unsatisfied-joint issue list. **Reserve the constraint/joint DATA seam**
+    (`Node.joints` referencing other `NodeId`s, §1) in the `scene` schema — **no solver**. *(These
+    are what the agent feedback loop and the future architectural-kit / constraint-solver features
+    consume; the solver + kit are a separate future design doc.)*
 
-**Phase I — Serialization v2 + migration.**
-14. Versioned `ProjectFile`; the override codec's **byte-identity round-trip test (= S9)**;
-    `migrate_v1_to_v2` + fixture tests. **(S6/S9.)**
+**Phase I — Serialization: tag + magic + hard-error (V0 pre-alpha; migrations deferred).**
+14. Add the `ProjectFile` **magic + `epoch` tag**; loader **hard-errors on an unrecognized tag**
+    (the S6 check); add the override codec's **byte-identity round-trip test (= S9)**. **No migration
+    code is written** — pre-alpha files may break freely until we leave pre-alpha. **(S6/S9.)**
 
-**Phase J — Threading hardening.**
-15. **Per-scope cache-entry revision** stamping (not a global doc version); Arc snapshots; chunk
-    clean only on **integrated, epoch-matched** result; stale-discard. **(S10.)** (Much of the worker
-    scaffolding exists in `scan_worker`/ADR 0002 async meshing — this formalizes the invariant.)
+**Phase J — Async/responsiveness hardening (the full §7 model).**
+15. Move resolve+mesh fully onto **prioritized, cancellable per-chunk worker jobs** over **Arc
+    snapshots**; enforce the main-thread **integration budget (~2 ms drain + bounded GPU upload)** and
+    **never `poll(Wait)`** (async readback for `shot`/export); add I/O-thread **prefetch-ahead /
+    evict-behind** for >10k-XZ horizontal motion; add **optimistic sculpt feedback** (immediate
+    bounded local remesh/overlay replaced by the off-thread re-resolve). Land the **per-scope
+    cache-entry revision** invariant (not a global doc version): chunk clean only on **integrated,
+    epoch-matched** result; stale-discard. **(S10.)** (Much of the worker scaffolding exists in
+    `scan_worker`/ADR 0002 async meshing — this formalizes and completes the model.)
 
-**Parallelizable:** B∥(start of C); F0 + registry (step 9/F0) ∥ D/E; the migration fixtures (I) can be
-authored anytime after B. **Sequential bottlenecks:** A3 (real golden net) gates everything;
-**D0 (far-scene goldens) gates D6/D7 (the payload + rebase-free store)**; D (rebase-free store) +
-**F0 (producer `resolve_into`)** both gate G (sculpt); D also gates E (residency); the rotation
-milestone (F11) gates S4.
+**Phase K — Agent control: live socket + MCP wrapper (§6a phases ii/iii).**
+16. Add the **loopback control socket** the windowed app pumps into its event loop, then the **MCP
+    server** thin-wrapping it (`apply_intent`/`undo`/`get_state`/`query`/`diagnostics`/`screenshot`).
+    Pure thin wrappers over the Phase C door — all logic stays in `AppCore`. *(WFC / architectural-kit
+    / constraint-SOLVER features build ON these seams; they are out of scope here, see Consequences.)*
+
+**Parallelizable:** B∥(start of C); F0 + registry (step 9/F0) ∥ D/E; the serialization tag (I) can be
+authored anytime after B. **Sequential bottlenecks:** A3 (real golden net) **and C5b (the Intent
+replay/test net)** gate everything after them; **D0 (far-scene goldens) gates D6/D7 (the payload +
+rebase-free store)**; D (rebase-free store) + **F0 (producer `resolve_into`)** both gate G (sculpt);
+D also gates E (residency); the rotation milestone (F11) gates S4; the Phase K socket/MCP requires
+the Phase C `Intent` door + the §6 query/diagnostics surface (H13).
 
 ## Consequences
 
@@ -591,22 +806,41 @@ milestone (F11) gates S4.
   changes**, not re-architectures — the foundation's whole point.
 - **The golden net tests the real app** (one `AppCore`) **and now covers far scenes**, closing both
   the parallel-path gap and the never-tested far-precision case.
-- The per-voxel payload is **chunk-local integer**, so absolute-i64 storage is exact at XZ~10k, not
-  merely "exact near the origin".
-- God-objects decompose into a strictly layered, AI-navigable codebase (D5); adding a producer/
-  command/tool is a registration, not a 3-arm edit.
-- Far-edge edits, big scenes, and bbox growth no longer nuke the cache (sticky/quantized origin); undo
-  is O(stroke) (chunk-windowed `resolve_into`).
-- Shared project files have a real versioned contract with a byte-identity-tested override codec and
-  tested migration.
+- The per-voxel payload is **chunk-local integer** carrying a **categorical block-palette cell**
+  (`block_id`+attrs), so absolute-i64 storage is exact at XZ~10k *and* voxels carry real named blocks
+  (not a 3-value enum sharing a field with a render flag) — the capability agent-composed buildings
+  need, foundational rather than a retrofit.
+- God-objects decompose into a strictly layered, AI-navigable codebase (D5); adding a producer /
+  command / **tool** / **chunk-store backend** is a registration against a trait, not a 3-arm edit;
+  closed sets (`Intent`, `Layer`, `CombineOp`) stay serializable enums (§3h).
+- **One serializable `Intent` door makes `AppCore` pull triple duty** — real app, headless
+  interaction-test net (S1–S10 as scripts), and agent driver (live socket + MCP) — with no new
+  mechanisms; the agent feedback loop is **data-primary** (`query`/`diagnostics` over exact
+  geometry + relationships) with multi-view render as the secondary gestalt channel, and the same
+  diagnostics serve human inspection.
+- **The async model keeps the app responsive under load:** edits/undo are a tree-mutate + dirty-mark
+  (never inline resolve/mesh), heavy work is prioritized cancellable per-chunk jobs, and a per-frame
+  integration budget amortizes big rebuilds — far-edge edits, big scenes, and bbox growth no longer
+  nuke the cache (sticky/quantized origin); undo is O(stroke) (chunk-windowed `resolve_into`).
+- Shared project files have a **magic + epoch tag** and a byte-identity-tested override codec; the tag
+  is the cheap seam that makes future migration a dispatch rather than a rewrite (none written yet,
+  V0 pre-alpha).
+- **The `scene` layer is a node tree + a relationship/constraint graph** (nodes reference joints to
+  other `NodeId`s), reserving the seam for human assembly-constraints and agent-driven building
+  without committing to a solver now.
 
 **Costs more**
 - Up-front extraction (Phase A), the `NodeId` arena (Phase B), the **chunk-local payload migration
   (D6)**, and the **producer-trait redesign (F0)** are pure-foundation work paid before the payoff.
 - Every mutation now goes through a command (more boilerplate per edit); each command must define a
   correct inverse (tested).
-- Maintaining the versioned format + the dedicated override codec + migration chain is ongoing tax on
-  the document interface.
+- Maintaining the dedicated override codec + the tagged format is ongoing tax on the document
+  interface (the migration chain itself is deferred — V0 pre-alpha).
+- Elevating materials to a foundational categorical block-palette cell means the payload, override
+  codec, serialization, and meshing all carry `block_id`+attrs from day one (paid before the rich
+  palette feature exists).
+- Reserving the constraint/joint data seam + the `query`/`diagnostics` surface is foundation work
+  whose payoff (assembly constraints, agent loops) lands only when the deferred features are built.
 - The single-`AppCore` constraint means the windowed and headless shells must stay genuinely thin.
 - Rotation is a whole milestone (conservative-cover fan-out + rotation-aware indexing), not a
   one-liner.
@@ -618,9 +852,24 @@ milestone (F11) gates S4.
 - **Free (non-lattice) rotation/scale with voxel resampling** — the rotation milestone (§3f) ships
   only the 24 axis-aligned lattice rotations as a type-level enum (exact index permutation,
   byte-stable serialization); arbitrary affine + interpolating resampling is a later layer.
-- **Multi-material picker for parts / VS palette block table** beyond the current procedural set.
+- **The full VS block-palette table / picker UI** (the rich palette *content*). The per-voxel
+  categorical CAPABILITY (`block_id`+attrs) is **foundational** (§3a) and **not** deferred — only the
+  populated palette table + picker UI is.
 - **In-part parametric construction tree** (booleans/lathe/array history) — the ordered layer stack
   is the seam it will slot into.
+- **The constraint/joint SOLVER and the parametric architectural kit** — `scene` reserves only the
+  joint DATA seam (§1); the solver + kit are features-on-top with their own future design doc.
+- **WFC (wave-function-collapse)** — deferred, and scoped narrowly as a **regular-detail / material
+  FILL producer** (deterministic, seeded), **not** a composition mechanism. It consumes the reserved
+  seams (the `VoxelProducer` registry for fill, the categorical block-palette cell) as a future
+  feature; it is not part of this foundation.
+
+**Forward-looking note (the seams these features consume):** WFC, the architectural kit, and the
+constraint SOLVER are all **deferred features that build on seams reserved here** — the `Intent`
+control surface (§6a) + `query`/`diagnostics` (§6/G3) for agent-driven composition, the
+categorical block-palette cell (§3a) and `VoxelProducer` registry (§3d) for WFC fill, and the
+`scene` joint graph (§1) for assembly constraints. Reserving the seams now (cheap) avoids the
+retrofit cascade later; building the features is separate design-doc work.
 
 ## Alternatives considered
 
@@ -643,8 +892,13 @@ milestone (F11) gates S4.
   fight the part/assembly *definition vs reference* model, which is a graph, not a flat entity soup.
 - **Event-sourcing / CRDT for undo or document state.** Explicitly forbidden by locked constraint 3
   (no real-time collaboration, ever). A linear command stack with inverse commands is simpler,
-  O(stroke) for sculpt undo, and trivially serializable. Event logs would bloat shared files and
-  complicate migration for zero benefit here.
+  O(stroke) for sculpt undo, and trivially serializable. Event logs would bloat shared files for zero
+  benefit here.
+- **Writing a versioned migration chain now (`migrate_v1_to_v2`, …).** Rejected: the project is V0
+  pre-alpha (locked constraint 4) — pre-alpha files may break freely. We pay only for the cheap
+  insurance (magic + `epoch` tag + hard-error on an unrecognized tag), and defer all migration code
+  until we declare a stable format. The tag is the seam that makes adding migration later a dispatch,
+  not a rewrite.
 - **World-space sculpting / world-anchored overrides.** Rejected: it breaks the part/assembly rule
   (overrides must live in the definition's local frame to propagate to instances — S2) and breaks S4
   (overrides would not follow a moved/rotated part). Part-local, address-anchored overrides are
@@ -652,11 +906,11 @@ milestone (F11) gates S4.
 - **Reusing `chunk_storage::compress` for sculpt overrides.** Rejected: `compress` consumes an f32
   `VoxelGrid` and debug-asserts a uniform per-axis `centre_fraction` (`chunk_storage.rs`), which
   integer force-on / force-off deltas do not satisfy. A dedicated integer-delta codec (sorted keys +
-  palette + separate force-off set) is required; only the *concept* of sparse chunk-keyed storage is
-  reused.
-- **Force-off as a reserved palette slot / sentinel material.** Rejected: it re-pollutes the
-  `material_id` field with a non-material meaning — the same class of leak as `GRID_OVERLAY_BIT` that
-  §3c removes. Force-off is a **separate sorted key set**.
+  block palette + separate force-off set) is required; only the *concept* of sparse chunk-keyed
+  storage is reused.
+- **Force-off as a reserved palette slot / sentinel block.** Rejected: it re-pollutes the categorical
+  `block_id` field with a non-block meaning — the same class of leak as `GRID_OVERLAY_BIT` that §3c
+  removes. Force-off is a **separate sorted key set**.
 - **f32-absolute per-voxel payload in an absolute-i64 store.** Rejected: at XZ~10k the f32 centre is
   lossy, so absolute storage in f32 is unsound. The payload must be chunk-local integer (§3a) with
   the absolute origin in the chunk key only.
@@ -669,3 +923,15 @@ milestone (F11) gates S4.
   is used instead (§7).
 - **Keep `shot.rs` as a parallel render path.** Rejected outright: it is the reason the golden net
   tested a copy; a shared `AppCore` is the keystone of this entire ADR.
+- **`Intent` as a trait object (`Box<dyn Intent>`).** Rejected: `Intent` is the replay/control
+  boundary (§6a) — it must serialize cleanly, round-trip byte-stably, and be exhaustively matched.
+  A trait object would wreck scripting (no clean serialize without `erased_serde`/registry ceremony,
+  no exhaustive match, no stable on-disk form). It stays a serializable **enum** (§3h). Conversely,
+  the *open* sets (`VoxelProducer`, `Command`, `Tool`, `ChunkStore` backend) are traits — the
+  traits-vs-enums rule (§3h) decides each by openness, not by reflex.
+- **Deferring the categorical material model (keep the 3-value enum + `GRID_OVERLAY_BIT` for now).**
+  Rejected: the categorical block-palette cell touches the payload, override codec, serialization, and
+  meshing simultaneously (§3a) — retrofitting it after sculpt/serialization ship is a cascade across
+  every one of those. The per-voxel CAPABILITY is therefore foundational; only the rich palette
+  content/picker is deferred. (The `GRID_OVERLAY_BIT`-in-`material_id` hack at `voxel.rs:82` is the
+  exact "meaning in a data field" leak this removes.)
