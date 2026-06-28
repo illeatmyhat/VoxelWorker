@@ -379,41 +379,23 @@ impl Store {
     pub fn resolve_region(&mut self, scene: &Scene, voxels_per_block: u32, lod: u32) -> VoxelGrid {
         debug_assert_eq!(lod, 0, "S2 only resolves full resolution (lod 0)");
 
-        // The render floating origin (ADR 0002 Decision 2 / S4b) IS the composite
-        // recentre offset `resolve_region` subtracts to centre the composite on the
-        // origin. Binding the cache to it makes every chunk come out ALREADY rebased
-        // by `resolve_chunk_rebased` — with the subtraction done in i64 BEFORE the f32
-        // downcast, so a far-placed scene keeps full f32 precision (the S1 speckle is
-        // gone). For a near scene this is bit-identical to the previous f32 subtract
-        // (the recentre is integer-block-aligned and positions are small), so the
-        // goldens are unchanged.
-        let recentre_voxels = scene.recentre_voxels_for_resolve(voxels_per_block);
-        self.rebind_if_changed(voxels_per_block, recentre_voxels);
-
-        let region_dimensions = scene.placed_region_dimensions(voxels_per_block);
+        // Thin wrapper over the [`bind_region`](Self::bind_region) primitive (A2c):
+        // bind the cache to the composite recentre/floating origin (ADR 0002
+        // Decision 2 / S4b) and make every covering chunk resident — the only step
+        // needing `&mut self` — then assemble the union of the resident chunks'
+        // voxels. Each chunk comes out ALREADY rebased by `resolve_chunk_rebased`,
+        // with the recentre subtracted in i64 BEFORE the f32 downcast, so a
+        // far-placed scene keeps full f32 precision (the S1 speckle is gone). For a
+        // near scene this is bit-identical to the previous direct f32 subtract (the
+        // recentre is integer-block-aligned and positions are small), so the goldens
+        // are unchanged. The covering chunks are visited in the same z,y,x order the
+        // bind resolved them in, so the assembled voxel order is identical too.
+        let region_dimensions = self.bind_region(scene, voxels_per_block, lod);
         let mut output = VoxelGrid::new(region_dimensions);
-
-        let Some((min_chunk, max_chunk)) = scene.covering_chunk_range(voxels_per_block) else {
-            // No leaf has an intrinsic size (a Part-only scene with no Tools): no
-            // composite AABB, so there are no chunks — an empty recentred grid,
-            // exactly as `resolve_region` returns for the same scene.
-            return output;
-        };
-
-        for chunk_z in min_chunk[2]..=max_chunk[2] {
-            for chunk_y in min_chunk[1]..=max_chunk[1] {
-                for chunk_x in min_chunk[0]..=max_chunk[0] {
-                    let chunk = self.chunk_for_current_binding(
-                        [chunk_x, chunk_y, chunk_z],
-                        scene,
-                        voxels_per_block,
-                        lod,
-                    );
-                    // The cached chunk is already rebased to the floating origin
-                    // (= recentre), so its voxels drop straight into the output.
-                    output.occupied.extend_from_slice(&chunk.occupied);
-                }
-            }
+        for grid in self.covering_chunk_grids(scene, voxels_per_block, lod) {
+            // The cached chunk is already rebased to the floating origin
+            // (= recentre), so its voxels drop straight into the output.
+            output.occupied.extend_from_slice(&grid.occupied);
         }
         output
     }
@@ -442,7 +424,7 @@ impl Store {
     /// The grids are **borrowed** from the cache (`&VoxelGrid`), so the returned
     /// `Vec` borrows `self` immutably for its lifetime. Resolving misses needs
     /// `&mut self`, so binding + resolving happens FIRST (in
-    /// [`bind_and_collect_region`](Self::bind_and_collect_region), all-mut), and the
+    /// [`bind_region`](Self::bind_region), all-mut), and the
     /// borrows are gathered only AFTER every covering chunk is resident (so the
     /// returned slice is all cache HITs — no interleaved mut/shared borrow). The
     /// resolved chunks stay CACHED, so a later [`resolve_region`] reuses them.
@@ -454,7 +436,7 @@ impl Store {
     ) -> Vec<([i32; 3], &VoxelGrid)> {
         // Bind to the recentre + resolve/resident every covering chunk (the only
         // step needing `&mut self`); after this the gather below is all HITs.
-        let _region_dimensions = self.bind_and_collect_region(scene, voxels_per_block, lod);
+        let _region_dimensions = self.bind_region(scene, voxels_per_block, lod);
 
         let Some((min_chunk, max_chunk)) = scene.covering_chunk_range(voxels_per_block) else {
             return Vec::new();
@@ -498,7 +480,7 @@ impl Store {
         band_min: u32,
         band_max: u32,
     ) -> u32 {
-        let region_dimensions = self.bind_and_collect_region(scene, voxels_per_block, lod);
+        let region_dimensions = self.bind_region(scene, voxels_per_block, lod);
         crate::voxel::widest_run_in_band_over_chunks(
             region_dimensions,
             self.covering_chunk_grids(scene, voxels_per_block, lod),
@@ -524,7 +506,7 @@ impl Store {
         voxels_per_block: u32,
         lod: u32,
     ) -> ([u32; 3], Vec<&[Voxel]>) {
-        let region_dimensions = self.bind_and_collect_region(scene, voxels_per_block, lod);
+        let region_dimensions = self.bind_region(scene, voxels_per_block, lod);
         let occupied = self
             .covering_chunk_grids(scene, voxels_per_block, lod)
             .map(|grid| &grid.occupied[..])
@@ -532,11 +514,17 @@ impl Store {
         (region_dimensions, occupied)
     }
 
-    /// Bind the cache to the composite recentre + density (as `resolve_region`
-    /// does) and ensure every covering chunk is resolved + resident, returning the
-    /// region's voxel dimensions. After this, [`covering_chunk_grids`] yields the
-    /// resident covering chunks (all cache HITs) in the recentred frame.
-    fn bind_and_collect_region(
+    /// **The bound-region primitive (ADR 0003 store seam).** Bind the cache to the
+    /// composite recentre/floating origin + density for `(scene, voxels_per_block)`
+    /// and ensure every covering chunk is resolved + resident, returning the
+    /// region's voxel dimensions. This is the shared `&mut self` step the four
+    /// consumer-shaped reads ([`resolve_region`](Self::resolve_region),
+    /// [`resident_render_chunks`](Self::resident_render_chunks),
+    /// [`widest_run_in_band`](Self::widest_run_in_band),
+    /// [`bound_region_occupied`](Self::bound_region_occupied)) are thin wrappers
+    /// over. After this, [`covering_chunk_grids`](Self::covering_chunk_grids) yields
+    /// the resident covering chunks (all cache HITs) in the recentred frame.
+    fn bind_region(
         &mut self,
         scene: &Scene,
         voxels_per_block: u32,
@@ -564,7 +552,7 @@ impl Store {
     }
 
     /// Iterate the per-chunk grids covering the scene's region, in chunk order.
-    /// Assumes [`bind_and_collect_region`](Self::bind_and_collect_region) has
+    /// Assumes [`bind_region`](Self::bind_region) has
     /// already resolved + resident every covering chunk at the cache's current
     /// binding (so these are all map lookups, no resolves), and that the cache is
     /// bound to the recentre (so the voxels are in the recentred frame).
