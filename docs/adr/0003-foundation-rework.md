@@ -148,7 +148,10 @@ consumption**.
   `vox_export`.
 - **Leaks:** a `GRID_OVERLAY_BIT` (`1 << 15`) packed into the `material_id` u16 (a render flag in a
   data field, mirrored in 2 shaders — see `voxel.rs::GRID_OVERLAY_BIT`); 3 coordinate frames
-  reconciled by comment-arithmetic; "extent-changing edit nukes the whole cache" (the
+  reconciled by comment-arithmetic (the half-block `leaf_lattice_shift` correction an *implicit-center*
+  shape needs for odd sizes — **now resolved-by-design** once shapes are **corner/face-anchored point
+  shapes** that make the shift identically zero by construction, see §3i); "extent-changing edit nukes
+  the whole cache" (the
   `ChunkResolveCache` rebinds on a *floating-origin / density* change — `chunk_cache.rs::rebind_if_changed`
   — and chunks are stored pre-rebased against the composite recentre); `incremental_rebuild_plan` is
   **computed but not consumed** (renderer re-meshes wholesale on edit).
@@ -317,6 +320,9 @@ pub enum JointKind { /* …existing kinds…, */ HostedOnDatum { datum: NodeId }
 - A datum's anchor may be **terrain-relative** (a named site level defined relative to imported grade),
   which is the seam that ties datums to **writable terrain (F3)**. The terrain *import format* remains
   the open research item (unchanged).
+- **Point-anchored shapes host on datums through this same seam.** A `ShapePoint::HostedOnDatum`
+  reference (§3i) lets a shape's corner/face anchor name a datum, so the relational tier can drive
+  sub-block carving geometry off a level/grid/axis exactly like it drives part placement.
 - This is a **data seam only** — datums serialize and reference durably; the editing/solver UX that
   drives them is features-on-top.
 
@@ -537,6 +543,15 @@ makes the *semantics* — N layers, ordered, later-wins — load-bearing rather 
 ADR 0004's junction/patch work stacks several corrective layers on one definition and on the assembly
 root, §1. Surfaced by ADR 0004's requirements — see the joint-arity cross-reference.)
 
+**Sub-block boolean composition IS the kit-authoring workflow (a supported authoring path).** Within a
+part definition, child shapes (the point-anchored primitives of §3i) compose through these same ordered
+`CombineOp` layers (`Union`/`Subtract`/`Intersect`) at **fraction-of-block placement** (§3f(0)) — e.g.
+**subtract a ¼-block slot out of a corner**. This yields **parametric sub-block features that are exact
+at voxel resolution, density-independent, and land on VS chisels at export** — the **no-code alternative
+to writing a bespoke `VoxelProducer` per sub-block part**. It is the within-part detail tier (§3i), and
+it is exactly what the kit-of-parts authoring composes with: a part definition is a boolean stack of
+point-anchored primitives placed at chisel-unit offsets, not a hand-written producer.
+
 The **`Layer` kind** (`Producer` vs `Sculpt`) and **`CombineOp`** are kept as ENUMs **on purpose**
 (see "Traits vs enums", §3h): both are closed, small, serialized, and exhaustively matched in the
 fold — a trait object here would only add `dyn` indirection + `erased_serde` ceremony with no
@@ -597,6 +612,18 @@ encoded with a **dedicated integer-delta codec** (§5 G2) — explicitly **not**
 `chunk_storage::compress`, which consumes an f32 `VoxelGrid` and debug-asserts a uniform
 `centre_fraction` that integer force-on/force-off deltas do not satisfy.
 
+**A sculpt/override layer FIXES its own chisel density (the density-change rule — pinning the
+previously-unspecified case).** A sculpt layer's keys are integer voxel addresses in a
+**density-DEPENDENT** space (unlike *placement*, which §3f(0) made density-INDEPENDENT fraction-of-block),
+so a density change cannot leave the stored layer untouched. The rule: each override layer **records the
+chisel density it was authored at**; on a density change the layer is **integer-rescaled** when the new
+density is an **integer multiple** of the old (the keys multiply by the integer factor exactly, lossless);
+otherwise it requires a **flagged opt-in resample** — the same lossy-resample opt-in posture as a
+non-lattice rotation of a sculpted part (§3f case 3), surfaced with a warning, never silent and never the
+default. **Distinguish the two coordinate kinds clearly:** *placement* is density-INDEPENDENT
+fraction-of-block (§3f(0)) and survives a density change for free; a *resolved sculpt/override* lives in
+the density-dependent voxel space and follows this fix-and-rescale rule.
+
 #### 3f. Rotation is its own milestone (G4) — three-way angle model (geometry is NOT 24-limited)
 
 **Arbitrary angle is a PRODUCER-PARAMETER concern, not a transform limit.** A common
@@ -630,8 +657,33 @@ deferred lossy-resample opt-in. The `LatticeOrientation` enum below governs **on
 
 Today `NodeTransform` is **translation-only** (`scene.rs`: `offset_blocks: [i64; 3]`, with a
 `// future: rotation, scale` marker) and the resolver composes placement by **pure i64 addition**
-(`scene.rs::walk_nodes` sums `offset_blocks` down the tree). Promoting to affine is **not** a
-one-substep change; it is a **dedicated milestone** (Phase F-rot) with three golden-gated parts:
+(`scene.rs::walk_nodes` sums `offset_blocks` down the tree). Two extensions ride here — a
+non-gating sub-block translation term (item (0), an early data change) and ROTATION, which (unlike (0))
+is **not** a one-substep change but a **dedicated milestone** (Phase F-rot) with three golden-gated parts
+((a)–(c)):
+
+- **(0) Sub-block placement is a FRACTION-OF-BLOCK chisel-unit offset (NOT a milestone gate; the
+  kit-authoring primitive — driven by sub-block boolean kit-of-parts authoring, ADR 0004 §A/§G9).**
+  `NodeTransform` gains a third translation term **alongside** `offset_blocks: [i64; 3]`:
+  `offset_chisels: [i32; 3]` — an integer count of **chisel-units, a fixed `CHISELS_PER_BLOCK = 16`
+  fraction of a block** (1/16-block per unit, matching VS's 16 chisels/block), **density-INDEPENDENT**.
+  We choose **fixed-denominator chisel units over an exact rational**: a `[i32; 3]` count of 16ths is
+  simpler, serializes byte-stably as plain integers, composes by pure i64 addition like `offset_blocks`,
+  and maps **exactly** onto a VS micro-block at export — whereas a general rational buys arbitrary
+  fineness we do not need and a non-canonical encoding. **Document coordinates are NEVER stored in raw
+  voxels** (the *density trap*): a voxel offset is density-dependent, so storing placement in voxels
+  would couple the saved document to the density render-setting; a fraction-of-block is density-free, so
+  the same document resolves identically at any density. At resolve, `offset_chisels` folds into the
+  existing placement math next to `offset_blocks·d + lattice_shift` as
+  `offset_chisels × (d / CHISELS_PER_BLOCK)` → an integer **voxel** offset (exact whenever the density
+  `d` is a multiple of `CHISELS_PER_BLOCK = 16`, which the app default 16 and any denser integer-multiple
+  density satisfy), so **the store/chunking are unaffected** — sub-block placement is purely a finer
+  rebase term, not a new coordinate space. This **mirrors the `Point.offset_voxels` precedent already in
+  the code** ("the field exists so a future sub-block placement is a data change, not a rewrite",
+  `scene.rs:381`) — but here the field is **BUILT, not merely reserved**, because it is the primitive the
+  kit-of-parts authoring composes with (the within-part granularity, §3i / §3b). (Sub-block placement is
+  *within-part* detail authoring; inter-part mating stays block-aligned — see §3i "within-part vs
+  between-part".)
 
 - **(a) order-48 signed-permutation orientation as a TYPE-level enum (F1 — widened from 24 to 48)**
   — `NodeTransform` gains `rotation: LatticeOrientation`, **plus a handedness/reflection bit** so the
@@ -701,6 +753,49 @@ A single rule decides every "trait or enum?" call in this foundation:
   (no clean serialize, no exhaustive match, no stable on-disk form). Enum is mandatory here.
 - **The `Layer` kind** (`Producer` vs `Sculpt`, §3b) — a fixed two-arm fold.
 - **`CombineOp`** (`Union`/`Subtract`/`Intersect`) — a fixed, matched, serialized set.
+
+#### 3i. Point-defined (corner/face-anchored) shapes — retires the 3-frame leak; the within-part/between-part granularity split
+
+Driven by the kit-of-parts authoring need (composing primitives with boolean ops at sub-block
+resolution, ADR 0004 §A/§G9), shapes stop being **`size_blocks` + an implicit center anchor** and
+become **parameterized by a small set of TYPED REFERENCE POINTS**. This is a **parameterization layer
+ABOVE the `VoxelProducer` trait (§3d), not a payload change** — the points DERIVE the `(size, origin)`
+the producer already consumes, so the producer's resolved output is unchanged:
+
+```rust
+pub enum ShapeAnchors {                          // derives (size, origin) for the existing producer
+    Box      { anchor: ShapePoint, corner: ShapePoint },              // 2-point: anchor + opposite corner
+    Cylinder { end_a: ShapePoint, end_b: ShapePoint, radius: ChiselLen }, // 2-point axis + radius (also Tube)
+    Arc      { a: ShapePoint, b: ShapePoint, c: ShapePoint },         // 3-point arc / plane / wedge
+}
+// A reference point carries FRACTION-OF-BLOCK coordinates (§3f(0)): block lattice + chisel-unit offset.
+pub enum ShapePoint {
+    Inline { offset_blocks: [i64; 3], offset_chisels: [i32; 3] },     // a typed inline point
+    HostedOnDatum(NodeId),                                            // names a Datum/anchor (F4 seam, §1)
+}
+```
+
+- **Corner/face anchoring makes `leaf_lattice_shift` identically ZERO by construction.** The
+  implicit-center model forced a half-block shift for odd `size_blocks` (the comment-arithmetic that
+  reconciled the 3 coordinate frames — the flagged Leak). A point-anchored shape places its corner/face
+  exactly on the lattice (or on a chisel-unit sub-grid via §3f(0)), so **there is no half-block
+  correction to carry** — this is the **intended RESOLUTION of the 3-frame "Leak"**, and that leak can
+  be retired once shapes are corner-anchored (recorded in the Leaks note above).
+- **Points are inline OR `HostedOnDatum` references (the F4 Datums seam, §1)** so the relational/solver
+  tier can **NAME a shape's anchor** — a shape corner can be hosted on a datum/level/grid exactly like a
+  part, riding the same id-keyed durable graph.
+- **The Phase-C `Intent` enum gains additive serializable variants** — `SetShapePoints` /
+  `SetAnchor` / `SetCorner` — and `SetOffset` becomes **derived/anchor-based** (moving the anchor moves
+  the shape), all additive growth on the §6a serializable boundary.
+
+**Within-part vs between-part granularity (load-bearing — state it clearly).** The fraction-of-block
+sub-block placement (§3f(0)) applies to **child-shape placement WITHIN a part DEFINITION**
+(carving/detail authoring — the chisel-unit anchoring of the points above). **CONNECTORS** (a part's
+mating interface, ADR 0004 §A) and **INTER-PART JOINTS** (§1) stay on the **integer BLOCK lattice**, so
+the ADR 0004 joint solver remains **integer-exact**. The rule: **sub-block where you carve,
+block-aligned where you mate.** This reconciles ADR 0004's "connectors stay block-clean" (still true —
+between-part mating is unchanged) with sub-block kit authoring (a new within-part freedom): the two
+granularities live in different tiers and never meet.
 
 ### 4. Chunked sparse streaming store: anisotropic tiling, rebase-at-consume, unified residency
 
@@ -818,6 +913,12 @@ struct ProjectFile {
     **S9** golden (encode → bytes → decode → byte-identical override layer + bytes stable across
     runs).
   - Large overrides stay compact (sorted keys + delta-varint + palette) and reload byte-identical.
+  - **Each override layer records the chisel DENSITY it was authored at** (§3e): the keys are in
+    density-dependent voxel space, so the stored density is needed to integer-rescale the layer on a
+    density change (lossless when the new density is an integer multiple; a flagged lossy-resample
+    opt-in otherwise). This is the override-codec counterpart to placement being stored as
+    density-INDEPENDENT fraction-of-block (§3f(0)) — placement needs no such tag, a resolved override
+    does.
   - The **same codec serializes both the part-local sculpt overrides and the scene-root
     assembly-scoped override layers (§1)** — they differ only in anchoring frame (definition-local
     vs world), not in encoding — so assembly patches reload byte-identical too.
@@ -898,8 +999,12 @@ impl AppCore {
 
 `Intent` is a **serializable enum** and it is **THE single boundary through which all mutation
 flows**: `ui/gizmos` and `ui/panels` both emit `Intent`s, `AppCore::apply_intent` is the only door,
-and `Command` (the inverse-bearing journal entry) is built *from* an `Intent` (§2). Because there is
-exactly one serializable door, several capabilities **fall out with no new mechanisms**:
+and `Command` (the inverse-bearing journal entry) is built *from* an `Intent` (§2). New edit kinds are
+**additive serializable variants** on this enum — the point-anchored shapes of §3i add
+`SetShapePoints` / `SetAnchor` / `SetCorner`, and the legacy `SetOffset` becomes **derived/anchor-based**
+(it moves the anchor rather than carrying a raw center offset) — additive growth, no boundary rewrite.
+Because there is exactly one serializable door, several capabilities **fall out with no new
+mechanisms**:
 
 1. **`shot` = replay an intent script → PNG.** Today's screenshot is just the **empty-script** case;
    the general tool loads an `Intent` script, replays it through the real `AppCore`, and renders. No
