@@ -19,13 +19,13 @@ use voxel_worker::scan_worker::{
 use voxel_worker::{
     chrome_zone_left_click_action, classify_cube_point, create_depth_view, create_msaa_color_view,
     procedural_material_average_color, render_frame,
-    run_egui_frame, AppConfig, ChromeClickAction, CubeChromeZone, CubeFace, CubeRect,
+    run_egui_frame, AppConfig, AppCore, ChromeClickAction, CubeChromeZone, CubeFace, CubeRect,
     EguiPaintBridge, FogMode,
     FrameOverlays,
     TransformGizmoRenderer,
-    GpuContext, InfiniteGridRenderer, LayerBand, MaterialSource, OnionFogParams, PointsRenderer,
+    GpuContext, InfiniteGridRenderer, LayerBand, MaterialSource, PointsRenderer,
     SceneGridRenderer,
-    HomeView, OnionFogRenderer, OrbitCamera, PanelState, Scene, SdfShape, SnapTween, ViewCubeElement,
+    HomeView, OnionFogRenderer, OrbitCamera, PanelState, SdfShape, SnapTween, ViewCubeElement,
     ViewCubeMenuRequest,
     ViewCubeRenderer, VoxelGrid, COLOR_TARGET_FORMAT,
     VIEW_CUBE_VIEWPORT_PIXELS,
@@ -102,14 +102,14 @@ struct WindowedState {
     /// The resolved voxel grid, kept so the layer-range diameter readout (issue
     /// #12) can re-measure the widest occupied run in the active band on demand.
     grid: VoxelGrid,
-    /// Per-chunk resolve cache (issue #27 S2): the resolve mechanism behind
-    /// `rebuild_geometry`. Lazily resolves each covering chunk and reassembles the
-    /// SAME recentred monolithic grid the renderer consumes today. Issue #27 S3
-    /// gives it TARGETED invalidation: `rebuild_geometry` diffs the scene's leaf
-    /// spatial index against the previous one and evicts only the chunks the edit's
-    /// world-AABB touched (falling back to a wholesale clear for density changes /
-    /// Part edits / the first build).
-    chunk_resolve_cache: voxel_worker::chunk_cache::ChunkResolveCache,
+    /// The headless orchestrator (ADR 0003 keystone): owns the per-chunk resolve
+    /// store (issue #27 S2 — the resolve mechanism behind `rebuild_geometry`, with
+    /// issue #27 S3's TARGETED invalidation that diffs the scene's leaf spatial
+    /// index against the previous one and evicts only the chunks the edit's
+    /// world-AABB touched) and the orbit camera. The shell delegates headless work
+    /// to it (`self.app_core.store` / `self.app_core.camera`) and keeps the GPU
+    /// renderers + winit/egui plumbing.
+    app_core: AppCore,
     /// The leaf spatial index (issue #27 S3) the LAST rebuild resolved from, kept so
     /// the next rebuild can diff against it to compute the edit's dirty world-AABB.
     /// `None` before the first rebuild (which clears wholesale).
@@ -129,7 +129,6 @@ struct WindowedState {
     depth_view: wgpu::TextureView,
     /// 4× MSAA colour target for the 3D pass; resolved into the surface texture.
     msaa_color_view: wgpu::TextureView,
-    camera: OrbitCamera,
     /// The saved Home view (#13): the orbit angles + distance the Home button
     /// returns to. Restored from the persisted config; updated by
     /// `set_home_to_current`. Step 1 only stores it (no input wiring yet).
@@ -187,74 +186,11 @@ fn face_for_axis_sign(axis: usize, positive: bool) -> CubeFace {
     }
 }
 
-/// Build the onion-skin fog parameters (issue #12) from the camera, grid, and
-/// layer-range scrubber. World-Y of layer `j` spans `[j - grid_y/2, j+1 -
-/// grid_y/2]` (voxel centres at `j + 0.5 - grid_y/2`). The solid band is layers
-/// `[lower, upper]`; the onion band extends `onion_depth` layers on each side.
-fn onion_fog_params(
-    view_projection: glam::Mat4,
-    grid_dimensions: [u32; 3],
-    layer_range: voxel_worker::LayerRange,
-) -> OnionFogParams {
-    let grid_y = grid_dimensions[1] as f32;
-    let half_y = grid_y / 2.0;
-    let depth = layer_range.onion_depth.clamp(1, 8) as f32;
-    let lower = layer_range.lower as f32;
-    let upper = layer_range.upper.min(grid_dimensions[1].saturating_sub(1)) as f32;
-    OnionFogParams {
-        inverse_view_projection: view_projection.inverse(),
-        semi_axes: [
-            grid_dimensions[0] as f32 / 2.0,
-            grid_dimensions[1] as f32 / 2.0,
-            grid_dimensions[2] as f32 / 2.0,
-        ],
-        // Onion band world-Y: `depth` layers below the band's bottom edge to
-        // `depth` layers above its top edge.
-        onion_y_min: (lower - depth) - half_y,
-        onion_y_max: (upper + 1.0 + depth) - half_y,
-        // Solid band world-Y (excluded from the fog).
-        band_y_min: lower - half_y,
-        band_y_max: (upper + 1.0) - half_y,
-    }
-}
-
 /// Default `.vox` filename from the shape + voxel dims (e.g. `cylinder_80x16x80.vox`).
 fn default_vox_filename(shape: &SdfShape) -> String {
     let [grid_x, grid_y, grid_z] = shape.grid_dimensions();
     let kind = format!("{:?}", shape.kind).to_lowercase();
     format!("{kind}_{grid_x}x{grid_y}x{grid_z}.vox")
-}
-
-/// Resolve the whole [`Scene`] into a fresh grid (ADR 0001 step 2). Every visible
-/// node composites (union) into one region sized to the per-axis max of the
-/// nodes' extents, at full resolution (`lod 0`). `voxels_per_block` is the global
-/// app density (the inspector mirror's density). For a one-node scene this is
-/// identical to the step-1 behaviour.
-fn resolve_scene(scene: &Scene, voxels_per_block: u32) -> VoxelGrid {
-    let region = scene.full_extent_blocks(voxels_per_block);
-    scene.resolve_region(region, voxels_per_block, 0)
-}
-
-/// The region dimensions (in voxels) the camera auto-frame, origin gizmo, block
-/// lattice, fine floor grid and layer scrubber are sized from — read from the
-/// SCENE, not by reaching into the assembled `VoxelGrid` (issue #20 S6c-1, prep
-/// for the per-chunk renderer of S6c step 4). This is a behaviour-preserving
-/// substitution: for a chunkable scene (every Tool scene, including the startup
-/// default) the assembled grid is literally sized to
-/// [`Scene::placed_region_dimensions`] — so this returns BYTE-IDENTICAL dimensions
-/// (proven in `scene::tests::placed_region_dimensions_equals_assembled_grid`).
-///
-/// A **Part-only** scene (e.g. a lone debug-cloud field) has no composite extent,
-/// so `placed_region_dimensions` would be `[0, 0, 0]`; that scene is resolved
-/// through the explicit-region path instead, so we fall back to the assembled
-/// grid's own dimensions — which (being the grid the consumers used before) is
-/// trivially identical to the old behaviour for that case.
-fn region_dimensions_for(scene: &Scene, density: u32, grid: &VoxelGrid) -> [u32; 3] {
-    if scene.has_chunkable_extent(density) {
-        scene.placed_region_dimensions(density)
-    } else {
-        grid.dimensions
-    }
 }
 
 impl WindowedState {
@@ -328,7 +264,7 @@ impl WindowedState {
             None => PanelState::with_view_cube_default(),
         };
         let shape = SdfShape::from_geometry(panel_state.geometry);
-        let grid = resolve_scene(&panel_state.scene, panel_state.geometry.voxels_per_block);
+        let grid = AppCore::resolve_scene(&panel_state.scene, panel_state.geometry.voxels_per_block);
         // Issue #20 S6c-1: the camera auto-frame, origin gizmo, block lattice, fine
         // floor grid and the layer scrubber are sized from the scene's region
         // dimensions DIRECTLY, not by reaching into the assembled grid object. For a
@@ -338,7 +274,7 @@ impl WindowedState {
         // `scene::tests::placed_region_dimensions_equals_assembled_grid`). The
         // renderer / mesher / fog still consume the assembled `grid` (that's S6c
         // step 4). `region_dimensions_for` keeps the Part-only fallback exact.
-        let region_dimensions = region_dimensions_for(
+        let region_dimensions = AppCore::region_dimensions_for(
             &panel_state.scene,
             panel_state.geometry.voxels_per_block,
             &grid,
@@ -462,14 +398,13 @@ impl WindowedState {
             loaded_material: None,
             face_resolver: FaceResolver::auto(),
             grid,
-            chunk_resolve_cache,
+            app_core: AppCore::new(chunk_resolve_cache, camera),
             previous_leaf_index: None,
             previous_recentre_voxels: None,
             measured_diameter,
             measured_band,
             depth_view,
             msaa_color_view,
-            camera,
             home_view,
             snap_tween: None,
             last_frame_time: std::time::Instant::now(),
@@ -582,27 +517,27 @@ impl WindowedState {
         match self.previous_leaf_index.as_ref() {
             Some(previous) => match new_leaf_index.edit_aabb_since(previous) {
                 Some(edit_aabb) => {
-                    self.chunk_resolve_cache.invalidate_aabb(&edit_aabb, density);
+                    self.app_core.store.invalidate_aabb(&edit_aabb, density);
                 }
                 None => {
-                    self.chunk_resolve_cache.clear();
+                    self.app_core.store.clear();
                 }
             },
             None => {
-                self.chunk_resolve_cache.clear();
+                self.app_core.store.clear();
             }
         }
         self.previous_recentre_voxels = Some(new_recentre);
         self.previous_leaf_index = Some(new_leaf_index);
         let grid = self
-            .chunk_resolve_cache
+            .app_core.store
             .resolve_region(&self.panel_state.scene, density, 0);
         // Issue #20 S6c-1: size the camera/gizmo/lattice/floor/scrubber from the
         // SCENE's region dimensions, not the assembled grid object. For a chunkable
         // scene this equals `grid.dimensions` exactly (the cache sizes its output to
         // `placed_region_dimensions`); the renderer/mesher/fog below still consume
         // the assembled `grid` (that's S6c step 4).
-        let region_dimensions = region_dimensions_for(&self.panel_state.scene, density, &grid);
+        let region_dimensions = AppCore::region_dimensions_for(&self.panel_state.scene, density, &grid);
         // Part of #20: the cuboid mesh renderer is the sole voxel render path. Rebuild
         // it from the resolve cache's PER-CHUNK accessor (`resident_render_chunks` —
         // `(absolute_chunk_coord, &rebased_grid)` per covering chunk), so it meshes
@@ -611,7 +546,7 @@ impl WindowedState {
         // fully BEFORE any further `&mut` cache call. The cuboid path rebuilds every
         // covering chunk wholesale (it has no per-chunk dirty cache of its own).
         let render_chunks = self
-            .chunk_resolve_cache
+            .app_core.store
             .resident_render_chunks(&self.panel_state.scene, density, 0);
         self.cuboid_mesh_renderer = CuboidMeshRenderer::new_from_chunks(
             &self.gpu.device,
@@ -649,7 +584,7 @@ impl WindowedState {
         self.measured_band = (u32::MAX, u32::MAX); // force a re-measure next frame.
 
         if auto_frame {
-            self.camera.orbit_distance = OrbitCamera::auto_framed_distance(region_dimensions);
+            self.app_core.camera.orbit_distance = OrbitCamera::auto_framed_distance(region_dimensions);
         }
     }
 
@@ -773,7 +708,7 @@ impl WindowedState {
         // scene preserves the voxel-centre `.5` instead of losing it to f32 rounding
         // at large magnitude (the monolithic path's far-offset bug). For a near scene
         // the two paths are byte-identical (proven by the vox-export parity tests).
-        let (region_dimensions, occupied) = self.chunk_resolve_cache.bound_region_occupied(
+        let (region_dimensions, occupied) = self.app_core.store.bound_region_occupied(
             &self.panel_state.scene,
             self.panel_state.geometry.voxels_per_block,
             0,
@@ -818,14 +753,14 @@ impl WindowedState {
     fn save_config(&self) {
         let window_size = [self.surface_config.width, self.surface_config.height];
         let config =
-            AppConfig::capture(&self.panel_state, &self.camera, self.home_view, window_size);
+            AppConfig::capture(&self.panel_state, &self.app_core.camera, self.home_view, window_size);
         config.save();
     }
 
     /// #13: save the live camera orbit as the new Home view (the right-click
     /// "set current view as home" context-menu action; Step 3).
     fn set_home_to_current(&mut self) {
-        self.home_view = HomeView::from_camera(&self.camera);
+        self.home_view = HomeView::from_camera(&self.app_core.camera);
     }
 
     /// #13: begin an eased snap toward the saved Home view and set the home
@@ -839,16 +774,16 @@ impl WindowedState {
     /// the canned default distance (10) zooms in far too close on a large model — so
     /// Home re-fits the auto-framed distance, matching the Fit button's distance.
     fn home_snap_tween(&mut self) -> SnapTween {
-        let tween = self.home_view.snap_tween(&self.camera);
-        self.camera.orbit_distance = if self.home_view.explicitly_set {
+        let tween = self.home_view.snap_tween(&self.app_core.camera);
+        self.app_core.camera.orbit_distance = if self.home_view.explicitly_set {
             self.home_view.distance
         } else {
-            let region_dimensions = region_dimensions_for(
+            let region_dimensions = AppCore::region_dimensions_for(
                 &self.panel_state.scene,
                 self.panel_state.geometry.voxels_per_block,
                 &self.grid,
             );
-            self.camera.target = glam::Vec3::ZERO;
+            self.app_core.camera.target = glam::Vec3::ZERO;
             OrbitCamera::auto_framed_distance(region_dimensions)
         };
         tween
@@ -861,13 +796,13 @@ impl WindowedState {
     /// rebuild: only the camera distance + target change. The distance math is the
     /// same `auto_framed_distance` covered by camera tests.
     fn fit_to_view(&mut self) {
-        let region_dimensions = region_dimensions_for(
+        let region_dimensions = AppCore::region_dimensions_for(
             &self.panel_state.scene,
             self.panel_state.geometry.voxels_per_block,
             &self.grid,
         );
-        self.camera.target = glam::Vec3::ZERO;
-        self.camera.orbit_distance = OrbitCamera::auto_framed_distance(region_dimensions);
+        self.app_core.camera.target = glam::Vec3::ZERO;
+        self.app_core.camera.orbit_distance = OrbitCamera::auto_framed_distance(region_dimensions);
     }
 
     /// Is the pixel `(x, y)` inside the view-cube viewport? Issue #25: the cube's
@@ -924,7 +859,7 @@ impl WindowedState {
         let ndc_x = ((x as f32 - corner_x) / size) * 2.0 - 1.0;
         let ndc_y = -(((y as f32 - corner_y) / size) * 2.0 - 1.0);
 
-        let view_projection = self.camera.view_cube_view_projection();
+        let view_projection = self.app_core.camera.view_cube_view_projection();
         let inverse = view_projection.inverse();
         let near = inverse * glam::Vec4::new(ndc_x, ndc_y, 0.0, 1.0);
         let far = inverse * glam::Vec4::new(ndc_x, ndc_y, 1.0, 1.0);
@@ -1040,7 +975,7 @@ impl WindowedState {
         // region dimensions, not the assembled grid object — identical to
         // `self.grid.dimensions[1]` for a chunkable scene (the grid is sized to
         // `placed_region_dimensions`).
-        let grid_y = region_dimensions_for(
+        let grid_y = AppCore::region_dimensions_for(
             &self.panel_state.scene,
             self.panel_state.geometry.voxels_per_block,
             &self.grid,
@@ -1052,7 +987,7 @@ impl WindowedState {
             // `self.grid`. Returns the SAME value as the whole-grid method
             // (parity-proven) while consuming only the per-chunk grids. The chunks are
             // already resident from the geometry rebuild, so this is cache HITs.
-            self.measured_diameter = self.chunk_resolve_cache.widest_run_in_band(
+            self.measured_diameter = self.app_core.store.widest_run_in_band(
                 &self.panel_state.scene,
                 self.panel_state.geometry.voxels_per_block,
                 0,
@@ -1072,7 +1007,7 @@ impl WindowedState {
                 .panel_state
                 .scene
                 .recentre_voxels_for_resolve(self.panel_state.geometry.voxels_per_block);
-            let target = self.camera.target;
+            let target = self.app_core.camera.target;
             self.panel_state.point_add_position_blocks = [
                 ((target.x.round() as i64) + recentre[0]).div_euclid(density),
                 ((target.y.round() as i64) + recentre[1]).div_euclid(density),
@@ -1118,7 +1053,7 @@ impl WindowedState {
         let delta_seconds = (now - self.last_frame_time).as_secs_f32();
         self.last_frame_time = now;
         if let Some(tween) = self.snap_tween.as_mut() {
-            if tween.advance(&mut self.camera, delta_seconds) {
+            if tween.advance(&mut self.app_core.camera, delta_seconds) {
                 self.snap_tween = None;
             }
         }
@@ -1142,7 +1077,7 @@ impl WindowedState {
 
         // Projection is a display-only param: apply it to the camera each frame
         // (no rebuild).
-        self.camera.projection_mode = self.panel_state.projection_mode;
+        self.app_core.camera.projection_mode = self.panel_state.projection_mode;
 
         // Upload the per-frame uniforms before drawing: camera matrix, grid
         // half-extent + density (per-voxel slice + overlay), and the overlay
@@ -1158,7 +1093,7 @@ impl WindowedState {
         // region's extent), not the active node's geometry — with several nodes the
         // region is the per-axis max of their sizes (ADR 0001 step 2).
         let grid_dimensions = self.grid.dimensions;
-        let view_projection = self.camera.view_projection(aspect_ratio);
+        let view_projection = self.app_core.camera.view_projection(aspect_ratio);
         // Issue #12: translate the layer-range scrubber into the shader band. The
         // band is inclusive on both ends; the upper handle is a layer index, so a
         // single-layer band is `lower == upper`. A full range draws everything.
@@ -1255,10 +1190,10 @@ impl WindowedState {
             &self.panel_state.scene,
             self.panel_state.geometry.voxels_per_block,
             view_projection,
-            self.camera.eye().to_array(),
+            self.app_core.camera.eye().to_array(),
         );
         self.view_cube_renderer
-            .update_uniforms(&self.gpu.queue, self.camera.view_cube_view_projection());
+            .update_uniforms(&self.gpu.queue, self.app_core.camera.view_cube_view_projection());
 
         // Issue #12: onion-skin volumetric fog. Active only when onion skin is on
         // and not in debug-face mode. Upload the camera + band world-Y ranges so the
@@ -1268,7 +1203,7 @@ impl WindowedState {
         if onion_active {
             self.onion_fog_renderer.update(
                 &self.gpu.queue,
-                onion_fog_params(view_projection, grid_dimensions, layer_range),
+                AppCore::onion_fog_params(view_projection, grid_dimensions, layer_range),
             );
         }
 
@@ -1288,7 +1223,7 @@ impl WindowedState {
             // #13 Step 6 follow-up: the four rotate arrows are a standing affordance
             // whenever the view is constrained to a face (not hover-gated), with the
             // hovered one brightened. Off-face views show none.
-            cube_rotate_arrows_visible: self.camera.is_face_constrained(),
+            cube_rotate_arrows_visible: self.app_core.camera.is_face_constrained(),
             scene_grid: Some(&self.scene_grid_renderer),
             // Issue #29 S5: the windowed app always shows the Points (the Origin's
             // ground+axes are on by default); the batch self-gates on hidden/off.
@@ -1415,11 +1350,11 @@ impl ApplicationHandler for App {
                                 let rotate_disabled = matches!(
                                     zone,
                                     Some(CubeChromeZone::RotateArrow(_))
-                                ) && !state.camera.is_face_constrained();
+                                ) && !state.app_core.camera.is_face_constrained();
                                 if let (Some(zone), false) = (zone, rotate_disabled) {
                                     let action = chrome_zone_left_click_action(
                                         zone,
-                                        &state.camera,
+                                        &state.app_core.camera,
                                     );
                                     state.run_chrome_action(action);
                                 }
@@ -1491,7 +1426,7 @@ impl ApplicationHandler for App {
                         if delta_x != 0.0 || delta_y != 0.0 {
                             // A manual orbit cancels any in-progress snap tween.
                             state.snap_tween = None;
-                            state.camera.orbit_by_drag(delta_x, delta_y);
+                            state.app_core.camera.orbit_by_drag(delta_x, delta_y);
                         }
                     }
                 }
@@ -1524,7 +1459,7 @@ impl ApplicationHandler for App {
                         // (Fusion behaviour). Off-face hovers over a rotate gutter
                         // don't light up.
                         Some(CubeChromeZone::RotateArrow(_))
-                            if !state.camera.is_face_constrained() =>
+                            if !state.app_core.camera.is_face_constrained() =>
                         {
                             None
                         }
@@ -1541,7 +1476,7 @@ impl ApplicationHandler for App {
                     MouseScrollDelta::LineDelta(_, vertical) => vertical,
                     MouseScrollDelta::PixelDelta(position) => position.y as f32,
                 };
-                state.camera.zoom_by_wheel(scroll_lines);
+                state.app_core.camera.zoom_by_wheel(scroll_lines);
             }
             WindowEvent::RedrawRequested => {
                 state.render();

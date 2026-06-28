@@ -39,6 +39,7 @@ pub mod texture_atlas;
 pub mod vox_export;
 pub mod voxel;
 
+pub use app_core::AppCore;
 pub use store::{ChunkCacheKey, ChunkResolveCache, Store};
 pub use chunk_storage::{compress, decompress, CompressedChunk, Occupancy, SparseCell};
 pub use disk_chunk_store::{DiskChunkStore, DiskChunkStoreStats};
