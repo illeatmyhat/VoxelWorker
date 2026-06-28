@@ -21,6 +21,8 @@ pub mod chunk_cache;
 // ADR 0003 bottom layer: dependency-free geometry primitives + the streaming quantum.
 pub mod core_geom;
 pub mod chunk_storage;
+// ADR 0003 Phase C: the linear inverse-command stack behind undo/redo. See command.rs.
+pub mod command;
 pub mod cuboid;
 pub mod cuboid_mesh;
 pub mod debug_clouds;

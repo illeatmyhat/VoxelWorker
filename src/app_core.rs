@@ -16,11 +16,12 @@
 //! **A2e**; `render` reads all headless data from here in **A2f**.
 
 use crate::camera::OrbitCamera;
+use crate::command::{Command, CommandStack, Inverse};
 use crate::core_geom::CHUNK_BLOCKS;
 use crate::intent::{Intent, IntentEffect};
 use crate::panel::LayerRange;
 use crate::renderer::OnionFogParams;
-use crate::scene::{NodeContent, Part, Scene};
+use crate::scene::{NodeContent, NodeId, Part, Scene};
 use crate::spatial_index::LeafSpatialIndex;
 use crate::store::Store;
 use crate::voxel::{chunk_extent_exceeds_bound, VoxelGrid};
@@ -44,6 +45,10 @@ pub struct AppCore {
     /// at (issue #20 S6c-2c): the resolve bookkeeping that records whether the
     /// floating origin shifted. `None` before the first rebuild.
     previous_recentre_voxels: Option<[i64; 3]>,
+    /// The linear inverse-command stack behind undo/redo (ADR 0003 Phase C C2). Every
+    /// non-selection-only `apply_intent` pushes a [`Command`] here; `undo`/`redo`
+    /// shuttle commands between its two Vecs. Empty until the first undoable edit.
+    command_stack: CommandStack,
 }
 
 /// The headless resolve output of a geometry [`rebuild`](AppCore::rebuild) (A2e).
@@ -85,6 +90,7 @@ impl AppCore {
             camera,
             previous_leaf_index: None,
             previous_recentre_voxels: None,
+            command_stack: CommandStack::new(),
         }
     }
 
@@ -107,97 +113,461 @@ impl AppCore {
     /// at their `target` first, then call the op — exactly how the panel arrives there
     /// (a clicked row sets `active`, then the action button fires). The intents carry
     /// the target explicitly so the value is self-contained / replayable.
-    pub fn apply_intent(&self, scene: &mut Scene, intent: Intent) -> IntentEffect {
+    pub fn apply_intent(&mut self, scene: &mut Scene, intent: Intent) -> IntentEffect {
+        // Selection-only intents are a view concern, not an undoable document step
+        // (consistent with C1): dispatch + report, push NOTHING.
+        if matches!(intent, Intent::SelectNode { .. } | Intent::SelectPoint { .. }) {
+            let (effect, _minted) = self.dispatch(scene, intent);
+            return effect;
+        }
+
+        // Snapshot the pre-state the undo needs (selection + the id counter — see the
+        // COUNTER RULE in command.rs), then capture the inverse by reading the scene
+        // BEFORE the mutation, then dispatch (which may mint ids the inverse needs).
+        let selection_before = scene.active;
+        let point_selection_before = scene.active_point;
+        let counter_before = scene.next_node_id;
+        let inverse = self.capture_inverse(scene, &intent, counter_before);
+        let (effect, minted) = self.dispatch(scene, intent.clone());
+        // The add family mints exactly one node; its inverse needs that id. We captured
+        // a placeholder above for the add family, so patch it with the real minted id.
+        let inverse = match (inverse, minted) {
+            (Inverse::RemoveAdded { .. }, Some(id)) => Inverse::RemoveAdded { id },
+            (other, _) => other,
+        };
+        self.command_stack.undo.push(Command {
+            intent,
+            inverse,
+            selection_before,
+            point_selection_before,
+            counter_before,
+        });
+        // A fresh edit invalidates the redo future (the linear-stack rule).
+        self.command_stack.redo.clear();
+        effect
+    }
+
+    /// Capture the [`Inverse`] of `intent` by reading the scene's pre-mutation state
+    /// (ADR 0003 Phase C C2). Called BEFORE [`dispatch`](Self::dispatch) so a field-set
+    /// reads the PRIOR value and a structural op reads the soon-to-be-detached shape.
+    /// The add family's minted id is not known yet, so it returns an
+    /// [`Inverse::RemoveAdded`] placeholder the caller patches with `dispatch`'s minted
+    /// id. A forward op that will be a no-op (missing id / kind-mismatch / stale
+    /// target) yields [`Inverse::NoOp`], so `undo` of a no-op restores nothing.
+    fn capture_inverse(&self, scene: &Scene, intent: &Intent, counter_before: u64) -> Inverse {
+        match intent {
+            // --- Structural ---
+            // The add family mints one node appended to a spine; the caller patches the
+            // placeholder id with `dispatch`'s minted id. (AddChild to a stale/non-Group
+            // target mints nothing — but `dispatch` then returns `None`, and the
+            // unpatched placeholder is never used because no node was added; we guard by
+            // checking the minted id in the caller, so a `NoOp` here is cleaner.)
+            Intent::AddNode { .. } => Inverse::RemoveAdded { id: NodeId(0) },
+            Intent::AddChild { group, .. } => {
+                if matches!(
+                    scene.node_by_id(*group).map(|node| &node.content),
+                    Some(NodeContent::Group(_))
+                ) {
+                    Inverse::RemoveAdded { id: NodeId(0) }
+                } else {
+                    Inverse::NoOp
+                }
+            }
+            Intent::AddInstance { def } => {
+                if scene.def_by_id(*def).is_some() {
+                    Inverse::RemoveAdded { id: NodeId(0) }
+                } else {
+                    Inverse::NoOp
+                }
+            }
+            Intent::GroupNode { target } => {
+                // group_active wraps `target` (the intent points `active` at it) in a
+                // fresh Group minted as the next id. The Group takes the target's slot;
+                // the inverse puts `target` back and drops the Group.
+                if scene.node_by_id(*target).is_some() {
+                    Inverse::UngroupNode {
+                        target: *target,
+                        group: NodeId(counter_before.max(1)),
+                    }
+                } else {
+                    Inverse::NoOp
+                }
+            }
+            Intent::MakeDefinition { target, .. } => match scene.node_by_id(*target) {
+                Some(node) => {
+                    let prior_content = node.content.clone();
+                    // A Group DONATES its children (no new node); any other content
+                    // mints a fresh "Body" node — the only node minted, so its id is
+                    // `counter_before` (after the mint's `max(1)` normalization).
+                    let minted_body = match &prior_content {
+                        NodeContent::Group(_) => None,
+                        _ => Some(NodeId(counter_before.max(1))),
+                    };
+                    Inverse::UndoMakeDefinition {
+                        node: *target,
+                        prior_content,
+                        def: scene.next_def_id(),
+                        minted_body,
+                    }
+                }
+                None => Inverse::NoOp,
+            },
+            Intent::RemoveNode { target } => match scene.parent_and_index_of(*target) {
+                Some((parent, index)) => Inverse::InsertSubtree {
+                    parent,
+                    index,
+                    nodes: scene.clone_subtree_nodes(*target),
+                },
+                None => Inverse::NoOp,
+            },
+
+            // --- Node field writes (inverse = same intent carrying the prior value) ---
+            Intent::SetVisible { target, .. } => match scene.node_by_id(*target) {
+                Some(node) => Inverse::Field(Intent::SetVisible {
+                    target: *target,
+                    visible: node.visible,
+                }),
+                None => Inverse::NoOp,
+            },
+            Intent::SetShape { target, .. } => match scene.node_by_id(*target) {
+                Some(node) => match &node.content {
+                    NodeContent::Tool { shape, .. } => Inverse::Field(Intent::SetShape {
+                        target: *target,
+                        shape: *shape,
+                    }),
+                    _ => Inverse::NoOp,
+                },
+                None => Inverse::NoOp,
+            },
+            Intent::SetMaterial { target, .. } => match scene.node_by_id(*target) {
+                Some(node) => match &node.content {
+                    NodeContent::Tool { material, .. } => Inverse::Field(Intent::SetMaterial {
+                        target: *target,
+                        material: *material,
+                    }),
+                    _ => Inverse::NoOp,
+                },
+                None => Inverse::NoOp,
+            },
+            Intent::SetOffset { target, .. } => match scene.node_by_id(*target) {
+                Some(node) => Inverse::Field(Intent::SetOffset {
+                    target: *target,
+                    offset_blocks: node.transform.offset_blocks,
+                }),
+                None => Inverse::NoOp,
+            },
+            Intent::SetName { target, .. } => match scene.node_by_id(*target) {
+                Some(node) => Inverse::Field(Intent::SetName {
+                    target: *target,
+                    name: node.name.clone(),
+                }),
+                None => Inverse::NoOp,
+            },
+            Intent::SetCloudSeed { target, .. } => match scene.node_by_id(*target) {
+                Some(node) => match &node.content {
+                    NodeContent::Part(Part::DebugClouds { seed }) => {
+                        Inverse::Field(Intent::SetCloudSeed {
+                            target: *target,
+                            seed: *seed,
+                        })
+                    }
+                    _ => Inverse::NoOp,
+                },
+                None => Inverse::NoOp,
+            },
+            Intent::SetNodeGrids { target, .. } => match scene.node_by_id(*target) {
+                Some(node) => Inverse::Field(Intent::SetNodeGrids {
+                    target: *target,
+                    grids: node.grids,
+                }),
+                None => Inverse::NoOp,
+            },
+
+            // --- Global ---
+            Intent::SetDensity { .. } => {
+                // The forward op rewrites EVERY Tool's density; capture each Tool's
+                // prior density (keyed by id) so a mixed-density scene restores exactly.
+                let prior = scene
+                    .arena
+                    .iter()
+                    .filter_map(|(id, node)| match &node.content {
+                        NodeContent::Tool { shape, .. } => Some((*id, shape.voxels_per_block)),
+                        _ => None,
+                    })
+                    .collect();
+                Inverse::Density(prior)
+            }
+            Intent::SetGridMasters { .. } => Inverse::Field(Intent::SetGridMasters {
+                voxel: scene.master_voxel_grid,
+                lattice: scene.master_block_lattice,
+                floor: scene.master_floor_grid,
+            }),
+
+            // --- Points ---
+            // `add_point` appends, so the new Point lands at the current `len`.
+            Intent::AddPoint { .. } => Inverse::RemoveAddedPoint {
+                index: scene.points.len(),
+            },
+            Intent::RemovePoint { index } => match scene.points.get(*index) {
+                // The Origin is undeletable (the forward op is a no-op for it).
+                Some(point) if !point.is_origin => Inverse::InsertPoint {
+                    index: *index,
+                    point: point.clone(),
+                },
+                _ => Inverse::NoOp,
+            },
+            Intent::SetPointHidden { index, .. } => match scene.points.get(*index) {
+                Some(point) => Inverse::Field(Intent::SetPointHidden {
+                    index: *index,
+                    hidden: point.hidden,
+                }),
+                None => Inverse::NoOp,
+            },
+            Intent::SetPointPlanes { index, .. } => match scene.points.get(*index) {
+                Some(point) => Inverse::Field(Intent::SetPointPlanes {
+                    index: *index,
+                    xz: point.plane_xz,
+                    xy: point.plane_xy,
+                    yz: point.plane_yz,
+                }),
+                None => Inverse::NoOp,
+            },
+            Intent::SetPointAxes { index, .. } => match scene.points.get(*index) {
+                Some(point) => Inverse::Field(Intent::SetPointAxes {
+                    index: *index,
+                    x: point.axis_x,
+                    y: point.axis_y,
+                    z: point.axis_z,
+                }),
+                None => Inverse::NoOp,
+            },
+            Intent::SetPointPosition { index, .. } => match scene.points.get(*index) {
+                Some(point) => Inverse::Field(Intent::SetPointPosition {
+                    index: *index,
+                    position_blocks: point.position_blocks,
+                }),
+                None => Inverse::NoOp,
+            },
+
+            // Selection-only intents never reach here (handled + returned above).
+            Intent::SelectNode { .. } | Intent::SelectPoint { .. } => Inverse::NoOp,
+        }
+    }
+
+    /// Apply the top `undo` command's [`Inverse`] to `scene`, then restore the captured
+    /// selection + id counter (the COUNTER RULE — see command.rs), and move the command
+    /// to the `redo` stack (ADR 0003 Phase C C2). Returns the forward intent's own
+    /// [`effect_of`](Self::effect_of) (so undoing a rename re-resolves the scene but NOT
+    /// the points overlay, and undoing a grid-master toggle re-resolves nothing — the
+    /// per-edit cost ADR 0003 optimizes against at 10k nodes), with `selection_changed`
+    /// forced on (undo always restores `selection_before`, so the inspector mirror must
+    /// re-sync). [`IntentEffect::none`] when the undo stack is empty.
+    ///
+    /// A [`Inverse::Field`] field-set is reversed by routing the prior-value intent back
+    /// through [`dispatch`](Self::dispatch) (the single owner of the field-write
+    /// mutations — no parallel copy to drift), so only the structural arms live in
+    /// [`Inverse::apply`].
+    pub fn undo(&mut self, scene: &mut Scene) -> IntentEffect {
+        let Some(command) = self.command_stack.undo.pop() else {
+            return IntentEffect::none();
+        };
+        match &command.inverse {
+            Inverse::Field(prior) => {
+                // Route the prior-value field-set through the same `dispatch` the forward
+                // path uses — no re-implemented field-write copy to silently diverge.
+                self.dispatch(scene, prior.clone());
+            }
+            structural => structural.apply(scene),
+        }
+        scene.active = command.selection_before;
+        scene.active_point = command.point_selection_before;
+        scene.next_node_id = command.counter_before;
+        let effect = Self::effect_of(&command.intent).merged_with(IntentEffect::selection());
+        self.command_stack.redo.push(command);
+        effect
+    }
+
+    /// Re-apply the top `redo` command's forward `intent` to `scene` (ADR 0003 Phase C
+    /// C2). The counter was rewound on undo, so re-`dispatch` re-mints byte-identical
+    /// ids. Moves the command back to the `undo` stack. Returns the forward intent's own
+    /// [`effect_of`](Self::effect_of) (with `selection_changed` forced on — redo restores
+    /// the post-forward selection the caller must re-sync); [`IntentEffect::none`] when
+    /// the redo stack is empty.
+    pub fn redo(&mut self, scene: &mut Scene) -> IntentEffect {
+        let Some(command) = self.command_stack.redo.pop() else {
+            return IntentEffect::none();
+        };
+        self.dispatch(scene, command.intent.clone());
+        let effect = Self::effect_of(&command.intent).merged_with(IntentEffect::selection());
+        self.command_stack.undo.push(command);
+        effect
+    }
+
+    /// The [`IntentEffect`] an intent produces **when it applies** — the single source
+    /// of truth for "what does this mutation change" (ADR 0003 Phase C C2, code-review
+    /// fix). A pure classification keyed only on the intent KIND: structural / field /
+    /// global-density edits re-resolve (`scene`); the grid-master toggle is read live
+    /// (`none`); a selection switch re-syncs the mirror (`selection`); a Point edit is
+    /// overlay-only (`points`).
+    ///
+    /// [`dispatch`](Self::dispatch) uses this for its success branch (and downgrades to
+    /// [`IntentEffect::none`] when the specific mutation could not land — a missing id /
+    /// kind-mismatch / stale index). [`undo`](Self::undo) / [`redo`](Self::redo) use it
+    /// so undoing a trivial rename reports only `scene_changed`, not a blanket-true
+    /// rebuild of points too — the per-edit cost ADR 0003 optimizes against at 10k
+    /// nodes.
+    pub fn effect_of(intent: &Intent) -> IntentEffect {
+        match intent {
+            // Structural + node field writes + global density → re-resolve.
+            Intent::AddNode { .. }
+            | Intent::AddChild { .. }
+            | Intent::GroupNode { .. }
+            | Intent::MakeDefinition { .. }
+            | Intent::AddInstance { .. }
+            | Intent::RemoveNode { .. }
+            | Intent::SetVisible { .. }
+            | Intent::SetShape { .. }
+            | Intent::SetMaterial { .. }
+            | Intent::SetOffset { .. }
+            | Intent::SetName { .. }
+            | Intent::SetCloudSeed { .. }
+            | Intent::SetNodeGrids { .. }
+            | Intent::SetDensity { .. } => IntentEffect::scene(),
+            // The grid masters are read live by the per-frame line batch — no re-resolve.
+            Intent::SetGridMasters { .. } => IntentEffect::none(),
+            // Selection is a view concern (re-sync the inspector mirror only).
+            Intent::SelectNode { .. } | Intent::SelectPoint { .. } => IntentEffect::selection(),
+            // Points are pure overlay (no voxel re-resolve).
+            Intent::AddPoint { .. }
+            | Intent::RemovePoint { .. }
+            | Intent::SetPointHidden { .. }
+            | Intent::SetPointPlanes { .. }
+            | Intent::SetPointAxes { .. }
+            | Intent::SetPointPosition { .. } => IntentEffect::points(),
+        }
+    }
+
+    /// The raw dispatch of one [`Intent`] to the matching [`Scene`](crate::scene::Scene)
+    /// edit op / field write (ADR 0003 Phase C — the C1 match, now factored out so both
+    /// `apply_intent` and `redo` drive it). The success effect is
+    /// [`effect_of`](Self::effect_of) (the single source of truth); a mutation that
+    /// could not land (missing id / kind-mismatch / stale index) downgrades to
+    /// [`IntentEffect::none`]. Also returns, for the add family (AddNode / AddChild /
+    /// AddInstance), the minted node id the inverse needs (`None` for the field /
+    /// structural / selection / point intents and for an add that no-ops on a stale
+    /// target).
+    fn dispatch(&self, scene: &mut Scene, intent: Intent) -> (IntentEffect, Option<NodeId>) {
+        let full_effect = Self::effect_of(&intent);
+        // The downgraded effect for a mutation that could not land.
+        let none = IntentEffect::none();
         match intent {
             // --- Structural ---
             Intent::AddNode { content } => {
-                scene.add_node(content.into_node());
-                IntentEffect::scene()
+                let index = scene.add_node(content.into_node());
+                let minted = scene.roots.get(index).copied();
+                (full_effect, minted)
             }
             Intent::AddChild { group, content } => {
-                scene.add_child_to_group(group, content.into_node());
-                IntentEffect::scene()
+                let added = scene.add_child_to_group(group, content.into_node());
+                // `add_child_to_group` selects the new child, so `active` is its id.
+                let minted = if added { scene.active } else { None };
+                (if added { full_effect } else { none }, minted)
             }
             Intent::GroupNode { target } => {
                 // group_active keys off `active`; point it at the target first
                 // (mirroring the panel: select the node, then click Group).
                 scene.active = Some(target);
                 scene.group_active();
-                IntentEffect::scene()
+                (full_effect, None)
             }
             Intent::MakeDefinition { target, name } => {
                 scene.active = Some(target);
                 scene.make_definition_from_active(name);
-                IntentEffect::scene()
+                (full_effect, None)
             }
             Intent::AddInstance { def } => {
-                scene.add_instance(def);
-                IntentEffect::scene()
+                let minted = scene.add_instance(def);
+                (if minted.is_some() { full_effect } else { none }, minted)
             }
             Intent::RemoveNode { target } => {
                 scene.remove_node(target);
-                IntentEffect::scene()
+                (full_effect, None)
             }
 
             // --- Node field writes ---
             Intent::SetVisible { target, visible } => {
-                if scene.set_node_visible(target, visible) {
-                    IntentEffect::scene()
-                } else {
-                    IntentEffect::none()
-                }
+                let applied = scene.set_node_visible(target, visible);
+                (if applied { full_effect } else { none }, None)
             }
-            Intent::SetShape { target, shape } => match scene.node_by_id_mut(target) {
-                Some(node) => match &mut node.content {
-                    NodeContent::Tool { shape: node_shape, .. } => {
-                        *node_shape = shape;
-                        IntentEffect::scene()
+            Intent::SetShape { target, shape } => {
+                let applied = match scene.node_by_id_mut(target) {
+                    Some(node) => match &mut node.content {
+                        NodeContent::Tool { shape: node_shape, .. } => {
+                            *node_shape = shape;
+                            true
+                        }
+                        _ => false,
+                    },
+                    None => false,
+                };
+                (if applied { full_effect } else { none }, None)
+            }
+            Intent::SetMaterial { target, material } => {
+                let applied = match scene.node_by_id_mut(target) {
+                    Some(node) => match &mut node.content {
+                        NodeContent::Tool { material: node_material, .. } => {
+                            *node_material = material;
+                            true
+                        }
+                        _ => false,
+                    },
+                    None => false,
+                };
+                (if applied { full_effect } else { none }, None)
+            }
+            Intent::SetOffset { target, offset_blocks } => {
+                let applied = match scene.node_by_id_mut(target) {
+                    Some(node) => {
+                        node.transform.offset_blocks = offset_blocks;
+                        true
                     }
-                    _ => IntentEffect::none(),
-                },
-                None => IntentEffect::none(),
-            },
-            Intent::SetMaterial { target, material } => match scene.node_by_id_mut(target) {
-                Some(node) => match &mut node.content {
-                    NodeContent::Tool { material: node_material, .. } => {
-                        *node_material = material;
-                        IntentEffect::scene()
+                    None => false,
+                };
+                (if applied { full_effect } else { none }, None)
+            }
+            Intent::SetName { target, name } => {
+                let applied = match scene.node_by_id_mut(target) {
+                    Some(node) => {
+                        node.name = name;
+                        true
                     }
-                    _ => IntentEffect::none(),
-                },
-                None => IntentEffect::none(),
-            },
-            Intent::SetOffset { target, offset_blocks } => match scene.node_by_id_mut(target) {
-                Some(node) => {
-                    node.transform.offset_blocks = offset_blocks;
-                    IntentEffect::scene()
-                }
-                None => IntentEffect::none(),
-            },
-            Intent::SetName { target, name } => match scene.node_by_id_mut(target) {
-                Some(node) => {
-                    node.name = name;
-                    IntentEffect::scene()
-                }
-                None => IntentEffect::none(),
-            },
-            Intent::SetCloudSeed { target, seed } => match scene.node_by_id_mut(target) {
-                Some(node) => match &mut node.content {
-                    NodeContent::Part(Part::DebugClouds { seed: node_seed }) => {
-                        *node_seed = seed;
-                        IntentEffect::scene()
+                    None => false,
+                };
+                (if applied { full_effect } else { none }, None)
+            }
+            Intent::SetCloudSeed { target, seed } => {
+                let applied = match scene.node_by_id_mut(target) {
+                    Some(node) => match &mut node.content {
+                        NodeContent::Part(Part::DebugClouds { seed: node_seed }) => {
+                            *node_seed = seed;
+                            true
+                        }
+                        _ => false,
+                    },
+                    None => false,
+                };
+                (if applied { full_effect } else { none }, None)
+            }
+            Intent::SetNodeGrids { target, grids } => {
+                let applied = match scene.node_by_id_mut(target) {
+                    Some(node) => {
+                        node.grids = grids;
+                        true
                     }
-                    _ => IntentEffect::none(),
-                },
-                None => IntentEffect::none(),
-            },
-            Intent::SetNodeGrids { target, grids } => match scene.node_by_id_mut(target) {
-                Some(node) => {
-                    node.grids = grids;
-                    IntentEffect::scene()
-                }
-                None => IntentEffect::none(),
-            },
+                    None => false,
+                };
+                (if applied { full_effect } else { none }, None)
+            }
 
             // --- Global ---
             Intent::SetDensity { voxels_per_block } => {
@@ -209,25 +579,25 @@ impl AppCore {
                         shape.voxels_per_block = voxels_per_block;
                     }
                 }
-                IntentEffect::scene()
+                (full_effect, None)
             }
             Intent::SetGridMasters { voxel, lattice, floor } => {
                 // The masters are read live by the per-frame line batch, so no
-                // re-resolve — matching the panel's Display section.
+                // re-resolve — `full_effect` is already `none()` for this intent.
                 scene.master_voxel_grid = voxel;
                 scene.master_block_lattice = lattice;
                 scene.master_floor_grid = floor;
-                IntentEffect::none()
+                (full_effect, None)
             }
 
             // --- Selection ---
             Intent::SelectNode { target } => {
                 scene.active = target;
-                IntentEffect::selection()
+                (full_effect, None)
             }
             Intent::SelectPoint { target } => {
                 scene.active_point = target;
-                IntentEffect::selection()
+                (full_effect, None)
             }
 
             // --- Points ---
@@ -238,45 +608,55 @@ impl AppCore {
                     ..crate::scene::Point::default()
                 };
                 scene.add_point(point);
-                IntentEffect::points()
+                (full_effect, None)
             }
             Intent::RemovePoint { index } => {
                 scene.remove_point(index);
-                IntentEffect::points()
+                (full_effect, None)
             }
-            Intent::SetPointHidden { index, hidden } => match scene.points.get_mut(index) {
-                Some(point) => {
-                    point.hidden = hidden;
-                    IntentEffect::points()
-                }
-                None => IntentEffect::none(),
-            },
-            Intent::SetPointPlanes { index, xz, xy, yz } => match scene.points.get_mut(index) {
-                Some(point) => {
-                    point.plane_xz = xz;
-                    point.plane_xy = xy;
-                    point.plane_yz = yz;
-                    IntentEffect::points()
-                }
-                None => IntentEffect::none(),
-            },
-            Intent::SetPointAxes { index, x, y, z } => match scene.points.get_mut(index) {
-                Some(point) => {
-                    point.axis_x = x;
-                    point.axis_y = y;
-                    point.axis_z = z;
-                    IntentEffect::points()
-                }
-                None => IntentEffect::none(),
-            },
+            Intent::SetPointHidden { index, hidden } => {
+                let applied = match scene.points.get_mut(index) {
+                    Some(point) => {
+                        point.hidden = hidden;
+                        true
+                    }
+                    None => false,
+                };
+                (if applied { full_effect } else { none }, None)
+            }
+            Intent::SetPointPlanes { index, xz, xy, yz } => {
+                let applied = match scene.points.get_mut(index) {
+                    Some(point) => {
+                        point.plane_xz = xz;
+                        point.plane_xy = xy;
+                        point.plane_yz = yz;
+                        true
+                    }
+                    None => false,
+                };
+                (if applied { full_effect } else { none }, None)
+            }
+            Intent::SetPointAxes { index, x, y, z } => {
+                let applied = match scene.points.get_mut(index) {
+                    Some(point) => {
+                        point.axis_x = x;
+                        point.axis_y = y;
+                        point.axis_z = z;
+                        true
+                    }
+                    None => false,
+                };
+                (if applied { full_effect } else { none }, None)
+            }
             Intent::SetPointPosition { index, position_blocks } => {
-                match scene.points.get_mut(index) {
+                let applied = match scene.points.get_mut(index) {
                     Some(point) => {
                         point.position_blocks = position_blocks;
-                        IntentEffect::points()
+                        true
                     }
-                    None => IntentEffect::none(),
-                }
+                    None => false,
+                };
+                (if applied { full_effect } else { none }, None)
             }
         }
     }
@@ -427,5 +807,556 @@ impl AppCore {
             band_y_min: lower - half_y,
             band_y_max: (upper + 1.0) - half_y,
         }
+    }
+
+    /// The number of commands on the undo stack (ADR 0003 Phase C C2 test support).
+    #[cfg(test)]
+    pub(crate) fn undo_depth(&self) -> usize {
+        self.command_stack.undo.len()
+    }
+
+    /// The number of commands on the redo stack (ADR 0003 Phase C C2 test support).
+    #[cfg(test)]
+    pub(crate) fn redo_depth(&self) -> usize {
+        self.command_stack.redo.len()
+    }
+}
+
+#[cfg(test)]
+mod undo_tests {
+    use super::*;
+    use crate::camera::OrbitCamera;
+    use crate::core_geom::MaterialChoice;
+    use crate::intent::{Intent, NodeSpec};
+    use crate::scene::{Node, NodeBuilder, NodeContent, NodeGrids, Point, Scene};
+    use crate::store::Store;
+    use crate::voxel::{SdfShape, ShapeKind};
+
+    /// A headless [`AppCore`] for the undo tests (no GPU — `apply_intent`/`undo`/`redo`
+    /// only touch the borrowed scene + the owned command stack).
+    fn test_core() -> AppCore {
+        AppCore::new(Store::new(), OrbitCamera::default())
+    }
+
+    /// A box Tool shape of the given block size at density 8.
+    fn box_shape(size: [u32; 3]) -> SdfShape {
+        SdfShape {
+            kind: ShapeKind::Box,
+            size_blocks: size,
+            voxels_per_block: 8,
+            wall_blocks: 1,
+        }
+    }
+
+    /// A Tool node named after its kind (matching [`NodeSpec::into_node`]).
+    fn tool_node(shape: SdfShape, material: MaterialChoice) -> Node {
+        Node::new(format!("{:?}", shape.kind), NodeContent::Tool { shape, material })
+    }
+
+    /// A normalized two-Tool scene with stable ids minted + an Origin point, the first
+    /// node active.
+    fn two_tool_scene() -> Scene {
+        let mut scene = Scene::from_nodes(vec![
+            tool_node(box_shape([2, 2, 2]), MaterialChoice::Stone),
+            tool_node(box_shape([3, 1, 4]), MaterialChoice::Wood),
+        ]);
+        scene.ensure_node_ids();
+        scene.ensure_origin_point();
+        scene.active = scene.roots.first().copied();
+        scene
+    }
+
+    /// Apply `intent`, asserting the round-trip invariant: `undo()` restores the
+    /// scene byte-for-byte to `before`, and `redo()` restores it byte-for-byte to the
+    /// post-apply `after`. Returns the core so the caller can inspect the stacks.
+    fn assert_round_trips(scene: &mut Scene, intent: Intent) {
+        let mut core = test_core();
+        let before = scene.clone();
+        core.apply_intent(scene, intent);
+        let after = scene.clone();
+        assert_ne!(*scene, before, "the forward op must change the scene");
+        assert_eq!(core.undo_depth(), 1, "one command pushed");
+
+        core.undo(scene);
+        assert_eq!(*scene, before, "undo must restore the scene byte-for-byte");
+        assert_eq!(core.undo_depth(), 0);
+        assert_eq!(core.redo_depth(), 1);
+
+        core.redo(scene);
+        assert_eq!(*scene, after, "redo must restore the post-apply scene byte-for-byte");
+        assert_eq!(core.undo_depth(), 1);
+        assert_eq!(core.redo_depth(), 0);
+    }
+
+    // === Structural inverses (the correctness-critical arms) ===
+
+    #[test]
+    fn add_node_round_trips() {
+        let mut scene = two_tool_scene();
+        assert_round_trips(
+            &mut scene,
+            Intent::AddNode {
+                content: NodeSpec::Tool {
+                    shape: box_shape([5, 5, 5]),
+                    material: MaterialChoice::Plain,
+                },
+            },
+        );
+    }
+
+    #[test]
+    fn add_child_round_trips() {
+        let mut scene = Scene::from_nodes(vec![NodeBuilder::group(
+            "G",
+            vec![tool_node(box_shape([2, 2, 2]), MaterialChoice::Stone).into()],
+        )]);
+        scene.ensure_node_ids();
+        scene.ensure_origin_point();
+        let group = scene.roots[0];
+        assert_round_trips(
+            &mut scene,
+            Intent::AddChild {
+                group,
+                content: NodeSpec::Tool {
+                    shape: box_shape([4, 4, 4]),
+                    material: MaterialChoice::Wood,
+                },
+            },
+        );
+    }
+
+    #[test]
+    fn group_node_round_trips() {
+        let mut scene = two_tool_scene();
+        let target = scene.roots[1];
+        assert_round_trips(&mut scene, Intent::GroupNode { target });
+    }
+
+    #[test]
+    fn group_node_nested_round_trips() {
+        // Group a node that already lives inside a Group — exercises the parent-spine
+        // (not roots) slot restore.
+        let mut scene = Scene::from_nodes(vec![NodeBuilder::group(
+            "G",
+            vec![
+                tool_node(box_shape([2, 2, 2]), MaterialChoice::Stone).into(),
+                tool_node(box_shape([3, 3, 3]), MaterialChoice::Wood).into(),
+            ],
+        )]);
+        scene.ensure_node_ids();
+        scene.ensure_origin_point();
+        // The second child of the Group.
+        let group = scene.roots[0];
+        let child = match &scene.arena[&group].content {
+            NodeContent::Group(children) => children[1],
+            _ => unreachable!(),
+        };
+        assert_round_trips(&mut scene, Intent::GroupNode { target: child });
+    }
+
+    #[test]
+    fn make_definition_from_leaf_round_trips() {
+        let mut scene = two_tool_scene();
+        let target = scene.roots[0];
+        assert_round_trips(
+            &mut scene,
+            Intent::MakeDefinition { target, name: "House".to_string() },
+        );
+    }
+
+    #[test]
+    fn make_definition_from_group_round_trips() {
+        // A Group active node DONATES its children to the def — the harder inverse
+        // (restore the donated spine into the node's content, pop the def, no body).
+        let mut scene = Scene::from_nodes(vec![NodeBuilder::group(
+            "G",
+            vec![
+                tool_node(box_shape([2, 2, 2]), MaterialChoice::Stone).into(),
+                tool_node(box_shape([3, 3, 3]), MaterialChoice::Wood).into(),
+            ],
+        )]);
+        scene.ensure_node_ids();
+        scene.ensure_origin_point();
+        let target = scene.roots[0];
+        assert_round_trips(
+            &mut scene,
+            Intent::MakeDefinition { target, name: "Body".to_string() },
+        );
+    }
+
+    #[test]
+    fn add_instance_round_trips() {
+        let mut scene = two_tool_scene();
+        let target = scene.roots[0];
+        scene.active = Some(target);
+        let def = scene.make_definition_from_active("Body").expect("def made");
+        assert_round_trips(&mut scene, Intent::AddInstance { def });
+    }
+
+    #[test]
+    fn remove_leaf_node_round_trips() {
+        let mut scene = two_tool_scene();
+        let target = scene.roots[1];
+        assert_round_trips(&mut scene, Intent::RemoveNode { target });
+    }
+
+    #[test]
+    fn remove_group_with_children_round_trips() {
+        // The critical case: removing a Group detaches a whole subtree; the inverse
+        // must re-insert every descendant under its original id at the original slot.
+        let mut scene = Scene::from_nodes(vec![
+            tool_node(box_shape([2, 2, 2]), MaterialChoice::Stone).into(),
+            NodeBuilder::group(
+                "G",
+                vec![
+                    tool_node(box_shape([3, 3, 3]), MaterialChoice::Wood).into(),
+                    NodeBuilder::group(
+                        "Inner",
+                        vec![tool_node(box_shape([1, 1, 1]), MaterialChoice::Plain).into()],
+                    ),
+                ],
+            ),
+            tool_node(box_shape([4, 4, 4]), MaterialChoice::Plain).into(),
+        ]);
+        scene.ensure_node_ids();
+        scene.ensure_origin_point();
+        scene.active = scene.roots.first().copied();
+        let group = scene.roots[1];
+        assert_round_trips(&mut scene, Intent::RemoveNode { target: group });
+    }
+
+    // === Field-set inverses ===
+
+    #[test]
+    fn set_visible_round_trips() {
+        let mut scene = two_tool_scene();
+        let target = scene.roots[0];
+        assert_round_trips(&mut scene, Intent::SetVisible { target, visible: false });
+    }
+
+    #[test]
+    fn set_shape_round_trips() {
+        let mut scene = two_tool_scene();
+        let target = scene.roots[0];
+        assert_round_trips(
+            &mut scene,
+            Intent::SetShape { target, shape: box_shape([9, 9, 9]) },
+        );
+    }
+
+    #[test]
+    fn set_material_round_trips() {
+        let mut scene = two_tool_scene();
+        let target = scene.roots[0];
+        assert_round_trips(
+            &mut scene,
+            Intent::SetMaterial { target, material: MaterialChoice::Plain },
+        );
+    }
+
+    #[test]
+    fn set_offset_round_trips() {
+        let mut scene = two_tool_scene();
+        let target = scene.roots[1];
+        assert_round_trips(
+            &mut scene,
+            Intent::SetOffset { target, offset_blocks: [3, -2, 5] },
+        );
+    }
+
+    #[test]
+    fn set_name_round_trips() {
+        let mut scene = two_tool_scene();
+        let target = scene.roots[0];
+        assert_round_trips(
+            &mut scene,
+            Intent::SetName { target, name: "Renamed".to_string() },
+        );
+    }
+
+    #[test]
+    fn set_cloud_seed_round_trips() {
+        let mut scene = Scene::from_nodes(vec![NodeSpec::CloudsPart.into_node()]);
+        scene.ensure_node_ids();
+        scene.ensure_origin_point();
+        scene.active = scene.roots.first().copied();
+        let target = scene.roots[0];
+        assert_round_trips(&mut scene, Intent::SetCloudSeed { target, seed: 42 });
+    }
+
+    #[test]
+    fn set_node_grids_round_trips() {
+        let mut scene = two_tool_scene();
+        let target = scene.roots[0];
+        assert_round_trips(
+            &mut scene,
+            Intent::SetNodeGrids {
+                target,
+                grids: NodeGrids {
+                    voxel_grid_on_faces: true,
+                    block_lattice: true,
+                    floor_grid: false,
+                },
+            },
+        );
+    }
+
+    #[test]
+    fn set_density_round_trips() {
+        // Mixed-density Tools (one nested in a Group) so the per-node prior capture is
+        // exercised — a flat single-value inverse would not restore this byte-for-byte.
+        let mut scene = Scene::from_nodes(vec![
+            tool_node(box_shape([2, 2, 2]), MaterialChoice::Stone).into(),
+            NodeBuilder::group(
+                "G",
+                vec![tool_node(box_shape([3, 3, 3]), MaterialChoice::Wood).into()],
+            ),
+        ]);
+        scene.ensure_node_ids();
+        scene.ensure_origin_point();
+        // Give the two Tools DIFFERENT densities before the global set.
+        for (offset, node) in scene.arena.values_mut().enumerate() {
+            if let NodeContent::Tool { shape, .. } = &mut node.content {
+                shape.voxels_per_block = 4 + offset as u32;
+            }
+        }
+        scene.active = scene.roots.first().copied();
+        assert_round_trips(&mut scene, Intent::SetDensity { voxels_per_block: 20 });
+    }
+
+    #[test]
+    fn set_grid_masters_round_trips() {
+        let mut scene = two_tool_scene();
+        assert_round_trips(
+            &mut scene,
+            Intent::SetGridMasters { voxel: false, lattice: true, floor: false },
+        );
+    }
+
+    // === Point inverses ===
+
+    #[test]
+    fn add_point_round_trips() {
+        let mut scene = two_tool_scene();
+        assert_round_trips(
+            &mut scene,
+            Intent::AddPoint { position_blocks: [4, 0, -3], name: "Anchor".to_string() },
+        );
+    }
+
+    #[test]
+    fn remove_point_round_trips() {
+        let mut scene = two_tool_scene();
+        scene.add_point(Point {
+            name: "P".to_string(),
+            position_blocks: [1, 2, 3],
+            ..Point::default()
+        });
+        assert_round_trips(&mut scene, Intent::RemovePoint { index: 1 });
+    }
+
+    #[test]
+    fn set_point_hidden_round_trips() {
+        let mut scene = two_tool_scene();
+        assert_round_trips(&mut scene, Intent::SetPointHidden { index: 0, hidden: true });
+    }
+
+    #[test]
+    fn set_point_planes_round_trips() {
+        let mut scene = two_tool_scene();
+        assert_round_trips(
+            &mut scene,
+            Intent::SetPointPlanes { index: 0, xz: false, xy: true, yz: true },
+        );
+    }
+
+    #[test]
+    fn set_point_axes_round_trips() {
+        let mut scene = two_tool_scene();
+        assert_round_trips(
+            &mut scene,
+            Intent::SetPointAxes { index: 0, x: false, y: true, z: false },
+        );
+    }
+
+    #[test]
+    fn set_point_position_round_trips() {
+        let mut scene = two_tool_scene();
+        scene.add_point(Point {
+            name: "P".to_string(),
+            position_blocks: [0, 0, 0],
+            ..Point::default()
+        });
+        assert_round_trips(
+            &mut scene,
+            Intent::SetPointPosition { index: 1, position_blocks: [9, -1, 2] },
+        );
+    }
+
+    // === Selection intents push NOTHING ===
+
+    #[test]
+    fn select_node_pushes_no_command() {
+        let mut scene = two_tool_scene();
+        let mut core = test_core();
+        let target = scene.roots[1];
+        core.apply_intent(&mut scene, Intent::SelectNode { target: Some(target) });
+        assert_eq!(core.undo_depth(), 0, "selection is not an undoable step");
+        assert_eq!(scene.active, Some(target));
+    }
+
+    #[test]
+    fn select_point_pushes_no_command() {
+        let mut scene = two_tool_scene();
+        let mut core = test_core();
+        core.apply_intent(&mut scene, Intent::SelectPoint { target: Some(0) });
+        assert_eq!(core.undo_depth(), 0, "point selection is not an undoable step");
+        assert_eq!(scene.active_point, Some(0));
+    }
+
+    // === No-op forward → no-op inverse (still pushes a command, undo restores nothing) ===
+
+    #[test]
+    fn field_write_to_missing_id_undo_is_noop() {
+        let mut scene = two_tool_scene();
+        let before = scene.clone();
+        let mut core = test_core();
+        core.apply_intent(
+            &mut scene,
+            Intent::SetName { target: crate::scene::NodeId(9999), name: "ghost".to_string() },
+        );
+        assert_eq!(scene, before, "a no-op forward changes nothing");
+        core.undo(&mut scene);
+        assert_eq!(scene, before, "undo of a no-op restores nothing");
+    }
+
+    // === Scripted realistic sequence ===
+
+    #[test]
+    fn scripted_sequence_undo_redo_round_trips() {
+        let mut scene = two_tool_scene();
+        let seed = scene.clone();
+        let mut core = test_core();
+
+        // A realistic authoring sequence.
+        core.apply_intent(
+            &mut scene,
+            Intent::AddNode {
+                content: NodeSpec::Tool {
+                    shape: box_shape([2, 2, 2]),
+                    material: MaterialChoice::Plain,
+                },
+            },
+        );
+        let added = scene.active.expect("added node selected");
+        core.apply_intent(&mut scene, Intent::GroupNode { target: added });
+        // The wrapped child is now active; group IT into a definition.
+        let active = scene.active.expect("active after group");
+        core.apply_intent(
+            &mut scene,
+            Intent::MakeDefinition { target: active, name: "Kit".to_string() },
+        );
+        let def = scene.definitions.last().expect("def made").id;
+        core.apply_intent(&mut scene, Intent::AddInstance { def });
+        let instance = scene.active.expect("instance selected");
+        core.apply_intent(
+            &mut scene,
+            Intent::SetOffset { target: instance, offset_blocks: [7, 0, 0] },
+        );
+        core.apply_intent(&mut scene, Intent::RemoveNode { target: instance });
+
+        let final_scene = scene.clone();
+        assert_eq!(core.undo_depth(), 6, "six undoable steps");
+
+        // Undo all the way back to the seed.
+        for _ in 0..6 {
+            core.undo(&mut scene);
+        }
+        assert_eq!(scene, seed, "undo all the way restores the seed byte-for-byte");
+
+        // Redo all the way back to the final scene.
+        for _ in 0..6 {
+            core.redo(&mut scene);
+        }
+        assert_eq!(scene, final_scene, "redo all the way restores the final scene");
+    }
+
+    #[test]
+    fn redo_cleared_after_apply() {
+        let mut scene = two_tool_scene();
+        let mut core = test_core();
+        let target = scene.roots[0];
+        core.apply_intent(&mut scene, Intent::SetName { target, name: "First".to_string() });
+        core.undo(&mut scene);
+        assert_eq!(core.redo_depth(), 1, "undo populated redo");
+        // A new, different apply must clear the redo future.
+        core.apply_intent(&mut scene, Intent::SetName { target, name: "Second".to_string() });
+        assert_eq!(core.redo_depth(), 0, "a fresh edit clears the redo stack");
+    }
+
+    // === effect_of routing: undo/redo return the per-intent effect, not blanket-true ===
+
+    #[test]
+    fn undo_of_field_edit_reports_scene_not_points() {
+        // A trivial rename re-resolves the scene but must NOT force a points rebuild
+        // (the per-edit cost ADR 0003 optimizes against at 10k nodes).
+        let mut scene = two_tool_scene();
+        let mut core = test_core();
+        let target = scene.roots[0];
+        core.apply_intent(&mut scene, Intent::SetName { target, name: "Renamed".to_string() });
+        let undo_effect = core.undo(&mut scene);
+        assert!(undo_effect.scene_changed, "rename re-resolves the scene");
+        assert!(!undo_effect.points_changed, "rename does not touch the points overlay");
+        assert!(undo_effect.selection_changed, "undo always re-syncs the selection mirror");
+        // And it is not the old blanket-true effect.
+        assert_ne!(
+            undo_effect,
+            IntentEffect { scene_changed: true, points_changed: true, selection_changed: true },
+            "undo no longer returns blanket-true",
+        );
+        let redo_effect = core.redo(&mut scene);
+        assert!(redo_effect.scene_changed);
+        assert!(!redo_effect.points_changed, "redo of a rename does not touch points");
+    }
+
+    #[test]
+    fn undo_of_shape_edit_reports_scene_not_points() {
+        let mut scene = two_tool_scene();
+        let mut core = test_core();
+        let target = scene.roots[0];
+        core.apply_intent(&mut scene, Intent::SetShape { target, shape: box_shape([9, 9, 9]) });
+        let undo_effect = core.undo(&mut scene);
+        assert!(undo_effect.scene_changed);
+        assert!(!undo_effect.points_changed);
+    }
+
+    #[test]
+    fn undo_of_point_edit_reports_points_not_scene() {
+        let mut scene = two_tool_scene();
+        let mut core = test_core();
+        core.apply_intent(&mut scene, Intent::SetPointHidden { index: 0, hidden: true });
+        let undo_effect = core.undo(&mut scene);
+        assert!(undo_effect.points_changed, "a point edit is overlay-only");
+        assert!(!undo_effect.scene_changed, "a point edit triggers no voxel re-resolve");
+        assert!(undo_effect.selection_changed);
+    }
+
+    #[test]
+    fn undo_of_grid_masters_does_not_claim_scene_changed() {
+        // The forward SetGridMasters effect is `none()` (masters are read live); undo
+        // must match — claiming scene_changed would wrongly force a re-resolve.
+        let mut scene = two_tool_scene();
+        let mut core = test_core();
+        core.apply_intent(
+            &mut scene,
+            Intent::SetGridMasters { voxel: false, lattice: true, floor: false },
+        );
+        let undo_effect = core.undo(&mut scene);
+        assert!(!undo_effect.scene_changed, "grid masters need no re-resolve");
+        assert!(!undo_effect.points_changed, "grid masters do not touch points");
+        // Selection is still re-synced (undo restores selection_before).
+        assert!(undo_effect.selection_changed);
+        let redo_effect = core.redo(&mut scene);
+        assert!(!redo_effect.scene_changed, "redo of grid masters needs no re-resolve");
     }
 }

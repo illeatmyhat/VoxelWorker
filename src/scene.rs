@@ -1207,6 +1207,113 @@ impl Scene {
             .and_then(|path| self.id_at_path(&path));
     }
 
+    /// The parent of the node `id` in the top-level assembly tree, and its index in
+    /// that parent's spine (ADR 0003 Phase C C2 undo support): `(Some(parent_id),
+    /// index)` for a Group child, `(None, index)` for a top-level node. `None` when the
+    /// id does not resolve. Used to CAPTURE a node's slot before a structural edit so
+    /// the inverse can splice it back at the same place.
+    pub fn parent_and_index_of(&self, id: NodeId) -> Option<(Option<NodeId>, usize)> {
+        let path = self.path_of(id)?;
+        let (&last_index, parent_indices) = path.indices.split_last()?;
+        if parent_indices.is_empty() {
+            return Some((None, last_index));
+        }
+        // The parent is the node the parent-prefix path resolves to (always a Group,
+        // since a non-Group has no addressable children).
+        let parent_path = NodePath::from_indices(parent_indices.to_vec());
+        let parent_id = self.id_at_path(&parent_path)?;
+        Some((Some(parent_id), last_index))
+    }
+
+    /// Clone the detached subtree rooted at `root_id` (the node + every descendant
+    /// through [`NodeContent::Group`] spines) into a `Vec<Node>`, root first, in the
+    /// SAME DFS order as [`collect_subtree_ids`](Self::collect_subtree_ids) (ADR 0003
+    /// Phase C C2 undo support). Captured BEFORE a `remove_node` so the inverse can
+    /// re-insert every `Node` under its ORIGINAL id. Definition bodies are NOT followed
+    /// (an `Instance` references a def stored separately).
+    pub fn clone_subtree_nodes(&self, root_id: NodeId) -> Vec<Node> {
+        let mut ids = Vec::new();
+        self.collect_subtree_ids(root_id, &mut ids);
+        ids.into_iter()
+            .filter_map(|id| self.arena.get(&id).cloned())
+            .collect()
+    }
+
+    /// Remove the node `id` (and its whole subtree) from the arena + splice its id out
+    /// of its parent spine, WITHOUT re-deriving the `active` selection (ADR 0003 Phase
+    /// C C2). The undo path restores selection itself from the command's captured
+    /// `selection_before`, so unlike [`remove_node`](Self::remove_node) this must not
+    /// touch `active`. Used to reverse a single-node mint (`Inverse::RemoveAdded`). A
+    /// stale id is a no-op.
+    pub fn remove_node_exact(&mut self, id: NodeId) {
+        let Some(path) = self.path_of(id) else {
+            return;
+        };
+        let Some((&last_index, parent_indices)) = path.indices.split_last() else {
+            return;
+        };
+        let parent_path = NodePath::from_indices(parent_indices.to_vec());
+        let removed_id = match self.siblings_mut(&parent_path) {
+            Some(spine) if last_index < spine.len() => spine.remove(last_index),
+            _ => return,
+        };
+        let mut to_remove = Vec::new();
+        self.collect_subtree_ids(removed_id, &mut to_remove);
+        for descendant in to_remove {
+            self.arena.remove(&descendant);
+        }
+    }
+
+    /// Reverse [`group_active`](Self::group_active) (ADR 0003 Phase C C2): the fresh
+    /// `group` node took `target`'s spine slot and adopted `target` as its sole child.
+    /// Put `target`'s id back in the slot `group` occupies and drop `group` from the
+    /// arena. Does NOT touch `active` (the undo path restores it). A no-op if `group`
+    /// no longer resolves.
+    pub fn ungroup_node(&mut self, group: NodeId, target: NodeId) {
+        let Some(path) = self.path_of(group) else {
+            return;
+        };
+        let Some((&last_index, parent_indices)) = path.indices.split_last() else {
+            return;
+        };
+        let parent_path = NodePath::from_indices(parent_indices.to_vec());
+        if let Some(spine) = self.siblings_mut(&parent_path) {
+            if last_index < spine.len() {
+                spine[last_index] = target;
+            }
+        }
+        self.arena.remove(&group);
+    }
+
+    /// Re-insert a detached subtree captured by [`clone_subtree_nodes`](Self::clone_subtree_nodes)
+    /// (ADR 0003 Phase C C2): store every `Node` back in the arena under its ORIGINAL
+    /// id (safe — the monotonic counter never reuses an id), then splice the root id
+    /// (`nodes[0]`) into `parent`'s spine (`None` = top-level `roots`) at `index`.
+    /// Reverses a [`remove_node`](Self::remove_node). Does NOT touch `active`.
+    pub fn reinsert_subtree(&mut self, parent: Option<NodeId>, index: usize, nodes: &[Node]) {
+        let Some(root) = nodes.first() else {
+            return;
+        };
+        let root_id = root.id;
+        for node in nodes {
+            self.arena.insert(node.id, node.clone());
+        }
+        match parent {
+            None => {
+                let clamped = index.min(self.roots.len());
+                self.roots.insert(clamped, root_id);
+            }
+            Some(parent_id) => {
+                if let Some(parent_node) = self.arena.get_mut(&parent_id) {
+                    if let NodeContent::Group(children) = &mut parent_node.content {
+                        let clamped = index.min(children.len());
+                        children.insert(clamped, root_id);
+                    }
+                }
+            }
+        }
+    }
+
     /// Collect `root_id` and every descendant id (through [`NodeContent::Group`]
     /// spines) into `out`, via a shared-borrow DFS over the arena (ADR 0003 Phase B5).
     /// Used by [`remove_node`](Self::remove_node) to gather a detached subtree's ids

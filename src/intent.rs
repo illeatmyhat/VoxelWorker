@@ -401,7 +401,7 @@ mod tests {
     /// the SAME scene state (so id-minting counters match), so the scenes compare
     /// equal (Scene derives PartialEq).
     fn assert_dispatch_matches(scene: &Scene, intent: Intent, direct: impl FnOnce(&mut Scene)) {
-        let core = test_core();
+        let mut core = test_core();
         let mut applied = scene.clone();
         core.apply_intent(&mut applied, intent);
         let mut expected = scene.clone();
@@ -615,7 +615,7 @@ mod tests {
     #[test]
     fn field_write_to_missing_id_is_noop() {
         let scene = two_tool_scene();
-        let core = test_core();
+        let mut core = test_core();
         let mut applied = scene.clone();
         let effect = core.apply_intent(
             &mut applied,
@@ -630,7 +630,7 @@ mod tests {
         let mut scene = Scene::from_nodes(vec![NodeSpec::CloudsPart.into_node()]);
         scene.ensure_node_ids();
         let target = root_id(&scene, 0);
-        let core = test_core();
+        let mut core = test_core();
         let mut applied = scene.clone();
         let effect =
             core.apply_intent(&mut applied, Intent::SetShape { target, shape: box_shape([2, 2, 2]) });
@@ -682,7 +682,7 @@ mod tests {
     fn select_node_dispatches() {
         let scene = two_tool_scene();
         let target = root_id(&scene, 1);
-        let core = test_core();
+        let mut core = test_core();
         let mut applied = scene.clone();
         let effect = core.apply_intent(&mut applied, Intent::SelectNode { target: Some(target) });
         let mut expected = scene.clone();
@@ -694,7 +694,7 @@ mod tests {
     #[test]
     fn select_point_dispatches() {
         let scene = two_tool_scene();
-        let core = test_core();
+        let mut core = test_core();
         let mut applied = scene.clone();
         let effect = core.apply_intent(&mut applied, Intent::SelectPoint { target: Some(0) });
         let mut expected = scene.clone();
