@@ -47,6 +47,58 @@ minimization.
    **i64-subtract-before-f32-downcast** rebasing (ADR 0002 Decision 2) is mandatory; a far-edge edit
    must NOT re-resolve the world.
 
+### Foundation seam rulings surfaced by the architecture gap sweep (F1–F6)
+
+A 9-lens **architecture gap sweep** ([`docs/design/architecture-gap-sweep.md`](../design/architecture-gap-sweep.md))
+was run against ADR 0003/0004 and surfaced six **foundation data-model seams + scope rulings** that
+are cheapest to pin **while 0003 is still Proposed** — the same way the joint-arity fix in §1 was
+driven by ADR 0004's stress-test. They are decided with the product owner and woven into the relevant
+sections below; this is the index:
+
+- **F1 — order-48 instance transform (mirror symmetry).** Widen the stored orientation from the 24
+  proper rotations to the **full order-48 signed-permutation group** (add a handedness/reflection
+  bit), unlocking bilateral mirror symmetry. Still an exact index permutation. (§3f.)
+- **F2 — typed `BlockAttrs` + rotation algebra + block-entity side-table + world-origin export.**
+  Define `BlockAttrs` as a typed per-`block_id` state schema, specify how it composes with the F1
+  transform, add a neighbor connection-resolve pass, a sparse block-entity side-table, and a
+  world-origin export contract. (§3a/§3a-bis, §5.)
+- **F3 — terrain is a MUTABLE layer with controlled coupling.** The product owner chose **writable
+  terrain**: terrain is a first-class mutable layer, and a **controlled producer↔terrain coupling**
+  (sampling `GroundHeightAt` to tie in to live grade) is permitted; no general producer↔producer
+  free-for-all. (See ruling below + Consequences/Alternatives.)
+- **F4 — Datums / levels / grids + `HostedOnDatum`.** Scene-owned named reference geometry, may be
+  terrain-relative. (§1.)
+- **F5 — instance param overrides + a Def TYPE tier.** Relax "instance = transform-only". (§1.)
+- **F6 — STATIC-function scope ruling.** Movable/stateful mechanisms are inert annotations for export
+  fidelity; live kinematics is out of scope. (See ruling below.)
+
+**F3 ruling — writable terrain + controlled coupling.** Terrain is a **first-class mutable layer**,
+not a frozen import. A producer **may** sample a `GroundHeightAt`-style terrain query to blend/tie-in
+to live grade (cut/fill/terrace/berm/excavate semantics). This is the **only** sanctioned
+producer↔producer-class coupling — a *controlled* terrain query, **not** a general producer→producer
+coupling free-for-all. This **supersedes the earlier "terrain read-only + no producer↔producer
+coupling" stance** (see Alternatives/Consequences). The specific cut/fill/terrace/berm/excavate
+**PRODUCERS are ADR 0005**; here we only establish that terrain is mutable and the coupling is
+allowed. The terrain *import format* remains the open research item (unchanged).
+
+**F6 ruling — the planner is STATIC.** Movable/stateful mechanisms (doors that open, drawbridges,
+lifts, portcullises, windmill cap yaw, furnaces/gears) are modeled as **inert ANNOTATIONS** — a
+`block_id` + the F2 `BlockAttrs` (e.g. `hinge-left/closed`) + the F2 block-entity side-table —
+carried purely for **VS export fidelity** so that **VS supplies the actual behavior**. A static
+*pose* (a windmill cap at a fixed angle) is just the F1 transform. The concrete form of an inert
+annotation for an interactable that has **no clean static-voxel representation** is a
+**placeholder / proxy entity** with two parts: (1) **proxy geometry** — a recognizable static
+stand-in so a human reading the plan grasps the *feel* ("a drawbridge goes here"); and (2) a
+**substitution payload** carried in the F2 side-table (`BlockEntity::Substitution` — the real
+`target` block/entity + attrs + orientation + params) so that **on export the proxy is substituted**
+for the real VS block/entity, or, failing that, a human has the exact data to place it manually. The
+planner itself stays static: it stores the proxy and the substitution data; **VS (or the human on
+substitution) supplies the real behavior**. **Live kinematics, state-machines, tick simulation, and
+signal networks are explicitly OUT of scope** — a categorically different subsystem, not bolted into
+the three-tier static model. This is the boundary; F2 carries the annotation, nothing here runs it.
+The placeholder PRODUCER library, the distinct placeholder RENDER treatment, substitute-on-export,
+and the `PlaceholderUnsubstituted` / `PlaceholderUnmapped` diagnostics are **ADR 0005**.
+
 ### The convergent backbone to deliver
 
 ```
@@ -180,8 +232,36 @@ in `edit`:**
 
 - `AssemblyDef` gains the per-part editable content: its parametric producer node(s) **and** its
   sculpt override layer (below), all in the **definition-local frame**.
-- An `Instance(DefId)` node carries only `NodeTransform` (promoted to the 24-orientation lattice
-  rotation + i64 translation — §3, milestone-scoped). It has **no** editable geometry surface.
+- An `Instance(DefId)` node carries `NodeTransform` (promoted to the **order-48 signed-permutation
+  orientation** — 24 rotations + 24 reflections, F1 — plus i64 translation — §3f, milestone-scoped),
+  **and may carry a `KitParams` override bag (F5).** It still has **no** editable *geometry* surface
+  (no per-instance sculpt); a `KitParams` override only re-parameterizes the referenced def's
+  producers, it does not edit voxels on the instance.
+
+**Instance param overrides + a Def TYPE tier (F5 — relaxing "instance = transform-only").** Today an
+instance is transform-only, which forces a **def fork per size variant** (a 3-wide window and a
+4-wide window become two unrelated defs). That is CAD/BIM table stakes to avoid, so the rule is
+relaxed two ways, either or both usable:
+
+```rust
+pub struct Instance {
+    pub def: DefId,
+    pub transform: NodeTransform,            // order-48 orientation + i64 translation (F1)
+    pub param_overrides: Option<KitParams>,  // F5: per-instance parametric override bag (None = use def defaults/type)
+}
+// A Def may additionally expose named parametric TYPE tiers (the "family" tier):
+pub struct DefType { pub name: String, pub params: KitParams }   // e.g. Window::"3-wide", "4-wide"
+// AssemblyDef carries `types: Vec<DefType>` (empty = a plain, non-parametric def).
+```
+
+- A `param_overrides` bag re-evaluates the def's **producers** with overridden `KitParams` at resolve
+  (the parametric tier, §3b/§3d) — it is **not** a sculpt/override layer and does **not** touch the
+  voxel-edit purity rule (sculpt still lives only in defs, §3e). A named `DefType` is a stored,
+  shareable parametric variant; an instance may select a type and/or further override it.
+- This **bends the "instance = transform-only" purity** of the Fusion rule (constraint 2)
+  deliberately — exactly as `assembly_overrides` (below) already bent the "geometry lives only in
+  definitions" purity. **Precedent already set in this same ADR.** Edited here so the seam exists; the
+  KIT producers that *consume* `KitParams` are designed in ADR 0005, not here.
 - `EditTarget` is either `Assembly` (place/move/pattern instances; geometry tools disabled) or
   `OpenDefinition(DefId)` (sculpt/producer tools enabled; instance placement disabled). The UI's
   "active context" is this enum, not a node.
@@ -212,6 +292,33 @@ expresses "this wall meets that floor" structurally, not by absolute coordinates
 constraint/joint **SOLVER and the parametric architectural kit are features-on-top** and belong in
 their own future design doc; we do **not** build the solver here — only the data seam so that
 adding it later is not a schema cascade.
+
+**Datums — scene-owned named reference geometry + `HostedOnDatum` (F4).** Joints relate part to part;
+there is no **shared reference datum** that many parts attach to so that "move Level 3 up → everything
+hosted on it follows" or "columns on grid A-3" works. The scene gains a **`Datum`** primitive — a
+**level plane, grid line, or work axis** — as **scene-owned, named reference geometry** that **reuses
+the `NodeId` arena** and **serializes with the document** (§5):
+
+```rust
+pub struct Datum {
+    pub id: NodeId,                 // reuses the existing stable-id arena (durable across undo)
+    pub name: String,              // "Level 3", "Grid A", "ridge axis"
+    pub kind: DatumKind,           // LevelPlane { y } | GridLine { … } | WorkAxis { … }
+    pub anchor: DatumAnchor,       // absolute, OR terrain-relative (a named site level vs imported grade — see F3)
+}
+// HostedOnDatum reuses the joint/hosting machinery: parts attach to a datum, not to each other.
+// Expressed as a JointKind so it rides the existing scene-owned, id-keyed joint graph above.
+pub enum JointKind { /* …existing kinds…, */ HostedOnDatum { datum: NodeId } }
+```
+
+- `HostedOnDatum` **reuses the joint/hosting machinery** (it is a `JointKind`, so it inherits the
+  durable id-keyed, n-ary graph above) — moving a datum propagates to everything hosted on it through
+  the same relationship fan-out, exactly like the future solver's other joints.
+- A datum's anchor may be **terrain-relative** (a named site level defined relative to imported grade),
+  which is the seam that ties datums to **writable terrain (F3)**. The terrain *import format* remains
+  the open research item (unchanged).
+- This is a **data seam only** — datums serialize and reference durably; the editing/solver UX that
+  drives them is features-on-top.
 
 **Assembly-scoped (scene-root) override layers — a world-frame, this-site-only patch.** Surfaced by
 ADR 0004's intersecting-wall junctions (an intersection is between two *instances in the assembly*,
@@ -310,7 +417,8 @@ pub struct Voxel {
     pub block_local_coord: [u8; 3],
     pub block_id: BlockId,        // categorical block-palette id (replaces the 3-material enum;
                                   // foundational — the rich VS palette CONTENT is the deferred part)
-    pub attrs: BlockAttrs,        // per-voxel attributes (e.g. rotation/variant flags)
+    pub attrs: BlockAttrs,        // TYPED per-block-id state schema (F2): orientation + variant +
+                                  // neighbor-connection bits; rotates/reflects WITH the geometry
 }
 ```
 
@@ -334,6 +442,75 @@ pub struct Voxel {
 
 This change is sequenced as a **prerequisite of the absolute-storage phase** (Phase D), gated by the
 far-scene goldens added first (§G3 / Phase D0).
+
+#### 3a-bis. `BlockAttrs` is a TYPED per-`block_id` state schema + rotation/reflection algebra (F2)
+
+`BlockAttrs` (§3a) must **not** stay an opaque "rotation/variant flags" payload: most real VS blocks
+are **stateful** (stair facing, log axis, door hinge/open, fence/wall connectivity, slab half). An
+opaque payload means a rotated instance keeps **stale facings**, neighbor connections are uncomputed,
+and VS schematic export is **lossy by construction** — a functional gatehouse exports as dumb stone.
+So `BlockAttrs` is pinned now as a **typed, per-`block_id` state schema**:
+
+```rust
+pub struct BlockAttrs {
+    pub orientation: Option<LatticeOrientation>,  // facing/axis, in the SAME order-48 group as the transform (F1)
+    pub variant: VariantFlags,                    // slab-half, stair-shape (inner/outer corner), etc. (per block_id)
+    pub connections: ConnectionBits,              // neighbor-connection bits (fence/wall/stairs/glass-pane)
+}
+// The schema is keyed by block_id: a given block_id declares WHICH of these fields are meaningful.
+```
+
+- **Attrs compose with the instance transform (the load-bearing rule):** a block's `orientation`
+  **rotates AND reflects WITH the geometry** under the F1 order-48 transform. When an instance is
+  rotated 90° or mirrored, every stateful block's facing is **re-composed through the same
+  signed-permutation**, so a rotated stair faces the rotated way and a mirrored door hinges the
+  mirrored way. **Stale facings are the bug this prevents.** (`orientation` lives in the same order-48
+  group as the transform precisely so the composition is one exact permutation, not a special case.)
+- **Connection-resolve pass (the state analogue of WFC):** a **neighbor-aware** pass computes
+  `connections` from adjacency (fences/walls/stairs/panes that connect to neighbors). It runs over
+  resolved occupancy + attrs, deterministic and seed-free; it is the *state* counterpart to the
+  material-fill WFC (which stays deferred, §Consequences). Specified here as a seam; the producers/UX
+  that drive it are ADR 0005.
+- **Sparse, address-keyed block-entity side-table (optional):** for VS **block entities / contents**
+  (chests, signs, mechanisms — F6), the scene carries an optional **sparse side-table keyed by voxel
+  address**, anchored **part-local** (same frame as the sculpt overrides, §3e) so it moves/rotates
+  with the part, and **serialized ALONGSIDE the occupancy codec** (§5). It is sparse because almost no
+  voxels carry an entity. An entry is one of:
+
+  ```rust
+  pub enum BlockEntity {
+      Contents(EntityBlob),                  // a real VS block entity / contents (chest, sign, …)
+      // F6: a PLACEHOLDER / PROXY for an interactable with no clean static-voxel form
+      // (door that opens, drawbridge, lift, windmill, furnace/gears). The voxel occupancy at this
+      // address is recognizable PROXY GEOMETRY (the "feel" — a human reads "a drawbridge goes here");
+      // this payload is the SUBSTITUTION DATA — the real thing the proxy stands for, applied on export.
+      Substitution {
+          target: TargetKind,                       // the real VS block_id OR entity-type to place
+          attrs: BlockAttrs,                        // F2 attrs of the real target (facing/variant/…)
+          orientation: Option<LatticeOrientation>,  // order-48 (F1); composes with the instance transform
+          params: EntityParams,                     // any extra params the real block/entity needs
+      },
+  }
+  // A `Substitution` entry IS the "placeholder, not final" marker by construction: the variant itself
+  // says this is a proxy, so export can substitute it and diagnostics can enumerate unsubstituted ones.
+  ```
+
+  On export (the world-origin export contract below) a `Substitution` proxy is **replaced** by its
+  `target` + `attrs` + `orientation` + `params`, and the proxy's `orientation` composes through the
+  instance transform exactly like any other stateful block (a mirrored drawbridge proxy substitutes a
+  mirror-oriented real block, F1). If the exporter cannot place the target automatically, the
+  substitution data is still the exact record a human needs to place the real thing manually. The
+  placeholder PRODUCER library (recognizable proxy shapes per interactable), the distinct
+  "this-is-a-placeholder" RENDER treatment (so proxies read as proxies — e.g. a per-draw proxy flag),
+  the substitute-on-export logic, and the `PlaceholderUnsubstituted` / `PlaceholderUnmapped`
+  diagnostics are **ADR 0005 consumers** — here we pin only the side-table `Substitution` schema.
+- **World-origin export contract:** export defines a **build-anchor block coord → VS world coord**
+  mapping, and **asserts chisel detail is phased to the block-local 16-grid** (16³ voxels/block) so a
+  round-trip lands on VS micro-block boundaries. The store's quantized floating origin (§4) is
+  decoupled from any world-meaningful origin, so this anchor is what gives export a real, agreed
+  world registration. (Detailed serialization in §5; the VS-native schematic *exporter* itself is a
+  consumer feature in ADR 0005 — here we pin the schema, the rotation algebra, the side-table seam,
+  and the export contract.)
 
 #### 3b. Composition stops being union-only
 
@@ -434,31 +611,40 @@ distinct cases, and only one of them is the 24-orientation case:
    to voxels and is exactly what VS chiseling looks like. Arbitrary angles, curves, and tapers are
    therefore **producer parameters** inside a part definition, fully supported, with no transform
    change at all.
-2. **Instance-transform ROTATION of already-baked voxel data stays the 24-orientation lattice**
-   (part (a) below). This was **never a geometry limit** — only a "losslessly rotate
-   *already-voxelized* data" limit: an axis-aligned rotation is an **exact index permutation**
-   (lossless, byte-stable, reversible), which is what keeps the sparse sculpt-override layer
-   intact and the future joint solver integer-exact.
+2. **Instance-transform ROTATION/REFLECTION of already-baked voxel data stays the order-48
+   signed-permutation lattice group** (part (a) below). This was **never a geometry limit** — only a
+   "losslessly rotate/mirror *already-voxelized* data" limit: an axis-aligned rotation **or
+   reflection** is an **exact index permutation** (lossless, byte-stable, reversible), which is what
+   keeps the sparse sculpt-override layer intact and the future joint solver integer-exact. The
+   reflection half (the other 24 of the order-48 group) is what makes **bilateral mirror symmetry**
+   — a left wing as a mirrored instance of a right-wing def — expressible at all (see (a)).
 3. **Rotating a *sculpted* (non-parametric) part to a non-lattice angle** would require **lossy
    resampling** of the sparse override layer onto the rotated lattice. This is a **deferred,
    flagged opt-in** ("this resamples/bakes the sculpt layer" warning) — not the default and not a
    silent operation (see Deferred). Parametric parts have no such cost (case 1 re-voxelizes from
    the field).
 
-So: angle/curve = producer parameters (exact from the field); lossless instance rotation of baked
-data = the 24-orientation enum; non-lattice rotation of a *sculpted* part = deferred lossy-resample
-opt-in. The `LatticeOrientation` enum below governs **only** case 2.
+So: angle/curve = producer parameters (exact from the field); lossless instance rotation/reflection
+of baked data = the order-48 signed-permutation enum; non-lattice rotation of a *sculpted* part =
+deferred lossy-resample opt-in. The `LatticeOrientation` enum below governs **only** case 2.
 
 Today `NodeTransform` is **translation-only** (`scene.rs`: `offset_blocks: [i64; 3]`, with a
 `// future: rotation, scale` marker) and the resolver composes placement by **pure i64 addition**
 (`scene.rs::walk_nodes` sums `offset_blocks` down the tree). Promoting to affine is **not** a
 one-substep change; it is a **dedicated milestone** (Phase F-rot) with three golden-gated parts:
 
-- **(a) 24-orientation rotation as a TYPE-level enum** — `NodeTransform` gains
-  `rotation: LatticeOrientation` (one of the 24 axis-aligned rotations), **not** a general affine in
-  the stored type. Keeping it an enum means voxel resampling stays an **exact index permutation**
-  (no interpolation), positions stay lattice-exact under i64 rebase, and the **serialization stays
-  byte-stable** (an enum discriminant, not a float matrix).
+- **(a) order-48 signed-permutation orientation as a TYPE-level enum (F1 — widened from 24 to 48)**
+  — `NodeTransform` gains `rotation: LatticeOrientation`, **plus a handedness/reflection bit** so the
+  stored orientation covers the **full order-48 signed-permutation group** (the 24 proper rotations +
+  the 24 reflections), **not** a general affine in the stored type. Keeping it an enum (+ one bit)
+  means voxel resampling — rotation **or mirror** — stays an **exact index permutation** (no
+  interpolation), positions stay lattice-exact under i64 rebase, and the **serialization stays
+  byte-stable** (an enum discriminant + a bit, not a float matrix). The reflection half is the
+  cheapest possible unlock of **bilateral mirror symmetry** (a left wing = a mirrored instance of a
+  right-wing def), the most common architectural symmetry and previously **inexpressible** in the
+  stored transform. **Caveat:** an *asymmetric* sculpt ornament inside a def is **chiral** — a
+  reflected instance mirrors that ornament too; reflection is exact-and-lossless, but it does mirror
+  any handed detail (acceptable and expected; flagged here so it is not a surprise).
 - **(b) Rotated-chunk conservative-cover fan-out** — a rotated part's chunks no longer map 1:1 to
   output chunks; invalidation/residency must fan out over the **conservative cover** of the rotated
   AABB.
@@ -593,7 +779,9 @@ struct ProjectFile {
     magic: [u8; 4],            // b"VXWP" — reject anything else immediately
     epoch: u32,               // format/epoch tag; the loader hard-errors on an unrecognized value
     scene: Scene,             // arena of defs/nodes (NodeId), per-def layer stacks, sculpt overrides,
-                              // joints, AND the scene-root assembly-scoped override layers (§1)
+                              // joints, datums (F4), instance KitParams/Def types (F5), the
+                              // block-entity side-table (F2), AND the scene-root assembly-scoped
+                              // override layers (§1)
 }
 ```
 
@@ -623,6 +811,21 @@ struct ProjectFile {
     assembly-scoped override layers (§1)** — they differ only in anchoring frame (definition-local
     vs world), not in encoding — so assembly patches reload byte-identical too.
   This is **S9**.
+
+- **Block-entity side-table + world-origin export contract (F2).** Alongside the occupancy/override
+  codec the document serializes:
+  - the **sparse, address-keyed block-entity side-table** (§3a-bis) — a `(voxel_addr → BlockEntity)`
+    map, **part-local-anchored** (same frame as the sculpt overrides, so it rotates/reflects with the
+    part under F1) and written **next to** the override codec for that scope. Sparse and deterministic
+    (keys ascending) so it reloads byte-identical; it is the carrier for VS block entities / contents
+    **and the F6 placeholder/proxy annotations** — including the `BlockEntity::Substitution` variant
+    (proxy + real `target`/attrs/orientation/params) that the export contract below substitutes.
+  - the **world-origin export contract**: a stored **build-anchor block coord** that maps to a VS
+    world coord on export, with the loader/exporter **asserting chisel detail is phased to the
+    block-local 16-grid** (16³ voxels/block). This is the agreed world registration the store's
+    decoupled quantized floating origin (§4) otherwise lacks. (The VS-native schematic *exporter* —
+    micro-block + block-state + entity round-trip — is a consumer feature in ADR 0005; the **contract
+    and the side-table format** are pinned here.)
 
 - **No migration code is written yet (V0 pre-alpha).** The loader's whole contract right now is:
   match `magic`, match `epoch`, and **hard-error on an unrecognized tag** with a clear message rather
@@ -794,8 +997,12 @@ the `shot.rs` parallel path and the second LRU.
 
 **Phase B — Identity: `NodeId` arena (no user-visible change).**
 4. Introduce `NodeId` + id-keyed arenas; selection/commands key on `NodeId`; demote `NodePath` to an
-   ephemeral tree-render projection. **Parallelizable** with C once A lands. **Reuse:** existing tree
-   widget (recompute paths on render).
+   ephemeral tree-render projection. **Add the F4 `Datum` primitive** (scene-owned named reference
+   geometry, reusing the `NodeId` arena; `HostedOnDatum` as a `JointKind` over the joint graph) and
+   the **F5 instance param-override bag + Def TYPE tier** (`Instance.param_overrides: Option<KitParams>`,
+   `AssemblyDef.types`). These are pure scene-schema additions that ride the identity work; the
+   producers/UX that consume `KitParams`/datums are ADR 0005. **Parallelizable** with C once A lands.
+   **Reuse:** existing tree widget (recompute paths on render), the joint graph (HostedOnDatum).
 
 **Phase C — Serializable `Intent` boundary + command stack + the headless replay/test net.**
 5. Define the **serializable `Intent` enum** (§6a) and route the existing `PanelResponse` intents (now
@@ -815,10 +1022,12 @@ the `shot.rs` parallel path and the second LRU.
   precision refactor ships **guarded**. The current goldens are near-only (`tests/golden.rs`).
 6. **Chunk-local integer payload + categorical cell (G1, prerequisite; materials FOUNDATIONAL):**
    change `Voxel` from f32 `world_position` to chunk-local integer `local`, and replace the 3-value
-   `material_id` (+ the `GRID_OVERLAY_BIT` hack) with a categorical **`block_id` + `attrs`** cell; the
-   absolute i64 origin lives only in the chunk key; f32 is produced only at consumption. (Unblocks
-   exact absolute storage, the §5 override codec, and agent-composed buildings. The rich VS palette
-   table / picker UI stays the deferred feature.)
+   `material_id` (+ the `GRID_OVERLAY_BIT` hack) with a categorical **`block_id` + `attrs`** cell,
+   **`attrs` being the F2 typed per-`block_id` `BlockAttrs` schema** (orientation in the order-48
+   group, variant flags, connection bits) — not an opaque payload; the absolute i64 origin lives only
+   in the chunk key; f32 is produced only at consumption. (Unblocks exact absolute storage, the §5
+   override codec, and agent-composed buildings. The rich VS palette table / picker UI stays the
+   deferred feature; the F2 connection-resolve pass and VS exporter are ADR 0005 consumers.)
 7. Collapse the two LRUs into one `ResidencyManager` over the **`ChunkStore` backend trait**
    (`DiskChunkStore` as the first impl); key chunks by **absolute i64**; stop pre-rebasing on store,
    rebase at consumption only; make the floating origin **sticky/quantized** and decoupled from
@@ -843,10 +1052,13 @@ the `shot.rs` parallel path and the second LRU.
     its region; **move the overlay flag to a per-draw uniform** (not a per-vertex attribute) and
     **delete `GRID_OVERLAY_BIT` from both shaders** (`cuboid.wgsl` + `cuboid_loaded.wgsl`) — the payload
     already dropped it in D6 — keeping `decompose_into_boxes` representation-agnostic. Golden-gated.
-11. **Rotation milestone (G4 — its own milestone, golden-gated):** promote `NodeTransform` with a
-    **24-orientation `LatticeOrientation` enum** (type-level, not general affine); add
-    (a) exact index-permutation resampling, (b) rotated-chunk conservative-cover fan-out,
-    (c) rotation-aware AABB-skip + spatial-index fingerprint. **(S4.)**
+11. **Rotation milestone (G4 — its own milestone, golden-gated):** promote `NodeTransform` with the
+    **order-48 signed-permutation `LatticeOrientation` enum (F1 — 24 rotations + 24 reflections, a
+    type-level enum + handedness bit, not general affine)**; add (a) exact index-permutation
+    resampling for **both rotation and reflection**, (b) rotated/reflected-chunk conservative-cover
+    fan-out, (c) orientation-aware AABB-skip + spatial-index fingerprint. **Also compose F2
+    `BlockAttrs.orientation` through the same order-48 permutation** so rotated/mirrored stateful
+    blocks (stairs, logs, doors) re-face correctly rather than keeping stale facings. **(S4, F1, F2.)**
 
 **Phase G — Sculpt override layer.**
 12. Add `SculptOverride` (sparse, chunk-keyed) as an override layer, using the **dedicated integer-delta
@@ -872,8 +1084,12 @@ the `shot.rs` parallel path and the second LRU.
 
 **Phase I — Serialization: tag + magic + hard-error (V0 pre-alpha; migrations deferred).**
 14. Add the `ProjectFile` **magic + `epoch` tag**; loader **hard-errors on an unrecognized tag**
-    (the S6 check); add the override codec's **byte-identity round-trip test (= S9)**. **No migration
-    code is written** — pre-alpha files may break freely until we leave pre-alpha. **(S6/S9.)**
+    (the S6 check); add the override codec's **byte-identity round-trip test (= S9)**. **Serialize the
+    F2 sparse block-entity side-table** (address-keyed, part-local-anchored, deterministic byte order)
+    alongside the occupancy/override codec, and **record the F2 world-origin export contract**
+    (build-anchor block coord → VS world coord, chisel detail asserted phased to the block-local
+    16-grid). **No migration code is written** — pre-alpha files may break freely until we leave
+    pre-alpha. **(S6/S9, F2.)**
 
 **Phase J — Async/responsiveness hardening (the full §7 model).**
 15. Move resolve+mesh fully onto **prioritized, cancellable per-chunk worker jobs** over **Arc
@@ -928,7 +1144,35 @@ the Phase C `Intent` door + the §6 query/diagnostics surface (H13).
   V0 pre-alpha).
 - **The `scene` layer is a node tree + a relationship/constraint graph** (nodes reference joints to
   other `NodeId`s), reserving the seam for human assembly-constraints and agent-driven building
-  without committing to a solver now.
+  without committing to a solver now. It also carries **F4 datums** (scene-owned named reference
+  geometry — levels/grids/axes, optionally terrain-relative — with `HostedOnDatum` riding the joint
+  graph so "move Level 3 → everything hosted follows") and the **F5 instance param-override bag + Def
+  TYPE tier** (a window family is one parametric def, not a fork per size), both pinned now while the
+  schema is cheap to widen.
+- **The instance transform is the full order-48 signed-permutation group (F1 — 24 rotations + 24
+  reflections), not just the 24 proper rotations.** Reflection stays an exact, lossless, byte-stable
+  index permutation, so **bilateral mirror symmetry** (a left wing as a mirrored instance of a
+  right-wing def — the most common architectural symmetry) is expressible for one extra bit. Caveat:
+  reflecting an instance mirrors any *asymmetric* sculpt ornament inside the def (chirality), exact
+  but handed.
+- **`BlockAttrs` is a typed per-`block_id` state schema (F2)** — orientation (in the order-48 group,
+  so it rotates/reflects WITH the geometry), variant flags, neighbor-connection bits — with a
+  connection-resolve pass, a sparse part-local block-entity side-table, and a world-origin export
+  contract (build-anchor → VS world coord, chisel detail phased to the block-local 16-grid). This is
+  what stops rotated stairs/doors from keeping stale facings and stops VS export from being lossy by
+  construction (a functional gatehouse no longer exports as dumb stone). The connection-resolve
+  producers + VS exporter are ADR 0005 consumers.
+- **Terrain is a first-class MUTABLE layer with a controlled producer↔terrain coupling (F3)** — a
+  producer may sample live grade (`GroundHeightAt`) to tie in — superseding the earlier terrain
+  read-only stance and unblocking cut/fill/terrace/berm/excavate work (those producers are ADR 0005).
+  Only the terrain query is coupled; no general producer↔producer free-for-all.
+- **The planner is explicitly STATIC (F6):** movable mechanisms are inert annotations (block_id +
+  attrs + entity side-table) carried for VS export fidelity; interactables with no clean static-voxel
+  form become **placeholder/proxy entities** — recognizable proxy geometry (the "feel") plus a
+  `BlockEntity::Substitution` payload (the real target + attrs + orientation + params) that export
+  substitutes, or a human places by hand. Live kinematics/state-machines/tick simulation are out of
+  scope by ruling, keeping the three-tier static model uncluttered. (Placeholder producers, render
+  treatment, substitute-on-export, and unsubstituted/unmapped diagnostics are ADR 0005.)
 - **Composition is the foundation's parametric + corrective tiers of a three-tier authoring model**
   (parametric producers / relational joints / corrective override layers — ADR 0004): the layer stack
   is explicitly **N ordered layers, later-wins** (§3b), assembly composition is **ordered/prioritized,
@@ -1022,6 +1266,32 @@ retrofit cascade later; building the features is separate design-doc work.
   required for placement-specific junctions (ADR 0004 F2/F3). It is not a contradiction — it is a
   second, clearly-distinguished tier (Fusion assembly-context-feature precedent), not a replacement of
   the part-local rule.
+- **Terrain READ-ONLY + no producer↔producer coupling.** **Superseded (F3).** The product owner
+  chose **writable terrain**: terrain is a first-class mutable layer and a *controlled* producer↔terrain
+  coupling (sampling `GroundHeightAt` to tie in to live grade) is permitted. The read-only/no-coupling
+  posture forecloses all cut/fill/terrace/berm/excavate/terrain-relative-datum work, which is the bulk
+  of site design. The coupling is kept narrow — **only** the terrain query, not a general
+  producer→producer free-for-all. (The producers themselves are ADR 0005; the terrain *import format*
+  stays an open research item.)
+- **Restricting the instance transform to the 24 PROPER rotations only.** **Superseded (F1).** The
+  24-rotation `LatticeOrientation` leaves the other 24 of the order-48 signed-permutation group (the
+  reflections) inexpressible, so **bilateral mirror symmetry** — the most common architectural
+  symmetry — has no stored transform and a left wing cannot be a mirrored instance of a right-wing
+  def. Widening to the full order-48 group is **one handedness bit**, stays an exact lossless
+  byte-stable index permutation (NOT the deferred lossy-resample path), and is cheapest now while
+  0003 is Proposed. (Caveat: reflection mirrors any asymmetric sculpt ornament — chiral but exact.)
+- **Leaving `BlockAttrs` an opaque payload (define it later).** **Rejected (F2).** An opaque
+  rotation/variant blob with no rotation algebra means a rotated/mirrored instance keeps **stale
+  facings**, neighbor connections are uncomputed, and VS schematic export is **lossy by
+  construction** (a functional gatehouse exports as dumb stone). The typed schema + the rule that
+  orientation composes through the F1 order-48 transform touches the payload, override codec,
+  serialization, and meshing together — retrofitting it after those ship is a cascade, so it is
+  pinned now (the schema + algebra + side-table + export contract; the exporter/connection-resolve
+  producers are ADR 0005).
+- **Live kinematics / state-machine simulation of mechanisms in the planner.** **Ruled out of scope
+  (F6).** Doors/drawbridges/lifts/windmill-yaw are modeled as **inert annotations** (block_id + attrs
+  + entity side-table) for VS export fidelity; VS supplies the behavior. A tick/signal simulation is a
+  categorically different subsystem and is not bolted into the static three-tier model.
 - **Reusing `chunk_storage::compress` for sculpt overrides.** Rejected: `compress` consumes an f32
   `VoxelGrid` and debug-asserts a uniform per-axis `centre_fraction` (`chunk_storage.rs`), which
   integer force-on / force-off deltas do not satisfy. A dedicated integer-delta codec (sorted keys +
