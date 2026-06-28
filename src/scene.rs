@@ -66,6 +66,21 @@ impl RegionBlocks {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct DefId(pub u32);
 
+/// A **process-stable node identity** (ADR 0003 Phase B). Minted monotonically from
+/// a document-owned counter ([`Scene::next_node_id`]) and durable across structural
+/// edits + undo, unlike the positional [`NodePath`] (which invalidates on every
+/// add/delete/reorder). `NodeId(0)` is the reserved **unassigned** sentinel a
+/// freshly-constructed [`Node`] carries until [`Scene::ensure_node_ids`] mints it a
+/// real id on the load/normalization path; real ids start at `1`.
+///
+/// **Phase B1 is scaffolding only:** the id is minted + persisted but NOT yet the
+/// identity of record — `NodePath` still is — so nothing reads it yet (B2/B3 move
+/// selection + commands onto it).
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default, Serialize, Deserialize,
+)]
+pub struct NodeId(pub u64);
+
 /// A path to a node anywhere in the **top-level assembly** (ADR 0001 step 4 UI).
 ///
 /// The path is a list of child indices walked from [`Scene::nodes`] down through
@@ -227,6 +242,11 @@ pub struct NodeGrids {
 /// local placement and combine operation.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Node {
+    /// Process-stable identity (ADR 0003 Phase B), minted by
+    /// [`Scene::ensure_node_ids`]. `NodeId(0)` (the default) until minted. NOT yet
+    /// the identity of record — `NodePath` still is — so nothing reads this in B1.
+    #[serde(default)]
+    pub id: NodeId,
     /// Human-readable name (for the future node-list UI).
     #[serde(default)]
     pub name: String,
@@ -259,6 +279,9 @@ impl Node {
     /// carries NO grids (issue #29: grids default OFF for new objects).
     pub fn new(name: impl Into<String>, content: NodeContent) -> Self {
         Self {
+            // Unassigned until `Scene::ensure_node_ids` mints a stable id on the
+            // load/normalization path (ADR 0003 Phase B).
+            id: NodeId(0),
             name: name.into(),
             transform: NodeTransform::identity(),
             operation: CombineOp::Union,
@@ -425,6 +448,12 @@ pub struct Scene {
     /// The active/selected Point (index into [`points`](Self::points)), or `None`.
     #[serde(default)]
     pub active_point: Option<usize>,
+    /// Document-owned monotonic counter for minting [`NodeId`]s (ADR 0003 Phase B).
+    /// `0` is never minted (it is the unassigned sentinel); the first real id is `1`.
+    /// [`ensure_node_ids`](Self::ensure_node_ids) advances it past any ids already
+    /// present in a loaded scene before minting new ones.
+    #[serde(default)]
+    pub next_node_id: u64,
 }
 
 impl Default for Scene {
@@ -443,6 +472,7 @@ impl Default for Scene {
             master_voxel_grid: true,
             master_floor_grid: true,
             active_point: None,
+            next_node_id: 0,
         }
     }
 }
@@ -483,6 +513,56 @@ impl Scene {
                 is_origin: true,
             },
         );
+    }
+
+    /// Mint a stable [`NodeId`] for every still-unassigned node (ADR 0003 Phase B).
+    /// Walks the top-level nodes, every [`NodeContent::Group`]'s children, and every
+    /// definition's nodes; any node carrying the `NodeId(0)` sentinel gets a fresh id
+    /// from [`next_node_id`](Self::next_node_id). The counter is first advanced past
+    /// any ids ALREADY present (a loaded scene may carry minted ids) so new ids never
+    /// collide. **Idempotent:** a second call mints nothing (every node already has a
+    /// non-zero id). Called on the load/normalization path alongside
+    /// [`ensure_origin_point`](Self::ensure_origin_point).
+    pub fn ensure_node_ids(&mut self) {
+        // Advance the counter past any ids already present, so freshly-minted ids
+        // never collide with ones a loaded scene already carries.
+        let mut max_existing = 0u64;
+        Self::visit_node_ids(&self.nodes, &mut |id| max_existing = max_existing.max(id));
+        for def in &self.definitions {
+            Self::visit_node_ids(&def.children, &mut |id| max_existing = max_existing.max(id));
+        }
+        self.next_node_id = self.next_node_id.max(max_existing + 1).max(1);
+
+        // Mint a fresh id for every still-unassigned node.
+        let counter = &mut self.next_node_id;
+        Self::mint_unassigned_node_ids(&mut self.nodes, counter);
+        for def in &mut self.definitions {
+            Self::mint_unassigned_node_ids(&mut def.children, counter);
+        }
+    }
+
+    /// Visit the `id` of every node in `nodes`, recursing into Group children.
+    fn visit_node_ids(nodes: &[Node], visit: &mut impl FnMut(u64)) {
+        for node in nodes {
+            visit(node.id.0);
+            if let NodeContent::Group(children) = &node.content {
+                Self::visit_node_ids(children, visit);
+            }
+        }
+    }
+
+    /// Assign `NodeId(*counter)` (then bump) to every `NodeId(0)` node in `nodes`,
+    /// recursing into Group children.
+    fn mint_unassigned_node_ids(nodes: &mut [Node], counter: &mut u64) {
+        for node in nodes {
+            if node.id == NodeId(0) {
+                node.id = NodeId(*counter);
+                *counter += 1;
+            }
+            if let NodeContent::Group(children) = &mut node.content {
+                Self::mint_unassigned_node_ids(children, counter);
+            }
+        }
     }
 
     /// Append a reference [`Point`] to the scene (issue #29). A newly-added user
@@ -4166,6 +4246,71 @@ mod tests {
         scene.ensure_origin_point();
         assert_eq!(scene.points.len(), 1, "second call adds nothing");
         assert_eq!(scene.points.iter().filter(|p| p.is_origin).count(), 1);
+    }
+
+    /// ADR 0003 Phase B: `ensure_node_ids` mints a unique non-zero id for every
+    /// node — top-level, Group children, and definition nodes — and is idempotent.
+    #[test]
+    fn ensure_node_ids_mints_unique_stable_ids() {
+        fn clouds(name: &str) -> Node {
+            Node::new(name, NodeContent::Part(Part::DebugClouds { seed: 0 }))
+        }
+        let mut scene = Scene {
+            nodes: vec![
+                clouds("A"),
+                Node::new("G", NodeContent::Group(vec![clouds("B"), clouds("C")])),
+            ],
+            definitions: vec![AssemblyDef {
+                id: DefId(1),
+                name: "Def".to_string(),
+                children: vec![clouds("D")],
+            }],
+            ..Scene::default()
+        };
+
+        scene.ensure_node_ids();
+
+        // Collect every id (top-level + Group children + definition nodes).
+        let mut ids = Vec::new();
+        Scene::visit_node_ids(&scene.nodes, &mut |id| ids.push(id));
+        for def in &scene.definitions {
+            Scene::visit_node_ids(&def.children, &mut |id| ids.push(id));
+        }
+        assert_eq!(ids.len(), 5, "A, G, B, C, D all visited");
+        assert!(ids.iter().all(|&id| id != 0), "no node keeps the 0 sentinel");
+        let unique: std::collections::HashSet<_> = ids.iter().copied().collect();
+        assert_eq!(unique.len(), ids.len(), "every minted id is unique");
+
+        // Idempotent: a second pass mints nothing and changes no id.
+        let before = scene.clone();
+        scene.ensure_node_ids();
+        assert_eq!(scene, before, "second call is a no-op");
+    }
+
+    /// A loaded scene that already carries an id keeps it, and the counter advances
+    /// past it so a newly-minted node never collides.
+    #[test]
+    fn ensure_node_ids_preserves_existing_and_advances_counter() {
+        let mut preset = Node::new("preset", NodeContent::Part(Part::DebugClouds { seed: 0 }));
+        preset.id = NodeId(5);
+        let mut scene = Scene {
+            nodes: vec![
+                preset,
+                Node::new("fresh", NodeContent::Part(Part::DebugClouds { seed: 0 })),
+            ],
+            ..Scene::default()
+        };
+
+        scene.ensure_node_ids();
+
+        assert_eq!(scene.nodes[0].id, NodeId(5), "existing id preserved");
+        assert_ne!(scene.nodes[1].id, NodeId(0), "fresh node minted");
+        assert_ne!(
+            scene.nodes[1].id,
+            NodeId(5),
+            "fresh id does not collide with the existing one"
+        );
+        assert!(scene.next_node_id > 5, "counter advanced past the loaded id");
     }
 
     /// An existing Origin (anywhere in the list) is NOT duplicated by

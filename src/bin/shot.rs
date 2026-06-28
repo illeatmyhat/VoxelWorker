@@ -986,6 +986,9 @@ async fn run_capture(options: ShotOptions) {
             });
         }
     }
+    // ADR 0003 Phase B: mint a stable NodeId for every node before the scene is
+    // consumed (idempotent; nothing reads the id yet in B1).
+    scene.ensure_node_ids();
     panel_state.scene = scene.clone();
     // Issue #29 S2: `--select-node N` overrides the active selection so a headless
     // capture can place the transform gizmo on a chosen (non-origin) node and prove

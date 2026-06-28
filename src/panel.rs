@@ -174,6 +174,8 @@ impl PanelState {
         // issue #29 (grid rework S1): every scene carries exactly one Origin Point.
         // Idempotent, so calling it on an already-seeded scene is a no-op.
         self.scene.ensure_origin_point();
+        // ADR 0003 Phase B: mint a stable NodeId for every node (idempotent).
+        self.scene.ensure_node_ids();
     }
 
     /// Copy the active node's parameters into the inspector mirror
