@@ -802,8 +802,23 @@ impl AppCore {
     /// the recentred-frame matrix every overlay + the voxel pass draw with. A
     /// `&self` getter (it reads the owned camera) so the shell and `shot` source the
     /// frame matrix identically.
-    pub fn view_projection(&self, aspect_ratio: f32) -> glam::Mat4 {
-        self.camera.view_projection(aspect_ratio)
+    ///
+    /// `region_dimensions` is the resolved grid extent (voxels). The recentre
+    /// centres the composite on the render-frame origin (Fit/Home both target
+    /// `Vec3::ZERO`), so the scene's bounding sphere is `centre = ORIGIN`,
+    /// `radius = ½·diagonal` (with a small margin for the integer-recentre's
+    /// sub-voxel asymmetry and a floor for tiny scenes). The camera derives its
+    /// near/far from that sphere so no part of the scene is ever depth-clipped.
+    pub fn view_projection(&self, aspect_ratio: f32, region_dimensions: [u32; 3]) -> glam::Mat4 {
+        let diagonal = glam::Vec3::new(
+            region_dimensions[0] as f32,
+            region_dimensions[1] as f32,
+            region_dimensions[2] as f32,
+        )
+        .length();
+        let scene_radius = (0.5 * diagonal * 1.15).max(1.0);
+        self.camera
+            .view_projection(aspect_ratio, glam::Vec3::ZERO, scene_radius)
     }
 
     /// Where the transform gizmo (issue #29 S2) should sit: the SELECTED node's

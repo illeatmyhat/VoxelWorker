@@ -1685,7 +1685,7 @@ async fn run_capture(options: ShotOptions) {
     // the side panel. Then upload every uniform that depends on the camera matrix.
     let [_, _, viewport_width, viewport_height] = prepared.viewport_px;
     let aspect_ratio = viewport_width as f32 / viewport_height.max(1) as f32;
-    let view_projection = app_core.view_projection(aspect_ratio);
+    let view_projection = app_core.view_projection(aspect_ratio, grid_dimensions);
     let gizmo_pivot = gizmo_placement
         .map(|(pivot, _)| glam::Vec3::from_array(pivot))
         .unwrap_or(glam::Vec3::ZERO);

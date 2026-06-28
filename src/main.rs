@@ -1102,7 +1102,7 @@ impl WindowedState {
         // region's extent), not the active node's geometry — with several nodes the
         // region is the per-axis max of their sizes (ADR 0001 step 2).
         let grid_dimensions = self.grid.dimensions;
-        let view_projection = self.app_core.view_projection(aspect_ratio);
+        let view_projection = self.app_core.view_projection(aspect_ratio, grid_dimensions);
         // Issue #12: translate the layer-range scrubber into the shader band. The
         // band is inclusive on both ends; the upper handle is a layer index, so a
         // single-layer band is `lower == upper`. A full range draws everything.

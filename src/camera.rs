@@ -42,7 +42,7 @@ const ORTHO_HALF_HEIGHT_FACTOR: f32 = 0.42;
 /// zoom (and across both projection modes, since the ortho half-height also
 /// tracks `orbit_distance`): the cursor stays glued to roughly the same fraction
 /// of the framed view regardless of how far out the camera is.
-const PAN_SPEED: f32 = 0.0015;
+const PAN_SPEED: f32 = 0.0009;
 
 /// The six view-cube faces, in `materialIndex` order (+X, -X, +Y, -Y, +Z, -Z).
 ///
@@ -899,22 +899,53 @@ impl OrbitCamera {
         self.orbit_distance = (self.orbit_distance * factor).max(0.1);
     }
 
-    /// Build the combined `view_projection` matrix for an aspect ratio (w/h).
+    /// Build the combined `view_projection` matrix for an aspect ratio (w/h),
+    /// with the near/far planes derived to ENCLOSE the scene's bounding sphere
+    /// (`scene_centre` + `scene_radius`, render-frame units) so no in-scene
+    /// geometry is ever depth-clipped.
+    ///
+    /// The old near/far keyed only off `orbit_distance` (`near = distance·0.01`).
+    /// That clipped the moment another object sat closer to the eye than the
+    /// auto-framed target — e.g. Focus shrinks `orbit_distance` to fit one node, so
+    /// a second node 15 blocks toward the camera fell in front of the near plane.
+    /// Instead, project the bounding-sphere centre onto the view axis and place the
+    /// planes a sphere-radius (plus a small margin) either side: the WHOLE scene is
+    /// then always within `[near, far]`, making near-plane clipping of scene
+    /// geometry unrepresentable. Orthographic tolerates a near plane behind the eye,
+    /// so its guarantee is absolute; perspective requires a positive near, so it
+    /// clamps to a small floor (only reachable by zooming the eye inside the sphere,
+    /// where a perspective near-clip is unavoidable anyway).
     ///
     /// The projection branch is chosen by [`OrbitCamera::projection_mode`]; the
-    /// orthographic frustum tracks `orbit_distance` so zoom keeps working and the
-    /// framing is preserved when toggling (ARCHITECTURE.md §4).
-    pub fn view_projection(&self, aspect_ratio: f32) -> Mat4 {
+    /// orthographic frustum's half-height tracks `orbit_distance` so zoom keeps
+    /// working and the framing is preserved when toggling (ARCHITECTURE.md §4).
+    pub fn view_projection(
+        &self,
+        aspect_ratio: f32,
+        scene_centre: Vec3,
+        scene_radius: f32,
+    ) -> Mat4 {
         let view = Mat4::look_at_rh(self.eye(), self.target, self.up_vector());
-        // Near/far chosen generously relative to the auto-framed distance so the
-        // grid never clips at any zoom we allow.
-        let near = (self.orbit_distance * 0.01).max(0.05);
-        let far = self.orbit_distance * 10.0 + 1000.0;
+        // Signed depth from the eye to the bounding-sphere centre along the view
+        // axis (forward = the unit look direction, target − eye = −direction()).
+        let forward = -self.direction();
+        let centre_depth = (scene_centre - self.eye()).dot(forward);
+        // A hair of slack so faces exactly on the sphere don't sit on a plane.
+        let margin = scene_radius * 0.05 + 0.5;
+        let mut near = centre_depth - scene_radius - margin;
+        let mut far = centre_depth + scene_radius + margin;
         let projection = match self.projection_mode {
             ProjectionMode::Perspective => {
+                // Perspective needs near > 0; clamp to a small floor and keep far
+                // strictly beyond it (the matrix stays finite even when the scene
+                // is behind the camera).
+                near = near.max(0.05);
+                far = far.max(near + 0.1);
                 Mat4::perspective_rh(PERSPECTIVE_FOV_Y, aspect_ratio, near, far)
             }
             ProjectionMode::Orthographic => {
+                // far − near = 2·(radius + margin) > 0 always, so the planes are
+                // never inverted; a negative `near` (eye inside the sphere) is fine.
                 let half_height = self.orbit_distance * ORTHO_HALF_HEIGHT_FACTOR;
                 let half_width = half_height * aspect_ratio;
                 Mat4::orthographic_rh(
@@ -1082,6 +1113,37 @@ mod tests {
             approx(far.target.length(), 2.0 * near.target.length()),
             "pan must scale linearly with orbit_distance",
         );
+    }
+
+    #[test]
+    fn orthographic_near_far_enclose_the_whole_scene_sphere() {
+        // The Focus near-clip bug: a small orbit_distance (eye close to the target)
+        // with a scene far larger than that distance — a second object 15+ blocks
+        // toward the camera fell in front of the old `orbit_distance·0.01` near
+        // plane. Orthographic tolerates a near plane BEHIND the eye, so the entire
+        // bounding sphere must now land inside the depth frustum: near-plane
+        // clipping of scene geometry is unrepresentable.
+        let radius = 30.0;
+        let camera = OrbitCamera {
+            orbit_distance: 2.0, // eye very close to the target, deep inside the sphere
+            projection_mode: ProjectionMode::Orthographic,
+            ..OrbitCamera::default()
+        };
+        let vp = camera.view_projection(1.0, Vec3::ZERO, radius);
+        let forward = -camera.direction();
+        let up = camera.up_vector();
+        let right = forward.cross(up).normalize();
+        // Sample the sphere's six axis-extreme surface points (centre = ZERO). The
+        // two along the view axis are the binding ones; all must map to a depth
+        // inside [0, 1] (glam's `_rh` projections use the wgpu [0,1] z range).
+        for dir in [forward, -forward, up, -up, right, -right] {
+            let clip = vp * (dir * radius).extend(1.0);
+            let ndc_z = clip.z / clip.w;
+            assert!(
+                (0.0..=1.0).contains(&ndc_z),
+                "sphere surface point {dir:?} depth-clipped (ndc_z={ndc_z})",
+            );
+        }
     }
 
     #[test]
@@ -1295,7 +1357,7 @@ mod tests {
                 orbit_phi: phi,
                 ..OrbitCamera::default()
             };
-            let vp = camera.view_projection(1.0);
+            let vp = camera.view_projection(1.0, Vec3::ZERO, 10.0);
             assert!(
                 vp.to_cols_array().iter().all(|v| v.is_finite()),
                 "view_projection not finite at phi={phi}: {vp:?}"
@@ -1637,7 +1699,7 @@ mod tests {
     fn view_matrices_finite_under_roll() {
         for &roll in &[0.0f32, FRAC_PI_2, PI, -FRAC_PI_2] {
             let camera = OrbitCamera { roll, ..OrbitCamera::default() };
-            let vp = camera.view_projection(1.0);
+            let vp = camera.view_projection(1.0, Vec3::ZERO, 10.0);
             assert!(
                 vp.to_cols_array().iter().all(|v| v.is_finite()),
                 "view_projection not finite at roll={roll}"
