@@ -1,6 +1,8 @@
-# Normalize all text files to LF in the repo; git checks out per platform.
-# This stops the "LF will be replaced by CRLF" warnings on Windows.
-* text=auto
+# Force LF for every text file, in the repo AND in every working copy on all
+# platforms (Linux/macOS/Windows). `eol=lf` overrides core.autocrlf, so there is
+# no CRLF conversion anywhere — which is what kills the "LF will be replaced by
+# CRLF" warnings on Windows. Rust, cargo, and modern editors handle LF natively.
+* text=auto eol=lf
 
 # Explicit text types (normalized to LF in the repo).
 *.rs    text
