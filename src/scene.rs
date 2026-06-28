@@ -97,10 +97,15 @@ pub struct NodeId(pub u64);
 /// top-level node that lives in that definition is not possible in this UI — a
 /// definition is edited via its instances' shared body). The path therefore never
 /// descends through an `Instance`.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+// ADR 0003 Phase B6: `NodePath` is now a purely EPHEMERAL render/UI tree
+// projection — produced on demand by `path_of`/`tree_rows` and consumed within a
+// frame by the renderer + gizmo/extent math. It is never stored on any type, held
+// across frames, or serialized (identity/selection/storage are all `NodeId` after
+// B3–B5), so the `Default`/`Serialize`/`Deserialize` derives were dropped as
+// vestigial (no config back-compat to preserve).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodePath {
     /// Child indices from the top-level node list down through Group children.
-    #[serde(default)]
     pub indices: Vec<usize>,
 }
 
@@ -113,29 +118,6 @@ impl NodePath {
     /// Build a path from an explicit list of child indices.
     pub fn from_indices(indices: Vec<usize>) -> Self {
         Self { indices }
-    }
-
-    /// Whether this path addresses a top-level node (one index, no descent).
-    pub fn is_top_level(&self) -> bool {
-        self.indices.len() == 1
-    }
-
-    /// The path of this node's parent (drops the last index), or `None` when this
-    /// is already a top-level node (its parent is the scene root).
-    pub fn parent(&self) -> Option<NodePath> {
-        if self.indices.len() <= 1 {
-            None
-        } else {
-            Some(NodePath {
-                indices: self.indices[..self.indices.len() - 1].to_vec(),
-            })
-        }
-    }
-
-    /// The last index in the path (the node's position among its siblings), or
-    /// `None` for an empty path.
-    pub fn last_index(&self) -> Option<usize> {
-        self.indices.last().copied()
     }
 }
 
