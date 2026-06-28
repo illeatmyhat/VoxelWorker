@@ -32,7 +32,8 @@ use voxel_worker::{
     PointsRenderer, RebuildOutcome, RebuildOutput, SceneGridRenderer,
     Node, NodeBuilder, NodeContent, NodePath, OnionFogRenderer, OrbitCamera, PanelState, Part,
     Point,
-    ProjectionMode, RegionBlocks, Scene, SdfShape, ShapeKind, TransformGizmoRenderer,
+    PlaneAxis, ProjectionMode, RegionBlocks, Scene, SdfShape, ShapeKind, Sketch, SketchExtrude,
+    SketchPoint, TransformGizmoRenderer,
     ViewCubeElement, VoxExport,
     ViewCubeRenderer, VoxelGrid, COLOR_TARGET_FORMAT,
 };
@@ -169,6 +170,12 @@ struct ShotOptions {
     /// `--demo-far-offset` but placed at the ORIGIN (a block offset of [0, 0, 0]),
     /// for A/B comparison against the far render. Overrides --shape/--size/--density.
     far_offset_near: bool,
+    /// `--demo-sketch-extrude` (ADR 0003 §3i Slice 2a): build a scene containing a
+    /// single **sketch → extrude** producer with a RECOGNIZABLE non-box (L-shaped)
+    /// footprint extruded up, so the headless capture confirms the new producer
+    /// resolves + renders through the same pipeline as `SdfShape`. Overrides
+    /// --shape/--size/--density.
+    demo_sketch_extrude: bool,
     /// `--demo-groups` (ADR 0001 step 4, UI verification): build a scene with a
     /// top-level `Group` that has two child Tools, plus a sibling top-level Tool
     /// and one `Instance` of a definition — so the headless PANEL capture shows the
@@ -236,6 +243,7 @@ impl Default for ShotOptions {
             debug_chunks: false,
             demo_scene: false,
             demo_village: false,
+            demo_sketch_extrude: false,
             demo_groups: false,
             far_offset: false,
             far_offset_near: false,
@@ -495,6 +503,9 @@ fn parse_options() -> ShotOptions {
             "--demo-village" => {
                 options.demo_village = true;
             }
+            "--demo-sketch-extrude" => {
+                options.demo_sketch_extrude = true;
+            }
             "--demo-groups" => {
                 options.demo_groups = true;
             }
@@ -623,6 +634,7 @@ fn parse_options() -> ShotOptions {
                      \x20            [--gizmo] [--select-node <usize>] [--lattice] [--floor] [--points] [--point-at <X Y Z>] [--no-viewcube]\n\
                      \x20            [--debug-faces] [--debug-chunks]\n\
                      \x20            [--demo-scene] [--demo-village] [--demo-groups]\n\
+                     \x20            [--demo-sketch-extrude]\n\
                      \x20            [--demo-far-offset] [--demo-far-offset-near]\n\
                      \x20            [--layer-lower <u32>] [--layer-upper <u32>] [--onion <u32>]\n\
                      \x20            [--fog <wholegrid|perchunk>]\n\
@@ -649,6 +661,10 @@ fn parse_options() -> ShotOptions {
                      \x20                Tools), a sibling Tool and an Instance, so the\n\
                      \x20                captured PANEL shows the indented tree + Definitions\n\
                      \x20                (ADR 0001 step 4 UI). Overrides --shape/--size/--density.\n\
+                     \x20  --demo-sketch-extrude build a single 2D-sketch→extrude producer\n\
+                     \x20                with an L-shaped footprint extruded up (ADR 0003 §3i\n\
+                     \x20                Slice 2a) — a non-box a primitive can't make. Overrides\n\
+                     \x20                --shape/--size/--density.\n\
                      \x20  --demo-far-offset      build a small 4³ box at offset [100_000,0,0]\n\
                      \x20                blocks (ADR 0002 streaming S1). Precision baseline:\n\
                      \x20                today's recentre maps it to the origin, so far jitter\n\
@@ -841,6 +857,43 @@ fn build_demo_village(voxels_per_block: u32) -> Scene {
     selecting_first_node(scene)
 }
 
+/// Build the `--demo-sketch-extrude` (ADR 0003 §3i Slice 2a): a single
+/// **sketch → extrude → volume** producer with a RECOGNIZABLE non-box footprint —
+/// an L-shaped (plus a notch) profile on the Y plane, extruded up several blocks.
+/// A box obviously cannot make this footprint, so the headless capture proves the
+/// new producer resolves + renders through the SAME pipeline as `SdfShape`.
+///
+/// The profile is an L: a `4×4`-block square with its top-right `2×2`-block
+/// quadrant removed (a reflex vertex), at the document density `d`, extruded
+/// `3` blocks (`3·d` voxels) along +Y. The whole footprint is a whole multiple of
+/// blocks so it sits cleanly on the lattice in the recentred render frame.
+fn build_demo_sketch_extrude(voxels_per_block: u32) -> Scene {
+    let density = voxels_per_block.max(1) as i64;
+    let two = 2 * density;
+    let four = 4 * density;
+    // L footprint (CCW), in voxels on the XZ plane: outer 0..4×0..2 blocks plus the
+    // left 0..2×2..4 block column, leaving the top-right quadrant empty.
+    let profile = vec![
+        SketchPoint::new(0, 0),
+        SketchPoint::new(four, 0),
+        SketchPoint::new(four, two),
+        SketchPoint::new(two, two), // reflex vertex (the inside corner of the L)
+        SketchPoint::new(two, four),
+        SketchPoint::new(0, four),
+    ];
+    let producer = SketchExtrude::new(Sketch::new(PlaneAxis::Y, profile), (3 * density) as u32);
+    let node = Node::new(
+        "Sketch L",
+        NodeContent::SketchTool {
+            producer,
+            material: MaterialChoice::Wood,
+        },
+    );
+    let mut scene = selecting_first_node(Scene::from_nodes(vec![node]));
+    scene.voxels_per_block = voxels_per_block;
+    scene
+}
+
 /// Build the `--demo-groups` (ADR 0001 step 4, UI verification): a scene that
 /// exercises the indented TREE in the panel. A top-level `Group` ("Cluster") holds
 /// two child Tools (a Sphere + a Box at a small offset); a sibling top-level Box
@@ -1029,6 +1082,8 @@ async fn run_capture(options: ShotOptions) {
         build_far_offset_scene(options.geometry.voxels_per_block, options.far_offset)
     } else if options.demo_groups {
         build_demo_groups(options.geometry.voxels_per_block)
+    } else if options.demo_sketch_extrude {
+        build_demo_sketch_extrude(options.geometry.voxels_per_block)
     } else if options.demo_village {
         build_demo_village(options.geometry.voxels_per_block)
     } else if options.demo_scene {

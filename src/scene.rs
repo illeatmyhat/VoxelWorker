@@ -38,6 +38,7 @@ use serde::{Deserialize, Serialize};
 use crate::core_geom::MaterialChoice;
 use crate::debug_clouds::DebugCloudField;
 use crate::spatial_index::{LeafEntry, LeafFingerprint, LeafSpatialIndex, VoxelAabb};
+use crate::sketch::SketchExtrude;
 use crate::voxel::{GeometryParams, SdfShape, VoxelGrid, VoxelProducer};
 
 /// Default +X spacing (in blocks) between successive instances of the same
@@ -254,6 +255,24 @@ pub enum NodeContent {
         /// The parametric primitive to resolve.
         shape: SdfShape,
         /// The single material this Tool stamps onto its voxels.
+        material: MaterialChoice,
+    },
+    /// A **sketch → extrude → volume** producer (ADR 0003 §3i, Slice 2a): a
+    /// grid-aligned plane + closed polygon profile extruded a whole number of
+    /// voxels, plus the single material it stamps. Added **alongside** [`Tool`]
+    /// (not replacing it) — the §3i sketch-to-volume authoring atom over which
+    /// primitives become sugar later. It resolves through the SAME stamp /
+    /// `CombineOp` / chunk path as [`Tool`], but is leak-free by construction
+    /// (corner-anchored profile), so it does NOT route through
+    /// [`leaf_lattice_shift_voxels`] — like a [`Part`], it reports no intrinsic
+    /// block size and takes a zero lattice shift.
+    ///
+    /// [`Tool`]: NodeContent::Tool
+    /// [`Part`]: NodeContent::Part
+    SketchTool {
+        /// The sketch + extrude span to resolve.
+        producer: SketchExtrude,
+        /// The single material this node stamps onto its voxels.
         material: MaterialChoice,
     },
     /// A static voxel body, dropped in as-is.
@@ -1789,7 +1808,9 @@ impl Scene {
                 parent_offset[2] + node.transform.offset_voxels[2],
             ];
             match &node.content {
-                NodeContent::Tool { .. } | NodeContent::Part(_) => {
+                NodeContent::Tool { .. }
+                | NodeContent::SketchTool { .. }
+                | NodeContent::Part(_) => {
                     visitor(world_offset_voxels, &node.content, node.grids.voxel_grid_on_faces);
                 }
                 NodeContent::Group(children) => {
@@ -1877,13 +1898,10 @@ impl Scene {
         // rebasing).
         self.for_each_leaf(&mut |world_offset_voxels, content, grid_on_faces| {
             // Snap a sized leaf onto the global block lattice (issue #30): an
-            // odd-block leaf's producer grid straddles a block boundary by half a
-            // block, so shift it by `leaf_lattice_shift_voxels` before placing. A
-            // Part (no intrinsic size) has no lattice frame, so its shift is zero.
-            let lattice_shift = match leaf_size_blocks(content, voxels_per_block) {
-                Some(size_blocks) => leaf_lattice_shift_voxels(size_blocks, voxels_per_block),
-                None => [0i64; 3],
-            };
+            // odd-block SDF leaf's producer grid straddles a block boundary by half a
+            // block, so shift it before placing. A Part (no intrinsic size) and a
+            // SketchTool (corner-anchored, §3i leak-retirement) take a zero shift.
+            let lattice_shift = leaf_lattice_shift(content, voxels_per_block);
             let translation_voxels = [
                 world_offset_voxels[0] + lattice_shift[0] - recentre_voxels[0],
                 world_offset_voxels[1] + lattice_shift[1] - recentre_voxels[1],
@@ -1901,6 +1919,23 @@ impl Scene {
                         // with each voxel (and survives chunk bucketing).
                         grid_on_faces,
                         shape,
+                        voxels_per_block,
+                    );
+                }
+                NodeContent::SketchTool { producer, material } => {
+                    // The sketch producer self-sizes its origin-centred grid exactly
+                    // like SdfShape, so it stamps through the same path. Its
+                    // `lattice_shift` is zero because `leaf_lattice_shift` routes
+                    // SketchTool to [0; 3] (§3i leak-retirement) — NOT because of block
+                    // size: `leaf_size_blocks` returns `Some` (the block-ceil of the
+                    // producer grid) for a sketch. So `translation_voxels` is unshifted.
+                    stamp_producer(
+                        &mut output,
+                        region_dimensions,
+                        translation_voxels,
+                        material_id_for(*material),
+                        grid_on_faces,
+                        producer,
                         voxels_per_block,
                     );
                 }
@@ -1925,8 +1960,8 @@ impl Scene {
                         voxels_per_block,
                     );
                 }
-                // `for_each_leaf` only ever yields leaf content (Tool / Part); the
-                // interior kinds were already recursed through by the walk.
+                // `for_each_leaf` only ever yields leaf content (Tool / SketchTool /
+                // Part); the interior kinds were already recursed through by the walk.
                 NodeContent::Group(_) | NodeContent::Instance(_) => {}
             }
         });
@@ -2035,7 +2070,6 @@ impl Scene {
         // WITHOUT the composite recentre, so positions are absolute. We then keep
         // only the voxels whose absolute centre falls in this chunk's box.
         let region_dimensions = self.placed_region_dimensions(voxels_per_block);
-        let density = voxels_per_block.max(1) as i64;
         let chunk_box = VoxelAabb::new(chunk_min_voxels, chunk_max_voxels);
         self.for_each_leaf(&mut |world_offset_voxels, content, grid_on_faces| {
             // Issue #27 S3 optimisation: skip a leaf whose world-AABB doesn't touch
@@ -2052,17 +2086,17 @@ impl Scene {
             // `[off·d − grid/2 + shift, …)` — equivalently the whole-block range
             // `[(off − floor(size/2))·d, …)`. Both the skip-AABB and the stamp
             // translation use the SAME shift so they stay consistent.
-            let lattice_shift = match leaf_size_blocks(content, voxels_per_block) {
-                Some(size_blocks) => leaf_lattice_shift_voxels(size_blocks, voxels_per_block),
-                None => [0i64; 3],
-            };
-            if let Some(size_blocks) = leaf_size_blocks(content, voxels_per_block) {
+            let lattice_shift = leaf_lattice_shift(content, voxels_per_block);
+            if let Some(grid_voxels) = leaf_producer_grid_voxels(content, voxels_per_block) {
                 let mut leaf_min = [0i64; 3];
                 let mut leaf_max = [0i64; 3];
                 for axis in 0..3 {
-                    let grid = size_blocks[axis] as i64 * density;
-                    // The world offset is already voxels at the document density
-                    // (ADR 0003 §3f(0)); it is the leaf's placed centre directly.
+                    // The producer emits its grid centred on the origin, so its span
+                    // is `[−grid/2, grid/2)`; the SAME shift the stamp applies snaps
+                    // it onto the block lattice (zero for a sketch, §3i). Using the
+                    // producer-true grid (exact emitted voxels, NOT block-rounded)
+                    // keeps the skip AABB bit-identical to stamping-then-clipping.
+                    let grid = grid_voxels[axis];
                     let centre = world_offset_voxels[axis];
                     leaf_min[axis] = centre - grid / 2 + lattice_shift[axis];
                     leaf_max[axis] = leaf_min[axis] + grid;
@@ -2080,6 +2114,9 @@ impl Scene {
             {
                 NodeContent::Tool { shape, material } => {
                     (material_id_for(*material), Box::new(*shape))
+                }
+                NodeContent::SketchTool { producer, material } => {
+                    (material_id_for(*material), Box::new(producer.clone()))
                 }
                 NodeContent::Part(Part::DebugClouds { seed }) => (
                     None,
@@ -2229,25 +2266,25 @@ impl Scene {
     /// the cause of the flat-shape (Y = 1 block) half-drop. `None` when no leaf has
     /// an intrinsic size.
     fn placed_extent_voxels(&self, voxels_per_block: u32) -> Option<([i64; 3], [i64; 3])> {
-        let density = voxels_per_block.max(1) as i64;
         let mut min_corner = [i64::MAX; 3];
         let mut max_corner = [i64::MIN; 3];
         let mut any = false;
         self.for_each_leaf(&mut |world_offset_voxels, content, _grid_on_faces| {
-            let Some(size_blocks) = leaf_size_blocks(content, voxels_per_block) else {
+            let Some(grid_voxels) = leaf_producer_grid_voxels(content, voxels_per_block) else {
                 return;
             };
             any = true;
-            let lattice_shift = leaf_lattice_shift_voxels(size_blocks, voxels_per_block);
+            let lattice_shift = leaf_lattice_shift(content, voxels_per_block);
             for axis in 0..3 {
-                let grid = size_blocks[axis] as i64 * density;
-                // The producer centres its grid on the origin (voxel centres at
-                // `idx + 0.5 − grid/2`), so its occupied voxel span is `[−grid/2,
+                // The producer-true emitted grid (`size·d` for an SDF Tool, the exact
+                // prism AABB for a SketchTool), centred on the origin (voxel centres
+                // at `idx + 0.5 − grid/2`), so its occupied voxel span is `[−grid/2,
                 // grid/2)`; placed at the world voxel offset (already voxels at the
                 // document density, ADR 0003 §3f(0)) and snapped onto the block
-                // lattice (issue #30) it spans `[off − grid/2 + shift, …)`, i.e.
-                // the whole-block range `[(off − floor(size/2))·d, …)`. Using the
-                // SAME shift the resolve path applies keeps every frame consistent.
+                // lattice (issue #30; ZERO for a sketch, §3i) it spans
+                // `[off − grid/2 + shift, …)`. Using the SAME shift the resolve path
+                // applies keeps every frame consistent.
+                let grid = grid_voxels[axis];
                 let centre = world_offset_voxels[axis];
                 let low = centre - grid / 2 + lattice_shift[axis];
                 let high = low + grid;
@@ -2308,23 +2345,24 @@ impl Scene {
     /// a query against the index returns the same leaf set as the full walk filtered
     /// by AABB (proven in the spatial-index tests).
     pub fn build_leaf_spatial_index(&self, voxels_per_block: u32) -> LeafSpatialIndex {
-        let density = voxels_per_block.max(1) as i64;
         let mut entries: Vec<LeafEntry> = Vec::new();
         let mut has_region_spanning_leaf = false;
         self.for_each_leaf(&mut |world_offset_voxels, content, grid_on_faces| {
-            match leaf_size_blocks(content, voxels_per_block) {
-                Some(size_blocks) => {
-                    // The producer centres its `size·d` grid on the origin, then it
-                    // is placed at its world voxel offset (already voxels at the
-                    // document density, ADR 0003 §3f(0)); its occupied voxel span
-                    // per axis is `[off − grid/2, off + grid/2)` — the producer-true
-                    // half-extent (`grid/2 = size·d/2`), identical to
+            match leaf_producer_grid_voxels(content, voxels_per_block) {
+                Some(grid_voxels) => {
+                    // The producer-true emitted grid (`size·d` for an SDF Tool, the
+                    // exact prism AABB for a SketchTool), centred on the origin, then
+                    // placed at its world voxel offset (already voxels at the document
+                    // density, ADR 0003 §3f(0)); its occupied voxel span per axis is
+                    // `[off − grid/2 + shift, off − grid/2 + shift + grid)` — the
+                    // producer-true half-extent with the SAME lattice shift the
+                    // resolve path applies (ZERO for a sketch, §3i), identical to
                     // `placed_extent_voxels`. Absolute voxels are i64 (S4a).
                     let mut min = [0i64; 3];
                     let mut max = [0i64; 3];
-                    let lattice_shift = leaf_lattice_shift_voxels(size_blocks, voxels_per_block);
+                    let lattice_shift = leaf_lattice_shift(content, voxels_per_block);
                     for axis in 0..3 {
-                        let grid = size_blocks[axis] as i64 * density;
+                        let grid = grid_voxels[axis];
                         let centre = world_offset_voxels[axis];
                         min[axis] = centre - grid / 2 + lattice_shift[axis];
                         max[axis] = min[axis] + grid;
@@ -2405,9 +2443,13 @@ fn leaf_content_fingerprint(
         NodeContent::Tool { shape, material } => {
             format!("Tool@{world_offset_voxels:?}:{shape:?}:{material:?}{grid}")
         }
+        NodeContent::SketchTool { producer, material } => {
+            format!("SketchTool@{world_offset_voxels:?}:{producer:?}:{material:?}{grid}")
+        }
         NodeContent::Part(part) => format!("Part@{world_offset_voxels:?}:{part:?}{grid}"),
-        // for_each_leaf only ever yields leaf content (Tool / Part); Group / Instance
-        // are interior and never reach a visitor. Fingerprint defensively anyway.
+        // for_each_leaf only ever yields leaf content (Tool / SketchTool / Part);
+        // Group / Instance are interior and never reach a visitor. Fingerprint
+        // defensively anyway.
         NodeContent::Group(_) => format!("Group@{world_offset_voxels:?}{grid}"),
         NodeContent::Instance(def_id) => format!("Instance@{world_offset_voxels:?}:{def_id:?}{grid}"),
     }
@@ -2442,6 +2484,20 @@ fn leaf_size_blocks(content: &NodeContent, voxels_per_block: u32) -> Option<[u32
     let density = voxels_per_block.max(1);
     match content {
         NodeContent::Tool { shape, .. } => Some(shape.size_blocks),
+        // A sketch→extrude prism reports its AABB rounded UP to whole blocks so the
+        // composite region sizing / recentre / chunk-coverage all see its extent —
+        // exactly like a Tool. Its placement lattice shift is forced to ZERO
+        // separately (`leaf_lattice_shift`, §3i leak-retirement): the sketch is
+        // corner-anchored and must NOT carry the odd-size half-block correction.
+        NodeContent::SketchTool { producer, .. } => {
+            let [grid_x, grid_y, grid_z] = producer.grid_dimensions();
+            let ceil_blocks = |voxels: u32| voxels.div_ceil(density);
+            Some([
+                ceil_blocks(grid_x),
+                ceil_blocks(grid_y),
+                ceil_blocks(grid_z),
+            ])
+        }
         // The cloud field has no intrinsic size; today it adopts the shape's grid
         // dimensions, so a step-1 Part-only scene has no extent of its own. The
         // call sites that resolve a Part always pass the region explicitly, so
@@ -2454,6 +2510,32 @@ fn leaf_size_blocks(content: &NodeContent, voxels_per_block: u32) -> Option<[u32
             None
         }
         NodeContent::Group(_) | NodeContent::Instance(_) => None,
+    }
+}
+
+/// The producer's exact **emitted grid** in voxels per axis (the producer-true
+/// frame the chunk ownership lives in), or `None` for a sizeless / interior leaf.
+///
+/// This is `size_blocks · d` for an [`SdfShape`] `Tool` (a whole-block grid), but
+/// the EXACT prism AABB for a [`SketchTool`] — which may NOT be a whole multiple
+/// of `d` (a sub-block profile). The chunk-coverage / spatial-index / AABB-skip
+/// math must use this true span, not the block-rounded [`leaf_size_blocks`], so a
+/// sub-block sketch's voxels are never dropped by a too-small cover.
+///
+/// [`SketchTool`]: NodeContent::SketchTool
+fn leaf_producer_grid_voxels(content: &NodeContent, voxels_per_block: u32) -> Option<[i64; 3]> {
+    let density = voxels_per_block.max(1) as i64;
+    match content {
+        NodeContent::Tool { shape, .. } => Some([
+            shape.size_blocks[0] as i64 * density,
+            shape.size_blocks[1] as i64 * density,
+            shape.size_blocks[2] as i64 * density,
+        ]),
+        NodeContent::SketchTool { producer, .. } => {
+            let [grid_x, grid_y, grid_z] = producer.grid_dimensions();
+            Some([grid_x as i64, grid_y as i64, grid_z as i64])
+        }
+        NodeContent::Part(_) | NodeContent::Group(_) | NodeContent::Instance(_) => None,
     }
 }
 
@@ -2489,6 +2571,29 @@ fn leaf_lattice_shift_voxels(size_blocks: [u32; 3], voxels_per_block: u32) -> [i
         shift[axis] = (size * density) / 2 - (size / 2) * density;
     }
     shift
+}
+
+/// The per-leaf block-lattice shift applied at placement, **content-aware**.
+///
+/// An [`SdfShape`] `Tool` carries the odd-size half-block correction
+/// ([`leaf_lattice_shift_voxels`], issue #30); a [`SketchTool`] is **leak-free by
+/// construction** (corner-anchored profile, ADR 0003 §3i) and so takes a ZERO
+/// shift — it is explicitly NOT routed through `leaf_lattice_shift_voxels`. A
+/// sizeless leaf (a Part / interior node) also takes zero.
+///
+/// [`SketchTool`]: NodeContent::SketchTool
+fn leaf_lattice_shift(content: &NodeContent, voxels_per_block: u32) -> [i64; 3] {
+    match content {
+        NodeContent::Tool { .. } => match leaf_size_blocks(content, voxels_per_block) {
+            Some(size_blocks) => leaf_lattice_shift_voxels(size_blocks, voxels_per_block),
+            None => [0; 3],
+        },
+        // §3i leak-retirement: the sketch path never carries a lattice shift.
+        NodeContent::SketchTool { .. }
+        | NodeContent::Part(_)
+        | NodeContent::Group(_)
+        | NodeContent::Instance(_) => [0; 3],
+    }
 }
 
 /// Map a Tool's [`MaterialChoice`] to the `material_id` it stamps (ADR 0001 step 3
@@ -3855,6 +3960,61 @@ mod tests {
         );
         let scene = scene_with_top_level_selected(scene_build, 0);
         assert_chunked_matches_monolithic(&scene, voxels_per_block, "demo-village");
+    }
+
+    /// ADR 0003 §3i Slice 2a: the new sketch→extrude producer composes through the
+    /// chunked resolve identically to the monolithic one — mirrors the SDF parity
+    /// harness for a SketchTool leaf. Two cases: a plain rectangle extrude (the box
+    /// sugar) and a concave L-shape extrude (the added-value path), both at the app
+    /// density and at an off-origin placement so the recentre/cover math is real.
+    #[test]
+    fn chunked_resolve_matches_monolithic_for_sketch_extrude() {
+        use crate::sketch::{PlaneAxis, Sketch, SketchPoint};
+        let voxels_per_block = 16;
+        let density = voxels_per_block as i64;
+
+        // (a) Rectangle extrude (box sugar), placed off-origin on X.
+        let rect = SketchExtrude::new(
+            Sketch::rectangle(PlaneAxis::Y, 3 * density, 2 * density),
+            2 * density as u32,
+        );
+        let mut rect_node = Node::new(
+            "Sketch rect",
+            NodeContent::SketchTool {
+                producer: rect,
+                material: MaterialChoice::Stone,
+            },
+        );
+        rect_node.transform = NodeTransform::from_blocks([5, 0, 0], voxels_per_block);
+        let rect_scene = Scene::single_node(rect_node);
+        assert_chunked_matches_monolithic(&rect_scene, voxels_per_block, "sketch-rect");
+
+        // (b) Concave L-shape extrude (the added value a box can't make).
+        let two = 2 * density;
+        let four = 4 * density;
+        let l_profile = vec![
+            SketchPoint::new(0, 0),
+            SketchPoint::new(four, 0),
+            SketchPoint::new(four, two),
+            SketchPoint::new(two, two),
+            SketchPoint::new(two, four),
+            SketchPoint::new(0, four),
+        ];
+        let l_extrude =
+            SketchExtrude::new(Sketch::new(PlaneAxis::Y, l_profile), 3 * density as u32);
+        let mut l_node = Node::new(
+            "Sketch L",
+            NodeContent::SketchTool {
+                producer: l_extrude,
+                material: MaterialChoice::Wood,
+            },
+        );
+        // Off-origin (crossing chunk boundaries on both in-plane axes X and Z) so the
+        // off-origin chunked path is proven on the concave/reflex shape, not just the
+        // convex rectangle above.
+        l_node.transform = NodeTransform::from_blocks([5, 0, 5], voxels_per_block);
+        let l_scene = Scene::single_node(l_node);
+        assert_chunked_matches_monolithic(&l_scene, voxels_per_block, "sketch-L");
     }
 
     /// A scene with a single node shifted well OFF the origin (+8 blocks on X) —

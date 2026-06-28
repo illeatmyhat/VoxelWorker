@@ -380,6 +380,7 @@ fn build_palette_dock(
 fn node_row_label(node: &Node) -> String {
     let kind = match &node.content {
         NodeContent::Tool { shape, .. } => format!("{:?}", shape.kind),
+        NodeContent::SketchTool { .. } => "Sketch".to_string(),
         NodeContent::Part(Part::DebugClouds { .. }) => "Clouds".to_string(),
         NodeContent::Group(children) => format!("Group ({})", children.len()),
         NodeContent::Instance(_) => "Instance".to_string(),
@@ -881,6 +882,7 @@ fn build_inspector_section(
     /// Which inspector to show for the active node.
     enum ActiveKind {
         Tool,
+        Sketch,
         Part,
         Group,
         Instance,
@@ -888,6 +890,10 @@ fn build_inspector_section(
     }
     let kind = match state.scene.active_node().map(|node| &node.content) {
         Some(NodeContent::Tool { .. }) => ActiveKind::Tool,
+        // ADR 0003 §3i Slice 2a has NO sketch-editing UI yet; the inspector shows
+        // only the shared placement + grids sections (a sketch is placed/toggled
+        // like any node). Profile/extrude editing arrives with the 2b/2c UI.
+        Some(NodeContent::SketchTool { .. }) => ActiveKind::Sketch,
         Some(NodeContent::Part(_)) => ActiveKind::Part,
         Some(NodeContent::Group(_)) => ActiveKind::Group,
         Some(NodeContent::Instance(_)) => ActiveKind::Instance,
@@ -937,6 +943,19 @@ fn build_inspector_section(
             }
             // Placement (ADR 0001 step 3) is on the node's transform, common to all
             // node kinds; it emits its own `SetOffset` intent.
+            build_offset_section(ui, state, response);
+            build_node_grids_section(ui, state, response);
+        }
+        ActiveKind::Sketch => {
+            // No sketch-editing widgets in Slice 2a — just a label + the shared
+            // placement / grids sections so a sketch node is selectable and placeable.
+            ui.add_space(8.0);
+            ui.label(
+                egui::RichText::new("Sketch → Extrude (no editor yet)")
+                    .small()
+                    .weak(),
+            );
+            ui.separator();
             build_offset_section(ui, state, response);
             build_node_grids_section(ui, state, response);
         }

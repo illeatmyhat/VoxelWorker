@@ -36,6 +36,8 @@ pub mod renderer;
 pub mod scan_worker;
 pub mod scene;
 pub mod settings;
+// ADR 0003 §3i (Slice 2a): the sketch → extrude → volume producer, alongside SdfShape.
+pub mod sketch;
 pub mod spatial_index;
 // ADR 0003 data layer: residency + per-chunk resolve + bound-region reads. See store.rs.
 pub mod store;
@@ -80,6 +82,7 @@ pub use scene::{
     Part, Point, RegionBlocks, Scene,
 };
 pub use settings::AppConfig;
+pub use sketch::{PlaneAxis, Sketch, SketchExtrude, SketchPoint};
 pub use spatial_index::{LeafEntry, LeafFingerprint, LeafSpatialIndex, VoxelAabb};
 pub use vox_export::VoxExport;
 pub use voxel::{
