@@ -128,6 +128,8 @@ struct WindowedState {
     last_frame_time: std::time::Instant,
     /// Whether the left mouse button is held (orbit drag in progress).
     left_button_held: bool,
+    /// Whether the middle mouse button is held (pan drag in progress).
+    middle_button_held: bool,
     /// Last cursor position, for computing drag deltas.
     last_cursor_position: Option<(f64, f64)>,
     /// Where the most recent left-press landed (for view-cube click detection).
@@ -396,6 +398,7 @@ impl WindowedState {
             snap_tween: None,
             last_frame_time: std::time::Instant::now(),
             left_button_held: false,
+            middle_button_held: false,
             last_cursor_position: None,
             press_position: None,
             press_in_view_cube: false,
@@ -1375,6 +1378,18 @@ impl ApplicationHandler for App {
             }
             WindowEvent::MouseInput {
                 state: button_state,
+                button: MouseButton::Middle,
+                ..
+            } => {
+                // Middle-drag pans the camera (explicit camera action). A press
+                // that egui consumed (over the side panel / dock) doesn't grab the
+                // scene, mirroring the left-orbit gate. The view cube doesn't take
+                // middle clicks, so no cube gating is needed here.
+                state.middle_button_held =
+                    button_state == ElementState::Pressed && !egui_consumed;
+            }
+            WindowEvent::MouseInput {
+                state: button_state,
                 button: MouseButton::Right,
                 ..
             } => {
@@ -1433,6 +1448,20 @@ impl ApplicationHandler for App {
                             // A manual orbit cancels any in-progress snap tween.
                             state.snap_tween = None;
                             state.app_core.camera.orbit_by_drag(delta_x, delta_y);
+                        }
+                    }
+                }
+
+                // Middle-drag pans the target in the view plane (independent of the
+                // orbit path, so the cursor can never both orbit and pan in one
+                // move). Like orbit, a manual pan cancels any in-progress snap tween.
+                if state.middle_button_held {
+                    if let Some((previous_x, previous_y)) = state.last_cursor_position {
+                        let delta_x = (current.0 - previous_x) as f32;
+                        let delta_y = (current.1 - previous_y) as f32;
+                        if delta_x != 0.0 || delta_y != 0.0 {
+                            state.snap_tween = None;
+                            state.app_core.camera.pan_by_drag(delta_x, delta_y);
                         }
                     }
                 }

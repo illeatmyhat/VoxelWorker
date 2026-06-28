@@ -37,6 +37,13 @@ const UP_BLEND_BAND: f32 = 0.05;
 /// orthographic keeps roughly the same framing at the target).
 const ORTHO_HALF_HEIGHT_FACTOR: f32 = 0.42;
 
+/// World units a one-pixel middle-drag pans the target, PER UNIT of
+/// `orbit_distance`. Scaling by distance keeps the pan feeling consistent at any
+/// zoom (and across both projection modes, since the ortho half-height also
+/// tracks `orbit_distance`): the cursor stays glued to roughly the same fraction
+/// of the framed view regardless of how far out the camera is.
+const PAN_SPEED: f32 = 0.0015;
+
 /// The six view-cube faces, in `materialIndex` order (+X, -X, +Y, -Y, +Z, -Z).
 ///
 /// Index order matches the prototype's `CUBELABELS` / `FACE_VIEW` arrays so a
@@ -863,6 +870,28 @@ impl OrbitCamera {
         self.orbit_phi = (self.orbit_phi - delta_y * 0.01).clamp(PHI_MIN, PHI_MAX);
     }
 
+    /// Pan by a screen-space drag delta (middle-drag): slide `target` (and with
+    /// it the eye, since `eye = target + direction·distance`) within the camera's
+    /// view plane, so the model translates under the cursor without rotating. This
+    /// is an EXPLICIT camera action — the same class as orbit/zoom/Fit — so it is
+    /// allowed to move the view (camera UX rule: edits never re-frame, but the user
+    /// driving the mouse always may).
+    ///
+    /// The view-plane basis comes from the live look direction and up:
+    /// `right = forward × up` (the `look_at_rh` screen-right), `up = up_vector()`.
+    /// Dragging right (`delta_x > 0`) grabs the scene and pulls it right, so the
+    /// target slides LEFT (`-right`). Winit's screen Y is down-positive, so
+    /// dragging down (`delta_y > 0`) pulls the scene down and the target slides UP
+    /// (`+up`). Both are scaled by `orbit_distance · PAN_SPEED` so a pixel of drag
+    /// moves a consistent fraction of the framed view at any zoom.
+    pub fn pan_by_drag(&mut self, delta_x: f32, delta_y: f32) {
+        let forward = -self.direction();
+        let up = self.up_vector();
+        let right = forward.cross(up).normalize_or_zero();
+        let world_per_pixel = self.orbit_distance * PAN_SPEED;
+        self.target += (-right * delta_x + up * delta_y) * world_per_pixel;
+    }
+
     /// Zoom by a wheel step: `distance *= 1 ± 0.08`. Positive `scroll_lines`
     /// zooms in (closer).
     pub fn zoom_by_wheel(&mut self, scroll_lines: f32) {
@@ -1018,6 +1047,41 @@ mod tests {
         let mut camera = OrbitCamera::default();
         camera.orbit_by_drag(0.0, -1000.0);
         assert!(approx(camera.orbit_phi, PI), "phi = {}", camera.orbit_phi);
+    }
+
+    #[test]
+    fn pan_translates_target_in_view_plane_and_scales_with_distance() {
+        let camera = OrbitCamera::default();
+        let forward = -camera.direction();
+        let up = camera.up_vector();
+        let right = forward.cross(up).normalize();
+
+        // A pure horizontal drag right grabs the scene and pulls it right, so the
+        // target slides LEFT (−right). It stays in the view plane: no vertical
+        // component and nothing along the look axis.
+        let mut horizontal = OrbitCamera::default();
+        horizontal.pan_by_drag(10.0, 0.0);
+        let moved = horizontal.target;
+        assert!(moved.dot(right) < 0.0, "drag right slides the target left");
+        assert!(approx(moved.dot(up), 0.0), "a horizontal drag has no vertical pan");
+        assert!(approx(moved.dot(forward), 0.0), "pan stays in the view plane");
+
+        // A pure vertical drag DOWN (winit screen-y is down-positive) pulls the
+        // scene down, so the target slides UP (+up).
+        let mut vertical = OrbitCamera::default();
+        vertical.pan_by_drag(0.0, 10.0);
+        assert!(vertical.target.dot(up) > 0.0, "drag down slides the target up");
+
+        // Pan scales with orbit_distance: the SAME drag at twice the distance moves
+        // the target exactly twice as far (consistent feel at any zoom).
+        let mut near = OrbitCamera { orbit_distance: 5.0, ..OrbitCamera::default() };
+        let mut far = OrbitCamera { orbit_distance: 10.0, ..OrbitCamera::default() };
+        near.pan_by_drag(7.0, -3.0);
+        far.pan_by_drag(7.0, -3.0);
+        assert!(
+            approx(far.target.length(), 2.0 * near.target.length()),
+            "pan must scale linearly with orbit_distance",
+        );
     }
 
     #[test]
