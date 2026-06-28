@@ -735,7 +735,7 @@ mod tests {
     use crate::core_geom::MaterialChoice;
     use crate::voxel::GeometryParams;
     use crate::scene::{
-        AssemblyDef, DefId, Node, NodeContent, RegionBlocks,
+        DefId, Node, NodeContent, RegionBlocks,
     };
     use crate::voxel::{SdfShape, ShapeKind, VoxelGrid};
 
@@ -882,15 +882,11 @@ mod tests {
             node.transform.offset_blocks = offset;
             node
         };
-        let scene = Scene {
-            nodes: vec![
-                make_tool(ShapeKind::Sphere, [0, 0, 0], MaterialChoice::Stone),
-                make_tool(ShapeKind::Box, [8, 0, 0], MaterialChoice::Wood),
-                make_tool(ShapeKind::Torus, [0, 0, 6], MaterialChoice::Plain),
-            ],
-            active: None,
-            ..Scene::default()
-        };
+        let scene = Scene::from_nodes(vec![
+            make_tool(ShapeKind::Sphere, [0, 0, 0], MaterialChoice::Stone),
+            make_tool(ShapeKind::Box, [8, 0, 0], MaterialChoice::Wood),
+            make_tool(ShapeKind::Torus, [0, 0, 6], MaterialChoice::Plain),
+        ]);
         assert_cache_region_matches_monolithic(&scene, voxels_per_block, "demo-scene");
     }
 
@@ -909,30 +905,25 @@ mod tests {
             node.transform.offset_blocks = offset;
             node
         };
-        let house = AssemblyDef {
-            id: house_def_id,
-            name: "House".to_string(),
-            children: vec![
-                tool(ShapeKind::Box, [2, 2, 2], [0, 0, 0], MaterialChoice::Stone),
-                tool(ShapeKind::Cylinder, [1, 2, 1], [0, 2, 0], MaterialChoice::Wood),
-            ],
-        };
         let instance = |name: &str, offset: [i64; 3]| {
             let mut node = Node::new(name, NodeContent::Instance(house_def_id));
             node.transform.offset_blocks = offset;
             node
         };
-        let scene = Scene {
-            nodes: vec![
-                instance("House 1", [0, 0, 0]),
-                instance("House 2", [6, 0, 0]),
-                instance("House 3", [12, 0, 0]),
-                instance("House 4", [18, 0, 0]),
+        let mut scene = Scene::from_nodes(vec![
+            instance("House 1", [0, 0, 0]),
+            instance("House 2", [6, 0, 0]),
+            instance("House 3", [12, 0, 0]),
+            instance("House 4", [18, 0, 0]),
+        ]);
+        scene.add_definition(
+            house_def_id,
+            "House".to_string(),
+            vec![
+                tool(ShapeKind::Box, [2, 2, 2], [0, 0, 0], MaterialChoice::Stone),
+                tool(ShapeKind::Cylinder, [1, 2, 1], [0, 2, 0], MaterialChoice::Wood),
             ],
-            definitions: vec![house],
-            active: None,
-            ..Scene::default()
-        };
+        );
         assert_cache_region_matches_monolithic(&scene, voxels_per_block, "demo-village");
     }
 
@@ -1002,14 +993,10 @@ mod tests {
             node.transform.offset_blocks = offset;
             node
         };
-        let scene = Scene {
-            nodes: vec![
-                corner("Box lo", [0, 0, 0]),
-                corner("Box hi", [spacing_blocks, spacing_blocks, spacing_blocks]),
-            ],
-            active: None,
-            ..Scene::default()
-        };
+        let scene = Scene::from_nodes(vec![
+            corner("Box lo", [0, 0, 0]),
+            corner("Box hi", [spacing_blocks, spacing_blocks, spacing_blocks]),
+        ]);
 
         // The OLD whole-region cap would reject this: the composite AABB voxel count
         // is far beyond 6M.
@@ -1096,15 +1083,11 @@ mod tests {
             node.transform.offset_blocks = offset;
             node
         };
-        Scene {
-            nodes: vec![
-                make_tool(ShapeKind::Sphere, [0, 0, 0], MaterialChoice::Stone),
-                make_tool(ShapeKind::Box, [box_offset_x, 0, 0], MaterialChoice::Wood),
-                make_tool(ShapeKind::Torus, [0, 0, 6], MaterialChoice::Plain),
-            ],
-            active: None,
-            ..Scene::default()
-        }
+        Scene::from_nodes(vec![
+            make_tool(ShapeKind::Sphere, [0, 0, 0], MaterialChoice::Stone),
+            make_tool(ShapeKind::Box, [box_offset_x, 0, 0], MaterialChoice::Wood),
+            make_tool(ShapeKind::Torus, [0, 0, 6], MaterialChoice::Plain),
+        ])
     }
 
     /// The set of chunk coords currently resident in the cache (for assertions).
@@ -1129,7 +1112,7 @@ mod tests {
         // Move the Box from +40X to +80X. Compute the edit AABB via the spatial-index
         // diff, exactly as `main::rebuild_geometry` does.
         let mut scene_b = scene_a.clone();
-        scene_b.nodes[1].transform.offset_blocks = [80, 0, 0];
+        scene_b.root_node_mut(1).transform.offset_blocks = [80, 0, 0];
         let index_a = scene_a.build_leaf_spatial_index(density);
         let index_b = scene_b.build_leaf_spatial_index(density);
         let edit_aabb = index_b.edit_aabb_since(&index_a).expect("same density");
@@ -1182,7 +1165,7 @@ mod tests {
         let _ = cache.resolve_region(&scene_a, density, 0);
 
         let mut scene_b = scene_a.clone();
-        scene_b.nodes[1].transform.offset_blocks = [80, 0, 0];
+        scene_b.root_node_mut(1).transform.offset_blocks = [80, 0, 0];
         let index_a = scene_a.build_leaf_spatial_index(density);
         let index_b = scene_b.build_leaf_spatial_index(density);
         let edit_aabb = index_b.edit_aabb_since(&index_a).expect("same density");
@@ -1223,7 +1206,7 @@ mod tests {
         let all_resident = resident_coords(&cache);
 
         let mut scene_b = scene_a.clone();
-        scene_b.nodes[1].transform.offset_blocks = [80, 0, 0];
+        scene_b.root_node_mut(1).transform.offset_blocks = [80, 0, 0];
         let index_a = scene_a.build_leaf_spatial_index(density);
         let index_b = scene_b.build_leaf_spatial_index(density);
         let edit_aabb = index_b.edit_aabb_since(&index_a).expect("same density");
@@ -1385,30 +1368,25 @@ mod tests {
             node.transform.offset_blocks = offset;
             node
         };
-        let house = AssemblyDef {
-            id: house_def_id,
-            name: "House".to_string(),
-            children: vec![
-                tool(ShapeKind::Box, [2, 2, 2], [0, 0, 0], MaterialChoice::Stone),
-                tool(ShapeKind::Cylinder, [1, 2, 1], [0, 2, 0], MaterialChoice::Wood),
-            ],
-        };
         let instance = |name: &str, offset: [i64; 3]| {
             let mut node = Node::new(name, NodeContent::Instance(house_def_id));
             node.transform.offset_blocks = offset;
             node
         };
-        let scene = Scene {
-            nodes: vec![
-                instance("House 1", [0, 0, 0]),
-                instance("House 2", [6, 0, 0]),
-                instance("House 3", [12, 0, 0]),
-                instance("House 4", [18, 0, 0]),
+        let mut scene = Scene::from_nodes(vec![
+            instance("House 1", [0, 0, 0]),
+            instance("House 2", [6, 0, 0]),
+            instance("House 3", [12, 0, 0]),
+            instance("House 4", [18, 0, 0]),
+        ]);
+        scene.add_definition(
+            house_def_id,
+            "House".to_string(),
+            vec![
+                tool(ShapeKind::Box, [2, 2, 2], [0, 0, 0], MaterialChoice::Stone),
+                tool(ShapeKind::Cylinder, [1, 2, 1], [0, 2, 0], MaterialChoice::Wood),
             ],
-            definitions: vec![house],
-            active: None,
-            ..Scene::default()
-        };
+        );
         assert_render_chunks_match_resolve_region(&scene, vpb, "demo-village");
     }
 
@@ -1570,11 +1548,7 @@ mod tests {
         // 20,000-block separation → composite centred ~10,000 blocks out → each box
         // ~160,000 voxels from the origin (far beyond any normal scene), while the
         // whole-grid reference (an O(grid_x)-per-row bitset) stays cheap to assemble.
-        let scene = Scene {
-            nodes: vec![make_box([0, 0, 0]), make_box([20_000, 0, 0])],
-            active: None,
-            ..Scene::default()
-        };
+        let scene = Scene::from_nodes(vec![make_box([0, 0, 0]), make_box([20_000, 0, 0])]);
 
         let dims = scene.placed_region_dimensions(vpb);
         let band = (0, dims[1].saturating_sub(1)); // whole Y stack (both boxes are at y=0).
@@ -1622,15 +1596,11 @@ mod tests {
             node.transform.offset_blocks = offset;
             node
         };
-        let scene = Scene {
-            nodes: vec![
-                make_tool(ShapeKind::Sphere, [0, 0, 0], MaterialChoice::Stone),
-                make_tool(ShapeKind::Box, [8, 0, 0], MaterialChoice::Wood),
-                make_tool(ShapeKind::Torus, [0, 0, 6], MaterialChoice::Plain),
-            ],
-            active: None,
-            ..Scene::default()
-        };
+        let scene = Scene::from_nodes(vec![
+            make_tool(ShapeKind::Sphere, [0, 0, 0], MaterialChoice::Stone),
+            make_tool(ShapeKind::Box, [8, 0, 0], MaterialChoice::Wood),
+            make_tool(ShapeKind::Torus, [0, 0, 6], MaterialChoice::Plain),
+        ]);
         assert_region_widest_run_matches_whole_grid(&scene, vpb, "demo-scene");
     }
 
@@ -1649,30 +1619,25 @@ mod tests {
             node.transform.offset_blocks = offset;
             node
         };
-        let house = AssemblyDef {
-            id: house_def_id,
-            name: "House".to_string(),
-            children: vec![
-                tool(ShapeKind::Box, [2, 2, 2], [0, 0, 0], MaterialChoice::Stone),
-                tool(ShapeKind::Cylinder, [1, 2, 1], [0, 2, 0], MaterialChoice::Wood),
-            ],
-        };
         let instance = |name: &str, offset: [i64; 3]| {
             let mut node = Node::new(name, NodeContent::Instance(house_def_id));
             node.transform.offset_blocks = offset;
             node
         };
-        let scene = Scene {
-            nodes: vec![
-                instance("House 1", [0, 0, 0]),
-                instance("House 2", [6, 0, 0]),
-                instance("House 3", [12, 0, 0]),
-                instance("House 4", [18, 0, 0]),
+        let mut scene = Scene::from_nodes(vec![
+            instance("House 1", [0, 0, 0]),
+            instance("House 2", [6, 0, 0]),
+            instance("House 3", [12, 0, 0]),
+            instance("House 4", [18, 0, 0]),
+        ]);
+        scene.add_definition(
+            house_def_id,
+            "House".to_string(),
+            vec![
+                tool(ShapeKind::Box, [2, 2, 2], [0, 0, 0], MaterialChoice::Stone),
+                tool(ShapeKind::Cylinder, [1, 2, 1], [0, 2, 0], MaterialChoice::Wood),
             ],
-            definitions: vec![house],
-            active: None,
-            ..Scene::default()
-        };
+        );
         assert_region_widest_run_matches_whole_grid(&scene, vpb, "demo-village");
     }
 
@@ -1695,14 +1660,10 @@ mod tests {
             voxels_per_block: vpb,
             wall_blocks: 1,
         };
-        let scene = Scene {
-            nodes: vec![Node::new(
-                "bar",
-                NodeContent::Tool { shape, material: MaterialChoice::Stone },
-            )],
-            active: None,
-            ..Scene::default()
-        };
+        let scene = Scene::from_nodes(vec![Node::new(
+            "bar",
+            NodeContent::Tool { shape, material: MaterialChoice::Stone },
+        )]);
 
         let dims = scene.placed_region_dimensions(vpb);
         let band = (0, dims[1].saturating_sub(1));
@@ -1740,14 +1701,10 @@ mod tests {
             wall_blocks: 1,
         };
         let _ = vpb;
-        let scene = Scene {
-            nodes: vec![Node::new(
-                "dot",
-                NodeContent::Tool { shape, material: MaterialChoice::Stone },
-            )],
-            active: None,
-            ..Scene::default()
-        };
+        let scene = Scene::from_nodes(vec![Node::new(
+            "dot",
+            NodeContent::Tool { shape, material: MaterialChoice::Stone },
+        )]);
         let dims = scene.placed_region_dimensions(1);
         assert_eq!(dims, [1, 1, 1], "a 1×1×1@1 box is a single voxel");
 
@@ -1902,15 +1859,11 @@ mod tests {
         // `apply_incremental_edit`). The interior "subject" box sits between them.
         let anchor_lo = || tool_node(ShapeKind::Sphere, [5, 5, 5], [0, 0, 0], MaterialChoice::Stone, density);
         let anchor_hi = || tool_node(ShapeKind::Torus, [5, 5, 5], [120, 0, 0], MaterialChoice::Plain, density);
-        let scene_a = Scene {
-            nodes: vec![
-                anchor_lo(),
-                tool_node(ShapeKind::Box, [5, 5, 5], [60, 0, 0], MaterialChoice::Wood, density),
-                anchor_hi(),
-            ],
-            active: None,
-            ..Scene::default()
-        };
+        let scene_a = Scene::from_nodes(vec![
+            anchor_lo(),
+            tool_node(ShapeKind::Box, [5, 5, 5], [60, 0, 0], MaterialChoice::Wood, density),
+            anchor_hi(),
+        ]);
 
         // Each case mutates scene_a → scene_b by ONE edit kind, all keeping the
         // composite extent (recentre) fixed via the anchors, so all are genuinely
@@ -1918,7 +1871,7 @@ mod tests {
         let recolor = {
             let mut b = scene_a.clone();
             // In-place recolor of the interior Box (material change, same geometry).
-            if let NodeContent::Tool { material, .. } = &mut b.nodes[1].content {
+            if let NodeContent::Tool { material, .. } = &mut b.root_node_mut(1).content {
                 *material = MaterialChoice::Stone;
             }
             ("recolor", b)
@@ -1926,27 +1879,32 @@ mod tests {
         let resize = {
             let mut b = scene_a.clone();
             // In-place resize of the interior Box (few dirty chunks around it).
-            b.nodes[1] = tool_node(ShapeKind::Box, [3, 3, 3], [60, 0, 0], MaterialChoice::Wood, density);
+            // Replace content + transform in place so the node keeps its arena id.
+            let replacement = tool_node(ShapeKind::Box, [3, 3, 3], [60, 0, 0], MaterialChoice::Wood, density);
+            let slot = b.root_node_mut(1);
+            slot.content = replacement.content;
+            slot.transform = replacement.transform;
             ("resize", b)
         };
         let move_node = {
             let mut b = scene_a.clone();
             // Move the interior Box from +60X to +70X (still interior → recentre
             // fixed; dirty around BOTH endpoints).
-            b.nodes[1].transform.offset_blocks = [70, 0, 0];
+            b.root_node_mut(1).transform.offset_blocks = [70, 0, 0];
             ("move", b)
         };
         let add_node = {
             let mut b = scene_a.clone();
             // ADD a new INTERIOR tool (brand-new covering chunks; extent unchanged).
-            b.nodes.push(tool_node(ShapeKind::Box, [3, 3, 3], [90, 0, 0], MaterialChoice::Stone, density));
+            b.add_node(tool_node(ShapeKind::Box, [3, 3, 3], [90, 0, 0], MaterialChoice::Stone, density));
             ("add", b)
         };
         let remove_node = {
             let mut b = scene_a.clone();
             // REMOVE the interior Box (its chunks must be evicted/vacated; the
             // anchors keep the extent so the recentre is unchanged).
-            b.nodes.remove(1);
+            let interior_id = b.roots[1];
+            b.remove_node(interior_id);
             ("remove", b)
         };
 
@@ -2012,16 +1970,12 @@ mod tests {
         let density = 16u32;
         // A wide sphere (many chunks) plus a tiny 1-block box pushed far out in X,
         // so the box owns only ~1 chunk no other leaf touches.
-        let scene_a = Scene {
-            nodes: vec![
-                tool_node(ShapeKind::Sphere, [9, 9, 9], [0, 0, 0], MaterialChoice::Stone, density),
-                tool_node(ShapeKind::Box, [1, 1, 1], [80, 0, 0], MaterialChoice::Wood, density),
-            ],
-            active: None,
-            ..Scene::default()
-        };
+        let scene_a = Scene::from_nodes(vec![
+            tool_node(ShapeKind::Sphere, [9, 9, 9], [0, 0, 0], MaterialChoice::Stone, density),
+            tool_node(ShapeKind::Box, [1, 1, 1], [80, 0, 0], MaterialChoice::Wood, density),
+        ]);
         let mut scene_b = scene_a.clone();
-        if let NodeContent::Tool { material, .. } = &mut scene_b.nodes[1].content {
+        if let NodeContent::Tool { material, .. } = &mut scene_b.root_node_mut(1).content {
             *material = MaterialChoice::Stone;
         }
 

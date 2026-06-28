@@ -26,11 +26,11 @@ use voxel_worker::block_palette::{BlockPalette, LoadedMaterial, ThumbnailRendere
 use voxel_worker::scan_worker::{run_auto_scan_blocking, FaceResolver};
 use voxel_worker::{
     create_depth_view, create_msaa_color_view, procedural_material_average_color, render_frame,
-    run_egui_frame, AppCore, AssemblyDef, CubeFace, DefId, EguiPaintBridge, FogMode, FrameOverlays,
+    run_egui_frame, AppCore, CubeFace, DefId, EguiPaintBridge, FogMode, FrameOverlays,
     GeometryParams,
     GpuContext, InfiniteGridRenderer, LayerBand, LayerRange, MaterialChoice, MaterialSource,
     PointsRenderer, RebuildOutcome, RebuildOutput, SceneGridRenderer,
-    Node, NodeContent, NodePath, OnionFogRenderer, OrbitCamera, PanelState, Part,
+    Node, NodeBuilder, NodeContent, NodePath, OnionFogRenderer, OrbitCamera, PanelState, Part,
     Point,
     ProjectionMode, RegionBlocks, Scene, SdfShape, ShapeKind, TransformGizmoRenderer,
     ViewCubeElement, VoxExport,
@@ -716,7 +716,7 @@ fn locate_stem_png(stem: &str) -> Option<std::path::PathBuf> {
 /// after minting). The later `ensure_node_ids` on the load path is idempotent.
 fn selecting_first_node(mut scene: Scene) -> Scene {
     scene.ensure_node_ids();
-    scene.active = scene.nodes.first().map(|node| node.id);
+    scene.active = scene.roots.first().copied();
     scene
 }
 
@@ -749,14 +749,11 @@ fn build_demo_scene(voxels_per_block: u32) -> Scene {
         node.transform.offset_blocks = offset;
         node
     };
-    selecting_first_node(Scene {
-        nodes: vec![
-            make_tool(ShapeKind::Sphere, [0, 0, 0], MaterialChoice::Stone),
-            make_tool(ShapeKind::Box, [8, 0, 0], MaterialChoice::Wood),
-            make_tool(ShapeKind::Torus, [0, 0, 6], MaterialChoice::Plain),
-        ],
-        ..Scene::default()
-    })
+    selecting_first_node(Scene::from_nodes(vec![
+        make_tool(ShapeKind::Sphere, [0, 0, 0], MaterialChoice::Stone),
+        make_tool(ShapeKind::Box, [8, 0, 0], MaterialChoice::Wood),
+        make_tool(ShapeKind::Torus, [0, 0, 6], MaterialChoice::Plain),
+    ]))
 }
 
 /// Build the `--demo-village` (ADR 0001 step 4): an **instanced** scene that
@@ -785,15 +782,6 @@ fn build_demo_village(voxels_per_block: u32) -> Scene {
     // chimney's local offset is RELATIVE to the house (it composes down through the
     // instance + group transforms). The body is kept small (2 blocks) so that four
     // instances stay well under the renderer's drawn-instance cap and all four draw.
-    let house = AssemblyDef {
-        id: house_def_id,
-        name: "House".to_string(),
-        children: vec![
-            tool(ShapeKind::Box, [2, 2, 2], [0, 0, 0], MaterialChoice::Stone),
-            tool(ShapeKind::Cylinder, [1, 2, 1], [0, 2, 0], MaterialChoice::Wood),
-        ],
-    };
-
     // Four instances of the SAME definition in a straight row, 8 blocks apart in X
     // (a 4-block house → 4-block gap between neighbours). A row (not a 2×2 grid, in
     // which diagonal pairs self-occlude from an isometric angle) keeps all four
@@ -805,16 +793,25 @@ fn build_demo_village(voxels_per_block: u32) -> Scene {
         node.transform.offset_blocks = offset;
         node
     };
-    selecting_first_node(Scene {
-        nodes: vec![
-            instance("House 1", [0, 0, 0]),
-            instance("House 2", [6, 0, 0]),
-            instance("House 3", [12, 0, 0]),
-            instance("House 4", [18, 0, 0]),
+    let mut scene = Scene::from_nodes(vec![
+        instance("House 1", [0, 0, 0]),
+        instance("House 2", [6, 0, 0]),
+        instance("House 3", [12, 0, 0]),
+        instance("House 4", [18, 0, 0]),
+    ]);
+    // The house: a 2³ stone body with a 1×2×1 wood "chimney" sitting on top, so the
+    // chimney's local offset is RELATIVE to the house (it composes down through the
+    // instance + group transforms). The body is kept small (2 blocks) so that four
+    // instances stay well under the renderer's drawn-instance cap and all four draw.
+    scene.add_definition(
+        house_def_id,
+        "House",
+        vec![
+            tool(ShapeKind::Box, [2, 2, 2], [0, 0, 0], MaterialChoice::Stone),
+            tool(ShapeKind::Cylinder, [1, 2, 1], [0, 2, 0], MaterialChoice::Wood),
         ],
-        definitions: vec![house],
-        ..Scene::default()
-    })
+    );
+    selecting_first_node(scene)
 }
 
 /// Build the `--demo-groups` (ADR 0001 step 4, UI verification): a scene that
@@ -833,32 +830,33 @@ fn build_demo_groups(voxels_per_block: u32) -> Scene {
     };
 
     let widget_def_id = DefId(1);
-    let widget = AssemblyDef {
-        id: widget_def_id,
-        name: "Widget".to_string(),
-        children: vec![tool(ShapeKind::Sphere, [2, 2, 2], [0, 0, 0], MaterialChoice::Plain, "Ball")],
-    };
 
     // A Group with two children, placed at the origin; the children carry their own
     // local offsets relative to the Group.
-    let mut cluster = Node::new(
+    let cluster = NodeBuilder::group_at(
         "Cluster",
-        NodeContent::Group(vec![
-            tool(ShapeKind::Sphere, [2, 2, 2], [0, 0, 0], MaterialChoice::Stone, "Core"),
-            tool(ShapeKind::Box, [2, 2, 2], [3, 0, 0], MaterialChoice::Wood, "Shell"),
-        ]),
+        [0, 0, 0],
+        vec![
+            tool(ShapeKind::Sphere, [2, 2, 2], [0, 0, 0], MaterialChoice::Stone, "Core").into(),
+            tool(ShapeKind::Box, [2, 2, 2], [3, 0, 0], MaterialChoice::Wood, "Shell").into(),
+        ],
     );
-    cluster.transform.offset_blocks = [0, 0, 0];
 
     let lone = tool(ShapeKind::Box, [2, 2, 2], [8, 0, 0], MaterialChoice::Wood, "Lone");
     let mut widget_instance = Node::new("Widget instance", NodeContent::Instance(widget_def_id));
     widget_instance.transform.offset_blocks = [12, 0, 0];
 
-    selecting_first_node(Scene {
-        nodes: vec![cluster, lone, widget_instance],
-        definitions: vec![widget],
-        ..Scene::default()
-    })
+    let mut scene = Scene::from_nodes(vec![
+        cluster,
+        NodeBuilder::Leaf(lone),
+        NodeBuilder::Leaf(widget_instance),
+    ]);
+    scene.add_definition(
+        widget_def_id,
+        "Widget",
+        vec![tool(ShapeKind::Sphere, [2, 2, 2], [0, 0, 0], MaterialChoice::Plain, "Ball")],
+    );
+    selecting_first_node(scene)
 }
 
 /// Build the `--demo-far-offset` / `--demo-far-offset-near` scene (ADR 0002
@@ -1019,7 +1017,15 @@ async fn run_capture(options: ShotOptions) {
         panel_state.scene.master_block_lattice = options.show_block_lattice;
         panel_state.scene.master_floor_grid = options.show_floor_grid;
         let grid_node = options.select_node.unwrap_or(0);
-        if let Some(node) = panel_state.scene.nodes.get_mut(grid_node) {
+        // B5: index the top-level node by position via the `roots` spine, then fetch
+        // it mutably from the arena.
+        if let Some(node) = panel_state
+            .scene
+            .roots
+            .get(grid_node)
+            .copied()
+            .and_then(|id| panel_state.scene.arena.get_mut(&id))
+        {
             node.grids.block_lattice = options.show_block_lattice;
             node.grids.floor_grid = options.show_floor_grid;
         }
@@ -1037,7 +1043,13 @@ async fn run_capture(options: ShotOptions) {
         // and per-frame uniforms agree.
         scene.master_voxel_grid = true;
         let grid_node = options.select_node.unwrap_or(0);
-        if let Some(node) = scene.nodes.get_mut(grid_node) {
+        // B5: index the top-level node by position via the `roots` spine.
+        if let Some(node) = scene
+            .roots
+            .get(grid_node)
+            .copied()
+            .and_then(|id| scene.arena.get_mut(&id))
+        {
             node.grids.voxel_grid_on_faces = true;
         }
         panel_state.scene = scene.clone();
@@ -1171,7 +1183,7 @@ async fn run_capture(options: ShotOptions) {
         println!(
             "resolved {} voxels for demo-groups ({} top-level nodes, {} definition(s), region {:?} blocks)",
             grid.occupied_count(),
-            scene.nodes.len(),
+            scene.roots.len(),
             scene.definitions.len(),
             region.size_blocks
         );
@@ -1179,7 +1191,7 @@ async fn run_capture(options: ShotOptions) {
         println!(
             "resolved {} voxels for demo-village ({} instances of {} definition(s), region {:?} blocks)",
             grid.occupied_count(),
-            scene.nodes.len(),
+            scene.roots.len(),
             scene.definitions.len(),
             region.size_blocks
         );

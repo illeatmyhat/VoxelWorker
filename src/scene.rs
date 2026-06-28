@@ -31,6 +31,8 @@
 //! `SdfShape::resolve` / `DebugCloudField::resolve` produce today (same
 //! dimensions, same occupied set). See `tool_scene_matches_bare_producer` below.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use crate::core_geom::MaterialChoice;
@@ -210,8 +212,12 @@ pub enum NodeContent {
     },
     /// A static voxel body, dropped in as-is.
     Part(Part),
-    /// An owned, one-off sub-assembly. **Not resolved in step 1** (step 4).
-    Group(Vec<Node>),
+    /// An owned, one-off sub-assembly. **ADR 0003 Phase B5:** a Group owns its
+    /// children by **identity** — the ordered spine of child [`NodeId`]s — while the
+    /// child `Node`s themselves live in the scene-wide [`Scene::arena`]. The `Vec`
+    /// order IS document order (resolved later-wins on overlap); the arena is fetched
+    /// from but never iterated to produce a walk. **Not resolved in step 1** (step 4).
+    Group(Vec<NodeId>),
     /// A reuse-by-reference of a definition. **Not resolved in step 1** (step 4).
     Instance(DefId),
 }
@@ -292,6 +298,66 @@ impl Node {
     }
 }
 
+/// A **by-value node-tree spec** for terse construction (ADR 0003 Phase B5).
+///
+/// Now that [`NodeContent::Group`] stores a `Vec<NodeId>` (ids into the scene
+/// [`arena`](Scene::arena)) rather than owning its children, a caller can no longer
+/// write `Group(vec![child_node])` to build a subtree by value. `NodeBuilder` restores
+/// that ergonomic: a leaf carries its [`Node`] directly; a [`NodeBuilder::group`]
+/// carries the (still-by-value) `Node`s/sub-builders of its children, which
+/// [`Scene::from_nodes`] / [`Scene::add_definition`] flatten into the arena (minting
+/// ids depth-first, building each Group's id-spine) at construction time. A plain
+/// [`Node`] converts in via [`From`], so flat fixtures stay `vec![node_a, node_b]`.
+pub enum NodeBuilder {
+    /// A leaf (or pre-built) node inserted as-is. Its content may NOT be a Group with
+    /// by-value children (the spine is ids) — use [`NodeBuilder::group`] for that.
+    Leaf(Node),
+    /// A Group node (`name` + `transform`) wrapping child specs, inserted as a fresh
+    /// arena node whose spine is the children's minted ids.
+    Group {
+        /// The Group node's name.
+        name: String,
+        /// The Group node's local transform (offset etc.).
+        transform: NodeTransform,
+        /// Whether the Group is visible.
+        visible: bool,
+        /// The Group's children, in document order.
+        children: Vec<NodeBuilder>,
+    },
+}
+
+impl NodeBuilder {
+    /// A Group spec with an identity transform wrapping `children`.
+    pub fn group(name: impl Into<String>, children: Vec<NodeBuilder>) -> Self {
+        NodeBuilder::Group {
+            name: name.into(),
+            transform: NodeTransform::identity(),
+            visible: true,
+            children,
+        }
+    }
+
+    /// A Group spec at `offset_blocks` wrapping `children`.
+    pub fn group_at(
+        name: impl Into<String>,
+        offset_blocks: [i64; 3],
+        children: Vec<NodeBuilder>,
+    ) -> Self {
+        NodeBuilder::Group {
+            name: name.into(),
+            transform: NodeTransform { offset_blocks },
+            visible: true,
+            children,
+        }
+    }
+}
+
+impl From<Node> for NodeBuilder {
+    fn from(node: Node) -> Self {
+        NodeBuilder::Leaf(node)
+    }
+}
+
 /// A reusable sub-assembly (e.g. "house") placed by [`NodeContent::Instance`]
 /// (ADR 0001). Step 1 never constructs or resolves one; it exists so the model is
 /// complete. The top-level assembly is also an `AssemblyDef` (its `root`).
@@ -302,9 +368,11 @@ pub struct AssemblyDef {
     /// Human-readable name.
     #[serde(default)]
     pub name: String,
-    /// The nodes that make up this assembly.
+    /// The nodes that make up this assembly. **ADR 0003 Phase B5:** an ordered spine
+    /// of child [`NodeId`]s; the child `Node`s live in the scene-wide
+    /// [`Scene::arena`]. The `Vec` order is document order.
     #[serde(default)]
-    pub children: Vec<Node>,
+    pub children: Vec<NodeId>,
 }
 
 /// A world-anchored **reference element** (issue #29 grid rework): a named point
@@ -403,10 +471,23 @@ fn default_master_grid() -> bool {
 /// instances).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Scene {
-    /// The top-level assembly's nodes, resolved in order (later nodes win on
-    /// overlap under [`CombineOp::Union`]).
+    /// The top-level assembly's nodes, as an **ordered spine of [`NodeId`]s**
+    /// (ADR 0003 Phase B5). Resolved in this order (later nodes win on overlap under
+    /// [`CombineOp::Union`]); the `Node`s themselves live in [`arena`](Self::arena).
+    /// **Golden-critical:** every tree walk iterates THIS spine (and each
+    /// [`NodeContent::Group`]'s spine) for order, fetching content from the arena —
+    /// never iterate the arena to produce a walk (that visits in id order and would
+    /// reorder later-wins material on overlap).
     #[serde(default)]
-    pub nodes: Vec<Node>,
+    pub roots: Vec<NodeId>,
+    /// The id-keyed node storage (ADR 0003 Phase B5). A [`BTreeMap`] (not `HashMap`)
+    /// so it iterates/serializes in ascending-id order → deterministic, and so the
+    /// load-path `max_existing` scan in [`ensure_node_ids`](Self::ensure_node_ids) is
+    /// stable. Keyed by the monotonic [`NodeId`] (the counter already prevents
+    /// stale-id aliasing, so no slotmap generations are needed). **Get-only inside
+    /// walks** — see [`roots`](Self::roots).
+    #[serde(default)]
+    pub arena: BTreeMap<NodeId, Node>,
     /// Reusable sub-assemblies referenced by [`NodeContent::Instance`]. A
     /// definition is stored ONCE here regardless of how many instances place it
     /// (ADR 0001 "Nesting & reuse"). Looked up by [`DefId`] via [`def_by_id`].
@@ -474,7 +555,8 @@ impl Default for Scene {
     /// [`ensure_origin_point`](Self::ensure_origin_point)).
     fn default() -> Self {
         Self {
-            nodes: Vec::new(),
+            roots: Vec::new(),
+            arena: BTreeMap::new(),
             definitions: Vec::new(),
             active: None,
             points: Vec::new(),
@@ -496,13 +578,85 @@ impl Scene {
     /// `active` is set to that id — the scene is born already-normalised, so the
     /// selection resolves immediately without a separate load-path mint.
     pub fn single_node(node: Node) -> Self {
-        let mut scene = Self {
-            nodes: vec![node],
-            ..Self::default()
-        };
-        scene.ensure_node_ids();
-        scene.active = scene.nodes.first().map(|node| node.id);
+        let mut scene = Self::from_nodes(vec![node]);
+        scene.active = scene.roots.first().copied();
         scene
+    }
+
+    /// Build a scene from a list of top-level [`Node`]s (ADR 0003 Phase B5), inserting
+    /// each (and its `Group` descendants) into the [`arena`](Self::arena) under a
+    /// freshly-minted [`NodeId`] and recording the top-level ids as the
+    /// [`roots`](Self::roots) spine in order. The terse constructor the demo builders
+    /// and test fixtures use so they keep building `Node` trees by value while the
+    /// storage underneath is the id-keyed arena. `active` is left `None` (callers set
+    /// it). Equivalent in effect to the old `Scene { nodes, .. }` + `ensure_node_ids`.
+    pub fn from_nodes<I, B>(nodes: I) -> Self
+    where
+        I: IntoIterator<Item = B>,
+        B: Into<NodeBuilder>,
+    {
+        let mut scene = Self::default();
+        for spec in nodes {
+            let id = scene.insert_builder(spec.into());
+            scene.roots.push(id);
+        }
+        scene
+    }
+
+    /// Insert a [`Node`] (and, for a [`NodeContent::Group`], its child subtrees) into
+    /// the [`arena`](Self::arena) under a freshly-minted [`NodeId`], returning the id
+    /// the node itself took. Does NOT touch [`roots`](Self::roots) or any parent spine.
+    /// Used by the edit ops (a pre-built `Node` with an already-id spine Group content
+    /// is inserted as-is — its descendants already live in the arena).
+    fn insert_subtree(&mut self, mut node: Node) -> NodeId {
+        let id = self.mint_node_id();
+        node.id = id;
+        self.arena.insert(id, node);
+        id
+    }
+
+    /// Flatten a [`NodeBuilder`] spec into the [`arena`](Self::arena), returning the
+    /// id the spec's node took (ADR 0003 Phase B5). For a [`NodeBuilder::Group`] the
+    /// children are inserted first (depth-first), then the Group node is stored with
+    /// its spine of minted child ids. Does NOT touch [`roots`](Self::roots) — the
+    /// caller splices the returned id where it belongs.
+    fn insert_builder(&mut self, spec: NodeBuilder) -> NodeId {
+        match spec {
+            NodeBuilder::Leaf(node) => self.insert_subtree(node),
+            NodeBuilder::Group {
+                name,
+                transform,
+                visible,
+                children,
+            } => {
+                let child_ids: Vec<NodeId> =
+                    children.into_iter().map(|child| self.insert_builder(child)).collect();
+                let mut group = Node::new(name, NodeContent::Group(child_ids));
+                group.transform = transform;
+                group.visible = visible;
+                self.insert_subtree(group)
+            }
+        }
+    }
+
+    /// Register a reusable [`AssemblyDef`] from `children` built by value (ADR 0003
+    /// Phase B5): each child subtree is inserted into the scene [`arena`](Self::arena)
+    /// and the def stores their ids as its spine. The terse test/demo helper mirroring
+    /// [`from_nodes`](Self::from_nodes) for definition bodies.
+    pub fn add_definition<I, B>(&mut self, id: DefId, name: impl Into<String>, children: I)
+    where
+        I: IntoIterator<Item = B>,
+        B: Into<NodeBuilder>,
+    {
+        let child_ids: Vec<NodeId> = children
+            .into_iter()
+            .map(|child| self.insert_builder(child.into()))
+            .collect();
+        self.definitions.push(AssemblyDef {
+            id,
+            name: name.into(),
+            children: child_ids,
+        });
     }
 
     /// Ensure the scene has exactly one **Origin** Point (issue #29). If no Point
@@ -542,44 +696,78 @@ impl Scene {
     /// [`ensure_origin_point`](Self::ensure_origin_point).
     pub fn ensure_node_ids(&mut self) {
         // Advance the counter past any ids already present, so freshly-minted ids
-        // never collide with ones a loaded scene already carries.
+        // never collide with ones a loaded scene already carries. The arena keys ARE
+        // every node's id (BTreeMap → ascending order, so the scan is stable), so a
+        // single pass over the arena values + the definition spines covers it. Note:
+        // a node carrying the `NodeId(0)` sentinel is stored UNDER key 0 in the arena
+        // (a fresh-by-value insert always mints, but a deserialized arena could carry
+        // a single 0-keyed node), so the `max` ignores 0 naturally.
         let mut max_existing = 0u64;
-        Self::visit_node_ids(&self.nodes, &mut |id| max_existing = max_existing.max(id));
-        for def in &self.definitions {
-            Self::visit_node_ids(&def.children, &mut |id| max_existing = max_existing.max(id));
+        for id in self.arena.keys() {
+            max_existing = max_existing.max(id.0);
         }
         self.next_node_id = self.next_node_id.max(max_existing + 1).max(1);
 
-        // Mint a fresh id for every still-unassigned node.
-        let counter = &mut self.next_node_id;
-        Self::mint_unassigned_node_ids(&mut self.nodes, counter);
-        for def in &mut self.definitions {
-            Self::mint_unassigned_node_ids(&mut def.children, counter);
-        }
-    }
-
-    /// Visit the `id` of every node in `nodes`, recursing into Group children.
-    fn visit_node_ids(nodes: &[Node], visit: &mut impl FnMut(u64)) {
-        for node in nodes {
-            visit(node.id.0);
-            if let NodeContent::Group(children) = &node.content {
-                Self::visit_node_ids(children, visit);
+        // Re-key any still-unassigned node out of the `NodeId(0)` sentinel slot. With
+        // the arena keyed by id, minting a fresh id means MOVING the arena entry AND
+        // repointing the one spine slot (`roots`, a Group's children, or a definition's
+        // children) that referenced it — otherwise the spine keeps pointing at slot 0
+        // while the node lives elsewhere, silently orphaning it on load (it would never
+        // render, list, or select). At most one node can sit under key 0 (BTreeMap keys
+        // are unique). In practice every arena/def node is minted at insert time
+        // (`insert_subtree`), so this is a safety net for a deserialized scene that
+        // carries a `NodeId(0)` node.
+        if self.arena.contains_key(&NodeId(0)) {
+            let fresh = NodeId(self.next_node_id);
+            self.next_node_id += 1;
+            // Repoint the spine FIRST (while the node is still at key 0), then move the
+            // arena entry. Mutating the `Vec<NodeId>` spines never borrows another arena
+            // node, so no nested-borrow dance is needed.
+            let repointed = self.repoint_spine_id(NodeId(0), fresh);
+            debug_assert!(
+                repointed,
+                "a NodeId(0) arena node must be referenced by some spine slot",
+            );
+            if let Some(mut node) = self.arena.remove(&NodeId(0)) {
+                node.id = fresh;
+                self.arena.insert(fresh, node);
             }
         }
     }
 
-    /// Assign `NodeId(*counter)` (then bump) to every `NodeId(0)` node in `nodes`,
-    /// recursing into Group children.
-    fn mint_unassigned_node_ids(nodes: &mut [Node], counter: &mut u64) {
-        for node in nodes {
-            if node.id == NodeId(0) {
-                node.id = NodeId(*counter);
-                *counter += 1;
+    /// Replace every spine reference to `old` with `new` across the top-level
+    /// [`roots`](Self::roots), every [`NodeContent::Group`]'s children, and every
+    /// definition's children. Returns whether any slot was repointed. Used when
+    /// re-keying a node in the arena (its id is its key, so the references that name
+    /// it must move with it). Touches only the `Vec<NodeId>` spines — it never looks
+    /// up another arena node, so it borrows the arena mutably without nesting.
+    fn repoint_spine_id(&mut self, old: NodeId, new: NodeId) -> bool {
+        let mut repointed = false;
+        for slot in self.roots.iter_mut() {
+            if *slot == old {
+                *slot = new;
+                repointed = true;
             }
+        }
+        for node in self.arena.values_mut() {
             if let NodeContent::Group(children) = &mut node.content {
-                Self::mint_unassigned_node_ids(children, counter);
+                for slot in children.iter_mut() {
+                    if *slot == old {
+                        *slot = new;
+                        repointed = true;
+                    }
+                }
             }
         }
+        for definition in self.definitions.iter_mut() {
+            for slot in definition.children.iter_mut() {
+                if *slot == old {
+                    *slot = new;
+                    repointed = true;
+                }
+            }
+        }
+        repointed
     }
 
     /// Append a reference [`Point`] to the scene (issue #29). A newly-added user
@@ -634,10 +822,13 @@ impl Scene {
     /// tries to descend through a non-Group (a Tool / Part / Instance has no
     /// addressable children).
     pub fn node_at_path(&self, path: &NodePath) -> Option<&Node> {
-        let mut siblings: &[Node] = &self.nodes;
+        // Walk the id-spine (`roots`, then each Group's `Vec<NodeId>`) for ORDER,
+        // fetching each node's content from the arena. ADR 0003 Phase B5.
+        let mut siblings: &[NodeId] = &self.roots;
         let mut found: Option<&Node> = None;
         for (depth, &index) in path.indices.iter().enumerate() {
-            let node = siblings.get(index)?;
+            let &child_id = siblings.get(index)?;
+            let node = self.arena.get(&child_id)?;
             let is_last = depth + 1 == path.indices.len();
             if is_last {
                 found = Some(node);
@@ -650,21 +841,13 @@ impl Scene {
         found
     }
 
-    /// The node at `path`, mutably (the inspector edits through this).
+    /// The node at `path`, mutably (the inspector edits through this). ADR 0003
+    /// Phase B5: resolve the path to a single [`NodeId`] over the id-spine (a shared
+    /// walk), then take ONE mutable arena borrow at the end — so the descent never
+    /// holds an aliasing `&mut` into the arena.
     pub fn node_at_path_mut(&mut self, path: &NodePath) -> Option<&mut Node> {
-        let mut siblings: &mut Vec<Node> = &mut self.nodes;
-        let count = path.indices.len();
-        for (depth, &index) in path.indices.iter().enumerate() {
-            let is_last = depth + 1 == count;
-            if is_last {
-                return siblings.get_mut(index);
-            }
-            match siblings.get_mut(index)?.content {
-                NodeContent::Group(ref mut children) => siblings = children,
-                _ => return None,
-            }
-        }
-        None
+        let id = self.id_at_path(path)?;
+        self.arena.get_mut(&id)
     }
 
     /// The [`NodeId`] of the node at `path` — the top-level-tree inverse of
@@ -681,45 +864,22 @@ impl Scene {
     /// unassigned sentinel) never matches. O(n) DFS; Phase B5 swaps the storage for
     /// an arena so this becomes a direct lookup.
     pub fn node_by_id(&self, id: NodeId) -> Option<&Node> {
-        fn find(nodes: &[Node], id: NodeId) -> Option<&Node> {
-            for node in nodes {
-                if node.id == id {
-                    return Some(node);
-                }
-                if let NodeContent::Group(children) = &node.content {
-                    if let Some(found) = find(children, id) {
-                        return Some(found);
-                    }
-                }
-            }
-            None
-        }
+        // ADR 0003 Phase B5: the arena IS keyed by NodeId, so this is a direct
+        // lookup (was an O(n) DFS). The `NodeId(0)` unassigned sentinel never matches.
         if id == NodeId(0) {
             return None;
         }
-        find(&self.nodes, id)
+        self.arena.get(&id)
     }
 
     /// The node with the given [`NodeId`], mutably (ADR 0003 Phase B2). Same scope +
     /// caveats as [`node_by_id`](Self::node_by_id).
     pub fn node_by_id_mut(&mut self, id: NodeId) -> Option<&mut Node> {
-        fn find(nodes: &mut [Node], id: NodeId) -> Option<&mut Node> {
-            for node in nodes {
-                if node.id == id {
-                    return Some(node);
-                }
-                if let NodeContent::Group(children) = &mut node.content {
-                    if let Some(found) = find(children, id) {
-                        return Some(found);
-                    }
-                }
-            }
-            None
-        }
+        // ADR 0003 Phase B5: direct id-keyed arena lookup.
         if id == NodeId(0) {
             return None;
         }
-        find(&mut self.nodes, id)
+        self.arena.get_mut(&id)
     }
 
     /// Set the `visible` flag of the node identified by `id` (ADR 0003 Phase B4),
@@ -742,14 +902,19 @@ impl Scene {
     /// record, this lets callers hold a stable [`NodeId`] and recover its current
     /// position on demand.
     pub fn path_of(&self, id: NodeId) -> Option<NodePath> {
-        fn search(nodes: &[Node], id: NodeId, prefix: &mut Vec<usize>) -> bool {
-            for (index, node) in nodes.iter().enumerate() {
+        // ADR 0003 Phase B5: walk the id-spine (`roots`, then each Group's spine) for
+        // ORDER, fetching content from the arena — the canonical render-time NodePath
+        // projection. The arena is get-only here.
+        fn search(scene: &Scene, spine: &[NodeId], id: NodeId, prefix: &mut Vec<usize>) -> bool {
+            for (index, &child_id) in spine.iter().enumerate() {
                 prefix.push(index);
-                if node.id == id {
+                if child_id == id {
                     return true;
                 }
-                if let NodeContent::Group(children) = &node.content {
-                    if search(children, id, prefix) {
+                if let Some(NodeContent::Group(children)) =
+                    scene.arena.get(&child_id).map(|node| &node.content)
+                {
+                    if search(scene, children, id, prefix) {
                         return true;
                     }
                 }
@@ -761,7 +926,7 @@ impl Scene {
             return None;
         }
         let mut prefix = Vec::new();
-        search(&self.nodes, id, &mut prefix).then(|| NodePath::from_indices(prefix))
+        search(self, &self.roots, id, &mut prefix).then(|| NodePath::from_indices(prefix))
     }
 
     /// Flatten the top-level assembly into a depth-first list of `(path, id, depth)`
@@ -776,7 +941,7 @@ impl Scene {
     /// without a `path → id` round-trip; the `NodePath` stays for depth/path display.
     pub fn tree_rows(&self) -> Vec<(NodePath, NodeId, usize)> {
         let mut rows = Vec::new();
-        collect_tree_rows(&self.nodes, &mut Vec::new(), 0, &mut rows);
+        collect_tree_rows(self, &self.roots, &mut Vec::new(), 0, &mut rows);
         rows
     }
 
@@ -892,11 +1057,13 @@ impl Scene {
         // Accumulate the world offset of every node ABOVE the target (the parent
         // offset), and grab the target node itself. `walk_nodes` below re-adds the
         // target's own offset, so we must stop accumulating at its parent.
-        let mut siblings: &[Node] = &self.nodes;
+        // Walk the id-spine for ORDER, fetch content from the arena (ADR 0003 B5).
+        let mut siblings: &[NodeId] = &self.roots;
         let mut parent_offset = [0i64; 3];
         let mut target: Option<&Node> = None;
         for (depth, &index) in path.indices.iter().enumerate() {
-            let node = siblings.get(index)?;
+            let &child_id = siblings.get(index)?;
+            let node = self.arena.get(&child_id)?;
             let is_last = depth + 1 == path.indices.len();
             if is_last {
                 target = Some(node);
@@ -915,15 +1082,17 @@ impl Scene {
         if !target.visible {
             return None;
         }
+        let target_id = target.id;
 
         // Union the leaf boxes under the target. `walk_nodes` adds the target's own
-        // offset to `parent_offset`, giving the leaf its true world location.
+        // offset to `parent_offset`, giving the leaf its true world location. The
+        // single-element id spine carries the target itself (ADR 0003 B5).
         let mut min_corner = [i64::MAX; 3];
         let mut max_corner = [i64::MIN; 3];
         let mut any = false;
         let mut def_path: Vec<DefId> = Vec::new();
         self.walk_nodes(
-            std::slice::from_ref(target),
+            &[target_id],
             parent_offset,
             &mut def_path,
             &mut |leaf_offset, content, _grid_on_faces| {
@@ -953,8 +1122,9 @@ impl Scene {
     pub fn add_node(&mut self, mut node: Node) -> usize {
         let id = self.mint_node_id();
         node.id = id;
-        self.nodes.push(node);
-        let index = self.nodes.len() - 1;
+        self.arena.insert(id, node);
+        self.roots.push(id);
+        let index = self.roots.len() - 1;
         self.active = Some(id);
         index
     }
@@ -989,17 +1159,24 @@ impl Scene {
             _ => return false,
         }
         // Mint the child's stable id (ADR 0003 Phase B3) so selection can point at
-        // it by identity; doing it before the mutable group borrow keeps the counter
-        // access and the `children` borrow from overlapping.
+        // it by identity; minting BEFORE the mutable group borrow releases the
+        // `&mut next_node_id` borrow so it can't overlap the arena borrow (B5).
         let id = self.mint_node_id();
         node.id = id;
+        // Insert the child into the arena (its `Node` lives there now), then splice
+        // its id onto the Group's spine. The arena insert is independent of the group
+        // borrow, so the two `&mut arena` accesses are sequential, not overlapping.
+        self.arena.insert(id, node);
         let Some(group_node) = self.node_at_path_mut(group_path) else {
+            // Unreachable (we checked it is a Group above), but keep the arena clean.
+            self.arena.remove(&id);
             return false;
         };
         let NodeContent::Group(children) = &mut group_node.content else {
+            self.arena.remove(&id);
             return false;
         };
-        children.push(node);
+        children.push(id);
         self.active = Some(id);
         true
     }
@@ -1010,29 +1187,35 @@ impl Scene {
     /// the Group), or to a surviving top-level node, or `None` when the scene
     /// empties. A stale id (no longer in the tree) is ignored.
     pub fn remove_node(&mut self, target_id: NodeId) {
-        // ADR 0003 Phase B4: the op targets a NodeId; resolve it to the positional
-        // path the removal + fallback logic still reason in (the positional bridge
-        // survives until B5). A stale id → no-op (mirrors the old out-of-range bail).
+        // ADR 0003 Phase B4/B5: resolve the target NodeId to its positional path (the
+        // removal + fallback logic reason in indices). A stale id → no-op.
         let Some(path) = self.path_of(target_id) else {
             return;
         };
         let Some((&last_index, parent_indices)) = path.indices.split_last() else {
             return;
         };
-        // Borrow the sibling list that owns the target node.
-        let removed = {
+        // Splice the target's id out of its parent spine (top-level `roots` or a
+        // Group's `Vec<NodeId>`), capturing the removed id.
+        let removed_id = {
             let parent_path = NodePath::from_indices(parent_indices.to_vec());
-            let siblings = self.siblings_mut(&parent_path);
-            match siblings {
-                Some(siblings) if last_index < siblings.len() => {
-                    siblings.remove(last_index);
-                    true
-                }
-                _ => false,
+            match self.siblings_mut(&parent_path) {
+                Some(spine) if last_index < spine.len() => Some(spine.remove(last_index)),
+                _ => None,
             }
         };
-        if !removed {
+        let Some(removed_id) = removed_id else {
             return;
+        };
+        // B5: the spine splice only detached the id; the `Node`s still live in the
+        // arena. Gather the WHOLE detached subtree's ids (the removed node + every
+        // descendant, via a shared-borrow DFS into a `Vec` so no arena borrow is held
+        // during removal), then drop each from the arena. Leaving any behind would
+        // orphan it (a round-trip / count test would catch it).
+        let mut to_remove = Vec::new();
+        self.collect_subtree_ids(removed_id, &mut to_remove);
+        for id in to_remove {
+            self.arena.remove(&id);
         }
         // Re-derive a valid selection. Prefer the sibling now occupying the removed
         // slot (a Group, or the scene root → a surviving top-level node); fall back
@@ -1043,12 +1226,33 @@ impl Scene {
             .and_then(|path| self.id_at_path(&path));
     }
 
-    /// The mutable sibling list addressed by `parent_path` (the empty path → the
-    /// top-level [`nodes`](Self::nodes); otherwise the children of the Group the
-    /// path resolves to). `None` when the path does not resolve to a Group.
-    fn siblings_mut(&mut self, parent_path: &NodePath) -> Option<&mut Vec<Node>> {
+    /// Collect `root_id` and every descendant id (through [`NodeContent::Group`]
+    /// spines) into `out`, via a shared-borrow DFS over the arena (ADR 0003 Phase B5).
+    /// Used by [`remove_node`](Self::remove_node) to gather a detached subtree's ids
+    /// up front so the arena entries can be dropped without holding a borrow across
+    /// the removal. Definition bodies are NOT followed (an `Instance` references a
+    /// def stored separately; deleting an instance never deletes the shared body).
+    fn collect_subtree_ids(&self, root_id: NodeId, out: &mut Vec<NodeId>) {
+        out.push(root_id);
+        if let Some(NodeContent::Group(children)) =
+            self.arena.get(&root_id).map(|node| &node.content)
+        {
+            // Clone the child ids out so the recursive `&self` borrow doesn't alias
+            // the `&self.arena.get` borrow above (the spine is small).
+            let child_ids: Vec<NodeId> = children.clone();
+            for child_id in child_ids {
+                self.collect_subtree_ids(child_id, out);
+            }
+        }
+    }
+
+    /// The mutable id-spine addressed by `parent_path` (the empty path → the
+    /// top-level [`roots`](Self::roots); otherwise the [`Vec<NodeId>`] of the Group
+    /// the path resolves to). `None` when the path does not resolve to a Group.
+    /// ADR 0003 Phase B5: returns the SPINE of child ids, not the child `Node`s.
+    fn siblings_mut(&mut self, parent_path: &NodePath) -> Option<&mut Vec<NodeId>> {
         if parent_path.indices.is_empty() {
-            return Some(&mut self.nodes);
+            return Some(&mut self.roots);
         }
         match self.node_at_path_mut(parent_path) {
             Some(node) => match &mut node.content {
@@ -1068,7 +1272,7 @@ impl Scene {
     ) -> Option<NodePath> {
         let parent_path = NodePath::from_indices(parent_indices.to_vec());
         let sibling_count = if parent_indices.is_empty() {
-            self.nodes.len()
+            self.roots.len()
         } else {
             match self.node_at_path(&parent_path).map(|n| &n.content) {
                 Some(NodeContent::Group(children)) => children.len(),
@@ -1107,17 +1311,25 @@ impl Scene {
         let (&index, parent_indices) = path.indices.split_last()?;
         let group_id = self.mint_node_id();
         let parent_path = NodePath::from_indices(parent_indices.to_vec());
-        let siblings = self.siblings_mut(&parent_path)?;
-        if index >= siblings.len() {
-            return None;
-        }
-        let child = siblings.remove(index);
-        let mut group = Node::new("Group", NodeContent::Group(vec![child]));
+        // B5: the spine carries child IDS. Swap the child's id at `index` for the new
+        // Group's id (capturing the child id), so the child `Node` never leaves the
+        // arena (only its id moves down one level into the Group's spine) — it keeps
+        // its stable identity and stays the active selection.
+        let child_id = {
+            let siblings = self.siblings_mut(&parent_path)?;
+            if index >= siblings.len() {
+                return None;
+            }
+            let child_id = siblings.remove(index);
+            siblings.insert(index, group_id);
+            child_id
+        };
+        // The new Group owns the wrapped child by id; store it in the arena.
+        let mut group = Node::new("Group", NodeContent::Group(vec![child_id]));
         group.id = group_id;
-        siblings.insert(index, group);
-        // The wrapped child keeps its stable id, so it stays the active selection by
-        // identity. ADR 0003 Phase B4: return the new Group's stable id (it already
-        // minted one above) rather than its positional path.
+        self.arena.insert(group_id, group);
+        // ADR 0003 Phase B4: return the new Group's stable id (minted above) rather
+        // than its positional path.
         Some(group_id)
     }
 
@@ -1149,19 +1361,40 @@ impl Scene {
         // ADR 0003 Phase B3: resolve the selected NodeId to its current position.
         // The node keeps its id while only its content becomes an Instance, so the
         // selection stays valid (still the same node by identity) with no re-point.
-        let path = self.active_path()?;
-        let node = self.node_at_path_mut(&path)?;
-        // The definition body: a Group donates its children; any other content
-        // becomes a single-node body wrapping a clone of the node's content.
-        let children = match &mut node.content {
-            NodeContent::Group(children) => std::mem::take(children),
-            other => vec![Node::new("Body", other.clone())],
+        let active_id = self.active?;
+        // Resolve to a position only to confirm it is in the addressable tree; the
+        // edit itself is by id (B5). A stale selection bails (mirrors the old `?`).
+        self.path_of(active_id)?;
+        // The definition body, as a spine of arena ids:
+        // * a Group DONATES its child id spine (`mem::take` empties the Group's
+        //   `Vec<NodeId>`); the child `Node`s STAY in the arena — the def now owns
+        //   them by reference, none are orphaned (B5).
+        // * any other content becomes a single-node body: a fresh "Body" node
+        //   wrapping a clone of the content, inserted into the arena under a new id.
+        // First mutate the node's content to the Instance and extract either the
+        // donated child-id spine (Group) or a fresh "Body" node to insert (leaf),
+        // dropping the `&mut node` arena borrow before any further `&mut self` use.
+        enum Body {
+            Donated(Vec<NodeId>),
+            Leaf(Node),
+        }
+        let body = {
+            let node = self.node_by_id_mut(active_id)?;
+            let body = match &mut node.content {
+                NodeContent::Group(children) => Body::Donated(std::mem::take(children)),
+                other => Body::Leaf(Node::new("Body", other.clone())),
+            };
+            node.content = NodeContent::Instance(def_id);
+            body
         };
-        node.content = NodeContent::Instance(def_id);
+        let child_ids: Vec<NodeId> = match body {
+            Body::Donated(ids) => ids,
+            Body::Leaf(node) => vec![self.insert_subtree(node)],
+        };
         self.definitions.push(AssemblyDef {
             id: def_id,
             name: name.into(),
-            children,
+            children: child_ids,
         });
         Some(def_id)
     }
@@ -1178,8 +1411,9 @@ impl Scene {
         // Nudge each new instance of this def along +X so it does not overlap the
         // previous one. Count existing top-level instances of this def for the step.
         let existing = self
-            .nodes
+            .roots
             .iter()
+            .filter_map(|id| self.arena.get(id))
             .filter(|node| matches!(node.content, NodeContent::Instance(id) if id == def_id))
             .count();
         let mut node = Node::new(name, NodeContent::Instance(def_id));
@@ -1208,6 +1442,23 @@ impl Scene {
                 material,
             },
         ))
+    }
+
+    /// Test helper (ADR 0003 Phase B5): the top-level node at positional `index`, via
+    /// the [`roots`](Self::roots) spine + arena. Replaces the old `scene.nodes[index]`
+    /// positional read now that storage is id-keyed.
+    #[cfg(test)]
+    pub(crate) fn root_node(&self, index: usize) -> &Node {
+        let id = self.roots[index];
+        &self.arena[&id]
+    }
+
+    /// Test helper (ADR 0003 Phase B5): the top-level node at positional `index`,
+    /// mutably. Replaces the old `scene.nodes[index]` positional `&mut`.
+    #[cfg(test)]
+    pub(crate) fn root_node_mut(&mut self, index: usize) -> &mut Node {
+        let id = self.roots[index];
+        self.arena.get_mut(&id).expect("root id present in arena")
     }
 
     /// The whole-block extent of the scene: the per-axis size of the bounding box
@@ -1286,7 +1537,7 @@ impl Scene {
     /// travels with each voxel through chunk bucketing).
     fn for_each_leaf(&self, visitor: &mut dyn FnMut([i64; 3], &NodeContent, bool)) {
         let mut def_path: Vec<DefId> = Vec::new();
-        self.walk_nodes(&self.nodes, [0, 0, 0], &mut def_path, visitor);
+        self.walk_nodes(&self.roots, [0, 0, 0], &mut def_path, visitor);
     }
 
     /// Recursive worker for [`for_each_leaf`](Self::for_each_leaf). `parent_offset`
@@ -1296,12 +1547,19 @@ impl Scene {
     /// path is skipped instead of recursing forever).
     fn walk_nodes(
         &self,
-        nodes: &[Node],
+        spine: &[NodeId],
         parent_offset: [i64; 3],
         def_path: &mut Vec<DefId>,
         visitor: &mut dyn FnMut([i64; 3], &NodeContent, bool),
     ) {
-        for node in nodes {
+        // GOLDEN-CRITICAL (ADR 0003 B5): iterate the id-spine for ORDER (document
+        // order = later-wins on overlap), fetching each node's content from the
+        // arena. NEVER iterate the arena to produce this walk — that visits in id
+        // order and would reorder Union material on overlap, moving the goldens.
+        for &node_id in spine {
+            let Some(node) = self.arena.get(&node_id) else {
+                continue;
+            };
             if !node.visible {
                 continue;
             }
@@ -1917,16 +2175,20 @@ fn leaf_content_fingerprint(world_offset: [i64; 3], content: &NodeContent) -> St
 /// node in `nodes`, descending into Group children (a Group's children follow it
 /// at `depth + 1`). `prefix` is the path of the assembly that owns `nodes`.
 fn collect_tree_rows(
-    nodes: &[Node],
+    scene: &Scene,
+    spine: &[NodeId],
     prefix: &mut Vec<usize>,
     depth: usize,
     rows: &mut Vec<(NodePath, NodeId, usize)>,
 ) {
-    for (index, node) in nodes.iter().enumerate() {
+    // Iterate the id-spine for ORDER, fetching content from the arena (ADR 0003 B5).
+    for (index, &child_id) in spine.iter().enumerate() {
         prefix.push(index);
-        rows.push((NodePath::from_indices(prefix.clone()), node.id, depth));
-        if let NodeContent::Group(children) = &node.content {
-            collect_tree_rows(children, prefix, depth + 1, rows);
+        rows.push((NodePath::from_indices(prefix.clone()), child_id, depth));
+        if let Some(NodeContent::Group(children)) =
+            scene.arena.get(&child_id).map(|node| &node.content)
+        {
+            collect_tree_rows(scene, children, prefix, depth + 1, rows);
         }
         prefix.pop();
     }
@@ -2236,14 +2498,11 @@ mod tests {
             node.transform.offset_blocks = offset;
             node
         };
-        let demo_scene = scene_with_top_level_selected(Scene {
-            nodes: vec![
-                make_tool(ShapeKind::Sphere, [0, 0, 0], MaterialChoice::Stone),
-                make_tool(ShapeKind::Box, [8, 0, 0], MaterialChoice::Wood),
-                make_tool(ShapeKind::Torus, [0, 0, 6], MaterialChoice::Plain),
-            ],
-            ..Scene::default()
-        }, 0);
+        let demo_scene = scene_with_top_level_selected(Scene::from_nodes(vec![
+            make_tool(ShapeKind::Sphere, [0, 0, 0], MaterialChoice::Stone),
+            make_tool(ShapeKind::Box, [8, 0, 0], MaterialChoice::Wood),
+            make_tool(ShapeKind::Torus, [0, 0, 6], MaterialChoice::Plain),
+        ]), 0);
         assert_equal(&demo_scene, 16, "demo-scene");
 
         // An instanced village (one house definition placed by four instances).
@@ -2254,29 +2513,26 @@ mod tests {
             node.transform.offset_blocks = offset;
             node
         };
-        let house = AssemblyDef {
-            id: house_def_id,
-            name: "House".to_string(),
-            children: vec![
-                tool(ShapeKind::Box, [2, 2, 2], [0, 0, 0], MaterialChoice::Stone),
-                tool(ShapeKind::Cylinder, [1, 2, 1], [0, 2, 0], MaterialChoice::Wood),
-            ],
-        };
         let instance = |name: &str, offset: [i64; 3]| {
             let mut node = Node::new(name, NodeContent::Instance(house_def_id));
             node.transform.offset_blocks = offset;
             node
         };
-        let village = scene_with_top_level_selected(Scene {
-            nodes: vec![
-                instance("House 1", [0, 0, 0]),
-                instance("House 2", [6, 0, 0]),
-                instance("House 3", [12, 0, 0]),
-                instance("House 4", [18, 0, 0]),
+        let mut village = Scene::from_nodes(vec![
+            instance("House 1", [0, 0, 0]),
+            instance("House 2", [6, 0, 0]),
+            instance("House 3", [12, 0, 0]),
+            instance("House 4", [18, 0, 0]),
+        ]);
+        village.add_definition(
+            house_def_id,
+            "House",
+            vec![
+                tool(ShapeKind::Box, [2, 2, 2], [0, 0, 0], MaterialChoice::Stone),
+                tool(ShapeKind::Cylinder, [1, 2, 1], [0, 2, 0], MaterialChoice::Wood),
             ],
-            definitions: vec![house],
-            ..Scene::default()
-        }, 0);
+        );
+        let village = scene_with_top_level_selected(village, 0);
         assert_equal(&village, 16, "demo-village");
     }
 
@@ -2352,10 +2608,7 @@ mod tests {
             Scene::single_node(cube.clone()).resolve_region(region, voxels_per_block, 0);
 
         // Both nodes composited.
-        let scene = scene_with_top_level_selected(Scene {
-            nodes: vec![sphere, cube],
-            ..Scene::default()
-        }, 0);
+        let scene = scene_with_top_level_selected(Scene::from_nodes(vec![sphere, cube]), 0);
         let union = scene.resolve_region(region, voxels_per_block, 0);
 
         // The expected set-union of the two single-node occupied sets, keyed by
@@ -2428,10 +2681,7 @@ mod tests {
         stone.transform.offset_blocks = [0, 0, 0];
         let mut wood = Node::new("Wood", NodeContent::Tool { shape: base, material: MaterialChoice::Wood });
         wood.transform.offset_blocks = [5, 0, 0];
-        let scene = scene_with_top_level_selected(Scene {
-            nodes: vec![stone, wood],
-            ..Scene::default()
-        }, 0);
+        let scene = scene_with_top_level_selected(Scene::from_nodes(vec![stone, wood]), 0);
         let region = scene.full_extent_blocks(voxels_per_block);
         let grid = scene.resolve_region(region, voxels_per_block, 0);
 
@@ -2531,10 +2781,7 @@ mod tests {
         );
         let mut wood = wood;
         wood.transform.offset_blocks = [5, 0, 0];
-        let scene = scene_with_top_level_selected(Scene {
-            nodes: vec![stone, wood],
-            ..Scene::default()
-        }, 0);
+        let scene = scene_with_top_level_selected(Scene::from_nodes(vec![stone, wood]), 0);
         let region = scene.full_extent_blocks(voxels_per_block);
         let grid = scene.resolve_region(region, voxels_per_block, 0);
 
@@ -2632,10 +2879,7 @@ mod tests {
         let mut at_n = Node::new("B", NodeContent::Tool { shape: base, material: MaterialChoice::Stone });
         at_n.transform.offset_blocks = [n, 0, 0];
 
-        let scene = scene_with_top_level_selected(Scene {
-            nodes: vec![at_zero, at_n],
-            ..Scene::default()
-        }, 0);
+        let scene = scene_with_top_level_selected(Scene::from_nodes(vec![at_zero, at_n]), 0);
         let grid = scene.resolve_region(region, voxels_per_block, 0);
 
         // Key each voxel by its EXACT world position (the producers emit voxel-
@@ -2705,10 +2949,7 @@ mod tests {
         let mut b = Node::new("B", NodeContent::Tool { shape: base, material: MaterialChoice::Stone });
         b.transform.offset_blocks = [5, 0, 0];
 
-        let scene = scene_with_top_level_selected(Scene {
-            nodes: vec![a, b],
-            ..Scene::default()
-        }, 0);
+        let scene = scene_with_top_level_selected(Scene::from_nodes(vec![a, b]), 0);
         // Region spans the full composite (offset 0..5, each 1 block) → 6 blocks X.
         let region = scene.full_extent_blocks(voxels_per_block);
         assert_eq!(region.size_blocks, [6, 1, 1], "composite extent encompasses both offsets");
@@ -2756,10 +2997,7 @@ mod tests {
         let mut offset_box =
             Node::new("Offset", NodeContent::Tool { shape: base, material: MaterialChoice::Stone });
         offset_box.transform.offset_blocks = [4, 0, 0];
-        let two = scene_with_top_level_selected(Scene {
-            nodes: vec![origin_box, offset_box],
-            ..Scene::default()
-        }, 0);
+        let two = scene_with_top_level_selected(Scene::from_nodes(vec![origin_box, offset_box]), 0);
         let extent = two.full_extent_blocks(voxels_per_block);
         assert_eq!(
             extent.size_blocks,
@@ -2812,12 +3050,10 @@ mod tests {
             NodeContent::Tool { shape: unit_box_shape(voxels_per_block), material: MaterialChoice::Stone },
         );
         leaf.transform.offset_blocks = [b, 0, 0];
-        let mut group = Node::new("Group", NodeContent::Group(vec![leaf]));
-        group.transform.offset_blocks = [a, 0, 0];
-        let grouped = scene_with_top_level_selected(Scene {
-            nodes: vec![group],
-            ..Scene::default()
-        }, 0);
+        let grouped = scene_with_top_level_selected(
+            Scene::from_nodes(vec![NodeBuilder::group_at("Group", [a, 0, 0], vec![leaf.into()])]),
+            0,
+        );
         let grouped_grid = grouped.resolve_region(region, voxels_per_block, 0);
 
         // Flat reference: the same box placed directly at A + B.
@@ -2846,22 +3082,19 @@ mod tests {
         let t = 4i64;
         let def_id = DefId(7);
 
+        let mut instance = Node::new("I", NodeContent::Instance(def_id));
+        instance.transform.offset_blocks = [t, 0, 0];
+        let mut instanced_scene = Scene::from_nodes(vec![instance]);
         // Definition: a single box at the origin (within the def).
-        let def = AssemblyDef {
-            id: def_id,
-            name: "Body".to_string(),
-            children: vec![Node::new(
+        instanced_scene.add_definition(
+            def_id,
+            "Body".to_string(),
+            vec![Node::new(
                 "Box",
                 NodeContent::Tool { shape: unit_box_shape(voxels_per_block), material: MaterialChoice::Wood },
             )],
-        };
-        let mut instance = Node::new("I", NodeContent::Instance(def_id));
-        instance.transform.offset_blocks = [t, 0, 0];
-        let instanced = scene_with_top_level_selected(Scene {
-            nodes: vec![instance],
-            definitions: vec![def],
-            ..Scene::default()
-        }, 0);
+        );
+        let instanced = scene_with_top_level_selected(instanced_scene, 0);
         let instanced_grid = instanced.resolve_region(region, voxels_per_block, 0);
 
         // Direct: the same box placed directly at T.
@@ -2889,21 +3122,18 @@ mod tests {
         let def_id = DefId(2);
 
         // The "house": a single 1-block box (so its count is easy to reason about).
-        let def = AssemblyDef {
-            id: def_id,
-            name: "House".to_string(),
-            children: vec![Node::new(
+        let house_body = || {
+            vec![Node::new(
                 "Box",
                 NodeContent::Tool { shape: unit_box_shape(voxels_per_block), material: MaterialChoice::Stone },
-            )],
+            )]
         };
 
         // The def's own occupied count (resolved alone at the origin).
-        let def_only = scene_with_top_level_selected(Scene {
-            nodes: vec![Node::new("I", NodeContent::Instance(def_id))],
-            definitions: vec![def.clone()],
-            ..Scene::default()
-        }, 0);
+        let mut def_only_scene =
+            Scene::from_nodes(vec![Node::new("I", NodeContent::Instance(def_id))]);
+        def_only_scene.add_definition(def_id, "House".to_string(), house_body());
+        let def_only = scene_with_top_level_selected(def_only_scene, 0);
         let def_count = def_only
             .resolve_region(RegionBlocks::new([1, 1, 1]), voxels_per_block, 0)
             .occupied_count();
@@ -2914,11 +3144,9 @@ mod tests {
         house_a.transform.offset_blocks = [0, 0, 0];
         let mut house_b = Node::new("B", NodeContent::Instance(def_id));
         house_b.transform.offset_blocks = [6, 0, 0];
-        let village = scene_with_top_level_selected(Scene {
-            nodes: vec![house_a, house_b],
-            definitions: vec![def],
-            ..Scene::default()
-        }, 0);
+        let mut village_scene = Scene::from_nodes(vec![house_a, house_b]);
+        village_scene.add_definition(def_id, "House".to_string(), house_body());
+        let village = scene_with_top_level_selected(village_scene, 0);
         let region = village.full_extent_blocks(voxels_per_block);
         let grid = village.resolve_region(region, voxels_per_block, 0);
 
@@ -2960,24 +3188,22 @@ mod tests {
         let voxels_per_block = 8u32;
         let def_id = DefId(1);
 
+        let mut scene_build =
+            Scene::from_nodes(vec![Node::new("Root", NodeContent::Instance(def_id))]);
         // A definition whose children are (a) a real box leaf and (b) an Instance of
         // ITSELF — the cycle the guard must break.
-        let def = AssemblyDef {
-            id: def_id,
-            name: "Recursive".to_string(),
-            children: vec![
+        scene_build.add_definition(
+            def_id,
+            "Recursive".to_string(),
+            vec![
                 Node::new(
                     "Box",
                     NodeContent::Tool { shape: unit_box_shape(voxels_per_block), material: MaterialChoice::Stone },
                 ),
                 Node::new("Self", NodeContent::Instance(def_id)),
             ],
-        };
-        let scene = scene_with_top_level_selected(Scene {
-            nodes: vec![Node::new("Root", NodeContent::Instance(def_id))],
-            definitions: vec![def],
-            ..Scene::default()
-        }, 0);
+        );
+        let scene = scene_with_top_level_selected(scene_build, 0);
 
         // Resolves (no overflow) and contributes the single box ONCE — the self-
         // instance is skipped, so the count is finite and equals one box's voxels.
@@ -3013,20 +3239,16 @@ mod tests {
     /// the selection (and the `group_active` it drives) resolves by identity.
     fn two_box_scene(voxels_per_block: u32) -> Scene {
         scene_with_top_level_selected(
-            Scene {
-                nodes: vec![
-                    Node::new(
-                        "A",
-                        NodeContent::Tool { shape: unit_box_shape(voxels_per_block), material: MaterialChoice::Stone },
-                    ),
-                    Node::new(
-                        "B",
-                        NodeContent::Tool { shape: unit_box_shape(voxels_per_block), material: MaterialChoice::Wood },
-                    ),
-                ],
-                definitions: Vec::new(),
-                ..Scene::default()
-            },
+            Scene::from_nodes(vec![
+                Node::new(
+                    "A",
+                    NodeContent::Tool { shape: unit_box_shape(voxels_per_block), material: MaterialChoice::Stone },
+                ),
+                Node::new(
+                    "B",
+                    NodeContent::Tool { shape: unit_box_shape(voxels_per_block), material: MaterialChoice::Wood },
+                ),
+            ]),
             0,
         )
     }
@@ -3053,10 +3275,13 @@ mod tests {
         );
 
         // The top-level node is now a Group with exactly one child (the old "A").
-        match &scene.nodes[0].content {
+        match &scene.root_node(0).content {
             NodeContent::Group(children) => {
                 assert_eq!(children.len(), 1, "the Group holds exactly the wrapped node");
-                assert_eq!(children[0].name, "A", "the wrapped child is the original node");
+                assert_eq!(
+                    scene.arena[&children[0]].name, "A",
+                    "the wrapped child is the original node"
+                );
             }
             other => panic!("expected a Group at slot 0, got {other:?}"),
         }
@@ -3069,8 +3294,8 @@ mod tests {
             "the selection now resolves to the child slot inside the Group"
         );
         // The second node is untouched.
-        assert_eq!(scene.nodes.len(), 2);
-        assert!(matches!(scene.nodes[1].content, NodeContent::Tool { .. }));
+        assert_eq!(scene.roots.len(), 2);
+        assert!(matches!(scene.root_node(1).content, NodeContent::Tool { .. }));
     }
 
     /// ADR 0001 step 4 (UI helper): `make_definition_from_active` creates an
@@ -3084,7 +3309,7 @@ mod tests {
         let mut scene = two_box_scene(voxels_per_block);
 
         // Occupancy of just the active node before the change (resolved alone).
-        let before = Scene::single_node(scene.nodes[0].clone())
+        let before = Scene::single_node(scene.root_node(0).clone())
             .resolve_region(RegionBlocks::new([1, 1, 1]), voxels_per_block, 0)
             .occupied_count();
         assert!(before > 0);
@@ -3100,19 +3325,17 @@ mod tests {
         assert_eq!(def.children.len(), 1, "a single leaf becomes a one-node body");
 
         // The former node is now an Instance of that def.
-        assert!(matches!(scene.nodes[0].content, NodeContent::Instance(id) if id == def_id));
+        assert!(matches!(scene.root_node(0).content, NodeContent::Instance(id) if id == def_id));
 
         // Resolving the (now-instanced) node reproduces the original occupancy.
-        let after = scene_with_top_level_selected(
-            Scene {
-                nodes: vec![scene.nodes[0].clone()],
-                definitions: scene.definitions.clone(),
-                ..Scene::default()
-            },
-            0,
-        )
-        .resolve_region(RegionBlocks::new([1, 1, 1]), voxels_per_block, 0)
-        .occupied_count();
+        // Reuse the live scene's arena + definitions, keeping only the single root.
+        let mut after_scene = scene.clone();
+        let kept_root = after_scene.roots[0];
+        after_scene.roots = vec![kept_root];
+        after_scene.active = Some(kept_root);
+        let after = after_scene
+            .resolve_region(RegionBlocks::new([1, 1, 1]), voxels_per_block, 0)
+            .occupied_count();
         assert_eq!(after, before, "an instance of the def equals the original node");
     }
 
@@ -3131,7 +3354,7 @@ mod tests {
         ));
         let def_id = scene.make_definition_from_active("House").expect("active node");
         assert_eq!(scene.definitions.len(), 1);
-        assert_eq!(scene.nodes.len(), 1, "the original node became one instance");
+        assert_eq!(scene.roots.len(), 1, "the original node became one instance");
 
         // The def's own voxel count (one box).
         let one = scene
@@ -3142,7 +3365,7 @@ mod tests {
         // Add a second instance — an Instance node referencing the same def appears.
         // B4: `add_instance` now returns the new node's stable id; resolve it by id.
         let instance_id = scene.add_instance(def_id).expect("the def exists");
-        assert_eq!(scene.nodes.len(), 2, "an Instance node referencing the def appears");
+        assert_eq!(scene.roots.len(), 2, "an Instance node referencing the def appears");
         assert!(matches!(
             scene.node_by_id(instance_id).map(|n| &n.content),
             Some(NodeContent::Instance(id)) if *id == def_id
@@ -3351,14 +3574,14 @@ mod tests {
             node.transform.offset_blocks = offset;
             node
         };
-        let scene = scene_with_top_level_selected(Scene {
-            nodes: vec![
+        let scene = scene_with_top_level_selected(
+            Scene::from_nodes(vec![
                 make_tool(ShapeKind::Sphere, [0, 0, 0], MaterialChoice::Stone),
                 make_tool(ShapeKind::Box, [8, 0, 0], MaterialChoice::Wood),
                 make_tool(ShapeKind::Torus, [0, 0, 6], MaterialChoice::Plain),
-            ],
-            ..Scene::default()
-        }, 0);
+            ]),
+            0,
+        );
         assert_chunked_matches_monolithic(&scene, voxels_per_block, "demo-scene");
     }
 
@@ -3380,29 +3603,26 @@ mod tests {
             node.transform.offset_blocks = offset;
             node
         };
-        let house = AssemblyDef {
-            id: house_def_id,
-            name: "House".to_string(),
-            children: vec![
-                tool(ShapeKind::Box, [2, 2, 2], [0, 0, 0], MaterialChoice::Stone),
-                tool(ShapeKind::Cylinder, [1, 2, 1], [0, 2, 0], MaterialChoice::Wood),
-            ],
-        };
         let instance = |name: &str, offset: [i64; 3]| {
             let mut node = Node::new(name, NodeContent::Instance(house_def_id));
             node.transform.offset_blocks = offset;
             node
         };
-        let scene = scene_with_top_level_selected(Scene {
-            nodes: vec![
-                instance("House 1", [0, 0, 0]),
-                instance("House 2", [6, 0, 0]),
-                instance("House 3", [12, 0, 0]),
-                instance("House 4", [18, 0, 0]),
+        let mut scene_build = Scene::from_nodes(vec![
+            instance("House 1", [0, 0, 0]),
+            instance("House 2", [6, 0, 0]),
+            instance("House 3", [12, 0, 0]),
+            instance("House 4", [18, 0, 0]),
+        ]);
+        scene_build.add_definition(
+            house_def_id,
+            "House".to_string(),
+            vec![
+                tool(ShapeKind::Box, [2, 2, 2], [0, 0, 0], MaterialChoice::Stone),
+                tool(ShapeKind::Cylinder, [1, 2, 1], [0, 2, 0], MaterialChoice::Wood),
             ],
-            definitions: vec![house],
-            ..Scene::default()
-        }, 0);
+        );
+        let scene = scene_with_top_level_selected(scene_build, 0);
         assert_chunked_matches_monolithic(&scene, voxels_per_block, "demo-village");
     }
 
@@ -3630,12 +3850,14 @@ mod tests {
             NodeContent::Tool { shape, material: MaterialChoice::Stone },
         );
         leaf.transform.offset_blocks = [leaf_offset, 0, 0];
-        let mut group = Node::new("Group", NodeContent::Group(vec![leaf]));
-        group.transform.offset_blocks = [group_offset, 0, 0];
-        let scene = scene_with_top_level_selected(Scene {
-            nodes: vec![group],
-            ..Scene::default()
-        }, 0);
+        let scene = scene_with_top_level_selected(
+            Scene::from_nodes(vec![NodeBuilder::group_at(
+                "Group",
+                [group_offset, 0, 0],
+                vec![leaf.into()],
+            )]),
+            0,
+        );
 
         // The producer-true voxel AABB (pure i64) is block-lattice aligned (issue
         // #30): a 1-block box occupies the whole-block range `[off, off + 1)` in
@@ -3734,14 +3956,14 @@ mod tests {
             node.transform.offset_blocks = offset;
             node
         };
-        scene_with_top_level_selected(Scene {
-            nodes: vec![
+        scene_with_top_level_selected(
+            Scene::from_nodes(vec![
                 make_tool(ShapeKind::Sphere, [0, 0, 0], MaterialChoice::Stone),
                 make_tool(ShapeKind::Box, [8, 0, 0], MaterialChoice::Wood),
                 make_tool(ShapeKind::Torus, [0, 0, 6], MaterialChoice::Plain),
-            ],
-            ..Scene::default()
-        }, 0)
+            ]),
+            0,
+        )
     }
 
     fn demo_village_scene(voxels_per_block: u32) -> Scene {
@@ -3757,29 +3979,26 @@ mod tests {
             node.transform.offset_blocks = offset;
             node
         };
-        let house = AssemblyDef {
-            id: house_def_id,
-            name: "House".to_string(),
-            children: vec![
-                tool(ShapeKind::Box, [2, 2, 2], [0, 0, 0], MaterialChoice::Stone),
-                tool(ShapeKind::Cylinder, [1, 2, 1], [0, 2, 0], MaterialChoice::Wood),
-            ],
-        };
         let instance = |name: &str, offset: [i64; 3]| {
             let mut node = Node::new(name, NodeContent::Instance(house_def_id));
             node.transform.offset_blocks = offset;
             node
         };
-        scene_with_top_level_selected(Scene {
-            nodes: vec![
-                instance("House 1", [0, 0, 0]),
-                instance("House 2", [6, 0, 0]),
-                instance("House 3", [12, 0, 0]),
-                instance("House 4", [18, 0, 0]),
+        let mut scene = Scene::from_nodes(vec![
+            instance("House 1", [0, 0, 0]),
+            instance("House 2", [6, 0, 0]),
+            instance("House 3", [12, 0, 0]),
+            instance("House 4", [18, 0, 0]),
+        ]);
+        scene.add_definition(
+            house_def_id,
+            "House".to_string(),
+            vec![
+                tool(ShapeKind::Box, [2, 2, 2], [0, 0, 0], MaterialChoice::Stone),
+                tool(ShapeKind::Cylinder, [1, 2, 1], [0, 2, 0], MaterialChoice::Wood),
             ],
-            definitions: vec![house],
-            ..Scene::default()
-        }, 0)
+        );
+        scene_with_top_level_selected(scene, 0)
     }
 
     /// The index query returns EXACTLY the leaves a full walk + AABB filter returns,
@@ -3840,7 +4059,7 @@ mod tests {
         // Move the Box (node 1) from +8X to +40X: the edit AABB must span BOTH the
         // old (+8) and new (+40) boxes.
         let mut scene_b = scene_a.clone();
-        scene_b.nodes[1].transform.offset_blocks = [40, 0, 0];
+        scene_b.root_node_mut(1).transform.offset_blocks = [40, 0, 0];
         let index_b = scene_b.build_leaf_spatial_index(voxels_per_block);
         let moved = index_b.edit_aabb_since(&index_a).expect("same density");
         assert!(!moved.is_empty());
@@ -3853,7 +4072,7 @@ mod tests {
 
         // Recolour the Sphere (node 0, same box): edit AABB is just that box.
         let mut scene_c = scene_a.clone();
-        if let NodeContent::Tool { material, .. } = &mut scene_c.nodes[0].content {
+        if let NodeContent::Tool { material, .. } = &mut scene_c.root_node_mut(0).content {
             *material = MaterialChoice::Wood;
         }
         let index_c = scene_c.build_leaf_spatial_index(voxels_per_block);
@@ -3891,13 +4110,13 @@ mod tests {
         );
         tool.transform.offset_blocks = [0, 0, 0];
         let part = Node::new("Clouds", NodeContent::Part(Part::DebugClouds { seed: 1 }));
-        let scene_a = scene_with_top_level_selected(Scene { nodes: vec![tool.clone(), part], ..Scene::default() }, 0);
+        let scene_a = scene_with_top_level_selected(Scene::from_nodes(vec![tool.clone(), part]), 0);
         let index_a = scene_a.build_leaf_spatial_index(voxels_per_block);
         assert!(index_a.has_region_spanning_leaf);
 
         // Change the Part's seed (a region-spanning content change).
         let mut scene_b = scene_a.clone();
-        scene_b.nodes[1].content = NodeContent::Part(Part::DebugClouds { seed: 2 });
+        scene_b.root_node_mut(1).content = NodeContent::Part(Part::DebugClouds { seed: 2 });
         let index_b = scene_b.build_leaf_spatial_index(voxels_per_block);
         assert_eq!(
             index_b.edit_aabb_since(&index_a),
@@ -4071,7 +4290,7 @@ mod tests {
         };
         let mut node = Node::new("Box", NodeContent::Tool { shape, material: MaterialChoice::Stone });
         node.transform.offset_blocks = offset_blocks;
-        let scene = scene_with_top_level_selected(Scene { nodes: vec![node], ..Scene::default() }, 0);
+        let scene = scene_with_top_level_selected(Scene::from_nodes(vec![node]), 0);
         let index = scene.build_leaf_spatial_index(density);
         assert_eq!(index.entries.len(), 1, "one Tool leaf → one index entry");
         index.entries[0].world_aabb
@@ -4181,10 +4400,7 @@ mod tests {
                 let mut node =
                     Node::new("Box", NodeContent::Tool { shape, material: MaterialChoice::Stone });
                 node.transform.offset_blocks = offset;
-                let scene = scene_with_top_level_selected(Scene {
-                    nodes: vec![node],
-                    ..Scene::default()
-                }, 0);
+                let scene = scene_with_top_level_selected(Scene::from_nodes(vec![node]), 0);
                 scene.recentre_voxels_for_resolve(density)
             };
             // Pivot in the recentred frame = offset·d − recentre.
@@ -4244,10 +4460,7 @@ mod tests {
         };
         let mut node = Node::new("Box", NodeContent::Tool { shape, material: MaterialChoice::Stone });
         node.transform.offset_blocks = offset_blocks;
-        let scene = scene_with_top_level_selected(Scene {
-            nodes: vec![node],
-            ..Scene::default()
-        }, 0);
+        let scene = scene_with_top_level_selected(Scene::from_nodes(vec![node]), 0);
         scene
             .node_block_lattice_box_recentred(&NodePath::root_index(0), density)
             .expect("a sized Box node has a lattice box")
@@ -4331,10 +4544,7 @@ mod tests {
                     NodeContent::Tool { shape: anchor_shape, material: MaterialChoice::Stone },
                 );
                 anchor.transform.offset_blocks = [0, 0, 0];
-                scene_with_top_level_selected(Scene {
-                    nodes: vec![moving, anchor],
-                    ..Scene::default()
-                }, 0)
+                scene_with_top_level_selected(Scene::from_nodes(vec![moving, anchor]), 0)
             };
             let box_of = |offset: [i64; 3]| {
                 make_scene(offset)
@@ -4448,29 +4658,19 @@ mod tests {
         fn clouds(name: &str) -> Node {
             Node::new(name, NodeContent::Part(Part::DebugClouds { seed: 0 }))
         }
-        let mut scene = Scene {
-            nodes: vec![
-                clouds("A"),
-                Node::new("G", NodeContent::Group(vec![clouds("B"), clouds("C")])),
-            ],
-            definitions: vec![AssemblyDef {
-                id: DefId(1),
-                name: "Def".to_string(),
-                children: vec![clouds("D")],
-            }],
-            ..Scene::default()
-        };
+        let mut scene = Scene::from_nodes(vec![
+            NodeBuilder::Leaf(clouds("A")),
+            NodeBuilder::group("G", vec![clouds("B").into(), clouds("C").into()]),
+        ]);
+        scene.add_definition(DefId(1), "Def".to_string(), vec![clouds("D")]);
 
         scene.ensure_node_ids();
 
-        // Collect every id (top-level + Group children + definition nodes).
-        let mut ids = Vec::new();
-        Scene::visit_node_ids(&scene.nodes, &mut |id| ids.push(id));
-        for def in &scene.definitions {
-            Scene::visit_node_ids(&def.children, &mut |id| ids.push(id));
-        }
+        // Collect every id (top-level + Group children + definition nodes). Every node
+        // lives in the arena keyed by its id, so the arena keys ARE the full id set.
+        let ids: Vec<NodeId> = scene.arena.keys().copied().collect();
         assert_eq!(ids.len(), 5, "A, G, B, C, D all visited");
-        assert!(ids.iter().all(|&id| id != 0), "no node keeps the 0 sentinel");
+        assert!(ids.iter().all(|&id| id != NodeId(0)), "no node keeps the 0 sentinel");
         let unique: std::collections::HashSet<_> = ids.iter().copied().collect();
         assert_eq!(unique.len(), ids.len(), "every minted id is unique");
 
@@ -4484,26 +4684,44 @@ mod tests {
     /// past it so a newly-minted node never collides.
     #[test]
     fn ensure_node_ids_preserves_existing_and_advances_counter() {
+        // A loaded scene: the arena is keyed by id, so a node that already carries a
+        // minted id (the "preset", id 5) lives under key NodeId(5), while a still-
+        // unminted node sits under the NodeId(0) sentinel. `next_node_id` starts at 0,
+        // as it would for a freshly-deserialized scene before normalization.
         let mut preset = Node::new("preset", NodeContent::Part(Part::DebugClouds { seed: 0 }));
         preset.id = NodeId(5);
-        let mut scene = Scene {
-            nodes: vec![
-                preset,
-                Node::new("fresh", NodeContent::Part(Part::DebugClouds { seed: 0 })),
-            ],
-            ..Scene::default()
-        };
+        let mut fresh = Node::new("fresh", NodeContent::Part(Part::DebugClouds { seed: 0 }));
+        fresh.id = NodeId(0);
+        let mut scene = Scene::default();
+        scene.arena.insert(NodeId(5), preset);
+        scene.arena.insert(NodeId(0), fresh);
+        scene.roots = vec![NodeId(5), NodeId(0)];
 
         scene.ensure_node_ids();
 
-        assert_eq!(scene.nodes[0].id, NodeId(5), "existing id preserved");
-        assert_ne!(scene.nodes[1].id, NodeId(0), "fresh node minted");
-        assert_ne!(
-            scene.nodes[1].id,
-            NodeId(5),
-            "fresh id does not collide with the existing one"
-        );
+        // The preset id is preserved verbatim.
+        assert!(scene.arena.contains_key(&NodeId(5)), "existing id preserved");
+        assert_eq!(scene.arena[&NodeId(5)].name, "preset");
+        // The unminted node was re-keyed out of the 0 sentinel into a fresh, distinct id.
+        assert!(!scene.arena.contains_key(&NodeId(0)), "the 0 sentinel is gone");
+        let fresh_id = scene
+            .arena
+            .iter()
+            .find(|(_, node)| node.name == "fresh")
+            .map(|(id, _)| *id)
+            .expect("the fresh node still exists under a minted id");
+        assert_ne!(fresh_id, NodeId(0), "fresh node minted");
+        assert_ne!(fresh_id, NodeId(5), "fresh id does not collide with the existing one");
         assert!(scene.next_node_id > 5, "counter advanced past the loaded id");
+        // Re-keying must repoint the SPINE, not just move the arena entry: the root slot
+        // that referenced the sentinel now names the fresh id, so the node is still
+        // reachable through `roots` (a stale NodeId(0) here would silently orphan it).
+        assert_eq!(scene.roots[1], fresh_id, "the root spine slot was repointed off the sentinel");
+        assert_eq!(
+            scene.node_at_path(&NodePath::root_index(1)).map(|node| node.name.as_str()),
+            Some("fresh"),
+            "the re-keyed node still resolves through the spine, not orphaned",
+        );
     }
 
     /// ADR 0003 Phase B2: `id_at_path` / `path_of` / `node_by_id` agree with the
@@ -4514,20 +4732,17 @@ mod tests {
         fn clouds(name: &str) -> Node {
             Node::new(name, NodeContent::Part(Part::DebugClouds { seed: 0 }))
         }
-        let mut scene = Scene {
-            nodes: vec![
-                clouds("A"),
-                Node::new(
-                    "G",
-                    NodeContent::Group(vec![
-                        clouds("B"),
-                        Node::new("H", NodeContent::Group(vec![clouds("C")])),
-                    ]),
-                ),
-                clouds("D"),
-            ],
-            ..Scene::default()
-        };
+        let mut scene = Scene::from_nodes(vec![
+            NodeBuilder::Leaf(clouds("A")),
+            NodeBuilder::group(
+                "G",
+                vec![
+                    clouds("B").into(),
+                    NodeBuilder::group("H", vec![clouds("C").into()]),
+                ],
+            ),
+            NodeBuilder::Leaf(clouds("D")),
+        ]);
         scene.ensure_node_ids();
 
         // Every tree row resolves both ways, consistently.
@@ -4651,14 +4866,12 @@ mod tests {
             block_lattice: false,
             floor_grid: true,
         };
-        let mut scene = scene_with_top_level_selected(Scene {
-            nodes: vec![node],
-            master_block_lattice: false,
-            master_voxel_grid: true,
-            master_floor_grid: true,
-            active_point: Some(1),
-            ..Scene::default()
-        }, 0);
+        let mut built = Scene::from_nodes(vec![node]);
+        built.master_block_lattice = false;
+        built.master_voxel_grid = true;
+        built.master_floor_grid = true;
+        built.active_point = Some(1);
+        let mut scene = scene_with_top_level_selected(built, 0);
         scene.ensure_origin_point();
         // Push directly (not via `add_point`, which overrides plane/axis flags to the
         // new-point default) so the round-trip exercises non-default per-axis flags.
@@ -4678,8 +4891,8 @@ mod tests {
         let json = serde_json::to_string_pretty(&scene).expect("serialise");
         let restored: Scene = serde_json::from_str(&json).expect("deserialise");
         assert_eq!(scene, restored, "scene with grids + points round-trips");
-        assert!(restored.nodes[0].grids.voxel_grid_on_faces);
-        assert!(restored.nodes[0].grids.floor_grid);
+        assert!(restored.root_node(0).grids.voxel_grid_on_faces);
+        assert!(restored.root_node(0).grids.floor_grid);
         assert!(!restored.master_block_lattice);
         assert!(restored.master_voxel_grid);
         assert_eq!(restored.points.len(), 2);
@@ -4693,26 +4906,39 @@ mod tests {
     /// masters at their struct default (ON, issue #29 grid-rework fix), empty points.
     #[test]
     fn old_scene_json_loads_with_grid_defaults() {
-        let old_json = r#"{
-            "nodes": [
-                {
-                    "name": "Box",
-                    "transform": { "offset_blocks": [0, 0, 0] },
-                    "operation": "Union",
-                    "visible": true,
-                    "content": {
-                        "Tool": {
-                            "shape": { "kind": "Box", "size_blocks": [2,2,2], "voxels_per_block": 8, "wall_blocks": 1 },
-                            "material": "Stone"
-                        }
-                    }
+        // Build a one-Box scene, serialize it, then STRIP the optional fields that an
+        // old document would not carry (the per-node `grids`, the scene-wide masters,
+        // `points`, `active_point`). Deserializing the trimmed JSON must fill every
+        // missing field with its struct default.
+        let node = Node::new(
+            "Box",
+            NodeContent::Tool {
+                shape: SdfShape { kind: ShapeKind::Box, size_blocks: [2, 2, 2], voxels_per_block: 8, wall_blocks: 1 },
+                material: MaterialChoice::Stone,
+            },
+        );
+        let scene = Scene::from_nodes(vec![node]);
+        let mut value = serde_json::to_value(&scene).expect("serialise");
+        let object = value.as_object_mut().expect("scene serializes to an object");
+        // Drop the optional/defaulted fields so the load path must synthesize them.
+        object.remove("master_block_lattice");
+        object.remove("master_voxel_grid");
+        object.remove("master_floor_grid");
+        object.remove("points");
+        object.remove("active_point");
+        // Strip every node's `grids` so the per-node default (#29 all-off) is exercised.
+        if let Some(arena) = object.get_mut("arena").and_then(|a| a.as_object_mut()) {
+            for stored in arena.values_mut() {
+                if let Some(node_obj) = stored.as_object_mut() {
+                    node_obj.remove("grids");
                 }
-            ],
-            "active": null
-        }"#;
-        let scene: Scene = serde_json::from_str(old_json).expect("old scene parses");
-        assert_eq!(scene.nodes.len(), 1);
-        assert_eq!(scene.nodes[0].grids, NodeGrids::default(), "grids default off");
+            }
+        }
+        let old_json = serde_json::to_string(&value).expect("re-serialise trimmed doc");
+
+        let scene: Scene = serde_json::from_str(&old_json).expect("old scene parses");
+        assert_eq!(scene.roots.len(), 1);
+        assert_eq!(scene.root_node(0).grids, NodeGrids::default(), "grids default off");
         assert!(scene.master_block_lattice, "lattice master default on");
         assert!(scene.master_voxel_grid && scene.master_floor_grid, "all masters default on");
         assert!(scene.points.is_empty(), "no points in the old document");
@@ -4737,15 +4963,12 @@ mod tests {
         for vpb in [1u32, 15, 16] {
             // Three even-sized boxes; box B sits +8X, box C sits +6Z. The block-AABB
             // of a single 4-block box centred at `off` is `[off-2, off+2]`, centre `off`.
-            let mut scene = Scene {
-                nodes: vec![
-                    make_tool(ShapeKind::Box, [4, 4, 4], [0, 0, 0]),
-                    make_tool(ShapeKind::Box, [4, 4, 4], [8, 0, 0]),
-                    make_tool(ShapeKind::Box, [4, 4, 4], [0, 0, 6]),
-                ],
-                active: None,
-                ..Scene::default()
-            };
+            let mut scene = Scene::from_nodes(vec![
+                make_tool(ShapeKind::Box, [4, 4, 4], [0, 0, 0]),
+                make_tool(ShapeKind::Box, [4, 4, 4], [8, 0, 0]),
+                make_tool(ShapeKind::Box, [4, 4, 4], [0, 0, 6]),
+            ]);
+            scene.active = None;
             // ADR 0003 Phase B3: mint ids so selecting a node by id resolves.
             scene.ensure_node_ids();
 
@@ -4799,10 +5022,7 @@ mod tests {
         let mut node =
             Node::new("Box", NodeContent::Tool { shape, material: MaterialChoice::Stone });
         node.transform.offset_blocks = [123, -45, 67];
-        let scene = scene_with_top_level_selected(Scene {
-            nodes: vec![node],
-            ..Scene::default()
-        }, 0);
+        let scene = scene_with_top_level_selected(Scene::from_nodes(vec![node]), 0);
         for vpb in [1u32, 15, 16] {
             let (pivot, _) = scene.active_gizmo_placement(vpb).expect("gizmo shown");
             assert_eq!(
@@ -4824,10 +5044,7 @@ mod tests {
         let mut node =
             Node::new("Box", NodeContent::Tool { shape, material: MaterialChoice::Stone });
         node.transform.offset_blocks = [123, -45, 67];
-        let scene = scene_with_top_level_selected(Scene {
-            nodes: vec![node],
-            ..Scene::default()
-        }, 0);
+        let scene = scene_with_top_level_selected(Scene::from_nodes(vec![node]), 0);
         // Every axis size (3, 1, 5) is odd, so the recentre truncates by up to half a
         // voxel. The lone node's pivot therefore stays WITHIN half a voxel of origin
         // (it does not run off to the node's absolute offset of [123, -45, 67]·d) —

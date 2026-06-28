@@ -485,15 +485,11 @@ mod tests {
             node.transform.offset_blocks = offset;
             node
         };
-        let scene = Scene {
-            nodes: vec![
-                make_tool(ShapeKind::Sphere, [0, 0, 0], MaterialChoice::Stone),
-                make_tool(ShapeKind::Box, [8, 0, 0], MaterialChoice::Wood),
-                make_tool(ShapeKind::Torus, [0, 0, 6], MaterialChoice::Plain),
-            ],
-            active: None,
-            ..Scene::default()
-        };
+        let scene = Scene::from_nodes(vec![
+            make_tool(ShapeKind::Sphere, [0, 0, 0], MaterialChoice::Stone),
+            make_tool(ShapeKind::Box, [8, 0, 0], MaterialChoice::Wood),
+            make_tool(ShapeKind::Torus, [0, 0, 6], MaterialChoice::Plain),
+        ]);
         assert_region_vox_export_equals_whole_grid(&scene, vpb, "demo-scene");
     }
 
@@ -515,14 +511,10 @@ mod tests {
             node.transform.offset_blocks = offset;
             node
         };
-        Scene {
-            nodes: vec![
-                make_box([0, 0, 0], MaterialChoice::Stone),
-                make_box([offset_blocks, 0, 0], MaterialChoice::Wood),
-            ],
-            active: None,
-            ..Scene::default()
-        }
+        Scene::from_nodes(vec![
+            make_box([0, 0, 0], MaterialChoice::Stone),
+            make_box([offset_blocks, 0, 0], MaterialChoice::Wood),
+        ])
     }
 
     /// **The rewired export is behaviour-equivalent to the old monolithic export, far

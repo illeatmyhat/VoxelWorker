@@ -489,7 +489,7 @@ fn compressed_binary_size(compressed: &CompressedChunk) -> usize {
 mod tests {
     use super::*;
     use crate::core_geom::MaterialChoice;
-    use crate::scene::{AssemblyDef, DefId, Node, NodeContent, Part, Scene};
+    use crate::scene::{DefId, Node, NodeContent, Part, Scene};
     use crate::voxel::{GeometryParams, SdfShape, ShapeKind, Voxel, VoxelGrid, VoxelProducer};
 
     /// A pseudo-random generator (the same Numerical-Recipes LCG `cuboid.rs` uses),
@@ -716,15 +716,11 @@ mod tests {
             node.transform.offset_blocks = offset;
             node
         };
-        let demo_scene = Scene {
-            nodes: vec![
-                make_tool(ShapeKind::Sphere, [0, 0, 0], MaterialChoice::Stone),
-                make_tool(ShapeKind::Box, [8, 0, 0], MaterialChoice::Wood),
-                make_tool(ShapeKind::Torus, [0, 0, 6], MaterialChoice::Plain),
-            ],
-            active: None,
-            ..Scene::default()
-        };
+        let demo_scene = Scene::from_nodes(vec![
+            make_tool(ShapeKind::Sphere, [0, 0, 0], MaterialChoice::Stone),
+            make_tool(ShapeKind::Box, [8, 0, 0], MaterialChoice::Wood),
+            make_tool(ShapeKind::Torus, [0, 0, 6], MaterialChoice::Plain),
+        ]);
 
         // --demo-village: an instanced house assembly.
         let house_def_id = DefId(1);
@@ -739,30 +735,25 @@ mod tests {
             node.transform.offset_blocks = offset;
             node
         };
-        let house = AssemblyDef {
-            id: house_def_id,
-            name: "House".to_string(),
-            children: vec![
-                tool(ShapeKind::Box, [2, 2, 2], [0, 0, 0], MaterialChoice::Stone),
-                tool(ShapeKind::Cylinder, [1, 2, 1], [0, 2, 0], MaterialChoice::Wood),
-            ],
-        };
         let instance = |name: &str, offset: [i64; 3]| {
             let mut node = Node::new(name, NodeContent::Instance(house_def_id));
             node.transform.offset_blocks = offset;
             node
         };
-        let village = Scene {
-            nodes: vec![
-                instance("House 1", [0, 0, 0]),
-                instance("House 2", [6, 0, 0]),
-                instance("House 3", [12, 0, 0]),
-                instance("House 4", [18, 0, 0]),
+        let mut village = Scene::from_nodes(vec![
+            instance("House 1", [0, 0, 0]),
+            instance("House 2", [6, 0, 0]),
+            instance("House 3", [12, 0, 0]),
+            instance("House 4", [18, 0, 0]),
+        ]);
+        village.add_definition(
+            house_def_id,
+            "House".to_string(),
+            vec![
+                tool(ShapeKind::Box, [2, 2, 2], [0, 0, 0], MaterialChoice::Stone),
+                tool(ShapeKind::Cylinder, [1, 2, 1], [0, 2, 0], MaterialChoice::Wood),
             ],
-            definitions: vec![house],
-            active: None,
-            ..Scene::default()
-        };
+        );
 
         for (scene, label) in [(demo_scene, "demo-scene"), (village, "demo-village")] {
             let (min_chunk, max_chunk) = scene
@@ -1043,14 +1034,10 @@ mod tests {
             node.transform.offset_blocks = offset;
             node
         };
-        let village = Scene {
-            nodes: vec![
-                make_tool(ShapeKind::Sphere, [0, 0, 0], MaterialChoice::Stone),
-                make_tool(ShapeKind::Box, [8, 0, 0], MaterialChoice::Wood),
-            ],
-            active: None,
-            ..Scene::default()
-        };
+        let village = Scene::from_nodes(vec![
+            make_tool(ShapeKind::Sphere, [0, 0, 0], MaterialChoice::Stone),
+            make_tool(ShapeKind::Box, [8, 0, 0], MaterialChoice::Wood),
+        ]);
         let (min_chunk, max_chunk) =
             village.covering_chunk_range(voxels_per_block).expect("placed");
         let mut total_raw = 0usize;

@@ -69,8 +69,8 @@ pub use renderer::{
 };
 pub use renderer::procedural_material_average_color;
 pub use scene::{
-    AssemblyDef, CombineOp, DefId, Node, NodeContent, NodeId, NodePath, NodeTransform, Part, Point,
-    RegionBlocks, Scene,
+    AssemblyDef, CombineOp, DefId, Node, NodeBuilder, NodeContent, NodeId, NodePath, NodeTransform,
+    Part, Point, RegionBlocks, Scene,
 };
 pub use settings::AppConfig;
 pub use spatial_index::{LeafEntry, LeafFingerprint, LeafSpatialIndex, VoxelAabb};

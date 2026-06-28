@@ -4208,14 +4208,11 @@ mod tests {
     #[test]
     fn scene_grid_boxes_gated_by_master_and_per_object() {
         for density in [1u32, 15, 16] {
-            let mut scene = Scene {
-                nodes: vec![
-                    box_node("A", [0, 0, 0], density),
-                    box_node("B", [8, 0, 0], density),
-                ],
-                active: None,
-                ..Scene::default()
-            };
+            let mut scene = Scene::from_nodes(vec![
+                box_node("A", [0, 0, 0], density),
+                box_node("B", [8, 0, 0], density),
+            ]);
+            scene.active = None;
             scene.master_block_lattice = true;
             scene.master_floor_grid = true;
 
@@ -4224,7 +4221,7 @@ mod tests {
             assert!(lat.is_empty() && flr.is_empty(), "@d{density}: per-object OFF ⇒ no boxes");
 
             // Enable block lattice on node A ONLY.
-            scene.nodes[0].grids.block_lattice = true;
+            scene.root_node_mut(0).grids.block_lattice = true;
             let (lat, flr) = scene_grid_boxes(&scene, density);
             assert_eq!(lat.len(), 1, "@d{density}: one node enabled ⇒ exactly one lattice box");
             assert!(flr.is_empty(), "@d{density}: floor still off");
@@ -4236,7 +4233,7 @@ mod tests {
 
             // Floor: node B's flag on + master on → one floor box, no lattice.
             scene.master_floor_grid = true;
-            scene.nodes[1].grids.floor_grid = true;
+            scene.root_node_mut(1).grids.floor_grid = true;
             let (lat, flr) = scene_grid_boxes(&scene, density);
             assert!(lat.is_empty(), "@d{density}: lattice master still off");
             assert_eq!(flr.len(), 1, "@d{density}: one floor box from node B");

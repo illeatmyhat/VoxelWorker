@@ -266,7 +266,7 @@ impl AppConfig {
         // malformed/empty persisted scene) load the default seed scene, the same one
         // a brand-new config gets, so the seed always produces a usable document.
         match &self.scene {
-            Some(scene) if !scene.nodes.is_empty() => {
+            Some(scene) if !scene.roots.is_empty() => {
                 state.scene = scene.clone();
             }
             _ => state.seed_scene_from_geometry(),
@@ -442,11 +442,7 @@ mod tests {
         wood.transform.offset_blocks = [3, 0, 0];
         // ADR 0003 Phase B3: selection is keyed by NodeId, so mint ids and select
         // the second node (top-level index 1) by its stable id.
-        let mut scene = Scene {
-            nodes: vec![stone, wood],
-            ..Scene::default()
-        };
-        scene.ensure_node_ids();
+        let mut scene = Scene::from_nodes(vec![stone, wood]);
         scene.active = scene.id_at_path(&NodePath::root_index(1));
 
         let mut panel = PanelState::with_view_cube_default();
@@ -460,9 +456,9 @@ mod tests {
         let restored: AppConfig = serde_json::from_str(&json).expect("deserialise");
         let restored_panel = restored.to_panel_state();
 
-        assert_eq!(restored_panel.scene.nodes.len(), 2, "both nodes survive the reload");
+        assert_eq!(restored_panel.scene.roots.len(), 2, "both nodes survive the reload");
         assert_eq!(restored_panel.scene.active, scene.active, "the active selection survives");
-        assert_eq!(restored_panel.scene.nodes[1].transform.offset_blocks, [3, 0, 0]);
+        assert_eq!(restored_panel.scene.root_node(1).transform.offset_blocks, [3, 0, 0]);
 
         let region = scene.full_extent_blocks(voxels_per_block);
         let before = scene.resolve_region(region, voxels_per_block, 0).occupied_count();
@@ -551,7 +547,7 @@ mod tests {
         // from the removed flat `shape`/`size_blocks`/`wall_blocks`). Only the density
         // carries over from the config.
         let panel = restored.to_panel_state();
-        assert_eq!(panel.scene.nodes.len(), 1);
+        assert_eq!(panel.scene.roots.len(), 1);
         match panel.scene.active_node().map(|node| &node.content) {
             Some(crate::scene::NodeContent::Tool { shape, material }) => {
                 // The default seed geometry, NOT the persisted flat params.
@@ -590,7 +586,7 @@ mod tests {
         // It loads cleanly to the default one-Tool-node seed scene (the stray `mesher`
         // and the removed flat geometry keys are all ignored).
         let panel = restored.to_panel_state();
-        assert_eq!(panel.scene.nodes.len(), 1);
+        assert_eq!(panel.scene.roots.len(), 1);
     }
 
     /// step 8 round-trip: a NON-TRIVIAL scene (top-level Tool + Part nodes with
@@ -601,7 +597,7 @@ mod tests {
     #[test]
     fn full_scene_round_trips_through_json() {
         use crate::scene::{
-            AssemblyDef, CombineOp, DefId, Node, NodeContent, NodePath, Part, Scene,
+            DefId, Node, NodeBuilder, NodeContent, NodePath, Part, Scene,
         };
         use crate::voxel::SdfShape;
 
@@ -615,17 +611,6 @@ mod tests {
 
         // A definition (the reusable "house" body): a single Wood box.
         let def_id = DefId(3);
-        let def = AssemblyDef {
-            id: def_id,
-            name: "House".to_string(),
-            children: vec![Node::new(
-                "Body",
-                NodeContent::Tool {
-                    shape: unit_box(ShapeKind::Box),
-                    material: MaterialChoice::Wood,
-                },
-            )],
-        };
 
         // Top-level node 0: a Stone Tool at the origin.
         let stone = Node::new(
@@ -647,21 +632,32 @@ mod tests {
             },
         );
         grouped_leaf.transform.offset_blocks = [1, 0, 0];
-        let mut group = Node::new("Group", NodeContent::Group(vec![grouped_leaf]));
-        group.transform.offset_blocks = [6, 0, 0];
-        group.operation = CombineOp::Union;
+        // Top-level node 2: a Group at +6X containing the Plain Tool offset within it
+        // (`CombineOp::Union` is the default operation a built Group carries).
+        let group = NodeBuilder::group_at("Group", [6, 0, 0], vec![grouped_leaf.into()]);
         // Top-level node 3: an Instance of the def, offset disjointly.
         let mut instance = Node::new("House instance", NodeContent::Instance(def_id));
         instance.transform.offset_blocks = [-6, 0, 0];
 
         // ADR 0003 Phase B3: selection is keyed by NodeId, so mint ids and select
         // the Group's child (path [2, 0]) by its stable id.
-        let mut scene = Scene {
-            nodes: vec![stone, clouds, group, instance],
-            definitions: vec![def],
-            ..Scene::default()
-        };
-        scene.ensure_node_ids();
+        let mut scene = Scene::from_nodes(vec![
+            NodeBuilder::Leaf(stone),
+            NodeBuilder::Leaf(clouds),
+            group,
+            NodeBuilder::Leaf(instance),
+        ]);
+        scene.add_definition(
+            def_id,
+            "House".to_string(),
+            vec![Node::new(
+                "Body",
+                NodeContent::Tool {
+                    shape: unit_box(ShapeKind::Box),
+                    material: MaterialChoice::Wood,
+                },
+            )],
+        );
         scene.active = scene.id_at_path(&NodePath::from_indices(vec![2, 0]));
 
         // Build a panel carrying this scene and capture → JSON → restore.
@@ -678,8 +674,8 @@ mod tests {
 
         // Structural equality: same node tree, definitions, and active selection.
         assert_eq!(
-            restored_panel.scene.nodes.len(),
-            scene.nodes.len(),
+            restored_panel.scene.roots.len(),
+            scene.roots.len(),
             "all top-level nodes survive"
         );
         assert_eq!(restored_panel.scene.definitions.len(), 1, "the def survives");
@@ -689,15 +685,18 @@ mod tests {
             "the active selection survives"
         );
         // The Group's child and the def's body survive with their offsets/materials.
-        match &restored_panel.scene.nodes[2].content {
+        match &restored_panel.scene.root_node(2).content {
             NodeContent::Group(children) => {
                 assert_eq!(children.len(), 1);
-                assert_eq!(children[0].transform.offset_blocks, [1, 0, 0]);
+                assert_eq!(
+                    restored_panel.scene.arena[&children[0]].transform.offset_blocks,
+                    [1, 0, 0]
+                );
             }
             other => panic!("node 2 must stay a Group, got {other:?}"),
         }
         assert!(matches!(
-            restored_panel.scene.nodes[3].content,
+            restored_panel.scene.root_node(3).content,
             NodeContent::Instance(id) if id == def_id
         ));
 
@@ -733,76 +732,86 @@ mod tests {
             serde_json::from_str(partial).expect("a partial scene object still parses");
         let panel = restored.to_panel_state();
         assert_eq!(
-            panel.scene.nodes.len(),
+            panel.scene.roots.len(),
             1,
             "an empty persisted scene falls back to the one-Tool-node seed"
         );
 
-        // A `scene` whose nodes contain a content variant missing fields is a clean
-        // parse error wholesale → `load()` would return None → caller uses defaults.
-        // We assert it never panics: the deserialize is an Err, not an unwind.
-        let broken = r#"{ "scene": { "nodes": [ { "content": "NotAVariant" } ] } }"#;
+        // A `scene` whose arena holds a node with a content variant that doesn't exist
+        // is a clean parse error wholesale → `load()` would return None → caller uses
+        // defaults. We assert it never panics: the deserialize is an Err, not an unwind.
+        // (The id-keyed arena is the real node storage, so the broken node must live
+        // there — a stray legacy `"nodes"` key would simply be ignored by serde.)
+        let broken = r#"{ "scene": { "roots": [1], "arena": { "1": { "content": "NotAVariant" } } } }"#;
         assert!(
             serde_json::from_str::<AppConfig>(broken).is_err(),
             "a structurally broken scene is a clean Err (load → defaults), never a panic"
         );
     }
 
-    /// S4a back-compat: a scene serialized by an OLDER build (when `offset_blocks`
-    /// was `[i32; 3]`) loads into the now-`[i64; 3]` field unchanged. A JSON integer
-    /// carries no width, so serde widens the old numbers transparently — this is the
-    /// "tolerant persistence migration" the S4a task requires, proven by a
-    /// hand-authored document that predates the widening (note the small i32-range
-    /// offsets, exactly what an old save held). The document must load, keep its
-    /// offsets, and resolve to a non-empty grid.
+    /// S4a back-compat: a small i32-range `offset_blocks` value carried in a JSON
+    /// document widens into the now-`[i64; 3]` field unchanged. A JSON integer carries
+    /// no width, so serde reads it straight into `i64` — the "tolerant persistence
+    /// migration" S4a requires. The document must load, keep its offsets, and resolve
+    /// to a non-empty grid.
+    ///
+    /// **ADR 0003 Phase B5 note:** the original version of this test hand-authored a
+    /// `"scene": { "nodes": [ … ] }` document in the OLD positional-`Vec<Node>` on-disk
+    /// shape. Phase B5 flipped scene storage to an id-keyed `arena` + `roots` spine, so
+    /// that legacy array shape no longer deserializes (the field is gone). Per project
+    /// policy (pre-alpha; old saves may break — see no-config-back-compat memory) the
+    /// test is REWRITTEN to author the scene via the API and round-trip it through the
+    /// NEW on-disk shape, still exercising i64-offset WIDENING (its real purpose, which
+    /// is orthogonal to the storage layout). The small i32-range offset is what an old
+    /// save held; the assertion that it lands as the same `i64` value is unchanged.
     #[test]
     fn old_i32_offset_scene_loads_after_widening_to_i64() {
-        use crate::scene::NodeContent;
+        use crate::scene::{Node, NodeContent, Scene};
+        use crate::voxel::SdfShape;
 
-        // An old-style document: a single Box Tool offset +5 blocks in X. The
-        // `offset_blocks` numbers are plain JSON integers, exactly as the pre-S4a
-        // `[i32; 3]` field serialized them.
-        let old_json = r#"{
-            "scene": {
-                "nodes": [
-                    {
-                        "name": "Box",
-                        "transform": { "offset_blocks": [5, 0, 0] },
-                        "operation": "Union",
-                        "visible": true,
-                        "content": {
-                            "Tool": {
-                                "shape": {
-                                    "kind": "Box",
-                                    "size_blocks": [2, 2, 2],
-                                    "voxels_per_block": 8,
-                                    "wall_blocks": 1
-                                },
-                                "material": "Stone"
-                            }
-                        }
-                    }
-                ],
-                "active": null
-            },
-            "shape": "Box",
-            "size_blocks": [2, 2, 2],
-            "voxels_per_block": 8,
-            "wall_blocks": 1
-        }"#;
+        // A single Box Tool offset +5 blocks in X — a small i32-range offset, exactly
+        // what a pre-S4a `[i32; 3]` save held. Authored via the API, then serialized to
+        // the current on-disk format and reloaded; the offset is a plain JSON integer
+        // in that document, so reloading proves it reads into the `i64` field intact.
+        let shape = SdfShape {
+            kind: ShapeKind::Box,
+            size_blocks: [2, 2, 2],
+            voxels_per_block: 8,
+            wall_blocks: 1,
+        };
+        let mut node = Node::new(
+            "Box",
+            NodeContent::Tool { shape, material: MaterialChoice::Stone },
+        );
+        node.transform.offset_blocks = [5, 0, 0];
+        let scene = Scene::single_node(node);
+
+        let mut panel = PanelState::with_view_cube_default();
+        panel.geometry.voxels_per_block = 8;
+        panel.scene = scene;
+        let camera = OrbitCamera::default();
+        let config = AppConfig::capture(&panel, &camera, HomeView::default(), [1280, 800]);
+        let json = serde_json::to_string(&config).expect("serialise");
+
+        // Sanity: the persisted offset really is a bare JSON integer (no width), the
+        // exact condition the widening relies on.
+        assert!(
+            json.contains("\"offset_blocks\":[5,0,0]"),
+            "the offset persists as plain JSON integers (no width): {json}"
+        );
 
         let restored: AppConfig =
-            serde_json::from_str(old_json).expect("an old i32-offset scene must still parse");
+            serde_json::from_str(&json).expect("an i32-range-offset scene must parse");
         let panel = restored.to_panel_state();
-        assert_eq!(panel.scene.nodes.len(), 1, "the old node survives the widening");
+        assert_eq!(panel.scene.roots.len(), 1, "the node survives the widening");
         // The i32-range offset widened into the i64 field intact.
         assert_eq!(
-            panel.scene.nodes[0].transform.offset_blocks,
+            panel.scene.root_node(0).transform.offset_blocks,
             [5i64, 0, 0],
             "the old i32 offset must widen to the same i64 value"
         );
         assert!(matches!(
-            panel.scene.nodes[0].content,
+            panel.scene.root_node(0).content,
             NodeContent::Tool { .. }
         ));
         // The migrated document still resolves to a non-empty grid.
@@ -849,12 +858,12 @@ mod tests {
         let restored_panel = restored.to_panel_state();
 
         assert_eq!(
-            restored_panel.scene.nodes.len(),
+            restored_panel.scene.roots.len(),
             1,
             "the far node survives the round-trip"
         );
         assert_eq!(
-            restored_panel.scene.nodes[0].transform.offset_blocks,
+            restored_panel.scene.root_node(0).transform.offset_blocks,
             [far_offset, -far_offset, far_offset / 2],
             "a >i32-range i64 offset must round-trip byte-exact through save/load"
         );
@@ -942,15 +951,11 @@ mod tests {
                 material: MaterialChoice::Stone,
             },
         );
-        let mut scene = Scene {
-            nodes: vec![node],
-            master_block_lattice: false,
-            master_voxel_grid: true,
-            master_floor_grid: false,
-            ..Scene::default()
-        };
-        // ADR 0003 Phase B3: mint ids and select the lone node by its stable id.
-        scene.ensure_node_ids();
+        let mut scene = Scene::from_nodes(vec![node]);
+        scene.master_block_lattice = false;
+        scene.master_voxel_grid = true;
+        scene.master_floor_grid = false;
+        // ADR 0003 Phase B3: select the lone node by its stable id (from_nodes minted it).
         scene.active = scene.id_at_path(&NodePath::root_index(0));
         scene.ensure_origin_point();
         scene.add_point(Point { name: "Marker".to_string(), ..Point::default() });
@@ -997,32 +1002,43 @@ mod tests {
                 },
             )
         };
-        // Two top-level nodes left at the unassigned sentinel, counter never advanced —
-        // exactly the shape a pre-mint save deserializes into.
-        let scene = Scene {
-            nodes: vec![make_box("First"), make_box("Second")],
-            next_node_id: 0,
-            ..Scene::default()
-        };
-        assert!(scene.nodes.iter().all(|node| node.id == NodeId(0)), "fixture starts unminted");
+        // REWRITTEN for the id-keyed arena (ADR 0003 B5): the old fixture built two
+        // `NodeId(0)` nodes, but the arena is keyed BY id, so it cannot hold two
+        // sentinel nodes, and `ensure_node_ids` re-keys a lone 0-node in the arena
+        // WITHOUT rewriting the `roots`/Group spines that reference it — so a
+        // roots-references-sentinel save is not representable/positionally reachable.
+        // The surviving, load-path-exercised guarantee is the STALE-COUNTER half: a
+        // persisted scene whose nodes already carry ids but whose `next_node_id` was
+        // never advanced past them must be normalised on load so a later edit op mints
+        // a non-colliding id and every row stays selectable. We forge exactly that
+        // persisted shape by resetting the counter in the serialized JSON.
+        let scene = Scene::from_nodes(vec![make_box("First"), make_box("Second")]);
 
         let mut panel = PanelState::with_view_cube_default();
         panel.scene = scene;
         let camera = OrbitCamera::default();
         let config = AppConfig::capture(&panel, &camera, HomeView::default(), [1280, 800]);
-        let json = serde_json::to_string_pretty(&config).expect("serialise");
+        let mut config_value = serde_json::to_value(&config).expect("serialise");
+        // Forge a stale counter: the nodes carry real ids, but `next_node_id` sits at 0
+        // (as a save written before the counter was persisted/advanced would).
+        *config_value
+            .get_mut("scene")
+            .and_then(|s| s.get_mut("next_node_id"))
+            .expect("the persisted scene carries a counter") = serde_json::json!(0);
+
+        let json = serde_json::to_string_pretty(&config_value).expect("re-serialise");
         let restored: AppConfig = serde_json::from_str(&json).expect("deserialise");
         let loaded = restored.to_panel_state();
 
-        // Every node now carries a real id, and the counter sits past all of them.
+        // Every node carries a real id, and the counter now sits past all of them.
         assert!(
-            loaded.scene.nodes.iter().all(|node| node.id != NodeId(0)),
-            "the load path mints ids for an unminted persisted scene"
+            loaded.scene.arena.values().all(|node| node.id != NodeId(0)),
+            "every loaded node carries a real (non-sentinel) id"
         );
-        let max_id = loaded.scene.nodes.iter().map(|node| node.id.0).max().unwrap();
+        let max_id = loaded.scene.arena.keys().map(|id| id.0).max().unwrap();
         assert!(loaded.scene.next_node_id > max_id, "counter advanced past every live id");
 
-        // A clicked top-level row now resolves to a selectable node (not the sentinel).
+        // A clicked top-level row resolves to a selectable node (not the sentinel).
         let clicked_id = loaded.scene.id_at_path(&NodePath::root_index(0)).expect("path resolves to an id");
         assert_ne!(clicked_id, NodeId(0));
         assert!(loaded.scene.node_by_id(clicked_id).is_some(), "the resolved id is selectable");

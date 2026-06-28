@@ -168,7 +168,7 @@ impl PanelState {
     /// state becomes a one-Tool-node scene). Does nothing if the scene already has
     /// nodes.
     pub fn seed_scene_from_geometry(&mut self) {
-        if self.scene.nodes.is_empty() {
+        if self.scene.roots.is_empty() {
             self.scene = Scene::from_geometry(self.geometry, self.material);
         }
         // issue #29 (grid rework S1): every scene carries exactly one Origin Point.
@@ -443,7 +443,7 @@ fn build_node_list_section(
         state.scene.set_node_visible(id, visible);
     }
 
-    if state.scene.nodes.is_empty() {
+    if state.scene.roots.is_empty() {
         ui.label(egui::RichText::new("(no nodes — add one below)").small().weak());
     }
 
