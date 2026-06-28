@@ -42,6 +42,8 @@ pub mod spatial_index;
 // ADR 0003 data layer: residency + per-chunk resolve + bound-region reads. See store.rs.
 pub mod store;
 pub mod texture_atlas;
+// ADR 0003 §3f(0) (Slice 2+): the parametric blocks/voxels units parser core.
+pub mod units;
 pub mod vox_export;
 pub mod voxel;
 
