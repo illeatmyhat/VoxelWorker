@@ -12,6 +12,8 @@
 //!     captured frame is identical to the live one.
 //!   * The colour identity from ARCHITECTURE.md §8 (warm-dark workshop).
 
+// ADR 0003 keystone: headless orchestrator (scene + store + camera). See app_core.rs.
+pub mod app_core;
 pub mod assets;
 pub mod block_palette;
 pub mod camera;
@@ -31,6 +33,8 @@ pub mod scan_worker;
 pub mod scene;
 pub mod settings;
 pub mod spatial_index;
+// ADR 0003 data layer: residency + per-chunk resolve + bound-region reads. See store.rs.
+pub mod store;
 pub mod texture_atlas;
 pub mod vox_export;
 pub mod voxel;
