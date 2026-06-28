@@ -765,6 +765,17 @@ scrubber, `.vox` export) read the per-chunk store over the active region, never 
 whole-grid. Scrubbing the layer-band is a **per-fragment clip on absolute-Y** (ADR 0002 matrix row) —
 no re-mesh — so a 10k-XZ scrub is interactive. This is **S7**.
 
+**The per-chunk `ChunkRevision` is EXPOSED on the read seam (reconciled from the ADR 0005 gap sweep — FLAG 1).**
+The per-chunk revision the store already tracks internally to drive incremental re-mesh (the dirty-mark
+→ stale-discard machinery, §7) is **carried out on the region read API**: `resolve_region` (and the
+per-chunk read) **returns / carries the `ChunkRevision` of each resolved chunk** alongside the
+occupancy, so a derived-analysis consumer (the ADR 0005 space/nav/topo graphs and other
+occupancy-reading passes) can **cache-key on exactly the revisions of the chunks it read** and reuse
+the foundation's per-chunk invalidation rather than maintaining a parallel dirty-tracking scheme. This
+is a **read-side addition only** — no per-voxel payload field, no schema cascade; it surfaces state the
+store already owns. (The gap-sweep / ADR 0005 surfaced this need, the same posture as the ADR 0004
+DATA-seam reconciliations and the §1 joint-arity fix crediting 0004's stress-test.)
+
 ### 5. Serialization & format tagging (V0 pre-alpha — tag now, migrate later)
 
 The project is **V0 pre-alpha**: project files carry a **magic header + a version/epoch tag from day
@@ -960,6 +971,12 @@ revision; a completion is stamped with the revision it was computed against; a s
 **discarded** and the chunk re-queued; a chunk is **clean only when an epoch-matched result is
 INTEGRATED**. The command stack is therefore never blocked by, and never inconsistent with,
 background meshing/scanning. This is **S10**.
+
+**This same per-chunk revision is the `ChunkRevision` exposed on the read seam (§4, FLAG 1).** The
+per-chunk revision stamp the worker pipeline already maintains is precisely the value the region read
+API now carries out (§4), so ADR 0005's derived-analysis caches key on the same monotonic stamp the
+re-mesh pipeline uses — one revision model, two consumers (internal re-mesh + external derived
+graphs), no parallel dirty-tracking.
 
 ## Acceptance criteria — stress-case walkthrough (S1–S10)
 
