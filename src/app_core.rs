@@ -17,9 +17,10 @@
 
 use crate::camera::OrbitCamera;
 use crate::core_geom::CHUNK_BLOCKS;
+use crate::intent::{Intent, IntentEffect};
 use crate::panel::LayerRange;
 use crate::renderer::OnionFogParams;
-use crate::scene::Scene;
+use crate::scene::{NodeContent, Part, Scene};
 use crate::spatial_index::LeafSpatialIndex;
 use crate::store::Store;
 use crate::voxel::{chunk_extent_exceeds_bound, VoxelGrid};
@@ -84,6 +85,199 @@ impl AppCore {
             camera,
             previous_leaf_index: None,
             previous_recentre_voxels: None,
+        }
+    }
+
+    /// **The single serializable mutation boundary (ADR 0003 Phase C, slice C1).**
+    /// Apply one [`Intent`] to `scene` by dispatching to the SAME edit op / field
+    /// write the panel performs today, returning the [`IntentEffect`] (the typed
+    /// successor of [`PanelResponse`](crate::panel::PanelResponse)'s effect booleans)
+    /// the caller reacts to.
+    ///
+    /// `apply_intent` borrows the scene (`&mut Scene`) rather than owning it — the
+    /// scene still lives in `PanelState` (A2d ownership boundary); it owns no command
+    /// stack yet (that is C2), so this is a pure dispatch + effect report. A field
+    /// write to a missing id (or a kind-mismatched node — a `SetShape` on a non-Tool,
+    /// a `SetCloudSeed` on a non-Clouds) is a no-op returning [`IntentEffect::none`].
+    ///
+    /// **The active-keyed ops.** [`group_active`](Scene::group_active) /
+    /// [`make_definition_from_active`](Scene::make_definition_from_active) operate on
+    /// the scene's `active` selection (the panel reaches them via the selected node),
+    /// so the matching intents (`GroupNode` / `MakeDefinition`) point `scene.active`
+    /// at their `target` first, then call the op — exactly how the panel arrives there
+    /// (a clicked row sets `active`, then the action button fires). The intents carry
+    /// the target explicitly so the value is self-contained / replayable.
+    pub fn apply_intent(&self, scene: &mut Scene, intent: Intent) -> IntentEffect {
+        match intent {
+            // --- Structural ---
+            Intent::AddNode { content } => {
+                scene.add_node(content.into_node());
+                IntentEffect::scene()
+            }
+            Intent::AddChild { group, content } => {
+                scene.add_child_to_group(group, content.into_node());
+                IntentEffect::scene()
+            }
+            Intent::GroupNode { target } => {
+                // group_active keys off `active`; point it at the target first
+                // (mirroring the panel: select the node, then click Group).
+                scene.active = Some(target);
+                scene.group_active();
+                IntentEffect::scene()
+            }
+            Intent::MakeDefinition { target, name } => {
+                scene.active = Some(target);
+                scene.make_definition_from_active(name);
+                IntentEffect::scene()
+            }
+            Intent::AddInstance { def } => {
+                scene.add_instance(def);
+                IntentEffect::scene()
+            }
+            Intent::RemoveNode { target } => {
+                scene.remove_node(target);
+                IntentEffect::scene()
+            }
+
+            // --- Node field writes ---
+            Intent::SetVisible { target, visible } => {
+                if scene.set_node_visible(target, visible) {
+                    IntentEffect::scene()
+                } else {
+                    IntentEffect::none()
+                }
+            }
+            Intent::SetShape { target, shape } => match scene.node_by_id_mut(target) {
+                Some(node) => match &mut node.content {
+                    NodeContent::Tool { shape: node_shape, .. } => {
+                        *node_shape = shape;
+                        IntentEffect::scene()
+                    }
+                    _ => IntentEffect::none(),
+                },
+                None => IntentEffect::none(),
+            },
+            Intent::SetMaterial { target, material } => match scene.node_by_id_mut(target) {
+                Some(node) => match &mut node.content {
+                    NodeContent::Tool { material: node_material, .. } => {
+                        *node_material = material;
+                        IntentEffect::scene()
+                    }
+                    _ => IntentEffect::none(),
+                },
+                None => IntentEffect::none(),
+            },
+            Intent::SetOffset { target, offset_blocks } => match scene.node_by_id_mut(target) {
+                Some(node) => {
+                    node.transform.offset_blocks = offset_blocks;
+                    IntentEffect::scene()
+                }
+                None => IntentEffect::none(),
+            },
+            Intent::SetName { target, name } => match scene.node_by_id_mut(target) {
+                Some(node) => {
+                    node.name = name;
+                    IntentEffect::scene()
+                }
+                None => IntentEffect::none(),
+            },
+            Intent::SetCloudSeed { target, seed } => match scene.node_by_id_mut(target) {
+                Some(node) => match &mut node.content {
+                    NodeContent::Part(Part::DebugClouds { seed: node_seed }) => {
+                        *node_seed = seed;
+                        IntentEffect::scene()
+                    }
+                    _ => IntentEffect::none(),
+                },
+                None => IntentEffect::none(),
+            },
+            Intent::SetNodeGrids { target, grids } => match scene.node_by_id_mut(target) {
+                Some(node) => {
+                    node.grids = grids;
+                    IntentEffect::scene()
+                }
+                None => IntentEffect::none(),
+            },
+
+            // --- Global ---
+            Intent::SetDensity { voxels_per_block } => {
+                // Density is global, but the resolve reads it off each Tool's shape,
+                // so rewrite EVERY Tool node's `voxels_per_block` (the arena holds
+                // every node; non-Tool nodes carry no density).
+                for node in scene.arena.values_mut() {
+                    if let NodeContent::Tool { shape, .. } = &mut node.content {
+                        shape.voxels_per_block = voxels_per_block;
+                    }
+                }
+                IntentEffect::scene()
+            }
+            Intent::SetGridMasters { voxel, lattice, floor } => {
+                // The masters are read live by the per-frame line batch, so no
+                // re-resolve — matching the panel's Display section.
+                scene.master_voxel_grid = voxel;
+                scene.master_block_lattice = lattice;
+                scene.master_floor_grid = floor;
+                IntentEffect::none()
+            }
+
+            // --- Selection ---
+            Intent::SelectNode { target } => {
+                scene.active = target;
+                IntentEffect::selection()
+            }
+            Intent::SelectPoint { target } => {
+                scene.active_point = target;
+                IntentEffect::selection()
+            }
+
+            // --- Points ---
+            Intent::AddPoint { position_blocks, name } => {
+                let point = crate::scene::Point {
+                    name,
+                    position_blocks,
+                    ..crate::scene::Point::default()
+                };
+                scene.add_point(point);
+                IntentEffect::points()
+            }
+            Intent::RemovePoint { index } => {
+                scene.remove_point(index);
+                IntentEffect::points()
+            }
+            Intent::SetPointHidden { index, hidden } => match scene.points.get_mut(index) {
+                Some(point) => {
+                    point.hidden = hidden;
+                    IntentEffect::points()
+                }
+                None => IntentEffect::none(),
+            },
+            Intent::SetPointPlanes { index, xz, xy, yz } => match scene.points.get_mut(index) {
+                Some(point) => {
+                    point.plane_xz = xz;
+                    point.plane_xy = xy;
+                    point.plane_yz = yz;
+                    IntentEffect::points()
+                }
+                None => IntentEffect::none(),
+            },
+            Intent::SetPointAxes { index, x, y, z } => match scene.points.get_mut(index) {
+                Some(point) => {
+                    point.axis_x = x;
+                    point.axis_y = y;
+                    point.axis_z = z;
+                    IntentEffect::points()
+                }
+                None => IntentEffect::none(),
+            },
+            Intent::SetPointPosition { index, position_blocks } => {
+                match scene.points.get_mut(index) {
+                    Some(point) => {
+                        point.position_blocks = position_blocks;
+                        IntentEffect::points()
+                    }
+                    None => IntentEffect::none(),
+                }
+            }
         }
     }
 

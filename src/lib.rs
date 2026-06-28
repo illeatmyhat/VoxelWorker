@@ -27,6 +27,8 @@ pub mod debug_clouds;
 pub mod disk_chunk_store;
 pub mod frustum;
 pub mod gpu;
+// ADR 0003 Phase C: the single serializable mutation boundary (Intent → apply_intent).
+pub mod intent;
 pub mod panel;
 pub mod renderer;
 pub mod scan_worker;
@@ -53,6 +55,7 @@ pub use camera::{
     RollDir, SnapTween, ViewCubeElement, CUBE_FACES, POLE_EPSILON,
 };
 pub use gpu::GpuContext;
+pub use intent::{Intent, IntentEffect, NodeSpec};
 pub use core_geom::MaterialChoice;
 pub use panel::{
     build_panel, LayerRange, PanelResponse,
