@@ -822,6 +822,157 @@ impl AppCore {
     }
 }
 
+/// The **default seed scene** the windowed app starts from (ADR 0003 Phase C, slice
+/// C3 — the base a `shot --replay` script is applied against). A single Tool node
+/// from the default geometry/material, the Origin Point synthesized, stable
+/// [`NodeId`]s minted — i.e. exactly `PanelState::with_view_cube_default().scene`
+/// (which runs `Scene::from_geometry(default)` + `ensure_origin_point` +
+/// `ensure_node_ids`). Kept here so both `bin/shot` and the lib tests build the
+/// replay base the same way.
+pub fn default_replay_seed_scene() -> Scene {
+    crate::panel::PanelState::with_view_cube_default().scene
+}
+
+/// Replay a **newline-delimited-JSON Intent script** into a [`Scene`] (ADR 0003
+/// Phase C, slice C3 — the testable core of `shot --replay`).
+///
+/// The `script` is one [`Intent`] per line: each non-empty line is parsed with
+/// `serde_json::from_str::<Intent>` and applied IN ORDER, via
+/// [`AppCore::apply_intent`], to the [`default_replay_seed_scene`]. Blank /
+/// whitespace-only lines are skipped. Returns the post-replay scene.
+///
+/// On a JSON parse error on any line, returns `Err` with a message naming the
+/// 1-based line number and the offending line (no panic) — the caller prints it and
+/// exits non-zero. `bin/shot` reads the file then calls this; the lib tests feed a
+/// string directly (keeping the GPU render out of the unit test).
+pub fn replay_intent_script(script: &str) -> Result<Scene, String> {
+    let mut scene = default_replay_seed_scene();
+    let mut app_core = AppCore::new(Store::new(), OrbitCamera::default());
+    for (line_index, raw_line) in script.lines().enumerate() {
+        let line_number = line_index + 1;
+        let trimmed = raw_line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let intent: Intent = serde_json::from_str(trimmed).map_err(|error| {
+            format!("parse error on line {line_number}: {error}\n  line: {trimmed}")
+        })?;
+        app_core.apply_intent(&mut scene, intent);
+    }
+    Ok(scene)
+}
+
+#[cfg(test)]
+mod replay_tests {
+    use super::*;
+    use crate::core_geom::MaterialChoice;
+    use crate::intent::{Intent, NodeSpec};
+    use crate::scene::NodeContent;
+    use crate::voxel::{SdfShape, ShapeKind};
+
+    /// A small box Tool shape for the script fixtures.
+    fn box_shape() -> SdfShape {
+        SdfShape {
+            kind: ShapeKind::Box,
+            size_blocks: [3, 3, 3],
+            voxels_per_block: 8,
+            wall_blocks: 1,
+        }
+    }
+
+    /// The replay seed base is the windowed default: exactly one top-level node (a
+    /// Tool from the default geometry) and exactly one Point (the Origin), with ids
+    /// minted. Scripts are written against this known starting point.
+    #[test]
+    fn default_seed_scene_matches_windowed_base() {
+        let seed = default_replay_seed_scene();
+        assert_eq!(seed.roots.len(), 1, "seed has one top-level Tool node");
+        assert_eq!(seed.points.len(), 1, "seed carries exactly the Origin Point");
+        assert!(
+            seed.roots.iter().all(|id| id.0 != 0),
+            "every seed node has a minted (non-zero) NodeId"
+        );
+    }
+
+    /// Plumbing proof: an `AddNode` then a `SetOffset` (targeting the just-added node
+    /// by its minted id) replays to a scene whose NEW node sits at the requested
+    /// offset — i.e. the script parsed, dispatched through `apply_intent`, and the
+    /// mutations landed in order.
+    #[test]
+    fn replay_add_then_offset_places_new_node() {
+        let seed = default_replay_seed_scene();
+        let roots_before = seed.roots.len();
+        // The add mints the next id past the seed's counter. `apply_intent`'s add op
+        // assigns `next_node_id`, which after the seed equals `roots_before + 1` given
+        // the seed mints ids 1..=roots_before. Derive it from the seed to stay robust.
+        let new_node_id = NodeId(seed.next_node_id);
+
+        let add = Intent::AddNode {
+            content: NodeSpec::Tool {
+                shape: box_shape(),
+                material: MaterialChoice::Wood,
+            },
+        };
+        let set_offset = Intent::SetOffset {
+            target: new_node_id,
+            offset_blocks: [7, -2, 4],
+        };
+        let script = format!(
+            "{}\n\n{}\n",
+            serde_json::to_string(&add).unwrap(),
+            serde_json::to_string(&set_offset).unwrap(),
+        );
+
+        let scene = replay_intent_script(&script).expect("replay succeeds");
+        assert_eq!(
+            scene.roots.len(),
+            roots_before + 1,
+            "AddNode added exactly one top-level node"
+        );
+        let added = scene
+            .node_by_id(new_node_id)
+            .expect("the added node exists at its minted id");
+        assert_eq!(
+            added.transform.offset_blocks,
+            [7, -2, 4],
+            "SetOffset moved the just-added node to the requested offset"
+        );
+        assert!(
+            matches!(added.content, NodeContent::Tool { .. }),
+            "the added node is a Tool"
+        );
+    }
+
+    /// A malformed line is reported as an `Err` (naming the line number), NOT a panic.
+    #[test]
+    fn replay_malformed_line_is_reported_not_panicked() {
+        let good = Intent::AddNode {
+            content: NodeSpec::CloudsPart,
+        };
+        let script = format!(
+            "{}\nthis is not json\n",
+            serde_json::to_string(&good).unwrap()
+        );
+        let error = replay_intent_script(&script).expect_err("malformed line must error");
+        assert!(
+            error.contains("line 2"),
+            "error names the offending 1-based line number, got: {error}"
+        );
+    }
+
+    /// Blank / whitespace-only lines are skipped (not parse errors).
+    #[test]
+    fn replay_skips_blank_lines() {
+        let add = Intent::AddNode {
+            content: NodeSpec::CloudsPart,
+        };
+        let script = format!("\n   \n{}\n\n", serde_json::to_string(&add).unwrap());
+        let scene = replay_intent_script(&script).expect("blank lines skipped");
+        // Seed (1 Tool) + 1 Clouds Part = 2 top-level nodes.
+        assert_eq!(scene.roots.len(), 2);
+    }
+}
+
 #[cfg(test)]
 mod undo_tests {
     use super::*;

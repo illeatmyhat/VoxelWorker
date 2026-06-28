@@ -181,6 +181,17 @@ struct ShotOptions {
     /// now renders a loaded per-face D2Array (and that cuboid vs instanced match per
     /// face). Overrides --scan-vs/--apply-block material selection.
     synthetic_block: bool,
+    /// `--replay <path>` (ADR 0003 Phase C, slice C3): build the scene by REPLAYING a
+    /// newline-delimited-JSON Intent script through `AppCore::apply_intent` instead of
+    /// from a `--shape`/`--demo-*` source. The file is one [`voxel_worker::Intent`] per
+    /// non-empty line, applied IN ORDER to the default seed scene (the same base the
+    /// windowed app starts from, via `voxel_worker::default_replay_seed_scene`); the
+    /// final post-replay scene flows into the SAME render path (resolve -> offscreen
+    /// render -> write PNG to `--out`). `--replay` takes precedence over the demo/shape
+    /// scene sources (it is the scene SOURCE); the camera/projection flags
+    /// (`--proj`, `--theta`, `--phi`, `--dist`, ...) still apply. `None` keeps the
+    /// existing demo/shape behaviour, byte-identical to today.
+    replay_path: Option<PathBuf>,
 }
 
 impl Default for ShotOptions {
@@ -229,6 +240,7 @@ impl Default for ShotOptions {
             far_offset: false,
             far_offset_near: false,
             synthetic_block: false,
+            replay_path: None,
         }
     }
 }
@@ -488,6 +500,11 @@ fn parse_options() -> ShotOptions {
             "--synthetic-block" => {
                 options.synthetic_block = true;
             }
+            "--replay" => {
+                options.replay_path = Some(PathBuf::from(
+                    args.next().expect("--replay requires a path argument"),
+                ));
+            }
             "--demo-far-offset" => {
                 options.far_offset = true;
             }
@@ -600,6 +617,7 @@ fn parse_options() -> ShotOptions {
                      \x20            [--scan-vs] [--apply-first-block]\n\
                      \x20            [--apply-block <substring>] [--list-perface]\n\
                      \x20            [--synthetic-block]\n\
+                     \x20            [--replay <script.jsonl>]\n\
                      \x20            [--force-demo-stem <texture/stem>]\n\
                      \x20            [--gizmo] [--select-node <usize>] [--lattice] [--floor] [--points] [--point-at <X Y Z>] [--no-viewcube]\n\
                      \x20            [--debug-faces] [--debug-chunks]\n\
@@ -634,7 +652,13 @@ fn parse_options() -> ShotOptions {
                      \x20                blocks (ADR 0002 streaming S1). Precision baseline:\n\
                      \x20                today's recentre maps it to the origin, so far jitter\n\
                      \x20                is hidden until S4. Overrides --shape/--size/--density.\n\
-                     \x20  --demo-far-offset-near the SAME box at the origin, for A/B compare."
+                     \x20  --demo-far-offset-near the SAME box at the origin, for A/B compare.\n\
+                     \x20  --replay <path>  build the scene by replaying a newline-delimited\n\
+                     \x20                JSON Intent script (one Intent per line) through\n\
+                     \x20                AppCore::apply_intent, applied in order to the default\n\
+                     \x20                seed scene; the final post-replay frame is rendered to\n\
+                     \x20                --out. Takes precedence over --shape/--demo-* (the scene\n\
+                     \x20                SOURCE); camera/projection flags still apply (ADR 0003 C3)."
                 );
                 std::process::exit(0);
             }
@@ -892,6 +916,29 @@ fn build_far_offset_scene(voxels_per_block: u32, far: bool) -> Scene {
     Scene::single_node(node)
 }
 
+/// `--replay` (ADR 0003 Phase C, slice C3): **replay-script -> Scene**.
+///
+/// The script at `replay_path` is **newline-delimited JSON**: one
+/// [`voxel_worker::Intent`] per non-empty line. Each line is parsed with
+/// `serde_json::from_str::<Intent>` and applied IN ORDER, via
+/// [`AppCore::apply_intent`], to the default seed scene (the same base the windowed
+/// app starts from — `voxel_worker::default_replay_seed_scene`). Blank /
+/// whitespace-only lines are skipped. The returned [`Scene`] is the post-replay
+/// document; the caller flows it into the SAME render path (resolve -> offscreen
+/// render -> write PNG to `--out`).
+///
+/// File IO lives here; the parse + apply core is `voxel_worker::replay_intent_script`
+/// (lib-tested without a GPU). On a read error, or a JSON parse error on any line,
+/// returns `Err` with a clear message naming the offending line — `run_capture`
+/// prints it and exits non-zero (no panic).
+fn build_scene_from_replay(replay_path: &std::path::Path) -> Result<Scene, String> {
+    let script = std::fs::read_to_string(replay_path).map_err(|error| {
+        format!("--replay: failed to read '{}': {error}", replay_path.display())
+    })?;
+    voxel_worker::replay_intent_script(&script)
+        .map_err(|error| format!("--replay: '{}': {error}", replay_path.display()))
+}
+
 async fn run_capture(options: ShotOptions) {
     assert!(options.width > 0 && options.height > 0, "capture size must be non-zero");
 
@@ -955,7 +1002,21 @@ async fn run_capture(options: ShotOptions) {
     // scene — a Tool, or a DebugClouds Part when `--shape debug-clouds`. Seed the
     // panel's scene so the node-list section renders the nodes in the captured
     // panel.
-    let mut scene = if options.far_offset || options.far_offset_near {
+    // `--replay` (ADR 0003 Phase C, slice C3) is the highest-precedence scene SOURCE:
+    // when present it REPLACES the demo/shape sources entirely — the scene is built by
+    // replaying the JSONL Intent script against the default seed via
+    // `AppCore::apply_intent`. A parse/read error is reported (line number + bad line)
+    // and the process exits non-zero, rather than panicking. The camera/projection
+    // flags below still apply to the replay render.
+    let mut scene = if let Some(replay_path) = &options.replay_path {
+        match build_scene_from_replay(replay_path) {
+            Ok(replayed_scene) => replayed_scene,
+            Err(message) => {
+                eprintln!("{message}");
+                std::process::exit(1);
+            }
+        }
+    } else if options.far_offset || options.far_offset_near {
         build_far_offset_scene(options.geometry.voxels_per_block, options.far_offset)
     } else if options.demo_groups {
         build_demo_groups(options.geometry.voxels_per_block)
@@ -1160,7 +1221,15 @@ async fn run_capture(options: ShotOptions) {
         region_dimensions, grid_dimensions,
         "S6c-1: scene region dimensions must equal the assembled grid the consumers used"
     );
-    if options.far_offset || options.far_offset_near {
+    if options.replay_path.is_some() {
+        println!(
+            "resolved {} voxels for --replay ({} top-level node(s), {} definition(s), {} point(s))",
+            grid.occupied_count(),
+            scene.roots.len(),
+            scene.definitions.len(),
+            scene.points.len(),
+        );
+    } else if options.far_offset || options.far_offset_near {
         println!(
             "resolved {} voxels for demo-far-offset ({}, offset {:?} blocks, region {:?} blocks) \
              — S4b: the resolve rebases to the floating origin in i64 before the f32 downcast, so \
