@@ -186,6 +186,23 @@ impl AppCore {
         }
     }
 
+    /// The camera's view-projection matrix for the given viewport aspect ratio —
+    /// the recentred-frame matrix every overlay + the voxel pass draw with. A
+    /// `&self` getter (it reads the owned camera) so the shell and `shot` source the
+    /// frame matrix identically.
+    pub fn view_projection(&self, aspect_ratio: f32) -> glam::Mat4 {
+        self.camera.view_projection(aspect_ratio)
+    }
+
+    /// Where the transform gizmo (issue #29 S2) should sit: the SELECTED node's
+    /// recentred pivot + its extent (in voxels), or `None` when nothing is selected
+    /// (or the selection has no extent). An associated function for now (it borrows
+    /// the scene; A2d ownership boundary) — becomes `&self` once `AppCore` owns the
+    /// scene in Phase B/C.
+    pub fn gizmo_placement(scene: &Scene, density: u32) -> Option<([f32; 3], [f32; 3])> {
+        scene.active_gizmo_placement(density)
+    }
+
     /// Build the onion-skin fog parameters (issue #12) from the camera-derived
     /// view-projection, grid, and layer-range scrubber. World-Y of layer `j` spans
     /// `[j - grid_y/2, j+1 - grid_y/2]` (voxel centres at `j + 0.5 - grid_y/2`). The

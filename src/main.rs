@@ -1027,7 +1027,7 @@ impl WindowedState {
         // region's extent), not the active node's geometry — with several nodes the
         // region is the per-axis max of their sizes (ADR 0001 step 2).
         let grid_dimensions = self.grid.dimensions;
-        let view_projection = self.app_core.camera.view_projection(aspect_ratio);
+        let view_projection = self.app_core.view_projection(aspect_ratio);
         // Issue #12: translate the layer-range scrubber into the shader band. The
         // band is inclusive on both ends; the upper handle is a layer index, so a
         // single-layer band is `lower == upper`. A full range draws everything.
@@ -1075,10 +1075,10 @@ impl WindowedState {
         // the selected node's own extent and bake its recentred pivot into the
         // camera matrix. `None` (nothing selected, or selection has no extent) hides
         // it — visibility is selection-driven, no longer a Display toggle.
-        let gizmo_placement = self
-            .panel_state
-            .scene
-            .active_gizmo_placement(self.panel_state.geometry.voxels_per_block);
+        let gizmo_placement = AppCore::gizmo_placement(
+            &self.panel_state.scene,
+            self.panel_state.geometry.voxels_per_block,
+        );
         if let Some((pivot, extent)) = gizmo_placement {
             let extent_dims = [
                 extent[0].round().max(0.0) as u32,
