@@ -665,34 +665,79 @@ non-gating sub-block translation term (item (0), an early data change) and ROTAT
 is **not** a one-substep change but a **dedicated milestone** (Phase F-rot) with three golden-gated parts
 ((a)–(c)):
 
-- **(0) Sub-block placement is a SUB-VOXEL remainder at the DOCUMENT'S density (NOT a milestone gate;
+- **(0) Sub-block placement is VOXEL-GRANULAR at the DOCUMENT'S density (NOT a milestone gate;
   the kit-authoring primitive — driven by sub-block boolean kit-of-parts authoring, ADR 0004 §A/§G9).**
   **THE PLANNING UNIT IS THE VOXEL.** "Blocks" are a **DERIVED overlay** — a grid line every `d` voxels,
   shown to display the target game's block grid and to drive block-aligned mating — **not** a hardcoded
-  fundamental. So `NodeTransform` gains a within-block voxel remainder **alongside** the existing
-  block-aligned `offset_blocks: [i64; 3]`:
+  fundamental. So `NodeTransform`'s placement becomes a single voxel-granular field, replacing the
+  block-only `offset_blocks: [i64; 3]`:
 
   ```rust
-  pub offset_blocks:    [i64; 3],   // block-aligned placement (for block-aligned mating, §3i)
-  pub offset_subvoxels: [i32; 3],   // the within-block VOXEL remainder, at the document's density d
+  pub offset_voxels: [i64; 3],   // placement in VOXELS at the document's density d (§3f(0))
+  // "Blocks" are a derived overlay, exposed via accessors — NOT a stored field:
+  //   .blocks(d)        = offset_voxels / d          (the whole-block view for UI/mating)
+  //   .block_aligned(d) = offset_voxels % d == 0     (the connector/joint mating predicate, §3i)
   ```
 
-  where `d = voxels_per_block` is the **document's density** (below). At resolve, placement is simply
-  `offset_blocks · d + offset_subvoxels` **voxels** — **EXACT at the document's own density by
-  construction** (the resolved grid *is* `d`), so there is **no rounding and no integer-multiple
-  caveat**: placement is at voxel granularity, period. This composes by pure i64 addition like
-  `offset_blocks`, serializes byte-stably as plain integers, and leaves the store/chunking unaffected
-  (it is a finer term in the same i64 placement sum, not a new coordinate space). It **mirrors the
-  `Point.offset_voxels` precedent already in the code** ("the field exists so a future sub-block
-  placement is a data change, not a rewrite", `scene.rs:381`) — but here the field is **BUILT, not
-  merely reserved**, because it is the primitive the kit-of-parts authoring composes with (the
-  within-part granularity, §3i / §3b).
+  where `d = voxels_per_block` is the **document's density** (below). Placement is stored **directly in
+  voxels** — a single field, voxel-granular, period. At resolve it enters the i64 placement sum as-is
+  (`translation_voxels = offset_voxels + lattice_shift − recentre`), with **no rounding and no
+  integer-multiple caveat** (the resolved grid *is* `d`). It composes by pure i64 addition, serializes
+  byte-stably as plain integers, and leaves the store/chunking unaffected. It follows the
+  `Point.offset_voxels` precedent already in the code (`scene.rs:381`), which is itself single-field
+  voxels.
+
+  - **One field, not two — the decided representation (amended 2026-06-28).** An earlier draft split
+    this into `offset_blocks: [i64;3]` + a within-block `offset_subvoxels: [i32;3]` remainder. That was
+    **rejected**: two fields summing to one position admit **redundant representations**
+    (`blocks=1,sub=0` ≡ `blocks=0,sub=d`) with **no canonical form**, which breaks `NodeTransform`'s
+    derived `PartialEq` (geometrically equal transforms compare unequal → broken no-op / drag-coalescing
+    guards) and makes the block-aligned mating test `offset_subvoxels == 0` **unreliable** (it
+    mis-judges the equivalent `blocks=0,sub=d`). The single `offset_voxels` field has a canonical form
+    by construction, a geometric `PartialEq`, and a **canonical-form-independent** mating predicate
+    `offset_voxels % d == 0`. The integer-exactness of between-part joints (§3i) comes from doing the
+    placement sum in **i64** plus the connector tier's lattice constraint — **not** from a two-field
+    representation — so nothing is lost. "Blocks" stay a *derived overlay* exactly as this section
+    argues, via `.blocks(d)` accessors.
   - **No magic number — the denominator IS the document's density.** A **Minecraft** document
-    (`d = 1`) has no sub-block remainder at all → placement is naturally block-only (correct for MC);
+    (`d = 1`) has placement that is naturally block-granular (every voxel is a block — correct for MC);
     a **Vintage Story** document (`d = 16`) has 16 sub-positions per block per axis; a **Hytale** (or
     any other game) document has whatever `d` that game uses. **Same mechanism, every game, zero
     hardcoded constant.** (Sub-block placement is *within-part* detail authoring; inter-part mating
-    stays block-aligned — see §3i "within-part vs between-part".)
+    stays block-aligned via `offset_voxels % d == 0` — see §3i "within-part vs between-part".)
+  - **Units are an INPUT/DISPLAY layer over the canonical voxel storage (Fusion-style; added 2026-06-28).**
+    Because placement (and sizes/radii) are stored as **canonical voxels**, a user-facing measurement is a
+    *unit expression* parsed onto that canonical store and formatted back — exactly Fusion's model (it stores
+    one canonical unit internally and lets you type measurements in any unit). The two interconvertible units
+    are **blocks** and **voxels**, related by the document's `d` (`blocks · d = voxels`); a measurement like
+    "3 blocks", "56 voxels", or a mixed "3b 8v" parses to `3·d + 8` voxels and round-trips. This is **why
+    canonical single-field `offset_voxels` matters** — the rejected two-field blocks+subvoxels split would
+    have baked one unit decomposition into storage, fighting the units layer instead of feeding it. The
+    parser/formatter + a per-document default display unit are a **Slice-2 input/display concern (no
+    foundation change)**. DECIDED (2026-06-28): **(i) units are blocks + voxels only** (the two grid-native
+    units, interconvertible via `d`); real-world units (m/cm) are out of scope. **(ii) a measurement RETAINS
+    its authored expression (parametric)** — the canonical `offset_voxels` (and size/radius) is the DERIVED
+    value, with the authored block/voxel expression stored alongside, Fusion-parameter-style. A measurement
+    is a sum of block-terms and voxel-terms (`"3 blocks + 8 voxels" → 3·d + 8` voxels). This retention
+    **refines the "density change is always destructive" posture**: on a density re-target the expression
+    re-evaluates — **block-terms scale in block-space (lossless) and, for an INTEGER-multiple re-target,
+    voxel-terms scale by the ratio and also land exactly (a lossless refine of the whole document)**; only a
+    NON-integer-ratio re-target can push voxel-terms off the lattice (the warned/lossy case). Consequences are
+    **additive and deferred to Slice 2+ / the ADR 0004 parametric-relations tier — the §3f(0) canonical
+    single-field storage is unchanged**: the placement `Intent`s (`SetOffset`/`SetAnchor`/`SetCorner`/
+    `SetShapePoints`, §3i) carry the **expression**, not just the derived voxels, so replay/undo preserve
+    authored intent; and this parametric measurement model is the same machinery the datum/relations tier
+    (ADR 0004) uses for hosted/derived points.
+  - **Parser policy — STRICT (2026-06-28; revisit on demand).** Measurements evaluate as **exact rationals**
+    (no floats), and the result MUST land on a whole voxel (the atomic unit). Fractions/decimals are allowed
+    on **block-terms only** (`3.5 blocks`, `8/16 blocks`, `3 8/16 blocks`); a **voxel-term must be an
+    integer** — sub-voxel input (`8/16 voxels`, `8.5 voxels`) is **rejected** (nothing is finer than a voxel;
+    nudge to a block-fraction or a denser document). A block-fraction that does NOT land on a whole voxel at
+    the current `d` (e.g. `3.5 blocks` at an odd `d=15` = 52.5 voxels) is **rejected at entry with the nearest
+    representable values shown** — never silently rounded-and-stored as if exact. (At even densities like VS's
+    `d=16`, halves/quarters/eighths/sixteenths all land, so this case is rare.) The looser
+    *approximate-and-retain* alternative — store the expression, snap the derived voxel value, flag
+    "approximate at this density" — is deferred unless users ask for it.
   - **Density `voxels_per_block` is a DOCUMENT-LEVEL attribute (the crux).** `d` is a
     **document/project property** — "which game/grid this plan targets" — **saved with the document,
     uniform across it**, and is **NOT** a per-node field, **NOT** a casual render knob, and **NOT**
@@ -796,20 +841,25 @@ pub enum ShapeAnchors {                          // derives (size, origin) for t
     Cylinder { end_a: ShapePoint, end_b: ShapePoint, radius: SubVoxelLen }, // 2-point axis + radius (also Tube)
     Arc      { a: ShapePoint, b: ShapePoint, c: ShapePoint },         // 3-point arc / plane / wedge
 }
-// A reference point carries voxel-granular coordinates at the document's density d (§3f(0)):
-// block-aligned part + within-block voxel remainder.
+// A reference point carries voxel-granular coordinates at the document's density d (§3f(0)),
+// stored as a single voxel vector (same representation as NodeTransform.offset_voxels):
 pub enum ShapePoint {
-    Inline { offset_blocks: [i64; 3], offset_subvoxels: [i32; 3] },   // a typed inline point
-    HostedOnDatum(NodeId),                                            // names a Datum/anchor (F4 seam, §1)
+    Inline { offset_voxels: [i64; 3] },   // a typed inline point, voxel-granular at d
+    HostedOnDatum(NodeId),                // names a Datum/anchor (F4 seam, §1)
 }
 ```
 
 - **Corner/face anchoring makes `leaf_lattice_shift` identically ZERO by construction.** The
   implicit-center model forced a half-block shift for odd `size_blocks` (the comment-arithmetic that
   reconciled the 3 coordinate frames — the flagged Leak). A point-anchored shape places its corner/face
-  exactly on the lattice (or on a sub-voxel position via `offset_subvoxels`, §3f(0)), so **there is no
+  exactly on the lattice (or on a sub-voxel position via `offset_voxels`, §3f(0)), so **there is no
   half-block correction to carry** — this is the **intended RESOLUTION of the 3-frame "Leak"**, and that
-  leak can be retired once shapes are corner-anchored (recorded in the Leaks note above).
+  leak can be retired once shapes are corner-anchored (recorded in the Leaks note above). *Scope note:*
+  `leaf_lattice_shift` is computed from `size_blocks` **regardless of kind**, so corner-anchoring zeroes
+  the **block-lattice** shift for every shape (Box and radius shapes alike). The stronger "surface lands
+  exactly on the lattice" is a **Box** property; a radius shape with an **odd voxel diameter** still
+  centres on a half-voxel — but that is a *producer* sampling property (the SDF inscribes the shape in
+  its AABB), not a placement shift, and is independent of this anchoring change.
 - **Points are inline OR `HostedOnDatum` references (the F4 Datums seam, §1)** so the relational/solver
   tier can **NAME a shape's anchor** — a shape corner can be hosted on a datum/level/grid exactly like a
   part, riding the same id-keyed durable graph.
@@ -817,11 +867,29 @@ pub enum ShapePoint {
   `SetAnchor` / `SetCorner` — and `SetOffset` becomes **derived/anchor-based** (moving the anchor moves
   the shape), all additive growth on the §6a serializable boundary.
 
-**Within-part vs between-part granularity (load-bearing — state it clearly).** The sub-voxel placement
-(the within-block voxel remainder, §3f(0)) applies to **child-shape placement WITHIN a part DEFINITION**
-(carving/detail authoring — the sub-voxel anchoring of the points above). **CONNECTORS** (a part's
-mating interface, ADR 0004 §A) and **INTER-PART JOINTS** (§1) stay on the **integer BLOCK lattice**
-(`offset_subvoxels == 0`), so the ADR 0004 joint solver remains **integer-exact**. The rule: **sub-block
+- **Honest scope of the three variants (amended 2026-06-28).** Only **Box** is purely "a
+  parameterization above the existing producer"; the other two are NOT free parameterizations of today's
+  producers and must not be planned as such:
+  - **`Box{anchor, corner}`** corner-anchoring derives `(size, origin)` the axis-aligned `SdfShape`
+    already consumes and zeroes the block-lattice shift (above). Genuinely "payload unchanged."
+  - **`Cylinder{end_a, end_b, radius}` with two *free* endpoints implies an arbitrary axis**, but the
+    only cylinder producer today (`signed_distance_elliptical_cylinder`) is **hard-coded axis-along-Y**.
+    So for v1 the two endpoints are **constrained to a single axis** (they differ on exactly one
+    coordinate); a genuinely diagonal cylinder needs the **deferred Phase F-rot rotation milestone**
+    (§3f (a)), not this section. "Producer payload unchanged" is honest only for the axis-aligned case.
+  - **`Arc{a, b, c}` has NO producer today** — the closed `ShapeKind` set is
+    `Cylinder/Tube/Sphere/Torus/Box`. It is **new producer work** (a new `ShapeKind` + a new
+    `signed_distance` arc/wedge function), tracked as such, **not** folded into the anchoring slice.
+  - **Derived size must be non-degenerate.** `Box{anchor, corner}` derives `size = |corner − anchor|`
+    per axis under a **min/max normalization** (inverted corners are canonicalized, never underflowed
+    into the `u32` `size_blocks`), and `SetAnchor`/`SetCorner` **reject a zero-extent box** rather than
+    silently resolving an empty grid. This invariant lives on the anchor-editing intents.
+
+**Within-part vs between-part granularity (load-bearing — state it clearly).** Sub-block placement
+(an `offset_voxels` not divisible by `d`, §3f(0)) applies to **child-shape placement WITHIN a part
+DEFINITION** (carving/detail authoring — the sub-voxel anchoring of the points above). **CONNECTORS** (a
+part's mating interface, ADR 0004 §A) and **INTER-PART JOINTS** (§1) stay on the **integer BLOCK
+lattice** (`offset_voxels % d == 0`), so the ADR 0004 joint solver remains **integer-exact**. The rule: **sub-block
 where you carve, block-aligned where you mate.** This reconciles ADR 0004's "connectors stay block-clean"
 (still true — between-part mating is unchanged) with sub-block kit authoring (a new within-part freedom):
 the two granularities live in different tiers and never meet.
