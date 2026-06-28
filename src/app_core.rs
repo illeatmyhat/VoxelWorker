@@ -1541,6 +1541,97 @@ mod undo_tests {
         }
     }
 
+    /// The occupied-voxel CORNER bounding box of a single `shape` of `size_blocks` at
+    /// offset `[0, 0, 0]`, resolved at `density` through **`AppCore::rebuild`** — the
+    /// per-chunk store path the WINDOWED APP actually renders. Returns
+    /// `(min_corner, max_corner)` per axis in absolute voxel units (the half-open box
+    /// `[min, max)`; voxel centres sit at `n + 0.5`, so the corner is `floor(centre)`
+    /// for the min and `floor(centre) + 1` for the max).
+    fn rebuild_frame_corner_bbox(
+        shape: SdfShape,
+        density: u32,
+    ) -> ([i64; 3], [i64; 3]) {
+        let mut scene = Scene::from_nodes(vec![tool_node(shape, MaterialChoice::Stone)]);
+        scene.ensure_node_ids();
+        scene.ensure_origin_point();
+        scene.active = scene.roots.first().copied();
+        let mut core = test_core();
+        let RebuildOutcome::Built(output) = core.rebuild(&scene, density) else {
+            panic!("density {density} unexpectedly rejected");
+        };
+        assert!(!output.grid.occupied.is_empty(), "shape resolved empty");
+        let mut min = [i64::MAX; 3];
+        let mut max = [i64::MIN; 3];
+        for voxel in &output.grid.occupied {
+            for axis in 0..3 {
+                let corner = voxel.world_position[axis].floor() as i64;
+                min[axis] = min[axis].min(corner);
+                max[axis] = max[axis].max(corner + 1); // half-open upper bound
+            }
+        }
+        (min, max)
+    }
+
+    /// PERMANENT GUARD (corrects the coordinator's mistaken premise). A shape placed
+    /// at world offset `[0, 0, 0]` is rendered CENTRED ON THE WORLD ORIGIN through
+    /// the `AppCore::rebuild` / per-chunk store path — the exact path the windowed app
+    /// renders. This pins the EMPIRICAL render-frame coordinates so the convention can
+    /// never be misdescribed again.
+    ///
+    /// The per-chunk store applies the composite recentre (`Store::bind_region`
+    /// rebases every chunk to the composite's recentre / floating origin), so the
+    /// rebuild grid is in the SAME centred frame as the monolithic `resolve_region`
+    /// (bit-identical for a near scene — proven by the goldens). The #30 lattice shift
+    /// snaps the producer grid onto the block lattice in the PRODUCER-TRUE
+    /// (pre-recentre) frame, but the recentre then re-symmetrises the composite about
+    /// the origin — so the shape the user sees is centred, NOT corner-at-origin.
+    ///
+    /// Measured coordinates (this test pins them):
+    ///   * 1×1×1 box  @ d16 → `[−8, 8)`  per axis  (d8 → `[−4, 4)`)  — centred, NOT `[0, 16)`.
+    ///   * 5×5×5 sphere @ d16 → `[−40, 40)` per axis (d8 → `[−20, 20)`).
+    ///   * 5×1×5 box  @ d16 → X/Z `[−40, 40)`, Y `[−8, 8)` (d8 → `[−20, 20)`, `[−4, 4)`).
+    ///
+    /// We assert the CORNER bbox is symmetric (`min + max == 0`): an odd voxel span
+    /// (`size·d` is even here, so the span is even-in-voxels) makes the corner bbox
+    /// exactly symmetric, with a voxel BOUNDARY on the origin.
+    #[test]
+    fn shapes_render_centered_on_origin_in_rebuild_frame() {
+        use crate::voxel::ShapeKind;
+        let cases: [(ShapeKind, [u32; 3]); 3] = [
+            (ShapeKind::Box, [1, 1, 1]),
+            (ShapeKind::Sphere, [5, 5, 5]),
+            (ShapeKind::Box, [5, 1, 5]),
+        ];
+        for density in [8u32, 16] {
+            for (kind, size) in cases {
+                let shape = SdfShape { kind, size_blocks: size, voxels_per_block: density, wall_blocks: 1 };
+                let (min, max) = rebuild_frame_corner_bbox(shape, density);
+                for axis in 0..3 {
+                    // Centred: the half-open corner box is symmetric about 0.
+                    assert_eq!(
+                        min[axis] + max[axis],
+                        0,
+                        "{kind:?} {size:?}@d{density} axis {axis}: rebuild-frame corner bbox \
+                         [{}, {}) must be centred on the origin (min + max == 0)",
+                        min[axis], max[axis]
+                    );
+                    // …and spans exactly size·d voxels (no clipping / no half-block leak).
+                    assert_eq!(
+                        max[axis] - min[axis],
+                        (size[axis] * density) as i64,
+                        "{kind:?} {size:?}@d{density} axis {axis}: span must be size·d voxels"
+                    );
+                }
+            }
+        }
+        // Pin the exact 1×1×1 @ d16 box so the convention is unambiguous: it occupies
+        // [−8, 8) per axis (centred), NOT [0, 16) (corner-at-origin).
+        let one_block = SdfShape { kind: ShapeKind::Box, size_blocks: [1, 1, 1], voxels_per_block: 16, wall_blocks: 1 };
+        let (min, max) = rebuild_frame_corner_bbox(one_block, 16);
+        assert_eq!(min, [-8, -8, -8], "1×1×1 box @ d16 min corner is centred at −8, not 0");
+        assert_eq!(max, [8, 8, 8], "1×1×1 box @ d16 max corner is centred at +8, not 16");
+    }
+
     /// Regression (FIX 1): toggling ONLY `voxel_grid_on_faces` must make the on-face
     /// grid appear on the FIRST rebuild — no unrelated edit needed to evict the
     /// stale cached chunks.

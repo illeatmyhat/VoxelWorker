@@ -4444,10 +4444,17 @@ mod tests {
         (min, max)
     }
 
-    /// USER-REQUESTED PERMANENT GUARD: an odd-sized shape placed at world offset
-    /// `[0, 0, 0]` is centred on the origin in the rendered (recentred) frame — its
-    /// occupied-voxel-CENTRE bounding box is symmetric about 0 on every axis
+    /// PERMANENT GUARD: an odd-sized shape placed at world offset `[0, 0, 0]` is
+    /// centred on the origin in the **recentred monolithic `resolve_region` frame** —
+    /// its occupied-voxel-CENTRE bounding box is symmetric about 0 on every axis
     /// (`min_centre + max_centre == 0`).
+    ///
+    /// This is the MONOLITHIC resolve frame, not the windowed-app render path; but the
+    /// two are BIT-IDENTICAL for a near scene (the per-chunk store applies the same
+    /// composite recentre — proven by the goldens and by
+    /// `app_core::undo_tests::shapes_render_centered_on_origin_in_rebuild_frame`, which
+    /// pins the SAME centring through `AppCore::rebuild`). So this guards the same
+    /// observable: the rendered shape is centred on the world origin.
     ///
     /// Covers a 5×5×5 sphere (odd on all axes) and a 5×1×5 box (the odd-X/Z, 1-block-Y
     /// size the user called out). The assertion is on voxel CENTRES, which is exact
@@ -4455,7 +4462,7 @@ mod tests {
     /// [`occupied_voxel_centre_bbox`] for why centres (not corners) are compared and
     /// why this is the RECENTRED frame, not the lattice-shifted producer frame.
     #[test]
-    fn odd_size_shape_at_zero_offset_is_centered_on_origin() {
+    fn odd_size_shape_centered_on_origin_in_resolve_region_frame() {
         let cases: [(ShapeKind, [u32; 3]); 2] =
             [(ShapeKind::Sphere, [5, 5, 5]), (ShapeKind::Box, [5, 1, 5])];
         for density in [1u32, 8, 16] {
