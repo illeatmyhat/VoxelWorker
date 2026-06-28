@@ -26,44 +26,17 @@ use voxel_worker::block_palette::{BlockPalette, LoadedMaterial, ThumbnailRendere
 use voxel_worker::scan_worker::{run_auto_scan_blocking, FaceResolver};
 use voxel_worker::{
     create_depth_view, create_msaa_color_view, procedural_material_average_color, render_frame,
-    run_egui_frame, AssemblyDef, CubeFace, DefId, EguiPaintBridge, FogMode, FrameOverlays,
+    run_egui_frame, AppCore, AssemblyDef, CubeFace, DefId, EguiPaintBridge, FogMode, FrameOverlays,
     GeometryParams,
     GpuContext, InfiniteGridRenderer, LayerBand, LayerRange, MaterialChoice, MaterialSource,
-    PointsRenderer, SceneGridRenderer,
-    Node, NodeContent, NodePath, OnionFogParams, OnionFogRenderer, OrbitCamera, PanelState, Part,
+    PointsRenderer, RebuildOutcome, RebuildOutput, SceneGridRenderer,
+    Node, NodeContent, NodePath, OnionFogRenderer, OrbitCamera, PanelState, Part,
     Point,
     ProjectionMode, RegionBlocks, Scene, SdfShape, ShapeKind, TransformGizmoRenderer,
     ViewCubeElement, VoxExport,
     ViewCubeRenderer, VoxelGrid, COLOR_TARGET_FORMAT,
 };
 use voxel_worker::CuboidMeshRenderer;
-
-/// Build the onion-skin fog parameters (issue #12) from the camera, grid, and
-/// layer-range. World-Y of layer `j` spans `[j - grid_y/2, j+1 - grid_y/2]`; the
-/// solid band is layers `[lower, upper]`, the onion band extends `onion_depth`
-/// layers on each side.
-fn onion_fog_params(
-    view_projection: glam::Mat4,
-    grid_dimensions: [u32; 3],
-    layer_range: LayerRange,
-) -> OnionFogParams {
-    let half_y = grid_dimensions[1] as f32 / 2.0;
-    let depth = layer_range.onion_depth.clamp(1, 8) as f32;
-    let lower = layer_range.lower as f32;
-    let upper = layer_range.upper.min(grid_dimensions[1].saturating_sub(1)) as f32;
-    OnionFogParams {
-        inverse_view_projection: view_projection.inverse(),
-        semi_axes: [
-            grid_dimensions[0] as f32 / 2.0,
-            grid_dimensions[1] as f32 / 2.0,
-            grid_dimensions[2] as f32 / 2.0,
-        ],
-        onion_y_min: (lower - depth) - half_y,
-        onion_y_max: (upper + 1.0 + depth) - half_y,
-        band_y_min: lower - half_y,
-        band_y_max: (upper + 1.0) - half_y,
-    }
-}
 
 struct ShotOptions {
     output_path: PathBuf,
@@ -1080,59 +1053,91 @@ async fn run_capture(options: ShotOptions) {
     // fine as long as each chunk is small. Only a pathological density (one chunk's
     // voxel capacity alone exceeds the bound) is rejected.
     let density = options.geometry.voxels_per_block;
-    let grid = if voxel_worker::voxel::chunk_extent_exceeds_bound(density) {
-        let chunk_extent = (voxel_worker::core_geom::CHUNK_BLOCKS * density.max(1)) as u64;
-        let chunk_voxels = chunk_extent * chunk_extent * chunk_extent;
-        panel_state.voxel_cap_warning_millions = Some(chunk_voxels as f32 / 1_000_000.0);
-        eprintln!(
-            "3D paused — one chunk is {:.1}M voxels, exceeding the per-chunk bound; \
-             rendering empty grid",
-            chunk_voxels as f32 / 1_000_000.0
-        );
-        VoxelGrid::new([
-            region.size_blocks[0] * density,
-            region.size_blocks[1] * density,
-            region.size_blocks[2] * density,
-        ])
-    } else if scene.has_chunkable_extent(density) {
-        // Route the resolve through the per-chunk cache (issue #27 S2). The cache
-        // lazily resolves each covering chunk and reassembles the SAME recentred
-        // monolithic grid the renderer/mesher/fog consumed before — byte-identical.
-        // (`resolve_region` here resolves the scene's full composite extent, which
-        // for a single zero-offset shape equals `region` — so single-shape goldens
-        // are unchanged.)
-        let mut chunk_resolve_cache = voxel_worker::chunk_cache::ChunkResolveCache::new();
-        chunk_resolve_cache.resolve_region(&scene, density, 0)
-    } else {
-        // A Part-only scene (e.g. `--shape debug-clouds`) has no intrinsic-size
-        // leaf, so there is no composite AABB to chunk — the cloud field sizes
-        // itself to the EXPLICIT region. Resolve it directly through the monolithic
-        // path, exactly as before (unchanged output).
-        scene.resolve_region(region, density, 0)
-    };
+    // The headless core: the resolve store + the CLI camera (assigned once the
+    // region dimensions are known, below). The CHUNKABLE path — every shape + demo
+    // scene the goldens test — resolves through `AppCore::rebuild`, the SAME
+    // store-backed resolve + per-chunk path the windowed app drives, so the golden
+    // net now exercises the real core instead of a parallel copy (A3 keystone). The
+    // density-cap and Part-only branches stay shot-specific (the windowed app never
+    // produces them). `render_chunks_for_mesh` carries the per-chunk accessor
+    // (chunkable path only) to the cuboid mesh build below; it borrows the store, so
+    // `app_core` is left untouched until it is consumed + dropped there.
+    let mut app_core = AppCore::new(voxel_worker::Store::new(), OrbitCamera::default());
+    // Issue #20 S6c-1: `region_dimensions` (what the camera auto-frame, origin gizmo,
+    // block lattice and fine floor grid are sized from) is read from the SCENE, not
+    // by reaching into the assembled grid object. For a chunkable scene it equals
+    // `grid.dimensions` exactly (the resolve sizes the grid to
+    // `placed_region_dimensions`, proven in
+    // `scene::tests::placed_region_dimensions_equals_assembled_grid`); for the
+    // chunkable path it comes straight off `AppCore::rebuild`'s output (no recompute).
+    // A Part-only scene (`--shape debug-clouds`) has no composite extent, so it is
+    // resolved through the explicit-region path and sized `region × density` (rather
+    // than `placed_region_dimensions`, which is `[0,0,0]` for it).
+    let (grid, region_dimensions, mut render_chunks_for_mesh) =
+        if voxel_worker::voxel::chunk_extent_exceeds_bound(density) {
+            let chunk_extent = (voxel_worker::core_geom::CHUNK_BLOCKS * density.max(1)) as u64;
+            let chunk_voxels = chunk_extent * chunk_extent * chunk_extent;
+            panel_state.voxel_cap_warning_millions = Some(chunk_voxels as f32 / 1_000_000.0);
+            eprintln!(
+                "3D paused — one chunk is {:.1}M voxels, exceeding the per-chunk bound; \
+                 rendering empty grid",
+                chunk_voxels as f32 / 1_000_000.0
+            );
+            // Render an EMPTY grid + (below) an empty mesh — NO resolve at the
+            // pathological density. This matches the windowed app, where
+            // `AppCore::rebuild` returns `DensityRejected` and resolves nothing; it
+            // also makes shot's mesh consistent with the empty fog grid + the
+            // "rendering empty grid" message (the pre-A3 cuboid path keyed on
+            // `has_chunkable_extent` and resolved per-chunk anyway, risking the very
+            // huge-allocation/hang the cap exists to prevent).
+            let grid = VoxelGrid::new([
+                region.size_blocks[0] * density,
+                region.size_blocks[1] * density,
+                region.size_blocks[2] * density,
+            ]);
+            let region_dimensions = if scene.has_chunkable_extent(density) {
+                scene.placed_region_dimensions(density)
+            } else {
+                grid.dimensions
+            };
+            (grid, region_dimensions, None)
+        } else if scene.has_chunkable_extent(density) {
+            // Route the resolve through `AppCore::rebuild` (issue #27 S2/S3): the store
+            // lazily resolves each covering chunk and reassembles the SAME recentred
+            // grid the windowed app's rebuild produces, then hands back the region
+            // dimensions + the per-chunk render accessor — byte-identical to shot's
+            // former separate-cache path. (It resolves the scene's full composite
+            // extent, which for a single zero-offset shape equals `region`, so
+            // single-shape goldens are unchanged.)
+            match app_core.rebuild(&scene, density) {
+                RebuildOutcome::Built(RebuildOutput {
+                    grid,
+                    region_dimensions,
+                    render_chunks,
+                }) => (grid, region_dimensions, Some(render_chunks)),
+                // Unreachable: the density-cap branch above already handled the only
+                // rejection case (one chunk exceeding the per-chunk voxel bound).
+                RebuildOutcome::DensityRejected { .. } => {
+                    unreachable!("chunk_extent_exceeds_bound was false, so rebuild cannot reject")
+                }
+            }
+        } else {
+            // A Part-only scene (e.g. `--shape debug-clouds`) has no intrinsic-size
+            // leaf, so there is no composite AABB to chunk — the cloud field sizes
+            // itself to the EXPLICIT region. Resolve it directly through the monolithic
+            // path, exactly as before (unchanged output). The windowed app never
+            // produces a Part-only scene.
+            let grid = scene.resolve_region(region, density, 0);
+            let region_dimensions = [
+                region.size_blocks[0] * density,
+                region.size_blocks[1] * density,
+                region.size_blocks[2] * density,
+            ];
+            (grid, region_dimensions, None)
+        };
     // The voxel-space grid dimensions actually resolved (the composite region for
     // a placed scene), used for the layer track and the uniforms / fog.
     let grid_dimensions = grid.dimensions;
-    // Issue #20 S6c-1: the camera auto-frame, origin gizmo, block lattice and fine
-    // floor grid are sized from the SCENE's region dimensions, not by reaching into
-    // the assembled grid object (prep for the per-chunk renderer, S6c step 4). For a
-    // chunkable scene this equals `grid.dimensions` exactly (the resolve sizes the
-    // grid to `placed_region_dimensions`, proven in
-    // `scene::tests::placed_region_dimensions_equals_assembled_grid`). A Part-only
-    // scene (`--shape debug-clouds`) has no composite extent, so it is resolved
-    // through the explicit-region path; we mirror that exact branch here (region ×
-    // density) rather than `placed_region_dimensions` (which is `[0,0,0]` for it),
-    // so the substitution stays byte-identical. The renderer / mesher / fog still
-    // consume the assembled `grid` (that's S6c step 4).
-    let region_dimensions = if scene.has_chunkable_extent(density) {
-        scene.placed_region_dimensions(density)
-    } else {
-        [
-            region.size_blocks[0] * density,
-            region.size_blocks[1] * density,
-            region.size_blocks[2] * density,
-        ]
-    };
     debug_assert_eq!(
         region_dimensions, grid_dimensions,
         "S6c-1: scene region dimensions must equal the assembled grid the consumers used"
@@ -1212,9 +1217,11 @@ async fn run_capture(options: ShotOptions) {
     // resolve cache's per-chunk accessor (`resident_render_chunks`) so the goldens
     // exercise the per-chunk path, falling back to the whole-grid wrapper when the
     // scene has no chunkable extent (the wrapper buckets internally → identical mesh).
-    let mut cuboid_mesh_renderer = if scene.has_chunkable_extent(density) {
-        let mut cuboid_resolve_cache = voxel_worker::chunk_cache::ChunkResolveCache::new();
-        let render_chunks = cuboid_resolve_cache.resident_render_chunks(&scene, density, 0);
+    let mut cuboid_mesh_renderer = if let Some(render_chunks) = render_chunks_for_mesh.take() {
+        // Chunkable path: mesh the per-chunk accessor from `AppCore::rebuild` above
+        // (1-voxel neighbour apron per chunk), so the goldens exercise the real
+        // per-chunk mesh path. `render_chunks` holds an immutable borrow of the store;
+        // consume + drop it here, freeing `app_core` for the camera assignment below.
         let renderer = CuboidMeshRenderer::new_from_chunks(
             &gpu.device,
             &gpu.queue,
@@ -1225,6 +1232,8 @@ async fn run_capture(options: ShotOptions) {
         drop(render_chunks);
         renderer
     } else {
+        // Density-cap (empty grid) or Part-only scene: mesh the whole grid (the
+        // wrapper buckets it into per-chunk sub-grids internally → identical mesh).
         CuboidMeshRenderer::new(
             &gpu.device,
             &gpu.queue,
@@ -1238,9 +1247,7 @@ async fn run_capture(options: ShotOptions) {
     // recentred pivot. `None` (no selection / no extent) keeps `--gizmo` a no-op,
     // and the goldens (which never pass `--gizmo`) are unaffected.
     let gizmo_placement = if options.show_origin_gizmo {
-        panel_state
-            .scene
-            .active_gizmo_placement(options.geometry.voxels_per_block)
+        AppCore::gizmo_placement(&panel_state.scene, options.geometry.voxels_per_block)
     } else {
         None
     };
@@ -1328,7 +1335,11 @@ async fn run_capture(options: ShotOptions) {
         Some(element) => element.snap_angles(),
         None => (options.theta, options.phi),
     };
-    let camera = OrbitCamera {
+    // The render-chunk borrow from `AppCore::rebuild` was consumed + dropped at the
+    // cuboid mesh build above, so `app_core` is free again — install the CLI camera
+    // so the headless render sources `view_projection` from the same `AppCore` the
+    // windowed shell does.
+    app_core.camera = OrbitCamera {
         target: glam::Vec3::ZERO,
         orbit_theta: theta,
         orbit_phi: phi,
@@ -1520,7 +1531,7 @@ async fn run_capture(options: ShotOptions) {
     // the side panel. Then upload every uniform that depends on the camera matrix.
     let [_, _, viewport_width, viewport_height] = prepared.viewport_px;
     let aspect_ratio = viewport_width as f32 / viewport_height.max(1) as f32;
-    let view_projection = camera.view_projection(aspect_ratio);
+    let view_projection = app_core.view_projection(aspect_ratio);
     let gizmo_pivot = gizmo_placement
         .map(|(pivot, _)| glam::Vec3::from_array(pivot))
         .unwrap_or(glam::Vec3::ZERO);
@@ -1553,14 +1564,14 @@ async fn run_capture(options: ShotOptions) {
             &panel_state.scene,
             options.geometry.voxels_per_block,
             view_projection,
-            camera.eye().to_array(),
+            app_core.camera.eye().to_array(),
         );
     }
-    view_cube_renderer.update_uniforms(&gpu.queue, camera.view_cube_view_projection());
+    view_cube_renderer.update_uniforms(&gpu.queue, app_core.camera.view_cube_view_projection());
     if onion_active {
         onion_fog_renderer.update(
             &gpu.queue,
-            onion_fog_params(view_projection, grid_dimensions, layer_range),
+            AppCore::onion_fog_params(view_projection, grid_dimensions, layer_range),
         );
     }
 
@@ -1623,7 +1634,7 @@ async fn run_capture(options: ShotOptions) {
         // #13 Step 6 follow-up: the four rotate arrows draw persistently when the view
         // is face-constrained. A forced `--cube-hover rotate-*` also enables them so a
         // golden can pin the arrow render even from a non-face camera.
-        cube_rotate_arrows_visible: camera.is_face_constrained()
+        cube_rotate_arrows_visible: app_core.camera.is_face_constrained()
             || matches!(
                 options.cube_hover,
                 Some(voxel_worker::camera::CubeChromeZone::RotateArrow(_))
