@@ -827,7 +827,48 @@ A single rule decides every "trait or enum?" call in this foundation:
 - **The `Layer` kind** (`Producer` vs `Sculpt`, §3b) — a fixed two-arm fold.
 - **`CombineOp`** (`Union`/`Subtract`/`Intersect`) — a fixed, matched, serialized set.
 
-#### 3i. Point-defined (corner/face-anchored) shapes — retires the 3-frame leak; the within-part/between-part granularity split
+#### 3i. SKETCH → VOLUME authoring (the atom) + point-defined substrate — retires the 3-frame leak; within-/between-part granularity
+
+**EVOLVED 2026-06-28 — the authoring atom is 2D SKETCH → VOLUME; primitives + box-drag are sugar.**
+A design conversation + sourced tool research (HardCuts — a standalone **voxel/SDF** app, not a Blender
+plugin — plus SketchUp push/pull, Revit massing, Fusion "every model starts as a 2D sketch": the
+buildings-focused consensus) reframed the shape model. The point-defined work below is RIGHT and is the
+**substrate**, but its *target* generalizes from "2-point primitives" to **sketches**:
+
+- **The atom = a `Sketch` (a grid-aligned plane + an ordered point *profile*, voxel-granular at `d`,
+  §3f(0)) + an `Operation` (`Extrude` / `Revolve` / `Sweep`)**, producing a volume. This is a new
+  `VoxelProducer` family (§3d; producers are the open trait, §3h), composed through the existing
+  `CombineOp` boolean `Layer` stack (§3b) — "anything that bounds a volume is a boolean operand on the
+  voxel field" (the HardCuts insight). Buildings are overwhelmingly footprint-extrude + profile-sweep +
+  revolve, so this natively covers walls/floors/roofs/arches/columns/cornices; primitive boxes
+  under-cover them and are the trivial by-hand case. **The product's value is organic / complex shapes**
+  (incl. VS sub-block chiseled surfaces like fake brick), not blocky massing.
+- **Primitives are SUGAR over sketches, not a parallel engine.** `box` = a rectangle profile extruded;
+  `cylinder` = a circle profile extruded; `sphere`/`dome` = a circle revolved; `torus` = a circle
+  revolved off-axis — each desugars to (profile + operation). The existing `SdfShape` SDF code is **kept
+  and reused as the rasterizer for curved profiles** (a circle profile *is* the SDF circle), not
+  discarded; the new producer is added **alongside** `SdfShape`, keeping goldens green during migration,
+  and primitives are reframed as sugar incrementally.
+- **Even box-drag is sugar.** Dragging a rectangle across the ground plane — or onto the *surface of an
+  existing object* (SketchUp push/pull-style on-surface sketching) — creates a rectangle sketch that
+  extrudes. So the zero-ceremony entry is *also* sketch-underneath: **one operand pipeline** fed by
+  box-drag, named primitives, and drawn/swept/lathed profiles. This dissolves the floor-vs-ceiling
+  tension (see the `authoring-atom-sketch-to-volume` memory).
+- **`ShapeAnchors` generalizes to a sketch.** The 2-point `Box{anchor, corner}` below is the degenerate
+  rectangle-extrude; a polyline footprint is the same machinery with more `ShapePoint`s. `ShapePoint` is
+  exactly a sketch vertex; the **leak-retirement and within-/between-part split below still hold verbatim**
+  (sketches are point/corner-defined → leak-free by construction). The "honest scope" caveats below are
+  reframed: a free-axis cylinder is a circle profile on a *rotated sketch plane* (still gated on the
+  plane-orientation milestone, §3f(a)); an "arc" is just a curved profile segment, not a new `ShapeKind`.
+
+**Build arc (Slice 2):** **2a** = sketch→`Extrude` engine, headless `shot`-verified · **2b** =
+box-drag-on-plane sugar (first interactive authoring) · **2c** = free polyline sketches +
+`Revolve`/`Sweep` + primitives-reframed-as-sugar + on-surface sketching. The parametric blocks/voxels
+units layer (§3f(0)) feeds sketch dimensions. Minecraft (`d=1`) collapses sub-voxel profile precision to
+whole blocks (sub-block features off), no special-casing. **Slice 1 (the §3f(0) coordinate substrate —
+document density + single `offset_voxels`) is SHIPPED.**
+
+*The original point-defined rationale (still valid as the substrate) follows.*
 
 Driven by the kit-of-parts authoring need (composing primitives with boolean ops at sub-block
 resolution, ADR 0004 §A/§G9), shapes stop being **`size_blocks` + an implicit center anchor** and
