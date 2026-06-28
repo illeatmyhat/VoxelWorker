@@ -711,7 +711,7 @@ mod tests {
                 wall_blocks: 1,
             };
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
-            node.transform.offset_blocks = offset;
+            node.transform = crate::scene::NodeTransform::from_blocks(offset, voxels_per_block);
             node
         };
         let demo_scene = Scene::from_nodes(vec![
@@ -729,12 +729,12 @@ mod tests {
                 wall_blocks: 1,
             };
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
-            node.transform.offset_blocks = offset;
+            node.transform = crate::scene::NodeTransform::from_blocks(offset, voxels_per_block);
             node
         };
         let instance = |name: &str, offset: [i64; 3]| {
             let mut node = Node::new(name, NodeContent::Instance(house_def_id));
-            node.transform.offset_blocks = offset;
+            node.transform = crate::scene::NodeTransform::from_blocks(offset, voxels_per_block);
             node
         };
         let mut village = Scene::from_nodes(vec![
@@ -1027,7 +1027,7 @@ mod tests {
                 wall_blocks: 1,
             };
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
-            node.transform.offset_blocks = offset;
+            node.transform = crate::scene::NodeTransform::from_blocks(offset, voxels_per_block);
             node
         };
         let village = Scene::from_nodes(vec![

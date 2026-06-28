@@ -155,8 +155,8 @@ struct ShotOptions {
     /// fewer chunks; a small scene draws all of them.
     debug_chunks: bool,
     /// `--demo-far-offset` (ADR 0002 streaming S1, part of #18): build a small
-    /// recognizable box placed at a LARGE block offset (`offset_blocks =
-    /// [100_000, 0, 0]`) so the far-lands f32-precision question can be observed.
+    /// recognizable box placed at a LARGE block offset (a block offset of
+    /// [100_000, 0, 0]) so the far-lands f32-precision question can be observed.
     /// This is the precision baseline the S4 64-bit/origin-rebasing work regresses
     /// against. NOTE: today's `resolve_region` recentres the composite on its own
     /// centre, so a LONE far node is recentred back to the origin — see the S1
@@ -166,7 +166,7 @@ struct ShotOptions {
     /// removed. Overrides --shape/--size/--density.
     far_offset: bool,
     /// `--demo-far-offset-near` (ADR 0002 streaming S1): the SAME small box as
-    /// `--demo-far-offset` but placed at the ORIGIN (`offset_blocks = [0, 0, 0]`),
+    /// `--demo-far-offset` but placed at the ORIGIN (a block offset of [0, 0, 0]),
     /// for A/B comparison against the far render. Overrides --shape/--size/--density.
     far_offset_near: bool,
     /// `--demo-groups` (ADR 0001 step 4, UI verification): build a scene with a
@@ -246,7 +246,8 @@ impl Default for ShotOptions {
 }
 
 /// The block offset of the far-offset demo box (ADR 0002 streaming S1; S4b makes it
-/// jitter-free). A large offset in the now-`i64` `offset_blocks` (widened in S4a). At
+/// jitter-free). A large block offset, resolved through the now-`i64` voxel offset
+/// (widened in S4a). At
 /// density 16 this is **16 million voxels** from the origin — past the f32
 /// exact-integer ceiling (2²⁴ ≈ 16.7M), where the old recentre-AFTER-f32-add path
 /// lost the voxel-centre `.5` fraction on EVERY voxel (the real precision breakdown
@@ -769,7 +770,7 @@ fn build_demo_scene(voxels_per_block: u32) -> Scene {
             format!("{kind:?}"),
             NodeContent::Tool { shape, material },
         );
-        node.transform.offset_blocks = offset;
+        node.transform = voxel_worker::scene::NodeTransform::from_blocks(offset, voxels_per_block);
         node
     };
     let mut scene = selecting_first_node(Scene::from_nodes(vec![
@@ -799,7 +800,7 @@ fn build_demo_village(voxels_per_block: u32) -> Scene {
             wall_blocks: 1,
         };
         let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
-        node.transform.offset_blocks = offset;
+        node.transform = voxel_worker::scene::NodeTransform::from_blocks(offset, voxels_per_block);
         node
     };
 
@@ -815,7 +816,7 @@ fn build_demo_village(voxels_per_block: u32) -> Scene {
     // separated locations from a single stored definition.
     let instance = |name: &str, offset: [i64; 3]| {
         let mut node = Node::new(name, NodeContent::Instance(house_def_id));
-        node.transform.offset_blocks = offset;
+        node.transform = voxel_worker::scene::NodeTransform::from_blocks(offset, voxels_per_block);
         node
     };
     let mut scene = Scene::from_nodes(vec![
@@ -851,7 +852,7 @@ fn build_demo_groups(voxels_per_block: u32) -> Scene {
     let tool = |kind, size: [u32; 3], offset: [i64; 3], material, name: &str| {
         let shape = SdfShape { kind, size_blocks: size, wall_blocks: 1 };
         let mut node = Node::new(name, NodeContent::Tool { shape, material });
-        node.transform.offset_blocks = offset;
+        node.transform = voxel_worker::scene::NodeTransform::from_blocks(offset, voxels_per_block);
         node
     };
 
@@ -862,6 +863,7 @@ fn build_demo_groups(voxels_per_block: u32) -> Scene {
     let cluster = NodeBuilder::group_at(
         "Cluster",
         [0, 0, 0],
+        voxels_per_block,
         vec![
             tool(ShapeKind::Sphere, [2, 2, 2], [0, 0, 0], MaterialChoice::Stone, "Core").into(),
             tool(ShapeKind::Box, [2, 2, 2], [3, 0, 0], MaterialChoice::Wood, "Shell").into(),
@@ -870,7 +872,7 @@ fn build_demo_groups(voxels_per_block: u32) -> Scene {
 
     let lone = tool(ShapeKind::Box, [2, 2, 2], [8, 0, 0], MaterialChoice::Wood, "Lone");
     let mut widget_instance = Node::new("Widget instance", NodeContent::Instance(widget_def_id));
-    widget_instance.transform.offset_blocks = [12, 0, 0];
+    widget_instance.transform = voxel_worker::scene::NodeTransform::from_blocks([12, 0, 0], voxels_per_block);
 
     let mut scene = Scene::from_nodes(vec![
         cluster,
@@ -914,7 +916,10 @@ fn build_far_offset_scene(voxels_per_block: u32, far: bool) -> Scene {
             material: MaterialChoice::Stone,
         },
     );
-    node.transform.offset_blocks = if far { FAR_OFFSET_BLOCKS } else { [0, 0, 0] };
+    node.transform = voxel_worker::scene::NodeTransform::from_blocks(
+        if far { FAR_OFFSET_BLOCKS } else { [0, 0, 0] },
+        voxels_per_block,
+    );
     let mut scene = Scene::single_node(node);
     scene.voxels_per_block = voxels_per_block;
     scene

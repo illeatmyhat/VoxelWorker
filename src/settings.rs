@@ -440,7 +440,7 @@ mod tests {
             "Wood",
             NodeContent::Tool { shape: unit_box(ShapeKind::Box), material: MaterialChoice::Wood },
         );
-        wood.transform.offset_blocks = [3, 0, 0];
+        wood.transform = crate::scene::NodeTransform::from_blocks([3, 0, 0], voxels_per_block);
         // ADR 0003 Phase B3: selection is keyed by NodeId, so mint ids and select
         // the second node (top-level index 1) by its stable id.
         let mut scene = Scene::from_nodes(vec![stone, wood]);
@@ -459,7 +459,10 @@ mod tests {
 
         assert_eq!(restored_panel.scene.roots.len(), 2, "both nodes survive the reload");
         assert_eq!(restored_panel.scene.active, scene.active, "the active selection survives");
-        assert_eq!(restored_panel.scene.root_node(1).transform.offset_blocks, [3, 0, 0]);
+        assert_eq!(
+            restored_panel.scene.root_node(1).transform.blocks(voxels_per_block),
+            [3, 0, 0]
+        );
 
         let region = scene.full_extent_blocks(voxels_per_block);
         let before = scene.resolve_region(region, voxels_per_block, 0).occupied_count();
@@ -623,7 +626,7 @@ mod tests {
         );
         // Top-level node 1: a Clouds Part, offset.
         let mut clouds = Node::new("Clouds", NodeContent::Part(Part::DebugClouds { seed: 7 }));
-        clouds.transform.offset_blocks = [3, 0, 0];
+        clouds.transform = crate::scene::NodeTransform::from_blocks([3, 0, 0], voxels_per_block);
         // Top-level node 2: a Group containing a Plain Tool offset within it.
         let mut grouped_leaf = Node::new(
             "Leaf",
@@ -632,13 +635,13 @@ mod tests {
                 material: MaterialChoice::Plain,
             },
         );
-        grouped_leaf.transform.offset_blocks = [1, 0, 0];
+        grouped_leaf.transform = crate::scene::NodeTransform::from_blocks([1, 0, 0], voxels_per_block);
         // Top-level node 2: a Group at +6X containing the Plain Tool offset within it
         // (`CombineOp::Union` is the default operation a built Group carries).
-        let group = NodeBuilder::group_at("Group", [6, 0, 0], vec![grouped_leaf.into()]);
+        let group = NodeBuilder::group_at("Group", [6, 0, 0], voxels_per_block, vec![grouped_leaf.into()]);
         // Top-level node 3: an Instance of the def, offset disjointly.
         let mut instance = Node::new("House instance", NodeContent::Instance(def_id));
-        instance.transform.offset_blocks = [-6, 0, 0];
+        instance.transform = crate::scene::NodeTransform::from_blocks([-6, 0, 0], voxels_per_block);
 
         // ADR 0003 Phase B3: selection is keyed by NodeId, so mint ids and select
         // the Group's child (path [2, 0]) by its stable id.
@@ -690,7 +693,9 @@ mod tests {
             NodeContent::Group(children) => {
                 assert_eq!(children.len(), 1);
                 assert_eq!(
-                    restored_panel.scene.arena[&children[0]].transform.offset_blocks,
+                    restored_panel.scene.arena[&children[0]]
+                        .transform
+                        .blocks(voxels_per_block),
                     [1, 0, 0]
                 );
             }
@@ -750,11 +755,12 @@ mod tests {
         );
     }
 
-    /// S4a back-compat: a small i32-range `offset_blocks` value carried in a JSON
+    /// S4a back-compat: a small i32-range `offset_voxels` value carried in a JSON
     /// document widens into the now-`[i64; 3]` field unchanged. A JSON integer carries
     /// no width, so serde reads it straight into `i64` — the "tolerant persistence
     /// migration" S4a requires. The document must load, keep its offsets, and resolve
-    /// to a non-empty grid.
+    /// to a non-empty grid. (Placement is canonical voxels at the document density now,
+    /// ADR 0003 §3f(0); authored here as a whole-block offset via `from_blocks`.)
     ///
     /// **ADR 0003 Phase B5 note:** the original version of this test hand-authored a
     /// `"scene": { "nodes": [ … ] }` document in the OLD positional-`Vec<Node>` on-disk
@@ -783,7 +789,8 @@ mod tests {
             "Box",
             NodeContent::Tool { shape, material: MaterialChoice::Stone },
         );
-        node.transform.offset_blocks = [5, 0, 0];
+        // +5 blocks in X at density 8 → canonical offset_voxels = [40, 0, 0].
+        node.transform = crate::scene::NodeTransform::from_blocks([5, 0, 0], 8);
         let scene = Scene::single_node(node);
 
         let mut panel = PanelState::with_view_cube_default();
@@ -796,7 +803,7 @@ mod tests {
         // Sanity: the persisted offset really is a bare JSON integer (no width), the
         // exact condition the widening relies on.
         assert!(
-            json.contains("\"offset_blocks\":[5,0,0]"),
+            json.contains("\"offset_voxels\":[40,0,0]"),
             "the offset persists as plain JSON integers (no width): {json}"
         );
 
@@ -806,8 +813,8 @@ mod tests {
         assert_eq!(panel.scene.roots.len(), 1, "the node survives the widening");
         // The i32-range offset widened into the i64 field intact.
         assert_eq!(
-            panel.scene.root_node(0).transform.offset_blocks,
-            [5i64, 0, 0],
+            panel.scene.root_node(0).transform.offset_voxels,
+            [40i64, 0, 0],
             "the old i32 offset must widen to the same i64 value"
         );
         assert!(matches!(
@@ -822,10 +829,12 @@ mod tests {
         );
     }
 
-    /// S4a: a scene whose `offset_blocks` is a LARGE i64 (well beyond the old
+    /// S4a: a scene whose `offset_voxels` is a LARGE i64 (well beyond the old
     /// `i32` range, ±2.1×10⁹) round-trips through `capture → JSON → load` byte-exact.
     /// This proves the widened field both serializes and deserializes the full
-    /// 64-bit range — far-apart village nodes survive a save/load.
+    /// 64-bit range — far-apart village nodes survive a save/load. (Placement is
+    /// canonical voxels now, ADR 0003 §3f(0); the large value is set directly on the
+    /// voxel field to exercise the full i64 range it persists.)
     #[test]
     fn large_i64_offset_round_trips_through_json() {
         use crate::scene::{Node, NodeContent, Scene};
@@ -843,7 +852,7 @@ mod tests {
             "Far box",
             NodeContent::Tool { shape, material: MaterialChoice::Stone },
         );
-        node.transform.offset_blocks = [far_offset, -far_offset, far_offset / 2];
+        node.transform.offset_voxels = [far_offset, -far_offset, far_offset / 2];
         let scene = Scene::single_node(node);
 
         let mut panel = PanelState::with_view_cube_default();
@@ -862,7 +871,7 @@ mod tests {
             "the far node survives the round-trip"
         );
         assert_eq!(
-            restored_panel.scene.root_node(0).transform.offset_blocks,
+            restored_panel.scene.root_node(0).transform.offset_voxels,
             [far_offset, -far_offset, far_offset / 2],
             "a >i32-range i64 offset must round-trip byte-exact through save/load"
         );

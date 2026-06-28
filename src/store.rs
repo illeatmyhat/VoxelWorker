@@ -878,7 +878,7 @@ mod tests {
                 wall_blocks: 1,
             };
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
-            node.transform.offset_blocks = offset;
+            node.transform = crate::scene::NodeTransform::from_blocks(offset, voxels_per_block);
             node
         };
         let scene = Scene::from_nodes(vec![
@@ -900,12 +900,12 @@ mod tests {
                 wall_blocks: 1,
             };
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
-            node.transform.offset_blocks = offset;
+            node.transform = crate::scene::NodeTransform::from_blocks(offset, voxels_per_block);
             node
         };
         let instance = |name: &str, offset: [i64; 3]| {
             let mut node = Node::new(name, NodeContent::Instance(house_def_id));
-            node.transform.offset_blocks = offset;
+            node.transform = crate::scene::NodeTransform::from_blocks(offset, voxels_per_block);
             node
         };
         let mut scene = Scene::from_nodes(vec![
@@ -987,7 +987,7 @@ mod tests {
                 label,
                 NodeContent::Tool { shape, material: MaterialChoice::Stone },
             );
-            node.transform.offset_blocks = offset;
+            node.transform = crate::scene::NodeTransform::from_blocks(offset, voxels_per_block);
             node
         };
         let scene = Scene::from_nodes(vec![
@@ -1076,7 +1076,7 @@ mod tests {
                 wall_blocks: 1,
             };
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
-            node.transform.offset_blocks = offset;
+            node.transform = crate::scene::NodeTransform::from_blocks(offset, voxels_per_block);
             node
         };
         let mut scene = Scene::from_nodes(vec![
@@ -1110,7 +1110,7 @@ mod tests {
         // Move the Box from +40X to +80X. Compute the edit AABB via the spatial-index
         // diff, exactly as `main::rebuild_geometry` does.
         let mut scene_b = scene_a.clone();
-        scene_b.root_node_mut(1).transform.offset_blocks = [80, 0, 0];
+        scene_b.root_node_mut(1).transform = crate::scene::NodeTransform::from_blocks([80, 0, 0], density);
         let index_a = scene_a.build_leaf_spatial_index(density);
         let index_b = scene_b.build_leaf_spatial_index(density);
         let edit_aabb = index_b.edit_aabb_since(&index_a).expect("same density");
@@ -1163,7 +1163,7 @@ mod tests {
         let _ = cache.resolve_region(&scene_a, density, 0);
 
         let mut scene_b = scene_a.clone();
-        scene_b.root_node_mut(1).transform.offset_blocks = [80, 0, 0];
+        scene_b.root_node_mut(1).transform = crate::scene::NodeTransform::from_blocks([80, 0, 0], density);
         let index_a = scene_a.build_leaf_spatial_index(density);
         let index_b = scene_b.build_leaf_spatial_index(density);
         let edit_aabb = index_b.edit_aabb_since(&index_a).expect("same density");
@@ -1204,7 +1204,7 @@ mod tests {
         let all_resident = resident_coords(&cache);
 
         let mut scene_b = scene_a.clone();
-        scene_b.root_node_mut(1).transform.offset_blocks = [80, 0, 0];
+        scene_b.root_node_mut(1).transform = crate::scene::NodeTransform::from_blocks([80, 0, 0], density);
         let index_a = scene_a.build_leaf_spatial_index(density);
         let index_b = scene_b.build_leaf_spatial_index(density);
         let edit_aabb = index_b.edit_aabb_since(&index_a).expect("same density");
@@ -1362,12 +1362,12 @@ mod tests {
                 wall_blocks: 1,
             };
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
-            node.transform.offset_blocks = offset;
+            node.transform = crate::scene::NodeTransform::from_blocks(offset, vpb);
             node
         };
         let instance = |name: &str, offset: [i64; 3]| {
             let mut node = Node::new(name, NodeContent::Instance(house_def_id));
-            node.transform.offset_blocks = offset;
+            node.transform = crate::scene::NodeTransform::from_blocks(offset, vpb);
             node
         };
         let mut scene = Scene::from_nodes(vec![
@@ -1428,7 +1428,7 @@ mod tests {
                 "box",
                 NodeContent::Tool { shape, material: MaterialChoice::Stone },
             );
-            node.transform.offset_blocks = [offset_x, 0, 0];
+            node.transform = crate::scene::NodeTransform::from_blocks([offset_x, 0, 0], vpb);
             Scene::single_node(node)
         };
 
@@ -1537,7 +1537,7 @@ mod tests {
                 wall_blocks: 1,
             };
             let mut node = Node::new("box", NodeContent::Tool { shape, material: MaterialChoice::Stone });
-            node.transform.offset_blocks = offset;
+            node.transform = crate::scene::NodeTransform::from_blocks(offset, vpb);
             node
         };
         // 20,000-block separation → composite centred ~10,000 blocks out → each box
@@ -1587,7 +1587,7 @@ mod tests {
                 wall_blocks: 1,
             };
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
-            node.transform.offset_blocks = offset;
+            node.transform = crate::scene::NodeTransform::from_blocks(offset, vpb);
             node
         };
         let scene = Scene::from_nodes(vec![
@@ -1609,12 +1609,12 @@ mod tests {
                 wall_blocks: 1,
             };
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
-            node.transform.offset_blocks = offset;
+            node.transform = crate::scene::NodeTransform::from_blocks(offset, vpb);
             node
         };
         let instance = |name: &str, offset: [i64; 3]| {
             let mut node = Node::new(name, NodeContent::Instance(house_def_id));
-            node.transform.offset_blocks = offset;
+            node.transform = crate::scene::NodeTransform::from_blocks(offset, vpb);
             node
         };
         let mut scene = Scene::from_nodes(vec![
@@ -1824,7 +1824,7 @@ mod tests {
             wall_blocks: 1,
         };
         let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
-        node.transform.offset_blocks = offset;
+        node.transform = crate::scene::NodeTransform::from_blocks(offset, 16);
         node
     }
 
@@ -1880,7 +1880,7 @@ mod tests {
             let mut b = scene_a.clone();
             // Move the interior Box from +60X to +70X (still interior → recentre
             // fixed; dirty around BOTH endpoints).
-            b.root_node_mut(1).transform.offset_blocks = [70, 0, 0];
+            b.root_node_mut(1).transform = crate::scene::NodeTransform::from_blocks([70, 0, 0], density);
             ("move", b)
         };
         let add_node = {

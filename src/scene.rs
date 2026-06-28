@@ -140,16 +140,24 @@ pub enum CombineOp {
 /// decision 3). In step 1 the offset is always `[0, 0, 0]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct NodeTransform {
-    /// Translation in whole blocks (X, Y, Z).
+    /// Translation in **voxels** at the document's density `d`
+    /// ([`Scene::voxels_per_block`]) — the single canonical placement field
+    /// (ADR 0003 §3f(0)). The planning unit is the voxel; "blocks" are a DERIVED
+    /// overlay (a grid line every `d` voxels), exposed via the [`blocks`] /
+    /// [`block_aligned`] accessors below — **not** a stored field. Sub-block
+    /// placement (an offset not divisible by `d`) is the kit-authoring primitive;
+    /// inter-part mating stays block-aligned via `offset_voxels % d == 0`.
     ///
-    /// **64-bit world addressing (S4a, ADR 0002 Decision 2):** the block offset is
-    /// `i64` so far-apart nodes compose down the tree without `i32` overflow (a
-    /// node placed at ±10⁹ blocks, or a deep nest summing past the i32 range, is
-    /// exact). serde widens an older `i32` JSON number into this field transparently
-    /// (a JSON integer carries no width), so previously-saved scenes load unchanged
-    /// — see the persistence round-trip tests in `settings.rs`.
+    /// **64-bit world addressing (S4a, ADR 0002 Decision 2):** the offset is `i64`
+    /// so far-apart nodes compose down the tree without overflow (a node placed at
+    /// ±10⁹ blocks, or a deep nest summing past the i32 range, is exact). It enters
+    /// the i64 placement sum at resolve as-is, with no rounding (the resolved grid
+    /// *is* `d`).
+    ///
+    /// [`blocks`]: NodeTransform::blocks
+    /// [`block_aligned`]: NodeTransform::block_aligned
     #[serde(default)]
-    pub offset_blocks: [i64; 3],
+    pub offset_voxels: [i64; 3],
     // future: rotation, scale → a general affine.
 }
 
@@ -158,6 +166,62 @@ impl NodeTransform {
     pub fn identity() -> Self {
         Self::default()
     }
+
+    /// Build a transform from a whole-**block** translation at density
+    /// `voxels_per_block` (`offset_voxels = blocks · d`). The block-valued
+    /// convenience constructor for the (still block-granular) UI placement path
+    /// (ADR 0003 §3f(0)).
+    pub fn from_blocks(blocks: [i64; 3], voxels_per_block: u32) -> Self {
+        // Clamp density to ≥1 like every resolve site, so a 0-density doc can't
+        // multiply placement to zero / mis-scale.
+        let density = voxels_per_block.max(1) as i64;
+        Self {
+            offset_voxels: [
+                blocks[0] * density,
+                blocks[1] * density,
+                blocks[2] * density,
+            ],
+        }
+    }
+
+    /// The whole-**block** view of this placement (the derived block overlay,
+    /// ADR 0003 §3f(0)): the floor of `offset_voxels / d` componentwise (the same
+    /// single floor rule the extent derivations use, see
+    /// [`world_block_corner_floor`]). EXACT while placement is block-aligned — which
+    /// it is today; for future negative sub-voxel offsets the floor is the correct
+    /// (block-containing) view.
+    pub fn blocks(&self, voxels_per_block: u32) -> [i64; 3] {
+        world_block_corner_floor(self.offset_voxels, voxels_per_block)
+    }
+
+    /// Whether this placement sits on the whole-block lattice — the connector /
+    /// joint mating predicate `offset_voxels % d == 0` per axis (ADR 0003 §3f(0)
+    /// / §3i "block-aligned where you mate").
+    pub fn block_aligned(&self, voxels_per_block: u32) -> bool {
+        // Clamp density to ≥1 so a 0-density doc can't panic on `% 0`.
+        let density = voxels_per_block.max(1) as i64;
+        self.offset_voxels.iter().all(|&v| v.rem_euclid(density) == 0)
+    }
+}
+
+/// The whole-**block** corner of a world VOXEL offset: `floor(offset_voxels / d)`
+/// per axis via `div_euclid` (the codebase convention, e.g. `main.rs`'s
+/// `point_add_position_blocks`). The single owner of the voxel→block-corner rule —
+/// [`NodeTransform::blocks`] and both extent derivations
+/// ([`Scene::placed_extent_blocks`], [`Scene::node_subtree_extent_blocks`]) route
+/// through it.
+///
+/// This is EXACT while placement is block-aligned — which it is today (every offset
+/// is a block multiple); Slice 2's sub-voxel placement makes it a truncating
+/// (floor) view, correct for the LOW corner of a leaf box but requiring outward
+/// (ceil) rounding for the HIGH corner at the call sites (see those).
+fn world_block_corner_floor(world_offset_voxels: [i64; 3], voxels_per_block: u32) -> [i64; 3] {
+    let density = voxels_per_block.max(1) as i64;
+    [
+        world_offset_voxels[0].div_euclid(density),
+        world_offset_voxels[1].div_euclid(density),
+        world_offset_voxels[2].div_euclid(density),
+    ]
 }
 
 /// A *static* voxel body with no meaningful generation parameters — dropped in
@@ -319,15 +383,19 @@ impl NodeBuilder {
         }
     }
 
-    /// A Group spec at `offset_blocks` wrapping `children`.
+    /// A Group spec at a whole-block `offset_blocks` (at density
+    /// `voxels_per_block`) wrapping `children`. The block-valued param is the UI
+    /// placement convenience; it is converted to the canonical voxel offset via
+    /// [`NodeTransform::from_blocks`] (ADR 0003 §3f(0)).
     pub fn group_at(
         name: impl Into<String>,
         offset_blocks: [i64; 3],
+        voxels_per_block: u32,
         children: Vec<NodeBuilder>,
     ) -> Self {
         NodeBuilder::Group {
             name: name.into(),
-            transform: NodeTransform { offset_blocks },
+            transform: NodeTransform::from_blocks(offset_blocks, voxels_per_block),
             visible: true,
             children,
         }
@@ -373,9 +441,8 @@ pub struct Point {
     /// Human-readable name (e.g. "Origin").
     #[serde(default)]
     pub name: String,
-    /// Position in the world-block lattice — the SAME frame as
-    /// [`NodeTransform::offset_blocks`] (whole blocks, `i64` for far-world
-    /// addressing).
+    /// Position in the world-block lattice — the whole-block view of placement
+    /// ([`NodeTransform::blocks`], `i64` for far-world addressing).
     #[serde(default)]
     pub position_blocks: [i64; 3],
     /// Sub-block offset in voxels (v1 keeps `[0, 0, 0]`; the field exists so a
@@ -1077,12 +1144,13 @@ impl Scene {
         path: &NodePath,
         voxels_per_block: u32,
     ) -> Option<([i64; 3], [i64; 3])> {
-        // Accumulate the world offset of every node ABOVE the target (the parent
-        // offset), and grab the target node itself. `walk_nodes` below re-adds the
-        // target's own offset, so we must stop accumulating at its parent.
-        // Walk the id-spine for ORDER, fetch content from the arena (ADR 0003 B5).
+        // Accumulate the world VOXEL offset of every node ABOVE the target (the
+        // parent offset), and grab the target node itself. `walk_nodes` below
+        // re-adds the target's own offset (also voxels), so we must stop
+        // accumulating at its parent. Walk the id-spine for ORDER, fetch content
+        // from the arena (ADR 0003 B5).
         let mut siblings: &[NodeId] = &self.roots;
-        let mut parent_offset = [0i64; 3];
+        let mut parent_offset_voxels = [0i64; 3];
         let mut target: Option<&Node> = None;
         for (depth, &index) in path.indices.iter().enumerate() {
             let &child_id = siblings.get(index)?;
@@ -1091,10 +1159,10 @@ impl Scene {
             if is_last {
                 target = Some(node);
             } else if let NodeContent::Group(children) = &node.content {
-                parent_offset = [
-                    parent_offset[0] + node.transform.offset_blocks[0],
-                    parent_offset[1] + node.transform.offset_blocks[1],
-                    parent_offset[2] + node.transform.offset_blocks[2],
+                parent_offset_voxels = [
+                    parent_offset_voxels[0] + node.transform.offset_voxels[0],
+                    parent_offset_voxels[1] + node.transform.offset_voxels[1],
+                    parent_offset_voxels[2] + node.transform.offset_voxels[2],
                 ];
                 siblings = children;
             } else {
@@ -1108,24 +1176,29 @@ impl Scene {
         let target_id = target.id;
 
         // Union the leaf boxes under the target. `walk_nodes` adds the target's own
-        // offset to `parent_offset`, giving the leaf its true world location. The
-        // single-element id spine carries the target itself (ADR 0003 B5).
+        // voxel offset to `parent_offset_voxels`, giving the leaf its true world
+        // location. The single-element id spine carries the target itself (ADR 0003
+        // B5).
         let mut min_corner = [i64::MAX; 3];
         let mut max_corner = [i64::MIN; 3];
         let mut any = false;
         let mut def_path: Vec<DefId> = Vec::new();
         self.walk_nodes(
             &[target_id],
-            parent_offset,
+            parent_offset_voxels,
             &mut def_path,
-            &mut |leaf_offset, content, _grid_on_faces| {
+            &mut |world_offset_voxels, content, _grid_on_faces| {
                 let Some(size_blocks) = leaf_size_blocks(content, voxels_per_block) else {
                     return;
                 };
                 any = true;
+                // The leaf's whole-block offset, via the single floor rule.
+                let world_blocks = world_block_corner_floor(world_offset_voxels, voxels_per_block);
                 for axis in 0..3 {
+                    // The ± size/2 block split. Slice 2's sub-voxel placement will
+                    // require outward (ceil) rounding for the HIGH corner here.
                     let half_low = (size_blocks[axis] / 2) as i64;
-                    let low = leaf_offset[axis] - half_low;
+                    let low = world_blocks[axis] - half_low;
                     let high = low + size_blocks[axis] as i64;
                     min_corner[axis] = min_corner[axis].min(low);
                     max_corner[axis] = max_corner[axis].max(high);
@@ -1551,7 +1624,9 @@ impl Scene {
             .filter(|node| matches!(node.content, NodeContent::Instance(id) if id == def_id))
             .count();
         let mut node = Node::new(name, NodeContent::Instance(def_id));
-        node.transform.offset_blocks = [(existing as i64 + 1) * DEFAULT_INSTANCE_SPACING_BLOCKS as i64, 0, 0];
+        // Block-granular auto-spacing → canonical voxels at the document density.
+        let spacing_blocks = (existing as i64 + 1) * DEFAULT_INSTANCE_SPACING_BLOCKS as i64;
+        node.transform = NodeTransform::from_blocks([spacing_blocks, 0, 0], self.voxels_per_block);
         let index = self.add_node(node);
         // ADR 0003 Phase B4: return the appended node's stable id rather than its
         // positional path. `add_node` minted its id and pointed `active` at it, and
@@ -1601,7 +1676,8 @@ impl Scene {
 
     /// The whole-block extent of the scene: the per-axis size of the bounding box
     /// that encompasses every placed leaf node (ADR 0001 step 3). Each leaf
-    /// occupies `offset_blocks ± size/2`; the composite extent is the union of
+    /// occupies `block-offset ± size/2` (its placement's derived block view,
+    /// ADR 0003 §3f(0)); the composite extent is the union of
     /// those boxes (`max_corner - min_corner` per axis). With every node at a zero
     /// offset this reduces to the per-axis MAX of the node sizes (the step-2
     /// behaviour). A Part-only node (the cloud field, which has no intrinsic size)
@@ -1626,7 +1702,8 @@ impl Scene {
 
     /// The composite bounding box of all placed leaf nodes, in **whole-block**
     /// coordinates: `(min_corner, max_corner)` where each leaf with intrinsic
-    /// `size_blocks` placed at `offset_blocks` spans
+    /// `size_blocks` placed at its block-offset (the derived block view of its
+    /// voxel placement, ADR 0003 §3f(0)) spans
     /// `[offset - size/2, offset - size/2 + size]`. `None` when no leaf has an
     /// intrinsic size (a Part-only scene). Drives both [`full_extent_blocks`] (the
     /// size) and the recentre in [`resolve_region`] (centring the composite so its
@@ -1640,14 +1717,18 @@ impl Scene {
         let mut min_corner = [i64::MAX; 3];
         let mut max_corner = [i64::MIN; 3];
         let mut any = false;
-        self.for_each_leaf(&mut |world_offset, content, _grid_on_faces| {
+        self.for_each_leaf(&mut |world_offset_voxels, content, _grid_on_faces| {
             let Some(size_blocks) = leaf_size_blocks(content, voxels_per_block) else {
                 return;
             };
             any = true;
+            // The leaf's whole-block offset, via the single floor rule.
+            let world_blocks = world_block_corner_floor(world_offset_voxels, voxels_per_block);
             for axis in 0..3 {
+                // The ± size/2 block split. Slice 2's sub-voxel placement will
+                // require outward (ceil) rounding for the HIGH corner here.
                 let half_low = (size_blocks[axis] / 2) as i64;
-                let low = world_offset[axis] - half_low;
+                let low = world_blocks[axis] - half_low;
                 let high = low + size_blocks[axis] as i64;
                 min_corner[axis] = min_corner[axis].min(low);
                 max_corner[axis] = max_corner[axis].max(high);
@@ -1656,10 +1737,11 @@ impl Scene {
         any.then_some((min_corner, max_corner))
     }
 
-    /// Walk the whole node tree depth-first, invoking `visitor(world_offset, leaf)`
-    /// once for every **visible leaf** (`Tool` / `Part`) with its accumulated
-    /// **world** block offset (`parent_offset + node.offset_blocks`, summed down the
-    /// tree — translation-only composition, ADR 0001 step 4).
+    /// Walk the whole node tree depth-first, invoking
+    /// `visitor(world_offset_voxels, leaf)` once for every **visible leaf** (`Tool`
+    /// / `Part`) with its accumulated **world** VOXEL offset (`parent_offset +
+    /// node.offset_voxels`, summed down the tree — translation-only composition,
+    /// ADR 0001 step 4; voxels at the document density, ADR 0003 §3f(0)).
     ///
     /// `Group` children inherit the group's world offset; an `Instance(def)` resolves
     /// the referenced [`AssemblyDef`]'s children under the instance's world offset, so
@@ -1668,7 +1750,7 @@ impl Scene {
     /// reference an ancestor definition) lives in [`walk_nodes`].
     ///
     /// [`walk_nodes`]: Self::walk_nodes
-    /// The visitor receives, per visible leaf: its accumulated world block
+    /// The visitor receives, per visible leaf: its accumulated world VOXEL
     /// offset, its content, and its own `grids.voxel_grid_on_faces` flag (issue
     /// #29 S4 — the resolver ORs [`crate::voxel::GRID_OVERLAY_BIT`] into the
     /// leaf's stamped `material_id` when this is set, so the on-face voxel grid
@@ -1679,7 +1761,7 @@ impl Scene {
     }
 
     /// Recursive worker for [`for_each_leaf`](Self::for_each_leaf). `parent_offset`
-    /// is the accumulated world block offset of the assembly that owns `nodes`;
+    /// is the accumulated world VOXEL offset of the assembly that owns `nodes`;
     /// `def_path` is the stack of definition ids currently being expanded (for the
     /// cycle guard — an `Instance` that would re-enter a definition already on the
     /// path is skipped instead of recursing forever).
@@ -1701,17 +1783,17 @@ impl Scene {
             if !node.visible {
                 continue;
             }
-            let world_offset = [
-                parent_offset[0] + node.transform.offset_blocks[0],
-                parent_offset[1] + node.transform.offset_blocks[1],
-                parent_offset[2] + node.transform.offset_blocks[2],
+            let world_offset_voxels = [
+                parent_offset[0] + node.transform.offset_voxels[0],
+                parent_offset[1] + node.transform.offset_voxels[1],
+                parent_offset[2] + node.transform.offset_voxels[2],
             ];
             match &node.content {
                 NodeContent::Tool { .. } | NodeContent::Part(_) => {
-                    visitor(world_offset, &node.content, node.grids.voxel_grid_on_faces);
+                    visitor(world_offset_voxels, &node.content, node.grids.voxel_grid_on_faces);
                 }
                 NodeContent::Group(children) => {
-                    self.walk_nodes(children, world_offset, def_path, visitor);
+                    self.walk_nodes(children, world_offset_voxels, def_path, visitor);
                 }
                 NodeContent::Instance(def_id) => {
                     // Cycle guard: an Instance may not reference an ancestor
@@ -1730,7 +1812,7 @@ impl Scene {
                         continue;
                     };
                     def_path.push(*def_id);
-                    self.walk_nodes(&def.children, world_offset, def_path, visitor);
+                    self.walk_nodes(&def.children, world_offset_voxels, def_path, visitor);
                     def_path.pop();
                 }
             }
@@ -1787,11 +1869,13 @@ impl Scene {
 
         // Walk the whole tree (groups + instances recurse, composing world
         // translation down — ADR 0001 step 4). Each visited leaf is stamped under
-        // its WORLD offset (× density) minus the composite recentre. All of this is
-        // in i64 (S4a) so a far-placed node composes without overflow; the result
-        // is downcast to f32 inside the stamp (the render frame stays f32 — S4b
-        // makes the far case byte-identical via origin rebasing).
-        self.for_each_leaf(&mut |world_offset, content, grid_on_faces| {
+        // its WORLD voxel offset minus the composite recentre. The offset is
+        // already voxels at the document density (ADR 0003 §3f(0)), so it enters
+        // the sum as-is. All of this is in i64 (S4a) so a far-placed node composes
+        // without overflow; the result is downcast to f32 inside the stamp (the
+        // render frame stays f32 — S4b makes the far case byte-identical via origin
+        // rebasing).
+        self.for_each_leaf(&mut |world_offset_voxels, content, grid_on_faces| {
             // Snap a sized leaf onto the global block lattice (issue #30): an
             // odd-block leaf's producer grid straddles a block boundary by half a
             // block, so shift it by `leaf_lattice_shift_voxels` before placing. A
@@ -1801,9 +1885,9 @@ impl Scene {
                 None => [0i64; 3],
             };
             let translation_voxels = [
-                world_offset[0] * voxels_per_block as i64 + lattice_shift[0] - recentre_voxels[0],
-                world_offset[1] * voxels_per_block as i64 + lattice_shift[1] - recentre_voxels[1],
-                world_offset[2] * voxels_per_block as i64 + lattice_shift[2] - recentre_voxels[2],
+                world_offset_voxels[0] + lattice_shift[0] - recentre_voxels[0],
+                world_offset_voxels[1] + lattice_shift[1] - recentre_voxels[1],
+                world_offset_voxels[2] + lattice_shift[2] - recentre_voxels[2],
             ];
             match content {
                 NodeContent::Tool { shape, material } => {
@@ -1953,7 +2037,7 @@ impl Scene {
         let region_dimensions = self.placed_region_dimensions(voxels_per_block);
         let density = voxels_per_block.max(1) as i64;
         let chunk_box = VoxelAabb::new(chunk_min_voxels, chunk_max_voxels);
-        self.for_each_leaf(&mut |world_offset, content, grid_on_faces| {
+        self.for_each_leaf(&mut |world_offset_voxels, content, grid_on_faces| {
             // Issue #27 S3 optimisation: skip a leaf whose world-AABB doesn't touch
             // this chunk, so resolving one chunk costs ~the leaves that overlap it
             // (not the whole tree). This is BIT-IDENTICAL to stamping-then-clipping:
@@ -1977,7 +2061,9 @@ impl Scene {
                 let mut leaf_max = [0i64; 3];
                 for axis in 0..3 {
                     let grid = size_blocks[axis] as i64 * density;
-                    let centre = world_offset[axis] * density;
+                    // The world offset is already voxels at the document density
+                    // (ADR 0003 §3f(0)); it is the leaf's placed centre directly.
+                    let centre = world_offset_voxels[axis];
                     leaf_min[axis] = centre - grid / 2 + lattice_shift[axis];
                     leaf_max[axis] = leaf_min[axis] + grid;
                 }
@@ -1986,9 +2072,9 @@ impl Scene {
                 }
             }
             let translation_voxels = [
-                world_offset[0] * voxels_per_block as i64 + lattice_shift[0],
-                world_offset[1] * voxels_per_block as i64 + lattice_shift[1],
-                world_offset[2] * voxels_per_block as i64 + lattice_shift[2],
+                world_offset_voxels[0] + lattice_shift[0],
+                world_offset_voxels[1] + lattice_shift[1],
+                world_offset_voxels[2] + lattice_shift[2],
             ];
             let (material_override, producer): (Option<u16>, Box<dyn VoxelProducer>) = match content
             {
@@ -2147,7 +2233,7 @@ impl Scene {
         let mut min_corner = [i64::MAX; 3];
         let mut max_corner = [i64::MIN; 3];
         let mut any = false;
-        self.for_each_leaf(&mut |world_offset, content, _grid_on_faces| {
+        self.for_each_leaf(&mut |world_offset_voxels, content, _grid_on_faces| {
             let Some(size_blocks) = leaf_size_blocks(content, voxels_per_block) else {
                 return;
             };
@@ -2157,11 +2243,12 @@ impl Scene {
                 let grid = size_blocks[axis] as i64 * density;
                 // The producer centres its grid on the origin (voxel centres at
                 // `idx + 0.5 − grid/2`), so its occupied voxel span is `[−grid/2,
-                // grid/2)`; placed at `world_offset·d` and snapped onto the block
-                // lattice (issue #30) it spans `[off·d − grid/2 + shift, …)`, i.e.
+                // grid/2)`; placed at the world voxel offset (already voxels at the
+                // document density, ADR 0003 §3f(0)) and snapped onto the block
+                // lattice (issue #30) it spans `[off − grid/2 + shift, …)`, i.e.
                 // the whole-block range `[(off − floor(size/2))·d, …)`. Using the
                 // SAME shift the resolve path applies keeps every frame consistent.
-                let centre = world_offset[axis] * density;
+                let centre = world_offset_voxels[axis];
                 let low = centre - grid / 2 + lattice_shift[axis];
                 let high = low + grid;
                 min_corner[axis] = min_corner[axis].min(low);
@@ -2224,12 +2311,13 @@ impl Scene {
         let density = voxels_per_block.max(1) as i64;
         let mut entries: Vec<LeafEntry> = Vec::new();
         let mut has_region_spanning_leaf = false;
-        self.for_each_leaf(&mut |world_offset, content, grid_on_faces| {
+        self.for_each_leaf(&mut |world_offset_voxels, content, grid_on_faces| {
             match leaf_size_blocks(content, voxels_per_block) {
                 Some(size_blocks) => {
                     // The producer centres its `size·d` grid on the origin, then it
-                    // is placed at `world_offset·d`; its occupied voxel span per axis
-                    // is `[off·d − grid/2, off·d + grid/2)` — the producer-true
+                    // is placed at its world voxel offset (already voxels at the
+                    // document density, ADR 0003 §3f(0)); its occupied voxel span
+                    // per axis is `[off − grid/2, off + grid/2)` — the producer-true
                     // half-extent (`grid/2 = size·d/2`), identical to
                     // `placed_extent_voxels`. Absolute voxels are i64 (S4a).
                     let mut min = [0i64; 3];
@@ -2237,14 +2325,14 @@ impl Scene {
                     let lattice_shift = leaf_lattice_shift_voxels(size_blocks, voxels_per_block);
                     for axis in 0..3 {
                         let grid = size_blocks[axis] as i64 * density;
-                        let centre = world_offset[axis] * density;
+                        let centre = world_offset_voxels[axis];
                         min[axis] = centre - grid / 2 + lattice_shift[axis];
                         max[axis] = min[axis] + grid;
                     }
                     entries.push(LeafEntry {
                         world_aabb: VoxelAabb::new(min, max),
                         fingerprint: LeafFingerprint::Bounded(leaf_content_fingerprint(
-                            world_offset,
+                            world_offset_voxels,
                             content,
                             grid_on_faces,
                         )),
@@ -2258,7 +2346,7 @@ impl Scene {
                     entries.push(LeafEntry {
                         world_aabb: VoxelAabb::new([0; 3], [0; 3]),
                         fingerprint: LeafFingerprint::RegionSpanning(leaf_content_fingerprint(
-                            world_offset,
+                            world_offset_voxels,
                             content,
                             grid_on_faces,
                         )),
@@ -2300,7 +2388,7 @@ fn narrow_chunk_coord(chunk_coord: i64) -> i32 {
 }
 
 fn leaf_content_fingerprint(
-    world_offset: [i64; 3],
+    world_offset_voxels: [i64; 3],
     content: &NodeContent,
     grid_on_faces: bool,
 ) -> String {
@@ -2309,17 +2397,19 @@ fn leaf_content_fingerprint(
     // resolve to DIFFERENT voxels. It must therefore be part of the fingerprint, or a
     // lone toggle of `voxel_grid_on_faces` produces an identical fingerprint and the
     // chunk-cache diff (`edit_aabb_since`) sees nothing dirty — leaving the stale
-    // grid-less chunks in place until an unrelated edit evicts them.
+    // grid-less chunks in place until an unrelated edit evicts them. The embedded
+    // offset is voxels (the canonical placement unit, ADR 0003 §3f(0)); it is an
+    // opaque cache key, all leaves on the same unit for consistency.
     let grid = if grid_on_faces { ":grid=1" } else { ":grid=0" };
     match content {
         NodeContent::Tool { shape, material } => {
-            format!("Tool@{world_offset:?}:{shape:?}:{material:?}{grid}")
+            format!("Tool@{world_offset_voxels:?}:{shape:?}:{material:?}{grid}")
         }
-        NodeContent::Part(part) => format!("Part@{world_offset:?}:{part:?}{grid}"),
+        NodeContent::Part(part) => format!("Part@{world_offset_voxels:?}:{part:?}{grid}"),
         // for_each_leaf only ever yields leaf content (Tool / Part); Group / Instance
         // are interior and never reach a visitor. Fingerprint defensively anyway.
-        NodeContent::Group(_) => format!("Group@{world_offset:?}{grid}"),
-        NodeContent::Instance(def_id) => format!("Instance@{world_offset:?}:{def_id:?}{grid}"),
+        NodeContent::Group(_) => format!("Group@{world_offset_voxels:?}{grid}"),
+        NodeContent::Instance(def_id) => format!("Instance@{world_offset_voxels:?}:{def_id:?}{grid}"),
     }
 }
 
@@ -2649,7 +2739,7 @@ mod tests {
         let make_tool = |kind, offset: [i64; 3], material| {
             let shape = SdfShape { kind, size_blocks: [5, 5, 5], wall_blocks: 1 };
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
-            node.transform.offset_blocks = offset;
+            node.transform = NodeTransform::from_blocks(offset, 16);
             node
         };
         let demo_scene = scene_with_top_level_selected(Scene::from_nodes(vec![
@@ -2664,12 +2754,12 @@ mod tests {
         let tool = |kind, size: [u32; 3], offset: [i64; 3], material| {
             let shape = SdfShape { kind, size_blocks: size, wall_blocks: 1 };
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
-            node.transform.offset_blocks = offset;
+            node.transform = NodeTransform::from_blocks(offset, 16);
             node
         };
         let instance = |name: &str, offset: [i64; 3]| {
             let mut node = Node::new(name, NodeContent::Instance(house_def_id));
-            node.transform.offset_blocks = offset;
+            node.transform = NodeTransform::from_blocks(offset, 16);
             node
         };
         let mut village = Scene::from_nodes(vec![
@@ -2827,9 +2917,9 @@ mod tests {
             wall_blocks: 1,
         };
         let mut stone = Node::new("Stone", NodeContent::Tool { shape: base, material: MaterialChoice::Stone });
-        stone.transform.offset_blocks = [0, 0, 0];
+        stone.transform = NodeTransform::from_blocks([0, 0, 0], voxels_per_block);
         let mut wood = Node::new("Wood", NodeContent::Tool { shape: base, material: MaterialChoice::Wood });
-        wood.transform.offset_blocks = [5, 0, 0];
+        wood.transform = NodeTransform::from_blocks([5, 0, 0], voxels_per_block);
         let scene = scene_with_top_level_selected(Scene::from_nodes(vec![stone, wood]), 0);
         let region = scene.full_extent_blocks(voxels_per_block);
         let grid = scene.resolve_region(region, voxels_per_block, 0);
@@ -2927,7 +3017,7 @@ mod tests {
             NodeContent::Tool { shape: base, material: MaterialChoice::Wood },
         );
         let mut wood = wood;
-        wood.transform.offset_blocks = [5, 0, 0];
+        wood.transform = NodeTransform::from_blocks([5, 0, 0], voxels_per_block);
         let scene = scene_with_top_level_selected(Scene::from_nodes(vec![stone, wood]), 0);
         let region = scene.full_extent_blocks(voxels_per_block);
         let grid = scene.resolve_region(region, voxels_per_block, 0);
@@ -2983,7 +3073,7 @@ mod tests {
             wall_blocks: 1,
         };
         let mut node = Node::new("Box", NodeContent::Tool { shape, material: MaterialChoice::Stone });
-        node.transform.offset_blocks = [offset_x, 0, 0];
+        node.transform = NodeTransform::from_blocks([offset_x, 0, 0], voxels_per_block);
         // A region wide enough to hold the offset box without clipping.
         let region = RegionBlocks::new([8, 1, 1]);
         let grid = Scene::single_node(node).resolve_region(region, voxels_per_block, 0);
@@ -2999,8 +3089,8 @@ mod tests {
             .collect()
     }
 
-    /// ADR 0001 step 3 (a): a node with `offset_blocks = [N, 0, 0]` places its
-    /// voxels shifted by exactly `N × voxels_per_block` in X versus offset 0.
+    /// ADR 0001 step 3 (a): a node placed at a whole-block offset `[N, 0, 0]` places
+    /// its voxels shifted by exactly `N × voxels_per_block` in X versus offset 0.
     ///
     /// A two-node scene (a 1-block box at offset 0 and an identical box at offset
     /// N, far enough apart to be disjoint) shares ONE composite recentre, so the
@@ -3019,9 +3109,9 @@ mod tests {
             wall_blocks: 1,
         };
         let mut at_zero = Node::new("A", NodeContent::Tool { shape: base, material: MaterialChoice::Stone });
-        at_zero.transform.offset_blocks = [0, 0, 0];
+        at_zero.transform = NodeTransform::from_blocks([0, 0, 0], voxels_per_block);
         let mut at_n = Node::new("B", NodeContent::Tool { shape: base, material: MaterialChoice::Stone });
-        at_n.transform.offset_blocks = [n, 0, 0];
+        at_n.transform = NodeTransform::from_blocks([n, 0, 0], voxels_per_block);
 
         let scene = scene_with_top_level_selected(Scene::from_nodes(vec![at_zero, at_n]), 0);
         let grid = scene.resolve_region(region, voxels_per_block, 0);
@@ -3088,9 +3178,9 @@ mod tests {
             wall_blocks: 1,
         };
         let mut a = Node::new("A", NodeContent::Tool { shape: base, material: MaterialChoice::Stone });
-        a.transform.offset_blocks = [0, 0, 0];
+        a.transform = NodeTransform::from_blocks([0, 0, 0], voxels_per_block);
         let mut b = Node::new("B", NodeContent::Tool { shape: base, material: MaterialChoice::Stone });
-        b.transform.offset_blocks = [5, 0, 0];
+        b.transform = NodeTransform::from_blocks([5, 0, 0], voxels_per_block);
 
         let scene = scene_with_top_level_selected(Scene::from_nodes(vec![a, b]), 0);
         // Region spans the full composite (offset 0..5, each 1 block) → 6 blocks X.
@@ -3118,7 +3208,7 @@ mod tests {
             wall_blocks: 1,
         };
         let mut node = Node::new("Box", NodeContent::Tool { shape: base, material: MaterialChoice::Stone });
-        node.transform.offset_blocks = [4, 0, 0];
+        node.transform = NodeTransform::from_blocks([4, 0, 0], voxels_per_block);
         let scene = Scene::single_node(node);
 
         // The box centred at block 4 with half-size 1 spans X blocks [3, 5] → its
@@ -3135,10 +3225,10 @@ mod tests {
         // origin box (blocks [-1, 1]) to the offset box (blocks [3, 5]) → X width 6.
         let mut origin_box =
             Node::new("Origin", NodeContent::Tool { shape: base, material: MaterialChoice::Stone });
-        origin_box.transform.offset_blocks = [0, 0, 0];
+        origin_box.transform = NodeTransform::from_blocks([0, 0, 0], voxels_per_block);
         let mut offset_box =
             Node::new("Offset", NodeContent::Tool { shape: base, material: MaterialChoice::Stone });
-        offset_box.transform.offset_blocks = [4, 0, 0];
+        offset_box.transform = NodeTransform::from_blocks([4, 0, 0], voxels_per_block);
         let two = scene_with_top_level_selected(Scene::from_nodes(vec![origin_box, offset_box]), 0);
         let extent = two.full_extent_blocks(voxels_per_block);
         assert_eq!(
@@ -3190,9 +3280,9 @@ mod tests {
             "Leaf",
             NodeContent::Tool { shape: unit_box_shape(), material: MaterialChoice::Stone },
         );
-        leaf.transform.offset_blocks = [b, 0, 0];
+        leaf.transform = NodeTransform::from_blocks([b, 0, 0], voxels_per_block);
         let grouped = scene_with_top_level_selected(
-            Scene::from_nodes(vec![NodeBuilder::group_at("Group", [a, 0, 0], vec![leaf.into()])]),
+            Scene::from_nodes(vec![NodeBuilder::group_at("Group", [a, 0, 0], voxels_per_block, vec![leaf.into()])]),
             0,
         );
         let grouped_grid = grouped.resolve_region(region, voxels_per_block, 0);
@@ -3202,7 +3292,7 @@ mod tests {
             "Flat",
             NodeContent::Tool { shape: unit_box_shape(), material: MaterialChoice::Stone },
         );
-        flat_leaf.transform.offset_blocks = [a + b, 0, 0];
+        flat_leaf.transform = NodeTransform::from_blocks([a + b, 0, 0], voxels_per_block);
         let flat = Scene::single_node(flat_leaf);
         let flat_grid = flat.resolve_region(region, voxels_per_block, 0);
 
@@ -3224,7 +3314,7 @@ mod tests {
         let def_id = DefId(7);
 
         let mut instance = Node::new("I", NodeContent::Instance(def_id));
-        instance.transform.offset_blocks = [t, 0, 0];
+        instance.transform = NodeTransform::from_blocks([t, 0, 0], voxels_per_block);
         let mut instanced_scene = Scene::from_nodes(vec![instance]);
         // Definition: a single box at the origin (within the def).
         instanced_scene.add_definition(
@@ -3243,7 +3333,7 @@ mod tests {
             "Direct",
             NodeContent::Tool { shape: unit_box_shape(), material: MaterialChoice::Wood },
         );
-        direct.transform.offset_blocks = [t, 0, 0];
+        direct.transform = NodeTransform::from_blocks([t, 0, 0], voxels_per_block);
         let direct_grid = Scene::single_node(direct).resolve_region(region, voxels_per_block, 0);
 
         assert!(instanced_grid.occupied_count() > 0, "the instance must emit voxels");
@@ -3282,9 +3372,9 @@ mod tests {
 
         // Two instances 6 blocks apart in X (a 1-block house → 5-block gap: disjoint).
         let mut house_a = Node::new("A", NodeContent::Instance(def_id));
-        house_a.transform.offset_blocks = [0, 0, 0];
+        house_a.transform = NodeTransform::from_blocks([0, 0, 0], voxels_per_block);
         let mut house_b = Node::new("B", NodeContent::Instance(def_id));
-        house_b.transform.offset_blocks = [6, 0, 0];
+        house_b.transform = NodeTransform::from_blocks([6, 0, 0], voxels_per_block);
         let mut village_scene = Scene::from_nodes(vec![house_a, house_b]);
         village_scene.add_definition(def_id, "House".to_string(), house_body());
         let village = scene_with_top_level_selected(village_scene, 0);
@@ -3713,7 +3803,7 @@ mod tests {
                 wall_blocks: 1,
             };
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
-            node.transform.offset_blocks = offset;
+            node.transform = NodeTransform::from_blocks(offset, voxels_per_block);
             node
         };
         let scene = scene_with_top_level_selected(
@@ -3741,12 +3831,12 @@ mod tests {
                 wall_blocks: 1,
             };
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
-            node.transform.offset_blocks = offset;
+            node.transform = NodeTransform::from_blocks(offset, voxels_per_block);
             node
         };
         let instance = |name: &str, offset: [i64; 3]| {
             let mut node = Node::new(name, NodeContent::Instance(house_def_id));
-            node.transform.offset_blocks = offset;
+            node.transform = NodeTransform::from_blocks(offset, voxels_per_block);
             node
         };
         let mut scene_build = Scene::from_nodes(vec![
@@ -3786,7 +3876,7 @@ mod tests {
                 material: MaterialChoice::Wood,
             },
         );
-        node.transform.offset_blocks = [8, 0, 0];
+        node.transform = NodeTransform::from_blocks([8, 0, 0], voxels_per_block);
         let scene = Scene::single_node(node);
 
         // Sanity: the recentre is genuinely non-zero for this off-centre scene, so
@@ -3834,7 +3924,7 @@ mod tests {
     // `resolve_region_via_chunks`), which — unlike `resolve_region` — does NOT
     // recentre, so its voxel positions ARE the scene's true composite coordinates.
     //
-    // `offset_blocks` is `[i64; 3]` (widened in S4a); 100_000 blocks is comfortably
+    // A node's whole-block offset is `[i64; 3]` (widened in S4a); 100_000 blocks is comfortably
     // in i32 range too, and at density 16 lands the box ~1.6M voxels out. The
     // BEYOND-i32 composition (offsets past ±2.1×10⁹) is proven separately in
     // `i64_composition_beyond_i32_range_is_exact` (pure integer, no f32 precision
@@ -3859,7 +3949,7 @@ mod tests {
             "Far box",
             NodeContent::Tool { shape, material: MaterialChoice::Stone },
         );
-        node.transform.offset_blocks = [offset_blocks, 0, 0];
+        node.transform = NodeTransform::from_blocks([offset_blocks, 0, 0], voxels_per_block);
         let scene = Scene::single_node(node);
 
         // The ABSOLUTE-coordinate chunk path (no recentre): these positions are the
@@ -3987,11 +4077,12 @@ mod tests {
             "Leaf",
             NodeContent::Tool { shape, material: MaterialChoice::Stone },
         );
-        leaf.transform.offset_blocks = [leaf_offset, 0, 0];
+        leaf.transform = NodeTransform::from_blocks([leaf_offset, 0, 0], voxels_per_block);
         let scene = scene_with_top_level_selected(
             Scene::from_nodes(vec![NodeBuilder::group_at(
                 "Group",
                 [group_offset, 0, 0],
+                voxels_per_block,
                 vec![leaf.into()],
             )]),
             0,
@@ -4054,7 +4145,7 @@ mod tests {
     ) -> Vec<crate::spatial_index::VoxelAabb> {
         let density = voxels_per_block.max(1) as i64;
         let mut matched = Vec::new();
-        scene.for_each_leaf(&mut |world_offset, content, _grid_on_faces| {
+        scene.for_each_leaf(&mut |world_offset_voxels, content, _grid_on_faces| {
             let Some(size_blocks) = leaf_size_blocks(content, voxels_per_block) else {
                 return; // region-spanning leaf — not an AABB match.
             };
@@ -4063,7 +4154,9 @@ mod tests {
             let lattice_shift = leaf_lattice_shift_voxels(size_blocks, voxels_per_block);
             for axis in 0..3 {
                 let grid = size_blocks[axis] as i64 * density;
-                let centre = world_offset[axis] * density;
+                // `for_each_leaf` yields the world offset already in voxels at the
+                // document density (ADR 0003 §3f(0)) — same as `build_leaf_spatial_index`.
+                let centre = world_offset_voxels[axis];
                 min[axis] = centre - grid / 2 + lattice_shift[axis];
                 max[axis] = min[axis] + grid;
             }
@@ -4090,7 +4183,7 @@ mod tests {
                 wall_blocks: 1,
             };
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
-            node.transform.offset_blocks = offset;
+            node.transform = NodeTransform::from_blocks(offset, voxels_per_block);
             node
         };
         let mut scene = scene_with_top_level_selected(
@@ -4114,12 +4207,12 @@ mod tests {
                 wall_blocks: 1,
             };
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
-            node.transform.offset_blocks = offset;
+            node.transform = NodeTransform::from_blocks(offset, voxels_per_block);
             node
         };
         let instance = |name: &str, offset: [i64; 3]| {
             let mut node = Node::new(name, NodeContent::Instance(house_def_id));
-            node.transform.offset_blocks = offset;
+            node.transform = NodeTransform::from_blocks(offset, voxels_per_block);
             node
         };
         let mut scene = Scene::from_nodes(vec![
@@ -4198,7 +4291,7 @@ mod tests {
         // Move the Box (node 1) from +8X to +40X: the edit AABB must span BOTH the
         // old (+8) and new (+40) boxes.
         let mut scene_b = scene_a.clone();
-        scene_b.root_node_mut(1).transform.offset_blocks = [40, 0, 0];
+        scene_b.root_node_mut(1).transform = NodeTransform::from_blocks([40, 0, 0], voxels_per_block);
         let index_b = scene_b.build_leaf_spatial_index(voxels_per_block);
         let moved = index_b.edit_aabb_since(&index_a).expect("same density");
         assert!(!moved.is_empty());
@@ -4247,7 +4340,7 @@ mod tests {
                 material: MaterialChoice::Stone,
             },
         );
-        tool.transform.offset_blocks = [0, 0, 0];
+        tool.transform = NodeTransform::from_blocks([0, 0, 0], voxels_per_block);
         let part = Node::new("Clouds", NodeContent::Part(Part::DebugClouds { seed: 1 }));
         let scene_a = scene_with_top_level_selected(Scene::from_nodes(vec![tool.clone(), part]), 0);
         let index_a = scene_a.build_leaf_spatial_index(voxels_per_block);
@@ -4511,11 +4604,37 @@ mod tests {
             wall_blocks: 1,
         };
         let mut node = Node::new("Box", NodeContent::Tool { shape, material: MaterialChoice::Stone });
-        node.transform.offset_blocks = offset_blocks;
+        node.transform = NodeTransform::from_blocks(offset_blocks, density);
         let scene = scene_with_top_level_selected(Scene::from_nodes(vec![node]), 0);
         let index = scene.build_leaf_spatial_index(density);
         assert_eq!(index.entries.len(), 1, "one Tool leaf → one index entry");
         index.entries[0].world_aabb
+    }
+
+    /// The `NodeTransform` block/voxel accessors round-trip (incl. negatives), the
+    /// mating predicate distinguishes block-aligned from sub-block offsets, and a
+    /// 0-density document cannot panic (density clamped to ≥1 like the resolve
+    /// sites). ADR 0003 §3f(0).
+    #[test]
+    fn node_transform_accessors_round_trip_and_guard() {
+        // Round-trip through canonical voxels, including negative components.
+        let transform = NodeTransform::from_blocks([-3, 2, -7], 16);
+        assert_eq!(transform.offset_voxels, [-48, 32, -112], "blocks·d = voxels");
+        assert_eq!(transform.blocks(16), [-3, 2, -7], "blocks(d) inverts from_blocks");
+        assert!(transform.block_aligned(16), "a whole-block offset is on the lattice");
+
+        // A hand-set SUB-block offset is NOT block-aligned (the mating predicate).
+        let sub_block = NodeTransform { offset_voxels: [1, 0, 0] };
+        assert!(
+            !sub_block.block_aligned(16),
+            "an offset of 1 voxel at d=16 is off the block lattice"
+        );
+
+        // A 0-density document must not panic: density is clamped to ≥1.
+        let _ = NodeTransform::from_blocks([2, 0, 0], 0);
+        let zero_density = NodeTransform { offset_voxels: [2, 0, 0] };
+        let _ = zero_density.blocks(0);
+        let _ = zero_density.block_aligned(0);
     }
 
     /// A `B`-block extent → a `B·d`-voxel AABB whose corners land on block
@@ -4555,9 +4674,9 @@ mod tests {
 
     /// Follow-on-translate: translating the node by `+1 block` shifts its AABB by
     /// exactly `d` voxels per axis (the grids/gizmo follow it), and the AABB stays
-    /// block-aligned, at each density. Offsets are whole blocks (`offset_blocks:
-    /// [i64; 3]`), so sub-block translation is not representable — whole-block
-    /// translation is the unit tested.
+    /// block-aligned, at each density. A node's placement here is a whole-block
+    /// offset (`[i64; 3]` blocks), so sub-block translation is not representable —
+    /// whole-block translation is the unit tested.
     #[test]
     fn node_aabb_follows_translation_at_each_density() {
         let size = [5u32, 5, 2];
@@ -4593,7 +4712,7 @@ mod tests {
     }
 
     /// The node pivot/origin the selection transform gizmo (#29) will track: the
-    /// node's world origin = `offset_blocks·d − recentre`, in the recentred frame.
+    /// node's world origin = `offset_in_blocks·d − recentre`, in the recentred frame.
     /// Pinned across densities for two facets:
     ///
     /// 1. **Recentred-frame value.** For a SINGLE-node scene the recentre always
@@ -4605,7 +4724,7 @@ mod tests {
     ///    lattice frame, not this auto-recentred composite — only a fixed frame
     ///    makes "the gizmo follows the object" observable.)
     /// 2. **Absolute-frame follow.** In the producer-true ABSOLUTE frame the node
-    ///    origin is `offset_blocks·d`; this DOES follow a `+1 block` translate by
+    ///    origin is `offset_in_blocks·d`; this DOES follow a `+1 block` translate by
     ///    exactly `d` voxels per axis (the property the global-frame gizmo inherits).
     #[test]
     fn node_pivot_origin_tracks_offset_across_densities() {
@@ -4620,7 +4739,7 @@ mod tests {
                 };
                 let mut node =
                     Node::new("Box", NodeContent::Tool { shape, material: MaterialChoice::Stone });
-                node.transform.offset_blocks = offset;
+                node.transform = NodeTransform::from_blocks(offset, density);
                 let scene = scene_with_top_level_selected(Scene::from_nodes(vec![node]), 0);
                 scene.recentre_voxels_for_resolve(density)
             };
@@ -4679,7 +4798,7 @@ mod tests {
             wall_blocks: 1,
         };
         let mut node = Node::new("Box", NodeContent::Tool { shape, material: MaterialChoice::Stone });
-        node.transform.offset_blocks = offset_blocks;
+        node.transform = NodeTransform::from_blocks(offset_blocks, density);
         let scene = scene_with_top_level_selected(Scene::from_nodes(vec![node]), 0);
         scene
             .node_block_lattice_box_recentred(&NodePath::root_index(0), density)
@@ -4722,7 +4841,7 @@ mod tests {
 
     /// Follow-on-translate: translating the node by `+1 block` shifts its lattice box
     /// by exactly `density` voxels per axis (the lattice follows the object), at each
-    /// density {1, 15, 16}. Because `offset_blocks` is whole-block, a SUB-block
+    /// density {1, 15, 16}. Because the node offset is whole-block, a SUB-block
     /// (1-voxel) translate is NOT representable at the node level, so the
     /// "add/remove a whole block on a sub-block move" requirement cannot be
     /// constructed here; the whole-block follow IS the unit tested. (The
@@ -4751,7 +4870,7 @@ mod tests {
                     "Moving",
                     NodeContent::Tool { shape, material: MaterialChoice::Stone },
                 );
-                moving.transform.offset_blocks = offset;
+                moving.transform = NodeTransform::from_blocks(offset, density);
                 let anchor_shape = SdfShape {
                     kind: ShapeKind::Box,
                     size_blocks: [200, 200, 200],
@@ -4761,7 +4880,7 @@ mod tests {
                     "Anchor",
                     NodeContent::Tool { shape: anchor_shape, material: MaterialChoice::Stone },
                 );
-                anchor.transform.offset_blocks = [0, 0, 0];
+                anchor.transform = NodeTransform::from_blocks([0, 0, 0], density);
                 scene_with_top_level_selected(Scene::from_nodes(vec![moving, anchor]), 0)
             };
             let box_of = |offset: [i64; 3]| {
@@ -5166,17 +5285,19 @@ mod tests {
     /// `None` when nothing is selected, across densities.
     #[test]
     fn active_gizmo_placement_follows_selected_node() {
-        let make_tool = |kind, size: [u32; 3], offset: [i64; 3]| {
-            let shape = SdfShape { kind, size_blocks: size, wall_blocks: 1 };
-            let mut node = Node::new(
-                format!("{kind:?}"),
-                NodeContent::Tool { shape, material: MaterialChoice::Stone },
-            );
-            node.transform.offset_blocks = offset;
-            node
-        };
-
         for vpb in [1u32, 15, 16] {
+            // Bake each node's whole-block offset at the resolve density `vpb` so the
+            // stored voxel offset divides back to the same block offset under this
+            // resolution (the gizmo reads `offset_voxels / vpb` → blocks).
+            let make_tool = |kind, size: [u32; 3], offset: [i64; 3]| {
+                let shape = SdfShape { kind, size_blocks: size, wall_blocks: 1 };
+                let mut node = Node::new(
+                    format!("{kind:?}"),
+                    NodeContent::Tool { shape, material: MaterialChoice::Stone },
+                );
+                node.transform = NodeTransform::from_blocks(offset, vpb);
+                node
+            };
             // Three even-sized boxes; box B sits +8X, box C sits +6Z. The block-AABB
             // of a single 4-block box centred at `off` is `[off-2, off+2]`, centre `off`.
             let mut scene = Scene::from_nodes(vec![
@@ -5235,11 +5356,11 @@ mod tests {
     fn single_even_selected_node_gizmo_sits_at_origin() {
         let shape =
             SdfShape { kind: ShapeKind::Box, size_blocks: [4, 2, 6], wall_blocks: 1 };
-        let mut node =
-            Node::new("Box", NodeContent::Tool { shape, material: MaterialChoice::Stone });
-        node.transform.offset_blocks = [123, -45, 67];
-        let scene = scene_with_top_level_selected(Scene::from_nodes(vec![node]), 0);
         for vpb in [1u32, 15, 16] {
+            let mut node =
+                Node::new("Box", NodeContent::Tool { shape, material: MaterialChoice::Stone });
+            node.transform = NodeTransform::from_blocks([123, -45, 67], vpb);
+            let scene = scene_with_top_level_selected(Scene::from_nodes(vec![node]), 0);
             let (pivot, _) = scene.active_gizmo_placement(vpb).expect("gizmo shown");
             assert_eq!(
                 pivot,
@@ -5257,10 +5378,6 @@ mod tests {
     fn single_odd_selected_node_gizmo_is_half_voxel_off_origin() {
         let shape =
             SdfShape { kind: ShapeKind::Box, size_blocks: [3, 1, 5], wall_blocks: 1 };
-        let mut node =
-            Node::new("Box", NodeContent::Tool { shape, material: MaterialChoice::Stone });
-        node.transform.offset_blocks = [123, -45, 67];
-        let scene = scene_with_top_level_selected(Scene::from_nodes(vec![node]), 0);
         // Every axis size (3, 1, 5) is odd, so the recentre truncates by up to half a
         // voxel. The lone node's pivot therefore stays WITHIN half a voxel of origin
         // (it does not run off to the node's absolute offset of [123, -45, 67]·d) —
@@ -5268,6 +5385,10 @@ mod tests {
         // and ±0.5 voxel when odd. The invariant: a lone selection sits ON the origin
         // to sub-voxel precision, never at its un-recentred world position.
         for vpb in [1u32, 15, 16] {
+            let mut node =
+                Node::new("Box", NodeContent::Tool { shape, material: MaterialChoice::Stone });
+            node.transform = NodeTransform::from_blocks([123, -45, 67], vpb);
+            let scene = scene_with_top_level_selected(Scene::from_nodes(vec![node]), 0);
             let (pivot, _) = scene.active_gizmo_placement(vpb).expect("gizmo shown");
             for (axis, &component) in pivot.iter().enumerate() {
                 assert!(

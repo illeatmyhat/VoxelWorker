@@ -479,7 +479,7 @@ mod tests {
                 wall_blocks: 1,
             };
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
-            node.transform.offset_blocks = offset;
+            node.transform = crate::scene::NodeTransform::from_blocks(offset, vpb);
             node
         };
         let scene = Scene::from_nodes(vec![
@@ -495,7 +495,8 @@ mod tests {
     /// Build a two-node scene whose composite is centred FAR from the world origin:
     /// one node at the origin and one node `offset_blocks` away on X. The composite
     /// centre lands at the midpoint, so each node sits ~`offset/2 × vpb` voxels from
-    /// the recentred frame's origin.
+    /// the recentred frame's origin. The second node is placed `offset_blocks` blocks
+    /// away on X.
     fn far_offset_two_box_scene(vpb: u32, offset_blocks: i64) -> Scene {
         let make_box = |offset: [i64; 3], material| {
             let shape = SdfShape {
@@ -504,7 +505,7 @@ mod tests {
                 wall_blocks: 1,
             };
             let mut node = Node::new("Box", NodeContent::Tool { shape, material });
-            node.transform.offset_blocks = offset;
+            node.transform = crate::scene::NodeTransform::from_blocks(offset, vpb);
             node
         };
         let mut scene = Scene::from_nodes(vec![

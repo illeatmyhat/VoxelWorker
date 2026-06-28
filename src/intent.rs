@@ -559,8 +559,11 @@ mod tests {
             &scene,
             Intent::SetOffset { target, offset_blocks: [3, -2, 5] },
             |s| {
+                // `apply` converts the block-granular intent to canonical voxels at
+                // the document density (ADR 0003 §3f(0)); mirror that here.
+                let density = s.voxels_per_block;
                 if let Some(node) = s.node_by_id_mut(target) {
-                    node.transform.offset_blocks = [3, -2, 5];
+                    node.transform = NodeTransform::from_blocks([3, -2, 5], density);
                 }
             },
         );
@@ -653,6 +656,17 @@ mod tests {
         ]);
         scene.ensure_node_ids();
         assert_dispatch_matches(&scene, Intent::SetDensity { voxels_per_block: 20 }, |s| {
+            // `apply` rescales every node's voxel offset old→new density to preserve
+            // block placement (ADR 0003 §3f(0)); mirror that here. (Every node in this
+            // scene has a zero offset, so the rescale is a no-op, but mirror it anyway
+            // so the equivalence stays honest.)
+            let old_density = s.voxels_per_block.max(1) as i64;
+            for node in s.arena.values_mut() {
+                for axis in 0..3 {
+                    node.transform.offset_voxels[axis] =
+                        node.transform.offset_voxels[axis] * 20 / old_density;
+                }
+            }
             s.voxels_per_block = 20;
         });
     }

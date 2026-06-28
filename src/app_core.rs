@@ -21,7 +21,7 @@ use crate::core_geom::CHUNK_BLOCKS;
 use crate::intent::{Intent, IntentEffect};
 use crate::panel::LayerRange;
 use crate::renderer::OnionFogParams;
-use crate::scene::{NodeContent, NodeId, Part, Scene};
+use crate::scene::{NodeContent, NodeId, NodeTransform, Part, Scene};
 use crate::spatial_index::LeafSpatialIndex;
 use crate::store::Store;
 use crate::voxel::{chunk_extent_exceeds_bound, VoxelGrid};
@@ -252,7 +252,11 @@ impl AppCore {
             Intent::SetOffset { target, .. } => match scene.node_by_id(*target) {
                 Some(node) => Inverse::Field(Intent::SetOffset {
                     target: *target,
-                    offset_blocks: node.transform.offset_blocks,
+                    // The intent is block-granular (UI convenience), so the inverse
+                    // records the prior offset in BLOCKS (the derived block view) so
+                    // undo round-trips exactly — exact while placement is
+                    // block-aligned, which it is today (ADR 0003 §3f(0)).
+                    offset_blocks: node.transform.blocks(scene.voxels_per_block),
                 }),
                 None => Inverse::NoOp,
             },
@@ -519,9 +523,14 @@ impl AppCore {
                 (if applied { full_effect } else { none }, None)
             }
             Intent::SetOffset { target, offset_blocks } => {
+                // The intent stays block-granular (UI convenience; Slice 2 adds a
+                // voxel/expression-aware variant). Convert to the canonical voxel
+                // offset at the document density (ADR 0003 §3f(0)) — the block→voxel
+                // rule has one owner in `NodeTransform::from_blocks`.
+                let density = scene.voxels_per_block;
                 let applied = match scene.node_by_id_mut(target) {
                     Some(node) => {
-                        node.transform.offset_blocks = offset_blocks;
+                        node.transform = NodeTransform::from_blocks(offset_blocks, density);
                         true
                     }
                     None => false,
@@ -567,6 +576,25 @@ impl AppCore {
                 // Density is a document-level attribute (ADR 0003 §3f(0)): one field
                 // on the scene that every resolve sources its density param from —
                 // no per-Tool fan-out.
+                //
+                // Placement is stored as canonical voxels at the authoring density
+                // (ADR 0003 §3f(0)), so this casual density control must RESCALE every
+                // node's offset from the old to the new density to PRESERVE its block
+                // placement — otherwise a node would teleport off the mating lattice.
+                // For block-multiple offsets the rescale is exact (the lossless refine
+                // for integer ratios). The explicit, warned, DESTRUCTIVE "re-target to
+                // a different game grid" (which reinterprets voxel-granular detail
+                // against a different grid) is a SEPARATE future Slice-2 op, not this.
+                let old_density = scene.voxels_per_block.max(1) as i64;
+                let new_density = voxels_per_block as i64;
+                for node in scene.arena.values_mut() {
+                    // Offsets live on EVERY NodeTransform (groups/instances too), not
+                    // just Tools, so rescale them all.
+                    for axis in 0..3 {
+                        node.transform.offset_voxels[axis] =
+                            node.transform.offset_voxels[axis] * new_density / old_density;
+                    }
+                }
                 scene.voxels_per_block = voxels_per_block;
                 (full_effect, None)
             }
@@ -933,7 +961,9 @@ mod replay_tests {
             .node_by_id(new_node_id)
             .expect("the added node exists at its minted id");
         assert_eq!(
-            added.transform.offset_blocks,
+            // The block-granular intent is stored as canonical voxels; the derived
+            // block view round-trips it exactly (block-aligned, ADR 0003 §3f(0)).
+            added.transform.blocks(scene.voxels_per_block),
             [7, -2, 4],
             "SetOffset moved the just-added node to the requested offset"
         );
@@ -979,7 +1009,7 @@ mod undo_tests {
     use crate::camera::OrbitCamera;
     use crate::core_geom::MaterialChoice;
     use crate::intent::{Intent, NodeSpec};
-    use crate::scene::{Node, NodeBuilder, NodeContent, NodeGrids, Point, Scene};
+    use crate::scene::{Node, NodeBuilder, NodeContent, NodeGrids, NodeTransform, Point, Scene};
     use crate::store::Store;
     use crate::voxel::{SdfShape, ShapeKind};
 
@@ -1267,6 +1297,65 @@ mod undo_tests {
         scene.voxels_per_block = 5;
         scene.active = scene.roots.first().copied();
         assert_round_trips(&mut scene, Intent::SetDensity { voxels_per_block: 20 });
+    }
+
+    /// A density change must PRESERVE each node's block placement (ADR 0003 §3f(0)):
+    /// the casual density control is fineness-only, so a node at block 5 stays at
+    /// block 5 — its canonical voxel offset rescales old→new density. (The explicit
+    /// destructive game-re-target is a separate future op.) Undo rescales back exactly
+    /// for block-multiple offsets.
+    #[test]
+    fn set_density_preserves_block_position() {
+        let mut node = tool_node(box_shape([1, 1, 1]), MaterialChoice::Stone);
+        node.transform = NodeTransform::from_blocks([5, 0, 0], 8); // block 5 @ d=8 → 40 voxels
+        let mut scene = Scene::single_node(node);
+        scene.voxels_per_block = 8;
+        let node_id = scene.roots[0];
+
+        let mut core = test_core();
+        core.apply_intent(&mut scene, Intent::SetDensity { voxels_per_block: 16 });
+
+        let after = scene.node_by_id(node_id).expect("node survives");
+        assert_eq!(after.transform.blocks(16), [5, 0, 0], "block 5 preserved across d 8→16");
+        assert_eq!(after.transform.offset_voxels, [80, 0, 0], "5 blocks @ d=16 = 80 voxels");
+        assert!(after.transform.block_aligned(16), "still on the mating lattice");
+
+        core.undo(&mut scene);
+        let restored = scene.node_by_id(node_id).expect("node survives undo");
+        assert_eq!(restored.transform.blocks(8), [5, 0, 0], "block 5 preserved on undo");
+        assert_eq!(restored.transform.offset_voxels, [40, 0, 0], "back to 40 voxels @ d=8");
+    }
+
+    /// A `SetOffset` undo across an interleaved density change still restores the
+    /// node's prior BLOCK placement: the inverse captures the prior offset in blocks
+    /// (block-aligned), and the density between apply and undo does not corrupt it.
+    #[test]
+    fn set_offset_undo_across_density_change() {
+        let mut node = tool_node(box_shape([1, 1, 1]), MaterialChoice::Stone);
+        node.transform = NodeTransform::from_blocks([5, 0, 0], 8);
+        let mut scene = Scene::single_node(node);
+        scene.voxels_per_block = 8;
+        let node_id = scene.roots[0];
+
+        let mut core = test_core();
+        core.apply_intent(&mut scene, Intent::SetDensity { voxels_per_block: 16 });
+        core.apply_intent(
+            &mut scene,
+            Intent::SetOffset { target: node_id, offset_blocks: [3, 0, 0] },
+        );
+        assert_eq!(
+            scene.node_by_id(node_id).unwrap().transform.blocks(16),
+            [3, 0, 0],
+            "SetOffset moved the node to block 3 at the current density"
+        );
+
+        // Undo only the SetOffset → back to the pre-offset block placement (block 5).
+        core.undo(&mut scene);
+        assert_eq!(
+            scene.node_by_id(node_id).unwrap().transform.blocks(16),
+            [5, 0, 0],
+            "undo restores the prior block placement across the density change"
+        );
     }
 
     #[test]

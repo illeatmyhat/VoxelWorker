@@ -1061,8 +1061,10 @@ fn build_part_inspector_section(
 }
 
 /// Offset (placement) section (ADR 0001 step 3): three integer drag boxes
-/// (X/Y/Z, may be negative) writing the active node's
-/// [`NodeTransform::offset_blocks`](crate::scene::NodeTransform::offset_blocks).
+/// (X/Y/Z, may be negative) writing the active node's placement via a
+/// block-granular `SetOffset` — the derived block view
+/// ([`NodeTransform::blocks`](crate::scene::NodeTransform::blocks)) of the
+/// canonical voxel offset (ADR 0003 §3f(0)).
 /// Common to Tools and Parts — placement is on the node's transform, not the
 /// producer. Editing it re-resolves the composited scene (a node moving changes
 /// the composite extent, so it auto-frames like a size change via
@@ -1083,7 +1085,9 @@ fn build_offset_section(ui: &mut egui::Ui, state: &mut PanelState, response: &mu
     // from the active node this frame); a change emits a single `SetOffset` carrying
     // all three axes. A placement edit re-resolves + re-frames the composite (the old
     // `scene_changed`), so it auto-frames the whole composited extent.
-    let mut offset = node.transform.offset_blocks;
+    // The drag boxes are block-granular (UI convenience); bind to the derived
+    // block view of the canonical voxel placement (ADR 0003 §3f(0)).
+    let mut offset = node.transform.blocks(state.scene.voxels_per_block);
     let mut changed = false;
     ui.horizontal(|ui| {
         for (axis_index, axis_label) in ["X", "Y", "Z"].iter().enumerate() {
