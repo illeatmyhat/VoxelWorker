@@ -54,15 +54,15 @@ struct CloudPuff {
 pub struct DebugCloudField {
     /// Voxel-space grid dimensions (X, Y, Z).
     pub dimensions: [u32; 3],
-    /// Voxels per block — only used to fill each voxel's `block_local_coord` so
-    /// the block lattice / per-face texturing stay consistent with the shapes.
-    pub voxels_per_block: u32,
     /// Seed for the deterministic placement + noise permutation.
     pub seed: u32,
 }
 
 impl VoxelProducer for DebugCloudField {
-    fn resolve(&self, grid: &mut VoxelGrid) {
+    /// `voxels_per_block` is the document-level density (ADR 0003 §3f(0)) — only
+    /// used to fill each voxel's `block_local_coord` so the block lattice / per-face
+    /// texturing stay consistent with the shapes.
+    fn resolve(&self, grid: &mut VoxelGrid, voxels_per_block: u32) {
         let [grid_x, grid_y, grid_z] = self.dimensions;
         grid.dimensions = self.dimensions;
         if grid_x == 0 || grid_y == 0 || grid_z == 0 {
@@ -77,7 +77,7 @@ impl VoxelProducer for DebugCloudField {
 
         let noise = PerlinNoise::new(self.seed);
         let clouds = scatter_cloud_puffs(self.seed, extent);
-        let voxels_per_block = self.voxels_per_block.max(1);
+        let voxels_per_block = voxels_per_block.max(1);
 
         // The outer `j` slices are disjoint and order-independent, so parallelise
         // them with rayon (same pattern as `SdfShape::resolve`): each slice builds
@@ -351,11 +351,10 @@ mod tests {
         // neither empty nor a filled box.
         let field = DebugCloudField {
             dimensions: [64, 64, 64],
-            voxels_per_block: 16,
             seed: 1,
         };
         let mut grid = VoxelGrid::new(field.dimensions);
-        field.resolve(&mut grid);
+        field.resolve(&mut grid, 16);
 
         let total = 64 * 64 * 64;
         let filled = grid.occupied_count();
@@ -370,13 +369,12 @@ mod tests {
     fn is_deterministic() {
         let field = DebugCloudField {
             dimensions: [48, 48, 48],
-            voxels_per_block: 16,
             seed: 7,
         };
         let mut a = VoxelGrid::new(field.dimensions);
         let mut b = VoxelGrid::new(field.dimensions);
-        field.resolve(&mut a);
-        field.resolve(&mut b);
+        field.resolve(&mut a, 16);
+        field.resolve(&mut b, 16);
         assert_eq!(a.occupied_count(), b.occupied_count());
     }
 }

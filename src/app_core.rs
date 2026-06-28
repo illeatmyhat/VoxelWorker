@@ -284,19 +284,12 @@ impl AppCore {
             },
 
             // --- Global ---
-            Intent::SetDensity { .. } => {
-                // The forward op rewrites EVERY Tool's density; capture each Tool's
-                // prior density (keyed by id) so a mixed-density scene restores exactly.
-                let prior = scene
-                    .arena
-                    .iter()
-                    .filter_map(|(id, node)| match &node.content {
-                        NodeContent::Tool { shape, .. } => Some((*id, shape.voxels_per_block)),
-                        _ => None,
-                    })
-                    .collect();
-                Inverse::Density(prior)
-            }
+            // Density is a single document-level field (ADR 0003 §3f(0)), so the
+            // inverse is the same field-set carrying the prior `scene.voxels_per_block`
+            // — exactly like `SetGridMasters`, routed back through `dispatch`.
+            Intent::SetDensity { .. } => Inverse::Field(Intent::SetDensity {
+                voxels_per_block: scene.voxels_per_block,
+            }),
             Intent::SetGridMasters { .. } => Inverse::Field(Intent::SetGridMasters {
                 voxel: scene.master_voxel_grid,
                 lattice: scene.master_block_lattice,
@@ -571,14 +564,10 @@ impl AppCore {
 
             // --- Global ---
             Intent::SetDensity { voxels_per_block } => {
-                // Density is global, but the resolve reads it off each Tool's shape,
-                // so rewrite EVERY Tool node's `voxels_per_block` (the arena holds
-                // every node; non-Tool nodes carry no density).
-                for node in scene.arena.values_mut() {
-                    if let NodeContent::Tool { shape, .. } = &mut node.content {
-                        shape.voxels_per_block = voxels_per_block;
-                    }
-                }
+                // Density is a document-level attribute (ADR 0003 §3f(0)): one field
+                // on the scene that every resolve sources its density param from —
+                // no per-Tool fan-out.
+                scene.voxels_per_block = voxels_per_block;
                 (full_effect, None)
             }
             Intent::SetGridMasters { voxel, lattice, floor } => {
@@ -887,7 +876,6 @@ mod replay_tests {
         SdfShape {
             kind: ShapeKind::Box,
             size_blocks: [3, 3, 3],
-            voxels_per_block: 8,
             wall_blocks: 1,
         }
     }
@@ -1006,7 +994,6 @@ mod undo_tests {
         SdfShape {
             kind: ShapeKind::Box,
             size_blocks: size,
-            voxels_per_block: 8,
             wall_blocks: 1,
         }
     }
@@ -1266,8 +1253,8 @@ mod undo_tests {
 
     #[test]
     fn set_density_round_trips() {
-        // Mixed-density Tools (one nested in a Group) so the per-node prior capture is
-        // exercised — a flat single-value inverse would not restore this byte-for-byte.
+        // Density is a single document-level field now (ADR 0003 §3f(0)); start from a
+        // non-default prior so the inverse must restore the exact prior value, not 16.
         let mut scene = Scene::from_nodes(vec![
             tool_node(box_shape([2, 2, 2]), MaterialChoice::Stone).into(),
             NodeBuilder::group(
@@ -1277,12 +1264,7 @@ mod undo_tests {
         ]);
         scene.ensure_node_ids();
         scene.ensure_origin_point();
-        // Give the two Tools DIFFERENT densities before the global set.
-        for (offset, node) in scene.arena.values_mut().enumerate() {
-            if let NodeContent::Tool { shape, .. } = &mut node.content {
-                shape.voxels_per_block = 4 + offset as u32;
-            }
-        }
+        scene.voxels_per_block = 5;
         scene.active = scene.roots.first().copied();
         assert_round_trips(&mut scene, Intent::SetDensity { voxels_per_block: 20 });
     }
@@ -1554,6 +1536,7 @@ mod undo_tests {
         let mut scene = Scene::from_nodes(vec![tool_node(shape, MaterialChoice::Stone)]);
         scene.ensure_node_ids();
         scene.ensure_origin_point();
+        scene.voxels_per_block = density;
         scene.active = scene.roots.first().copied();
         let mut core = test_core();
         let RebuildOutcome::Built(output) = core.rebuild(&scene, density) else {
@@ -1604,7 +1587,7 @@ mod undo_tests {
         ];
         for density in [8u32, 16] {
             for (kind, size) in cases {
-                let shape = SdfShape { kind, size_blocks: size, voxels_per_block: density, wall_blocks: 1 };
+                let shape = SdfShape { kind, size_blocks: size, wall_blocks: 1 };
                 let (min, max) = rebuild_frame_corner_bbox(shape, density);
                 for axis in 0..3 {
                     // Centred: the half-open corner box is symmetric about 0.
@@ -1626,7 +1609,7 @@ mod undo_tests {
         }
         // Pin the exact 1×1×1 @ d16 box so the convention is unambiguous: it occupies
         // [−8, 8) per axis (centred), NOT [0, 16) (corner-at-origin).
-        let one_block = SdfShape { kind: ShapeKind::Box, size_blocks: [1, 1, 1], voxels_per_block: 16, wall_blocks: 1 };
+        let one_block = SdfShape { kind: ShapeKind::Box, size_blocks: [1, 1, 1], wall_blocks: 1 };
         let (min, max) = rebuild_frame_corner_bbox(one_block, 16);
         assert_eq!(min, [-8, -8, -8], "1×1×1 box @ d16 min corner is centred at −8, not 0");
         assert_eq!(max, [8, 8, 8], "1×1×1 box @ d16 max corner is centred at +8, not 16");

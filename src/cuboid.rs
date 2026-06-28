@@ -774,15 +774,15 @@ mod tests {
             ShapeKind::Tube,
         ] {
             for &size in &[[3u32, 3, 3], [5, 1, 5], [4, 2, 3]] {
+                let voxels_per_block = 4;
                 let shape = SdfShape {
                     kind,
                     size_blocks: size,
-                    voxels_per_block: 4,
                     wall_blocks: 1,
                 };
-                let dimensions = shape.grid_dimensions();
+                let dimensions = shape.grid_dimensions(voxels_per_block);
                 let mut grid = VoxelGrid::new(dimensions);
-                shape.resolve(&mut grid);
+                shape.resolve(&mut grid, voxels_per_block);
                 if grid.occupied.is_empty() {
                     continue;
                 }

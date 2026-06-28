@@ -176,8 +176,8 @@ fn face_for_axis_sign(axis: usize, positive: bool) -> CubeFace {
 }
 
 /// Default `.vox` filename from the shape + voxel dims (e.g. `cylinder_80x16x80.vox`).
-fn default_vox_filename(shape: &SdfShape) -> String {
-    let [grid_x, grid_y, grid_z] = shape.grid_dimensions();
+fn default_vox_filename(shape: &SdfShape, voxels_per_block: u32) -> String {
+    let [grid_x, grid_y, grid_z] = shape.grid_dimensions(voxels_per_block);
     let kind = format!("{:?}", shape.kind).to_lowercase();
     format!("{kind}_{grid_x}x{grid_y}x{grid_z}.vox")
 }
@@ -272,7 +272,7 @@ impl WindowedState {
         let grid_y = region_dimensions[1];
         panel_state
             .layer_range
-            .rescale_to_grid_y(0, grid_y, shape.voxels_per_block);
+            .rescale_to_grid_y(0, grid_y, panel_state.geometry.voxels_per_block);
         // Issue #20 Step 2: the diameter / scrubber readout reads the region-scoped,
         // per-chunk `widest_run_in_band` (cross-seam stitched) rather than the
         // assembled grid's whole-grid method — returning the SAME value (parity-proven
@@ -293,7 +293,7 @@ impl WindowedState {
             grid.occupied_count(),
             shape.kind,
             shape.size_blocks,
-            shape.voxels_per_block
+            panel_state.geometry.voxels_per_block
         );
         // The cuboid mesh renderer is the sole voxel render path (part of #20). The
         // whole-grid wrapper buckets `grid` into per-chunk sub-grids internally — the
@@ -451,7 +451,6 @@ impl WindowedState {
     /// Explicit framing (startup fit, Home/Fit, Focus) is handled by their own paths.
     fn rebuild_geometry(&mut self) {
         let density = self.panel_state.geometry.voxels_per_block;
-        let shape = SdfShape::from_geometry(self.panel_state.geometry);
 
         // Delegate the headless resolve (S2/S3 targeted invalidation + assemble) to
         // `AppCore::rebuild`, then consume its output here in the shell: build the
@@ -513,7 +512,7 @@ impl WindowedState {
         self.panel_state.layer_range.rescale_to_grid_y(
             previous_grid_y,
             region_dimensions[1],
-            shape.voxels_per_block,
+            density,
         );
         self.grid = grid;
         self.measured_band = (u32::MAX, u32::MAX); // force a re-measure next frame.
@@ -613,8 +612,9 @@ impl WindowedState {
     /// `cylinder_80x16x80.vox`). The palette colour is the active material's
     /// representative colour (a loaded block's average, or the procedural one).
     fn export_vox(&mut self) {
+        let density = self.panel_state.geometry.voxels_per_block;
         let shape = SdfShape::from_geometry(self.panel_state.geometry);
-        if shape.exceeds_voxel_cap() {
+        if shape.exceeds_voxel_cap(density) {
             eprintln!("export .vox: grid exceeds the voxel cap; not exporting");
             return;
         }
@@ -624,7 +624,7 @@ impl WindowedState {
             None => procedural_material_average_color(self.panel_state.material),
         };
 
-        let default_name = default_vox_filename(&shape);
+        let default_name = default_vox_filename(&shape, density);
         let Some(path) = rfd::FileDialog::new()
             .set_file_name(default_name)
             .add_filter("MagicaVoxel", &["vox"])

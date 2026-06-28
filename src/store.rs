@@ -875,7 +875,6 @@ mod tests {
             let shape = SdfShape {
                 kind,
                 size_blocks: [5, 5, 5],
-                voxels_per_block,
                 wall_blocks: 1,
             };
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
@@ -898,7 +897,6 @@ mod tests {
             let shape = SdfShape {
                 kind,
                 size_blocks: size,
-                voxels_per_block,
                 wall_blocks: 1,
             };
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
@@ -982,7 +980,6 @@ mod tests {
         let shape = SdfShape {
             kind: ShapeKind::Box,
             size_blocks: [1, 1, 1],
-            voxels_per_block,
             wall_blocks: 1,
         };
         let corner = |label: &str, offset: [i64; 3]| {
@@ -1076,18 +1073,19 @@ mod tests {
             let shape = SdfShape {
                 kind,
                 size_blocks: [5, 5, 5],
-                voxels_per_block,
                 wall_blocks: 1,
             };
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
             node.transform.offset_blocks = offset;
             node
         };
-        Scene::from_nodes(vec![
+        let mut scene = Scene::from_nodes(vec![
             make_tool(ShapeKind::Sphere, [0, 0, 0], MaterialChoice::Stone),
             make_tool(ShapeKind::Box, [box_offset_x, 0, 0], MaterialChoice::Wood),
             make_tool(ShapeKind::Torus, [0, 0, 6], MaterialChoice::Plain),
-        ])
+        ]);
+        scene.voxels_per_block = voxels_per_block;
+        scene
     }
 
     /// The set of chunk coords currently resident in the cache (for assertions).
@@ -1361,7 +1359,6 @@ mod tests {
             let shape = SdfShape {
                 kind,
                 size_blocks: size,
-                voxels_per_block: vpb,
                 wall_blocks: 1,
             };
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
@@ -1425,7 +1422,6 @@ mod tests {
             let shape = SdfShape {
                 kind: ShapeKind::Box,
                 size_blocks: [4, 4, 4],
-                voxels_per_block: vpb,
                 wall_blocks: 1,
             };
             let mut node = Node::new(
@@ -1538,7 +1534,6 @@ mod tests {
             let shape = SdfShape {
                 kind: ShapeKind::Box,
                 size_blocks: [3, 3, 3],
-                voxels_per_block: vpb,
                 wall_blocks: 1,
             };
             let mut node = Node::new("box", NodeContent::Tool { shape, material: MaterialChoice::Stone });
@@ -1589,7 +1584,6 @@ mod tests {
             let shape = SdfShape {
                 kind,
                 size_blocks: [5, 5, 5],
-                voxels_per_block: vpb,
                 wall_blocks: 1,
             };
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
@@ -1612,7 +1606,6 @@ mod tests {
             let shape = SdfShape {
                 kind,
                 size_blocks: size,
-                voxels_per_block: vpb,
                 wall_blocks: 1,
             };
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
@@ -1657,7 +1650,6 @@ mod tests {
         let shape = SdfShape {
             kind: ShapeKind::Box,
             size_blocks: [bar_blocks_x, 1, 1],
-            voxels_per_block: vpb,
             wall_blocks: 1,
         };
         let scene = Scene::from_nodes(vec![Node::new(
@@ -1697,7 +1689,6 @@ mod tests {
         let shape = SdfShape {
             kind: ShapeKind::Box,
             size_blocks: [1, 1, 1],
-            voxels_per_block: 1,
             wall_blocks: 1,
         };
         let _ = vpb;
@@ -1826,11 +1817,10 @@ mod tests {
     }
 
     /// A tool node at the given offset, for building edit scenes.
-    fn tool_node(kind: ShapeKind, size: [u32; 3], offset: [i64; 3], material: MaterialChoice, density: u32) -> Node {
+    fn tool_node(kind: ShapeKind, size: [u32; 3], offset: [i64; 3], material: MaterialChoice) -> Node {
         let shape = SdfShape {
             kind,
             size_blocks: size,
-            voxels_per_block: density,
             wall_blocks: 1,
         };
         let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
@@ -1857,11 +1847,11 @@ mod tests {
         // that is the regime where the incremental dirty-only path is valid (a
         // recentre shift rebases every chunk and forces a full rebuild instead; see
         // `apply_incremental_edit`). The interior "subject" box sits between them.
-        let anchor_lo = || tool_node(ShapeKind::Sphere, [5, 5, 5], [0, 0, 0], MaterialChoice::Stone, density);
-        let anchor_hi = || tool_node(ShapeKind::Torus, [5, 5, 5], [120, 0, 0], MaterialChoice::Plain, density);
+        let anchor_lo = || tool_node(ShapeKind::Sphere, [5, 5, 5], [0, 0, 0], MaterialChoice::Stone);
+        let anchor_hi = || tool_node(ShapeKind::Torus, [5, 5, 5], [120, 0, 0], MaterialChoice::Plain);
         let scene_a = Scene::from_nodes(vec![
             anchor_lo(),
-            tool_node(ShapeKind::Box, [5, 5, 5], [60, 0, 0], MaterialChoice::Wood, density),
+            tool_node(ShapeKind::Box, [5, 5, 5], [60, 0, 0], MaterialChoice::Wood),
             anchor_hi(),
         ]);
 
@@ -1880,7 +1870,7 @@ mod tests {
             let mut b = scene_a.clone();
             // In-place resize of the interior Box (few dirty chunks around it).
             // Replace content + transform in place so the node keeps its arena id.
-            let replacement = tool_node(ShapeKind::Box, [3, 3, 3], [60, 0, 0], MaterialChoice::Wood, density);
+            let replacement = tool_node(ShapeKind::Box, [3, 3, 3], [60, 0, 0], MaterialChoice::Wood);
             let slot = b.root_node_mut(1);
             slot.content = replacement.content;
             slot.transform = replacement.transform;
@@ -1896,7 +1886,7 @@ mod tests {
         let add_node = {
             let mut b = scene_a.clone();
             // ADD a new INTERIOR tool (brand-new covering chunks; extent unchanged).
-            b.add_node(tool_node(ShapeKind::Box, [3, 3, 3], [90, 0, 0], MaterialChoice::Stone, density));
+            b.add_node(tool_node(ShapeKind::Box, [3, 3, 3], [90, 0, 0], MaterialChoice::Stone));
             ("add", b)
         };
         let remove_node = {
@@ -1971,8 +1961,8 @@ mod tests {
         // A wide sphere (many chunks) plus a tiny 1-block box pushed far out in X,
         // so the box owns only ~1 chunk no other leaf touches.
         let scene_a = Scene::from_nodes(vec![
-            tool_node(ShapeKind::Sphere, [9, 9, 9], [0, 0, 0], MaterialChoice::Stone, density),
-            tool_node(ShapeKind::Box, [1, 1, 1], [80, 0, 0], MaterialChoice::Wood, density),
+            tool_node(ShapeKind::Sphere, [9, 9, 9], [0, 0, 0], MaterialChoice::Stone),
+            tool_node(ShapeKind::Box, [1, 1, 1], [80, 0, 0], MaterialChoice::Wood),
         ]);
         let mut scene_b = scene_a.clone();
         if let NodeContent::Tool { material, .. } = &mut scene_b.root_node_mut(1).content {

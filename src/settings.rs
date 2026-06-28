@@ -39,8 +39,9 @@ pub struct AppConfig {
     // `scene` value can never reach this field as garbage: serde tolerates missing
     // inner fields (every scene field is `#[serde(default)]`), and an outright
     // unparseable config is rejected wholesale by `load()` → defaults. Density
-    // (`voxels_per_block`) stays an app-level field below; the scene reads it at
-    // resolve time (ADR 0001 "Density").
+    // (`voxels_per_block`) is now a document-level attribute on the `scene` (ADR 0003
+    // §3f(0)); the app-level field below persists the inspector slider's transient
+    // mirror value, kept in sync with `scene.voxels_per_block` via `SetDensity`.
     //
     // issue #32: the flat `shape` / `size_blocks` / `wall_blocks` geometry mirror
     // fields were deleted (no config back-compat — see #31). They previously built a
@@ -56,7 +57,8 @@ pub struct AppConfig {
     #[serde(default)]
     pub scene: Option<Scene>,
 
-    // --- density (app-level; the scene reads it at resolve time, ADR 0001) ---
+    // --- density (the inspector slider's persisted mirror; the document truth is
+    // `scene.voxels_per_block`, ADR 0003 §3f(0)) ---
     #[serde(default = "default_density")]
     pub voxels_per_block: u32,
 
@@ -428,7 +430,6 @@ mod tests {
         let unit_box = |kind| SdfShape {
             kind,
             size_blocks: [1, 1, 1],
-            voxels_per_block,
             wall_blocks: 1,
         };
         let stone = Node::new(
@@ -548,13 +549,14 @@ mod tests {
         // carries over from the config.
         let panel = restored.to_panel_state();
         assert_eq!(panel.scene.roots.len(), 1);
+        // Density DID carry over from the config and now lives on the document
+        // (ADR 0003 §3f(0)), not the shape.
+        assert_eq!(panel.scene.voxels_per_block, 20);
         match panel.scene.active_node().map(|node| &node.content) {
             Some(crate::scene::NodeContent::Tool { shape, material }) => {
                 // The default seed geometry, NOT the persisted flat params.
                 assert_eq!(shape.kind, ShapeKind::Cylinder);
                 assert_eq!(shape.size_blocks, [5, 1, 5]);
-                // Density DID carry over from the config (app-level field).
-                assert_eq!(shape.voxels_per_block, 20);
                 // The persisted `material` rides the seed (it is still an AppConfig field).
                 assert_eq!(*material, MaterialChoice::Wood);
             }
@@ -605,7 +607,6 @@ mod tests {
         let unit_box = |kind| SdfShape {
             kind,
             size_blocks: [1, 1, 1],
-            voxels_per_block,
             wall_blocks: 1,
         };
 
@@ -776,7 +777,6 @@ mod tests {
         let shape = SdfShape {
             kind: ShapeKind::Box,
             size_blocks: [2, 2, 2],
-            voxels_per_block: 8,
             wall_blocks: 1,
         };
         let mut node = Node::new(
@@ -837,7 +837,6 @@ mod tests {
         let shape = SdfShape {
             kind: ShapeKind::Box,
             size_blocks: [2, 2, 2],
-            voxels_per_block: 8,
             wall_blocks: 1,
         };
         let mut node = Node::new(
@@ -947,7 +946,7 @@ mod tests {
         let node = Node::new(
             "Box",
             NodeContent::Tool {
-                shape: SdfShape { kind: ShapeKind::Box, size_blocks: [2, 2, 2], voxels_per_block: 8, wall_blocks: 1 },
+                shape: SdfShape { kind: ShapeKind::Box, size_blocks: [2, 2, 2], wall_blocks: 1 },
                 material: MaterialChoice::Stone,
             },
         );
@@ -997,7 +996,7 @@ mod tests {
             Node::new(
                 name,
                 NodeContent::Tool {
-                    shape: SdfShape { kind: ShapeKind::Box, size_blocks: [2, 2, 2], voxels_per_block: 8, wall_blocks: 1 },
+                    shape: SdfShape { kind: ShapeKind::Box, size_blocks: [2, 2, 2], wall_blocks: 1 },
                     material: MaterialChoice::Stone,
                 },
             )

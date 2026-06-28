@@ -190,7 +190,9 @@ impl PanelState {
                 self.geometry = GeometryParams {
                     shape: shape.kind,
                     size_blocks: shape.size_blocks,
-                    voxels_per_block: shape.voxels_per_block,
+                    // Density is document-level (ADR 0003 §3f(0)): the slider's
+                    // transient mirror value comes from the scene, not the shape.
+                    voxels_per_block: self.scene.voxels_per_block,
                     wall_blocks: shape.wall_blocks,
                 };
                 self.material = *material;
@@ -705,7 +707,6 @@ fn tool_node_spec(kind: ShapeKind, state: &PanelState) -> NodeSpec {
         shape: SdfShape {
             kind,
             size_blocks: state.geometry.size_blocks,
-            voxels_per_block: state.geometry.voxels_per_block,
             wall_blocks: state.geometry.wall_blocks,
         },
         material: state.material,
@@ -921,8 +922,9 @@ fn build_inspector_section(
                         response.emit(intent);
                     }
                 }
-                // Density is global (stored on every Tool's shape so the resolve reads
-                // it) → rewrite EVERY Tool. Auto-frames like a size change.
+                // Density is a document-level attribute (ADR 0003 §3f(0)): the slider's
+                // transient value drives the single `scene.voxels_per_block` via
+                // SetDensity. Auto-frames like a size change.
                 if density_changed {
                     response.emit_and_frame(Intent::SetDensity {
                         voxels_per_block: state.geometry.voxels_per_block,

@@ -275,21 +275,31 @@ pub fn widest_run_in_band_over_chunks<'grid>(
 pub trait VoxelProducer {
     /// Write occupied voxels into `grid`. The grid's `dimensions` are assumed to
     /// already be set by the caller (so multiple producers can target one grid).
-    fn resolve(&self, grid: &mut VoxelGrid);
+    /// `voxels_per_block` is the document-level density (ADR 0003 §3f(0): one grid
+    /// fineness for the whole plan, no longer a per-producer field) — used to fill
+    /// each voxel's `block_local_coord` (and, for a sized producer, its grid extent).
+    fn resolve(&self, grid: &mut VoxelGrid, voxels_per_block: u32);
 }
 
 /// Geometry parameters — the *only* params that trigger a voxel rebuild.
 ///
 /// The UI-side mirror of [`SdfShape`] (the panel edits this; `SdfShape::from_geometry`
-/// turns it into a producer). Sizes are in **whole blocks**; `voxels_per_block` is
-/// fineness only and never changes the object's block size (DATA.md "the density bug").
+/// turns it into a producer). Sizes are in **whole blocks**.
+///
+/// `voxels_per_block` is the **transient UI control value** for the density slider
+/// only — density is a document-level attribute on [`Scene`](crate::scene::Scene)
+/// (ADR 0003 §3f(0)), so this field is mirrored from / written to the scene via
+/// [`Intent::SetDensity`](crate::intent::Intent::SetDensity) and is NOT copied onto
+/// the produced [`SdfShape`]. Fineness only — it never changes the object's block
+/// size (DATA.md "the density bug").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GeometryParams {
     /// Selected primitive.
     pub shape: ShapeKind,
     /// Bounding-box size in whole blocks (X, Y, Z).
     pub size_blocks: [u32; 3],
-    /// Voxels per block (chisel fineness). Default 16.
+    /// Voxels per block (chisel fineness): the density slider's transient UI value,
+    /// mirrored to/from [`Scene::voxels_per_block`](crate::scene::Scene). Default 16.
     pub voxels_per_block: u32,
     /// Tube wall thickness in whole blocks (used by [`ShapeKind::Tube`] only).
     pub wall_blocks: u32,
@@ -308,8 +318,11 @@ impl Default for GeometryParams {
 
 /// A single parametric SDF primitive: the first (and, in M2, only) producer.
 ///
-/// Sizes are stored in **whole blocks**; `voxels_per_block` (density) is fineness
-/// only and never changes object size (DATA.md "the density bug").
+/// Sizes are stored in **whole blocks**. Density (`voxels_per_block`) is NOT stored
+/// here — it is a document-level attribute on [`Scene`](crate::scene::Scene) (ADR
+/// 0003 §3f(0): one grid fineness for the whole plan), passed in to the size /
+/// resolve methods. Fineness only — it never changes object size (DATA.md "the
+/// density bug").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SdfShape {
     #[serde(default = "default_shape_kind")]
@@ -317,9 +330,6 @@ pub struct SdfShape {
     /// Bounding-box size in whole blocks (X, Y, Z).
     #[serde(default = "default_shape_size")]
     pub size_blocks: [u32; 3],
-    /// Voxels per block (chisel fineness). Default 16.
-    #[serde(default = "default_shape_density")]
-    pub voxels_per_block: u32,
     /// Tube wall thickness in whole blocks (used by [`ShapeKind::Tube`] only).
     #[serde(default = "default_shape_wall")]
     pub wall_blocks: u32,
@@ -334,9 +344,6 @@ fn default_shape_kind() -> ShapeKind {
 fn default_shape_size() -> [u32; 3] {
     [5, 1, 5]
 }
-fn default_shape_density() -> u32 {
-    16
-}
 fn default_shape_wall() -> u32 {
     1
 }
@@ -345,42 +352,42 @@ impl SdfShape {
     /// Build the shape from the UI-side [`GeometryParams`].
     ///
     /// This is the single place geometry params become a producer; the split in
-    /// `panel.rs` guarantees display/camera params never reach here.
+    /// `panel.rs` guarantees display/camera params never reach here. Density is NOT
+    /// copied — it lives on the [`Scene`](crate::scene::Scene), not the shape.
     pub fn from_geometry(geometry: GeometryParams) -> Self {
         Self {
             kind: geometry.shape,
             size_blocks: geometry.size_blocks,
-            voxels_per_block: geometry.voxels_per_block,
             wall_blocks: geometry.wall_blocks,
         }
     }
 
     /// Grid dimensions in voxels: `size_blocks * voxels_per_block`.
-    pub fn grid_dimensions(&self) -> [u32; 3] {
+    pub fn grid_dimensions(&self, voxels_per_block: u32) -> [u32; 3] {
         [
-            self.size_blocks[0] * self.voxels_per_block,
-            self.size_blocks[1] * self.voxels_per_block,
-            self.size_blocks[2] * self.voxels_per_block,
+            self.size_blocks[0] * voxels_per_block,
+            self.size_blocks[1] * voxels_per_block,
+            self.size_blocks[2] * voxels_per_block,
         ]
     }
 
     /// Total number of sampling-grid voxels (`grid_x * grid_y * grid_z`), as
     /// `u64` so it can't overflow at large sizes/densities.
-    pub fn grid_voxel_count(&self) -> u64 {
-        let [grid_x, grid_y, grid_z] = self.grid_dimensions();
+    pub fn grid_voxel_count(&self, voxels_per_block: u32) -> u64 {
+        let [grid_x, grid_y, grid_z] = self.grid_dimensions(voxels_per_block);
         grid_x as u64 * grid_y as u64 * grid_z as u64
     }
 
     /// Whether this shape's sampling grid exceeds [`MAX_GRID_VOXELS`] and so the
     /// 3D rebuild should be skipped (ARCHITECTURE.md §7).
-    pub fn exceeds_voxel_cap(&self) -> bool {
-        self.grid_voxel_count() > MAX_GRID_VOXELS
+    pub fn exceeds_voxel_cap(&self, voxels_per_block: u32) -> bool {
+        self.grid_voxel_count(voxels_per_block) > MAX_GRID_VOXELS
     }
 }
 
 impl VoxelProducer for SdfShape {
-    fn resolve(&self, grid: &mut VoxelGrid) {
-        let [grid_x, grid_y, grid_z] = self.grid_dimensions();
+    fn resolve(&self, grid: &mut VoxelGrid, voxels_per_block: u32) {
+        let [grid_x, grid_y, grid_z] = self.grid_dimensions(voxels_per_block);
         grid.dimensions = [grid_x, grid_y, grid_z];
 
         // Shape inscribed in the box: semi-axes are half the voxel-space dims.
@@ -389,8 +396,7 @@ impl VoxelProducer for SdfShape {
             grid_y as f32 / 2.0,
             grid_z as f32 / 2.0,
         );
-        let wall_voxels = (self.wall_blocks * self.voxels_per_block) as f32;
-        let voxels_per_block = self.voxels_per_block;
+        let wall_voxels = (self.wall_blocks * voxels_per_block) as f32;
 
         let half_x = grid_x as f32 / 2.0;
         let half_y = grid_y as f32 / 2.0;

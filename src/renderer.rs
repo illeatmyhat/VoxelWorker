@@ -4189,11 +4189,10 @@ mod tests {
         }
     }
 
-    fn box_node(name: &str, offset: [i64; 3], density: u32) -> Node {
+    fn box_node(name: &str, offset: [i64; 3]) -> Node {
         let shape = SdfShape {
             kind: ShapeKind::Box,
             size_blocks: [2, 2, 2],
-            voxels_per_block: density,
             wall_blocks: 1,
         };
         let mut node = Node::new(name, NodeContent::Tool { shape, material: Mc::Stone });
@@ -4209,9 +4208,10 @@ mod tests {
     fn scene_grid_boxes_gated_by_master_and_per_object() {
         for density in [1u32, 15, 16] {
             let mut scene = Scene::from_nodes(vec![
-                box_node("A", [0, 0, 0], density),
-                box_node("B", [8, 0, 0], density),
+                box_node("A", [0, 0, 0]),
+                box_node("B", [8, 0, 0]),
             ]);
+            scene.voxels_per_block = density;
             scene.active = None;
             scene.master_block_lattice = true;
             scene.master_floor_grid = true;

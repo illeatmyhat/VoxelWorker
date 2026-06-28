@@ -311,11 +311,10 @@ mod tests {
         let shape = SdfShape {
             kind: ShapeKind::Cylinder,
             size_blocks: [5, 1, 5],
-            voxels_per_block: 16,
             wall_blocks: 1,
         };
-        let mut grid = VoxelGrid::new(shape.grid_dimensions());
-        shape.resolve(&mut grid);
+        let mut grid = VoxelGrid::new(shape.grid_dimensions(16));
+        shape.resolve(&mut grid, 16);
         assert!(grid.occupied_count() > 0, "expected a non-empty grid");
 
         let export = VoxExport::from_grid(&grid, [132, 126, 118, 255]);
@@ -350,11 +349,10 @@ mod tests {
         let shape = SdfShape {
             kind: ShapeKind::Box,
             size_blocks: [17, 1, 1],
-            voxels_per_block: 16,
             wall_blocks: 1,
         };
-        let mut grid = VoxelGrid::new(shape.grid_dimensions());
-        shape.resolve(&mut grid);
+        let mut grid = VoxelGrid::new(shape.grid_dimensions(16));
+        shape.resolve(&mut grid, 16);
 
         let export = VoxExport::from_grid(&grid, [200, 200, 200, 255]);
         assert!(export.model_count() >= 2, "272-wide grid should split");
@@ -478,7 +476,6 @@ mod tests {
             let shape = SdfShape {
                 kind,
                 size_blocks: [5, 5, 5],
-                voxels_per_block: vpb,
                 wall_blocks: 1,
             };
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
@@ -504,17 +501,18 @@ mod tests {
             let shape = SdfShape {
                 kind: ShapeKind::Box,
                 size_blocks: [3, 3, 3],
-                voxels_per_block: vpb,
                 wall_blocks: 1,
             };
             let mut node = Node::new("Box", NodeContent::Tool { shape, material });
             node.transform.offset_blocks = offset;
             node
         };
-        Scene::from_nodes(vec![
+        let mut scene = Scene::from_nodes(vec![
             make_box([0, 0, 0], MaterialChoice::Stone),
             make_box([offset_blocks, 0, 0], MaterialChoice::Wood),
-        ])
+        ]);
+        scene.voxels_per_block = vpb;
+        scene
     }
 
     /// **The rewired export is behaviour-equivalent to the old monolithic export, far

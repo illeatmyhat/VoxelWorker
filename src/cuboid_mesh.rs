@@ -1691,18 +1691,18 @@ mod tests {
             // 5×1×5 is the default disc (odd X/Z blocks → the recentre that exposed
             // the bug); also exercise an odd-all-axes size to be thorough.
             for &size in &[[5u32, 1, 5], [3, 3, 3], [5, 3, 7]] {
+                let voxels_per_block = 8;
                 let shape = SdfShape {
                     kind,
                     size_blocks: size,
-                    voxels_per_block: 8,
                     wall_blocks: 1,
                 };
                 // Shift-invariance: also run a deliberately recentred copy of the
                 // grid (every voxel +8 in each axis, like `resolve_region`'s
                 // off-centre composite) — coverage must be identical.
                 for shift in [0.0f32, 8.0] {
-                    let mut shifted = VoxelGrid::new(shape.grid_dimensions());
-                    shape.resolve(&mut shifted);
+                    let mut shifted = VoxelGrid::new(shape.grid_dimensions(voxels_per_block));
+                    shape.resolve(&mut shifted, voxels_per_block);
                     if shifted.occupied.is_empty() {
                         continue;
                     }
@@ -2158,12 +2158,11 @@ mod tests {
                 let shape = SdfShape {
                     kind,
                     size_blocks: size,
-                    voxels_per_block: density,
                     wall_blocks: 1,
                 };
-                let dims = shape.grid_dimensions();
+                let dims = shape.grid_dimensions(density);
                 let mut grid = VoxelGrid::new(dims);
-                shape.resolve(&mut grid);
+                shape.resolve(&mut grid, density);
                 if grid.occupied.is_empty() {
                     continue;
                 }
@@ -2307,15 +2306,15 @@ mod tests {
     #[test]
     fn per_chunk_band_clip_face_set_equals_whole_region() {
         use crate::voxel::{SdfShape, ShapeKind, VoxelProducer};
+        let voxels_per_block = 8;
         let shape = SdfShape {
             kind: ShapeKind::Torus,
             size_blocks: [8, 2, 8],
-            voxels_per_block: 8,
             wall_blocks: 1,
         };
-        let dims = shape.grid_dimensions();
+        let dims = shape.grid_dimensions(voxels_per_block);
         let mut grid = VoxelGrid::new(dims);
-        shape.resolve(&mut grid);
+        shape.resolve(&mut grid, voxels_per_block);
         assert!(!grid.occupied.is_empty());
 
         let band = LayerBand {

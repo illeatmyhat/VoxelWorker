@@ -192,11 +192,11 @@ pub enum Intent {
     },
 
     // --- Global ---
-    /// Set the global density (voxels per block). Density is global, but is stored
-    /// on every Tool's [`SdfShape`] so the resolve reads it — so this rewrites EVERY
-    /// Tool node's `voxels_per_block`.
+    /// Set the document-level density (voxels per block). Density is a single attribute
+    /// on the [`Scene`](crate::scene::Scene) — which block-game grid the plan targets
+    /// (ADR 0003 §3f(0)) — so this writes `scene.voxels_per_block`, not a per-Tool field.
     SetDensity {
-        /// The new global voxels-per-block.
+        /// The new document voxels-per-block.
         voxels_per_block: u32,
     },
     /// Set the three scene-wide grid master toggles.
@@ -369,7 +369,6 @@ mod tests {
         SdfShape {
             kind: ShapeKind::Box,
             size_blocks: size,
-            voxels_per_block: 8,
             wall_blocks: 1,
         }
     }
@@ -641,9 +640,9 @@ mod tests {
     // === Global ===
 
     #[test]
-    fn set_density_rewrites_every_tool() {
-        // Two top-level Tools + a Tool nested in a Group, so the global rewrite must
-        // reach the arena, not just the roots.
+    fn set_density_sets_document_field() {
+        // Density is a single document-level field (ADR 0003 §3f(0)): the dispatch sets
+        // `scene.voxels_per_block`, not a per-Tool fan-out.
         let mut scene = Scene::from_nodes(vec![
             tool_node(box_shape([2, 2, 2]), MaterialChoice::Stone).into(),
             NodeBuilder::group(
@@ -654,11 +653,7 @@ mod tests {
         ]);
         scene.ensure_node_ids();
         assert_dispatch_matches(&scene, Intent::SetDensity { voxels_per_block: 20 }, |s| {
-            for node in s.arena.values_mut() {
-                if let NodeContent::Tool { shape, .. } = &mut node.content {
-                    shape.voxels_per_block = 20;
-                }
-            }
+            s.voxels_per_block = 20;
         });
     }
 

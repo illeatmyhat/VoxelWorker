@@ -527,6 +527,20 @@ pub struct Scene {
     /// present in a loaded scene before minting new ones.
     #[serde(default)]
     pub next_node_id: u64,
+    /// Document-level voxel density (voxels per block): which block-game grid the
+    /// plan targets (ADR 0003 §3f(0)). Uniform across the document — it is NOT a
+    /// per-shape attribute. Every resolve / chunk / export / spatial-index call
+    /// sources its density param from here; [`Intent::SetDensity`](crate::intent::Intent::SetDensity)
+    /// is the single writer.
+    #[serde(default = "default_density")]
+    pub voxels_per_block: u32,
+}
+
+/// The document-level density default (voxels per block) for a fresh or partially
+/// deserialised [`Scene`] — matches [`GeometryParams`](crate::voxel::GeometryParams)
+/// default 16.
+fn default_density() -> u32 {
+    16
 }
 
 impl Default for Scene {
@@ -547,6 +561,7 @@ impl Default for Scene {
             master_floor_grid: true,
             active_point: None,
             next_node_id: 0,
+            voxels_per_block: default_density(),
         }
     }
 }
@@ -1554,13 +1569,17 @@ impl Scene {
     /// the geometry. So this constructor only ever builds a Tool; the back-compat
     /// config load (a single persisted geometry) routes through here.
     pub fn from_geometry(geometry: GeometryParams, material: MaterialChoice) -> Self {
-        Self::single_node(Node::new(
+        let mut scene = Self::single_node(Node::new(
             "Shape",
             NodeContent::Tool {
                 shape: SdfShape::from_geometry(geometry),
                 material,
             },
-        ))
+        ));
+        // Density is document-level (ADR 0003 §3f(0)): carry the UI control value
+        // onto the scene, not the shape.
+        scene.voxels_per_block = geometry.voxels_per_block;
+        scene
     }
 
     /// Test helper (ADR 0003 Phase B5): the top-level node at positional `index`, via
@@ -1798,6 +1817,7 @@ impl Scene {
                         // with each voxel (and survives chunk bucketing).
                         grid_on_faces,
                         shape,
+                        voxels_per_block,
                     );
                 }
                 NodeContent::Part(Part::DebugClouds { seed }) => {
@@ -1805,7 +1825,6 @@ impl Scene {
                         // The cloud field sizes itself from the region (today's
                         // behaviour resolved it at the shape's grid dimensions).
                         dimensions: region_dimensions,
-                        voxels_per_block,
                         seed: *seed,
                     };
                     stamp_producer(
@@ -1819,6 +1838,7 @@ impl Scene {
                         // node wants the on-face grid (independent of material).
                         grid_on_faces,
                         &producer,
+                        voxels_per_block,
                     );
                 }
                 // `for_each_leaf` only ever yields leaf content (Tool / Part); the
@@ -1979,7 +1999,6 @@ impl Scene {
                     None,
                     Box::new(DebugCloudField {
                         dimensions: region_dimensions,
-                        voxels_per_block,
                         seed: *seed,
                     }),
                 ),
@@ -1996,6 +2015,7 @@ impl Scene {
                 // render path exactly as it does through `resolve_region`.
                 grid_on_faces,
                 producer.as_ref(),
+                voxels_per_block,
                 chunk_min_voxels,
                 chunk_max_voxels,
             );
@@ -2407,13 +2427,14 @@ fn stamp_producer(
     material_override: Option<u16>,
     grid_overlay: bool,
     producer: &dyn VoxelProducer,
+    voxels_per_block: u32,
 ) {
     // The producer sizes its own grid (`SdfShape::resolve` overwrites
     // `dimensions` to its own `size_blocks × density`, centred at the origin), so
     // the local grid need only seed the dimensions; the cloud field, which has no
     // intrinsic size, fills the region it is handed.
     let mut local = VoxelGrid::new(region_dimensions);
-    producer.resolve(&mut local);
+    producer.resolve(&mut local, voxels_per_block);
 
     let zero_offset = translation_voxels == [0, 0, 0];
 
@@ -2480,11 +2501,12 @@ fn stamp_producer_into_chunk(
     material_override: Option<u16>,
     grid_overlay: bool,
     producer: &dyn VoxelProducer,
+    voxels_per_block: u32,
     chunk_min_voxels: [i64; 3],
     chunk_max_voxels: [i64; 3],
 ) {
     let mut local = VoxelGrid::new(region_dimensions);
-    producer.resolve(&mut local);
+    producer.resolve(&mut local, voxels_per_block);
 
     // The voxel's chunk-local placement, rebased to the floating origin in i64
     // FIRST so the f32 add never sees a large magnitude. For the live render the
@@ -2546,8 +2568,8 @@ mod tests {
 
         // Bare producer (today's path).
         let shape = SdfShape::from_geometry(geometry);
-        let mut bare = VoxelGrid::new(shape.grid_dimensions());
-        shape.resolve(&mut bare);
+        let mut bare = VoxelGrid::new(shape.grid_dimensions(geometry.voxels_per_block));
+        shape.resolve(&mut bare, geometry.voxels_per_block);
 
         // Through the scene.
         let scene = Scene::from_geometry(geometry, MaterialChoice::Stone);
@@ -2625,7 +2647,7 @@ mod tests {
 
         // A placed multi-node scene (sphere at origin + box +8X + torus +6Z).
         let make_tool = |kind, offset: [i64; 3], material| {
-            let shape = SdfShape { kind, size_blocks: [5, 5, 5], voxels_per_block: 16, wall_blocks: 1 };
+            let shape = SdfShape { kind, size_blocks: [5, 5, 5], wall_blocks: 1 };
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
             node.transform.offset_blocks = offset;
             node
@@ -2640,7 +2662,7 @@ mod tests {
         // An instanced village (one house definition placed by four instances).
         let house_def_id = DefId(1);
         let tool = |kind, size: [u32; 3], offset: [i64; 3], material| {
-            let shape = SdfShape { kind, size_blocks: size, voxels_per_block: 16, wall_blocks: 1 };
+            let shape = SdfShape { kind, size_blocks: size, wall_blocks: 1 };
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
             node.transform.offset_blocks = offset;
             node
@@ -2682,11 +2704,10 @@ mod tests {
         ];
         let bare_field = DebugCloudField {
             dimensions,
-            voxels_per_block,
             seed: 0,
         };
         let mut bare = VoxelGrid::new(dimensions);
-        bare_field.resolve(&mut bare);
+        bare_field.resolve(&mut bare, voxels_per_block);
 
         let scene =
             Scene::single_node(Node::new("Clouds", NodeContent::Part(Part::DebugClouds { seed: 0 })));
@@ -2712,7 +2733,6 @@ mod tests {
                 shape: SdfShape {
                     kind: ShapeKind::Sphere,
                     size_blocks: [6, 6, 6],
-                    voxels_per_block,
                     wall_blocks: 1,
                 },
                 material: MaterialChoice::Stone,
@@ -2726,7 +2746,6 @@ mod tests {
                 shape: SdfShape {
                     kind: ShapeKind::Box,
                     size_blocks: [6, 6, 6],
-                    voxels_per_block,
                     wall_blocks: 1,
                 },
                 material: MaterialChoice::Wood,
@@ -2781,7 +2800,6 @@ mod tests {
         let shape = SdfShape {
             kind: ShapeKind::Box,
             size_blocks: [2, 2, 2],
-            voxels_per_block,
             wall_blocks: 1,
         };
         let scene = Scene::single_node(Node::new(
@@ -2806,7 +2824,6 @@ mod tests {
         let base = SdfShape {
             kind: ShapeKind::Box,
             size_blocks: [1, 1, 1],
-            voxels_per_block,
             wall_blocks: 1,
         };
         let mut stone = Node::new("Stone", NodeContent::Tool { shape: base, material: MaterialChoice::Stone });
@@ -2842,7 +2859,6 @@ mod tests {
             let shape = SdfShape {
                 kind: ShapeKind::Box,
                 size_blocks: [1, 1, 1],
-                voxels_per_block,
                 wall_blocks: 1,
             };
             let wood_id = MaterialChoice::Wood.material_id();
@@ -2898,7 +2914,6 @@ mod tests {
         let base = SdfShape {
             kind: ShapeKind::Box,
             size_blocks: [1, 1, 1],
-            voxels_per_block,
             wall_blocks: 1,
         };
         // Stone node opts IN; Wood node opts OUT, placed disjointly.
@@ -2947,7 +2962,6 @@ mod tests {
                 shape: SdfShape {
                     kind: ShapeKind::Box,
                     size_blocks: [2, 2, 2],
-                    voxels_per_block: 8,
                     wall_blocks: 1,
                 },
                 material: MaterialChoice::Stone,
@@ -2966,7 +2980,6 @@ mod tests {
         let shape = SdfShape {
             kind: ShapeKind::Box,
             size_blocks: [1, 1, 1],
-            voxels_per_block,
             wall_blocks: 1,
         };
         let mut node = Node::new("Box", NodeContent::Tool { shape, material: MaterialChoice::Stone });
@@ -3003,7 +3016,6 @@ mod tests {
         let base = SdfShape {
             kind: ShapeKind::Box,
             size_blocks: [1, 1, 1],
-            voxels_per_block,
             wall_blocks: 1,
         };
         let mut at_zero = Node::new("A", NodeContent::Tool { shape: base, material: MaterialChoice::Stone });
@@ -3073,7 +3085,6 @@ mod tests {
         let base = SdfShape {
             kind: ShapeKind::Box,
             size_blocks: [1, 1, 1],
-            voxels_per_block,
             wall_blocks: 1,
         };
         let mut a = Node::new("A", NodeContent::Tool { shape: base, material: MaterialChoice::Stone });
@@ -3104,7 +3115,6 @@ mod tests {
         let base = SdfShape {
             kind: ShapeKind::Box,
             size_blocks: [2, 2, 2],
-            voxels_per_block,
             wall_blocks: 1,
         };
         let mut node = Node::new("Box", NodeContent::Tool { shape: base, material: MaterialChoice::Stone });
@@ -3140,11 +3150,10 @@ mod tests {
 
     /// A 1×1×1 box Tool shape, used as a leaf in the step-4 recursion/instancing
     /// tests (the node carries the material; the shape does not).
-    fn unit_box_shape(voxels_per_block: u32) -> SdfShape {
+    fn unit_box_shape() -> SdfShape {
         SdfShape {
             kind: ShapeKind::Box,
             size_blocks: [1, 1, 1],
-            voxels_per_block,
             wall_blocks: 1,
         }
     }
@@ -3179,7 +3188,7 @@ mod tests {
         // Grouped: a Group at +A containing a box at +B.
         let mut leaf = Node::new(
             "Leaf",
-            NodeContent::Tool { shape: unit_box_shape(voxels_per_block), material: MaterialChoice::Stone },
+            NodeContent::Tool { shape: unit_box_shape(), material: MaterialChoice::Stone },
         );
         leaf.transform.offset_blocks = [b, 0, 0];
         let grouped = scene_with_top_level_selected(
@@ -3191,7 +3200,7 @@ mod tests {
         // Flat reference: the same box placed directly at A + B.
         let mut flat_leaf = Node::new(
             "Flat",
-            NodeContent::Tool { shape: unit_box_shape(voxels_per_block), material: MaterialChoice::Stone },
+            NodeContent::Tool { shape: unit_box_shape(), material: MaterialChoice::Stone },
         );
         flat_leaf.transform.offset_blocks = [a + b, 0, 0];
         let flat = Scene::single_node(flat_leaf);
@@ -3223,7 +3232,7 @@ mod tests {
             "Body".to_string(),
             vec![Node::new(
                 "Box",
-                NodeContent::Tool { shape: unit_box_shape(voxels_per_block), material: MaterialChoice::Wood },
+                NodeContent::Tool { shape: unit_box_shape(), material: MaterialChoice::Wood },
             )],
         );
         let instanced = scene_with_top_level_selected(instanced_scene, 0);
@@ -3232,7 +3241,7 @@ mod tests {
         // Direct: the same box placed directly at T.
         let mut direct = Node::new(
             "Direct",
-            NodeContent::Tool { shape: unit_box_shape(voxels_per_block), material: MaterialChoice::Wood },
+            NodeContent::Tool { shape: unit_box_shape(), material: MaterialChoice::Wood },
         );
         direct.transform.offset_blocks = [t, 0, 0];
         let direct_grid = Scene::single_node(direct).resolve_region(region, voxels_per_block, 0);
@@ -3257,7 +3266,7 @@ mod tests {
         let house_body = || {
             vec![Node::new(
                 "Box",
-                NodeContent::Tool { shape: unit_box_shape(voxels_per_block), material: MaterialChoice::Stone },
+                NodeContent::Tool { shape: unit_box_shape(), material: MaterialChoice::Stone },
             )]
         };
 
@@ -3330,7 +3339,7 @@ mod tests {
             vec![
                 Node::new(
                     "Box",
-                    NodeContent::Tool { shape: unit_box_shape(voxels_per_block), material: MaterialChoice::Stone },
+                    NodeContent::Tool { shape: unit_box_shape(), material: MaterialChoice::Stone },
                 ),
                 Node::new("Self", NodeContent::Instance(def_id)),
             ],
@@ -3342,7 +3351,7 @@ mod tests {
         let grid = scene.resolve_region(RegionBlocks::new([1, 1, 1]), voxels_per_block, 0);
         let one_box = Scene::single_node(Node::new(
             "Box",
-            NodeContent::Tool { shape: unit_box_shape(voxels_per_block), material: MaterialChoice::Stone },
+            NodeContent::Tool { shape: unit_box_shape(), material: MaterialChoice::Stone },
         ))
         .resolve_region(RegionBlocks::new([1, 1, 1]), voxels_per_block, 0)
         .occupied_count();
@@ -3370,19 +3379,21 @@ mod tests {
     /// tree-mutation UI helper tests build on. ADR 0003 Phase B3: ids are minted so
     /// the selection (and the `group_active` it drives) resolves by identity.
     fn two_box_scene(voxels_per_block: u32) -> Scene {
-        scene_with_top_level_selected(
+        let mut scene = scene_with_top_level_selected(
             Scene::from_nodes(vec![
                 Node::new(
                     "A",
-                    NodeContent::Tool { shape: unit_box_shape(voxels_per_block), material: MaterialChoice::Stone },
+                    NodeContent::Tool { shape: unit_box_shape(), material: MaterialChoice::Stone },
                 ),
                 Node::new(
                     "B",
-                    NodeContent::Tool { shape: unit_box_shape(voxels_per_block), material: MaterialChoice::Wood },
+                    NodeContent::Tool { shape: unit_box_shape(), material: MaterialChoice::Wood },
                 ),
             ]),
             0,
-        )
+        );
+        scene.voxels_per_block = voxels_per_block;
+        scene
     }
 
     /// ADR 0001 step 4 (UI helper): `group_active` wraps the active node in a new
@@ -3482,7 +3493,7 @@ mod tests {
         // add a second instance.
         let mut scene = Scene::single_node(Node::new(
             "House",
-            NodeContent::Tool { shape: unit_box_shape(voxels_per_block), material: MaterialChoice::Stone },
+            NodeContent::Tool { shape: unit_box_shape(), material: MaterialChoice::Stone },
         ));
         let def_id = scene.make_definition_from_active("House").expect("active node");
         assert_eq!(scene.definitions.len(), 1);
@@ -3699,7 +3710,6 @@ mod tests {
             let shape = SdfShape {
                 kind,
                 size_blocks: [5, 5, 5],
-                voxels_per_block,
                 wall_blocks: 1,
             };
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
@@ -3728,7 +3738,6 @@ mod tests {
             let shape = SdfShape {
                 kind,
                 size_blocks: size,
-                voxels_per_block,
                 wall_blocks: 1,
             };
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
@@ -3768,7 +3777,6 @@ mod tests {
         let shape = SdfShape {
             kind: ShapeKind::Sphere,
             size_blocks: [4, 4, 4],
-            voxels_per_block,
             wall_blocks: 1,
         };
         let mut node = Node::new(
@@ -3845,7 +3853,6 @@ mod tests {
         let shape = SdfShape {
             kind: ShapeKind::Box,
             size_blocks: [4, 4, 4],
-            voxels_per_block,
             wall_blocks: 1,
         };
         let mut node = Node::new(
@@ -3974,7 +3981,6 @@ mod tests {
         let shape = SdfShape {
             kind: ShapeKind::Box,
             size_blocks: [1, 1, 1],
-            voxels_per_block,
             wall_blocks: 1,
         };
         let mut leaf = Node::new(
@@ -4081,21 +4087,22 @@ mod tests {
             let shape = SdfShape {
                 kind,
                 size_blocks: [5, 5, 5],
-                voxels_per_block,
                 wall_blocks: 1,
             };
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
             node.transform.offset_blocks = offset;
             node
         };
-        scene_with_top_level_selected(
+        let mut scene = scene_with_top_level_selected(
             Scene::from_nodes(vec![
                 make_tool(ShapeKind::Sphere, [0, 0, 0], MaterialChoice::Stone),
                 make_tool(ShapeKind::Box, [8, 0, 0], MaterialChoice::Wood),
                 make_tool(ShapeKind::Torus, [0, 0, 6], MaterialChoice::Plain),
             ]),
             0,
-        )
+        );
+        scene.voxels_per_block = voxels_per_block;
+        scene
     }
 
     fn demo_village_scene(voxels_per_block: u32) -> Scene {
@@ -4104,7 +4111,6 @@ mod tests {
             let shape = SdfShape {
                 kind,
                 size_blocks: size,
-                voxels_per_block,
                 wall_blocks: 1,
             };
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
@@ -4130,6 +4136,7 @@ mod tests {
                 tool(ShapeKind::Cylinder, [1, 2, 1], [0, 2, 0], MaterialChoice::Wood),
             ],
         );
+        scene.voxels_per_block = voxels_per_block;
         scene_with_top_level_selected(scene, 0)
     }
 
@@ -4236,7 +4243,7 @@ mod tests {
         let mut tool = Node::new(
             "Sphere",
             NodeContent::Tool {
-                shape: SdfShape { kind: ShapeKind::Sphere, size_blocks: [5, 5, 5], voxels_per_block, wall_blocks: 1 },
+                shape: SdfShape { kind: ShapeKind::Sphere, size_blocks: [5, 5, 5], wall_blocks: 1 },
                 material: MaterialChoice::Stone,
             },
         );
@@ -4501,7 +4508,6 @@ mod tests {
         let shape = SdfShape {
             kind: ShapeKind::Box,
             size_blocks,
-            voxels_per_block: density,
             wall_blocks: 1,
         };
         let mut node = Node::new("Box", NodeContent::Tool { shape, material: MaterialChoice::Stone });
@@ -4610,7 +4616,6 @@ mod tests {
                 let shape = SdfShape {
                     kind: ShapeKind::Box,
                     size_blocks: size,
-                    voxels_per_block: density,
                     wall_blocks: 1,
                 };
                 let mut node =
@@ -4671,7 +4676,6 @@ mod tests {
         let shape = SdfShape {
             kind: ShapeKind::Box,
             size_blocks,
-            voxels_per_block: density,
             wall_blocks: 1,
         };
         let mut node = Node::new("Box", NodeContent::Tool { shape, material: MaterialChoice::Stone });
@@ -4741,7 +4745,6 @@ mod tests {
                 let shape = SdfShape {
                     kind: ShapeKind::Box,
                     size_blocks: size,
-                    voxels_per_block: density,
                     wall_blocks: 1,
                 };
                 let mut moving = Node::new(
@@ -4752,7 +4755,6 @@ mod tests {
                 let anchor_shape = SdfShape {
                     kind: ShapeKind::Box,
                     size_blocks: [200, 200, 200],
-                    voxels_per_block: density,
                     wall_blocks: 1,
                 };
                 let mut anchor = Node::new(
@@ -4820,7 +4822,6 @@ mod tests {
                 shape: SdfShape {
                     kind: ShapeKind::Box,
                     size_blocks: [1, 1, 1],
-                    voxels_per_block: 8,
                     wall_blocks: 1,
                 },
                 material: MaterialChoice::Stone,
@@ -5071,7 +5072,6 @@ mod tests {
                 shape: SdfShape {
                     kind: ShapeKind::Box,
                     size_blocks: [1, 1, 1],
-                    voxels_per_block: 8,
                     wall_blocks: 1,
                 },
                 material: MaterialChoice::Stone,
@@ -5129,7 +5129,7 @@ mod tests {
         let node = Node::new(
             "Box",
             NodeContent::Tool {
-                shape: SdfShape { kind: ShapeKind::Box, size_blocks: [2, 2, 2], voxels_per_block: 8, wall_blocks: 1 },
+                shape: SdfShape { kind: ShapeKind::Box, size_blocks: [2, 2, 2], wall_blocks: 1 },
                 material: MaterialChoice::Stone,
             },
         );
@@ -5167,7 +5167,7 @@ mod tests {
     #[test]
     fn active_gizmo_placement_follows_selected_node() {
         let make_tool = |kind, size: [u32; 3], offset: [i64; 3]| {
-            let shape = SdfShape { kind, size_blocks: size, voxels_per_block: 16, wall_blocks: 1 };
+            let shape = SdfShape { kind, size_blocks: size, wall_blocks: 1 };
             let mut node = Node::new(
                 format!("{kind:?}"),
                 NodeContent::Tool { shape, material: MaterialChoice::Stone },
@@ -5234,7 +5234,7 @@ mod tests {
     #[test]
     fn single_even_selected_node_gizmo_sits_at_origin() {
         let shape =
-            SdfShape { kind: ShapeKind::Box, size_blocks: [4, 2, 6], voxels_per_block: 16, wall_blocks: 1 };
+            SdfShape { kind: ShapeKind::Box, size_blocks: [4, 2, 6], wall_blocks: 1 };
         let mut node =
             Node::new("Box", NodeContent::Tool { shape, material: MaterialChoice::Stone });
         node.transform.offset_blocks = [123, -45, 67];
@@ -5256,7 +5256,7 @@ mod tests {
     #[test]
     fn single_odd_selected_node_gizmo_is_half_voxel_off_origin() {
         let shape =
-            SdfShape { kind: ShapeKind::Box, size_blocks: [3, 1, 5], voxels_per_block: 16, wall_blocks: 1 };
+            SdfShape { kind: ShapeKind::Box, size_blocks: [3, 1, 5], wall_blocks: 1 };
         let mut node =
             Node::new("Box", NodeContent::Tool { shape, material: MaterialChoice::Stone });
         node.transform.offset_blocks = [123, -45, 67];

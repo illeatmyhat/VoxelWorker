@@ -35,14 +35,12 @@ use crate::scene::{DefId, Node, NodeContent, NodeId, Point};
 /// and `undo` rewinds the counter so a later `redo` re-mints the same ids).
 pub enum Inverse {
     /// Reverse a field-set intent (SetVisible / SetShape / SetMaterial / SetOffset /
-    /// SetName / SetCloudSeed / SetNodeGrids / SetGridMasters and the point field-sets
-    /// SetPointHidden / SetPointPlanes / SetPointAxes / SetPointPosition) by replaying
-    /// the SAME intent carrying the field's PRIOR value, captured before the mutate.
+    /// SetName / SetCloudSeed / SetNodeGrids / SetDensity / SetGridMasters and the point
+    /// field-sets SetPointHidden / SetPointPlanes / SetPointAxes / SetPointPosition) by
+    /// replaying the SAME intent carrying the field's PRIOR value, captured before the
+    /// mutate. `SetDensity` joins this group now that density is a single document-level
+    /// field (ADR 0003 §3f(0)) rather than a fan-out over every Tool's shape.
     Field(Intent),
-    /// Reverse `SetDensity` — which rewrites EVERY Tool node's `voxels_per_block` —
-    /// by restoring each Tool's captured prior density (per node, so a scene whose
-    /// Tools carried mixed densities restores exactly).
-    Density(Vec<(NodeId, u32)>),
     /// Reverse a single-node mint (AddNode / AddChild / AddInstance): the forward op
     /// minted exactly one node + spliced its id onto the end of a spine; the inverse
     /// removes that node (which `remove_node`'s spine splice + arena drop does), then
@@ -128,15 +126,6 @@ impl Inverse {
                     false,
                     "Inverse::Field must be routed through AppCore::dispatch, not apply()"
                 );
-            }
-            Inverse::Density(prior) => {
-                for &(id, voxels_per_block) in prior {
-                    if let Some(node) = scene.arena.get_mut(&id) {
-                        if let NodeContent::Tool { shape, .. } = &mut node.content {
-                            shape.voxels_per_block = voxels_per_block;
-                        }
-                    }
-                }
             }
             Inverse::RemoveAdded { id } => {
                 scene.remove_node_exact(*id);

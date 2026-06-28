@@ -763,7 +763,6 @@ fn build_demo_scene(voxels_per_block: u32) -> Scene {
         let shape = SdfShape {
             kind,
             size_blocks: [5, 5, 5],
-            voxels_per_block,
             wall_blocks: 1,
         };
         let mut node = Node::new(
@@ -773,11 +772,14 @@ fn build_demo_scene(voxels_per_block: u32) -> Scene {
         node.transform.offset_blocks = offset;
         node
     };
-    selecting_first_node(Scene::from_nodes(vec![
+    let mut scene = selecting_first_node(Scene::from_nodes(vec![
         make_tool(ShapeKind::Sphere, [0, 0, 0], MaterialChoice::Stone),
         make_tool(ShapeKind::Box, [8, 0, 0], MaterialChoice::Wood),
         make_tool(ShapeKind::Torus, [0, 0, 6], MaterialChoice::Plain),
-    ]))
+    ]));
+    // Density is document-level (ADR 0003 §3f(0)).
+    scene.voxels_per_block = voxels_per_block;
+    scene
 }
 
 /// Build the `--demo-village` (ADR 0001 step 4): an **instanced** scene that
@@ -794,7 +796,6 @@ fn build_demo_village(voxels_per_block: u32) -> Scene {
         let shape = SdfShape {
             kind,
             size_blocks: size,
-            voxels_per_block,
             wall_blocks: 1,
         };
         let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
@@ -835,6 +836,7 @@ fn build_demo_village(voxels_per_block: u32) -> Scene {
             tool(ShapeKind::Cylinder, [1, 2, 1], [0, 2, 0], MaterialChoice::Wood),
         ],
     );
+    scene.voxels_per_block = voxels_per_block;
     selecting_first_node(scene)
 }
 
@@ -847,7 +849,7 @@ fn build_demo_village(voxels_per_block: u32) -> Scene {
 /// Definitions list — the whole authoring surface this step adds.
 fn build_demo_groups(voxels_per_block: u32) -> Scene {
     let tool = |kind, size: [u32; 3], offset: [i64; 3], material, name: &str| {
-        let shape = SdfShape { kind, size_blocks: size, voxels_per_block, wall_blocks: 1 };
+        let shape = SdfShape { kind, size_blocks: size, wall_blocks: 1 };
         let mut node = Node::new(name, NodeContent::Tool { shape, material });
         node.transform.offset_blocks = offset;
         node
@@ -880,6 +882,7 @@ fn build_demo_groups(voxels_per_block: u32) -> Scene {
         "Widget",
         vec![tool(ShapeKind::Sphere, [2, 2, 2], [0, 0, 0], MaterialChoice::Plain, "Ball")],
     );
+    scene.voxels_per_block = voxels_per_block;
     selecting_first_node(scene)
 }
 
@@ -902,7 +905,6 @@ fn build_far_offset_scene(voxels_per_block: u32, far: bool) -> Scene {
     let shape = SdfShape {
         kind: ShapeKind::Box,
         size_blocks: [4, 4, 4],
-        voxels_per_block,
         wall_blocks: 1,
     };
     let mut node = Node::new(
@@ -913,7 +915,9 @@ fn build_far_offset_scene(voxels_per_block: u32, far: bool) -> Scene {
         },
     );
     node.transform.offset_blocks = if far { FAR_OFFSET_BLOCKS } else { [0, 0, 0] };
-    Scene::single_node(node)
+    let mut scene = Scene::single_node(node);
+    scene.voxels_per_block = voxels_per_block;
+    scene
 }
 
 /// `--replay` (ADR 0003 Phase C, slice C3): **replay-script -> Scene**.
@@ -974,7 +978,7 @@ async fn run_capture(options: ShotOptions) {
     // instance buffer FROM the grid (REPRESENTATION.md seam). The voxel cap
     // (ARCHITECTURE.md §7) guards against an enormous CLI request.
     let shape = SdfShape::from_geometry(options.geometry);
-    let grid_y = shape.grid_dimensions()[1];
+    let grid_y = shape.grid_dimensions(options.geometry.voxels_per_block)[1];
     // Issue #12: build the layer-range band from the raw CLI voxel indices (no
     // snapping — flags take raw indices). Defaults to the full range.
     let layer_range = LayerRange {
@@ -1266,7 +1270,7 @@ async fn run_capture(options: ShotOptions) {
             "resolved {} voxels for DebugClouds {:?}@{}",
             grid.occupied_count(),
             shape.size_blocks,
-            shape.voxels_per_block
+            options.geometry.voxels_per_block
         );
     } else {
         println!(
@@ -1274,7 +1278,7 @@ async fn run_capture(options: ShotOptions) {
             grid.occupied_count(),
             shape.kind,
             shape.size_blocks,
-            shape.voxels_per_block
+            options.geometry.voxels_per_block
         );
     }
 

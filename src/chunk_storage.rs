@@ -561,11 +561,10 @@ mod tests {
         let shape = SdfShape {
             kind,
             size_blocks: size,
-            voxels_per_block,
             wall_blocks: 1,
         };
-        let mut grid = VoxelGrid::new(shape.grid_dimensions());
-        shape.resolve(&mut grid);
+        let mut grid = VoxelGrid::new(shape.grid_dimensions(voxels_per_block));
+        shape.resolve(&mut grid, voxels_per_block);
         grid
     }
 
@@ -709,7 +708,6 @@ mod tests {
             let shape = SdfShape {
                 kind,
                 size_blocks: [5, 5, 5],
-                voxels_per_block,
                 wall_blocks: 1,
             };
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
@@ -728,7 +726,6 @@ mod tests {
             let shape = SdfShape {
                 kind,
                 size_blocks: size,
-                voxels_per_block,
                 wall_blocks: 1,
             };
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
@@ -1027,7 +1024,6 @@ mod tests {
             let shape = SdfShape {
                 kind,
                 size_blocks: [5, 5, 5],
-                voxels_per_block,
                 wall_blocks: 1,
             };
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
