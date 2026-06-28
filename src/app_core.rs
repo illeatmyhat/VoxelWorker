@@ -67,6 +67,16 @@ pub struct RebuildOutput<'store> {
     /// (`(absolute_chunk_coord, &rebased_grid)`), borrowing the store. Drop it
     /// before the next `&mut AppCore`.
     pub render_chunks: Vec<([i32; 3], &'store VoxelGrid)>,
+    /// How far the floating-origin recentre SHIFTED this rebuild, in render-frame
+    /// voxels (`new_recentre − previous_recentre`; `[0, 0, 0]` on the first build).
+    /// The composite is re-centred on the world origin every rebuild, so when its
+    /// extent (or the density, since the recentre is in voxels) changes the whole
+    /// resolved world slides by this amount under a fixed camera. The windowed shell
+    /// subtracts this from `camera.target` so the view stays locked on the same WORLD
+    /// point across an edit — making the recentre visually inert (the camera moves
+    /// only on EXPLICIT Fit/Home/Focus/orbit actions). The `shot` path ignores it
+    /// (its camera is set per-capture from CLI flags), so goldens are unaffected.
+    pub recentre_shift_voxels: [i64; 3],
 }
 
 /// Outcome of [`AppCore::rebuild`]: either the resolve output, or a rejection when
@@ -715,6 +725,16 @@ impl AppCore {
         // where there is no localisable AABB.
         let new_leaf_index = scene.build_leaf_spatial_index(density);
         let new_recentre = scene.recentre_voxels_for_resolve(density);
+        // The floating-origin shift since the last rebuild (render-frame voxels). The
+        // first rebuild has no previous recentre, so it shifts nothing (the camera is
+        // framed explicitly at startup, not compensated). The shell subtracts this
+        // from `camera.target` so the view stays put as the origin floats.
+        let previous_recentre = self.previous_recentre_voxels.unwrap_or(new_recentre);
+        let recentre_shift_voxels = [
+            new_recentre[0] - previous_recentre[0],
+            new_recentre[1] - previous_recentre[1],
+            new_recentre[2] - previous_recentre[2],
+        ];
         match self.previous_leaf_index.as_ref() {
             Some(previous) => match new_leaf_index.edit_aabb_since(previous) {
                 Some(edit_aabb) => {
@@ -738,6 +758,7 @@ impl AppCore {
             grid,
             region_dimensions,
             render_chunks,
+            recentre_shift_voxels,
         })
     }
 
@@ -1610,6 +1631,59 @@ mod undo_tests {
                 panic!("density {density} unexpectedly rejected")
             }
         }
+    }
+
+    /// Read the recentre shift a single `rebuild` of `scene` at `density` reports.
+    fn rebuild_recentre_shift(core: &mut AppCore, scene: &Scene, density: u32) -> [i64; 3] {
+        match core.rebuild(scene, density) {
+            RebuildOutcome::Built(output) => output.recentre_shift_voxels,
+            RebuildOutcome::DensityRejected { .. } => {
+                panic!("density {density} unexpectedly rejected")
+            }
+        }
+    }
+
+    /// The camera-stability wiring (the windowed re-frame bug): `rebuild` must report
+    /// the floating-origin SHIFT so the shell can compensate `camera.target` and keep
+    /// the view put across an edit. The first build shifts nothing; an offset that
+    /// moves the composite extent shifts the recentre by exactly the change in
+    /// `recentre_voxels_for_resolve` — the delta the camera subtracts.
+    #[test]
+    fn rebuild_reports_recentre_shift_across_extent_change() {
+        let density = 8;
+        let mut scene = two_tool_scene();
+        let mut core = test_core();
+
+        // First rebuild: no previous recentre, so the shift is zero (the camera is
+        // framed explicitly at startup, never compensated on the first build).
+        let first_shift = rebuild_recentre_shift(&mut core, &scene, density);
+        assert_eq!(first_shift, [0; 3], "the first rebuild must not move the camera");
+
+        // Move a node so the composite extent (hence its recentre) shifts.
+        let recentre_before = scene.recentre_voxels_for_resolve(density);
+        let target = scene.roots[0];
+        core.apply_intent(
+            &mut scene,
+            Intent::SetOffset { target, offset_blocks: [10, -4, 6] },
+        );
+        let recentre_after = scene.recentre_voxels_for_resolve(density);
+        let expected_shift = [
+            recentre_after[0] - recentre_before[0],
+            recentre_after[1] - recentre_before[1],
+            recentre_after[2] - recentre_before[2],
+        ];
+        assert_ne!(expected_shift, [0; 3], "the offset must actually move the origin");
+
+        let reported_shift = rebuild_recentre_shift(&mut core, &scene, density);
+        assert_eq!(
+            reported_shift, expected_shift,
+            "rebuild must report the exact recentre delta the camera compensates",
+        );
+
+        // A re-resolve with no further extent change reports zero — a no-op edit (or a
+        // pure selection change) must not nudge the view.
+        let steady_shift = rebuild_recentre_shift(&mut core, &scene, density);
+        assert_eq!(steady_shift, [0; 3], "an unchanged extent must not move the camera");
     }
 
     /// The occupied-voxel CORNER bounding box of a single `shape` of `size_blocks` at

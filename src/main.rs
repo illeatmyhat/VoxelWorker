@@ -461,6 +461,7 @@ impl WindowedState {
             grid,
             region_dimensions,
             render_chunks,
+            recentre_shift_voxels,
         } = match self.app_core.rebuild(&self.panel_state.scene, density) {
             RebuildOutcome::DensityRejected {
                 chunk_voxels_millions,
@@ -490,6 +491,25 @@ impl WindowedState {
             grid.dimensions,
         );
         drop(render_chunks);
+
+        // Camera UX invariant: an edit must NEVER re-frame the view. The composite is
+        // re-centred on the world origin every rebuild, so any extent change (add /
+        // delete / offset) — and any density change, since the recentre is in voxels —
+        // shifts the floating origin by `recentre_shift_voxels`. The camera target is
+        // pinned in that same recentred render frame (voxels), so without compensation
+        // the whole world would slide under the fixed camera (the "jump to centre /
+        // fit everything" the user reported). Subtract the shift so the target tracks
+        // the SAME world point as the origin floats — net zero view motion. The shift
+        // is `[0,0,0]` on the first build, and the explicit Fit/Home/Focus actions
+        // OVERWRITE the target afterwards (they run on their own paths, not here), so
+        // they keep re-framing exactly as before; orbit/pan/zoom are untouched.
+        if recentre_shift_voxels != [0; 3] {
+            self.app_core.camera.target -= glam::Vec3::new(
+                recentre_shift_voxels[0] as f32,
+                recentre_shift_voxels[1] as f32,
+                recentre_shift_voxels[2] as f32,
+            );
+        }
         // Re-upload the fog's occupancy field for the new grid, using the active fog
         // mode (per-chunk by default since #28 S5b).
         Self::upload_fog_occupancy(
