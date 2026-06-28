@@ -238,6 +238,12 @@ pub struct PanelResponse {
     /// The "Export .vox" button was clicked this frame → open the OS save dialog
     /// and write the resolved grid as a MagicaVoxel `.vox` file (M8).
     pub clicked_export_vox: bool,
+    /// The user picked **Focus** from a node row's right-click context menu this
+    /// frame → the loop should frame that node (set the camera target to the node's
+    /// world centre + fit the distance). A VIEW action, NOT a document `Intent` (it
+    /// is not undoable), so it rides on the response rather than `intents`. `None`
+    /// when no Focus was requested.
+    pub focus_node: Option<NodeId>,
 }
 
 impl PanelResponse {
@@ -410,6 +416,10 @@ fn build_node_list_section(
     let mut select: Option<NodeId> = None;
     let mut delete: Option<NodeId> = None;
     let mut set_visible: Option<(NodeId, bool)> = None;
+    // The camera "Focus" view action (right-click a row → frame that node). Deferred
+    // like the others and carried out on the `PanelResponse` (a VIEW action, not an
+    // undoable document intent).
+    let mut focus: Option<NodeId> = None;
 
     // Walk the tree depth-first; each row is indented by its depth.
     // ADR 0003 Phase B4: each row carries its node's stable NodeId, so the
@@ -437,9 +447,19 @@ fn build_node_list_section(
             {
                 set_visible = Some((*id, visible));
             }
-            if ui.selectable_label(is_active, label).clicked() {
+            let row_response = ui.selectable_label(is_active, label);
+            if row_response.clicked() {
                 select = Some(*id);
             }
+            // Right-click → Focus: a VIEW action that frames this node (camera target
+            // = node centre, distance fitted to its AABB). Carried on the response,
+            // not as an Intent (Focus is not undoable).
+            row_response.context_menu(|ui| {
+                if ui.button("Focus").clicked() {
+                    focus = Some(*id);
+                    ui.close();
+                }
+            });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.small_button("✕").on_hover_text("Delete node").clicked() {
                     delete = Some(*id);
@@ -453,6 +473,13 @@ fn build_node_list_section(
     // auto-frames exactly as before (the old `scene_changed`).
     if let Some((id, visible)) = set_visible {
         response.emit_and_frame(Intent::SetVisible { target: id, visible });
+    }
+
+    // Carry a right-click Focus request to the loop (a view action; the loop sets the
+    // camera target + distance from this node's AABB). Not an Intent — Focus is not
+    // an undoable document mutation.
+    if let Some(id) = focus {
+        response.focus_node = Some(id);
     }
 
     if state.scene.roots.is_empty() {

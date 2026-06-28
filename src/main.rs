@@ -446,15 +446,16 @@ impl WindowedState {
         }
     }
 
-    /// When `auto_frame` is set (size/density change, NOT shape change) the
-    /// camera distance is re-framed; shape switches never move the camera.
-    fn rebuild_geometry(&mut self, auto_frame: bool) {
+    /// Re-resolve the grid + GPU geometry for the current scene. Camera UX change:
+    /// this NEVER moves the camera — edits keep the orbit target + distance fixed.
+    /// Explicit framing (startup fit, Home/Fit, Focus) is handled by their own paths.
+    fn rebuild_geometry(&mut self) {
         let density = self.panel_state.geometry.voxels_per_block;
         let shape = SdfShape::from_geometry(self.panel_state.geometry);
 
         // Delegate the headless resolve (S2/S3 targeted invalidation + assemble) to
         // `AppCore::rebuild`, then consume its output here in the shell: build the
-        // GPU cuboid mesh, upload the fog, and reframe the camera. A density whose
+        // GPU cuboid mesh and upload the fog (the camera is NOT touched). A density whose
         // single-chunk voxel capacity exceeds the bound is rejected with the store
         // untouched, so we surface the cap warning and bail.
         let RebuildOutput {
@@ -481,7 +482,7 @@ impl WindowedState {
         // Rebuild it from the per-chunk accessor (`(absolute_chunk_coord,
         // &rebased_grid)` per covering chunk, 1-voxel apron). `render_chunks` holds
         // an IMMUTABLE borrow of the store, so it is consumed here and dropped BEFORE
-        // the next `&mut AppCore` call (the auto-frame below).
+        // any later `&mut AppCore` use.
         self.cuboid_mesh_renderer = CuboidMeshRenderer::new_from_chunks(
             &self.gpu.device,
             &self.gpu.queue,
@@ -516,10 +517,6 @@ impl WindowedState {
         );
         self.grid = grid;
         self.measured_band = (u32::MAX, u32::MAX); // force a re-measure next frame.
-
-        if auto_frame {
-            self.app_core.camera.orbit_distance = OrbitCamera::auto_framed_distance(region_dimensions);
-        }
     }
 
     /// Drain the background scan channel into a pending queue, then build a
@@ -978,6 +975,26 @@ impl WindowedState {
             None => {}
         }
 
+        // Camera UX change: right-click a node row → "Focus" frames that node. This
+        // is the ONLY edit-tree action that moves the camera. Set the orbit target to
+        // the node's recentred world centre and fit the distance to its AABB (same fit
+        // math as Fit, scoped to the node). The orbit ANGLES are held (Focus moves the
+        // pivot + distance only). A node with no resolvable extent is a no-op.
+        if let Some(focus_id) = prepared.panel_response.focus_node {
+            if let Some((pivot, extent)) = AppCore::gizmo_placement_for_id(
+                &self.panel_state.scene,
+                focus_id,
+                self.panel_state.geometry.voxels_per_block,
+            ) {
+                let (target, distance) = OrbitCamera::focus_target_and_distance(
+                    glam::Vec3::from_array(pivot),
+                    extent,
+                );
+                self.app_core.camera.target = target;
+                self.app_core.camera.orbit_distance = distance;
+            }
+        }
+
         // M6: react to palette interactions (apply a block, connect a folder,
         // revert to a procedural material).
         self.handle_palette_response(&prepared.panel_response);
@@ -1008,13 +1025,13 @@ impl WindowedState {
         //                           a pure `SelectNode` must NOT force a re-resolve).
         //   * `points_changed`    → the Points overlay is rebuilt every frame anyway
         //                           (camera-relative), so no extra work is needed.
-        // The auto-frame is a panel UX signal (`frame_after_apply`): the same intent
-        // KIND (`SetShape`) re-frames from a size slider but not from a shape chip, so
-        // it cannot be derived from the intent — it rides on the response.
-        // Take the intents out of `prepared` (leaving it otherwise intact for the
-        // `render_frame` call below, which still borrows it). `frame_after_apply` is a
-        // Copy bool, so read it directly.
-        let frame_after_apply = prepared.panel_response.frame_after_apply;
+        // Camera UX change: edits NO LONGER auto-frame the camera. The camera orbits
+        // a FIXED/floating target (the world origin by default) and never jumps when
+        // the user adds/moves/deletes/edits nodes. The panel's `frame_after_apply`
+        // hint is intentionally IGNORED here — only the EXPLICIT view controls move
+        // the camera now (startup fit, the ViewCube Home/Fit buttons, and the
+        // right-click "Focus" action below). Take the intents out of `prepared`
+        // (leaving it otherwise intact for the `render_frame` call below).
         let intents = std::mem::take(&mut prepared.panel_response.intents);
         let mut merged_effect = voxel_worker::IntentEffect::none();
         for intent in intents {
@@ -1037,10 +1054,11 @@ impl WindowedState {
             self.panel_state.sync_mirror_from_active();
         }
         if merged_effect.scene_changed {
-            // A structural / node-field / global-density edit re-resolves. Auto-frame
-            // only when the panel asked (size/density/structural edits) — a pure shape
-            // switch or rename re-resolves WITHOUT moving the camera (guard #1).
-            self.rebuild_geometry(frame_after_apply);
+            // A structural / node-field / global-density edit re-resolves the grid.
+            // Camera UX change: this NEVER auto-frames any more — `false` keeps the
+            // camera target + distance fixed across every edit. Re-framing is now only
+            // via explicit controls (Home/Fit/Focus) and the startup fit.
+            self.rebuild_geometry();
         }
 
         // Projection is a display-only param: apply it to the camera each frame

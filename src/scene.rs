@@ -973,7 +973,33 @@ impl Scene {
         voxels_per_block: u32,
     ) -> Option<([f32; 3], [f32; 3])> {
         let path = self.active_path()?;
-        let (min_corner, max_corner) = self.node_subtree_extent_blocks(&path, voxels_per_block)?;
+        self.gizmo_placement_at_path(&path, voxels_per_block)
+    }
+
+    /// The recentred `(pivot_voxels, extent_voxels)` for the node identified by
+    /// `node_id` — the SAME computation as [`active_gizmo_placement`](Self::active_gizmo_placement)
+    /// but scoped to an arbitrary node rather than the active selection. Used by the
+    /// camera "Focus" view action (right-click a tree row → frame that node): the
+    /// camera target is set to `pivot` and the distance fitted from `extent`.
+    /// `None` when the id no longer resolves or the node's subtree has no extent.
+    pub fn gizmo_placement_for_id(
+        &self,
+        node_id: NodeId,
+        voxels_per_block: u32,
+    ) -> Option<([f32; 3], [f32; 3])> {
+        let path = self.path_of(node_id)?;
+        self.gizmo_placement_at_path(&path, voxels_per_block)
+    }
+
+    /// Shared body of [`active_gizmo_placement`](Self::active_gizmo_placement) and
+    /// [`gizmo_placement_for_id`](Self::gizmo_placement_for_id): the recentred pivot
+    /// (centre of the node subtree's block-aligned AABB) + its extent, in voxels.
+    fn gizmo_placement_at_path(
+        &self,
+        path: &NodePath,
+        voxels_per_block: u32,
+    ) -> Option<([f32; 3], [f32; 3])> {
+        let (min_corner, max_corner) = self.node_subtree_extent_blocks(path, voxels_per_block)?;
         let recentre = self.recentre_voxels_for_resolve(voxels_per_block);
         let density = voxels_per_block.max(1) as i64;
         let mut pivot = [0.0f32; 3];

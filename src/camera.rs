@@ -706,6 +706,25 @@ impl OrbitCamera {
         longest * 1.9
     }
 
+    /// Frame a single node's AABB for the "Focus" view action (right-click a tree
+    /// row → look at that node). Given the node's recentred AABB `centre` (the gizmo
+    /// pivot, in the recentred render frame) and its voxel `extent`, returns the
+    /// `(target, distance)` the camera should adopt: the target is the node centre,
+    /// and the distance reuses the SAME [`auto_framed_distance`](Self::auto_framed_distance)
+    /// fit math (`longest_axis * 1.9`) so a focused node is framed exactly like a
+    /// whole-scene Fit, scoped to that node. The orbit angles are left to the caller
+    /// (Focus moves the pivot + distance only, like Fit). A zero-extent node yields a
+    /// floored minimum distance so the camera never collapses onto the target.
+    pub fn focus_target_and_distance(centre: Vec3, extent: [f32; 3]) -> (Vec3, f32) {
+        let extent_dimensions = [
+            extent[0].round().max(0.0) as u32,
+            extent[1].round().max(0.0) as u32,
+            extent[2].round().max(0.0) as u32,
+        ];
+        let distance = Self::auto_framed_distance(extent_dimensions).max(0.1);
+        (centre, distance)
+    }
+
     /// Unit direction from the target toward the camera eye.
     pub fn direction(&self) -> Vec3 {
         let (sin_phi, cos_phi) = self.orbit_phi.sin_cos();
@@ -1051,6 +1070,26 @@ mod tests {
         assert!(approx(rebuilt.y, direction.y));
         assert!(approx(rebuilt.z, direction.z));
         assert!(approx(phi, (1.0f32 / 3.0f32.sqrt()).acos()));
+    }
+
+    #[test]
+    fn focus_target_and_distance_centres_and_fits_node() {
+        // Focus sets the target to the node centre and fits the distance from the
+        // longest extent axis via the same `auto_framed_distance` math (longest×1.9).
+        let centre = Vec3::new(3.0, -2.0, 5.0);
+        let (target, distance) = OrbitCamera::focus_target_and_distance(centre, [4.0, 12.0, 6.0]);
+        assert_eq!(target, centre);
+        assert!(approx(distance, 12.0 * 1.9), "distance = {distance}");
+    }
+
+    #[test]
+    fn focus_target_and_distance_floors_zero_extent() {
+        // A node with no resolvable extent must not collapse the camera onto the
+        // target (distance 0) — it is floored to a small minimum.
+        let centre = Vec3::ZERO;
+        let (target, distance) = OrbitCamera::focus_target_and_distance(centre, [0.0, 0.0, 0.0]);
+        assert_eq!(target, centre);
+        assert!(distance >= 0.1, "distance = {distance}");
     }
 
     #[test]

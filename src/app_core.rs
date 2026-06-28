@@ -777,6 +777,18 @@ impl AppCore {
         scene.active_gizmo_placement(density)
     }
 
+    /// The recentred `(pivot_voxels, extent_voxels)` for an ARBITRARY node id (not
+    /// the active selection) — the camera "Focus" view action frames that node. A
+    /// thin wrapper over [`Scene::gizmo_placement_for_id`]; `None` when the id no
+    /// longer resolves or the node has no extent (Focus is then a no-op).
+    pub fn gizmo_placement_for_id(
+        scene: &Scene,
+        node_id: NodeId,
+        density: u32,
+    ) -> Option<([f32; 3], [f32; 3])> {
+        scene.gizmo_placement_for_id(node_id, density)
+    }
+
     /// Build the onion-skin fog parameters (issue #12) from the camera-derived
     /// view-projection, grid, and layer-range scrubber. World-Y of layer `j` spans
     /// `[j - grid_y/2, j+1 - grid_y/2]` (voxel centres at `j + 0.5 - grid_y/2`). The
