@@ -1017,14 +1017,10 @@ async fn run_capture(options: ShotOptions) {
         panel_state.scene.master_block_lattice = options.show_block_lattice;
         panel_state.scene.master_floor_grid = options.show_floor_grid;
         let grid_node = options.select_node.unwrap_or(0);
-        // B5: index the top-level node by position via the `roots` spine, then fetch
-        // it mutably from the arena.
+        // B5: address the top-level node by position via the public path helper.
         if let Some(node) = panel_state
             .scene
-            .roots
-            .get(grid_node)
-            .copied()
-            .and_then(|id| panel_state.scene.arena.get_mut(&id))
+            .node_at_path_mut(&NodePath::root_index(grid_node))
         {
             node.grids.block_lattice = options.show_block_lattice;
             node.grids.floor_grid = options.show_floor_grid;
@@ -1043,13 +1039,8 @@ async fn run_capture(options: ShotOptions) {
         // and per-frame uniforms agree.
         scene.master_voxel_grid = true;
         let grid_node = options.select_node.unwrap_or(0);
-        // B5: index the top-level node by position via the `roots` spine.
-        if let Some(node) = scene
-            .roots
-            .get(grid_node)
-            .copied()
-            .and_then(|id| scene.arena.get_mut(&id))
-        {
+        // B5: address the top-level node by position via the public path helper.
+        if let Some(node) = scene.node_at_path_mut(&NodePath::root_index(grid_node)) {
             node.grids.voxel_grid_on_faces = true;
         }
         panel_state.scene = scene.clone();

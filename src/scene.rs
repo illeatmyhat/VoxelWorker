@@ -1119,10 +1119,9 @@ impl Scene {
     /// minted a stable id here ([`mint_node_id`](Self::mint_node_id)) before
     /// `active` is pointed at it — a freshly-added node is selectable by identity
     /// immediately, surviving any later reorder.
-    pub fn add_node(&mut self, mut node: Node) -> usize {
-        let id = self.mint_node_id();
-        node.id = id;
-        self.arena.insert(id, node);
+    pub fn add_node(&mut self, node: Node) -> usize {
+        // The arena insert (mint id, stamp it, store) is exactly `insert_subtree`.
+        let id = self.insert_subtree(node);
         self.roots.push(id);
         let index = self.roots.len() - 1;
         self.active = Some(id);
@@ -1234,15 +1233,21 @@ impl Scene {
     /// def stored separately; deleting an instance never deletes the shared body).
     fn collect_subtree_ids(&self, root_id: NodeId, out: &mut Vec<NodeId>) {
         out.push(root_id);
-        if let Some(NodeContent::Group(children)) =
-            self.arena.get(&root_id).map(|node| &node.content)
-        {
-            // Clone the child ids out so the recursive `&self` borrow doesn't alias
-            // the `&self.arena.get` borrow above (the spine is small).
-            let child_ids: Vec<NodeId> = children.clone();
-            for child_id in child_ids {
-                self.collect_subtree_ids(child_id, out);
-            }
+        // Snapshot the Group's spine length, then re-fetch each child id by position
+        // for the recursive descent — so no `&self.arena.get` borrow is held across
+        // the recursive `&self` call (and no per-group spine clone is allocated).
+        let child_count = match self.arena.get(&root_id).map(|node| &node.content) {
+            Some(NodeContent::Group(children)) => children.len(),
+            _ => return,
+        };
+        for child_index in 0..child_count {
+            let Some(NodeContent::Group(children)) =
+                self.arena.get(&root_id).map(|node| &node.content)
+            else {
+                return;
+            };
+            let child_id = children[child_index];
+            self.collect_subtree_ids(child_id, out);
         }
     }
 
@@ -1362,9 +1367,8 @@ impl Scene {
         // The node keeps its id while only its content becomes an Instance, so the
         // selection stays valid (still the same node by identity) with no re-point.
         let active_id = self.active?;
-        // Resolve to a position only to confirm it is in the addressable tree; the
-        // edit itself is by id (B5). A stale selection bails (mirrors the old `?`).
-        self.path_of(active_id)?;
+        // The edit is by id (B5); the `node_by_id_mut` lookup below already bails
+        // (`?`) on a stale selection, so no separate presence guard is needed.
         // The definition body, as a spine of arena ids:
         // * a Group DONATES its child id spine (`mem::take` empties the Group's
         //   `Vec<NodeId>`); the child `Node`s STAY in the arena — the def now owns
