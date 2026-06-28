@@ -2178,7 +2178,7 @@ impl Scene {
         let density = voxels_per_block.max(1) as i64;
         let mut entries: Vec<LeafEntry> = Vec::new();
         let mut has_region_spanning_leaf = false;
-        self.for_each_leaf(&mut |world_offset, content, _grid_on_faces| {
+        self.for_each_leaf(&mut |world_offset, content, grid_on_faces| {
             match leaf_size_blocks(content, voxels_per_block) {
                 Some(size_blocks) => {
                     // The producer centres its `size·d` grid on the origin, then it
@@ -2200,6 +2200,7 @@ impl Scene {
                         fingerprint: LeafFingerprint::Bounded(leaf_content_fingerprint(
                             world_offset,
                             content,
+                            grid_on_faces,
                         )),
                     });
                 }
@@ -2213,6 +2214,7 @@ impl Scene {
                         fingerprint: LeafFingerprint::RegionSpanning(leaf_content_fingerprint(
                             world_offset,
                             content,
+                            grid_on_faces,
                         )),
                     });
                 }
@@ -2251,16 +2253,27 @@ fn narrow_chunk_coord(chunk_coord: i64) -> i32 {
     chunk_coord.clamp(i32::MIN as i64, i32::MAX as i64) as i32
 }
 
-fn leaf_content_fingerprint(world_offset: [i64; 3], content: &NodeContent) -> String {
+fn leaf_content_fingerprint(
+    world_offset: [i64; 3],
+    content: &NodeContent,
+    grid_on_faces: bool,
+) -> String {
+    // The on-face-grid flag is baked into the resolved voxels as `GRID_OVERLAY_BIT`
+    // (issue #29 S4), so two otherwise-identical leaves that differ only in this flag
+    // resolve to DIFFERENT voxels. It must therefore be part of the fingerprint, or a
+    // lone toggle of `voxel_grid_on_faces` produces an identical fingerprint and the
+    // chunk-cache diff (`edit_aabb_since`) sees nothing dirty — leaving the stale
+    // grid-less chunks in place until an unrelated edit evicts them.
+    let grid = if grid_on_faces { ":grid=1" } else { ":grid=0" };
     match content {
         NodeContent::Tool { shape, material } => {
-            format!("Tool@{world_offset:?}:{shape:?}:{material:?}")
+            format!("Tool@{world_offset:?}:{shape:?}:{material:?}{grid}")
         }
-        NodeContent::Part(part) => format!("Part@{world_offset:?}:{part:?}"),
+        NodeContent::Part(part) => format!("Part@{world_offset:?}:{part:?}{grid}"),
         // for_each_leaf only ever yields leaf content (Tool / Part); Group / Instance
         // are interior and never reach a visitor. Fingerprint defensively anyway.
-        NodeContent::Group(_) => format!("Group@{world_offset:?}"),
-        NodeContent::Instance(def_id) => format!("Instance@{world_offset:?}:{def_id:?}"),
+        NodeContent::Group(_) => format!("Group@{world_offset:?}{grid}"),
+        NodeContent::Instance(def_id) => format!("Instance@{world_offset:?}:{def_id:?}{grid}"),
     }
 }
 
@@ -4356,6 +4369,83 @@ mod tests {
                     -((size_axis / 2 * density) as i64),
                     "axis {axis} @ d{density}: an even box is symmetric about the origin"
                 );
+            }
+        }
+    }
+
+    /// The bounding box of the OCCUPIED VOXEL CENTRES for a single `shape` of
+    /// `size_blocks` placed at world offset `[0, 0, 0]`, resolved at `density` in the
+    /// **recentred render frame** ([`resolve_region`] — the frame the camera, gizmo
+    /// and renderer use, which centres the composite on the origin). Returns
+    /// `(min_centre, max_centre)` per axis (centres sit at `n + 0.5`). A shape is
+    /// centred on the origin iff `min_centre + max_centre == 0` per axis.
+    ///
+    /// We assert on voxel CENTRES, not corners, deliberately. In the producer-true
+    /// (absolute) frame an odd-size shape is INTENTIONALLY shifted by `+d/2` to snap
+    /// onto the global block lattice (issue #30 — see `leaf_lattice_shift_voxels`), so
+    /// it is NOT origin-symmetric there. The recentre then re-centres the composite's
+    /// block AABB on the origin; for an odd voxel span the centre bbox is exactly
+    /// symmetric (a voxel centre lands on 0), so `min + max == 0` holds with no
+    /// epsilon. (The CORNER bbox is symmetric only for even voxel spans; centres are
+    /// the parity-independent quantity, hence the exact assertion.)
+    fn occupied_voxel_centre_bbox(
+        shape: ShapeKind,
+        size_blocks: [u32; 3],
+        density: u32,
+    ) -> ([f32; 3], [f32; 3]) {
+        let scene = Scene::from_geometry(
+            GeometryParams {
+                shape,
+                size_blocks,
+                voxels_per_block: density,
+                wall_blocks: 1,
+            },
+            MaterialChoice::Stone,
+        );
+        // The recentred frame (what the renderer/camera/gizmo see): the composite's
+        // block AABB is centred on the origin.
+        let region = scene.full_extent_blocks(density);
+        let grid = scene.resolve_region(region, density, 0);
+        assert!(!grid.occupied.is_empty(), "shape {shape:?} {size_blocks:?}@{density} resolved empty");
+        let mut min = [f32::INFINITY; 3];
+        let mut max = [f32::NEG_INFINITY; 3];
+        for voxel in &grid.occupied {
+            for axis in 0..3 {
+                min[axis] = min[axis].min(voxel.world_position[axis]);
+                max[axis] = max[axis].max(voxel.world_position[axis]);
+            }
+        }
+        (min, max)
+    }
+
+    /// USER-REQUESTED PERMANENT GUARD: an odd-sized shape placed at world offset
+    /// `[0, 0, 0]` is centred on the origin in the rendered (recentred) frame — its
+    /// occupied-voxel-CENTRE bounding box is symmetric about 0 on every axis
+    /// (`min_centre + max_centre == 0`).
+    ///
+    /// Covers a 5×5×5 sphere (odd on all axes) and a 5×1×5 box (the odd-X/Z, 1-block-Y
+    /// size the user called out). The assertion is on voxel CENTRES, which is exact
+    /// for an odd voxel span (a centre sits ON the origin); see
+    /// [`occupied_voxel_centre_bbox`] for why centres (not corners) are compared and
+    /// why this is the RECENTRED frame, not the lattice-shifted producer frame.
+    #[test]
+    fn odd_size_shape_at_zero_offset_is_centered_on_origin() {
+        let cases: [(ShapeKind, [u32; 3]); 2] =
+            [(ShapeKind::Sphere, [5, 5, 5]), (ShapeKind::Box, [5, 1, 5])];
+        for density in [1u32, 8, 16] {
+            for (shape, size) in cases {
+                let (min, max) = occupied_voxel_centre_bbox(shape, size, density);
+                for axis in 0..3 {
+                    // Centres are `n + 0.5` exactly representable in f32 at these
+                    // magnitudes, so the symmetric sum is exactly 0.0 (no epsilon).
+                    let centre_sum = min[axis] + max[axis];
+                    assert_eq!(
+                        centre_sum, 0.0,
+                        "{shape:?} {size:?}@d{density} axis {axis}: voxel-centre bbox \
+                         [{}, {}] must be symmetric about the origin (sum {centre_sum})",
+                        min[axis], max[axis]
+                    );
+                }
             }
         }
     }

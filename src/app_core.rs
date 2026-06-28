@@ -1510,4 +1510,69 @@ mod undo_tests {
         let redo_effect = core.redo(&mut scene);
         assert!(!redo_effect.scene_changed, "redo of grid masters needs no re-resolve");
     }
+
+    /// Count the `GRID_OVERLAY_BIT`-flagged voxels in a fresh `rebuild` of `scene` at
+    /// `density`. `rebuild` routes through the per-chunk store (the chunk cache), so
+    /// this exercises the SAME invalidation path the live app uses — not the
+    /// always-full `resolve_region`.
+    fn rebuild_grid_overlay_count(core: &mut AppCore, scene: &Scene, density: u32) -> usize {
+        match core.rebuild(scene, density) {
+            RebuildOutcome::Built(output) => output
+                .grid
+                .occupied
+                .iter()
+                .filter(|voxel| voxel.material_id & crate::voxel::GRID_OVERLAY_BIT != 0)
+                .count(),
+            RebuildOutcome::DensityRejected { .. } => {
+                panic!("density {density} unexpectedly rejected")
+            }
+        }
+    }
+
+    /// Regression (FIX 1): toggling ONLY `voxel_grid_on_faces` must make the on-face
+    /// grid appear on the FIRST rebuild — no unrelated edit needed to evict the
+    /// stale cached chunks.
+    ///
+    /// The flag is baked into the resolved voxels as `GRID_OVERLAY_BIT`, but it had
+    /// been OMITTED from the leaf content fingerprint. So a lone toggle produced an
+    /// identical fingerprint → `edit_aabb_since` found nothing dirty → `rebuild`
+    /// evicted no chunks → the cached (grid-less) chunks were reused, and the grid
+    /// only "caught up" when a later move/resize/etc. happened to evict them. Folding
+    /// the flag into the fingerprint dirties the leaf's AABB on the toggle itself.
+    #[test]
+    fn toggling_voxel_grid_on_faces_appears_on_first_rebuild() {
+        let mut scene = Scene::from_nodes(vec![tool_node(box_shape([3, 3, 3]), MaterialChoice::Stone)]);
+        scene.ensure_node_ids();
+        scene.ensure_origin_point();
+        scene.active = scene.roots.first().copied();
+        let target = scene.roots[0];
+        let density = 8;
+
+        let mut core = test_core();
+
+        // Seed the chunk cache with a rebuild while the flag is OFF: zero flagged
+        // voxels, and (critically) this populates the store + `previous_leaf_index`
+        // so the NEXT rebuild diffs against it.
+        let before = rebuild_grid_overlay_count(&mut core, &scene, density);
+        assert_eq!(before, 0, "with the flag OFF no voxel may carry GRID_OVERLAY_BIT");
+
+        // Flip ONLY voxel_grid_on_faces ON via the intent door (no other edit).
+        core.apply_intent(
+            &mut scene,
+            Intent::SetNodeGrids {
+                target,
+                grids: NodeGrids { voxel_grid_on_faces: true, ..NodeGrids::default() },
+            },
+        );
+
+        // Rebuild AGAIN. Before the fix the fingerprint was unchanged → no chunk
+        // evicted → this stayed 0. With the flag in the fingerprint the leaf's AABB
+        // reports dirty, its chunks re-resolve WITH the bit, and the grid appears now.
+        let after = rebuild_grid_overlay_count(&mut core, &scene, density);
+        assert!(
+            after > 0,
+            "after toggling voxel_grid_on_faces ON, the FIRST rebuild must flag voxels \
+             (was {before}, now {after}) — no unrelated edit should be needed"
+        );
+    }
 }
