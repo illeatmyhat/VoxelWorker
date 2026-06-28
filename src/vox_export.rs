@@ -411,7 +411,8 @@ mod tests {
 
         // Region export: from the per-chunk grids, no monolithic grid assembled.
         let mut cache = ChunkResolveCache::new();
-        let region_export = cache.vox_export(scene, vpb, 0, rgba);
+        let (dims, occupied) = cache.bound_region_occupied(scene, vpb, 0);
+        let region_export = VoxExport::from_region_voxels(dims, occupied, rgba);
 
         assert_eq!(
             region_export.voxel_count(),
@@ -557,7 +558,8 @@ mod tests {
 
         // New (region-scoped) path — what the export button now calls.
         let mut cache = ChunkResolveCache::new();
-        let region_export = cache.vox_export(&scene, vpb, 0, rgba);
+        let (dims, occupied) = cache.bound_region_occupied(&scene, vpb, 0);
+        let region_export = VoxExport::from_region_voxels(dims, occupied, rgba);
         assert_eq!(
             region_export.voxel_count(),
             expected_voxels,
@@ -595,7 +597,8 @@ mod tests {
         let rgba = [132, 126, 118, 255];
 
         let mut cache = ChunkResolveCache::new();
-        let region_export = cache.vox_export(&scene, vpb, 0, rgba);
+        let (dims, occupied) = cache.bound_region_occupied(&scene, vpb, 0);
+        let region_export = VoxExport::from_region_voxels(dims, occupied, rgba);
 
         let parsed = dot_vox::load_bytes(&region_export.to_bytes())
             .expect("dot_vox should parse the far-offset export");

@@ -43,7 +43,7 @@ use crate::chunk_storage::{compress, decompress};
 use crate::disk_chunk_store::DiskChunkStore;
 use crate::scene::Scene;
 use crate::spatial_index::VoxelAabb;
-use crate::voxel::VoxelGrid;
+use crate::voxel::{Voxel, VoxelGrid};
 
 /// The cache key: a chunk coordinate (in `CHUNK_BLOCKS`-cell space) plus its
 /// level-of-detail. `lod` is the parked LOD seam (ADR 0002 Decision 2): it is
@@ -498,28 +498,29 @@ impl ChunkResolveCache {
         )
     }
 
-    /// **Region-scoped `.vox` export (issue #20 S6d).** Build the `.vox` export of
-    /// the scene's ACTIVE region from the per-chunk grids, WITHOUT assembling a
-    /// monolithic grid — equal (model-set, sizes, palette, count) to
-    /// [`VoxExport::from_grid`](crate::vox_export::VoxExport::from_grid) over the
-    /// assembled region. (Streamed multi-region export stays deferred; this scopes
-    /// the existing single-active-region export.)
-    pub fn vox_export(
+    /// **Bound-region read primitive (ADR 0003 store seam; issue #20 S6d).** Bind
+    /// the cache to the scene's ACTIVE region (recentre + density, as
+    /// [`resolve_region`](Self::resolve_region) does), ensure every covering chunk
+    /// is resolved + resident, and return the region's voxel dimensions alongside
+    /// the resident covering chunks' occupied slices — WITHOUT assembling a
+    /// monolithic grid. This is the cache/export-agnostic primitive the `.vox`
+    /// export is a thin wrapper over; the export glue itself lives at the call
+    /// site over [`VoxExport::from_region_voxels`](crate::vox_export::VoxExport::from_region_voxels),
+    /// so the cache no longer depends on the export module. The union of the
+    /// returned occupied slices is exactly the monolithic region grid's occupied
+    /// set (the S2 cache-assembly equivalence proof).
+    pub fn bound_region_occupied(
         &mut self,
         scene: &Scene,
         voxels_per_block: u32,
         lod: u32,
-        representative_rgba: [u8; 4],
-    ) -> crate::vox_export::VoxExport {
+    ) -> ([u32; 3], Vec<&[Voxel]>) {
         let region_dimensions = self.bind_and_collect_region(scene, voxels_per_block, lod);
-        let grids: Vec<&VoxelGrid> = self
+        let occupied = self
             .covering_chunk_grids(scene, voxels_per_block, lod)
+            .map(|grid| &grid.occupied[..])
             .collect();
-        crate::vox_export::VoxExport::from_region_voxels(
-            region_dimensions,
-            grids.iter().map(|grid| &grid.occupied[..]),
-            representative_rgba,
-        )
+        (region_dimensions, occupied)
     }
 
     /// Bind the cache to the composite recentre + density (as `resolve_region`

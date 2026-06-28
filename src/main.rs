@@ -773,12 +773,13 @@ impl WindowedState {
         // scene preserves the voxel-centre `.5` instead of losing it to f32 rounding
         // at large magnitude (the monolithic path's far-offset bug). For a near scene
         // the two paths are byte-identical (proven by the vox-export parity tests).
-        let export = self.chunk_resolve_cache.vox_export(
+        let (region_dimensions, occupied) = self.chunk_resolve_cache.bound_region_occupied(
             &self.panel_state.scene,
             self.panel_state.geometry.voxels_per_block,
             0,
-            representative,
         );
+        let export =
+            voxel_worker::VoxExport::from_region_voxels(region_dimensions, occupied, representative);
         match export.write(&path) {
             Ok(bytes) => println!(
                 "wrote {} ({} voxels, {} model(s), {} bytes)",
