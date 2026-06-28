@@ -510,9 +510,10 @@ pub struct BlockAttrs {
   "this-is-a-placeholder" RENDER treatment (so proxies read as proxies — e.g. a per-draw proxy flag),
   the substitute-on-export logic, and the `PlaceholderUnsubstituted` / `PlaceholderUnmapped`
   diagnostics are **ADR 0005 consumers** — here we pin only the side-table `Substitution` schema.
-- **World-origin export contract:** export defines a **build-anchor block coord → VS world coord**
-  mapping, and **asserts chisel detail is phased to the block-local 16-grid** (16³ voxels/block) so a
-  round-trip lands on VS micro-block boundaries. The store's quantized floating origin (§4) is
+- **World-origin export contract:** export defines a **build-anchor block coord → target-game world
+  coord** mapping, and **asserts sub-block detail is phased to the document's `d`-grid**
+  (`voxels_per_block`³ voxels/block — e.g. 16³ for Vintage Story, §3f(0)) so a round-trip lands on the
+  target game's micro-block boundaries. The store's quantized floating origin (§4) is
   decoupled from any world-meaningful origin, so this anchor is what gives export a real, agreed
   world registration. (Detailed serialization in §5; the VS-native schematic *exporter* itself is a
   consumer feature in ADR 0005 — here we pin the schema, the rotation algebra, the side-table seam,
@@ -545,12 +546,13 @@ root, §1. Surfaced by ADR 0004's requirements — see the joint-arity cross-ref
 
 **Sub-block boolean composition IS the kit-authoring workflow (a supported authoring path).** Within a
 part definition, child shapes (the point-anchored primitives of §3i) compose through these same ordered
-`CombineOp` layers (`Union`/`Subtract`/`Intersect`) at **fraction-of-block placement** (§3f(0)) — e.g.
-**subtract a ¼-block slot out of a corner**. This yields **parametric sub-block features that are exact
-at voxel resolution, density-independent, and land on VS chisels at export** — the **no-code alternative
-to writing a bespoke `VoxelProducer` per sub-block part**. It is the within-part detail tier (§3i), and
-it is exactly what the kit-of-parts authoring composes with: a part definition is a boolean stack of
-point-anchored primitives placed at chisel-unit offsets, not a hand-written producer.
+`CombineOp` layers (`Union`/`Subtract`/`Intersect`) at **sub-voxel placement** (the within-block voxel
+remainder, §3f(0)) — e.g. **subtract a slot a few voxels deep out of a corner**. This yields
+**parametric sub-block features that are exact at the document's voxel resolution and land on the target
+game's grid at export** — the **no-code alternative to writing a bespoke `VoxelProducer` per sub-block
+part**. It is the within-part detail tier (§3i), and it is exactly what the kit-of-parts authoring
+composes with: a part definition is a boolean stack of point-anchored primitives placed at sub-voxel
+offsets, not a hand-written producer.
 
 The **`Layer` kind** (`Producer` vs `Sculpt`) and **`CombineOp`** are kept as ENUMs **on purpose**
 (see "Traits vs enums", §3h): both are closed, small, serialized, and exhaustively matched in the
@@ -612,17 +614,18 @@ encoded with a **dedicated integer-delta codec** (§5 G2) — explicitly **not**
 `chunk_storage::compress`, which consumes an f32 `VoxelGrid` and debug-asserts a uniform
 `centre_fraction` that integer force-on/force-off deltas do not satisfy.
 
-**A sculpt/override layer FIXES its own chisel density (the density-change rule — pinning the
-previously-unspecified case).** A sculpt layer's keys are integer voxel addresses in a
-**density-DEPENDENT** space (unlike *placement*, which §3f(0) made density-INDEPENDENT fraction-of-block),
-so a density change cannot leave the stored layer untouched. The rule: each override layer **records the
-chisel density it was authored at**; on a density change the layer is **integer-rescaled** when the new
-density is an **integer multiple** of the old (the keys multiply by the integer factor exactly, lossless);
-otherwise it requires a **flagged opt-in resample** — the same lossy-resample opt-in posture as a
-non-lattice rotation of a sculpted part (§3f case 3), surfaced with a warning, never silent and never the
-default. **Distinguish the two coordinate kinds clearly:** *placement* is density-INDEPENDENT
-fraction-of-block (§3f(0)) and survives a density change for free; a *resolved sculpt/override* lives in
-the density-dependent voxel space and follows this fix-and-rescale rule.
+**A sculpt/override layer is VOXEL-GRANULAR at the document's density (pinning the
+previously-unspecified density-change case).** A sculpt layer's keys are integer voxel addresses at the
+document's density `d` (§3f(0)). Since `d` is a **document-level attribute, fixed for the document's
+life** (§3f(0)), a sculpt layer simply lives at that one density — there is no per-layer density
+mismatch to reconcile during normal editing. The only density change is the **explicit, warned,
+DESTRUCTIVE re-target** (§3f(0)): re-targeting the document to a different game/grid **reinterprets
+every voxel-granular sculpt/override layer against a different grid**, which they do **not** survive
+cleanly, so it is surfaced as a destructive operation ("this breaks voxel-granular detail"), never
+silent and never a casual toggle. (An integer-multiple convenience rescale is a possible future
+affordance, but the spec posture is **warn — this breaks the document**.) **Both placement (§3f(0)) and
+resolved sculpt are voxel-granular at the document's own `d`** — the grid travels with the file, so
+there is no density trap; the destructive re-target is the single, explicit exception.
 
 #### 3f. Rotation is its own milestone (G4) — three-way angle model (geometry is NOT 24-limited)
 
@@ -662,28 +665,53 @@ non-gating sub-block translation term (item (0), an early data change) and ROTAT
 is **not** a one-substep change but a **dedicated milestone** (Phase F-rot) with three golden-gated parts
 ((a)–(c)):
 
-- **(0) Sub-block placement is a FRACTION-OF-BLOCK chisel-unit offset (NOT a milestone gate; the
-  kit-authoring primitive — driven by sub-block boolean kit-of-parts authoring, ADR 0004 §A/§G9).**
-  `NodeTransform` gains a third translation term **alongside** `offset_blocks: [i64; 3]`:
-  `offset_chisels: [i32; 3]` — an integer count of **chisel-units, a fixed `CHISELS_PER_BLOCK = 16`
-  fraction of a block** (1/16-block per unit, matching VS's 16 chisels/block), **density-INDEPENDENT**.
-  We choose **fixed-denominator chisel units over an exact rational**: a `[i32; 3]` count of 16ths is
-  simpler, serializes byte-stably as plain integers, composes by pure i64 addition like `offset_blocks`,
-  and maps **exactly** onto a VS micro-block at export — whereas a general rational buys arbitrary
-  fineness we do not need and a non-canonical encoding. **Document coordinates are NEVER stored in raw
-  voxels** (the *density trap*): a voxel offset is density-dependent, so storing placement in voxels
-  would couple the saved document to the density render-setting; a fraction-of-block is density-free, so
-  the same document resolves identically at any density. At resolve, `offset_chisels` folds into the
-  existing placement math next to `offset_blocks·d + lattice_shift` as
-  `offset_chisels × (d / CHISELS_PER_BLOCK)` → an integer **voxel** offset (exact whenever the density
-  `d` is a multiple of `CHISELS_PER_BLOCK = 16`, which the app default 16 and any denser integer-multiple
-  density satisfy), so **the store/chunking are unaffected** — sub-block placement is purely a finer
-  rebase term, not a new coordinate space. This **mirrors the `Point.offset_voxels` precedent already in
-  the code** ("the field exists so a future sub-block placement is a data change, not a rewrite",
-  `scene.rs:381`) — but here the field is **BUILT, not merely reserved**, because it is the primitive the
-  kit-of-parts authoring composes with (the within-part granularity, §3i / §3b). (Sub-block placement is
-  *within-part* detail authoring; inter-part mating stays block-aligned — see §3i "within-part vs
-  between-part".)
+- **(0) Sub-block placement is a SUB-VOXEL remainder at the DOCUMENT'S density (NOT a milestone gate;
+  the kit-authoring primitive — driven by sub-block boolean kit-of-parts authoring, ADR 0004 §A/§G9).**
+  **THE PLANNING UNIT IS THE VOXEL.** "Blocks" are a **DERIVED overlay** — a grid line every `d` voxels,
+  shown to display the target game's block grid and to drive block-aligned mating — **not** a hardcoded
+  fundamental. So `NodeTransform` gains a within-block voxel remainder **alongside** the existing
+  block-aligned `offset_blocks: [i64; 3]`:
+
+  ```rust
+  pub offset_blocks:    [i64; 3],   // block-aligned placement (for block-aligned mating, §3i)
+  pub offset_subvoxels: [i32; 3],   // the within-block VOXEL remainder, at the document's density d
+  ```
+
+  where `d = voxels_per_block` is the **document's density** (below). At resolve, placement is simply
+  `offset_blocks · d + offset_subvoxels` **voxels** — **EXACT at the document's own density by
+  construction** (the resolved grid *is* `d`), so there is **no rounding and no integer-multiple
+  caveat**: placement is at voxel granularity, period. This composes by pure i64 addition like
+  `offset_blocks`, serializes byte-stably as plain integers, and leaves the store/chunking unaffected
+  (it is a finer term in the same i64 placement sum, not a new coordinate space). It **mirrors the
+  `Point.offset_voxels` precedent already in the code** ("the field exists so a future sub-block
+  placement is a data change, not a rewrite", `scene.rs:381`) — but here the field is **BUILT, not
+  merely reserved**, because it is the primitive the kit-of-parts authoring composes with (the
+  within-part granularity, §3i / §3b).
+  - **No magic number — the denominator IS the document's density.** A **Minecraft** document
+    (`d = 1`) has no sub-block remainder at all → placement is naturally block-only (correct for MC);
+    a **Vintage Story** document (`d = 16`) has 16 sub-positions per block per axis; a **Hytale** (or
+    any other game) document has whatever `d` that game uses. **Same mechanism, every game, zero
+    hardcoded constant.** (Sub-block placement is *within-part* detail authoring; inter-part mating
+    stays block-aligned — see §3i "within-part vs between-part".)
+  - **Density `voxels_per_block` is a DOCUMENT-LEVEL attribute (the crux).** `d` is a
+    **document/project property** — "which game/grid this plan targets" — **saved with the document,
+    uniform across it**, and is **NOT** a per-node field, **NOT** a casual render knob, and **NOT**
+    redundantly stored per shape. Different games are different documents with different `d`. (This
+    also resolves the latent inconsistency where density was carried per-`Tool`-shape: density belongs
+    on the **document**, not on each shape.)
+  - **The old "density trap" is INVERTED, not avoided.** The earlier worry — *don't store placement in
+    voxels because voxels are density-dependent* — assumed density was a mutable render setting. It is
+    not: density is **fixed per document and travels with the file**, so a voxel-granular placement at
+    the document's own `d` is unambiguous and portable — the grid moves with the document and there is
+    **no trap**. The only density change is the explicit destructive re-target below.
+  - **Changing the density is a DESTRUCTIVE RE-TARGET that breaks the document and MUST warn.** `d` is
+    fixed for a document's life. Changing it **reinterprets every voxel-granular placement and every
+    voxel-granular sculpt/override layer against a different grid**, which they do **not** survive
+    cleanly — so it is an **explicit, warned, destructive operation** ("this re-targets the plan to a
+    different game/grid and breaks voxel-granular detail"), never silent and never a casual toggle. (A
+    convenience integer-multiple rescale — re-targeting VS `d=16` → a `d=32` document by doubling every
+    voxel key — is a **possible future affordance**, but the spec posture is **warn: this breaks the
+    document**.)
 
 - **(a) order-48 signed-permutation orientation as a TYPE-level enum (F1 — widened from 24 to 48)**
   — `NodeTransform` gains `rotation: LatticeOrientation`, **plus a handedness/reflection bit** so the
@@ -765,12 +793,13 @@ the producer already consumes, so the producer's resolved output is unchanged:
 ```rust
 pub enum ShapeAnchors {                          // derives (size, origin) for the existing producer
     Box      { anchor: ShapePoint, corner: ShapePoint },              // 2-point: anchor + opposite corner
-    Cylinder { end_a: ShapePoint, end_b: ShapePoint, radius: ChiselLen }, // 2-point axis + radius (also Tube)
+    Cylinder { end_a: ShapePoint, end_b: ShapePoint, radius: SubVoxelLen }, // 2-point axis + radius (also Tube)
     Arc      { a: ShapePoint, b: ShapePoint, c: ShapePoint },         // 3-point arc / plane / wedge
 }
-// A reference point carries FRACTION-OF-BLOCK coordinates (§3f(0)): block lattice + chisel-unit offset.
+// A reference point carries voxel-granular coordinates at the document's density d (§3f(0)):
+// block-aligned part + within-block voxel remainder.
 pub enum ShapePoint {
-    Inline { offset_blocks: [i64; 3], offset_chisels: [i32; 3] },     // a typed inline point
+    Inline { offset_blocks: [i64; 3], offset_subvoxels: [i32; 3] },   // a typed inline point
     HostedOnDatum(NodeId),                                            // names a Datum/anchor (F4 seam, §1)
 }
 ```
@@ -778,9 +807,9 @@ pub enum ShapePoint {
 - **Corner/face anchoring makes `leaf_lattice_shift` identically ZERO by construction.** The
   implicit-center model forced a half-block shift for odd `size_blocks` (the comment-arithmetic that
   reconciled the 3 coordinate frames — the flagged Leak). A point-anchored shape places its corner/face
-  exactly on the lattice (or on a chisel-unit sub-grid via §3f(0)), so **there is no half-block
-  correction to carry** — this is the **intended RESOLUTION of the 3-frame "Leak"**, and that leak can
-  be retired once shapes are corner-anchored (recorded in the Leaks note above).
+  exactly on the lattice (or on a sub-voxel position via `offset_subvoxels`, §3f(0)), so **there is no
+  half-block correction to carry** — this is the **intended RESOLUTION of the 3-frame "Leak"**, and that
+  leak can be retired once shapes are corner-anchored (recorded in the Leaks note above).
 - **Points are inline OR `HostedOnDatum` references (the F4 Datums seam, §1)** so the relational/solver
   tier can **NAME a shape's anchor** — a shape corner can be hosted on a datum/level/grid exactly like a
   part, riding the same id-keyed durable graph.
@@ -788,14 +817,14 @@ pub enum ShapePoint {
   `SetAnchor` / `SetCorner` — and `SetOffset` becomes **derived/anchor-based** (moving the anchor moves
   the shape), all additive growth on the §6a serializable boundary.
 
-**Within-part vs between-part granularity (load-bearing — state it clearly).** The fraction-of-block
-sub-block placement (§3f(0)) applies to **child-shape placement WITHIN a part DEFINITION**
-(carving/detail authoring — the chisel-unit anchoring of the points above). **CONNECTORS** (a part's
-mating interface, ADR 0004 §A) and **INTER-PART JOINTS** (§1) stay on the **integer BLOCK lattice**, so
-the ADR 0004 joint solver remains **integer-exact**. The rule: **sub-block where you carve,
-block-aligned where you mate.** This reconciles ADR 0004's "connectors stay block-clean" (still true —
-between-part mating is unchanged) with sub-block kit authoring (a new within-part freedom): the two
-granularities live in different tiers and never meet.
+**Within-part vs between-part granularity (load-bearing — state it clearly).** The sub-voxel placement
+(the within-block voxel remainder, §3f(0)) applies to **child-shape placement WITHIN a part DEFINITION**
+(carving/detail authoring — the sub-voxel anchoring of the points above). **CONNECTORS** (a part's
+mating interface, ADR 0004 §A) and **INTER-PART JOINTS** (§1) stay on the **integer BLOCK lattice**
+(`offset_subvoxels == 0`), so the ADR 0004 joint solver remains **integer-exact**. The rule: **sub-block
+where you carve, block-aligned where you mate.** This reconciles ADR 0004's "connectors stay block-clean"
+(still true — between-part mating is unchanged) with sub-block kit authoring (a new within-part freedom):
+the two granularities live in different tiers and never meet.
 
 ### 4. Chunked sparse streaming store: anisotropic tiling, rebase-at-consume, unified residency
 
@@ -884,6 +913,9 @@ tag exists so we can *introduce* migration the day we leave pre-alpha, not befor
 struct ProjectFile {
     magic: [u8; 4],            // b"VXWP" — reject anything else immediately
     epoch: u32,               // format/epoch tag; the loader hard-errors on an unrecognized value
+    voxels_per_block: u32,    // the document's DENSITY d (§3f(0)) — "which game/grid this plan targets"
+                              // (Minecraft 1, VS 16, …); document-level, uniform, fixed for the doc's life.
+                              // Changing it is the explicit destructive re-target (§3e/§3f(0)), not a load knob.
     scene: Scene,             // arena of defs/nodes (NodeId), per-def layer stacks, sculpt overrides,
                               // joints, datums (F4), instance KitParams/Def types (F5), the
                               // block-entity side-table (F2), AND the scene-root assembly-scoped
@@ -913,12 +945,11 @@ struct ProjectFile {
     **S9** golden (encode → bytes → decode → byte-identical override layer + bytes stable across
     runs).
   - Large overrides stay compact (sorted keys + delta-varint + palette) and reload byte-identical.
-  - **Each override layer records the chisel DENSITY it was authored at** (§3e): the keys are in
-    density-dependent voxel space, so the stored density is needed to integer-rescale the layer on a
-    density change (lossless when the new density is an integer multiple; a flagged lossy-resample
-    opt-in otherwise). This is the override-codec counterpart to placement being stored as
-    density-INDEPENDENT fraction-of-block (§3f(0)) — placement needs no such tag, a resolved override
-    does.
+  - **Override keys are voxel-granular at the DOCUMENT's density `d`** (§3e/§3f(0)): `d` is a
+    document-level attribute (stored once on the document, §3f(0)), so an override layer needs **no
+    per-layer density tag** — it is authored and resolved at the one document density. A density change
+    is the **explicit destructive re-target** (§3f(0)), which reinterprets these voxel keys against a
+    different grid and is warned, not a silent codec migration.
   - The **same codec serializes both the part-local sculpt overrides and the scene-root
     assembly-scoped override layers (§1)** — they differ only in anchoring frame (definition-local
     vs world), not in encoding — so assembly patches reload byte-identical too.
@@ -932,9 +963,10 @@ struct ProjectFile {
     (keys ascending) so it reloads byte-identical; it is the carrier for VS block entities / contents
     **and the F6 placeholder/proxy annotations** — including the `BlockEntity::Substitution` variant
     (proxy + real `target`/attrs/orientation/params) that the export contract below substitutes.
-  - the **world-origin export contract**: a stored **build-anchor block coord** that maps to a VS
-    world coord on export, with the loader/exporter **asserting chisel detail is phased to the
-    block-local 16-grid** (16³ voxels/block). This is the agreed world registration the store's
+  - the **world-origin export contract**: a stored **build-anchor block coord** that maps to a
+    target-game world coord on export, with the loader/exporter **asserting sub-block detail is phased
+    to the document's `d`-grid** (`voxels_per_block`³ voxels/block — e.g. 16³ for Vintage Story,
+    §3f(0)). This is the agreed world registration the store's
     decoupled quantized floating origin (§4) otherwise lacks. (The VS-native schematic *exporter* —
     micro-block + block-state + entity round-trip — is a consumer feature in ADR 0005; the **contract
     and the side-table format** are pinned here.)
@@ -1209,8 +1241,9 @@ the `shot.rs` parallel path and the second LRU.
     (the S6 check); add the override codec's **byte-identity round-trip test (= S9)**. **Serialize the
     F2 sparse block-entity side-table** (address-keyed, part-local-anchored, deterministic byte order)
     alongside the occupancy/override codec, and **record the F2 world-origin export contract**
-    (build-anchor block coord → VS world coord, chisel detail asserted phased to the block-local
-    16-grid). **No migration code is written** — pre-alpha files may break freely until we leave
+    (build-anchor block coord → target-game world coord, sub-block detail asserted phased to the
+    document's `d`-grid — `voxels_per_block`³ voxels/block, e.g. 16³ for Vintage Story). **No migration
+    code is written** — pre-alpha files may break freely until we leave
     pre-alpha. **(S6/S9, F2.)**
 
 **Phase J — Async/responsiveness hardening (the full §7 model).**
@@ -1280,7 +1313,8 @@ the Phase C `Intent` door + the §6 query/diagnostics surface (H13).
 - **`BlockAttrs` is a typed per-`block_id` state schema (F2)** — orientation (in the order-48 group,
   so it rotates/reflects WITH the geometry), variant flags, neighbor-connection bits — with a
   connection-resolve pass, a sparse part-local block-entity side-table, and a world-origin export
-  contract (build-anchor → VS world coord, chisel detail phased to the block-local 16-grid). This is
+  contract (build-anchor → target-game world coord, sub-block detail phased to the document's `d`-grid —
+  `voxels_per_block`³ voxels/block, e.g. 16³ for Vintage Story). This is
   what stops rotated stairs/doors from keeping stale facings and stops VS export from being lossy by
   construction (a functional gatehouse no longer exports as dumb stone). The connection-resolve
   producers + VS exporter are ADR 0005 consumers.
