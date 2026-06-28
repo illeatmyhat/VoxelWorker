@@ -2285,7 +2285,7 @@ pub(crate) fn scene_grid_boxes(
     if !want_lattice_master && !want_floor_master {
         return (lattice_boxes, floor_boxes);
     }
-    for (path, _depth) in scene.tree_rows() {
+    for (path, _id, _depth) in scene.tree_rows() {
         let Some(node) = scene.node_at_path(&path) else {
             continue;
         };

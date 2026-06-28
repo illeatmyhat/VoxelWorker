@@ -20,7 +20,7 @@
 use crate::block_palette::BlockPalette;
 use crate::camera::ProjectionMode;
 use crate::core_geom::MaterialChoice;
-use crate::scene::{DefId, Node, NodeContent, NodePath, Part, Point, Scene};
+use crate::scene::{DefId, Node, NodeContent, NodeId, Part, Point, Scene};
 use crate::voxel::{GeometryParams, SdfShape, ShapeKind};
 
 /// Layer-range scrubber state (issue #12).
@@ -398,50 +398,56 @@ fn build_node_list_section(
     ui.add_space(8.0);
     ui.strong("Scene");
 
-    let mut select: Option<NodePath> = None;
-    let mut delete: Option<NodePath> = None;
-    let mut visibility_toggled = false;
+    let mut select: Option<NodeId> = None;
+    let mut delete: Option<NodeId> = None;
+    let mut set_visible: Option<(NodeId, bool)> = None;
 
     // Walk the tree depth-first; each row is indented by its depth.
+    // ADR 0003 Phase B4: each row carries its node's stable NodeId, so the
+    // select/delete/visibility ops (now NodeId-typed) are fed it directly — the
+    // path is kept only for depth/indentation.
     let rows = state.scene.tree_rows();
-    // ADR 0003 Phase B3: selection is keyed by NodeId; compare each row's node id
-    // against the active id so the highlight tracks the selected node by identity.
-    let active_path = state.scene.active_path();
-    for (path, depth) in &rows {
-        let is_active = active_path.as_ref() == Some(path);
-        // Read the node by path; mutate visibility in place via a separate lookup
-        // so the borrow of `nodes` does not span the whole row.
-        let label = match state.scene.node_at_path(path) {
-            Some(node) => node_row_label(node),
+    // Selection is keyed by NodeId; compare each row's id against the active id so
+    // the highlight tracks the selected node by identity.
+    let active_id = state.scene.active;
+    for (_path, id, depth) in &rows {
+        let is_active = active_id == Some(*id);
+        // Read the node by id; mutate visibility via a deferred op (a separate
+        // lookup) so the borrow of `nodes` does not span the whole row.
+        let (label, visible) = match state.scene.node_by_id(*id) {
+            Some(node) => (node_row_label(node), node.visible),
             None => continue,
         };
         ui.horizontal(|ui| {
             ui.add_space(*depth as f32 * 14.0);
-            if let Some(node) = state.scene.node_at_path_mut(path) {
-                if ui
-                    .checkbox(&mut node.visible, "")
-                    .on_hover_text("Visible")
-                    .changed()
-                {
-                    visibility_toggled = true;
-                }
+            let mut visible = visible;
+            if ui
+                .checkbox(&mut visible, "")
+                .on_hover_text("Visible")
+                .changed()
+            {
+                set_visible = Some((*id, visible));
             }
             if ui.selectable_label(is_active, label).clicked() {
-                select = Some(path.clone());
+                select = Some(*id);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.small_button("✕").on_hover_text("Delete node").clicked() {
-                    delete = Some(path.clone());
+                    delete = Some(*id);
                 }
             });
         });
+    }
+
+    if let Some((id, visible)) = set_visible {
+        state.scene.set_node_visible(id, visible);
     }
 
     if state.scene.nodes.is_empty() {
         ui.label(egui::RichText::new("(no nodes — add one below)").small().weak());
     }
 
-    if visibility_toggled {
+    if set_visible.is_some() {
         response.scene_changed = true;
     }
 
@@ -449,18 +455,17 @@ fn build_node_list_section(
     build_definitions_section(ui, state, response);
 
     // Apply the deferred selection / delete after the walk (can't mutate the
-    // active path while borrowing through the tree).
-    if let Some(path) = delete {
-        state.scene.remove_node(&path);
+    // active selection while borrowing through the tree).
+    if let Some(id) = delete {
+        state.scene.remove_node(id);
         state.sync_mirror_from_active();
         response.scene_changed = true;
-    } else if let Some(path) = select {
-        // ADR 0003 Phase B3: a clicked row reports its path; convert it to the
-        // node's stable id and store THAT as the selection, so the highlight and
-        // inspector follow the node through later structural edits.
-        let clicked_id = state.scene.id_at_path(&path);
-        if state.scene.active != clicked_id {
-            state.scene.active = clicked_id;
+    } else if let Some(clicked_id) = select {
+        // ADR 0003 Phase B4: a clicked row reports its node's stable NodeId; store
+        // THAT as the selection, so the highlight and inspector follow the node
+        // through later structural edits.
+        if state.scene.active != Some(clicked_id) {
+            state.scene.active = Some(clicked_id);
             state.sync_mirror_from_active();
             response.scene_changed = true;
         }
@@ -663,15 +668,16 @@ fn build_node_actions(ui: &mut egui::Ui, state: &mut PanelState, response: &mut 
 
         // + Add child — into the active Group (only shown when one is selected).
         if active_is_group {
-            // ADR 0003 Phase B3: selection is a NodeId; `add_child_to_group` takes a
-            // positional path, so resolve the active id to its current path here.
-            let group_path = state.scene.active_path();
+            // ADR 0003 Phase B4: `add_child_to_group` targets a NodeId; this block
+            // only shows when a Group is active, so the active selection IS the
+            // group's id — pass it straight through.
+            let group_id = state.scene.active;
             ui.menu_button("+ Add child", |ui| {
                 for (kind, label) in SHAPE_CHIPS {
                     if ui.button(*label).clicked() {
                         let node = new_tool_node(*kind, label, state);
-                        if let Some(path) = &group_path {
-                            state.scene.add_child_to_group(path, node);
+                        if let Some(group_id) = group_id {
+                            state.scene.add_child_to_group(group_id, node);
                             state.sync_mirror_from_active();
                             response.scene_changed = true;
                         }
@@ -680,9 +686,9 @@ fn build_node_actions(ui: &mut egui::Ui, state: &mut PanelState, response: &mut 
                 }
                 ui.separator();
                 if ui.button("Clouds (Part)").clicked() {
-                    if let Some(path) = &group_path {
+                    if let Some(group_id) = group_id {
                         state.scene.add_child_to_group(
-                            path,
+                            group_id,
                             Node::new("Clouds", NodeContent::Part(Part::DebugClouds { seed: 0 })),
                         );
                         response.scene_changed = true;

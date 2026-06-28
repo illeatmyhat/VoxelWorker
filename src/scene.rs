@@ -722,6 +722,19 @@ impl Scene {
         find(&mut self.nodes, id)
     }
 
+    /// Set the `visible` flag of the node identified by `id` (ADR 0003 Phase B4),
+    /// returning whether the id resolved to a node. A NodeId-typed edit op so the
+    /// panel's visibility checkbox can mutate by identity rather than by path.
+    pub fn set_node_visible(&mut self, id: NodeId, visible: bool) -> bool {
+        match self.node_by_id_mut(id) {
+            Some(node) => {
+                node.visible = visible;
+                true
+            }
+            None => false,
+        }
+    }
+
     /// The [`NodePath`] addressing the node with the given [`NodeId`] in the
     /// top-level assembly tree, or `None` (ADR 0003 Phase B2). The inverse of
     /// [`id_at_path`](Self::id_at_path): `path_of(id_at_path(path)) == Some(path)`
@@ -751,13 +764,17 @@ impl Scene {
         search(&self.nodes, id, &mut prefix).then(|| NodePath::from_indices(prefix))
     }
 
-    /// Flatten the top-level assembly into a depth-first list of `(path, depth)`
+    /// Flatten the top-level assembly into a depth-first list of `(path, id, depth)`
     /// rows for the tree UI (ADR 0001 step 4): every top-level node, and — for a
     /// [`NodeContent::Group`] — its children recursively at increasing depth. The
     /// rows are in display order (a parent immediately precedes its children).
     /// `Instance` nodes are leaves here (their definition's body is stored
     /// separately and rendered in the Definitions list, not inlined into the tree).
-    pub fn tree_rows(&self) -> Vec<(NodePath, usize)> {
+    ///
+    /// ADR 0003 Phase B4: each row also carries the node's stable [`NodeId`] so the
+    /// panel can feed the now-NodeId-typed select/delete/visibility ops directly,
+    /// without a `path → id` round-trip; the `NodePath` stays for depth/path display.
+    pub fn tree_rows(&self) -> Vec<(NodePath, NodeId, usize)> {
         let mut rows = Vec::new();
         collect_tree_rows(&self.nodes, &mut Vec::new(), 0, &mut rows);
         rows
@@ -954,10 +971,17 @@ impl Scene {
         id
     }
 
-    /// Append `node` as a child of the Group at `group_path` and select it.
-    /// Returns `true` if the target was a Group and the node was added. A no-op
-    /// (returns `false`) when the path does not resolve to a Group.
-    pub fn add_child_to_group(&mut self, group_path: &NodePath, mut node: Node) -> bool {
+    /// Append `node` as a child of the Group identified by `group_id` and select
+    /// it. Returns `true` if the target was a Group and the node was added. A no-op
+    /// (returns `false`) when the id does not resolve to a Group.
+    pub fn add_child_to_group(&mut self, group_id: NodeId, mut node: Node) -> bool {
+        // ADR 0003 Phase B4: the op targets a NodeId; resolve it to the positional
+        // path the internal storage still needs (the positional bridge survives
+        // until B5). A stale id → no-op (mirrors the old out-of-range path bail).
+        let Some(group_path) = self.path_of(group_id) else {
+            return false;
+        };
+        let group_path = &group_path;
         // Bail before minting if the target is not a Group, so a no-op neither adds
         // a node nor burns a counter value.
         match self.node_at_path(group_path).map(|node| &node.content) {
@@ -980,12 +1004,18 @@ impl Scene {
         true
     }
 
-    /// Remove the node at `path` (top-level or a Group child), keeping the `active`
-    /// selection sensible: after a removal the selection falls back to the removed
-    /// node's parent (so a Group's last child deletion selects the Group), or to a
-    /// surviving top-level node, or `None` when the scene empties. Out-of-range
-    /// paths are ignored.
-    pub fn remove_node(&mut self, path: &NodePath) {
+    /// Remove the node identified by `target_id` (top-level or a Group child),
+    /// keeping the `active` selection sensible: after a removal the selection falls
+    /// back to the removed node's parent (so a Group's last child deletion selects
+    /// the Group), or to a surviving top-level node, or `None` when the scene
+    /// empties. A stale id (no longer in the tree) is ignored.
+    pub fn remove_node(&mut self, target_id: NodeId) {
+        // ADR 0003 Phase B4: the op targets a NodeId; resolve it to the positional
+        // path the removal + fallback logic still reason in (the positional bridge
+        // survives until B5). A stale id → no-op (mirrors the old out-of-range bail).
+        let Some(path) = self.path_of(target_id) else {
+            return;
+        };
         let Some((&last_index, parent_indices)) = path.indices.split_last() else {
             return;
         };
@@ -1064,12 +1094,12 @@ impl Scene {
     /// step 4 authoring): the active node becomes the sole child of a fresh Group
     /// that takes its slot among its siblings. The Group inherits an identity
     /// transform (the child keeps its own offset, so the composite is unchanged),
-    /// and the wrapped child becomes the new active selection. Returns the Group's
-    /// path on success; `None` when there is no active node.
+    /// and the wrapped child becomes the new active selection. Returns the new
+    /// Group's [`NodeId`] on success; `None` when there is no active node.
     ///
     /// Grouping a node that is itself a Group simply nests it one level deeper —
     /// the recursion handles arbitrary depth.
-    pub fn group_active(&mut self) -> Option<NodePath> {
+    pub fn group_active(&mut self) -> Option<NodeId> {
         // ADR 0003 Phase B3: selection is a NodeId; resolve it to the child's
         // current position to do the positional wrap. The child keeps its id (and
         // thus stays selected by identity); only the new Group needs a fresh id.
@@ -1085,15 +1115,10 @@ impl Scene {
         let mut group = Node::new("Group", NodeContent::Group(vec![child]));
         group.id = group_id;
         siblings.insert(index, group);
-        // The Group sits at the old slot; its single child is index 0 within it.
-        let group_path = NodePath::from_indices({
-            let mut v = parent_indices.to_vec();
-            v.push(index);
-            v
-        });
         // The wrapped child keeps its stable id, so it stays the active selection by
-        // identity (no need to re-derive it from the new positional path).
-        Some(group_path)
+        // identity. ADR 0003 Phase B4: return the new Group's stable id (it already
+        // minted one above) rather than its positional path.
+        Some(group_id)
     }
 
     /// The smallest unused [`DefId`] (one past the current max, or `DefId(1)` when
@@ -1146,8 +1171,8 @@ impl Scene {
     /// after the definition and gets a default offset that nudges it clear of
     /// earlier instances of the same def (so a freshly-added village house does not
     /// land exactly on top of the previous one). Selects the new node. Returns its
-    /// path, or `None` when no definition carries `def_id`.
-    pub fn add_instance(&mut self, def_id: DefId) -> Option<NodePath> {
+    /// [`NodeId`], or `None` when no definition carries `def_id`.
+    pub fn add_instance(&mut self, def_id: DefId) -> Option<NodeId> {
         let def = self.def_by_id(def_id)?;
         let name = format!("{} instance", def.name);
         // Nudge each new instance of this def along +X so it does not overlap the
@@ -1160,7 +1185,10 @@ impl Scene {
         let mut node = Node::new(name, NodeContent::Instance(def_id));
         node.transform.offset_blocks = [(existing as i64 + 1) * DEFAULT_INSTANCE_SPACING_BLOCKS as i64, 0, 0];
         let index = self.add_node(node);
-        Some(NodePath::root_index(index))
+        // ADR 0003 Phase B4: return the appended node's stable id rather than its
+        // positional path. `add_node` minted its id and pointed `active` at it, and
+        // `id_at_path` reads it back from the slot it now occupies.
+        self.id_at_path(&NodePath::root_index(index))
     }
 
     /// Build the one-node Tool scene that reproduces today's single-shape
@@ -1892,11 +1920,11 @@ fn collect_tree_rows(
     nodes: &[Node],
     prefix: &mut Vec<usize>,
     depth: usize,
-    rows: &mut Vec<(NodePath, usize)>,
+    rows: &mut Vec<(NodePath, NodeId, usize)>,
 ) {
     for (index, node) in nodes.iter().enumerate() {
         prefix.push(index);
-        rows.push((NodePath::from_indices(prefix.clone()), depth));
+        rows.push((NodePath::from_indices(prefix.clone()), node.id, depth));
         if let NodeContent::Group(children) = &node.content {
             collect_tree_rows(children, prefix, depth + 1, rows);
         }
@@ -3015,8 +3043,14 @@ mod tests {
         let node_a_id = scene.id_at_path(&NodePath::root_index(0)).expect("A has an id");
         assert_eq!(scene.active, Some(node_a_id));
 
-        let group_path = scene.group_active().expect("there is an active node to group");
-        assert_eq!(group_path, NodePath::root_index(0), "the Group takes the old slot");
+        let group_id = scene.group_active().expect("there is an active node to group");
+        // B4: `group_active` now returns the new Group's stable id; it resolves to
+        // the old top-level slot the Group took (path [0]).
+        assert_eq!(
+            scene.path_of(group_id),
+            Some(NodePath::root_index(0)),
+            "the Group takes the old slot"
+        );
 
         // The top-level node is now a Group with exactly one child (the old "A").
         match &scene.nodes[0].content {
@@ -3106,10 +3140,11 @@ mod tests {
         assert!(one > 0);
 
         // Add a second instance — an Instance node referencing the same def appears.
-        let path = scene.add_instance(def_id).expect("the def exists");
+        // B4: `add_instance` now returns the new node's stable id; resolve it by id.
+        let instance_id = scene.add_instance(def_id).expect("the def exists");
         assert_eq!(scene.nodes.len(), 2, "an Instance node referencing the def appears");
         assert!(matches!(
-            scene.node_at_path(&path).map(|n| &n.content),
+            scene.node_by_id(instance_id).map(|n| &n.content),
             Some(NodeContent::Instance(id)) if *id == def_id
         ));
         // Still exactly ONE stored definition (reuse by reference).
@@ -3134,16 +3169,16 @@ mod tests {
         //   [0, 1]         child          depth 1
         //   [1]          B                depth 0
         // Node 0 ("A") is already the active selection (the fixture selects it).
-        let group_path = scene.group_active().expect("active node");
+        let group_id = scene.group_active().expect("active node");
         let added = scene.add_child_to_group(
-            &group_path,
+            group_id,
             Node::new("child", NodeContent::Part(Part::DebugClouds { seed: 0 })),
         );
         assert!(added, "the wrapped node is a Group so a child can be added");
 
         let rows = scene.tree_rows();
         let paths: Vec<(Vec<usize>, usize)> =
-            rows.iter().map(|(p, d)| (p.indices.clone(), *d)).collect();
+            rows.iter().map(|(p, _id, d)| (p.indices.clone(), *d)).collect();
         assert_eq!(
             paths,
             vec![
@@ -4496,8 +4531,9 @@ mod tests {
         scene.ensure_node_ids();
 
         // Every tree row resolves both ways, consistently.
-        for (path, _depth) in scene.tree_rows() {
+        for (path, row_id, _depth) in scene.tree_rows() {
             let id = scene.id_at_path(&path).expect("path resolves to an id");
+            assert_eq!(id, row_id, "the row's carried id matches id_at_path");
             assert_ne!(id, NodeId(0), "a minted node never has the 0 sentinel");
             assert_eq!(
                 scene.path_of(id),
