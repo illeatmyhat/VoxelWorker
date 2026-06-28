@@ -710,6 +710,16 @@ fn locate_stem_png(stem: &str) -> Option<std::path::PathBuf> {
     None
 }
 
+/// Mint stable [`NodeId`]s for a freshly-built demo scene and select its first
+/// top-level node by id (ADR 0003 Phase B3: selection is keyed by [`NodeId`], so a
+/// demo built with positional intent ("select node 0") must resolve that to an id
+/// after minting). The later `ensure_node_ids` on the load path is idempotent.
+fn selecting_first_node(mut scene: Scene) -> Scene {
+    scene.ensure_node_ids();
+    scene.active = scene.nodes.first().map(|node| node.id);
+    scene
+}
+
 /// Build the `--demo-scene` (ADR 0001 step 3): a hardcoded multi-node PLACED
 /// scene proving disjoint placement. A sphere at the origin, a box offset +8
 /// blocks in X, and a torus offset +6 blocks in Z. Each Tool is 5 blocks, so the
@@ -739,15 +749,14 @@ fn build_demo_scene(voxels_per_block: u32) -> Scene {
         node.transform.offset_blocks = offset;
         node
     };
-    Scene {
+    selecting_first_node(Scene {
         nodes: vec![
             make_tool(ShapeKind::Sphere, [0, 0, 0], MaterialChoice::Stone),
             make_tool(ShapeKind::Box, [8, 0, 0], MaterialChoice::Wood),
             make_tool(ShapeKind::Torus, [0, 0, 6], MaterialChoice::Plain),
         ],
-        active: Some(NodePath::root_index(0)),
         ..Scene::default()
-    }
+    })
 }
 
 /// Build the `--demo-village` (ADR 0001 step 4): an **instanced** scene that
@@ -796,7 +805,7 @@ fn build_demo_village(voxels_per_block: u32) -> Scene {
         node.transform.offset_blocks = offset;
         node
     };
-    Scene {
+    selecting_first_node(Scene {
         nodes: vec![
             instance("House 1", [0, 0, 0]),
             instance("House 2", [6, 0, 0]),
@@ -804,9 +813,8 @@ fn build_demo_village(voxels_per_block: u32) -> Scene {
             instance("House 4", [18, 0, 0]),
         ],
         definitions: vec![house],
-        active: Some(NodePath::root_index(0)),
         ..Scene::default()
-    }
+    })
 }
 
 /// Build the `--demo-groups` (ADR 0001 step 4, UI verification): a scene that
@@ -846,12 +854,11 @@ fn build_demo_groups(voxels_per_block: u32) -> Scene {
     let mut widget_instance = Node::new("Widget instance", NodeContent::Instance(widget_def_id));
     widget_instance.transform.offset_blocks = [12, 0, 0];
 
-    Scene {
+    selecting_first_node(Scene {
         nodes: vec![cluster, lone, widget_instance],
         definitions: vec![widget],
-        active: Some(NodePath::root_index(0)),
         ..Scene::default()
-    }
+    })
 }
 
 /// Build the `--demo-far-offset` / `--demo-far-offset-near` scene (ADR 0002
@@ -994,8 +1001,13 @@ async fn run_capture(options: ShotOptions) {
     // capture can place the transform gizmo on a chosen (non-origin) node and prove
     // it follows the selection. An out-of-range index clears the selection.
     if let Some(index) = options.select_node {
-        panel_state.scene.active = (index < panel_state.scene.nodes.len())
-            .then(|| NodePath::root_index(index));
+        // ADR 0003 Phase B3: selection is keyed by NodeId. Parse the same top-level
+        // index as before, then resolve it to that node's stable id (ids were minted
+        // by `ensure_node_ids` above), so the SAME `--select-node N` argument selects
+        // the SAME node. An out-of-range index resolves to None → clears selection.
+        panel_state.scene.active = panel_state
+            .scene
+            .id_at_path(&NodePath::root_index(index));
     }
     // Issue #29 S3: the per-object block lattice + floor grid are now gated by a
     // scene master ANDed with each NODE's own toggle (default OFF), so a headless

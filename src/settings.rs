@@ -280,6 +280,13 @@ impl AppConfig {
         // directly, and a fresh/legacy config with no scene falls back to the
         // default seed scene whose `Scene::default()` masters all default ON.
         state.scene.ensure_origin_point();
+        // ADR 0003 Phase B3: selection and the edit ops key on a stable `NodeId`, and
+        // `mint_node_id` trusts `next_node_id` to already sit past every live id. A
+        // restored scene may carry unminted nodes (`NodeId(0)` sentinel) and/or a stale
+        // counter, so mint ids and advance the counter here — idempotent, and uniform
+        // with the seed branch and `shot.rs`. Runs after `ensure_origin_point` so the
+        // origin point it may have just appended also receives an id.
+        state.scene.ensure_node_ids();
         state
     }
 
@@ -433,11 +440,14 @@ mod tests {
             NodeContent::Tool { shape: unit_box(ShapeKind::Box), material: MaterialChoice::Wood },
         );
         wood.transform.offset_blocks = [3, 0, 0];
-        let scene = Scene {
+        // ADR 0003 Phase B3: selection is keyed by NodeId, so mint ids and select
+        // the second node (top-level index 1) by its stable id.
+        let mut scene = Scene {
             nodes: vec![stone, wood],
-            active: Some(NodePath::root_index(1)),
             ..Scene::default()
         };
+        scene.ensure_node_ids();
+        scene.active = scene.id_at_path(&NodePath::root_index(1));
 
         let mut panel = PanelState::with_view_cube_default();
         panel.geometry.voxels_per_block = voxels_per_block;
@@ -644,12 +654,15 @@ mod tests {
         let mut instance = Node::new("House instance", NodeContent::Instance(def_id));
         instance.transform.offset_blocks = [-6, 0, 0];
 
-        let scene = Scene {
+        // ADR 0003 Phase B3: selection is keyed by NodeId, so mint ids and select
+        // the Group's child (path [2, 0]) by its stable id.
+        let mut scene = Scene {
             nodes: vec![stone, clouds, group, instance],
             definitions: vec![def],
-            active: Some(NodePath::from_indices(vec![2, 0])),
             ..Scene::default()
         };
+        scene.ensure_node_ids();
+        scene.active = scene.id_at_path(&NodePath::from_indices(vec![2, 0]));
 
         // Build a panel carrying this scene and capture → JSON → restore.
         let mut panel = PanelState::with_view_cube_default();
@@ -770,7 +783,7 @@ mod tests {
                         }
                     }
                 ],
-                "active": { "indices": [0] }
+                "active": null
             },
             "shape": "Box",
             "size_blocks": [2, 2, 2],
@@ -806,7 +819,7 @@ mod tests {
     /// 64-bit range — far-apart village nodes survive a save/load.
     #[test]
     fn large_i64_offset_round_trips_through_json() {
-        use crate::scene::{Node, NodeContent, NodePath, Scene};
+        use crate::scene::{Node, NodeContent, Scene};
         use crate::voxel::SdfShape;
 
         // Beyond i32::MAX (2_147_483_647): a node placed ~3 billion blocks out. An
@@ -845,11 +858,14 @@ mod tests {
             [far_offset, -far_offset, far_offset / 2],
             "a >i32-range i64 offset must round-trip byte-exact through save/load"
         );
+        // ADR 0003 Phase B3: selection is keyed by NodeId; `single_node` minted the
+        // lone node an id and selected it, and that id round-trips intact.
         assert_eq!(
             restored_panel.scene.active,
-            Some(NodePath::root_index(0)),
+            scene.active,
             "the active selection survives"
         );
+        assert!(scene.active.is_some(), "the lone node is selected by id");
     }
 
     /// issue #31: the grid masters are the single source of truth on `scene.master_*`
@@ -928,12 +944,14 @@ mod tests {
         );
         let mut scene = Scene {
             nodes: vec![node],
-            active: Some(NodePath::root_index(0)),
             master_block_lattice: false,
             master_voxel_grid: true,
             master_floor_grid: false,
             ..Scene::default()
         };
+        // ADR 0003 Phase B3: mint ids and select the lone node by its stable id.
+        scene.ensure_node_ids();
+        scene.active = scene.id_at_path(&NodePath::root_index(0));
         scene.ensure_origin_point();
         scene.add_point(Point { name: "Marker".to_string(), ..Point::default() });
 
@@ -956,5 +974,57 @@ mod tests {
             1
         );
         assert_eq!(restored_panel.scene.points.len(), 2, "Origin + Marker survive");
+    }
+
+    /// ADR 0003 Phase B3 regression: a persisted scene whose nodes carry the
+    /// `NodeId(0)` sentinel and a stale `next_node_id` (an unminted save) must be
+    /// minted on the load path, not left selection-dead. Without the
+    /// `ensure_node_ids` call in `to_panel_state`, `id_at_path` would resolve a
+    /// clicked node to `NodeId(0)`, which `node_by_id`/`path_of` reject — so the
+    /// node would be silently unselectable and the next edit op would mint a
+    /// colliding id.
+    #[test]
+    fn unminted_persisted_scene_gets_ids_minted_on_load() {
+        use crate::scene::{Node, NodeContent, NodePath, NodeId, Scene};
+        use crate::voxel::SdfShape;
+
+        let make_box = |name: &str| {
+            Node::new(
+                name,
+                NodeContent::Tool {
+                    shape: SdfShape { kind: ShapeKind::Box, size_blocks: [2, 2, 2], voxels_per_block: 8, wall_blocks: 1 },
+                    material: MaterialChoice::Stone,
+                },
+            )
+        };
+        // Two top-level nodes left at the unassigned sentinel, counter never advanced —
+        // exactly the shape a pre-mint save deserializes into.
+        let scene = Scene {
+            nodes: vec![make_box("First"), make_box("Second")],
+            next_node_id: 0,
+            ..Scene::default()
+        };
+        assert!(scene.nodes.iter().all(|node| node.id == NodeId(0)), "fixture starts unminted");
+
+        let mut panel = PanelState::with_view_cube_default();
+        panel.scene = scene;
+        let camera = OrbitCamera::default();
+        let config = AppConfig::capture(&panel, &camera, HomeView::default(), [1280, 800]);
+        let json = serde_json::to_string_pretty(&config).expect("serialise");
+        let restored: AppConfig = serde_json::from_str(&json).expect("deserialise");
+        let loaded = restored.to_panel_state();
+
+        // Every node now carries a real id, and the counter sits past all of them.
+        assert!(
+            loaded.scene.nodes.iter().all(|node| node.id != NodeId(0)),
+            "the load path mints ids for an unminted persisted scene"
+        );
+        let max_id = loaded.scene.nodes.iter().map(|node| node.id.0).max().unwrap();
+        assert!(loaded.scene.next_node_id > max_id, "counter advanced past every live id");
+
+        // A clicked top-level row now resolves to a selectable node (not the sentinel).
+        let clicked_id = loaded.scene.id_at_path(&NodePath::root_index(0)).expect("path resolves to an id");
+        assert_ne!(clicked_id, NodeId(0));
+        assert!(loaded.scene.node_by_id(clicked_id).is_some(), "the resolved id is selectable");
     }
 }

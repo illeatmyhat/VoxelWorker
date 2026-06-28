@@ -489,7 +489,7 @@ fn compressed_binary_size(compressed: &CompressedChunk) -> usize {
 mod tests {
     use super::*;
     use crate::core_geom::MaterialChoice;
-    use crate::scene::{AssemblyDef, DefId, Node, NodeContent, NodePath, Part, Scene};
+    use crate::scene::{AssemblyDef, DefId, Node, NodeContent, Part, Scene};
     use crate::voxel::{GeometryParams, SdfShape, ShapeKind, Voxel, VoxelGrid, VoxelProducer};
 
     /// A pseudo-random generator (the same Numerical-Recipes LCG `cuboid.rs` uses),
@@ -722,7 +722,7 @@ mod tests {
                 make_tool(ShapeKind::Box, [8, 0, 0], MaterialChoice::Wood),
                 make_tool(ShapeKind::Torus, [0, 0, 6], MaterialChoice::Plain),
             ],
-            active: Some(NodePath::root_index(0)),
+            active: None,
             ..Scene::default()
         };
 
@@ -760,7 +760,7 @@ mod tests {
                 instance("House 4", [18, 0, 0]),
             ],
             definitions: vec![house],
-            active: Some(NodePath::root_index(0)),
+            active: None,
             ..Scene::default()
         };
 
@@ -1048,7 +1048,7 @@ mod tests {
                 make_tool(ShapeKind::Sphere, [0, 0, 0], MaterialChoice::Stone),
                 make_tool(ShapeKind::Box, [8, 0, 0], MaterialChoice::Wood),
             ],
-            active: Some(NodePath::root_index(0)),
+            active: None,
             ..Scene::default()
         };
         let (min_chunk, max_chunk) =

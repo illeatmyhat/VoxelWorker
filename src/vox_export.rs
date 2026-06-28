@@ -374,7 +374,7 @@ mod tests {
 
     use crate::chunk_cache::ChunkResolveCache;
     use crate::core_geom::MaterialChoice;
-    use crate::scene::{Node, NodeContent, NodePath, Scene};
+    use crate::scene::{Node, NodeContent, Scene};
     use crate::voxel::GeometryParams;
 
     /// Parse a `.vox` byte stream into a per-model SORTED multiset of
@@ -491,7 +491,7 @@ mod tests {
                 make_tool(ShapeKind::Box, [8, 0, 0], MaterialChoice::Wood),
                 make_tool(ShapeKind::Torus, [0, 0, 6], MaterialChoice::Plain),
             ],
-            active: Some(NodePath::root_index(0)),
+            active: None,
             ..Scene::default()
         };
         assert_region_vox_export_equals_whole_grid(&scene, vpb, "demo-scene");
@@ -520,7 +520,7 @@ mod tests {
                 make_box([0, 0, 0], MaterialChoice::Stone),
                 make_box([offset_blocks, 0, 0], MaterialChoice::Wood),
             ],
-            active: Some(NodePath::root_index(0)),
+            active: None,
             ..Scene::default()
         }
     }

@@ -404,8 +404,11 @@ fn build_node_list_section(
 
     // Walk the tree depth-first; each row is indented by its depth.
     let rows = state.scene.tree_rows();
+    // ADR 0003 Phase B3: selection is keyed by NodeId; compare each row's node id
+    // against the active id so the highlight tracks the selected node by identity.
+    let active_path = state.scene.active_path();
     for (path, depth) in &rows {
-        let is_active = state.scene.active.as_ref() == Some(path);
+        let is_active = active_path.as_ref() == Some(path);
         // Read the node by path; mutate visibility in place via a separate lookup
         // so the borrow of `nodes` does not span the whole row.
         let label = match state.scene.node_at_path(path) {
@@ -452,8 +455,12 @@ fn build_node_list_section(
         state.sync_mirror_from_active();
         response.scene_changed = true;
     } else if let Some(path) = select {
-        if state.scene.active.as_ref() != Some(&path) {
-            state.scene.active = Some(path);
+        // ADR 0003 Phase B3: a clicked row reports its path; convert it to the
+        // node's stable id and store THAT as the selection, so the highlight and
+        // inspector follow the node through later structural edits.
+        let clicked_id = state.scene.id_at_path(&path);
+        if state.scene.active != clicked_id {
+            state.scene.active = clicked_id;
             state.sync_mirror_from_active();
             response.scene_changed = true;
         }
@@ -656,7 +663,9 @@ fn build_node_actions(ui: &mut egui::Ui, state: &mut PanelState, response: &mut 
 
         // + Add child — into the active Group (only shown when one is selected).
         if active_is_group {
-            let group_path = state.scene.active.clone();
+            // ADR 0003 Phase B3: selection is a NodeId; `add_child_to_group` takes a
+            // positional path, so resolve the active id to its current path here.
+            let group_path = state.scene.active_path();
             ui.menu_button("+ Add child", |ui| {
                 for (kind, label) in SHAPE_CHIPS {
                     if ui.button(*label).clicked() {

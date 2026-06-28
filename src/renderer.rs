@@ -4040,7 +4040,7 @@ mod tests {
     // ---- issue #29 S3: per-object grid line geometry + gating ----
 
     use crate::core_geom::MaterialChoice as Mc;
-    use crate::scene::{Node, NodeContent, NodePath};
+    use crate::scene::{Node, NodeContent};
     use crate::voxel::ShapeKind;
     use crate::voxel::SdfShape;
 
@@ -4213,7 +4213,7 @@ mod tests {
                     box_node("A", [0, 0, 0], density),
                     box_node("B", [8, 0, 0], density),
                 ],
-                active: Some(NodePath::root_index(0)),
+                active: None,
                 ..Scene::default()
             };
             scene.master_block_lattice = true;

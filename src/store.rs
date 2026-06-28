@@ -735,7 +735,7 @@ mod tests {
     use crate::core_geom::MaterialChoice;
     use crate::voxel::GeometryParams;
     use crate::scene::{
-        AssemblyDef, DefId, Node, NodeContent, NodePath, RegionBlocks,
+        AssemblyDef, DefId, Node, NodeContent, RegionBlocks,
     };
     use crate::voxel::{SdfShape, ShapeKind, VoxelGrid};
 
@@ -888,7 +888,7 @@ mod tests {
                 make_tool(ShapeKind::Box, [8, 0, 0], MaterialChoice::Wood),
                 make_tool(ShapeKind::Torus, [0, 0, 6], MaterialChoice::Plain),
             ],
-            active: Some(NodePath::root_index(0)),
+            active: None,
             ..Scene::default()
         };
         assert_cache_region_matches_monolithic(&scene, voxels_per_block, "demo-scene");
@@ -930,7 +930,7 @@ mod tests {
                 instance("House 4", [18, 0, 0]),
             ],
             definitions: vec![house],
-            active: Some(NodePath::root_index(0)),
+            active: None,
             ..Scene::default()
         };
         assert_cache_region_matches_monolithic(&scene, voxels_per_block, "demo-village");
@@ -1007,7 +1007,7 @@ mod tests {
                 corner("Box lo", [0, 0, 0]),
                 corner("Box hi", [spacing_blocks, spacing_blocks, spacing_blocks]),
             ],
-            active: Some(NodePath::root_index(0)),
+            active: None,
             ..Scene::default()
         };
 
@@ -1102,7 +1102,7 @@ mod tests {
                 make_tool(ShapeKind::Box, [box_offset_x, 0, 0], MaterialChoice::Wood),
                 make_tool(ShapeKind::Torus, [0, 0, 6], MaterialChoice::Plain),
             ],
-            active: Some(NodePath::root_index(0)),
+            active: None,
             ..Scene::default()
         }
     }
@@ -1406,7 +1406,7 @@ mod tests {
                 instance("House 4", [18, 0, 0]),
             ],
             definitions: vec![house],
-            active: Some(NodePath::root_index(0)),
+            active: None,
             ..Scene::default()
         };
         assert_render_chunks_match_resolve_region(&scene, vpb, "demo-village");
@@ -1572,7 +1572,7 @@ mod tests {
         // whole-grid reference (an O(grid_x)-per-row bitset) stays cheap to assemble.
         let scene = Scene {
             nodes: vec![make_box([0, 0, 0]), make_box([20_000, 0, 0])],
-            active: Some(NodePath::root_index(0)),
+            active: None,
             ..Scene::default()
         };
 
@@ -1628,7 +1628,7 @@ mod tests {
                 make_tool(ShapeKind::Box, [8, 0, 0], MaterialChoice::Wood),
                 make_tool(ShapeKind::Torus, [0, 0, 6], MaterialChoice::Plain),
             ],
-            active: Some(NodePath::root_index(0)),
+            active: None,
             ..Scene::default()
         };
         assert_region_widest_run_matches_whole_grid(&scene, vpb, "demo-scene");
@@ -1670,7 +1670,7 @@ mod tests {
                 instance("House 4", [18, 0, 0]),
             ],
             definitions: vec![house],
-            active: Some(NodePath::root_index(0)),
+            active: None,
             ..Scene::default()
         };
         assert_region_widest_run_matches_whole_grid(&scene, vpb, "demo-village");
@@ -1700,7 +1700,7 @@ mod tests {
                 "bar",
                 NodeContent::Tool { shape, material: MaterialChoice::Stone },
             )],
-            active: Some(NodePath::root_index(0)),
+            active: None,
             ..Scene::default()
         };
 
@@ -1745,7 +1745,7 @@ mod tests {
                 "dot",
                 NodeContent::Tool { shape, material: MaterialChoice::Stone },
             )],
-            active: Some(NodePath::root_index(0)),
+            active: None,
             ..Scene::default()
         };
         let dims = scene.placed_region_dimensions(1);
@@ -1908,7 +1908,7 @@ mod tests {
                 tool_node(ShapeKind::Box, [5, 5, 5], [60, 0, 0], MaterialChoice::Wood, density),
                 anchor_hi(),
             ],
-            active: Some(NodePath::root_index(0)),
+            active: None,
             ..Scene::default()
         };
 
@@ -2017,7 +2017,7 @@ mod tests {
                 tool_node(ShapeKind::Sphere, [9, 9, 9], [0, 0, 0], MaterialChoice::Stone, density),
                 tool_node(ShapeKind::Box, [1, 1, 1], [80, 0, 0], MaterialChoice::Wood, density),
             ],
-            active: Some(NodePath::root_index(0)),
+            active: None,
             ..Scene::default()
         };
         let mut scene_b = scene_a.clone();
