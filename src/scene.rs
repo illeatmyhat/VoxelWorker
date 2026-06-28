@@ -650,6 +650,90 @@ impl Scene {
         None
     }
 
+    /// The [`NodeId`] of the node at `path` — the top-level-tree inverse of
+    /// [`path_of`](Self::path_of) — or `None` if the path doesn't resolve (ADR 0003
+    /// Phase B2). A convenience bridge while selection/commands migrate off
+    /// [`NodePath`] onto [`NodeId`].
+    pub fn id_at_path(&self, path: &NodePath) -> Option<NodeId> {
+        self.node_at_path(path).map(|node| node.id)
+    }
+
+    /// The node with the given [`NodeId`] in the **top-level assembly tree**
+    /// (top-level nodes + [`NodeContent::Group`] children — the same scope
+    /// [`NodePath`] addresses), or `None` (ADR 0003 Phase B2). `NodeId(0)` (the
+    /// unassigned sentinel) never matches. O(n) DFS; Phase B5 swaps the storage for
+    /// an arena so this becomes a direct lookup.
+    pub fn node_by_id(&self, id: NodeId) -> Option<&Node> {
+        fn find(nodes: &[Node], id: NodeId) -> Option<&Node> {
+            for node in nodes {
+                if node.id == id {
+                    return Some(node);
+                }
+                if let NodeContent::Group(children) = &node.content {
+                    if let Some(found) = find(children, id) {
+                        return Some(found);
+                    }
+                }
+            }
+            None
+        }
+        if id == NodeId(0) {
+            return None;
+        }
+        find(&self.nodes, id)
+    }
+
+    /// The node with the given [`NodeId`], mutably (ADR 0003 Phase B2). Same scope +
+    /// caveats as [`node_by_id`](Self::node_by_id).
+    pub fn node_by_id_mut(&mut self, id: NodeId) -> Option<&mut Node> {
+        fn find(nodes: &mut [Node], id: NodeId) -> Option<&mut Node> {
+            for node in nodes {
+                if node.id == id {
+                    return Some(node);
+                }
+                if let NodeContent::Group(children) = &mut node.content {
+                    if let Some(found) = find(children, id) {
+                        return Some(found);
+                    }
+                }
+            }
+            None
+        }
+        if id == NodeId(0) {
+            return None;
+        }
+        find(&mut self.nodes, id)
+    }
+
+    /// The [`NodePath`] addressing the node with the given [`NodeId`] in the
+    /// top-level assembly tree, or `None` (ADR 0003 Phase B2). The inverse of
+    /// [`id_at_path`](Self::id_at_path): `path_of(id_at_path(path)) == Some(path)`
+    /// for every path that resolves. While `NodePath` is still the identity of
+    /// record, this lets callers hold a stable [`NodeId`] and recover its current
+    /// position on demand.
+    pub fn path_of(&self, id: NodeId) -> Option<NodePath> {
+        fn search(nodes: &[Node], id: NodeId, prefix: &mut Vec<usize>) -> bool {
+            for (index, node) in nodes.iter().enumerate() {
+                prefix.push(index);
+                if node.id == id {
+                    return true;
+                }
+                if let NodeContent::Group(children) = &node.content {
+                    if search(children, id, prefix) {
+                        return true;
+                    }
+                }
+                prefix.pop();
+            }
+            false
+        }
+        if id == NodeId(0) {
+            return None;
+        }
+        let mut prefix = Vec::new();
+        search(&self.nodes, id, &mut prefix).then(|| NodePath::from_indices(prefix))
+    }
+
     /// Flatten the top-level assembly into a depth-first list of `(path, depth)`
     /// rows for the tree UI (ADR 0001 step 4): every top-level node, and — for a
     /// [`NodeContent::Group`] — its children recursively at increasing depth. The
@@ -4311,6 +4395,58 @@ mod tests {
             "fresh id does not collide with the existing one"
         );
         assert!(scene.next_node_id > 5, "counter advanced past the loaded id");
+    }
+
+    /// ADR 0003 Phase B2: `id_at_path` / `path_of` / `node_by_id` agree with the
+    /// positional `node_at_path` for EVERY node in the tree (the ⇄ equivalence the
+    /// later selection/command migration relies on).
+    #[test]
+    fn node_id_and_path_resolution_round_trip() {
+        fn clouds(name: &str) -> Node {
+            Node::new(name, NodeContent::Part(Part::DebugClouds { seed: 0 }))
+        }
+        let mut scene = Scene {
+            nodes: vec![
+                clouds("A"),
+                Node::new(
+                    "G",
+                    NodeContent::Group(vec![
+                        clouds("B"),
+                        Node::new("H", NodeContent::Group(vec![clouds("C")])),
+                    ]),
+                ),
+                clouds("D"),
+            ],
+            ..Scene::default()
+        };
+        scene.ensure_node_ids();
+
+        // Every tree row resolves both ways, consistently.
+        for (path, _depth) in scene.tree_rows() {
+            let id = scene.id_at_path(&path).expect("path resolves to an id");
+            assert_ne!(id, NodeId(0), "a minted node never has the 0 sentinel");
+            assert_eq!(
+                scene.path_of(id),
+                Some(path.clone()),
+                "path_of inverts id_at_path"
+            );
+            // node_by_id and node_at_path reach the SAME node.
+            let by_id = scene.node_by_id(id).expect("id resolves to a node");
+            let by_path = scene.node_at_path(&path).expect("path resolves to a node");
+            assert_eq!(by_id.id, by_path.id);
+            assert_eq!(by_id.name, by_path.name);
+        }
+
+        // Sentinel + unknown ids resolve to nothing.
+        assert!(scene.node_by_id(NodeId(0)).is_none());
+        assert!(scene.path_of(NodeId(0)).is_none());
+        assert!(scene.node_by_id(NodeId(9_999)).is_none());
+        assert!(scene.path_of(NodeId(9_999)).is_none());
+
+        // Mutable lookup reaches the same node.
+        let first_id = scene.id_at_path(&NodePath::root_index(0)).unwrap();
+        scene.node_by_id_mut(first_id).unwrap().name = "renamed".to_string();
+        assert_eq!(scene.node_at_path(&NodePath::root_index(0)).unwrap().name, "renamed");
     }
 
     /// An existing Origin (anywhere in the list) is NOT duplicated by
