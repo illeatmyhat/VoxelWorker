@@ -20,6 +20,7 @@ use voxel_worker::{
     chrome_zone_left_click_action, classify_cube_point, create_depth_view, create_msaa_color_view,
     procedural_material_average_color, render_frame,
     run_egui_frame, AppConfig, AppCore, ChromeClickAction, CubeChromeZone, CubeFace, CubeRect,
+    RebuildOutcome, RebuildOutput,
     EguiPaintBridge, FogMode,
     FrameOverlays,
     TransformGizmoRenderer,
@@ -110,18 +111,6 @@ struct WindowedState {
     /// to it (`self.app_core.store` / `self.app_core.camera`) and keeps the GPU
     /// renderers + winit/egui plumbing.
     app_core: AppCore,
-    /// The leaf spatial index (issue #27 S3) the LAST rebuild resolved from, kept so
-    /// the next rebuild can diff against it to compute the edit's dirty world-AABB.
-    /// `None` before the first rebuild (which clears wholesale).
-    previous_leaf_index: Option<voxel_worker::spatial_index::LeafSpatialIndex>,
-    /// The composite recentre (floating origin, in voxels) the LAST rebuild resolved
-    /// at (issue #20 S6c-2c). Every cached chunk's voxel positions are rebased to
-    /// this origin, so when it CHANGES (a move shifts the active region's composite
-    /// extent) every chunk's contents shift — even chunks far from the edit. An
-    /// incremental dirty-only GPU rebuild would then keep stale (old-origin) buffers
-    /// for the untouched chunks, so a recentre change forces a wholesale rebuild.
-    /// `None` before the first rebuild.
-    previous_recentre_voxels: Option<[i64; 3]>,
     /// Cached widest-run measurement + the band it was computed for, so we only
     /// re-measure when the band or grid actually changes.
     measured_diameter: u32,
@@ -399,8 +388,6 @@ impl WindowedState {
             face_resolver: FaceResolver::auto(),
             grid,
             app_core: AppCore::new(chunk_resolve_cache, camera),
-            previous_leaf_index: None,
-            previous_recentre_voxels: None,
             measured_diameter,
             measured_band,
             depth_view,
@@ -465,89 +452,36 @@ impl WindowedState {
         let density = self.panel_state.geometry.voxels_per_block;
         let shape = SdfShape::from_geometry(self.panel_state.geometry);
 
-        // Issue #27 S2: the resolve is now chunked + lazy, so the 6M figure is a
-        // PER-CHUNK bound, not a whole-scene total. A scene whose total voxel count
-        // is far beyond 6M now resolves fine as long as each chunk is small; only a
-        // pathological density (one chunk's voxel capacity alone exceeds the bound)
-        // is rejected.
-        if voxel_worker::voxel::chunk_extent_exceeds_bound(density) {
-            let chunk_extent = (voxel_worker::core_geom::CHUNK_BLOCKS * density.max(1)) as u64;
-            let chunk_voxels = chunk_extent * chunk_extent * chunk_extent;
-            self.panel_state.voxel_cap_warning_millions = Some(chunk_voxels as f32 / 1_000_000.0);
-            return;
-        }
-        self.panel_state.voxel_cap_warning_millions = None;
-
-        let previous_grid_y = self.grid.dimensions[1];
-        // Route the resolve through the per-chunk cache (issue #27 S2/S3). S3 does
-        // TARGETED invalidation: build the new scene's leaf spatial index, diff it
-        // against the previous rebuild's index to get the edit's dirty world-AABB,
-        // and evict ONLY the chunks that AABB touches — every other cached chunk
-        // stays resident. A move dirties chunks around both the source and the
-        // destination (the diff unions the old AND new boxes). We fall back to a
-        // wholesale `clear()` when a precise AABB can't be computed: the first
-        // rebuild (no previous index), a density change, or a region-spanning Part
-        // edit (no localisable box) — see `LeafSpatialIndex::edit_aabb_since`. The
-        // reassembled grid is byte-identical either way (the same chunks are
-        // re-resolved; untouched chunks are reused verbatim).
-        // The dirty absolute chunk-coords this edit evicted from the resolve cache
-        // (issue #20 S6c-2c); the GPU instance cache rebuilds EXACTLY these (plus any
-        // brand-new covering chunks) below, instead of clearing every per-chunk
-        // buffer. `full_rebuild` forces a wholesale GPU rebuild for the cases the
-        // resolve cache itself falls back to a `clear()` for — the first rebuild (no
-        // previous index), a density change, or a region-spanning Part edit (no
-        // localisable AABB) — where there is no meaningful dirty set.
-        let new_leaf_index = self.panel_state.scene.build_leaf_spatial_index(density);
-        // The new composite recentre (floating origin). If it differs from the last
-        // rebuild's, EVERY cached chunk's rebased contents shift, so the incremental
-        // GPU path (which keeps untouched chunks verbatim) would leave stale buffers —
-        // force a wholesale rebuild in that case (see `previous_recentre_voxels`).
-        let new_recentre = self
-            .panel_state
-            .scene
-            .recentre_voxels_for_resolve(density);
-        let _recentre_changed = self.previous_recentre_voxels != Some(new_recentre);
-        // The cuboid renderer rebuilds every covering chunk wholesale below, so it
-        // needs no dirty set of its own — but the resolve cache's invalidation side
-        // effects ARE still required: `invalidate_aabb` evicts the edit's dirty chunks
-        // (so `resident_render_chunks` re-resolves them), and `clear()` handles the
-        // first build / density change / region-spanning edit where there is no
-        // localisable AABB. We keep the match for those side effects; its return
-        // values (the old instanced path's dirty set / full-rebuild flag) are unused.
-        match self.previous_leaf_index.as_ref() {
-            Some(previous) => match new_leaf_index.edit_aabb_since(previous) {
-                Some(edit_aabb) => {
-                    self.app_core.store.invalidate_aabb(&edit_aabb, density);
-                }
-                None => {
-                    self.app_core.store.clear();
-                }
-            },
-            None => {
-                self.app_core.store.clear();
+        // Delegate the headless resolve (S2/S3 targeted invalidation + assemble) to
+        // `AppCore::rebuild`, then consume its output here in the shell: build the
+        // GPU cuboid mesh, upload the fog, and reframe the camera. A density whose
+        // single-chunk voxel capacity exceeds the bound is rejected with the store
+        // untouched, so we surface the cap warning and bail.
+        let RebuildOutput {
+            grid,
+            region_dimensions,
+            render_chunks,
+        } = match self.app_core.rebuild(&self.panel_state.scene, density) {
+            RebuildOutcome::DensityRejected {
+                chunk_voxels_millions,
+            } => {
+                self.panel_state.voxel_cap_warning_millions = Some(chunk_voxels_millions);
+                return;
             }
-        }
-        self.previous_recentre_voxels = Some(new_recentre);
-        self.previous_leaf_index = Some(new_leaf_index);
-        let grid = self
-            .app_core.store
-            .resolve_region(&self.panel_state.scene, density, 0);
-        // Issue #20 S6c-1: size the camera/gizmo/lattice/floor/scrubber from the
-        // SCENE's region dimensions, not the assembled grid object. For a chunkable
-        // scene this equals `grid.dimensions` exactly (the cache sizes its output to
-        // `placed_region_dimensions`); the renderer/mesher/fog below still consume
-        // the assembled `grid` (that's S6c step 4).
-        let region_dimensions = AppCore::region_dimensions_for(&self.panel_state.scene, density, &grid);
-        // Part of #20: the cuboid mesh renderer is the sole voxel render path. Rebuild
-        // it from the resolve cache's PER-CHUNK accessor (`resident_render_chunks` —
-        // `(absolute_chunk_coord, &rebased_grid)` per covering chunk), so it meshes
-        // exactly the chunks the cache reports (1-voxel apron per chunk). The accessor
-        // returns a `Vec` holding an IMMUTABLE borrow of the cache, so it is consumed
-        // fully BEFORE any further `&mut` cache call. The cuboid path rebuilds every
-        // covering chunk wholesale (it has no per-chunk dirty cache of its own).
-        let render_chunks = self
-            .app_core.store
-            .resident_render_chunks(&self.panel_state.scene, density, 0);
+            RebuildOutcome::Built(output) => {
+                self.panel_state.voxel_cap_warning_millions = None;
+                output
+            }
+        };
+
+        // Read the OLD grid_y before reassigning `self.grid`, for the layer-band
+        // rescale below.
+        let previous_grid_y = self.grid.dimensions[1];
+        // Part of #20: the cuboid mesh renderer is the sole voxel render path.
+        // Rebuild it from the per-chunk accessor (`(absolute_chunk_coord,
+        // &rebased_grid)` per covering chunk, 1-voxel apron). `render_chunks` holds
+        // an IMMUTABLE borrow of the store, so it is consumed here and dropped BEFORE
+        // the next `&mut AppCore` call (the auto-frame below).
         self.cuboid_mesh_renderer = CuboidMeshRenderer::new_from_chunks(
             &self.gpu.device,
             &self.gpu.queue,
