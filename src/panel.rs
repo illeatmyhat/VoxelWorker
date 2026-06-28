@@ -20,7 +20,8 @@
 use crate::block_palette::BlockPalette;
 use crate::camera::ProjectionMode;
 use crate::core_geom::MaterialChoice;
-use crate::scene::{DefId, Node, NodeContent, NodeId, Part, Point, Scene};
+use crate::intent::{Intent, NodeSpec};
+use crate::scene::{DefId, Node, NodeContent, NodeId, Part, Scene};
 use crate::voxel::{GeometryParams, SdfShape, ShapeKind};
 
 /// Layer-range scrubber state (issue #12).
@@ -196,32 +197,35 @@ impl PanelState {
             }
         }
     }
-
-    /// Write the inspector mirror back onto the active node when it is a Tool
-    /// (shape/size/wall/material edits target the active selection). Density is
-    /// global, but it is stored on every Tool's shape so the resolve reads it; the
-    /// mirror's `voxels_per_block` is propagated here. No-op for a Part active node
-    /// or an empty scene.
-    pub fn write_mirror_to_active(&mut self) {
-        let geometry = self.geometry;
-        let material = self.material;
-        if let Some(node) = self.scene.active_node_mut() {
-            if let NodeContent::Tool { shape, material: node_material } = &mut node.content {
-                *shape = SdfShape::from_geometry(geometry);
-                *node_material = material;
-            }
-        }
-    }
 }
 
 /// What changed during a [`build_panel`] call, so the caller can react.
-#[derive(Debug, Clone, Copy, Default)]
+///
+/// **ADR 0003 Phase C, slice C4a.** The panel no longer mutates `state.scene`
+/// directly; instead every document mutation this frame is DESCRIBED as an
+/// [`Intent`] pushed onto [`intents`](Self::intents), which the loop applies through
+/// [`AppCore::apply_intent`](crate::AppCore::apply_intent) and folds the returned
+/// [`IntentEffect`](crate::IntentEffect)s into its rebuild / points / selection
+/// decisions. The remaining fields are NON-scene side effects (palette / export /
+/// folder picker) the panel still only flags, plus the
+/// [`frame_after_apply`](Self::frame_after_apply) auto-frame hint (which is a panel
+/// UX concern — a size-slider `SetShape` re-frames, a shape-chip `SetShape` does
+/// not, even though both are the same intent KIND — so it cannot be derived from the
+/// intent alone and stays on the response).
+#[derive(Debug, Clone, Default)]
 pub struct PanelResponse {
-    /// A geometry param changed → re-resolve the grid + rebuild instances.
-    pub geometry_changed: bool,
-    /// Size or density specifically changed → also auto-frame the camera.
-    /// (Shape change re-resolves but must NOT move the camera — guard #1.)
-    pub size_or_density_changed: bool,
+    /// The document mutations the user made this frame, in emission order (ADR 0003
+    /// Phase C C4a). The loop applies each through `AppCore::apply_intent` and merges
+    /// the effects; the panel itself performs NONE of them.
+    pub intents: Vec<Intent>,
+    /// The caller should auto-frame the camera after applying this frame's intents
+    /// (the typed successor of the old `size_or_density_changed || scene_changed`
+    /// auto-frame trigger). Set by the panel for every emitted intent EXCEPT a pure
+    /// shape-chip switch and a material pick (guard #1: a shape switch re-resolves at
+    /// the same size and must NOT move the camera). A panel-level signal because the
+    /// same intent KIND (`SetShape`) auto-frames from a size slider but not from a
+    /// shape chip.
+    pub frame_after_apply: bool,
     /// A palette tile was clicked this frame → apply a pseudo-random variant of
     /// this tile index as the active loaded material (M6).
     pub clicked_palette_tile: Option<usize>,
@@ -234,18 +238,23 @@ pub struct PanelResponse {
     /// The "Export .vox" button was clicked this frame → open the OS save dialog
     /// and write the resolved grid as a MagicaVoxel `.vox` file (M8).
     pub clicked_export_vox: bool,
-    /// The scene's node list changed this frame (a node was added, deleted, or the
-    /// active selection switched) → the caller re-resolves the scene and re-frames
-    /// as it would for a geometry change. Distinct from
-    /// [`geometry_changed`](Self::geometry_changed) (an inspector edit), though the
-    /// caller treats both as "rebuild".
-    pub scene_changed: bool,
-    /// A Point changed this frame (issue #29 S5): a Point was added/deleted/selected,
-    /// or one of its plane/axis/visibility/position fields toggled. The Point line
-    /// batch is rebuilt every frame anyway (it is camera-relative), so this is purely
-    /// informational — the caller may persist the scene on it. Does NOT trigger a
-    /// voxel re-resolve (Points are pure overlay, not geometry).
-    pub points_changed: bool,
+}
+
+impl PanelResponse {
+    /// Push a mutation the user described this frame (ADR 0003 Phase C C4a). The loop
+    /// applies it through `AppCore::apply_intent`; the panel never mutates the scene.
+    fn emit(&mut self, intent: Intent) {
+        self.intents.push(intent);
+    }
+
+    /// Push a mutation AND request an auto-frame after this frame's intents apply (the
+    /// old `scene_changed` / `size_or_density_changed` behaviour). Used for structural
+    /// edits and size/density edits — everything that re-frames; a shape-chip switch
+    /// and a material pick use [`emit`](Self::emit) instead so the camera stays put.
+    fn emit_and_frame(&mut self, intent: Intent) {
+        self.frame_after_apply = true;
+        self.intents.push(intent);
+    }
 }
 
 /// Build the right-hand side panel into the root [`egui::Ui`] of the frame.
@@ -281,7 +290,7 @@ pub fn build_panel(
             build_points_section(ui, state, &mut response);
             build_inspector_section(ui, state, &mut response);
             build_camera_section(ui, state);
-            build_display_section(ui, state);
+            build_display_section(ui, state, &mut response);
             build_export_section(ui, &mut response);
             build_layers_section(ui, state, grid_y, measured_diameter);
 
@@ -439,35 +448,33 @@ fn build_node_list_section(
         });
     }
 
+    // ADR 0003 Phase C C4a: a visibility toggle is now described as a `SetVisible`
+    // intent (the loop applies it), not a direct `set_node_visible`. It re-resolves +
+    // auto-frames exactly as before (the old `scene_changed`).
     if let Some((id, visible)) = set_visible {
-        state.scene.set_node_visible(id, visible);
+        response.emit_and_frame(Intent::SetVisible { target: id, visible });
     }
 
     if state.scene.roots.is_empty() {
         ui.label(egui::RichText::new("(no nodes — add one below)").small().weak());
     }
 
-    if set_visible.is_some() {
-        response.scene_changed = true;
-    }
-
     build_node_actions(ui, state, response);
     build_definitions_section(ui, state, response);
 
-    // Apply the deferred selection / delete after the walk (can't mutate the
-    // active selection while borrowing through the tree).
+    // Apply the deferred selection / delete after the walk. ADR 0003 Phase C C4a:
+    // both are now intents (`RemoveNode` / `SelectNode`) the loop applies — the panel
+    // no longer touches `scene.active` or calls `remove_node`/`sync_mirror_from_active`
+    // here (the loop re-syncs the inspector mirror on the returned effect).
     if let Some(id) = delete {
-        state.scene.remove_node(id);
-        state.sync_mirror_from_active();
-        response.scene_changed = true;
+        response.emit_and_frame(Intent::RemoveNode { target: id });
     } else if let Some(clicked_id) = select {
-        // ADR 0003 Phase B4: a clicked row reports its node's stable NodeId; store
-        // THAT as the selection, so the highlight and inspector follow the node
-        // through later structural edits.
+        // ADR 0003 Phase B4: a clicked row reports its node's stable NodeId; select
+        // THAT, so the highlight and inspector follow the node through later
+        // structural edits. Only emit when it actually changes the selection (the old
+        // guard) — a `SelectNode` is selection-only (no re-resolve, no auto-frame).
         if state.scene.active != Some(clicked_id) {
-            state.scene.active = Some(clicked_id);
-            state.sync_mirror_from_active();
-            response.scene_changed = true;
+            response.emit(Intent::SelectNode { target: Some(clicked_id) });
         }
     }
 
@@ -528,53 +535,91 @@ fn build_points_section(ui: &mut egui::Ui, state: &mut PanelState, response: &mu
         });
     }
 
-    // + Add Point — a fresh Point at the camera target (whole blocks), else the origin.
+    // + Add Point — a fresh Point at the camera target (whole blocks), else the
+    // origin. ADR 0003 Phase C C4a: described as an `AddPoint` intent; the panel
+    // names it after the soon-to-be index (matching the old `format!`), and emits a
+    // trailing `SelectPoint` so the new Point becomes active (the old
+    // `active_point = len - 1`, which `add_point` itself does not set).
     if ui
         .button("+ Add Point")
         .on_hover_text("Add a reference Point at the camera target")
         .clicked()
     {
-        let target = state.point_add_position_blocks;
-        let mut point = Point {
-            name: format!("Point {}", state.scene.points.len()),
-            position_blocks: target,
-            ..Point::default()
-        };
-        // A user Point is never the Origin (the Origin is synthesized on load).
-        point.is_origin = false;
-        state.scene.add_point(point);
-        state.scene.active_point = Some(state.scene.points.len() - 1);
-        response.points_changed = true;
+        let new_index = state.scene.points.len();
+        response.emit(Intent::AddPoint {
+            position_blocks: state.point_add_position_blocks,
+            name: format!("Point {new_index}"),
+        });
+        response.emit(Intent::SelectPoint { target: Some(new_index) });
     }
 
     // The selected Point's editor: plane/axis toggles, position (hidden for Origin),
-    // and a delete button (hidden for the Origin).
+    // and a delete button (hidden for the Origin). ADR 0003 Phase C C4a: each widget
+    // binds to a LOCAL copy of the Point's fields (egui needs the `&mut`); a change
+    // emits the matching `SetPoint*` intent instead of mutating the Point. The buffer
+    // is read fresh from the scene each frame, so it always reflects the live value.
     if let Some(active) = state.scene.active_point {
-        if let Some(point) = state.scene.points.get_mut(active) {
+        if let Some(point) = state.scene.points.get(active) {
+            let point = point.clone();
             ui.add_space(4.0);
             ui.separator();
-            let mut changed = false;
-            changed |= ui.checkbox(&mut point.plane_xz, "Ground plane (XZ)").changed();
-            changed |= ui.checkbox(&mut point.plane_xy, "Front plane (XY)").changed();
-            changed |= ui.checkbox(&mut point.plane_yz, "Side plane (YZ)").changed();
-            // Per-axis toggles (issue #29 fix): X/Y/Z each toggle independently.
+
+            // Plane toggles → `SetPointPlanes` (carrying all three current values).
+            let mut plane_xz = point.plane_xz;
+            let mut plane_xy = point.plane_xy;
+            let mut plane_yz = point.plane_yz;
+            let mut planes_changed = false;
+            planes_changed |= ui.checkbox(&mut plane_xz, "Ground plane (XZ)").changed();
+            planes_changed |= ui.checkbox(&mut plane_xy, "Front plane (XY)").changed();
+            planes_changed |= ui.checkbox(&mut plane_yz, "Side plane (YZ)").changed();
+            if planes_changed {
+                response.emit(Intent::SetPointPlanes {
+                    index: active,
+                    xz: plane_xz,
+                    xy: plane_xy,
+                    yz: plane_yz,
+                });
+            }
+
+            // Per-axis toggles (issue #29 fix): X/Y/Z each toggle independently →
+            // `SetPointAxes` (carrying all three).
+            let mut axis_x = point.axis_x;
+            let mut axis_y = point.axis_y;
+            let mut axis_z = point.axis_z;
+            let mut axes_changed = false;
             ui.horizontal(|ui| {
                 ui.label("Axes");
-                changed |= ui.checkbox(&mut point.axis_x, "X").changed();
-                changed |= ui.checkbox(&mut point.axis_y, "Y").changed();
-                changed |= ui.checkbox(&mut point.axis_z, "Z").changed();
+                axes_changed |= ui.checkbox(&mut axis_x, "X").changed();
+                axes_changed |= ui.checkbox(&mut axis_y, "Y").changed();
+                axes_changed |= ui.checkbox(&mut axis_z, "Z").changed();
             });
+            if axes_changed {
+                response.emit(Intent::SetPointAxes {
+                    index: active,
+                    x: axis_x,
+                    y: axis_y,
+                    z: axis_z,
+                });
+            }
 
             // Position editor — only for a user Point (the Origin is pinned at world 0).
             if !point.is_origin {
+                let mut position = point.position_blocks;
+                let mut position_changed = false;
                 ui.horizontal(|ui| {
                     ui.label("Pos (blocks)");
-                    for axis in 0..3 {
-                        changed |= ui
-                            .add(egui::DragValue::new(&mut point.position_blocks[axis]).speed(1.0))
+                    for axis_value in &mut position {
+                        position_changed |= ui
+                            .add(egui::DragValue::new(axis_value).speed(1.0))
                             .changed();
                     }
                 });
+                if position_changed {
+                    response.emit(Intent::SetPointPosition {
+                        index: active,
+                        position_blocks: position,
+                    });
+                }
                 if ui.button("Delete point").clicked() {
                     delete = Some(active);
                 }
@@ -585,50 +630,59 @@ fn build_points_section(ui: &mut egui::Ui, state: &mut PanelState, response: &mu
                         .weak(),
                 );
             }
-            if changed {
-                response.points_changed = true;
-            }
         }
     }
 
-    // Apply deferred mutations after the read/borrow walk.
+    // Apply deferred mutations after the read/borrow walk. ADR 0003 Phase C C4a: each
+    // is described as an intent the loop applies.
     if let Some(index) = toggle_hidden {
-        state.scene.toggle_point_hidden(index);
-        response.points_changed = true;
+        // The visibility checkbox is bound to `!hidden`; a toggle flips it. Read the
+        // current flag and emit the explicit `SetPointHidden` for the new value (the
+        // intent path is explicit, unlike `toggle_point_hidden`'s flip).
+        if let Some(point) = state.scene.points.get(index) {
+            response.emit(Intent::SetPointHidden { index, hidden: !point.hidden });
+        }
     }
     if let Some(index) = delete {
-        // `remove_point` is a no-op on the Origin (defensive — the UI already hides
-        // its delete affordances). Keep `active_point` valid after a removal.
+        // `RemovePoint` is a no-op on the Origin (the UI already hides its delete
+        // affordances). To preserve the old `active_point` fix-up (which `remove_point`
+        // does not do), emit a trailing `SelectPoint` re-deriving the selection.
         let was_origin = state.scene.points.get(index).map(|p| p.is_origin).unwrap_or(false);
         if !was_origin {
-            state.scene.remove_point(index);
-            state.scene.active_point = if state.scene.points.is_empty() {
+            response.emit(Intent::RemovePoint { index });
+            // After removing index, the list shrinks by one: re-derive the selection
+            // exactly as the old code did (clamp to the new last, or clear if empty).
+            let remaining = state.scene.points.len().saturating_sub(1);
+            let next = if remaining == 0 {
                 None
             } else {
-                Some(index.min(state.scene.points.len() - 1))
+                Some(index.min(remaining - 1))
             };
-            response.points_changed = true;
+            response.emit(Intent::SelectPoint { target: next });
         }
     } else if let Some(index) = select {
         if state.scene.active_point != Some(index) {
-            state.scene.active_point = Some(index);
-            response.points_changed = true;
+            response.emit(Intent::SelectPoint { target: Some(index) });
         }
     }
 
     ui.separator();
 }
 
-/// A fresh Tool node of the given shape, inheriting the current size/density so it
-/// renders immediately.
-fn new_tool_node(kind: ShapeKind, label: &str, state: &PanelState) -> Node {
-    let shape = SdfShape {
-        kind,
-        size_blocks: state.geometry.size_blocks,
-        voxels_per_block: state.geometry.voxels_per_block,
-        wall_blocks: state.geometry.wall_blocks,
-    };
-    Node::new(label, NodeContent::Tool { shape, material: state.material })
+/// A [`NodeSpec`] for a fresh Tool node of the given shape, inheriting the current
+/// size/density/wall + material so it renders immediately (ADR 0003 Phase C C4a). The
+/// spec's `into_node` names the node after the shape kind — identical to the old
+/// `new_tool_node` label, since the [`SHAPE_CHIPS`] labels ARE the kind's Debug names.
+fn tool_node_spec(kind: ShapeKind, state: &PanelState) -> NodeSpec {
+    NodeSpec::Tool {
+        shape: SdfShape {
+            kind,
+            size_blocks: state.geometry.size_blocks,
+            voxels_per_block: state.geometry.voxels_per_block,
+            wall_blocks: state.geometry.wall_blocks,
+        },
+        material: state.material,
+    }
 }
 
 /// Build the action buttons under the tree: **+ Add** (top-level), **+ Add child**
@@ -645,41 +699,41 @@ fn build_node_actions(ui: &mut egui::Ui, state: &mut PanelState, response: &mut 
     let has_active = state.scene.active.is_some();
 
     ui.horizontal_wrapped(|ui| {
-        // + Add — a top-level Tool or Clouds Part.
+        // + Add — a top-level Tool or Clouds Part. ADR 0003 Phase C C4a: described as
+        // `AddNode` intents (`NodeSpec` carries the same shape+material/Clouds the old
+        // `new_tool_node` / `Node::new` built). The new node becomes active inside the
+        // add op, so the loop re-syncs the inspector mirror on the returned effect.
         ui.menu_button("+ Add", |ui| {
             for (kind, label) in SHAPE_CHIPS {
                 if ui.button(*label).clicked() {
-                    let node = new_tool_node(*kind, label, state);
-                    state.scene.add_node(node);
-                    state.sync_mirror_from_active();
-                    response.scene_changed = true;
+                    response.emit_and_frame(Intent::AddNode {
+                        content: tool_node_spec(*kind, state),
+                    });
                     ui.close();
                 }
             }
             ui.separator();
             if ui.button("Clouds (Part)").clicked() {
-                state
-                    .scene
-                    .add_node(Node::new("Clouds", NodeContent::Part(Part::DebugClouds { seed: 0 })));
-                response.scene_changed = true;
+                response.emit_and_frame(Intent::AddNode {
+                    content: NodeSpec::CloudsPart,
+                });
                 ui.close();
             }
         });
 
         // + Add child — into the active Group (only shown when one is selected).
         if active_is_group {
-            // ADR 0003 Phase B4: `add_child_to_group` targets a NodeId; this block
-            // only shows when a Group is active, so the active selection IS the
-            // group's id — pass it straight through.
+            // ADR 0003 Phase B4: `AddChild` targets a NodeId; this block only shows
+            // when a Group is active, so the active selection IS the group's id.
             let group_id = state.scene.active;
             ui.menu_button("+ Add child", |ui| {
                 for (kind, label) in SHAPE_CHIPS {
                     if ui.button(*label).clicked() {
-                        let node = new_tool_node(*kind, label, state);
                         if let Some(group_id) = group_id {
-                            state.scene.add_child_to_group(group_id, node);
-                            state.sync_mirror_from_active();
-                            response.scene_changed = true;
+                            response.emit_and_frame(Intent::AddChild {
+                                group: group_id,
+                                content: tool_node_spec(*kind, state),
+                            });
                         }
                         ui.close();
                     }
@@ -687,49 +741,48 @@ fn build_node_actions(ui: &mut egui::Ui, state: &mut PanelState, response: &mut 
                 ui.separator();
                 if ui.button("Clouds (Part)").clicked() {
                     if let Some(group_id) = group_id {
-                        state.scene.add_child_to_group(
-                            group_id,
-                            Node::new("Clouds", NodeContent::Part(Part::DebugClouds { seed: 0 })),
-                        );
-                        response.scene_changed = true;
+                        response.emit_and_frame(Intent::AddChild {
+                            group: group_id,
+                            content: NodeSpec::CloudsPart,
+                        });
                     }
                     ui.close();
                 }
             });
         }
 
-        // Group — wrap the active node in a new Group.
+        // Group — wrap the active node in a new Group → `GroupNode { target: active }`.
         if ui
             .add_enabled(has_active, egui::Button::new("Group"))
             .on_hover_text("Wrap the selected node in a new Group")
             .clicked()
         {
-            state.scene.group_active();
-            state.sync_mirror_from_active();
-            response.scene_changed = true;
+            if let Some(target) = state.scene.active {
+                response.emit_and_frame(Intent::GroupNode { target });
+            }
         }
 
         // Make definition — the active node becomes a reusable AssemblyDef and is
-        // replaced by an Instance of it.
+        // replaced by an Instance of it → `MakeDefinition { target: active, name }`.
         if ui
             .add_enabled(has_active, egui::Button::new("Make definition"))
             .on_hover_text("Turn the selected Group/node into a reusable definition, placed by an Instance")
             .clicked()
         {
-            let def_name = state
-                .scene
-                .active_node()
-                .map(|node| {
-                    if node.name.is_empty() {
-                        "Definition".to_string()
-                    } else {
-                        node.name.clone()
-                    }
-                })
-                .unwrap_or_else(|| "Definition".to_string());
-            state.scene.make_definition_from_active(def_name);
-            state.sync_mirror_from_active();
-            response.scene_changed = true;
+            if let Some(target) = state.scene.active {
+                let def_name = state
+                    .scene
+                    .active_node()
+                    .map(|node| {
+                        if node.name.is_empty() {
+                            "Definition".to_string()
+                        } else {
+                            node.name.clone()
+                        }
+                    })
+                    .unwrap_or_else(|| "Definition".to_string());
+                response.emit_and_frame(Intent::MakeDefinition { target, name: def_name });
+            }
         }
     });
 }
@@ -780,17 +833,18 @@ fn build_definitions_section(
         });
     }
 
+    // ADR 0003 Phase C C4a: described as an `AddInstance` intent. The placed Instance
+    // becomes active inside the add op, so the loop re-syncs the mirror on the effect.
     if let Some(id) = add_instance_of {
-        state.scene.add_instance(id);
-        state.sync_mirror_from_active();
-        response.scene_changed = true;
+        response.emit_and_frame(Intent::AddInstance { def: id });
     }
 }
 
 /// The inspector: switches on the active node. A **Tool** shows the shape chips,
-/// size sliders, density slider and material selector (editing the active Tool
-/// node, mirrored through [`PanelState::write_mirror_to_active`]). A **Clouds
-/// Part** shows its name + seed instead. With no active node, a hint.
+/// size sliders, density slider and material selector (editing the active Tool node;
+/// ADR 0003 Phase C C4a routes each edit to a `SetShape`/`SetDensity`/`SetMaterial`
+/// intent the loop applies). A **Clouds Part** shows its name + seed instead. With no
+/// active node, a hint.
 fn build_inspector_section(
     ui: &mut egui::Ui,
     state: &mut PanelState,
@@ -814,19 +868,46 @@ fn build_inspector_section(
 
     match kind {
         ActiveKind::Tool => {
-            build_shape_section(ui, state, response);
-            build_size_section(ui, state, response);
-            build_density_section(ui, state, response);
-            build_material_section(ui, state, response);
-            // Any inspector edit this frame is mirrored back onto the active node.
-            // A material pick (`selected_procedural_material`) updates the Tool's
-            // material; a geometry edit updates its shape — both write the mirror.
-            if response.geometry_changed || response.selected_procedural_material {
-                state.write_mirror_to_active();
+            // ADR 0003 Phase C C4a: the inspector still binds the widgets to the
+            // `geometry`/`material` mirror buffer (egui needs the `&mut`), but a change
+            // now EMITS the matching intent instead of calling `write_mirror_to_active`.
+            // The active id is known (this is the Tool arm). `SetShape` carries the FULL
+            // updated buffer (`from_geometry`) onto the active node — covering both a
+            // shape-chip switch (no auto-frame, guard #1) and a size/wall edit
+            // (auto-frame). Density is GLOBAL → `SetDensity` (rewrites every Tool);
+            // material → `SetMaterial`. The mirror is now ONLY the widget buffer.
+            let active = state.scene.active;
+            let shape_changed = build_shape_section(ui, state);
+            let size_changed = build_size_section(ui, state);
+            let density_changed = build_density_section(ui, state);
+            let material_changed = build_material_section(ui, state, response);
+
+            if let Some(target) = active {
+                // A shape OR size/wall edit rewrites the active Tool's shape from the
+                // buffer. Size/wall auto-frames; a pure shape switch does not.
+                if shape_changed || size_changed {
+                    let shape = SdfShape::from_geometry(state.geometry);
+                    let intent = Intent::SetShape { target, shape };
+                    if size_changed {
+                        response.emit_and_frame(intent);
+                    } else {
+                        response.emit(intent);
+                    }
+                }
+                // Density is global (stored on every Tool's shape so the resolve reads
+                // it) → rewrite EVERY Tool. Auto-frames like a size change.
+                if density_changed {
+                    response.emit_and_frame(Intent::SetDensity {
+                        voxels_per_block: state.geometry.voxels_per_block,
+                    });
+                }
+                // A material pick updates the active Tool's material (no auto-frame).
+                if material_changed {
+                    response.emit(Intent::SetMaterial { target, material: state.material });
+                }
             }
-            // Placement (ADR 0001 step 3) is on the node's transform, not the
-            // geometry mirror, so it is edited AFTER the mirror write-back (which
-            // only touches shape + material) and is common to all node kinds.
+            // Placement (ADR 0001 step 3) is on the node's transform, common to all
+            // node kinds; it emits its own `SetOffset` intent.
             build_offset_section(ui, state, response);
             build_node_grids_section(ui, state, response);
         }
@@ -836,12 +917,12 @@ fn build_inspector_section(
             build_node_grids_section(ui, state, response);
         }
         ActiveKind::Group => {
-            build_group_inspector_section(ui, state, "Group");
+            build_group_inspector_section(ui, state, "Group", response);
             build_offset_section(ui, state, response);
             build_node_grids_section(ui, state, response);
         }
         ActiveKind::Instance => {
-            build_group_inspector_section(ui, state, "Instance");
+            build_group_inspector_section(ui, state, "Instance", response);
             build_offset_section(ui, state, response);
             build_node_grids_section(ui, state, response);
         }
@@ -859,11 +940,19 @@ fn build_inspector_section(
 
 /// Inspector for a Group or Instance active node (ADR 0001 step 4): its name (and,
 /// for an Instance, the definition it references). The offset is edited by the
-/// shared [`build_offset_section`], so Group/Instance get at least name + offset.
-fn build_group_inspector_section(ui: &mut egui::Ui, state: &mut PanelState, heading: &str) {
+/// shared [`build_offset_section`], so Group/Instance get at least name + offset. ADR
+/// 0003 Phase C C4a: the name widget binds to a LOCAL buffer; a change emits `SetName`
+/// WITHOUT an auto-frame (the old rename mutated `node.name` with no response flag, so
+/// the camera never moved on rename).
+fn build_group_inspector_section(
+    ui: &mut egui::Ui,
+    state: &mut PanelState,
+    heading: &str,
+    response: &mut PanelResponse,
+) {
     ui.add_space(8.0);
     ui.strong(heading);
-    // Capture the def label (immutable borrow) before taking the mutable node.
+    // Capture the def label (immutable borrow) before taking the active node.
     let def_label = match state.scene.active_node().map(|n| &n.content) {
         Some(NodeContent::Instance(def_id)) => state
             .scene
@@ -878,10 +967,17 @@ fn build_group_inspector_section(ui: &mut egui::Ui, state: &mut PanelState, head
             .or_else(|| Some(format!("Def {} (missing)", def_id.0))),
         _ => None,
     };
-    if let Some(node) = state.scene.active_node_mut() {
+    if let (Some(target), Some(node)) = (state.scene.active, state.scene.active_node()) {
+        let mut name = node.name.clone();
         ui.horizontal(|ui| {
             ui.label("Name");
-            ui.text_edit_singleline(&mut node.name);
+            // A rename did NOT auto-frame in the old code (it mutated `node.name`
+            // with no response flag), so emit WITHOUT a frame. The `SetName` effect is
+            // `scene_changed`, so the loop re-resolves (an identical grid — the name is
+            // not geometry) but the camera stays put, matching the old visible result.
+            if ui.text_edit_singleline(&mut name).changed() {
+                response.emit(Intent::SetName { target, name: name.clone() });
+            }
         });
     }
     if let Some(label) = def_label {
@@ -895,7 +991,10 @@ fn build_group_inspector_section(ui: &mut egui::Ui, state: &mut PanelState, head
 }
 
 /// Inspector for a Clouds Part active node: its name and seed (its one knob). A
-/// seed change re-resolves the scene.
+/// seed change re-resolves the scene. ADR 0003 Phase C C4a: the name/seed widgets bind
+/// to LOCAL buffers (read from the active node each frame); a change emits `SetName` /
+/// `SetCloudSeed` instead of mutating the node. A seed edit auto-frames like the old
+/// `scene_changed`.
 fn build_part_inspector_section(
     ui: &mut egui::Ui,
     state: &mut PanelState,
@@ -903,21 +1002,30 @@ fn build_part_inspector_section(
 ) {
     ui.add_space(8.0);
     ui.strong("Clouds (Part)");
-    let Some(node) = state.scene.active_node_mut() else {
+    let Some(target) = state.scene.active else {
         return;
+    };
+    let Some(node) = state.scene.active_node() else {
+        return;
+    };
+    let mut name = node.name.clone();
+    let current_seed = match &node.content {
+        NodeContent::Part(Part::DebugClouds { seed }) => Some(*seed),
+        _ => None,
     };
     ui.horizontal(|ui| {
         ui.label("Name");
-        ui.text_edit_singleline(&mut node.name);
+        if ui.text_edit_singleline(&mut name).changed() {
+            response.emit(Intent::SetName { target, name: name.clone() });
+        }
     });
-    if let NodeContent::Part(Part::DebugClouds { seed }) = &mut node.content {
-        let mut value = *seed;
+    if let Some(seed) = current_seed {
+        let mut value = seed;
         if ui
             .add(egui::Slider::new(&mut value, 0..=64).text("seed"))
             .changed()
         {
-            *seed = value;
-            response.scene_changed = true;
+            response.emit_and_frame(Intent::SetCloudSeed { target, seed: value });
         }
     }
     ui.separator();
@@ -934,28 +1042,34 @@ fn build_part_inspector_section(
 /// Offsets are in-memory only for now — persistence is ADR 0001 step 8 (the
 /// config round-trip does not yet carry them). // step 8: serialize offsets.
 fn build_offset_section(ui: &mut egui::Ui, state: &mut PanelState, response: &mut PanelResponse) {
-    let Some(node) = state.scene.active_node_mut() else {
+    let Some(target) = state.scene.active else {
+        return;
+    };
+    let Some(node) = state.scene.active_node() else {
         return;
     };
     ui.add_space(8.0);
     ui.strong("Offset (blocks)");
+    // ADR 0003 Phase C C4a: the drag boxes bind to a LOCAL copy of the offset (read
+    // from the active node this frame); a change emits a single `SetOffset` carrying
+    // all three axes. A placement edit re-resolves + re-frames the composite (the old
+    // `scene_changed`), so it auto-frames the whole composited extent.
+    let mut offset = node.transform.offset_blocks;
     let mut changed = false;
     ui.horizontal(|ui| {
         for (axis_index, axis_label) in ["X", "Y", "Z"].iter().enumerate() {
-            let mut value = node.transform.offset_blocks[axis_index];
+            let mut value = offset[axis_index];
             let drag = egui::DragValue::new(&mut value)
                 .speed(0.1)
                 .prefix(format!("{axis_label} "));
             if ui.add(drag).changed() {
-                node.transform.offset_blocks[axis_index] = value;
+                offset[axis_index] = value;
                 changed = true;
             }
         }
     });
     if changed {
-        // A placement edit re-resolves + re-frames the composite (treated like a
-        // scene change so the caller auto-frames the whole composited extent).
-        response.scene_changed = true;
+        response.emit_and_frame(Intent::SetOffset { target, offset_blocks: offset });
     }
     ui.separator();
 }
@@ -976,56 +1090,76 @@ fn build_node_grids_section(
     state: &mut PanelState,
     response: &mut PanelResponse,
 ) {
-    let Some(node) = state.scene.active_node_mut() else {
+    let Some(target) = state.scene.active else {
+        return;
+    };
+    let Some(node) = state.scene.active_node() else {
         return;
     };
     ui.add_space(8.0);
     ui.strong("Grids (this object)");
-    if ui
-        .checkbox(&mut node.grids.voxel_grid_on_faces, "Voxel grid on faces")
-        .changed()
-    {
-        // The bit is baked at resolve time, so a re-resolve is required.
-        response.scene_changed = true;
+    // ADR 0003 Phase C C4a: the three checkboxes bind to a LOCAL copy of the node's
+    // grids; a change emits ONE `SetNodeGrids` carrying all three. The on-face-grid
+    // flag is baked at RESOLVE time, so flipping it must re-resolve AND it auto-framed
+    // before (it set `scene_changed`); the lattice/floor flags are read by the
+    // per-frame line batch, so they did NOT auto-frame. We therefore auto-frame ONLY
+    // when `voxel_grid_on_faces` flips. (`SetNodeGrids`'s effect is `scene_changed`, so
+    // a lattice/floor toggle now also re-resolves — an identical grid, no camera move,
+    // so the visible result is unchanged; the cost is a redundant re-resolve.)
+    let mut grids = node.grids;
+    let mut voxel_grid_changed = false;
+    let mut other_changed = false;
+    voxel_grid_changed |= ui
+        .checkbox(&mut grids.voxel_grid_on_faces, "Voxel grid on faces")
+        .changed();
+    other_changed |= ui.checkbox(&mut grids.block_lattice, "Block lattice").changed();
+    other_changed |= ui.checkbox(&mut grids.floor_grid, "Floor grid").changed();
+    if voxel_grid_changed {
+        response.emit_and_frame(Intent::SetNodeGrids { target, grids });
+    } else if other_changed {
+        response.emit(Intent::SetNodeGrids { target, grids });
     }
-    ui.checkbox(&mut node.grids.block_lattice, "Block lattice");
-    ui.checkbox(&mut node.grids.floor_grid, "Floor grid");
     ui.separator();
 }
 
 /// Shape chips. Selecting a shape sets [`GeometryParams::shape`] ONLY — it never
 /// touches the size or the camera (Milestone 3 guard #1). Shown only for a Tool
-/// active node; the edit is mirrored onto that node by the inspector.
-fn build_shape_section(ui: &mut egui::Ui, state: &mut PanelState, response: &mut PanelResponse) {
+/// active node. ADR 0003 Phase C C4a: returns `true` when the buffer's shape changed
+/// (the inspector then emits a `SetShape` WITHOUT an auto-frame).
+fn build_shape_section(ui: &mut egui::Ui, state: &mut PanelState) -> bool {
     ui.add_space(8.0);
     ui.strong("Shape");
+    let mut changed = false;
     ui.horizontal_wrapped(|ui| {
         for (kind, label) in SHAPE_CHIPS {
             let is_selected = state.geometry.shape == *kind;
             if ui.selectable_label(is_selected, *label).clicked() && !is_selected {
                 state.geometry.shape = *kind;
-                response.geometry_changed = true;
-                // Deliberately NOT setting size_or_density_changed: a shape
-                // switch re-resolves at the same size and must not auto-frame.
+                changed = true;
+                // The caller emits a `SetShape` but no auto-frame: a shape switch
+                // re-resolves at the same size and must not move the camera.
             }
         }
     });
     ui.separator();
+    changed
 }
 
-/// Size sliders (whole blocks). Each shows the resulting voxel extent as a hint.
-fn build_size_section(ui: &mut egui::Ui, state: &mut PanelState, response: &mut PanelResponse) {
+/// Size sliders (whole blocks). Each shows the resulting voxel extent as a hint. ADR
+/// 0003 Phase C C4a: returns `true` when the buffer's size/wall changed (the inspector
+/// then emits a `SetShape` AND auto-frames, the old `size_or_density_changed`).
+fn build_size_section(ui: &mut egui::Ui, state: &mut PanelState) -> bool {
     ui.add_space(8.0);
     ui.strong("Size (blocks)");
 
+    let mut changed = false;
     let density = state.geometry.voxels_per_block;
     for (axis_index, axis_label) in ["X", "Y", "Z"].iter().enumerate() {
         let mut value = state.geometry.size_blocks[axis_index];
         let slider = egui::Slider::new(&mut value, 1..=16).text(*axis_label);
         if ui.add(slider).changed() {
             state.geometry.size_blocks[axis_index] = value;
-            response.geometry_changed = true;
-            response.size_or_density_changed = true;
+            changed = true;
         }
         let voxel_extent = value * density;
         ui.label(
@@ -1042,8 +1176,7 @@ fn build_size_section(ui: &mut egui::Ui, state: &mut PanelState, response: &mut 
         let slider = egui::Slider::new(&mut wall, 1..=8).text("Wall");
         if ui.add(slider).changed() {
             state.geometry.wall_blocks = wall;
-            response.geometry_changed = true;
-            response.size_or_density_changed = true;
+            changed = true;
         }
         ui.label(
             egui::RichText::new(format!("{wall} block wall"))
@@ -1052,20 +1185,23 @@ fn build_size_section(ui: &mut egui::Ui, state: &mut PanelState, response: &mut 
         );
     }
     ui.separator();
+    changed
 }
 
-/// Density slider. Changes fineness ONLY — never the block size (guard #2).
-fn build_density_section(ui: &mut egui::Ui, state: &mut PanelState, response: &mut PanelResponse) {
+/// Density slider. Changes fineness ONLY — never the block size (guard #2). ADR 0003
+/// Phase C C4a: returns `true` when the buffer's density changed (the inspector then
+/// emits a global `SetDensity` AND auto-frames).
+fn build_density_section(ui: &mut egui::Ui, state: &mut PanelState) -> bool {
     ui.add_space(8.0);
     ui.strong("Density");
     let mut density = state.geometry.voxels_per_block;
     let slider = egui::Slider::new(&mut density, 2..=32).text("vx/block");
-    if ui.add(slider).changed() {
+    let changed = ui.add(slider).changed();
+    if changed {
         state.geometry.voxels_per_block = density;
-        response.geometry_changed = true;
-        response.size_or_density_changed = true;
     }
     ui.separator();
+    changed
 }
 
 /// Camera projection toggle (display-only: no rebuild).
@@ -1088,10 +1224,19 @@ fn build_camera_section(ui: &mut egui::Ui, state: &mut PanelState) {
 }
 
 /// Material selector: selects which procedural texture binds (M4). Selecting any
-/// procedural material clears an applied loaded VS block (M6) and reverts to it.
-fn build_material_section(ui: &mut egui::Ui, state: &mut PanelState, response: &mut PanelResponse) {
+/// procedural material clears an applied loaded VS block (M6) and reverts to it. ADR
+/// 0003 Phase C C4a: returns `true` when the buffer's material changed (the inspector
+/// then emits a `SetMaterial`). Still sets `selected_procedural_material` for the
+/// caller's M6 palette side-effect (clearing the applied loaded block — NOT a scene
+/// mutation, so it stays a response flag, not an intent).
+fn build_material_section(
+    ui: &mut egui::Ui,
+    state: &mut PanelState,
+    response: &mut PanelResponse,
+) -> bool {
     ui.add_space(8.0);
     ui.strong("Material");
+    let mut changed = false;
     ui.horizontal(|ui| {
         for (choice, label) in [
             (MaterialChoice::Stone, "Stone"),
@@ -1100,6 +1245,7 @@ fn build_material_section(ui: &mut egui::Ui, state: &mut PanelState, response: &
         ] {
             if ui.selectable_value(&mut state.material, choice, label).clicked() {
                 response.selected_procedural_material = true;
+                changed = true;
             }
         }
     });
@@ -1111,25 +1257,35 @@ fn build_material_section(ui: &mut egui::Ui, state: &mut PanelState, response: &
         );
     }
     ui.separator();
+    changed
 }
 
 /// Display section. M4 added the voxel-grid overlay; M5 wired the view cube and
 /// the origin gizmo; M8 wires the block lattice and fine floor grid (#10).
-fn build_display_section(ui: &mut egui::Ui, state: &mut PanelState) {
+fn build_display_section(ui: &mut egui::Ui, state: &mut PanelState, response: &mut PanelResponse) {
     ui.add_space(8.0);
     ui.strong("Display");
-    // Issue #29 S4: the on-face voxel grid is now per-object. This Display toggle is
-    // the scene-wide MASTER, ANDed (in the mesh shaders) with each node's own
-    // `grids.voxel_grid_on_faces` flag (in the inspector). It drives
-    // `Scene::master_voxel_grid` directly — toggling it is just a uniform write (no
-    // re-resolve), since the per-object flag bit is baked onto each voxel at resolve.
-    ui.checkbox(&mut state.scene.master_voxel_grid, "Voxel grid on faces (master)");
-    // Issue #29 S3: these are now scene-wide MASTERS for the per-object grids — each
-    // is ANDed with a node's own toggle (in the inspector) to decide if that node
-    // draws the grid. They drive `Scene::master_*` directly (no scene re-resolve;
-    // the per-frame batch reads them), replacing the old whole-region `show_*`.
-    ui.checkbox(&mut state.scene.master_block_lattice, "Block lattice (master)");
-    ui.checkbox(&mut state.scene.master_floor_grid, "Floor grid (master)");
+    // ADR 0003 Phase C C4a: the three grid MASTERS are scene fields, so they bind to
+    // LOCAL copies and a change emits ONE `SetGridMasters`. The masters are read live
+    // by the per-frame line batch / mesh shader (no re-resolve), so `SetGridMasters`'s
+    // effect is `none()` — no rebuild, no auto-frame — matching the old direct writes.
+    // `show_view_cube` / `debug_face_orientation` are PanelState DISPLAY fields (not
+    // scene mutations), so they keep mutating in place.
+    let mut voxel = state.scene.master_voxel_grid;
+    let mut lattice = state.scene.master_block_lattice;
+    let mut floor = state.scene.master_floor_grid;
+    let mut masters_changed = false;
+    // Issue #29 S4: the on-face voxel grid is per-object; this is the scene-wide
+    // MASTER, ANDed (in the mesh shaders) with each node's own flag.
+    masters_changed |= ui
+        .checkbox(&mut voxel, "Voxel grid on faces (master)")
+        .changed();
+    // Issue #29 S3: scene-wide MASTERS for the per-object lattice / floor grids.
+    masters_changed |= ui.checkbox(&mut lattice, "Block lattice (master)").changed();
+    masters_changed |= ui.checkbox(&mut floor, "Floor grid (master)").changed();
+    if masters_changed {
+        response.emit(Intent::SetGridMasters { voxel, lattice, floor });
+    }
     ui.checkbox(&mut state.show_view_cube, "View cube");
     // Issue #29 S2: the transform gizmo is now selection-driven (drawn on the
     // active node), so it no longer has a Display toggle.

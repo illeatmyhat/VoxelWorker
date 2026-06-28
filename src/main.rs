@@ -949,7 +949,7 @@ impl WindowedState {
             ];
         }
 
-        let prepared = run_egui_frame(
+        let mut prepared = run_egui_frame(
             &mut self.egui_bridge,
             &self.gpu.device,
             &self.gpu.queue,
@@ -996,17 +996,51 @@ impl WindowedState {
         self.egui_winit_state
             .handle_platform_output(&self.window, prepared.platform_output.clone());
 
-        // React to panel edits (M3): geometry changes rebuild the grid; size or
-        // density changes also auto-frame. A shape switch rebuilds but does NOT
-        // auto-frame (guard #1). Display/camera params never reach here.
-        let panel_response = prepared.panel_response;
-        // A geometry edit (inspector) or a scene change (add/delete/select/
-        // visibility/seed) both re-resolve the composited scene. Add/delete can
-        // change the extent, so a scene change auto-frames like a size change.
-        if panel_response.geometry_changed || panel_response.scene_changed {
-            let auto_frame =
-                panel_response.size_or_density_changed || panel_response.scene_changed;
-            self.rebuild_geometry(auto_frame);
+        // ADR 0003 Phase C C4a: the panel no longer mutates the scene directly — it
+        // DESCRIBES this frame's mutations as a `Vec<Intent>`. Apply each through the
+        // single `AppCore::apply_intent` door (in order), merging the returned typed
+        // `IntentEffect`s, then fold them into the loop's existing decisions:
+        //   * `scene_changed`     → re-resolve the grid (the old `geometry_changed` /
+        //                           `scene_changed` rebuild).
+        //   * `selection_changed` → re-sync the inspector mirror (the gizmo + node
+        //                           highlight are recomputed every frame below from
+        //                           `scene.active`, so they already track selection —
+        //                           a pure `SelectNode` must NOT force a re-resolve).
+        //   * `points_changed`    → the Points overlay is rebuilt every frame anyway
+        //                           (camera-relative), so no extra work is needed.
+        // The auto-frame is a panel UX signal (`frame_after_apply`): the same intent
+        // KIND (`SetShape`) re-frames from a size slider but not from a shape chip, so
+        // it cannot be derived from the intent — it rides on the response.
+        // Take the intents out of `prepared` (leaving it otherwise intact for the
+        // `render_frame` call below, which still borrows it). `frame_after_apply` is a
+        // Copy bool, so read it directly.
+        let frame_after_apply = prepared.panel_response.frame_after_apply;
+        let intents = std::mem::take(&mut prepared.panel_response.intents);
+        let mut merged_effect = voxel_worker::IntentEffect::none();
+        for intent in intents {
+            let effect = self
+                .app_core
+                .apply_intent(&mut self.panel_state.scene, intent);
+            merged_effect = merged_effect.merged_with(effect);
+        }
+        if merged_effect.selection_changed || merged_effect.scene_changed {
+            // Re-sync the inspector mirror to the active node. The OLD panel called
+            // `sync_mirror_from_active` after EVERY structural action (add / group /
+            // make-definition / add-instance / delete — each of which changes the
+            // active node) AND on a row select; we reproduce that by syncing on a
+            // `selection_changed` (a pure `SelectNode`) OR a `scene_changed` (a
+            // structural edit may have moved the active selection to a freshly-added /
+            // re-derived node). Syncing after an inspector `SetShape`/`SetDensity` is a
+            // harmless no-op (the node now equals the buffer it was written from). The
+            // transform gizmo + row highlight read `scene.active` live each frame, so a
+            // pure `SelectNode` updates them WITHOUT a re-resolve (the efficiency win).
+            self.panel_state.sync_mirror_from_active();
+        }
+        if merged_effect.scene_changed {
+            // A structural / node-field / global-density edit re-resolves. Auto-frame
+            // only when the panel asked (size/density/structural edits) — a pure shape
+            // switch or rename re-resolves WITHOUT moving the camera (guard #1).
+            self.rebuild_geometry(frame_after_apply);
         }
 
         // Projection is a display-only param: apply it to the camera each frame
