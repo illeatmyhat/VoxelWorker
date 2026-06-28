@@ -1461,7 +1461,13 @@ impl ApplicationHandler for App {
                         let delta_y = (current.1 - previous_y) as f32;
                         if delta_x != 0.0 || delta_y != 0.0 {
                             state.snap_tween = None;
-                            state.app_core.camera.pan_by_drag(delta_x, delta_y);
+                            // The 3D viewport height (cached each frame) makes the
+                            // pan cursor-locked: a pixel of drag == a pixel of scene.
+                            let viewport_height_px = state.last_viewport_px[3] as f32;
+                            state
+                                .app_core
+                                .camera
+                                .pan_by_drag(delta_x, delta_y, viewport_height_px);
                         }
                     }
                 }

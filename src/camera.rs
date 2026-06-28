@@ -37,13 +37,6 @@ const UP_BLEND_BAND: f32 = 0.05;
 /// orthographic keeps roughly the same framing at the target).
 const ORTHO_HALF_HEIGHT_FACTOR: f32 = 0.42;
 
-/// World units a one-pixel middle-drag pans the target, PER UNIT of
-/// `orbit_distance`. Scaling by distance keeps the pan feeling consistent at any
-/// zoom (and across both projection modes, since the ortho half-height also
-/// tracks `orbit_distance`): the cursor stays glued to roughly the same fraction
-/// of the framed view regardless of how far out the camera is.
-const PAN_SPEED: f32 = 0.0009;
-
 /// The six view-cube faces, in `materialIndex` order (+X, -X, +Y, -Y, +Z, -Z).
 ///
 /// Index order matches the prototype's `CUBELABELS` / `FACE_VIEW` arrays so a
@@ -872,24 +865,43 @@ impl OrbitCamera {
 
     /// Pan by a screen-space drag delta (middle-drag): slide `target` (and with
     /// it the eye, since `eye = target + direction·distance`) within the camera's
-    /// view plane, so the model translates under the cursor without rotating. This
-    /// is an EXPLICIT camera action — the same class as orbit/zoom/Fit — so it is
-    /// allowed to move the view (camera UX rule: edits never re-frame, but the user
-    /// driving the mouse always may).
+    /// view plane, so the grabbed point stays locked under the cursor as the model
+    /// translates without rotating. This is an EXPLICIT camera action — the same
+    /// class as orbit/zoom/Fit — so it is allowed to move the view (camera UX rule:
+    /// edits never re-frame, but the user driving the mouse always may).
     ///
-    /// The view-plane basis comes from the live look direction and up:
-    /// `right = forward × up` (the `look_at_rh` screen-right), `up = up_vector()`.
+    /// The view-plane basis is the SAME orthonormal frame `look_at_rh` builds:
+    /// `right = forward × up_vector()`, then the true screen up is `right × forward`.
+    /// Using the orthogonalised screen up — NOT the raw `up_vector()`, which is only
+    /// perpendicular to `forward` when the view is level — is what keeps a vertical
+    /// drag moving straight up ON SCREEN at any tilt. With the raw up the pan drifts
+    /// along world-Y and the cursor slips off the grabbed point (worst in
+    /// orthographic, where there's no perspective foreshortening to hide the drift).
+    ///
+    /// `viewport_height_px` makes the pan cursor-locked (1:1): `world_per_pixel` is
+    /// the world span of one screen pixel at the target plane, derived per
+    /// projection (the ortho half-height, or the perspective frustum height at
+    /// `orbit_distance`). Both evaluate to ≈`0.83·distance / height`, so the SAME
+    /// drag tracks the cursor identically in either mode.
+    ///
     /// Dragging right (`delta_x > 0`) grabs the scene and pulls it right, so the
-    /// target slides LEFT (`-right`). Winit's screen Y is down-positive, so
-    /// dragging down (`delta_y > 0`) pulls the scene down and the target slides UP
-    /// (`+up`). Both are scaled by `orbit_distance · PAN_SPEED` so a pixel of drag
-    /// moves a consistent fraction of the framed view at any zoom.
-    pub fn pan_by_drag(&mut self, delta_x: f32, delta_y: f32) {
+    /// target slides LEFT (`−right`). Winit's screen Y is down-positive, so dragging
+    /// down (`delta_y > 0`) pulls the scene down and the target slides UP
+    /// (`+screen_up`).
+    pub fn pan_by_drag(&mut self, delta_x: f32, delta_y: f32, viewport_height_px: f32) {
         let forward = -self.direction();
-        let up = self.up_vector();
-        let right = forward.cross(up).normalize_or_zero();
-        let world_per_pixel = self.orbit_distance * PAN_SPEED;
-        self.target += (-right * delta_x + up * delta_y) * world_per_pixel;
+        let right = forward.cross(self.up_vector()).normalize_or_zero();
+        let screen_up = right.cross(forward).normalize_or_zero();
+        let height = viewport_height_px.max(1.0);
+        let world_per_pixel = match self.projection_mode {
+            ProjectionMode::Orthographic => {
+                2.0 * self.orbit_distance * ORTHO_HALF_HEIGHT_FACTOR / height
+            }
+            ProjectionMode::Perspective => {
+                2.0 * self.orbit_distance * (PERSPECTIVE_FOV_Y * 0.5).tan() / height
+            }
+        };
+        self.target += (-right * delta_x + screen_up * delta_y) * world_per_pixel;
     }
 
     /// Zoom by a wheel step: `distance *= 1 ± 0.08`. Positive `scroll_lines`
@@ -1081,34 +1093,49 @@ mod tests {
     }
 
     #[test]
-    fn pan_translates_target_in_view_plane_and_scales_with_distance() {
+    fn pan_moves_along_the_screen_basis_and_scales_with_distance() {
+        // The default view is TILTED (phi ≈ 1.05), so up_vector() (≈ +Y) is NOT
+        // perpendicular to the look direction — the exact case the screen-up
+        // orthogonalisation fixes. The pan must follow the look_at_rh frame:
+        // right = forward × up, screen_up = right × forward.
+        let height = 1000.0;
         let camera = OrbitCamera::default();
         let forward = -camera.direction();
-        let up = camera.up_vector();
-        let right = forward.cross(up).normalize();
+        let right = forward.cross(camera.up_vector()).normalize();
+        let screen_up = right.cross(forward).normalize();
 
         // A pure horizontal drag right grabs the scene and pulls it right, so the
-        // target slides LEFT (−right). It stays in the view plane: no vertical
-        // component and nothing along the look axis.
+        // target slides LEFT (−right), with NO vertical (screen_up) component and
+        // nothing along the look axis.
         let mut horizontal = OrbitCamera::default();
-        horizontal.pan_by_drag(10.0, 0.0);
+        horizontal.pan_by_drag(10.0, 0.0, height);
         let moved = horizontal.target;
         assert!(moved.dot(right) < 0.0, "drag right slides the target left");
-        assert!(approx(moved.dot(up), 0.0), "a horizontal drag has no vertical pan");
+        assert!(approx(moved.dot(screen_up), 0.0), "a horizontal drag has no vertical pan");
         assert!(approx(moved.dot(forward), 0.0), "pan stays in the view plane");
 
         // A pure vertical drag DOWN (winit screen-y is down-positive) pulls the
-        // scene down, so the target slides UP (+up).
+        // scene down, so the target slides UP — along SCREEN up, in the view plane,
+        // with no horizontal (right) component. The regression guard: it must NOT be
+        // pure world-Y, which on this tilted view has a real screen_up·Y < 1.
         let mut vertical = OrbitCamera::default();
-        vertical.pan_by_drag(0.0, 10.0);
-        assert!(vertical.target.dot(up) > 0.0, "drag down slides the target up");
+        vertical.pan_by_drag(0.0, 10.0, height);
+        let moved = vertical.target;
+        assert!(moved.dot(screen_up) > 0.0, "drag down slides the target up-screen");
+        assert!(approx(moved.dot(right), 0.0), "a vertical drag has no horizontal pan");
+        assert!(approx(moved.dot(forward), 0.0), "pan stays in the view plane");
+        // The vertical pan is genuinely TILTED off world-Y (the bug was using raw Y).
+        assert!(
+            moved.normalize().dot(Vec3::Y) < 0.999,
+            "vertical pan must track screen-up, not pure world-Y",
+        );
 
         // Pan scales with orbit_distance: the SAME drag at twice the distance moves
-        // the target exactly twice as far (consistent feel at any zoom).
+        // the target exactly twice as far (cursor-locked at any zoom).
         let mut near = OrbitCamera { orbit_distance: 5.0, ..OrbitCamera::default() };
         let mut far = OrbitCamera { orbit_distance: 10.0, ..OrbitCamera::default() };
-        near.pan_by_drag(7.0, -3.0);
-        far.pan_by_drag(7.0, -3.0);
+        near.pan_by_drag(7.0, -3.0, height);
+        far.pan_by_drag(7.0, -3.0, height);
         assert!(
             approx(far.target.length(), 2.0 * near.target.length()),
             "pan must scale linearly with orbit_distance",
