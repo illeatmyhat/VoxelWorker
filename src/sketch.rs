@@ -145,7 +145,51 @@ pub enum Operation {
         /// Extrude span in voxels along the plane normal.
         height_voxels: u32,
     },
-    // future: Revolve { axis, sweep }, Sweep { path }  (added in later commits — leave this comment)
+    /// Revolve the profile around an in-plane axis, producing a solid of
+    /// revolution (ADR 0003 §3i). The sketch's two in-plane coordinates are
+    /// reinterpreted as (axial, radial): one in-plane world axis becomes the
+    /// REVOLVE AXIS (selected by [`RevolveAxis`]) and the profile is swept around
+    /// it through [`RevolveSweep::turn_degrees`]. A rectangle revolved is a
+    /// cylinder; a half-disc revolved is a sphere — revolve is the producer those
+    /// primitives are sugar over, the same way extrude subsumes the box.
+    Revolve {
+        /// Which in-plane world axis is the revolve (axial) axis.
+        axis: RevolveAxis,
+        /// How far around the axis the profile is swept.
+        sweep: RevolveSweep,
+    },
+    // future: Sweep { path }  (added in later commits — leave this comment)
+}
+
+/// Which of the plane's two in-plane world axes is the REVOLVE (axial) axis — the
+/// axis the profile is swept around (ADR 0003 §3i). The other in-plane axis plus
+/// the plane NORMAL become the two RADIAL world axes the swept disc lives in.
+///
+/// The profile's two coordinates `[c0, c1]` (along [`PlaneAxis::in_plane_axes`]`[0]`
+/// and `[1]`) are reinterpreted as (axial, radial):
+///
+/// | axis        | axial world axis    | axial profile coord | radial profile coord |
+/// |-------------|---------------------|---------------------|----------------------|
+/// | `InPlane0`  | `in_plane_axes()[0]`| `c0`                | `c1`                 |
+/// | `InPlane1`  | `in_plane_axes()[1]`| `c1`                | `c0`                 |
+///
+/// The revolve axis sits at radial coordinate `= 0`; the profile may sit on one
+/// side touching the axis, or straddle it (folded by `abs` into the radius).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum RevolveAxis {
+    /// Revolve around `in_plane_axes()[0]`; axial profile coord is `c0`, radial is `c1`.
+    InPlane0,
+    /// Revolve around `in_plane_axes()[1]`; axial profile coord is `c1`, radial is `c0`.
+    InPlane1,
+}
+
+/// How far the profile is swept around the revolve axis (ADR 0003 §3i). `360`
+/// degrees is a full solid of revolution; a smaller value `(0, 360]` is a partial
+/// wedge. `0` is degenerate (empty occupancy).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RevolveSweep {
+    /// Sweep angle in whole degrees; `360` = full revolve, `(0, 360]` valid.
+    pub turn_degrees: u32,
 }
 
 impl Default for Operation {
@@ -179,15 +223,30 @@ impl SketchSolid {
         }
     }
 
+    /// A sketch revolved around an in-plane `axis` through `turn_degrees`
+    /// (`360` = full solid of revolution). See [`Operation::Revolve`] /
+    /// [`RevolveAxis`] for the (axial, radial) reinterpretation of the profile.
+    pub fn revolve(sketch: Sketch, axis: RevolveAxis, turn_degrees: u32) -> Self {
+        Self {
+            sketch,
+            operation: Operation::Revolve {
+                axis,
+                sweep: RevolveSweep { turn_degrees },
+            },
+        }
+    }
+
     /// The profile's 2D bounding box in voxels as `(min, max)` half-open per
     /// in-plane axis, or `None` for a degenerate profile (fewer than 3 points or a
     /// zero-extent span on either in-plane axis). The local in-plane grid is sized
     /// `max − min`; cells are addressed from `min`.
     fn profile_bounds(&self) -> Option<([i64; 2], [i64; 2])> {
         // Per-operation degeneracy: an Extrude with zero height is empty (its prism
-        // has no thickness). Other operations branch here as they are added.
+        // has no thickness); a Revolve with zero turn is empty (no sweep). Other
+        // operations branch here as they are added.
         let operation_is_degenerate = match self.operation {
             Operation::Extrude { height_voxels } => height_voxels == 0,
+            Operation::Revolve { sweep, .. } => sweep.turn_degrees == 0,
         };
         if self.sketch.profile.len() < 3 || operation_is_degenerate {
             return None;
@@ -219,13 +278,39 @@ impl SketchSolid {
         let [in_plane_0, in_plane_1] = self.sketch.plane.in_plane_axes();
         let normal = self.sketch.plane.normal_axis();
         let mut dimensions = [0u32; 3];
-        // Saturating downcast: a profile span exceeding u32::MAX must clamp to a huge
-        // dimension (rejected by downstream bounds), never silently wrap to a small one.
-        dimensions[in_plane_0] = u32::try_from(max[0] - min[0]).unwrap_or(u32::MAX);
-        dimensions[in_plane_1] = u32::try_from(max[1] - min[1]).unwrap_or(u32::MAX);
-        dimensions[normal] = match self.operation {
-            Operation::Extrude { height_voxels } => height_voxels,
-        };
+        match self.operation {
+            Operation::Extrude { height_voxels } => {
+                // Saturating downcast: a profile span exceeding u32::MAX must clamp to a
+                // huge dimension (rejected by downstream bounds), never silently wrap.
+                dimensions[in_plane_0] = u32::try_from(max[0] - min[0]).unwrap_or(u32::MAX);
+                dimensions[in_plane_1] = u32::try_from(max[1] - min[1]).unwrap_or(u32::MAX);
+                dimensions[normal] = height_voxels;
+            }
+            Operation::Revolve { axis, .. } => {
+                // Reinterpret the in-plane bbox as (axial, radial) per RevolveAxis. The
+                // axial world axis keeps its profile span; each of the two RADIAL world
+                // axes (the OTHER in-plane axis + the plane normal) spans the full disc
+                // diameter `2 * radial_max`, so the revolve axis sits at the grid centre.
+                let (axial_world_axis, axial_span, radial_coord_min, radial_coord_max) = match axis
+                {
+                    RevolveAxis::InPlane0 => (in_plane_0, max[0] - min[0], min[1], max[1]),
+                    RevolveAxis::InPlane1 => (in_plane_1, max[1] - min[1], min[0], max[0]),
+                };
+                // radial_max folds a straddling profile by abs: the farthest profile
+                // vertex from the radial-0 axis, on either side.
+                let radial_max = radial_coord_min.abs().max(radial_coord_max.abs());
+                let diameter = u64::try_from(radial_max).unwrap_or(u64::MAX) * 2;
+                let radial_dimension = u32::try_from(diameter).unwrap_or(u32::MAX);
+                // The two radial world axes are the non-axial in-plane axis and the normal.
+                let radial_world_axes: [usize; 2] = match axis {
+                    RevolveAxis::InPlane0 => [in_plane_1, normal],
+                    RevolveAxis::InPlane1 => [in_plane_0, normal],
+                };
+                dimensions[axial_world_axis] = u32::try_from(axial_span).unwrap_or(u32::MAX);
+                dimensions[radial_world_axes[0]] = radial_dimension;
+                dimensions[radial_world_axes[1]] = radial_dimension;
+            }
+        }
         dimensions
     }
 
@@ -327,7 +412,12 @@ fn point_in_polygon(profile: &[SketchPoint], sample_0: f64, sample_1: f64) -> bo
 impl VoxelProducer for SketchSolid {
     fn resolve(&self, grid: &mut VoxelGrid, voxels_per_block: u32) {
         match self.operation {
-            Operation::Extrude { height_voxels } => self.resolve_extrude(grid, voxels_per_block, height_voxels),
+            Operation::Extrude { height_voxels } => {
+                self.resolve_extrude(grid, voxels_per_block, height_voxels)
+            }
+            Operation::Revolve { axis, sweep } => {
+                self.resolve_revolve(grid, voxels_per_block, axis, sweep)
+            }
         }
     }
 }
@@ -395,6 +485,148 @@ impl SketchSolid {
                     ],
                     material_id: 0,
                 });
+            }
+        }
+    }
+
+    /// The revolve resolve: sweep the profile around an in-plane axis into a solid
+    /// of revolution (ADR 0003 §3i). The profile's `(axial, radial)` reinterpretation
+    /// (per [`RevolveAxis`]) is sampled at every grid cell:
+    ///
+    /// - The axial world axis maps the cell to profile-axial space the SAME way the
+    ///   extrude rasterizer maps an in-plane span: `axial_min + idx + 0.5` (un-centred
+    ///   profile-space mapping), so a rectangle-revolve is exact against a cylinder.
+    /// - The two RADIAL world axes (the non-axial in-plane axis + the plane normal)
+    ///   are CENTRED exactly like `SdfShape` (`idx + 0.5 − dim/2`); the radius is their
+    ///   Euclidean length, so the revolve axis lands at the grid centre.
+    /// - A cell is inside iff the even-odd `point_in_polygon` test passes for the
+    ///   reconstructed profile point `(+radial folded, profile_axial)` placed back into
+    ///   the profile's native `(c0, c1)` slots.
+    /// - PARTIAL turn: the swept angle `theta = atan2(centred[radial_b],
+    ///   centred[radial_a])` (normalized to `[0, 360)`) gates the cell — kept iff
+    ///   `theta <= turn_degrees`. At `turn_degrees == 360` the gate is inert.
+    ///
+    /// `radial_a` / `radial_b` are the two radial world axes in ASCENDING world-axis
+    /// index. With `atan2(b, a)`, theta is measured FROM `radial_a` (the lower-indexed
+    /// radial world axis) TOWARD `radial_b` (the higher). The wedge therefore opens
+    /// from the lower radial axis. In Z-up terms, for the canonical footprint-revolve
+    /// (`PlaneAxis::Z`, axial = X, so radials are Y and Z): theta=0 points along +Y
+    /// (away from the viewer / into the scene, since front = −Y) and sweeps up toward
+    /// +Z (vertical). The corner-anchored store is IDENTICAL to extrude.
+    fn resolve_revolve(
+        &self,
+        grid: &mut VoxelGrid,
+        voxels_per_block: u32,
+        axis: RevolveAxis,
+        sweep: RevolveSweep,
+    ) {
+        let dimensions = self.grid_dimensions();
+        grid.dimensions = dimensions;
+        grid.occupied.clear();
+
+        // Respect the single-shape voxel cap (same MAX_GRID_VOXELS guard SdfShape /
+        // exceeds_voxel_cap apply): a pathological radius/height resolves to empty
+        // rather than allocating a blown grid. Checked BEFORE iterating.
+        if self.exceeds_voxel_cap() {
+            return;
+        }
+
+        let Some((min, _max)) = self.profile_bounds() else {
+            // Degenerate (no profile / zero turn / zero radial extent): empty, no panic.
+            return;
+        };
+        let [in_plane_0, in_plane_1] = self.sketch.plane.in_plane_axes();
+        let normal = self.sketch.plane.normal_axis();
+
+        // Reinterpret the in-plane axes as (axial, radial) per RevolveAxis.
+        let (axial_world_axis, axial_min, radial_in_plane_axis) = match axis {
+            RevolveAxis::InPlane0 => (in_plane_0, min[0], in_plane_1),
+            RevolveAxis::InPlane1 => (in_plane_1, min[1], in_plane_0),
+        };
+        // The two radial world axes (non-axial in-plane axis + normal), taken in
+        // ASCENDING world-axis index so radial_a < radial_b deterministically.
+        let mut radial_world_axes = [radial_in_plane_axis, normal];
+        radial_world_axes.sort_unstable();
+        let [radial_a, radial_b] = radial_world_axes;
+
+        let density = voxels_per_block.max(1);
+        let turn_degrees = sweep.turn_degrees;
+        let is_partial = turn_degrees < 360;
+        let turn = turn_degrees as f32;
+
+        let half = [
+            dimensions[0] as f32 / 2.0,
+            dimensions[1] as f32 / 2.0,
+            dimensions[2] as f32 / 2.0,
+        ];
+
+        // Iterate every grid cell. The axial axis uses an un-centred profile-space
+        // mapping (matching the extrude rasterizer); the radial axes are centred.
+        for k in 0..dimensions[2] {
+            for j in 0..dimensions[1] {
+                for i in 0..dimensions[0] {
+                    let index = [i, j, k];
+                    let centred = [
+                        index[0] as f32 + 0.5 - half[0],
+                        index[1] as f32 + 0.5 - half[1],
+                        index[2] as f32 + 0.5 - half[2],
+                    ];
+                    let radial =
+                        (centred[radial_a].powi(2) + centred[radial_b].powi(2)).sqrt();
+
+                    // PARTIAL turn gate: skip cells outside the swept wedge. Inert at 360
+                    // (theta ∈ [0, 360) is never > 360).
+                    if is_partial {
+                        let mut theta =
+                            centred[radial_b].atan2(centred[radial_a]).to_degrees();
+                        if theta < 0.0 {
+                            theta += 360.0;
+                        }
+                        if theta > turn {
+                            continue;
+                        }
+                    }
+
+                    // Profile-axial coord: un-centred map matching the extrude sampler.
+                    let profile_axial = axial_min as f64 + index[axial_world_axis] as f64 + 0.5;
+                    // Reconstruct the profile point in its native (c0, c1) order: the
+                    // radial-mapped coordinate is the signed radius, the axial-mapped
+                    // coordinate is profile_axial, placed per RevolveAxis. A solid of
+                    // revolution is symmetric about the axis, so a 3D point is inside iff
+                    // the profile contains it at EITHER sign of radius — test both
+                    // +radius and −radius and OR them. This implements the
+                    // "straddle folded by abs" the RevolveAxis doc promises and lets a
+                    // profile authored on the NEGATIVE radial side (a tube) revolve
+                    // correctly. For a one-sided radial>=0 profile the −radius query lands
+                    // outside (except at r=0 where ∓0 coincide), so the cylinder / sphere
+                    // locks are unaffected.
+                    let radius = radial as f64;
+                    let inside = |signed_radius: f64| {
+                        let (sample_0, sample_1) = match axis {
+                            RevolveAxis::InPlane0 => (profile_axial, signed_radius),
+                            RevolveAxis::InPlane1 => (signed_radius, profile_axial),
+                        };
+                        point_in_polygon(&self.sketch.profile, sample_0, sample_1)
+                    };
+                    if !(inside(radius) || inside(-radius)) {
+                        continue;
+                    }
+
+                    let world_position = [
+                        index[0] as f32 + 0.5,
+                        index[1] as f32 + 0.5,
+                        index[2] as f32 + 0.5,
+                    ];
+                    grid.occupied.push(Voxel {
+                        world_position,
+                        block_local_coord: [
+                            (index[0] % density) as u8,
+                            (index[1] % density) as u8,
+                            (index[2] % density) as u8,
+                        ],
+                        material_id: 0,
+                    });
+                }
             }
         }
     }
@@ -681,5 +913,386 @@ mod tests {
         extrude.resolve(&mut grid, 16);
         assert_eq!(grid.dimensions, extrude.grid_dimensions());
         assert!(!extrude.exceeds_voxel_cap());
+    }
+
+    // ----- Revolve operation (ADR 0003 §3i, the solid-of-revolution producer) -----
+
+    use crate::sketch::RevolveAxis;
+
+    /// Collect a producer's occupied voxels as a set of corner-anchored CELL indices
+    /// `(i, j, k)` (`world − 0.5`). Used for IoU / overlap comparisons against an
+    /// `SdfShape` of the same grid dimensions.
+    fn cell_set(producer: &dyn VoxelProducer, density: u32) -> BTreeSet<[i64; 3]> {
+        let mut grid = VoxelGrid::default();
+        producer.resolve(&mut grid, density);
+        grid.occupied
+            .iter()
+            .map(|voxel| {
+                [
+                    (voxel.world_position[0] - 0.5).round() as i64,
+                    (voxel.world_position[1] - 0.5).round() as i64,
+                    (voxel.world_position[2] - 0.5).round() as i64,
+                ]
+            })
+            .collect()
+    }
+
+    /// THE LOCK: a rectangle profile (radial 0..R, axial 0..H) revolved a full 360°
+    /// about an axis oriented so the AXIAL world axis is Z must match the `Cylinder`
+    /// `SdfShape` of diameter 2R, height H.
+    ///
+    /// Orientation: `PlaneAxis::X` + `RevolveAxis::InPlane1` ⇒ axial world axis = Z
+    /// (the cylinder's Z-up vertical axis), radial world axes = {X, Y} (the circular
+    /// cross-section). The profile coord (c0, c1) = (radial, axial), so
+    /// `Sketch::rectangle(PlaneAxis::X, R, H)` is exactly the radial×axial rectangle.
+    ///
+    /// EXACT occupancy-set equality. The revolve rasterizes the rim with
+    /// `radial = sqrt(x²+y²) <= R` via the polygon edge at radial R, while the SDF
+    /// rasterizes `(|p_xy| − R_semi) <= 0`. Both compare the SAME centred radius to the
+    /// SAME R (R = grid/2 = semi-axis), so the rim cells agree cell-for-cell and the
+    /// equality holds EXACTLY (measured symmetric difference = 0 for both R parities).
+    /// Covered for an EVEN and an ODD radial extent at density 16 (parity).
+    #[test]
+    fn rectangle_revolve_equals_cylinder() {
+        let density = 16u32;
+        // (radial_extent R in voxels, axial height H in voxels). 2R is the diameter.
+        // R=32 → even diameter 64; R=33 → odd radial extent (diameter 66) — exercise
+        // both R parities at d16.
+        let cases = [(32i64, 48i64), (33, 47)];
+        for (radial, axial) in cases {
+            let revolve = SketchSolid::revolve(
+                Sketch::rectangle(PlaneAxis::X, radial, axial),
+                RevolveAxis::InPlane1,
+                360,
+            );
+            // Cylinder of diameter 2R (X, Y) and height H (Z), pure-voxel size.
+            let cylinder = SdfShape::from_voxels(
+                ShapeKind::Cylinder,
+                [(2 * radial) as u32, (2 * radial) as u32, axial as u32],
+                1,
+            );
+            assert_eq!(
+                revolve.grid_dimensions(),
+                cylinder.grid_dimensions(density),
+                "grid dims must match for radial {radial}, axial {axial}"
+            );
+            assert_eq!(
+                cell_set(&revolve, density),
+                cell_set(&cylinder, density),
+                "rectangle revolve must EXACTLY equal Cylinder for radial {radial}, axial {axial}"
+            );
+        }
+    }
+
+    /// FOLD CORRECTNESS: a solid of revolution is symmetric about its axis, so the
+    /// resolve folds both radial signs. (a) A rectangle authored entirely on the
+    /// NEGATIVE radial side ([−30, −20]) revolves to the SAME tube as the same
+    /// rectangle mirrored to the positive side ([20, 30]). (b) A profile STRADDLING
+    /// the axis fills the union of both sides — the |radial|-folded region — and is
+    /// non-empty. Without two-sided folding the negative-side rectangle would resolve
+    /// to nothing and a straddling profile would lose its negative half.
+    #[test]
+    fn revolve_negative_and_straddling_radial_fold() {
+        let density = 8u32;
+        let axial = 24i64;
+
+        // (a) Negative-side rectangle == positive mirror (same tube).
+        // Profile (radial, axial) = (c0, c1); radial spans [−30, −20] vs [20, 30].
+        let negative_side = SketchSolid::revolve(
+            Sketch::new(
+                PlaneAxis::X,
+                vec![
+                    SketchPoint::new(-30, 0),
+                    SketchPoint::new(-20, 0),
+                    SketchPoint::new(-20, axial),
+                    SketchPoint::new(-30, axial),
+                ],
+            ),
+            RevolveAxis::InPlane1,
+            360,
+        );
+        let positive_mirror = SketchSolid::revolve(
+            Sketch::new(
+                PlaneAxis::X,
+                vec![
+                    SketchPoint::new(20, 0),
+                    SketchPoint::new(30, 0),
+                    SketchPoint::new(30, axial),
+                    SketchPoint::new(20, axial),
+                ],
+            ),
+            RevolveAxis::InPlane1,
+            360,
+        );
+        assert_eq!(
+            negative_side.grid_dimensions(),
+            positive_mirror.grid_dimensions(),
+            "negative-side and positive-mirror tubes must share grid dims (radial_max folds by abs)"
+        );
+        let negative_cells = cell_set(&negative_side, density);
+        assert!(!negative_cells.is_empty(), "negative-side rectangle must NOT be empty");
+        assert_eq!(
+            negative_cells,
+            cell_set(&positive_mirror, density),
+            "negative-side rectangle must revolve to the same tube as its positive mirror"
+        );
+
+        // (b) Straddling profile fills the |radial|-folded region. A rectangle radial
+        // [−15, 25] straddles the axis; its |radial| union covers [0, 25] (the larger
+        // side dominates). Equivalent to a SOLID disc rectangle radial [0, 25] revolved
+        // — the straddle's smaller (−15) side is wholly subsumed by the +25 side.
+        let straddling = SketchSolid::revolve(
+            Sketch::new(
+                PlaneAxis::X,
+                vec![
+                    SketchPoint::new(-15, 0),
+                    SketchPoint::new(25, 0),
+                    SketchPoint::new(25, axial),
+                    SketchPoint::new(-15, axial),
+                ],
+            ),
+            RevolveAxis::InPlane1,
+            360,
+        );
+        let straddling_cells = cell_set(&straddling, density);
+        assert!(!straddling_cells.is_empty(), "straddling profile must NOT be empty");
+        // The folded region is the disc of radius max(|−15|, 25) = 25 — a solid disc,
+        // because the profile spans through radial 0 (no inner hole). Compare against a
+        // one-sided solid rectangle radial [0, 25]: same axial extent, same outer radius,
+        // both solid to the axis ⇒ identical folded occupancy.
+        let solid_disc = SketchSolid::revolve(
+            Sketch::rectangle(PlaneAxis::X, 25, axial),
+            RevolveAxis::InPlane1,
+            360,
+        );
+        assert_eq!(
+            straddling.grid_dimensions(),
+            solid_disc.grid_dimensions(),
+            "straddling profile diameter is 2·max(|radial|) = 50, matching the solid disc"
+        );
+        assert_eq!(
+            straddling_cells,
+            cell_set(&solid_disc, density),
+            "straddling profile must fill the |radial|-folded solid disc"
+        );
+    }
+
+    /// A polygon approximating a half-disc (radial profile of a semicircle) revolved
+    /// 360° about Z approximates a `Sphere` — IoU overlap >= 0.97. This is a TOLERANCE
+    /// assertion, not exact: the profile is a many-segment polygon approximating the
+    /// circular arc, and the SDF sphere uses its own ellipsoid isolevel, so the two
+    /// rims never coincide exactly (the polygon under/over-shoots the arc per segment).
+    #[test]
+    fn half_disc_revolve_approximates_sphere() {
+        let density = 16u32;
+        let radius = 40i64; // sphere radius in voxels ⇒ diameter 80
+        // Half-disc profile in (radial, axial) = (c0, c1): the radial extent is the
+        // sphere radius at each axial height. Axial runs 0..2R; radial(axial) =
+        // sqrt(R² − (axial − R)²). Many segments ⇒ a close polygon arc. The flat side
+        // (radial = 0) is the revolve axis, so revolving the half-disc gives a sphere.
+        let segments = 64;
+        let mut profile = vec![SketchPoint::new(0, 0)]; // bottom pole on the axis
+        for step in 0..=segments {
+            let axial = (2 * radius) * step / segments;
+            let dz = (axial - radius) as f64;
+            let r = ((radius * radius) as f64 - dz * dz).max(0.0).sqrt();
+            profile.push(SketchPoint::new(r.round() as i64, axial));
+        }
+        profile.push(SketchPoint::new(0, 2 * radius)); // top pole on the axis
+        let revolve =
+            SketchSolid::revolve(Sketch::new(PlaneAxis::X, profile), RevolveAxis::InPlane1, 360);
+        let sphere = SdfShape::from_voxels(
+            ShapeKind::Sphere,
+            [(2 * radius) as u32, (2 * radius) as u32, (2 * radius) as u32],
+            1,
+        );
+        assert_eq!(revolve.grid_dimensions(), sphere.grid_dimensions(density));
+        let revolve_set = cell_set(&revolve, density);
+        let sphere_set = cell_set(&sphere, density);
+        let intersection = revolve_set.intersection(&sphere_set).count();
+        let union = revolve_set.union(&sphere_set).count();
+        let iou = intersection as f64 / union as f64;
+        assert!(iou >= 0.97, "half-disc revolve IoU vs sphere {iou} < 0.97");
+    }
+
+    /// EDGE CASE: degenerate revolve profiles resolve to empty without panicking —
+    /// fewer than 3 points, zero radial extent, and a zero turn. (Mirror of
+    /// `degenerate_profiles_are_empty` for the revolve arm.)
+    #[test]
+    fn revolve_degenerate_profiles_are_empty() {
+        let empty = |producer: &SketchSolid| {
+            let mut grid = VoxelGrid::default();
+            producer.resolve(&mut grid, 4);
+            assert!(grid.occupied.is_empty());
+            assert_eq!(grid.dimensions, [0, 0, 0]);
+        };
+        // < 3 points.
+        empty(&SketchSolid::revolve(
+            Sketch::new(PlaneAxis::X, vec![SketchPoint::new(0, 0), SketchPoint::new(4, 0)]),
+            RevolveAxis::InPlane1,
+            360,
+        ));
+        // Zero radial extent: a profile collinear on the radial axis (radial coord all
+        // 0) — profile_bounds rejects the zero-span axis ⇒ empty.
+        empty(&SketchSolid::revolve(
+            Sketch::new(
+                PlaneAxis::X,
+                vec![
+                    SketchPoint::new(0, 0),
+                    SketchPoint::new(0, 4),
+                    SketchPoint::new(0, 8),
+                ],
+            ),
+            RevolveAxis::InPlane1,
+            360,
+        ));
+        // Zero turn.
+        empty(&SketchSolid::revolve(
+            Sketch::rectangle(PlaneAxis::X, 8, 8),
+            RevolveAxis::InPlane1,
+            0,
+        ));
+    }
+
+    /// PARITY: a rectangle revolved on EACH `RevolveAxis` at even and odd diameters is
+    /// corner-anchored with NO straddle — occupancy spans exactly `[0, dim)` per axis,
+    /// and the disc is symmetric about the grid centre on the two radial axes.
+    #[test]
+    fn revolve_parity_axis_placement() {
+        let density = 8u32;
+        // (radial R, axial H): R=10 ⇒ even diameter 20; R=11 ⇒ odd-extent, diameter 22.
+        for (radial, axial) in [(10i64, 12i64), (11, 13)] {
+            for plane in [PlaneAxis::X, PlaneAxis::Y, PlaneAxis::Z] {
+                for revolve_axis in [RevolveAxis::InPlane0, RevolveAxis::InPlane1] {
+                    // Place radial on c0, axial on c1 for InPlane1; swapped for InPlane0.
+                    let sketch = match revolve_axis {
+                        RevolveAxis::InPlane1 => Sketch::rectangle(plane, radial, axial),
+                        RevolveAxis::InPlane0 => Sketch::rectangle(plane, axial, radial),
+                    };
+                    let revolve = SketchSolid::revolve(sketch, revolve_axis, 360);
+                    let dims = revolve.grid_dimensions();
+                    let mut grid = VoxelGrid::default();
+                    revolve.resolve(&mut grid, density);
+                    assert!(!grid.occupied.is_empty(), "{plane:?}/{revolve_axis:?} empty");
+
+                    // No straddle: every cell index is within [0, dim) per axis, and the
+                    // occupancy touches 0 and dim-1 on the radial axes (the disc spans
+                    // the full diameter symmetric about the centre).
+                    let mut min_cell = [i64::MAX; 3];
+                    let mut max_cell = [i64::MIN; 3];
+                    for voxel in &grid.occupied {
+                        for axis in 0..3 {
+                            let cell = (voxel.world_position[axis] - 0.5).round() as i64;
+                            assert!(
+                                cell >= 0 && (cell as u32) < dims[axis],
+                                "{plane:?}/{revolve_axis:?}: cell {cell} out of [0,{}) on axis {axis}",
+                                dims[axis]
+                            );
+                            min_cell[axis] = min_cell[axis].min(cell);
+                            max_cell[axis] = max_cell[axis].max(cell);
+                        }
+                    }
+                    // Identify the two radial world axes (full-diameter, symmetric span).
+                    let [ip0, ip1] = plane.in_plane_axes();
+                    let normal = plane.normal_axis();
+                    let radial_axes: [usize; 2] = match revolve_axis {
+                        RevolveAxis::InPlane0 => {
+                            let mut a = [ip1, normal];
+                            a.sort_unstable();
+                            a
+                        }
+                        RevolveAxis::InPlane1 => {
+                            let mut a = [ip0, normal];
+                            a.sort_unstable();
+                            a
+                        }
+                    };
+                    for &axis in &radial_axes {
+                        // The widest slice (through the rectangle's full radial extent)
+                        // spans the whole diameter, touching both ends ⇒ no straddle and
+                        // symmetric about the centre.
+                        assert_eq!(
+                            min_cell[axis], 0,
+                            "{plane:?}/{revolve_axis:?}: radial axis {axis} does not start at 0"
+                        );
+                        assert_eq!(
+                            max_cell[axis] as u32,
+                            dims[axis] - 1,
+                            "{plane:?}/{revolve_axis:?}: radial axis {axis} does not reach dim-1"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// PARTIAL turn is inert at 360: a 360° revolve is byte-identical (occupancy SET
+    /// equal) to one built without the partial path engaging — proves the atan2 gate
+    /// never fires at a full turn (theta ∈ [0,360) is never > 360).
+    #[test]
+    fn partial_revolve_360_equals_full() {
+        let density = 16u32;
+        let full_a = SketchSolid::revolve(
+            Sketch::rectangle(PlaneAxis::X, 32, 48),
+            RevolveAxis::InPlane1,
+            360,
+        );
+        // The "full" reference is the same operation; this asserts determinism AND that
+        // the 360 gate produces the same occupancy as the cylinder lock above relies on.
+        let full_b = SketchSolid::revolve(
+            Sketch::rectangle(PlaneAxis::X, 32, 48),
+            RevolveAxis::InPlane1,
+            360,
+        );
+        assert_eq!(
+            cell_set(&full_a, density),
+            cell_set(&full_b, density),
+            "360° revolve must be deterministic / gate-inert"
+        );
+        // And it equals the matching cylinder (the partial gate did not eat any cells).
+        let cylinder = SdfShape::from_voxels(ShapeKind::Cylinder, [64, 64, 48], 1);
+        let diff = cell_set(&full_a, density)
+            .symmetric_difference(&cell_set(&cylinder, density))
+            .count();
+        let total = cell_set(&cylinder, density).len();
+        assert!(diff * 100 <= total, "360 revolve diff from cylinder {diff} > 1%");
+    }
+
+    /// PARTIAL turn 180° is roughly half a 360° revolve, and one angular half of the
+    /// disc is empty (structural). The angle is measured from radial_a toward radial_b
+    /// (ascending world-axis index); for PlaneAxis::X + InPlane1, radial_a=X, radial_b=Y,
+    /// so the kept wedge is theta ∈ [0,180] ⇒ the centred-Y < 0 half is empty.
+    #[test]
+    fn partial_revolve_180_is_half() {
+        let density = 8u32;
+        let full = SketchSolid::revolve(
+            Sketch::rectangle(PlaneAxis::X, 24, 32),
+            RevolveAxis::InPlane1,
+            360,
+        );
+        let half = SketchSolid::revolve(
+            Sketch::rectangle(PlaneAxis::X, 24, 32),
+            RevolveAxis::InPlane1,
+            180,
+        );
+        let full_count = cell_set(&full, density).len();
+        let half_count = cell_set(&half, density).len();
+        let ratio = half_count as f64 / full_count as f64;
+        assert!(
+            (0.40..=0.60).contains(&ratio),
+            "180° revolve count ratio {ratio} not ~0.5"
+        );
+        // Structural: the half with theta > 180 is empty. For PlaneAxis::X + InPlane1,
+        // radial_a = X (idx 0), radial_b = Y (idx 1); theta > 180 ⇔ centred-Y < 0. The
+        // grid is [48,48,32]; centred-Y < 0 means cell-Y < 24.
+        let mut grid = VoxelGrid::default();
+        half.resolve(&mut grid, density);
+        let dim_y = grid.dimensions[1];
+        let any_in_lower_half = grid.occupied.iter().any(|voxel| {
+            let cell_y = (voxel.world_position[1] - 0.5).round() as i64;
+            // centred-Y = cell_y + 0.5 - dim_y/2 < 0
+            (cell_y as f32 + 0.5 - dim_y as f32 / 2.0) < 0.0
+        });
+        assert!(!any_in_lower_half, "180° revolve leaked into the theta>180 half");
     }
 }

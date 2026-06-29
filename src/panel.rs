@@ -1180,6 +1180,9 @@ fn build_sketch_inspector_section(
     // the height from the Extrude arm; any other operation falls back to a sane 1.
     let mut height_voxels = match producer.operation {
         Operation::Extrude { height_voxels } => height_voxels,
+        // Revolve has no inspector yet (commit 4): fall back to a sane height so the
+        // extrude-only editor stays well-defined; editing here re-extrudes the profile.
+        Operation::Revolve { .. } => 1,
     }
     .max(1);
     let mut changed = false;

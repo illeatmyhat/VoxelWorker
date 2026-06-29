@@ -4533,6 +4533,57 @@ mod tests {
         assert_chunked_matches_monolithic(&l_scene, voxels_per_block, "sketch-L");
     }
 
+    /// ADR 0003 §3i: the revolve operation composes through the chunked resolve
+    /// identically to the monolithic one — mirrors the extrude parity harness for a
+    /// solid of revolution. A rectangle revolved 360° about Z (a cylinder) placed
+    /// off-origin on X+Y so the recentre/cover math is real and the disc crosses
+    /// chunk boundaries on both radial axes.
+    #[test]
+    fn chunked_resolve_matches_monolithic_for_sketch_revolve() {
+        use crate::sketch::{PlaneAxis, RevolveAxis, Sketch};
+        let voxels_per_block = 16;
+        let density = voxels_per_block as i64;
+
+        // PlaneAxis::X + RevolveAxis::InPlane1 ⇒ axial = Z (vertical), radial = {X, Y}.
+        // (a) Profile (radial, axial) = rectangle(radial = 2 blocks, axial = 3 blocks)
+        // ⇒ a 4-block-diameter, 3-block-tall cylinder. EVEN radial + whole-block axial.
+        let revolve = SketchSolid::revolve(
+            Sketch::rectangle(PlaneAxis::X, 2 * density, 3 * density),
+            RevolveAxis::InPlane1,
+            360,
+        );
+        let mut node = Node::new(
+            "Sketch revolve",
+            NodeContent::SketchTool {
+                producer: revolve,
+                material: MaterialChoice::Stone,
+            },
+        );
+        // Off-origin so the covering chunk range and recentre offset are non-trivial.
+        node.transform = NodeTransform::from_blocks([5, 5, 0], voxels_per_block);
+        let scene = Scene::single_node(node);
+        assert_chunked_matches_monolithic(&scene, voxels_per_block, "sketch-revolve");
+
+        // (b) ODD axial extent (NOT a whole number of blocks) with an even radial, so
+        // the even-radial diameter + odd-axial block-rounding combo is exercised through
+        // the chunked path. Radial 30 voxels (diameter 60), axial 2·16 + 5 = 37 voxels.
+        let revolve_odd_axial = SketchSolid::revolve(
+            Sketch::rectangle(PlaneAxis::X, 30, 2 * density + 5),
+            RevolveAxis::InPlane1,
+            360,
+        );
+        let mut odd_node = Node::new(
+            "Sketch revolve odd axial",
+            NodeContent::SketchTool {
+                producer: revolve_odd_axial,
+                material: MaterialChoice::Wood,
+            },
+        );
+        odd_node.transform = NodeTransform::from_blocks([5, 5, 0], voxels_per_block);
+        let odd_scene = Scene::single_node(odd_node);
+        assert_chunked_matches_monolithic(&odd_scene, voxels_per_block, "sketch-revolve-odd-axial");
+    }
+
     /// A scene with a single node shifted well OFF the origin (+8 blocks on X) —
     /// proves the chunked path handles off-centre placement (the AABB does not
     /// start at the origin, so the covering chunk range is non-trivial and the
