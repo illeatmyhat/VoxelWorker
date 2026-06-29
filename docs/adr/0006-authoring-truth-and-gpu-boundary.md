@@ -133,10 +133,12 @@ registry; ADR 0003 §3d/§3e), AND (iii) it lands behind a CPU↔GPU A/B equival
 goldens. Recorded near-term items, in order, that do NOT require any GPU-authority change:
 
 - **Done:** parallelise producer resolve; chunk-windowed `resolve_into` (kills the per-chunk full-grid
-  redundancy + restores the per-chunk memory bound); fog scatter build (kills the global-HashSet gather).
-- **Next (CPU, on the existing trajectory):** consume the already-computed-but-ignored
-  `incremental_rebuild_plan` so the renderer re-meshes only changed chunks instead of wholesale; per-chunk
-  async resolve on a worker.
+  redundancy + restores the per-chunk memory bound); fog scatter build (kills the global-HashSet gather);
+  incremental cuboid re-mesh (#40, `9ff63c3`) — only re-mesh the dirty chunks (apron-dilated via
+  `cuboid_incremental_plan`), wholesale only on a floating-origin shift / density change.
+- **Next (CPU, on the existing trajectory):** the fog occupancy upload + the monolithic `resolve_region`
+  grid assembly still run wholesale every edit (the cuboid path no longer needs the monolithic grid) —
+  Tracy-measure the post-#40 per-edit profile first; then per-chunk async resolve on a worker.
 - **Then (GPU display derivation, gated as above):** GPU-voxelize the fog occupancy (compute-scatter the
   sparse occupied list into the R8 3D texture — kills the CPU densify *and* the dense upload, byte-identical
   per the fog investigation); later, a GPU view-resolve for the mesh; later still, the GPU sculpt brush as a

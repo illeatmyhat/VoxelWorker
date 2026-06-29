@@ -249,12 +249,16 @@ golden-image net (E0, #24) is the sole regression guard from here on.
      scene size (disk-spill or assembly-removal *alone* does not); the borrow-returning whole-region
      gather methods will need a reload-then-borrow pass under a real resident cap. Dominated by
      interactive paths the static goldens cannot exercise → needs the windowed app for smoke-testing.
-     **[STATUS 2026-06-29] The dirty-chunk PLAN is computed but NOT yet consumed by the live renderer.**
-     `renderer::incremental_rebuild_plan` exists (and is unit-tested via the `store.rs` CPU render-cache
-     harness), but the windowed app still re-meshes WHOLESALE on every edit (`VoxelRenderer::rebuild_from_scene`,
-     driven from `main.rs`); no `incremental_rebuild_from_chunks` consumer is wired up. Consuming this plan
-     is the recorded next CPU perf step (see [ADR 0003](0003-foundation-rework.md) §4 / migration step 8 and
-     [ADR 0006](0006-authoring-truth-and-gpu-boundary.md) "Next (CPU)").
+     **[STATUS 2026-06-29] The dirty-chunk re-mesh is now CONSUMED by the live cuboid renderer (#40,
+     commit `9ff63c3`).** `rebuild_geometry` keeps the `CuboidMeshRenderer` persistent and updates only
+     the chunks an edit (+ its 1-voxel apron neighbours) touched via `CuboidMeshRenderer::incremental_rebuild_from_chunks`,
+     driven by the apron-aware `cuboid_mesh::cuboid_incremental_plan` (the dirty set DILATED by the
+     26-neighbourhood — the old instanced `renderer::incremental_rebuild_plan` is apron-unaware and not
+     used by live code). It falls back to a wholesale `new_from_chunks` on a floating-origin shift or
+     density change (both re-key/re-base every chunk). The remaining half of "Step 4" — DELETING the
+     monolithic `resolve_region`/`resolve_scene` whole-grid assembly (still built for the fog upload) — is
+     not yet done. See [ADR 0003](0003-foundation-rework.md) §4 / migration step 8 and
+     [ADR 0006](0006-authoring-truth-and-gpu-boundary.md) "Next (CPU)".
 8. **(later) Per-chunk cross-block cuboid merge + optional 2D greedy pass over cuboid faces.** ⛔
    **PARKED.** Whole-block-multiple, same-material only; pursue only if E5 proves GPU-bound. **LOD
    stays parked** (seam preserved via the `(chunk_coord, lod)` key; O7).
@@ -343,10 +347,11 @@ performance techniques worth lifting, each mapped to our engine steps. Sources:
    **entire chunk** is re-tessellated." → **Validates our coarse invalidation granularity
    (Decision 3):** an edit dirties only the chunks its world-AABB intersects, and we re-mesh just
    those — whole-chunk, not per-voxel-diff. Simpler beats finer-grained; no incremental mesh
-   patching. **[STATUS 2026-06-29] This is the TARGET, not yet the live behavior:** the dirty-chunk
-   plan (`incremental_rebuild_plan`) is computed but the live renderer still re-meshes wholesale (see
-   E5 Step 4 above). The resolve CACHE already invalidates only the dirty chunks; the GPU MESH rebuild
-   does not yet honor that.
+   patching. **[STATUS 2026-06-29] This is now the LIVE behavior (#40, commit `9ff63c3`):** the live
+   cuboid renderer re-meshes only the dirty chunks (DILATED by the 1-voxel apron's 26-neighbourhood, so
+   a seam neighbour's culling stays correct) via `cuboid_mesh::cuboid_incremental_plan` +
+   `incremental_rebuild_from_chunks`, falling back to wholesale only on a floating-origin shift / density
+   change. The GPU MESH rebuild now honors the resolve cache's per-chunk invalidation (see E5 Step 4 above).
 
 4. **Pooled GPU mesh buffers keyed by (render pass × atlas)** (VS `MeshDataPoolManager`s). → **Adopt
    at E2/E5:** reuse vertex/index allocations across frames and chunks via a pool keyed by

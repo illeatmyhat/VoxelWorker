@@ -157,8 +157,10 @@ consumption**.
   shapes** that make the shift identically zero by construction, see §3i); "extent-changing edit nukes
   the whole cache" (the
   `ChunkResolveCache` rebinds on a *floating-origin / density* change — `chunk_cache.rs::rebind_if_changed`
-  — and chunks are stored pre-rebased against the composite recentre); `incremental_rebuild_plan` is
-  **computed but not consumed** (renderer re-meshes wholesale on edit).
+  — and chunks are stored pre-rebased against the composite recentre); ~~`incremental_rebuild_plan` is
+  computed but not consumed (renderer re-meshes wholesale on edit)~~ **[RESOLVED 2026-06-29, #40 `9ff63c3`]:
+  the live cuboid renderer now re-meshes only the dirty chunks (apron-dilated via `cuboid_incremental_plan`),
+  wholesale only on a floating-origin shift / density change — see §4.**
 - **Per-voxel payload is f32-absolute.** `voxel.rs::Voxel` stores `world_position: [f32; 3]` (the
   voxel *centre* in world-grid space). At XZ~10k that f32 has ~1 mantissa bit below the voxel and the
   position becomes ambiguous; the current code only stays exact because the i64 rebase in
@@ -1014,10 +1016,15 @@ union, and a bespoke world-frame patch could not override the parts beneath it. 
 work, below.) Per-part layer folding (§3b) stays as-is; this clause governs **inter-part / assembly**
 precedence, the level above it.
 
-**Incremental re-mesh is finally CONSUMED.** `incremental_rebuild_plan` (computed-but-ignored today)
-becomes the load-bearing path: an edit's world-AABB → set of dirty `(chunk_coord)` → those chunks
-re-resolve (fold layers via `resolve_into`, §3d, then apply assembly-scoped overrides in order) and
-re-mesh; **all other chunks keep their cached buffers**. The renderer stops re-meshing wholesale on edit. Region-scoped consumers (diameter, layer
+**Incremental re-mesh is finally CONSUMED.** **[SHIPPED 2026-06-29, #40 `9ff63c3`]** An edit's
+world-AABB → set of dirty `(chunk_coord)` (from `invalidate_aabb`) → those chunks re-resolve and
+re-mesh; **all other chunks keep their cached GPU buffers**. The renderer stops re-meshing wholesale
+on edit (falls back to wholesale only on a floating-origin shift / density change). NB the *live*
+plan is `cuboid_mesh::cuboid_incremental_plan`, NOT the instanced-era `renderer::incremental_rebuild_plan`:
+the cuboid mesher culls each chunk's boundary faces against a 1-voxel apron from global occupancy, so
+the dirty set is DILATED by the 26-neighbourhood (a neighbour's occupancy change alters this chunk's
+seam faces) — the instanced planner had no such inter-chunk dependency. Region-scoped consumers
+(diameter, layer
 scrubber, `.vox` export) read the per-chunk store over the active region, never an assembled
 whole-grid. Scrubbing the layer-band is a **per-fragment clip on absolute-Y** (ADR 0002 matrix row) —
 no re-mesh — so a 10k-XZ scrub is interactive. This is **S7**.

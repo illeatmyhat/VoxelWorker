@@ -30,11 +30,11 @@ F1–F6 seams). ADR 0004 built the agent-authoring stack on top (the joint solve
 WFC material-fill producer, and the data-primary perceive → diagnose → correct loop over
 `query(SpatialQuery)` + `diagnostics() -> Vec<Issue>` + multi-view `render_png`).
 
-> **[STATUS 2026-06-29]** "Per-chunk incremental re-mesh" above is the foundation DESIGN (ADR 0003 §4),
-> not yet the live behavior: `incremental_rebuild_plan` is computed but the renderer still re-meshes
-> wholesale on edit (see ADR 0002 E5 Step 4 / ADR 0003 §4). The §J caching this ADR builds on the
-> per-chunk `ChunkRevision` is unaffected — it depends on the resolve cache's per-chunk invalidation,
-> which IS live, not on the GPU mesh rebuild.
+> **[STATUS 2026-06-29]** "Per-chunk incremental re-mesh" above is now LIVE (#40, commit `9ff63c3`):
+> the cuboid renderer re-meshes only the dirty chunks (apron-dilated via `cuboid_incremental_plan`),
+> wholesale only on a floating-origin shift / density change (see ADR 0002 E5 Step 4 / ADR 0003 §4). The
+> §J caching this ADR builds on the per-chunk `ChunkRevision` was always unaffected by this — it depends
+> on the resolve cache's per-chunk invalidation, which was already live, not on the GPU mesh rebuild.
 
 A 9-lens **architecture gap sweep** ([`docs/design/architecture-gap-sweep.md`](../design/architecture-gap-sweep.md))
 was then run across the whole stack. Its headline finding: **the spine is sound — there is no
