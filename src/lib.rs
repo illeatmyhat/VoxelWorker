@@ -196,7 +196,7 @@ pub fn run_egui_frame(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     panel_state: &mut PanelState,
-    grid_y: u32,
+    grid_z: u32,
     measured_diameter: u32,
     palette: &block_palette::BlockPalette,
     raw_input: egui::RawInput,
@@ -220,7 +220,7 @@ pub fn run_egui_frame(
         egui::vec2(size_in_pixels[0] as f32, size_in_pixels[1] as f32),
     );
     let full_output = bridge.context.run_ui(raw_input, |ui| {
-        panel_response = build_panel(ui, panel_state, grid_y, measured_diameter, palette);
+        panel_response = build_panel(ui, panel_state, grid_z, measured_diameter, palette);
         // After both panels have been shown inside the root ui, the remaining
         // space is the central viewport.
         central_rect_points = ui.available_rect_before_wrap();

@@ -163,17 +163,17 @@ struct App {
     state: Option<WindowedState>,
 }
 
-/// The [`CubeFace`] whose outward normal lies along `axis` (0=X,1=Y,2=Z) with the
-/// given sign (`true` = positive → Right/Top/Front, `false` = negative →
-/// Left/Bottom/Back).
+/// The [`CubeFace`] whose outward normal lies along the GEOMETRIC cube `axis`
+/// (0=X,1=Y,2=Z) with the given sign. Z-up: +X→Right, −X→Left, +Y→Back, −Y→Front
+/// (front = −Y), +Z→Top, −Z→Bottom.
 fn face_for_axis_sign(axis: usize, positive: bool) -> CubeFace {
     match (axis, positive) {
         (0, true) => CubeFace::Right,
         (0, false) => CubeFace::Left,
-        (1, true) => CubeFace::Top,
-        (1, false) => CubeFace::Bottom,
-        (2, true) => CubeFace::Front,
-        _ => CubeFace::Back,
+        (1, true) => CubeFace::Back,
+        (1, false) => CubeFace::Front,
+        (2, true) => CubeFace::Top,
+        _ => CubeFace::Bottom,
     }
 }
 
@@ -270,11 +270,12 @@ impl WindowedState {
             panel_state.geometry.voxels_per_block,
             &grid,
         );
-        // Initialise the layer-range band to the full grid height (issue #12).
-        let grid_y = region_dimensions[1];
+        // Initialise the layer-range band to the full grid height (issue #12). Z-up:
+        // layers are Z-slices, so the track spans the Z dimension (index 2).
+        let grid_z = region_dimensions[2];
         panel_state
             .layer_range
-            .rescale_to_grid_y(0, grid_y, panel_state.geometry.voxels_per_block);
+            .rescale_to_grid_z(0, grid_z, panel_state.geometry.voxels_per_block);
         // Issue #20 Step 2: the diameter / scrubber readout reads the region-scoped,
         // per-chunk `widest_run_in_band` (cross-seam stitched) rather than the
         // assembled grid's whole-grid method — returning the SAME value (parity-proven
@@ -478,9 +479,9 @@ impl WindowedState {
             }
         };
 
-        // Read the OLD grid_y before reassigning `self.grid`, for the layer-band
-        // rescale below.
-        let previous_grid_y = self.grid.dimensions[1];
+        // Read the OLD grid_z before reassigning `self.grid`, for the layer-band
+        // rescale below (Z-up: layers are Z-slices, index 2).
+        let previous_grid_z = self.grid.dimensions[2];
         // Part of #20: the cuboid mesh renderer is the sole voxel render path.
         // Rebuild it from the per-chunk accessor (`(absolute_chunk_coord,
         // &rebased_grid)` per covering chunk, 1-voxel apron). `render_chunks` holds
@@ -529,12 +530,12 @@ impl WindowedState {
         // floor grid (issue #29 S3) is likewise (re)batched per frame from the
         // grid-enabled nodes — a per-node toggle needs no scene re-resolve.
 
-        // Issue #12: clamp/rescale the layer band to the new grid_y (re-snapping
+        // Issue #12: clamp/rescale the layer band to the new grid_z (re-snapping
         // to block multiples when snapping is on), then invalidate the diameter
-        // cache so the readout re-measures against the new grid.
-        self.panel_state.layer_range.rescale_to_grid_y(
-            previous_grid_y,
-            region_dimensions[1],
+        // cache so the readout re-measures against the new grid. Z-up: index 2.
+        self.panel_state.layer_range.rescale_to_grid_z(
+            previous_grid_z,
+            region_dimensions[2],
             density,
         );
         self.grid = grid;
@@ -878,7 +879,7 @@ impl WindowedState {
             }
             let coordinate = hit[axis];
             if coordinate > ZONE_THRESHOLD {
-                // Positive face along this axis (+X→Right, +Y→Top, +Z→Front).
+                // Positive face along this axis (Z-up: +X→Right, +Y→Back, +Z→Top).
                 neighbours.push(face_for_axis_sign(axis, true));
             } else if coordinate < -ZONE_THRESHOLD {
                 neighbours.push(face_for_axis_sign(axis, false));
@@ -925,15 +926,15 @@ impl WindowedState {
         let raw_input = self.egui_winit_state.take_egui_input(&self.window);
         let pixels_per_point = self.egui_winit_state.egui_ctx().pixels_per_point();
 
-        // Issue #12/#20 S6c-1: the layer scrubber's Y extent comes from the SCENE's
-        // region dimensions, not the assembled grid object — identical to
-        // `self.grid.dimensions[1]` for a chunkable scene (the grid is sized to
-        // `placed_region_dimensions`).
-        let grid_y = AppCore::region_dimensions_for(
+        // Issue #12/#20 S6c-1: the layer scrubber's vertical extent comes from the
+        // SCENE's region dimensions, not the assembled grid object — identical to
+        // `self.grid.dimensions[2]` for a chunkable scene. Z-up: layers are Z-slices,
+        // so the track spans the Z dimension (index 2).
+        let grid_z = AppCore::region_dimensions_for(
             &self.panel_state.scene,
             self.panel_state.geometry.voxels_per_block,
             &self.grid,
-        )[1];
+        )[2];
         let current_band = (self.panel_state.layer_range.lower, self.panel_state.layer_range.upper);
         if current_band != self.measured_band {
             // Issue #20 Step 2: re-measure the diameter through the region-scoped,
@@ -974,7 +975,7 @@ impl WindowedState {
             &self.gpu.device,
             &self.gpu.queue,
             &mut self.panel_state,
-            grid_y,
+            grid_z,
             self.measured_diameter,
             &self.palette,
             raw_input,
@@ -1107,14 +1108,15 @@ impl WindowedState {
         // band is inclusive on both ends; the upper handle is a layer index, so a
         // single-layer band is `lower == upper`. A full range draws everything.
         let layer_range = self.panel_state.layer_range;
-        let band = if layer_range.is_full_range(grid_dimensions[1]) && !layer_range.onion_skin {
+        // Z-up: layers are Z-slices, so the band is a Z-layer range (index 2).
+        let band = if layer_range.is_full_range(grid_dimensions[2]) && !layer_range.onion_skin {
             LayerBand::FULL
         } else {
             LayerBand {
                 band_min: layer_range.lower,
                 // `upper` is the last visible layer index; clamp into the grid so a
-                // full-range upper (== grid_y) still includes the top layer.
-                band_max: layer_range.upper.min(grid_dimensions[1].saturating_sub(1)),
+                // full-range upper (== grid_z) still includes the top layer.
+                band_max: layer_range.upper.min(grid_dimensions[2].saturating_sub(1)),
                 onion_depth: if layer_range.onion_skin {
                     layer_range.onion_depth.clamp(1, 8)
                 } else {
@@ -1205,7 +1207,8 @@ impl WindowedState {
             .update_uniforms(&self.gpu.queue, self.app_core.camera.view_cube_view_projection());
 
         // Issue #12: onion-skin volumetric fog. Active only when onion skin is on
-        // and not in debug-face mode. Upload the camera + band world-Y ranges so the
+        // and not in debug-face mode. Upload the camera + band world-Z ranges (Z-up)
+        // so the
         // fullscreen raymarch of the occupancy grid hazes the layers around the band
         // (the grid itself is uploaded on geometry rebuild, not per frame).
         let onion_active = layer_range.onion_skin && !self.panel_state.debug_face_orientation;

@@ -9,11 +9,11 @@
 //!
 //! ## Axis convention (documented, the bit that bites)
 //!
-//! MagicaVoxel uses a **Z-up** right-handed coordinate system; our world is
-//! **Y-up**. So our grid index `(i, j_up, k)` maps to a vox coordinate
-//! `(x, z, y_up) = (i, k, j_up)` — our vertical axis becomes vox Z, and our
-//! depth axis (Z) becomes vox Y. This makes the model stand upright in
-//! MagicaVoxel and the mod instead of lying on its side.
+//! MagicaVoxel uses a **Z-up** right-handed coordinate system; our world is **also
+//! Z-up** (vertical = +Z, index 2). So our grid index `(i, j, k)` maps DIRECTLY to
+//! a vox coordinate `(x, y, z) = (i, j, k)` — **no axis swap**. (Before the Z-up
+//! reorientation our world was Y-up and this path swapped Y/Z to stand the model
+//! upright; now the model is already Z-up so the swap is gone.)
 //!
 //! ## 256 limit
 //!
@@ -66,7 +66,7 @@ pub struct VoxExport {
 }
 
 impl VoxExport {
-    /// Build the export from a resolved grid, mapping Y-up → Z-up and tiling into
+    /// Build the export from a resolved grid (Z-up, no axis swap) and tiling into
     /// ≤256 models if any dimension exceeds [`VOX_AXIS_MAX`].
     ///
     /// `representative_rgba` is the single palette colour every voxel references
@@ -143,9 +143,9 @@ impl VoxExport {
                     let sy = tile_size(grid_y, ty);
                     let sz = tile_size(grid_z, tz);
                     model_index.insert((tx, ty, tz), models.len());
-                    // vox size = (our X, our Z, our Y) after Y-up→Z-up swap.
+                    // Z-up: vox size = (our X, our Y, our Z) — no swap.
                     models.push(VoxModel {
-                        size: [sx, sz, sy],
+                        size: [sx, sy, sz],
                         voxels: Vec::new(),
                     });
                 }
@@ -179,11 +179,11 @@ impl VoxExport {
             let Some(&model_pos) = model_index.get(&(tx, ty, tz)) else {
                 continue;
             };
-            // Y-up → Z-up: vox (x, y, z) = (our i, our k, our j_up).
+            // Z-up: vox (x, y, z) = (our i, our j, our k) — no swap.
             models[model_pos].voxels.push(VoxVoxel {
                 x: local_i as u8,
-                y: local_k as u8,
-                z: local_j as u8,
+                y: local_j as u8,
+                z: local_k as u8,
                 color_index: 1,
             });
             voxel_count += 1;
@@ -194,10 +194,11 @@ impl VoxExport {
         // Always emit at least one (possibly empty) model so the file is valid.
         if models.is_empty() {
             models.push(VoxModel {
+                // Z-up: no swap — vox size = (our X, our Y, our Z).
                 size: [
                     grid_x.clamp(1, VOX_AXIS_MAX),
-                    grid_z.clamp(1, VOX_AXIS_MAX),
                     grid_y.clamp(1, VOX_AXIS_MAX),
+                    grid_z.clamp(1, VOX_AXIS_MAX),
                 ],
                 voxels: Vec::new(),
             });
@@ -308,7 +309,7 @@ mod tests {
     use crate::voxel::{SdfShape, ShapeKind};
 
     /// Resolve a small cylinder and round-trip it through `.vox`, asserting the
-    /// voxel count and dimensions survive the Y-up → Z-up mapping.
+    /// voxel count and dimensions survive (Z-up, no axis swap).
     ///
     /// Corner-anchoring: `from_grid`'s decode (`round(world + floor(dim/2) − 0.5)`)
     /// expects the grid in the RECENTRED frame (low corner `−floor(dim/2)`), which is
@@ -337,11 +338,11 @@ mod tests {
 
         assert_eq!(parsed.models.len(), 1);
         let model = &parsed.models[0];
-        // vox size = (our X, our Z, our Y). Grid is 80×16×80 → vox 80×80×16.
+        // Z-up: vox size = (our X, our Y, our Z) — no swap. Grid 80×16×80 → vox 80×16×80.
         let [gx, gy, gz] = grid.dimensions;
         assert_eq!(model.size.x, gx);
-        assert_eq!(model.size.y, gz);
-        assert_eq!(model.size.z, gy);
+        assert_eq!(model.size.y, gy);
+        assert_eq!(model.size.z, gz);
         // Every occupied voxel was written exactly once.
         assert_eq!(model.voxels.len(), grid.occupied_count());
         // All coordinates are within the model's declared size.
@@ -350,6 +351,36 @@ mod tests {
             assert!((voxel.y as u32) < model.size.y);
             assert!((voxel.z as u32) < model.size.z);
         }
+    }
+
+    /// Z-up convention pin: an ASYMMETRIC shape (tall in Z) puts its vertical extent
+    /// on vox-Z with NO swap. A cylinder 2×2×5 blocks (5 blocks tall along the +Z
+    /// axis) must export to a vox model whose Z size is the largest — proving the
+    /// vertical axis lands on vox-Z directly, not relocated to vox-Y.
+    #[test]
+    fn vox_export_puts_vertical_on_vox_z_no_swap() {
+        let scene = crate::scene::Scene::from_geometry(
+            GeometryParams {
+                shape: ShapeKind::Cylinder,
+                size_blocks: [2, 2, 5],
+                voxels_per_block: 16,
+                wall_blocks: 1,
+            },
+            crate::core_geom::MaterialChoice::Stone,
+        );
+        let grid = scene.resolve_region(scene.full_extent_blocks(16), 16, 0);
+        let [gx, gy, gz] = grid.dimensions; // 32 × 32 × 80
+        let export = VoxExport::from_grid(&grid, [132, 126, 118, 255]);
+        let bytes = export.to_bytes();
+        let parsed = dot_vox::load_bytes(&bytes).expect("dot_vox should parse our file");
+        let model = &parsed.models[0];
+        // No swap: vox size matches our (X, Y, Z) exactly, with Z the tallest axis.
+        assert_eq!([model.size.x, model.size.y, model.size.z], [gx, gy, gz]);
+        assert!(
+            model.size.z > model.size.x && model.size.z > model.size.y,
+            "the tall (Z) axis must land on vox-Z (got {:?})",
+            (model.size.x, model.size.y, model.size.z)
+        );
     }
 
     /// A grid wider than 256 voxels on an axis must split into multiple models,

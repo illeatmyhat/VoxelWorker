@@ -21,10 +21,11 @@ struct FogUniforms {
     fog_strength: f32,
     fog_color: vec3<f32>,
     _pad0: f32,
-    onion_y_min: f32,
-    onion_y_max: f32,
-    band_y_min: f32,
-    band_y_max: f32,
+    // World-space Z range (Z-up: layers are Z-slices). Matches `OnionFogParams`.
+    onion_z_min: f32,
+    onion_z_max: f32,
+    band_z_min: f32,
+    band_z_max: f32,
 };
 
 // Per-chunk metadata: atlas tiling + one record per resident chunk. Matches the
@@ -175,15 +176,15 @@ fn fragment_main(input: VsOut) -> @location(0) vec4<f32> {
         }
         let inside = smoothstep(FOG_EDGE_LOW, FOG_EDGE_HIGH, density);
 
-        let y = sample_point.y;
+        let z = sample_point.z;
         var vertical = 0.0;
-        if (y < fog.band_y_min) {
-            let reach = max(fog.band_y_min - fog.onion_y_min, 1e-4);
-            let d = (fog.band_y_min - y) / reach;
+        if (z < fog.band_z_min) {
+            let reach = max(fog.band_z_min - fog.onion_z_min, 1e-4);
+            let d = (fog.band_z_min - z) / reach;
             vertical = clamp(1.0 - d, 0.0, 1.0);
-        } else if (y > fog.band_y_max) {
-            let reach = max(fog.onion_y_max - fog.band_y_max, 1e-4);
-            let d = (y - fog.band_y_max) / reach;
+        } else if (z > fog.band_z_max) {
+            let reach = max(fog.onion_z_max - fog.band_z_max, 1e-4);
+            let d = (z - fog.band_z_max) / reach;
             vertical = clamp(1.0 - d, 0.0, 1.0);
         }
         optical_thickness = optical_thickness + inside * vertical * step_size;

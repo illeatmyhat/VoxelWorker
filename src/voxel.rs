@@ -1,5 +1,18 @@
 //! The resolved voxel grid and the producers that fill it.
 //!
+//! ## Coordinate convention (PROJECT-WIDE — Z-up, right-handed)
+//!
+//! **Vertical / up = +Z** ([`glam::Vec3::Z`], array index **2**) EVERYWHERE in this
+//! crate — camera, SDFs, fog, layers, diameter, mesh and `.vox` export all agree.
+//! The ground plane is **XY** (normal +Z); **front = −Y** (the front view looks
+//! along +Y); LEFT/RIGHT = ±X; TOP/BOTTOM = ±Z. Panel X/Y/Z fields map directly to
+//! indices 0/1/2 with Z genuinely the vertical axis — no relabel shim.
+//!
+//! Consequences pinned by tests: a tall cylinder/tube/torus has its axis along Z
+//! (`size_blocks[2]` is the vertical extent), layer slices are Z-slices, the onion
+//! fog band is a Z-range, and the `.vox` export writes our Z straight to vox-Z with
+//! NO axis swap (MagicaVoxel is itself Z-up).
+//!
 //! This module implements the architectural seam required by `REPRESENTATION.md`:
 //! **the renderer never calls the SDF directly.** Instead a [`VoxelProducer`]
 //! resolves a parametric shape (or, in a later milestone, a sculpt overlay) into
@@ -135,13 +148,14 @@ impl VoxelGrid {
     }
 
     /// Measure the widest occupied voxel run (the diameter readout, issue #12),
-    /// restricted to the layers `[band_min, band_max]` (inclusive) along Y. The
-    /// "widest run" is the longest contiguous span of occupied voxels along X
-    /// within any single `(y, z)` row of the band — the same measure the old 2D
-    /// slice reported, but taken over the active band instead of the mid-Y layer.
+    /// restricted to the layers `[band_min, band_max]` (inclusive) along Z (Z-up:
+    /// layers are Z-slices). The "widest run" is the longest contiguous span of
+    /// occupied voxels along X within any single `(z, y)` row of the band — the same
+    /// measure the old 2D slice reported, but taken over the active band instead of
+    /// the mid-vertical layer.
     ///
     /// Reads the RESOLVED grid — NOT the SDF — per REPRESENTATION.md. Cheap: one
-    /// pass over the sparse occupied list bucketed into per-(y,z)-row bitsets.
+    /// pass over the sparse occupied list bucketed into per-(z,y)-row bitsets.
     pub fn widest_run_in_band(&self, band_min: u32, band_max: u32) -> u32 {
         let [grid_x, grid_y, grid_z] = self.dimensions;
         if grid_x == 0 || grid_y == 0 || grid_z == 0 {
@@ -156,20 +170,21 @@ impl VoxelGrid {
         let half_y = (grid_y / 2) as f32;
         let half_z = (grid_z / 2) as f32;
 
-        // One occupancy row (length grid_x) per (y, z) row that touches the band.
-        // Keyed by a flat (y, z) index; built sparsely so an empty grid is cheap.
+        // One occupancy row (length grid_x) per (z, y) row that touches the band.
+        // Keyed by a flat (z, y) index; built sparsely so an empty grid is cheap.
+        // Z-up: the band is a Z-layer (index 2) range; `k` (Z) is the layer scan.
         let mut rows: std::collections::HashMap<u64, Vec<bool>> = std::collections::HashMap::new();
         for voxel in &self.occupied {
-            let j = (voxel.world_position[1] + half_y - 0.5).round() as i64;
-            if j < band_min as i64 || j > band_max as i64 {
+            let k = (voxel.world_position[2] + half_z - 0.5).round() as i64;
+            if k < band_min as i64 || k > band_max as i64 {
                 continue;
             }
             let i = (voxel.world_position[0] + half_x - 0.5).round() as i64;
-            let k = (voxel.world_position[2] + half_z - 0.5).round() as i64;
-            if i < 0 || i >= width as i64 || k < 0 || k >= grid_z as i64 {
+            let j = (voxel.world_position[1] + half_y - 0.5).round() as i64;
+            if i < 0 || i >= width as i64 || j < 0 || j >= grid_y as i64 {
                 continue;
             }
-            let key = (j as u64) << 32 | (k as u64);
+            let key = (k as u64) << 32 | (j as u64);
             let row = rows.entry(key).or_insert_with(|| vec![false; width]);
             row[i as usize] = true;
         }
@@ -236,23 +251,23 @@ pub fn widest_run_in_band_over_chunks<'grid>(
     let half_y = (grid_y / 2) as f32;
     let half_z = (grid_z / 2) as f32;
 
-    // ONE shared occupancy row (length grid_x) per (y, z) row that touches the
+    // ONE shared occupancy row (length grid_x) per (z, y) row that touches the
     // band — shared across ALL chunks, so a run spanning a chunk seam is one
-    // contiguous span in the same bitset. Keyed by a flat (y, z) index, built
-    // sparsely so an empty band is cheap.
+    // contiguous span in the same bitset. Keyed by a flat (z, y) index, built
+    // sparsely so an empty band is cheap. Z-up: the band is a Z-layer range.
     let mut rows: std::collections::HashMap<u64, Vec<bool>> = std::collections::HashMap::new();
     for grid in chunk_grids {
         for voxel in &grid.occupied {
-            let j = (voxel.world_position[1] + half_y - 0.5).round() as i64;
-            if j < band_min as i64 || j > band_max as i64 {
+            let k = (voxel.world_position[2] + half_z - 0.5).round() as i64;
+            if k < band_min as i64 || k > band_max as i64 {
                 continue;
             }
             let i = (voxel.world_position[0] + half_x - 0.5).round() as i64;
-            let k = (voxel.world_position[2] + half_z - 0.5).round() as i64;
-            if i < 0 || i >= width as i64 || k < 0 || k >= grid_z as i64 {
+            let j = (voxel.world_position[1] + half_y - 0.5).round() as i64;
+            if i < 0 || i >= width as i64 || j < 0 || j >= grid_y as i64 {
                 continue;
             }
-            let key = (j as u64) << 32 | (k as u64);
+            let key = (k as u64) << 32 | (j as u64);
             let row = rows.entry(key).or_insert_with(|| vec![false; width]);
             row[i as usize] = true;
         }
@@ -482,19 +497,20 @@ pub fn signed_distance_ellipsoid(point: Vec3, semi_axes: Vec3) -> f32 {
     distance_to_unit * (distance_to_unit - 1.0) / gradient
 }
 
-/// Signed distance to an elliptical cylinder with its axis along Y.
+/// Signed distance to an elliptical cylinder with its axis along Z (Z-up).
 ///
-/// `sdCylE(p, ax, az, ay)` in ARCHITECTURE.md §2: `semi_axis_x`/`semi_axis_z`
-/// are the cross-section radii, `half_height` is the Y half-extent.
+/// `sdCylE(p, ax, ay, az)` in ARCHITECTURE.md §2: `semi_axis_x`/`semi_axis_y`
+/// are the cross-section radii (the cylinder's circular cross-section lies in the
+/// XY ground plane), `half_height` is the Z (vertical) half-extent.
 pub fn signed_distance_elliptical_cylinder(
     point: Vec3,
     semi_axis_x: f32,
-    semi_axis_z: f32,
+    semi_axis_y: f32,
     half_height: f32,
 ) -> f32 {
-    let radial = (glam::Vec2::new(point.x / semi_axis_x, point.z / semi_axis_z).length() - 1.0)
-        * semi_axis_x.min(semi_axis_z);
-    let vertical = point.y.abs() - half_height;
+    let radial = (glam::Vec2::new(point.x / semi_axis_x, point.y / semi_axis_y).length() - 1.0)
+        * semi_axis_x.min(semi_axis_y);
+    let vertical = point.z.abs() - half_height;
     radial.max(vertical).min(0.0)
         + glam::Vec2::new(radial.max(0.0), vertical.max(0.0)).length()
 }
@@ -515,25 +531,29 @@ pub fn signed_distance(
 
     match shape {
         ShapeKind::Cylinder => {
-            signed_distance_elliptical_cylinder(point, semi_axis_x, semi_axis_z, semi_axis_y)
+            // Z-up: axis along Z. Cross-section radii are X/Y; `semi_axis_z` is the
+            // vertical half-height.
+            signed_distance_elliptical_cylinder(point, semi_axis_x, semi_axis_y, semi_axis_z)
         }
         ShapeKind::Tube => {
             let outer =
-                signed_distance_elliptical_cylinder(point, semi_axis_x, semi_axis_z, semi_axis_y);
+                signed_distance_elliptical_cylinder(point, semi_axis_x, semi_axis_y, semi_axis_z);
             let inner = signed_distance_elliptical_cylinder(
                 point,
                 (semi_axis_x - wall_voxels).max(0.01),
-                (semi_axis_z - wall_voxels).max(0.01),
-                semi_axis_y + 1.0,
+                (semi_axis_y - wall_voxels).max(0.01),
+                semi_axis_z + 1.0,
             );
             outer.max(-inner)
         }
         ShapeKind::Sphere => signed_distance_ellipsoid(point, semi_axes),
         ShapeKind::Torus => {
-            let tube_radius = semi_axis_y;
-            let ring_radius = (semi_axis_x.min(semi_axis_z) - tube_radius).max(0.0);
-            let radial = glam::Vec2::new(point.x, point.z).length() - ring_radius;
-            glam::Vec2::new(radial, point.y).length() - tube_radius
+            // Z-up: the ring lies in the XY ground plane, swept around the +Z axis;
+            // the tube minor radius is the vertical (Z) extent.
+            let tube_radius = semi_axis_z;
+            let ring_radius = (semi_axis_x.min(semi_axis_y) - tube_radius).max(0.0);
+            let radial = glam::Vec2::new(point.x, point.y).length() - ring_radius;
+            glam::Vec2::new(radial, point.z).length() - tube_radius
         }
         ShapeKind::Box => signed_distance_box(point, semi_axes),
     }

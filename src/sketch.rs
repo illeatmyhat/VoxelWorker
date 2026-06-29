@@ -47,9 +47,10 @@ use crate::voxel::{Voxel, VoxelGrid, VoxelProducer, MAX_GRID_VOXELS};
 pub enum PlaneAxis {
     /// Profile in the YZ plane, extruded along X.
     X,
-    /// Profile in the XZ plane, extruded along Y (the footprint-extrude default).
+    /// Profile in the XZ plane, extruded along Y.
     Y,
-    /// Profile in the XY plane, extruded along Z.
+    /// Profile in the XY plane, extruded along Z (Z-up: the footprint-extrude-up
+    /// default — profile on the XY ground, extruded up along +Z).
     Z,
 }
 

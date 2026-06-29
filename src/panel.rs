@@ -26,20 +26,20 @@ use crate::voxel::{GeometryParams, SdfShape, ShapeKind};
 
 /// Layer-range scrubber state (issue #12).
 ///
-/// The layer-range scrubber subsumes the old 2D mid-Y slice map. Layers run along
-/// **Y** (height). `lower`/`upper` are voxel Y-layer indices selected on a track
-/// `0..grid_y`; the visible band is layers `[lower, upper]` INCLUSIVE on both ends
-/// (so `lower == upper` shows a single layer). Default = the full range.
+/// The layer-range scrubber subsumes the old 2D mid-vertical slice map. Z-up: layers
+/// run along **Z** (height). `lower`/`upper` are voxel Z-layer indices selected on a
+/// track `0..grid_z`; the visible band is layers `[lower, upper]` INCLUSIVE on both
+/// ends (so `lower == upper` shows a single layer). Default = the full range.
 ///
 /// When `snap_to_blocks` is on, the handles snap to multiples of
-/// `voxels_per_block` (plus the endpoints `0` and `grid_y`); a narrowed
+/// `voxels_per_block` (plus the endpoints `0` and `grid_z`); a narrowed
 /// single-layer band viewed from the top is the chisel stencil. `onion_skin`
 /// ghosts up to `onion_depth` layers on each side of the band (3D screen-door).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LayerRange {
-    /// Lower handle: the first visible layer index (`0..=grid_y`).
+    /// Lower handle: the first visible layer index (`0..=grid_z`).
     pub lower: u32,
-    /// Upper handle: the last visible layer index (`lower..=grid_y`).
+    /// Upper handle: the last visible layer index (`lower..=grid_z`).
     pub upper: u32,
     /// Snap the handles to block boundaries (multiples of `voxels_per_block`).
     pub snap_to_blocks: bool,
@@ -51,9 +51,9 @@ pub struct LayerRange {
 
 impl Default for LayerRange {
     fn default() -> Self {
-        // Full range over the default cylinder grid_y (1 block × 16 density = 16).
+        // Full range over the default cylinder grid_z (1 block × 16 density = 16).
         // The real bounds are clamped/rescaled to the live grid on first rebuild
-        // and whenever grid_y changes (see `LayerRange::rescale_to_grid_y`).
+        // and whenever grid_z changes (see `LayerRange::rescale_to_grid_z`).
         Self {
             lower: 0,
             upper: 16,
@@ -66,34 +66,34 @@ impl Default for LayerRange {
 
 impl LayerRange {
     /// Snap a layer index to the nearest block boundary, keeping the endpoints
-    /// `0` and `grid_y` exact (they are always valid snap points even when
-    /// `grid_y` is not a clean multiple of the density, which it always is here).
-    pub fn snap_value(value: u32, voxels_per_block: u32, grid_y: u32) -> u32 {
+    /// `0` and `grid_z` exact (they are always valid snap points even when
+    /// `grid_z` is not a clean multiple of the density, which it always is here).
+    pub fn snap_value(value: u32, voxels_per_block: u32, grid_z: u32) -> u32 {
         let step = voxels_per_block.max(1);
-        if value >= grid_y {
-            return grid_y;
+        if value >= grid_z {
+            return grid_z;
         }
         let snapped = ((value + step / 2) / step) * step;
-        snapped.min(grid_y)
+        snapped.min(grid_z)
     }
 
-    /// Clamp/rescale the bounds to a (possibly new) `grid_y`. Called on every
-    /// geometry rebuild: when `grid_y` shrinks the handles are clamped in; the
-    /// default full-range state widens to the new top. Re-snaps to block
-    /// multiples when snapping is on so the band keeps landing on boundaries.
-    pub fn rescale_to_grid_y(&mut self, previous_grid_y: u32, grid_y: u32, voxels_per_block: u32) {
+    /// Clamp/rescale the bounds to a (possibly new) `grid_z` (Z-up: layers are
+    /// Z-slices). Called on every geometry rebuild: when `grid_z` shrinks the handles
+    /// are clamped in; the default full-range state widens to the new top. Re-snaps to
+    /// block multiples when snapping is on so the band keeps landing on boundaries.
+    pub fn rescale_to_grid_z(&mut self, previous_grid_z: u32, grid_z: u32, voxels_per_block: u32) {
         // A band that spanned the whole previous grid stays "full" on the new one.
-        let was_full = self.lower == 0 && self.upper >= previous_grid_y;
-        if was_full || previous_grid_y == 0 {
+        let was_full = self.lower == 0 && self.upper >= previous_grid_z;
+        if was_full || previous_grid_z == 0 {
             self.lower = 0;
-            self.upper = grid_y;
+            self.upper = grid_z;
         } else {
-            self.lower = self.lower.min(grid_y);
-            self.upper = self.upper.min(grid_y);
+            self.lower = self.lower.min(grid_z);
+            self.upper = self.upper.min(grid_z);
         }
         if self.snap_to_blocks {
-            self.lower = Self::snap_value(self.lower, voxels_per_block, grid_y);
-            self.upper = Self::snap_value(self.upper, voxels_per_block, grid_y);
+            self.lower = Self::snap_value(self.lower, voxels_per_block, grid_z);
+            self.upper = Self::snap_value(self.upper, voxels_per_block, grid_z);
         }
         if self.lower > self.upper {
             std::mem::swap(&mut self.lower, &mut self.upper);
@@ -102,8 +102,8 @@ impl LayerRange {
     }
 
     /// Whether this band covers the whole grid (so the 3D render is unclipped).
-    pub fn is_full_range(&self, grid_y: u32) -> bool {
-        self.lower == 0 && self.upper >= grid_y
+    pub fn is_full_range(&self, grid_z: u32) -> bool {
+        self.lower == 0 && self.upper >= grid_z
     }
 }
 
@@ -142,8 +142,8 @@ pub struct PanelState {
     /// its label, shown under the Material selector. `None` = a procedural
     /// material is active.
     pub applied_block_label: Option<String>,
-    /// Layer-range scrubber state (issue #12): the visible band along Y plus the
-    /// snap/onion controls. Bounds are clamped/rescaled to the grid on rebuild.
+    /// Layer-range scrubber state (issue #12): the visible band along Z (Z-up: layers
+    /// are Z-slices) plus the snap/onion controls. Bounds clamped/rescaled on rebuild.
     pub layer_range: LayerRange,
     /// Where **+ Add Point** drops a new Point (issue #29 S5), in whole world blocks.
     /// The caller refreshes it each frame from the camera target (rounded to blocks)
@@ -267,14 +267,14 @@ impl PanelResponse {
 
 /// Build the right-hand side panel into the root [`egui::Ui`] of the frame.
 ///
-/// `grid_y` is the current grid height in voxels (the layer-scrubber track spans
-/// `0..grid_y`); `measured_diameter` is the widest occupied voxel run in the
-/// active band (`grid.widest_run_in_band`), shown as a small stat line. Returns a
-/// [`PanelResponse`] describing what the user changed this frame.
+/// `grid_z` is the current grid height in voxels (Z-up: layers are Z-slices, so the
+/// layer-scrubber track spans `0..grid_z`); `measured_diameter` is the widest
+/// occupied voxel run in the active band (`grid.widest_run_in_band`), shown as a
+/// small stat line. Returns a [`PanelResponse`] describing what the user changed.
 pub fn build_panel(
     root_ui: &mut egui::Ui,
     state: &mut PanelState,
-    grid_y: u32,
+    grid_z: u32,
     measured_diameter: u32,
     palette: &BlockPalette,
 ) -> PanelResponse {
@@ -300,7 +300,7 @@ pub fn build_panel(
             build_camera_section(ui, state);
             build_display_section(ui, state, &mut response);
             build_export_section(ui, &mut response);
-            build_layers_section(ui, state, grid_y, measured_diameter);
+            build_layers_section(ui, state, grid_z, measured_diameter);
 
             if let Some(millions) = state.voxel_cap_warning_millions {
                 ui.add_space(8.0);
@@ -595,12 +595,14 @@ fn build_points_section(ui: &mut egui::Ui, state: &mut PanelState, response: &mu
             ui.separator();
 
             // Plane toggles → `SetPointPlanes` (carrying all three current values).
+            // Z-up: the GROUND plane is XY (normal +Z) = the `plane_xy` flag; the
+            // FRONT plane is XZ (normal +Y) = `plane_xz`; the SIDE plane is YZ.
             let mut plane_xz = point.plane_xz;
             let mut plane_xy = point.plane_xy;
             let mut plane_yz = point.plane_yz;
             let mut planes_changed = false;
-            planes_changed |= ui.checkbox(&mut plane_xz, "Ground plane (XZ)").changed();
-            planes_changed |= ui.checkbox(&mut plane_xy, "Front plane (XY)").changed();
+            planes_changed |= ui.checkbox(&mut plane_xy, "Ground plane (XY)").changed();
+            planes_changed |= ui.checkbox(&mut plane_xz, "Front plane (XZ)").changed();
             planes_changed |= ui.checkbox(&mut plane_yz, "Side plane (YZ)").changed();
             if planes_changed {
                 response.emit(Intent::SetPointPlanes {
@@ -1362,14 +1364,14 @@ fn build_export_section(ui: &mut egui::Ui, response: &mut PanelResponse) {
 }
 
 /// The Layers section (issue #12): the layer-range scrubber that subsumes the old
-/// 2D mid-Y slice map. A video-clip-style track over `0..grid_y` with two trim
-/// handles (lower/upper), the selected band highlighted, block-boundary ticks,
-/// the layers/blocks readout, the snap + onion controls, and the measured-
-/// diameter stat line (widest occupied voxel run in the active band).
+/// 2D mid-vertical slice map. Z-up: layers are Z-slices. A video-clip-style track
+/// over `0..grid_z` with two trim handles (lower/upper), the selected band
+/// highlighted, block-boundary ticks, the layers/blocks readout, the snap + onion
+/// controls, and the measured-diameter stat line (widest occupied run in the band).
 fn build_layers_section(
     ui: &mut egui::Ui,
     state: &mut PanelState,
-    grid_y: u32,
+    grid_z: u32,
     measured_diameter: u32,
 ) {
     ui.add_space(8.0);
@@ -1377,8 +1379,8 @@ fn build_layers_section(
 
     let voxels_per_block = state.geometry.voxels_per_block.max(1);
     // The scrubber edits `state.layer_range` in place; the bounds are kept valid
-    // (clamped to grid_y, lower <= upper, snapped if requested) by the widget.
-    layer_scrubber(ui, &mut state.layer_range, grid_y, voxels_per_block);
+    // (clamped to grid_z, lower <= upper, snapped if requested) by the widget.
+    layer_scrubber(ui, &mut state.layer_range, grid_z, voxels_per_block);
 
     let range = state.layer_range;
     // Readout: "layers L–U of N · blocks b0–b1".
@@ -1386,7 +1388,7 @@ fn build_layers_section(
     let block_upper = range.upper.saturating_sub(1).max(range.lower) / voxels_per_block;
     ui.label(
         egui::RichText::new(format!(
-            "layers {}–{} of {grid_y} · blocks {block_lower}–{block_upper}",
+            "layers {}–{} of {grid_z} · blocks {block_lower}–{block_upper}",
             range.lower, range.upper
         ))
         .small()
@@ -1398,9 +1400,9 @@ fn build_layers_section(
     if state.layer_range.snap_to_blocks {
         // Re-snap the current handles immediately so toggling snap on tidies them.
         state.layer_range.lower =
-            LayerRange::snap_value(state.layer_range.lower, voxels_per_block, grid_y);
+            LayerRange::snap_value(state.layer_range.lower, voxels_per_block, grid_z);
         state.layer_range.upper =
-            LayerRange::snap_value(state.layer_range.upper, voxels_per_block, grid_y);
+            LayerRange::snap_value(state.layer_range.upper, voxels_per_block, grid_z);
         if state.layer_range.lower > state.layer_range.upper {
             std::mem::swap(&mut state.layer_range.lower, &mut state.layer_range.upper);
         }
@@ -1427,19 +1429,19 @@ fn build_layers_section(
     ui.separator();
 }
 
-/// Custom range-scrubber widget (issue #12). Paints a track spanning `0..grid_y`
-/// with block-boundary ticks, the selected band highlighted, and two draggable
-/// trim handles (lower/upper). Drag is handled via `ui.interact` + the pointer:
-/// the nearer handle to the press grabs, then follows the pointer (snapped to
-/// block boundaries when `snap_to_blocks` is on). Keeps `lower <= upper` by
-/// swapping when the handles cross. Edits `range` in place.
+/// Custom range-scrubber widget (issue #12). Z-up: layers are Z-slices, so it paints
+/// a track spanning `0..grid_z` with block-boundary ticks, the selected band
+/// highlighted, and two draggable trim handles (lower/upper). Drag is handled via
+/// `ui.interact` + the pointer: the nearer handle to the press grabs, then follows
+/// the pointer (snapped to block boundaries when `snap_to_blocks` is on). Keeps
+/// `lower <= upper` by swapping when the handles cross. Edits `range` in place.
 fn layer_scrubber(
     ui: &mut egui::Ui,
     range: &mut LayerRange,
-    grid_y: u32,
+    grid_z: u32,
     voxels_per_block: u32,
 ) {
-    let grid_y = grid_y.max(1);
+    let grid_z = grid_z.max(1);
     let track_height = 26.0;
     let handle_half_width = 5.0;
     let desired = egui::vec2(ui.available_width(), track_height + 14.0);
@@ -1458,11 +1460,11 @@ fn layer_scrubber(
 
     // Map a layer index <-> an x pixel on the track.
     let layer_to_x = |layer: u32| -> f32 {
-        track_left + (layer as f32 / grid_y as f32) * track_width
+        track_left + (layer as f32 / grid_z as f32) * track_width
     };
     let x_to_layer = |x: f32| -> u32 {
         let t = ((x - track_left) / track_width).clamp(0.0, 1.0);
-        (t * grid_y as f32).round() as u32
+        (t * grid_z as f32).round() as u32
     };
 
     let painter = ui.painter_at(rect);
@@ -1473,19 +1475,19 @@ fn layer_scrubber(
 
     // Block-boundary tick marks every `voxels_per_block` layers (the snap points).
     let mut boundary = 0u32;
-    while boundary <= grid_y {
+    while boundary <= grid_z {
         let x = layer_to_x(boundary);
         painter.line_segment(
             [egui::pos2(x, track_top), egui::pos2(x, track_bottom)],
             egui::Stroke::new(1.0, egui::Color32::from_rgb(0x3a, 0x5f, 0x57)),
         );
-        if boundary == grid_y {
+        if boundary == grid_z {
             break;
         }
-        boundary = (boundary + voxels_per_block).min(grid_y);
-        if boundary == grid_y {
+        boundary = (boundary + voxels_per_block).min(grid_z);
+        if boundary == grid_z {
             // Draw the final endpoint tick then stop.
-            let x = layer_to_x(grid_y);
+            let x = layer_to_x(grid_z);
             painter.line_segment(
                 [egui::pos2(x, track_top), egui::pos2(x, track_bottom)],
                 egui::Stroke::new(1.0, egui::Color32::from_rgb(0x3a, 0x5f, 0x57)),
@@ -1523,7 +1525,7 @@ fn layer_scrubber(
                 });
             let mut value = x_to_layer(pos.x);
             if range.snap_to_blocks {
-                value = LayerRange::snap_value(value, voxels_per_block, grid_y);
+                value = LayerRange::snap_value(value, voxels_per_block, grid_z);
             }
             if active_upper {
                 range.upper = value;

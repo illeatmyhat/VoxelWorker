@@ -55,26 +55,31 @@ fn on_face_grid_enabled(material_id: u32) -> bool {
     return uniforms.grid_overlay_enabled > 0.5 && (material_id & GRID_OVERLAY_BIT) != 0u;
 }
 
-// The loaded block's 6-layer face texture array (one layer per cube face). Layer
-// order matches the renderer's CubeFaceSlot / `face_layer`: 0 +X(east), 1 -X(west),
-// 2 +Y(up), 3 -Y(down), 4 +Z(south), 5 -Z(north). A uniform block puts the same
-// PNG on all six layers; a per-face block puts each face PNG on its own layer.
+// The loaded block's 6-layer face texture array (one layer per cube face). Z-up:
+// layer order matches the renderer's CubeFaceSlot / `face_layer`: 0 +X(east),
+// 1 -X(west), 2 +Z(up), 3 -Z(down), 4 -Y(south/front), 5 +Y(north/back). The
+// VERTICAL texture axis is Z: a grass block's `up` PNG lands on its +Z top, NOT a
+// +Y wall. A uniform block puts the same PNG on all six layers; a per-face block
+// puts each face PNG on its own layer.
 @group(1) @binding(0)
 var material_texture: texture_2d_array<f32>;
 @group(1) @binding(1)
 var material_sampler: sampler;
 
 // Pick the texture-array layer for a cube face from its outward normal — IDENTICAL
-// to the instanced `face_layer` in voxel.wgsl so per-face textures land on the same
-// faces the instanced path shows.
+// to the CPU `face_layer` in cuboid_mesh.rs (and `CubeFaceSlot`) so per-face textures
+// land on the same faces. Z-up: +Z = up (2), -Z = down (3); the four horizontals are
+// ±X (east/west) and ±Y (south/north).
 fn face_layer(face_normal: vec3<f32>) -> i32 {
     let axis_magnitude = abs(face_normal);
-    if (axis_magnitude.x > 0.5) {
+    if (axis_magnitude.z > 0.5) {
+        // Vertical axis (Z-up): +Z = up layer 2, -Z = down layer 3.
+        return select(3, 2, face_normal.z > 0.0);
+    } else if (axis_magnitude.x > 0.5) {
         return select(1, 0, face_normal.x > 0.0);
-    } else if (axis_magnitude.y > 0.5) {
-        return select(3, 2, face_normal.y > 0.0);
     } else {
-        return select(5, 4, face_normal.z > 0.0);
+        // ±Y horizontals: -Y = south/front (4), +Y = north/back (5).
+        return select(5, 4, face_normal.y < 0.0);
     }
 }
 
@@ -139,19 +144,26 @@ fn fragment_main(
         return vec4<f32>(debug_color, 1.0);
     }
 
-    // --- Per-voxel texture slice (per-face UV direction matches the instanced cube) ---
+    // --- Per-voxel texture slice (per-face UV direction; IDENTICAL to cuboid.wgsl) ---
+    // Z-up: the texture's VERTICAL axis (V) is world-Z on every SIDE wall, so a
+    // directional texture stands upright on all four walls (±X and ±Y); the horizontal
+    // Z faces (top/bottom) tile in XY. Mapping: ±X U=±y V=±z; ±Y U=+x V=±z; ±Z U=±x V=+y.
     let axis_magnitude = abs(input.world_normal);
     var u_value: f32;
     var v_value: f32;
     if (axis_magnitude.x > 0.5) {
-        let u_sign = select(-1.0, 1.0, input.world_normal.x > 0.0);
-        u_value = coord_component(absolute.z, u_sign);
-        v_value = coord_component(absolute.y, -1.0);
+        // X-facing walls (east/west): U follows horizontal Y, V follows up (Z). V sign
+        // keys on world_normal.x, mirroring the Y branch's V sign on world_normal.y.
+        let v_sign = select(1.0, -1.0, input.world_normal.x > 0.0);
+        u_value = coord_component(absolute.y, 1.0);
+        v_value = coord_component(absolute.z, v_sign);
     } else if (axis_magnitude.y > 0.5) {
+        // Y-facing walls (north/south): U follows +x, V follows up (Z).
         let v_sign = select(1.0, -1.0, input.world_normal.y > 0.0);
         u_value = coord_component(absolute.x, 1.0);
         v_value = coord_component(absolute.z, v_sign);
     } else {
+        // Z faces (top/bottom, horizontal): U follows x, V follows +y.
         let u_sign = select(-1.0, 1.0, input.world_normal.z > 0.0);
         u_value = coord_component(absolute.x, u_sign);
         v_value = coord_component(absolute.y, 1.0);

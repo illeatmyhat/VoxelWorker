@@ -247,11 +247,11 @@ pub enum Intent {
     SetPointPlanes {
         /// The point index to edit.
         index: usize,
-        /// The ground (XZ) plane flag.
+        /// The FRONT (XZ, normal +Y) plane flag (Z-up).
         xz: bool,
-        /// The front (XY) plane flag.
+        /// The GROUND (XY, normal +Z) plane flag (Z-up).
         xy: bool,
-        /// The side (YZ) plane flag.
+        /// The side (YZ, normal +X) plane flag.
         yz: bool,
     },
     /// Set the three axis toggles of the point at `index`.

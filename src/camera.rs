@@ -26,9 +26,9 @@ const PHI_MIN: f32 = 0.0;
 const PHI_MAX: f32 = std::f32::consts::PI;
 
 /// Half-width of the smoothstep band (in `phi` radians) over which the up vector
-/// blends from `Vec3::Y` to the azimuth-derived horizontal up. Inside `[0, BAND]`
+/// blends from `Vec3::Z` to the azimuth-derived horizontal up. Inside `[0, BAND]`
 /// of the top pole (and `[π−BAND, π]` of the bottom) the blend runs; outside it
-/// the up is exactly `Vec3::Y`. Small enough to be invisible, wide enough that
+/// the up is exactly `Vec3::Z`. Small enough to be invisible, wide enough that
 /// the blend is smooth (no 1-frame flip) right through the singular frame.
 const UP_BLEND_BAND: f32 = 0.05;
 
@@ -47,29 +47,35 @@ pub enum CubeFace {
     Right,
     /// -X — LEFT.
     Left,
-    /// +Y — TOP.
+    /// +Z — TOP (Z-up).
     Top,
-    /// -Y — BOTTOM.
+    /// -Z — BOTTOM (Z-up).
     Bottom,
-    /// +Z — FRONT.
+    /// -Y — FRONT (Z-up: the front view looks along +Y at the −Y face).
     Front,
-    /// -Z — BACK.
+    /// +Y — BACK (Z-up).
     Back,
 }
 
 /// The view-cube faces in `materialIndex` order, with their human labels.
+///
+/// `materialIndex` order is the GEOMETRIC cube-axis order `(+X, -X, +Y, -Y, +Z,
+/// -Z)` (the raycast computes it as `axis*2 + sign`). Under the Z-up convention the
+/// geometric +Z face is TOP, -Z is BOTTOM, -Y is FRONT (the front view looks along
+/// +Y at the −Y face), and +Y is BACK — so the semantic [`CubeFace`] at each
+/// geometric index is RIGHT/LEFT/BACK/FRONT/TOP/BOTTOM.
 pub const CUBE_FACES: [(CubeFace, &str); 6] = [
-    (CubeFace::Right, "RIGHT"),
-    (CubeFace::Left, "LEFT"),
-    (CubeFace::Top, "TOP"),
-    (CubeFace::Bottom, "BOTTOM"),
-    (CubeFace::Front, "FRONT"),
-    (CubeFace::Back, "BACK"),
+    (CubeFace::Right, "RIGHT"),   // +X
+    (CubeFace::Left, "LEFT"),     // -X
+    (CubeFace::Back, "BACK"),     // +Y
+    (CubeFace::Front, "FRONT"),   // -Y
+    (CubeFace::Top, "TOP"),       // +Z
+    (CubeFace::Bottom, "BOTTOM"), // -Z
 ];
 
 impl CubeFace {
-    /// Map a 0..5 material index (raycast hit) to a face, matching the prototype
-    /// `materialIndex` order (+X, -X, +Y, -Y, +Z, -Z).
+    /// Map a 0..5 material index (raycast hit) to a face, matching the GEOMETRIC
+    /// `materialIndex` order (+X, -X, +Y, -Y, +Z, -Z) under the Z-up convention.
     pub fn from_material_index(index: usize) -> Option<Self> {
         CUBE_FACES.get(index).map(|(face, _)| *face)
     }
@@ -81,15 +87,16 @@ impl CubeFace {
         ViewCubeElement::from_face(self).snap_angles()
     }
 
-    /// The outward unit normal of this face (+X,-X,+Y,-Y,+Z,-Z).
+    /// The outward unit normal of this face, Z-up: RIGHT/LEFT = ±X, TOP/BOTTOM =
+    /// ±Z, FRONT/BACK = ∓Y (front = −Y, the front view looks along +Y).
     pub fn normal(self) -> Vec3 {
         match self {
             CubeFace::Right => Vec3::X,
             CubeFace::Left => Vec3::NEG_X,
-            CubeFace::Top => Vec3::Y,
-            CubeFace::Bottom => Vec3::NEG_Y,
-            CubeFace::Front => Vec3::Z,
-            CubeFace::Back => Vec3::NEG_Z,
+            CubeFace::Top => Vec3::Z,
+            CubeFace::Bottom => Vec3::NEG_Z,
+            CubeFace::Front => Vec3::NEG_Y,
+            CubeFace::Back => Vec3::Y,
         }
     }
 }
@@ -148,13 +155,13 @@ impl ViewCubeElement {
 
     /// Convert this element's direction into orbit `(theta, phi)`.
     ///
-    /// Unified spherical conversion `phi = acos(dir.y)`, `theta = atan2(dir.z,
-    /// dir.x)` — works for faces, edges AND corners. The pure poles (dir = ±Y)
-    /// special-case theta (undefined there) and snap phi to the EXACT pole
-    /// (`0` / `π`): the view matrix no longer degenerates there because
+    /// Unified spherical conversion (Z-up) `phi = acos(dir.z)`, `theta =
+    /// atan2(dir.y, dir.x)` — works for faces, edges AND corners. The pure poles
+    /// (dir = ±Z) special-case theta (undefined there) and snap phi to the EXACT
+    /// pole (`0` / `π`): the view matrix no longer degenerates there because
     /// [`OrbitCamera::up_vector`] supplies a true singular-frame up. Theta keeps
     /// the historical TOP/BOTTOM convention (`−π/2`) so the pole-up limit
-    /// `(−cos θ, 0, −sin θ)` lands on a stable screen orientation.
+    /// `(−cos θ, −sin θ, 0)` lands on a stable screen orientation.
     pub fn snap_angles(&self) -> (f32, f32) {
         use std::f32::consts::{FRAC_PI_2, PI};
         if self.is_pole() {
@@ -164,8 +171,8 @@ impl ViewCubeElement {
             };
         }
         let direction = self.snap_direction().normalize();
-        let phi = direction.y.clamp(-1.0, 1.0).acos();
-        let theta = direction.z.atan2(direction.x);
+        let phi = direction.z.clamp(-1.0, 1.0).acos();
+        let theta = direction.y.atan2(direction.x);
         (theta, phi)
     }
 }
@@ -216,12 +223,12 @@ pub enum RollDir {
 /// Up/Down reach TOP/BOTTOM, and TOP/BOTTOM's Left/Right reach the LEFT/RIGHT
 /// equatorial faces (a spin about the vertical axis). Full table:
 ///
-///   * FRONT (+Z): Up→Top,  Down→Bottom, Left→Left,  Right→Right
-///   * BACK (−Z):  Up→Bottom, Down→Top,  Left→Right, Right→Left
+///   * FRONT (−Y): Up→Top,  Down→Bottom, Left→Left,  Right→Right
+///   * BACK (+Y):  Up→Bottom, Down→Top,  Left→Right, Right→Left
 ///   * RIGHT (+X): Up→Top,  Down→Bottom, Left→Front, Right→Back
 ///   * LEFT (−X):  Up→Top,  Down→Bottom, Left→Back,  Right→Front
-///   * TOP (+Y):   Up→Back, Down→Front,  Left→Left,  Right→Right
-///   * BOTTOM(−Y): Up→Front, Down→Back,  Left→Left,  Right→Right
+///   * TOP (+Z):   Up→Back, Down→Front,  Left→Left,  Right→Right
+///   * BOTTOM(−Z): Up→Front, Down→Back,  Left→Left,  Right→Right
 ///
 /// Properties (proven in tests): the four neighbours of any face are distinct
 /// (never the face itself); four Up steps cycle the vertical circle and four
@@ -668,14 +675,15 @@ pub enum ProjectionMode {
 pub struct OrbitCamera {
     /// Point the camera looks at (origin in M2).
     pub target: Vec3,
-    /// Azimuth, radians.
+    /// Azimuth in the XY ground plane, radians.
     pub orbit_theta: f32,
-    /// Polar angle from +Y, radians (clamped to `[PHI_MIN, PHI_MAX]`).
+    /// Polar angle from +Z (the vertical/up axis), radians (clamped to
+    /// `[PHI_MIN, PHI_MAX]`).
     pub orbit_phi: f32,
     /// Distance from `target` to the camera eye.
     pub orbit_distance: f32,
     /// Roll about the forward/view axis (radians, #13 Step 5). Default 0 = the
-    /// pole-aware base up (`Vec3::Y` away from the poles). The ViewCube roll arrows
+    /// pole-aware base up (`Vec3::Z` away from the poles). The ViewCube roll arrows
     /// tween this by ∓90°; any face/edge/corner/Home snap re-uprights it to 0.
     /// Transient view state — NOT persisted (default 0 on load).
     pub roll: f32,
@@ -725,11 +733,12 @@ impl OrbitCamera {
         (centre, distance)
     }
 
-    /// Unit direction from the target toward the camera eye.
+    /// Unit direction from the target toward the camera eye (Z-up spherical:
+    /// `phi` is the polar angle from +Z, `theta` the azimuth in the XY plane).
     pub fn direction(&self) -> Vec3 {
         let (sin_phi, cos_phi) = self.orbit_phi.sin_cos();
         let (sin_theta, cos_theta) = self.orbit_theta.sin_cos();
-        Vec3::new(sin_phi * cos_theta, cos_phi, sin_phi * sin_theta)
+        Vec3::new(sin_phi * cos_theta, sin_phi * sin_theta, cos_phi)
     }
 
     /// Camera eye position: `target + direction * distance`.
@@ -776,16 +785,17 @@ impl OrbitCamera {
     /// The up vector for `look_at_rh`, well-defined and CONTINUOUS through the
     /// poles (no `look_at` degeneracy, no roll-flip).
     ///
-    /// Away from the poles this is just `Vec3::Y`. Within [`UP_BLEND_BAND`] of a
+    /// Away from the poles this is just `Vec3::Z`. Within [`UP_BLEND_BAND`] of a
     /// pole it smoothly blends to an **azimuth-derived horizontal up** — the exact
-    /// limit of "`Vec3::Y` projected onto the view plane, normalised" as
-    /// `phi → 0/π`. That limit is `(−cos θ, 0, −sin θ)` at the top pole and
-    /// `(cos θ, 0, sin θ)` at the bottom, so the screen "up" the user sees is the
+    /// limit of "`Vec3::Z` projected onto the view plane, normalised" as
+    /// `phi → 0/π`. That limit is `(−cos θ, −sin θ, 0)` at the top pole and
+    /// `(cos θ, sin θ, 0)` at the bottom, so the screen "up" the user sees is the
     /// direction the camera would tilt toward, and it never jumps as the drag
     /// crosses the singular frame.
     ///
-    /// At the exact TOP snap (`θ = −π/2`, `phi = 0`) this yields up `≈ (0, 0, 1)`,
-    /// consistent with the historical TOP/BOTTOM snap convention.
+    /// At the exact TOP snap (`θ = −π/2`, `phi = 0`) this yields up `≈ (0, 1, 0)`,
+    /// consistent with the Z-up TOP/BOTTOM snap convention (looking straight down
+    /// at the XY ground, screen-up points toward +Y = the BACK edge).
     ///
     /// This is the **base** up (roll-free). [`Self::up_vector`] rotates it by
     /// `roll` about the forward axis; both view matrices route through that one so
@@ -796,21 +806,22 @@ impl OrbitCamera {
         let phi = self.orbit_phi;
         let distance_from_pole = phi.min(PI - phi);
         if distance_from_pole >= UP_BLEND_BAND {
-            return Vec3::Y;
+            return Vec3::Z;
         }
-        // Horizontal up: the limit of projected-Y as phi → the near pole.
-        // Top pole (phi≈0): (−cosθ, 0, −sinθ); bottom (phi≈π): (cosθ, 0, sinθ).
+        // Horizontal up: the limit of projected-Z as phi → the near pole (in the XY
+        // ground plane). Top pole (phi≈0): (−cosθ, −sinθ, 0); bottom (phi≈π):
+        // (cosθ, sinθ, 0).
         let (sin_theta, cos_theta) = self.orbit_theta.sin_cos();
         let near_top = phi < PI - phi;
         let horizontal_up = if near_top {
-            Vec3::new(-cos_theta, 0.0, -sin_theta)
+            Vec3::new(-cos_theta, -sin_theta, 0.0)
         } else {
-            Vec3::new(cos_theta, 0.0, sin_theta)
+            Vec3::new(cos_theta, sin_theta, 0.0)
         };
-        // smoothstep from horizontal_up (at the pole) to Vec3::Y (at the band edge).
+        // smoothstep from horizontal_up (at the pole) to Vec3::Z (at the band edge).
         let t = (distance_from_pole / UP_BLEND_BAND).clamp(0.0, 1.0);
         let weight = t * t * (3.0 - 2.0 * t); // smoothstep
-        let blended = horizontal_up.lerp(Vec3::Y, weight);
+        let blended = horizontal_up.lerp(Vec3::Z, weight);
         // The two endpoints are orthogonal unit vectors, so the lerp is never
         // zero-length; normalise so `look_at_rh` gets a clean unit up.
         blended.normalize()
@@ -875,7 +886,7 @@ impl OrbitCamera {
     /// Using the orthogonalised screen up — NOT the raw `up_vector()`, which is only
     /// perpendicular to `forward` when the view is level — is what keeps a vertical
     /// drag moving straight up ON SCREEN at any tilt. With the raw up the pan drifts
-    /// along world-Y and the cursor slips off the grabbed point (worst in
+    /// along world-Z and the cursor slips off the grabbed point (worst in
     /// orthographic, where there's no perspective foreshortening to hide the drift).
     ///
     /// `viewport_height_px` makes the pan cursor-locked (1:1): `world_per_pixel` is
@@ -1000,17 +1011,20 @@ mod tests {
 
     #[test]
     fn material_index_maps_to_faces_in_order() {
+        // Z-up geometric (+X,-X,+Y,-Y,+Z,-Z) → Right,Left,Back,Front,Top,Bottom.
         assert_eq!(CubeFace::from_material_index(0), Some(CubeFace::Right));
-        assert_eq!(CubeFace::from_material_index(2), Some(CubeFace::Top));
-        assert_eq!(CubeFace::from_material_index(5), Some(CubeFace::Back));
+        assert_eq!(CubeFace::from_material_index(2), Some(CubeFace::Back));
+        assert_eq!(CubeFace::from_material_index(4), Some(CubeFace::Top));
+        assert_eq!(CubeFace::from_material_index(5), Some(CubeFace::Bottom));
         assert_eq!(CubeFace::from_material_index(6), None);
     }
 
     #[test]
-    fn front_face_points_down_positive_z() {
-        // FRONT = +Z: snapping should put the eye on +Z looking back at origin.
+    fn front_face_eye_on_negative_y() {
+        // Z-up: FRONT = −Y. Snapping puts the eye on −Y looking back along +Y at
+        // the origin. Front snap: theta = atan2(−1, 0) = −π/2, phi = acos(0) = π/2.
         let (theta, phi) = CubeFace::Front.snap_angles();
-        assert!(approx(theta, FRAC_PI_2));
+        assert!(approx(theta, -FRAC_PI_2));
         assert!(approx(phi, FRAC_PI_2));
         let camera = OrbitCamera {
             orbit_theta: theta,
@@ -1018,14 +1032,15 @@ mod tests {
             ..OrbitCamera::default()
         };
         let direction = camera.direction();
-        // direction = (sin·cos, cos, sin·sin) → ~(0, 0, 1).
+        // direction = (sinφcosθ, sinφsinθ, cosφ) → ~(0, −1, 0).
         assert!(approx(direction.x, 0.0));
-        assert!(approx(direction.y, 0.0));
-        assert!(approx(direction.z, 1.0));
+        assert!(approx(direction.y, -1.0));
+        assert!(approx(direction.z, 0.0));
     }
 
     #[test]
-    fn top_face_points_down_positive_y() {
+    fn top_face_eye_on_positive_z() {
+        // Z-up: TOP = +Z. The eye sits straight above, looking down at the XY ground.
         let (theta, phi) = CubeFace::Top.snap_angles();
         let camera = OrbitCamera {
             orbit_theta: theta,
@@ -1033,8 +1048,8 @@ mod tests {
             ..OrbitCamera::default()
         };
         let direction = camera.direction();
-        assert!(approx(direction.y, 1.0));
-        assert!(direction.x.abs() < 1e-3 && direction.z.abs() < 1e-3);
+        assert!(approx(direction.z, 1.0));
+        assert!(direction.x.abs() < 1e-3 && direction.y.abs() < 1e-3);
     }
 
     #[test]
@@ -1094,7 +1109,7 @@ mod tests {
 
     #[test]
     fn pan_moves_along_the_screen_basis_and_scales_with_distance() {
-        // The default view is TILTED (phi ≈ 1.05), so up_vector() (≈ +Y) is NOT
+        // The default view is TILTED (phi ≈ 1.05), so up_vector() (≈ +Z) is NOT
         // perpendicular to the look direction — the exact case the screen-up
         // orthogonalisation fixes. The pan must follow the look_at_rh frame:
         // right = forward × up, screen_up = right × forward.
@@ -1117,17 +1132,17 @@ mod tests {
         // A pure vertical drag DOWN (winit screen-y is down-positive) pulls the
         // scene down, so the target slides UP — along SCREEN up, in the view plane,
         // with no horizontal (right) component. The regression guard: it must NOT be
-        // pure world-Y, which on this tilted view has a real screen_up·Y < 1.
+        // pure world-Z (the vertical axis), which on this tilted view has screen_up·Z < 1.
         let mut vertical = OrbitCamera::default();
         vertical.pan_by_drag(0.0, 10.0, height);
         let moved = vertical.target;
         assert!(moved.dot(screen_up) > 0.0, "drag down slides the target up-screen");
         assert!(approx(moved.dot(right), 0.0), "a vertical drag has no horizontal pan");
         assert!(approx(moved.dot(forward), 0.0), "pan stays in the view plane");
-        // The vertical pan is genuinely TILTED off world-Y (the bug was using raw Y).
+        // The vertical pan is genuinely TILTED off world-Z (the bug was using raw up).
         assert!(
-            moved.normalize().dot(Vec3::Y) < 0.999,
-            "vertical pan must track screen-up, not pure world-Y",
+            moved.normalize().dot(Vec3::Z) < 0.999,
+            "vertical pan must track screen-up, not pure world-Z",
         );
 
         // Pan scales with orbit_distance: the SAME drag at twice the distance moves
@@ -1176,13 +1191,15 @@ mod tests {
     #[test]
     fn faces_match_old_snap_table() {
         // The unified element snap must reproduce the historical face angles.
+        // Z-up snap angles: Right/Left/Top/Bottom unchanged; Front (−Y) → theta
+        // −π/2 and Back (+Y) → theta +π/2 (swapped from the old Y-up +Z/−Z front/back).
         let expected = [
             (CubeFace::Right, (0.0, FRAC_PI_2)),
             (CubeFace::Left, (PI, FRAC_PI_2)),
             (CubeFace::Top, (-FRAC_PI_2, 0.0)),
             (CubeFace::Bottom, (-FRAC_PI_2, PI)),
-            (CubeFace::Front, (FRAC_PI_2, FRAC_PI_2)),
-            (CubeFace::Back, (-FRAC_PI_2, FRAC_PI_2)),
+            (CubeFace::Front, (-FRAC_PI_2, FRAC_PI_2)),
+            (CubeFace::Back, (FRAC_PI_2, FRAC_PI_2)),
         ];
         for (face, (theta, phi)) in expected {
             let (got_theta, got_phi) = face.snap_angles();
@@ -1193,11 +1210,11 @@ mod tests {
 
     #[test]
     fn edge_snap_direction_front_top() {
-        // FRONT (+Z) + TOP (+Y) → dir (0, .707, .707): phi = π/4, theta = π/2.
+        // Z-up: FRONT (−Y) + TOP (+Z) → dir (0, −.707, .707): phi = π/4, theta = −π/2.
         let element = ViewCubeElement::from_edge(CubeFace::Front, CubeFace::Top);
         let (theta, phi) = element.snap_angles();
         assert!(approx(phi, std::f32::consts::FRAC_PI_4), "phi = {phi}");
-        assert!(approx(theta, FRAC_PI_2), "theta = {theta}");
+        assert!(approx(theta, -FRAC_PI_2), "theta = {theta}");
         // Order-independence: the same edge the other way round.
         let (theta2, phi2) = ViewCubeElement::from_edge(CubeFace::Top, CubeFace::Front).snap_angles();
         assert!(approx(theta, theta2) && approx(phi, phi2));
@@ -1205,12 +1222,12 @@ mod tests {
 
     #[test]
     fn corner_snap_direction_front_top_right_is_isometric() {
-        // FRONT (+Z) + TOP (+Y) + RIGHT (+X) → dir (1,1,1)/√3: all components
-        // positive, an isometric view. phi = acos(1/√3) ≈ 0.9553.
+        // Z-up: FRONT (−Y) + TOP (+Z) + RIGHT (+X) → dir (1,−1,1)/√3: an isometric
+        // view (X+, Y−, Z+). phi = acos(1/√3) ≈ 0.9553.
         let element =
             ViewCubeElement::from_corner(CubeFace::Front, CubeFace::Top, CubeFace::Right);
         let direction = element.snap_direction().normalize();
-        assert!(direction.x > 0.0 && direction.y > 0.0 && direction.z > 0.0);
+        assert!(direction.x > 0.0 && direction.y < 0.0 && direction.z > 0.0);
         let (theta, phi) = element.snap_angles();
         // Rebuild the eye direction from the snapped angles and confirm it matches.
         let camera = OrbitCamera {
@@ -1333,9 +1350,9 @@ mod tests {
         }
     }
 
-    /// At the exact TOP snap (theta=-π/2, phi=0) the up limit is (0,0,1) and at
-    /// the BOTTOM snap (theta=-π/2, phi=π) it is (0,0,-1) — the documented
-    /// convention.
+    /// Z-up: at the exact TOP snap (theta=-π/2, phi=0) the up limit is (0,1,0) and
+    /// at the BOTTOM snap (theta=-π/2, phi=π) it is (0,-1,0) — the documented
+    /// convention (screen-up points toward ±Y in the ground plane).
     #[test]
     fn up_vector_at_exact_pole_snaps_matches_convention() {
         let top = OrbitCamera {
@@ -1344,8 +1361,8 @@ mod tests {
             ..OrbitCamera::default()
         }
         .up_vector();
-        // (-cos(-π/2), 0, -sin(-π/2)) = (0, 0, 1).
-        assert!(approx(top.x, 0.0) && approx(top.y, 0.0) && approx(top.z, 1.0), "{top:?}");
+        // (-cos(-π/2), -sin(-π/2), 0) = (0, 1, 0).
+        assert!(approx(top.x, 0.0) && approx(top.y, 1.0) && approx(top.z, 0.0), "{top:?}");
 
         let bottom = OrbitCamera {
             orbit_theta: -FRAC_PI_2,
@@ -1353,24 +1370,23 @@ mod tests {
             ..OrbitCamera::default()
         }
         .up_vector();
-        // (cos(-π/2), 0, sin(-π/2)) = (0, 0, -1).
+        // (cos(-π/2), sin(-π/2), 0) = (0, -1, 0).
         assert!(
-            approx(bottom.x, 0.0) && approx(bottom.y, 0.0) && approx(bottom.z, -1.0),
+            approx(bottom.x, 0.0) && approx(bottom.y, -1.0) && approx(bottom.z, 0.0),
             "{bottom:?}"
         );
     }
 
-    /// Away from the poles the up vector is exactly Vec3::Y (no behavioural
-    /// change to non-pole views — goldens stay byte-identical).
+    /// Away from the poles the up vector is exactly Vec3::Z (Z-up: the vertical axis).
     #[test]
-    fn up_vector_away_from_poles_is_exactly_y() {
+    fn up_vector_away_from_poles_is_exactly_z() {
         for &phi in &[0.1f32, 0.5, 1.05, FRAC_PI_2, 2.5, PI - 0.1] {
             let up = OrbitCamera {
                 orbit_phi: phi,
                 ..OrbitCamera::default()
             }
             .up_vector();
-            assert_eq!(up, Vec3::Y, "phi={phi} should give exact Vec3::Y");
+            assert_eq!(up, Vec3::Z, "phi={phi} should give exact Vec3::Z");
         }
     }
 
@@ -1853,6 +1869,31 @@ mod tests {
         assert!(approx(home.theta, camera.orbit_theta));
         assert!(approx(home.phi, camera.orbit_phi));
         assert!(approx(home.distance, camera.orbit_distance));
+    }
+
+    /// Z-up convention pins (the central guarantee of the reorientation):
+    ///  * the base up away from the poles is exactly `Vec3::Z`;
+    ///  * a top-down view's nearest face is `Top` with outward normal +Z;
+    ///  * the ground-plane / front-face normals are +Z / −Y respectively.
+    #[test]
+    fn z_up_convention_holds() {
+        // (1) up_vector_base ≈ Vec3::Z at a normal (non-pole) tilt.
+        let camera = OrbitCamera { orbit_phi: 1.0, ..OrbitCamera::default() };
+        assert_eq!(camera.up_vector_base(), Vec3::Z, "base up must be +Z");
+
+        // (2) A top-down view (snapped to TOP) has nearest face Top, normal +Z.
+        let (theta, phi) = CubeFace::Top.snap_angles();
+        let top_down = OrbitCamera { orbit_theta: theta, orbit_phi: phi, ..OrbitCamera::default() };
+        assert_eq!(top_down.nearest_face(), CubeFace::Top, "top-down nearest face");
+        assert_eq!(CubeFace::Top.normal(), Vec3::Z, "TOP normal is +Z");
+
+        // (3) FRONT normal = −Y (the front view looks along +Y); ground plane up +Z.
+        assert_eq!(CubeFace::Front.normal(), Vec3::NEG_Y, "FRONT normal is −Y");
+        assert_eq!(CubeFace::Bottom.normal(), Vec3::NEG_Z, "BOTTOM normal is −Z");
+
+        // (4) The default view looks DOWN at the XY ground (eye above, +Z), 3/4-ish.
+        let eye_dir = OrbitCamera::default().direction();
+        assert!(eye_dir.z > 0.0, "default eye is above the ground (Z>0): {eye_dir:?}");
     }
 
     #[test]

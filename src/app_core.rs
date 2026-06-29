@@ -843,10 +843,11 @@ impl AppCore {
     }
 
     /// Build the onion-skin fog parameters (issue #12) from the camera-derived
-    /// view-projection, grid, and layer-range scrubber. Corner-anchoring: the grid's
-    /// low corner in the recentred frame is `−floor(dim/2)`, so layer `j` has its voxel
-    /// centre at `j + 0.5 − floor(grid_y/2)` and spans world-Y `[j − floor(grid_y/2),
-    /// j+1 − floor(grid_y/2)]`. The solid band is layers `[lower, upper]`; the onion
+    /// view-projection, grid, and layer-range scrubber. Z-up: layers are Z-slices, so
+    /// the band is a Z-range. Corner-anchoring: the grid's low corner in the recentred
+    /// frame is `−floor(dim/2)`, so layer `k` has its voxel centre at
+    /// `k + 0.5 − floor(grid_z/2)` and spans world-Z `[k − floor(grid_z/2),
+    /// k+1 − floor(grid_z/2)]`. The solid band is layers `[lower, upper]`; the onion
     /// band extends `onion_depth` layers on each side.
     pub fn onion_fog_params(
         view_projection: glam::Mat4,
@@ -855,7 +856,7 @@ impl AppCore {
     ) -> OnionFogParams {
         // FLOORED half (`(dim/2) as f32`) throughout, for a frame CONSISTENT with the
         // corner-anchored voxels: the grid's low corner in the recentred frame is
-        // `−floor(dim/2)`, so the layer→world-Y conversion AND the ellipsoid `semi_axes`
+        // `−floor(dim/2)`, so the layer→world-Z conversion AND the ellipsoid `semi_axes`
         // (which bounds the voxel volume `[−floor(dim/2), −floor(dim/2)+dim)`) must both
         // use the floored half. (`dim/2.0` would put the ghost-fog ellipsoid ½ voxel off
         // the voxels at an ODD dim; even-density goldens are unaffected either way.)
@@ -864,17 +865,18 @@ impl AppCore {
         let half_z = (grid_dimensions[2] / 2) as f32;
         let depth = layer_range.onion_depth.clamp(1, 8) as f32;
         let lower = layer_range.lower as f32;
-        let upper = layer_range.upper.min(grid_dimensions[1].saturating_sub(1)) as f32;
+        // Z-up: the layer band is along Z (index 2).
+        let upper = layer_range.upper.min(grid_dimensions[2].saturating_sub(1)) as f32;
         OnionFogParams {
             inverse_view_projection: view_projection.inverse(),
             semi_axes: [half_x, half_y, half_z],
-            // Onion band world-Y: `depth` layers below the band's bottom edge to
+            // Onion band world-Z: `depth` layers below the band's bottom edge to
             // `depth` layers above its top edge.
-            onion_y_min: (lower - depth) - half_y,
-            onion_y_max: (upper + 1.0 + depth) - half_y,
-            // Solid band world-Y (excluded from the fog).
-            band_y_min: lower - half_y,
-            band_y_max: (upper + 1.0) - half_y,
+            onion_z_min: (lower - depth) - half_z,
+            onion_z_max: (upper + 1.0 + depth) - half_z,
+            // Solid band world-Z (excluded from the fog).
+            band_z_min: lower - half_z,
+            band_z_max: (upper + 1.0) - half_z,
         }
     }
 

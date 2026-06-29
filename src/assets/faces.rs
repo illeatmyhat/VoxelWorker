@@ -34,12 +34,15 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-/// The six cube faces, in the renderer's layer order (+X, -X, +Y, -Y, +Z, -Z).
+/// The six cube faces, in the renderer's texture-array layer order
+/// (slot 0..5 = East, West, Up, Down, South, North).
 ///
-/// The mapping to VS face names is: +Y = `up`, -Y = `down`, and the four
-/// horizontal faces take their side textures (+X = `east`, -X = `west`,
-/// +Z = `south`, -Z = `north`). Exact compass orientation is not critical
-/// (DATA.md); top-vs-side correctness is what matters.
+/// **Z-up world-axis mapping** (matches `cuboid_loaded.wgsl::face_layer` exactly):
+/// the VERTICAL axis is Z, so `up` = +Z and `down` = -Z; the four horizontals are
+/// `east` = +X, `west` = -X, `south` = -Y (the front face — front looks along +Y),
+/// `north` = +Y (back). Exact compass orientation of the sides is not critical
+/// (DATA.md); top-vs-side correctness — the `up` PNG on the +Z top, not a wall — is
+/// what matters, and that is now correct under Z-up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CubeFaceSlot {
     East,
@@ -51,7 +54,8 @@ pub enum CubeFaceSlot {
 }
 
 impl CubeFaceSlot {
-    /// All six slots in renderer-layer order (+X, -X, +Y, -Y, +Z, -Z).
+    /// All six slots in texture-array layer order (0 East/+X, 1 West/-X, 2 Up/+Z,
+    /// 3 Down/-Z, 4 South/-Y, 5 North/+Y).
     pub const ALL: [CubeFaceSlot; 6] = [
         CubeFaceSlot::East,
         CubeFaceSlot::West,
@@ -61,7 +65,8 @@ impl CubeFaceSlot {
         CubeFaceSlot::North,
     ];
 
-    /// The texture-array layer index (0..6) for this slot.
+    /// The texture-array layer index (0..6) for this slot. Z-up: Up=+Z, Down=-Z,
+    /// East=+X, West=-X, South=-Y, North=+Y.
     pub fn layer(self) -> usize {
         match self {
             CubeFaceSlot::East => 0,
@@ -81,7 +86,8 @@ impl CubeFaceSlot {
 /// block genuinely differs per face (used by `--list-perface`).
 #[derive(Debug, Clone)]
 pub struct FaceTextures {
-    /// One absolute PNG path per face, in +X,-X,+Y,-Y,+Z,-Z layer order.
+    /// One absolute PNG path per face, in `CubeFaceSlot` layer order
+    /// (East/+X, West/-X, Up/+Z, Down/-Z, South/-Y, North/+Y under Z-up).
     pub paths: [PathBuf; 6],
     /// How the mapping was obtained (for the `--list-perface` / report log).
     pub provenance: FaceProvenance,

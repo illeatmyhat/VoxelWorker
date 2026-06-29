@@ -148,12 +148,12 @@ fn with_alpha(rgb: [f32; 3], alpha: f32) -> [f32; 4] {
     [rgb[0], rgb[1], rgb[2], alpha]
 }
 
-/// The visible layer band (issue #12), in voxel Y-layer indices, passed to the
-/// voxel shader. The band is INCLUSIVE on both ends: layers `[band_min, band_max]`
-/// render solid. `onion_depth` is the number of layers OUTSIDE the band that
-/// render ghosted (screen-door dither); `0` means a hard clip at the band.
+/// The visible layer band (issue #12), in voxel Z-layer indices (Z-up: layers are
+/// Z-slices), passed to the mesh band clip. The band is INCLUSIVE on both ends:
+/// layers `[band_min, band_max]` render solid. `onion_depth` is the number of layers
+/// OUTSIDE the band that render ghosted (screen-door dither); `0` = a hard clip.
 ///
-/// Pass [`LayerBand::FULL`] (or any band whose `band_max >= grid_y - 1` and
+/// Pass [`LayerBand::FULL`] (or any band whose `band_max >= grid_z - 1` and
 /// `band_min == 0`) to draw the whole model unclipped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LayerBand {
@@ -164,7 +164,7 @@ pub struct LayerBand {
 
 impl LayerBand {
     /// An effectively-unbounded band (the whole grid, no onion skin). `band_max`
-    /// is huge so no layer is ever clipped regardless of `grid_y`.
+    /// is huge so no layer is ever clipped regardless of `grid_z`.
     pub const FULL: LayerBand = LayerBand {
         band_min: 0,
         band_max: u32::MAX,
@@ -922,13 +922,15 @@ impl ViewCubeRenderer {
 /// its layer in the cube's face-label texture array and its bit in the hover mask.
 fn cube_face_material_index(face: crate::camera::CubeFace) -> u32 {
     use crate::camera::CubeFace;
+    // GEOMETRIC material-index order (+X,-X,+Y,-Y,+Z,-Z) under Z-up: the inverse of
+    // `CubeFace::from_material_index` (Right,Left,Back,Front,Top,Bottom).
     match face {
         CubeFace::Right => 0,
         CubeFace::Left => 1,
-        CubeFace::Top => 2,
-        CubeFace::Bottom => 3,
-        CubeFace::Front => 4,
-        CubeFace::Back => 5,
+        CubeFace::Back => 2,
+        CubeFace::Front => 3,
+        CubeFace::Top => 4,
+        CubeFace::Bottom => 5,
     }
 }
 
@@ -1014,12 +1016,12 @@ fn view_cube_edges() -> Vec<LineVertex> {
     vertices
 }
 
-/// Render the six face-label textures (RIGHT/LEFT/TOP/BOTTOM/FRONT/BACK) into one
-/// stacked RGBA8 buffer (6 layers, in `materialIndex` order). Each is a dark
-/// warm panel `#241d15` with a teal `#5fb8a4` border and parchment `#e9e1d1`
-/// text, transcribed from the prototype `faceTex`.
+/// Render the six face-label textures into one stacked RGBA8 buffer (6 layers, in
+/// GEOMETRIC `materialIndex` order +X,-X,+Y,-Y,+Z,-Z). Z-up labels each geometric
+/// face: +Y = BACK, −Y = FRONT, +Z = TOP, −Z = BOTTOM. Each is a dark warm panel
+/// `#241d15` with a teal `#5fb8a4` border and parchment `#e9e1d1` text.
 fn generate_face_label_textures() -> Vec<u8> {
-    const LABELS: [&str; 6] = ["RIGHT", "LEFT", "TOP", "BOTTOM", "FRONT", "BACK"];
+    const LABELS: [&str; 6] = ["RIGHT", "LEFT", "BACK", "FRONT", "TOP", "BOTTOM"];
     let size = FACE_LABEL_TEXTURE_SIZE as usize;
     let mut all = Vec::with_capacity(size * size * 4 * 6);
     for label in LABELS {
@@ -2071,7 +2073,7 @@ pub struct SceneGridRenderer {
     uniform_bind_group: wgpu::BindGroup,
     /// Separate uniforms for the floor draw (issue #29 fix): the SAME
     /// view-projection but a NEGATIVE [`LineUniforms::depth_bias`], so the floor
-    /// draws at the EXACT base plane `y = min[1]` (meeting the lattice's bottom
+    /// draws at the EXACT base plane `z = min[2]` (Z-up; meeting the lattice's bottom
     /// edges) yet wins the `Less` depth test against the model's coincident bottom
     /// face — no z-fight shimmer, no geometric vertical drop. (A hardware
     /// `DepthBiasState` is rejected by wgpu on `LineList`, so the bias is applied
@@ -2364,6 +2366,9 @@ fn lattice_vertices_into(vertices: &mut Vec<LineVertex>, min: [f32; 3], max: [f3
         vertices.push(LineVertex { position: to, color });
     };
 
+    // The full 3D block lattice draws line families along all three axes. Z-up: the
+    // VERTICAL pillars are the Z-along family below (between the XY ground nodes); the
+    // X- and Y-along families are the horizontal grid lines.
     // Lines along Y at every (x, z) lattice node.
     for &x in &xs {
         for &z in &zs {
@@ -2376,7 +2381,7 @@ fn lattice_vertices_into(vertices: &mut Vec<LineVertex>, min: [f32; 3], max: [f3
             add([min[0], y, z], [max[0], y, z]);
         }
     }
-    // Lines along Z at every (x, y) lattice node.
+    // Lines along Z (the VERTICAL pillars, Z-up) at every (x, y) lattice node.
     for &x in &xs {
         for &y in &ys {
             add([x, y, min[2]], [x, y, max[2]]);
@@ -2385,8 +2390,8 @@ fn lattice_vertices_into(vertices: &mut Vec<LineVertex>, min: [f32; 3], max: [f3
 }
 
 /// Append a FINE floor grid for the box `[min, max]` (voxels) on its BASE plane
-/// (exactly at `y = min[1]`) into `vertices` (issue #29 fix). Two-tier, mirroring
-/// the block lattice and the Point ground plane:
+/// (Z-up: exactly at `z = min[2]`, an XY grid) into `vertices` (issue #29 fix).
+/// Two-tier, mirroring the block lattice and the Point ground plane:
 ///
 /// * **Fine voxel lines** — one per voxel boundary (step 1), at the subtle
 ///   [`FLOOR_VOXEL_ALPHA`].
@@ -2397,17 +2402,18 @@ fn lattice_vertices_into(vertices: &mut Vec<LineVertex>, min: [f32; 3], max: [f3
 /// ([`voxel_boundaries`]), so the bold block lines land on `min + k·step` — the
 /// EXACT coordinates of the block lattice's vertical lines
 /// ([`block_boundaries`]). The floor grid therefore shares the lattice's global
-/// frame and their lines coincide at the base plane. The base plane is the node's
-/// bottom EXACTLY (`y = min[1]`), so the floor's block lines meet the block
-/// lattice's bottom edges with no vertical gap; z-fighting against the model's
-/// coincident bottom face is avoided by the floor pipeline's depth bias
-/// ([`SceneGridRenderer::floor_pipeline`]) rather than a geometric drop.
+/// frame and their lines coincide at the base plane. Z-up: the base plane is the
+/// node's bottom EXACTLY (`z = min[2]`), an XY-plane grid, so the floor's block
+/// lines meet the block lattice's bottom edges with no vertical gap; z-fighting
+/// against the model's coincident bottom face is avoided by the floor pipeline's
+/// depth bias ([`SceneGridRenderer::floor_pipeline`]) rather than a geometric drop.
 fn floor_vertices_into(vertices: &mut Vec<LineVertex>, min: [f32; 3], max: [f32; 3], step: u32) {
     let voxel_color = with_alpha(srgb_hex_to_linear(FLOOR_COLOR_HEX), FLOOR_VOXEL_ALPHA);
     let block_color = with_alpha(srgb_hex_to_linear(FLOOR_COLOR_HEX), FLOOR_ALPHA);
-    let y = min[1];
+    // Z-up: the floor is an XY grid at the node's bottom (`z = min[2]`).
+    let z = min[2];
     let xs = voxel_boundaries(min[0], max[0], step);
-    let zs = voxel_boundaries(min[2], max[2], step);
+    let ys = voxel_boundaries(min[1], max[1], step);
 
     let mut add = |from: [f32; 3], to: [f32; 3], color: [f32; 4]| {
         vertices.push(LineVertex { position: from, color });
@@ -2415,21 +2421,21 @@ fn floor_vertices_into(vertices: &mut Vec<LineVertex>, min: [f32; 3], max: [f32;
     };
 
     // Minor pass: fine voxel lines (one per voxel boundary), subtle.
-    // Lines parallel to Z, at every X voxel boundary.
+    // Lines parallel to Y, at every X voxel boundary.
     for &(x, _) in &xs {
-        add([x, y, min[2]], [x, y, max[2]], voxel_color);
+        add([x, min[1], z], [x, max[1], z], voxel_color);
     }
-    // Lines parallel to X, at every Z voxel boundary.
-    for &(z, _) in &zs {
+    // Lines parallel to X, at every Y voxel boundary.
+    for &(y, _) in &ys {
         add([min[0], y, z], [max[0], y, z], voxel_color);
     }
     // Major pass: bold block lines, on top, coincident with the block lattice.
     for &(x, is_block) in &xs {
         if is_block {
-            add([x, y, min[2]], [x, y, max[2]], block_color);
+            add([x, min[1], z], [x, max[1], z], block_color);
         }
     }
-    for &(z, is_block) in &zs {
+    for &(y, is_block) in &ys {
         if is_block {
             add([min[0], y, z], [max[0], y, z], block_color);
         }
@@ -2463,11 +2469,11 @@ const POINT_AXIS_ALPHA: f32 = 0.85;
 /// by its two in-plane axes; the third (constant) axis is pinned at the Point.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ReferencePlane {
-    /// The ground plane (spanned by X and Z; constant Y).
+    /// The FRONT plane (Z-up): spanned by X and Z; constant Y (normal +Y).
     Xz,
-    /// The front plane (spanned by X and Y; constant Z).
+    /// The GROUND plane (Z-up): spanned by X and Y; constant Z (normal +Z).
     Xy,
-    /// The side plane (spanned by Y and Z; constant X).
+    /// The side plane: spanned by Y and Z; constant X (normal +X).
     Yz,
 }
 
@@ -2564,9 +2570,9 @@ pub struct GridPlaneInstance {
 /// axes and the plane normal, in world coordinates.
 fn reference_plane_basis(plane: ReferencePlane) -> ([f32; 3], [f32; 3], [f32; 3]) {
     match plane {
-        // Ground: spanned by X and Z, normal +Y.
+        // Front (Z-up): spanned by X and Z, normal +Y.
         ReferencePlane::Xz => ([1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 1.0, 0.0]),
-        // Front: spanned by X and Y, normal +Z.
+        // GROUND (Z-up): spanned by X and Y, normal +Z.
         ReferencePlane::Xy => ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]),
         // Side: spanned by Y and Z, normal +X.
         ReferencePlane::Yz => ([0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]),
@@ -2576,8 +2582,8 @@ fn reference_plane_basis(plane: ReferencePlane) -> ([f32; 3], [f32; 3], [f32; 3]
 /// Collect every enabled reference PLANE of every VISIBLE Point (issue #29 Points
 /// fast-follow), in the recentred render frame, for the analytic infinite-grid pass.
 /// Hidden Points and disabled planes contribute nothing; the common case (the
-/// Origin Point's XZ ground plane) yields exactly one instance. Pure + GPU-free so
-/// the plane selection/orientation is unit-tested.
+/// Origin Point's XY ground plane, Z-up) yields exactly one instance. Pure + GPU-free
+/// so the plane selection/orientation is unit-tested.
 pub fn enabled_grid_planes(scene: &Scene, voxels_per_block: u32) -> Vec<GridPlaneInstance> {
     let step = voxels_per_block.max(1);
     let density = step as i64;
@@ -2942,22 +2948,23 @@ impl InfiniteGridRenderer {
 
 /// Parameters for one frame of the onion-skin fog pass. The fog raymarches the
 /// RESOLVED voxel grid (uploaded via [`OnionFogRenderer::upload_grid`]) as a 3D
-/// cloud density field and integrates a faint haze in the onion-band Y range
-/// OUTSIDE the displayed (solid) band. Option B (x-ray onion): the march ignores
-/// opaque depth so neighbour layers show through the slice on both sides.
+/// cloud density field and integrates a faint haze in the onion-band Z range
+/// (Z-up: layers are Z-slices) OUTSIDE the displayed (solid) band. Option B (x-ray
+/// onion): the march ignores opaque depth so neighbour layers show through the
+/// slice on both sides.
 #[derive(Debug, Clone, Copy)]
 pub struct OnionFogParams {
     /// Inverse camera view-projection (to unproject screen → world rays).
     pub inverse_view_projection: glam::Mat4,
     /// Inscribed semi-axes (= grid_dimensions / 2); maps world → normalised grid.
     pub semi_axes: [f32; 3],
-    /// World-space Y extent of the onion band (the layers to fog).
-    pub onion_y_min: f32,
-    pub onion_y_max: f32,
-    /// World-space Y extent of the displayed solid band (excluded from the fog —
+    /// World-space Z extent of the onion band (the layers to fog).
+    pub onion_z_min: f32,
+    pub onion_z_max: f32,
+    /// World-space Z extent of the displayed solid band (excluded from the fog —
     /// the opaque voxel pass already drew it).
-    pub band_y_min: f32,
-    pub band_y_max: f32,
+    pub band_z_min: f32,
+    pub band_z_max: f32,
 }
 
 /// std140-safe uniform block; field order matches `FogUniforms` in onion_fog.wgsl.
@@ -2969,10 +2976,10 @@ struct OnionFogUniforms {
     fog_strength: f32,
     fog_color: [f32; 3],
     _pad0: f32,
-    onion_y_min: f32,
-    onion_y_max: f32,
-    band_y_min: f32,
-    band_y_max: f32,
+    onion_z_min: f32,
+    onion_z_max: f32,
+    band_z_min: f32,
+    band_z_max: f32,
 }
 
 /// Fog tint (cool blue-grey) and Beer–Lambert strength. Strength is low so the
@@ -3707,10 +3714,10 @@ impl OnionFogRenderer {
             fog_strength: ONION_FOG_STRENGTH,
             fog_color: srgb_hex_to_linear(ONION_FOG_COLOR_HEX),
             _pad0: 0.0,
-            onion_y_min: params.onion_y_min,
-            onion_y_max: params.onion_y_max,
-            band_y_min: params.band_y_min,
-            band_y_max: params.band_y_max,
+            onion_z_min: params.onion_z_min,
+            onion_z_max: params.onion_z_max,
+            band_z_min: params.band_z_min,
+            band_z_max: params.band_z_max,
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
     }
@@ -4110,14 +4117,16 @@ mod tests {
     }
 
     /// The fine floor grid is two-tier and aligns with the block lattice (issue #29
-    /// fix). For a node box, this asserts three properties. First, the floor's
-    /// DISTINCT X/Z line coordinates form a superset of — and at the block positions
-    /// coincide with — the lattice's vertical-line coordinates. Second, the floor
-    /// uses exactly two alphas (a subtle voxel tier and a bold block tier). Third, at
-    /// a coarse density the voxel lines visibly outnumber the block lines.
+    /// fix). Z-up: the floor is an XY-plane grid at the base. For a node box, this
+    /// asserts three properties. First, the floor's DISTINCT X line coordinates form a
+    /// superset of — and at the block positions coincide with — the lattice's
+    /// X-line coordinates. Second, the floor uses exactly two alphas (a subtle voxel
+    /// tier and a bold block tier). Third, at a coarse density the voxel lines visibly
+    /// outnumber the block lines.
     #[test]
     fn floor_grid_is_two_tier_and_aligns_with_lattice() {
-        // Distinct X coordinates among the Z-running lines of a floor/lattice batch.
+        // Distinct X coordinates among the floor's X-boundary lines (Z-up: each runs
+        // along Y in the XY ground plane); compared against the lattice's X lines.
         let distinct_xs = |verts: &[LineVertex]| -> Vec<i64> {
             let mut xs: Vec<i64> = verts
                 .iter()
@@ -4149,8 +4158,8 @@ mod tests {
                 "@step{step}: floor has two alpha tiers (subtle voxel + bold block)",
             );
 
-            // (1) The lattice's vertical X lines must ALL appear among the floor's
-            // X lines (the floor X set is a superset coinciding at the block lines).
+            // (1) The lattice's X lines must ALL appear among the floor's X lines
+            // (the floor X set is a superset coinciding at the block lines).
             let lattice_xs = distinct_xs(&lattice);
             let floor_xs = distinct_xs(&floor);
             for x in &lattice_xs {
@@ -4184,12 +4193,13 @@ mod tests {
             let mut floor = Vec::new();
             floor_vertices_into(&mut floor, min, max, step);
             assert!(!floor.is_empty(), "@step{step}: a sized box has floor lines");
-            // Floor sits at the EXACT base plane `y = min[1]` (issue #29 fix: no
-            // geometric drop — the floor pipeline's depth bias avoids z-fighting the
-            // model's coincident bottom face), flat in Y, uniform across every vertex.
-            // This is what makes the floor's block lines meet the lattice's bottom edges.
-            let floor_y = min[1];
-            assert!(floor.iter().all(|v| v.position[1] == floor_y), "floor on exact base plane");
+            // Z-up: the floor sits at the EXACT base plane `z = min[2]` (issue #29
+            // fix: no geometric drop — the floor pipeline's depth bias avoids
+            // z-fighting the model's coincident bottom face), flat in Z, uniform across
+            // every vertex. This makes the floor's block lines meet the lattice's
+            // bottom edges.
+            let floor_z = min[2];
+            assert!(floor.iter().all(|v| v.position[2] == floor_z), "floor on exact base plane");
         }
     }
 
@@ -4285,12 +4295,13 @@ mod tests {
     #[test]
     fn points_visible_yields_batch_hidden_yields_none() {
         for density in [1u32, 15, 16] {
-            let mut scene = origin_point_scene(true, false, false, true);
+            // Z-up: the ground plane is XY (the 2nd flag of `origin_point_scene`).
+            let mut scene = origin_point_scene(false, true, false, true);
             let batch = points_line_batch(&scene, density);
             assert!(!batch.is_empty(), "@d{density}: visible axes ⇒ non-empty batch");
             assert_eq!(batch.len() % 2, 0, "@d{density}: whole line segments");
 
-            // The Origin's ground (XZ) plane is one analytic-grid instance.
+            // The Origin's ground (XY, Z-up) plane is one analytic-grid instance.
             let planes = enabled_grid_planes(&scene, density);
             assert_eq!(planes.len(), 1, "@d{density}: the Origin ground plane ⇒ one grid plane");
 
@@ -4327,11 +4338,12 @@ mod tests {
             "axes alone ⇒ no grid planes",
         );
 
-        // Each enabled plane adds one grid instance; enabling more planes grows the count.
-        let xz = enabled_grid_planes(&origin_point_scene(true, false, false, false), density);
-        let xz_xy = enabled_grid_planes(&origin_point_scene(true, true, false, false), density);
-        assert_eq!(xz.len(), 1, "ground plane alone ⇒ one grid plane");
-        assert_eq!(xz_xy.len(), 2, "adding the XY plane ⇒ two grid planes");
+        // Each enabled plane adds one grid instance; enabling more planes grows the
+        // count. Z-up: the ground plane is XY (2nd flag).
+        let ground = enabled_grid_planes(&origin_point_scene(false, true, false, false), density);
+        let ground_front = enabled_grid_planes(&origin_point_scene(true, true, false, false), density);
+        assert_eq!(ground.len(), 1, "the XY ground plane alone ⇒ one grid plane");
+        assert_eq!(ground_front.len(), 2, "adding the XZ front plane ⇒ two grid planes");
     }
 
     /// Per-axis gating (issue #29 fix): the X/Y/Z axes toggle independently. All three
@@ -4370,9 +4382,9 @@ mod tests {
     }
 
     /// The analytic grid plane carries the correct orientation, origin, and tuning for
-    /// each [`ReferencePlane`]: XZ is normal +Y (the ground), XY normal +Z, YZ normal
-    /// +X, with orthonormal in-plane axes through the Point origin. Pure CPU — the
-    /// shader consumes these basis vectors to intersect the per-pixel ray.
+    /// each [`ReferencePlane`] (Z-up): XZ is normal +Y (the FRONT plane), XY normal +Z
+    /// (the GROUND plane), YZ normal +X (the side), with orthonormal in-plane axes
+    /// through the Point origin. Pure CPU — the shader consumes these basis vectors.
     #[test]
     fn grid_planes_carry_correct_orientation() {
         for density in [1u32, 15, 16] {
@@ -4380,9 +4392,9 @@ mod tests {
             let scene = origin_point_scene(true, true, true, false);
             let planes = enabled_grid_planes(&scene, density);
             assert_eq!(planes.len(), 3, "@d{density}: three planes enabled ⇒ three instances");
-            // Emission order is XZ, XY, YZ.
-            assert_eq!(planes[0].normal, [0.0, 1.0, 0.0], "@d{density}: XZ ground ⇒ +Y normal");
-            assert_eq!(planes[1].normal, [0.0, 0.0, 1.0], "@d{density}: XY front ⇒ +Z normal");
+            // Emission order is XZ (front), XY (ground), YZ (side).
+            assert_eq!(planes[0].normal, [0.0, 1.0, 0.0], "@d{density}: XZ front ⇒ +Y normal");
+            assert_eq!(planes[1].normal, [0.0, 0.0, 1.0], "@d{density}: XY ground ⇒ +Z normal");
             assert_eq!(planes[2].normal, [1.0, 0.0, 0.0], "@d{density}: YZ side ⇒ +X normal");
             for plane in &planes {
                 assert_eq!(plane.origin, [0.0, 0.0, 0.0], "@d{density}: Origin plane at world 0");
@@ -4401,16 +4413,20 @@ mod tests {
     fn points_offset_point_frame_sits_at_world_position() {
         let density = 16i64;
         let mut scene = Scene::default();
+        // Z-up: the ground plane is XY (`plane_xy`, on by default). Keep ONLY the
+        // ground plane on so this Point yields exactly one grid plane.
         scene.points.push(Point {
             position_blocks: [10, 0, -4],
-            plane_xz: true,
+            plane_xy: true,
+            plane_xz: false,
+            plane_yz: false,
             // axis_x/y/z default true via Point::default() ⇒ all three axes on.
             is_origin: false,
             ..Point::default()
         });
         // The offset Point's ground plane sits at that world position.
         let planes = enabled_grid_planes(&scene, density as u32);
-        assert_eq!(planes.len(), 1, "the offset Point's XZ plane ⇒ one grid plane");
+        assert_eq!(planes.len(), 1, "the offset Point's XY ground plane ⇒ one grid plane");
         assert_eq!(
             planes[0].origin,
             [(10 * density) as f32, 0.0, (-4 * density) as f32],

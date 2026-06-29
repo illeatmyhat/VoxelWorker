@@ -85,7 +85,8 @@ pub struct AppConfig {
     pub applied_block_label: Option<String>,
 
     // --- layer-range scrubber (issue #12) ---
-    // The bounds themselves depend on the live grid_y, so they are NOT persisted
+    // The bounds themselves depend on the live grid_z (Z-up: layers are Z-slices), so
+    // they are NOT persisted
     // (they always re-derive to the full range on load); only the sticky control
     // preferences are saved here.
     #[serde(default = "default_true")]
@@ -248,10 +249,10 @@ impl AppConfig {
             // panel readout); the material itself reverts to procedural.
             applied_block_label: self.applied_block_label.clone(),
             // Issue #12: only the sticky control prefs persist; the band bounds
-            // are re-derived to the full range against the live grid_y on load.
+            // are re-derived to the full range against the live grid_z on load.
             layer_range: LayerRange {
                 lower: 0,
-                upper: 0, // rescaled to grid_y by the caller after the grid resolves.
+                upper: 0, // rescaled to grid_z by the caller after the grid resolves.
                 snap_to_blocks: self.snap_to_blocks,
                 onion_skin: self.onion_skin,
                 onion_depth: self.onion_depth.clamp(1, 8),

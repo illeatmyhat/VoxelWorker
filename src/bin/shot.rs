@@ -71,7 +71,7 @@ struct ShotOptions {
     /// the Origin Point (and any others) so a deliberate Points golden can be captured.
     show_points: bool,
     /// An OPTIONAL extra Point at the given world BLOCK position (issue #29 Points
-    /// fast-follow `--point-at X Y Z`), with its XZ ground plane + axes ON, so a
+    /// fast-follow `--point-at X Y Z`), with its XY ground plane (Z-up) + axes ON, so a
     /// headless capture can verify a second analytic grid plane at a different height
     /// / offset. Only meaningful together with `--points`.
     extra_point_blocks: Option<[i64; 3]>,
@@ -119,11 +119,11 @@ struct ShotOptions {
     /// its texture stem (e.g. `wood/treetrunk/oak`) even if it is outside the
     /// chiselable allow-list, to demonstrate per-face rendering on a known block.
     force_demo_stem: Option<String>,
-    /// Layer-range scrubber lower bound (issue #12), a voxel Y-layer index. When
+    /// Layer-range scrubber lower bound (issue #12), a voxel Z-layer index. When
     /// `None`, defaults to the full range (0). Raw voxel index — no snapping.
     layer_lower: Option<u32>,
-    /// Layer-range scrubber upper bound (issue #12), a voxel Y-layer index. When
-    /// `None`, defaults to the full range (grid_y). Raw voxel index — no snapping.
+    /// Layer-range scrubber upper bound (issue #12), a voxel Z-layer index. When
+    /// `None`, defaults to the full range (grid_z). Raw voxel index — no snapping.
     layer_upper: Option<u32>,
     /// Onion-skin depth (issue #12): 0 = off (hard band clip), N = ghost N layers
     /// on each side of the band with screen-door dither.
@@ -859,20 +859,21 @@ fn build_demo_village(voxels_per_block: u32) -> Scene {
 
 /// Build the `--demo-sketch-extrude` (ADR 0003 §3i Slice 2a): a single
 /// **sketch → extrude → volume** producer with a RECOGNIZABLE non-box footprint —
-/// an L-shaped (plus a notch) profile on the Y plane, extruded up several blocks.
-/// A box obviously cannot make this footprint, so the headless capture proves the
-/// new producer resolves + renders through the SAME pipeline as `SdfShape`.
+/// an L-shaped (plus a notch) profile on the GROUND plane, extruded UP several
+/// blocks. A box obviously cannot make this footprint, so the headless capture
+/// proves the new producer resolves + renders through the SAME pipeline as `SdfShape`.
 ///
 /// The profile is an L: a `4×4`-block square with its top-right `2×2`-block
 /// quadrant removed (a reflex vertex), at the document density `d`, extruded
-/// `3` blocks (`3·d` voxels) along +Y. The whole footprint is a whole multiple of
-/// blocks so it sits cleanly on the lattice in the recentred render frame.
+/// `3` blocks (`3·d` voxels) along +Z (Z-up: "up"). The whole footprint is a whole
+/// multiple of blocks so it sits cleanly on the lattice in the recentred render frame.
 fn build_demo_sketch_extrude(voxels_per_block: u32) -> Scene {
     let density = voxels_per_block.max(1) as i64;
     let two = 2 * density;
     let four = 4 * density;
-    // L footprint (CCW), in voxels on the XZ plane: outer 0..4×0..2 blocks plus the
-    // left 0..2×2..4 block column, leaving the top-right quadrant empty.
+    // L footprint (CCW), in voxels on the XY ground plane (PlaneAxis::Z in-plane axes
+    // are X,Y): outer 0..4×0..2 blocks plus the left 0..2×2..4 block column, leaving
+    // the top-right quadrant empty. Extruded UP along +Z.
     let profile = vec![
         SketchPoint::new(0, 0),
         SketchPoint::new(four, 0),
@@ -881,7 +882,7 @@ fn build_demo_sketch_extrude(voxels_per_block: u32) -> Scene {
         SketchPoint::new(two, four),
         SketchPoint::new(0, four),
     ];
-    let producer = SketchExtrude::new(Sketch::new(PlaneAxis::Y, profile), (3 * density) as u32);
+    let producer = SketchExtrude::new(Sketch::new(PlaneAxis::Z, profile), (3 * density) as u32);
     let node = Node::new(
         "Sketch L",
         NodeContent::SketchTool {
@@ -1036,12 +1037,13 @@ async fn run_capture(options: ShotOptions) {
     // instance buffer FROM the grid (REPRESENTATION.md seam). The voxel cap
     // (ARCHITECTURE.md §7) guards against an enormous CLI request.
     let shape = SdfShape::from_geometry(options.geometry);
-    let grid_y = shape.grid_dimensions(options.geometry.voxels_per_block)[1];
+    // Z-up: layers are Z-slices, so the layer track spans the Z dimension (index 2).
+    let grid_z = shape.grid_dimensions(options.geometry.voxels_per_block)[2];
     // Issue #12: build the layer-range band from the raw CLI voxel indices (no
     // snapping — flags take raw indices). Defaults to the full range.
     let layer_range = LayerRange {
-        lower: options.layer_lower.unwrap_or(0).min(grid_y),
-        upper: options.layer_upper.unwrap_or(grid_y).min(grid_y),
+        lower: options.layer_lower.unwrap_or(0).min(grid_z),
+        upper: options.layer_upper.unwrap_or(grid_z).min(grid_z),
         snap_to_blocks: true,
         onion_skin: options.onion_depth > 0,
         onion_depth: options.onion_depth.clamp(1, 8),
@@ -1105,13 +1107,15 @@ async fn run_capture(options: ShotOptions) {
     if options.show_points {
         scene.ensure_origin_point();
         // An optional extra Point (issue #29 Points fast-follow) at a chosen world
-        // block position with its XZ ground plane + axes on, so a headless capture can
-        // verify a second analytic grid plane at a different height/offset.
+        // block position with its XY ground plane (Z-up) + axes on, so a headless
+        // capture can verify a second analytic grid plane at a different height/offset.
         if let Some(position_blocks) = options.extra_point_blocks {
             scene.points.push(Point {
                 name: "Extra".to_string(),
                 position_blocks,
-                plane_xz: true,
+                plane_xy: true,
+                plane_xz: false,
+                plane_yz: false,
                 ..Point::default()
             });
         }
@@ -1459,21 +1463,21 @@ async fn run_capture(options: ShotOptions) {
             );
         }
     }
-    // The voxel-space grid_y of the ACTUALLY resolved grid (the composite for a
+    // Z-up: the voxel-space grid_z of the ACTUALLY resolved grid (the composite for a
     // placed scene), used for the band clip + uniforms so a demo scene that grew
-    // past the single-shape `grid_y` is not clipped or mis-sized.
-    let render_grid_y = grid_dimensions[1];
+    // past the single-shape `grid_z` is not clipped or mis-sized. Layers are Z-slices.
+    let render_grid_z = grid_dimensions[2];
     // Issue #12: the layer-range band for the 3D clip + the measured-diameter
     // readout (widest occupied run in the active band). The demo scene always
     // renders the full band (placement, not layer-scrubbing, is what it verifies).
     let band = if placed_scene
-        || (layer_range.is_full_range(render_grid_y) && !layer_range.onion_skin)
+        || (layer_range.is_full_range(render_grid_z) && !layer_range.onion_skin)
     {
         LayerBand::FULL
     } else {
         LayerBand {
             band_min: layer_range.lower,
-            band_max: layer_range.upper.min(render_grid_y.saturating_sub(1)),
+            band_max: layer_range.upper.min(render_grid_z.saturating_sub(1)),
             onion_depth: if layer_range.onion_skin {
                 layer_range.onion_depth.clamp(1, 8)
             } else {
@@ -1669,7 +1673,7 @@ async fn run_capture(options: ShotOptions) {
         &gpu.device,
         &gpu.queue,
         &mut panel_state,
-        render_grid_y,
+        render_grid_z,
         measured_diameter,
         &palette,
         raw_input,

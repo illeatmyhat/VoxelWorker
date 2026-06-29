@@ -467,13 +467,15 @@ pub struct Point {
     /// future sub-block placement is a data change, not a rewrite).
     #[serde(default)]
     pub offset_voxels: [i32; 3],
-    /// Whether the ground reference plane (XZ) shows. Default **true**.
-    #[serde(default = "default_true_bool")]
-    pub plane_xz: bool,
-    /// Whether the front reference plane (XY) shows. Default false.
+    /// Whether the FRONT reference plane (XZ, normal +Y) shows. Default false.
+    /// (Z-up: the front view looks along +Y; the front plane spans X and Z.)
     #[serde(default)]
+    pub plane_xz: bool,
+    /// Whether the GROUND reference plane (XY, normal +Z) shows. Default **true**.
+    /// (Z-up: the ground plane is XY — the default reference plane.)
+    #[serde(default = "default_true_bool")]
     pub plane_xy: bool,
-    /// Whether the side reference plane (YZ) shows. Default false.
+    /// Whether the SIDE reference plane (YZ, normal +X) shows. Default false.
     #[serde(default)]
     pub plane_yz: bool,
     /// Whether the +X axis line shows. Default **true** (issue #29 fix: the single
@@ -503,15 +505,16 @@ fn default_true_bool() -> bool {
 
 impl Default for Point {
     /// A blank Point at the world origin with the spec defaults (ground + axes on,
-    /// other planes off, visible, NOT the Origin). [`Scene::ensure_origin_point`]
-    /// clones this and sets `is_origin`/`name`.
+    /// other planes off, visible, NOT the Origin). Z-up: the ground plane is XY
+    /// (`plane_xy`). [`Scene::ensure_origin_point`] clones this and sets
+    /// `is_origin`/`name`.
     fn default() -> Self {
         Self {
             name: String::new(),
             position_blocks: [0, 0, 0],
             offset_voxels: [0, 0, 0],
-            plane_xz: true,
-            plane_xy: false,
+            plane_xz: false,
+            plane_xy: true,
             plane_yz: false,
             axis_x: true,
             axis_y: true,
@@ -756,8 +759,9 @@ impl Scene {
                 name: "Origin".to_string(),
                 position_blocks: [0, 0, 0],
                 offset_voxels: [0, 0, 0],
-                plane_xz: true,
-                plane_xy: false,
+                // Z-up: the ground plane is XY (`plane_xy`).
+                plane_xz: false,
+                plane_xy: true,
                 plane_yz: false,
                 axis_x: true,
                 axis_y: true,
@@ -854,7 +858,7 @@ impl Scene {
 
     /// Append a reference [`Point`] to the scene (issue #29). A newly-added user
     /// Point defaults to **all planes OFF** (XZ/XY/YZ) with its **axes ON** (issue
-    /// #29 fix): only the Origin keeps the ground (XZ) plane on by default (via
+    /// #29 fix): only the Origin keeps the ground (XY, Z-up) plane on by default (via
     /// [`ensure_origin_point`](Self::ensure_origin_point)). The plane/axis flags on
     /// the passed `point` are overridden here so every "+ Add Point" path gets the
     /// clean default; the caller controls only the point's name/position/identity.
@@ -4270,9 +4274,10 @@ mod tests {
         let voxels_per_block = 16;
         let density = voxels_per_block as i64;
 
-        // (a) Rectangle extrude (box sugar), placed off-origin on X.
+        // (a) Rectangle extrude (box sugar), placed off-origin on X. Z-up:
+        // footprint-extrude-up uses PlaneAxis::Z (profile in XY, extruded along +Z).
         let rect = SketchExtrude::new(
-            Sketch::rectangle(PlaneAxis::Y, 3 * density, 2 * density),
+            Sketch::rectangle(PlaneAxis::Z, 3 * density, 2 * density),
             2 * density as u32,
         );
         let mut rect_node = Node::new(
@@ -4298,7 +4303,7 @@ mod tests {
             SketchPoint::new(0, four),
         ];
         let l_extrude =
-            SketchExtrude::new(Sketch::new(PlaneAxis::Y, l_profile), 3 * density as u32);
+            SketchExtrude::new(Sketch::new(PlaneAxis::Z, l_profile), 3 * density as u32);
         let mut l_node = Node::new(
             "Sketch L",
             NodeContent::SketchTool {
@@ -4306,10 +4311,10 @@ mod tests {
                 material: MaterialChoice::Wood,
             },
         );
-        // Off-origin (crossing chunk boundaries on both in-plane axes X and Z) so the
+        // Off-origin (crossing chunk boundaries on both in-plane axes X and Y) so the
         // off-origin chunked path is proven on the concave/reflex shape, not just the
-        // convex rectangle above.
-        l_node.transform = NodeTransform::from_blocks([5, 0, 5], voxels_per_block);
+        // convex rectangle above. (Z-up: the L footprint lives in the XY ground plane.)
+        l_node.transform = NodeTransform::from_blocks([5, 5, 0], voxels_per_block);
         let l_scene = Scene::single_node(l_node);
         assert_chunked_matches_monolithic(&l_scene, voxels_per_block, "sketch-L");
     }
@@ -5469,9 +5474,10 @@ mod tests {
         assert!(origin.is_origin, "the synthesized Point is the Origin");
         assert_eq!(origin.name, "Origin");
         assert_eq!(origin.position_blocks, [0, 0, 0]);
-        assert!(origin.plane_xz, "ground plane on by default");
+        // Z-up: the ground plane is XY (`plane_xy`).
+        assert!(origin.plane_xy, "ground plane (XY) on by default");
         assert!(origin.axis_x && origin.axis_y && origin.axis_z, "all axes on by default");
-        assert!(!origin.plane_xy && !origin.plane_yz);
+        assert!(!origin.plane_xz && !origin.plane_yz);
         assert!(!origin.hidden);
 
         // Idempotent: a second call does not add another Origin.
@@ -5619,7 +5625,7 @@ mod tests {
     /// `add_point` gives a newly-added user Point the clean default (issue #29 fix):
     /// **all planes OFF** with **all three axes ON** — even if the caller passes a
     /// Point with planes enabled. Only the Origin (built by `ensure_origin_point`,
-    /// not `add_point`) keeps the ground (XZ) plane on.
+    /// not `add_point`) keeps the ground (XY, Z-up) plane on.
     #[test]
     fn add_point_defaults_planes_off_axes_on() {
         let mut scene = Scene::default();
@@ -5638,10 +5644,11 @@ mod tests {
         assert!(!point.plane_xz && !point.plane_xy && !point.plane_yz, "new point: all planes OFF");
         assert!(point.axis_x && point.axis_y && point.axis_z, "new point: all axes ON");
 
-        // The Origin (via ensure_origin_point) still keeps the ground plane on.
+        // The Origin (via ensure_origin_point) still keeps the ground plane on
+        // (Z-up: ground = XY = `plane_xy`).
         let mut origin_scene = Scene::default();
         origin_scene.ensure_origin_point();
-        assert!(origin_scene.points[0].plane_xz, "Origin keeps the ground plane");
+        assert!(origin_scene.points[0].plane_xy, "Origin keeps the ground plane (XY)");
     }
 
     /// `remove_point` deletes a normal Point but NO-OPS on the Origin (undeletable),

@@ -49,9 +49,10 @@ struct CuboidUniforms {
     voxel_line_alpha: f32,
     block_line_alpha: f32,
     // --- Layer-range band clip (issue #12 parity) ---
-    // The visible band, in voxel Y-layer indices. A fragment is kept when its
-    // layer satisfies `band_min <= layer <= band_max` (BOTH ends INCLUSIVE),
-    // matching the instanced voxel pass. Full range = band_min 0, band_max huge.
+    // The visible band, in voxel Z-layer indices (Z-up: layers are Z-slices). The
+    // cuboid path clips the band at MESH-BUILD time (see the fragment NOTE below),
+    // so these uniforms are unused by the shader and kept only for layout parity.
+    // Full range = band_min 0, band_max huge.
     band_min: f32,
     band_max: f32,
     // Face-orientation debug flag (0 = normal render, 1 = colour-by-normal debug),
@@ -173,14 +174,13 @@ fn fragment_main(
     input: VertexOutput,
     @builtin(front_facing) is_front_facing: bool,
 ) -> @location(0) vec4<f32> {
-    // NOTE on the layer-range band clip (issue #12 parity): unlike the instanced
-    // path (which discards per-fragment by voxel layer), the cuboid path clips the
-    // band at MESH-BUILD time — the densified region is masked to the band's
-    // Y-range before decomposition, so the band's top/bottom voxels expose real CAP
-    // faces (a fragment discard on a single merged column would leave the band open-
-    // topped, since the merged box's only +Y face is the model's true top). The
-    // `band_*` uniforms are therefore unused by the shader and kept only for std140
-    // layout/debug parity.
+    // NOTE on the layer-range band clip (issue #12 parity): the cuboid path clips the
+    // band at MESH-BUILD time — the densified region is masked to the band's Z-range
+    // (Z-up: layers are Z-slices) before decomposition, so the band's top/bottom
+    // voxels expose real CAP faces (a fragment discard on a single merged column would
+    // leave the band open-topped, since the merged box's only +Z face is the model's
+    // true top). The `band_*` uniforms are therefore unused by the shader and kept
+    // only for std140 layout/debug parity.
     let absolute = input.voxel_absolute_position;
 
     // --- Face-orientation debug mode (cull-off parity) ---
@@ -199,10 +199,9 @@ fn fragment_main(
     }
 
     // --- Per-voxel texture slice (BUG 1 parity) ---
-    // Reproduce the instanced per-voxel slice EXACTLY, including the per-face UV
-    // direction the instanced cube geometry bakes in (`unit_cube_geometry`), so a
-    // non-symmetric texture (wood grain, a loaded VS block) lands texel-for-texel
-    // identical — not just "looks like the same noise".
+    // Reproduce the per-voxel slice with a per-face UV direction (Z-up: V = world-Z
+    // on every side wall) so a non-symmetric texture (wood grain, a loaded VS block)
+    // lands texel-for-texel correct and UPRIGHT — not just "looks like the same noise".
     //
     // Instanced texcoord (pre-/density) along an in-plane axis is
     //   face_uv_component + block_local_coord_component
@@ -216,23 +215,28 @@ fn fragment_main(
     // `absolute` (the absolute voxel position) was bound at the top of the fn for
     // the band clip; reuse it here.
     let axis_magnitude = abs(input.world_normal);
-    // Per-face (U axis, U sign) and (V axis, V sign), matching the instanced
-    // unit-cube face UVs: +X U=+z V=-y; -X U=-z V=-y; +Y U=+x V=-z; -Y U=+x V=+z;
-    // +Z U=+x V=+y; -Z U=-x V=+y.
+    // Per-face (U axis, U sign) and (V axis, V sign). Z-up: the texture's VERTICAL
+    // axis (V) is world-Z on every SIDE wall, so a directional texture stands upright
+    // on all four walls (±X and ±Y), and the horizontal Z faces (top/bottom) tile in
+    // XY. Mapping: ±X U=±y V=±z; ±Y U=+x V=±z; ±Z U=±x V=+y.
     var u_value: f32;
     var v_value: f32;
     if (axis_magnitude.x > 0.5) {
-        // X faces: U follows z, V follows -y. U sign flips with the face dir.
-        let u_sign = select(-1.0, 1.0, input.world_normal.x > 0.0);
-        u_value = coord_component(absolute.z, u_sign);
-        v_value = coord_component(absolute.y, -1.0);
+        // X-facing walls (east/west): U follows horizontal Y, V follows up (Z). The
+        // V sign keys on world_normal.x exactly as the Y branch keys V on world_normal.y
+        // (so the texture is neither mirrored nor upside-down across the two walls).
+        let v_sign = select(1.0, -1.0, input.world_normal.x > 0.0);
+        u_value = coord_component(absolute.y, 1.0);
+        v_value = coord_component(absolute.z, v_sign);
     } else if (axis_magnitude.y > 0.5) {
-        // Y faces: U follows +x, V follows z (sign flips with the face dir).
+        // Y-facing walls (north/south): U follows +x, V follows up (Z), sign flips with
+        // the face dir.
         let v_sign = select(1.0, -1.0, input.world_normal.y > 0.0);
         u_value = coord_component(absolute.x, 1.0);
         v_value = coord_component(absolute.z, v_sign);
     } else {
-        // Z faces: U follows x (sign flips with the face dir), V follows +y.
+        // Z faces (top/bottom, horizontal): U follows x (sign flips with the face dir),
+        // V follows +y. No "up" on a horizontal face.
         let u_sign = select(-1.0, 1.0, input.world_normal.z > 0.0);
         u_value = coord_component(absolute.x, u_sign);
         v_value = coord_component(absolute.y, 1.0);

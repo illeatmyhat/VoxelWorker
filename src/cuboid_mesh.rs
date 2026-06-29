@@ -161,14 +161,13 @@ pub fn build_cuboid_mesh(grid: &VoxelGrid, voxels_per_block: u32) -> CuboidMesh 
 
 /// Build the exposed-face mesh CLIPPED to a layer-range band (issue #12 parity).
 ///
-/// Where the instanced path discards fragments outside the band per voxel layer,
-/// the cuboid path masks the densified region to the band's absolute Y-layer range
-/// `[band.band_min, band.band_max]` (INCLUSIVE) BEFORE decomposition. Masking (not
-/// a fragment discard) is required so the band's top/bottom voxels expose real CAP
-/// faces: a single tall merged column has only one +Y face — at the model's true
-/// top — so discarding its out-of-band fragments would leave the displayed slab
-/// open-topped. Masking makes the cells just outside the band air, so the greedy
-/// mesher caps the slab exactly like the instanced slab's top/bottom voxel faces.
+/// Z-up: layers are Z-slices. The cuboid path masks the densified region to the
+/// band's absolute Z-layer range `[band.band_min, band.band_max]` (INCLUSIVE) BEFORE
+/// decomposition. Masking (not a fragment discard) is required so the band's
+/// top/bottom voxels expose real CAP faces: a single tall merged column has only one
+/// +Z face — at the model's true top — so discarding its out-of-band fragments would
+/// leave the displayed slab open-topped. Masking makes the cells just outside the
+/// band air, so the greedy mesher caps the slab exactly like a per-voxel top/bottom.
 ///
 /// `LayerBand::FULL` (band_max = u32::MAX) masks nothing — the full model is built,
 /// byte-identical to the unbanded path.
@@ -196,28 +195,28 @@ pub fn build_cuboid_mesh_banded(
     let (mut region, world_offset) = region_from_voxel_cloud(grid);
 
     // --- Layer-range band clip (issue #12 parity) ---
-    // Mask region cells whose ABSOLUTE Y-layer falls outside `[band_min, band_max]`
-    // to air, so the greedy mesher below produces real cap faces at the band edges
-    // (see `build_cuboid_mesh_banded`). The instanced path clips by the absolute
-    // layer `floor(world_position.y + half_y)`; a region-local Y index `ly` maps to
-    // that absolute layer by a constant `base_layer = floor(min_world.y + half_y)`
-    // (= `floor(world_offset.y + 0.5 + half_y)`), so absolute layer = `base_layer +
-    // ly`. We invert the band into region-local Y and clear everything outside it.
+    // Z-up: layers are Z-slices. Mask region cells whose ABSOLUTE Z-layer falls
+    // outside `[band_min, band_max]` to air, so the greedy mesher below produces real
+    // cap faces at the band edges. The clip keys by the absolute layer
+    // `floor(world_position.z + half_z)`; a region-local Z index `lz` maps to that
+    // absolute layer by a constant `base_layer = floor(min_world.z + half_z)`
+    // (= `floor(world_offset.z + 0.5 + half_z)`), so absolute layer = `base_layer +
+    // lz`. We invert the band into region-local Z and clear everything outside it.
     if band.band_min > 0 || band.band_max != u32::MAX {
-        // Corner-anchoring: FLOORED half so the absolute layer matches the shader's
-        // `floor(world.y + floor(dim/2))` for any dim parity.
-        let half_y = (grid_y / 2) as f32;
-        let base_layer = (world_offset[1] + 0.5 + half_y).floor() as i64;
-        // Region-local Y range that maps into [band_min, band_max] (inclusive).
+        // Corner-anchoring: FLOORED half so the absolute layer matches
+        // `floor(world.z + floor(dim/2))` for any dim parity.
+        let half_z = (grid_z / 2) as f32;
+        let base_layer = (world_offset[2] + 0.5 + half_z).floor() as i64;
+        // Region-local Z range that maps into [band_min, band_max] (inclusive).
         let local_lo = band.band_min as i64 - base_layer;
         let local_hi = band.band_max as i64 - base_layer;
         let [rx, ry, rz] = region.extent;
-        for ly in 0..ry {
-            let in_band = (ly as i64) >= local_lo && (ly as i64) <= local_hi;
+        for lz in 0..rz {
+            let in_band = (lz as i64) >= local_lo && (lz as i64) <= local_hi;
             if in_band {
                 continue;
             }
-            for lz in 0..rz {
+            for ly in 0..ry {
                 for lx in 0..rx {
                     region.set(lx, ly, lz, None);
                 }
@@ -447,9 +446,9 @@ fn global_occupancy_from_chunks(chunk_grids: &[([i32; 3], &VoxelGrid)]) -> Globa
 ///    decomposition, so no box ever spans into the apron), then `emit_box_faces`
 ///    with exposure tested against the APRON region.
 ///
-/// `grid_dimensions` is the whole composite grid's voxel dims; only the Y half is
-/// used (to map an absolute layer to the global region-local Y for the band clip).
-/// Chunks that mesh to zero faces are omitted from the result.
+/// `grid_dimensions` is the whole composite grid's voxel dims; Z-up: only the Z half
+/// is used (to map an absolute layer to the global region-local Z for the band clip,
+/// since layers are Z-slices). Chunks that mesh to zero faces are omitted.
 fn build_chunk_meshes_with_apron(
     chunk_grids: &[([i32; 3], &VoxelGrid)],
     grid_dimensions: [u32; 3],
@@ -461,21 +460,21 @@ fn build_chunk_meshes_with_apron(
     }
     let world_offset = global.world_offset;
 
-    // The band clip works in GLOBAL absolute-index Y. A voxel's global index is
-    // `round(world - min_world)`; the instanced path clips by absolute layer
-    // `floor(world.y + half_y)`. With `world.y = global_index_y + min_world.y` and
-    // `min_world.y = world_offset.y + 0.5`, absolute layer = `global_index_y +
-    // base_layer`, `base_layer = floor(world_offset.y + 0.5 + half_y)`. So a global
-    // index Y is in-band iff `base_layer + gy ∈ [band_min, band_max]`.
+    // Z-up: the band clip works in GLOBAL absolute-index Z (layers are Z-slices). A
+    // voxel's global index is `round(world - min_world)`; the absolute layer is
+    // `floor(world.z + half_z)`. With `world.z = global_index_z + min_world.z` and
+    // `min_world.z = world_offset.z + 0.5`, absolute layer = `global_index_z +
+    // base_layer`, `base_layer = floor(world_offset.z + 0.5 + half_z)`. So a global
+    // index Z is in-band iff `base_layer + gz ∈ [band_min, band_max]`.
     let band_active = band.band_min > 0 || band.band_max != u32::MAX;
-    // Corner-anchoring: FLOORED half (matches the shader's floor(world.y+floor(dim/2))).
-    let half_y = (grid_dimensions[1] / 2) as f32;
-    let base_layer = (world_offset[1] + 0.5 + half_y).floor() as i64;
-    let global_y_in_band = |gy: i64| -> bool {
+    // Corner-anchoring: FLOORED half (matches `floor(world.z + floor(dim/2))`).
+    let half_z = (grid_dimensions[2] / 2) as f32;
+    let base_layer = (world_offset[2] + 0.5 + half_z).floor() as i64;
+    let global_z_in_band = |gz: i64| -> bool {
         if !band_active {
             return true;
         }
-        let layer = base_layer + gy;
+        let layer = base_layer + gz;
         layer >= band.band_min as i64 && layer <= band.band_max as i64
     };
 
@@ -494,7 +493,7 @@ fn build_chunk_meshes_with_apron(
                 (voxel.world_position[1] - (world_offset[1] + 0.5)).round() as i64,
                 (voxel.world_position[2] - (world_offset[2] + 0.5)).round() as i64,
             ];
-            if !global_y_in_band(index[1]) {
+            if !global_z_in_band(index[2]) {
                 continue;
             }
             for axis in 0..3 {
@@ -542,12 +541,14 @@ fn build_chunk_meshes_with_apron(
         let [aw, ah, _ad] = extent;
         for lz in 0..extent[2] {
             let gz = origin[2] + lz as i64;
-            if gz < 0 || gz >= gd as i64 {
+            // Z-up: the band clip is along Z (layers are Z-slices), so an out-of-band
+            // Z plane reads as air — synthesising the cap face at the band edge.
+            if gz < 0 || gz >= gd as i64 || !global_z_in_band(gz) {
                 continue;
             }
             for ly in 0..extent[1] {
                 let gy = origin[1] + ly as i64;
-                if gy < 0 || gy >= gh as i64 || !global_y_in_band(gy) {
+                if gy < 0 || gy >= gh as i64 {
                     continue;
                 }
                 // The apron row spans global X in `[origin.x, origin.x + aw)`; clip
@@ -1363,7 +1364,7 @@ impl CuboidMeshRenderer {
             // Corner-anchoring: the grid's low corner is `−floor(dim/2)`, so the GPU
             // recovers the absolute voxel frame with `world_position + floor(dim/2)`
             // (integer-valued). Using `dim/2.0` would be half a voxel off for an ODD
-            // dim, mis-snapping the voxel/block grid overlay and the Y-band clip.
+            // dim, mis-snapping the voxel/block grid overlay and the Z-band clip.
             grid_half_extent: [
                 (grid_dimensions[0] / 2) as f32,
                 (grid_dimensions[1] / 2) as f32,
@@ -1629,8 +1630,8 @@ mod tests {
     /// in-plane axes, so a face spanning N voxels must have vertices whose
     /// absolute index spans 0..N on those axes (the shader divides by density +
     /// Repeat-tiles, giving one texture tile per voxel). Here a 3-voxel X-run in a
-    /// 5³ grid merges to one box; its top (+Y) face must span 3 voxels along X and
-    /// 1 along Z, i.e. world X-extent 3 and Z-extent 1.
+    /// 5³ grid merges to one box; its top (Z-up: +Z) face must span 3 voxels along X
+    /// and 1 along Y, i.e. world X-extent 3.
     #[test]
     fn merged_face_spans_one_uv_unit_per_voxel() {
         let grid = grid_from_indices([5, 5, 5], &[[1, 2, 2], [2, 2, 2], [3, 2, 2]], 0);
@@ -1654,24 +1655,31 @@ mod tests {
         assert_eq!(max_x - min_x, 3.0, "face spans 3 voxel UV units along X");
     }
 
-    /// E3b-2: the face-normal → texture-array layer mapping the cuboid shader uses
-    /// must match the instanced `face_layer` (0 +X, 1 -X, 2 +Y, 3 -Y, 4 +Z, 5 -Z).
-    /// Replicated here as a pure function so the mapping is regression-guarded.
+    /// E3b-2: the face-normal → texture-array layer mapping must match the loaded
+    /// shader's `face_layer` (cuboid_loaded.wgsl) EXACTLY. Z-up: +Z = up (2), -Z =
+    /// down (3); ±X = east/west (0/1); -Y = south/front (4), +Y = north/back (5).
+    /// Replicated here as a pure function so the shader↔CPU mapping is regression-
+    /// guarded (the vertical texture axis is Z, not Y).
     #[test]
     fn face_normal_to_layer_matches_instanced() {
+        // Byte-for-byte the same branch order as cuboid_loaded.wgsl::face_layer.
         fn face_layer(normal: [f32; 3]) -> i32 {
             let m = [normal[0].abs(), normal[1].abs(), normal[2].abs()];
-            if m[0] > 0.5 {
+            if m[2] > 0.5 {
+                // Vertical (Z-up): +Z = up (2), -Z = down (3).
+                if normal[2] > 0.0 { 2 } else { 3 }
+            } else if m[0] > 0.5 {
                 if normal[0] > 0.0 { 0 } else { 1 }
-            } else if m[1] > 0.5 {
-                if normal[1] > 0.0 { 2 } else { 3 }
-            } else if normal[2] > 0.0 {
+            } else if normal[1] < 0.0 {
+                // -Y = south/front.
                 4
             } else {
+                // +Y = north/back.
                 5
             }
         }
-        let expected = [0, 1, 2, 3, 4, 5];
+        // FACE_TEMPLATES order is +X,-X,+Y,-Y,+Z,-Z → Z-up layers 0,1,5,4,2,3.
+        let expected = [0, 1, 5, 4, 2, 3];
         for (face, &want) in FACE_TEMPLATES.iter().zip(expected.iter()) {
             assert_eq!(face_layer(face.normal), want, "normal {:?}", face.normal);
         }
@@ -1745,12 +1753,12 @@ mod tests {
     }
 
     /// E3b-3: the layer-range band clip masks the densified region to the band's
-    /// absolute Y-layer range BEFORE decomposition, so clipping a solid block to a
-    /// sub-band yields a thinner block — with NEW cap faces at the band edges, just
-    /// like the instanced slab's per-voxel top/bottom faces (a fragment discard on
-    /// the single merged column would leave it open-topped, with no caps). Here a
-    /// solid 4×4×4 block (one tall box) clipped to a 2-layer band must mesh as a
-    /// 4×2×4 box: still 6 faces, but spanning exactly 2 voxels in Y.
+    /// absolute Z-layer range (Z-up: layers are Z-slices) BEFORE decomposition, so
+    /// clipping a solid block to a sub-band yields a thinner block — with NEW cap
+    /// faces at the band edges (a fragment discard on the single merged column would
+    /// leave it open-topped, with no caps). Here a solid 4×4×4 block (one tall box)
+    /// clipped to a 2-layer band must mesh as a 4×4×2 box: still 6 faces, but spanning
+    /// exactly 2 voxels in Z.
     #[test]
     fn band_clip_masks_region_and_caps_the_slab() {
         let mut cells = Vec::new();
@@ -1761,15 +1769,15 @@ mod tests {
                 }
             }
         }
-        // A centred 4³ block: half_y = 2, so absolute layer == region-local Y here.
+        // A centred 4³ block: half_z = 2, so absolute layer == region-local Z here.
         let grid = grid_from_indices([4, 4, 4], &cells, 0);
 
-        // Full band → the whole block: 1 box, 6 faces, Y-span 4.
+        // Full band → the whole block: 1 box, 6 faces, Z-span 4.
         let full = build_cuboid_mesh_banded(&grid, 1, LayerBand::FULL);
         assert_eq!(full.box_count(), 1);
         assert_eq!(full.face_count(), 6);
 
-        // Band [1, 2] (inclusive) → only layers 1 and 2 survive: a 4×2×4 slab.
+        // Band [1, 2] (inclusive) → only Z-layers 1 and 2 survive: a 4×4×2 slab.
         let band = LayerBand {
             band_min: 1,
             band_max: 2,
@@ -1783,19 +1791,19 @@ mod tests {
             "the band edges get real cap faces (top + bottom), so still 6 faces"
         );
 
-        // The clipped slab spans EXACTLY 2 voxels in Y (the band height), with new
+        // The clipped slab spans EXACTLY 2 voxels in Z (the band height), with new
         // caps — confirming masking, not a fragment discard.
-        let half_y = 2.0f32;
-        let abs_y: Vec<f32> = clipped
+        let half_z = 2.0f32;
+        let abs_z: Vec<f32> = clipped
             .vertices
             .iter()
-            .map(|v| v.position[1] + half_y)
+            .map(|v| v.position[2] + half_z)
             .collect();
-        let min_y = abs_y.iter().cloned().fold(f32::INFINITY, f32::min);
-        let max_y = abs_y.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-        assert_eq!(min_y, 1.0, "slab bottom cap at the band's lower layer");
-        assert_eq!(max_y, 3.0, "slab top cap at the band's upper layer + 1");
-        assert_eq!(max_y - min_y, 2.0, "slab is exactly the 2-layer band tall");
+        let min_z = abs_z.iter().cloned().fold(f32::INFINITY, f32::min);
+        let max_z = abs_z.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+        assert_eq!(min_z, 1.0, "slab bottom cap at the band's lower layer");
+        assert_eq!(max_z, 3.0, "slab top cap at the band's upper layer + 1");
+        assert_eq!(max_z - min_z, 2.0, "slab is exactly the 2-layer band tall");
     }
 
     /// A band entirely OUTSIDE the occupied layers clips everything away.
@@ -2324,24 +2332,26 @@ mod tests {
         shape.resolve(&mut grid, voxels_per_block);
         assert!(!grid.occupied.is_empty());
 
+        // Z-up: the band is a Z-layer range. The torus [8,2,8] is 128 voxels tall in
+        // Z; a band straddling the vertical middle keeps a real slice of the tube.
         let band = LayerBand {
-            band_min: 4,
-            band_max: 11,
+            band_min: 56,
+            band_max: 71,
             onion_depth: 0,
         };
 
         // Ground truth: genuinely-exposed faces of the BAND-MASKED occupancy. The
-        // band maps an absolute layer to a global index Y by `gy + base_layer` where
-        // base_layer = floor(min_world.y + half_y) and the global index uses
-        // `round(world - min_world)`. We mask occupancy to `base_layer + gy ∈ band`.
+        // band maps an absolute layer to a global index Z by `gz + base_layer` where
+        // base_layer = floor(min_world.z + half_z) and the global index uses
+        // `round(world - min_world)`. We mask occupancy to `base_layer + gz ∈ band`.
         let mut min_world = [f32::INFINITY; 3];
         for v in &grid.occupied {
             for (axis, m) in min_world.iter_mut().enumerate() {
                 *m = m.min(v.world_position[axis]);
             }
         }
-        let half_y = (dims[1] / 2) as f32; // corner-anchoring: floored half
-        let base_layer = (min_world[1] + half_y).floor() as i64;
+        let half_z = (dims[2] / 2) as f32; // corner-anchoring: floored half
+        let base_layer = (min_world[2] + half_z).floor() as i64;
         let occupancy: std::collections::HashSet<[i64; 3]> = grid
             .occupied
             .iter()
@@ -2353,7 +2363,7 @@ mod tests {
                 ]
             })
             .filter(|idx| {
-                let layer = base_layer + idx[1];
+                let layer = base_layer + idx[2];
                 layer >= band.band_min as i64 && layer <= band.band_max as i64
             })
             .collect();

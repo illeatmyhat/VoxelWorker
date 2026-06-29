@@ -1493,18 +1493,19 @@ mod tests {
     /// several layer bands.
     fn assert_region_widest_run_matches_whole_grid(scene: &Scene, vpb: u32, label: &str) {
         let dims = scene.placed_region_dimensions(vpb);
-        let grid_y = dims[1];
+        // Z-up: layers are Z-slices, so the band spans the Z dimension (index 2).
+        let grid_z = dims[2];
         // A spread of bands: the whole stack, the bottom layer, the top layer, the
-        // exact mid-Y layer (the old slice), a thin interior band, and an
+        // exact mid-Z layer (the old slice), a thin interior band, and an
         // out-of-range band (above the grid → empty).
-        let mid = grid_y.saturating_sub(1) / 2;
+        let mid = grid_z.saturating_sub(1) / 2;
         let bands = [
-            (0, grid_y.saturating_sub(1)),
+            (0, grid_z.saturating_sub(1)),
             (0, 0),
-            (grid_y.saturating_sub(1), grid_y.saturating_sub(1)),
+            (grid_z.saturating_sub(1), grid_z.saturating_sub(1)),
             (mid, mid),
-            (mid, (mid + 2).min(grid_y.saturating_sub(1))),
-            (grid_y + 10, grid_y + 20),
+            (mid, (mid + 2).min(grid_z.saturating_sub(1))),
+            (grid_z + 10, grid_z + 20),
         ];
         for band in bands {
             let expected = whole_grid_widest_run(scene, vpb, band);
@@ -1546,7 +1547,8 @@ mod tests {
         let scene = Scene::from_nodes(vec![make_box([0, 0, 0]), make_box([20_000, 0, 0])]);
 
         let dims = scene.placed_region_dimensions(vpb);
-        let band = (0, dims[1].saturating_sub(1)); // whole Y stack (both boxes are at y=0).
+        // Z-up: layers are Z-slices, so the band spans the Z stack (both boxes at z=0).
+        let band = (0, dims[2].saturating_sub(1));
         let true_box_width = 3 * vpb; // each box spans a full 48-voxel face row.
 
         let mut cache = Store::new();
@@ -1658,7 +1660,8 @@ mod tests {
         )]);
 
         let dims = scene.placed_region_dimensions(vpb);
-        let band = (0, dims[1].saturating_sub(1));
+        // Z-up: layers are Z-slices, so the band spans the Z dimension (index 2).
+        let band = (0, dims[2].saturating_sub(1));
 
         let expected = whole_grid_widest_run(&scene, vpb, band);
         let mut cache = Store::new();

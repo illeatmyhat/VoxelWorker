@@ -29,14 +29,14 @@ struct FogUniforms {
     // Fog tint (linear RGB).
     fog_color: vec3<f32>,
     _pad0: f32,
-    // World-space Y range of the ONION band (layers OUTSIDE the displayed band that
-    // should fog) and of the displayed solid band (excluded — the opaque pass
-    // already drew it). Fog integrates only where world_y is within
-    // [onion_y_min, onion_y_max] AND outside [band_y_min, band_y_max].
-    onion_y_min: f32,
-    onion_y_max: f32,
-    band_y_min: f32,
-    band_y_max: f32,
+    // World-space Z range (Z-up: layers are Z-slices) of the ONION band (layers
+    // OUTSIDE the displayed band that should fog) and of the displayed solid band
+    // (excluded — the opaque pass already drew it). Fog integrates only where world_z
+    // is within [onion_z_min, onion_z_max] AND outside [band_z_min, band_z_max].
+    onion_z_min: f32,
+    onion_z_max: f32,
+    band_z_min: f32,
+    band_z_max: f32,
 };
 
 @group(0) @binding(0) var<uniform> fog: FogUniforms;
@@ -164,16 +164,16 @@ fn fragment_main(input: VsOut) -> @location(0) vec4<f32> {
         // falloff keeps the fog wispy — the nearest ghost layers read strongest and
         // it never stacks into a solid puck, even for a near-flat slice whose
         // neighbour layers are nearly full cross-sections.
-        let y = sample_point.y;
+        let z = sample_point.z;
         var vertical = 0.0;
-        if (y < fog.band_y_min) {
+        if (z < fog.band_z_min) {
             // Below the band: distance below the bottom edge, normalised by reach.
-            let reach = max(fog.band_y_min - fog.onion_y_min, 1e-4);
-            let d = (fog.band_y_min - y) / reach; // 0 at edge → 1 at onion_y_min
+            let reach = max(fog.band_z_min - fog.onion_z_min, 1e-4);
+            let d = (fog.band_z_min - z) / reach; // 0 at edge → 1 at onion_z_min
             vertical = clamp(1.0 - d, 0.0, 1.0);
-        } else if (y > fog.band_y_max) {
-            let reach = max(fog.onion_y_max - fog.band_y_max, 1e-4);
-            let d = (y - fog.band_y_max) / reach;
+        } else if (z > fog.band_z_max) {
+            let reach = max(fog.onion_z_max - fog.band_z_max, 1e-4);
+            let d = (z - fog.band_z_max) / reach;
             vertical = clamp(1.0 - d, 0.0, 1.0);
         }
         optical_thickness = optical_thickness + inside * vertical * step_size;
