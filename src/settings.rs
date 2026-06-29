@@ -106,8 +106,9 @@ pub struct AppConfig {
 
     // --- view-cube home view (#13) ---
     // The Home button's saved view. New fields: `#[serde(default)]` so an OLD
-    // config without them loads with the camera defaults (theta≈0.7/phi≈1.05/
-    // distance 10) — serde fills each missing key from its default fn.
+    // config without them loads with the camera defaults — serde fills each missing
+    // key from its default fn, which derive from `OrbitCamera::default()` so the
+    // config default can never drift from the live camera default.
     #[serde(default = "default_theta")]
     pub home_theta: f32,
     #[serde(default = "default_phi")]
@@ -132,13 +133,13 @@ fn default_true() -> bool {
     true
 }
 fn default_theta() -> f32 {
-    0.7
+    OrbitCamera::default().orbit_theta
 }
 fn default_phi() -> f32 {
-    1.05
+    OrbitCamera::default().orbit_phi
 }
 fn default_distance() -> f32 {
-    10.0
+    OrbitCamera::default().orbit_distance
 }
 fn default_window_size() -> [u32; 2] {
     [1280, 800]

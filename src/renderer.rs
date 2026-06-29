@@ -982,11 +982,17 @@ fn view_cube_geometry() -> (Vec<CubeLabelVertex>, Vec<u16>) {
     let mut indices = Vec::with_capacity(36);
     for (layer, (normal, corners)) in faces.iter().enumerate() {
         let base = vertices.len() as u16;
+        // Z-up: the BACK (+Y, layer 2) and BOTTOM (−Z, layer 5) faces wind such that
+        // the shared UV table maps their label upside-down. Rotate just those two
+        // faces' UVs 180° (corner_index + 2) so every label reads upright — the fix
+        // lives in the unwrap, keeping the label textures themselves canonical.
+        let uv_rotated = layer == 2 || layer == 5;
         for (corner_index, corner) in corners.iter().enumerate() {
+            let uv_index = if uv_rotated { (corner_index + 2) % 4 } else { corner_index };
             vertices.push(CubeLabelVertex {
                 position: *corner,
                 normal: *normal,
-                uv: UVS[corner_index],
+                uv: UVS[uv_index],
                 layer: layer as u32,
             });
         }
