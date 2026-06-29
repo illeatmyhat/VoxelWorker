@@ -3076,10 +3076,19 @@ pub fn build_per_chunk_fog_occupancy(
     // `round(world + half − 0.5)` index is exact for an odd dim (voxel.rs decode).
     let half = [(grid_x / 2) as f32, (grid_y / 2) as f32, (grid_z / 2) as f32];
 
+    // ===================================================================================
+    // SCATTER build (issue #28 S5a perf, the `fog_upload` CPU hot path). This is a pure
+    // speedup over the original GATHER (which built a global `HashSet<[i64;3]>` of every
+    // occupied voxel, then for EVERY non-empty chunk probed all `(extent+2)³` apron cells
+    // against that set — O(non_empty_chunks × pad³) hash lookups, tens of millions per
+    // rebuild). The scatter is O(total occupied voxels): we deduplicate occupied voxels
+    // once, pick the chunk set by bucketing each voxel into its interior chunk, then push
+    // each voxel into the ≤8 chunk volumes whose apron box contains it. The output (chunk
+    // set, ordering, world_origins, extent, apron bytes) is byte-identical to the gather —
+    // see the `per_chunk_scatter_matches_gather_reference` regression test.
+    //
     // First pass: integer voxel coords of every occupied voxel (the SAME mapping the
-    // whole-grid upload uses), bucketed by chunk coordinate. We keep a per-chunk set of
-    // local voxel coords so the apron can be filled exactly (a neighbour voxel that
-    // belongs to an adjacent chunk still lands in THIS chunk's apron layer).
+    // whole-grid upload uses), deduplicated.
     use std::collections::{HashMap, HashSet};
     let mut occupied_voxels: HashSet<[i64; 3]> = HashSet::new();
     for voxel in &grid.occupied {
@@ -3093,17 +3102,22 @@ pub fn build_per_chunk_fog_occupancy(
         occupied_voxels.insert([i, j, k]);
     }
 
-    // Which chunks contain at least one occupied voxel.
-    let mut chunk_coords: HashMap<[i32; 3], ()> = HashMap::new();
+    // The chunk set: a chunk gets a volume iff it holds ≥1 occupied voxel in its INTERIOR
+    // `[0, extent)` — the SAME criterion the gather used (it bucketed by
+    // `voxel.div_euclid(chunk_extent)`). A voxel that lands only in a neighbour's apron
+    // does NOT by itself create a chunk; it only writes into an existing chunk's border.
+    // This is a single O(total occupied) bucketing pass — NO per-cell probing.
+    let mut chunk_index_by_coord: HashMap<[i32; 3], usize> = HashMap::new();
     for &[i, j, k] in &occupied_voxels {
         let coord = [
             narrow_chunk_coord_local(i.div_euclid(chunk_extent)),
             narrow_chunk_coord_local(j.div_euclid(chunk_extent)),
             narrow_chunk_coord_local(k.div_euclid(chunk_extent)),
         ];
-        chunk_coords.insert(coord, ());
+        let next_index = chunk_index_by_coord.len();
+        chunk_index_by_coord.entry(coord).or_insert(next_index);
     }
-    let mut keys: Vec<[i32; 3]> = chunk_coords.keys().copied().collect();
+    let mut keys: Vec<[i32; 3]> = chunk_index_by_coord.keys().copied().collect();
     keys.sort_unstable();
     // Too many resident non-empty chunks for the per-chunk atlas to hold. Degrade
     // gracefully and CONSISTENTLY with `upload_grid_per_chunk`'s other overflow branch
@@ -3127,43 +3141,87 @@ pub fn build_per_chunk_fog_occupancy(
     }
 
     let pad = (chunk_extent + 2) as usize; // apron: -1 .. extent (inclusive)
-    let mut volumes = Vec::with_capacity(keys.len());
-    for coord in keys {
-        let chunk_min = [
-            coord[0] as i64 * chunk_extent,
-            coord[1] as i64 * chunk_extent,
-            coord[2] as i64 * chunk_extent,
-        ];
-        let mut occupancy = vec![0u8; pad * pad * pad];
-        // Fill the apron'd box `[-1, extent]` per axis from the GLOBAL occupancy, so the
-        // border layer carries the true neighbour voxel (seam-smooth trilinear).
-        for local_k in -1..=chunk_extent {
-            for local_j in -1..=chunk_extent {
-                for local_i in -1..=chunk_extent {
-                    let global = [
-                        chunk_min[0] + local_i,
-                        chunk_min[1] + local_j,
-                        chunk_min[2] + local_k,
+    // Allocate every chunk volume up front, in the SAME sorted order the gather used (the
+    // tile-pack order in `upload_grid_per_chunk` depends on this ordering). Map each chunk
+    // coord to its slot so the scatter can address volumes by coord in O(1).
+    let mut volumes: Vec<ChunkFogVolume> = keys
+        .iter()
+        .map(|&coord| {
+            let chunk_min = [
+                coord[0] as i64 * chunk_extent,
+                coord[1] as i64 * chunk_extent,
+                coord[2] as i64 * chunk_extent,
+            ];
+            ChunkFogVolume {
+                chunk_coord: coord,
+                // Interior origin (voxel CORNER of local [0,0,0]) in recentred world space.
+                world_origin: [
+                    chunk_min[0] as f32 - half[0],
+                    chunk_min[1] as f32 - half[1],
+                    chunk_min[2] as f32 - half[2],
+                ],
+                occupancy: vec![0u8; pad * pad * pad],
+            }
+        })
+        .collect();
+    let mut slot_of_coord: HashMap<[i32; 3], usize> = HashMap::with_capacity(keys.len());
+    for (slot, &coord) in keys.iter().enumerate() {
+        slot_of_coord.insert(coord, slot);
+    }
+
+    // Scatter: each occupied voxel `v` lands in the apron box of every chunk `C` where
+    // `local = v − C*extent ∈ [-1, extent]` per axis. For a given axis the only chunks
+    // that can satisfy this are the owner chunk `c0 = v.div_euclid(extent)` (local in
+    // `[0, extent)`) and at most one neighbour: `c0 − 1` (only when `v` sits on the owner's
+    // low boundary, giving local `extent`, the chunk's +face apron) or `c0 + 1` (only when
+    // `v` is on the owner's high boundary, giving local `-1`, the −face apron). So we
+    // enumerate `{c0−1, c0, c0+1}` per axis and keep just the candidates whose local lands
+    // in `[-1, extent]` — ≤2 per axis → ≤8 chunks per voxel. We write into a chunk only if
+    // it EXISTS in the set above — matching the gather, where an apron-only neighbour voxel
+    // sets an existing chunk's border but never creates a chunk. `div_euclid` floors toward
+    // −∞ (correct for negative voxel coords in the recentred frame), the same rounding the
+    // chunk-set bucketing uses above.
+    let pad_i64 = pad as i64;
+    // Candidate (chunk_coord, local_apron_index) pairs along one axis for voxel coord `v`.
+    let axis_candidates = |v: i64| -> [(i64, i64); 3] {
+        let owner = v.div_euclid(chunk_extent);
+        [
+            (owner - 1, v - (owner - 1) * chunk_extent),
+            (owner, v - owner * chunk_extent),
+            (owner + 1, v - (owner + 1) * chunk_extent),
+        ]
+    };
+    for &[vi, vj, vk] in &occupied_voxels {
+        let cands_i = axis_candidates(vi);
+        let cands_j = axis_candidates(vj);
+        let cands_k = axis_candidates(vk);
+        for &(ck, local_k) in &cands_k {
+            if !(-1..=chunk_extent).contains(&local_k) {
+                continue;
+            }
+            let ak = local_k + 1;
+            for &(cj, local_j) in &cands_j {
+                if !(-1..=chunk_extent).contains(&local_j) {
+                    continue;
+                }
+                let aj = local_j + 1;
+                for &(ci, local_i) in &cands_i {
+                    if !(-1..=chunk_extent).contains(&local_i) {
+                        continue;
+                    }
+                    let coord = [
+                        narrow_chunk_coord_local(ci),
+                        narrow_chunk_coord_local(cj),
+                        narrow_chunk_coord_local(ck),
                     ];
-                    if occupied_voxels.contains(&global) {
-                        let ai = (local_i + 1) as usize;
-                        let aj = (local_j + 1) as usize;
-                        let ak = (local_k + 1) as usize;
-                        occupancy[(ak * pad + aj) * pad + ai] = 255;
+                    if let Some(&slot) = slot_of_coord.get(&coord) {
+                        let ai = local_i + 1;
+                        let flat = ((ak * pad_i64 + aj) * pad_i64 + ai) as usize;
+                        volumes[slot].occupancy[flat] = 255;
                     }
                 }
             }
         }
-        volumes.push(ChunkFogVolume {
-            chunk_coord: coord,
-            // Interior origin (voxel CORNER of local [0,0,0]) in recentred world space.
-            world_origin: [
-                chunk_min[0] as f32 - half[0],
-                chunk_min[1] as f32 - half[1],
-                chunk_min[2] as f32 - half[2],
-            ],
-            occupancy,
-        });
     }
 
     PerChunkFogOccupancy {
@@ -4042,6 +4100,262 @@ mod tests {
             MAX_FOG_CHUNKS,
             "exactly MAX_FOG_CHUNKS resident chunks still renders (boundary is inclusive)"
         );
+    }
+
+    /// The ORIGINAL gather implementation of `build_per_chunk_fog_occupancy`, kept here as
+    /// the byte-identity oracle for the scatter rewrite (issue #28 S5a perf). It builds a
+    /// global `HashSet` of occupied voxels, then for every non-empty chunk probes all
+    /// `(extent+2)³` apron cells against that set. The production fn now scatters instead;
+    /// `per_chunk_scatter_matches_gather_reference` asserts the two agree byte-for-byte
+    /// across single/multi-chunk, boundary-straddling, recentred (negative world-pos), and
+    /// even/odd/mixed-parity grids. If they ever diverge, the scatter has a bug.
+    fn build_per_chunk_fog_occupancy_reference(
+        grid: &VoxelGrid,
+        voxels_per_block: u32,
+    ) -> PerChunkFogOccupancy {
+        use std::collections::{HashMap, HashSet};
+        let chunk_extent = (CHUNK_BLOCKS * voxels_per_block.max(1)) as i64;
+        let [grid_x, grid_y, grid_z] = grid.dimensions;
+        if grid_x == 0 || grid_y == 0 || grid_z == 0 {
+            return PerChunkFogOccupancy {
+                chunk_extent: chunk_extent as u32,
+                volumes: Vec::new(),
+            };
+        }
+        let half = [(grid_x / 2) as f32, (grid_y / 2) as f32, (grid_z / 2) as f32];
+        let mut occupied_voxels: HashSet<[i64; 3]> = HashSet::new();
+        for voxel in &grid.occupied {
+            let i = (voxel.world_position[0] + half[0] - 0.5).round() as i64;
+            let j = (voxel.world_position[1] + half[1] - 0.5).round() as i64;
+            let k = (voxel.world_position[2] + half[2] - 0.5).round() as i64;
+            if i < 0
+                || j < 0
+                || k < 0
+                || i >= grid_x as i64
+                || j >= grid_y as i64
+                || k >= grid_z as i64
+            {
+                continue;
+            }
+            occupied_voxels.insert([i, j, k]);
+        }
+        let mut chunk_coords: HashMap<[i32; 3], ()> = HashMap::new();
+        for &[i, j, k] in &occupied_voxels {
+            let coord = [
+                narrow_chunk_coord_local(i.div_euclid(chunk_extent)),
+                narrow_chunk_coord_local(j.div_euclid(chunk_extent)),
+                narrow_chunk_coord_local(k.div_euclid(chunk_extent)),
+            ];
+            chunk_coords.insert(coord, ());
+        }
+        let mut keys: Vec<[i32; 3]> = chunk_coords.keys().copied().collect();
+        keys.sort_unstable();
+        if keys.len() > MAX_FOG_CHUNKS {
+            return PerChunkFogOccupancy {
+                chunk_extent: chunk_extent as u32,
+                volumes: Vec::new(),
+            };
+        }
+        let pad = (chunk_extent + 2) as usize;
+        let mut volumes = Vec::with_capacity(keys.len());
+        for coord in keys {
+            let chunk_min = [
+                coord[0] as i64 * chunk_extent,
+                coord[1] as i64 * chunk_extent,
+                coord[2] as i64 * chunk_extent,
+            ];
+            let mut occupancy = vec![0u8; pad * pad * pad];
+            for local_k in -1..=chunk_extent {
+                for local_j in -1..=chunk_extent {
+                    for local_i in -1..=chunk_extent {
+                        let global = [
+                            chunk_min[0] + local_i,
+                            chunk_min[1] + local_j,
+                            chunk_min[2] + local_k,
+                        ];
+                        if occupied_voxels.contains(&global) {
+                            let ai = (local_i + 1) as usize;
+                            let aj = (local_j + 1) as usize;
+                            let ak = (local_k + 1) as usize;
+                            occupancy[(ak * pad + aj) * pad + ai] = 255;
+                        }
+                    }
+                }
+            }
+            volumes.push(ChunkFogVolume {
+                chunk_coord: coord,
+                world_origin: [
+                    chunk_min[0] as f32 - half[0],
+                    chunk_min[1] as f32 - half[1],
+                    chunk_min[2] as f32 - half[2],
+                ],
+                occupancy,
+            });
+        }
+        PerChunkFogOccupancy {
+            chunk_extent: chunk_extent as u32,
+            volumes,
+        }
+    }
+
+    /// Assert the production scatter equals the gather reference byte-for-byte: same
+    /// `chunk_extent`, same number/order of volumes, same `chunk_coord`, bit-exact
+    /// `world_origin`, and identical apron `occupancy` bytes for every chunk.
+    fn assert_scatter_matches_gather(grid: &VoxelGrid, density: u32) {
+        let scatter = build_per_chunk_fog_occupancy(grid, density);
+        let gather = build_per_chunk_fog_occupancy_reference(grid, density);
+        assert_eq!(scatter.chunk_extent, gather.chunk_extent, "chunk_extent");
+        assert_eq!(
+            scatter.volumes.len(),
+            gather.volumes.len(),
+            "same number of resident chunk volumes"
+        );
+        for (s, g) in scatter.volumes.iter().zip(gather.volumes.iter()) {
+            assert_eq!(s.chunk_coord, g.chunk_coord, "chunk_coord (and ordering)");
+            // bit-exact: both derive world_origin from the same integer math.
+            assert_eq!(
+                s.world_origin.map(f32::to_bits),
+                g.world_origin.map(f32::to_bits),
+                "world_origin bits for chunk {:?}",
+                g.chunk_coord
+            );
+            assert_eq!(
+                s.occupancy, g.occupancy,
+                "apron occupancy bytes for chunk {:?}",
+                g.chunk_coord
+            );
+        }
+    }
+
+    /// The scatter rewrite of `build_per_chunk_fog_occupancy` is byte-identical to the
+    /// original gather across the cases a scatter most easily diverges on: single chunk,
+    /// multi-chunk, voxels straddling chunk boundaries (apron borders), voxels at grid
+    /// corners (apron reaches into non-resident chunks), recentred frames with negative
+    /// `world_position`, and even / odd / mixed-parity grid dimensions. This is the
+    /// load-bearing proof that the optimization changed only cost, not output.
+    #[test]
+    fn per_chunk_scatter_matches_gather_reference() {
+        let extent_at = |density: u32| CHUNK_BLOCKS * density.max(1);
+
+        // density 1 → extent 4.
+        let e = extent_at(1) as i64; // 4
+
+        // 1) Single chunk, a few interior voxels (even dims).
+        assert_scatter_matches_gather(
+            &grid_with_voxels([e as u32, e as u32, e as u32], &[[0, 0, 0], [1, 2, 3], [3, 3, 3]]),
+            1,
+        );
+
+        // 2) Multi-chunk in all three axes, voxels in several distinct chunks.
+        let dims2 = [(e * 2) as u32, (e * 2) as u32, (e * 2) as u32]; // 8^3 → 8 chunks
+        assert_scatter_matches_gather(
+            &grid_with_voxels(
+                dims2,
+                &[
+                    [0, 0, 0],
+                    [4, 0, 0],
+                    [0, 4, 0],
+                    [0, 0, 4],
+                    [4, 4, 4],
+                    [7, 7, 7],
+                    [3, 4, 5],
+                ],
+            ),
+            1,
+        );
+
+        // 3) Voxels straddling chunk boundaries: a chunk-0 edge voxel (x=3) and the
+        //    neighbour's first voxel (x=4) so chunk-0's +X apron is populated from a
+        //    voxel that belongs to chunk-1's interior — the exact apron-sharing case.
+        let dims3 = [(e * 2) as u32, e as u32, e as u32]; // 8x4x4
+        assert_scatter_matches_gather(
+            &grid_with_voxels(dims3, &[[3, 0, 0], [4, 0, 0], [3, 3, 3], [4, 3, 3]]),
+            1,
+        );
+
+        // 4) Corner voxels: voxel at (0,0,0) makes chunk 0's −1 apron reach into the
+        //    (non-resident) chunk at coord −1, and the (dim-1) corner makes the +extent
+        //    apron reach a chunk past the grid. Neither apron-only neighbour exists, so no
+        //    stray chunk volume — exercises the "apron reaches outside the resident set".
+        let dims4 = [(e * 3) as u32, (e * 3) as u32, (e * 3) as u32]; // 12^3, 27 chunks
+        assert_scatter_matches_gather(
+            &grid_with_voxels(
+                dims4,
+                &[[0, 0, 0], [11, 11, 11], [4, 0, 11], [0, 7, 4]],
+            ),
+            1,
+        );
+
+        // 5) Recentred frame with NEGATIVE world_position. With dims 12, half = 6, so the
+        //    voxel at integer index 0 has world_position −5.5 (negative) — the recentred
+        //    frame the prompt calls out. `grid_with_voxels` encodes world = i + 0.5 − half,
+        //    so these voxels already have negative world coords; assert it round-trips.
+        assert!(
+            grid_with_voxels([12, 12, 12], &[[0, 0, 0]]).occupied[0].world_position[0] < 0.0,
+            "index-0 voxel in a dim-12 grid has negative recentred world_position"
+        );
+        assert_scatter_matches_gather(
+            &grid_with_voxels([12, 12, 12], &[[0, 0, 0], [1, 0, 5], [5, 11, 0]]),
+            1,
+        );
+
+        // 6) Higher density (density 4 → extent 16, the default-ish atlas tile size).
+        let e16 = extent_at(4); // 16
+        assert_scatter_matches_gather(
+            &grid_with_voxels(
+                [e16 * 2, e16, e16],
+                &[[0, 0, 0], [15, 0, 0], [16, 0, 0], [31, 15, 15], [16, 8, 8]],
+            ),
+            4,
+        );
+
+        // 7) ODD and MIXED-parity dimensions (the floored-half decode is the subtle bit:
+        //    half = dim/2 integer division). 7 is odd, 8 even, 9 odd → mixed parity.
+        assert_scatter_matches_gather(
+            &grid_with_voxels([7, 8, 9], &[[0, 0, 0], [6, 7, 8], [3, 4, 4], [6, 0, 8]]),
+            1,
+        );
+        // All-odd, multi-chunk.
+        assert_scatter_matches_gather(
+            &grid_with_voxels([9, 9, 9], &[[0, 0, 0], [8, 8, 8], [4, 4, 4], [8, 0, 4]]),
+            1,
+        );
+
+        // 8) Empty grid → both yield no volumes.
+        assert_scatter_matches_gather(&VoxelGrid::new([e as u32, e as u32, e as u32]), 1);
+    }
+
+    /// A small hand-built expected case that PERMANENTLY pins the apron layout, so the
+    /// byte-identity invariant survives even after the gather reference is gone. A single
+    /// voxel at chunk-1's first interior cell (x=extent) in a 2-chunk-wide grid must:
+    ///   * create exactly chunk 1's volume (interior owner),
+    ///   * set chunk-1 local (0,0,0),
+    ///   * set chunk-0's +X apron cell at local (extent,0,0) — the seam neighbour,
+    ///   * leave everything else zero,
+    ///   * and NOT create a chunk-0 volume from the apron-only write IF chunk 0 has no
+    ///     interior voxel. Here chunk 0 has none, so ONLY chunk 1 is resident; the apron
+    ///     write into chunk 0 has nowhere to land. This is the exact chunk-set criterion.
+    #[test]
+    fn per_chunk_scatter_hand_built_apron_layout() {
+        let density = 1u32;
+        let extent = (CHUNK_BLOCKS * density) as i64; // 4
+        let dims = [(extent * 2) as u32, extent as u32, extent as u32]; // 8x4x4
+        // Single voxel at x=extent (chunk 1's interior origin). Chunk 0 has NO interior
+        // voxel, so it gets no volume even though this voxel sits in its +X apron.
+        let grid = grid_with_voxels(dims, &[[extent as u32, 0, 0]]);
+        let occ = build_per_chunk_fog_occupancy(&grid, density);
+
+        assert_eq!(occ.chunk_extent, extent as u32);
+        assert_eq!(occ.volumes.len(), 1, "only chunk 1 is resident (interior owner)");
+        let chunk1 = &occ.volumes[0];
+        assert_eq!(chunk1.chunk_coord, [1, 0, 0]);
+        // Chunk 1's interior (0,0,0) is occupied.
+        assert_eq!(apron_at(chunk1, extent, [0, 0, 0]), 255);
+        // Its −1 apron (chunk-0 side, x=extent-1=3 global) is empty (no voxel there).
+        assert_eq!(apron_at(chunk1, extent, [-1, 0, 0]), 0);
+        // Exactly one occupied cell in the whole volume.
+        let occupied_cells = chunk1.occupancy.iter().filter(|&&b| b == 255).count();
+        assert_eq!(occupied_cells, 1, "exactly one apron cell set");
     }
 
     #[test]

@@ -527,14 +527,17 @@ impl WindowedState {
         }
         // Re-upload the fog's occupancy field for the new grid, using the active fog
         // mode (per-chunk by default since #28 S5b).
-        Self::upload_fog_occupancy(
-            &mut self.onion_fog_renderer,
-            self.fog_mode,
-            &self.gpu.device,
-            &self.gpu.queue,
-            &grid,
-            density,
-        );
+        {
+            profiling::scope!("fog_upload");
+            Self::upload_fog_occupancy(
+                &mut self.onion_fog_renderer,
+                self.fog_mode,
+                &self.gpu.device,
+                &self.gpu.queue,
+                &grid,
+                density,
+            );
+        }
         // The transform gizmo (issue #29 S2) is sized + positioned from the SELECTED
         // node in the per-frame render path (it must track selection changes, which
         // don't trigger a geometry rebuild), not here. The per-object block lattice +
