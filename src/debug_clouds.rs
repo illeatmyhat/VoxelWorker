@@ -63,13 +63,34 @@ impl VoxelProducer for DebugCloudField {
     /// used to fill each voxel's `block_local_coord` so the block lattice / per-face
     /// texturing stay consistent with the shapes.
     fn resolve(&self, grid: &mut VoxelGrid, voxels_per_block: u32) {
+        let [full_x, full_y, full_z] = self.dimensions;
+        self.resolve_into(
+            grid,
+            voxels_per_block,
+            crate::spatial_index::VoxelAabb::new(
+                [0, 0, 0],
+                [full_x as i64, full_y as i64, full_z as i64],
+            ),
+        );
+    }
+
+    fn resolve_into(
+        &self,
+        grid: &mut VoxelGrid,
+        voxels_per_block: u32,
+        window_local_voxels: crate::spatial_index::VoxelAabb,
+    ) {
         let [grid_x, grid_y, grid_z] = self.dimensions;
+        // FULL dimensions even when only a window is written.
         grid.dimensions = self.dimensions;
         if grid_x == 0 || grid_y == 0 || grid_z == 0 {
             grid.occupied = Vec::new();
             return;
         }
 
+        // ALL field math (half_*, the extent driving puff placement, the noise) is
+        // derived from the FULL `self.dimensions` — the window only narrows the
+        // iterated cell range, so a windowed resolve is a byte-identical subset.
         let half_x = grid_x as f32 / 2.0;
         let half_y = grid_y as f32 / 2.0;
         let half_z = grid_z as f32 / 2.0;
@@ -79,16 +100,22 @@ impl VoxelProducer for DebugCloudField {
         let clouds = scatter_cloud_puffs(self.seed, extent);
         let voxels_per_block = voxels_per_block.max(1);
 
+        // Clamp the window to `[0, full_dim)`; a full-window call reproduces the
+        // historical `0..grid_*` loops exactly.
+        let [(win_x_lo, win_x_hi), (win_y_lo, win_y_hi), (win_z_lo, win_z_hi)] =
+            crate::voxel::clamp_window_to_grid(window_local_voxels, self.dimensions);
+
         // The outer `j` slices are disjoint and order-independent, so parallelise
         // them with rayon (same pattern as `SdfShape::resolve`): each slice builds
         // a local `Vec<Voxel>` and the results are concatenated. The SET is what
-        // matters downstream, not the order.
-        grid.occupied = (0..grid_y)
+        // matters downstream, not the order. Windowing parallelises over the
+        // WINDOWED j range.
+        grid.occupied = (win_y_lo..win_y_hi)
             .into_par_iter()
             .flat_map_iter(|j| {
                 let mut local = Vec::new();
-                for k in 0..grid_z {
-                    for i in 0..grid_x {
+                for k in win_z_lo..win_z_hi {
+                    for i in win_x_lo..win_x_hi {
                         // SAMPLE the field at the centred coordinate (`idx + 0.5 −
                         // half`) so the cloud geometry is unchanged, but STORE the voxel
                         // CORNER-ANCHORED (`idx + 0.5`) exactly like `SdfShape` /

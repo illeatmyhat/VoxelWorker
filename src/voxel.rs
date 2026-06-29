@@ -300,7 +300,63 @@ pub trait VoxelProducer {
     /// `voxels_per_block` is the document-level density (ADR 0003 §3f(0): one grid
     /// fineness for the whole plan, no longer a per-producer field) — used to fill
     /// each voxel's `block_local_coord` (and, for a sized producer, its grid extent).
+    ///
+    /// This is the full-window convenience wrapper over [`resolve_into`]: each impl
+    /// computes its own FULL grid dimensions and calls `resolve_into` with the window
+    /// `[0, full_dim)` on every axis. It therefore writes EVERY in-range cell — i.e.
+    /// it is exactly the historical (pre-windowing) resolve.
+    ///
+    /// [`resolve_into`]: VoxelProducer::resolve_into
     fn resolve(&self, grid: &mut VoxelGrid, voxels_per_block: u32);
+
+    /// Resolve only the cells whose LOCAL voxel index lies inside `window_local_voxels`
+    /// (a half-open `[min, max)` box in the producer's own voxel-index frame
+    /// `[0, full_dim)`), writing JUST those in-window cells into `grid.occupied`.
+    ///
+    /// Two invariants every implementor upholds (so a windowed resolve is a
+    /// byte-identical SUBSET of the full resolve):
+    ///
+    /// * **`grid.dimensions` is ALWAYS the producer's FULL dimensions**, never the
+    ///   window size. Downstream decode (`widest_run_in_band`, the 2D slice, `.vox`
+    ///   export) recover indices against the full extent, so the dimensions must
+    ///   describe the whole producer even when only a sub-region's cells are written.
+    /// * Each impl **CLAMPs** the window to `[0, full_dim)` per axis before iterating,
+    ///   so an oversized / partly-out-of-range window is harmless and a full-window
+    ///   call (`[0,0,0]..full_dim`) reproduces the historical resolve EXACTLY.
+    ///
+    /// Every producer's per-cell output depends ONLY on the cell index and the FULL
+    /// dimensions (centred sample `idx + 0.5 − full_dim/2`; corner-anchored store
+    /// `idx + 0.5`; revolve radius/axial from the full extent; cloud puffs scattered
+    /// from the full extent) — never on which window is being filled. So restricting
+    /// the iteration to `window ∩ [0, full_dim)` produces a byte-identical subset.
+    fn resolve_into(
+        &self,
+        grid: &mut VoxelGrid,
+        voxels_per_block: u32,
+        window_local_voxels: crate::spatial_index::VoxelAabb,
+    );
+}
+
+/// Clamp a producer window to `[0, full_dim)` per axis and return the per-axis
+/// iteration bounds `[lo, hi)` as `u32` (already intersected with the grid). When the
+/// window lies fully outside the grid on any axis the returned range is EMPTY
+/// (`lo >= hi`), so the iteration writes nothing. Shared by every `resolve_into`.
+#[inline]
+pub(crate) fn clamp_window_to_grid(
+    window_local_voxels: crate::spatial_index::VoxelAabb,
+    full_dimensions: [u32; 3],
+) -> [(u32, u32); 3] {
+    let mut bounds = [(0u32, 0u32); 3];
+    for axis in 0..3 {
+        let full = full_dimensions[axis] as i64;
+        let lo = window_local_voxels.min[axis].clamp(0, full) as u32;
+        let hi = window_local_voxels.max[axis].clamp(0, full) as u32;
+        // `hi >= lo` always holds after clamping a half-open box to a non-negative
+        // range, but a degenerate (min > max) input box could invert — guard it so
+        // the range is never reversed (which would panic the `par_iter`).
+        bounds[axis] = (lo, hi.max(lo));
+    }
+    bounds
 }
 
 /// Geometry parameters — the *only* params that trigger a voxel rebuild.
@@ -601,11 +657,32 @@ impl SdfShape {
 
 impl VoxelProducer for SdfShape {
     fn resolve(&self, grid: &mut VoxelGrid, voxels_per_block: u32) {
+        let [full_x, full_y, full_z] = self.grid_dimensions(voxels_per_block);
+        self.resolve_into(
+            grid,
+            voxels_per_block,
+            crate::spatial_index::VoxelAabb::new(
+                [0, 0, 0],
+                [full_x as i64, full_y as i64, full_z as i64],
+            ),
+        );
+    }
+
+    fn resolve_into(
+        &self,
+        grid: &mut VoxelGrid,
+        voxels_per_block: u32,
+        window_local_voxels: crate::spatial_index::VoxelAabb,
+    ) {
         profiling::scope!("sdf_resolve");
         let [grid_x, grid_y, grid_z] = self.grid_dimensions(voxels_per_block);
+        // FULL dimensions even when only a window is written (downstream decode /
+        // slice / export read against the whole producer extent).
         grid.dimensions = [grid_x, grid_y, grid_z];
 
-        // Shape inscribed in the box: semi-axes are half the voxel-space dims.
+        // Shape inscribed in the box: semi-axes are half the voxel-space dims. ALL
+        // per-cell math is derived from the FULL dims — the window only narrows the
+        // iteration range, never the sampling frame.
         let semi_axes = Vec3::new(
             grid_x as f32 / 2.0,
             grid_y as f32 / 2.0,
@@ -617,19 +694,25 @@ impl VoxelProducer for SdfShape {
         let half_y = grid_y as f32 / 2.0;
         let half_z = grid_z as f32 / 2.0;
 
+        // Clamp the window to `[0, full_dim)`; a full-window call reproduces the
+        // historical `0..grid_*` loops exactly.
+        let [(win_x_lo, win_x_hi), (win_y_lo, win_y_hi), (win_z_lo, win_z_hi)] =
+            clamp_window_to_grid(window_local_voxels, [grid_x, grid_y, grid_z]);
+
         // The outer `j` slices are order-independent (each samples a disjoint set
         // of voxels and writes nothing shared), so M8 parallelises them with
         // rayon: each slice produces a local `Vec<Voxel>` and the results are
         // concatenated. The voxel ORDER may differ from the serial version, but
         // the SET is identical — the renderer doesn't care about order, and the
         // 2D slice / `.vox` export recover indices from each voxel's position.
+        // Windowing parallelises over the WINDOWED outer-axis range.
         let kind = self.kind;
-        grid.occupied = (0..grid_y)
+        grid.occupied = (win_y_lo..win_y_hi)
             .into_par_iter()
             .flat_map_iter(|j| {
                 let mut local = Vec::new();
-                for k in 0..grid_z {
-                    for i in 0..grid_x {
+                for k in win_z_lo..win_z_hi {
+                    for i in win_x_lo..win_x_hi {
                         // The shape geometry is still inscribed symmetric about the
                         // grid's centre, so SAMPLE the SDF at the centred coordinate
                         // (`idx + 0.5 − grid/2`). But STORE the voxel CORNER-ANCHORED

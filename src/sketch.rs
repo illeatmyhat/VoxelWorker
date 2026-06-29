@@ -412,13 +412,30 @@ fn point_in_polygon(profile: &[SketchPoint], sample_0: f64, sample_1: f64) -> bo
 
 impl VoxelProducer for SketchSolid {
     fn resolve(&self, grid: &mut VoxelGrid, voxels_per_block: u32) {
+        let [full_x, full_y, full_z] = self.grid_dimensions();
+        self.resolve_into(
+            grid,
+            voxels_per_block,
+            crate::spatial_index::VoxelAabb::new(
+                [0, 0, 0],
+                [full_x as i64, full_y as i64, full_z as i64],
+            ),
+        );
+    }
+
+    fn resolve_into(
+        &self,
+        grid: &mut VoxelGrid,
+        voxels_per_block: u32,
+        window_local_voxels: crate::spatial_index::VoxelAabb,
+    ) {
         profiling::scope!("sketch_resolve");
         match self.operation {
             Operation::Extrude { height_voxels } => {
-                self.resolve_extrude(grid, voxels_per_block, height_voxels)
+                self.resolve_extrude(grid, voxels_per_block, height_voxels, window_local_voxels)
             }
             Operation::Revolve { axis, sweep } => {
-                self.resolve_revolve(grid, voxels_per_block, axis, sweep)
+                self.resolve_revolve(grid, voxels_per_block, axis, sweep, window_local_voxels)
             }
         }
     }
@@ -428,8 +445,15 @@ impl SketchSolid {
     /// The extrude resolve: rasterize the profile once and sweep it across
     /// `height_voxels` layers along the plane normal. Byte-identical to the prior
     /// `SketchExtrude::resolve` (the height now arrives from the matched operation).
-    fn resolve_extrude(&self, grid: &mut VoxelGrid, voxels_per_block: u32, height_voxels: u32) {
+    fn resolve_extrude(
+        &self,
+        grid: &mut VoxelGrid,
+        voxels_per_block: u32,
+        height_voxels: u32,
+        window_local_voxels: crate::spatial_index::VoxelAabb,
+    ) {
         let dimensions = self.grid_dimensions();
+        // FULL dimensions even when only a window is written.
         grid.dimensions = dimensions;
         grid.occupied.clear();
 
@@ -444,16 +468,31 @@ impl SketchSolid {
         let in_plane_span_1 = dimensions[in_plane_1];
         let density = voxels_per_block.max(1);
 
+        // The window is a WORLD-axis box `[0, full_dim)`; map each clamped world-axis
+        // range to the producer's (in_plane_0, in_plane_1, normal) frame. The 2D
+        // raster's `cell_0` runs along `in_plane_0` and `cell_1` along `in_plane_1`;
+        // the layer sweep runs along `normal`. Clamping to full dims makes a
+        // full-window call reproduce the historical `0..span` / `0..height` loops.
+        let world_bounds = crate::voxel::clamp_window_to_grid(window_local_voxels, dimensions);
+        let (cell_0_lo, cell_0_hi) = world_bounds[in_plane_0];
+        let (cell_1_lo, cell_1_hi) = world_bounds[in_plane_1];
+        let (layer_lo, layer_hi) = world_bounds[normal];
+        // `grid_dimensions()` sets `dimensions[normal] = height_voxels`, so the
+        // clamped normal range is already `⊆ [0, height_voxels)`.
+        let _ = height_voxels;
+
         // Rasterize the 2D profile ONCE (axis-aligned extrusion ⇒ the same fill on
-        // every layer along the normal — §3i, cheap + predictable), then sweep it
-        // across the `height_voxels` layers. A cell `(cell_0, cell_1)` at local
-        // origin `min` is occupied iff its centre `(min + cell + 0.5)` is inside the
-        // polygon (even-odd test at the cell centre — §3i).
-        let mut filled_in_plane: Vec<[u32; 2]> =
-            Vec::with_capacity((in_plane_span_0 as usize) * (in_plane_span_1 as usize));
-        for cell_1 in 0..in_plane_span_1 {
+        // every layer along the normal — §3i, cheap + predictable) over the WINDOWED
+        // in-plane range, then sweep it across the WINDOWED `normal` layers. A cell
+        // `(cell_0, cell_1)` at local origin `min` is occupied iff its centre
+        // `(min + cell + 0.5)` is inside the polygon (even-odd test at the cell
+        // centre — §3i). The polygon test is on `min + cell`, which is FULL-derived;
+        // only the iterated cell range narrows.
+        let _ = (in_plane_span_0, in_plane_span_1);
+        let mut filled_in_plane: Vec<[u32; 2]> = Vec::new();
+        for cell_1 in cell_1_lo..cell_1_hi {
             let sample_1 = min[1] as f64 + cell_1 as f64 + 0.5;
-            for cell_0 in 0..in_plane_span_0 {
+            for cell_0 in cell_0_lo..cell_0_hi {
                 let sample_0 = min[0] as f64 + cell_0 as f64 + 0.5;
                 if point_in_polygon(&self.sketch.profile, sample_0, sample_1) {
                     filled_in_plane.push([cell_0, cell_1]);
@@ -473,7 +512,7 @@ impl SketchSolid {
         // with rayon. The emission ORDER may differ from the serial version, but the
         // SET is identical (consumers recover indices from each voxel's position).
         let profile_axes = [in_plane_0, in_plane_1, normal];
-        grid.occupied = (0..height_voxels)
+        grid.occupied = (layer_lo..layer_hi)
             .into_par_iter()
             .flat_map_iter(|layer| {
                 let [in_plane_0, in_plane_1, normal] = profile_axes;
@@ -530,8 +569,10 @@ impl SketchSolid {
         voxels_per_block: u32,
         axis: RevolveAxis,
         sweep: RevolveSweep,
+        window_local_voxels: crate::spatial_index::VoxelAabb,
     ) {
         let dimensions = self.grid_dimensions();
+        // FULL dimensions even when only a window is written.
         grid.dimensions = dimensions;
         grid.occupied.clear();
 
@@ -602,19 +643,27 @@ impl SketchSolid {
 
         let profile = &self.sketch.profile;
 
+        // Clamp the WORLD-axis window to `[0, full_dim)`; all per-cell math (half,
+        // radial_max, the centred sample, profile_axial) stays FULL-derived — only
+        // the iterated cell range narrows. A full-window call reproduces the
+        // historical `0..dimensions[*]` loops exactly.
+        let [(win_x_lo, win_x_hi), (win_y_lo, win_y_hi), (win_z_lo, win_z_hi)] =
+            crate::voxel::clamp_window_to_grid(window_local_voxels, dimensions);
+
         // Iterate every grid cell. The axial axis uses an un-centred profile-space
         // mapping (matching the extrude rasterizer); the radial axes are centred.
         //
         // The outer `k` slices are order-independent (each samples a disjoint set of
         // voxels), so — mirroring `SdfShape::resolve` — each slice produces a local
         // `Vec<Voxel>` and rayon concatenates them. Emission ORDER may differ from the
-        // serial version but the SET is identical.
-        grid.occupied = (0..dimensions[2])
+        // serial version but the SET is identical. Windowing parallelises over the
+        // WINDOWED z range.
+        grid.occupied = (win_z_lo..win_z_hi)
             .into_par_iter()
             .flat_map_iter(|k| {
                 let mut local = Vec::new();
-                for j in 0..dimensions[1] {
-                    for i in 0..dimensions[0] {
+                for j in win_y_lo..win_y_hi {
+                    for i in win_x_lo..win_x_hi {
                         let index = [i, j, k];
                         let centred = [
                             index[0] as f32 + 0.5 - half[0],

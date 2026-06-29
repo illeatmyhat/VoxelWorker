@@ -47,6 +47,9 @@ pub mod units;
 pub mod vox_export;
 pub mod voxel;
 
+#[cfg(test)]
+mod windowed_resolve_tests;
+
 pub use app_core::{
     default_replay_seed_scene, replay_intent_script, AppCore, RebuildOutcome, RebuildOutput,
 };
