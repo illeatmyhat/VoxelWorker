@@ -464,6 +464,7 @@ impl WindowedState {
     /// this NEVER moves the camera — edits keep the orbit target + distance fixed.
     /// Explicit framing (startup fit, Home/Fit, Focus) is handled by their own paths.
     fn rebuild_geometry(&mut self) {
+        profiling::scope!("rebuild_geometry");
         let density = self.panel_state.geometry.voxels_per_block;
 
         // Delegate the headless resolve (S2/S3 targeted invalidation + assemble) to
@@ -905,6 +906,7 @@ impl WindowedState {
     }
 
     fn render(&mut self) {
+        profiling::scope!("render");
         let surface_texture = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(texture)
             | wgpu::CurrentSurfaceTexture::Suboptimal(texture) => texture,
@@ -980,8 +982,10 @@ impl WindowedState {
             ];
         }
 
-        let mut prepared = run_egui_frame(
-            &mut self.egui_bridge,
+        let mut prepared = {
+            profiling::scope!("egui_frame");
+            run_egui_frame(
+                &mut self.egui_bridge,
             &self.gpu.device,
             &self.gpu.queue,
             &mut self.panel_state,
@@ -990,9 +994,10 @@ impl WindowedState {
             &self.palette,
             raw_input,
             [self.surface_config.width, self.surface_config.height],
-            pixels_per_point,
-            &mut self.context_menu_open_at,
-        );
+                pixels_per_point,
+                &mut self.context_menu_open_at,
+            )
+        };
 
         // Issue #25: cache the central 3D viewport rect so the view-cube
         // hit-testing (run later, in mouse events) can offset the cube corner.
@@ -1269,19 +1274,27 @@ impl WindowedState {
             None => MaterialSource::Procedural(self.panel_state.material),
         };
 
-        render_frame(
-            &mut self.egui_bridge,
-            &self.gpu.device,
-            &self.gpu.queue,
-            &target_view,
-            &self.msaa_color_view,
-            &self.depth_view,
-            material,
-            &overlays,
-            &prepared,
-        );
+        {
+            profiling::scope!("render_submit");
+            render_frame(
+                &mut self.egui_bridge,
+                &self.gpu.device,
+                &self.gpu.queue,
+                &target_view,
+                &self.msaa_color_view,
+                &self.depth_view,
+                material,
+                &overlays,
+                &prepared,
+            );
 
-        surface_texture.present();
+            surface_texture.present();
+        }
+
+        // One frame mark per rendered frame (not per event). No-op unless a
+        // profiling backend is enabled; under `--features tracy` this delimits the
+        // frame on the Tracy timeline.
+        profiling::finish_frame!();
     }
 }
 
@@ -1555,6 +1568,12 @@ impl ApplicationHandler for App {
 }
 
 fn main() {
+    // Start the Tracy client and hold the guard alive for the whole program so it
+    // stays connectable from the external Tracy profiler app. No-op / absent unless
+    // built with `--features tracy` (see docs/profiling.md). CPU zones only for now.
+    #[cfg(feature = "tracy")]
+    let _tracy_client = tracy_client::Client::start();
+
     let event_loop = EventLoop::new().expect("failed to create event loop");
     let mut app = App::default();
     event_loop

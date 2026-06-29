@@ -411,6 +411,7 @@ fn point_in_polygon(profile: &[SketchPoint], sample_0: f64, sample_1: f64) -> bo
 
 impl VoxelProducer for SketchSolid {
     fn resolve(&self, grid: &mut VoxelGrid, voxels_per_block: u32) {
+        profiling::scope!("sketch_resolve");
         match self.operation {
             Operation::Extrude { height_voxels } => {
                 self.resolve_extrude(grid, voxels_per_block, height_voxels)

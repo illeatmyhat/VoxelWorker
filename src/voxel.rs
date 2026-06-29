@@ -601,6 +601,7 @@ impl SdfShape {
 
 impl VoxelProducer for SdfShape {
     fn resolve(&self, grid: &mut VoxelGrid, voxels_per_block: u32) {
+        profiling::scope!("sdf_resolve");
         let [grid_x, grid_y, grid_z] = self.grid_dimensions(voxels_per_block);
         grid.dimensions = [grid_x, grid_y, grid_z];
 

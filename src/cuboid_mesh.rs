@@ -954,6 +954,7 @@ impl CuboidMeshRenderer {
         chunk_grids: &[([i32; 3], &VoxelGrid)],
         grid_dimensions: [u32; 3],
     ) -> Self {
+        profiling::scope!("cuboid_mesh_build");
         let source_chunk_grids: Vec<([i32; 3], VoxelGrid)> = chunk_grids
             .iter()
             .map(|(coord, grid)| (*coord, (*grid).clone()))

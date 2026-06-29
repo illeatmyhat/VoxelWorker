@@ -795,6 +795,7 @@ impl AppCore {
     /// the store, returning the offending count so the shell can surface the cap
     /// warning (AppCore never writes panel state).
     pub fn rebuild<'a>(&'a mut self, scene: &Scene, density: u32) -> RebuildOutcome<'a> {
+        profiling::scope!("app_core_rebuild");
         // Issue #27 S2: the resolve is chunked + lazy, so the voxel bound is a
         // PER-CHUNK bound, not a whole-scene total. Only a pathological density
         // (one chunk's voxel capacity alone exceeds the bound) is rejected.
@@ -827,11 +828,18 @@ impl AppCore {
         match self.previous_leaf_index.as_ref() {
             Some(previous) => match new_leaf_index.edit_aabb_since(previous) {
                 Some(edit_aabb) => {
+                    profiling::scope!("invalidate_aabb");
                     self.store.invalidate_aabb(&edit_aabb, density);
                 }
-                None => self.store.clear(),
+                None => {
+                    profiling::scope!("invalidate_clear");
+                    self.store.clear();
+                }
             },
-            None => self.store.clear(),
+            None => {
+                profiling::scope!("invalidate_clear");
+                self.store.clear();
+            }
         }
         self.previous_recentre_voxels = Some(new_recentre);
         self.previous_leaf_index = Some(new_leaf_index);
@@ -840,9 +848,15 @@ impl AppCore {
         // accessor LAST — it borrows the store, so every `&mut store` call above
         // must already be done. The grid drops straight into the fog upload; the
         // accessor feeds the cuboid mesher, then the shell drops it.
-        let grid = self.store.resolve_region(scene, density, 0);
+        let grid = {
+            profiling::scope!("resolve_region");
+            self.store.resolve_region(scene, density, 0)
+        };
         let region_dimensions = Self::region_dimensions_for(scene, density, &grid);
-        let render_chunks = self.store.resident_render_chunks(scene, density, 0);
+        let render_chunks = {
+            profiling::scope!("resident_render_chunks");
+            self.store.resident_render_chunks(scene, density, 0)
+        };
         RebuildOutcome::Built(RebuildOutput {
             grid,
             region_dimensions,
