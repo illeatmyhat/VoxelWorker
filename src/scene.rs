@@ -2866,8 +2866,32 @@ fn stamp_producer_into_chunk(
     chunk_min_voxels: [i64; 3],
     chunk_max_voxels: [i64; 3],
 ) {
+    // Resolve ONLY the cells this chunk owns, in the producer's LOCAL voxel-index
+    // frame `[0, full_dim)`. A producer's local cell `idx` has absolute centre
+    // `translation_voxels[axis] + idx + 0.5`; the historical chunk-membership clip
+    // kept `chunk_min ≤ translation + idx + 0.5 < chunk_max`. The `+ 0.5` cancels on
+    // half-open INTEGER chunk edges:
+    //   idx + 0.5 ≥ chunk_min  ⟺  idx ≥ chunk_min − translation
+    //   idx + 0.5 <  chunk_max  ⟺  idx <  chunk_max − translation
+    // so the chunk window in the local frame is the integer half-open box below.
+    // `resolve_into` clamps it to `[0, full_dim)` internally, so an out-of-range
+    // window is safe, and it returns EXACTLY the cells the old per-voxel clip kept —
+    // a producer spanning N chunks now resolves each chunk's cells once instead of
+    // re-resolving its full extent N×.
     let mut local = VoxelGrid::new(region_dimensions);
-    producer.resolve(&mut local, voxels_per_block);
+    let window_local = crate::spatial_index::VoxelAabb::new(
+        [
+            chunk_min_voxels[0] - translation_voxels[0],
+            chunk_min_voxels[1] - translation_voxels[1],
+            chunk_min_voxels[2] - translation_voxels[2],
+        ],
+        [
+            chunk_max_voxels[0] - translation_voxels[0],
+            chunk_max_voxels[1] - translation_voxels[1],
+            chunk_max_voxels[2] - translation_voxels[2],
+        ],
+    );
+    producer.resolve_into(&mut local, voxels_per_block, window_local);
 
     // The voxel's chunk-local placement, rebased to the floating origin in i64
     // FIRST so the f32 add never sees a large magnitude. For the live render the
@@ -2883,18 +2907,6 @@ fn stamp_producer_into_chunk(
 
     output.occupied.reserve(local.occupied.len());
     for mut voxel in local.occupied {
-        // Chunk membership is decided on the ABSOLUTE centre, computed in f64 so a
-        // far chunk's boundary voxels are classified at full precision (the half-open
-        // box `[min, max)` with centres at `n + 0.5` → each voxel owns exactly one
-        // chunk). f64 carries far more than the ~21 bits an f32 keeps at 1.6M voxels.
-        let in_chunk = (0..3).all(|axis| {
-            let absolute = voxel.world_position[axis] as f64 + translation_voxels[axis] as f64;
-            absolute >= chunk_min_voxels[axis] as f64 && absolute < chunk_max_voxels[axis] as f64
-        });
-        if !in_chunk {
-            continue;
-        }
-
         // Store the rebased (origin-relative) f32 position.
         voxel.world_position[0] += rebased_translation[0];
         voxel.world_position[1] += rebased_translation[1];
