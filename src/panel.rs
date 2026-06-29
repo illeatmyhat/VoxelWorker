@@ -22,6 +22,7 @@ use crate::camera::ProjectionMode;
 use crate::core_geom::MaterialChoice;
 use crate::intent::{Intent, NodeSpec};
 use crate::scene::{DefId, Node, NodeContent, NodeId, Part, Scene};
+use crate::units::{self, DisplayUnit, MeasurementError};
 use crate::voxel::{GeometryParams, SdfShape, ShapeKind};
 
 /// Layer-range scrubber state (issue #12).
@@ -1081,18 +1082,23 @@ fn build_part_inspector_section(
     ui.separator();
 }
 
-/// Offset (placement) section (ADR 0001 step 3): three integer drag boxes
-/// (X/Y/Z, may be negative) writing the active node's placement via a
-/// block-granular `SetOffset` — the derived block view
-/// ([`NodeTransform::blocks`](crate::scene::NodeTransform::blocks)) of the
-/// canonical voxel offset (ADR 0003 §3f(0)).
-/// Common to Tools and Parts — placement is on the node's transform, not the
-/// producer. Editing it re-resolves the composited scene (a node moving changes
-/// the composite extent, so it auto-frames like a size change via
-/// [`PanelResponse::scene_changed`]).
+/// Offset (placement) section (ADR 0003 §3f(0)): three per-axis text fields
+/// (X/Y/Z, signed) accepting blocks+voxels unit expressions (e.g. `"3 blocks 8
+/// voxels"`, `"-1b 4v"`, `"3.5 blocks"`). Each field is seeded from the canonical
+/// voxel offset formatted as blocks+voxels and, on commit (Enter or focus loss),
+/// parsed via [`units::parse`] and validated to land on a whole voxel at the
+/// document density; on success it emits a single `SetOffset` carrying the
+/// per-axis [`Measurement`](crate::units::Measurement)s (the edited axis plus the
+/// two unchanged retained ones). A parse / non-landing error is shown inline (red)
+/// and NOTHING is emitted, so the canonical offset never moves on bad input.
 ///
-/// Offsets are in-memory only for now — persistence is ADR 0001 step 8 (the
-/// config round-trip does not yet carry them). // step 8: serialize offsets.
+/// Common to Tools and Parts — placement is on the node's transform, not the
+/// producer. A committed edit re-resolves + re-frames the composite (a node moving
+/// changes the composite extent), so it auto-frames the whole composited extent.
+///
+/// The in-progress text + last error live in egui temp memory (keyed per axis by a
+/// stable `Id`) so a partial edit and its error survive across frames; an unfocused
+/// field re-syncs to the canonical value, so undo / external moves reflect.
 fn build_offset_section(ui: &mut egui::Ui, state: &mut PanelState, response: &mut PanelResponse) {
     let Some(target) = state.scene.active else {
         return;
@@ -1100,32 +1106,119 @@ fn build_offset_section(ui: &mut egui::Ui, state: &mut PanelState, response: &mu
     let Some(node) = state.scene.active_node() else {
         return;
     };
+    let density = state.scene.voxels_per_block;
+    // The canonical voxel offset (resolve's source of truth) and the RETAINED
+    // per-axis measurements (the two unedited axes ride along unchanged in any
+    // emitted intent so a single-axis edit does not disturb the others).
+    let offset_voxels = node.transform.offset_voxels;
+    let retained_measurements = node.transform.offset_measurements();
+
     ui.add_space(8.0);
-    ui.strong("Offset (blocks)");
-    // ADR 0003 Phase C C4a: the drag boxes bind to a LOCAL copy of the offset (read
-    // from the active node this frame); a change emits a single `SetOffset` carrying
-    // all three axes. A placement edit re-resolves + re-frames the composite (the old
-    // `scene_changed`), so it auto-frames the whole composited extent.
-    // The drag boxes are block-granular (UI convenience); bind to the derived
-    // block view of the canonical voxel placement (ADR 0003 §3f(0)).
-    let mut offset = node.transform.blocks(state.scene.voxels_per_block);
-    let mut changed = false;
-    ui.horizontal(|ui| {
-        for (axis_index, axis_label) in ["X", "Y", "Z"].iter().enumerate() {
-            let mut value = offset[axis_index];
-            let drag = egui::DragValue::new(&mut value)
-                .speed(0.1)
-                .prefix(format!("{axis_label} "));
-            if ui.add(drag).changed() {
-                offset[axis_index] = value;
-                changed = true;
+    ui.strong("Offset (blocks + voxels)");
+
+    for (axis_index, axis_label) in ["X", "Y", "Z"].iter().enumerate() {
+        // Per-axis stable ids for the in-progress text buffer and last error.
+        let text_id = egui::Id::new(("offset_axis_text", target, axis_index));
+        let error_id = egui::Id::new(("offset_axis_error", target, axis_index));
+        // The canonical seed: the current voxel offset as a blocks+voxels string.
+        let seed = units::format(offset_voxels[axis_index], density, DisplayUnit::BlocksAndVoxels);
+
+        // The text edit binds to a LOCAL buffer restored from temp memory; an
+        // UNFOCUSED field re-syncs to the canonical seed so undo / external moves
+        // and density changes reflect, while a focused field keeps the user's
+        // in-progress text untouched.
+        let mut buffer = ui
+            .memory(|memory| memory.data.get_temp::<String>(text_id))
+            .unwrap_or_else(|| seed.clone());
+
+        let widget = egui::TextEdit::singleline(&mut buffer)
+            .desired_width(110.0)
+            .hint_text("blocks + voxels");
+        let widget_response = ui.horizontal(|ui| {
+            ui.label(format!("{axis_label} "));
+            ui.add(widget)
+        });
+        let edit_response = widget_response.inner;
+
+        // Editing again clears any stale error from a prior failed commit, so the
+        // red message tracks the LAST committed attempt, not in-progress typing.
+        if edit_response.changed() {
+            ui.memory_mut(|memory| memory.data.remove::<String>(error_id));
+        }
+
+        // `lost_focus()` fires on Enter AND on click-away, so it is the single
+        // commit trigger; the typed `buffer` is still live here (the unfocused
+        // re-sync happens AFTER, so a commit reads the user's text, not the seed).
+        // Only attempt a parse when the text actually differs from the canonical
+        // seed (a focus loss with no edit is a no-op).
+        let committed = edit_response.lost_focus() && buffer.trim() != seed;
+        if committed {
+            match units::parse(&buffer) {
+                Ok(measurement) => match measurement.to_voxels(density) {
+                    Ok(landed_voxels) => {
+                        // Replace only this axis; the other two keep their retained
+                        // measurements so a single-axis edit is isolated.
+                        let mut next = retained_measurements;
+                        next[axis_index] = measurement;
+                        ui.memory_mut(|memory| memory.data.remove::<String>(error_id));
+                        response.emit_and_frame(Intent::SetOffset {
+                            target,
+                            offset_measurements: next,
+                        });
+                        // Settle the field on the canonical form of the applied value.
+                        buffer =
+                            units::format(landed_voxels, density, DisplayUnit::BlocksAndVoxels);
+                    }
+                    Err(error) => {
+                        ui.memory_mut(|memory| {
+                            memory.data.insert_temp(error_id, offset_error_text(&error))
+                        });
+                    }
+                },
+                Err(error) => {
+                    ui.memory_mut(|memory| {
+                        memory.data.insert_temp(error_id, error.to_string())
+                    });
+                }
+            }
+        } else if !edit_response.has_focus() {
+            // Not being edited and not a commit. If a prior commit FAILED, an error
+            // is stored — keep the user's (rejected) text on screen alongside the
+            // error so they can see and fix it; do NOT silently revert. With no
+            // error, mirror the canonical value so undo / external moves / density
+            // changes reflect in the field.
+            let has_error = ui.memory(|memory| memory.data.get_temp::<String>(error_id).is_some());
+            if !has_error {
+                buffer = seed.clone();
             }
         }
-    });
-    if changed {
-        response.emit_and_frame(Intent::SetOffset { target, offset_blocks: offset });
+
+        // Persist the buffer for the next frame (the focused, in-progress text).
+        ui.memory_mut(|memory| memory.data.insert_temp(text_id, buffer));
+
+        // Inline error (red), cleared on the next successful commit.
+        if let Some(message) = ui.memory(|memory| memory.data.get_temp::<String>(error_id)) {
+            ui.colored_label(egui::Color32::from_rgb(220, 80, 80), message);
+        }
     }
+
     ui.separator();
+}
+
+/// Render a [`MeasurementError`] for the inline offset error label. A non-landing
+/// block fraction reports the nearest representable voxel counts so the user can
+/// pick one instead of being silently rounded (ADR 0003 §3f(0)).
+fn offset_error_text(error: &MeasurementError) -> String {
+    match error {
+        MeasurementError::BlockTermNotWholeVoxels {
+            density,
+            nearest_floor_voxels,
+            nearest_ceil_voxels,
+        } => format!(
+            "doesn't land on a whole voxel at density {density}; nearest are {nearest_floor_voxels} or {nearest_ceil_voxels} voxels"
+        ),
+        MeasurementError::ZeroDensity => "density must be at least 1".to_string(),
+    }
 }
 
 /// Per-node grid toggles (issue #29 S3/S4): the active node's own

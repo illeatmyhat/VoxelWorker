@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::core_geom::MaterialChoice;
 use crate::scene::{DefId, Node, NodeContent, NodeGrids, NodeId, Part};
+use crate::units::Measurement;
 use crate::voxel::SdfShape;
 
 /// A **by-value node payload** for the structural add intents (ADR 0003 Phase C).
@@ -161,12 +162,18 @@ pub enum Intent {
         /// The new material.
         material: MaterialChoice,
     },
-    /// Set the block offset of `target`'s transform.
+    /// Set the offset of `target`'s transform from a per-axis authored unit
+    /// expression (ADR 0003 §3f(0)).
     SetOffset {
         /// The node to move.
         target: NodeId,
-        /// The new whole-block offset.
-        offset_blocks: [i64; 3],
+        /// The new per-axis offset as RETAINED [`Measurement`]s (blocks + voxels,
+        /// signed). The apply path derives the canonical voxel offset via
+        /// [`Measurement::to_voxels`] at the document density; the inspector
+        /// guarantees each axis lands on a whole voxel before emitting. The
+        /// measurements are retained on the transform for lossless density
+        /// re-targeting and exact-expression undo.
+        offset_measurements: [Measurement; 3],
     },
     /// Set the name of `target`.
     SetName {
@@ -347,6 +354,20 @@ impl IntentEffect {
             selection_changed: self.selection_changed || other.selection_changed,
         }
     }
+}
+
+/// Build a per-axis whole-**block** offset measurement (test helper for the
+/// `SetOffset` intent, which now carries `[Measurement; 3]`). Each axis is a pure
+/// integer block term, so it derives to `blocks · d` voxels at any density — the
+/// same result the old block-granular path produced.
+#[cfg(test)]
+pub(crate) fn whole_block_offset(blocks: [i64; 3]) -> [Measurement; 3] {
+    use crate::units::ExactRational;
+    [
+        Measurement::new(ExactRational::from_integer(blocks[0] as i128), 0),
+        Measurement::new(ExactRational::from_integer(blocks[1] as i128), 0),
+        Measurement::new(ExactRational::from_integer(blocks[2] as i128), 0),
+    ]
 }
 
 #[cfg(test)]
@@ -557,13 +578,14 @@ mod tests {
         let target = root_id(&scene, 1);
         assert_dispatch_matches(
             &scene,
-            Intent::SetOffset { target, offset_blocks: [3, -2, 5] },
+            Intent::SetOffset { target, offset_measurements: whole_block_offset([3, -2, 5]) },
             |s| {
-                // `apply` converts the block-granular intent to canonical voxels at
+                // `apply` derives canonical voxels from the per-axis measurement at
                 // the document density (ADR 0003 §3f(0)); mirror that here.
                 let density = s.voxels_per_block;
                 if let Some(node) = s.node_by_id_mut(target) {
-                    node.transform = NodeTransform::from_blocks([3, -2, 5], density);
+                    node.transform =
+                        NodeTransform::from_measurements(whole_block_offset([3, -2, 5]), density);
                 }
             },
         );
@@ -827,7 +849,7 @@ mod tests {
             Intent::SetVisible { target: NodeId(1), visible: false },
             Intent::SetShape { target: NodeId(1), shape },
             Intent::SetMaterial { target: NodeId(1), material: MaterialChoice::Stone },
-            Intent::SetOffset { target: NodeId(1), offset_blocks: [-1, 2, -3] },
+            Intent::SetOffset { target: NodeId(1), offset_measurements: whole_block_offset([-1, 2, -3]) },
             Intent::SetName { target: NodeId(1), name: "Foo".to_string() },
             Intent::SetCloudSeed { target: NodeId(1), seed: 9 },
             Intent::SetNodeGrids { target: NodeId(1), grids },

@@ -262,11 +262,10 @@ impl AppCore {
             Intent::SetOffset { target, .. } => match scene.node_by_id(*target) {
                 Some(node) => Inverse::Field(Intent::SetOffset {
                     target: *target,
-                    // The intent is block-granular (UI convenience), so the inverse
-                    // records the prior offset in BLOCKS (the derived block view) so
-                    // undo round-trips exactly — exact while placement is
-                    // block-aligned, which it is today (ADR 0003 §3f(0)).
-                    offset_blocks: node.transform.blocks(scene.voxels_per_block),
+                    // Capture the node's RETAINED per-axis measurements so undo
+                    // replays the EXACT authored expression — voxel-granular and
+                    // parametric, not the floored block view (ADR 0003 §3f(0)).
+                    offset_measurements: node.transform.offset_measurements(),
                 }),
                 None => Inverse::NoOp,
             },
@@ -532,15 +531,17 @@ impl AppCore {
                 };
                 (if applied { full_effect } else { none }, None)
             }
-            Intent::SetOffset { target, offset_blocks } => {
-                // The intent stays block-granular (UI convenience; Slice 2 adds a
-                // voxel/expression-aware variant). Convert to the canonical voxel
-                // offset at the document density (ADR 0003 §3f(0)) — the block→voxel
-                // rule has one owner in `NodeTransform::from_blocks`.
+            Intent::SetOffset { target, offset_measurements } => {
+                // The intent carries the per-axis authored measurement (ADR 0003
+                // §3f(0)). Derive the canonical voxel offset at the document density
+                // and RETAIN the expression — the measurement→voxel rule has one
+                // owner in `NodeTransform::from_measurements`. The inspector
+                // validated each axis lands on a whole voxel before emitting.
                 let density = scene.voxels_per_block;
                 let applied = match scene.node_by_id_mut(target) {
                     Some(node) => {
-                        node.transform = NodeTransform::from_blocks(offset_blocks, density);
+                        node.transform =
+                            NodeTransform::from_measurements(offset_measurements, density);
                         true
                     }
                     None => false,
@@ -588,21 +589,40 @@ impl AppCore {
                 // no per-Tool fan-out.
                 //
                 // Placement is stored as canonical voxels at the authoring density
-                // (ADR 0003 §3f(0)), so this casual density control must RESCALE every
-                // node's offset from the old to the new density to PRESERVE its block
-                // placement — otherwise a node would teleport off the mating lattice.
-                // For block-multiple offsets the rescale is exact (the lossless refine
-                // for integer ratios). The explicit, warned, DESTRUCTIVE "re-target to
-                // a different game grid" (which reinterprets voxel-granular detail
-                // against a different grid) is a SEPARATE future Slice-2 op, not this.
+                // (ADR 0003 §3f(0)). A density change must keep every node's
+                // placement coherent, but the RIGHT way to do that depends on
+                // whether the node carries a retained authored expression:
+                //
+                // * RETAINED measurement (`Some`): RE-EVALUATE the authored
+                //   expression at the new density via `from_measurements`. This is
+                //   the ADR's lossless re-target — block terms scale (`3.5 blocks`:
+                //   56 vx at d16 → 112 at d32) and voxel terms stay EXACT (`3 blocks
+                //   8 voxels`: 56 at d16 → 3*32+8 = 104 at d32, NOT the integer
+                //   rescale's 112). A non-dividing re-target (e.g. d16→d15) floors
+                //   and resynthesises that axis inside `from_measurements`, so the
+                //   retained expression and `offset_voxels` can never disagree.
+                // * NO retained measurement (`None` — old docs, drags, pure-voxel
+                //   offsets): keep the legacy integer rescale, which PRESERVES the
+                //   physical position (and stays on the mating lattice for
+                //   block-multiple offsets). The field stays `None`.
+                //
+                // The explicit, warned, DESTRUCTIVE "re-target to a different game
+                // grid" remains a SEPARATE future Slice-2 op, not this.
                 let old_density = scene.voxels_per_block.max(1) as i64;
                 let new_density = voxels_per_block as i64;
                 for node in scene.arena.values_mut() {
                     // Offsets live on EVERY NodeTransform (groups/instances too), not
-                    // just Tools, so rescale them all.
-                    for axis in 0..3 {
-                        node.transform.offset_voxels[axis] =
-                            node.transform.offset_voxels[axis] * new_density / old_density;
+                    // just Tools, so re-target them all.
+                    if node.transform.has_retained_measurements() {
+                        node.transform = NodeTransform::from_measurements(
+                            node.transform.offset_measurements(),
+                            voxels_per_block,
+                        );
+                    } else {
+                        for axis in 0..3 {
+                            node.transform.offset_voxels[axis] =
+                                node.transform.offset_voxels[axis] * new_density / old_density;
+                        }
                     }
                 }
                 scene.voxels_per_block = voxels_per_block;
@@ -985,7 +1005,7 @@ mod replay_tests {
         };
         let set_offset = Intent::SetOffset {
             target: new_node_id,
-            offset_blocks: [7, -2, 4],
+            offset_measurements: crate::intent::whole_block_offset([7, -2, 4]),
         };
         let script = format!(
             "{}\n\n{}\n",
@@ -1050,9 +1070,10 @@ mod undo_tests {
     use super::*;
     use crate::camera::OrbitCamera;
     use crate::core_geom::MaterialChoice;
-    use crate::intent::{Intent, NodeSpec};
+    use crate::intent::{whole_block_offset, Intent, NodeSpec};
     use crate::scene::{Node, NodeBuilder, NodeContent, NodeGrids, NodeTransform, Point, Scene};
     use crate::store::Store;
+    use crate::units::Measurement;
     use crate::voxel::{SdfShape, ShapeKind};
 
     /// A headless [`AppCore`] for the undo tests (no GPU — `apply_intent`/`undo`/`redo`
@@ -1282,8 +1303,87 @@ mod undo_tests {
         let target = scene.roots[1];
         assert_round_trips(
             &mut scene,
-            Intent::SetOffset { target, offset_blocks: [3, -2, 5] },
+            Intent::SetOffset { target, offset_measurements: whole_block_offset([3, -2, 5]) },
         );
+    }
+
+    /// Applying a `SetOffset` with a blocks+voxels expression derives the canonical
+    /// voxel offset at the document density, and the same expression refines
+    /// losslessly at a denser document (ADR 0003 §3f(0)). `3.5 blocks` → 56 voxels
+    /// at d16, 112 at d32; a signed `-2 blocks 4 voxels` axis derives signed.
+    #[test]
+    fn set_offset_apply_derives_voxels_at_density() {
+        let expression = [
+            Measurement::new(crate::units::ExactRational::new(7, 2).unwrap(), 0), // 3.5 blocks
+            Measurement::new(crate::units::ExactRational::from_integer(-2), 4),   // -2 blocks 4 voxels
+            Measurement::from_voxels(7),                                          // 7 voxels
+        ];
+
+        let mut scene = two_tool_scene();
+        scene.voxels_per_block = 16;
+        let target = scene.roots[1];
+        let mut core = test_core();
+        core.apply_intent(
+            &mut scene,
+            Intent::SetOffset { target, offset_measurements: expression },
+        );
+        assert_eq!(
+            scene.node_by_id(target).unwrap().transform.offset_voxels,
+            [56, -28, 7],
+            "blocks·d + voxels derived per axis at density 16"
+        );
+
+        let mut dense = two_tool_scene();
+        dense.voxels_per_block = 32;
+        let dense_target = dense.roots[1];
+        core.apply_intent(
+            &mut dense,
+            Intent::SetOffset { target: dense_target, offset_measurements: expression },
+        );
+        assert_eq!(
+            dense.node_by_id(dense_target).unwrap().transform.offset_voxels,
+            [112, -60, 7],
+            "the SAME expression refines losslessly at density 32"
+        );
+    }
+
+    /// Undo of a `SetOffset` replays the node's prior RETAINED measurement exactly
+    /// — voxel-granular and parametric, not the floored block view (ADR 0003
+    /// §3f(0)). A prior `2 blocks 8 voxels` axis is restored verbatim, not flattened
+    /// to whole blocks.
+    #[test]
+    fn set_offset_undo_restores_retained_measurement() {
+        let mut scene = two_tool_scene();
+        scene.voxels_per_block = 16;
+        let target = scene.roots[1];
+        let mut core = test_core();
+
+        let first = [
+            Measurement::new(crate::units::ExactRational::from_integer(2), 8), // 2 blocks 8 voxels
+            Measurement::from_voxels(0),
+            Measurement::from_voxels(0),
+        ];
+        core.apply_intent(
+            &mut scene,
+            Intent::SetOffset { target, offset_measurements: first },
+        );
+        assert_eq!(scene.node_by_id(target).unwrap().transform.offset_voxels[0], 40);
+
+        // A second SetOffset, then undo it → the FIRST expression is restored.
+        let second = whole_block_offset([5, 0, 0]);
+        core.apply_intent(
+            &mut scene,
+            Intent::SetOffset { target, offset_measurements: second },
+        );
+        assert_eq!(scene.node_by_id(target).unwrap().transform.offset_voxels[0], 80);
+
+        core.undo(&mut scene);
+        let restored = scene.node_by_id(target).unwrap().transform.offset_measurements();
+        assert_eq!(
+            restored, first,
+            "undo restored the exact authored expression (2 blocks 8 voxels), not a block-floored view"
+        );
+        assert_eq!(scene.node_by_id(target).unwrap().transform.offset_voxels[0], 40);
     }
 
     #[test]
@@ -1369,8 +1469,9 @@ mod undo_tests {
     }
 
     /// A `SetOffset` undo across an interleaved density change still restores the
-    /// node's prior BLOCK placement: the inverse captures the prior offset in blocks
-    /// (block-aligned), and the density between apply and undo does not corrupt it.
+    /// node's prior placement: the inverse captures the prior RETAINED measurement
+    /// (`5 blocks`), which re-evaluates at the new density to the same block 5, so
+    /// the density between apply and undo does not corrupt it (ADR 0003 §3f(0)).
     #[test]
     fn set_offset_undo_across_density_change() {
         let mut node = tool_node(box_shape([1, 1, 1]), MaterialChoice::Stone);
@@ -1383,7 +1484,7 @@ mod undo_tests {
         core.apply_intent(&mut scene, Intent::SetDensity { voxels_per_block: 16 });
         core.apply_intent(
             &mut scene,
-            Intent::SetOffset { target: node_id, offset_blocks: [3, 0, 0] },
+            Intent::SetOffset { target: node_id, offset_measurements: whole_block_offset([3, 0, 0]) },
         );
         assert_eq!(
             scene.node_by_id(node_id).unwrap().transform.blocks(16),
@@ -1397,6 +1498,68 @@ mod undo_tests {
             scene.node_by_id(node_id).unwrap().transform.blocks(16),
             [5, 0, 0],
             "undo restores the prior block placement across the density change"
+        );
+    }
+
+    /// `SetDensity` RE-EVALUATES a node's RETAINED expression at the new density
+    /// (the seam fix): `3 blocks 8 voxels` (56 vx at d16) becomes 3*32 + 8 = 104 at
+    /// d32 — the voxel term stays exact, NOT the legacy integer rescale's 112 — and
+    /// the retained measurement and canonical voxels stay consistent.
+    #[test]
+    fn set_density_re_evaluates_retained_measurement_exactly() {
+        let mut scene = two_tool_scene();
+        scene.voxels_per_block = 16;
+        let target = scene.roots[1];
+        let mut core = test_core();
+        let expression = [
+            Measurement::new(crate::units::ExactRational::from_integer(3), 8), // 3 blocks 8 voxels
+            Measurement::from_voxels(0),
+            Measurement::from_voxels(0),
+        ];
+        core.apply_intent(
+            &mut scene,
+            Intent::SetOffset { target, offset_measurements: expression },
+        );
+        assert_eq!(scene.node_by_id(target).unwrap().transform.offset_voxels[0], 56);
+
+        core.apply_intent(&mut scene, Intent::SetDensity { voxels_per_block: 32 });
+        let transform = &scene.node_by_id(target).unwrap().transform;
+        assert_eq!(
+            transform.offset_voxels[0], 104,
+            "voxel term exact across density re-target (3*32 + 8), NOT the rescale 112"
+        );
+        assert_eq!(
+            transform.offset_measurements()[0],
+            expression[0],
+            "the authored expression is preserved across the re-target"
+        );
+    }
+
+    /// `SetDensity` on a node with NO retained measurement (a `None` transform, the
+    /// legacy/drag path) KEEPS the integer rescale, preserving the physical block
+    /// position, and leaves the field `None` (existing behavior untouched).
+    #[test]
+    fn set_density_integer_rescales_non_retained_offset() {
+        let mut node = tool_node(box_shape([1, 1, 1]), MaterialChoice::Stone);
+        // A hand-set sub-block voxel offset with NO authored expression: start from
+        // the identity (retained field None) and set only the canonical voxels.
+        node.transform = NodeTransform::identity();
+        node.transform.offset_voxels = [40, 0, 0];
+        assert!(!node.transform.has_retained_measurements());
+        let mut scene = Scene::single_node(node);
+        scene.voxels_per_block = 16;
+        let node_id = scene.roots[0];
+
+        let mut core = test_core();
+        core.apply_intent(&mut scene, Intent::SetDensity { voxels_per_block: 32 });
+        let transform = &scene.node_by_id(node_id).unwrap().transform;
+        assert_eq!(
+            transform.offset_voxels[0], 80,
+            "non-retained offset integer-rescales (40 * 32 / 16 = 80), preserving position"
+        );
+        assert!(
+            !transform.has_retained_measurements(),
+            "the legacy rescale leaves the retained field None"
         );
     }
 
@@ -1537,7 +1700,7 @@ mod undo_tests {
         let instance = scene.active.expect("instance selected");
         core.apply_intent(
             &mut scene,
-            Intent::SetOffset { target: instance, offset_blocks: [7, 0, 0] },
+            Intent::SetOffset { target: instance, offset_measurements: whole_block_offset([7, 0, 0]) },
         );
         core.apply_intent(&mut scene, Intent::RemoveNode { target: instance });
 
@@ -1685,7 +1848,7 @@ mod undo_tests {
         let target = scene.roots[0];
         core.apply_intent(
             &mut scene,
-            Intent::SetOffset { target, offset_blocks: [10, -4, 6] },
+            Intent::SetOffset { target, offset_measurements: whole_block_offset([10, -4, 6]) },
         );
         let recentre_after = scene.recentre_voxels_for_resolve(density);
         let expected_shift = [

@@ -173,6 +173,16 @@ pub struct Measurement {
     voxel_term: i64,
 }
 
+impl Default for Measurement {
+    /// The zero measurement: a `0/1` block term and `0` voxels (NOT the derived
+    /// `i128::default()` denominator of 0, which would be an invalid rational).
+    /// This is what an `[Measurement; 3]` field defaults to (e.g. a fresh
+    /// identity transform), and it evaluates to 0 voxels at any density.
+    fn default() -> Self {
+        Self::from_voxels(0)
+    }
+}
+
 impl Measurement {
     /// Build a measurement from an exact block rational and a whole voxel count.
     pub fn new(block_term: ExactRational, voxel_term: i64) -> Self {
@@ -194,6 +204,18 @@ impl Measurement {
     /// The whole-voxel term.
     pub fn voxel_term(self) -> i64 {
         self.voxel_term
+    }
+
+    /// A pure-voxel measurement equal to `voxels` (zero block term).
+    ///
+    /// The synthesis path for documents/offsets that only have a canonical voxel
+    /// count and no authored expression to retain (e.g. an OLD scene loaded
+    /// without an `offset_measurements` field, or a placement produced by a drag
+    /// gizmo): the retained measurement is just the voxel count, which
+    /// re-evaluates back to exactly `voxels` at any density (the block term is 0,
+    /// so density does not scale it).
+    pub fn from_voxels(voxels: i64) -> Self {
+        Self::new(ExactRational::from_integer(0), voxels)
     }
 
     /// Evaluate to an exact voxel count at the given density `d`.
@@ -947,6 +969,56 @@ mod tests {
         // 8/16 term. Verify the retained block term is exactly 7/2.
         let block_term = parse("3 8/16 blocks").expect("parses").block_term();
         assert_eq!(block_term, ExactRational::new(7, 2).unwrap());
+    }
+
+    #[test]
+    fn parse_accepts_signed_offsets() {
+        // Offsets are signed: a leading minus on each term parses through the
+        // tokeniser (the minus stays glued to the number, the unit letter peels
+        // off after it) and the term parses negative.
+        assert_eq!(parse_and_evaluate("-3b", 16).unwrap(), -48);
+        assert_eq!(parse_and_evaluate("-1b 4v", 16).unwrap(), -12);
+        assert_eq!(parse_and_evaluate("-3.5 blocks", 16).unwrap(), -56);
+        assert_eq!(parse_and_evaluate("-8/16 blocks", 16).unwrap(), -8);
+        assert_eq!(parse_and_evaluate("-12 voxels", 16).unwrap(), -12);
+        // A negative block term with a positive voxel term sums signed.
+        assert_eq!(parse_and_evaluate("-1 blocks 4 voxels", 16).unwrap(), -12);
+    }
+
+    #[test]
+    fn signed_offsets_round_trip_through_formatter() {
+        // parse(format(x)) re-evaluates back to x for negative voxel counts and
+        // every style, so a negative offset displays and re-parses losslessly.
+        for voxels in [-1_i64, -8, -16, -56, -100, -257] {
+            for style in [
+                DisplayUnit::DecimalBlocks,
+                DisplayUnit::BlocksAndVoxels,
+                DisplayUnit::BlockFraction,
+                DisplayUnit::Voxels,
+            ] {
+                let text = format(voxels, 16, style);
+                let reparsed = parse(&text)
+                    .unwrap_or_else(|error| panic!("`{text}` should re-parse: {error}"));
+                assert_eq!(
+                    reparsed.to_voxels(16).unwrap(),
+                    voxels,
+                    "round-trip failed for {voxels} via `{text}` ({style:?})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn from_voxels_is_a_pure_voxel_measurement() {
+        // A synthesised measurement re-evaluates to exactly its voxel count at any
+        // density (the block term is zero, so density never scales it).
+        for voxels in [-48_i64, -1, 0, 7, 56] {
+            let measurement = Measurement::from_voxels(voxels);
+            assert_eq!(measurement.block_term(), ExactRational::from_integer(0));
+            assert_eq!(measurement.voxel_term(), voxels);
+            assert_eq!(measurement.to_voxels(16).unwrap(), voxels);
+            assert_eq!(measurement.to_voxels(32).unwrap(), voxels);
+        }
     }
 
     #[test]

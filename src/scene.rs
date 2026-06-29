@@ -39,6 +39,7 @@ use crate::core_geom::MaterialChoice;
 use crate::debug_clouds::DebugCloudField;
 use crate::spatial_index::{LeafEntry, LeafFingerprint, LeafSpatialIndex, VoxelAabb};
 use crate::sketch::SketchExtrude;
+use crate::units::{ExactRational, Measurement};
 use crate::voxel::{GeometryParams, SdfShape, VoxelGrid, VoxelProducer};
 
 /// Default +X spacing (in blocks) between successive instances of the same
@@ -139,7 +140,12 @@ pub enum CombineOp {
 /// type targets a full affine (translation + rotation + scale) so rotation /
 /// scale (with voxel resampling) slot in later without a rewrite (ADR 0001
 /// decision 3). In step 1 the offset is always `[0, 0, 0]`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+///
+/// NOT `Copy`: it owns an optional boxed retained-measurement expression (the
+/// parametric units layer, ADR 0003 §3f(0)), so it is `Clone` only. The canonical
+/// `offset_voxels` is read by-field everywhere; the few sites that moved a whole
+/// transform out of a `&Node` now `.clone()` it.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct NodeTransform {
     /// Translation in **voxels** at the document's density `d`
     /// ([`Scene::voxels_per_block`]) — the single canonical placement field
@@ -159,6 +165,31 @@ pub struct NodeTransform {
     /// [`block_aligned`]: NodeTransform::block_aligned
     #[serde(default)]
     pub offset_voxels: [i64; 3],
+
+    /// The RETAINED authored unit expression per axis (ADR 0003 §3f(0)).
+    ///
+    /// `offset_voxels` stays the canonical source of truth for ALL geometry /
+    /// resolve; this is the parametric expression the user typed (e.g. `"3.5
+    /// blocks"`), kept ALONGSIDE the voxels so a later density re-target is
+    /// lossless (the same measurement re-evaluates at the new `d`). It is NOT read
+    /// by resolve — only by the inspector (seed/undo) and a future density change.
+    ///
+    /// **Versioning:** `#[serde(default)]` makes this `None` on an OLD scene that
+    /// predates the field, so old documents still load. The accessor
+    /// [`offset_measurements`](NodeTransform::offset_measurements) SYNTHESISES a
+    /// pure-voxel measurement from `offset_voxels` when this is `None`, so the
+    /// retained expression is always correct (just non-parametric — a whole-voxel
+    /// count — for a placement authored before the field existed or via a path
+    /// that has no expression, e.g. a drag gizmo).
+    ///
+    /// **Boxed** so the common (`None`) case keeps [`NodeTransform`] pointer-small:
+    /// three `Measurement`s are ~120 bytes, which would otherwise bloat every
+    /// `Node` (and the arena's `Leaf(Node)` variant). The box is allocated only
+    /// when a real authored block expression is retained. `serde` treats
+    /// `Option<Box<T>>` transparently, so the on-disk shape is unchanged (`null`
+    /// or the three-measurement array).
+    #[serde(default)]
+    offset_measurements: Option<Box<[Measurement; 3]>>,
     // future: rotation, scale → a general affine.
 }
 
@@ -170,19 +201,127 @@ impl NodeTransform {
 
     /// Build a transform from a whole-**block** translation at density
     /// `voxels_per_block` (`offset_voxels = blocks · d`). The block-valued
-    /// convenience constructor for the (still block-granular) UI placement path
-    /// (ADR 0003 §3f(0)).
+    /// convenience constructor used by demos, tests and `GroupSpec` placement
+    /// (ADR 0003 §3f(0)). The inspector's Offset path now authors through
+    /// [`from_measurements`](NodeTransform::from_measurements) (blocks + voxels);
+    /// this remains the terse whole-block entry point. It retains each axis as a
+    /// whole-block measurement, so a later density re-target scales it losslessly.
     pub fn from_blocks(blocks: [i64; 3], voxels_per_block: u32) -> Self {
         // Clamp density to ≥1 like every resolve site, so a 0-density doc can't
         // multiply placement to zero / mis-scale.
         let density = voxels_per_block.max(1) as i64;
+        let offset_voxels = [blocks[0] * density, blocks[1] * density, blocks[2] * density];
+        // Retain a whole-BLOCK measurement per axis (no voxel remainder), so a later
+        // density re-target scales the block count losslessly — but normalise the
+        // all-zero case to `None` so a zero placement matches a fresh identity.
+        let measurements = [
+            Measurement::new(ExactRational::from_integer(blocks[0] as i128), 0),
+            Measurement::new(ExactRational::from_integer(blocks[1] as i128), 0),
+            Measurement::new(ExactRational::from_integer(blocks[2] as i128), 0),
+        ];
         Self {
-            offset_voxels: [
-                blocks[0] * density,
-                blocks[1] * density,
-                blocks[2] * density,
+            offset_voxels,
+            offset_measurements: Self::retained_or_none(measurements, offset_voxels),
+        }
+    }
+
+    /// Build a transform from a per-axis authored [`Measurement`] at density
+    /// `voxels_per_block` (ADR 0003 §3f(0)). The canonical voxel offset is DERIVED
+    /// via [`Measurement::to_voxels`]; the measurements are RETAINED for lossless
+    /// density re-targeting and for the inspector to seed/undo the exact authored
+    /// expression.
+    ///
+    /// **Self-consistency invariant:** the result NEVER carries a retained
+    /// measurement that disagrees with `offset_voxels`. On the UI path every axis
+    /// lands on a whole voxel (the inspector validates before emitting), so the
+    /// authored measurement is kept verbatim. On the LOSSY density-retarget path
+    /// (`SetDensity` re-evaluating an expression at a `d` it no longer divides
+    /// cleanly, e.g. `3.5 blocks` at `d = 15`), the offending axis is floored to a
+    /// whole voxel AND its retained measurement is RESYNTHESISED to the pure-voxel
+    /// form of that floored value — so the canonical voxels and the retained
+    /// expression always agree (the block-term parametricity is lost for that axis,
+    /// which is the honest outcome of a non-dividing re-target). Landing axes keep
+    /// their authored (block-parametric) measurement.
+    pub fn from_measurements(measurements: [Measurement; 3], voxels_per_block: u32) -> Self {
+        // Per axis, derive the voxel count AND the measurement to retain. A landing
+        // axis keeps its authored measurement; a non-landing axis floors and
+        // resynthesises to the pure-voxel form of the floored value so the two can
+        // never disagree.
+        let resolve_axis = |measurement: Measurement| -> (i64, Measurement) {
+            match measurement.to_voxels(voxels_per_block) {
+                Ok(voxels) => (voxels, measurement),
+                Err(crate::units::MeasurementError::BlockTermNotWholeVoxels {
+                    nearest_floor_voxels,
+                    ..
+                }) => (nearest_floor_voxels, Measurement::from_voxels(nearest_floor_voxels)),
+                Err(crate::units::MeasurementError::ZeroDensity) => {
+                    let voxels = measurement.voxel_term();
+                    (voxels, Measurement::from_voxels(voxels))
+                }
+            }
+        };
+        let (voxels_x, retained_x) = resolve_axis(measurements[0]);
+        let (voxels_y, retained_y) = resolve_axis(measurements[1]);
+        let (voxels_z, retained_z) = resolve_axis(measurements[2]);
+        let offset_voxels = [voxels_x, voxels_y, voxels_z];
+        let retained = [retained_x, retained_y, retained_z];
+        Self {
+            offset_voxels,
+            offset_measurements: Self::retained_or_none(retained, offset_voxels),
+        }
+    }
+
+    /// Normalise the retained measurements to `None` when they carry NO parametric
+    /// content beyond the derived voxel count — i.e. every axis is exactly the
+    /// pure-voxel measurement [`Measurement::from_voxels`] of its derived voxels.
+    /// This keeps a placement with no real authored block expression (a zero
+    /// offset, a drag, a `from_voxels` round-trip) in the SAME canonical form as a
+    /// freshly-built / freshly-loaded transform (`None`), so apply→undo→apply is
+    /// byte-identical and serde does not gain a redundant `Some([...])` husk. A
+    /// real block expression (e.g. `3 blocks`, `3.5 blocks`) does NOT synthesise
+    /// from its voxel count, so it is retained as `Some` for lossless re-targeting.
+    fn retained_or_none(
+        measurements: [Measurement; 3],
+        offset_voxels: [i64; 3],
+    ) -> Option<Box<[Measurement; 3]>> {
+        let is_synthesisable = (0..3).all(|axis| {
+            measurements[axis] == Measurement::from_voxels(offset_voxels[axis])
+        });
+        if is_synthesisable {
+            None
+        } else {
+            Some(Box::new(measurements))
+        }
+    }
+
+    /// The RETAINED per-axis authored measurement (ADR 0003 §3f(0)).
+    ///
+    /// When the placement carries no stored expression (an OLD scene predating the
+    /// field, or a transform built without one), this SYNTHESISES a pure-voxel
+    /// measurement equal to `offset_voxels` per axis — correct (it re-evaluates
+    /// back to the same voxels at any density), just non-parametric for a block
+    /// re-target. The canonical `offset_voxels` always wins for geometry; this is
+    /// retention/display only.
+    pub fn offset_measurements(&self) -> [Measurement; 3] {
+        match &self.offset_measurements {
+            Some(measurements) => **measurements,
+            None => [
+                Measurement::from_voxels(self.offset_voxels[0]),
+                Measurement::from_voxels(self.offset_voxels[1]),
+                Measurement::from_voxels(self.offset_voxels[2]),
             ],
         }
+    }
+
+    /// Whether this transform carries a GENUINELY retained authored expression
+    /// (the stored field is `Some`) versus a placement whose measurement is only
+    /// SYNTHESISED from `offset_voxels` (the field is `None` — an old document, a
+    /// drag, a pure-voxel offset). The density re-target (`SetDensity`) uses this
+    /// to decide between RE-EVALUATING the authored block expression at the new
+    /// density (lossless block scaling, exact voxel terms) and the legacy integer
+    /// rescale that preserves a non-parametric offset's physical position.
+    pub fn has_retained_measurements(&self) -> bool {
+        self.offset_measurements.is_some()
     }
 
     /// The whole-**block** view of this placement (the derived block overlay,
@@ -2759,6 +2898,117 @@ mod tests {
     use super::*;
     use crate::voxel::ShapeKind;
 
+    /// `from_measurements` derives the canonical voxel offset from the per-axis
+    /// authored expression and retains the expression (ADR 0003 §3f(0)). A `3.5
+    /// blocks` axis lands on `3.5 · d` voxels (56 at d16, 112 at d32 — the lossless
+    /// parametric refine).
+    #[test]
+    fn transform_from_measurements_derives_voxels_and_retains_expression() {
+        let measurements = [
+            Measurement::new(ExactRational::new(7, 2).unwrap(), 0), // 3.5 blocks
+            Measurement::from_voxels(-4),                           // -4 voxels
+            Measurement::new(ExactRational::from_integer(2), 8),    // 2 blocks 8 voxels
+        ];
+        let at_sixteen = NodeTransform::from_measurements(measurements, 16);
+        assert_eq!(at_sixteen.offset_voxels, [56, -4, 40]);
+        // The expression is retained verbatim.
+        assert_eq!(at_sixteen.offset_measurements(), measurements);
+        // The SAME measurements re-evaluate at a denser document (lossless refine).
+        let at_thirty_two = NodeTransform::from_measurements(measurements, 32);
+        assert_eq!(at_thirty_two.offset_voxels, [112, -4, 72]);
+    }
+
+    /// A retained NON-block-multiple offset (`3.5 blocks` on X = 56 vx at d16)
+    /// re-evaluated at a NON-dividing density (d15, where 3.5·15 = 52.5) must not
+    /// panic, floors X to a whole voxel, and keeps the retained measurement
+    /// CONSISTENT with `offset_voxels` (the seam bug: they used to disagree). This
+    /// is the lossy density-retarget path inside `from_measurements`.
+    #[test]
+    fn from_measurements_non_dividing_density_stays_self_consistent() {
+        let measurements = [
+            Measurement::new(ExactRational::new(7, 2).unwrap(), 0), // 3.5 blocks
+            Measurement::from_voxels(0),
+            Measurement::from_voxels(0),
+        ];
+        // 3.5 blocks lands cleanly at d16 (= 56 voxels).
+        let at_sixteen = NodeTransform::from_measurements(measurements, 16);
+        assert_eq!(at_sixteen.offset_voxels[0], 56);
+
+        // Re-evaluate the SAME authored expression at the non-dividing d15.
+        let at_fifteen = NodeTransform::from_measurements(at_sixteen.offset_measurements(), 15);
+        // 3.5·15 = 52.5 → floored to 52 voxels (no panic).
+        assert_eq!(at_fifteen.offset_voxels[0], 52);
+        // The retained measurement now AGREES with the floored voxels: re-evaluating
+        // it at d15 yields exactly offset_voxels[0] (no silent disagreement).
+        let retained = at_fifteen.offset_measurements();
+        assert_eq!(
+            retained[0].to_voxels(15).unwrap(),
+            at_fifteen.offset_voxels[0],
+            "retained measurement must be consistent with the floored canonical voxels"
+        );
+    }
+
+    /// A retained `3 blocks 8 voxels` (= 56 vx at d16) re-evaluated at the
+    /// integer-multiple d32 keeps the VOXEL TERM EXACT: 3·32 + 8 = 104, NOT the
+    /// integer rescale's 56·2 = 112. The authored expression is preserved.
+    #[test]
+    fn from_measurements_integer_multiple_density_keeps_voxel_term_exact() {
+        let measurements = [
+            Measurement::new(ExactRational::from_integer(3), 8), // 3 blocks 8 voxels
+            Measurement::from_voxels(0),
+            Measurement::from_voxels(0),
+        ];
+        let at_sixteen = NodeTransform::from_measurements(measurements, 16);
+        assert_eq!(at_sixteen.offset_voxels[0], 56);
+
+        let at_thirty_two =
+            NodeTransform::from_measurements(at_sixteen.offset_measurements(), 32);
+        assert_eq!(
+            at_thirty_two.offset_voxels[0], 104,
+            "voxel term stays exact (3*32 + 8), NOT the integer rescale 112"
+        );
+        // The authored expression is preserved verbatim.
+        assert_eq!(at_thirty_two.offset_measurements()[0], measurements[0]);
+    }
+
+    /// An OLD `NodeTransform` JSON that predates `offset_measurements` still
+    /// deserialises (serde default → `None`), and the accessor SYNTHESISES a
+    /// pure-voxel measurement equal to `offset_voxels` per axis — which
+    /// re-evaluates back to exactly those voxels at any density (versioning:
+    /// shared documents must load forward, ADR 0003 §3f(0)).
+    #[test]
+    fn transform_serde_back_compat_synthesises_measurements_from_voxels() {
+        let old_json = r#"{ "offset_voxels": [48, -16, 7] }"#;
+        let restored: NodeTransform =
+            serde_json::from_str(old_json).expect("old transform without measurements must load");
+        assert_eq!(restored.offset_voxels, [48, -16, 7]);
+        let synthesised = restored.offset_measurements();
+        for (axis, &voxels) in restored.offset_voxels.iter().enumerate() {
+            assert_eq!(synthesised[axis], Measurement::from_voxels(voxels));
+            assert_eq!(synthesised[axis].to_voxels(16).unwrap(), voxels);
+            assert_eq!(synthesised[axis].to_voxels(32).unwrap(), voxels);
+        }
+    }
+
+    /// A `NodeTransform` carrying retained measurements round-trips through serde
+    /// unchanged (the new field persists for a forward-saved document).
+    #[test]
+    fn transform_serde_round_trips_with_retained_measurements() {
+        let transform = NodeTransform::from_measurements(
+            [
+                Measurement::new(ExactRational::new(7, 2).unwrap(), 0),
+                Measurement::from_voxels(-4),
+                Measurement::new(ExactRational::from_integer(2), 8),
+            ],
+            16,
+        );
+        let json = serde_json::to_string(&transform).expect("serialises");
+        let restored: NodeTransform = serde_json::from_str(&json).expect("deserialises");
+        assert_eq!(restored, transform);
+        assert_eq!(restored.offset_measurements(), transform.offset_measurements());
+        assert_eq!(restored.offset_voxels, transform.offset_voxels);
+    }
+
     /// The identical-behaviour guarantee (ADR 0001 step 1): a one-node Tool scene
     /// resolved over the node's full extent yields the SAME occupied count as
     /// calling `SdfShape::resolve` directly — and the same grid dimensions.
@@ -5109,7 +5359,7 @@ mod tests {
         assert!(transform.block_aligned(16), "a whole-block offset is on the lattice");
 
         // A hand-set SUB-block offset is NOT block-aligned (the mating predicate).
-        let sub_block = NodeTransform { offset_voxels: [1, 0, 0] };
+        let sub_block = NodeTransform { offset_voxels: [1, 0, 0], ..Default::default() };
         assert!(
             !sub_block.block_aligned(16),
             "an offset of 1 voxel at d=16 is off the block lattice"
@@ -5117,7 +5367,7 @@ mod tests {
 
         // A 0-density document must not panic: density is clamped to ≥1.
         let _ = NodeTransform::from_blocks([2, 0, 0], 0);
-        let zero_density = NodeTransform { offset_voxels: [2, 0, 0] };
+        let zero_density = NodeTransform { offset_voxels: [2, 0, 0], ..Default::default() };
         let _ = zero_density.blocks(0);
         let _ = zero_density.block_aligned(0);
     }
