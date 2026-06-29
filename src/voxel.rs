@@ -130,15 +130,26 @@ pub struct VoxelGrid {
     /// Grid dimensions in voxels (the producer's voxel-granular size, already at
     /// document density — e.g. `SdfShape::size_voxels`).
     pub dimensions: [u32; 3],
+    /// The integer voxel offset this grid's world positions were RECENTRED by
+    /// ([`Scene::resolve_region`](crate::scene::Scene::resolve_region) subtracts it from
+    /// every voxel). **ADR 0008 — the carried frame.** A placed composite is recentred by
+    /// `(min+max)/2` (= `floor(dim/2)` for a lone producer); a Part-only / bare-producer
+    /// grid is corner-anchored, so this is `[0,0,0]`. Carrying it lets every consumer
+    /// decode `world → index` correctly WITHOUT re-deriving the centring (the assumption
+    /// that, hard-coded as `floor(dim/2)`, made the fog drop a corner-anchored cloud
+    /// field). Default `[0,0,0]` is correct for any un-recentred grid.
+    pub recentre_voxels: [i64; 3],
     /// The occupied voxels (sparse).
     pub occupied: Vec<Voxel>,
 }
 
 impl VoxelGrid {
-    /// Create an empty grid with the given voxel dimensions.
+    /// Create an empty grid with the given voxel dimensions (un-recentred:
+    /// `recentre_voxels = [0,0,0]`; a recentred resolve sets it explicitly).
     pub fn new(dimensions: [u32; 3]) -> Self {
         Self {
             dimensions,
+            recentre_voxels: [0, 0, 0],
             occupied: Vec::new(),
         }
     }
@@ -146,6 +157,31 @@ impl VoxelGrid {
     /// Number of occupied voxels.
     pub fn occupied_count(&self) -> usize {
         self.occupied.len()
+    }
+
+    /// The local `[0, dimensions)` voxel index of the voxel whose centre sits at
+    /// `world_position`, decoded with this grid's CARRIED [`recentre_voxels`] rather than
+    /// a re-derived `floor(dim/2)`.
+    ///
+    /// **ADR 0008 (the voxel-frame invariant): the SINGLE world→index decode authority.**
+    /// A producer corner-anchors each centre at `idx + 0.5`, then the resolve subtracts
+    /// `recentre_voxels`, so `world = idx + 0.5 − recentre`; this inverts that exactly for
+    /// any dimension parity. Because the recentre is *carried* (not assumed), a centred
+    /// placed Tool (`recentre = floor(dim/2)`) and a corner-anchored Part-only
+    /// `DebugClouds` (`recentre = [0,0,0]`) BOTH decode into `[0, dimensions)` — the
+    /// divergence that, with a hard-coded `floor(dim/2)`, dropped ~7/8 of a corner-
+    /// anchored cloud field. For a centred grid this reduces to the historical
+    /// `round(world + floor(dim/2) − 0.5)`, so placed scenes are byte-identical. The
+    /// result may fall outside `[0, dimensions)` for a stray position — callers
+    /// bounds-check.
+    ///
+    /// [`recentre_voxels`]: VoxelGrid::recentre_voxels
+    pub fn voxel_index_of(&self, world_position: [f32; 3]) -> [i64; 3] {
+        [
+            (world_position[0] + self.recentre_voxels[0] as f32 - 0.5).round() as i64,
+            (world_position[1] + self.recentre_voxels[1] as f32 - 0.5).round() as i64,
+            (world_position[2] + self.recentre_voxels[2] as f32 - 0.5).round() as i64,
+        ]
     }
 
     /// Measure the widest occupied voxel run (the diameter readout, issue #12),

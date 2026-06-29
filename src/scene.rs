@@ -2100,7 +2100,14 @@ impl Scene {
         // composite's voxel space is `offset_voxels`, and the whole composite's centre
         // is `(min + max).div_euclid(2)` (producer-true voxel frame). Subtracting that
         // centre from every node's translation lands the composite centred in `output`.
+        // A Part-only scene (e.g. `DebugClouds`) has no composite extent, so this is
+        // `[0,0,0]` and the field stays CORNER-anchored at `[0, region)` — the shipped
+        // convention (see `part_only_cloud_at_odd_density_drops_no_voxels` /
+        // `mixed_tool_and_cloud_resolve_in_one_frame`). ADR 0008: the recentre is CARRIED on
+        // the grid (below), so every consumer decodes correctly without re-deriving the
+        // frame as `floor(dim/2)` (the assumption that dropped the corner-anchored cloud fog).
         let recentre_voxels = self.recentre_voxels_for_resolve(voxels_per_block);
+        output.recentre_voxels = recentre_voxels;
 
         // Walk the whole tree (groups + instances recurse, composing world
         // translation down — ADR 0001 step 4). Each visited leaf is stamped under

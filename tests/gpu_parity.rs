@@ -301,18 +301,12 @@ fn gpu_clouds_occupancy_matches_per_chunk_fog_exactly() {
 
     for &(name, dims, seed, vpb) in CLOUD_CASES {
         let field = DebugCloudField { dimensions: dims, seed };
-        // Resolve to a grid, then RECENTRE by floor(grid/2) so it sits in the standard
-        // fog frame (fog-global == producer-local, local_offset 0). This isolates the
-        // noise-eval parity (the §6 question) from the Part-only recentre wrinkle, which
-        // is a separate live-frame concern.
+        // A bare cloud resolve is corner-anchored at `[0, dim)` with `recentre = [0,0,0]`
+        // (the real Part-only frame, ADR 0008). The fog decodes it correctly via the
+        // carried recentre, so the GPU evaluates at `local_offset = 0` (fog-global ==
+        // producer-local index) — no manual recentre needed.
         let mut grid = VoxelGrid::new(dims);
         field.resolve(&mut grid, vpb);
-        let half = [(dims[0] / 2) as f32, (dims[1] / 2) as f32, (dims[2] / 2) as f32];
-        for voxel in &mut grid.occupied {
-            voxel.world_position[0] -= half[0];
-            voxel.world_position[1] -= half[1];
-            voxel.world_position[2] -= half[2];
-        }
 
         let reference = build_per_chunk_fog_occupancy(&grid, vpb);
         let chunk_coords: Vec<[i32; 3]> = reference.volumes.iter().map(|v| v.chunk_coord).collect();

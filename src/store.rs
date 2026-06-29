@@ -392,6 +392,10 @@ impl Store {
         // bind resolved them in, so the assembled voxel order is identical too.
         let region_dimensions = self.bind_region(scene, voxels_per_block, lod);
         let mut output = VoxelGrid::new(region_dimensions);
+        // ADR 0008: carry the recentre the chunks were rebased by, so the fog (and any
+        // other consumer) decodes `world → index` without re-deriving `floor(dim/2)`. This
+        // matches `Scene::resolve_region`'s output exactly (the S2 identical-output net).
+        output.recentre_voxels = scene.recentre_voxels_for_resolve(voxels_per_block);
         for grid in self.covering_chunk_grids(scene, voxels_per_block, lod) {
             // The cached chunk is already rebased to the floating origin
             // (= recentre), so its voxels drop straight into the output.

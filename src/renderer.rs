@@ -3072,10 +3072,6 @@ pub fn build_per_chunk_fog_occupancy(
             volumes: Vec::new(),
         };
     }
-    // Corner-anchoring decode: FLOORED half (`dim/2` integer division) so the
-    // `round(world + half − 0.5)` index is exact for an odd dim (voxel.rs decode).
-    let half = [(grid_x / 2) as f32, (grid_y / 2) as f32, (grid_z / 2) as f32];
-
     // ===================================================================================
     // SCATTER build (issue #28 S5a perf, the `fog_upload` CPU hot path). This is a pure
     // speedup over the original GATHER (which built a global `HashSet<[i64;3]>` of every
@@ -3092,9 +3088,13 @@ pub fn build_per_chunk_fog_occupancy(
     use std::collections::{HashMap, HashSet};
     let mut occupied_voxels: HashSet<[i64; 3]> = HashSet::new();
     for voxel in &grid.occupied {
-        let i = (voxel.world_position[0] + half[0] - 0.5).round() as i64;
-        let j = (voxel.world_position[1] + half[1] - 0.5).round() as i64;
-        let k = (voxel.world_position[2] + half[2] - 0.5).round() as i64;
+        // ADR 0008: decode through the grid's single world→index authority, which uses the
+        // grid's CARRIED recentre. Was an inlined `round(wp + floor(dim/2) − 0.5)` that
+        // re-derived the centring and then dropped any index outside `[0, dim)` — which
+        // silently discarded ~7/8 of a corner-anchored `DebugClouds` field. A centred Tool
+        // (`recentre = floor(dim/2)`) decodes byte-identically; a corner-anchored cloud
+        // (`recentre = 0`) now also lands in `[0, dim)`.
+        let [i, j, k] = grid.voxel_index_of(voxel.world_position);
         if i < 0 || j < 0 || k < 0 || i >= grid_x as i64 || j >= grid_y as i64 || k >= grid_z as i64
         {
             continue;
@@ -3154,11 +3154,14 @@ pub fn build_per_chunk_fog_occupancy(
             ];
             ChunkFogVolume {
                 chunk_coord: coord,
-                // Interior origin (voxel CORNER of local [0,0,0]) in recentred world space.
+                // Interior origin (voxel CORNER of local [0,0,0]) in recentred world space:
+                // `chunk_min − recentre` (ADR 0008 — the grid's CARRIED recentre, was a
+                // hard-coded `floor(dim/2)`). For a centred Tool this equals the historical
+                // value; for a corner-anchored cloud (`recentre = 0`) it is `chunk_min`.
                 world_origin: [
-                    chunk_min[0] as f32 - half[0],
-                    chunk_min[1] as f32 - half[1],
-                    chunk_min[2] as f32 - half[2],
+                    chunk_min[0] as f32 - grid.recentre_voxels[0] as f32,
+                    chunk_min[1] as f32 - grid.recentre_voxels[1] as f32,
+                    chunk_min[2] as f32 - grid.recentre_voxels[2] as f32,
                 ],
                 occupancy: vec![0u8; pad * pad * pad],
             }
@@ -3978,6 +3981,9 @@ mod tests {
     /// the exact integer coords here.
     fn grid_with_voxels(dims: [u32; 3], coords: &[[u32; 3]]) -> VoxelGrid {
         let mut grid = VoxelGrid::new(dims);
+        // These voxels are placed CENTRED (`i + 0.5 − dim/2`), so the grid is recentred by
+        // `floor(dim/2)` — record it (ADR 0008) so the fog decode/world_origin match.
+        grid.recentre_voxels = [(dims[0] / 2) as i64, (dims[1] / 2) as i64, (dims[2] / 2) as i64];
         let half = [dims[0] as f32 / 2.0, dims[1] as f32 / 2.0, dims[2] as f32 / 2.0];
         for &[i, j, k] in coords {
             grid.occupied.push(Voxel {
@@ -4122,12 +4128,11 @@ mod tests {
                 volumes: Vec::new(),
             };
         }
-        let half = [(grid_x / 2) as f32, (grid_y / 2) as f32, (grid_z / 2) as f32];
+        // Decode through the grid's carried-recentre authority (ADR 0008), matching the
+        // production builder.
         let mut occupied_voxels: HashSet<[i64; 3]> = HashSet::new();
         for voxel in &grid.occupied {
-            let i = (voxel.world_position[0] + half[0] - 0.5).round() as i64;
-            let j = (voxel.world_position[1] + half[1] - 0.5).round() as i64;
-            let k = (voxel.world_position[2] + half[2] - 0.5).round() as i64;
+            let [i, j, k] = grid.voxel_index_of(voxel.world_position);
             if i < 0
                 || j < 0
                 || k < 0
@@ -4185,9 +4190,9 @@ mod tests {
             volumes.push(ChunkFogVolume {
                 chunk_coord: coord,
                 world_origin: [
-                    chunk_min[0] as f32 - half[0],
-                    chunk_min[1] as f32 - half[1],
-                    chunk_min[2] as f32 - half[2],
+                    chunk_min[0] as f32 - grid.recentre_voxels[0] as f32,
+                    chunk_min[1] as f32 - grid.recentre_voxels[1] as f32,
+                    chunk_min[2] as f32 - grid.recentre_voxels[2] as f32,
                 ],
                 occupancy,
             });
