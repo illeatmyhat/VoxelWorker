@@ -359,11 +359,7 @@ mod tests {
             ([4, 2, 6], 16),
         ];
         for (size_blocks, density) in cases {
-            let box_shape = SdfShape {
-                kind: ShapeKind::Box,
-                size_blocks,
-                wall_blocks: 1,
-            };
+            let box_shape = SdfShape::from_blocks(ShapeKind::Box, size_blocks, 1, density);
             let grid_x = (size_blocks[0] * density) as i64;
             let grid_y = (size_blocks[1] * density) as i64;
             let grid_z = (size_blocks[2] * density) as i64;
@@ -392,11 +388,7 @@ mod tests {
     fn rectangle_extrude_each_plane_equals_box() {
         let density = 4u32;
         let size_blocks = [2u32, 3, 4];
-        let box_shape = SdfShape {
-            kind: ShapeKind::Box,
-            size_blocks,
-            wall_blocks: 1,
-        };
+        let box_shape = SdfShape::from_blocks(ShapeKind::Box, size_blocks, 1, density);
         let dims = box_shape.grid_dimensions(density);
         let box_set = occupancy_set(&box_shape, density);
         for plane in [PlaneAxis::X, PlaneAxis::Y, PlaneAxis::Z] {

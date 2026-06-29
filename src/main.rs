@@ -254,7 +254,7 @@ impl WindowedState {
             Some(config) => config.to_panel_state(),
             None => PanelState::with_view_cube_default(),
         };
-        let shape = SdfShape::from_geometry(panel_state.geometry);
+        let shape = SdfShape::from_geometry(panel_state.geometry.clone());
         let grid = AppCore::resolve_scene(&panel_state.scene, panel_state.geometry.voxels_per_block);
         // Issue #20 S6c-1: the camera auto-frame, origin gizmo, block lattice, fine
         // floor grid and the layer scrubber are sized from the scene's region
@@ -295,7 +295,7 @@ impl WindowedState {
             "resolved {} voxels for {:?} {:?}@{}",
             grid.occupied_count(),
             shape.kind,
-            shape.size_blocks,
+            shape.size_voxels,
             panel_state.geometry.voxels_per_block
         );
         // The cuboid mesh renderer is the sole voxel render path (part of #20). The
@@ -647,7 +647,7 @@ impl WindowedState {
     /// representative colour (a loaded block's average, or the procedural one).
     fn export_vox(&mut self) {
         let density = self.panel_state.geometry.voxels_per_block;
-        let shape = SdfShape::from_geometry(self.panel_state.geometry);
+        let shape = SdfShape::from_geometry(self.panel_state.geometry.clone());
         if shape.exceeds_voxel_cap(density) {
             eprintln!("export .vox: grid exceeds the voxel cap; not exporting");
             return;
@@ -1108,7 +1108,7 @@ impl WindowedState {
         // the side panel. `prepared.viewport_px` = [x, y, w, h] in physical pixels.
         let [_, _, viewport_width, viewport_height] = prepared.viewport_px;
         let aspect_ratio = viewport_width as f32 / viewport_height.max(1) as f32;
-        let geometry = self.panel_state.geometry;
+        let geometry = self.panel_state.geometry.clone();
         // The grid dims come from the ACTUALLY resolved scene grid (the composited
         // region's extent), not the active node's geometry — with several nodes the
         // region is the per-axis max of their sizes (ADR 0001 step 2).

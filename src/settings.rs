@@ -243,7 +243,16 @@ impl AppConfig {
             // issue #32: the flat geometry mirror fields are gone. The inspector
             // mirror starts at its defaults, overridden only by the persisted
             // app-level density; it is re-synced from the active node after the seed.
+            // Size is voxel-granular (ADR 0003 §3f(0)): the default seed is 5×1×5
+            // BLOCKS, so build its canonical voxels at the PERSISTED density (not the
+            // Default impl's hardcoded d16) so a config at d20 still seeds a 5-block
+            // shape, matching the old block-granular seed.
             geometry: GeometryParams {
+                size_voxels: [
+                    5 * self.voxels_per_block.max(1),
+                    self.voxels_per_block.max(1),
+                    5 * self.voxels_per_block.max(1),
+                ],
                 voxels_per_block: self.voxels_per_block,
                 ..GeometryParams::default()
             },
@@ -437,11 +446,7 @@ mod tests {
         use crate::voxel::SdfShape;
 
         let voxels_per_block = 8u32;
-        let unit_box = |kind| SdfShape {
-            kind,
-            size_blocks: [1, 1, 1],
-            wall_blocks: 1,
-        };
+        let unit_box = |kind| SdfShape::from_blocks(kind, [1, 1, 1], 1, voxels_per_block);
         let stone = Node::new(
             "Stone",
             NodeContent::Tool { shape: unit_box(ShapeKind::Box), material: MaterialChoice::Stone },
@@ -569,7 +574,9 @@ mod tests {
             Some(crate::scene::NodeContent::Tool { shape, material }) => {
                 // The default seed geometry, NOT the persisted flat params.
                 assert_eq!(shape.kind, ShapeKind::Cylinder);
-                assert_eq!(shape.size_blocks, [5, 1, 5]);
+                // Size is voxel-canonical now (ADR 0003 §3f(0)): the 5×1×5-block seed
+                // built at the persisted density 20 = [100, 20, 100] voxels.
+                assert_eq!(shape.size_voxels, [100, 20, 100]);
                 // The persisted `material` rides the seed (it is still an AppConfig field).
                 assert_eq!(*material, MaterialChoice::Wood);
             }
@@ -617,11 +624,7 @@ mod tests {
         use crate::voxel::SdfShape;
 
         let voxels_per_block = 8u32;
-        let unit_box = |kind| SdfShape {
-            kind,
-            size_blocks: [1, 1, 1],
-            wall_blocks: 1,
-        };
+        let unit_box = |kind| SdfShape::from_blocks(kind, [1, 1, 1], 1, voxels_per_block);
 
         // A definition (the reusable "house" body): a single Wood box.
         let def_id = DefId(3);
@@ -790,11 +793,7 @@ mod tests {
         // what a pre-S4a `[i32; 3]` save held. Authored via the API, then serialized to
         // the current on-disk format and reloaded; the offset is a plain JSON integer
         // in that document, so reloading proves it reads into the `i64` field intact.
-        let shape = SdfShape {
-            kind: ShapeKind::Box,
-            size_blocks: [2, 2, 2],
-            wall_blocks: 1,
-        };
+        let shape = SdfShape::from_blocks(ShapeKind::Box, [2, 2, 2], 1, 16);
         let mut node = Node::new(
             "Box",
             NodeContent::Tool { shape, material: MaterialChoice::Stone },
@@ -853,11 +852,7 @@ mod tests {
         // Beyond i32::MAX (2_147_483_647): a node placed ~3 billion blocks out. An
         // i32 field could never have held this; the i64 field must persist it exactly.
         let far_offset: i64 = 3_000_000_000;
-        let shape = SdfShape {
-            kind: ShapeKind::Box,
-            size_blocks: [2, 2, 2],
-            wall_blocks: 1,
-        };
+        let shape = SdfShape::from_blocks(ShapeKind::Box, [2, 2, 2], 1, 16);
         let mut node = Node::new(
             "Far box",
             NodeContent::Tool { shape, material: MaterialChoice::Stone },
@@ -965,7 +960,7 @@ mod tests {
         let node = Node::new(
             "Box",
             NodeContent::Tool {
-                shape: SdfShape { kind: ShapeKind::Box, size_blocks: [2, 2, 2], wall_blocks: 1 },
+                shape: SdfShape::from_blocks(ShapeKind::Box, [2, 2, 2], 1, 16),
                 material: MaterialChoice::Stone,
             },
         );
@@ -1015,7 +1010,7 @@ mod tests {
             Node::new(
                 name,
                 NodeContent::Tool {
-                    shape: SdfShape { kind: ShapeKind::Box, size_blocks: [2, 2, 2], wall_blocks: 1 },
+                    shape: SdfShape::from_blocks(ShapeKind::Box, [2, 2, 2], 1, 16),
                     material: MaterialChoice::Stone,
                 },
             )

@@ -171,7 +171,7 @@ impl PanelState {
     /// nodes.
     pub fn seed_scene_from_geometry(&mut self) {
         if self.scene.roots.is_empty() {
-            self.scene = Scene::from_geometry(self.geometry, self.material);
+            self.scene = Scene::from_geometry(self.geometry.clone(), self.material);
         }
         // issue #29 (grid rework S1): every scene carries exactly one Origin Point.
         // Idempotent, so calling it on an already-seeded scene is a no-op.
@@ -190,7 +190,15 @@ impl PanelState {
             if let NodeContent::Tool { shape, material } = &node.content {
                 self.geometry = GeometryParams {
                     shape: shape.kind,
-                    size_blocks: shape.size_blocks,
+                    // Size is voxel-granular (ADR 0003 §3f(0)): carry the canonical
+                    // voxels AND the retained authored expression so the inspector
+                    // seeds / re-emits the exact size the user typed.
+                    size_voxels: shape.size_voxels,
+                    size_measurements: if shape.has_retained_size_measurements() {
+                        Some(Box::new(shape.size_measurements()))
+                    } else {
+                        None
+                    },
                     // Density is document-level (ADR 0003 §3f(0)): the slider's
                     // transient mirror value comes from the scene, not the shape.
                     voxels_per_block: self.scene.voxels_per_block,
@@ -708,11 +716,9 @@ fn build_points_section(ui: &mut egui::Ui, state: &mut PanelState, response: &mu
 /// `new_tool_node` label, since the [`SHAPE_CHIPS`] labels ARE the kind's Debug names.
 fn tool_node_spec(kind: ShapeKind, state: &PanelState) -> NodeSpec {
     NodeSpec::Tool {
-        shape: SdfShape {
-            kind,
-            size_blocks: state.geometry.size_blocks,
-            wall_blocks: state.geometry.wall_blocks,
-        },
+        // Build through `from_geometry` so the canonical `size_voxels` + retained
+        // measurements (and the ≥1 clamp) are applied in one owner.
+        shape: SdfShape::from_geometry(GeometryParams { shape: kind, ..state.geometry.clone() }),
         material: state.material,
     }
 }
@@ -923,7 +929,7 @@ fn build_inspector_section(
                 // A shape OR size/wall edit rewrites the active Tool's shape from the
                 // buffer. Size/wall auto-frames; a pure shape switch does not.
                 if shape_changed || size_changed {
-                    let shape = SdfShape::from_geometry(state.geometry);
+                    let shape = SdfShape::from_geometry(state.geometry.clone());
                     let intent = Intent::SetShape { target, shape };
                     if size_changed {
                         response.emit_and_frame(intent);
@@ -1171,7 +1177,7 @@ fn build_offset_section(ui: &mut egui::Ui, state: &mut PanelState, response: &mu
                     }
                     Err(error) => {
                         ui.memory_mut(|memory| {
-                            memory.data.insert_temp(error_id, offset_error_text(&error))
+                            memory.data.insert_temp(error_id, measurement_error_text(&error))
                         });
                     }
                 },
@@ -1205,10 +1211,11 @@ fn build_offset_section(ui: &mut egui::Ui, state: &mut PanelState, response: &mu
     ui.separator();
 }
 
-/// Render a [`MeasurementError`] for the inline offset error label. A non-landing
-/// block fraction reports the nearest representable voxel counts so the user can
-/// pick one instead of being silently rounded (ADR 0003 §3f(0)).
-fn offset_error_text(error: &MeasurementError) -> String {
+/// Render a [`MeasurementError`] for an inline unit-field error label (Offset and
+/// Size both use it). A non-landing block fraction reports the nearest representable
+/// voxel counts so the user can pick one instead of being silently rounded (ADR 0003
+/// §3f(0)).
+fn measurement_error_text(error: &MeasurementError) -> String {
     match error {
         MeasurementError::BlockTermNotWholeVoxels {
             density,
@@ -1292,28 +1299,109 @@ fn build_shape_section(ui: &mut egui::Ui, state: &mut PanelState) -> bool {
     changed
 }
 
-/// Size sliders (whole blocks). Each shows the resulting voxel extent as a hint. ADR
-/// 0003 Phase C C4a: returns `true` when the buffer's size/wall changed (the inspector
-/// then emits a `SetShape` AND auto-frames, the old `size_or_density_changed`).
+/// Size section (ADR 0003 §3f(0)): three per-axis text fields (X/Y/Z) accepting
+/// blocks+voxels unit expressions (e.g. `"5 blocks"`, `"5b 8v"`, `"83 voxels"`),
+/// mirroring [`build_offset_section`]. Each field is seeded from the canonical voxel
+/// size formatted as blocks+voxels and, on commit (Enter or focus loss), parsed via
+/// [`units::parse`] and validated to land on a whole voxel `>= 1` at the document
+/// density. On success it writes the edited axis's canonical voxels + retained
+/// measurement into the [`GeometryParams`] mirror (the OTHER two axes keep their
+/// retained measurements — single-axis isolation) and returns `true`, so the
+/// inspector emits a `SetShape` (built via [`SdfShape::from_geometry`]) AND
+/// auto-frames. A parse / non-landing / sub-1 error is shown inline (red) and the
+/// size is NOT changed.
+///
+/// The in-progress text + last error live in egui temp memory (keyed per axis by a
+/// stable `Id`) so a partial edit and its error survive across frames; an unfocused
+/// field with no error re-syncs to the canonical value, so undo / external edits /
+/// density changes reflect.
 fn build_size_section(ui: &mut egui::Ui, state: &mut PanelState) -> bool {
     ui.add_space(8.0);
-    ui.strong("Size (blocks)");
+    ui.strong("Size (blocks + voxels)");
 
     let mut changed = false;
     let density = state.geometry.voxels_per_block;
+    // The canonical voxel size and the RETAINED per-axis measurements (the two
+    // unedited axes ride along unchanged so a single-axis edit is isolated).
+    let size_voxels = state.geometry.size_voxels;
+    let retained_measurements = match &state.geometry.size_measurements {
+        Some(measurements) => **measurements,
+        None => [
+            units::Measurement::from_voxels(size_voxels[0] as i64),
+            units::Measurement::from_voxels(size_voxels[1] as i64),
+            units::Measurement::from_voxels(size_voxels[2] as i64),
+        ],
+    };
+    // A stable per-active-node key prefix so each selection gets its own buffers
+    // (a re-selection re-seeds, like the offset section keys on `target`).
+    let key = state.scene.active;
+
     for (axis_index, axis_label) in ["X", "Y", "Z"].iter().enumerate() {
-        let mut value = state.geometry.size_blocks[axis_index];
-        let slider = egui::Slider::new(&mut value, 1..=16).text(*axis_label);
-        if ui.add(slider).changed() {
-            state.geometry.size_blocks[axis_index] = value;
-            changed = true;
+        let text_id = egui::Id::new(("size_axis_text", key, axis_index));
+        let error_id = egui::Id::new(("size_axis_error", key, axis_index));
+        let seed = units::format(size_voxels[axis_index] as i64, density, DisplayUnit::BlocksAndVoxels);
+
+        let mut buffer = ui
+            .memory(|memory| memory.data.get_temp::<String>(text_id))
+            .unwrap_or_else(|| seed.clone());
+
+        let widget = egui::TextEdit::singleline(&mut buffer)
+            .desired_width(110.0)
+            .hint_text("blocks + voxels");
+        let widget_response = ui.horizontal(|ui| {
+            ui.label(format!("{axis_label} "));
+            ui.add(widget)
+        });
+        let edit_response = widget_response.inner;
+
+        if edit_response.changed() {
+            ui.memory_mut(|memory| memory.data.remove::<String>(error_id));
         }
-        let voxel_extent = value * density;
-        ui.label(
-            egui::RichText::new(format!("{value} blocks · {voxel_extent} vx"))
-                .small()
-                .weak(),
-        );
+
+        let committed = edit_response.lost_focus() && buffer.trim() != seed;
+        if committed {
+            match units::parse(&buffer) {
+                Ok(measurement) => match measurement.to_voxels(density) {
+                    Ok(landed_voxels) if landed_voxels >= 1 => {
+                        // Replace only this axis; the other two keep their retained
+                        // measurements so a single-axis edit is isolated.
+                        let mut next = retained_measurements;
+                        next[axis_index] = measurement;
+                        state.geometry.size_voxels[axis_index] = landed_voxels as u32;
+                        state.geometry.size_measurements = Some(Box::new(next));
+                        changed = true;
+                        ui.memory_mut(|memory| memory.data.remove::<String>(error_id));
+                        buffer = units::format(landed_voxels, density, DisplayUnit::BlocksAndVoxels);
+                    }
+                    Ok(_) => {
+                        ui.memory_mut(|memory| {
+                            memory
+                                .data
+                                .insert_temp(error_id, "size must be at least 1 voxel".to_string())
+                        });
+                    }
+                    Err(error) => {
+                        ui.memory_mut(|memory| {
+                            memory.data.insert_temp(error_id, measurement_error_text(&error))
+                        });
+                    }
+                },
+                Err(error) => {
+                    ui.memory_mut(|memory| memory.data.insert_temp(error_id, error.to_string()));
+                }
+            }
+        } else if !edit_response.has_focus() {
+            let has_error = ui.memory(|memory| memory.data.get_temp::<String>(error_id).is_some());
+            if !has_error {
+                buffer = seed.clone();
+            }
+        }
+
+        ui.memory_mut(|memory| memory.data.insert_temp(text_id, buffer));
+
+        if let Some(message) = ui.memory(|memory| memory.data.get_temp::<String>(error_id)) {
+            ui.colored_label(egui::Color32::from_rgb(220, 80, 80), message);
+        }
     }
 
     // Conditional wall row — Tube only.

@@ -763,7 +763,8 @@ mod tests {
         Scene::from_geometry(
             GeometryParams {
                 shape: kind,
-                size_blocks: [5, 5, 5],
+                size_voxels: [5 * voxels_per_block, 5 * voxels_per_block, 5 * voxels_per_block],
+                size_measurements: None,
                 voxels_per_block,
                 wall_blocks: 1,
             },
@@ -857,7 +858,8 @@ mod tests {
                 let scene = Scene::from_geometry(
                     GeometryParams {
                         shape: kind,
-                        size_blocks: size,
+                        size_voxels: [size[0] * 16, size[1] * 16, size[2] * 16],
+                        size_measurements: None,
                         voxels_per_block: 16,
                         wall_blocks: 1,
                     },
@@ -872,11 +874,7 @@ mod tests {
     fn cache_region_matches_monolithic_for_demo_scene() {
         let voxels_per_block = 16;
         let make_tool = |kind, offset: [i64; 3], material| {
-            let shape = SdfShape {
-                kind,
-                size_blocks: [5, 5, 5],
-                wall_blocks: 1,
-            };
+            let shape = SdfShape::from_blocks(kind, [5, 5, 5], 1, voxels_per_block);
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
             node.transform = crate::scene::NodeTransform::from_blocks(offset, voxels_per_block);
             node
@@ -894,11 +892,7 @@ mod tests {
         let voxels_per_block = 16;
         let house_def_id = DefId(1);
         let tool = |kind, size: [u32; 3], offset: [i64; 3], material| {
-            let shape = SdfShape {
-                kind,
-                size_blocks: size,
-                wall_blocks: 1,
-            };
+            let shape = SdfShape::from_blocks(kind, size, 1, voxels_per_block);
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
             node.transform = crate::scene::NodeTransform::from_blocks(offset, voxels_per_block);
             node
@@ -977,15 +971,11 @@ mod tests {
         // Two 1-block stone cubes at opposite corners of a 16-block cube, so the
         // composite spans a huge cubic extent while each chunk holds at most one box.
         let spacing_blocks = 16i64;
-        let shape = SdfShape {
-            kind: ShapeKind::Box,
-            size_blocks: [1, 1, 1],
-            wall_blocks: 1,
-        };
+        let shape = SdfShape::from_blocks(ShapeKind::Box, [1, 1, 1], 1, voxels_per_block);
         let corner = |label: &str, offset: [i64; 3]| {
             let mut node = Node::new(
                 label,
-                NodeContent::Tool { shape, material: MaterialChoice::Stone },
+                NodeContent::Tool { shape: shape.clone(), material: MaterialChoice::Stone },
             );
             node.transform = crate::scene::NodeTransform::from_blocks(offset, voxels_per_block);
             node
@@ -1070,11 +1060,7 @@ mod tests {
 
     fn three_tool_scene(voxels_per_block: u32, box_offset_x: i64) -> Scene {
         let make_tool = |kind, offset: [i64; 3], material| {
-            let shape = SdfShape {
-                kind,
-                size_blocks: [5, 5, 5],
-                wall_blocks: 1,
-            };
+            let shape = SdfShape::from_blocks(kind, [5, 5, 5], 1, voxels_per_block);
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
             node.transform = crate::scene::NodeTransform::from_blocks(offset, voxels_per_block);
             node
@@ -1356,11 +1342,7 @@ mod tests {
         let vpb = 16u32;
         let house_def_id = DefId(1);
         let tool = |kind, size: [u32; 3], offset: [i64; 3], material| {
-            let shape = SdfShape {
-                kind,
-                size_blocks: size,
-                wall_blocks: 1,
-            };
+            let shape = SdfShape::from_blocks(kind, size, 1, vpb);
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
             node.transform = crate::scene::NodeTransform::from_blocks(offset, vpb);
             node
@@ -1419,11 +1401,7 @@ mod tests {
     fn far_offset_resolves_byte_identical_to_near_after_rebase() {
         let vpb = 16u32;
         let box_scene = |offset_x: i64| -> Scene {
-            let shape = SdfShape {
-                kind: ShapeKind::Box,
-                size_blocks: [4, 4, 4],
-                wall_blocks: 1,
-            };
+            let shape = SdfShape::from_blocks(ShapeKind::Box, [4, 4, 4], 1, vpb);
             let mut node = Node::new(
                 "box",
                 NodeContent::Tool { shape, material: MaterialChoice::Stone },
@@ -1532,11 +1510,7 @@ mod tests {
     fn region_widest_run_correct_at_far_offset() {
         let vpb = 16u32;
         let make_box = |offset: [i64; 3]| {
-            let shape = SdfShape {
-                kind: ShapeKind::Box,
-                size_blocks: [3, 3, 3],
-                wall_blocks: 1,
-            };
+            let shape = SdfShape::from_blocks(ShapeKind::Box, [3, 3, 3], 1, vpb);
             let mut node = Node::new("box", NodeContent::Tool { shape, material: MaterialChoice::Stone });
             node.transform = crate::scene::NodeTransform::from_blocks(offset, vpb);
             node
@@ -1583,11 +1557,7 @@ mod tests {
     fn region_widest_run_matches_whole_grid_for_demo_scene() {
         let vpb = 16u32;
         let make_tool = |kind, offset: [i64; 3], material| {
-            let shape = SdfShape {
-                kind,
-                size_blocks: [5, 5, 5],
-                wall_blocks: 1,
-            };
+            let shape = SdfShape::from_blocks(kind, [5, 5, 5], 1, vpb);
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
             node.transform = crate::scene::NodeTransform::from_blocks(offset, vpb);
             node
@@ -1605,11 +1575,7 @@ mod tests {
         let vpb = 16u32;
         let house_def_id = DefId(1);
         let tool = |kind, size: [u32; 3], offset: [i64; 3], material| {
-            let shape = SdfShape {
-                kind,
-                size_blocks: size,
-                wall_blocks: 1,
-            };
+            let shape = SdfShape::from_blocks(kind, size, 1, vpb);
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
             node.transform = crate::scene::NodeTransform::from_blocks(offset, vpb);
             node
@@ -1649,11 +1615,7 @@ mod tests {
     fn region_widest_run_stitches_runs_across_chunk_seams() {
         let vpb = 16u32;
         let bar_blocks_x = 20u32; // 20 × 16 = 320 voxels wide.
-        let shape = SdfShape {
-            kind: ShapeKind::Box,
-            size_blocks: [bar_blocks_x, 1, 1],
-            wall_blocks: 1,
-        };
+        let shape = SdfShape::from_blocks(ShapeKind::Box, [bar_blocks_x, 1, 1], 1, vpb);
         let scene = Scene::from_nodes(vec![Node::new(
             "bar",
             NodeContent::Tool { shape, material: MaterialChoice::Stone },
@@ -1689,11 +1651,7 @@ mod tests {
         let vpb = 16u32;
         // A 1-block box at density 16 is a 16³ solid; pick density 1 for a true
         // single voxel so the run is exactly 1.
-        let shape = SdfShape {
-            kind: ShapeKind::Box,
-            size_blocks: [1, 1, 1],
-            wall_blocks: 1,
-        };
+        let shape = SdfShape::from_blocks(ShapeKind::Box, [1, 1, 1], 1, 1);
         let _ = vpb;
         let scene = Scene::from_nodes(vec![Node::new(
             "dot",
@@ -1821,11 +1779,7 @@ mod tests {
 
     /// A tool node at the given offset, for building edit scenes.
     fn tool_node(kind: ShapeKind, size: [u32; 3], offset: [i64; 3], material: MaterialChoice) -> Node {
-        let shape = SdfShape {
-            kind,
-            size_blocks: size,
-            wall_blocks: 1,
-        };
+        let shape = SdfShape::from_blocks(kind, size, 1, 16);
         let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
         node.transform = crate::scene::NodeTransform::from_blocks(offset, 16);
         node

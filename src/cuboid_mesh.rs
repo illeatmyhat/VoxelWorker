@@ -1707,11 +1707,7 @@ mod tests {
             // the bug); also exercise an odd-all-axes size to be thorough.
             for &size in &[[5u32, 1, 5], [3, 3, 3], [5, 3, 7]] {
                 let voxels_per_block = 8;
-                let shape = SdfShape {
-                    kind,
-                    size_blocks: size,
-                    wall_blocks: 1,
-                };
+                let shape = SdfShape::from_blocks(kind, size, 1, voxels_per_block);
                 // Shift-invariance: also run a deliberately recentred copy of the
                 // grid (every voxel +8 in each axis, like `resolve_region`'s
                 // off-centre composite) — coverage must be identical.
@@ -2170,11 +2166,7 @@ mod tests {
                 ([8, 2, 8], 8), // 64×16×64 voxels → 2 chunks/axis in X/Z (multi-chunk)
                 ([5, 3, 7], 8),
             ] {
-                let shape = SdfShape {
-                    kind,
-                    size_blocks: size,
-                    wall_blocks: 1,
-                };
+                let shape = SdfShape::from_blocks(kind, size, 1, density);
                 let dims = shape.grid_dimensions(density);
                 let mut grid = VoxelGrid::new(dims);
                 shape.resolve(&mut grid, density);
@@ -2322,11 +2314,7 @@ mod tests {
     fn per_chunk_band_clip_face_set_equals_whole_region() {
         use crate::voxel::{SdfShape, ShapeKind, VoxelProducer};
         let voxels_per_block = 8;
-        let shape = SdfShape {
-            kind: ShapeKind::Torus,
-            size_blocks: [8, 2, 8],
-            wall_blocks: 1,
-        };
+        let shape = SdfShape::from_blocks(ShapeKind::Torus, [8, 2, 8], 1, voxels_per_block);
         let dims = shape.grid_dimensions(voxels_per_block);
         let mut grid = VoxelGrid::new(dims);
         shape.resolve(&mut grid, voxels_per_block);

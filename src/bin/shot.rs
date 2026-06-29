@@ -365,6 +365,11 @@ fn parse_projection(value: &str) -> ProjectionMode {
 
 fn parse_options() -> ShotOptions {
     let mut options = ShotOptions::default();
+    // The `--size-*` flags are BLOCK counts (the CLI's whole-block ergonomics); the
+    // geometry mirror is now voxel-canonical (ADR 0003 §3f(0)), so collect the block
+    // sizes here and finalise `size_voxels = blocks · density` AFTER the loop (so the
+    // flags are order-independent with `--density`). Default 5×1×5 blocks.
+    let mut size_blocks_cli: [u32; 3] = [5, 1, 5];
     let mut args = std::env::args().skip(1);
     while let Some(flag) = args.next() {
         match flag.as_str() {
@@ -399,21 +404,21 @@ fn parse_options() -> ShotOptions {
                 }
             }
             "--size-x" => {
-                options.geometry.size_blocks[0] = args
+                size_blocks_cli[0] = args
                     .next()
                     .expect("--size-x requires a value")
                     .parse()
                     .expect("--size-x must be a positive integer");
             }
             "--size-y" => {
-                options.geometry.size_blocks[1] = args
+                size_blocks_cli[1] = args
                     .next()
                     .expect("--size-y requires a value")
                     .parse()
                     .expect("--size-y must be a positive integer");
             }
             "--size-z" => {
-                options.geometry.size_blocks[2] = args
+                size_blocks_cli[2] = args
                     .next()
                     .expect("--size-z requires a value")
                     .parse()
@@ -684,6 +689,16 @@ fn parse_options() -> ShotOptions {
             }
         }
     }
+    // Finalise the voxel-canonical size from the requested BLOCK counts at the final
+    // density, retaining each axis as a whole-block measurement (ADR 0003 §3f(0)).
+    let built =
+        SdfShape::from_blocks(options.geometry.shape, size_blocks_cli, options.geometry.wall_blocks, options.geometry.voxels_per_block);
+    options.geometry.size_voxels = built.size_voxels;
+    options.geometry.size_measurements = if built.has_retained_size_measurements() {
+        Some(Box::new(built.size_measurements()))
+    } else {
+        None
+    };
     options
 }
 
@@ -777,11 +792,7 @@ fn selecting_first_node(mut scene: Scene) -> Scene {
 /// and the in-app inspector offsets both Tools and Parts.
 fn build_demo_scene(voxels_per_block: u32) -> Scene {
     let make_tool = |kind, offset: [i64; 3], material| {
-        let shape = SdfShape {
-            kind,
-            size_blocks: [5, 5, 5],
-            wall_blocks: 1,
-        };
+        let shape = SdfShape::from_blocks(kind, [5, 5, 5], 1, voxels_per_block);
         let mut node = Node::new(
             format!("{kind:?}"),
             NodeContent::Tool { shape, material },
@@ -810,11 +821,7 @@ fn build_demo_scene(voxels_per_block: u32) -> Scene {
 fn build_demo_village(voxels_per_block: u32) -> Scene {
     let house_def_id = DefId(1);
     let tool = |kind, size: [u32; 3], offset: [i64; 3], material| {
-        let shape = SdfShape {
-            kind,
-            size_blocks: size,
-            wall_blocks: 1,
-        };
+        let shape = SdfShape::from_blocks(kind, size, 1, voxels_per_block);
         let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
         node.transform = voxel_worker::scene::NodeTransform::from_blocks(offset, voxels_per_block);
         node
@@ -904,7 +911,7 @@ fn build_demo_sketch_extrude(voxels_per_block: u32) -> Scene {
 /// Definitions list — the whole authoring surface this step adds.
 fn build_demo_groups(voxels_per_block: u32) -> Scene {
     let tool = |kind, size: [u32; 3], offset: [i64; 3], material, name: &str| {
-        let shape = SdfShape { kind, size_blocks: size, wall_blocks: 1 };
+        let shape = SdfShape::from_blocks(kind, size, 1, voxels_per_block);
         let mut node = Node::new(name, NodeContent::Tool { shape, material });
         node.transform = voxel_worker::scene::NodeTransform::from_blocks(offset, voxels_per_block);
         node
@@ -958,11 +965,7 @@ fn build_demo_groups(voxels_per_block: u32) -> Scene {
 /// until S4 removes the recentre / adds origin-rebasing. This flag exists to be
 /// the visual regression target for S4 (it must STAY jitter-free once S4 lands).
 fn build_far_offset_scene(voxels_per_block: u32, far: bool) -> Scene {
-    let shape = SdfShape {
-        kind: ShapeKind::Box,
-        size_blocks: [4, 4, 4],
-        wall_blocks: 1,
-    };
+    let shape = SdfShape::from_blocks(ShapeKind::Box, [4, 4, 4], 1, voxels_per_block);
     let mut node = Node::new(
         if far { "Far box" } else { "Near box" },
         NodeContent::Tool {
@@ -1036,7 +1039,7 @@ async fn run_capture(options: ShotOptions) {
     // Resolve the requested geometry into the grid, then build the renderer's
     // instance buffer FROM the grid (REPRESENTATION.md seam). The voxel cap
     // (ARCHITECTURE.md §7) guards against an enormous CLI request.
-    let shape = SdfShape::from_geometry(options.geometry);
+    let shape = SdfShape::from_geometry(options.geometry.clone());
     // Z-up: layers are Z-slices, so the layer track spans the Z dimension (index 2).
     let grid_z = shape.grid_dimensions(options.geometry.voxels_per_block)[2];
     // Issue #12: build the layer-range band from the raw CLI voxel indices (no
@@ -1049,7 +1052,7 @@ async fn run_capture(options: ShotOptions) {
         onion_depth: options.onion_depth.clamp(1, 8),
     };
     let mut panel_state = PanelState {
-        geometry: options.geometry,
+        geometry: options.geometry.clone(),
         projection_mode: options.projection_mode,
         material: options.material,
         show_view_cube: options.show_view_cube,
@@ -1096,7 +1099,7 @@ async fn run_capture(options: ShotOptions) {
             NodeContent::Part(Part::DebugClouds { seed: 0 }),
         ))
     } else {
-        Scene::from_geometry(options.geometry, options.material)
+        Scene::from_geometry(options.geometry.clone(), options.material)
     };
     // Issue #29 S5: Points are SUPPRESSED unless `--points`. The headless scenes do
     // NOT synthesize an Origin Point (that runs on the windowed load/seed path), so by
@@ -1193,7 +1196,18 @@ async fn run_capture(options: ShotOptions) {
     let region = if placed_scene {
         scene.full_extent_blocks(options.geometry.voxels_per_block)
     } else {
-        RegionBlocks::new(options.geometry.size_blocks)
+        {
+            // The geometry mirror is voxel-canonical (ADR 0003 §3f(0)); the explicit
+            // single-shape region is whole blocks, so round the voxel size UP to
+            // whole blocks (a whole-block size divides cleanly).
+            let density = options.geometry.voxels_per_block.max(1);
+            let voxels = options.geometry.size_voxels;
+            RegionBlocks::new([
+                voxels[0].div_ceil(density),
+                voxels[1].div_ceil(density),
+                voxels[2].div_ceil(density),
+            ])
+        }
     };
     // Issue #27 S2: the old whole-region `MAX_GRID_VOXELS` total cap is now a
     // PER-CHUNK bound — a scene whose TOTAL voxel count is far beyond 6M resolves
@@ -1336,7 +1350,7 @@ async fn run_capture(options: ShotOptions) {
         println!(
             "resolved {} voxels for DebugClouds {:?}@{}",
             grid.occupied_count(),
-            shape.size_blocks,
+            shape.size_voxels,
             options.geometry.voxels_per_block
         );
     } else {
@@ -1344,7 +1358,7 @@ async fn run_capture(options: ShotOptions) {
             "resolved {} voxels for {:?} {:?}@{}",
             grid.occupied_count(),
             shape.kind,
-            shape.size_blocks,
+            shape.size_voxels,
             options.geometry.voxels_per_block
         );
     }

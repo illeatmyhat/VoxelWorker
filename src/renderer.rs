@@ -4210,11 +4210,7 @@ mod tests {
     }
 
     fn box_node(name: &str, offset: [i64; 3], voxels_per_block: u32) -> Node {
-        let shape = SdfShape {
-            kind: ShapeKind::Box,
-            size_blocks: [2, 2, 2],
-            wall_blocks: 1,
-        };
+        let shape = SdfShape::from_blocks(ShapeKind::Box, [2, 2, 2], 1, voxels_per_block);
         let mut node = Node::new(name, NodeContent::Tool { shape, material: Mc::Stone });
         node.transform = crate::scene::NodeTransform::from_blocks(offset, voxels_per_block);
         node

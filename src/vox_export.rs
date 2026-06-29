@@ -320,7 +320,8 @@ mod tests {
         let scene = crate::scene::Scene::from_geometry(
             GeometryParams {
                 shape: ShapeKind::Cylinder,
-                size_blocks: [5, 1, 5],
+                size_voxels: [80, 16, 80],
+                size_measurements: None,
                 voxels_per_block: 16,
                 wall_blocks: 1,
             },
@@ -362,7 +363,8 @@ mod tests {
         let scene = crate::scene::Scene::from_geometry(
             GeometryParams {
                 shape: ShapeKind::Cylinder,
-                size_blocks: [2, 2, 5],
+                size_voxels: [2 * 16, 2 * 16, 5 * 16],
+                size_measurements: None,
                 voxels_per_block: 16,
                 wall_blocks: 1,
             },
@@ -392,7 +394,8 @@ mod tests {
         let scene = crate::scene::Scene::from_geometry(
             GeometryParams {
                 shape: ShapeKind::Box,
-                size_blocks: [17, 1, 1],
+                size_voxels: [272, 16, 16],
+                size_measurements: None,
                 voxels_per_block: 16,
                 wall_blocks: 1,
             },
@@ -479,7 +482,8 @@ mod tests {
         Scene::from_geometry(
             GeometryParams {
                 shape: kind,
-                size_blocks: size,
+                size_voxels: [size[0] * vpb, size[1] * vpb, size[2] * vpb],
+                size_measurements: None,
                 voxels_per_block: vpb,
                 wall_blocks: 1,
             },
@@ -519,11 +523,7 @@ mod tests {
     fn region_vox_export_equals_whole_grid_for_demo_scene() {
         let vpb = 16u32;
         let make_tool = |kind, offset: [i64; 3], material| {
-            let shape = SdfShape {
-                kind,
-                size_blocks: [5, 5, 5],
-                wall_blocks: 1,
-            };
+            let shape = SdfShape::from_blocks(kind, [5, 5, 5], 1, vpb);
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
             node.transform = crate::scene::NodeTransform::from_blocks(offset, vpb);
             node
@@ -545,11 +545,7 @@ mod tests {
     /// away on X.
     fn far_offset_two_box_scene(vpb: u32, offset_blocks: i64) -> Scene {
         let make_box = |offset: [i64; 3], material| {
-            let shape = SdfShape {
-                kind: ShapeKind::Box,
-                size_blocks: [3, 3, 3],
-                wall_blocks: 1,
-            };
+            let shape = SdfShape::from_blocks(ShapeKind::Box, [3, 3, 3], 1, vpb);
             let mut node = Node::new("Box", NodeContent::Tool { shape, material });
             node.transform = crate::scene::NodeTransform::from_blocks(offset, vpb);
             node

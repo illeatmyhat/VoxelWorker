@@ -776,11 +776,7 @@ mod tests {
         ] {
             for &size in &[[3u32, 3, 3], [5, 1, 5], [4, 2, 3]] {
                 let voxels_per_block = 4;
-                let shape = SdfShape {
-                    kind,
-                    size_blocks: size,
-                    wall_blocks: 1,
-                };
+                let shape = SdfShape::from_blocks(kind, size, 1, voxels_per_block);
                 let dimensions = shape.grid_dimensions(voxels_per_block);
                 let mut grid = VoxelGrid::new(dimensions);
                 shape.resolve(&mut grid, voxels_per_block);

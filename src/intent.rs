@@ -385,13 +385,10 @@ mod tests {
         AppCore::new(Store::new(), OrbitCamera::default())
     }
 
-    /// A box Tool shape at the given size (the default-ish fixture shape).
+    /// A box Tool shape at the given BLOCK size (the default-ish fixture shape),
+    /// built at the default density 16 (`size_voxels = blocks · 16`).
     fn box_shape(size: [u32; 3]) -> SdfShape {
-        SdfShape {
-            kind: ShapeKind::Box,
-            size_blocks: size,
-            wall_blocks: 1,
-        }
+        SdfShape::from_blocks(ShapeKind::Box, size, 1, 16)
     }
 
     /// A Tool node named after its kind (matching [`NodeSpec::into_node`]).
@@ -546,10 +543,10 @@ mod tests {
         let scene = two_tool_scene();
         let target = root_id(&scene, 0);
         let shape = box_shape([7, 7, 7]);
-        assert_dispatch_matches(&scene, Intent::SetShape { target, shape }, |s| {
+        assert_dispatch_matches(&scene, Intent::SetShape { target, shape: shape.clone() }, |s| {
             if let Some(node) = s.node_by_id_mut(target) {
                 if let NodeContent::Tool { shape: node_shape, .. } = &mut node.content {
-                    *node_shape = shape;
+                    *node_shape = shape.clone();
                 }
             }
         });
@@ -679,14 +676,23 @@ mod tests {
         scene.ensure_node_ids();
         assert_dispatch_matches(&scene, Intent::SetDensity { voxels_per_block: 20 }, |s| {
             // `apply` rescales every node's voxel offset old→new density to preserve
-            // block placement (ADR 0003 §3f(0)); mirror that here. (Every node in this
-            // scene has a zero offset, so the rescale is a no-op, but mirror it anyway
-            // so the equivalence stays honest.)
+            // block placement, AND re-targets every Tool's voxel-granular size (ADR
+            // 0003 §3f(0)); mirror both here. (Every node has a zero offset, so the
+            // offset rescale is a no-op; the sizes DO re-target — a retained whole-block
+            // size re-evaluates at the new density.)
             let old_density = s.voxels_per_block.max(1) as i64;
             for node in s.arena.values_mut() {
                 for axis in 0..3 {
                     node.transform.offset_voxels[axis] =
                         node.transform.offset_voxels[axis] * 20 / old_density;
+                }
+                if let NodeContent::Tool { shape, .. } = &mut node.content {
+                    *shape = crate::voxel::SdfShape::from_measurements(
+                        shape.kind,
+                        shape.size_measurements(),
+                        shape.wall_blocks,
+                        20,
+                    );
                 }
             }
             s.voxels_per_block = 20;
@@ -835,12 +841,12 @@ mod tests {
         };
         let variants = vec![
             Intent::AddNode {
-                content: NodeSpec::Tool { shape, material: MaterialChoice::Wood },
+                content: NodeSpec::Tool { shape: shape.clone(), material: MaterialChoice::Wood },
             },
             Intent::AddNode { content: NodeSpec::CloudsPart },
             Intent::AddChild {
                 group: NodeId(7),
-                content: NodeSpec::Tool { shape, material: MaterialChoice::Plain },
+                content: NodeSpec::Tool { shape: shape.clone(), material: MaterialChoice::Plain },
             },
             Intent::GroupNode { target: NodeId(3) },
             Intent::MakeDefinition { target: NodeId(3), name: "House".to_string() },
@@ -878,7 +884,7 @@ mod tests {
         // A Tool spec yields a node named after its kind (the panel's chip label),
         // wrapping the same shape + material.
         let shape = box_shape([2, 2, 2]);
-        let node = NodeSpec::Tool { shape, material: MaterialChoice::Wood }.into_node();
+        let node = NodeSpec::Tool { shape: shape.clone(), material: MaterialChoice::Wood }.into_node();
         assert_eq!(node.name, "Box");
         assert_eq!(node.transform, NodeTransform::identity());
         match node.content {

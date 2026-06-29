@@ -24,7 +24,7 @@ use crate::renderer::OnionFogParams;
 use crate::scene::{NodeContent, NodeId, NodeTransform, Part, Scene};
 use crate::spatial_index::LeafSpatialIndex;
 use crate::store::Store;
-use crate::voxel::{chunk_extent_exceeds_bound, VoxelGrid};
+use crate::voxel::{chunk_extent_exceeds_bound, SdfShape, VoxelGrid};
 
 /// The headless orchestrator: owns the per-chunk resolve [`Store`] and the
 /// [`OrbitCamera`], and answers the headless scene queries the shell renders from.
@@ -243,7 +243,10 @@ impl AppCore {
                 Some(node) => match &node.content {
                     NodeContent::Tool { shape, .. } => Inverse::Field(Intent::SetShape {
                         target: *target,
-                        shape: *shape,
+                        // `SdfShape` is no longer `Copy` (it owns an optional boxed
+                        // retained-size expression), so clone the prior shape so undo
+                        // replays the EXACT authored size (ADR 0003 §3f(0)).
+                        shape: shape.clone(),
                     }),
                     _ => Inverse::NoOp,
                 },
@@ -624,6 +627,34 @@ impl AppCore {
                                 node.transform.offset_voxels[axis] * new_density / old_density;
                         }
                     }
+
+                    // A Tool's SIZE is now voxel-granular (ADR 0003 §3f(0)), so it
+                    // must be re-targeted on a density change EXACTLY like the offset
+                    // — otherwise the physical size would change (an 80-voxel = 5-block
+                    // box at d16 would stay 80 voxels = 2.5 blocks at d32). Same split:
+                    //  * RETAINED authored size: re-evaluate via `from_measurements`
+                    //    (block terms scale, voxel terms stay exact, non-dividing axes
+                    //    floor+resynthesise — never disagree with `size_voxels`).
+                    //  * NO retained size (old docs / pure-voxel): integer rescale to
+                    //    preserve physical size; the field stays `None`.
+                    if let NodeContent::Tool { shape, .. } = &mut node.content {
+                        if shape.has_retained_size_measurements() {
+                            *shape = SdfShape::from_measurements(
+                                shape.kind,
+                                shape.size_measurements(),
+                                shape.wall_blocks,
+                                voxels_per_block,
+                            );
+                        } else {
+                            let mut size_voxels = shape.size_voxels;
+                            for axis in size_voxels.iter_mut() {
+                                // Integer rescale, clamped to ≥1 so a tiny size can't
+                                // collapse to a 0-voxel (degenerate) axis.
+                                *axis = ((*axis as i64 * new_density / old_density).max(1)) as u32;
+                            }
+                            *shape = SdfShape::from_voxels(shape.kind, size_voxels, shape.wall_blocks);
+                        }
+                    }
                 }
                 scene.voxels_per_block = voxels_per_block;
                 (full_effect, None)
@@ -961,13 +992,10 @@ mod replay_tests {
     use crate::scene::NodeContent;
     use crate::voxel::{SdfShape, ShapeKind};
 
-    /// A small box Tool shape for the script fixtures.
+    /// A small box Tool shape for the script fixtures (3 blocks at the default
+    /// density 16 → 48 voxels per axis).
     fn box_shape() -> SdfShape {
-        SdfShape {
-            kind: ShapeKind::Box,
-            size_blocks: [3, 3, 3],
-            wall_blocks: 1,
-        }
+        SdfShape::from_blocks(ShapeKind::Box, [3, 3, 3], 1, 16)
     }
 
     /// The replay seed base is the windowed default: exactly one top-level node (a
@@ -1082,13 +1110,12 @@ mod undo_tests {
         AppCore::new(Store::new(), OrbitCamera::default())
     }
 
-    /// A box Tool shape of the given block size at density 8.
+    /// A box Tool shape of the given BLOCK size, built at the default density 16
+    /// (canonical `size_voxels = blocks · 16`). The undo / recenter fixtures key on
+    /// structure + offsets, not the exact voxel size, and `two_tool_scene` runs at
+    /// the default density 16.
     fn box_shape(size: [u32; 3]) -> SdfShape {
-        SdfShape {
-            kind: ShapeKind::Box,
-            size_blocks: size,
-            wall_blocks: 1,
-        }
+        SdfShape::from_blocks(ShapeKind::Box, size, 1, 16)
     }
 
     /// A Tool node named after its kind (matching [`NodeSpec::into_node`]).
@@ -1427,11 +1454,21 @@ mod undo_tests {
     fn set_density_round_trips() {
         // Density is a single document-level field now (ADR 0003 §3f(0)); start from a
         // non-default prior so the inverse must restore the exact prior value, not 16.
+        // Size is now voxel-granular and SetDensity RE-TARGETS each Tool's size at the
+        // new density (ADR 0003 §3f(0)), so the fixture's shapes must be built at the
+        // SAME density the scene runs at (5) — a `2 blocks` shape is 10 voxels at d5,
+        // not the d16 default's 32 — otherwise the density round-trip would normalise
+        // the inconsistency and undo could not restore it byte-for-byte.
         let mut scene = Scene::from_nodes(vec![
-            tool_node(box_shape([2, 2, 2]), MaterialChoice::Stone).into(),
+            tool_node(SdfShape::from_blocks(ShapeKind::Box, [2, 2, 2], 1, 5), MaterialChoice::Stone)
+                .into(),
             NodeBuilder::group(
                 "G",
-                vec![tool_node(box_shape([3, 3, 3]), MaterialChoice::Wood).into()],
+                vec![tool_node(
+                    SdfShape::from_blocks(ShapeKind::Box, [3, 3, 3], 1, 5),
+                    MaterialChoice::Wood,
+                )
+                .into()],
             ),
         ]);
         scene.ensure_node_ids();
@@ -1934,7 +1971,7 @@ mod undo_tests {
         ];
         for density in [8u32, 16] {
             for (kind, size) in cases {
-                let shape = SdfShape { kind, size_blocks: size, wall_blocks: 1 };
+                let shape = SdfShape::from_blocks(kind, size, 1, density);
                 let (min, max) = rebuild_frame_corner_bbox(shape, density);
                 for axis in 0..3 {
                     // Centred: the half-open corner box is symmetric about 0.
@@ -1956,7 +1993,7 @@ mod undo_tests {
         }
         // Pin the exact 1×1×1 @ d16 box so the convention is unambiguous: it occupies
         // [−8, 8) per axis (centred), NOT [0, 16) (corner-at-origin).
-        let one_block = SdfShape { kind: ShapeKind::Box, size_blocks: [1, 1, 1], wall_blocks: 1 };
+        let one_block = SdfShape::from_blocks(ShapeKind::Box, [1, 1, 1], 1, 16);
         let (min, max) = rebuild_frame_corner_bbox(one_block, 16);
         assert_eq!(min, [-8, -8, -8], "1×1×1 box @ d16 min corner is centred at −8, not 0");
         assert_eq!(max, [8, 8, 8], "1×1×1 box @ d16 max corner is centred at +8, not 16");

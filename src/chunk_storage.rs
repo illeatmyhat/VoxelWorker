@@ -558,11 +558,7 @@ mod tests {
     }
 
     fn shape_grid(kind: ShapeKind, size: [u32; 3], voxels_per_block: u32) -> VoxelGrid {
-        let shape = SdfShape {
-            kind,
-            size_blocks: size,
-            wall_blocks: 1,
-        };
+        let shape = SdfShape::from_blocks(kind, size, 1, voxels_per_block);
         let mut grid = VoxelGrid::new(shape.grid_dimensions(voxels_per_block));
         shape.resolve(&mut grid, voxels_per_block);
         grid
@@ -672,7 +668,8 @@ mod tests {
             let scene = Scene::from_geometry(
                 GeometryParams {
                     shape: kind,
-                    size_blocks: [5, 5, 5],
+                    size_voxels: [5 * voxels_per_block, 5 * voxels_per_block, 5 * voxels_per_block],
+                    size_measurements: None,
                     voxels_per_block,
                     wall_blocks: 1,
                 },
@@ -705,11 +702,7 @@ mod tests {
 
         // --demo-scene: three differently-materialled tools.
         let make_tool = |kind, offset: [i64; 3], material| {
-            let shape = SdfShape {
-                kind,
-                size_blocks: [5, 5, 5],
-                wall_blocks: 1,
-            };
+            let shape = SdfShape::from_blocks(kind, [5, 5, 5], 1, voxels_per_block);
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
             node.transform = crate::scene::NodeTransform::from_blocks(offset, voxels_per_block);
             node
@@ -723,11 +716,7 @@ mod tests {
         // --demo-village: an instanced house assembly.
         let house_def_id = DefId(1);
         let tool = |kind, size: [u32; 3], offset: [i64; 3], material| {
-            let shape = SdfShape {
-                kind,
-                size_blocks: size,
-                wall_blocks: 1,
-            };
+            let shape = SdfShape::from_blocks(kind, size, 1, voxels_per_block);
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
             node.transform = crate::scene::NodeTransform::from_blocks(offset, voxels_per_block);
             node
@@ -944,7 +933,8 @@ mod tests {
             let scene = Scene::from_geometry(
                 GeometryParams {
                     shape: kind,
-                    size_blocks: size,
+                    size_voxels: [size[0] * voxels_per_block, size[1] * voxels_per_block, size[2] * voxels_per_block],
+                    size_measurements: None,
                     voxels_per_block,
                     wall_blocks: 1,
                 },
@@ -1021,11 +1011,7 @@ mod tests {
 
         // A real village chunk (resolved through the chunk path).
         let make_tool = |kind, offset: [i64; 3], material| {
-            let shape = SdfShape {
-                kind,
-                size_blocks: [5, 5, 5],
-                wall_blocks: 1,
-            };
+            let shape = SdfShape::from_blocks(kind, [5, 5, 5], 1, voxels_per_block);
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
             node.transform = crate::scene::NodeTransform::from_blocks(offset, voxels_per_block);
             node
