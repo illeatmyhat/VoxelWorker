@@ -29,6 +29,10 @@ pub mod debug_clouds;
 pub mod disk_chunk_store;
 pub mod frustum;
 pub mod gpu;
+// ADR 0007 P1 spike: the GPU view-resolve A/B equivalence net (the repo's first
+// compute pipeline). Display/test infra only — never authoritative (ADR 0006 §4).
+#[cfg(feature = "gpu")]
+pub mod gpu_resolve;
 // ADR 0003 Phase C: the single serializable mutation boundary (Intent → apply_intent).
 pub mod intent;
 pub mod panel;

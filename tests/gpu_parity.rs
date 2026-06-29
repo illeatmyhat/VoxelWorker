@@ -1,0 +1,282 @@
+//! GPU view-resolve P1 spike — the CPU↔GPU A/B equivalence net (ADR 0007 §5/§6).
+//!
+//! Resolves a producer on the CPU through the REAL scene path (so the reference grid
+//! is exactly what the app feeds the fog — a single node, recentred by
+//! `resolve_region`), buckets it into apron'd per-chunk fog volumes via the SHIPPED
+//! `build_per_chunk_fog_occupancy`, then GPU-evaluates the SAME chunks' occupancy and
+//! asserts they are **byte-identical**. This is the spike that answers ADR 0007's
+//! central open question: does the Rust↔WGSL float eval agree at the occupancy
+//! boundary? Exact is the target; a measured divergence is a finding to REPORT
+//! (count + where), never silently tolerate (ADR 0007 §6).
+//!
+//! - SDF tier: f32 both sides → expected exact.
+//! - Sketch tier: CPU does the polygon test in **f64**, the GPU in **f32** (no portable
+//!   f64 in WGSL). Extrude samples are half-integer over integer vertices (a wide gap
+//!   from any edge → expected exact); revolve samples include an irrational radius
+//!   (the genuine divergence surface). The matrix measures all of it.
+//!
+//! Run: `cargo test --features gpu --test gpu_parity`
+#![cfg(feature = "gpu")]
+
+use voxel_worker::gpu_resolve::GpuResolver;
+use voxel_worker::renderer::{build_per_chunk_fog_occupancy, PerChunkFogOccupancy};
+use voxel_worker::voxel::{signed_distance, GeometryParams, SdfShape, ShapeKind};
+use voxel_worker::{
+    GpuContext, MaterialChoice, Node, NodeContent, PlaneAxis, RevolveAxis, Scene, Sketch,
+    SketchPoint, SketchSolid,
+};
+
+/// A divergent apron cell, located for the report.
+struct Mismatch {
+    chunk_coord: [i32; 3],
+    apron: [usize; 3],
+    cpu: u8,
+    gpu: u8,
+}
+
+/// Walk the CPU reference vs the GPU occupancy and collect every byte that differs.
+/// (Asserts the per-chunk lengths line up first.)
+fn collect_mismatches(
+    case: &str,
+    reference: &PerChunkFogOccupancy,
+    gpu_occupancy: &[Vec<u8>],
+    pad: usize,
+) -> Vec<Mismatch> {
+    let mut mismatches = Vec::new();
+    for (volume, gpu_cells) in reference.volumes.iter().zip(gpu_occupancy) {
+        assert_eq!(
+            volume.occupancy.len(),
+            gpu_cells.len(),
+            "{case}: chunk {:?} length mismatch (CPU {} vs GPU {})",
+            volume.chunk_coord,
+            volume.occupancy.len(),
+            gpu_cells.len()
+        );
+        for (idx, (&cpu, &gpu)) in volume.occupancy.iter().zip(gpu_cells).enumerate() {
+            if cpu != gpu {
+                mismatches.push(Mismatch {
+                    chunk_coord: volume.chunk_coord,
+                    apron: [idx % pad, (idx / pad) % pad, idx / (pad * pad)],
+                    cpu,
+                    gpu,
+                });
+            }
+        }
+    }
+    mismatches
+}
+
+/// The recentred-frame fog-global voxel coordinate of an apron cell (== the producer
+/// local voxel index for a lone producer, `local_offset == 0` — see the shader).
+fn voxel_index_of(chunk_coord: [i32; 3], apron: [usize; 3], chunk_extent: i64) -> [i64; 3] {
+    [
+        chunk_coord[0] as i64 * chunk_extent + apron[0] as i64 - 1,
+        chunk_coord[1] as i64 * chunk_extent + apron[1] as i64 - 1,
+        chunk_coord[2] as i64 * chunk_extent + apron[2] as i64 - 1,
+    ]
+}
+
+/// Format the first few mismatches into a one-line-each report via a per-cell
+/// diagnostic that recomputes the CPU predicate at the differing voxel.
+fn report(case: &str, total: usize, mismatches: &[Mismatch], diagnose: impl Fn(&Mismatch) -> String) -> String {
+    let mut lines = vec![format!("{case}: {}/{total} cells differ", mismatches.len())];
+    for m in mismatches.iter().take(6) {
+        lines.push(format!("    {}", diagnose(m)));
+    }
+    lines.join("\n")
+}
+
+// ===========================================================================
+// SDF tier
+// ===========================================================================
+
+struct SdfCase {
+    name: &'static str,
+    kind: ShapeKind,
+    size_voxels: [u32; 3],
+    wall_blocks: u32,
+    voxels_per_block: u32,
+}
+
+const SDF_CASES: &[SdfCase] = &[
+    SdfCase { name: "cylinder-80-16-80-d16", kind: ShapeKind::Cylinder, size_voxels: [80, 16, 80], wall_blocks: 1, voxels_per_block: 16 },
+    SdfCase { name: "box-80-16-80-d16", kind: ShapeKind::Box, size_voxels: [80, 16, 80], wall_blocks: 1, voxels_per_block: 16 },
+    SdfCase { name: "sphere-80-80-80-d16", kind: ShapeKind::Sphere, size_voxels: [80, 80, 80], wall_blocks: 1, voxels_per_block: 16 },
+    SdfCase { name: "torus-128-32-128-d16", kind: ShapeKind::Torus, size_voxels: [128, 32, 128], wall_blocks: 1, voxels_per_block: 16 },
+    SdfCase { name: "tube-80-16-80-w1-d16", kind: ShapeKind::Tube, size_voxels: [80, 16, 80], wall_blocks: 1, voxels_per_block: 16 },
+    SdfCase { name: "sphere-33-33-33-d4", kind: ShapeKind::Sphere, size_voxels: [33, 33, 33], wall_blocks: 1, voxels_per_block: 4 },
+    SdfCase { name: "box-31-17-49-d4", kind: ShapeKind::Box, size_voxels: [31, 17, 49], wall_blocks: 1, voxels_per_block: 4 },
+    SdfCase { name: "cylinder-45-21-45-d4", kind: ShapeKind::Cylinder, size_voxels: [45, 21, 45], wall_blocks: 1, voxels_per_block: 4 },
+    SdfCase { name: "torus-49-13-49-d4", kind: ShapeKind::Torus, size_voxels: [49, 13, 49], wall_blocks: 1, voxels_per_block: 4 },
+    SdfCase { name: "tube-50-20-50-w2-d4", kind: ShapeKind::Tube, size_voxels: [50, 20, 50], wall_blocks: 2, voxels_per_block: 4 },
+];
+
+#[test]
+fn gpu_sdf_occupancy_matches_per_chunk_fog_exactly() {
+    let gpu = pollster::block_on(GpuContext::new(None));
+    let resolver = GpuResolver::new(&gpu.device);
+    let mut failures: Vec<String> = Vec::new();
+
+    for case in SDF_CASES {
+        let vpb = case.voxels_per_block;
+        let shape = SdfShape::from_voxels(case.kind, case.size_voxels, case.wall_blocks);
+        let geometry = GeometryParams {
+            shape: case.kind,
+            size_voxels: case.size_voxels,
+            size_measurements: None,
+            voxels_per_block: vpb,
+            wall_blocks: case.wall_blocks,
+        };
+        let scene = Scene::from_geometry(geometry, MaterialChoice::default());
+        let grid = scene.resolve_region(scene.full_extent_blocks(vpb), vpb, 0);
+        let reference = build_per_chunk_fog_occupancy(&grid, vpb);
+        let chunk_coords: Vec<[i32; 3]> = reference.volumes.iter().map(|v| v.chunk_coord).collect();
+        if chunk_coords.is_empty() {
+            failures.push(format!("{}: CPU produced zero chunk volumes", case.name));
+            continue;
+        }
+
+        let gpu_occupancy = resolver.resolve_sdf_occupancy(&gpu.device, &gpu.queue, &shape, vpb, &chunk_coords);
+        let pad = (reference.chunk_extent + 2) as usize;
+        let chunk_extent = reference.chunk_extent as i64;
+        let mismatches = collect_mismatches(case.name, &reference, &gpu_occupancy, pad);
+        if mismatches.is_empty() {
+            continue;
+        }
+        let total: usize = reference.volumes.iter().map(|v| v.occupancy.len()).sum();
+        let semi = glam::Vec3::new(
+            grid.dimensions[0] as f32 / 2.0,
+            grid.dimensions[1] as f32 / 2.0,
+            grid.dimensions[2] as f32 / 2.0,
+        );
+        let wall_voxels = (case.wall_blocks * vpb.max(1)) as f32;
+        failures.push(report(case.name, total, &mismatches, |m| {
+            let vi = voxel_index_of(m.chunk_coord, m.apron, chunk_extent);
+            let sample = glam::Vec3::new(
+                vi[0] as f32 + 0.5 - semi.x,
+                vi[1] as f32 + 0.5 - semi.y,
+                vi[2] as f32 + 0.5 - semi.z,
+            );
+            let sdf = signed_distance(case.kind, sample, semi, wall_voxels);
+            format!("vi={vi:?} cpu_sdf={sdf:+.6e} cpu={} gpu={}", m.cpu, m.gpu)
+        }));
+    }
+
+    assert!(
+        failures.is_empty(),
+        "GPU↔CPU SDF occupancy diverged (ADR 0007 §6 — exact is the target):\n{}",
+        failures.join("\n")
+    );
+}
+
+// ===========================================================================
+// Sketch tier (extrude + revolve)
+// ===========================================================================
+
+/// How the sketch case builds its producer; the test wraps it in a one-node scene.
+enum SketchKind {
+    Extrude { height_blocks: i64 },
+    Revolve { axis: RevolveAxis, turn_degrees: u32 },
+}
+
+struct SketchCase {
+    name: &'static str,
+    plane: PlaneAxis,
+    /// Profile vertices in BLOCKS (scaled by density at build time → voxel coords).
+    profile_blocks: &'static [[i64; 2]],
+    kind: SketchKind,
+    voxels_per_block: u32,
+}
+
+const SKETCH_CASES: &[SketchCase] = &[
+    // Rectangle extrude == box (exact reference for the extrude path).
+    SketchCase { name: "extrude-rect-4x2x3-d4", plane: PlaneAxis::Z, profile_blocks: &[[0, 0], [4, 0], [4, 2], [0, 2]], kind: SketchKind::Extrude { height_blocks: 3 }, voxels_per_block: 4 },
+    // The demo L (concave, reflex vertex) extruded up, multi-chunk at d8.
+    SketchCase { name: "extrude-L-d8", plane: PlaneAxis::Z, profile_blocks: &[[0, 0], [4, 0], [4, 2], [2, 2], [2, 4], [0, 4]], kind: SketchKind::Extrude { height_blocks: 3 }, voxels_per_block: 8 },
+    // A triangle (odd, non-axis-aligned edges) extruded — slanted crossings.
+    SketchCase { name: "extrude-tri-d4", plane: PlaneAxis::Y, profile_blocks: &[[0, 0], [7, 1], [3, 6]], kind: SketchKind::Extrude { height_blocks: 2 }, voxels_per_block: 4 },
+    // Rectangle revolve == cylinder, full turn (one-sided radial).
+    SketchCase { name: "revolve-rect-cyl-d4", plane: PlaneAxis::X, profile_blocks: &[[0, 0], [5, 0], [5, 4], [0, 4]], kind: SketchKind::Revolve { axis: RevolveAxis::InPlane1, turn_degrees: 360 }, voxels_per_block: 4 },
+    // The demo vase (stepped silhouette) revolved 360° — the headline revolve shape.
+    SketchCase { name: "revolve-vase-d4", plane: PlaneAxis::X, profile_blocks: &[[0, 0], [4, 0], [4, 1], [2, 3], [2, 5], [4, 6], [3, 8], [0, 8]], kind: SketchKind::Revolve { axis: RevolveAxis::InPlane1, turn_degrees: 360 }, voxels_per_block: 4 },
+    // A half-disc-ish profile revolved → rounded body (curved radial boundary).
+    SketchCase { name: "revolve-bowl-d8", plane: PlaneAxis::X, profile_blocks: &[[0, 0], [6, 0], [6, 1], [1, 6], [0, 6]], kind: SketchKind::Revolve { axis: RevolveAxis::InPlane1, turn_degrees: 360 }, voxels_per_block: 8 },
+    // Partial turn (180°) — exercises the atan2 theta gate (transcendental divergence).
+    SketchCase { name: "revolve-rect-half-d4", plane: PlaneAxis::X, profile_blocks: &[[0, 0], [5, 0], [5, 4], [0, 4]], kind: SketchKind::Revolve { axis: RevolveAxis::InPlane1, turn_degrees: 180 }, voxels_per_block: 4 },
+    // Straddling profile (radial coords cross 0) — exercises the +radius/−radius fold.
+    SketchCase { name: "revolve-straddle-d4", plane: PlaneAxis::X, profile_blocks: &[[-3, 0], [3, 0], [3, 4], [-3, 4]], kind: SketchKind::Revolve { axis: RevolveAxis::InPlane1, turn_degrees: 360 }, voxels_per_block: 4 },
+];
+
+impl SketchCase {
+    fn build(&self) -> SketchSolid {
+        let d = self.voxels_per_block as i64;
+        let profile: Vec<SketchPoint> = self
+            .profile_blocks
+            .iter()
+            .map(|&[a, b]| SketchPoint::new(a * d, b * d))
+            .collect();
+        let sketch = Sketch::new(self.plane, profile);
+        match self.kind {
+            SketchKind::Extrude { height_blocks } => {
+                SketchSolid::extrude(sketch, (height_blocks * d) as u32)
+            }
+            SketchKind::Revolve { axis, turn_degrees } => {
+                SketchSolid::revolve(sketch, axis, turn_degrees)
+            }
+        }
+    }
+}
+
+#[test]
+fn gpu_sketch_occupancy_matches_per_chunk_fog_exactly() {
+    let gpu = pollster::block_on(GpuContext::new(None));
+    let resolver = GpuResolver::new(&gpu.device);
+    let mut failures: Vec<String> = Vec::new();
+
+    for case in SKETCH_CASES {
+        let vpb = case.voxels_per_block;
+        let producer = case.build();
+        let node = Node::new(
+            "Sketch",
+            NodeContent::SketchTool {
+                producer: producer.clone(),
+                material: MaterialChoice::default(),
+            },
+        );
+        let mut scene = Scene::single_node(node);
+        scene.voxels_per_block = vpb;
+        let grid = scene.resolve_region(scene.full_extent_blocks(vpb), vpb, 0);
+        let reference = build_per_chunk_fog_occupancy(&grid, vpb);
+        let chunk_coords: Vec<[i32; 3]> = reference.volumes.iter().map(|v| v.chunk_coord).collect();
+        if chunk_coords.is_empty() {
+            failures.push(format!("{}: CPU produced zero chunk volumes", case.name));
+            continue;
+        }
+
+        let gpu_occupancy = resolver.resolve_sketch_occupancy(&gpu.device, &gpu.queue, &producer, vpb, &chunk_coords);
+        let pad = (reference.chunk_extent + 2) as usize;
+        let chunk_extent = reference.chunk_extent as i64;
+        let mismatches = collect_mismatches(case.name, &reference, &gpu_occupancy, pad);
+        if mismatches.is_empty() {
+            continue;
+        }
+        let total: usize = reference.volumes.iter().map(|v| v.occupancy.len()).sum();
+        let dims = grid.dimensions;
+        failures.push(report(case.name, total, &mismatches, |m| {
+            let vi = voxel_index_of(m.chunk_coord, m.apron, chunk_extent);
+            // Centred radius (revolve diagnostic) — the f32 value both sides start from.
+            let centred = [
+                vi[0] as f32 + 0.5 - dims[0] as f32 / 2.0,
+                vi[1] as f32 + 0.5 - dims[1] as f32 / 2.0,
+                vi[2] as f32 + 0.5 - dims[2] as f32 / 2.0,
+            ];
+            format!("vi={vi:?} centred={centred:?} cpu={} gpu={}", m.cpu, m.gpu)
+        }));
+    }
+
+    assert!(
+        failures.is_empty(),
+        "GPU↔CPU sketch occupancy diverged (ADR 0007 §6 — measure, don't silently tolerate):\n{}",
+        failures.join("\n")
+    );
+}

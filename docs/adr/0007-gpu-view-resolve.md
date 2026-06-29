@@ -192,7 +192,31 @@ spine. All read CPU resolved occupancy, resolved lazily and region-scoped. None 
 3. **No sculpt front-run.** P1/P2 derive from the shipped `resolve_into` seam (ADR 0006 gate (ii)
    satisfied); P3 (sculpt-delta compositing) waits for ADR 0003 §3e. Confirmed.
 
+## P1 spike result (2026-06-29 — the SDF-tier A/B net landed)
+
+The P1 spike is **built and green** (`src/gpu_resolve.rs` — the repo's first compute pipeline —
+`src/shaders/gpu_resolve.wgsl`, and the `tests/gpu_parity.rs` A/B net, `--features gpu`). It
+GPU-evaluates each chunk's apron'd occupancy from the streamed compact descriptor (producer params +
+profile) and asserts it **byte-identical** to `build_per_chunk_fog_occupancy` over a shape/size matrix
+resolved through the REAL `Scene::resolve_region` path (the recentred frame the fog actually consumes).
+
+**Measured finding: EXACT parity holds across the whole tested matrix — no tolerance needed (yet).**
+Both the SDF tier (sphere/box/cylinder/tube/torus, even/odd parity, multi-chunk seams; f32 both sides)
+AND the `SketchSolid` tier (extrude — rectangle/concave-L/triangle; revolve — cylinder/vase/bowl, a
+partial 180° turn exercising the `atan2` gate, and a straddling profile) come out bit-exact, *despite*
+the CPU running the polygon test in **f64** and the GPU in **f32** (no portable f64 in WGSL). The
+§6 Rust↔WGSL boundary-divergence risk — which was expected to bite revolve's irrational-radius polygon
+test hardest — **did not manifest on this adapter** (the RTX golden machine).
+
+Caveat (kept honest, not silently assumed): "exact" here is *measured on this matrix + this adapter*,
+not proven for all inputs. A denser/larger revolve or a different GPU could still surface a thin
+boundary band; the §6 contract then degrades to the pinned tolerance below. The A/B net is the standing
+guard that would catch it. The driver currently asserts a single-dimension workgroup-count limit (the
+spike dispatches 1-D), so very large cases are split by keeping density vs chunk-count balanced.
+
 ## Open (deferred to their phase)
 
+- **Live wiring** — P1's spike is green; wiring the GPU field into `OnionFogRenderer`'s atlas
+  (`copy_buffer_to_texture` from a packed-byte storage buffer) is the next step, behind the A/B net.
 - **P2 mesh-vs-raymarch** for the GPU display surface (decided at P2, not now).
-- **The pinned tolerance value**, only if P1 proves exact parity unattainable.
+- **The pinned tolerance value**, only if a future case/adapter proves exact parity unattainable.
