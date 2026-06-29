@@ -45,6 +45,12 @@ pub struct AppCore {
     /// at (issue #20 S6c-2c): the resolve bookkeeping that records whether the
     /// floating origin shifted. `None` before the first rebuild.
     previous_recentre_voxels: Option<[i64; 3]>,
+    /// The density the LAST rebuild resolved at (issue #40). A density change re-keys
+    /// every chunk (chunk extent = `CHUNK_BLOCKS × density`), so even when the recentre
+    /// happens to land at `[0,0,0]` at both densities the per-chunk buffers are in a
+    /// different frame and the incremental cuboid path is unsafe — this gates it off.
+    /// `None` before the first rebuild.
+    previous_density: Option<u32>,
     /// The linear inverse-command stack behind undo/redo (ADR 0003 Phase C C2). Every
     /// non-selection-only `apply_intent` pushes a [`Command`] here; `undo`/`redo`
     /// shuttle commands between its two Vecs. Empty until the first undoable edit.
@@ -77,6 +83,17 @@ pub struct RebuildOutput<'store> {
     /// only on EXPLICIT Fit/Home/Focus/orbit actions). The `shot` path ignores it
     /// (its camera is set per-capture from CLI flags), so goldens are unaffected.
     pub recentre_shift_voxels: [i64; 3],
+    /// The chunk coords the resolve cache EVICTED this rebuild (issue #40) — the
+    /// edit's dirty set, from [`Store::invalidate_aabb`](crate::store::Store::invalidate_aabb).
+    /// The shell feeds these to the cuboid mesher's incremental rebuild (re-mesh only
+    /// the dirty-dilated subset). Empty when `incremental_ok` is false.
+    pub dirty_chunk_coords: Vec<[i32; 3]>,
+    /// Whether the cuboid mesher may take its INCREMENTAL path this rebuild (issue #40)
+    /// — true only when the resolve took the targeted `invalidate_aabb` path AND
+    /// neither the floating origin (`recentre_shift_voxels == [0,0,0]`) nor the density
+    /// changed. Any of those re-keys / re-bases every resident chunk, so the renderer
+    /// must rebuild wholesale (`new_from_chunks`) instead. False on the first build.
+    pub incremental_ok: bool,
 }
 
 /// Outcome of [`AppCore::rebuild`]: either the resolve output, or a rejection when
@@ -100,6 +117,7 @@ impl AppCore {
             camera,
             previous_leaf_index: None,
             previous_recentre_voxels: None,
+            previous_density: None,
             command_stack: CommandStack::new(),
         }
     }
@@ -825,24 +843,40 @@ impl AppCore {
             new_recentre[1] - previous_recentre[1],
             new_recentre[2] - previous_recentre[2],
         ];
-        match self.previous_leaf_index.as_ref() {
+        // Capture the edit's evicted (dirty) chunk coords + whether the TARGETED
+        // invalidation path ran (issue #40). Only that path leaves the untouched chunks
+        // resident, so only then may the cuboid mesher rebuild incrementally; the
+        // wholesale `clear()` path re-resolves everything (dirty set is meaningless).
+        let (dirty_chunk_coords, took_aabb_path) = match self.previous_leaf_index.as_ref() {
             Some(previous) => match new_leaf_index.edit_aabb_since(previous) {
                 Some(edit_aabb) => {
                     profiling::scope!("invalidate_aabb");
-                    self.store.invalidate_aabb(&edit_aabb, density);
+                    (self.store.invalidate_aabb(&edit_aabb, density), true)
                 }
                 None => {
                     profiling::scope!("invalidate_clear");
                     self.store.clear();
+                    (Vec::new(), false)
                 }
             },
             None => {
                 profiling::scope!("invalidate_clear");
                 self.store.clear();
+                (Vec::new(), false)
             }
-        }
+        };
+        // Incremental is safe ONLY when the targeted path ran AND nothing re-keyed /
+        // re-based every resident chunk: a floating-origin shift (chunks are stored
+        // pre-rebased) or a density change (chunk extent changes) both invalidate the
+        // renderer's whole buffer set. `bind_region` (in `resolve_region` below) itself
+        // clears the cache on either change, so the renderer MUST match with a wholesale
+        // rebuild. The first build has `took_aabb_path == false`.
+        let density_unchanged = self.previous_density == Some(density);
+        let incremental_ok =
+            took_aabb_path && recentre_shift_voxels == [0; 3] && density_unchanged;
         self.previous_recentre_voxels = Some(new_recentre);
         self.previous_leaf_index = Some(new_leaf_index);
+        self.previous_density = Some(density);
 
         // Resolve the assembled grid (owned), then gather the per-chunk render
         // accessor LAST — it borrows the store, so every `&mut store` call above
@@ -862,6 +896,8 @@ impl AppCore {
             region_dimensions,
             render_chunks,
             recentre_shift_voxels,
+            dirty_chunk_coords,
+            incremental_ok,
         })
     }
 

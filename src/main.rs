@@ -477,6 +477,8 @@ impl WindowedState {
             region_dimensions,
             render_chunks,
             recentre_shift_voxels,
+            dirty_chunk_coords,
+            incremental_ok,
         } = match self.app_core.rebuild(&self.panel_state.scene, density) {
             RebuildOutcome::DensityRejected {
                 chunk_voxels_millions,
@@ -498,13 +500,29 @@ impl WindowedState {
         // &rebased_grid)` per covering chunk, 1-voxel apron). `render_chunks` holds
         // an IMMUTABLE borrow of the store, so it is consumed here and dropped BEFORE
         // any later `&mut AppCore` use.
-        self.cuboid_mesh_renderer = CuboidMeshRenderer::new_from_chunks(
-            &self.gpu.device,
-            &self.gpu.queue,
-            COLOR_TARGET_FORMAT,
-            &render_chunks,
-            grid.dimensions,
-        );
+        //
+        // Issue #40: when the resolve took the TARGETED path and nothing re-keyed the
+        // whole world (no floating-origin shift, no density change), update only the
+        // chunks the edit (+ its apron neighbours) touched and keep every other chunk's
+        // GPU buffers — instead of recreating ALL of them (the measured ~600ms/edit
+        // cost). Otherwise (first build, recentre shift, density change, region-spanning
+        // edit) rebuild wholesale, which also re-seeds the persistent renderer's state.
+        if incremental_ok {
+            self.cuboid_mesh_renderer.incremental_rebuild_from_chunks(
+                &self.gpu.device,
+                &render_chunks,
+                grid.dimensions,
+                &dirty_chunk_coords,
+            );
+        } else {
+            self.cuboid_mesh_renderer = CuboidMeshRenderer::new_from_chunks(
+                &self.gpu.device,
+                &self.gpu.queue,
+                COLOR_TARGET_FORMAT,
+                &render_chunks,
+                grid.dimensions,
+            );
+        }
         drop(render_chunks);
 
         // Camera UX invariant: an edit must NEVER re-frame the view. The composite is

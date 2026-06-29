@@ -449,8 +449,102 @@ fn global_occupancy_from_chunks(chunk_grids: &[([i32; 3], &VoxelGrid)]) -> Globa
 /// `grid_dimensions` is the whole composite grid's voxel dims; Z-up: only the Z half
 /// is used (to map an absolute layer to the global region-local Z for the band clip,
 /// since layers are Z-slices). Chunks that mesh to zero faces are omitted.
+/// The apron-aware incremental rebuild plan for the cuboid mesher (issue #40).
+pub struct CuboidRebuildPlan {
+    /// Chunk coords to re-mesh + re-upload (occupied, and either changed or a
+    /// neighbour-of-changed).
+    pub rebuild: Vec<[i32; 3]>,
+    /// Resident chunk coords to drop (no longer occupied — vacated or emptied).
+    pub evict: Vec<[i32; 3]>,
+}
+
+/// Decide which chunks an edit forces the cuboid mesher to re-mesh, ACCOUNTING FOR THE
+/// 1-VOXEL APRON: a chunk's boundary faces are culled against its neighbours
+/// ([`build_chunk_meshes_with_apron`]), so a neighbour's occupancy change can alter
+/// this chunk's mesh. This is the load-bearing difference from the instanced-era
+/// [`crate::renderer::incremental_rebuild_plan`] (one-instance-per-voxel, no
+/// inter-chunk dependency): here the dirty set is DILATED by the 26-neighbourhood.
+///
+/// - `resident` — the chunk coords whose state the renderer currently holds (its
+///   `source_chunk_grids` coords, NOT just the buffered ones, so fully-occluded
+///   occupied chunks stay stable instead of re-meshing every edit).
+/// - `evicted_dirty` — the resolve cache's evicted coords for this edit (chunks whose
+///   OWN occupancy may have changed; from [`crate::store::Store::invalidate_aabb`]).
+/// - `occupied` — the post-edit covering coords that resolve to a NON-EMPTY grid.
+///
+/// `seed` = changed-occupancy chunks = `evicted_dirty` ∪ newly-appeared
+/// (`occupied \ resident`). `rebuild` = `seed` dilated by the 26-neighbourhood ∩
+/// `occupied` (only non-empty chunks are meshed; a neighbour that went empty drops out
+/// here and re-exposes its occupied neighbours' faces, which ARE in `rebuild`).
+/// `evict` = `resident \ occupied`. Applying this plan — re-mesh `rebuild`, drop
+/// `evict`, keep the rest — yields a per-chunk buffer set byte-identical to a wholesale
+/// rebuild (proven by the CPU parity test).
+pub fn cuboid_incremental_plan(
+    resident: &[[i32; 3]],
+    evicted_dirty: &[[i32; 3]],
+    occupied: &[[i32; 3]],
+) -> CuboidRebuildPlan {
+    use std::collections::HashSet;
+    let resident_set: HashSet<[i32; 3]> = resident.iter().copied().collect();
+    let occupied_set: HashSet<[i32; 3]> = occupied.iter().copied().collect();
+
+    // seed = chunks whose occupancy changed: evicted (own may have changed) ∪
+    // newly-appeared (occupied this rebuild but the renderer didn't know them before).
+    let mut seed: HashSet<[i32; 3]> = evicted_dirty.iter().copied().collect();
+    for coord in occupied {
+        if !resident_set.contains(coord) {
+            seed.insert(*coord);
+        }
+    }
+
+    // Dilate the seed by the 26-neighbourhood (the apron footprint) and keep only
+    // occupied coords — those are the chunks whose mesh can have changed.
+    let mut rebuild_set: HashSet<[i32; 3]> = HashSet::new();
+    for coord in &seed {
+        for delta_z in -1..=1 {
+            for delta_y in -1..=1 {
+                for delta_x in -1..=1 {
+                    let neighbour = [coord[0] + delta_x, coord[1] + delta_y, coord[2] + delta_z];
+                    if occupied_set.contains(&neighbour) {
+                        rebuild_set.insert(neighbour);
+                    }
+                }
+            }
+        }
+    }
+    let mut rebuild: Vec<[i32; 3]> = rebuild_set.into_iter().collect();
+    rebuild.sort_unstable();
+
+    // evict = resident coords that are no longer occupied (a removed/shrunk node
+    // vacated them, or an edit turned them empty).
+    let mut evict: Vec<[i32; 3]> = resident
+        .iter()
+        .copied()
+        .filter(|coord| !occupied_set.contains(coord))
+        .collect();
+    evict.sort_unstable();
+    evict.dedup();
+
+    CuboidRebuildPlan { rebuild, evict }
+}
+
 fn build_chunk_meshes_with_apron(
     chunk_grids: &[([i32; 3], &VoxelGrid)],
+    grid_dimensions: [u32; 3],
+    band: LayerBand,
+) -> Vec<CuboidChunkMesh> {
+    build_chunk_meshes_with_apron_filtered(chunk_grids, None, grid_dimensions, band)
+}
+
+/// Like [`build_chunk_meshes_with_apron`] but meshes ONLY the chunks in `only`
+/// (when `Some`). The global occupancy — hence every meshed chunk's apron — is still
+/// computed from the FULL `chunk_grids` set, so a subset build is byte-identical to
+/// the same chunks within a wholesale build. `None` meshes every chunk (the wholesale
+/// path). This is the seam the INCREMENTAL rebuild uses: it passes the full resident
+/// set for correct aprons but re-meshes only the dirty-dilated subset.
+fn build_chunk_meshes_with_apron_filtered(
+    chunk_grids: &[([i32; 3], &VoxelGrid)],
+    only: Option<&std::collections::HashSet<[i32; 3]>>,
     grid_dimensions: [u32; 3],
     band: LayerBand,
 ) -> Vec<CuboidChunkMesh> {
@@ -482,6 +576,14 @@ fn build_chunk_meshes_with_apron(
     for (coord, grid) in chunk_grids {
         if grid.occupied.is_empty() {
             continue;
+        }
+        // Incremental subset: skip chunks not in the rebuild set. The apron still sees
+        // every chunk (global occupancy above is over the FULL set), so a skipped
+        // neighbour's occupancy correctly culls the meshed chunk's seam faces.
+        if let Some(only) = only {
+            if !only.contains(coord) {
+                continue;
+            }
         }
         // The chunk's own voxels as global absolute indices (band-clipped).
         let mut chunk_indices: Vec<([i64; 3], u16)> = Vec::with_capacity(grid.occupied.len());
@@ -842,6 +944,11 @@ struct CuboidChunkBuffers {
     index_buffer: wgpu::Buffer,
     index_count: u32,
     aabb: Aabb,
+    /// Boxes this chunk decomposed into (diagnostic). Retained per chunk so the
+    /// renderer's `total_box_count` can be recomputed exactly after an INCREMENTAL
+    /// rebuild touches only a subset of chunks (an incremental update can't sum from
+    /// the freshly-built meshes alone — the untouched chunks' buffers carry it).
+    box_count: u32,
 }
 
 /// All GPU resources for drawing the cuboid mesh (DEFAULT render path; per-chunk
@@ -1233,6 +1340,89 @@ impl CuboidMeshRenderer {
         }
     }
 
+    /// Incrementally update the per-chunk buffers for a geometry edit (issue #40):
+    /// re-mesh + re-upload ONLY the chunks the edit (and its apron neighbours) touched,
+    /// drop vacated chunks, and KEEP every other chunk's existing buffers — instead of
+    /// the wholesale `new_from_chunks` recreate (the measured ~600ms/edit GPU cost).
+    ///
+    /// `chunk_grids` is the FULL post-edit covering set (`resident_render_chunks`),
+    /// needed IN FULL so the re-meshed chunks' aprons see every neighbour; `grid_dimensions`
+    /// is the whole composite's voxel dims (band-clip mapping); `evicted_dirty` is the
+    /// resolve cache's evicted coords for this edit (from `invalidate_aabb`).
+    ///
+    /// PRECONDITION: the floating origin did NOT shift since the last rebuild. Chunk
+    /// grids are stored pre-rebased against the composite recentre, so a recentre shift
+    /// staleens EVERY buffer — the caller must fall back to `new_from_chunks` then. The
+    /// active layer band is preserved (re-meshes at `self.current_band`).
+    pub fn incremental_rebuild_from_chunks(
+        &mut self,
+        device: &wgpu::Device,
+        chunk_grids: &[([i32; 3], &VoxelGrid)],
+        grid_dimensions: [u32; 3],
+        evicted_dirty: &[[i32; 3]],
+    ) {
+        profiling::scope!("cuboid_mesh_incremental");
+        self.source_grid_dimensions = grid_dimensions;
+
+        // The renderer's KNOWN set is its source grids' coords (includes occupied-but-
+        // fully-occluded chunks that carry no buffer), so occluded chunks stay stable
+        // instead of being treated as "new" and re-meshed every edit.
+        let resident: Vec<[i32; 3]> = self.source_chunk_grids.iter().map(|(c, _)| *c).collect();
+        let occupied: Vec<[i32; 3]> = chunk_grids
+            .iter()
+            .filter(|(_, grid)| !grid.occupied.is_empty())
+            .map(|(coord, _)| *coord)
+            .collect();
+        let plan = cuboid_incremental_plan(&resident, evicted_dirty, &occupied);
+
+        // Re-mesh only the dirty-dilated subset (aprons from the full set) at the
+        // active band, then upload those chunks' buffers.
+        let rebuild_set: std::collections::HashSet<[i32; 3]> =
+            plan.rebuild.iter().copied().collect();
+        let meshes = build_chunk_meshes_with_apron_filtered(
+            chunk_grids,
+            Some(&rebuild_set),
+            grid_dimensions,
+            self.current_band,
+        );
+        let rebuilt_buffers = upload_chunk_meshes(device, &meshes);
+
+        // Apply. Drop evicted buffers, then drop EVERY rebuild coord's old buffer (a
+        // rebuild coord that now meshes to EMPTY — e.g. fully occluded by new neighbour
+        // occupancy — produces no buffer and must lose its stale one), then insert the
+        // freshly built buffers. Net result == wholesale rebuild's buffer set.
+        let grids_by_coord: std::collections::HashMap<[i32; 3], &VoxelGrid> =
+            chunk_grids.iter().map(|(coord, grid)| (*coord, *grid)).collect();
+        for coord in &plan.evict {
+            self.chunk_buffers.remove(coord);
+        }
+        for coord in &plan.rebuild {
+            self.chunk_buffers.remove(coord);
+        }
+        self.chunk_buffers.extend(rebuilt_buffers);
+
+        // Keep `source_chunk_grids` the COMPLETE current covering set (a later band
+        // re-clip reads it for global occupancy): drop evicted, upsert each rebuilt
+        // coord's grid. Untouched chunks are resolve-cache hits → already correct.
+        let evict_set: std::collections::HashSet<[i32; 3]> = plan.evict.iter().copied().collect();
+        self.source_chunk_grids
+            .retain(|(coord, _)| !evict_set.contains(coord));
+        for coord in &plan.rebuild {
+            if let Some(grid) = grids_by_coord.get(coord) {
+                match self.source_chunk_grids.iter_mut().find(|(c, _)| c == coord) {
+                    Some(entry) => entry.1 = (*grid).clone(),
+                    None => self.source_chunk_grids.push((*coord, (*grid).clone())),
+                }
+            }
+        }
+
+        // Recompute the diagnostics from the (now-correct) full buffer set. All chunks
+        // visible until the next frustum cull in `update_uniforms`.
+        self.total_box_count = self.chunk_buffers.values().map(|c| c.box_count).sum();
+        self.visible_chunks = self.chunk_buffers.keys().copied().collect();
+        self.visible_chunks.sort_unstable();
+    }
+
     /// The loaded-VS-block material bind-group layout (6-layer D2Array texture +
     /// sampler). Exposed so a runtime-loaded block (M6) can build a bind group of the
     /// SAME shape (via `LoadedMaterial`) and be drawn by the loaded pipeline.
@@ -1495,6 +1685,7 @@ fn upload_chunk_meshes(
                 index_buffer,
                 index_count: mesh.indices.len() as u32,
                 aabb: mesh.aabb,
+                box_count: mesh.box_count,
             },
         );
     }
@@ -2128,6 +2319,173 @@ mod tests {
             ]);
         }
         set
+    }
+
+    /// Map a wholesale/filtered mesh build to `coord -> (vertex bytes, indices)` — the
+    /// per-chunk GPU buffer set proxy (the renderer uploads exactly these bytes), so a
+    /// byte-equal map == a byte-equal buffer set.
+    fn mesh_map(
+        meshes: &[CuboidChunkMesh],
+    ) -> std::collections::HashMap<[i32; 3], (Vec<u8>, Vec<u32>)> {
+        meshes
+            .iter()
+            .map(|m| {
+                (
+                    m.coord,
+                    (bytemuck::cast_slice::<_, u8>(&m.vertices).to_vec(), m.indices.clone()),
+                )
+            })
+            .collect()
+    }
+
+    /// Issue #40: an INCREMENTAL rebuild — re-mesh only the apron-dilated dirty subset,
+    /// evict vacated chunks, keep every other chunk's buffer — produces a per-chunk
+    /// mesh (buffer) set BYTE-IDENTICAL to a wholesale rebuild, for every edit kind
+    /// INCLUDING edits at a chunk SEAM (where the 1-voxel apron makes a neighbour's
+    /// boundary faces depend on the edited chunk). This is the cuboid analogue of the
+    /// deleted instanced `incremental_rebuild_equals_full_rebuild_for_every_edit_kind`
+    /// and the real proof that consuming `cuboid_incremental_plan` is output-preserving.
+    ///
+    /// Both scenes pin the SAME global bounds with anchor voxels at the extremes (so
+    /// `world_offset` is identical — modelling the live `incremental_ok` precondition
+    /// that the floating origin did NOT shift; a shift forces a wholesale fall-back).
+    /// Edits touch only interior / seam voxels. `evicted_dirty` is set to exactly the
+    /// chunks that were resident in A AND changed in B — faithfully modelling
+    /// `Store::invalidate_aabb`'s evicted set — so the plan's 26-neighbour dilation is
+    /// what must catch any stale neighbour; if the dilation were wrong, a seam edit fails.
+    #[test]
+    fn incremental_cuboid_rebuild_equals_wholesale() {
+        // vpb 1 → chunk extent = CHUNK_BLOCKS(4) voxels, so a 12³ grid spans 3 chunks
+        // per axis and interior/seam edits exercise real apron seams.
+        let dims = [12u32, 12, 12];
+        // Anchor frame: the 8 corners, present in EVERY scene → global bounds pinned.
+        let anchors: Vec<[u32; 3]> = {
+            let e = [0u32, 11];
+            let mut cs = Vec::new();
+            for &x in &e {
+                for &y in &e {
+                    for &z in &e {
+                        cs.push([x, y, z]);
+                    }
+                }
+            }
+            cs
+        };
+        // (scene_a interior, scene_b interior) edit pairs. x=4/x=8 are chunk seams
+        // (chunk extent 4), so an edit at x=3↔4 changes faces in TWO chunks.
+        let scene_a_interior: Vec<[u32; 3]> =
+            vec![[3, 3, 3], [4, 3, 3], [7, 7, 7], [8, 7, 7], [5, 9, 2]];
+        let edits: Vec<(&str, Vec<[u32; 3]>)> = vec![
+            // Add an interior voxel (no seam).
+            ("add interior", {
+                let mut v = scene_a_interior.clone();
+                v.push([6, 6, 6]);
+                v
+            }),
+            // Remove a seam voxel → its cross-seam neighbour [3,3,3] re-exposes a face.
+            ("remove seam voxel", {
+                let mut v = scene_a_interior.clone();
+                v.retain(|c| *c != [4, 3, 3]);
+                v
+            }),
+            // Add a voxel straddling a seam next to an existing one → neighbour chunk
+            // boundary faces get culled.
+            ("add seam voxel", {
+                let mut v = scene_a_interior.clone();
+                v.push([4, 7, 7]); // abuts [3-or-8?]; sits in chunk x=1 next to [8,7,7] region edits
+                v.push([3, 7, 7]);
+                v
+            }),
+            // Move a voxel across a seam (remove one side, add the other).
+            ("move across seam", {
+                let mut v = scene_a_interior.clone();
+                v.retain(|c| *c != [8, 7, 7]);
+                v.push([9, 7, 7]);
+                v
+            }),
+        ];
+
+        for (label, interior_b) in &edits {
+            let mut cells_a = anchors.clone();
+            cells_a.extend(scene_a_interior.iter().copied());
+            let mut cells_b = anchors.clone();
+            cells_b.extend(interior_b.iter().copied());
+
+            let grid_a = grid_from_indices(dims, &cells_a, 0);
+            let grid_b = grid_from_indices(dims, &cells_b, 0);
+            let buckets_a = bucket_for_test(&grid_a, 1);
+            let buckets_b = bucket_for_test(&grid_b, 1);
+            let refs_a: Vec<([i32; 3], &VoxelGrid)> =
+                buckets_a.iter().map(|(c, g)| (*c, g)).collect();
+            let refs_b: Vec<([i32; 3], &VoxelGrid)> =
+                buckets_b.iter().map(|(c, g)| (*c, g)).collect();
+
+            // Wholesale builds (the ground truth) for A (prior state) and B (target).
+            let wholesale_a = build_chunk_meshes_with_apron(&refs_a, dims, LayerBand::FULL);
+            let wholesale_b = build_chunk_meshes_with_apron(&refs_b, dims, LayerBand::FULL);
+
+            // Per-chunk occupancy index sets, to derive the faithful dirty set.
+            let occ = |buckets: &[([i32; 3], VoxelGrid)]| {
+                let mut m: std::collections::HashMap<[i32; 3], std::collections::HashSet<[i64; 3]>> =
+                    std::collections::HashMap::new();
+                for (coord, g) in buckets {
+                    m.insert(*coord, occupancy_indices(g));
+                }
+                m
+            };
+            let occ_a = occ(&buckets_a);
+            let occ_b = occ(&buckets_b);
+
+            // resident = A's covering coords (the renderer's source_chunk_grids coords).
+            let resident: Vec<[i32; 3]> = buckets_a.iter().map(|(c, _)| *c).collect();
+            // occupied_b = B's non-empty covering coords.
+            let occupied_b: Vec<[i32; 3]> = buckets_b
+                .iter()
+                .filter(|(_, g)| !g.occupied.is_empty())
+                .map(|(c, _)| *c)
+                .collect();
+            // evicted_dirty = chunks resident in A whose occupancy CHANGED in B (exactly
+            // what invalidate_aabb evicts: resident ∩ edit-region). Newly-appeared
+            // chunks (absent from A) are caught by the plan's own new-appeared term.
+            let evicted_dirty: Vec<[i32; 3]> = resident
+                .iter()
+                .copied()
+                .filter(|coord| occ_a.get(coord) != occ_b.get(coord))
+                .collect();
+
+            let plan = cuboid_incremental_plan(&resident, &evicted_dirty, &occupied_b);
+
+            // Genuinely incremental: at least the far corners are NOT re-meshed.
+            assert!(
+                plan.rebuild.len() < occupied_b.len(),
+                "[{label}] expected a partial rebuild, got {} of {} chunks",
+                plan.rebuild.len(),
+                occupied_b.len()
+            );
+
+            // Apply the plan to A's mesh map → the incremental buffer set.
+            let rebuild_set: std::collections::HashSet<[i32; 3]> =
+                plan.rebuild.iter().copied().collect();
+            let rebuilt =
+                build_chunk_meshes_with_apron_filtered(&refs_b, Some(&rebuild_set), dims, LayerBand::FULL);
+
+            let mut result = mesh_map(&wholesale_a);
+            for coord in &plan.evict {
+                result.remove(coord);
+            }
+            for coord in &plan.rebuild {
+                result.remove(coord); // a rebuild coord meshing to empty drops out here
+            }
+            for (coord, entry) in mesh_map(&rebuilt) {
+                result.insert(coord, entry);
+            }
+
+            let target = mesh_map(&wholesale_b);
+            assert_eq!(
+                result, target,
+                "[{label}] incremental buffer set must byte-equal the wholesale rebuild"
+            );
+        }
     }
 
     /// The CORE structural guarantee (the analogue of the decomposition round-trip):

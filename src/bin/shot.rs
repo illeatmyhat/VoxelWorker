@@ -1338,6 +1338,11 @@ async fn run_capture(options: ShotOptions) {
                     // The recentre shift compensates the WINDOWED camera across edits;
                     // `shot` sets its camera per-capture from CLI flags, so it ignores it.
                     recentre_shift_voxels: _,
+                    // `shot` builds each capture's mesh wholesale (one resolve per run,
+                    // no persistent renderer to update incrementally), so issue #40's
+                    // dirty set + incremental gate are irrelevant here.
+                    dirty_chunk_coords: _,
+                    incremental_ok: _,
                 }) => (grid, region_dimensions, Some(render_chunks)),
                 // Unreachable: the density-cap branch above already handled the only
                 // rejection case (one chunk exceeding the per-chunk voxel bound).
