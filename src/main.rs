@@ -351,15 +351,25 @@ impl WindowedState {
             projection_mode: panel_state.projection_mode,
             ..OrbitCamera::default()
         };
-        // Restore the persisted camera orbit + projection if a config was loaded.
-        if let Some(config) = &config {
-            config.apply_camera(&mut camera);
-        }
         // Restore the saved Home view (#13), or default to the camera defaults.
         let home_view = config
             .as_ref()
             .map(AppConfig::home_view)
             .unwrap_or_default();
+        // Startup camera selection: a loaded config (`Some`) means a prior session
+        // persisted its live camera — resume it exactly (the existing behavior). A
+        // GENUINE FIRST RUN (`AppConfig::load()` returned `None`: no config file, or
+        // an unreadable/invalid one) has no live camera to resume, so open at the
+        // Home view corner instead — the same `home_view` the Home button snaps to.
+        // The signal is `config.is_none()`; a config that merely lacks some keys is
+        // still `Some` (serde fills the gaps), so partial configs still resume.
+        match &config {
+            Some(config) => config.apply_camera(&mut camera),
+            None => {
+                camera.orbit_theta = home_view.theta;
+                camera.orbit_phi = home_view.phi;
+            }
+        }
 
         let depth_view = create_depth_view(&gpu.device, width, height);
         let msaa_color_view =
