@@ -14,6 +14,12 @@ parked-but-seam-preserved — and flagged that step 6 "likely [needs] its own su
 that sub-ADR.** It covers steps 5–7, the **engine phase**, which ADR 0001 itself calls "by far the
 largest piece" and "engine-level work."
 
+> **[CROSS-REF 2026-06-29]** This ADR governs the renderer; the CPU↔GPU authority line it sits under
+> is now pinned by [ADR 0006](0006-authoring-truth-and-gpu-boundary.md): the resolved grid is
+> CPU-authoritative, the renderer (mesh + fog) is a DISPLAY derivation downstream of resolve, and the
+> A/B golden-equivalence discipline this ADR used for the instanced→cuboid switch is the same net
+> ADR 0006 requires for any future GPU view-resolve / GPU sculpt path.
+
 The reason a sub-ADR is warranted is not the data model (that was ADR 0001's job) but a **risk**:
 the current renderer (`src/renderer.rs`, `VoxelRenderer`) is not a thin draw of cubes — it is a
 **pile of shipped features** welded onto the one-instanced-cube-per-voxel pipeline. A naive "rip it
@@ -243,6 +249,12 @@ golden-image net (E0, #24) is the sole regression guard from here on.
      scene size (disk-spill or assembly-removal *alone* does not); the borrow-returning whole-region
      gather methods will need a reload-then-borrow pass under a real resident cap. Dominated by
      interactive paths the static goldens cannot exercise → needs the windowed app for smoke-testing.
+     **[STATUS 2026-06-29] The dirty-chunk PLAN is computed but NOT yet consumed by the live renderer.**
+     `renderer::incremental_rebuild_plan` exists (and is unit-tested via the `store.rs` CPU render-cache
+     harness), but the windowed app still re-meshes WHOLESALE on every edit (`VoxelRenderer::rebuild_from_scene`,
+     driven from `main.rs`); no `incremental_rebuild_from_chunks` consumer is wired up. Consuming this plan
+     is the recorded next CPU perf step (see [ADR 0003](0003-foundation-rework.md) §4 / migration step 8 and
+     [ADR 0006](0006-authoring-truth-and-gpu-boundary.md) "Next (CPU)").
 8. **(later) Per-chunk cross-block cuboid merge + optional 2D greedy pass over cuboid faces.** ⛔
    **PARKED.** Whole-block-multiple, same-material only; pursue only if E5 proves GPU-bound. **LOD
    stays parked** (seam preserved via the `(chunk_coord, lod)` key; O7).
@@ -331,7 +343,10 @@ performance techniques worth lifting, each mapped to our engine steps. Sources:
    **entire chunk** is re-tessellated." → **Validates our coarse invalidation granularity
    (Decision 3):** an edit dirties only the chunks its world-AABB intersects, and we re-mesh just
    those — whole-chunk, not per-voxel-diff. Simpler beats finer-grained; no incremental mesh
-   patching.
+   patching. **[STATUS 2026-06-29] This is the TARGET, not yet the live behavior:** the dirty-chunk
+   plan (`incremental_rebuild_plan`) is computed but the live renderer still re-meshes wholesale (see
+   E5 Step 4 above). The resolve CACHE already invalidates only the dirty chunks; the GPU MESH rebuild
+   does not yet honor that.
 
 4. **Pooled GPU mesh buffers keyed by (render pass × atlas)** (VS `MeshDataPoolManager`s). → **Adopt
    at E2/E5:** reuse vertex/index allocations across frames and chunks via a pool keyed by

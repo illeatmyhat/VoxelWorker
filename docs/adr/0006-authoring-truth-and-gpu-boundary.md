@@ -73,8 +73,12 @@ sculpt/override foundation lands, and kept honest behind a **CPU↔GPU A/B equiv
 discipline ADR 0002 used for the instanced→cuboid switch). Never authoritative.
 
 **4. Agent authoring is CPU/`Intent`/data-primary and headless-capable; the GPU edit path must never gate
-it.** Per ADR 0004 the agent authors only via `Intent`, perceives via CPU `query`/`diagnostics`, and runs
-headless. A GPU sculpt mode is a *human-only* accelerator. Crucially, the proposed "stream voxel diffs back
+it.** Per ADR 0004 the agent authors only via `Intent`, perceives **data-primary**, and runs headless.
+(Status note: the `query(SpatialQuery)` / `diagnostics()` read surface is the ADR 0004 *planned* perception
+API — not yet built; today only the `Intent` door and the resolved-occupancy read seam exist. This ruling
+describes the intended design and does **not** depend on that surface being implemented — it depends only
+on the agent authoring through `Intent` and perceiving CPU-side data rather than the GPU/rendered image.)
+A GPU sculpt mode is a *human-only* accelerator. Crucially, the proposed "stream voxel diffs back
 from the GPU and treat them as the delta" is **rejected** — it inverts the §7 data-flow and would break
 determinism, headless agents, and the journal-as-truth model. The reconciled flow is the only one allowed:
 **GPU edit → lower to `Intent` → CPU records → CPU resolves → GPU re-renders.**

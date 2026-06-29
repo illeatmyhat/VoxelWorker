@@ -14,6 +14,12 @@
   resolved-occupancy *revision* read seam for incremental cache invalidation (FLAG 1) — and it has been
   **reconciled into ADR 0003 §4/§7** (a small read-side API addition, not a model change). After that
   reconciliation, Foundation-fit shows **zero outstanding foundation flags**.
+- **Cross-ref (added 2026-06-29):** the ~6 analysis subsystems here all read the **CPU resolved-occupancy
+  seam** ([§J](#j-the-perf-budget-discipline-load-bearing)), which
+  [ADR 0006](0006-authoring-truth-and-gpu-boundary.md) pins as CPU-authoritative precisely because every
+  one of them is a CPU consumer of authoritative occupancy (export/analysis/persistence) that a
+  GPU-authoritative volume would break. ADR 0006 names this ADR's analysis-perf budget (§J) as the real
+  agent-side bottleneck.
 
 ## Context
 
@@ -23,6 +29,12 @@ chunked sparse absolute-i64 streaming store with rebase-at-consume and per-chunk
 F1–F6 seams). ADR 0004 built the agent-authoring stack on top (the joint solver, the parametric kit, the
 WFC material-fill producer, and the data-primary perceive → diagnose → correct loop over
 `query(SpatialQuery)` + `diagnostics() -> Vec<Issue>` + multi-view `render_png`).
+
+> **[STATUS 2026-06-29]** "Per-chunk incremental re-mesh" above is the foundation DESIGN (ADR 0003 §4),
+> not yet the live behavior: `incremental_rebuild_plan` is computed but the renderer still re-meshes
+> wholesale on edit (see ADR 0002 E5 Step 4 / ADR 0003 §4). The §J caching this ADR builds on the
+> per-chunk `ChunkRevision` is unaffected — it depends on the resolve cache's per-chunk invalidation,
+> which IS live, not on the GPU mesh rebuild.
 
 A 9-lens **architecture gap sweep** ([`docs/design/architecture-gap-sweep.md`](../design/architecture-gap-sweep.md))
 was then run across the whole stack. Its headline finding: **the spine is sound — there is no

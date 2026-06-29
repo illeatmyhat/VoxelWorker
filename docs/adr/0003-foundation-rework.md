@@ -598,6 +598,12 @@ pub trait VoxelProducer: Send + Sync {
   the dirty chunk window; without `resolve_into(chunk_box, …)` the "re-resolve dirty chunks" path is
   O(part_volume × dirty_chunks). This trait redesign therefore **sequences before** the sculpt and
   residency phases (it is its own early milestone — Phase F0).
+  **[SHIPPED 2026-06-29] The chunk-windowed `resolve_into` is now IMPLEMENTED** (`af661cd` added it
+  with no behavior change; `d2d4d96` switched per-chunk resolution to it, killing the ~11x per-chunk
+  full-grid redundancy and restoring the per-chunk memory bound). Producers now resolve only a chunk
+  window instead of the full grid per overlapping chunk. (Producer resolve is also parallelised via
+  rayon, e.g. `dd08c81` for `SketchSolid`.) This is the seam ADR 0004/0005 consume and the one a future
+  GPU view-resolve hooks behind — see [ADR 0006](0006-authoring-truth-and-gpu-boundary.md).
 - `world_aabb_blocks()` returns `Option<Aabb>`: a **bounded** producer (`SdfShape`) yields a finite
   AABB so the spatial index / invalidation only touch intersecting chunks; an **unbounded** producer
   (`DebugClouds`) returns `None` and keeps the **wholesale-clear fallback** (its edits invalidate the
@@ -714,7 +720,12 @@ is **not** a one-substep change but a **dedicated milestone** (Phase F-rot) with
     canonical single-field `offset_voxels` matters** — the rejected two-field blocks+subvoxels split would
     have baked one unit decomposition into storage, fighting the units layer instead of feeding it. The
     parser/formatter + a per-document default display unit are a **Slice-2 input/display concern (no
-    foundation change)**. DECIDED (2026-06-28): **(i) units are blocks + voxels only** (the two grid-native
+    foundation change)**. **[SHIPPED 2026-06-29]** This units layer is now WIRED into the app: the
+    exact-rational blocks/voxels Measurement parser core landed (`b844d17`) and is wired into the inspector
+    **Offset** fields (`fb2ad2a`) and the voxel-granular shape **Size** with parametric Measurement
+    retention (`f3841b0`); `SetDensity` re-evaluates retained measurements per the rule below. (The earlier
+    `size_blocks` field was renamed `size_voxels`, no migration — pre-alpha, per constraint 4.) DECIDED
+    (2026-06-28): **(i) units are blocks + voxels only** (the two grid-native
     units, interconvertible via `d`); real-world units (m/cm) are out of scope. **(ii) a measurement RETAINS
     its authored expression (parametric)** — the canonical `offset_voxels` (and size/radius) is the DERIVED
     value, with the authored block/voxel expression stored alongside, Fusion-parameter-style. A measurement
@@ -867,6 +878,15 @@ box-drag-on-plane sugar (first interactive authoring) · **2c** = free polyline 
 units layer (§3f(0)) feeds sketch dimensions. Minecraft (`d=1`) collapses sub-voxel profile precision to
 whole blocks (sub-block features off), no special-casing. **Slice 1 (the §3f(0) coordinate substrate —
 document density + single `offset_voxels`) is SHIPPED.**
+
+**[SHIPPED 2026-06-29]** The sketch→volume pipeline is now USER-REACHABLE, and `Revolve` shipped early:
+the sketch→extrude engine (`f62f031`), then sketch nodes creatable + editable via intents in the headless
+core (`NodeSpec::Sketch` + `Intent::SetSketch`, `18f0abd`) and the interactive authoring UI (Add-menu chip
++ inspector editor, `93552e2`). The `Operation` enum (`Extrude | Revolve`) and the unified
+`SketchSolid { sketch, operation }` producer landed (`d568b05`), the `Revolve` solid-of-revolution
+operation (full + partial turn, `1c9eccb`), and its UI (Operation picker + axis/angle fields + demo
+golden, `85bba95`). **STILL DEFERRED per the arc:** box-drag-on-plane (2b), free-polyline editing,
+`Sweep`, primitives-reframed-as-sugar, and on-surface sketching (2c).
 
 *The original point-defined rationale (still valid as the substrate) follows.*
 
@@ -1138,6 +1158,12 @@ impl AppCore {
 
 ### 6a. The `Intent` boundary — the automation / test / agent-control surface
 
+> **[CROSS-REF 2026-06-29]** [ADR 0006](0006-authoring-truth-and-gpu-boundary.md) ratifies this as
+> THE one mutation door for ALL sources (human gizmo, future GPU sculpt brush, agent/LLM/solver): a
+> GPU edit must **lower to an integer-addressed `Intent`** recorded CPU-side — there is no
+> raycast/voxel-coordinate variant and must not be one. It also keys the human↔agent presence-lock off
+> the `IntentEffect` split and enforces it AT this door.
+
 `Intent` is a **serializable enum** and it is **THE single boundary through which all mutation
 flows**: `ui/gizmos` and `ui/panels` both emit `Intent`s, `AppCore::apply_intent` is the only door,
 and `Command` (the inverse-bearing journal entry) is built *from* an `Intent` (§2). New edit kinds are
@@ -1170,6 +1196,12 @@ driver, all behind one door. The hard requirement that buys all three is that th
 fixed view, the same pixels) every run. (This is why `Intent` is an enum, not a trait object — §3h.)
 
 ### 7. Async / responsiveness model (S10)
+
+> **[CROSS-REF 2026-06-29]** This §7 invariant — `apply` mutates the tree + marks chunks dirty but
+> does NOT resolve/mesh inline; the GPU sits DOWNSTREAM of resolve, never upstream of the journal — is
+> the load-bearing data-flow [ADR 0006](0006-authoring-truth-and-gpu-boundary.md) pins. ADR 0006
+> explicitly REJECTS the inverse ("stream voxel diffs back from the GPU and treat them as the delta")
+> because it would invert this flow and break determinism/headless/journal-as-truth.
 
 The whole point is that **edits, undo/redo, and camera always feel instant**, even mid-rebuild on a
 10k-XZ scene. The model splits work across thread classes by cost and bounds every main-thread touch.

@@ -143,6 +143,13 @@ v1 sidesteps by assuming the app default.
 
 > The engine phase (steps 5–7) is decomposed in its own sub-ADR:
 > [ADR 0002 — Engine phase: streaming, meshing & coordinates](0002-engine-streaming-meshing.md).
+>
+> **[STATUS 2026-06-29]** The committed scale stack below (chunked + lazily-resolved streaming,
+> 64-bit/origin-rebased coordinates, cuboid meshing, per-chunk fog) is now largely SHIPPED — see
+> ADR 0002's status recap for the per-piece DONE/REMAINING state (only the final out-of-core wiring,
+> #20 Steps 2/4, remains). The CPU↔GPU authority line for that renderer is now pinned by
+> [ADR 0006](0006-authoring-truth-and-gpu-boundary.md): "the resolved grid is the one truth" stays
+> CPU-authoritative; the GPU is a display shell downstream of resolve.
 
 This is the constraint that reshapes everything downstream of the seam. A 1024³-block canvas at
 density 16 is ~16384³ ≈ **4 trillion** voxels — there is **no monolithic resolved grid**, dense or

@@ -11,6 +11,12 @@
   override layers, ordered assembly composition, scene-root assembly-scoped overrides) — **all now
   reconciled INTO ADR 0003 in this same amendment, so Foundation-fit shows ZERO outstanding flags.**
   Everywhere else, additions are additive enum variants or new downward-depending crates.
+- **Cross-ref (added 2026-06-29):** [ADR 0006](0006-authoring-truth-and-gpu-boundary.md) ratifies this
+  ADR's core posture as a hard boundary — the agent authors **only via `Intent`** (never voxels),
+  perceives **data-primary** over the CPU resolved-occupancy seam (pixel-primary feedback rejected),
+  and runs **headless** (the GPU edit path must never gate agent authoring); a GPU sculpt brush is a
+  human-only accelerator that lowers to an `Intent`. The human↔agent presence-lock (single-writer,
+  not collaboration) is specified in ADR 0006 §5.
 
 ## Context
 
@@ -647,8 +653,15 @@ the implementer uses it. If a future solve genuinely needed a transactional mult
 
 Each step is a green checkpoint. **No kit and no WFC are built until the cheap probes pass** — they
 de-risk the novel bets before any expensive authoring. The genuinely cheapest first slice is
-**foundation-free** (H10): ADR 0003 is only ~5% built (no AppCore/Intent/query/diagnostics/joints yet),
-so the very first probe must not depend on any of that plumbing.
+**foundation-free** (H10): when this ADR was written ADR 0003 was only ~5% built (no
+AppCore/Intent/query/diagnostics/joints yet), so the very first probe must not depend on any of that
+plumbing. **[STATUS 2026-06-29]** Part of that plumbing has since SHIPPED: the `Intent` enum +
+`AppCore::apply_intent` door (`1a74f06`), a linear command stack with inverse-based undo/redo
+(`ede4a2b`), the `shot --replay` Intent-script harness (`07ad622`), windowed panel mutation routed
+through `apply_intent` (`6450e8b`), and the chunk-windowed `VoxelProducer::resolve_into`
+(`af661cd`/`d2d4d96`). Still absent: `query(SpatialQuery)`/`diagnostics()`, the joint/datum seams, and
+rotation — so the P2+ probes that gate on Phases C/F/H remain gated; only P0/P1 (foundation-free) are
+unblocked. (The foundation-free P0 framing is unaffected.)
 
 - **P0 — THE cheapest, foundation-free spine probe (G10/G1/H10), the literal first thing:** a pure
   `solve(&Scene) -> Vec<TransformResult>` **unit test on hand-built structs** — zero AppCore, zero
