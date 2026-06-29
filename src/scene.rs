@@ -38,7 +38,7 @@ use serde::{Deserialize, Serialize};
 use crate::core_geom::MaterialChoice;
 use crate::debug_clouds::DebugCloudField;
 use crate::spatial_index::{LeafEntry, LeafFingerprint, LeafSpatialIndex, VoxelAabb};
-use crate::sketch::SketchExtrude;
+use crate::sketch::SketchSolid;
 use crate::units::{ExactRational, Measurement};
 use crate::voxel::{GeometryParams, SdfShape, VoxelGrid, VoxelProducer};
 
@@ -408,8 +408,8 @@ pub enum NodeContent {
     /// [`Tool`]: NodeContent::Tool
     /// [`Part`]: NodeContent::Part
     SketchTool {
-        /// The sketch + extrude span to resolve.
-        producer: SketchExtrude,
+        /// The sketch + operation to resolve.
+        producer: SketchSolid,
         /// The single material this node stamps onto its voxels.
         material: MaterialChoice,
     },
@@ -4490,7 +4490,7 @@ mod tests {
 
         // (a) Rectangle extrude (box sugar), placed off-origin on X. Z-up:
         // footprint-extrude-up uses PlaneAxis::Z (profile in XY, extruded along +Z).
-        let rect = SketchExtrude::new(
+        let rect = SketchSolid::extrude(
             Sketch::rectangle(PlaneAxis::Z, 3 * density, 2 * density),
             2 * density as u32,
         );
@@ -4517,7 +4517,7 @@ mod tests {
             SketchPoint::new(0, four),
         ];
         let l_extrude =
-            SketchExtrude::new(Sketch::new(PlaneAxis::Z, l_profile), 3 * density as u32);
+            SketchSolid::extrude(Sketch::new(PlaneAxis::Z, l_profile), 3 * density as u32);
         let mut l_node = Node::new(
             "Sketch L",
             NodeContent::SketchTool {

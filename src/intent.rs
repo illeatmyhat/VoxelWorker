@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::core_geom::MaterialChoice;
 use crate::scene::{DefId, Node, NodeContent, NodeGrids, NodeId, Part};
-use crate::sketch::SketchExtrude;
+use crate::sketch::SketchSolid;
 use crate::units::Measurement;
 use crate::voxel::SdfShape;
 
@@ -45,13 +45,13 @@ pub enum NodeSpec {
         /// The single material the Tool stamps onto its voxels.
         material: MaterialChoice,
     },
-    /// A sketch→extrude Tool node (a [`SketchExtrude`] producer + its single
+    /// A sketch→operation Tool node (a [`SketchSolid`] producer + its single
     /// [`MaterialChoice`]), named `"Sketch"` — the sketch-authoring add (ADR 0003
     /// §3i). Carries the whole producer by value, mirroring how [`Tool`](Self::Tool)
     /// carries its [`SdfShape`].
     Sketch {
-        /// The sketch + extrude span this node resolves.
-        producer: SketchExtrude,
+        /// The sketch + operation this node resolves.
+        producer: SketchSolid,
         /// The single material the sketch node stamps onto its voxels.
         material: MaterialChoice,
     },
@@ -168,15 +168,15 @@ pub enum Intent {
         /// The new shape.
         shape: SdfShape,
     },
-    /// Set the [`SketchExtrude`] producer of the sketch node `target` (a no-op for a
+    /// Set the [`SketchSolid`] producer of the sketch node `target` (a no-op for a
     /// non-sketch node). The sketch-authoring analogue of [`SetShape`](Self::SetShape)
     /// — a separate field-edit intent (not a reuse of `SetShape`) because a sketch
     /// node carries a producer, not an [`SdfShape`].
     SetSketch {
         /// The sketch node to edit.
         target: NodeId,
-        /// The new sketch + extrude producer.
-        producer: SketchExtrude,
+        /// The new sketch + operation producer.
+        producer: SketchSolid,
     },
     /// Set the [`MaterialChoice`] of the Tool node `target` (a no-op for a non-Tool
     /// node).
@@ -400,7 +400,7 @@ mod tests {
     use crate::app_core::AppCore;
     use crate::camera::OrbitCamera;
     use crate::scene::{Node, NodeBuilder, NodeTransform, Point, Scene};
-    use crate::sketch::{PlaneAxis, Sketch, SketchExtrude};
+    use crate::sketch::{PlaneAxis, Sketch, SketchSolid};
     use crate::store::Store;
     use crate::voxel::{ShapeKind, SdfShape};
 
@@ -419,16 +419,16 @@ mod tests {
     /// A rectangle-footprint sketch→extrude producer at the given BLOCK size, built
     /// at the default density 16 (the "box footprint" sketch — `PlaneAxis::Z` is the
     /// footprint-extrude-up default: profile on the XY ground, extruded up along +Z).
-    fn box_sketch(size_blocks: [u32; 3]) -> SketchExtrude {
+    fn box_sketch(size_blocks: [u32; 3]) -> SketchSolid {
         let density = 16u32;
         let grid_x = (size_blocks[0] * density) as i64;
         let grid_y = (size_blocks[1] * density) as i64;
         let grid_z = size_blocks[2] * density;
-        SketchExtrude::new(Sketch::rectangle(PlaneAxis::Z, grid_x, grid_y), grid_z)
+        SketchSolid::extrude(Sketch::rectangle(PlaneAxis::Z, grid_x, grid_y), grid_z)
     }
 
     /// A Sketch node named `"Sketch"` (matching [`NodeSpec::into_node`]).
-    fn sketch_node(producer: SketchExtrude, material: MaterialChoice) -> Node {
+    fn sketch_node(producer: SketchSolid, material: MaterialChoice) -> Node {
         Node::new("Sketch", NodeContent::SketchTool { producer, material })
     }
 
@@ -1019,7 +1019,7 @@ mod tests {
     }
 
     /// LOAD-BEARING equivalence: a default rectangle-footprint sketch
-    /// (`SketchExtrude::new(Sketch::rectangle(PlaneAxis::Z, w, d), h)`) resolves to
+    /// (`SketchSolid::extrude(Sketch::rectangle(PlaneAxis::Z, w, d), h)`) resolves to
     /// EXACTLY the same occupied voxel set as the matching `SdfShape` `Box` of the
     /// same voxel size + density. This locks "a default sketch == a box" so a future
     /// UI default (a freshly-added sketch) can never silently drift from the box it

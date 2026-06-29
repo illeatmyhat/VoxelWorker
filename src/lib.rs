@@ -84,7 +84,7 @@ pub use scene::{
     Part, Point, RegionBlocks, Scene,
 };
 pub use settings::AppConfig;
-pub use sketch::{PlaneAxis, Sketch, SketchExtrude, SketchPoint};
+pub use sketch::{Operation, PlaneAxis, Sketch, SketchPoint, SketchSolid};
 pub use spatial_index::{LeafEntry, LeafFingerprint, LeafSpatialIndex, VoxelAabb};
 pub use vox_export::VoxExport;
 pub use voxel::{

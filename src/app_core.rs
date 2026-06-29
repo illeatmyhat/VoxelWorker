@@ -1138,7 +1138,7 @@ mod undo_tests {
     use crate::core_geom::MaterialChoice;
     use crate::intent::{whole_block_offset, Intent, NodeSpec};
     use crate::scene::{Node, NodeBuilder, NodeContent, NodeGrids, NodeTransform, Point, Scene};
-    use crate::sketch::{PlaneAxis, Sketch, SketchExtrude};
+    use crate::sketch::{PlaneAxis, Sketch, SketchSolid};
     use crate::store::Store;
     use crate::units::Measurement;
     use crate::voxel::{SdfShape, ShapeKind};
@@ -1152,16 +1152,16 @@ mod undo_tests {
     /// A rectangle-footprint sketch→extrude producer of the given BLOCK size at the
     /// default density 16 (`PlaneAxis::Z` = footprint-extrude-up: profile in XY,
     /// extruded along +Z).
-    fn box_sketch(size_blocks: [u32; 3]) -> SketchExtrude {
+    fn box_sketch(size_blocks: [u32; 3]) -> SketchSolid {
         let density = 16u32;
         let grid_x = (size_blocks[0] * density) as i64;
         let grid_y = (size_blocks[1] * density) as i64;
         let grid_z = size_blocks[2] * density;
-        SketchExtrude::new(Sketch::rectangle(PlaneAxis::Z, grid_x, grid_y), grid_z)
+        SketchSolid::extrude(Sketch::rectangle(PlaneAxis::Z, grid_x, grid_y), grid_z)
     }
 
     /// A Sketch node named `"Sketch"` (matching [`NodeSpec::into_node`]).
-    fn sketch_node(producer: SketchExtrude, material: MaterialChoice) -> Node {
+    fn sketch_node(producer: SketchSolid, material: MaterialChoice) -> Node {
         Node::new("Sketch", NodeContent::SketchTool { producer, material })
     }
 

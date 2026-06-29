@@ -92,7 +92,7 @@ impl VoxelProducer for DebugCloudField {
                         // SAMPLE the field at the centred coordinate (`idx + 0.5 −
                         // half`) so the cloud geometry is unchanged, but STORE the voxel
                         // CORNER-ANCHORED (`idx + 0.5`) exactly like `SdfShape` /
-                        // `SketchExtrude`: the centre is a half-integer for any grid
+                        // `SketchSolid`: the centre is a half-integer for any grid
                         // size → always on the global voxel lattice, and the cloud
                         // resolves in the SAME frame as the Tools it mixes with.
                         let sample = Vec3::new(

@@ -32,7 +32,7 @@ use voxel_worker::{
     PointsRenderer, RebuildOutcome, RebuildOutput, SceneGridRenderer,
     Node, NodeBuilder, NodeContent, NodePath, OnionFogRenderer, OrbitCamera, PanelState, Part,
     Point,
-    PlaneAxis, ProjectionMode, RegionBlocks, Scene, SdfShape, ShapeKind, Sketch, SketchExtrude,
+    PlaneAxis, ProjectionMode, RegionBlocks, Scene, SdfShape, ShapeKind, Sketch, SketchSolid,
     SketchPoint, TransformGizmoRenderer,
     ViewCubeElement, VoxExport,
     ViewCubeRenderer, VoxelGrid, COLOR_TARGET_FORMAT,
@@ -889,7 +889,7 @@ fn build_demo_sketch_extrude(voxels_per_block: u32) -> Scene {
         SketchPoint::new(two, four),
         SketchPoint::new(0, four),
     ];
-    let producer = SketchExtrude::new(Sketch::new(PlaneAxis::Z, profile), (3 * density) as u32);
+    let producer = SketchSolid::extrude(Sketch::new(PlaneAxis::Z, profile), (3 * density) as u32);
     let node = Node::new(
         "Sketch L",
         NodeContent::SketchTool {

@@ -22,7 +22,7 @@ use crate::camera::ProjectionMode;
 use crate::core_geom::MaterialChoice;
 use crate::intent::{Intent, NodeSpec};
 use crate::scene::{DefId, Node, NodeContent, NodeId, Part, Scene};
-use crate::sketch::{PlaneAxis, Sketch, SketchExtrude};
+use crate::sketch::{Operation, PlaneAxis, Sketch, SketchSolid};
 use crate::units::{self, DisplayUnit, MeasurementError};
 use crate::voxel::{GeometryParams, SdfShape, ShapeKind};
 
@@ -737,12 +737,12 @@ fn tool_node_spec(kind: ShapeKind, state: &PanelState) -> NodeSpec {
 /// in-plane axes for Z are `[0, 1]` = X, Y, so the rectangle's in-plane width is
 /// `size_x` and depth is `size_y`, extruded `size_z` voxels up along +Z. This is the
 /// SAME construction the headless `default_sketch_spec_equals_box` test pins
-/// (`SketchExtrude::new(Sketch::rectangle(PlaneAxis::Z, size_x, size_y), size_z)`), so
+/// (`SketchSolid::extrude(Sketch::rectangle(PlaneAxis::Z, size_x, size_y), size_z)`), so
 /// a freshly-added sketch resolves to exactly the matching `Box` of the current Size.
 fn sketch_node_spec(state: &PanelState) -> NodeSpec {
     let [size_x, size_y, size_z] = state.geometry.size_voxels;
     NodeSpec::Sketch {
-        producer: SketchExtrude::new(
+        producer: SketchSolid::extrude(
             Sketch::rectangle(PlaneAxis::Z, size_x as i64, size_y as i64),
             size_z,
         ),
@@ -1124,7 +1124,7 @@ fn build_part_inspector_section(
 }
 
 /// Inspector for a sketch→extrude active node (ADR 0003 §3i): edits the node's
-/// [`SketchExtrude`] producer. A change rebuilds the whole producer and emits a
+/// [`SketchSolid`] producer. A change rebuilds the whole producer and emits a
 /// `SetSketch` (auto-framed, since the prism's AABB — and thus the composite extent —
 /// changes), then the shared material section emits `SetMaterial`. The offset / grids
 /// sections are appended by the caller, common to all node kinds.
@@ -1176,7 +1176,12 @@ fn build_sketch_inspector_section(
     }
 
     let mut plane = producer.sketch.plane;
-    let mut height_voxels = producer.height_voxels.max(1);
+    // The UI edits an extrude today (the Operation picker comes in commit 4), so read
+    // the height from the Extrude arm; any other operation falls back to a sane 1.
+    let mut height_voxels = match producer.operation {
+        Operation::Extrude { height_voxels } => height_voxels,
+    }
+    .max(1);
     let mut changed = false;
 
     // Plane picker — common to both modes.
@@ -1240,7 +1245,7 @@ fn build_sketch_inspector_section(
         } else {
             Sketch::new(plane, producer.sketch.profile.clone())
         };
-        let rebuilt = SketchExtrude::new(sketch, height_voxels);
+        let rebuilt = SketchSolid::extrude(sketch, height_voxels);
         response.emit_and_frame(Intent::SetSketch { target, producer: rebuilt });
     }
 

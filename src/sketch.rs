@@ -133,24 +133,49 @@ impl Sketch {
     }
 }
 
-/// A [`Sketch`] extruded a whole number of voxels along its plane normal,
-/// producing a prism — the 2a sketch→volume producer (ADR 0003 §3i). Added
-/// **alongside** `SdfShape`; both implement [`VoxelProducer`] and resolve through
-/// the same stamp / `CombineOp` / chunk path.
+/// The OPERATION that turns a [`Sketch`]'s 2D profile into a 3D volume (ADR 0003
+/// §3i, the "Sketch + Operation" model). A [`SketchSolid`] pairs a sketch with one
+/// of these. Today the only operation is [`Extrude`](Operation::Extrude); revolve
+/// and sweep are later commits.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct SketchExtrude {
-    /// The closed 2D profile + its plane.
-    pub sketch: Sketch,
-    /// Extrude span in voxels along the plane normal (≥1 for a non-empty prism).
-    pub height_voxels: u32,
+pub enum Operation {
+    /// Extrude the profile a whole number of voxels along its plane normal,
+    /// producing a prism (≥1 for a non-empty prism).
+    Extrude {
+        /// Extrude span in voxels along the plane normal.
+        height_voxels: u32,
+    },
+    // future: Revolve { axis, sweep }, Sweep { path }  (added in later commits — leave this comment)
 }
 
-impl SketchExtrude {
+impl Default for Operation {
+    /// A degenerate extrude (zero height ⇒ empty occupancy). Used so a document
+    /// node missing its operation deserializes to a no-op rather than failing.
+    fn default() -> Self {
+        Operation::Extrude { height_voxels: 0 }
+    }
+}
+
+/// A [`Sketch`] paired with an [`Operation`] that turns its 2D profile into a 3D
+/// volume — the 2a sketch→volume producer (ADR 0003 §3i, the "Sketch + Operation"
+/// model). Added **alongside** `SdfShape`; both implement [`VoxelProducer`] and
+/// resolve through the same stamp / `CombineOp` / chunk path. The only operation
+/// today is [`Operation::Extrude`] (a prism); revolve / sweep are later commits.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SketchSolid {
+    /// The closed 2D profile + its plane.
+    pub sketch: Sketch,
+    /// How the profile is turned into a volume.
+    #[serde(default)]
+    pub operation: Operation,
+}
+
+impl SketchSolid {
     /// A sketch extruded `height_voxels` along its plane normal.
-    pub fn new(sketch: Sketch, height_voxels: u32) -> Self {
+    pub fn extrude(sketch: Sketch, height_voxels: u32) -> Self {
         Self {
             sketch,
-            height_voxels,
+            operation: Operation::Extrude { height_voxels },
         }
     }
 
@@ -159,7 +184,12 @@ impl SketchExtrude {
     /// zero-extent span on either in-plane axis). The local in-plane grid is sized
     /// `max − min`; cells are addressed from `min`.
     fn profile_bounds(&self) -> Option<([i64; 2], [i64; 2])> {
-        if self.sketch.profile.len() < 3 || self.height_voxels == 0 {
+        // Per-operation degeneracy: an Extrude with zero height is empty (its prism
+        // has no thickness). Other operations branch here as they are added.
+        let operation_is_degenerate = match self.operation {
+            Operation::Extrude { height_voxels } => height_voxels == 0,
+        };
+        if self.sketch.profile.len() < 3 || operation_is_degenerate {
             return None;
         }
         let first = self.sketch.profile[0].offset_voxels;
@@ -193,7 +223,9 @@ impl SketchExtrude {
         // dimension (rejected by downstream bounds), never silently wrap to a small one.
         dimensions[in_plane_0] = u32::try_from(max[0] - min[0]).unwrap_or(u32::MAX);
         dimensions[in_plane_1] = u32::try_from(max[1] - min[1]).unwrap_or(u32::MAX);
-        dimensions[normal] = self.height_voxels;
+        dimensions[normal] = match self.operation {
+            Operation::Extrude { height_voxels } => height_voxels,
+        };
         dimensions
     }
 
@@ -292,8 +324,19 @@ fn point_in_polygon(profile: &[SketchPoint], sample_0: f64, sample_1: f64) -> bo
     inside
 }
 
-impl VoxelProducer for SketchExtrude {
+impl VoxelProducer for SketchSolid {
     fn resolve(&self, grid: &mut VoxelGrid, voxels_per_block: u32) {
+        match self.operation {
+            Operation::Extrude { height_voxels } => self.resolve_extrude(grid, voxels_per_block, height_voxels),
+        }
+    }
+}
+
+impl SketchSolid {
+    /// The extrude resolve: rasterize the profile once and sweep it across
+    /// `height_voxels` layers along the plane normal. Byte-identical to the prior
+    /// `SketchExtrude::resolve` (the height now arrives from the matched operation).
+    fn resolve_extrude(&self, grid: &mut VoxelGrid, voxels_per_block: u32, height_voxels: u32) {
         let dimensions = self.grid_dimensions();
         grid.dimensions = dimensions;
         grid.occupied.clear();
@@ -326,13 +369,13 @@ impl VoxelProducer for SketchExtrude {
             }
         }
 
-        grid.occupied.reserve(filled_in_plane.len() * self.height_voxels as usize);
+        grid.occupied.reserve(filled_in_plane.len() * height_voxels as usize);
         // The voxel's grid index per world axis, assembled from the in-plane cell
         // and the normal layer, then CORNER-ANCHORED (centre = idx + 0.5) exactly the
         // way `SdfShape::resolve` does, so a rectangle extrude is byte-identical to the
         // matching `Box`. The centre is a half-integer for any grid size → always on
         // the global voxel lattice.
-        for layer in 0..self.height_voxels {
+        for layer in 0..height_voxels {
             for &[cell_0, cell_1] in &filled_in_plane {
                 let mut index = [0u32; 3];
                 index[in_plane_0] = cell_0;
@@ -410,7 +453,7 @@ mod tests {
             let grid_z = (size_blocks[2] * density) as i64;
             // Plane Y: profile in XZ (width = X span, height = Z span), extruded
             // grid_y voxels along Y — matches the box's [x, y, z] grid exactly.
-            let extrude = SketchExtrude::new(
+            let extrude = SketchSolid::extrude(
                 Sketch::rectangle(PlaneAxis::Y, grid_x, grid_z),
                 grid_y as u32,
             );
@@ -439,7 +482,7 @@ mod tests {
         for plane in [PlaneAxis::X, PlaneAxis::Y, PlaneAxis::Z] {
             let [in_plane_0, in_plane_1] = plane.in_plane_axes();
             let normal = plane.normal_axis();
-            let extrude = SketchExtrude::new(
+            let extrude = SketchSolid::extrude(
                 Sketch::rectangle(plane, dims[in_plane_0] as i64, dims[in_plane_1] as i64),
                 dims[normal],
             );
@@ -480,7 +523,7 @@ mod tests {
             SketchPoint::new(2, 4),
             SketchPoint::new(0, 4),
         ];
-        let extrude = SketchExtrude::new(Sketch::new(PlaneAxis::Y, profile), 1);
+        let extrude = SketchSolid::extrude(Sketch::new(PlaneAxis::Y, profile), 1);
         let mut grid = VoxelGrid::default();
         extrude.resolve(&mut grid, 4);
         assert_eq!(grid.dimensions, [4, 1, 4], "L AABB is 4×1×4");
@@ -519,19 +562,19 @@ mod tests {
     /// fewer than 3 points, collinear (zero-area) points, and a zero height.
     #[test]
     fn degenerate_profiles_are_empty() {
-        let empty = |producer: &SketchExtrude| {
+        let empty = |producer: &SketchSolid| {
             let mut grid = VoxelGrid::default();
             producer.resolve(&mut grid, 4);
             assert!(grid.occupied.is_empty());
             assert_eq!(grid.dimensions, [0, 0, 0]);
         };
         // < 3 points.
-        empty(&SketchExtrude::new(
+        empty(&SketchSolid::extrude(
             Sketch::new(PlaneAxis::Y, vec![SketchPoint::new(0, 0), SketchPoint::new(4, 0)]),
             2,
         ));
         // Collinear (zero-area) — three points on one line.
-        empty(&SketchExtrude::new(
+        empty(&SketchSolid::extrude(
             Sketch::new(
                 PlaneAxis::Y,
                 vec![
@@ -543,7 +586,7 @@ mod tests {
             2,
         ));
         // Zero height.
-        empty(&SketchExtrude::new(Sketch::rectangle(PlaneAxis::Y, 4, 4), 0));
+        empty(&SketchSolid::extrude(Sketch::rectangle(PlaneAxis::Y, 4, 4), 0));
     }
 
     /// EDGE CASE: a sub-block-precise profile at d=16 (a vertex NOT on a block
@@ -554,7 +597,7 @@ mod tests {
     fn sub_block_precise_profile_at_d16() {
         let density = 16u32;
         // 20 voxels = 1 block + 4 voxels — a sub-block extent on a non-block boundary.
-        let extrude = SketchExtrude::new(Sketch::rectangle(PlaneAxis::Y, 20, 20), 3);
+        let extrude = SketchSolid::extrude(Sketch::rectangle(PlaneAxis::Y, 20, 20), 3);
         assert_eq!(extrude.grid_dimensions(), [20, 3, 20]);
         let mut grid = VoxelGrid::default();
         extrude.resolve(&mut grid, density);
@@ -579,7 +622,7 @@ mod tests {
     fn rectangle_in_plane_spans_detection() {
         // A genuine rectangle on each plane reports its [width, depth] spans.
         for plane in [PlaneAxis::X, PlaneAxis::Y, PlaneAxis::Z] {
-            let extrude = SketchExtrude::new(Sketch::rectangle(plane, 6, 4), 3);
+            let extrude = SketchSolid::extrude(Sketch::rectangle(plane, 6, 4), 3);
             assert_eq!(
                 extrude.rectangle_in_plane_spans(),
                 Some([6, 4]),
@@ -596,7 +639,7 @@ mod tests {
             SketchPoint::new(0, 4),
         ];
         assert_eq!(
-            SketchExtrude::new(Sketch::new(PlaneAxis::Z, l_profile), 1)
+            SketchSolid::extrude(Sketch::new(PlaneAxis::Z, l_profile), 1)
                 .rectangle_in_plane_spans(),
             None,
             "an L-shape is not a rectangle"
@@ -610,7 +653,7 @@ mod tests {
             SketchPoint::new(0, 2),
         ];
         assert_eq!(
-            SketchExtrude::new(Sketch::new(PlaneAxis::Z, diamond), 1)
+            SketchSolid::extrude(Sketch::new(PlaneAxis::Z, diamond), 1)
                 .rectangle_in_plane_spans(),
             None,
             "a diamond quad is not an axis-aligned rectangle"
@@ -622,7 +665,7 @@ mod tests {
             SketchPoint::new(0, 4),
         ];
         assert_eq!(
-            SketchExtrude::new(Sketch::new(PlaneAxis::Z, triangle), 1)
+            SketchSolid::extrude(Sketch::new(PlaneAxis::Z, triangle), 1)
                 .rectangle_in_plane_spans(),
             None,
             "a triangle is not a rectangle"
@@ -633,7 +676,7 @@ mod tests {
     /// resolved grid's `dimensions`, and respects the voxel cap predicate.
     #[test]
     fn grid_dimensions_consistent_and_cap() {
-        let extrude = SketchExtrude::new(Sketch::rectangle(PlaneAxis::Z, 6, 4), 5);
+        let extrude = SketchSolid::extrude(Sketch::rectangle(PlaneAxis::Z, 6, 4), 5);
         let mut grid = VoxelGrid::default();
         extrude.resolve(&mut grid, 16);
         assert_eq!(grid.dimensions, extrude.grid_dimensions());
