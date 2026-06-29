@@ -1138,7 +1138,7 @@ mod undo_tests {
     use crate::core_geom::MaterialChoice;
     use crate::intent::{whole_block_offset, Intent, NodeSpec};
     use crate::scene::{Node, NodeBuilder, NodeContent, NodeGrids, NodeTransform, Point, Scene};
-    use crate::sketch::{PlaneAxis, Sketch, SketchSolid};
+    use crate::sketch::{PlaneAxis, RevolveAxis, Sketch, SketchSolid};
     use crate::store::Store;
     use crate::units::Measurement;
     use crate::voxel::{SdfShape, ShapeKind};
@@ -1158,6 +1158,19 @@ mod undo_tests {
         let grid_y = (size_blocks[1] * density) as i64;
         let grid_z = size_blocks[2] * density;
         SketchSolid::extrude(Sketch::rectangle(PlaneAxis::Z, grid_x, grid_y), grid_z)
+    }
+
+    /// A revolve producer: a rectangle radial×axial profile revolved a full 360° about
+    /// an in-plane axis (a cylinder of the given block radius / axial height at d16).
+    fn revolve_sketch(radius_blocks: u32, axial_blocks: u32) -> SketchSolid {
+        let density = 16u32;
+        let radial = (radius_blocks * density) as i64;
+        let axial = (axial_blocks * density) as i64;
+        SketchSolid::revolve(
+            Sketch::rectangle(PlaneAxis::X, radial, axial),
+            RevolveAxis::InPlane1,
+            360,
+        )
     }
 
     /// A Sketch node named `"Sketch"` (matching [`NodeSpec::into_node`]).
@@ -1416,6 +1429,20 @@ mod undo_tests {
         assert_round_trips(
             &mut scene,
             Intent::SetSketch { target, producer: box_sketch([9, 7, 3]) },
+        );
+    }
+
+    #[test]
+    fn set_sketch_revolve_round_trips() {
+        // A SetSketch carrying a REVOLVE producer round-trips: undo restores the prior
+        // producer byte-for-byte, redo re-applies the revolve. Proves the dispatch /
+        // capture_inverse path is operation-agnostic (the inspector's revolve rebuild
+        // flows through the same SetSketch intent as extrude).
+        let mut scene = sketch_then_tool_scene();
+        let target = scene.roots[0];
+        assert_round_trips(
+            &mut scene,
+            Intent::SetSketch { target, producer: revolve_sketch(4, 6) },
         );
     }
 

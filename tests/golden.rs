@@ -143,6 +143,16 @@ const CASES: &[GoldenCase] = &[
         name: "roll-quarter",
         args: &["--demo-village", "--roll-quarters", "1"],
     },
+    // ADR 0003 §3i (revolve commit 4): the sketch→revolve render path. A stepped
+    // (vase) radial profile revolved a full 360° about the vertical Z axis into a
+    // solid of revolution — a round, axially-symmetric body with a foot, a pinched
+    // waist and a flared lip that a box / extrude cannot produce. Pins the revolve
+    // producer resolving + rendering through the SAME cuboid/instanced pipeline as
+    // SdfShape at the fixed golden camera.
+    GoldenCase {
+        name: "sketch-revolve-dome",
+        args: &["--demo-sketch-revolve"],
+    },
 ];
 
 /// Fixed orbit angles so the framing is identical to the committed reference. The

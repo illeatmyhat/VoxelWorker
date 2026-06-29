@@ -22,7 +22,7 @@ use crate::camera::ProjectionMode;
 use crate::core_geom::MaterialChoice;
 use crate::intent::{Intent, NodeSpec};
 use crate::scene::{DefId, Node, NodeContent, NodeId, Part, Scene};
-use crate::sketch::{Operation, PlaneAxis, Sketch, SketchSolid};
+use crate::sketch::{Operation, PlaneAxis, RevolveAxis, Sketch, SketchSolid};
 use crate::units::{self, DisplayUnit, MeasurementError};
 use crate::voxel::{GeometryParams, SdfShape, ShapeKind};
 
@@ -1123,27 +1123,39 @@ fn build_part_inspector_section(
     ui.separator();
 }
 
-/// Inspector for a sketch→extrude active node (ADR 0003 §3i): edits the node's
+/// Inspector for a sketch→solid active node (ADR 0003 §3i): edits the node's
 /// [`SketchSolid`] producer. A change rebuilds the whole producer and emits a
-/// `SetSketch` (auto-framed, since the prism's AABB — and thus the composite extent —
+/// `SetSketch` (auto-framed, since the solid's AABB — and thus the composite extent —
 /// changes), then the shared material section emits `SetMaterial`. The offset / grids
 /// sections are appended by the caller, common to all node kinds.
 ///
-/// Two modes, by profile shape:
+/// An **Operation** picker (Extrude / Revolve) selects how the 2D profile becomes a
+/// volume; the editor is OPERATION-AWARE so editing a Revolve node rebuilds a Revolve
+/// (it never silently clobbers to Extrude — the rebuild branches on the
+/// CURRENTLY-SELECTED operation, not on a hardcoded `extrude`).
 ///
-///   * **Rectangle** (the only shape the UI can author today, e.g. the Add-menu
-///     default): a **Plane** picker (X/Y/Z) plus **Width** / **Depth** (the two
-///     in-plane spans, along the plane's [`in_plane_axes`]) and **Height** (the
-///     extrude span). Any change rebuilds a fresh `Sketch::rectangle` on the chosen
-///     plane at the edited spans.
-///   * **Custom profile** (a hand-built polygon — not reachable from the UI yet, but
-///     it can exist in code/tests): a read-only "Custom profile (N points)" note and
-///     ONLY the Plane picker + Height. A rebuild here PRESERVES the existing profile
-///     points, swapping only the plane / extrude span — it never clobbers the polygon
-///     into a rectangle.
+/// The **Plane** picker and the rectangle Width/Depth detection are
+/// operation-independent (the profile is the same shape either way). Each operation
+/// then adds its own controls:
 ///
-/// DEFERRED (ADR 0003 §3i, Slices 2b/2c): free-polyline point add/move/delete
-/// editing, revolve / sweep producers, and on-surface sketching are not built here.
+///   * **Extrude**: a **Height (vx)** field (the extrude span along the plane normal).
+///     Rebuilds `SketchSolid::extrude`.
+///   * **Revolve**: a **RevolveAxis** picker (the two in-plane world axes, labelled in
+///     world-axis terms, e.g. "about X" / "about Y") plus a **Turn (deg)** field
+///     (`1..=360`, default 360). Rebuilds `SketchSolid::revolve`.
+///
+/// Two profile modes, by shape (independent of operation):
+///
+///   * **Rectangle** (the Add-menu default): editable **Width** / **Depth** (the two
+///     in-plane spans, along the plane's [`in_plane_axes`]). A rebuild regenerates a
+///     fresh `Sketch::rectangle` on the chosen plane at the edited spans.
+///   * **Custom profile** (a hand-built polygon — not authorable from the UI yet, but
+///     it can exist in code/tests): a read-only "Custom profile (N points)" note. A
+///     rebuild PRESERVES the existing profile points (swapping only plane / operation
+///     parameters), so a hand-built polygon is never clobbered into a rectangle.
+///
+/// DEFERRED (ADR 0003 §3i, Slices 2b/2c): free-polyline point add/move/delete editing,
+/// the sweep producer, and on-surface sketching are not built here.
 ///
 /// [`in_plane_axes`]: crate::sketch::PlaneAxis::in_plane_axes
 fn build_sketch_inspector_section(
@@ -1163,8 +1175,24 @@ fn build_sketch_inspector_section(
         return;
     };
 
+    // Which operation kind the active producer currently is — drives the heading and
+    // seeds the Operation picker. A SWITCH to the other kind carries sensible defaults
+    // (see `OperationKind` / the rebuild below).
+    #[derive(PartialEq, Eq, Clone, Copy)]
+    enum OperationKind {
+        Extrude,
+        Revolve,
+    }
+    let current_kind = match producer.operation {
+        Operation::Extrude { .. } => OperationKind::Extrude,
+        Operation::Revolve { .. } => OperationKind::Revolve,
+    };
+
     ui.add_space(8.0);
-    ui.strong("Sketch → Extrude");
+    ui.strong(match current_kind {
+        OperationKind::Extrude => "Sketch → Extrude",
+        OperationKind::Revolve => "Sketch → Revolve",
+    });
 
     // The label for a plane choice in the picker.
     fn plane_label(plane: PlaneAxis) -> &'static str {
@@ -1175,19 +1203,56 @@ fn build_sketch_inspector_section(
         }
     }
 
+    // The world-axis letter (X/Y/Z) for a world-axis index — used to label the
+    // RevolveAxis options in world terms the user can reason about.
+    fn world_axis_letter(axis_index: usize) -> char {
+        ['X', 'Y', 'Z'][axis_index]
+    }
+
+    // The RevolveAxis picker label: which world axis the profile is revolved ABOUT.
+    // `RevolveAxis::InPlane0` revolves about `in_plane_axes()[0]`, `InPlane1` about
+    // `[1]`, so the label is derived from the plane's in-plane axes (e.g. for the Z
+    // footprint plane the in-plane axes are X, Y → "about X" / "about Y").
+    fn revolve_axis_label(plane: PlaneAxis, axis: RevolveAxis) -> String {
+        let in_plane = plane.in_plane_axes();
+        let world_index = match axis {
+            RevolveAxis::InPlane0 => in_plane[0],
+            RevolveAxis::InPlane1 => in_plane[1],
+        };
+        format!("about {}", world_axis_letter(world_index))
+    }
+
     let mut plane = producer.sketch.plane;
-    // The UI edits an extrude today (the Operation picker comes in commit 4), so read
-    // the height from the Extrude arm; any other operation falls back to a sane 1.
+    let mut kind = current_kind;
+    // Per-operation parameters, seeded from the active producer. The OTHER kind's
+    // parameters seed from sensible defaults so an operation SWITCH carries them.
     let mut height_voxels = match producer.operation {
         Operation::Extrude { height_voxels } => height_voxels,
-        // Revolve has no inspector yet (commit 4): fall back to a sane height so the
-        // extrude-only editor stays well-defined; editing here re-extrudes the profile.
-        Operation::Revolve { .. } => 1,
-    }
-    .max(1);
+        Operation::Revolve { .. } => 0,
+    };
+    let (mut revolve_axis, mut turn_degrees) = match producer.operation {
+        Operation::Revolve { axis, sweep } => (axis, sweep.turn_degrees),
+        Operation::Extrude { .. } => (RevolveAxis::InPlane0, 360),
+    };
     let mut changed = false;
 
-    // Plane picker — common to both modes.
+    // Operation picker — seeds from the current kind. A change flips `kind`; the
+    // rebuild below branches on `kind`, so a Revolve stays a Revolve on edit.
+    egui::ComboBox::from_label("Operation")
+        .selected_text(match kind {
+            OperationKind::Extrude => "Extrude",
+            OperationKind::Revolve => "Revolve",
+        })
+        .show_ui(ui, |ui| {
+            changed |= ui
+                .selectable_value(&mut kind, OperationKind::Extrude, "Extrude")
+                .changed();
+            changed |= ui
+                .selectable_value(&mut kind, OperationKind::Revolve, "Revolve")
+                .changed();
+        });
+
+    // Plane picker — common to both operations.
     egui::ComboBox::from_label("Plane")
         .selected_text(plane_label(plane))
         .show_ui(ui, |ui| {
@@ -1202,6 +1267,7 @@ fn build_sketch_inspector_section(
         });
 
     // Rectangle profiles expose editable Width/Depth; a custom polygon is read-only.
+    // Operation-independent — the profile shape is the same whether extruded or revolved.
     let rectangle_spans = producer.rectangle_in_plane_spans();
     let mut width_voxels = rectangle_spans.map(|spans| spans[0]).unwrap_or(1).max(1);
     let mut depth_voxels = rectangle_spans.map(|spans| spans[1]).unwrap_or(1).max(1);
@@ -1221,7 +1287,7 @@ fn build_sketch_inspector_section(
         });
     } else {
         // A hand-built polygon: read-only note, no Width/Depth (editing them would
-        // mean discarding the profile). Only the plane + height below are editable.
+        // mean discarding the profile). Only the plane + operation params are editable.
         ui.label(
             egui::RichText::new(format!(
                 "Custom profile ({} points)",
@@ -1232,23 +1298,69 @@ fn build_sketch_inspector_section(
         );
     }
 
-    ui.horizontal(|ui| {
-        ui.label("Height (vx)");
-        changed |= ui
-            .add(egui::DragValue::new(&mut height_voxels).speed(1.0).range(1..=u32::MAX))
-            .changed();
-    });
+    // Per-operation controls.
+    match kind {
+        OperationKind::Extrude => {
+            ui.horizontal(|ui| {
+                ui.label("Height (vx)");
+                changed |= ui
+                    .add(egui::DragValue::new(&mut height_voxels).speed(1.0).range(1..=u32::MAX))
+                    .changed();
+            });
+        }
+        OperationKind::Revolve => {
+            egui::ComboBox::from_label("Revolve axis")
+                .selected_text(revolve_axis_label(plane, revolve_axis))
+                .show_ui(ui, |ui| {
+                    for option in [RevolveAxis::InPlane0, RevolveAxis::InPlane1] {
+                        if ui
+                            .selectable_value(
+                                &mut revolve_axis,
+                                option,
+                                revolve_axis_label(plane, option),
+                            )
+                            .changed()
+                        {
+                            changed = true;
+                        }
+                    }
+                });
+            ui.horizontal(|ui| {
+                ui.label("Turn (deg)");
+                changed |= ui
+                    .add(egui::DragValue::new(&mut turn_degrees).speed(1.0).range(1..=360))
+                    .changed();
+            });
+        }
+    }
 
     if changed {
-        // Rebuild the producer. A rectangle profile is regenerated at the edited
-        // spans; a custom profile is PRESERVED (only plane / height swap), so a
+        // Rebuild the producer. A rectangle profile is regenerated at the edited spans;
+        // a custom profile is PRESERVED (only plane / operation params swap), so a
         // hand-built polygon is never clobbered into a rectangle.
         let sketch = if rectangle_spans.is_some() {
             Sketch::rectangle(plane, width_voxels as i64, depth_voxels as i64)
         } else {
             Sketch::new(plane, producer.sketch.profile.clone())
         };
-        let rebuilt = SketchSolid::extrude(sketch, height_voxels);
+        // Branch on the CURRENTLY-SELECTED operation so editing a Revolve rebuilds a
+        // Revolve (no clobber to Extrude). An operation SWITCH carries the defaults
+        // seeded above: Extrude→Revolve uses InPlane0 + a full 360° turn; Revolve→
+        // Extrude uses a sensible height (the rectangle's depth span if available,
+        // else a default 16 — the user adjusts after).
+        let rebuilt = match kind {
+            OperationKind::Extrude => {
+                // When switching FROM Revolve the seeded height is 0 (no extrude span
+                // existed); fall back to the rectangle depth, else a default 16.
+                let height = if height_voxels >= 1 {
+                    height_voxels
+                } else {
+                    rectangle_spans.map(|spans| spans[1]).unwrap_or(16).max(1)
+                };
+                SketchSolid::extrude(sketch, height)
+            }
+            OperationKind::Revolve => SketchSolid::revolve(sketch, revolve_axis, turn_degrees),
+        };
         response.emit_and_frame(Intent::SetSketch { target, producer: rebuilt });
     }
 

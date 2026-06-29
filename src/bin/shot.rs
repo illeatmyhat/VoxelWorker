@@ -32,7 +32,7 @@ use voxel_worker::{
     PointsRenderer, RebuildOutcome, RebuildOutput, SceneGridRenderer,
     Node, NodeBuilder, NodeContent, NodePath, OnionFogRenderer, OrbitCamera, PanelState, Part,
     Point,
-    PlaneAxis, ProjectionMode, RegionBlocks, Scene, SdfShape, ShapeKind, Sketch, SketchSolid,
+    PlaneAxis, ProjectionMode, RegionBlocks, RevolveAxis, Scene, SdfShape, ShapeKind, Sketch, SketchSolid,
     SketchPoint, TransformGizmoRenderer,
     ViewCubeElement, VoxExport,
     ViewCubeRenderer, VoxelGrid, COLOR_TARGET_FORMAT,
@@ -176,6 +176,12 @@ struct ShotOptions {
     /// resolves + renders through the same pipeline as `SdfShape`. Overrides
     /// --shape/--size/--density.
     demo_sketch_extrude: bool,
+    /// `--demo-sketch-revolve` (ADR 0003 §3i): build a scene containing a single
+    /// **sketch → revolve** producer — a stepped (vase-like) radial profile revolved a
+    /// full 360° about the vertical Z axis into a solid of revolution, so the headless
+    /// capture confirms the revolve producer resolves + renders through the same
+    /// pipeline as `SdfShape`. Overrides --shape/--size/--density.
+    demo_sketch_revolve: bool,
     /// `--demo-groups` (ADR 0001 step 4, UI verification): build a scene with a
     /// top-level `Group` that has two child Tools, plus a sibling top-level Tool
     /// and one `Instance` of a definition — so the headless PANEL capture shows the
@@ -244,6 +250,7 @@ impl Default for ShotOptions {
             demo_scene: false,
             demo_village: false,
             demo_sketch_extrude: false,
+            demo_sketch_revolve: false,
             demo_groups: false,
             far_offset: false,
             far_offset_near: false,
@@ -511,6 +518,9 @@ fn parse_options() -> ShotOptions {
             "--demo-sketch-extrude" => {
                 options.demo_sketch_extrude = true;
             }
+            "--demo-sketch-revolve" => {
+                options.demo_sketch_revolve = true;
+            }
             "--demo-groups" => {
                 options.demo_groups = true;
             }
@@ -639,7 +649,7 @@ fn parse_options() -> ShotOptions {
                      \x20            [--gizmo] [--select-node <usize>] [--lattice] [--floor] [--points] [--point-at <X Y Z>] [--no-viewcube]\n\
                      \x20            [--debug-faces] [--debug-chunks]\n\
                      \x20            [--demo-scene] [--demo-village] [--demo-groups]\n\
-                     \x20            [--demo-sketch-extrude]\n\
+                     \x20            [--demo-sketch-extrude] [--demo-sketch-revolve]\n\
                      \x20            [--demo-far-offset] [--demo-far-offset-near]\n\
                      \x20            [--layer-lower <u32>] [--layer-upper <u32>] [--onion <u32>]\n\
                      \x20            [--fog <wholegrid|perchunk>]\n\
@@ -669,6 +679,10 @@ fn parse_options() -> ShotOptions {
                      \x20  --demo-sketch-extrude build a single 2D-sketch→extrude producer\n\
                      \x20                with an L-shaped footprint extruded up (ADR 0003 §3i\n\
                      \x20                Slice 2a) — a non-box a primitive can't make. Overrides\n\
+                     \x20                --shape/--size/--density.\n\
+                     \x20  --demo-sketch-revolve build a single 2D-sketch→revolve producer:\n\
+                     \x20                a stepped (vase) radial profile revolved 360° about\n\
+                     \x20                +Z into a solid of revolution (ADR 0003 §3i). Overrides\n\
                      \x20                --shape/--size/--density.\n\
                      \x20  --demo-far-offset      build a small 4³ box at offset [100_000,0,0]\n\
                      \x20                blocks (ADR 0002 streaming S1). Precision baseline:\n\
@@ -902,6 +916,50 @@ fn build_demo_sketch_extrude(voxels_per_block: u32) -> Scene {
     scene
 }
 
+/// Build the `--demo-sketch-revolve` (ADR 0003 §3i): a single **sketch → revolve →
+/// volume** producer that is visibly a SOLID OF REVOLUTION — a stepped, vase-like
+/// silhouette revolved a full 360° about the vertical Z axis. A box / extrude cannot
+/// make a round, axially-symmetric, varying-radius body, so the headless capture
+/// proves the revolve producer resolves + renders through the SAME pipeline as
+/// `SdfShape`.
+///
+/// Orientation: `PlaneAxis::X` + `RevolveAxis::InPlane1` puts the AXIAL world axis on
+/// Z (the vase stands up, Z-up) and the two RADIAL world axes on X and Y (the round
+/// cross-section). The profile coords `(c0, c1) = (radial, axial)`, so each vertex is
+/// `(radius, height)` in voxels. The silhouette: a wide foot, a pinched waist, and a
+/// flared lip — a stepped vase. All extents are whole blocks so the body sits cleanly
+/// on the lattice in the recentred render frame.
+fn build_demo_sketch_revolve(voxels_per_block: u32) -> Scene {
+    let block = voxels_per_block.max(1) as i64;
+    // Radial profile (radius, height) in voxels, walked up one side of the silhouette
+    // from the bottom of the axis, then back DOWN the axis (radius 0) to close — a
+    // stepped vase: foot (r=4b) → waist (r=2b) → shoulder (r=4b) → lip (r=3b), 8 blocks
+    // tall. Revolving this 360° about Z sweeps the silhouette into a round vase.
+    let radial = |blocks: i64| blocks * block;
+    let axial = |blocks: i64| blocks * block;
+    let profile = vec![
+        SketchPoint::new(0, axial(0)),          // bottom centre, on the axis
+        SketchPoint::new(radial(4), axial(0)),  // foot outer edge
+        SketchPoint::new(radial(4), axial(1)),  // foot top
+        SketchPoint::new(radial(2), axial(3)),  // pinch in to the waist
+        SketchPoint::new(radial(2), axial(5)),  // waist
+        SketchPoint::new(radial(4), axial(6)),  // flare out to the shoulder
+        SketchPoint::new(radial(3), axial(8)),  // lip
+        SketchPoint::new(0, axial(8)),          // top centre, back on the axis
+    ];
+    let producer = SketchSolid::revolve(Sketch::new(PlaneAxis::X, profile), RevolveAxis::InPlane1, 360);
+    let node = Node::new(
+        "Sketch vase",
+        NodeContent::SketchTool {
+            producer,
+            material: MaterialChoice::Stone,
+        },
+    );
+    let mut scene = selecting_first_node(Scene::from_nodes(vec![node]));
+    scene.voxels_per_block = voxels_per_block;
+    scene
+}
+
 /// Build the `--demo-groups` (ADR 0001 step 4, UI verification): a scene that
 /// exercises the indented TREE in the panel. A top-level `Group` ("Cluster") holds
 /// two child Tools (a Sphere + a Box at a small offset); a sibling top-level Box
@@ -1089,6 +1147,8 @@ async fn run_capture(options: ShotOptions) {
         build_demo_groups(options.geometry.voxels_per_block)
     } else if options.demo_sketch_extrude {
         build_demo_sketch_extrude(options.geometry.voxels_per_block)
+    } else if options.demo_sketch_revolve {
+        build_demo_sketch_revolve(options.geometry.voxels_per_block)
     } else if options.demo_village {
         build_demo_village(options.geometry.voxels_per_block)
     } else if options.demo_scene {
