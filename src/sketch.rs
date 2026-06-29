@@ -26,6 +26,7 @@
 //! (fewer than 3 points, or zero area) resolves to nothing rather than panicking.
 
 use crate::voxel::{Voxel, VoxelGrid, VoxelProducer, MAX_GRID_VOXELS};
+use rayon::prelude::*;
 
 /// Which axis the sketch plane's normal points along — i.e. the axis the profile
 /// is EXTRUDED along (ADR 0003 §3i, 2a axis-aligned scope).
@@ -460,34 +461,43 @@ impl SketchSolid {
             }
         }
 
-        grid.occupied.reserve(filled_in_plane.len() * height_voxels as usize);
         // The voxel's grid index per world axis, assembled from the in-plane cell
         // and the normal layer, then CORNER-ANCHORED (centre = idx + 0.5) exactly the
         // way `SdfShape::resolve` does, so a rectangle extrude is byte-identical to the
         // matching `Box`. The centre is a half-integer for any grid size → always on
         // the global voxel lattice.
-        for layer in 0..height_voxels {
-            for &[cell_0, cell_1] in &filled_in_plane {
-                let mut index = [0u32; 3];
-                index[in_plane_0] = cell_0;
-                index[in_plane_1] = cell_1;
-                index[normal] = layer;
-                let world_position = [
-                    index[0] as f32 + 0.5,
-                    index[1] as f32 + 0.5,
-                    index[2] as f32 + 0.5,
-                ];
-                grid.occupied.push(Voxel {
-                    world_position,
-                    block_local_coord: [
-                        (index[0] % density) as u8,
-                        (index[1] % density) as u8,
-                        (index[2] % density) as u8,
-                    ],
-                    material_id: 0,
-                });
-            }
-        }
+        //
+        // The normal-axis LAYERS are order-independent (each layer writes a disjoint
+        // set of voxels), so — mirroring `SdfShape::resolve`'s slice parallelism —
+        // each layer produces a local `Vec<Voxel>` and the results are concatenated
+        // with rayon. The emission ORDER may differ from the serial version, but the
+        // SET is identical (consumers recover indices from each voxel's position).
+        let profile_axes = [in_plane_0, in_plane_1, normal];
+        grid.occupied = (0..height_voxels)
+            .into_par_iter()
+            .flat_map_iter(|layer| {
+                let [in_plane_0, in_plane_1, normal] = profile_axes;
+                filled_in_plane.iter().map(move |&[cell_0, cell_1]| {
+                    let mut index = [0u32; 3];
+                    index[in_plane_0] = cell_0;
+                    index[in_plane_1] = cell_1;
+                    index[normal] = layer;
+                    Voxel {
+                        world_position: [
+                            index[0] as f32 + 0.5,
+                            index[1] as f32 + 0.5,
+                            index[2] as f32 + 0.5,
+                        ],
+                        block_local_coord: [
+                            (index[0] % density) as u8,
+                            (index[1] % density) as u8,
+                            (index[2] % density) as u8,
+                        ],
+                        material_id: 0,
+                    }
+                })
+            })
+            .collect();
     }
 
     /// The revolve resolve: sweep the profile around an in-plane axis into a solid
@@ -561,75 +571,126 @@ impl SketchSolid {
             dimensions[2] as f32 / 2.0,
         ];
 
+        // --- Per-cell-work trims (computed ONCE, before the cell loop) ---
+        //
+        // (1) STRADDLE flag: a solid of revolution folds both radial signs, so the
+        //     general path tests `point_in_polygon` at BOTH +radius and −radius (the
+        //     "straddle folded by abs"). But the −radius query can only ever be inside
+        //     when some profile vertex has a NEGATIVE radial coordinate (the profile
+        //     reaches across radial 0). For the common one-sided lathe profile
+        //     (radial >= 0) the −radius query always lands outside, so we skip it —
+        //     halving the polygon tests with IDENTICAL output. The radial profile
+        //     coordinate is c1 for InPlane0 and c0 for InPlane1 (the NON-axial coord).
+        // (2) radial_max: the farthest profile vertex from the radial-0 axis. A cell
+        //     whose radius exceeds radial_max can't be inside the polygon (the polygon
+        //     does not reach that far), so we skip the test entirely — a cheap compare
+        //     before the polygon test, preserving output.
+        let radial_profile_coord = match axis {
+            RevolveAxis::InPlane0 => 1,
+            RevolveAxis::InPlane1 => 0,
+        };
+        let mut profile_straddles_axis = false;
+        let mut radial_max = 0i64;
+        for point in &self.sketch.profile {
+            let radial_coord = point.offset_voxels[radial_profile_coord];
+            if radial_coord < 0 {
+                profile_straddles_axis = true;
+            }
+            radial_max = radial_max.max(radial_coord.abs());
+        }
+        let radial_max = radial_max as f64;
+
+        let profile = &self.sketch.profile;
+
         // Iterate every grid cell. The axial axis uses an un-centred profile-space
         // mapping (matching the extrude rasterizer); the radial axes are centred.
-        for k in 0..dimensions[2] {
-            for j in 0..dimensions[1] {
-                for i in 0..dimensions[0] {
-                    let index = [i, j, k];
-                    let centred = [
-                        index[0] as f32 + 0.5 - half[0],
-                        index[1] as f32 + 0.5 - half[1],
-                        index[2] as f32 + 0.5 - half[2],
-                    ];
-                    let radial =
-                        (centred[radial_a].powi(2) + centred[radial_b].powi(2)).sqrt();
+        //
+        // The outer `k` slices are order-independent (each samples a disjoint set of
+        // voxels), so — mirroring `SdfShape::resolve` — each slice produces a local
+        // `Vec<Voxel>` and rayon concatenates them. Emission ORDER may differ from the
+        // serial version but the SET is identical.
+        grid.occupied = (0..dimensions[2])
+            .into_par_iter()
+            .flat_map_iter(|k| {
+                let mut local = Vec::new();
+                for j in 0..dimensions[1] {
+                    for i in 0..dimensions[0] {
+                        let index = [i, j, k];
+                        let centred = [
+                            index[0] as f32 + 0.5 - half[0],
+                            index[1] as f32 + 0.5 - half[1],
+                            index[2] as f32 + 0.5 - half[2],
+                        ];
+                        let radial =
+                            (centred[radial_a].powi(2) + centred[radial_b].powi(2)).sqrt();
 
-                    // PARTIAL turn gate: skip cells outside the swept wedge. Inert at 360
-                    // (theta ∈ [0, 360) is never > 360).
-                    if is_partial {
-                        let mut theta =
-                            centred[radial_b].atan2(centred[radial_a]).to_degrees();
-                        if theta < 0.0 {
-                            theta += 360.0;
+                        // PARTIAL turn gate: skip cells outside the swept wedge. Inert at
+                        // 360 (theta ∈ [0, 360) is never > 360) — atan2 only on the
+                        // partial path.
+                        if is_partial {
+                            let mut theta =
+                                centred[radial_b].atan2(centred[radial_a]).to_degrees();
+                            if theta < 0.0 {
+                                theta += 360.0;
+                            }
+                            if theta > turn {
+                                continue;
+                            }
                         }
-                        if theta > turn {
+
+                        let radius = radial as f64;
+                        // RADIAL EARLY-OUT: a cell beyond the profile's farthest radial
+                        // vertex can't be inside the polygon — skip the polygon test.
+                        if radius > radial_max {
                             continue;
                         }
-                    }
 
-                    // Profile-axial coord: un-centred map matching the extrude sampler.
-                    let profile_axial = axial_min as f64 + index[axial_world_axis] as f64 + 0.5;
-                    // Reconstruct the profile point in its native (c0, c1) order: the
-                    // radial-mapped coordinate is the signed radius, the axial-mapped
-                    // coordinate is profile_axial, placed per RevolveAxis. A solid of
-                    // revolution is symmetric about the axis, so a 3D point is inside iff
-                    // the profile contains it at EITHER sign of radius — test both
-                    // +radius and −radius and OR them. This implements the
-                    // "straddle folded by abs" the RevolveAxis doc promises and lets a
-                    // profile authored on the NEGATIVE radial side (a tube) revolve
-                    // correctly. For a one-sided radial>=0 profile the −radius query lands
-                    // outside (except at r=0 where ∓0 coincide), so the cylinder / sphere
-                    // locks are unaffected.
-                    let radius = radial as f64;
-                    let inside = |signed_radius: f64| {
-                        let (sample_0, sample_1) = match axis {
-                            RevolveAxis::InPlane0 => (profile_axial, signed_radius),
-                            RevolveAxis::InPlane1 => (signed_radius, profile_axial),
+                        // Profile-axial coord: un-centred map matching the extrude sampler.
+                        let profile_axial =
+                            axial_min as f64 + index[axial_world_axis] as f64 + 0.5;
+                        // Reconstruct the profile point in its native (c0, c1) order: the
+                        // radial-mapped coordinate is the signed radius, the axial-mapped
+                        // coordinate is profile_axial, placed per RevolveAxis. A solid of
+                        // revolution is symmetric about the axis, so a 3D point is inside
+                        // iff the profile contains it at EITHER sign of radius. Only test
+                        // −radius when the profile actually straddles radial 0 (a tube
+                        // authored on the negative side, or a profile spanning across the
+                        // axis); for a one-sided radial>=0 profile the −radius query always
+                        // lands outside, so testing +radius alone is IDENTICAL.
+                        let inside = |signed_radius: f64| {
+                            let (sample_0, sample_1) = match axis {
+                                RevolveAxis::InPlane0 => (profile_axial, signed_radius),
+                                RevolveAxis::InPlane1 => (signed_radius, profile_axial),
+                            };
+                            point_in_polygon(profile, sample_0, sample_1)
                         };
-                        point_in_polygon(&self.sketch.profile, sample_0, sample_1)
-                    };
-                    if !(inside(radius) || inside(-radius)) {
-                        continue;
-                    }
+                        let is_inside = if profile_straddles_axis {
+                            inside(radius) || inside(-radius)
+                        } else {
+                            inside(radius)
+                        };
+                        if !is_inside {
+                            continue;
+                        }
 
-                    let world_position = [
-                        index[0] as f32 + 0.5,
-                        index[1] as f32 + 0.5,
-                        index[2] as f32 + 0.5,
-                    ];
-                    grid.occupied.push(Voxel {
-                        world_position,
-                        block_local_coord: [
-                            (index[0] % density) as u8,
-                            (index[1] % density) as u8,
-                            (index[2] % density) as u8,
-                        ],
-                        material_id: 0,
-                    });
+                        local.push(Voxel {
+                            world_position: [
+                                index[0] as f32 + 0.5,
+                                index[1] as f32 + 0.5,
+                                index[2] as f32 + 0.5,
+                            ],
+                            block_local_coord: [
+                                (index[0] % density) as u8,
+                                (index[1] % density) as u8,
+                                (index[2] % density) as u8,
+                            ],
+                            material_id: 0,
+                        });
+                    }
                 }
-            }
-        }
+                local
+            })
+            .collect();
     }
 }
 
