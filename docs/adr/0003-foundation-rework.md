@@ -1,6 +1,10 @@
 # ADR 0003 — Foundation rework: parts, sculpt, command journal & streaming store
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-06-29 — the keystone decisions are accepted and committed-to; the
+  shipped portions (units §3f(0), the Sketch system §3i, chunk-windowed `resolve_into` §3d, the
+  `Intent` door §6a / command stack / `shot --replay`) prove the direction. Remaining unbuilt pieces
+  — sculpt, the absolute-i64 store, rotation (§3f G4), async (§7) — are tracked as issues, not as an
+  open proposal.)
 - **Date:** 2026-06-27
 - **Supersedes / extends:** consolidates and supersedes the open growth-path clauses of
   [ADR 0001](0001-scene-graph-parts-and-tools.md) (composition beyond union; transforms beyond

@@ -173,6 +173,14 @@ streaming stack below; **LOD is the one piece deliberately parked** (see "Deferr
 
 **Coordinate model (committed, to avoid a retrofit):**
 
+- **Axis convention is Z-up** (decided 2026-06-28, commit `4fe114a`). The world is **Z-up**: the
+  vertical axis is **+Z** (index 2), the **ground plane is XY**, and **front is −Y**. The anisotropy
+  of "Scale" below is therefore **horizontal = XY** (the >10k-block extent that streams out-of-core)
+  and **vertical = Z** (the bounded ~1–2k-block column kept resident). The earlier draft of this ADR
+  was axis-agnostic; this clause pins the convention as a formal decision. Note on the code: most
+  `[1]` / `grid_y`-style indices are **positional and axis-agnostic** (they survived the flip
+  unchanged); only the *vertical-semantic* uses moved to index 2. `.vox` export is now an identity
+  mapping (no axis swap). See memory `coordinate-convention-z-up`.
 - World addressing is **64-bit**: `i32` (→ later `i64`) **block** coordinates plus a sub-block voxel
   offset; node transforms compose in **f64**. This pushes the addressing ceiling to billions of
   blocks/axis and beyond.
