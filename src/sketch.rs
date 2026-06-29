@@ -203,6 +203,51 @@ impl SketchExtrude {
         x as u64 * y as u64 * z as u64
     }
 
+    /// If the profile is an axis-aligned RECTANGLE — exactly the four corners of its
+    /// bounding box (in any winding / starting vertex) — return its in-plane spans
+    /// `[width, depth]` in voxels (along the plane's [`in_plane_axes`]); otherwise
+    /// `None` (a degenerate or hand-built non-rectangular polygon). This is what the
+    /// inspector uses to decide whether to show the editable Width/Depth fields (a
+    /// rectangle) versus a read-only "custom profile" note (anything else), so the
+    /// editor never clobbers a custom polygon by forcing it to a rectangle.
+    ///
+    /// [`in_plane_axes`]: PlaneAxis::in_plane_axes
+    pub fn rectangle_in_plane_spans(&self) -> Option<[u32; 2]> {
+        // Exactly four vertices, spanning a non-degenerate box.
+        if self.sketch.profile.len() != 4 {
+            return None;
+        }
+        let (min, max) = self.profile_bounds()?;
+        // Every vertex must sit on a corner of the bounding box (each in-plane
+        // coordinate is the box min or max), and all four distinct corners must be
+        // present — i.e. the four points ARE the rectangle's corners.
+        let mut corners_seen = [false; 4];
+        for point in &self.sketch.profile {
+            let [coord_0, coord_1] = point.offset_voxels;
+            let on_0 = if coord_0 == min[0] {
+                0
+            } else if coord_0 == max[0] {
+                1
+            } else {
+                return None;
+            };
+            let on_1 = if coord_1 == min[1] {
+                0
+            } else if coord_1 == max[1] {
+                1
+            } else {
+                return None;
+            };
+            corners_seen[on_1 * 2 + on_0] = true;
+        }
+        if corners_seen != [true; 4] {
+            return None;
+        }
+        let width = u32::try_from(max[0] - min[0]).ok()?;
+        let depth = u32::try_from(max[1] - min[1]).ok()?;
+        Some([width, depth])
+    }
+
     /// Whether the prism's AABB exceeds [`MAX_GRID_VOXELS`] — the same single-shape
     /// sanity cap `SdfShape::exceeds_voxel_cap` applies, so a pathological
     /// profile/height can't blow memory on a lone resolve.
@@ -523,6 +568,65 @@ mod tests {
             cell_x == 17 && voxel.block_local_coord[0] == 1
         });
         assert!(has_local_one, "sub-block block_local_coord must wrap at d=16");
+    }
+
+    /// The rectangle-detection helper the inspector uses to choose editable
+    /// Width/Depth vs. a read-only custom-profile note: a `rectangle` profile is
+    /// detected (returning its in-plane spans) regardless of plane; an L-shape and a
+    /// degenerate (triangle) profile are not; and a four-point profile whose corners
+    /// are NOT the bounding-box corners (a non-axis-aligned quad) is rejected.
+    #[test]
+    fn rectangle_in_plane_spans_detection() {
+        // A genuine rectangle on each plane reports its [width, depth] spans.
+        for plane in [PlaneAxis::X, PlaneAxis::Y, PlaneAxis::Z] {
+            let extrude = SketchExtrude::new(Sketch::rectangle(plane, 6, 4), 3);
+            assert_eq!(
+                extrude.rectangle_in_plane_spans(),
+                Some([6, 4]),
+                "plane {plane:?} rectangle must report its spans"
+            );
+        }
+        // An L-shape (six vertices) is not a rectangle.
+        let l_profile = vec![
+            SketchPoint::new(0, 0),
+            SketchPoint::new(4, 0),
+            SketchPoint::new(4, 2),
+            SketchPoint::new(2, 2),
+            SketchPoint::new(2, 4),
+            SketchPoint::new(0, 4),
+        ];
+        assert_eq!(
+            SketchExtrude::new(Sketch::new(PlaneAxis::Z, l_profile), 1)
+                .rectangle_in_plane_spans(),
+            None,
+            "an L-shape is not a rectangle"
+        );
+        // A four-point quad whose corners are NOT the bounding-box corners (a
+        // diamond) must be rejected — its vertices lie on edge midpoints, not corners.
+        let diamond = vec![
+            SketchPoint::new(2, 0),
+            SketchPoint::new(4, 2),
+            SketchPoint::new(2, 4),
+            SketchPoint::new(0, 2),
+        ];
+        assert_eq!(
+            SketchExtrude::new(Sketch::new(PlaneAxis::Z, diamond), 1)
+                .rectangle_in_plane_spans(),
+            None,
+            "a diamond quad is not an axis-aligned rectangle"
+        );
+        // A degenerate (triangle / <4 point) profile is not a rectangle.
+        let triangle = vec![
+            SketchPoint::new(0, 0),
+            SketchPoint::new(4, 0),
+            SketchPoint::new(0, 4),
+        ];
+        assert_eq!(
+            SketchExtrude::new(Sketch::new(PlaneAxis::Z, triangle), 1)
+                .rectangle_in_plane_spans(),
+            None,
+            "a triangle is not a rectangle"
+        );
     }
 
     /// A non-rectangular extrude still matches between `grid_dimensions` and the

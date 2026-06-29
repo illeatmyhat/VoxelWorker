@@ -22,6 +22,7 @@ use crate::camera::ProjectionMode;
 use crate::core_geom::MaterialChoice;
 use crate::intent::{Intent, NodeSpec};
 use crate::scene::{DefId, Node, NodeContent, NodeId, Part, Scene};
+use crate::sketch::{PlaneAxis, Sketch, SketchExtrude};
 use crate::units::{self, DisplayUnit, MeasurementError};
 use crate::voxel::{GeometryParams, SdfShape, ShapeKind};
 
@@ -187,6 +188,13 @@ impl PanelState {
     /// mirror untouched (its editor shows name + seed instead).
     pub fn sync_mirror_from_active(&mut self) {
         if let Some(node) = self.scene.active_node() {
+            // A sketch node shares the single `material` field; mirror it so the
+            // inspector's Material selector reflects the selected sketch's material
+            // (its producer is read straight from the node, not from the geometry
+            // mirror, so only the material needs syncing here).
+            if let NodeContent::SketchTool { material, .. } = &node.content {
+                self.material = *material;
+            }
             if let NodeContent::Tool { shape, material } = &node.content {
                 self.geometry = GeometryParams {
                     shape: shape.kind,
@@ -723,6 +731,25 @@ fn tool_node_spec(kind: ShapeKind, state: &PanelState) -> NodeSpec {
     }
 }
 
+/// A [`NodeSpec`] for a fresh sketch→extrude node sized to the current Size — a
+/// footprint-extrude-up rectangle on the XY ground (ADR 0003 §3i). The current size
+/// in voxels `[size_x, size_y, size_z]` maps onto a `PlaneAxis::Z` sketch: the
+/// in-plane axes for Z are `[0, 1]` = X, Y, so the rectangle's in-plane width is
+/// `size_x` and depth is `size_y`, extruded `size_z` voxels up along +Z. This is the
+/// SAME construction the headless `default_sketch_spec_equals_box` test pins
+/// (`SketchExtrude::new(Sketch::rectangle(PlaneAxis::Z, size_x, size_y), size_z)`), so
+/// a freshly-added sketch resolves to exactly the matching `Box` of the current Size.
+fn sketch_node_spec(state: &PanelState) -> NodeSpec {
+    let [size_x, size_y, size_z] = state.geometry.size_voxels;
+    NodeSpec::Sketch {
+        producer: SketchExtrude::new(
+            Sketch::rectangle(PlaneAxis::Z, size_x as i64, size_y as i64),
+            size_z,
+        ),
+        material: state.material,
+    }
+}
+
 /// Build the action buttons under the tree: **+ Add** (top-level), **+ Add child**
 /// (into the active Group), **Group** (wrap the active node), and **Make
 /// definition** (turn the active node into a reusable [`AssemblyDef`] + Instance).
@@ -751,6 +778,12 @@ fn build_node_actions(ui: &mut egui::Ui, state: &mut PanelState, response: &mut 
                 }
             }
             ui.separator();
+            if ui.button("Sketch").clicked() {
+                response.emit_and_frame(Intent::AddNode {
+                    content: sketch_node_spec(state),
+                });
+                ui.close();
+            }
             if ui.button("Clouds (Part)").clicked() {
                 response.emit_and_frame(Intent::AddNode {
                     content: NodeSpec::CloudsPart,
@@ -777,6 +810,15 @@ fn build_node_actions(ui: &mut egui::Ui, state: &mut PanelState, response: &mut 
                     }
                 }
                 ui.separator();
+                if ui.button("Sketch").clicked() {
+                    if let Some(group_id) = group_id {
+                        response.emit_and_frame(Intent::AddChild {
+                            group: group_id,
+                            content: sketch_node_spec(state),
+                        });
+                    }
+                    ui.close();
+                }
                 if ui.button("Clouds (Part)").clicked() {
                     if let Some(group_id) = group_id {
                         response.emit_and_frame(Intent::AddChild {
@@ -899,9 +941,10 @@ fn build_inspector_section(
     }
     let kind = match state.scene.active_node().map(|node| &node.content) {
         Some(NodeContent::Tool { .. }) => ActiveKind::Tool,
-        // ADR 0003 §3i Slice 2a has NO sketch-editing UI yet; the inspector shows
-        // only the shared placement + grids sections (a sketch is placed/toggled
-        // like any node). Profile/extrude editing arrives with the 2b/2c UI.
+        // ADR 0003 §3i: a sketch node shows the rectangle-profile editor
+        // (Plane / Width / Depth / Height) — or, for a hand-built non-rectangular
+        // profile, a read-only note + Plane/Height — plus the shared material /
+        // placement / grids sections (see `build_sketch_inspector_section`).
         Some(NodeContent::SketchTool { .. }) => ActiveKind::Sketch,
         Some(NodeContent::Part(_)) => ActiveKind::Part,
         Some(NodeContent::Group(_)) => ActiveKind::Group,
@@ -956,15 +999,7 @@ fn build_inspector_section(
             build_node_grids_section(ui, state, response);
         }
         ActiveKind::Sketch => {
-            // No sketch-editing widgets in Slice 2a — just a label + the shared
-            // placement / grids sections so a sketch node is selectable and placeable.
-            ui.add_space(8.0);
-            ui.label(
-                egui::RichText::new("Sketch → Extrude (no editor yet)")
-                    .small()
-                    .weak(),
-            );
-            ui.separator();
+            build_sketch_inspector_section(ui, state, response);
             build_offset_section(ui, state, response);
             build_node_grids_section(ui, state, response);
         }
@@ -1086,6 +1121,138 @@ fn build_part_inspector_section(
         }
     }
     ui.separator();
+}
+
+/// Inspector for a sketch→extrude active node (ADR 0003 §3i): edits the node's
+/// [`SketchExtrude`] producer. A change rebuilds the whole producer and emits a
+/// `SetSketch` (auto-framed, since the prism's AABB — and thus the composite extent —
+/// changes), then the shared material section emits `SetMaterial`. The offset / grids
+/// sections are appended by the caller, common to all node kinds.
+///
+/// Two modes, by profile shape:
+///
+///   * **Rectangle** (the only shape the UI can author today, e.g. the Add-menu
+///     default): a **Plane** picker (X/Y/Z) plus **Width** / **Depth** (the two
+///     in-plane spans, along the plane's [`in_plane_axes`]) and **Height** (the
+///     extrude span). Any change rebuilds a fresh `Sketch::rectangle` on the chosen
+///     plane at the edited spans.
+///   * **Custom profile** (a hand-built polygon — not reachable from the UI yet, but
+///     it can exist in code/tests): a read-only "Custom profile (N points)" note and
+///     ONLY the Plane picker + Height. A rebuild here PRESERVES the existing profile
+///     points, swapping only the plane / extrude span — it never clobbers the polygon
+///     into a rectangle.
+///
+/// DEFERRED (ADR 0003 §3i, Slices 2b/2c): free-polyline point add/move/delete
+/// editing, revolve / sweep producers, and on-surface sketching are not built here.
+///
+/// [`in_plane_axes`]: crate::sketch::PlaneAxis::in_plane_axes
+fn build_sketch_inspector_section(
+    ui: &mut egui::Ui,
+    state: &mut PanelState,
+    response: &mut PanelResponse,
+) {
+    let Some(target) = state.scene.active else {
+        return;
+    };
+    // Read the active node's producer (clone so the borrow of the scene ends before
+    // the material section, which takes `&mut state`).
+    let Some(producer) = state.scene.active_node().and_then(|node| match &node.content {
+        NodeContent::SketchTool { producer, .. } => Some(producer.clone()),
+        _ => None,
+    }) else {
+        return;
+    };
+
+    ui.add_space(8.0);
+    ui.strong("Sketch → Extrude");
+
+    // The label for a plane choice in the picker.
+    fn plane_label(plane: PlaneAxis) -> &'static str {
+        match plane {
+            PlaneAxis::Z => "Z (XY footprint, up)",
+            PlaneAxis::X => "X (YZ profile)",
+            PlaneAxis::Y => "Y (XZ profile)",
+        }
+    }
+
+    let mut plane = producer.sketch.plane;
+    let mut height_voxels = producer.height_voxels.max(1);
+    let mut changed = false;
+
+    // Plane picker — common to both modes.
+    egui::ComboBox::from_label("Plane")
+        .selected_text(plane_label(plane))
+        .show_ui(ui, |ui| {
+            for option in [PlaneAxis::Z, PlaneAxis::X, PlaneAxis::Y] {
+                if ui
+                    .selectable_value(&mut plane, option, plane_label(option))
+                    .changed()
+                {
+                    changed = true;
+                }
+            }
+        });
+
+    // Rectangle profiles expose editable Width/Depth; a custom polygon is read-only.
+    let rectangle_spans = producer.rectangle_in_plane_spans();
+    let mut width_voxels = rectangle_spans.map(|spans| spans[0]).unwrap_or(1).max(1);
+    let mut depth_voxels = rectangle_spans.map(|spans| spans[1]).unwrap_or(1).max(1);
+
+    if rectangle_spans.is_some() {
+        ui.horizontal(|ui| {
+            ui.label("Width (vx)");
+            changed |= ui
+                .add(egui::DragValue::new(&mut width_voxels).speed(1.0).range(1..=u32::MAX))
+                .changed();
+        });
+        ui.horizontal(|ui| {
+            ui.label("Depth (vx)");
+            changed |= ui
+                .add(egui::DragValue::new(&mut depth_voxels).speed(1.0).range(1..=u32::MAX))
+                .changed();
+        });
+    } else {
+        // A hand-built polygon: read-only note, no Width/Depth (editing them would
+        // mean discarding the profile). Only the plane + height below are editable.
+        ui.label(
+            egui::RichText::new(format!(
+                "Custom profile ({} points)",
+                producer.sketch.profile.len()
+            ))
+            .small()
+            .weak(),
+        );
+    }
+
+    ui.horizontal(|ui| {
+        ui.label("Height (vx)");
+        changed |= ui
+            .add(egui::DragValue::new(&mut height_voxels).speed(1.0).range(1..=u32::MAX))
+            .changed();
+    });
+
+    if changed {
+        // Rebuild the producer. A rectangle profile is regenerated at the edited
+        // spans; a custom profile is PRESERVED (only plane / height swap), so a
+        // hand-built polygon is never clobbered into a rectangle.
+        let sketch = if rectangle_spans.is_some() {
+            Sketch::rectangle(plane, width_voxels as i64, depth_voxels as i64)
+        } else {
+            Sketch::new(plane, producer.sketch.profile.clone())
+        };
+        let rebuilt = SketchExtrude::new(sketch, height_voxels);
+        response.emit_and_frame(Intent::SetSketch { target, producer: rebuilt });
+    }
+
+    ui.separator();
+
+    // Shared material section (emits SetMaterial). It binds to `state.material`, which
+    // the loop syncs from the active node on selection, so it reflects this sketch's
+    // material; a pick emits `SetMaterial` (which the dispatch applies to a sketch
+    // node's shared material field).
+    if build_material_section(ui, state, response) {
+        response.emit(Intent::SetMaterial { target, material: state.material });
+    }
 }
 
 /// Offset (placement) section (ADR 0003 §3f(0)): three per-axis text fields
