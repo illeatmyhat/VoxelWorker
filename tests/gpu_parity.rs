@@ -280,3 +280,117 @@ fn gpu_sketch_occupancy_matches_per_chunk_fog_exactly() {
         failures.join("\n")
     );
 }
+
+// ===========================================================================
+// Atlas packing tier — the production texture-write mechanic
+// ===========================================================================
+
+/// Replicate `upload_grid_per_chunk`'s atlas packing on the CPU from the reference
+/// volumes, so the GPU-produced R8 atlas can be asserted byte-identical to it. Returns
+/// the `atlas_dim³` bytes plus the tile geometry.
+fn cpu_atlas(reference: &PerChunkFogOccupancy) -> (Vec<u8>, u32, u32) {
+    let pad = reference.chunk_extent as usize + 2;
+    let chunk_count = reference.volumes.len();
+    let tiles_per_axis = ((chunk_count as f64).cbrt().ceil() as u32).max(1);
+    let atlas_dim = tiles_per_axis * pad as u32;
+    let atlas_dim_usize = atlas_dim as usize;
+    let mut atlas = vec![0u8; atlas_dim_usize.pow(3)];
+    for (tile_index, volume) in reference.volumes.iter().enumerate() {
+        let tx = (tile_index as u32) % tiles_per_axis;
+        let ty = ((tile_index as u32) / tiles_per_axis) % tiles_per_axis;
+        let tz = (tile_index as u32) / (tiles_per_axis * tiles_per_axis);
+        let base = [tx as usize * pad, ty as usize * pad, tz as usize * pad];
+        for lz in 0..pad {
+            for ly in 0..pad {
+                for lx in 0..pad {
+                    let src = (lz * pad + ly) * pad + lx;
+                    let ax = base[0] + lx;
+                    let ay = base[1] + ly;
+                    let az = base[2] + lz;
+                    let dst = (az * atlas_dim_usize + ay) * atlas_dim_usize + ax;
+                    atlas[dst] = volume.occupancy[src];
+                }
+            }
+        }
+    }
+    (atlas, atlas_dim, tiles_per_axis)
+}
+
+/// Compare a GPU `AtlasResult` against the CPU-packed atlas; `None` on byte-identical.
+fn compare_atlas(
+    case: &str,
+    cpu: &[u8],
+    cpu_dim: u32,
+    cpu_tiles: u32,
+    gpu_atlas: &[u8],
+    gpu_dim: u32,
+    gpu_tiles: u32,
+) -> Option<String> {
+    if (cpu_dim, cpu_tiles) != (gpu_dim, gpu_tiles) {
+        return Some(format!(
+            "{case}: geometry mismatch — CPU dim={cpu_dim} tiles={cpu_tiles} vs GPU dim={gpu_dim} tiles={gpu_tiles}"
+        ));
+    }
+    let differing = cpu.iter().zip(gpu_atlas).filter(|(a, b)| a != b).count();
+    if differing == 0 {
+        None
+    } else {
+        Some(format!("{case}: {differing}/{} atlas bytes differ", cpu.len()))
+    }
+}
+
+#[test]
+fn gpu_atlas_matches_cpu_upload_packing() {
+    let gpu = pollster::block_on(GpuContext::new(None));
+    let resolver = GpuResolver::new(&gpu.device);
+    let mut failures: Vec<String> = Vec::new();
+
+    // SDF: sphere@d16 (8 chunks → tiles_per_axis 2, full) and box@d4 (12 chunks →
+    // tiles_per_axis 3, so 27 tile slots with 15 EMPTY — exercises the zero-fill).
+    for case in [&SDF_CASES[2], &SDF_CASES[6]] {
+        let vpb = case.voxels_per_block;
+        let shape = SdfShape::from_voxels(case.kind, case.size_voxels, case.wall_blocks);
+        let geometry = GeometryParams {
+            shape: case.kind,
+            size_voxels: case.size_voxels,
+            size_measurements: None,
+            voxels_per_block: vpb,
+            wall_blocks: case.wall_blocks,
+        };
+        let scene = Scene::from_geometry(geometry, MaterialChoice::default());
+        let grid = scene.resolve_region(scene.full_extent_blocks(vpb), vpb, 0);
+        let reference = build_per_chunk_fog_occupancy(&grid, vpb);
+        let chunk_coords: Vec<[i32; 3]> = reference.volumes.iter().map(|v| v.chunk_coord).collect();
+        let (cpu, dim, tiles) = cpu_atlas(&reference);
+        let result = resolver.resolve_sdf_atlas(&gpu.device, &gpu.queue, &shape, vpb, &chunk_coords);
+        if let Some(f) = compare_atlas(case.name, &cpu, dim, tiles, &result.atlas, result.atlas_dim, result.tiles_per_axis) {
+            failures.push(f);
+        }
+    }
+
+    // Sketch: the concave L extrude and the revolved vase.
+    for case in [&SKETCH_CASES[1], &SKETCH_CASES[4]] {
+        let vpb = case.voxels_per_block;
+        let producer = case.build();
+        let node = Node::new(
+            "Sketch",
+            NodeContent::SketchTool { producer: producer.clone(), material: MaterialChoice::default() },
+        );
+        let mut scene = Scene::single_node(node);
+        scene.voxels_per_block = vpb;
+        let grid = scene.resolve_region(scene.full_extent_blocks(vpb), vpb, 0);
+        let reference = build_per_chunk_fog_occupancy(&grid, vpb);
+        let chunk_coords: Vec<[i32; 3]> = reference.volumes.iter().map(|v| v.chunk_coord).collect();
+        let (cpu, dim, tiles) = cpu_atlas(&reference);
+        let result = resolver.resolve_sketch_atlas(&gpu.device, &gpu.queue, &producer, vpb, &chunk_coords);
+        if let Some(f) = compare_atlas(case.name, &cpu, dim, tiles, &result.atlas, result.atlas_dim, result.tiles_per_axis) {
+            failures.push(f);
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "GPU atlas != CPU upload_grid_per_chunk packing:\n{}",
+        failures.join("\n")
+    );
+}

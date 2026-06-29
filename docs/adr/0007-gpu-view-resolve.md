@@ -214,9 +214,21 @@ boundary band; the §6 contract then degrades to the pinned tolerance below. The
 guard that would catch it. The driver currently asserts a single-dimension workgroup-count limit (the
 spike dispatches 1-D), so very large cases are split by keeping density vs chunk-count balanced.
 
+**Atlas mechanic proven (2026-06-29).** The production texture-write path is built + green: a second
+compute entry (`main_atlas`) packs the GPU-evaluated occupancy as bytes (`atomicOr`, 256-aligned rows)
+straight into the `upload_grid_per_chunk` atlas layout; `copy_buffer_to_texture` lands it in the R8
+atlas, and the A/B net asserts the texture (read back) is **byte-identical** to the CPU atlas packing —
+including the empty-tile zero-fill and the row-alignment padding. So the GPU can now produce the exact
+R8 atlas the per-chunk fog raymarch samples; what remains is the live call-site swap.
+
 ## Open (deferred to their phase)
 
-- **Live wiring** — P1's spike is green; wiring the GPU field into `OnionFogRenderer`'s atlas
-  (`copy_buffer_to_texture` from a packed-byte storage buffer) is the next step, behind the A/B net.
+- **Live call-site swap** — replace the per-edit CPU `build_per_chunk_fog_occupancy` + atlas pack at
+  the `main.rs` / `shot.rs` fog-upload sites with the GPU atlas path. The remaining design question is
+  the **chunk-set / residency** source: the GPU path enumerates COVERING chunks (from the producer
+  AABB) rather than the CPU's occupied-bucketed non-empty set, so empty tiles appear (benign — no
+  occupancy, no fog) but the atlas is no longer byte-identical to the CPU one; the goldens (pixel
+  tolerance) are the guard there, and `DebugClouds` / multi-producer composites fall back to the CPU
+  path per chunk. This is the architecturally-invasive step (touches `AppCore` dirty-set plumbing).
 - **P2 mesh-vs-raymarch** for the GPU display surface (decided at P2, not now).
 - **The pinned tolerance value**, only if a future case/adapter proves exact parity unattainable.

@@ -50,14 +50,20 @@ struct Descriptor {
     pad: u32,
     // Number of chunk volumes to evaluate.
     num_chunks: u32,
-    _pad0: u32,
-    _pad1: u32,
-    _pad2: u32,
+    // Atlas packing (the `main_atlas` entry only): tiles per axis, the atlas cube
+    // dimension (tiles_per_axis * pad), and the 256-aligned bytes-per-row stride of the
+    // packed-byte buffer (a copy_buffer_to_texture requirement).
+    tiles_per_axis: u32,
+    atlas_dim: u32,
+    padded_row: u32,
 };
 
 @group(0) @binding(0) var<uniform> desc: Descriptor;
 @group(0) @binding(1) var<storage, read> chunk_coords: array<vec4<i32>>;
-@group(0) @binding(2) var<storage, read_write> occupancy: array<u32>;
+// Read-write occupancy. The `main` (A/B) entry writes one u32 (0/255) per apron cell;
+// the `main_atlas` entry packs occupancy BYTES into the atlas via `atomicOr` (4 cells
+// share a u32 word, written concurrently). Typed atomic so both entries share the layout.
+@group(0) @binding(2) var<storage, read_write> occupancy: array<atomic<u32>>;
 // Sketch profile vertices (in-plane voxel coords); one dummy element for SDF cases.
 @group(0) @binding(3) var<storage, read> profile: array<vec2<i32>>;
 
@@ -274,5 +280,56 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         occupied = evaluate(voxel_index);
     }
 
-    occupancy[linear] = occupied;
+    atomicStore(&occupancy[linear], occupied);
+}
+
+// Pack the same per-chunk apron occupancy into the OnionFogRenderer atlas byte layout
+// (mirrors `upload_grid_per_chunk`'s tile placement), as PACKED BYTES in a 256-padded-row
+// buffer ready for `copy_buffer_to_texture` into the R8 atlas. One invocation per apron
+// cell; the byte is OR'd into its u32 word (the buffer is cleared to 0 first).
+@compute @workgroup_size(64)
+fn main_atlas(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let linear = global_id.x;
+    let pad = desc.pad;
+    let cells_per_chunk = pad * pad * pad;
+    let total = desc.num_chunks * cells_per_chunk;
+    if (linear >= total) {
+        return;
+    }
+
+    let chunk = linear / cells_per_chunk;
+    var rem = linear % cells_per_chunk;
+    let ak = rem / (pad * pad);
+    rem = rem % (pad * pad);
+    let aj = rem / pad;
+    let ai = rem % pad;
+
+    let coord = chunk_coords[chunk].xyz;
+    let chunk_min = coord * desc.chunk_extent;
+    let g = chunk_min + vec3<i32>(i32(ai), i32(aj), i32(ak)) - vec3<i32>(1, 1, 1);
+    let voxel_index = g - desc.local_offset.xyz;
+
+    var occupied = 0u;
+    if (all(voxel_index >= vec3<i32>(0, 0, 0)) && all(voxel_index < desc.grid.xyz)) {
+        occupied = evaluate(voxel_index);
+    }
+    if (occupied == 0u) {
+        return; // byte stays 0; nothing to OR
+    }
+
+    // Tile slot of this chunk in the cubic atlas (linear tile index → 3D tile coord),
+    // matching `upload_grid_per_chunk`.
+    let tpa = desc.tiles_per_axis;
+    let tx = chunk % tpa;
+    let ty = (chunk / tpa) % tpa;
+    let tz = chunk / (tpa * tpa);
+    let ax = tx * pad + ai;
+    let ay = ty * pad + aj;
+    let az = tz * pad + ak;
+
+    // Byte offset in the 256-padded-row buffer; OR the 0xFF byte into its u32 word.
+    let byte_index = (az * desc.atlas_dim + ay) * desc.padded_row + ax;
+    let word = byte_index / 4u;
+    let shift = (byte_index % 4u) * 8u;
+    atomicOr(&occupancy[word], occupied << shift);
 }
