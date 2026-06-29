@@ -210,13 +210,21 @@ impl AppConfig {
     }
 
     /// The persisted [`HomeView`] (#13) — the saved Home-button view restored on
-    /// load. Defaults to the camera defaults for an old config without the keys.
+    /// load. An EXPLICIT home (the user pressed "set home") is honoured verbatim; an
+    /// IMPLICIT home (never captured) always tracks the CURRENT code default instead
+    /// of whatever angles a prior session happened to persist, so changing the
+    /// default Home angle takes effect even on an existing config (no stale TOP view
+    /// lingering from a pre-change save).
     pub fn home_view(&self) -> HomeView {
-        HomeView {
-            theta: self.home_theta,
-            phi: self.home_phi,
-            distance: self.home_distance,
-            explicitly_set: self.home_explicit,
+        if self.home_explicit {
+            HomeView {
+                theta: self.home_theta,
+                phi: self.home_phi,
+                distance: self.home_distance,
+                explicitly_set: true,
+            }
+        } else {
+            HomeView::default()
         }
     }
 
