@@ -17,6 +17,10 @@
 use wgpu::util::DeviceExt;
 
 use crate::core_geom::CHUNK_BLOCKS;
+use crate::debug_clouds::{
+    DebugCloudField, CLOUD_EDGE_BILLOW, CLOUD_NOISE_GAIN, CLOUD_NOISE_LACUNARITY,
+    CLOUD_NOISE_OCTAVES, CLOUD_NOISE_WAVELENGTH_FRACTION,
+};
 use crate::sketch::{Operation, RevolveAxis, SketchSolid};
 use crate::voxel::{SdfShape, ShapeKind};
 
@@ -35,7 +39,9 @@ struct Descriptor {
     sketch_axes: [u32; 4],
     /// [radial_a, radial_b, revolve_is_inplane0, profile_straddles_axis].
     revolve_axes: [u32; 4],
-    /// 0 = SDF primitive, 1 = sketch extrude, 2 = sketch revolve.
+    /// DebugClouds fBm constants: [edge_billow, wavelength_fraction, lacunarity, gain].
+    cloud_params: [f32; 4],
+    /// 0 = SDF primitive, 1 = sketch extrude, 2 = sketch revolve, 3 = debug clouds.
     producer_type: u32,
     kind: u32,
     wall_voxels: f32,
@@ -49,6 +55,11 @@ struct Descriptor {
     tiles_per_axis: u32,
     atlas_dim: u32,
     padded_row: u32,
+    /// DebugClouds: fBm octave count + number of puffs in the `cloud_puffs` buffer.
+    cloud_octaves: u32,
+    num_puffs: u32,
+    _pad0: u32,
+    _pad1: u32,
 }
 
 impl Descriptor {
@@ -66,6 +77,7 @@ impl Descriptor {
             profile_ints: [0; 4],
             sketch_axes: [0; 4],
             revolve_axes: [0; 4],
+            cloud_params: [0.0; 4],
             producer_type: 0,
             kind: 0,
             wall_voxels: 0.0,
@@ -78,6 +90,10 @@ impl Descriptor {
             tiles_per_axis: 0,
             atlas_dim: 0,
             padded_row: 0,
+            cloud_octaves: 0,
+            num_puffs: 0,
+            _pad0: 0,
+            _pad1: 0,
         }
     }
 }
@@ -97,6 +113,33 @@ fn shape_kind_discriminant(kind: ShapeKind) -> u32 {
 /// `copy_buffer_to_texture` requires each buffer row be a multiple of this (wgpu's
 /// `COPY_BYTES_PER_ROW_ALIGNMENT`), so the packed atlas buffer pads its rows to it.
 const COPY_BYTES_PER_ROW_ALIGNMENT: u32 = 256;
+
+/// Placeholder bindings 3/4/5 for producers that don't use a given input (the layout
+/// always binds all three, so no storage binding is ever zero-sized).
+const DUMMY_PROFILE: &[[i32; 2]] = &[[0, 0]];
+const DUMMY_CLOUDS: &[[f32; 4]] = &[[0.0; 4]];
+const DUMMY_PERM: &[u32] = &[0];
+
+/// The producer-specific input buffers bound at bindings 3 (profile), 4 (cloud puffs),
+/// and 5 (cloud permutation). Each producer fills the one(s) it uses and leaves the
+/// rest as dummies — bundled so the dispatch helpers stay under the argument limit.
+struct ProducerInputs<'a> {
+    profile: &'a [[i32; 2]],
+    cloud_puffs: &'a [[f32; 4]],
+    cloud_perm: &'a [u32],
+}
+
+impl<'a> ProducerInputs<'a> {
+    fn sdf() -> Self {
+        Self { profile: DUMMY_PROFILE, cloud_puffs: DUMMY_CLOUDS, cloud_perm: DUMMY_PERM }
+    }
+    fn sketch(profile: &'a [[i32; 2]]) -> Self {
+        Self { profile, cloud_puffs: DUMMY_CLOUDS, cloud_perm: DUMMY_PERM }
+    }
+    fn clouds(cloud_puffs: &'a [[f32; 4]], cloud_perm: &'a [u32]) -> Self {
+        Self { profile: DUMMY_PROFILE, cloud_puffs, cloud_perm }
+    }
+}
 
 /// The GPU-packed fog atlas: the R8 texture produced via `copy_buffer_to_texture`,
 /// plus its bytes read back (unpadded `atlas_dim³`) for the A/B assertion, and the
@@ -170,9 +213,31 @@ impl GpuResolver {
                         },
                         count: None,
                     },
-                    // 3: sketch profile vertices (read-only storage; dummy for SDF)
+                    // 3: sketch profile vertices (read-only storage; dummy otherwise)
                     wgpu::BindGroupLayoutEntry {
                         binding: 3,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // 4: cloud puffs (read-only storage; dummy otherwise)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // 5: cloud permutation table (read-only storage; dummy otherwise)
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 5,
                         visibility: wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Storage { read_only: true },
@@ -228,7 +293,7 @@ impl GpuResolver {
         chunk_coords: &[[i32; 3]],
     ) -> Vec<Vec<u8>> {
         let descriptor = Self::sdf_descriptor(shape, voxels_per_block, chunk_coords.len() as u32);
-        self.dispatch(device, queue, descriptor, chunk_coords, &[[0, 0]])
+        self.dispatch(device, queue, descriptor, chunk_coords, ProducerInputs::sdf())
     }
 
     /// As [`resolve_sdf_occupancy`](Self::resolve_sdf_occupancy), but packs the result
@@ -244,7 +309,7 @@ impl GpuResolver {
         chunk_coords: &[[i32; 3]],
     ) -> AtlasResult {
         let descriptor = Self::sdf_descriptor(shape, voxels_per_block, chunk_coords.len() as u32);
-        self.dispatch_atlas(device, queue, descriptor, chunk_coords, &[[0, 0]])
+        self.dispatch_atlas(device, queue, descriptor, chunk_coords, ProducerInputs::sdf())
     }
 
     /// GPU-evaluate the apron'd occupancy of a [`SketchSolid`] (extrude or revolve) at
@@ -261,7 +326,7 @@ impl GpuResolver {
     ) -> Vec<Vec<u8>> {
         let (descriptor, profile) =
             Self::sketch_descriptor(solid, voxels_per_block, chunk_coords.len() as u32);
-        self.dispatch(device, queue, descriptor, chunk_coords, &profile)
+        self.dispatch(device, queue, descriptor, chunk_coords, ProducerInputs::sketch(&profile))
     }
 
     /// As [`resolve_sketch_occupancy`](Self::resolve_sketch_occupancy), but packs the
@@ -276,7 +341,38 @@ impl GpuResolver {
     ) -> AtlasResult {
         let (descriptor, profile) =
             Self::sketch_descriptor(solid, voxels_per_block, chunk_coords.len() as u32);
-        self.dispatch_atlas(device, queue, descriptor, chunk_coords, &profile)
+        self.dispatch_atlas(device, queue, descriptor, chunk_coords, ProducerInputs::sketch(&profile))
+    }
+
+    /// GPU-evaluate the apron'd occupancy of a [`DebugCloudField`] at document density
+    /// `voxels_per_block`, for each chunk in `chunk_coords` (same contract as
+    /// [`resolve_sdf_occupancy`](Self::resolve_sdf_occupancy)).
+    pub fn resolve_clouds_occupancy(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        field: &DebugCloudField,
+        voxels_per_block: u32,
+        chunk_coords: &[[i32; 3]],
+    ) -> Vec<Vec<u8>> {
+        let (descriptor, puffs, perm) =
+            Self::cloud_descriptor(field, voxels_per_block, chunk_coords.len() as u32);
+        self.dispatch(device, queue, descriptor, chunk_coords, ProducerInputs::clouds(&puffs, &perm))
+    }
+
+    /// As [`resolve_clouds_occupancy`](Self::resolve_clouds_occupancy), but packs the
+    /// result into the atlas texture (see [`resolve_sdf_atlas`](Self::resolve_sdf_atlas)).
+    pub fn resolve_clouds_atlas(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        field: &DebugCloudField,
+        voxels_per_block: u32,
+        chunk_coords: &[[i32; 3]],
+    ) -> AtlasResult {
+        let (descriptor, puffs, perm) =
+            Self::cloud_descriptor(field, voxels_per_block, chunk_coords.len() as u32);
+        self.dispatch_atlas(device, queue, descriptor, chunk_coords, ProducerInputs::clouds(&puffs, &perm))
     }
 
     /// Build the SDF producer descriptor (atlas fields left zero).
@@ -369,6 +465,37 @@ impl GpuResolver {
         (descriptor, profile_vertices)
     }
 
+    /// Build the DebugClouds descriptor + its puff buffer (2 vec4 per puff) and the
+    /// permutation table, computed CPU-side from the field exactly as the CPU resolve
+    /// does (so the GPU noise indexes the same table / puffs).
+    fn cloud_descriptor(
+        field: &DebugCloudField,
+        voxels_per_block: u32,
+        num_chunks: u32,
+    ) -> (Descriptor, Vec<[f32; 4]>, Vec<u32>) {
+        let voxels_per_block = voxels_per_block.max(1);
+        let chunk_extent = (CHUNK_BLOCKS * voxels_per_block) as i32;
+        let mut descriptor = Descriptor::base(field.dimensions, chunk_extent, num_chunks);
+        descriptor.producer_type = 3;
+        descriptor.cloud_params = [
+            CLOUD_EDGE_BILLOW,
+            CLOUD_NOISE_WAVELENGTH_FRACTION,
+            CLOUD_NOISE_LACUNARITY,
+            CLOUD_NOISE_GAIN,
+        ];
+        descriptor.cloud_octaves = CLOUD_NOISE_OCTAVES;
+
+        let puff_params = field.gpu_puffs();
+        descriptor.num_puffs = puff_params.len() as u32;
+        let mut puffs: Vec<[f32; 4]> = Vec::with_capacity(puff_params.len() * 2);
+        for p in &puff_params {
+            puffs.push([p.center[0], p.center[1], p.center[2], p.radius]);
+            puffs.push([p.noise_offset[0], p.noise_offset[1], p.noise_offset[2], 0.0]);
+        }
+        let perm: Vec<u32> = field.permutation_table().iter().map(|&b| b as u32).collect();
+        (descriptor, puffs, perm)
+    }
+
     /// Build the buffers + bind group, dispatch, and read the occupancy back, split
     /// into one `pad³` Vec per chunk.
     fn dispatch(
@@ -377,7 +504,7 @@ impl GpuResolver {
         queue: &wgpu::Queue,
         descriptor: Descriptor,
         chunk_coords: &[[i32; 3]],
-        profile_vertices: &[[i32; 2]],
+        inputs: ProducerInputs,
     ) -> Vec<Vec<u8>> {
         let pad = descriptor.pad as usize;
         let cells_per_chunk = pad * pad * pad;
@@ -414,11 +541,21 @@ impl GpuResolver {
             usage: wgpu::BufferUsages::STORAGE,
         });
 
-        // The profile buffer is always bound (binding 3); SDF cases pass a single dummy
-        // vertex so the storage binding is never zero-sized.
+        // Bindings 3/4/5 are always bound; non-matching producers pass single dummies so
+        // no storage binding is ever zero-sized.
         let profile_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("gpu_resolve profile"),
-            contents: bytemuck::cast_slice(profile_vertices),
+            contents: bytemuck::cast_slice(inputs.profile),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        let cloud_puffs_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("gpu_resolve cloud puffs"),
+            contents: bytemuck::cast_slice(inputs.cloud_puffs),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        let cloud_perm_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("gpu_resolve cloud perm"),
+            contents: bytemuck::cast_slice(inputs.cloud_perm),
             usage: wgpu::BufferUsages::STORAGE,
         });
 
@@ -455,6 +592,14 @@ impl GpuResolver {
                 wgpu::BindGroupEntry {
                     binding: 3,
                     resource: profile_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: cloud_puffs_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: cloud_perm_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -514,7 +659,7 @@ impl GpuResolver {
         queue: &wgpu::Queue,
         mut descriptor: Descriptor,
         chunk_coords: &[[i32; 3]],
-        profile_vertices: &[[i32; 2]],
+        inputs: ProducerInputs,
     ) -> AtlasResult {
         let pad = descriptor.pad;
         let cells_per_chunk = (pad * pad * pad) as usize;
@@ -561,7 +706,17 @@ impl GpuResolver {
         });
         let profile_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("gpu_resolve atlas profile"),
-            contents: bytemuck::cast_slice(profile_vertices),
+            contents: bytemuck::cast_slice(inputs.profile),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        let cloud_puffs_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("gpu_resolve atlas cloud puffs"),
+            contents: bytemuck::cast_slice(inputs.cloud_puffs),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        let cloud_perm_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("gpu_resolve atlas cloud perm"),
+            contents: bytemuck::cast_slice(inputs.cloud_perm),
             usage: wgpu::BufferUsages::STORAGE,
         });
         let packed_buffer = device.create_buffer(&wgpu::BufferDescriptor {
@@ -604,6 +759,8 @@ impl GpuResolver {
                 wgpu::BindGroupEntry { binding: 1, resource: coords_buffer.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 2, resource: packed_buffer.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 3, resource: profile_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: cloud_puffs_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 5, resource: cloud_perm_buffer.as_entire_binding() },
             ],
         });
 

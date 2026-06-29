@@ -20,10 +20,10 @@
 
 use voxel_worker::gpu_resolve::GpuResolver;
 use voxel_worker::renderer::{build_per_chunk_fog_occupancy, PerChunkFogOccupancy};
-use voxel_worker::voxel::{signed_distance, GeometryParams, SdfShape, ShapeKind};
+use voxel_worker::voxel::{signed_distance, GeometryParams, SdfShape, ShapeKind, VoxelGrid, VoxelProducer};
 use voxel_worker::{
-    GpuContext, MaterialChoice, Node, NodeContent, PlaneAxis, RevolveAxis, Scene, Sketch,
-    SketchPoint, SketchSolid,
+    DebugCloudField, GpuContext, MaterialChoice, Node, NodeContent, PlaneAxis, RevolveAxis, Scene,
+    Sketch, SketchPoint, SketchSolid,
 };
 
 /// A divergent apron cell, located for the report.
@@ -277,6 +277,67 @@ fn gpu_sketch_occupancy_matches_per_chunk_fog_exactly() {
     assert!(
         failures.is_empty(),
         "GPU↔CPU sketch occupancy diverged (ADR 0007 §6 — measure, don't silently tolerate):\n{}",
+        failures.join("\n")
+    );
+}
+
+// ===========================================================================
+// DebugClouds tier (Perlin fBm) — the §6 noise-parity question
+// ===========================================================================
+
+/// `(name, dimensions, seed, voxels_per_block)`. Densities kept low so the chunk
+/// count stays under the single-dimension workgroup limit.
+const CLOUD_CASES: &[(&str, [u32; 3], u32, u32)] = &[
+    ("clouds-48-d4-s1", [48, 48, 48], 1, 4),
+    ("clouds-48-d4-s7", [48, 48, 48], 7, 4),
+    ("clouds-64-32-64-d4-s3", [64, 32, 64], 3, 4),
+];
+
+#[test]
+fn gpu_clouds_occupancy_matches_per_chunk_fog_exactly() {
+    let gpu = pollster::block_on(GpuContext::new(None));
+    let resolver = GpuResolver::new(&gpu.device);
+    let mut failures: Vec<String> = Vec::new();
+
+    for &(name, dims, seed, vpb) in CLOUD_CASES {
+        let field = DebugCloudField { dimensions: dims, seed };
+        // Resolve to a grid, then RECENTRE by floor(grid/2) so it sits in the standard
+        // fog frame (fog-global == producer-local, local_offset 0). This isolates the
+        // noise-eval parity (the §6 question) from the Part-only recentre wrinkle, which
+        // is a separate live-frame concern.
+        let mut grid = VoxelGrid::new(dims);
+        field.resolve(&mut grid, vpb);
+        let half = [(dims[0] / 2) as f32, (dims[1] / 2) as f32, (dims[2] / 2) as f32];
+        for voxel in &mut grid.occupied {
+            voxel.world_position[0] -= half[0];
+            voxel.world_position[1] -= half[1];
+            voxel.world_position[2] -= half[2];
+        }
+
+        let reference = build_per_chunk_fog_occupancy(&grid, vpb);
+        let chunk_coords: Vec<[i32; 3]> = reference.volumes.iter().map(|v| v.chunk_coord).collect();
+        if chunk_coords.is_empty() {
+            failures.push(format!("{name}: CPU produced zero chunk volumes"));
+            continue;
+        }
+
+        let gpu_occupancy = resolver.resolve_clouds_occupancy(&gpu.device, &gpu.queue, &field, vpb, &chunk_coords);
+        let pad = (reference.chunk_extent + 2) as usize;
+        let chunk_extent = reference.chunk_extent as i64;
+        let mismatches = collect_mismatches(name, &reference, &gpu_occupancy, pad);
+        if mismatches.is_empty() {
+            continue;
+        }
+        let total: usize = reference.volumes.iter().map(|v| v.occupancy.len()).sum();
+        failures.push(report(name, total, &mismatches, |m| {
+            let vi = voxel_index_of(m.chunk_coord, m.apron, chunk_extent);
+            format!("vi={vi:?} cpu={} gpu={}", m.cpu, m.gpu)
+        }));
+    }
+
+    assert!(
+        failures.is_empty(),
+        "GPU↔CPU cloud occupancy diverged (ADR 0007 §6 — Perlin fBm must match):\n{}",
         failures.join("\n")
     );
 }

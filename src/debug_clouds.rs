@@ -25,18 +25,22 @@ use rayon::prelude::*;
 /// fraction of each cloud's radius. Keeps clouds bounded (so the gaps survive)
 /// while making the edges billow. < 1.0 guarantees a cloud never reaches more
 /// than `radius * (1 + this)` from its centre.
-const CLOUD_EDGE_BILLOW: f32 = 0.42;
+///
+/// `pub` so the GPU view-resolve (ADR 0007) shares the EXACT same constant with its
+/// WGSL port (one source of truth — a drift would break the §6 exact-parity net).
+pub const CLOUD_EDGE_BILLOW: f32 = 0.42;
 
 /// fBm octave count / shaping. Four octaves is plenty for a readable cloud at
-/// these grid sizes; more just adds sub-voxel detail.
-const CLOUD_NOISE_OCTAVES: u32 = 4;
-const CLOUD_NOISE_LACUNARITY: f32 = 2.0;
-const CLOUD_NOISE_GAIN: f32 = 0.5;
+/// these grid sizes; more just adds sub-voxel detail. `pub`: shared with the GPU port.
+pub const CLOUD_NOISE_OCTAVES: u32 = 4;
+pub const CLOUD_NOISE_LACUNARITY: f32 = 2.0;
+pub const CLOUD_NOISE_GAIN: f32 = 0.5;
 
 /// Noise wavelength as a fraction of a cloud's radius. ~0.6 puts a few billows
 /// across each cloud (wavelength a bit smaller than the cloud), which reads as
-/// fluffy rather than either smooth (too large) or noisy (too small).
-const CLOUD_NOISE_WAVELENGTH_FRACTION: f32 = 0.6;
+/// fluffy rather than either smooth (too large) or noisy (too small). `pub`: shared
+/// with the GPU port.
+pub const CLOUD_NOISE_WAVELENGTH_FRACTION: f32 = 0.6;
 
 /// A single cloud puff.
 #[derive(Debug, Clone, Copy)]
@@ -56,6 +60,46 @@ pub struct DebugCloudField {
     pub dimensions: [u32; 3],
     /// Seed for the deterministic placement + noise permutation.
     pub seed: u32,
+}
+
+/// One cloud puff's resolved parameters, flattened for the GPU view-resolve (ADR
+/// 0007). The producer evaluates `distance + fBm` against these on the GPU exactly as
+/// [`cloud_field_is_solid`] does on the CPU.
+#[derive(Debug, Clone, Copy)]
+pub struct CloudPuffParams {
+    /// World-centred centre (same frame as the centred SDF sample `idx + 0.5 - grid/2`).
+    pub center: [f32; 3],
+    /// Base radius in voxels (before noise displacement).
+    pub radius: f32,
+    /// Per-cloud offset into the noise field.
+    pub noise_offset: [f32; 3],
+}
+
+impl DebugCloudField {
+    /// The resolved cloud puffs (the GPU view-resolve streams these), computed from
+    /// `seed` + `dimensions` EXACTLY as [`resolve_into`](DebugCloudField::resolve_into)
+    /// does — same `scatter_cloud_puffs`, so the GPU eval matches the CPU bit-for-bit.
+    pub fn gpu_puffs(&self) -> Vec<CloudPuffParams> {
+        let extent = Vec3::new(
+            self.dimensions[0] as f32,
+            self.dimensions[1] as f32,
+            self.dimensions[2] as f32,
+        );
+        scatter_cloud_puffs(self.seed, extent)
+            .into_iter()
+            .map(|cloud| CloudPuffParams {
+                center: cloud.center.to_array(),
+                radius: cloud.radius,
+                noise_offset: cloud.noise_offset.to_array(),
+            })
+            .collect()
+    }
+
+    /// The seed-shuffled Perlin permutation table (the GPU view-resolve streams it so
+    /// its WGSL noise indexes the SAME table as the CPU `PerlinNoise`).
+    pub fn permutation_table(&self) -> [u8; 512] {
+        PerlinNoise::new(self.seed).permutation
+    }
 }
 
 impl VoxelProducer for DebugCloudField {

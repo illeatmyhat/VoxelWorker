@@ -32,7 +32,9 @@ struct Descriptor {
     sketch_axes: vec4<u32>,
     // Revolve params: [radial_a, radial_b, revolve_is_inplane0, profile_straddles_axis].
     revolve_axes: vec4<u32>,
-    // 0 = SDF primitive, 1 = sketch extrude, 2 = sketch revolve.
+    // DebugClouds fBm constants: [edge_billow, wavelength_fraction, lacunarity, gain].
+    cloud_params: vec4<f32>,
+    // 0 = SDF primitive, 1 = sketch extrude, 2 = sketch revolve, 3 = debug clouds.
     producer_type: u32,
     // ShapeKind discriminant (producer_type 0): 0=Cyl 1=Tube 2=Sphere 3=Torus 4=Box.
     kind: u32,
@@ -56,6 +58,11 @@ struct Descriptor {
     tiles_per_axis: u32,
     atlas_dim: u32,
     padded_row: u32,
+    // DebugClouds: fBm octave count + number of cloud puffs in `cloud_puffs`.
+    cloud_octaves: u32,
+    num_puffs: u32,
+    _pad0: u32,
+    _pad1: u32,
 };
 
 @group(0) @binding(0) var<uniform> desc: Descriptor;
@@ -66,6 +73,12 @@ struct Descriptor {
 @group(0) @binding(2) var<storage, read_write> occupancy: array<atomic<u32>>;
 // Sketch profile vertices (in-plane voxel coords); one dummy element for SDF cases.
 @group(0) @binding(3) var<storage, read> profile: array<vec2<i32>>;
+// DebugClouds puffs: 2 vec4 per puff — [center.xyz, radius], [noise_offset.xyz, _].
+// One dummy element for non-cloud producers.
+@group(0) @binding(4) var<storage, read> cloud_puffs: array<vec4<f32>>;
+// DebugClouds Perlin permutation table (512 seed-shuffled entries, 0..255). One dummy
+// element for non-cloud producers.
+@group(0) @binding(5) var<storage, read> cloud_perm: array<u32>;
 
 // --- SDF primitives (mirror src/voxel.rs `signed_distance_*`, glam f32) ---
 
@@ -178,6 +191,113 @@ fn revolve_inside(signed_radius: f32, profile_axial: f32, is_inplane0: bool) -> 
     return point_in_polygon(sample_0, sample_1);
 }
 
+// --- DebugClouds: Perlin fBm + per-puff radial falloff (mirror src/debug_clouds.rs) ---
+
+fn fade(t: f32) -> f32 {
+    return t * t * t * (t * (t * 6.0 - 15.0) + 10.0);
+}
+
+fn nlerp(a: f32, b: f32, t: f32) -> f32 {
+    return a + t * (b - a);
+}
+
+// Perlin's 12-direction gradient (mirror `grad`, hash low bits select the edge).
+fn grad(hash: u32, x: f32, y: f32, z: f32) -> f32 {
+    let h = hash & 15u;
+    var u: f32;
+    if (h < 8u) { u = x; } else { u = y; }
+    var v: f32;
+    if (h < 4u) { v = y; } else if (h == 12u || h == 14u) { v = x; } else { v = z; }
+    var u_term: f32;
+    if ((h & 1u) == 0u) { u_term = u; } else { u_term = -u; }
+    var v_term: f32;
+    if ((h & 2u) == 0u) { v_term = v; } else { v_term = -v; }
+    return u_term + v_term;
+}
+
+fn perm(index: u32) -> u32 {
+    return cloud_perm[index];
+}
+
+// Improved-Perlin 3D noise (mirror `PerlinNoise::noise`).
+fn perlin_noise(point: vec3<f32>) -> f32 {
+    let xi = floor(point.x);
+    let yi = floor(point.y);
+    let zi = floor(point.z);
+    let cube_x = u32(i32(xi) & 255);
+    let cube_y = u32(i32(yi) & 255);
+    let cube_z = u32(i32(zi) & 255);
+
+    let fx = point.x - xi;
+    let fy = point.y - yi;
+    let fz = point.z - zi;
+
+    let u = fade(fx);
+    let v = fade(fy);
+    let w = fade(fz);
+
+    let a = perm(cube_x) + cube_y;
+    let aa = perm(a) + cube_z;
+    let ab = perm(a + 1u) + cube_z;
+    let b = perm(cube_x + 1u) + cube_y;
+    let ba = perm(b) + cube_z;
+    let bb = perm(b + 1u) + cube_z;
+
+    let x1 = nlerp(grad(perm(aa), fx, fy, fz), grad(perm(ba), fx - 1.0, fy, fz), u);
+    let x2 = nlerp(grad(perm(ab), fx, fy - 1.0, fz), grad(perm(bb), fx - 1.0, fy - 1.0, fz), u);
+    let y1 = nlerp(x1, x2, v);
+
+    let x3 = nlerp(grad(perm(aa + 1u), fx, fy, fz - 1.0), grad(perm(ba + 1u), fx - 1.0, fy, fz - 1.0), u);
+    let x4 = nlerp(grad(perm(ab + 1u), fx, fy - 1.0, fz - 1.0), grad(perm(bb + 1u), fx - 1.0, fy - 1.0, fz - 1.0), u);
+    let y2 = nlerp(x3, x4, v);
+
+    return nlerp(y1, y2, w);
+}
+
+// fBm: summed octaves, normalised (mirror `PerlinNoise::fractal_noise`).
+fn fractal_noise(point: vec3<f32>) -> f32 {
+    let octaves = desc.cloud_octaves;
+    let lacunarity = desc.cloud_params.z;
+    let gain = desc.cloud_params.w;
+    var frequency = 1.0;
+    var amplitude = 1.0;
+    var sum = 0.0;
+    var normalization = 0.0;
+    for (var i = 0u; i < octaves; i = i + 1u) {
+        sum = sum + amplitude * perlin_noise(point * frequency);
+        normalization = normalization + amplitude;
+        amplitude = amplitude * gain;
+        frequency = frequency * lacunarity;
+    }
+    if (normalization == 0.0) {
+        return 0.0;
+    }
+    return sum / normalization;
+}
+
+// Whether the centred sample lands in any puff (mirror `cloud_field_is_solid`).
+fn cloud_field_is_solid(point: vec3<f32>) -> bool {
+    let edge_billow = desc.cloud_params.x;
+    let wavelength_fraction = desc.cloud_params.y;
+    for (var p = 0u; p < desc.num_puffs; p = p + 1u) {
+        let center = cloud_puffs[2u * p].xyz;
+        let radius = cloud_puffs[2u * p].w;
+        let noise_offset = cloud_puffs[2u * p + 1u].xyz;
+        let dist = length(point - center);
+        let radial = 1.0 - dist / radius;
+        if (radial < -edge_billow) {
+            continue;
+        }
+        let wavelength = radius * wavelength_fraction;
+        let frequency = 1.0 / max(wavelength, 1.0);
+        let billow = fractal_noise((point + noise_offset) * frequency);
+        if (radial + edge_billow * billow > 0.0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // Occupancy of a single producer-local voxel index. Returns 255u (inside) or 0u.
 fn evaluate(voxel_index: vec3<i32>) -> u32 {
     var vi = array<i32, 3>(voxel_index.x, voxel_index.y, voxel_index.z);
@@ -241,6 +361,14 @@ fn evaluate(voxel_index: vec3<i32>) -> u32 {
                 is_inside = revolve_inside(-radial, profile_axial, is_inplane0);
             }
             if (is_inside) {
+                return 255u;
+            }
+            return 0u;
+        }
+        // DebugClouds: Perlin fBm cloud field at the centred sample.
+        case 3u: {
+            let sample = vec3<f32>(voxel_index) + vec3<f32>(0.5) - desc.semi_axes.xyz;
+            if (cloud_field_is_solid(sample)) {
                 return 255u;
             }
             return 0u;
