@@ -257,11 +257,6 @@ impl VoxelProducer for SketchExtrude {
             return;
         };
 
-        let [grid_x, grid_y, grid_z] = dimensions;
-        let half_x = grid_x as f32 / 2.0;
-        let half_y = grid_y as f32 / 2.0;
-        let half_z = grid_z as f32 / 2.0;
-
         let [in_plane_0, in_plane_1] = self.sketch.plane.in_plane_axes();
         let normal = self.sketch.plane.normal_axis();
         let in_plane_span_0 = dimensions[in_plane_0];
@@ -287,9 +282,10 @@ impl VoxelProducer for SketchExtrude {
 
         grid.occupied.reserve(filled_in_plane.len() * self.height_voxels as usize);
         // The voxel's grid index per world axis, assembled from the in-plane cell
-        // and the normal layer, then turned into an origin-centred centre exactly
-        // the way `SdfShape::resolve` does (centre = idx + 0.5 − grid/2) so a
-        // rectangle extrude is byte-identical to the matching `Box`.
+        // and the normal layer, then CORNER-ANCHORED (centre = idx + 0.5) exactly the
+        // way `SdfShape::resolve` does, so a rectangle extrude is byte-identical to the
+        // matching `Box`. The centre is a half-integer for any grid size → always on
+        // the global voxel lattice.
         for layer in 0..self.height_voxels {
             for &[cell_0, cell_1] in &filled_in_plane {
                 let mut index = [0u32; 3];
@@ -297,9 +293,9 @@ impl VoxelProducer for SketchExtrude {
                 index[in_plane_1] = cell_1;
                 index[normal] = layer;
                 let world_position = [
-                    index[0] as f32 + 0.5 - half_x,
-                    index[1] as f32 + 0.5 - half_y,
-                    index[2] as f32 + 0.5 - half_z,
+                    index[0] as f32 + 0.5,
+                    index[1] as f32 + 0.5,
+                    index[2] as f32 + 0.5,
                 ];
                 grid.occupied.push(Voxel {
                     world_position,
@@ -451,12 +447,12 @@ mod tests {
         extrude.resolve(&mut grid, 4);
         assert_eq!(grid.dimensions, [4, 1, 4], "L AABB is 4×1×4");
 
-        // Recover the in-plane cell of each voxel (plane Y ⇒ axes X, Z; grid 4×1×4,
-        // so centres are idx + 0.5 − 2.0). Build the occupied (x, z) cell set.
+        // Recover the in-plane cell of each voxel (plane Y ⇒ axes X, Z). Corner-
+        // anchored: centres are `idx + 0.5`, so the cell index is `world − 0.5`.
         let mut cells: BTreeSet<(i64, i64)> = BTreeSet::new();
         for voxel in &grid.occupied {
-            let cell_x = (voxel.world_position[0] + 2.0 - 0.5).round() as i64;
-            let cell_z = (voxel.world_position[2] + 2.0 - 0.5).round() as i64;
+            let cell_x = (voxel.world_position[0] - 0.5).round() as i64;
+            let cell_z = (voxel.world_position[2] - 0.5).round() as i64;
             cells.insert((cell_x, cell_z));
         }
         // The L occupies the full bottom two rows (z 0..2, all x) and the left two
@@ -529,7 +525,8 @@ mod tests {
         // block_local_coord wraps at the density: a cell at in-plane index 17 has
         // block-local X = 17 % 16 = 1 (proves the sub-block fraction is carried).
         let has_local_one = grid.occupied.iter().any(|voxel| {
-            let cell_x = (voxel.world_position[0] + 10.0 - 0.5).round() as i64;
+            // Corner-anchored: cell index = world − 0.5.
+            let cell_x = (voxel.world_position[0] - 0.5).round() as i64;
             cell_x == 17 && voxel.block_local_coord[0] == 1
         });
         assert!(has_local_one, "sub-block block_local_coord must wrap at d=16");

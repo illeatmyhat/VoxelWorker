@@ -205,12 +205,13 @@ pub fn decompose_into_boxes(region: &VoxelRegion) -> Vec<VoxelBox> {
 /// (the per-chunk adapter the rendering task — E3 — will call).
 ///
 /// `origin` is the region's minimum voxel index in grid space; `extent` is its
-/// size in voxels. A grid voxel maps to its index with the project-wide rule
-/// `i = round(world_position + dimensions/2 - 0.5)` (see
-/// `VoxelGrid::widest_run_in_band` / `renderer::upload_grid`). Voxels whose index
-/// falls inside `[origin, origin + extent)` are copied into the region with their
-/// `material_id`; everything else stays air. Out-of-grid origins simply yield air
-/// for the uncovered cells.
+/// size in voxels. A grid voxel maps to its index with the project-wide
+/// CORNER-ANCHORED rule `i = round(world_position + floor(dimensions/2) - 0.5)`
+/// (see `VoxelGrid::widest_run_in_band` / `renderer::upload_grid`) — the producers
+/// emit corner-anchored half-integer centres, so this is exact for any dim parity.
+/// Voxels whose index falls inside `[origin, origin + extent)` are copied into the
+/// region with their `material_id`; everything else stays air. Out-of-grid origins
+/// simply yield air for the uncovered cells.
 ///
 /// Passing `origin = [0, 0, 0]` and `extent = grid.dimensions` decomposes the
 /// whole grid in one call.
@@ -224,14 +225,14 @@ pub fn region_from_voxel_grid(
     if grid_x == 0 || grid_y == 0 || grid_z == 0 {
         return region;
     }
-    let half_x = grid_x as f32 / 2.0;
-    let half_y = grid_y as f32 / 2.0;
-    let half_z = grid_z as f32 / 2.0;
-
+    // Corner-anchoring: the grid's index space is `[0, dim)` with voxel centres at
+    // `idx + 0.5`, so `idx = floor(world)` — exact for any parity (centres are
+    // half-integers). (Was `round(world + dim/2 − 0.5)` for the retired origin-centred
+    // grid, which broke for odd dim.)
     for voxel in &grid.occupied {
-        let i = (voxel.world_position[0] + half_x - 0.5).round() as i64;
-        let j = (voxel.world_position[1] + half_y - 0.5).round() as i64;
-        let k = (voxel.world_position[2] + half_z - 0.5).round() as i64;
+        let i = voxel.world_position[0].floor() as i64;
+        let j = voxel.world_position[1].floor() as i64;
+        let k = voxel.world_position[2].floor() as i64;
         if i < 0 || j < 0 || k < 0 {
             continue;
         }
@@ -532,17 +533,17 @@ mod tests {
         // Build a tiny VoxelGrid by hand and decompose the whole thing via the
         // adapter, confirming the world_position → index mapping round-trips.
         let dimensions = [2u32, 2, 2];
-        let half = [1.0f32, 1.0, 1.0]; // dims/2
         let mut grid = VoxelGrid::new(dimensions);
-        // Fill a 2×2×1 slab (z=0) with material 5; leave z=1 air.
+        // Corner-anchored grid: voxel (i,j,k) centre at `idx + 0.5`. Fill a 2×2×1 slab
+        // (z=0) with material 5; leave z=1 air.
         for k in 0..1u32 {
             for j in 0..2u32 {
                 for i in 0..2u32 {
                     grid.occupied.push(Voxel {
                         world_position: [
-                            i as f32 + 0.5 - half[0],
-                            j as f32 + 0.5 - half[1],
-                            k as f32 + 0.5 - half[2],
+                            i as f32 + 0.5,
+                            j as f32 + 0.5,
+                            k as f32 + 0.5,
                         ],
                         block_local_coord: [i as u8, j as u8, k as u8],
                         material_id: 5,
@@ -833,16 +834,18 @@ mod tests {
         // A 4×4×4 grid, fill the high-X half (i>=2) with material 8; extract just
         // the sub-box [2,0,0]..[2+2,4,4) and confirm the offset shift is correct.
         let dimensions = [4u32, 4, 4];
-        let half = 2.0f32;
         let mut grid = VoxelGrid::new(dimensions);
+        // Corner-anchored grid: voxel (i,j,k) centre at `idx + 0.5` (index space
+        // `[0, dim)`). Occupy the i ∈ [2,4) slab so the `origin=[2,0,0]` sub-box
+        // selects it.
         for k in 0..4u32 {
             for j in 0..4u32 {
                 for i in 2..4u32 {
                     grid.occupied.push(Voxel {
                         world_position: [
-                            i as f32 + 0.5 - half,
-                            j as f32 + 0.5 - half,
-                            k as f32 + 0.5 - half,
+                            i as f32 + 0.5,
+                            j as f32 + 0.5,
+                            k as f32 + 0.5,
                         ],
                         block_local_coord: [0, 0, 0],
                         material_id: 8,

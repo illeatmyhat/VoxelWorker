@@ -89,14 +89,24 @@ impl VoxelProducer for DebugCloudField {
                 let mut local = Vec::new();
                 for k in 0..grid_z {
                     for i in 0..grid_x {
-                        let point = Vec3::new(
+                        // SAMPLE the field at the centred coordinate (`idx + 0.5 −
+                        // half`) so the cloud geometry is unchanged, but STORE the voxel
+                        // CORNER-ANCHORED (`idx + 0.5`) exactly like `SdfShape` /
+                        // `SketchExtrude`: the centre is a half-integer for any grid
+                        // size → always on the global voxel lattice, and the cloud
+                        // resolves in the SAME frame as the Tools it mixes with.
+                        let sample = Vec3::new(
                             i as f32 + 0.5 - half_x,
                             j as f32 + 0.5 - half_y,
                             k as f32 + 0.5 - half_z,
                         );
-                        if cloud_field_is_solid(point, &clouds, &noise) {
+                        if cloud_field_is_solid(sample, &clouds, &noise) {
                             local.push(Voxel {
-                                world_position: [point.x, point.y, point.z],
+                                world_position: [
+                                    i as f32 + 0.5,
+                                    j as f32 + 0.5,
+                                    k as f32 + 0.5,
+                                ],
                                 block_local_coord: [
                                     (i % voxels_per_block) as u8,
                                     (j % voxels_per_block) as u8,

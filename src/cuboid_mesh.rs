@@ -204,7 +204,9 @@ pub fn build_cuboid_mesh_banded(
     // (= `floor(world_offset.y + 0.5 + half_y)`), so absolute layer = `base_layer +
     // ly`. We invert the band into region-local Y and clear everything outside it.
     if band.band_min > 0 || band.band_max != u32::MAX {
-        let half_y = grid_y as f32 / 2.0;
+        // Corner-anchoring: FLOORED half so the absolute layer matches the shader's
+        // `floor(world.y + floor(dim/2))` for any dim parity.
+        let half_y = (grid_y / 2) as f32;
         let base_layer = (world_offset[1] + 0.5 + half_y).floor() as i64;
         // Region-local Y range that maps into [band_min, band_max] (inclusive).
         let local_lo = band.band_min as i64 - base_layer;
@@ -466,7 +468,8 @@ fn build_chunk_meshes_with_apron(
     // base_layer`, `base_layer = floor(world_offset.y + 0.5 + half_y)`. So a global
     // index Y is in-band iff `base_layer + gy ∈ [band_min, band_max]`.
     let band_active = band.band_min > 0 || band.band_max != u32::MAX;
-    let half_y = grid_dimensions[1] as f32 / 2.0;
+    // Corner-anchoring: FLOORED half (matches the shader's floor(world.y+floor(dim/2))).
+    let half_y = (grid_dimensions[1] / 2) as f32;
     let base_layer = (world_offset[1] + 0.5 + half_y).floor() as i64;
     let global_y_in_band = |gy: i64| -> bool {
         if !band_active {
@@ -1357,10 +1360,14 @@ impl CuboidMeshRenderer {
         let overlay = crate::renderer::grid_overlay_params();
         let uniforms = CuboidUniforms {
             view_projection: view_projection.to_cols_array_2d(),
+            // Corner-anchoring: the grid's low corner is `−floor(dim/2)`, so the GPU
+            // recovers the absolute voxel frame with `world_position + floor(dim/2)`
+            // (integer-valued). Using `dim/2.0` would be half a voxel off for an ODD
+            // dim, mis-snapping the voxel/block grid overlay and the Y-band clip.
             grid_half_extent: [
-                grid_dimensions[0] as f32 / 2.0,
-                grid_dimensions[1] as f32 / 2.0,
-                grid_dimensions[2] as f32 / 2.0,
+                (grid_dimensions[0] / 2) as f32,
+                (grid_dimensions[1] / 2) as f32,
+                (grid_dimensions[2] / 2) as f32,
             ],
             voxels_per_block: voxels_per_block.max(1) as f32,
             voxel_line_color: overlay.voxel_line_color,
@@ -2333,7 +2340,7 @@ mod tests {
                 *m = m.min(v.world_position[axis]);
             }
         }
-        let half_y = dims[1] as f32 / 2.0;
+        let half_y = (dims[1] / 2) as f32; // corner-anchoring: floored half
         let base_layer = (min_world[1] + half_y).floor() as i64;
         let occupancy: std::collections::HashSet<[i64; 3]> = grid
             .occupied

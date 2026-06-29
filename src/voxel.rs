@@ -148,9 +148,13 @@ impl VoxelGrid {
             return 0;
         }
         let width = grid_x as usize;
-        let half_x = grid_x as f32 / 2.0;
-        let half_y = grid_y as f32 / 2.0;
-        let half_z = grid_z as f32 / 2.0;
+        // Corner-anchoring decode: the grid's low corner in the recentred frame is
+        // `−floor(dim/2)`, so `idx = round(world − region_low − 0.5) = round(world +
+        // floor(dim/2) − 0.5)`. Use FLOORED half (`dim/2` integer division), NOT
+        // `dim/2.0`, so the decode is exact for an ODD dim too (world is half-integer).
+        let half_x = (grid_x / 2) as f32;
+        let half_y = (grid_y / 2) as f32;
+        let half_z = (grid_z / 2) as f32;
 
         // One occupancy row (length grid_x) per (y, z) row that touches the band.
         // Keyed by a flat (y, z) index; built sparsely so an empty grid is cheap.
@@ -226,9 +230,11 @@ pub fn widest_run_in_band_over_chunks<'grid>(
         return 0;
     }
     let width = grid_x as usize;
-    let half_x = grid_x as f32 / 2.0;
-    let half_y = grid_y as f32 / 2.0;
-    let half_z = grid_z as f32 / 2.0;
+    // Corner-anchoring decode: FLOORED half (`dim/2` integer division), exact for an
+    // odd dim — see `widest_run_in_band`.
+    let half_x = (grid_x / 2) as f32;
+    let half_y = (grid_y / 2) as f32;
+    let half_z = (grid_z / 2) as f32;
 
     // ONE shared occupancy row (length grid_x) per (y, z) row that touches the
     // band — shared across ALL chunks, so a run spanning a chunk seam is one
@@ -415,18 +421,29 @@ impl VoxelProducer for SdfShape {
                 let mut local = Vec::new();
                 for k in 0..grid_z {
                     for i in 0..grid_x {
-                        // World-centred sample point at the voxel centre.
-                        let point = Vec3::new(
+                        // The shape geometry is still inscribed symmetric about the
+                        // grid's centre, so SAMPLE the SDF at the centred coordinate
+                        // (`idx + 0.5 − grid/2`). But STORE the voxel CORNER-ANCHORED
+                        // (`idx + 0.5`): the local occupied span is `[0, grid)` and the
+                        // centre is a HALF-INTEGER for any grid size, so it always sits
+                        // inside its voxel cell `[idx, idx+1)` — on the global voxel
+                        // lattice at any parity. (Was centred at `idx + 0.5 − grid/2`,
+                        // which lands on integers for an odd grid and straddles cells.)
+                        let sample = Vec3::new(
                             i as f32 + 0.5 - half_x,
                             j as f32 + 0.5 - half_y,
                             k as f32 + 0.5 - half_z,
                         );
 
-                        if signed_distance(kind, point, semi_axes, wall_voxels)
+                        if signed_distance(kind, sample, semi_axes, wall_voxels)
                             <= SURFACE_ISOLEVEL
                         {
                             local.push(Voxel {
-                                world_position: [point.x, point.y, point.z],
+                                world_position: [
+                                    i as f32 + 0.5,
+                                    j as f32 + 0.5,
+                                    k as f32 + 0.5,
+                                ],
                                 block_local_coord: [
                                     (i % voxels_per_block) as u8,
                                     (j % voxels_per_block) as u8,

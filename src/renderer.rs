@@ -3059,7 +3059,9 @@ pub fn build_per_chunk_fog_occupancy(
             volumes: Vec::new(),
         };
     }
-    let half = [grid_x as f32 / 2.0, grid_y as f32 / 2.0, grid_z as f32 / 2.0];
+    // Corner-anchoring decode: FLOORED half (`dim/2` integer division) so the
+    // `round(world + half − 0.5)` index is exact for an odd dim (voxel.rs decode).
+    let half = [(grid_x / 2) as f32, (grid_y / 2) as f32, (grid_z / 2) as f32];
 
     // First pass: integer voxel coords of every occupied voxel (the SAME mapping the
     // whole-grid upload uses), bucketed by chunk coordinate. We keep a per-chunk set of
@@ -3505,9 +3507,11 @@ impl OnionFogRenderer {
         // grid uses elsewhere (voxel.rs::widest_run_in_band).
         let (width, height, depth) = (grid_x as usize, grid_y as usize, grid_z as usize);
         let mut occupancy = vec![0u8; width * height * depth];
-        let half_x = grid_x as f32 / 2.0;
-        let half_y = grid_y as f32 / 2.0;
-        let half_z = grid_z as f32 / 2.0;
+        // Corner-anchoring decode: FLOORED half (`dim/2` integer division), exact for
+        // an odd dim (voxel.rs::widest_run_in_band).
+        let half_x = (grid_x / 2) as f32;
+        let half_y = (grid_y / 2) as f32;
+        let half_z = (grid_z / 2) as f32;
         for voxel in &grid.occupied {
             let i = (voxel.world_position[0] + half_x - 0.5).round() as i64;
             let j = (voxel.world_position[1] + half_y - 0.5).round() as i64;

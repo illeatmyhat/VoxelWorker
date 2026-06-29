@@ -114,9 +114,12 @@ impl VoxExport {
         representative_rgba: [u8; 4],
     ) -> Self {
         let [grid_x, grid_y, grid_z] = region_dimensions;
-        let half_x = grid_x as f32 / 2.0;
-        let half_y = grid_y as f32 / 2.0;
-        let half_z = grid_z as f32 / 2.0;
+        // Corner-anchoring decode: FLOORED half (`dim/2` integer division), so
+        // `round(world + floor(dim/2) − 0.5)` recovers the exact index for an odd dim
+        // too (see voxel.rs::widest_run_in_band).
+        let half_x = (grid_x / 2) as f32;
+        let half_y = (grid_y / 2) as f32;
+        let half_z = (grid_z / 2) as f32;
 
         // Number of tiles along each grid axis so every tile is ≤ 256.
         let tiles_x = grid_x.div_ceil(VOX_AXIS_MAX).max(1);
@@ -302,19 +305,27 @@ fn write_chunk(out: &mut Vec<u8>, id: &[u8; 4], content: &[u8], children: &[u8])
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::voxel::{SdfShape, ShapeKind, VoxelProducer, VoxelGrid};
+    use crate::voxel::{SdfShape, ShapeKind};
 
     /// Resolve a small cylinder and round-trip it through `.vox`, asserting the
     /// voxel count and dimensions survive the Y-up → Z-up mapping.
+    ///
+    /// Corner-anchoring: `from_grid`'s decode (`round(world + floor(dim/2) − 0.5)`)
+    /// expects the grid in the RECENTRED frame (low corner `−floor(dim/2)`), which is
+    /// what production produces. So resolve through a one-node scene (recentred), NOT
+    /// the bare producer grid (whose low corner is 0).
     #[test]
     fn vox_round_trip_matches_grid() {
-        let shape = SdfShape {
-            kind: ShapeKind::Cylinder,
-            size_blocks: [5, 1, 5],
-            wall_blocks: 1,
-        };
-        let mut grid = VoxelGrid::new(shape.grid_dimensions(16));
-        shape.resolve(&mut grid, 16);
+        let scene = crate::scene::Scene::from_geometry(
+            GeometryParams {
+                shape: ShapeKind::Cylinder,
+                size_blocks: [5, 1, 5],
+                voxels_per_block: 16,
+                wall_blocks: 1,
+            },
+            crate::core_geom::MaterialChoice::Stone,
+        );
+        let grid = scene.resolve_region(scene.full_extent_blocks(16), 16, 0);
         assert!(grid.occupied_count() > 0, "expected a non-empty grid");
 
         let export = VoxExport::from_grid(&grid, [132, 126, 118, 255]);
@@ -345,14 +356,18 @@ mod tests {
     /// never silently truncate.
     #[test]
     fn vox_splits_models_over_256() {
-        // 17 blocks × 16 vx = 272 > 256 on X.
-        let shape = SdfShape {
-            kind: ShapeKind::Box,
-            size_blocks: [17, 1, 1],
-            wall_blocks: 1,
-        };
-        let mut grid = VoxelGrid::new(shape.grid_dimensions(16));
-        shape.resolve(&mut grid, 16);
+        // 17 blocks × 16 vx = 272 > 256 on X. Resolve through a scene (recentred
+        // frame) so `from_grid`'s corner-anchored decode lands every voxel in range.
+        let scene = crate::scene::Scene::from_geometry(
+            GeometryParams {
+                shape: ShapeKind::Box,
+                size_blocks: [17, 1, 1],
+                voxels_per_block: 16,
+                wall_blocks: 1,
+            },
+            crate::core_geom::MaterialChoice::Stone,
+        );
+        let grid = scene.resolve_region(scene.full_extent_blocks(16), 16, 0);
 
         let export = VoxExport::from_grid(&grid, [200, 200, 200, 255]);
         assert!(export.model_count() >= 2, "272-wide grid should split");

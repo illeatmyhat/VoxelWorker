@@ -843,27 +843,31 @@ impl AppCore {
     }
 
     /// Build the onion-skin fog parameters (issue #12) from the camera-derived
-    /// view-projection, grid, and layer-range scrubber. World-Y of layer `j` spans
-    /// `[j - grid_y/2, j+1 - grid_y/2]` (voxel centres at `j + 0.5 - grid_y/2`). The
-    /// solid band is layers `[lower, upper]`; the onion band extends `onion_depth`
-    /// layers on each side.
+    /// view-projection, grid, and layer-range scrubber. Corner-anchoring: the grid's
+    /// low corner in the recentred frame is `−floor(dim/2)`, so layer `j` has its voxel
+    /// centre at `j + 0.5 − floor(grid_y/2)` and spans world-Y `[j − floor(grid_y/2),
+    /// j+1 − floor(grid_y/2)]`. The solid band is layers `[lower, upper]`; the onion
+    /// band extends `onion_depth` layers on each side.
     pub fn onion_fog_params(
         view_projection: glam::Mat4,
         grid_dimensions: [u32; 3],
         layer_range: LayerRange,
     ) -> OnionFogParams {
-        let grid_y = grid_dimensions[1] as f32;
-        let half_y = grid_y / 2.0;
+        // FLOORED half (`(dim/2) as f32`) throughout, for a frame CONSISTENT with the
+        // corner-anchored voxels: the grid's low corner in the recentred frame is
+        // `−floor(dim/2)`, so the layer→world-Y conversion AND the ellipsoid `semi_axes`
+        // (which bounds the voxel volume `[−floor(dim/2), −floor(dim/2)+dim)`) must both
+        // use the floored half. (`dim/2.0` would put the ghost-fog ellipsoid ½ voxel off
+        // the voxels at an ODD dim; even-density goldens are unaffected either way.)
+        let half_x = (grid_dimensions[0] / 2) as f32;
+        let half_y = (grid_dimensions[1] / 2) as f32;
+        let half_z = (grid_dimensions[2] / 2) as f32;
         let depth = layer_range.onion_depth.clamp(1, 8) as f32;
         let lower = layer_range.lower as f32;
         let upper = layer_range.upper.min(grid_dimensions[1].saturating_sub(1)) as f32;
         OnionFogParams {
             inverse_view_projection: view_projection.inverse(),
-            semi_axes: [
-                grid_dimensions[0] as f32 / 2.0,
-                grid_dimensions[1] as f32 / 2.0,
-                grid_dimensions[2] as f32 / 2.0,
-            ],
+            semi_axes: [half_x, half_y, half_z],
             // Onion band world-Y: `depth` layers below the band's bottom edge to
             // `depth` layers above its top edge.
             onion_y_min: (lower - depth) - half_y,

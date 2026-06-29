@@ -225,34 +225,6 @@ fn world_block_corner_floor(world_offset_voxels: [i64; 3], voxels_per_block: u32
     ]
 }
 
-/// The region-grid dimension (voxels) that holds a center-emitted composite whose
-/// producer-true voxel span is `span` on one axis, at density `voxels_per_block`
-/// (center-anchoring retirement).
-///
-/// The decode every consumer uses — `index = round(world_position + dim/2 − 0.5)` —
-/// is exact only when `frac(dim/2)` matches the voxel-centre fractional part:
-/// * an **even-grid** leaf (`size·d` even) emits HALF-INTEGER centres → `dim` must be
-///   EVEN (so `dim/2` is whole);
-/// * an **odd-grid** leaf (`size·d` odd) emits INTEGER centres → `dim` must be ODD.
-///
-/// At **even density** every `size·d` is even, so all leaves are even-grid and `dim`
-/// must be even: we round the span UP to even (a parity-/offset-mismatched composite
-/// can give an ODD span, which a block-framed `size·d` region would clip; padding by
-/// one voxel costs at most one empty boundary slab and guarantees nothing drops).
-///
-/// At **odd density** a single shape's span is `size·d` whose parity already equals
-/// the leaf's grid parity, so we keep the span as-is (padding would shift its only
-/// voxel off index 0). A MIXED-parity composite at odd density cannot be satisfied by
-/// any single `dim` — a pre-existing decode limitation (see the parity tests).
-fn region_dim_for_span(span: i64, voxels_per_block: u32) -> u32 {
-    let span = span.max(0) as u32;
-    if voxels_per_block.max(1).is_multiple_of(2) {
-        span + (span & 1) // even density ⇒ even-grid leaves ⇒ dim must be even
-    } else {
-        span
-    }
-}
-
 /// A *static* voxel body with no meaningful generation parameters — dropped in
 /// as-is (ADR 0001). v1 has one variant; future variants are saved chiseled
 /// blocks and imported `.vox` bodies, each carrying baked per-voxel materials.
@@ -1250,10 +1222,9 @@ impl Scene {
                 // The leaf's whole-block offset, via the single floor rule.
                 let world_blocks = world_block_corner_floor(world_offset_voxels, voxels_per_block);
                 for axis in 0..3 {
-                    // The ± size/2 block split. Slice 2's sub-voxel placement will
-                    // require outward (ceil) rounding for the HIGH corner here.
-                    let half_low = (size_blocks[axis] / 2) as i64;
-                    let low = world_blocks[axis] - half_low;
+                    // Corner-anchored: the offset block IS the low corner, so the leaf
+                    // spans `[off_block, off_block + size)` blocks.
+                    let low = world_blocks[axis];
                     let high = low + size_blocks[axis] as i64;
                     min_corner[axis] = min_corner[axis].min(low);
                     max_corner[axis] = max_corner[axis].max(high);
@@ -1316,9 +1287,9 @@ impl Scene {
                 };
                 any = true;
                 for axis in 0..3 {
-                    // Center-emitted span `[off·d − grid/2, off·d + grid/2)`.
+                    // Corner-anchored span `[off, off + grid)` (offset is the low corner).
                     let grid = grid_voxels[axis];
-                    let low = world_offset_voxels[axis] - grid / 2;
+                    let low = world_offset_voxels[axis];
                     let high = low + grid;
                     min_corner[axis] = min_corner[axis].min(low);
                     max_corner[axis] = max_corner[axis].max(high);
@@ -1822,17 +1793,14 @@ impl Scene {
 
     /// The composite bounding box of all placed leaf nodes, in **whole-block**
     /// coordinates: `(min_corner, max_corner)` where each leaf with intrinsic
-    /// `size_blocks` placed at its block-offset (the derived block view of its
-    /// voxel placement, ADR 0003 §3f(0)) spans
-    /// `[offset - size/2, offset - size/2 + size]`. `None` when no leaf has an
-    /// intrinsic size (a Part-only scene). Drives both [`full_extent_blocks`] (the
-    /// size) and the recentre in [`resolve_region`] (centring the composite so its
-    /// world positions sit symmetrically about the origin — what the renderer and
-    /// camera assume).
+    /// `size_blocks` is CORNER-ANCHORED at its block-offset (the derived block view of
+    /// its voxel placement, ADR 0003 §3f(0)) and so spans `[offset, offset + size]`.
+    /// `None` when no leaf has an intrinsic size (a Part-only scene). Drives
+    /// [`full_extent_blocks`] (the whole-block size readout) and the block-lattice
+    /// overlay extent.
     ///
-    /// Block extents are split into a low/high half (`floor(size/2)` below the
-    /// centre, the remainder above) so an odd block size keeps the same parity the
-    /// voxel-space resolution uses, and the returned box is exact in blocks.
+    /// CORNER-ANCHORING: the offset block is the LOW corner (no `± size/2` split), so
+    /// the block frame matches the corner-anchored producer voxel frame exactly.
     fn placed_extent_blocks(&self, voxels_per_block: u32) -> Option<([i64; 3], [i64; 3])> {
         let mut min_corner = [i64::MAX; 3];
         let mut max_corner = [i64::MIN; 3];
@@ -1845,10 +1813,8 @@ impl Scene {
             // The leaf's whole-block offset, via the single floor rule.
             let world_blocks = world_block_corner_floor(world_offset_voxels, voxels_per_block);
             for axis in 0..3 {
-                // The ± size/2 block split. Slice 2's sub-voxel placement will
-                // require outward (ceil) rounding for the HIGH corner here.
-                let half_low = (size_blocks[axis] / 2) as i64;
-                let low = world_blocks[axis] - half_low;
+                // Corner-anchored: the offset block IS the low corner.
+                let low = world_blocks[axis];
                 let high = low + size_blocks[axis] as i64;
                 min_corner[axis] = min_corner[axis].min(low);
                 max_corner[axis] = max_corner[axis].max(high);
@@ -1965,19 +1931,15 @@ impl Scene {
     ) -> VoxelGrid {
         debug_assert_eq!(lod, 0, "step 1 only resolves full resolution (lod 0)");
 
-        // The region grid is sized in the PRODUCER VOXEL FRAME (center-anchoring
-        // retirement): the recentred composite occupies exactly `[−D/2, D/2)` with
-        // `D = max_v − min_v` (`placed_extent_voxels`), so a block-framed region
-        // (`size·d`) would clip a parity-mismatched multi-leaf composite. For a
-        // chunkable scene we therefore IGNORE the passed-in block `region` for sizing
-        // and use the voxel span; the explicit `region` argument still sizes a
-        // Part-only scene (which has no composite voxel extent).
+        // The region grid is sized in the PRODUCER VOXEL FRAME (corner-anchoring):
+        // the recentred composite occupies exactly `[region_low, region_low + D)` with
+        // `D = max_v − min_v` (`placed_extent_voxels`) and `region_low = min_v −
+        // recentre`, so a block-framed region (`size·d`) would clip a parity-mismatched
+        // multi-leaf composite. For a chunkable scene we IGNORE the passed-in block
+        // `region` for sizing and use the voxel span; the explicit `region` argument
+        // still sizes a Part-only scene (which has no composite voxel extent).
         let region_dimensions = match self.placed_extent_voxels(voxels_per_block) {
-            Some((min_corner, max_corner)) => [
-                region_dim_for_span(max_corner[0] - min_corner[0], voxels_per_block),
-                region_dim_for_span(max_corner[1] - min_corner[1], voxels_per_block),
-                region_dim_for_span(max_corner[2] - min_corner[2], voxels_per_block),
-            ],
+            Some(_) => self.placed_region_dimensions(voxels_per_block),
             None => [
                 region.size_blocks[0] * voxels_per_block,
                 region.size_blocks[1] * voxels_per_block,
@@ -1988,12 +1950,10 @@ impl Scene {
 
         // Recentre the composite so its world positions sit symmetrically about
         // the origin (what the renderer + camera auto-frame assume). Each producer
-        // emits voxels centred on ITS OWN grid; a node's placed centre in the
-        // composite's voxel space is `offset_voxels`, and the whole composite's
-        // centre is `((min + max) / 2) * voxels_per_block`. Subtracting that centre
-        // from every node's translation lands the composite centred in `output`.
-        // With a single zero-offset node the composite centre is the node's own
-        // centre, so the shift is zero — the step-2 identity is preserved.
+        // CORNER-ANCHORS its grid (local span `[0, grid)`); a leaf's low corner in the
+        // composite's voxel space is `offset_voxels`, and the whole composite's centre
+        // is `(min + max).div_euclid(2)` (producer-true voxel frame). Subtracting that
+        // centre from every node's translation lands the composite centred in `output`.
         let recentre_voxels = self.recentre_voxels_for_resolve(voxels_per_block);
 
         // Walk the whole tree (groups + instances recurse, composing world
@@ -2005,10 +1965,10 @@ impl Scene {
         // render frame stays f32 — S4b makes the far case byte-identical via origin
         // rebasing).
         self.for_each_leaf(&mut |world_offset_voxels, content, grid_on_faces| {
-            // Every producer center-emits its grid at the origin; the recentre
-            // (derived from the producer-true voxel frame) symmetrises the composite
-            // about the origin for ALL size·d parities, so no per-leaf lattice shift
-            // is needed — a leaf simply sits at its world voxel offset.
+            // Every producer corner-anchors its grid at its world voxel offset (the low
+            // corner); the recentre (from the producer-true voxel frame) symmetrises the
+            // composite about the origin for ALL size·d parities, so no per-leaf lattice
+            // shift is needed — a leaf simply sits at its world voxel offset.
             let translation_voxels = [
                 world_offset_voxels[0] - recentre_voxels[0],
                 world_offset_voxels[1] - recentre_voxels[1],
@@ -2189,14 +2149,12 @@ impl Scene {
                 let mut leaf_min = [0i64; 3];
                 let mut leaf_max = [0i64; 3];
                 for axis in 0..3 {
-                    // The producer center-emits its grid at the origin, so its span
-                    // is `[−grid/2, grid/2)`; placed at the world voxel offset it is
-                    // `[off − grid/2, off + grid/2)`. Using the producer-true grid
-                    // (exact emitted voxels, NOT block-rounded) keeps the skip AABB
-                    // bit-identical to stamping-then-clipping.
+                    // The producer corner-anchors its grid, so placed at the world
+                    // voxel offset (its low corner) it spans `[off, off + grid)`. Using
+                    // the producer-true grid (exact emitted voxels, NOT block-rounded)
+                    // keeps the skip AABB bit-identical to stamping-then-clipping.
                     let grid = grid_voxels[axis];
-                    let centre = world_offset_voxels[axis];
-                    leaf_min[axis] = centre - grid / 2;
+                    leaf_min[axis] = world_offset_voxels[axis];
                     leaf_max[axis] = leaf_min[axis] + grid;
                 }
                 if !VoxelAabb::new(leaf_min, leaf_max).intersects(&chunk_box) {
@@ -2349,10 +2307,14 @@ impl Scene {
     /// [`full_extent_blocks`]: Self::full_extent_blocks
     pub fn placed_region_dimensions(&self, voxels_per_block: u32) -> [u32; 3] {
         match self.placed_extent_voxels(voxels_per_block) {
+            // The EXACT voxel span (`max − min`). Corner-anchored producers emit
+            // half-integer centres, so the region-relative decode
+            // (`floor(world − region_low)`, see `resolve_region`) is exact for any
+            // span parity — no even-padding is needed.
             Some((min_corner, max_corner)) => [
-                region_dim_for_span(max_corner[0] - min_corner[0], voxels_per_block),
-                region_dim_for_span(max_corner[1] - min_corner[1], voxels_per_block),
-                region_dim_for_span(max_corner[2] - min_corner[2], voxels_per_block),
+                (max_corner[0] - min_corner[0]) as u32,
+                (max_corner[1] - min_corner[1]) as u32,
+                (max_corner[2] - min_corner[2]) as u32,
             ],
             None => [0, 0, 0],
         }
@@ -2370,19 +2332,15 @@ impl Scene {
 
     /// The composite occupied AABB in **absolute voxel** space, as the producers
     /// actually emit it. Each leaf producer fills its own grid (`size_blocks ×
-    /// density` voxels) **centred on the origin**, then placed at `world_offset ×
-    /// density`; so a leaf occupies the half-open absolute-voxel box
-    /// `[world_offset·d − grid/2, world_offset·d + grid/2)` per axis, where
-    /// `grid = size_blocks · d`. The composite is the union of those boxes.
+    /// density` voxels) **corner-anchored** (local span `[0, grid)`, centres at
+    /// `idx + 0.5`), placed so its `world_offset` is its LOW CORNER; so a leaf
+    /// occupies the half-open absolute-voxel box `[world_offset, world_offset + grid)`
+    /// per axis, where `grid = size_blocks · d`. The composite is the union of those
+    /// boxes.
     ///
     /// This is the **producer-true** frame the chunk ownership (`floor(position /
-    /// chunk_extent)`) lives in — distinct from [`placed_extent_blocks`], whose
-    /// `floor(size/2)`-per-block split is shifted by up to half a block from the
-    /// producer's centre for **odd** block sizes (e.g. a 5- or 1-block axis). The
-    /// chunk path must cover the producer-true voxel extent (not the block-AABB
-    /// frame) or it drops the voxels living in the chunks the block-AABB misses —
-    /// the cause of the flat-shape (Y = 1 block) half-drop. `None` when no leaf has
-    /// an intrinsic size.
+    /// chunk_extent)`) lives in — distinct from [`placed_extent_blocks`] (the
+    /// whole-block size readout). `None` when no leaf has an intrinsic size.
     fn placed_extent_voxels(&self, voxels_per_block: u32) -> Option<([i64; 3], [i64; 3])> {
         let mut min_corner = [i64::MAX; 3];
         let mut max_corner = [i64::MIN; 3];
@@ -2394,14 +2352,10 @@ impl Scene {
             any = true;
             for axis in 0..3 {
                 // The producer-true emitted grid (`size·d` for an SDF Tool, the exact
-                // prism AABB for a SketchTool), center-emitted at the origin (voxel
-                // centres at `idx + 0.5 − grid/2`), so its occupied voxel span is
-                // `[−grid/2, grid/2)`; placed at the world voxel offset (already
-                // voxels at the document density, ADR 0003 §3f(0)) it spans
-                // `[off − grid/2, off + grid/2)`.
+                // prism AABB for a SketchTool), corner-anchored so its world offset is
+                // the LOW corner: it spans `[off, off + grid)`.
                 let grid = grid_voxels[axis];
-                let centre = world_offset_voxels[axis];
-                let low = centre - grid / 2;
+                let low = world_offset_voxels[axis];
                 let high = low + grid;
                 min_corner[axis] = min_corner[axis].min(low);
                 max_corner[axis] = max_corner[axis].max(high);
@@ -2466,17 +2420,15 @@ impl Scene {
             match leaf_producer_grid_voxels(content, voxels_per_block) {
                 Some(grid_voxels) => {
                     // The producer-true emitted grid (`size·d` for an SDF Tool, the
-                    // exact prism AABB for a SketchTool), center-emitted at the origin,
-                    // then placed at its world voxel offset (already voxels at the
-                    // document density, ADR 0003 §3f(0)); its occupied voxel span per
-                    // axis is `[off − grid/2, off + grid/2)` — identical to
-                    // `placed_extent_voxels`. Absolute voxels are i64 (S4a).
+                    // exact prism AABB for a SketchTool), corner-anchored: its world
+                    // voxel offset is the LOW corner, so the span per axis is
+                    // `[off, off + grid)` — identical to `placed_extent_voxels`.
+                    // Absolute voxels are i64 (S4a).
                     let mut min = [0i64; 3];
                     let mut max = [0i64; 3];
                     for axis in 0..3 {
                         let grid = grid_voxels[axis];
-                        let centre = world_offset_voxels[axis];
-                        min[axis] = centre - grid / 2;
+                        min[axis] = world_offset_voxels[axis];
                         max[axis] = min[axis] + grid;
                     }
                     entries.push(LeafEntry {
@@ -2962,96 +2914,29 @@ mod tests {
         scene_with_top_level_selected(Scene::from_nodes(vec![node_a, node_b]), 0)
     }
 
-    /// BLOCKER REGRESSION (center-anchoring retirement, review direction a): a
-    /// PARITY-MISMATCHED multi-leaf composite at an EVEN density must NOT clip any
-    /// voxel. With the per-leaf lattice shift gone, the producer voxel frame and the
-    /// block frame DIVERGE for a composite whose leaves have different size parities;
-    /// if the region grid were still block-framed (`size·d`) it would be too SMALL for
-    /// the recentred span and every decode consumer (`.vox` export, diameter readout,
-    /// renderer densify, fog) would silently DROP the voxels that decode to an index
-    /// `>= dim` or `< 0`. The region is now voxel-framed (`placed_extent_voxels`
-    /// span), so the recentred composite fits `[0, dim)` exactly and ZERO voxels clip.
+    /// THE BUG-CLASS MATRIX (corner-anchoring): across size ∈ {1,2,3,5,6} ×
+    /// density ∈ {1,2,5,15,16}, for BOTH a single shape AND a 2-leaf mixed-parity
+    /// composite, assert the four invariants that the old center-emit broke:
     ///
-    /// Tested at d=16 (the density the review reproduced at) and d=2 — every EVEN
-    /// density makes `size·d` even for every leaf, so all producer grids share one
-    /// parity and the integer-index decode is exact. (Odd density d=1 can mix grid
-    /// parities WITHIN a composite, which the integer `round(pos + dim/2 − 0.5)`
-    /// decode cannot represent for both at once — a PRE-EXISTING limitation, identical
-    /// under the old block-framed+shift code; see
-    /// `parity_mismatch_at_odd_density_is_frame_consistent`.)
+    /// (a) every occupied voxel CENTRE is a HALF-INTEGER (`fract()==0.5`) — on the
+    ///     voxel lattice, inside a cell, for ANY size·d parity (the win: odd grids no
+    ///     longer land on integers and straddle cell boundaries);
+    /// (b) ZERO voxels dropped — occupied count == the expected filled-cell count;
+    /// (c) every DECODED index is in `[0, dim)` (no clipped slab, none at `== dim`),
+    ///     using the production decode `round(world + floor(dim/2) − 0.5)`;
+    /// (d) the monolithic and chunk paths emit the IDENTICAL voxel set.
+    ///
+    /// Crucially this passes at ODD density (d ∈ {1,5,15}) and MIXED parity — the
+    /// cases the center-emit convention could not represent.
     #[test]
-    fn parity_mismatched_composite_drops_no_voxels_at_even_density() {
+    fn corner_anchoring_parity_matrix() {
         use crate::chunk_cache::ChunkResolveCache;
 
-        for vpb in [16u32, 2] {
-            let scene = parity_mismatch_scene(vpb);
-
-            // The region is voxel-framed = the producer span (max_v − min_v), rounded
-            // UP to even so the integer decode stays exact (never block-framed `size·d`,
-            // which is too small for a parity-mismatched composite).
-            let (min_v, max_v) = scene
-                .placed_extent_voxels(vpb)
-                .expect("a two-Tool scene has a composite extent");
-            let dims = scene.placed_region_dimensions(vpb);
-            for axis in 0..3 {
-                let span = max_v[axis] - min_v[axis];
-                // Even density ⇒ dim rounds the span up to even (decode parity).
-                assert_eq!(
-                    dims[axis] as i64,
-                    span + (span & 1),
-                    "[d{vpb}] region dim axis {axis} is the voxel span rounded up to even"
-                );
-            }
-
-            // Both resolve paths must agree on the (voxel-framed) dimensions and the
-            // occupied count — and EVERY occupied voxel must decode (via the SAME
-            // `round(pos + dim/2 − 0.5)` consumers use) to an index inside `[0, dim)`.
-            let region = scene.full_extent_blocks(vpb);
-            let monolithic = scene.resolve_region(region, vpb, 0);
-            let mut cache = ChunkResolveCache::new();
-            let assembled = cache.resolve_region(&scene, vpb, 0);
-
-            assert_eq!(monolithic.dimensions, dims, "[d{vpb}] monolithic dims voxel-framed");
-            assert_eq!(assembled.dimensions, dims, "[d{vpb}] assembled dims voxel-framed");
-            assert_eq!(
-                monolithic.occupied_count(),
-                assembled.occupied_count(),
-                "[d{vpb}] both paths emit the same voxel count"
-            );
-
-            // The clip check the bug would trip: NO voxel decodes out of `[0, dim)`.
-            let half = [
-                dims[0] as f32 / 2.0,
-                dims[1] as f32 / 2.0,
-                dims[2] as f32 / 2.0,
-            ];
-            for (label, grid) in [("monolithic", &monolithic), ("assembled", &assembled)] {
-                for voxel in &grid.occupied {
-                    let ok = (0..3).all(|axis| {
-                        let index =
-                            (voxel.world_position[axis] + half[axis] - 0.5).round() as i64;
-                        index >= 0 && index < dims[axis] as i64
-                    });
-                    assert!(
-                        ok,
-                        "[d{vpb}/{label}] voxel at {:?} decodes OUTSIDE [0, {dims:?}) — a clipped slab",
-                        voxel.world_position
-                    );
-                }
-                assert!(grid.occupied_count() > 0, "[d{vpb}/{label}] the composite is non-empty");
-            }
-
-            // Disjoint-union sanity: the distinct occupied CELLS equal |A| + |B| − overlap.
-            // A is `d`³ cells; B is `2d × d × d`; they overlap on X where A's span
-            // `[−d/2, d/2)` meets B's `[off·d − d, off·d + d)` (off = 1 block = d voxels)
-            // → X overlap = `[0, d/2)` = d/2 cells, full d×d in Y,Z → overlap = (d/2)·d·d.
-            let d = vpb as i64;
-            let a_cells = d * d * d;
-            let b_cells = 2 * d * d * d;
-            let overlap = (d / 2) * d * d;
-            let expected_distinct = a_cells + b_cells - overlap;
-            let distinct: std::collections::BTreeSet<[i64; 3]> = monolithic
-                .occupied
+        // Decode an occupied set to integer cell indices with the production rule.
+        let decode_cells = |grid: &VoxelGrid| -> std::collections::BTreeSet<[i64; 3]> {
+            let [dx, dy, dz] = grid.dimensions;
+            let half = [(dx / 2) as f32, (dy / 2) as f32, (dz / 2) as f32];
+            grid.occupied
                 .iter()
                 .map(|voxel| {
                     [
@@ -3060,54 +2945,9 @@ mod tests {
                         (voxel.world_position[2] + half[2] - 0.5).round() as i64,
                     ]
                 })
-                .collect();
-            assert_eq!(
-                distinct.len() as i64,
-                expected_distinct,
-                "[d{vpb}] distinct occupied cells must equal |A| + |B| − overlap (no clip, no gap)"
-            );
-        }
-    }
-
-    /// At ODD density (d=1) the SAME parity-mismatched composite mixes producer-grid
-    /// parities (A's grid `1·1` is odd → integer voxel centres; B's grid `2·1` is even
-    /// → half-integer centres), which the integer `round(pos + dim/2 − 0.5)` decode
-    /// cannot place in one frame — A's bottom cell decodes to index −1. This is a
-    /// PRE-EXISTING limitation (the retired block-framed+shift code produced the
-    /// IDENTICAL positions: same recentre R=1, both shifts 0), NOT a regression of
-    /// the center-anchoring retirement, and is out of scope for this slice.
-    ///
-    /// What the retirement DOES guarantee at d=1 — and what this pins — is that the
-    /// region is voxel-framed and BOTH resolve paths stay byte-consistent (same dims,
-    /// same emitted positions), so nothing diverges between the monolithic and chunk
-    /// paths. (A full fix needs a parity-agnostic decode, tracked separately.)
-    #[test]
-    fn parity_mismatch_at_odd_density_is_frame_consistent() {
-        use crate::chunk_cache::ChunkResolveCache;
-
-        let vpb = 1u32;
-        let scene = parity_mismatch_scene(vpb);
-
-        let (min_v, max_v) = scene.placed_extent_voxels(vpb).expect("composite extent");
-        let dims = scene.placed_region_dimensions(vpb);
-        for axis in 0..3 {
-            let span = max_v[axis] - min_v[axis];
-            // Odd density: dim is the exact voxel span (no even-padding).
-            assert_eq!(
-                dims[axis] as i64, span,
-                "[d1] region dim axis {axis} is the exact voxel span"
-            );
-        }
-
-        let region = scene.full_extent_blocks(vpb);
-        let monolithic = scene.resolve_region(region, vpb, 0);
-        let mut cache = ChunkResolveCache::new();
-        let assembled = cache.resolve_region(&scene, vpb, 0);
-
-        assert_eq!(monolithic.dimensions, dims, "[d1] monolithic dims voxel-framed");
-        assert_eq!(assembled.dimensions, dims, "[d1] assembled dims voxel-framed");
-        // Byte-consistency between the two paths (the property the slice owns): the
-        // exact f32 position bits + material, as a multiset (order-independent).
+                .collect()
+        };
+        // The exact f32-bit + material multiset (order-independent path comparison).
         let multiset = |grid: &VoxelGrid| {
             let mut set = std::collections::BTreeMap::<([u32; 3], u16), usize>::new();
             for voxel in &grid.occupied {
@@ -3123,11 +2963,92 @@ mod tests {
             }
             set
         };
-        assert_eq!(
-            multiset(&monolithic),
-            multiset(&assembled),
-            "[d1] monolithic and chunk paths must emit the identical voxel set"
-        );
+
+        // Run the four-invariant battery on one scene, returning its decoded cell set.
+        let check = |scene: &Scene, vpb: u32, label: &str| -> std::collections::BTreeSet<[i64; 3]> {
+            let dims = scene.placed_region_dimensions(vpb);
+            let monolithic = scene.resolve_region(scene.full_extent_blocks(vpb), vpb, 0);
+            let mut cache = ChunkResolveCache::new();
+            let assembled = cache.resolve_region(scene, vpb, 0);
+
+            assert_eq!(monolithic.dimensions, dims, "[{label}] monolithic dims voxel-framed");
+            assert_eq!(assembled.dimensions, dims, "[{label}] assembled dims voxel-framed");
+
+            // (a) every centre is a half-integer.
+            for voxel in &monolithic.occupied {
+                for axis in 0..3 {
+                    assert_eq!(
+                        voxel.world_position[axis].fract().abs(),
+                        0.5,
+                        "[{label}] centre {:?} axis {axis} must be a half-integer (on the lattice)",
+                        voxel.world_position
+                    );
+                }
+            }
+            // (c) every decoded index is in [0, dim).
+            for voxel in &monolithic.occupied {
+                for (axis, &dim) in dims.iter().enumerate() {
+                    let half = (dim / 2) as f32;
+                    let index = (voxel.world_position[axis] + half - 0.5).round() as i64;
+                    assert!(
+                        index >= 0 && index < dim as i64,
+                        "[{label}] voxel {:?} axis {axis} decodes to {index} OUTSIDE [0, {dim})",
+                        voxel.world_position
+                    );
+                }
+            }
+            // (d) the two paths emit the identical voxel set.
+            assert_eq!(
+                multiset(&monolithic),
+                multiset(&assembled),
+                "[{label}] monolithic and chunk paths must emit the identical voxel set"
+            );
+            assert!(!monolithic.occupied.is_empty(), "[{label}] non-empty");
+            decode_cells(&monolithic)
+        };
+
+        for vpb in [1u32, 2, 5, 15, 16] {
+            // --- single shape: a Box fully fills `size·d`³ cells, zero dropped (b). ---
+            for size in [1u32, 2, 3, 5, 6] {
+                let scene = Scene::from_geometry(
+                    GeometryParams {
+                        shape: ShapeKind::Box,
+                        size_blocks: [size, size, size],
+                        voxels_per_block: vpb,
+                        wall_blocks: 1,
+                    },
+                    MaterialChoice::Stone,
+                );
+                let label = format!("box {size}³ @ d{vpb}");
+                let cells = check(&scene, vpb, &label);
+                let expected = (size * vpb).pow(3) as usize;
+                assert_eq!(
+                    cells.len(), expected,
+                    "[{label}] (b) zero dropped: distinct cells {} must equal size·d cubed {expected}",
+                    cells.len()
+                );
+                let monolithic = scene.resolve_region(scene.full_extent_blocks(vpb), vpb, 0);
+                assert_eq!(
+                    monolithic.occupied_count(), expected,
+                    "[{label}] (b) occupied count must equal the filled-cell count"
+                );
+            }
+
+            // --- 2-leaf mixed-parity composite: A [1,1,1]@0 + B [2,1,1]@+1 block. ---
+            let scene = parity_mismatch_scene(vpb);
+            let label = format!("parity-composite @ d{vpb}");
+            let cells = check(&scene, vpb, &label);
+            // (b) distinct cells = |A| + |B| − overlap. A spans X[0,d), B spans
+            // X[d, 3d) (off=1 block=d voxels, grid 2d) → DISJOINT on X (no overlap),
+            // both full d×d in Y,Z. So distinct = d³ + 2d³ = 3d³.
+            let d = vpb as i64;
+            let expected_distinct = d * d * d + 2 * d * d * d;
+            assert_eq!(
+                cells.len() as i64, expected_distinct,
+                "[{label}] (b) distinct occupied cells {} must equal |A|+|B| (disjoint) {expected_distinct}",
+                cells.len()
+            );
+        }
     }
 
     /// The same guarantee for a Part (the debug cloud field): a one-node Part
@@ -3156,6 +3077,137 @@ mod tests {
 
         assert_eq!(resolved.dimensions, bare.dimensions);
         assert_eq!(resolved.occupied_count(), bare.occupied_count());
+    }
+
+    /// CORNER-ANCHORING (cloud producer): a PART-ONLY cloud at ODD density drops ZERO
+    /// voxels — every occupied centre is a HALF-INTEGER (on the voxel lattice) and
+    /// every decoded index ∈ [0, dim). This is the case center-emit broke: at an odd
+    /// region dim the centred bottom voxel decoded to index −1 and was dropped.
+    /// Tested at d=1 and d=5 (odd densities → odd region dims for an odd block size).
+    #[test]
+    fn part_only_cloud_at_odd_density_drops_no_voxels() {
+        // 5×5×5 blocks at odd density → region dims 5·d (odd). A 64-vx field has plenty
+        // of solid voxels so the boundary cells are genuinely exercised.
+        for (size_blocks, vpb) in [([5u32, 5, 5], 1u32), ([5, 5, 5], 5)] {
+            let scene = Scene::single_node(Node::new(
+                "Clouds",
+                NodeContent::Part(Part::DebugClouds { seed: 7 }),
+            ));
+            let region = RegionBlocks::new(size_blocks);
+            let dims = [
+                size_blocks[0] * vpb,
+                size_blocks[1] * vpb,
+                size_blocks[2] * vpb,
+            ];
+            let label = format!("part-only cloud {size_blocks:?}@d{vpb}");
+
+            let monolithic = scene.resolve_region(region, vpb, 0);
+            assert_eq!(monolithic.dimensions, dims, "[{label}] dims = region·d");
+            assert!(!monolithic.occupied.is_empty(), "[{label}] non-empty cloud");
+
+            // (a) every centre is a half-integer; (c) every decoded index ∈ [0, dim).
+            // A Part-only cloud is corner-anchored at the explicit region (low corner 0,
+            // recentre 0), so the decode is `floor(world)`.
+            let mut decoded = 0usize;
+            for voxel in &monolithic.occupied {
+                for (axis, &dim) in dims.iter().enumerate() {
+                    let pos = voxel.world_position[axis];
+                    assert_eq!(
+                        pos.fract().abs(), 0.5,
+                        "[{label}] centre {pos} axis {axis} must be a half-integer"
+                    );
+                    let index = pos.floor() as i64;
+                    assert!(
+                        index >= 0 && index < dim as i64,
+                        "[{label}] voxel {pos} axis {axis} decodes to {index} OUTSIDE [0, {dim})"
+                    );
+                }
+                decoded += 1;
+            }
+            assert_eq!(
+                decoded, monolithic.occupied_count(),
+                "[{label}] every emitted voxel decodes in-range (no silent drop)"
+            );
+
+            // A Part-only scene has no chunkable extent, so the monolithic path above
+            // IS the resolve path (the chunk reassembly is for Tool-bearing scenes).
+            assert!(
+                !scene.has_chunkable_extent(vpb),
+                "[{label}] a Part-only cloud has no chunkable extent"
+            );
+        }
+    }
+
+    /// CORNER-ANCHORING (mixed frame): a Tool and a Cloud in the SAME scene resolve in
+    /// ONE frame — the cloud's voxels are NOT offset by `region_dim/2` from the Tool.
+    /// Center-emit broke this: the Tool corner-anchored but the cloud center-emitted,
+    /// so they sat in different frames. Now BOTH corner-anchor at `[0, region_dim)`, so
+    /// a Tool placed at offset 0 and the region-filling cloud share the same low corner.
+    #[test]
+    fn mixed_tool_and_cloud_resolve_in_one_frame() {
+        // A Box Tool at offset 0 (size 3³) plus a Cloud. The Tool's voxel span and the
+        // cloud's region span share the SAME low corner in the resolved frame.
+        let vpb = 4u32;
+        let mut tool = Node::new(
+            "Box",
+            NodeContent::Tool {
+                shape: SdfShape { kind: ShapeKind::Box, size_blocks: [3, 3, 3], wall_blocks: 1 },
+                material: MaterialChoice::Stone,
+            },
+        );
+        tool.transform = NodeTransform::from_blocks([0, 0, 0], vpb);
+        let cloud = Node::new("Clouds", NodeContent::Part(Part::DebugClouds { seed: 3 }));
+        let scene = scene_with_top_level_selected(
+            Scene::from_nodes(vec![tool, cloud]),
+            0,
+        );
+
+        // The Tool gives the scene a chunkable extent; the region is its voxel span.
+        let region = scene.full_extent_blocks(vpb);
+        let dims = scene.placed_region_dimensions(vpb);
+        let grid = scene.resolve_region(region, vpb, 0);
+        assert_eq!(grid.dimensions, dims, "region is the Tool's voxel-framed span");
+
+        // Decode in the recentred frame (low corner −floor(dim/2)). EVERY voxel —
+        // whether from the Tool or the Cloud — must decode to an index in [0, dim) with
+        // a half-integer centre. If the cloud were still center-emitting it would be
+        // offset by ~region_dim/2 and a slab would decode out of range.
+        let recentre = scene.recentre_voxels_for_resolve(vpb);
+        for voxel in &grid.occupied {
+            for (axis, &dim) in dims.iter().enumerate() {
+                let pos = voxel.world_position[axis];
+                assert_eq!(
+                    pos.fract().abs(), 0.5,
+                    "mixed scene: centre {pos} axis {axis} must be a half-integer (same frame)"
+                );
+                let half = (dim / 2) as f32;
+                let index = (pos + half - 0.5).round() as i64;
+                assert!(
+                    index >= 0 && index < dim as i64,
+                    "mixed scene: voxel {pos} axis {axis} decodes to {index} OUTSIDE [0, {dim}) \
+                     — a cloud offset by region_dim/2 would land here"
+                );
+            }
+        }
+
+        // The Tool's voxels land EXACTLY where corner-anchored math says: a 3³ box at
+        // offset 0 occupies absolute `[0, 3d)`; recentred, its low corner is
+        // `0 − recentre`. At least one voxel sits at that low corner (the box fully
+        // fills its AABB). This pins the cloud sharing the Tool's frame, not an offset.
+        let expected_low = [
+            (0 - recentre[0]) as f32 + 0.5,
+            (0 - recentre[1]) as f32 + 0.5,
+            (0 - recentre[2]) as f32 + 0.5,
+        ];
+        let has_box_low_corner = grid.occupied.iter().any(|v| {
+            (v.world_position[0] - expected_low[0]).abs() < 1e-3
+                && (v.world_position[1] - expected_low[1]).abs() < 1e-3
+                && (v.world_position[2] - expected_low[2]).abs() < 1e-3
+        });
+        assert!(
+            has_box_low_corner,
+            "the corner-anchored Box must place a voxel at its recentred low corner {expected_low:?}"
+        );
     }
 
     /// ADR 0001 step 2: several leaf nodes composite into one region under union.
@@ -4366,13 +4418,14 @@ mod tests {
             "the far box must resolve to voxels"
         );
 
-        // Every voxel's absolute X centre lands in the far block's voxel span. The
-        // 4-block box centred on block 100_000 spans blocks [99_998, 100_002), i.e.
-        // absolute voxels [99_998·d, 100_002·d). (Y/Z are centred on 0, unchanged.)
+        // CORNER-ANCHORING: every voxel's absolute X centre lands in the far block's
+        // voxel span. The 4-block box CORNER-ANCHORED at block 100_000 spans blocks
+        // [100_000, 100_004), i.e. absolute voxels [100_000·d, 100_004·d). (Y/Z start
+        // at 0.) The box's geometric centre is `off·d + 2·d`.
         let density = voxels_per_block as f32;
-        let span_lo = (offset_blocks - 2) as f32 * density;
-        let span_hi = (offset_blocks + 2) as f32 * density;
-        let expected_centre_voxels = offset_blocks as f32 * density; // 1_600_000
+        let span_lo = offset_blocks as f32 * density;
+        let span_hi = (offset_blocks + 4) as f32 * density;
+        let expected_centre_voxels = (offset_blocks as f32 + 2.0) * density; // 1_600_032
         for voxel in &absolute.occupied {
             let x = voxel.world_position[0];
             assert!(
@@ -4431,9 +4484,10 @@ mod tests {
         let recentre = scene.recentre_voxels(voxels_per_block);
         assert_eq!(
             recentre[0],
-            offset_blocks * voxels_per_block as i64,
-            "the recentre offset equals the full far placement — it is what hides the \
-             far offset from the live render today (S4 removes it)"
+            offset_blocks * voxels_per_block as i64 + 2 * voxels_per_block as i64,
+            "CORNER-ANCHORING: the recentre is the box's geometric CENTRE `off·d + 2·d` \
+             (corner `off·d` + half the 4-block extent) — it is what hides the far \
+             offset from the live render today (S4 removes it)"
         );
         let monolithic = scene.resolve_region(
             scene.full_extent_blocks(voxels_per_block),
@@ -4493,25 +4547,22 @@ mod tests {
             0,
         );
 
-        // The producer-true voxel AABB (pure i64) is the center-emitted span (center-
-        // anchoring retirement): a 1-block box (size 1, ODD) occupies
-        // `[off·d − d/2, off·d + d/2)` — centred on the composed offset, NOT snapped
-        // to a block multiple. The point of THIS test is the exact i64 composition (no
-        // i32 overflow) — the half-block centre offset (d/2) is exact in i64 too.
+        // CORNER-ANCHORING: the producer-true voxel AABB (pure i64) is `[off·d,
+        // off·d + grid)` — the composed offset IS the low corner (block-aligned for a
+        // whole-block offset). The point of THIS test is the exact i64 composition
+        // (no i32 overflow).
         let index = scene.build_leaf_spatial_index(voxels_per_block);
         assert_eq!(index.entries.len(), 1, "exactly one leaf is indexed");
         let aabb = index.entries[0].world_aabb;
         let composed_voxels = composed_blocks * density; // 48_000_000_000 — past i32 too
-        // CHANGED: was `composed_voxels` (block-aligned via the old shift); now the
-        // centred corner `off·d − d/2` — the producer-true frame, exact in i64.
         assert_eq!(
-            aabb.min[0], composed_voxels - density / 2,
-            "the composed leaf min-X must equal (group+leaf)·d − d/2 (centred), \
+            aabb.min[0], composed_voxels,
+            "the composed leaf min-X must equal (group+leaf)·d (corner-anchored), \
              with NO i32 overflow (got {}, want {})",
-            aabb.min[0], composed_voxels - density / 2
+            aabb.min[0], composed_voxels
         );
         assert_eq!(
-            aabb.max[0], composed_voxels - density / 2 + density,
+            aabb.max[0], composed_voxels + density,
             "the composed leaf max-X must be exact in i64"
         );
         // Sanity: this absolute voxel coordinate genuinely exceeds the i32 range, so
@@ -4559,12 +4610,10 @@ mod tests {
             let mut min = [0i64; 3];
             let mut max = [0i64; 3];
             for axis in 0..3 {
-                // Producer-true voxel span `[off − grid/2, off + grid/2)`, the same
-                // shift-free maths `build_leaf_spatial_index` now uses (no lattice
-                // shift — recentre lives in the producer voxel frame).
+                // Corner-anchored span `[off, off + grid)` (offset is the low corner),
+                // the same maths `build_leaf_spatial_index` now uses.
                 let grid = grid_voxels[axis];
-                let centre = world_offset_voxels[axis];
-                min[axis] = centre - grid / 2;
+                min[axis] = world_offset_voxels[axis];
                 max[axis] = min[axis] + grid;
             }
             let aabb = crate::spatial_index::VoxelAabb::new(min, max);
@@ -4702,11 +4751,11 @@ mod tests {
         let index_b = scene_b.build_leaf_spatial_index(voxels_per_block);
         let moved = index_b.edit_aabb_since(&index_a).expect("same density");
         assert!(!moved.is_empty());
-        // CHANGED (center-anchoring retirement): a 5-block (odd) box is now CENTRED on
-        // its offset — span `[off·d − 5d/2, off·d + 5d/2)` = `[off·16 − 40, off·16 + 40)`.
-        // Old at +8: [88, 168). New at +40: [600, 680). The union must contain both.
-        assert!(moved.min[0] <= 8 * 16 - 40, "edit AABB must cover the OLD location");
-        assert!(moved.max[0] >= 40 * 16 + 40, "edit AABB must cover the NEW location");
+        // CORNER-ANCHORING: a 5-block box spans `[off·d, off·d + 5d)` = `[off·16,
+        // off·16 + 80)`. Old at +8: [128, 208). New at +40: [640, 720). The union
+        // must contain both.
+        assert!(moved.min[0] <= 8 * 16, "edit AABB must cover the OLD location");
+        assert!(moved.max[0] >= 40 * 16 + 80, "edit AABB must cover the NEW location");
 
         // Recolour the Sphere (node 0, same box): edit AABB is just that box.
         let mut scene_c = scene_a.clone();
@@ -4716,9 +4765,8 @@ mod tests {
         let index_c = scene_c.build_leaf_spatial_index(voxels_per_block);
         let recoloured = index_c.edit_aabb_since(&index_a).expect("same density");
         assert!(!recoloured.is_empty(), "a same-box content change is still dirty");
-        // CHANGED: Sphere at origin, 5 blocks (odd) → center-emitted span
-        // [−5·16/2, +5·16/2) = [−40, 40) (was [−32, 48) under the retired #30 shift).
-        assert_eq!(recoloured, crate::spatial_index::VoxelAabb::new([-40, -40, -40], [40, 40, 40]));
+        // CORNER-ANCHORING: Sphere at origin, 5 blocks → span [0, 5·16) = [0, 80).
+        assert_eq!(recoloured, crate::spatial_index::VoxelAabb::new([0, 0, 0], [80, 80, 80]));
     }
 
     /// A density change can't be localised: the diff returns `None` (clear).
@@ -4800,16 +4848,16 @@ mod tests {
         (min, max, grid.occupied.len())
     }
 
-    /// Assert that a box of `size_blocks` resolved at `density` (at world offset 0)
-    /// is CENTER-EMITTED on the origin: it generates exactly `prod(size·d)` voxels
-    /// occupying the span `[−size·d/2, +size·d/2)` per axis.
+    /// Assert that a box of `size_blocks` resolved at `density` (at world offset 0) is
+    /// CORNER-ANCHORED at the origin in the ABSOLUTE frame: it generates exactly
+    /// `prod(size·d)` voxels occupying the span `[0, size·d)` per axis, with every
+    /// voxel centre on a half-integer (the global voxel lattice).
     ///
-    /// CHANGED (center-anchoring retirement): the producer center-emits, and the
-    /// absolute frame is no longer block-lattice snapped — an odd `size·d` is centred
-    /// on the offset (here, the origin) and so its corners are HALF A BLOCK off the
-    /// lattice. That is the intended new behavior; we assert the centred span, not
-    /// block-multiple corners.
-    fn assert_box_centered_on_origin(size: [u32; 3], density: u32) {
+    /// CHANGED (corner-anchoring): the producer corner-emits, so its world offset is
+    /// the LOW CORNER. In the ABSOLUTE (non-recentred) frame a zero-offset box spans
+    /// `[0, size·d)`, NOT the old centred `[−size·d/2, size·d/2)`. The recentre then
+    /// symmetrises it for the render frame (see the recentred-frame tests).
+    fn assert_box_corner_at_origin(size: [u32; 3], density: u32) {
         let (min, max, count) = absolute_box_extent(size, density);
         let expected_count = (size[0] * density) as usize
             * (size[1] * density) as usize
@@ -4821,66 +4869,56 @@ mod tests {
         for (axis, &size_axis) in size.iter().enumerate() {
             let grid = (size_axis * density) as i64;
             assert_eq!(
-                min[axis], -(grid / 2),
-                "axis {axis}: min corner must be −size·d/2 (center-emitted, size {size:?} @ {density})"
+                min[axis], 0,
+                "axis {axis}: corner-anchored min is 0 (size {size:?} @ {density})"
             );
             assert_eq!(
-                max[axis], grid - grid / 2,
-                "axis {axis}: max boundary must be size·d − size·d/2 (size {size:?} @ {density})"
-            );
-            assert_eq!(
-                max[axis] - min[axis],
-                grid,
-                "axis {axis}: the span must be size·d voxels (size {size:?} @ {density})"
+                max[axis], grid,
+                "axis {axis}: corner-anchored max is size·d (size {size:?} @ {density})"
             );
         }
     }
 
     /// A 1×1×1-block box (size 1, ODD) at density `d` and offset 0 generates exactly
-    /// `d³` voxels CENTER-EMITTED on the origin: the span is `[−d/2, d/2)` per axis.
-    /// Across the representative density set — INCLUDING d=1 (→ 1 voxel, span [0,1))
-    /// and d=15 (→ 15³ = 3375), plus d=2, d=16 (default → 4096), d=32.
+    /// `d³` voxels CORNER-ANCHORED at the origin: the absolute span is `[0, d)` per
+    /// axis. Across the representative density set — d=1 (→ 1 voxel), d=2, d=15
+    /// (→ 15³ = 3375), d=16 (default → 4096), d=32.
     ///
-    /// CHANGED (center-anchoring retirement): formerly asserted a block-aligned cell
-    /// `[k·d, (k+1)·d)` (issue #30 shift). The shift is retired — an odd extent is now
-    /// centred on its offset, so for an even d the min corner `−d/2` is a half-block,
-    /// NOT a block multiple.
+    /// CHANGED (corner-anchoring): the absolute span is `[0, d)` (offset = low corner),
+    /// not the old centred `[−d/2, d/2)`.
     #[test]
-    fn one_block_box_is_center_emitted_across_densities() {
+    fn one_block_box_corner_anchored_across_densities() {
         for density in [1u32, 2, 15, 16, 32] {
-            assert_box_centered_on_origin([1, 1, 1], density);
+            assert_box_corner_at_origin([1, 1, 1], density);
         }
     }
 
-    /// An odd-sized shape (5×5×2) is CENTER-EMITTED on the origin across densities:
-    /// it generates `(5d)×(5d)×(2d)` voxels spanning `[−size·d/2, +size·d/2)`.
+    /// An odd-sized shape (5×5×2) is CORNER-ANCHORED at the origin across densities:
+    /// it generates `(5d)×(5d)×(2d)` voxels spanning `[0, size·d)`.
     ///
-    /// CHANGED (center-anchoring retirement): formerly asserted block-lattice
-    /// alignment (the #30 shift); the shift is gone, the shape is centred on its
-    /// offset, at d ∈ {1, 15, 16}.
+    /// CHANGED (corner-anchoring): the absolute span is `[0, size·d)` (offset = low
+    /// corner), at d ∈ {1, 15, 16}. ODD `size·d` (d=15) no longer straddles voxel
+    /// cells — every centre is a half-integer.
     #[test]
-    fn odd_size_shape_is_center_emitted_on_origin() {
+    fn odd_size_shape_corner_anchored_at_origin() {
         for density in [1u32, 15, 16] {
-            assert_box_centered_on_origin([5, 5, 2], density);
+            assert_box_corner_at_origin([5, 5, 2], density);
         }
     }
 
-    /// An even-sized shape (2×4×6) center-emitted on the origin straddles it
-    /// symmetrically AND lands on block multiples (an even `size·d/2` is a whole
-    /// block), confirming the centred convention coincides with block-alignment for
-    /// even parities at d ∈ {1, 15, 16}.
+    /// An even-sized shape (2×4×6) corner-anchored at the origin spans `[0, size·d)`,
+    /// at d ∈ {1, 15, 16}.
     #[test]
-    fn even_size_shape_is_block_aligned_and_centered() {
+    fn even_size_shape_corner_anchored_at_origin() {
         for density in [1u32, 15, 16] {
-            assert_box_centered_on_origin([2, 4, 6], density);
-            // An even size straddles the origin symmetrically: [-size/2·d, +size/2·d).
+            assert_box_corner_at_origin([2, 4, 6], density);
+            // Corner-anchored: the absolute min corner is 0 (offset = low corner).
             let size = [2u32, 4, 6];
             let (min, _max, _count) = absolute_box_extent(size, density);
-            for (axis, &size_axis) in size.iter().enumerate() {
+            for (axis, &min_axis) in min.iter().enumerate() {
                 assert_eq!(
-                    min[axis],
-                    -((size_axis / 2 * density) as i64),
-                    "axis {axis} @ d{density}: an even box is symmetric about the origin"
+                    min_axis, 0,
+                    "axis {axis} @ d{density}: a corner-anchored box starts at index 0"
                 );
             }
         }
@@ -4893,13 +4931,11 @@ mod tests {
     /// `(min_centre, max_centre)` per axis (centres sit at `n + 0.5`). A shape is
     /// centred on the origin iff `min_centre + max_centre == 0` per axis.
     ///
-    /// We assert on voxel CENTRES, not corners, deliberately. The producer
-    /// center-emits its `size·d` grid at the origin (centres at `idx + 0.5 − grid/2`),
-    /// so a single zero-offset leaf is already origin-symmetric and the recentre is
-    /// zero. For an odd voxel span a voxel centre lands ON 0, so `min + max == 0`
-    /// holds with no epsilon — for ALL densities including d=1 (no lattice shift to
-    /// truncate). (The CORNER bbox is symmetric only for even voxel spans; centres
-    /// are the parity-independent quantity, hence the exact assertion.)
+    /// We assert on voxel CENTRES, not corners. CORNER-ANCHORING: the producer
+    /// corner-emits (`[0, grid)`) and the recentre `floor(grid/2)` lands the composite
+    /// in the render frame. For an EVEN voxel span the centre bbox is exactly symmetric
+    /// (`min + max == 0`); for an ODD span the floor-recentre leaves it off by exactly
+    /// one voxel (`min + max == 1`), since an odd extent has no voxel-centred origin.
     fn occupied_voxel_centre_bbox(
         shape: ShapeKind,
         size_blocks: [u32; 3],
@@ -4930,38 +4966,31 @@ mod tests {
         (min, max)
     }
 
-    /// PERMANENT GUARD: an odd-sized shape placed at world offset `[0, 0, 0]` is
-    /// centred on the origin in the **recentred monolithic `resolve_region` frame** —
-    /// its occupied-voxel-CENTRE bounding box is symmetric about 0 on every axis
-    /// (`min_centre + max_centre == 0`).
+    /// PERMANENT GUARD: a shape placed at world offset `[0, 0, 0]` is centred (to
+    /// sub-voxel precision) on the origin in the **recentred monolithic
+    /// `resolve_region` frame** — its occupied-voxel-CENTRE bounding box is symmetric
+    /// about 0 within half a voxel on every axis. CORNER-ANCHORING: the centre-sum is
+    /// `grid mod 2` — exactly 0 for an EVEN voxel span, exactly 1 for an ODD one (an
+    /// odd extent has no voxel-centred origin; the floor-recentre biases it one voxel).
     ///
-    /// This is the MONOLITHIC resolve frame, not the windowed-app render path; but the
-    /// two are BIT-IDENTICAL for a near scene (the per-chunk store applies the same
-    /// composite recentre — proven by the goldens and by
-    /// `app_core::undo_tests::shapes_render_centered_on_origin_in_rebuild_frame`, which
-    /// pins the SAME centring through `AppCore::rebuild`). So this guards the same
-    /// observable: the rendered shape is centred on the world origin.
-    ///
-    /// Covers a 5×5×5 sphere (odd on all axes) and a 5×1×5 box (the odd-X/Z, 1-block-Y
-    /// size the user called out). The assertion is on voxel CENTRES, which is exact
-    /// for an odd voxel span (a centre sits ON the origin); see
-    /// [`occupied_voxel_centre_bbox`] for why centres (not corners) are compared and
-    /// why this is the RECENTRED frame, not the lattice-shifted producer frame.
+    /// This is the MONOLITHIC resolve frame; it is BIT-IDENTICAL to the windowed-app
+    /// render path for a near scene (the per-chunk store applies the same recentre).
+    /// Covers a 5×5×5 sphere (odd) and a 5×1×5 box (odd-X/Z, 1-block-Y).
     #[test]
-    fn odd_size_shape_centered_on_origin_in_resolve_region_frame() {
+    fn shape_centered_within_half_voxel_in_resolve_region_frame() {
         let cases: [(ShapeKind, [u32; 3]); 2] =
             [(ShapeKind::Sphere, [5, 5, 5]), (ShapeKind::Box, [5, 1, 5])];
         for density in [1u32, 8, 16] {
             for (shape, size) in cases {
                 let (min, max) = occupied_voxel_centre_bbox(shape, size, density);
                 for axis in 0..3 {
-                    // Centres are `n + 0.5` exactly representable in f32 at these
-                    // magnitudes, so the symmetric sum is exactly 0.0 (no epsilon).
+                    let grid = size[axis] * density;
+                    let expected = (grid % 2) as f32; // 0 even, 1 odd
                     let centre_sum = min[axis] + max[axis];
                     assert_eq!(
-                        centre_sum, 0.0,
+                        centre_sum, expected,
                         "{shape:?} {size:?}@d{density} axis {axis}: voxel-centre bbox \
-                         [{}, {}] must be symmetric about the origin (sum {centre_sum})",
+                         [{}, {}] sum must be grid%2 = {expected} (corner-anchored recentre)",
                         min[axis], max[axis]
                     );
                 }
@@ -4969,16 +4998,18 @@ mod tests {
         }
     }
 
-    /// HEADLINE REGRESSION (center-anchoring retirement): an odd extent at DENSITY 1
-    /// lands on whole integer cells, symmetric about the origin — the exact case the
-    /// old `leaf_lattice_shift_voxels` got wrong (its `+d/2` correction truncated to
-    /// ZERO for odd size at odd density, so an odd-extent shape sat ½ voxel off the
-    /// lattice with no correction). Now that placement is purely the producer's
-    /// origin-centred grid (recentre derived from the producer voxel frame, no
-    /// shift), a 3×1×3 box @ d=1 occupies cells `{−1, 0, 1}` on X/Z and `{0}` on Y —
-    /// integer cells, centres at `n + 0.5 − grid/2`, symmetric.
+    /// HEADLINE WIN (corner-anchoring): an ODD extent at ODD DENSITY (d=1) lands on the
+    /// voxel lattice — every centre is a HALF-INTEGER, sitting strictly INSIDE its
+    /// voxel cell `[k, k+1)`. This is the exact case the old centred-emit got wrong:
+    /// at odd grid the centred convention put centres on INTEGERS (`idx + 0.5 − grid/2`
+    /// = whole numbers), straddling cell boundaries — visibly off the global voxel
+    /// grid. Corner-emit (`idx + 0.5`) makes every centre a half-integer for ANY parity.
+    ///
+    /// A 3×1×3 box @ d=1, recentred (recentre = floor(grid/2) = 1 on X/Z): X/Z centres
+    /// are `idx + 0.5 − 1` = {−0.5, 0.5, 1.5}; Y centre = 0.5. Nine voxels, every centre
+    /// a half-integer.
     #[test]
-    fn odd_extent_at_density_one_lands_on_integer_cells() {
+    fn odd_extent_at_odd_density_lands_on_voxel_lattice() {
         let shape = SdfShape {
             kind: ShapeKind::Box,
             size_blocks: [3, 1, 3],
@@ -4995,43 +5026,41 @@ mod tests {
         let region = scene.full_extent_blocks(density);
         let grid = scene.resolve_region(region, density, 0);
 
-        // grid = size·d = [3, 1, 3]; centres = idx + 0.5 − grid/2 → X/Z idx 0..3 give
-        // {−1.0, 0.0, 1.0}; Y idx 0 gives 0.0. A whole filled 3×1×3 box = 9 voxels.
         assert_eq!(grid.occupied.len(), 9, "3×1×3 box @ d=1 is a full 9-cell prism (3·1·3)");
 
+        // THE WIN: every voxel centre is a half-integer (frac == 0.5) — on the lattice,
+        // inside a cell — NOT an integer straddling a boundary (the old odd-grid bug).
+        for voxel in &grid.occupied {
+            for axis in 0..3 {
+                let pos = voxel.world_position[axis];
+                assert_eq!(
+                    pos.fract().abs(), 0.5,
+                    "axis {axis} centre {pos} must be a HALF-INTEGER (on the voxel lattice) at d=1 odd extent"
+                );
+            }
+        }
+
+        // The recovered cells (floor of the recentred centre) are the symmetric set
+        // {−1, 0, 1} on X/Z and {0} on Y.
         use std::collections::BTreeSet;
         let cells: BTreeSet<[i64; 3]> = grid
             .occupied
             .iter()
             .map(|voxel| {
-                // Recover the integer cell: a center-emitted grid puts a centre at
-                // `n − 1` for grid 3 (idx 0→−1), so the cell index IS round(position).
                 [
-                    voxel.world_position[0].round() as i64,
-                    voxel.world_position[1].round() as i64,
-                    voxel.world_position[2].round() as i64,
+                    voxel.world_position[0].floor() as i64,
+                    voxel.world_position[1].floor() as i64,
+                    voxel.world_position[2].floor() as i64,
                 ]
             })
             .collect();
-
         let mut expected: BTreeSet<[i64; 3]> = BTreeSet::new();
         for x in [-1i64, 0, 1] {
             for z in [-1i64, 0, 1] {
                 expected.insert([x, 0, z]);
             }
         }
-        assert_eq!(cells, expected, "odd 3×1×3 @ d=1 must occupy the symmetric integer cells {{−1,0,1}}²×{{0}}");
-
-        // Every voxel centre is an integer + 0.5? No — for an ODD grid the centres are
-        // whole integers (idx + 0.5 − 1.5 = idx − 1.0). Assert they are on whole cells
-        // (the lattice), i.e. the fractional part is exactly 0.0 — the old truncating
-        // shift would have left a ±0.5 straddle here.
-        for voxel in &grid.occupied {
-            for axis in 0..3 {
-                let pos = voxel.world_position[axis];
-                assert_eq!(pos.fract(), 0.0, "axis {axis} centre {pos} must sit on an integer cell at d=1 odd extent");
-            }
-        }
+        assert_eq!(cells, expected, "odd 3×1×3 @ d=1 cells are {{−1,0,1}}²×{{0}}");
     }
 
     // ===== Issue #29 foundation: per-object block-aligned voxel AABB + pivot =====
@@ -5088,44 +5117,42 @@ mod tests {
         let _ = zero_density.block_aligned(0);
     }
 
-    /// A `B`-block extent → a `B·d`-voxel AABB CENTRED on the node's world offset,
-    /// at each density. This is the geometry the per-object block lattice / floor /
-    /// voxel grid (#29) will span.
+    /// A `B`-block extent → a `B·d`-voxel AABB CORNER-ANCHORED at the node's world
+    /// offset, at each density. This is the geometry the per-object block lattice /
+    /// floor / voxel grid (#29) will span.
     ///
-    /// CHANGED (center-anchoring retirement): the AABB is now the producer-true
-    /// center-emitted span `[off·d − size·d/2, off·d + size·d/2)`, NOT the
-    /// block-floored shifted span. So the corners are symmetric about `off·d` and are
-    /// block multiples ONLY for EVEN `size·d`; an odd extent's corners sit half a
-    /// block off the lattice (centred on the offset instead) — exactly the old
-    /// `leaf_lattice_shift` removal. We assert the extent and the centre, and the
-    /// even/odd alignment parity.
+    /// CHANGED (corner-anchoring): the AABB is the producer-true span
+    /// `[off·d, off·d + size·d)` — the offset IS the low corner. For a whole-block
+    /// offset the corner is a block multiple of `d` at ANY size parity (no more
+    /// half-block straddle for odd sizes).
     #[test]
-    fn node_block_aabb_scales_and_centres_across_densities() {
+    fn node_block_aabb_scales_and_corner_anchors_across_densities() {
         let size = [5u32, 5, 2]; // a representative mixed (odd X/Y, even Z) extent
         let offset = [3i64, -2, 4];
         for density in [1u32, 15, 16] {
             let aabb = single_leaf_aabb(size, offset, density);
             for (axis, &size_axis) in size.iter().enumerate() {
                 let grid = (size_axis * density) as i64;
+                let off_voxels = offset[axis] * density as i64;
                 // Scales with density: a B-block extent → B·d voxels.
                 assert_eq!(
                     aabb.max[axis] - aabb.min[axis],
                     grid,
                     "axis {axis} @ d{density}: AABB extent must be size·d voxels"
                 );
-                // Centred on the node's world offset (producer center-emit), so the
-                // corner is exactly `off·d − grid/2` — symmetric about `off·d`. This
-                // is the producer-true span the recentre/chunk/index all now use.
-                let off_voxels = offset[axis] * density as i64;
+                // Corner-anchored: the offset is the LOW corner.
                 assert_eq!(
-                    aabb.min[axis],
-                    off_voxels - grid / 2,
-                    "axis {axis} @ d{density}: AABB min corner is off·d − size·d/2 (centred)"
+                    aabb.min[axis], off_voxels,
+                    "axis {axis} @ d{density}: AABB min corner is off·d (corner-anchored)"
                 );
                 assert_eq!(
-                    aabb.max[axis],
-                    off_voxels + grid - grid / 2,
-                    "axis {axis} @ d{density}: AABB max corner is off·d + size·d − size·d/2"
+                    aabb.max[axis], off_voxels + grid,
+                    "axis {axis} @ d{density}: AABB max corner is off·d + size·d"
+                );
+                // A whole-block offset → block-aligned corner at ANY size parity.
+                assert_eq!(
+                    aabb.min[axis].rem_euclid(density as i64), 0,
+                    "axis {axis} @ d{density}: a whole-block offset is block-aligned"
                 );
             }
         }
@@ -5342,7 +5369,11 @@ mod tests {
                     "Anchor",
                     NodeContent::Tool { shape: anchor_shape, material: MaterialChoice::Stone },
                 );
-                anchor.transform = NodeTransform::from_blocks([0, 0, 0], density);
+                // CORNER-ANCHORING: a leaf spans `[off, off+size)` blocks, so to make
+                // the 200³ anchor BRACKET the small moving node on every axis (and so
+                // dominate the composite AABB, fixing the recentre) it must be offset to
+                // `[−100, 100)` blocks, not corner-anchored at the origin.
+                anchor.transform = NodeTransform::from_blocks([-100, -100, -100], density);
                 scene_with_top_level_selected(Scene::from_nodes(vec![moving, anchor]), 0)
             };
             let box_of = |offset: [i64; 3]| {
@@ -5760,8 +5791,8 @@ mod tests {
                 node.transform = NodeTransform::from_blocks(offset, vpb);
                 node
             };
-            // Three even-sized boxes; box B sits +8X, box C sits +6Z. The block-AABB
-            // of a single 4-block box centred at `off` is `[off-2, off+2]`, centre `off`.
+            // Three even-sized boxes; box B sits +8X, box C sits +6Z. CORNER-ANCHORING:
+            // a 4-block box at offset `off` spans `[off, off+4]` blocks, centre `off+2`.
             let mut scene = Scene::from_nodes(vec![
                 make_tool(ShapeKind::Box, [4, 4, 4], [0, 0, 0]),
                 make_tool(ShapeKind::Box, [4, 4, 4], [8, 0, 0]),
@@ -5781,12 +5812,14 @@ mod tests {
             let recentre = scene.recentre_voxels_for_resolve(vpb);
             let density = vpb as i64;
 
-            // Expected pivot for the node whose block-AABB centre is `centre_blocks`.
-            let expected_pivot = |centre_blocks: [i64; 3]| {
+            // Expected pivot for a 4-block box at block OFFSET `off`: its geometric
+            // centre is `(off + 2)·d` voxels (corner-anchored), minus the recentre.
+            let half_extent_voxels = 2 * density; // half of the 4-block extent
+            let expected_pivot = |off_blocks: [i64; 3]| {
                 [
-                    (centre_blocks[0] * density - recentre[0]) as f32,
-                    (centre_blocks[1] * density - recentre[1]) as f32,
-                    (centre_blocks[2] * density - recentre[2]) as f32,
+                    (off_blocks[0] * density + half_extent_voxels - recentre[0]) as f32,
+                    (off_blocks[1] * density + half_extent_voxels - recentre[1]) as f32,
+                    (off_blocks[2] * density + half_extent_voxels - recentre[2]) as f32,
                 ]
             };
 
