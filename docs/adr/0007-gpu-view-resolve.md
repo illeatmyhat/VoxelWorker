@@ -109,7 +109,7 @@ a thin boundary band diverges, the contract degrades to a **pinned, asserted tol
 only at voxels with `|sdf| < ε`, count bounded") — never silent. Sculpt deltas are **integer**
 (force-on/off) and composite **exactly** on both sides, so the sculpt tier is exact by construction.
 
-### 7. Producer portability — per-producer opt-in, CPU fallback for the rest
+### 7. Producer portability — per-producer opt-in; unported producers fall through to CPU *temporarily*
 
 The SDF primitives (sphere / box / cylinder / torus, the order-48 transform, the `CombineOp` fold)
 port to WGSL directly. The sketch **extrude/revolve** producer (`SketchSolid`) is in the **P1 GPU
@@ -117,12 +117,23 @@ set** too (owner decision — it covers the shapes actually authored, the VS-fir
 its 2D profile polygon streams to the GPU and the eval is a crossing-number point-in-polygon test in
 the cross-section plane (extrude) or in `(radius, height)` space (revolve). It is **harder to make
 bit-matching** (more float ops, the polygon test) — so it is exactly where the §6 exact-parity spike
-earns its keep. The remaining producer — `DebugClouds` (a static debug field, not an authoring
-target) — does **not** port; chunks touching it **fall back to the CPU resolve-and-upload** display
-path. So the GPU path is **per-producer opt-in**: a chunk whose producers are all GPU-portable is
-GPU-resolved for display; a chunk touching `DebugClouds` falls back per chunk. Mixed scenes work
+earns its keep.
+
+`DebugClouds` is **also GPU-portable, and trivially so** — it is procedural Perlin fBm (`fade`/`grad`/
+`lerp` + an integer permutation table) over a per-puff radial falloff, i.e. the most GPU-native
+producer of the set (no `atan2`, no polygon test; the puff params + perm table are computed CPU-side
+once and handed over as a small uniform + buffer, the per-voxel eval is `distance + noise`). It is
+**out of the P1 set by priority, not portability** — it is a debug object, not an authoring target, so
+it is a *deferred port*, NOT a permanent CPU-only producer. (Correction, owner 2026-06-29: the earlier
+"DebugClouds does not port → CPU fallback" framing conflated *not an authoring target* with *not
+portable*. Like every producer it is just an Intent-door input; nothing about the resolver special-
+cases it.)
+
+So the GPU path is **per-producer opt-in**: a chunk whose producers are all ported is GPU-resolved for
+display; a chunk touching an **as-yet-unported** producer falls through to the CPU resolve-and-upload
+path **as a temporary migration scaffold**, not a standing architectural fallback. Mixed scenes work
 because residency + display are already per chunk. This keeps the port incremental and never blocks a
-scene on an unported producer.
+scene on an unported producer — and the unported set shrinks to empty as ports land.
 
 ## Sequencing (each phase: spike behind the A/B net → wire → measure)
 
@@ -228,7 +239,8 @@ R8 atlas the per-chunk fog raymarch samples; what remains is the live call-site 
   the **chunk-set / residency** source: the GPU path enumerates COVERING chunks (from the producer
   AABB) rather than the CPU's occupied-bucketed non-empty set, so empty tiles appear (benign — no
   occupancy, no fog) but the atlas is no longer byte-identical to the CPU one; the goldens (pixel
-  tolerance) are the guard there, and `DebugClouds` / multi-producer composites fall back to the CPU
-  path per chunk. This is the architecturally-invasive step (touches `AppCore` dirty-set plumbing).
+  tolerance) are the guard there, and any **as-yet-unported** producer (e.g. `DebugClouds` until its
+  quick port lands — §7) falls through to the CPU path per chunk as a temporary scaffold. This is the
+  architecturally-invasive step (touches `AppCore` dirty-set plumbing).
 - **P2 mesh-vs-raymarch** for the GPU display surface (decided at P2, not now).
 - **The pinned tolerance value**, only if a future case/adapter proves exact parity unattainable.
