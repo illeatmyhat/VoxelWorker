@@ -32,6 +32,10 @@ use voxel_worker::{
     VIEW_CUBE_VIEWPORT_PIXELS,
 };
 use voxel_worker::CuboidMeshRenderer;
+// ADR 0007: the GPU view-resolve pipelines are an opt-in display accelerator (`--features
+// gpu`); default builds keep the CPU fog densify so CI / GPU-less runs are unaffected.
+#[cfg(feature = "gpu")]
+use voxel_worker::{gpu_resolve::GpuResolver, PerChunkAtlasGeometry, Scene};
 
 /// Drag threshold (pixels) distinguishing a click (snap) from a drag (orbit) on
 /// the view cube, and the general orbit-start threshold.
@@ -71,6 +75,12 @@ struct WindowedState {
     view_cube_renderer: ViewCubeRenderer,
     /// Onion-skin volumetric fog (issue #12).
     onion_fog_renderer: OnionFogRenderer,
+    /// ADR 0007 live call-site swap: the GPU view-resolve compute pipelines, built ONCE and
+    /// reused every edit (unlike `shot`, which rebuilds them per run). Drives the per-chunk
+    /// fog atlas for single-producer scenes on the GPU (no CPU densify); multi-producer
+    /// scenes fall back to `upload_fog_occupancy`. Only present under `--features gpu`.
+    #[cfg(feature = "gpu")]
+    gpu_resolver: GpuResolver,
     /// Onion-fog occupancy mode (issue #28). `PerChunk` is the DEFAULT since S5b
     /// (one apron'd volume per resident chunk packed into a small 3D atlas, so fog
     /// still renders at scale where a single whole-grid 3D texture would exceed
@@ -324,18 +334,36 @@ impl WindowedState {
         let view_cube_renderer =
             ViewCubeRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
         let mut onion_fog_renderer = OnionFogRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
+        // ADR 0007: build the GPU view-resolve pipelines once (reused every edit).
+        #[cfg(feature = "gpu")]
+        let gpu_resolver = GpuResolver::new(&gpu.device);
         // Upload the resolved grid as the fog's occupancy field. Per-chunk is the
         // DEFAULT (issue #28 S5b): one apron'd volume per resident chunk so fog still
         // renders at scale where a single whole-grid 3D texture would disable itself.
+        // ADR 0007: a single-producer scene resolves its atlas on the GPU (no CPU densify)
+        // under `--features gpu`; otherwise the CPU densify path.
         let fog_mode = FogMode::PerChunk;
-        Self::upload_fog_occupancy(
+        #[cfg(feature = "gpu")]
+        let gpu_fog_installed = Self::try_install_gpu_per_chunk_fog(
+            &gpu_resolver,
             &mut onion_fog_renderer,
-            fog_mode,
-            &gpu.device,
-            &gpu.queue,
+            &gpu,
+            &panel_state.scene,
             &grid,
             panel_state.geometry.voxels_per_block,
         );
+        #[cfg(not(feature = "gpu"))]
+        let gpu_fog_installed = false;
+        if !gpu_fog_installed {
+            Self::upload_fog_occupancy(
+                &mut onion_fog_renderer,
+                fog_mode,
+                &gpu.device,
+                &gpu.queue,
+                &grid,
+                panel_state.geometry.voxels_per_block,
+            );
+        }
         let thumbnail_renderer = ThumbnailRenderer::new(&gpu.device, &gpu.queue);
 
         // Kick off the VS auto-detect + scan on a background thread immediately;
@@ -390,6 +418,8 @@ impl WindowedState {
             infinite_grid_renderer,
             view_cube_renderer,
             onion_fog_renderer,
+            #[cfg(feature = "gpu")]
+            gpu_resolver,
             fog_mode,
             thumbnail_renderer,
             palette,
@@ -444,8 +474,10 @@ impl WindowedState {
     /// renders at scale where the legacy whole-grid single 3D texture would exceed
     /// `max_texture_dimension_3d` and disable itself. Shared by the initial upload and
     /// every `rebuild_geometry` re-upload so both code paths honour the same mode.
-    // The live windowed app still uses the deprecated CPU fog densify (ADR 0007): the
-    // GPU atlas swap lands in `shot` first, then here. DELETE this allow with the path.
+    // The CPU fog densify (ADR 0007): now the FALLBACK for multi-producer scenes and
+    // default (no `--features gpu`) builds — single-producer scenes resolve on the GPU via
+    // `try_install_gpu_per_chunk_fog`. Still deprecated; DELETE this allow + the CPU densify
+    // when every producer the live app composes resolves on the GPU (P2+).
     #[allow(deprecated)]
     fn upload_fog_occupancy(
         onion_fog_renderer: &mut OnionFogRenderer,
@@ -461,6 +493,58 @@ impl WindowedState {
                 onion_fog_renderer.upload_grid_per_chunk(device, queue, grid, voxels_per_block)
             }
         }
+    }
+
+    /// ADR 0007 live call-site swap: try the GPU per-chunk fog atlas for a SINGLE ported
+    /// producer (`Scene::single_producer` — one SDF Tool, SketchTool, or `DebugClouds`
+    /// Part). On a hit the producer's covering-chunk fog atlas is GPU-resolved (option (C)
+    /// compaction drops empty-interior tiles) and installed directly — **no CPU densify, no
+    /// occupancy readback** (only a tiny per-chunk flags readback to size the atlas).
+    /// Returns `true` when the GPU path took over; `false` to keep the CPU densify
+    /// (multi-producer scene, a dispatch too large for this device, or a non-empty set that
+    /// still overflows the atlas budget). Mirrors `shot::try_install_gpu_per_chunk_fog`, but
+    /// reuses the App's persistent `resolver` instead of rebuilding the pipelines per call.
+    ///
+    /// Taken as an associated fn over explicit fields (not `&mut self`) so the caller's
+    /// disjoint borrows of `gpu_resolver` / `onion_fog_renderer` / `gpu` / `scene` don't
+    /// collide.
+    #[cfg(feature = "gpu")]
+    fn try_install_gpu_per_chunk_fog(
+        resolver: &GpuResolver,
+        fog: &mut OnionFogRenderer,
+        gpu: &GpuContext,
+        scene: &Scene,
+        grid: &VoxelGrid,
+        voxels_per_block: u32,
+    ) -> bool {
+        profiling::scope!("fog_gpu_resolve");
+        let Some(producer) = scene.single_producer() else {
+            return false;
+        };
+        let Some(atlas) = resolver.resolve_single_producer_fog_atlas(
+            &gpu.device,
+            &gpu.queue,
+            &producer,
+            grid.dimensions,
+            grid.recentre_voxels,
+            voxels_per_block,
+        ) else {
+            return false;
+        };
+        fog.install_per_chunk_atlas(
+            &gpu.queue,
+            &atlas.texture,
+            &atlas.world_origins,
+            PerChunkAtlasGeometry {
+                chunk_extent: atlas.chunk_extent,
+                pad: atlas.pad,
+                tiles_per_axis: atlas.tiles_per_axis,
+                atlas_dim: atlas.atlas_dim,
+            },
+        );
+        // The compacted non-empty set can still exceed the atlas budget; if the install
+        // couldn't activate, fall back to the CPU densify rather than show no fog.
+        fog.per_chunk_active()
     }
 
     /// Re-resolve the grid + GPU geometry for the current scene. Camera UX change:
@@ -546,18 +630,38 @@ impl WindowedState {
                 recentre_shift_voxels[2] as f32,
             );
         }
-        // Re-upload the fog's occupancy field for the new grid, using the active fog
-        // mode (per-chunk by default since #28 S5b).
+        // Re-upload the fog's occupancy field for the new grid. ADR 0007 live call-site
+        // swap: a single-producer scene resolves its per-chunk atlas on the GPU (no CPU
+        // densify — the ~592ms/edit bottleneck) under `--features gpu`; a multi-producer
+        // scene, or a default build, takes the CPU densify path (`#28 S5b` per-chunk).
         {
             profiling::scope!("fog_upload");
-            Self::upload_fog_occupancy(
+            #[cfg(feature = "gpu")]
+            let gpu_fog_installed = Self::try_install_gpu_per_chunk_fog(
+                &self.gpu_resolver,
                 &mut self.onion_fog_renderer,
-                self.fog_mode,
-                &self.gpu.device,
-                &self.gpu.queue,
+                &self.gpu,
+                &self.panel_state.scene,
                 &grid,
                 density,
             );
+            #[cfg(not(feature = "gpu"))]
+            let gpu_fog_installed = false;
+            if !gpu_fog_installed {
+                // CPU densify fallback (multi-producer, dispatch too large for the GPU, or a
+                // default build). Own scope so a Tracy trace separates it from the GPU path
+                // — `upload_grid_per_chunk` itself is not annotated, so without this the
+                // fallback's cost hides inside `fog_upload`.
+                profiling::scope!("fog_cpu_densify");
+                Self::upload_fog_occupancy(
+                    &mut self.onion_fog_renderer,
+                    self.fog_mode,
+                    &self.gpu.device,
+                    &self.gpu.queue,
+                    &grid,
+                    density,
+                );
+            }
         }
         // The transform gizmo (issue #29 S2) is sized + positioned from the SELECTED
         // node in the per-frame render path (it must track selection changes, which
