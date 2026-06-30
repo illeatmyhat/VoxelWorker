@@ -208,6 +208,17 @@ struct ShotOptions {
     /// repeated assembly appears at multiple separated locations from a single
     /// stored definition (reuse by reference).
     demo_village: bool,
+    /// `--demo-village-far` (ADR 0010 D0 / ADR 0003 §G3, Phase D0): the SAME
+    /// instanced `--demo-village` scene, but its whole composite is offset to the FAR
+    /// end of the anisotropic horizontal extent ([`FAR_SCENE_BASE_BLOCKS`] ≈
+    /// XZ 10,000 blocks, vertical Y bounded at 0). The near goldens cannot see
+    /// far-scene f32 precision loss — at XZ~10k the absolute voxel centre has barely a
+    /// mantissa bit below the voxel — so this golden establishes the far-scene baseline
+    /// the §3a chunk-local-integer payload move (#48) must preserve. It renders crisp
+    /// TODAY because `resolve_chunk_rebased` subtracts the floating origin in i64 BEFORE
+    /// the f32 downcast (S4b); a regression of that rebase would smear this golden.
+    /// Overrides --shape/--size/--density.
+    demo_village_far: bool,
     /// `--debug-chunks` (ADR 0002 E2, part of #19): after the per-frame frustum
     /// cull, print `chunks: drew X / Y` (visible / total) so the chunking + cull
     /// can be verified headlessly. Zooming/rotating a large scene off-screen draws
@@ -307,6 +318,7 @@ impl Default for ShotOptions {
             debug_chunks: false,
             demo_scene: false,
             demo_village: false,
+            demo_village_far: false,
             demo_sketch_extrude: false,
             demo_sketch_revolve: false,
             demo_groups: false,
@@ -329,6 +341,19 @@ impl Default for ShotOptions {
 /// near box. (At the previous 100_000 the f32 ULP at 1.6M is 0.125, so `.5` survived
 /// and the box never actually jittered — only the demo's UI text differed.)
 const FAR_OFFSET_BLOCKS: [i64; 3] = [1_000_000, 0, 0];
+
+/// The block offset that places the `--demo-village-far` composite at the FAR end of
+/// the anisotropic horizontal extent (ADR 0010 D0 / ADR 0003 §G3): ~10,000 blocks on
+/// both horizontal axes (X and Z), with the VERTICAL axis (Z-up → index 2 is vertical;
+/// the horizontal ground plane is X/Y) bounded. Per the project's Z-up convention the
+/// two HORIZONTAL axes are X (index 0) and Y (index 1), and the VERTICAL axis is Z
+/// (index 2) — so the far horizontal offset goes on X and Y and the vertical Z stays at
+/// 0. At density 16 this sits 160,000 voxels from the origin per horizontal axis, where
+/// an absolute f32 voxel centre has barely a fractional bit left (the precision loss the
+/// §3a chunk-local-integer payload exists to remove). The composite SPAN stays small (a
+/// ~20-block row of houses), so only the OFFSET is far — the resolved grid is the same
+/// size as the near `--demo-village`.
+const FAR_SCENE_BASE_BLOCKS: [i64; 3] = [10_000, 10_000, 0];
 
 /// Parse a single face name into a [`CubeFace`].
 fn parse_face_name(value: &str) -> CubeFace {
@@ -573,6 +598,9 @@ fn parse_options() -> ShotOptions {
             "--demo-village" => {
                 options.demo_village = true;
             }
+            "--demo-village-far" => {
+                options.demo_village_far = true;
+            }
             "--demo-sketch-extrude" => {
                 options.demo_sketch_extrude = true;
             }
@@ -706,7 +734,7 @@ fn parse_options() -> ShotOptions {
                      \x20            [--force-demo-stem <texture/stem>]\n\
                      \x20            [--gizmo] [--select-node <usize>] [--lattice] [--floor] [--points] [--point-at <X Y Z>] [--no-viewcube]\n\
                      \x20            [--debug-faces] [--debug-chunks]\n\
-                     \x20            [--demo-scene] [--demo-village] [--demo-groups]\n\
+                     \x20            [--demo-scene] [--demo-village] [--demo-village-far] [--demo-groups]\n\
                      \x20            [--demo-sketch-extrude] [--demo-sketch-revolve]\n\
                      \x20            [--demo-far-offset] [--demo-far-offset-near]\n\
                      \x20            [--layer-lower <u32>] [--layer-upper <u32>] [--onion <u32>]\n\
@@ -730,6 +758,11 @@ fn parse_options() -> ShotOptions {
                      \x20                placed by 4 Instances at 4 offsets, proving reuse-\n\
                      \x20                by-reference (ADR 0001 step 4). Overrides\n\
                      \x20                --shape/--size/--density.\n\
+                     \x20  --demo-village-far the SAME instanced village, but its whole\n\
+                     \x20                composite is offset to ~XZ 10,000 blocks (vertical\n\
+                     \x20                bounded) — the far-scene golden baseline the §3a\n\
+                     \x20                chunk-local payload move must preserve (ADR 0010 D0).\n\
+                     \x20                Overrides --shape/--size/--density.\n\
                      \x20  --demo-groups build a scene with a top-level Group (2 child\n\
                      \x20                Tools), a sibling Tool and an Instance, so the\n\
                      \x20                captured PANEL shows the indented tree + Definitions\n\
@@ -891,6 +924,30 @@ fn build_demo_scene(voxels_per_block: u32) -> Scene {
 /// headless capture confirms the repeated assembly shows up at multiple disjoint
 /// locations.
 fn build_demo_village(voxels_per_block: u32) -> Scene {
+    // The default village sits at the origin; the far-scene golden (ADR 0010 D0)
+    // reuses the SAME builder with a far base offset.
+    build_demo_village_at(voxels_per_block, [0, 0, 0])
+}
+
+/// Build the `--demo-village-far` (ADR 0010 D0 / ADR 0003 §G3, Phase D0): the SAME
+/// instanced village as [`build_demo_village`], but with its whole composite shifted
+/// to [`FAR_SCENE_BASE_BLOCKS`] (~XZ 10,000 blocks, vertical bounded). The composite
+/// SPAN is unchanged (the row of four houses), so only the OFFSET is far — the
+/// resolved grid is the same size as the near village, but every absolute voxel centre
+/// now lives ~160k voxels out, where the f32 payload is lossy. The render is still
+/// crisp today because the resolve rebases to the composite floating-origin in i64
+/// before the f32 downcast (S4b); this golden is the baseline the §3a chunk-local
+/// payload move (#48) must preserve.
+fn build_demo_village_far(voxels_per_block: u32) -> Scene {
+    build_demo_village_at(voxels_per_block, FAR_SCENE_BASE_BLOCKS)
+}
+
+/// Shared village builder used by both [`build_demo_village`] (origin) and
+/// [`build_demo_village_far`] (far). `base_offset_blocks` is added to every instance's
+/// placement, shifting the WHOLE composite without changing its internal layout or
+/// span. With `[0, 0, 0]` the output is byte-identical to the historical
+/// `--demo-village`.
+fn build_demo_village_at(voxels_per_block: u32, base_offset_blocks: [i64; 3]) -> Scene {
     let house_def_id = DefId(1);
     let tool = |kind, size: [u32; 3], offset: [i64; 3], material| {
         let shape = SdfShape::from_blocks(kind, size, 1, voxels_per_block);
@@ -908,10 +965,16 @@ fn build_demo_village(voxels_per_block: u32) -> Scene {
     // which diagonal pairs self-occlude from an isometric angle) keeps all four
     // houses non-overlapping in screen space when viewed perpendicular to the row,
     // so the headless PNG unambiguously shows the repeated assembly at four
-    // separated locations from a single stored definition.
+    // separated locations from a single stored definition. The shared `base_offset`
+    // shifts every house equally so the far-scene variant keeps this exact layout.
     let instance = |name: &str, offset: [i64; 3]| {
+        let placement = [
+            offset[0] + base_offset_blocks[0],
+            offset[1] + base_offset_blocks[1],
+            offset[2] + base_offset_blocks[2],
+        ];
         let mut node = Node::new(name, NodeContent::Instance(house_def_id));
-        node.transform = voxel_worker::scene::NodeTransform::from_blocks(offset, voxels_per_block);
+        node.transform = voxel_worker::scene::NodeTransform::from_blocks(placement, voxels_per_block);
         node
     };
     let mut scene = Scene::from_nodes(vec![
@@ -1207,6 +1270,8 @@ async fn run_capture(options: ShotOptions) {
         build_demo_sketch_extrude(options.geometry.voxels_per_block)
     } else if options.demo_sketch_revolve {
         build_demo_sketch_revolve(options.geometry.voxels_per_block)
+    } else if options.demo_village_far {
+        build_demo_village_far(options.geometry.voxels_per_block)
     } else if options.demo_village {
         build_demo_village(options.geometry.voxels_per_block)
     } else if options.demo_scene {
@@ -1308,6 +1373,7 @@ async fn run_capture(options: ShotOptions) {
     // to the near box at the origin — the far-lands jitter is gone (S4b proof).
     let placed_scene = options.demo_scene
         || options.demo_village
+        || options.demo_village_far
         || options.demo_groups
         || options.far_offset
         || options.far_offset_near;
@@ -1453,6 +1519,18 @@ async fn run_capture(options: ShotOptions) {
             grid.occupied_count(),
             scene.roots.len(),
             scene.definitions.len(),
+            region.size_blocks
+        );
+    } else if options.demo_village_far {
+        println!(
+            "resolved {} voxels for demo-village-far ({} instances of {} definition(s), base offset \
+             {:?} blocks, region {:?} blocks) — ADR 0010 D0: the composite is rebased to its \
+             floating origin in i64 before the f32 downcast, so the far village renders crisp \
+             (the §3a payload-move baseline)",
+            grid.occupied_count(),
+            scene.roots.len(),
+            scene.definitions.len(),
+            FAR_SCENE_BASE_BLOCKS,
             region.size_blocks
         );
     } else if options.demo_village {

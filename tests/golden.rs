@@ -79,6 +79,20 @@ const CASES: &[GoldenCase] = &[
         name: "demo-village",
         args: &["--demo-village"],
     },
+    // ADR 0010 D0 (ADR 0003 §G3, Phase D0): the FAR-SCENE baseline. The SAME instanced
+    // village, but its whole composite is placed at ~XZ 10,000 blocks (vertical bounded;
+    // Z-up, so the far offset is on the two horizontal axes X/Y). Every other golden is
+    // near-origin, where the f32 voxel payload is still exact — they cannot see far-scene
+    // precision loss. At XZ~10k an absolute f32 voxel centre has barely a fractional bit
+    // left, so this golden is the guard the ADR 0003 §3a chunk-local-integer payload move
+    // (#48) must preserve. It renders pixel-identical to `demo-village` TODAY because the
+    // resolve rebases to the composite floating-origin in i64 BEFORE the f32 downcast
+    // (S4b); a regression of that rebase would smear or speckle this golden while leaving
+    // the near goldens untouched.
+    GoldenCase {
+        name: "demo-village-far",
+        args: &["--demo-village-far"],
+    },
     GoldenCase {
         name: "debug-clouds",
         args: &[
