@@ -325,6 +325,139 @@ pub fn widest_run_in_band_over_chunks<'grid>(
     widest
 }
 
+/// A CONSERVATIVE interval `[minimum, maximum]` of a producer's SIGNED field over a
+/// whole block-sized cell, the classification primitive of ADR 0010 Decision 2 (the
+/// E1 slice).
+///
+/// **Convention (mirrors the resolve seam):** occupancy is `field <= SURFACE_ISOLEVEL`
+/// (inside). So an interval whose `minimum` already exceeds the isolevel proves the
+/// cell is entirely AIR; an interval whose `maximum` is at-or-below the isolevel
+/// proves the cell is entirely SOLID; an interval straddling the isolevel cannot be
+/// decided coarsely and the cell is BOUNDARY (per-voxel field evaluation).
+///
+/// The bound is *conservative*: it may be WIDER than the true field range over the
+/// cell (it never claims a tighter range than the truth), so a coarse AIR/SOLID
+/// verdict can never disagree with a brute-force per-voxel evaluation — only the
+/// (always-safe) BOUNDARY fallback can be reported where brute force would have
+/// elided. This exact-on-the-data-seam property is the whole point of the E1 parity
+/// gate.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FieldInterval {
+    /// Conservative LOWER bound on the signed field over the cell (`<=` the true
+    /// minimum the producer would evaluate at any sample inside the cell).
+    pub minimum: f32,
+    /// Conservative UPPER bound on the signed field over the cell (`>=` the true
+    /// maximum).
+    pub maximum: f32,
+}
+
+impl FieldInterval {
+    /// An interval `[minimum, maximum]` (callers pass already-conservative bounds).
+    pub fn new(minimum: f32, maximum: f32) -> Self {
+        Self { minimum, maximum }
+    }
+
+    /// The interval of a 1-Lipschitz signed field over a cell whose centre sample is
+    /// `field_at_center` and whose circumradius (half the space-diagonal) is
+    /// `cell_circumradius`: `[field_at_center − r, field_at_center + r]`. A true
+    /// distance field changes by at most `r` between the centre and any cell corner,
+    /// so this brackets every in-cell sample. If a given field is only *approximately*
+    /// 1-Lipschitz the caller must WIDEN `cell_circumradius`, never narrow it.
+    pub fn from_lipschitz_center(field_at_center: f32, cell_circumradius: f32) -> Self {
+        let radius = cell_circumradius.abs();
+        Self {
+            minimum: field_at_center - radius,
+            maximum: field_at_center + radius,
+        }
+    }
+
+    /// Classify a block cell from this conservative interval (ADR 0010 Decision 2).
+    /// `isolevel` is the occupancy threshold (`SURFACE_ISOLEVEL`): a cell is solid
+    /// where `field <= isolevel`.
+    pub fn classify(&self, isolevel: f32) -> FieldClassification {
+        if self.minimum > isolevel {
+            // Every sample is strictly outside ⇒ no voxel can be occupied.
+            FieldClassification::Air
+        } else if self.maximum <= isolevel {
+            // Every sample is at-or-below the isolevel ⇒ every voxel is occupied.
+            FieldClassification::CoarseSolid
+        } else {
+            // The interval straddles the isolevel ⇒ resolve the cell per-voxel.
+            FieldClassification::Boundary
+        }
+    }
+
+    /// CSG UNION of two field intervals (`min(field_a, field_b)`, the nearer surface
+    /// wins): the bound on `min(a, b)` is `[min(aMin,bMin), min(aMax,bMax)]`.
+    pub fn union(self, other: FieldInterval) -> FieldInterval {
+        FieldInterval {
+            minimum: self.minimum.min(other.minimum),
+            maximum: self.maximum.min(other.maximum),
+        }
+    }
+
+    /// CSG INTERSECTION of two field intervals (`max(field_a, field_b)`): the bound on
+    /// `max(a, b)` is `[max(aMin,bMin), max(aMax,bMax)]`.
+    pub fn intersect(self, other: FieldInterval) -> FieldInterval {
+        FieldInterval {
+            minimum: self.minimum.max(other.minimum),
+            maximum: self.maximum.max(other.maximum),
+        }
+    }
+
+    /// The NEGATED field interval (`−field`): `[−maximum, −minimum]`. Used to compose
+    /// a subtraction, whose field is `max(field_a, −field_b)`.
+    pub fn negate(self) -> FieldInterval {
+        FieldInterval {
+            minimum: -self.maximum,
+            maximum: -self.minimum,
+        }
+    }
+
+    /// CSG SUBTRACTION `A − B` of two field intervals (`max(field_a, −field_b)`): the
+    /// region inside `A` and outside `B`. Composed as `self.intersect(other.negate())`.
+    pub fn subtract(self, other: FieldInterval) -> FieldInterval {
+        self.intersect(other.negate())
+    }
+}
+
+/// The coarse verdict a [`FieldInterval`] yields for a block cell (ADR 0010
+/// Decision 2): the cell is wholly outside, wholly inside, or straddles the surface.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldClassification {
+    /// Every voxel in the cell is EMPTY (the conservative interval is all-positive).
+    Air,
+    /// Every voxel in the cell is OCCUPIED (the interval is all-at-or-below the
+    /// isolevel) — the cell is a coarse solid, no per-voxel data needed.
+    CoarseSolid,
+    /// The interval straddles the isolevel (or the producer could not bound the cell):
+    /// the cell must be resolved per-voxel. Always the SAFE verdict.
+    Boundary,
+}
+
+/// The conservative field interval of a CSG UNION over a list of operands — `None`
+/// (unboundable ⇒ BOUNDARY) the moment any operand is `None`, since a union with an
+/// unbounded field cannot be coarsely decided. An empty list yields `None`.
+pub fn union_field_intervals(
+    intervals: impl IntoIterator<Item = Option<FieldInterval>>,
+) -> Option<FieldInterval> {
+    let mut accumulated: Option<FieldInterval> = None;
+    let mut any = false;
+    for interval in intervals {
+        any = true;
+        let interval = interval?;
+        accumulated = Some(match accumulated {
+            Some(existing) => existing.union(interval),
+            None => interval,
+        });
+    }
+    if any {
+        accumulated
+    } else {
+        None
+    }
+}
+
 /// Anything that can resolve itself into the shared [`VoxelGrid`].
 ///
 /// v1 has a single implementor ([`SdfShape`]); the trait exists so a sculpt
@@ -371,6 +504,32 @@ pub trait VoxelProducer {
         voxels_per_block: u32,
         window_local_voxels: crate::spatial_index::VoxelAabb,
     );
+
+    /// CONSERVATIVE bound on the producer's SIGNED field over a block-sized cell — the
+    /// classification primitive of ADR 0010 Decision 2 (the E1 slice). `cell_local_voxels`
+    /// is a half-open `[min, max)` box in the producer's OWN local voxel-index frame
+    /// `[0, full_dim)` (the SAME frame [`resolve_into`]'s window uses, ADR 0008 — the
+    /// frame is carried, never re-derived).
+    ///
+    /// Returns `Some([minimum, maximum])` whenever the producer can bracket its field
+    /// over the whole cell (see [`FieldInterval`] for the conservative-never-narrow
+    /// rule), or `None` when it cannot (e.g. the fBm-displaced cloud field) — a `None`
+    /// consumer treats the cell as BOUNDARY and resolves it per-voxel, still exact, just
+    /// unelided.
+    ///
+    /// The default is `None` (the always-safe fallback): a producer opts INTO coarse
+    /// classification by overriding this. Wired to nothing yet (E1 stands alone with its
+    /// own exactness gate); it is op-stack math independent of any payload change.
+    ///
+    /// [`resolve_into`]: VoxelProducer::resolve_into
+    fn cell_field_interval(
+        &self,
+        cell_local_voxels: crate::spatial_index::VoxelAabb,
+        voxels_per_block: u32,
+    ) -> Option<FieldInterval> {
+        let _ = (cell_local_voxels, voxels_per_block);
+        None
+    }
 }
 
 /// Clamp a producer window to `[0, full_dim)` per axis and return the per-axis
@@ -785,6 +944,77 @@ impl VoxelProducer for SdfShape {
                 local
             })
             .collect();
+    }
+
+    /// Conservative 1-Lipschitz field interval over a cell (ADR 0010 Decision 2). The
+    /// resolve samples the SDF at the CENTRED coordinate `idx + 0.5 − full_dim/2`, so
+    /// this maps the cell box (local voxel-index frame, ADR 0008) into that SAME centred
+    /// frame, evaluates the field at the cell's geometric centre, and brackets the
+    /// variation over the cell by the (widened) circumradius.
+    ///
+    /// `signed_distance_box` and the torus SDF are exactly 1-Lipschitz, but the IQ
+    /// ellipsoid and the elliptical-cylinder/tube SDFs have gradient magnitude up to
+    /// the semi-axis ANISOTROPY `max_semi / min_semi` (≥ 1; = 1 for an isotropic shape).
+    /// To stay conservative for EVERY kind we WIDEN the circumradius by that anisotropy
+    /// factor — never narrower than the true field range, so a coarse AIR/SOLID verdict
+    /// can never misclassify (proven by the E1 parity gate).
+    fn cell_field_interval(
+        &self,
+        cell_local_voxels: crate::spatial_index::VoxelAabb,
+        voxels_per_block: u32,
+    ) -> Option<FieldInterval> {
+        if cell_local_voxels.is_empty() {
+            return None;
+        }
+        let [grid_x, grid_y, grid_z] = self.grid_dimensions(voxels_per_block);
+        let semi_axes = Vec3::new(grid_x as f32 / 2.0, grid_y as f32 / 2.0, grid_z as f32 / 2.0);
+        let wall_voxels = (self.wall_blocks * voxels_per_block) as f32;
+        let half = semi_axes;
+
+        // The cell's geometric centre in the producer's CENTRED sampling frame: a cell
+        // sample at integer index `idx` sits at `idx + 0.5 − half`, so the centre of the
+        // half-open cell box `[min, max)` is `(min + max) / 2 − half`.
+        let center = Vec3::new(
+            (cell_local_voxels.min[0] + cell_local_voxels.max[0]) as f32 / 2.0 - half.x,
+            (cell_local_voxels.min[1] + cell_local_voxels.max[1]) as f32 / 2.0 - half.y,
+            (cell_local_voxels.min[2] + cell_local_voxels.max[2]) as f32 / 2.0 - half.z,
+        );
+
+        // Circumradius = half the cell's space-diagonal. The brute-force seam SAMPLES
+        // each voxel at its own centre `idx + 0.5 − half`, so the farthest sample from
+        // the cell centre is half the diagonal across the SPAN OF SAMPLE CENTRES — which
+        // is `(extent − 1)` voxels per axis. Using the full extent (`extent`) is strictly
+        // wider, so we keep it: a wider radius is always conservative.
+        let extent = Vec3::new(
+            (cell_local_voxels.max[0] - cell_local_voxels.min[0]) as f32,
+            (cell_local_voxels.max[1] - cell_local_voxels.min[1]) as f32,
+            (cell_local_voxels.max[2] - cell_local_voxels.min[2]) as f32,
+        );
+        let circumradius = (extent * 0.5).length();
+
+        // Conservative Lipschitz constant: 1 for the truly-1-Lipschitz kinds, the
+        // semi-axis anisotropy for the ellipsoid / cylinder / tube whose gradient can
+        // steepen along the shorter axis. Always >= the true constant ⇒ never narrows.
+        let lipschitz_constant = match self.kind {
+            ShapeKind::Box | ShapeKind::Torus => 1.0,
+            ShapeKind::Sphere | ShapeKind::Cylinder | ShapeKind::Tube => {
+                let largest = semi_axes.x.max(semi_axes.y).max(semi_axes.z);
+                let smallest = semi_axes.x.min(semi_axes.y).min(semi_axes.z);
+                if smallest > 0.0 {
+                    (largest / smallest).max(1.0)
+                } else {
+                    // A degenerate zero-thickness axis: fall back to BOUNDARY (None) — we
+                    // cannot bound the gradient, so let the per-voxel seam decide.
+                    return None;
+                }
+            }
+        };
+
+        let field_at_center = signed_distance(self.kind, center, semi_axes, wall_voxels);
+        Some(FieldInterval::from_lipschitz_center(
+            field_at_center,
+            circumradius * lipschitz_constant,
+        ))
     }
 }
 

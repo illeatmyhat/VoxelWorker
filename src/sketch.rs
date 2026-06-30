@@ -439,6 +439,44 @@ impl VoxelProducer for SketchSolid {
             }
         }
     }
+
+    /// Conservative field interval over a block cell (ADR 0010 Decision 2). A sketch's
+    /// occupied set is a SUBSET of the producer's grid AABB `[0, full_dim)` (the profile
+    /// bbox extruded / revolved into that span), but inside the bbox the actual filled
+    /// region is a polygon, not a box — so this NEVER claims a cell is coarse-solid (that
+    /// would over-claim the bbox as filled). Instead:
+    ///
+    /// - a cell lying ENTIRELY OUTSIDE the producer's grid AABB is provably AIR (no voxel
+    ///   can be occupied there) — return an all-positive interval;
+    /// - any cell overlapping the AABB returns a STRADDLING interval ⇒ BOUNDARY ⇒ resolved
+    ///   per-voxel by the even-odd polygon test. Still exact, just unelided (the ADR's
+    ///   accepted "conservative from the profile bbox; when unsure, straddle" path).
+    ///
+    /// The frame is the producer's local voxel-index frame `[0, full_dim)` (ADR 0008).
+    fn cell_field_interval(
+        &self,
+        cell_local_voxels: crate::spatial_index::VoxelAabb,
+        voxels_per_block: u32,
+    ) -> Option<crate::voxel::FieldInterval> {
+        let _ = voxels_per_block;
+        if cell_local_voxels.is_empty() {
+            return None;
+        }
+        let [full_x, full_y, full_z] = self.grid_dimensions();
+        // A degenerate (empty-occupancy) producer: every cell is AIR.
+        let grid_aabb = crate::spatial_index::VoxelAabb::new(
+            [0, 0, 0],
+            [full_x as i64, full_y as i64, full_z as i64],
+        );
+        if grid_aabb.is_empty() || !cell_local_voxels.intersects(&grid_aabb) {
+            // Wholly outside the producer extent ⇒ provably AIR. An all-positive
+            // interval classifies as air without claiming a (false) coarse solid.
+            return Some(crate::voxel::FieldInterval::new(1.0, 2.0));
+        }
+        // Overlaps the extent: the polygon fill inside the bbox is not a box, so we
+        // cannot coarsely decide ⇒ straddle ⇒ BOUNDARY (per-voxel exact).
+        Some(crate::voxel::FieldInterval::new(-1.0, 1.0))
+    }
 }
 
 impl SketchSolid {

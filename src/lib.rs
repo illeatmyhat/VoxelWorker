@@ -54,6 +54,11 @@ pub mod voxel;
 #[cfg(test)]
 mod windowed_resolve_tests;
 
+// ADR 0010 E1: the standalone exactness parity for the conservative cell-interval
+// bound primitive (VoxelProducer::cell_field_interval) + the CSG interval composition.
+#[cfg(test)]
+mod cell_interval_parity_tests;
+
 pub use app_core::{
     default_replay_seed_scene, replay_intent_script, AppCore, RebuildOutcome, RebuildOutput,
 };

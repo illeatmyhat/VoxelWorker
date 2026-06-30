@@ -192,6 +192,19 @@ impl VoxelProducer for DebugCloudField {
             })
             .collect();
     }
+
+    /// The cloud field is displaced by FRACTAL PERLIN NOISE (fBm), whose value over a
+    /// cell has no cheap conservative bracket — so this producer is UNBOUNDABLE and
+    /// returns `None` (ADR 0010 Decision 2). A `None` consumer treats every cell as
+    /// BOUNDARY and resolves it per-voxel: still EXACT, just unelided. (This is also the
+    /// trait default; the explicit override documents the intent at the producer.)
+    fn cell_field_interval(
+        &self,
+        _cell_local_voxels: crate::spatial_index::VoxelAabb,
+        _voxels_per_block: u32,
+    ) -> Option<crate::voxel::FieldInterval> {
+        None
+    }
 }
 
 /// Whether `point` lands inside any cloud puff. The field is the per-cloud radial
