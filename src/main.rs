@@ -789,10 +789,10 @@ impl WindowedState {
     fn export_vox(&mut self) {
         let density = self.panel_state.geometry.voxels_per_block;
         let shape = SdfShape::from_geometry(self.panel_state.geometry.clone());
-        if shape.exceeds_voxel_cap(density) {
-            eprintln!("export .vox: grid exceeds the voxel cap; not exporting");
-            return;
-        }
+        // ADR 0010 E4: the old `exceeds_voxel_cap` guard (the dense whole-region 6M
+        // ceiling) is GONE on the export path — the streaming export never materialises
+        // a dense interior, so an 800×800-revolve-class solid exports successfully. A
+        // pathological per-CHUNK density is still bounded by the resolver itself.
 
         let representative = match &self.loaded_material {
             Some(loaded) => loaded.average_color,
@@ -813,20 +813,37 @@ impl WindowedState {
         else {
             return;
         };
-        // Issue #20 Step 2: build the `.vox` from the region-scoped, per-chunk path
-        // (`ChunkResolveCache::vox_export`) rather than the monolithic
-        // `resolve_scene` + `VoxExport::from_grid`. Each chunk's voxels are rebased
-        // to the composite recentre in i64 BEFORE the f32 downcast, so a far-offset
-        // scene preserves the voxel-centre `.5` instead of losing it to f32 rounding
-        // at large magnitude (the monolithic path's far-offset bug). For a near scene
-        // the two paths are byte-identical (proven by the vox-export parity tests).
-        let (region_dimensions, occupied) = self.app_core.store.bound_region_occupied(
+        // ADR 0010 E4: build the `.vox` by STREAMING the cacheless two-layer evaluator
+        // region-scoped — a coarse-solid block is a fast `d³` fill, a boundary block is
+        // per-voxel — so no dense whole-region grid is materialised and the 6M cap
+        // dissolves on the export path. Each covering chunk's voxels are bucketed then
+        // dropped. The streamed export is model-set-identical to the dense-path region
+        // export (the E4 parity gate); when the two-layer capability is OFF the call
+        // returns `None` and we fall back to the dense per-chunk `bound_region_occupied`
+        // path (issue #20 Step 2 — rebased in i64 before the f32 downcast).
+        let two_layer = voxel_worker::TwoLayerStore::enabled();
+        let mut streamed_chunks: Vec<Vec<voxel_worker::Voxel>> = Vec::new();
+        let streamed = voxel_worker::stream_vox_occupancy(
+            &two_layer,
             &self.panel_state.scene,
-            self.panel_state.geometry.voxels_per_block,
-            0,
+            density,
+            |chunk_voxels| streamed_chunks.push(chunk_voxels),
         );
-        let export =
-            voxel_worker::VoxExport::from_region_voxels(region_dimensions, occupied, palette_colors);
+        let export = match streamed {
+            Some((region_dimensions, _recentre)) => voxel_worker::VoxExport::from_region_voxel_chunks(
+                region_dimensions,
+                streamed_chunks,
+                palette_colors,
+            ),
+            None => {
+                let (region_dimensions, occupied) = self.app_core.store.bound_region_occupied(
+                    &self.panel_state.scene,
+                    density,
+                    0,
+                );
+                voxel_worker::VoxExport::from_region_voxels(region_dimensions, occupied, palette_colors)
+            }
+        };
         match export.write(&path) {
             Ok(bytes) => println!(
                 "wrote {} ({} voxels, {} model(s), {} bytes)",
@@ -1095,18 +1112,31 @@ impl WindowedState {
         )[2];
         let current_band = (self.panel_state.layer_range.lower, self.panel_state.layer_range.upper);
         if current_band != self.measured_band {
-            // Issue #20 Step 2: re-measure the diameter through the region-scoped,
-            // per-chunk `widest_run_in_band` (cross-seam stitched), NOT the assembled
-            // `self.grid`. Returns the SAME value as the whole-grid method
-            // (parity-proven) while consuming only the per-chunk grids. The chunks are
-            // already resident from the geometry rebuild, so this is cache HITs.
-            self.measured_diameter = self.app_core.store.widest_run_in_band(
+            // ADR 0010 E4: re-measure the diameter by STREAMING the cacheless two-layer
+            // evaluator — a coarse-solid block contributes its `d`-long run ANALYTICALLY
+            // (no per-voxel expansion), a boundary block is per-voxel. Returns the SAME
+            // value as the dense region-scoped `widest_run_in_band` (the parity gate)
+            // without assembling a dense grid. When the two-layer capability is OFF the
+            // call returns `None` and we fall back to the dense per-chunk path (issue #20
+            // Step 2, cross-seam stitched).
+            let density = self.panel_state.geometry.voxels_per_block;
+            let two_layer = voxel_worker::TwoLayerStore::enabled();
+            self.measured_diameter = voxel_worker::streamed_widest_run_in_band(
+                &two_layer,
                 &self.panel_state.scene,
-                self.panel_state.geometry.voxels_per_block,
-                0,
+                density,
                 current_band.0,
                 current_band.1,
-            );
+            )
+            .unwrap_or_else(|| {
+                self.app_core.store.widest_run_in_band(
+                    &self.panel_state.scene,
+                    density,
+                    0,
+                    current_band.0,
+                    current_band.1,
+                )
+            });
             self.measured_band = current_band;
         }
 

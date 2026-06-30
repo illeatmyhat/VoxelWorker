@@ -104,8 +104,8 @@ pub use scene::{
 };
 pub use settings::AppConfig;
 pub use two_layer_store::{
-    resolve_region_two_layer, BlockClassification, MicroblockGeometry, SeamSolidity, TwoLayerChunk,
-    TwoLayerStore,
+    resolve_region_two_layer, stream_vox_occupancy, streamed_widest_run_in_band,
+    BlockClassification, MicroblockGeometry, SeamSolidity, TwoLayerChunk, TwoLayerStore,
 };
 pub use sketch::{Operation, PlaneAxis, RevolveAxis, Sketch, SketchPoint, SketchSolid};
 pub use spatial_index::{LeafEntry, LeafFingerprint, LeafSpatialIndex, VoxelAabb};

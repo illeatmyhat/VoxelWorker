@@ -139,6 +139,49 @@ impl VoxExport {
         chunk_voxels: impl IntoIterator<Item = &'voxels [crate::voxel::Voxel]>,
         palette_colors: BlockPaletteColors,
     ) -> Self {
+        Self::from_region_voxel_iter(
+            region_dimensions,
+            chunk_voxels.into_iter().flatten().copied(),
+            palette_colors,
+        )
+    }
+
+    /// **Cacheless STREAMING `.vox` export (ADR 0010 E4).** Build the SAME export
+    /// [`from_region_voxels`](Self::from_region_voxels) would build, but from a stream
+    /// of OWNED per-chunk voxel `Vec`s — each chunk buffer is bucketed then DROPPED, so
+    /// no whole-region dense grid is ever assembled. This is the seam the export button
+    /// drives over the cacheless two-layer evaluator
+    /// ([`crate::two_layer_store::stream_vox_occupancy`]): a coarse-solid block is a
+    /// fast `d³` fill, a boundary block is per-voxel — and the **6M whole-region cap
+    /// dissolves on the export path** because the only transient is one chunk's voxels.
+    ///
+    /// The bucketing is the SAME core `from_region_voxels` uses (same
+    /// `i = round(world + floor(dim/2) − 0.5)` decode, same 256-tiling), so a streamed
+    /// export is model-set-identical to the dense-path region export for any scene that
+    /// fits the dense path — the E4 parity gate.
+    pub fn from_region_voxel_chunks(
+        region_dimensions: [u32; 3],
+        chunk_voxels: impl IntoIterator<Item = Vec<crate::voxel::Voxel>>,
+        palette_colors: BlockPaletteColors,
+    ) -> Self {
+        Self::from_region_voxel_iter(
+            region_dimensions,
+            chunk_voxels.into_iter().flatten(),
+            palette_colors,
+        )
+    }
+
+    /// The shared bucketing core: stream EVERY occupied [`Voxel`](crate::voxel::Voxel)
+    /// into its 256-tile model at the corner-anchored decode index, dropping each as it
+    /// is consumed (so an owned per-chunk stream never holds the whole region). Both
+    /// [`from_region_voxels`](Self::from_region_voxels) (borrowed slices) and
+    /// [`from_region_voxel_chunks`](Self::from_region_voxel_chunks) (owned chunk Vecs)
+    /// flatten into this one path, so the streamed and dense exports can never drift.
+    fn from_region_voxel_iter(
+        region_dimensions: [u32; 3],
+        voxels: impl Iterator<Item = crate::voxel::Voxel>,
+        palette_colors: BlockPaletteColors,
+    ) -> Self {
         let [grid_x, grid_y, grid_z] = region_dimensions;
         // Corner-anchoring decode: FLOORED half (`dim/2` integer division), so
         // `round(world + floor(dim/2) − 0.5)` recovers the exact index for an odd dim
@@ -179,7 +222,7 @@ impl VoxExport {
         }
 
         let mut voxel_count = 0usize;
-        for voxel in chunk_voxels.into_iter().flatten() {
+        for voxel in voxels {
             // Recover non-negative integer grid indices from the world-centred
             // voxel-centre position: `i = round(world_x + dim_x/2 - 0.5)`.
             let position = voxel.world_position();
@@ -484,6 +527,36 @@ mod tests {
             .collect()
     }
 
+    /// Parse a `.vox` byte stream into a per-model **last-writer-wins** map
+    /// `(x, y, z) -> colour` — the occupancy a MagicaVoxel reader actually renders. The
+    /// dense-path export writes DUPLICATE voxels at positions where leaves overlap (the
+    /// dense occupied Vec keeps both leaves' entries; the LATER one in document order is
+    /// the resolved winner a reader shows); the streamed two-layer export is one-id-per-
+    /// cell (Union later-wins resolved). Reducing both to last-writer-per-coord compares
+    /// the TRUE resolved file: for every non-overlapping scene each coord has one writer,
+    /// so this is identical to [`parsed_model_sets`]; only genuine overlap differs, and
+    /// there the last-writer map is the correct comparison (ADR 0010 parity-gate canonical
+    /// form, mirroring `two_layer_store.rs::resolved_occupancy_set`).
+    type ModelLastWriter = std::collections::BTreeMap<(u8, u8, u8), u8>;
+    type ModelLastWriterSets = std::collections::BTreeSet<([u32; 3], Vec<((u8, u8, u8), u8)>)>;
+    fn parsed_model_last_writer_sets(bytes: &[u8]) -> ModelLastWriterSets {
+        let parsed = dot_vox::load_bytes(bytes).expect("dot_vox should parse our file");
+        parsed
+            .models
+            .iter()
+            .map(|model| {
+                let size = [model.size.x, model.size.y, model.size.z];
+                // Voxels are in write order; the LAST entry at a coord wins (insert
+                // overwrites), reproducing the MagicaVoxel reader's resolved occupancy.
+                let mut last: ModelLastWriter = std::collections::BTreeMap::new();
+                for v in &model.voxels {
+                    last.insert((v.x, v.y, v.z), v.i);
+                }
+                (size, last.into_iter().collect::<Vec<_>>())
+            })
+            .collect()
+    }
+
     fn assert_region_vox_export_equals_whole_grid(scene: &Scene, vpb: u32, label: &str) {
         let rgba = VoxExport::block_palette_from_active(MaterialChoice::Stone, [132, 126, 118, 255]);
 
@@ -691,5 +764,236 @@ mod tests {
             nonempty_models >= 2,
             "the two far-separated boxes must land in >=2 distinct tiles (got {nonempty_models})"
         );
+    }
+
+    // ===== ADR 0010 E4: cacheless STREAMING `.vox` export ========================
+
+    use crate::core_geom::MaterialChoice as Mat;
+    use crate::two_layer_store::{stream_vox_occupancy, TwoLayerStore};
+
+    /// Build the `.vox` export by STREAMING the cacheless two-layer evaluator (coarse
+    /// `d³` fast-fill + boundary per-voxel) — the E4 path the export button drives.
+    fn streamed_vox_export(scene: &Scene, vpb: u32, rgba: BlockPaletteColors) -> VoxExport {
+        let store = TwoLayerStore::enabled();
+        let mut chunks: Vec<Vec<crate::voxel::Voxel>> = Vec::new();
+        let (dims, _recentre) =
+            stream_vox_occupancy(&store, scene, vpb, |chunk| chunks.push(chunk))
+                .expect("the two-layer capability is enabled");
+        VoxExport::from_region_voxel_chunks(dims, chunks, rgba)
+    }
+
+    /// **THE E4 `.vox` PARITY GATE:** the streamed export's written `.vox` (model set =
+    /// sizes + per-voxel `(x, y, z, colour)`) is IDENTICAL to today's dense-path region
+    /// export, for the gated scene. Mirrors
+    /// `assert_region_vox_export_equals_whole_grid` on the streaming path.
+    fn assert_streamed_vox_export_equals_dense(scene: &Scene, vpb: u32, label: &str) {
+        let rgba = VoxExport::block_palette_from_active(Mat::Stone, [132, 126, 118, 255]);
+
+        // Dense path (today's export): per-chunk `bound_region_occupied` → `from_region_voxels`.
+        let mut cache = ChunkResolveCache::new();
+        let (dims, occupied) = cache.bound_region_occupied(scene, vpb, 0);
+        let dense_export = VoxExport::from_region_voxels(dims, occupied, rgba);
+
+        // Streamed path (E4): the cacheless two-layer evaluator.
+        let streamed_export = streamed_vox_export(scene, vpb, rgba);
+
+        assert_eq!(
+            streamed_export.model_count(),
+            dense_export.model_count(),
+            "[{label}] streamed export model count must equal the dense-path export"
+        );
+        // The faithful parity comparison is the RESOLVED occupancy a MagicaVoxel reader
+        // renders — last-writer-per-coord (position + palette colour). For every
+        // non-overlapping scene each coord has one writer, so this is bit-identical to
+        // the raw per-voxel set; only genuine leaf overlap differs (the dense file keeps
+        // duplicate entries there, the streamed file is resolved), and the last-writer
+        // map is the correct comparison (ADR 0010 parity-gate canonical form).
+        let streamed_bytes = streamed_export.to_bytes();
+        let dense_bytes = dense_export.to_bytes();
+        assert_eq!(
+            parsed_model_last_writer_sets(&streamed_bytes),
+            parsed_model_last_writer_sets(&dense_bytes),
+            "[{label}] streamed export resolved occupancy (last-writer position + palette \
+             colour) must be IDENTICAL to the dense-path `.vox` export"
+        );
+        // The streamed export is one-id-per-cell: it writes NO duplicate voxels, so its
+        // raw voxel count equals its resolved count (the dense path over-counts at
+        // overlaps; the streamed path never does — that is the elision win).
+        let streamed_resolved_count: usize = parsed_model_last_writer_sets(&streamed_bytes)
+            .iter()
+            .map(|(_, last)| last.len())
+            .sum();
+        assert_eq!(
+            streamed_export.voxel_count(),
+            streamed_resolved_count,
+            "[{label}] the streamed export must write one voxel per resolved cell (no \
+             duplicate-at-overlap entries)"
+        );
+    }
+
+    #[test]
+    fn streamed_vox_export_equals_dense_for_shapes() {
+        for kind in [
+            ShapeKind::Sphere,
+            ShapeKind::Cylinder,
+            ShapeKind::Tube,
+            ShapeKind::Torus,
+            ShapeKind::Box,
+        ] {
+            let scene = shape_scene(kind, 16, [5, 5, 5]);
+            assert_streamed_vox_export_equals_dense(&scene, 16, &format!("{kind:?}"));
+        }
+    }
+
+    /// FLAT / odd-sized shapes (a 1-block axis straddling two chunks) stream identically.
+    #[test]
+    fn streamed_vox_export_equals_dense_for_flat_and_odd_shapes() {
+        for kind in [ShapeKind::Cylinder, ShapeKind::Sphere, ShapeKind::Torus] {
+            for size in [[5u32, 1, 5], [3, 1, 3], [5, 3, 5], [1, 1, 1]] {
+                let scene = shape_scene(kind, 16, size);
+                assert_streamed_vox_export_equals_dense(
+                    &scene,
+                    16,
+                    &format!("{kind:?} {size:?}"),
+                );
+            }
+        }
+    }
+
+    /// A wide box forcing a 256-split streams the same multi-model set as the dense path.
+    #[test]
+    fn streamed_vox_export_equals_dense_when_split_over_256() {
+        let scene = shape_scene(ShapeKind::Box, 16, [20, 1, 1]);
+        assert_streamed_vox_export_equals_dense(&scene, 16, "wide-box-split");
+    }
+
+    #[test]
+    fn streamed_vox_export_equals_dense_for_demo_scene() {
+        let vpb = 16u32;
+        let make_tool = |kind, offset: [i64; 3], material| {
+            let shape = SdfShape::from_blocks(kind, [5, 5, 5], 1, vpb);
+            let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
+            node.transform = crate::scene::NodeTransform::from_blocks(offset, vpb);
+            node
+        };
+        let scene = Scene::from_nodes(vec![
+            make_tool(ShapeKind::Sphere, [0, 0, 0], Mat::Stone),
+            make_tool(ShapeKind::Box, [8, 0, 0], Mat::Wood),
+            make_tool(ShapeKind::Torus, [0, 0, 6], Mat::Plain),
+        ]);
+        assert_streamed_vox_export_equals_dense(&scene, vpb, "demo-scene");
+    }
+
+    #[test]
+    fn streamed_vox_export_equals_dense_for_demo_village() {
+        use crate::scene::DefId;
+        let vpb = 16u32;
+        let house_def_id = DefId(1);
+        let tool = |kind, size: [u32; 3], offset: [i64; 3], material| {
+            let shape = SdfShape::from_blocks(kind, size, 1, vpb);
+            let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
+            node.transform = crate::scene::NodeTransform::from_blocks(offset, vpb);
+            node
+        };
+        let instance = |name: &str, offset: [i64; 3]| {
+            let mut node = Node::new(name, NodeContent::Instance(house_def_id));
+            node.transform = crate::scene::NodeTransform::from_blocks(offset, vpb);
+            node
+        };
+        let mut scene = Scene::from_nodes(vec![
+            instance("House 1", [0, 0, 0]),
+            instance("House 2", [6, 0, 0]),
+            instance("House 3", [12, 0, 0]),
+            instance("House 4", [18, 0, 0]),
+        ]);
+        scene.add_definition(
+            house_def_id,
+            "House".to_string(),
+            vec![
+                tool(ShapeKind::Box, [2, 2, 2], [0, 0, 0], Mat::Stone),
+                tool(ShapeKind::Cylinder, [1, 2, 1], [0, 2, 0], Mat::Wood),
+            ],
+        );
+        assert_streamed_vox_export_equals_dense(&scene, vpb, "demo-village");
+    }
+
+    /// A sketch-revolve solid (always classifies BOUNDARY — its polygon fill is not a
+    /// coarse box) streams its per-voxel boundary path identically to the dense export.
+    #[test]
+    fn streamed_vox_export_equals_dense_for_sketch_solid() {
+        use crate::sketch::{PlaneAxis, RevolveAxis, Sketch, SketchSolid};
+        let vpb = 16u32;
+        let profile = Sketch::rectangle(PlaneAxis::Z, 24, 16);
+        let producer = SketchSolid::revolve(profile, RevolveAxis::InPlane0, 360);
+        let node = Node::new(
+            "Revolve",
+            NodeContent::SketchTool {
+                producer,
+                material: Mat::Stone,
+            },
+        );
+        let scene = Scene::from_nodes(vec![node]);
+        assert_streamed_vox_export_equals_dense(&scene, vpb, "sketch-revolve");
+    }
+
+    /// An OVERLAP multi-material scene (two boxes of different materials overlapping):
+    /// the overlap blocks classify BOUNDARY (Union later-wins material is per-voxel), so
+    /// each voxel's `.vox` palette colour must match the dense export through the palette.
+    #[test]
+    fn streamed_vox_export_equals_dense_for_overlap_multi_material() {
+        let vpb = 16u32;
+        let make_tool = |offset: [i64; 3], material| {
+            let shape = SdfShape::from_blocks(ShapeKind::Box, [4, 4, 4], 1, vpb);
+            let mut node = Node::new("Box", NodeContent::Tool { shape, material });
+            node.transform = crate::scene::NodeTransform::from_blocks(offset, vpb);
+            node
+        };
+        let scene = Scene::from_nodes(vec![
+            make_tool([0, 0, 0], Mat::Stone),
+            make_tool([2, 0, 0], Mat::Wood),
+        ]);
+        assert_streamed_vox_export_equals_dense(&scene, vpb, "overlap-multi-material");
+    }
+
+    /// **6M-CAP DISSOLUTION (the E4 headline):** an 800×800-revolve-class solid box —
+    /// 50³ blocks @ d16 = 800³ voxels, whose dense whole-region count (~5.1e8) blows the
+    /// 6M `MAX_GRID_VOXELS` cap — EXPORTS SUCCESSFULLY via the streaming path. We assert
+    /// (a) the dense single-shape guard WOULD reject it, and (b) the streamed export
+    /// produces the full surface+interior occupancy without a whole-region densify.
+    #[test]
+    fn streamed_vox_export_dissolves_6m_cap_on_large_solid() {
+        let vpb = 16u32;
+        let blocks = 50u32;
+        let shape = SdfShape::from_blocks(ShapeKind::Box, [blocks, blocks, blocks], 1, vpb);
+        // (a) The dense single-shape cap WOULD reject this scene outright.
+        assert!(
+            shape.exceeds_voxel_cap(vpb),
+            "the large solid must exceed the dense 6M cap to prove the point"
+        );
+        let node = Node::new("BigBox", NodeContent::Tool { shape, material: Mat::Stone });
+        let scene = Scene::from_nodes(vec![node]);
+        let rgba = VoxExport::block_palette_from_active(Mat::Stone, [132, 126, 118, 255]);
+
+        // (b) The streamed export succeeds — no whole-region grid is ever built.
+        let export = streamed_vox_export(&scene, vpb, rgba);
+
+        // The export holds the FULL occupancy (surface shell + coarse interior fast-fill).
+        // 800³ voxels = 5.1e8; the dense path could never assemble it. (The `.vox` 256
+        // cap tiles the 800-axis into ceil(800/256)=4 models per axis.)
+        let region_voxels = (blocks as u64 * vpb as u64).pow(3);
+        assert_eq!(
+            export.voxel_count() as u64,
+            region_voxels,
+            "the streamed export must hold the FULL solid occupancy (surface + interior \
+             coarse fast-fill), far past the dense 6M cap"
+        );
+        // The file parses and tiles correctly (800 > 256 on every axis → 4³ = 64 models).
+        let parsed = dot_vox::load_bytes(&export.to_bytes())
+            .expect("dot_vox should parse the large streamed export");
+        let total: u64 = parsed.models.iter().map(|m| m.voxels.len() as u64).sum();
+        assert_eq!(total, region_voxels, "every voxel must survive the 256-split tiling");
+        for model in &parsed.models {
+            assert!(model.size.x <= 256 && model.size.y <= 256 && model.size.z <= 256);
+        }
     }
 }

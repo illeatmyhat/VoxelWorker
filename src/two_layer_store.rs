@@ -201,7 +201,7 @@ impl TwoLayerChunk {
     /// `index_offset` is added (in i64, before the i32 downcast) to every emitted voxel
     /// index: pass `chunk_min_voxels − floating_origin_voxels` to land the chunk in the
     /// exact frame the dense store assembles, or `[0,0,0]` for chunk-local indices.
-    fn expand_occupancy_into(&self, output: &mut Vec<Voxel>, index_offset: [i64; 3]) {
+    pub fn expand_occupancy_into(&self, output: &mut Vec<Voxel>, index_offset: [i64; 3]) {
         let density = self.voxels_per_block.max(1);
         let block_extent = density as i64;
 
@@ -818,6 +818,260 @@ pub fn resolve_region_two_layer(
     Some(output)
 }
 
+// ===== ADR 0010 E4 — the cacheless STREAMING exact sinks =====================
+//
+// The display sink (E3) CACHES the two layers; the exact sinks (`.vox` export and
+// the diameter/widest-run query) read the SAME evaluator region-scoped, cacheless,
+// streaming (ADR 0010 Decision 3 — "many sinks by policy"). They drive the E2
+// classifier ([`classify_chunk_block`]) block-by-block and NEVER assemble a dense
+// whole-region `VoxelGrid`: a coarse-solid block is a fast `d³` fill (export) or an
+// analytic run contribution (query: `run += d`, no per-voxel expansion); a boundary
+// block is per-voxel field eval. This is why the `.vox` 6M whole-region cap
+// dissolves on the export path — no dense interior is ever materialised.
+
+/// Build ONE covering chunk in the recentred frame and stream its occupancy into a
+/// FRESH `Vec<Voxel>` (coarse `d³` fast-fill + boundary per-voxel), in the EXACT
+/// frame the dense [`Store::resolve_region`](crate::store::Store::resolve_region)
+/// assembles. Returns `None` when the capability is OFF.
+///
+/// This is the per-chunk streaming primitive both exact sinks share: the export
+/// buckets each chunk's `Vec` then DROPS it (never holding the whole region), and a
+/// caller wanting the whole occupancy just concatenates. No dense whole-region grid
+/// is ever allocated — the chunk buffer is the only transient, bounded to one
+/// chunk's surface + (for export) its coarse interior.
+fn stream_chunk_recentred(
+    store: &TwoLayerStore,
+    scene: &Scene,
+    chunk_coord: [i32; 3],
+    voxels_per_block: u32,
+    recentre_voxels: [i64; 3],
+) -> Option<Vec<Voxel>> {
+    let chunk = store.build_chunk(chunk_coord, scene, voxels_per_block, 0)?;
+    let chunk_extent_voxels = (CHUNK_BLOCKS * voxels_per_block.max(1)) as i64;
+    // Rebase chunk-local indices into the recentred frame (mirrors
+    // `resolve_region_two_layer` / `resolve_chunk_rebased`): a chunk-local voxel `l`
+    // has absolute index `chunk_min + l`, and the recentred frame subtracts the
+    // recentre, so the offset is `chunk_min − recentre` (i64, before the i32 downcast).
+    let index_offset = [
+        chunk_coord[0] as i64 * chunk_extent_voxels - recentre_voxels[0],
+        chunk_coord[1] as i64 * chunk_extent_voxels - recentre_voxels[1],
+        chunk_coord[2] as i64 * chunk_extent_voxels - recentre_voxels[2],
+    ];
+    let mut output = Vec::new();
+    chunk.expand_occupancy_into(&mut output, index_offset);
+    Some(output)
+}
+
+/// **Cacheless `.vox` streaming source (ADR 0010 E4).** Stream the scene's exact
+/// occupancy region-scoped, ONE covering chunk at a time, in the recentred frame the
+/// dense path produces, invoking `sink` with each chunk's freshly-expanded
+/// `Vec<Voxel>` (coarse `d³` fast-fill + boundary per-voxel) before dropping it. The
+/// caller's `sink` buckets each chunk into the `.vox` model set (so no whole-region
+/// dense grid is ever assembled — the 6M whole-region cap dissolves on this path).
+///
+/// Returns the region's voxel `dimensions` (the SAME value
+/// [`Scene::placed_region_dimensions`](crate::scene::Scene::placed_region_dimensions)
+/// produces — the `.vox` tiling/decode frame) and the carried `recentre`. Returns
+/// `None` when the capability is OFF (the caller falls back to the dense path).
+pub fn stream_vox_occupancy<Sink: FnMut(Vec<Voxel>)>(
+    store: &TwoLayerStore,
+    scene: &Scene,
+    voxels_per_block: u32,
+    mut sink: Sink,
+) -> Option<([u32; 3], [i64; 3])> {
+    if !store.is_enabled() {
+        return None;
+    }
+    let region_dimensions = scene.placed_region_dimensions(voxels_per_block);
+    let recentre_voxels = scene.recentre_voxels_for_resolve(voxels_per_block);
+    let Some((min_chunk, max_chunk)) = scene.covering_chunk_range(voxels_per_block) else {
+        // No composite extent (Part-only): an empty occupancy is still a valid export.
+        return Some((region_dimensions, recentre_voxels));
+    };
+    for chunk_z in min_chunk[2]..=max_chunk[2] {
+        for chunk_y in min_chunk[1]..=max_chunk[1] {
+            for chunk_x in min_chunk[0]..=max_chunk[0] {
+                if let Some(chunk_voxels) = stream_chunk_recentred(
+                    store,
+                    scene,
+                    [chunk_x, chunk_y, chunk_z],
+                    voxels_per_block,
+                    recentre_voxels,
+                ) {
+                    sink(chunk_voxels);
+                }
+            }
+        }
+    }
+    Some((region_dimensions, recentre_voxels))
+}
+
+/// **Cacheless diameter / widest-run query (ADR 0010 E4).** Compute the widest
+/// occupied run in the layer band `[band_min, band_max]` (Z-slices, Z-up) by
+/// streaming the classifier block-by-block — accounting a **coarse-solid block
+/// ANALYTICALLY** (a fully-solid block sets a contiguous `density`-long X span in
+/// every `(y, z)` row it covers, with NO per-voxel expansion) and a boundary block
+/// per-voxel. Returns the SAME value
+/// [`Store::widest_run_in_band`](crate::store::Store::widest_run_in_band) /
+/// [`VoxelGrid::widest_run_in_band`](crate::voxel::VoxelGrid::widest_run_in_band)
+/// returns for the assembled region, but never assembles a dense grid.
+///
+/// Returns `None` when the capability is OFF (the caller falls back to the dense
+/// path).
+///
+/// ## Frame / decode (identical to the dense readout, ADR 0008)
+///
+/// The shared per-`(y, z)` occupancy rows are keyed by the GLOBAL X index the dense
+/// [`VoxelGrid::widest_run_in_band`] computes
+/// (`i = round(world_x + floor(grid_x/2) − 0.5)`). A coarse-solid block is stamped
+/// at the SAME indices its per-voxel expansion would land — the recentred chunk-local
+/// voxel index `chunk_min + block_low + local − recentre`, whose `world = index + 0.5`
+/// decodes back to `index − region_low = index + floor(dim/2)` — so the analytic span
+/// is bit-identical to expanding the block and scanning. A boundary block's per-voxel
+/// fill uses the identical decode, so a run crossing a coarse↔boundary seam is one
+/// contiguous span in the shared bitset.
+pub fn streamed_widest_run_in_band(
+    store: &TwoLayerStore,
+    scene: &Scene,
+    voxels_per_block: u32,
+    band_min: u32,
+    band_max: u32,
+) -> Option<u32> {
+    if !store.is_enabled() {
+        return None;
+    }
+    let [grid_x, grid_y, grid_z] = scene.placed_region_dimensions(voxels_per_block);
+    if grid_x == 0 || grid_y == 0 || grid_z == 0 {
+        return Some(0);
+    }
+    let recentre_voxels = scene.recentre_voxels_for_resolve(voxels_per_block);
+    let Some((min_chunk, max_chunk)) = scene.covering_chunk_range(voxels_per_block) else {
+        return Some(0);
+    };
+
+    let width = grid_x as usize;
+    // The dense decode: `idx = round(world + floor(dim/2) − 0.5)`. Because every
+    // streamed voxel index `n` decodes `world = n + 0.5` ⇒ `idx = n + floor(dim/2)`,
+    // the recentred index maps to the global grid index by ADDING `floor(dim/2)`.
+    let half = [
+        (grid_x / 2) as i64,
+        (grid_y / 2) as i64,
+        (grid_z / 2) as i64,
+    ];
+    // One SHARED occupancy row (length grid_x) per (z, y) row touching the band, so a
+    // run crossing a chunk/block seam is one contiguous span — the same stitching the
+    // dense `widest_run_in_band_over_chunks` uses.
+    let mut rows: std::collections::HashMap<u64, Vec<bool>> = std::collections::HashMap::new();
+    let density = voxels_per_block.max(1) as i64;
+    let chunk_extent_voxels = CHUNK_BLOCKS as i64 * density;
+
+    // Set the half-open recentred-X span `[x_start, x_end)` of `(global_y, global_z)`
+    // into the shared band rows (clamped to `[0, width)` / the band / `[0, grid_y)`).
+    let set_span = |rows: &mut std::collections::HashMap<u64, Vec<bool>>,
+                        global_y: i64,
+                        global_z: i64,
+                        x_start: i64,
+                        x_end: i64| {
+        if global_z < band_min as i64 || global_z > band_max as i64 {
+            return;
+        }
+        if global_y < 0 || global_y >= grid_y as i64 {
+            return;
+        }
+        let lo = x_start.max(0);
+        let hi = x_end.min(width as i64);
+        if lo >= hi {
+            return;
+        }
+        let key = (global_z as u64) << 32 | (global_y as u64);
+        let row = rows.entry(key).or_insert_with(|| vec![false; width]);
+        for cell in &mut row[lo as usize..hi as usize] {
+            *cell = true;
+        }
+    };
+
+    for chunk_z in min_chunk[2]..=max_chunk[2] {
+        for chunk_y in min_chunk[1]..=max_chunk[1] {
+            for chunk_x in min_chunk[0]..=max_chunk[0] {
+                let chunk_coord = [chunk_x, chunk_y, chunk_z];
+                let Some(chunk) = store.build_chunk(chunk_coord, scene, voxels_per_block, 0) else {
+                    continue;
+                };
+                let chunk_min = [
+                    chunk_x as i64 * chunk_extent_voxels,
+                    chunk_y as i64 * chunk_extent_voxels,
+                    chunk_z as i64 * chunk_extent_voxels,
+                ];
+                // The recentred→global map: global = (chunk_min + local − recentre) + half.
+                let to_global = [
+                    chunk_min[0] - recentre_voxels[0] + half[0],
+                    chunk_min[1] - recentre_voxels[1] + half[1],
+                    chunk_min[2] - recentre_voxels[2] + half[2],
+                ];
+                for block_z in 0..CHUNK_BLOCKS {
+                    for block_y in 0..CHUNK_BLOCKS {
+                        for block_x in 0..CHUNK_BLOCKS {
+                            let block = [block_x, block_y, block_z];
+                            let block_low = [
+                                block_x as i64 * density,
+                                block_y as i64 * density,
+                                block_z as i64 * density,
+                            ];
+                            if chunk.coarse_block(block).is_some() {
+                                // ANALYTIC: every (y, z) cell of this d³ block is solid,
+                                // so each row gets the contiguous X span `[x0, x0 + d)`
+                                // — no per-voxel expansion.
+                                let x0 = to_global[0] + block_low[0];
+                                for local_z in 0..density {
+                                    let gz = to_global[2] + block_low[2] + local_z;
+                                    for local_y in 0..density {
+                                        let gy = to_global[1] + block_low[1] + local_y;
+                                        set_span(&mut rows, gy, gz, x0, x0 + density);
+                                    }
+                                }
+                            } else if let Some(geometry) = chunk.microblocks.get(&block) {
+                                // BOUNDARY: per-voxel (each cuboid expands to its cells).
+                                for cuboid in &geometry.cuboids {
+                                    for local_z in cuboid.min[2]..=cuboid.max[2] {
+                                        let gz =
+                                            to_global[2] + block_low[2] + local_z as i64;
+                                        for local_y in cuboid.min[1]..=cuboid.max[1] {
+                                            let gy =
+                                                to_global[1] + block_low[1] + local_y as i64;
+                                            let x_lo = to_global[0]
+                                                + block_low[0]
+                                                + cuboid.min[0] as i64;
+                                            let x_hi = to_global[0]
+                                                + block_low[0]
+                                                + cuboid.max[0] as i64
+                                                + 1;
+                                            set_span(&mut rows, gy, gz, x_lo, x_hi);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut widest = 0u32;
+    for row in rows.values() {
+        let mut run = 0u32;
+        for &occupied in row {
+            if occupied {
+                run += 1;
+                widest = widest.max(run);
+            } else {
+                run = 0;
+            }
+        }
+    }
+    Some(widest)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1294,5 +1548,223 @@ mod tests {
         assert!(!store.is_enabled());
         assert!(store.build_chunk([0, 0, 0], &scene, 16, 0).is_none());
         assert!(resolve_region_two_layer(&store, &scene, 16, 0).is_none());
+        // E4 exact sinks also return None when the capability is OFF (dense fallback).
+        assert!(streamed_widest_run_in_band(&store, &scene, 16, 0, 0).is_none());
+        assert!(stream_vox_occupancy(&store, &scene, 16, |_| {}).is_none());
+    }
+
+    // ===== ADR 0010 E4: cacheless STREAMING diameter / widest-run query ===========
+
+    /// The whole-grid diameter readout — today's reference value the streamed query
+    /// must reproduce (same as `store.rs::whole_grid_widest_run`).
+    fn whole_grid_widest_run(scene: &Scene, vpb: u32, band: (u32, u32)) -> u32 {
+        let region = scene.full_extent_blocks(vpb);
+        let grid = scene.resolve_region(region, vpb, 0);
+        grid.widest_run_in_band(band.0, band.1)
+    }
+
+    /// **THE E4 diameter PARITY GATE:** the STREAMED widest-run (coarse blocks accounted
+    /// ANALYTICALLY, boundary per-voxel) equals today's dense
+    /// `VoxelGrid::widest_run_in_band` for the gated scene, across a spread of bands.
+    /// Mirrors `store.rs::assert_region_widest_run_matches_whole_grid`.
+    fn assert_streamed_widest_run_matches_dense(scene: &Scene, vpb: u32, label: &str) {
+        let dims = scene.placed_region_dimensions(vpb);
+        let grid_z = dims[2];
+        let mid = grid_z.saturating_sub(1) / 2;
+        let bands = [
+            (0, grid_z.saturating_sub(1)),
+            (0, 0),
+            (grid_z.saturating_sub(1), grid_z.saturating_sub(1)),
+            (mid, mid),
+            (mid, (mid + 2).min(grid_z.saturating_sub(1))),
+            (grid_z + 10, grid_z + 20),
+        ];
+        let store = TwoLayerStore::enabled();
+        for band in bands {
+            let expected = whole_grid_widest_run(scene, vpb, band);
+            let actual = streamed_widest_run_in_band(&store, scene, vpb, band.0, band.1)
+                .expect("the two-layer capability is enabled");
+            assert_eq!(
+                actual, expected,
+                "[{label}] streamed widest_run band {band:?} must equal the dense readout"
+            );
+        }
+    }
+
+    #[test]
+    fn streamed_widest_run_matches_dense_for_all_shapes() {
+        for kind in [
+            ShapeKind::Sphere,
+            ShapeKind::Cylinder,
+            ShapeKind::Tube,
+            ShapeKind::Torus,
+            ShapeKind::Box,
+        ] {
+            let scene = shape_scene(kind, 16);
+            assert_streamed_widest_run_matches_dense(&scene, 16, &format!("{kind:?}"));
+        }
+    }
+
+    #[test]
+    fn streamed_widest_run_matches_dense_for_flat_and_odd_shapes() {
+        for kind in [ShapeKind::Cylinder, ShapeKind::Sphere, ShapeKind::Torus] {
+            for size in [[5u32, 1, 5], [3, 1, 3], [5, 3, 5], [1, 1, 1]] {
+                let scene = Scene::from_geometry(
+                    GeometryParams {
+                        shape: kind,
+                        size_voxels: [size[0] * 16, size[1] * 16, size[2] * 16],
+                        size_measurements: None,
+                        voxels_per_block: 16,
+                        wall_blocks: 1,
+                    },
+                    MaterialChoice::Stone,
+                );
+                assert_streamed_widest_run_matches_dense(&scene, 16, &format!("{kind:?} {size:?}"));
+            }
+        }
+    }
+
+    #[test]
+    fn streamed_widest_run_matches_dense_for_demo_scene() {
+        let density = 16;
+        let scene = Scene::from_nodes(vec![
+            make_tool(ShapeKind::Sphere, [0, 0, 0], MaterialChoice::Stone, density),
+            make_tool(ShapeKind::Box, [8, 0, 0], MaterialChoice::Wood, density),
+            make_tool(ShapeKind::Torus, [0, 0, 6], MaterialChoice::Plain, density),
+        ]);
+        assert_streamed_widest_run_matches_dense(&scene, density, "demo-scene");
+    }
+
+    #[test]
+    fn streamed_widest_run_matches_dense_for_demo_village() {
+        let density = 16;
+        let house_def_id = DefId(1);
+        let tool = |kind, size: [u32; 3], offset: [i64; 3], material| {
+            let shape = SdfShape::from_blocks(kind, size, 1, density);
+            let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
+            node.transform = NodeTransform::from_blocks(offset, density);
+            node
+        };
+        let instance = |name: &str, offset: [i64; 3]| {
+            let mut node = Node::new(name, NodeContent::Instance(house_def_id));
+            node.transform = NodeTransform::from_blocks(offset, density);
+            node
+        };
+        let mut scene = Scene::from_nodes(vec![
+            instance("House 1", [0, 0, 0]),
+            instance("House 2", [6, 0, 0]),
+            instance("House 3", [12, 0, 0]),
+            instance("House 4", [18, 0, 0]),
+        ]);
+        scene.add_definition(
+            house_def_id,
+            "House".to_string(),
+            vec![
+                tool(ShapeKind::Box, [2, 2, 2], [0, 0, 0], MaterialChoice::Stone),
+                tool(ShapeKind::Cylinder, [1, 2, 1], [0, 2, 0], MaterialChoice::Wood),
+            ],
+        );
+        assert_streamed_widest_run_matches_dense(&scene, density, "demo-village");
+    }
+
+    /// A sketch-revolve solid (boundary-only) — its diameter streams identically.
+    #[test]
+    fn streamed_widest_run_matches_dense_for_sketch_solid() {
+        use crate::sketch::{PlaneAxis, RevolveAxis, Sketch, SketchSolid};
+        let density = 16;
+        let profile = Sketch::rectangle(PlaneAxis::Z, 24, 16);
+        let producer = SketchSolid::revolve(profile, RevolveAxis::InPlane0, 360);
+        let node = Node::new(
+            "Revolve",
+            NodeContent::SketchTool {
+                producer,
+                material: MaterialChoice::Stone,
+            },
+        );
+        let scene = Scene::from_nodes(vec![node]);
+        assert_streamed_widest_run_matches_dense(&scene, density, "sketch-revolve");
+    }
+
+    /// An OVERLAP multi-material scene (overlap blocks classify boundary) streams the
+    /// same widest-run as the dense readout — a run crossing a coarse↔boundary seam is
+    /// one contiguous span.
+    #[test]
+    fn streamed_widest_run_matches_dense_for_overlap_multi_material() {
+        let density = 16;
+        let scene = Scene::from_nodes(vec![
+            make_tool_density(ShapeKind::Box, [0, 0, 0], MaterialChoice::Stone, density, 4),
+            make_tool_density(ShapeKind::Box, [2, 0, 0], MaterialChoice::Wood, density, 4),
+        ]);
+        assert_streamed_widest_run_matches_dense(&scene, density, "overlap-multi-material");
+    }
+
+    /// **6M-CAP DISSOLUTION (query side):** the streamed diameter of an
+    /// 800×800-revolve-class solid is accounted with coarse blocks ANALYTICALLY (no
+    /// per-voxel expansion), so the whole-region densify the dense path needs never
+    /// happens. We assert the streamed widest run equals the box's true 800-voxel face
+    /// width and quantify the analytic saving (coarse cells vs per-voxel cells avoided).
+    #[test]
+    fn streamed_widest_run_dissolves_6m_cap_with_analytic_coarse() {
+        let density = 16u32;
+        let blocks = 50u32;
+        let shape = SdfShape::from_blocks(ShapeKind::Box, [blocks, blocks, blocks], 1, density);
+        assert!(
+            shape.exceeds_voxel_cap(density),
+            "the large solid must exceed the dense 6M cap to prove the point"
+        );
+        let node = Node::new("BigBox", NodeContent::Tool { shape, material: MaterialChoice::Stone });
+        let scene = Scene::from_nodes(vec![node]);
+        let dims = scene.placed_region_dimensions(density);
+        let band = (0, dims[2].saturating_sub(1));
+        let true_width = blocks * density; // 800-voxel face row.
+
+        let store = TwoLayerStore::enabled();
+        let widest = streamed_widest_run_in_band(&store, &scene, density, band.0, band.1)
+            .expect("the two-layer capability is enabled");
+        assert_eq!(
+            widest, true_width,
+            "the streamed diameter must report the solid box's true 800-voxel width"
+        );
+
+        // Quantify the analytic saving: count coarse-solid blocks (accounted by run +=
+        // d, NO per-voxel expansion) vs boundary blocks (per-voxel). Each coarse block
+        // elides d³ per-voxel cells from the scan.
+        let (min_chunk, max_chunk) = scene.covering_chunk_range(density).unwrap();
+        let mut coarse_blocks = 0u64;
+        let mut boundary_blocks = 0u64;
+        for chunk_z in min_chunk[2]..=max_chunk[2] {
+            for chunk_y in min_chunk[1]..=max_chunk[1] {
+                for chunk_x in min_chunk[0]..=max_chunk[0] {
+                    let chunk = store
+                        .build_chunk([chunk_x, chunk_y, chunk_z], &scene, density, 0)
+                        .unwrap();
+                    for bz in 0..CHUNK_BLOCKS {
+                        for by in 0..CHUNK_BLOCKS {
+                            for bx in 0..CHUNK_BLOCKS {
+                                let block = [bx, by, bz];
+                                if chunk.coarse_block(block).is_some() {
+                                    coarse_blocks += 1;
+                                } else if chunk.microblocks.contains_key(&block) {
+                                    boundary_blocks += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let cells_per_block = (density as u64).pow(3);
+        let analytic_cells_elided = coarse_blocks * cells_per_block;
+        assert!(
+            coarse_blocks > boundary_blocks,
+            "a large solid box must be mostly coarse blocks (coarse {coarse_blocks} > \
+             boundary {boundary_blocks})"
+        );
+        eprintln!(
+            "E4 analytic diameter: {coarse_blocks} coarse blocks (accounted run += d, \
+             {analytic_cells_elided} per-voxel cells ELIDED) vs {boundary_blocks} boundary \
+             blocks (per-voxel); dense path would densify all {} region voxels",
+            (blocks as u64 * density as u64).pow(3)
+        );
     }
 }
