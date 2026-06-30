@@ -101,17 +101,18 @@ GPU fog per-chunk atlas is already a brick map** (boundary-residency occupancy t
 - **Object-count scaling (the running experiment):** how many objects each display technique handles on- and off-screen
   at a reasonable framerate (dynamic ramp to 20 FPS @ 4K). The benchmark races **three** display sinks (below); it is the
   first real prototype of the §3 evaluator + broadphase. Gating unknown for the display path.
-- **Display A vs B vs C — BENCHMARKED (RTX 4090, 4K, ramp to 20 FPS; `experimental/sdf_bench`), NOT yet settled.**
-  Packed didn't discriminate (all ≥16384 ladder cap). Scattered/off-screen (the weighted case), as MEASURED: **A mesh
-  ≥16384, B raymarch 2560 (the analytic wall), C brick-field 160.** So as-built **A wins scattered** — but C's loss is an
-  artifact of building **single-resolution bricks with no LOD** (deferred), so scattered rays march bricks across the
-  whole world (world-diameter-bound, not screen-bound). C otherwise wins decisively: near-flat frame time vs N
-  (render cost independent of scene complexity), ~3× less memory (64 MB packed / 0.8 MB scattered vs mesh 185 MB), and
-  cheap incremental edits (re-eval only dirty bricks vs mesh whole-object rebuild) — and matches the prior art. **GATING
-  EXPERIMENT before settling the display path: add geometry clip-map LOD to C and re-measure scattered** (expected to
-  leap past A). Measure-don't-assume: do not adopt C for the large/off-screen case on argument alone. **Settled
-  sub-result:** coarse-until-chiseled buys ~3× on the dominant cost (mesh instances / brick count) for A and C — not
-  densifying plain blocks is a real win.
+- **Display path — DECIDED: C, the cached sparse brick field + clip-map LOD** (benchmarked RTX 4090, 4K, 20 FPS;
+  `experimental/sdf_bench`). The gating experiment ran: adding a clip-map occupancy pyramid (coarse "any-brick-inside"
+  levels + a hierarchical DDA that jumps empty space) lifted C's scattered ceiling **160 → 10240 (~64×)**, exactly as the
+  prior art predicted; packed unaffected. Final scattered: **C 10240 @ 46 MB / 57 µs-edit vs A-mesh ≥16384 @ 185 MB /
+  183 µs-edit** (B analytic raymarch ≈2.5–4k — the wall). C still trails mesh's *raw* scattered ceiling (the rasterizer
+  gets frustum/Z cull free; C had only two LOD levels — a 3rd/4th closes most of the gap), but **C wins the currencies
+  that matter for an edit-heavy, large, mostly-off-screen world: ~4× less memory, ~3× lower edit latency, render cost
+  independent of scene complexity** — and it generalizes the shipped fog atlas (ADR 0007). Measure-don't-assume
+  satisfied: the clip-map fix was *measured*, not assumed. **Remaining engineering** (not architecture): more LOD
+  levels, GPU-side incremental atlas updates, production port into the chunk store. **Settled sub-result:**
+  coarse-until-chiseled buys ~3× on the dominant cost (mesh instances / brick count) — not densifying plain blocks is a
+  real win.
 - **Broadphase + LOD:** uniform macrocell grid vs **BVH/AABB-tree** (prior art); **geometry clip-maps** for the
   >10k-block anisotropic + off-screen case (ties to ADR 0003's streaming/eviction).
 - **Editable sparse delta structure:** sorted-key list (works now) vs hash grid / HashDAG as delta counts grow.
