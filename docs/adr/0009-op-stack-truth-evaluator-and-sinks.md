@@ -82,6 +82,12 @@ density). Geometry/occupancy is per-voxel; texture/material is per-block (a bric
 - The `.vox` 6M-cap "disappears" bug is dissolved (no dense interior is ever built); `.vox` becomes a constrained
   exporter behind the exporter-sink interface.
 - Headless/agents/CI unaffected — they bind the CPU query sink (cleaner than iterating a dense grid).
+- **The brick-field evaluator assumes the world-axis-aligned voxel lattice** (the project's Z-up convention): bricks
+  align to the world grid, so no per-object ray-into-local-space transform is needed (a simplification). A *rotated*
+  voxel/sculpted part would staircase on the shared lattice — so rotated baked-voxel placement stays the deferred
+  local-lattice / 24-orientation / lossy-resample path (ADR 0003 + architecture trajectory), NOT the world-aligned brick
+  fast path. (Surfaced empirically by the benchmark spike: random per-object yaw smeared faces; axis-aligned objects are
+  the realistic case.)
 
 ## Prior art (external validation)
 
