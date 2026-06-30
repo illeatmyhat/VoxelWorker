@@ -263,6 +263,19 @@ struct ShotOptions {
     /// now renders a loaded per-face D2Array (and that cuboid vs instanced match per
     /// face). Overrides --scan-vs/--apply-block material selection.
     synthetic_block: bool,
+    /// `--demo-overlap` (ADR 0010 E3 / #50): two solid boxes of DIFFERENT materials that
+    /// OVERLAP, so the overlap region resolves last-writer-wins (document order). The golden
+    /// pins that an overlapping multi-material scene renders identically on the dense and
+    /// two-layer paths (the E2 carry-over). Overrides --shape/--size/--density.
+    demo_overlap: bool,
+    /// `--two-layer` (ADR 0010 E3 / #50): render the voxel mesh THROUGH the two-layer
+    /// path — build each covering chunk's [`voxel_worker::two_layer_store::TwoLayerChunk`]
+    /// (coarse one-box + microblock cuboids + seam-solidity flags) and mesh from it via
+    /// [`CuboidMeshRenderer::new_from_two_layer_chunks`], instead of the dense per-chunk
+    /// `VoxelGrid`. PROVES the two-layer mesher renders pixel-identical to the dense path
+    /// (the E3 golden gate). DEFAULT OFF — the live renderer stays on the dense path until
+    /// E5. Only the voxel MESH source changes; fog / overlays / export are unaffected.
+    two_layer: bool,
     /// `--replay <path>` (ADR 0003 Phase C, slice C3): build the scene by REPLAYING a
     /// newline-delimited-JSON Intent script through `AppCore::apply_intent` instead of
     /// from a `--shape`/`--demo-*` source. The file is one [`voxel_worker::Intent`] per
@@ -325,6 +338,8 @@ impl Default for ShotOptions {
             far_offset: false,
             far_offset_near: false,
             synthetic_block: false,
+            demo_overlap: false,
+            two_layer: false,
             replay_path: None,
         }
     }
@@ -613,6 +628,12 @@ fn parse_options() -> ShotOptions {
             "--synthetic-block" => {
                 options.synthetic_block = true;
             }
+            "--two-layer" => {
+                options.two_layer = true;
+            }
+            "--demo-overlap" => {
+                options.demo_overlap = true;
+            }
             "--replay" => {
                 options.replay_path = Some(PathBuf::from(
                     args.next().expect("--replay requires a path argument"),
@@ -729,12 +750,12 @@ fn parse_options() -> ShotOptions {
                      \x20            [--material <stone|wood|plain>] [--grid]\n\
                      \x20            [--scan-vs] [--apply-first-block]\n\
                      \x20            [--apply-block <substring>] [--list-perface]\n\
-                     \x20            [--synthetic-block]\n\
+                     \x20            [--synthetic-block] [--two-layer]\n\
                      \x20            [--replay <script.jsonl>]\n\
                      \x20            [--force-demo-stem <texture/stem>]\n\
                      \x20            [--gizmo] [--select-node <usize>] [--lattice] [--floor] [--points] [--point-at <X Y Z>] [--no-viewcube]\n\
                      \x20            [--debug-faces] [--debug-chunks]\n\
-                     \x20            [--demo-scene] [--demo-village] [--demo-village-far] [--demo-groups]\n\
+                     \x20            [--demo-scene] [--demo-overlap] [--demo-village] [--demo-village-far] [--demo-groups]\n\
                      \x20            [--demo-sketch-extrude] [--demo-sketch-revolve]\n\
                      \x20            [--demo-far-offset] [--demo-far-offset-near]\n\
                      \x20            [--layer-lower <u32>] [--layer-upper <u32>] [--onion <u32>]\n\
@@ -911,6 +932,27 @@ fn build_demo_scene(voxels_per_block: u32) -> Scene {
         make_tool(ShapeKind::Torus, [0, 0, 6], MaterialChoice::Plain),
     ]));
     // Density is document-level (ADR 0003 §3f(0)).
+    scene.voxels_per_block = voxels_per_block;
+    scene
+}
+
+/// Build the `--demo-overlap` (ADR 0010 E3 / #50): two solid boxes of DIFFERENT materials
+/// placed so they OVERLAP, exercising the multi-material overlap case (the E2 carry-over).
+/// The overlap region resolves last-writer-wins by document order (the Wood box is second,
+/// so it wins where they overlap), and the golden pins that the dense and two-layer paths
+/// render this IDENTICALLY. The boxes are 4 blocks each, offset 2 blocks in X+Y so a corner
+/// volume overlaps; their union is a recognizable two-tone L-ish solid.
+fn build_demo_overlap(voxels_per_block: u32) -> Scene {
+    let make = |kind, offset: [i64; 3], material| {
+        let shape = SdfShape::from_blocks(kind, [4, 4, 4], 1, voxels_per_block);
+        let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
+        node.transform = voxel_worker::scene::NodeTransform::from_blocks(offset, voxels_per_block);
+        node
+    };
+    let mut scene = selecting_first_node(Scene::from_nodes(vec![
+        make(ShapeKind::Box, [0, 0, 0], MaterialChoice::Stone),
+        make(ShapeKind::Box, [2, 2, 0], MaterialChoice::Wood),
+    ]));
     scene.voxels_per_block = voxels_per_block;
     scene
 }
@@ -1274,6 +1316,8 @@ async fn run_capture(options: ShotOptions) {
         build_demo_village_far(options.geometry.voxels_per_block)
     } else if options.demo_village {
         build_demo_village(options.geometry.voxels_per_block)
+    } else if options.demo_overlap {
+        build_demo_overlap(options.geometry.voxels_per_block)
     } else if options.demo_scene {
         build_demo_scene(options.geometry.voxels_per_block)
     } else if options.debug_clouds {
@@ -1372,6 +1416,7 @@ async fn run_capture(options: ShotOptions) {
     // (16M voxels, past the f32 exact-integer ceiling) the grid is BYTE-IDENTICAL
     // to the near box at the origin — the far-lands jitter is gone (S4b proof).
     let placed_scene = options.demo_scene
+        || options.demo_overlap
         || options.demo_village
         || options.demo_village_far
         || options.demo_groups
@@ -1601,7 +1646,36 @@ async fn run_capture(options: ShotOptions) {
     // resolve cache's per-chunk accessor (`resident_render_chunks`) so the goldens
     // exercise the per-chunk path, falling back to the whole-grid wrapper when the
     // scene has no chunkable extent (the wrapper buckets internally → identical mesh).
-    let mut cuboid_mesh_renderer = if let Some(render_chunks) = render_chunks_for_mesh.take() {
+    let mut cuboid_mesh_renderer = if options.two_layer && scene.has_chunkable_extent(options.geometry.voxels_per_block) {
+        // ADR 0010 E3 / #50: mesh THROUGH the two-layer path — build each covering chunk's
+        // `TwoLayerChunk` (coarse one-box + microblock cuboids + seam flags) and mesh from
+        // it. PROVES pixel-identity to the dense path (the E3 golden gate). The render-chunk
+        // borrow is dropped first (the two-layer build reads the SCENE evaluator, not the
+        // dense store), freeing `app_core` for the camera assignment below.
+        if let Some(render_chunks) = render_chunks_for_mesh.take() {
+            drop(render_chunks);
+        }
+        let density = options.geometry.voxels_per_block;
+        let store = voxel_worker::two_layer_store::TwoLayerStore::enabled();
+        let two_layer_chunks = store.build_covering_chunks(&scene, density, 0);
+        println!(
+            "two-layer mesher: {} covering chunks, {} stored boundary voxels (interior elided)",
+            two_layer_chunks.len(),
+            two_layer_chunks
+                .iter()
+                .map(|(_, c)| c.stored_voxel_count())
+                .sum::<u64>(),
+        );
+        CuboidMeshRenderer::new_from_two_layer_chunks(
+            &gpu.device,
+            &gpu.queue,
+            COLOR_TARGET_FORMAT,
+            &two_layer_chunks,
+            grid_dimensions,
+            grid.recentre_voxels,
+            density,
+        )
+    } else if let Some(render_chunks) = render_chunks_for_mesh.take() {
         // Chunkable path: mesh the per-chunk accessor from `AppCore::rebuild` above
         // (1-voxel neighbour apron per chunk), so the goldens exercise the real
         // per-chunk mesh path. `render_chunks` holds an immutable borrow of the store;

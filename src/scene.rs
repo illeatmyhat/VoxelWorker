@@ -2049,7 +2049,7 @@ impl Scene {
     pub(crate) fn leaf_producers(&self, voxels_per_block: u32) -> Vec<LeafProducer> {
         let region_dimensions = self.placed_region_dimensions(voxels_per_block);
         let mut leaves = Vec::new();
-        self.for_each_leaf(&mut |world_offset_voxels, content, _grid_on_faces| {
+        self.for_each_leaf(&mut |world_offset_voxels, content, grid_on_faces| {
             let (material, producer): (Option<crate::core_geom::BlockId>, Box<dyn VoxelProducer>) =
                 match content {
                     NodeContent::Tool { shape, material } => {
@@ -2071,6 +2071,7 @@ impl Scene {
                 world_offset_voxels,
                 producer,
                 material,
+                grid_overlay: grid_on_faces,
             });
         });
         leaves
@@ -2854,6 +2855,12 @@ pub(crate) struct LeafProducer {
     /// The single-material override id a Tool stamps onto every voxel (`Some`), or `None`
     /// for a Part that brings its own per-voxel materials (the cloud field emits id 0).
     pub material: Option<crate::core_geom::BlockId>,
+    /// The owning node's `grids.voxel_grid_on_faces` flag (issue #29 S4 / ADR 0003 §3c) —
+    /// the transient on-face-grid render marker. Carried so the two-layer mesher (ADR 0010
+    /// E3) can attach the per-box overlay flag exactly as the dense resolve bakes
+    /// [`crate::voxel::Voxel::grid_overlay`]. It is a RENDER hint only: it never enters the
+    /// categorical `block_id`, the chunk codec, or `.vox` export (§3c).
+    pub grid_overlay: bool,
 }
 
 fn leaf_producer_grid_voxels(content: &NodeContent, _voxels_per_block: u32) -> Option<[i64; 3]> {

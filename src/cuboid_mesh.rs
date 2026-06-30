@@ -32,11 +32,12 @@
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
-use crate::core_geom::MaterialChoice;
+use crate::core_geom::{MaterialChoice, CHUNK_BLOCKS};
 use crate::cuboid::{decompose_into_boxes, VoxelBox, VoxelRegion};
 use crate::frustum::{Aabb, Frustum};
 use crate::renderer::{LayerBand, DEPTH_FORMAT, MSAA_SAMPLE_COUNT};
 use crate::texture_atlas::MaterialAtlas;
+use crate::two_layer_store::{MicroblockGeometry, SeamSolidity, TwoLayerChunk};
 use crate::voxel::VoxelGrid;
 
 /// The transient on-face-grid bit the **cuboid mesher** folds into its region-cell key
@@ -57,24 +58,47 @@ const MESH_GRID_OVERLAY_BIT: u16 = 1 << 15;
 /// builds the SAME key. The overlay bit lives ONLY in this render-side key — never in the
 /// persistent `Voxel` payload, the chunk-storage codec, or the `.vox` export.
 pub fn mesh_cell_key(voxel: &crate::voxel::Voxel) -> u16 {
-    let mut key = voxel.color_index();
-    if voxel.grid_overlay {
+    compose_cell_key(voxel.color_index(), voxel.grid_overlay)
+}
+
+/// Compose a cuboid mesher region-cell key from a clean categorical `block_id` and a
+/// transient on-face-grid `overlay` marker (ADR 0003 §3c). The shared primitive behind
+/// [`mesh_cell_key`] (which reads them off a [`crate::voxel::Voxel`]) and the two-layer
+/// mesher / store (ADR 0010 E3), which already hold the id + overlay separately. The
+/// overlay bit lives ONLY in this render-side key — never in the persistent payload.
+#[inline]
+pub fn compose_cell_key(block_id: u16, overlay: bool) -> u16 {
+    let mut key = block_id;
+    if overlay {
         key |= MESH_GRID_OVERLAY_BIT;
     }
     key
 }
 
-/// One mesh vertex of a cuboid face: world position, the face's outward normal, the
-/// box's `block_id` (the clean colour index, constant across the face), and the box's
-/// per-draw on-face-grid flag (ADR 0003 §3c — a DEDICATED attribute, not a bit jammed
-/// into the material).
+/// The clean categorical `block_id` of a render-cell key — the overlay bit
+/// ([`MESH_GRID_OVERLAY_BIT`]) masked off (ADR 0003 §3c). The inverse low-bits half of
+/// [`compose_cell_key`], used where a consumer needs the categorical id without the
+/// transient render flag (the two-layer occupancy expansion).
+#[inline]
+pub fn clean_block_id(cell_key: u16) -> u16 {
+    cell_key & !MESH_GRID_OVERLAY_BIT
+}
+
+/// One mesh vertex of a cuboid face: world position, the face's outward normal, and the
+/// box's `block_id` (the clean colour index, constant across the face).
+///
+/// ADR 0010 E3 / ADR 0003 §3c: the on-face-grid overlay flag is **no longer a vertex
+/// attribute**. A chunk mesh is SPLIT into an overlay-off and an overlay-on index run over
+/// this one shared vertex list (a box never spans both — the overlay bit is part of the
+/// decomposition key), and the draw selects the per-draw overlay-active uniform per run. So
+/// the render flag is entirely out of the per-vertex format while the per-object behaviour
+/// (the `voxel_grid_flag_bit_is_per_object` invariant) is preserved by the split.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 struct CuboidVertex {
     position: [f32; 3],
     normal: [f32; 3],
     material_id: u32,
-    grid_overlay: u32,
 }
 
 /// The six cube-face directions, each with its outward normal and the four
@@ -142,20 +166,25 @@ const FACE_TEMPLATES: [FaceTemplate; 6] = [
 #[derive(Debug, Default, Clone)]
 pub struct CuboidMesh {
     vertices: Vec<CuboidVertex>,
+    /// Triangle indices for boxes WITHOUT the on-face-grid overlay (ADR 0003 §3c). The
+    /// overlay-on boxes index into the same `vertices` via `indices_overlay`.
     indices: Vec<u32>,
+    /// Triangle indices for the overlay-ON boxes (the split that replaced the per-vertex
+    /// overlay flag, ADR 0010 E3). Empty whenever no box carried the overlay marker.
+    indices_overlay: Vec<u32>,
     /// Number of boxes the grid decomposed into (diagnostic).
     box_count: u32,
 }
 
 impl CuboidMesh {
-    /// Total number of triangles in the mesh.
+    /// Total number of triangles in the mesh (both overlay runs).
     pub fn triangle_count(&self) -> u32 {
-        (self.indices.len() / 3) as u32
+        ((self.indices.len() + self.indices_overlay.len()) / 3) as u32
     }
 
-    /// Total number of exposed quad faces (two triangles each).
+    /// Total number of exposed quad faces (two triangles each, both overlay runs).
     pub fn face_count(&self) -> u32 {
-        (self.indices.len() / 6) as u32
+        ((self.indices.len() + self.indices_overlay.len()) / 6) as u32
     }
 
     /// Number of vertices.
@@ -163,9 +192,9 @@ impl CuboidMesh {
         self.vertices.len() as u32
     }
 
-    /// Number of indices.
+    /// Number of indices (both overlay runs).
     pub fn index_count(&self) -> u32 {
-        self.indices.len() as u32
+        (self.indices.len() + self.indices_overlay.len()) as u32
     }
 
     /// Number of cuboid boxes the grid decomposed into.
@@ -266,14 +295,23 @@ pub fn build_cuboid_mesh_banded(
     // buffers come from [`build_chunk_meshes_with_apron`]).
     let mut vertices: Vec<CuboidVertex> = Vec::new();
     let mut indices: Vec<u32> = Vec::new();
+    let mut indices_overlay: Vec<u32> = Vec::new();
     let mut aabb = Aabb::empty();
     for voxel_box in &boxes {
-        emit_box_faces(voxel_box, &region, world_offset, &mut vertices, &mut indices, &mut aabb);
+        // ADR 0003 §3c: route each box's faces to the overlay-off or overlay-on index run
+        // by its decomposition key's overlay bit (a box never spans both states).
+        let index_sink = if box_has_overlay(voxel_box) {
+            &mut indices_overlay
+        } else {
+            &mut indices
+        };
+        emit_box_faces(voxel_box, &region, world_offset, &mut vertices, index_sink, &mut aabb);
     }
 
     CuboidMesh {
         vertices,
         indices,
+        indices_overlay,
         box_count: boxes.len() as u32,
     }
 }
@@ -366,8 +404,11 @@ pub struct CuboidChunkMesh {
     pub coord: [i32; 3],
     /// The chunk's exposed-face vertices.
     vertices: Vec<CuboidVertex>,
-    /// Triangle indices into `vertices`.
+    /// Triangle indices for the overlay-OFF boxes into `vertices` (ADR 0003 §3c).
     indices: Vec<u32>,
+    /// Triangle indices for the overlay-ON boxes into `vertices` (the split that replaced
+    /// the per-vertex overlay flag, ADR 0010 E3). Empty when no box carried the marker.
+    indices_overlay: Vec<u32>,
     /// World-space AABB of the chunk's emitted geometry (frustum cull key).
     aabb: Aabb,
     /// Boxes the chunk's interior decomposed into (diagnostic).
@@ -375,13 +416,13 @@ pub struct CuboidChunkMesh {
 }
 
 impl CuboidChunkMesh {
-    /// Number of exposed quad faces (two triangles each).
+    /// Total exposed quad faces (two triangles each, both overlay runs).
     pub fn face_count(&self) -> u32 {
-        (self.indices.len() / 6) as u32
+        ((self.indices.len() + self.indices_overlay.len()) / 6) as u32
     }
-    /// Number of triangles.
+    /// Total triangles (both overlay runs).
     pub fn triangle_count(&self) -> u32 {
-        (self.indices.len() / 3) as u32
+        ((self.indices.len() + self.indices_overlay.len()) / 3) as u32
     }
     /// Boxes the chunk's interior decomposed into.
     pub fn box_count(&self) -> u32 {
@@ -716,23 +757,473 @@ fn build_chunk_meshes_with_apron_filtered(
         let boxes = decompose_into_boxes(&interior);
         let mut vertices: Vec<CuboidVertex> = Vec::new();
         let mut indices: Vec<u32> = Vec::new();
+        let mut indices_overlay: Vec<u32> = Vec::new();
         let mut aabb = Aabb::empty();
         for voxel_box in &boxes {
             // Decompose on the interior region but test exposure against the apron.
-            emit_box_faces(voxel_box, &apron, region_offset, &mut vertices, &mut indices, &mut aabb);
+            // ADR 0003 §3c: route to the overlay-off / overlay-on index run by the box key.
+            let index_sink = if box_has_overlay(voxel_box) {
+                &mut indices_overlay
+            } else {
+                &mut indices
+            };
+            emit_box_faces(voxel_box, &apron, region_offset, &mut vertices, index_sink, &mut aabb);
         }
-        if indices.is_empty() {
+        if indices.is_empty() && indices_overlay.is_empty() {
             continue;
         }
         meshes.push(CuboidChunkMesh {
             coord: *coord,
             vertices,
             indices,
+            indices_overlay,
             aabb,
             box_count: boxes.len() as u32,
         });
     }
     meshes
+}
+
+// ===========================================================================
+// ADR 0010 E3 — the TWO-LAYER mesher (one-box coarse + cuboid microblock +
+// seam-flag culling). Builds a chunk's mesh from its [`TwoLayerChunk`] instead of
+// a dense `VoxelGrid`, and PROVES (the E3 parity gate) the exposed-face set is
+// identical to the dense [`build_chunk_meshes_with_apron`].
+// ===========================================================================
+
+/// Whether the WHOLE shared face of one block is solid, for seam-flag culling (ADR 0010
+/// Decision 4). A face that is fully solid backs every cell on the neighbour's matching
+/// face, so the neighbour's face there is occluded and culled. A coarse-solid block is
+/// solid on all 6 faces; an air block on none; a boundary block per its [`SeamSolidity`].
+/// `None` = the block is air / does not exist (no covering chunk) ⇒ never solid.
+#[derive(Debug, Clone, Copy)]
+enum BlockFaceSolidity {
+    /// Every face fully solid (a coarse-solid block, or a fully-interior boundary block).
+    AllSolid,
+    /// Per-face solidity (a boundary block's stored seam flags).
+    PerFace(SeamSolidity),
+    /// Air / outside any covering chunk — no face is solid.
+    None,
+}
+
+impl BlockFaceSolidity {
+    /// Whether this block's face on `axis` (0/1/2), `side` (0 low / 1 high) is fully solid.
+    fn face_is_solid(&self, axis: usize, side: usize) -> bool {
+        match self {
+            BlockFaceSolidity::AllSolid => true,
+            BlockFaceSolidity::PerFace(seam) => seam.face_is_solid(axis, side),
+            BlockFaceSolidity::None => false,
+        }
+    }
+}
+
+/// The PER-CELL occupancy of a neighbour block's face abutting a boundary block (ADR 0010 E3).
+/// A coarse-solid neighbour is `Solid` (the seam-flag fast path — no densification); an air /
+/// missing neighbour is `Air`; a boundary neighbour carries its face layer's `density²`
+/// occupancy bitmap. This is the exact neighbour info the dense apron carried, restricted to
+/// the SURFACE blocks so coarse interiors are never densified.
+enum NeighbourFace {
+    /// The whole face is solid (a coarse-solid neighbour).
+    Solid,
+    /// The whole face is air (no covering chunk, or an air block).
+    Air,
+    /// Per-cell occupancy, indexed `cells[in_plane_b * density + in_plane_a]` over the two
+    /// axes other than the face axis (ascending order — see [`in_plane_axes`]).
+    Cells(Vec<bool>),
+}
+
+/// The two axes IN the plane of a face whose normal is along `axis` (0/1/2 = X/Y/Z), in
+/// ascending order: axis 0 → (1, 2), axis 1 → (0, 2), axis 2 → (0, 1). The canonical
+/// in-plane (a, b) ordering both the neighbour-face bitmap and the apron fill index by.
+#[inline]
+fn in_plane_axes(axis: usize) -> (usize, usize) {
+    match axis {
+        0 => (1, 2),
+        1 => (0, 2),
+        _ => (0, 1),
+    }
+}
+
+/// Build the per-chunk exposed-face meshes from the two-layer chunks (ADR 0010 E3). A
+/// coarse-solid block emits ONE box (no per-voxel decompose of the solid interior); a
+/// boundary block emits its stored microblock cuboids; inter-block / inter-chunk seam
+/// faces are culled via the per-face seam-solidity flags (the coarse-vs-microblock apron
+/// analogue) rather than a densified neighbour apron.
+///
+/// `chunks` is `(absolute_chunk_coord, TwoLayerChunk)` per covering chunk;
+/// `grid_dimensions` is unused here (the band reclip stays on the dense path until E5) but
+/// kept for call-site symmetry; `recentre_voxels` is the resolve's carried recentre (ADR
+/// 0008) so the emitted vertices land in the SAME world frame the dense path assembles
+/// (its global cloud-min anchor cancels to exactly this recentred index — proven in the
+/// E3 parity test). `voxels_per_block` is the chunk density.
+fn build_two_layer_chunk_meshes(
+    chunks: &[([i32; 3], TwoLayerChunk)],
+    _grid_dimensions: [u32; 3],
+    recentre_voxels: [i64; 3],
+    voxels_per_block: u32,
+) -> Vec<CuboidChunkMesh> {
+    let density = voxels_per_block.max(1);
+    let block_extent = density as i64;
+    let chunk_extent_voxels = (CHUNK_BLOCKS * density) as i64;
+
+    // A lookup of every covering chunk by coord so a block can consult its neighbour's
+    // coarse / microblock face solidity across a block OR chunk seam.
+    let chunk_by_coord: std::collections::HashMap<[i32; 3], &TwoLayerChunk> =
+        chunks.iter().map(|(coord, chunk)| (*coord, chunk)).collect();
+
+    // The block-face solidity of the block at ABSOLUTE block coord `abs_block` (across all
+    // chunks): resolve which chunk + chunk-local block it is, then read its layer.
+    let face_solidity_at = |abs_block: [i64; 3]| -> BlockFaceSolidity {
+        let chunk_blocks = CHUNK_BLOCKS as i64;
+        let chunk_coord = [
+            abs_block[0].div_euclid(chunk_blocks) as i32,
+            abs_block[1].div_euclid(chunk_blocks) as i32,
+            abs_block[2].div_euclid(chunk_blocks) as i32,
+        ];
+        let Some(chunk) = chunk_by_coord.get(&chunk_coord) else {
+            return BlockFaceSolidity::None;
+        };
+        let local = [
+            abs_block[0].rem_euclid(chunk_blocks) as u32,
+            abs_block[1].rem_euclid(chunk_blocks) as u32,
+            abs_block[2].rem_euclid(chunk_blocks) as u32,
+        ];
+        if chunk.coarse_block(local).is_some() {
+            BlockFaceSolidity::AllSolid
+        } else if let Some(geometry) = chunk.microblocks.get(&local) {
+            BlockFaceSolidity::PerFace(geometry.seam_solidity)
+        } else {
+            BlockFaceSolidity::None
+        }
+    };
+
+    // The PER-CELL occupancy of the block at `abs_block`'s face on `(axis, side)` — the
+    // 1-voxel layer that abuts a neighbouring block across that face. A coarse-solid block
+    // is fully solid (the seam-flag fast path — no densification); an air block fully air; a
+    // boundary block expands ITS cuboids' face layer per cell. This is the exact neighbour
+    // info the dense apron carried — but only for the SURFACE (boundary) blocks, so coarse
+    // interiors are still never densified. The returned bitmap is indexed
+    // `cell[in_plane_b * density + in_plane_a]`, with `(in_plane_a, in_plane_b)` = the two
+    // axes other than `axis` in ascending order — the SAME order the apron fill walks.
+    let face_cells_at = |abs_block: [i64; 3], axis: usize, side: usize| -> NeighbourFace {
+        let chunk_blocks = CHUNK_BLOCKS as i64;
+        let chunk_coord = [
+            abs_block[0].div_euclid(chunk_blocks) as i32,
+            abs_block[1].div_euclid(chunk_blocks) as i32,
+            abs_block[2].div_euclid(chunk_blocks) as i32,
+        ];
+        let Some(chunk) = chunk_by_coord.get(&chunk_coord) else {
+            return NeighbourFace::Air;
+        };
+        let local = [
+            abs_block[0].rem_euclid(chunk_blocks) as u32,
+            abs_block[1].rem_euclid(chunk_blocks) as u32,
+            abs_block[2].rem_euclid(chunk_blocks) as u32,
+        ];
+        if chunk.coarse_block(local).is_some() {
+            return NeighbourFace::Solid;
+        }
+        let Some(geometry) = chunk.microblocks.get(&local) else {
+            return NeighbourFace::Air;
+        };
+        // Expand the boundary block's cuboids' face layer (the plane `coord == 0` for the low
+        // face, `coord == density-1` for the high face on `axis`) into a density² bitmap.
+        let (axis_a, axis_b) = in_plane_axes(axis);
+        let plane = if side == 0 { 0u32 } else { density - 1 };
+        let mut cells = vec![false; (density * density) as usize];
+        for cuboid in &geometry.cuboids {
+            // Does this cuboid touch the requested plane on `axis`?
+            if (cuboid.min[axis]..=cuboid.max[axis]).contains(&plane) {
+                for a in cuboid.min[axis_a]..=cuboid.max[axis_a] {
+                    for b in cuboid.min[axis_b]..=cuboid.max[axis_b] {
+                        cells[(b * density + a) as usize] = true;
+                    }
+                }
+            }
+        }
+        NeighbourFace::Cells(cells)
+    };
+
+    let mut meshes = Vec::new();
+    for (chunk_coord, chunk) in chunks {
+        // The chunk's low voxel corner in the RECENTRED frame (ADR 0008): a chunk-local
+        // voxel index `lv` lands at world min-corner `chunk_min - recentre + lv`. Emitting
+        // box corners there matches the dense path's `global_index + (min_world - 0.5)`
+        // exactly (its cloud-min anchor cancels — see the parity test).
+        let chunk_min_recentred = [
+            chunk_coord[0] as i64 * chunk_extent_voxels - recentre_voxels[0],
+            chunk_coord[1] as i64 * chunk_extent_voxels - recentre_voxels[1],
+            chunk_coord[2] as i64 * chunk_extent_voxels - recentre_voxels[2],
+        ];
+        // Each block's absolute block coord low = chunk_coord * CHUNK_BLOCKS + local block.
+        let chunk_block_base = [
+            chunk_coord[0] as i64 * CHUNK_BLOCKS as i64,
+            chunk_coord[1] as i64 * CHUNK_BLOCKS as i64,
+            chunk_coord[2] as i64 * CHUNK_BLOCKS as i64,
+        ];
+
+        let mut vertices: Vec<CuboidVertex> = Vec::new();
+        let mut indices: Vec<u32> = Vec::new();
+        let mut indices_overlay: Vec<u32> = Vec::new();
+        let mut aabb = Aabb::empty();
+        let mut box_count = 0u32;
+
+        for block_z in 0..CHUNK_BLOCKS {
+            for block_y in 0..CHUNK_BLOCKS {
+                for block_x in 0..CHUNK_BLOCKS {
+                    let block = [block_x, block_y, block_z];
+                    let abs_block = [
+                        chunk_block_base[0] + block_x as i64,
+                        chunk_block_base[1] + block_y as i64,
+                        chunk_block_base[2] + block_z as i64,
+                    ];
+                    // The block's low voxel corner in the recentred frame.
+                    let block_low_recentred = [
+                        chunk_min_recentred[0] + block_x as i64 * block_extent,
+                        chunk_min_recentred[1] + block_y as i64 * block_extent,
+                        chunk_min_recentred[2] + block_z as i64 * block_extent,
+                    ];
+
+                    if let Some(block_id) = chunk.coarse_block(block) {
+                        // COARSE-SOLID → ONE box spanning the block (no per-voxel decompose).
+                        let overlay = chunk.coarse_block_overlay(block);
+                        emit_coarse_block_box(
+                            block_id,
+                            overlay,
+                            density,
+                            block_low_recentred,
+                            abs_block,
+                            &face_solidity_at,
+                            &mut vertices,
+                            &mut indices,
+                            &mut indices_overlay,
+                            &mut aabb,
+                        );
+                        box_count += 1;
+                    } else if let Some(geometry) = chunk.microblocks.get(&block) {
+                        // BOUNDARY → its stored microblock cuboids, exposure tested against a
+                        // block-local apron filled PER CELL from the NEIGHBOUR blocks' face
+                        // occupancy (coarse → whole-face solid via the seam flag; boundary →
+                        // its own cuboids' face layer) — matching the dense apron exactly.
+                        emit_boundary_block_cuboids(
+                            geometry,
+                            density,
+                            block_low_recentred,
+                            abs_block,
+                            &face_cells_at,
+                            &mut vertices,
+                            &mut indices,
+                            &mut indices_overlay,
+                            &mut aabb,
+                        );
+                        box_count += geometry.cuboids.len() as u32;
+                    }
+                    // else: air block, nothing to emit.
+                }
+            }
+        }
+
+        if indices.is_empty() && indices_overlay.is_empty() {
+            continue;
+        }
+        meshes.push(CuboidChunkMesh {
+            coord: *chunk_coord,
+            vertices,
+            indices,
+            indices_overlay,
+            aabb,
+            box_count,
+        });
+    }
+    meshes
+}
+
+/// Emit a COARSE-SOLID block as ONE box (ADR 0010 Decision 4): the whole `density³` block
+/// at `block_id`, culling each of its 6 block faces when the neighbour block's matching
+/// face is fully solid (seam-flag culling — no densified apron, no per-voxel decompose of
+/// the solid interior). `block_low_recentred` is the block's low voxel corner in the
+/// recentred frame; `abs_block` its absolute block coord (to look up neighbours).
+#[allow(clippy::too_many_arguments)]
+fn emit_coarse_block_box(
+    block_id: crate::core_geom::BlockId,
+    overlay: bool,
+    density: u32,
+    block_low_recentred: [i64; 3],
+    abs_block: [i64; 3],
+    face_solidity_at: &dyn Fn([i64; 3]) -> BlockFaceSolidity,
+    vertices: &mut Vec<CuboidVertex>,
+    indices: &mut Vec<u32>,
+    indices_overlay: &mut Vec<u32>,
+    aabb: &mut Aabb,
+) {
+    let material_id = compose_cell_key(block_id.0, overlay);
+    // The box spans the block: world min corner = block_low_recentred, far plane = + density.
+    let lo = [
+        block_low_recentred[0] as f32,
+        block_low_recentred[1] as f32,
+        block_low_recentred[2] as f32,
+    ];
+    let hi = [
+        (block_low_recentred[0] + density as i64) as f32,
+        (block_low_recentred[1] + density as i64) as f32,
+        (block_low_recentred[2] + density as i64) as f32,
+    ];
+    aabb.expand(glam::Vec3::new(lo[0], lo[1], lo[2]));
+    aabb.expand(glam::Vec3::new(hi[0], hi[1], hi[2]));
+
+    let sink = if overlay { indices_overlay } else { indices };
+    let clean_material = clean_block_id(material_id) as u32;
+    for face in &FACE_TEMPLATES {
+        // The face's axis + side, and the neighbour block across it.
+        let (axis, side) = face_axis_side(face.neighbor_delta);
+        let neighbour = [
+            abs_block[0] + face.neighbor_delta[0] as i64,
+            abs_block[1] + face.neighbor_delta[1] as i64,
+            abs_block[2] + face.neighbor_delta[2] as i64,
+        ];
+        // The neighbour's MATCHING face is on the same axis, OPPOSITE side. If it is fully
+        // solid, every cell behind this face is backed ⇒ cull. Otherwise emit the whole
+        // block face (the merged-box over-draw rule — any partly-exposed face is emitted,
+        // and a fully-occluded over-draw is back-face-culled / depth-buried).
+        let neighbour_face_solid = face_solidity_at(neighbour).face_is_solid(axis, 1 - side);
+        if neighbour_face_solid {
+            continue;
+        }
+        let base = vertices.len() as u32;
+        for corner in &face.corners {
+            let world = [
+                if corner[0] == 0 { lo[0] } else { hi[0] },
+                if corner[1] == 0 { lo[1] } else { hi[1] },
+                if corner[2] == 0 { lo[2] } else { hi[2] },
+            ];
+            vertices.push(CuboidVertex {
+                position: world,
+                normal: face.normal,
+                material_id: clean_material,
+            });
+        }
+        sink.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+    }
+}
+
+/// Emit a BOUNDARY block's stored microblock cuboids (ADR 0010 Decision 4), exposure tested
+/// against a `(density+2)³` apron region whose interior is the block's own voxels (re-expanded
+/// from the cuboids) and whose 1-voxel border is filled PER CELL from each NEIGHBOUR block's
+/// face occupancy (coarse → whole-face solid via the seam flag, NO densification of the coarse
+/// interior; boundary → its own cuboids' face layer; air → empty). This reproduces the dense
+/// apron EXACTLY at the block seam, so it reuses [`emit_box_faces`] / [`face_is_exposed`]
+/// unchanged and culls every boundary face the dense mesher culls — no over-draw at a partial
+/// boundary-to-boundary seam (which would otherwise render as a spurious surface).
+#[allow(clippy::too_many_arguments)]
+fn emit_boundary_block_cuboids(
+    geometry: &MicroblockGeometry,
+    density: u32,
+    block_low_recentred: [i64; 3],
+    abs_block: [i64; 3],
+    face_cells_at: &dyn Fn([i64; 3], usize, usize) -> NeighbourFace,
+    vertices: &mut Vec<CuboidVertex>,
+    indices: &mut Vec<u32>,
+    indices_overlay: &mut Vec<u32>,
+    aabb: &mut Aabb,
+) {
+    // Apron frame: a (density+2)³ region with the block's voxels at local index +1, so the
+    // 1-voxel border is the apron. `face_is_exposed` then tests the neighbour cell exactly.
+    let apron_extent = [density + 2, density + 2, density + 2];
+    let mut apron = VoxelRegion::new_empty(apron_extent);
+
+    // Interior: the block's own voxels (the cuboids' render keys), shifted +1.
+    for cuboid in &geometry.cuboids {
+        for vz in cuboid.min[2]..=cuboid.max[2] {
+            for vy in cuboid.min[1]..=cuboid.max[1] {
+                for vx in cuboid.min[0]..=cuboid.max[0] {
+                    apron.set(vx + 1, vy + 1, vz + 1, Some(cuboid.material_id));
+                }
+            }
+        }
+    }
+
+    // Apron border: each of the 6 outer planes is filled PER CELL from the neighbour block's
+    // matching (opposite-side) face. A constant non-zero key marks "solid" (the apron is only
+    // read for occupancy by `face_is_exposed`).
+    const APRON_SOLID: u16 = 1;
+    let d = density;
+    for (axis, side, delta) in [
+        (0usize, 0usize, [-1i64, 0, 0]),
+        (0, 1, [1, 0, 0]),
+        (1, 0, [0, -1, 0]),
+        (1, 1, [0, 1, 0]),
+        (2, 0, [0, 0, -1]),
+        (2, 1, [0, 0, 1]),
+    ] {
+        let neighbour = [
+            abs_block[0] + delta[0],
+            abs_block[1] + delta[1],
+            abs_block[2] + delta[2],
+        ];
+        // The neighbour's MATCHING face is on the same axis, OPPOSITE side.
+        let neighbour_face = face_cells_at(neighbour, axis, 1 - side);
+        if matches!(neighbour_face, NeighbourFace::Air) {
+            continue; // fully air ⇒ nothing to cull against on this plane
+        }
+        let plane = if side == 0 { 0u32 } else { d + 1 };
+        let (axis_a, axis_b) = in_plane_axes(axis);
+        for ai in 0..d {
+            for bi in 0..d {
+                let solid = match &neighbour_face {
+                    NeighbourFace::Solid => true,
+                    NeighbourFace::Cells(cells) => cells[(bi * d + ai) as usize],
+                    NeighbourFace::Air => false,
+                };
+                if !solid {
+                    continue;
+                }
+                // Apron-local cell: the block's in-plane index `ai/bi` sits at apron +1; the
+                // out-of-plane coord is the border `plane`.
+                let mut coord = [0u32; 3];
+                coord[axis] = plane;
+                coord[axis_a] = ai + 1;
+                coord[axis_b] = bi + 1;
+                apron.set(coord[0], coord[1], coord[2], Some(APRON_SOLID));
+            }
+        }
+    }
+
+    // Region offset maps apron-local index 0 to the recentred frame: the block's low voxel
+    // is apron-local +1, so apron-local 0 sits at `block_low_recentred - 1`.
+    let region_offset = [
+        (block_low_recentred[0] - 1) as f32,
+        (block_low_recentred[1] - 1) as f32,
+        (block_low_recentred[2] - 1) as f32,
+    ];
+    for cuboid in &geometry.cuboids {
+        // The cuboid in apron-local frame (+1 shift).
+        let shifted = VoxelBox {
+            min: [cuboid.min[0] + 1, cuboid.min[1] + 1, cuboid.min[2] + 1],
+            max: [cuboid.max[0] + 1, cuboid.max[1] + 1, cuboid.max[2] + 1],
+            material_id: cuboid.material_id,
+        };
+        let sink = if box_has_overlay(&shifted) {
+            &mut *indices_overlay
+        } else {
+            &mut *indices
+        };
+        emit_box_faces(&shifted, &apron, region_offset, vertices, sink, aabb);
+    }
+}
+
+/// The `(axis, side)` a face-template's `neighbor_delta` points along: axis 0/1/2 = X/Y/Z,
+/// side 0 = low (delta −1), side 1 = high (delta +1).
+#[inline]
+fn face_axis_side(delta: [i32; 3]) -> (usize, usize) {
+    for (axis, &d) in delta.iter().enumerate() {
+        if d > 0 {
+            return (axis, 1);
+        }
+        if d < 0 {
+            return (axis, 0);
+        }
+    }
+    (0, 0)
 }
 
 /// Emit the exposed faces of one box into the shared vertex/index buffers,
@@ -762,12 +1253,11 @@ fn emit_box_faces(
     aabb.expand(glam::Vec3::new(lo[0] + world_offset[0], lo[1] + world_offset[1], lo[2] + world_offset[2]));
     aabb.expand(glam::Vec3::new(hi[0] + world_offset[0], hi[1] + world_offset[1], hi[2] + world_offset[2]));
 
-    // Split the box's region-cell key back into the clean colour index + the per-box
-    // on-face-grid flag (ADR 0003 §3c): the box never merged across differing overlay
-    // flags (the bit was part of the decomposition key), so the whole box shares ONE
-    // flag, written into the dedicated `grid_overlay` vertex attribute (not the material).
-    let material_id = (voxel_box.material_id & !MESH_GRID_OVERLAY_BIT) as u32;
-    let grid_overlay = u32::from(voxel_box.material_id & MESH_GRID_OVERLAY_BIT != 0);
+    // The clean colour index (ADR 0003 §3c): the box's on-face-grid flag is NOT a vertex
+    // attribute — the caller routed this box to the overlay-on or overlay-off index run by
+    // its key bit, and the draw sets the per-draw overlay-active uniform per run. So strip
+    // the overlay bit here and write only the categorical id into the vertex.
+    let material_id = clean_block_id(voxel_box.material_id) as u32;
 
     for face in &FACE_TEMPLATES {
         if !face_is_exposed(voxel_box, region, face.neighbor_delta) {
@@ -785,12 +1275,18 @@ fn emit_box_faces(
                 position: world,
                 normal: face.normal,
                 material_id,
-                grid_overlay,
             });
         }
         // Two CCW triangles per quad (matching the instanced winding scheme).
         indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
     }
+}
+
+/// Whether a decomposed box carries the on-face-grid overlay marker in its region-cell
+/// key (ADR 0003 §3c). Routes the box to the overlay-on index run.
+#[inline]
+fn box_has_overlay(voxel_box: &VoxelBox) -> bool {
+    voxel_box.material_id & MESH_GRID_OVERLAY_BIT != 0
 }
 
 /// Is the given face of the box exposed? The face is exposed when ANY voxel cell
@@ -908,6 +1404,61 @@ fn atlas_rects_from(atlas: &MaterialAtlas) -> [[f32; 4]; MaterialChoice::MATERIA
     rects
 }
 
+/// The per-draw on-face-grid overlay-active bind-group layout (group 2, ADR 0003 §3c / ADR
+/// 0010 E3): one `u32` uniform read with a DYNAMIC OFFSET, so the overlay-off and overlay-on
+/// draws of a chunk select `0` / `1` from a two-entry buffer without a per-vertex flag.
+fn overlay_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("cuboid overlay-active bind group layout"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: true,
+                min_binding_size: std::num::NonZeroU64::new(std::mem::size_of::<u32>() as u64),
+            },
+            count: None,
+        }],
+    })
+}
+
+/// Build the two-entry per-draw overlay-active uniform buffer + its dynamic-offset bind
+/// group (ADR 0003 §3c). Entry 0 = `0` (overlay off), entry 1 (at the device's
+/// `min_uniform_buffer_offset_alignment`) = `1` (overlay on). Returns the bind group and
+/// the stride to pass as the dynamic offset for the overlay-on draw.
+fn build_overlay_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+) -> (wgpu::BindGroup, u32) {
+    let stride = device
+        .limits()
+        .min_uniform_buffer_offset_alignment
+        .max(std::mem::size_of::<u32>() as u32);
+    // Two `u32` entries, each at a `stride`-aligned offset (the rest is padding).
+    let mut bytes = vec![0u8; (stride as usize) + std::mem::size_of::<u32>()];
+    bytes[0..4].copy_from_slice(&0u32.to_ne_bytes()); // entry 0: overlay OFF
+    bytes[stride as usize..stride as usize + 4].copy_from_slice(&1u32.to_ne_bytes()); // entry 1: overlay ON
+    let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("cuboid overlay-active uniform"),
+        contents: &bytes,
+        usage: wgpu::BufferUsages::UNIFORM,
+    });
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("cuboid overlay-active bind group"),
+        layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                buffer: &buffer,
+                offset: 0,
+                size: std::num::NonZeroU64::new(std::mem::size_of::<u32>() as u64),
+            }),
+        }],
+    });
+    (bind_group, stride)
+}
+
 /// The cuboid atlas bind-group layout: a single 2D texture (binding 0) + sampler
 /// (binding 1). One atlas for ALL materials replaces the former per-material
 /// D2Array binds (ADR 0002 O8).
@@ -982,8 +1533,15 @@ fn upload_atlas_texture(
 /// meshes to zero faces is never stored (no buffer allocated).
 struct CuboidChunkBuffers {
     vertex_buffer: wgpu::Buffer,
+    /// One index buffer holding the overlay-OFF run followed by the overlay-ON run (ADR
+    /// 0003 §3c). `index_count` is the overlay-off run length (drawn with the per-draw
+    /// overlay-active uniform = 0); `index_count_overlay` is the overlay-on run, drawn at
+    /// byte offset `index_count * 4` with the uniform = 1. Splitting by overlay state into
+    /// two draws keeps the render flag out of the vertex format while preserving the
+    /// per-object overlay behaviour.
     index_buffer: wgpu::Buffer,
     index_count: u32,
+    index_count_overlay: u32,
     aabb: Aabb,
     /// Boxes this chunk decomposed into (diagnostic). Retained per chunk so the
     /// renderer's `total_box_count` can be recomputed exactly after an INCREMENTAL
@@ -1024,6 +1582,15 @@ pub struct CuboidMeshRenderer {
     visible_chunks: Vec<[i32; 3]>,
     uniform_buffer: wgpu::Buffer,
     uniform_bind_group: wgpu::BindGroup,
+    /// Per-draw on-face-grid overlay-active bind group (group 2, ADR 0003 §3c / ADR 0010
+    /// E3): a single tiny `u32` uniform read with a DYNAMIC OFFSET. The backing buffer
+    /// holds the value `0` at offset 0 and `1` at offset `overlay_dynamic_stride`, so the
+    /// overlay-off draw binds offset 0 and the overlay-on draw binds the stride — the
+    /// per-draw uniform that replaced the per-vertex overlay flag (one bool per draw, §3c).
+    overlay_bind_group: wgpu::BindGroup,
+    /// The dynamic-offset stride between the two overlay-active uniform entries (the
+    /// device's `min_uniform_buffer_offset_alignment`, rounded up from the `u32` value).
+    overlay_dynamic_stride: u32,
     /// ONE atlas bind group (ADR 0002 E3c-1 / O8): all material textures packed
     /// into a single 2D atlas texture + sampler. Replaces the former per-material
     /// D2Array binds — a chunk of mixed materials is now one mesh = one draw, with
@@ -1109,6 +1676,70 @@ impl CuboidMeshRenderer {
             .collect();
         let chunk_meshes =
             build_chunk_meshes_with_apron(chunk_grids, grid_dimensions, LayerBand::FULL);
+        Self::assemble(
+            device,
+            queue,
+            color_format,
+            chunk_meshes,
+            source_chunk_grids,
+            grid_dimensions,
+        )
+    }
+
+    /// Build the cuboid renderer from a [`TwoLayerChunk`] per covering chunk (ADR 0010 E3):
+    /// a coarse-solid block becomes a ONE-BOX fast path, a boundary block its stored
+    /// microblock cuboids, and inter-block / inter-chunk seam faces are culled via the
+    /// per-face seam-solidity flags (plus the neighbour coarse layer) — NOT a densified
+    /// apron. The emitted exposed-face set is proven identical to the dense
+    /// [`new_from_chunks`] path (the E3 parity gate), so it renders pixel-identical.
+    ///
+    /// `chunks` is `(absolute_chunk_coord, TwoLayerChunk)` per covering chunk;
+    /// `grid_dimensions` is the whole composite voxel dims; `recentre_voxels` is the
+    /// resolve's carried recentre (ADR 0008) so the two-layer mesh lands in the SAME world
+    /// frame the dense path assembles. The layer band is FULL (band reclip stays on the
+    /// dense path until E5), so `source_chunk_grids` is left empty (a band change falls
+    /// back to a no-op — the two-layer display path is the E3-gated proof, not yet live).
+    pub fn new_from_two_layer_chunks(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        color_format: wgpu::TextureFormat,
+        chunks: &[([i32; 3], crate::two_layer_store::TwoLayerChunk)],
+        grid_dimensions: [u32; 3],
+        recentre_voxels: [i64; 3],
+        voxels_per_block: u32,
+    ) -> Self {
+        profiling::scope!("cuboid_mesh_build_two_layer");
+        let chunk_meshes = build_two_layer_chunk_meshes(
+            chunks,
+            grid_dimensions,
+            recentre_voxels,
+            voxels_per_block,
+        );
+        // The two-layer display path is the E3-gated proof; band reclip + incremental
+        // edits stay on the dense path until E5, so there are no source grids to retain.
+        Self::assemble(
+            device,
+            queue,
+            color_format,
+            chunk_meshes,
+            Vec::new(),
+            grid_dimensions,
+        )
+    }
+
+    /// Shared GPU-resource assembly for both the dense ([`new_from_chunks`]) and two-layer
+    /// ([`new_from_two_layer_chunks`]) builders: upload the per-chunk meshes, build the
+    /// uniform / per-draw-overlay / atlas / loaded bind groups + pipelines, and assemble
+    /// the renderer. `source_chunk_grids` is retained for the band reclip (empty on the
+    /// two-layer path, which stays FULL-band until E5).
+    fn assemble(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        color_format: wgpu::TextureFormat,
+        chunk_meshes: Vec<CuboidChunkMesh>,
+        source_chunk_grids: Vec<([i32; 3], VoxelGrid)>,
+        grid_dimensions: [u32; 3],
+    ) -> Self {
         let total_box_count = chunk_meshes.iter().map(|m| m.box_count).sum();
         let chunk_buffers = upload_chunk_meshes(device, &chunk_meshes);
 
@@ -1140,6 +1771,15 @@ impl CuboidMeshRenderer {
                 resource: uniform_buffer.as_entire_binding(),
             }],
         });
+
+        // --- Per-draw on-face-grid overlay-active uniform (group 2, ADR 0003 §3c) ---
+        // The overlay flag is no longer a vertex attribute (ADR 0010 E3): a chunk mesh is
+        // split into an overlay-off and an overlay-on draw, each selecting this per-draw
+        // `u32` via a DYNAMIC OFFSET. Two entries — `0` then `1` — packed one
+        // `min_uniform_buffer_offset_alignment` apart, so the off-draw binds offset 0 and
+        // the on-draw binds the stride.
+        let (overlay_bind_group, overlay_dynamic_stride) =
+            build_overlay_bind_group(device, &overlay_bind_group_layout(device));
 
         // --- Material texture ATLAS (E3c-1 / ADR 0002 O8) ---
         // Pack ALL material textures (Stone/Wood/Plain) into ONE atlas image and
@@ -1193,6 +1833,8 @@ impl CuboidMeshRenderer {
             bind_group_layouts: &[
                 Some(&uniform_bind_group_layout),
                 Some(&atlas_bind_group_layout),
+                // group(2): the per-draw overlay-active uniform (ADR 0003 §3c).
+                Some(&overlay_bind_group_layout(device)),
             ],
             immediate_size: 0,
         });
@@ -1216,13 +1858,9 @@ impl CuboidMeshRenderer {
                     shader_location: 2,
                     format: wgpu::VertexFormat::Uint32,
                 },
-                // ADR 0003 §3c: the per-box on-face-grid flag as a DEDICATED attribute,
-                // immediately after the `material_id` u32 (offset 6 floats + 1 u32 = 28).
-                wgpu::VertexAttribute {
-                    offset: std::mem::size_of::<[f32; 6]>() as u64 + std::mem::size_of::<u32>() as u64,
-                    shader_location: 3,
-                    format: wgpu::VertexFormat::Uint32,
-                },
+                // ADR 0003 §3c / ADR 0010 E3: the on-face-grid flag is NO LONGER a vertex
+                // attribute — the chunk mesh is split into overlay-off / overlay-on draws,
+                // each selecting a per-draw `grid_overlay_active` uniform (group 2).
             ],
         };
 
@@ -1311,6 +1949,8 @@ impl CuboidMeshRenderer {
                 bind_group_layouts: &[
                     Some(&uniform_bind_group_layout),
                     Some(&loaded_material_layout),
+                    // group(2): the per-draw overlay-active uniform (ADR 0003 §3c).
+                    Some(&overlay_bind_group_layout(device)),
                 ],
                 immediate_size: 0,
             });
@@ -1376,6 +2016,8 @@ impl CuboidMeshRenderer {
             visible_chunks,
             uniform_buffer,
             uniform_bind_group,
+            overlay_bind_group,
+            overlay_dynamic_stride,
             atlas_bind_group,
             atlas_rects,
             bound_material: MaterialChoice::Plain,
@@ -1494,6 +2136,14 @@ impl CuboidMeshRenderer {
         if band == self.current_band {
             return;
         }
+        // ADR 0010 E3: the two-layer path retains NO source grids (band reclip stays on the
+        // dense path until E5), so a band change cannot be honoured by re-meshing — leave the
+        // FULL-band geometry in place rather than clearing it to zero chunks. The dense path
+        // (which DOES retain source grids) is unaffected.
+        if self.source_chunk_grids.is_empty() {
+            self.current_band = band;
+            return;
+        }
         self.current_band = band;
         let chunk_refs: Vec<([i32; 3], &VoxelGrid)> = self
             .source_chunk_grids
@@ -1509,14 +2159,20 @@ impl CuboidMeshRenderer {
         self.visible_chunks.sort_unstable();
     }
 
-    /// Total exposed quad faces across all resident chunks (diagnostic).
+    /// Total exposed quad faces across all resident chunks (diagnostic, both overlay runs).
     pub fn face_count(&self) -> u32 {
-        self.chunk_buffers.values().map(|c| c.index_count / 6).sum()
+        self.chunk_buffers
+            .values()
+            .map(|c| (c.index_count + c.index_count_overlay) / 6)
+            .sum()
     }
 
-    /// Total triangles across all resident chunks (diagnostic).
+    /// Total triangles across all resident chunks (diagnostic, both overlay runs).
     pub fn triangle_count(&self) -> u32 {
-        self.chunk_buffers.values().map(|c| c.index_count / 3).sum()
+        self.chunk_buffers
+            .values()
+            .map(|c| (c.index_count + c.index_count_overlay) / 3)
+            .sum()
     }
 
     /// Total boxes the last build decomposed into across all chunks (diagnostic).
@@ -1695,12 +2351,25 @@ impl CuboidMeshRenderer {
             let Some(chunk) = self.chunk_buffers.get(coord) else {
                 continue;
             };
-            if chunk.index_count == 0 {
+            if chunk.index_count == 0 && chunk.index_count_overlay == 0 {
                 continue;
             }
             render_pass.set_vertex_buffer(0, chunk.vertex_buffer.slice(..));
             render_pass.set_index_buffer(chunk.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-            render_pass.draw_indexed(0..chunk.index_count, 0, 0..1);
+            // ADR 0003 §3c: two draws per chunk — the overlay-OFF run (group(2) dynamic
+            // offset 0 → overlay-active uniform = 0) then the overlay-ON run (dynamic
+            // offset `overlay_dynamic_stride` → uniform = 1). The on-run is the second
+            // half of the single index buffer (byte offset `index_count * 4`).
+            if chunk.index_count > 0 {
+                render_pass.set_bind_group(2, &self.overlay_bind_group, &[0]);
+                render_pass.draw_indexed(0..chunk.index_count, 0, 0..1);
+            }
+            if chunk.index_count_overlay > 0 {
+                render_pass.set_bind_group(2, &self.overlay_bind_group, &[self.overlay_dynamic_stride]);
+                let start = chunk.index_count;
+                render_pass
+                    .draw_indexed(start..start + chunk.index_count_overlay, 0, 0..1);
+            }
         }
     }
 }
@@ -1713,7 +2382,7 @@ fn upload_chunk_meshes(
 ) -> std::collections::HashMap<[i32; 3], CuboidChunkBuffers> {
     let mut buffers = std::collections::HashMap::new();
     for mesh in chunk_meshes {
-        if mesh.indices.is_empty() {
+        if mesh.indices.is_empty() && mesh.indices_overlay.is_empty() {
             continue;
         }
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -1721,9 +2390,13 @@ fn upload_chunk_meshes(
             contents: bytemuck::cast_slice(&mesh.vertices),
             usage: wgpu::BufferUsages::VERTEX,
         });
+        // One index buffer = overlay-OFF run then overlay-ON run (ADR 0003 §3c); the two
+        // draws slice it by count + offset.
+        let mut all_indices = mesh.indices.clone();
+        all_indices.extend_from_slice(&mesh.indices_overlay);
         let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("cuboid chunk indices"),
-            contents: bytemuck::cast_slice(&mesh.indices),
+            contents: bytemuck::cast_slice(&all_indices),
             usage: wgpu::BufferUsages::INDEX,
         });
         buffers.insert(
@@ -1732,6 +2405,7 @@ fn upload_chunk_meshes(
                 vertex_buffer,
                 index_buffer,
                 index_count: mesh.indices.len() as u32,
+                index_count_overlay: mesh.indices_overlay.len() as u32,
                 aabb: mesh.aabb,
                 box_count: mesh.box_count,
             },
@@ -2831,5 +3505,256 @@ mod tests {
             per_chunk_visible, genuine,
             "banded torus: per-chunk apron visible faces != band-masked ground truth"
         );
+    }
+
+    // ---- ADR 0010 E3 — two-layer mesher exposed-face parity (#50) ----
+
+    use crate::core_geom::MaterialChoice as MC;
+    use crate::scene::{DefId, Node, NodeContent, NodeTransform, Scene};
+    use crate::two_layer_store::TwoLayerStore;
+    use crate::voxel::{SdfShape as TwoLayerSdf, ShapeKind as TwoLayerShape};
+
+    /// Every unit face a mesh EMITS that ACTUALLY RENDERS — i.e. whose cell on the NORMAL
+    /// (front) side is AIR per the dense occupancy. A face buried in solid (front solid) is
+    /// back-face-culled / depth-occluded and never reaches a pixel, so the rendered image is
+    /// exactly this set. Unlike [`visible_unit_faces`] (which pre-filters to `genuine`), this
+    /// does NOT discard non-genuine faces — so it CATCHES a spurious face that renders
+    /// (front air, but no solid behind it), the over-draw bug `visible_unit_faces` hides.
+    fn renderable_unit_faces(
+        vertices: &[CuboidVertex],
+        indices: &[u32],
+        world_offset: [f32; 3],
+        occupied: &std::collections::HashSet<[i64; 3]>,
+    ) -> std::collections::HashSet<UnitFace> {
+        unit_faces_in_index_frame(vertices, indices, world_offset)
+            .into_iter()
+            .filter(|f| {
+                // The cell on the NORMAL (front) side of the face. For +sign the plane is the
+                // voxel's far edge (front cell index = plane), for -sign the near edge (front
+                // cell index = plane - 1). The two in-plane axes carry `f.cell`.
+                let (axis, sign) = (f.axis as usize, f.sign);
+                let (a, b) = match axis {
+                    0 => (1usize, 2usize),
+                    1 => (0usize, 2usize),
+                    _ => (0usize, 1usize),
+                };
+                let mut front = [0i64; 3];
+                front[axis] = if sign > 0 { f.plane } else { f.plane - 1 };
+                front[a] = f.cell[0];
+                front[b] = f.cell[1];
+                // Renders iff the front cell is AIR (nothing occluding it).
+                !occupied.contains(&front)
+            })
+            .collect()
+    }
+
+    /// The two-layer mesher's RENDERABLE exposed-face set (every emitted face whose front cell
+    /// is air per the dense occupancy), in the recentred-index frame. Unions over every chunk.
+    fn two_layer_renderable_faces(
+        scene: &Scene,
+        density: u32,
+        world_offset: [f32; 3],
+        recentre: [i64; 3],
+        grid_dimensions: [u32; 3],
+        occupied: &std::collections::HashSet<[i64; 3]>,
+    ) -> std::collections::HashSet<UnitFace> {
+        let store = TwoLayerStore::enabled();
+        let chunks = store.build_covering_chunks(scene, density, 0);
+        let meshes = build_two_layer_chunk_meshes(&chunks, grid_dimensions, recentre, density);
+        let mut renderable = std::collections::HashSet::new();
+        for mesh in &meshes {
+            renderable.extend(renderable_unit_faces(
+                &mesh.vertices,
+                &mesh.indices,
+                world_offset,
+                occupied,
+            ));
+            renderable.extend(renderable_unit_faces(
+                &mesh.vertices,
+                &mesh.indices_overlay,
+                world_offset,
+                occupied,
+            ));
+        }
+        renderable
+    }
+
+    /// Assert the two-layer mesher's VISIBLE exposed-face set equals the dense path's —
+    /// and both equal the ground-truth genuinely-exposed set derived straight from the
+    /// dense occupancy — for one scene. Mirrors
+    /// [`per_chunk_apron_exposed_face_set_equals_whole_region`] (the apron parity), but for
+    /// the two-layer (coarse one-box + microblock cuboid + seam-flag) mesher (ADR 0010 E3).
+    fn assert_two_layer_face_parity(scene: &Scene, density: u32, label: &str) {
+        // The dense assembled grid: ground truth occupancy + the reference whole-grid mesh.
+        let dense = scene.resolve_region(scene.full_extent_blocks(density), density, 0);
+        assert!(!dense.occupied.is_empty(), "[{label}] scene resolved empty");
+        let occupancy = occupancy_indices(&dense);
+        let genuine = genuine_exposed_faces(&occupancy);
+        let world_offset = grid_world_offset(&dense);
+
+        // Dense reference mesh → its VISIBLE face subset (the existing parity reference).
+        let whole = build_cuboid_mesh(&dense, density);
+        let mut whole_visible =
+            visible_unit_faces(&whole.vertices, &whole.indices, world_offset, &genuine);
+        whole_visible.extend(visible_unit_faces(
+            &whole.vertices,
+            &whole.indices_overlay,
+            world_offset,
+            &genuine,
+        ));
+        assert_eq!(
+            whole_visible, genuine,
+            "[{label}] dense reference visible faces != ground truth"
+        );
+
+        // Two-layer mesher → its RENDERABLE face set (every emitted face whose front cell is
+        // air — exactly what reaches a pixel). This must equal the ground-truth genuine
+        // surface: a SUPERSET would be a spurious rendered face (over-draw that isn't
+        // occluded — the boundary-seam over-emit bug), a SUBSET a hole. Strictly stronger
+        // than the visible-subset check (which can't see over-emission).
+        let two_layer_renderable = two_layer_renderable_faces(
+            scene,
+            density,
+            world_offset,
+            dense.recentre_voxels,
+            dense.dimensions,
+            &occupancy,
+        );
+        assert_eq!(
+            two_layer_renderable, genuine,
+            "[{label}] two-layer mesher RENDERABLE faces != ground truth ({} renderable vs {} \
+             genuine) — a hole (missing surface) or a spurious rendered seam face (over-draw)",
+            two_layer_renderable.len(),
+            genuine.len()
+        );
+    }
+
+    fn two_layer_tool(
+        kind: TwoLayerShape,
+        size: [u32; 3],
+        offset: [i64; 3],
+        material: MC,
+        density: u32,
+    ) -> Node {
+        let shape = TwoLayerSdf::from_blocks(kind, size, 1, density);
+        let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
+        node.transform = NodeTransform::from_blocks(offset, density);
+        node
+    }
+
+    /// THE E3 GATE (parity (b)): the two-layer mesher's exposed-face SET equals the dense
+    /// mesher's across the gated scene matrix — SDF shapes (incl. flat/odd), a demo scene,
+    /// a demo village, a LARGE solid (the one-box coarse path must leave no interior seam),
+    /// AND an overlapping multi-material scene (the E2 carry-over: overlaps must render
+    /// identically). Multi-chunk shapes exercise the inter-chunk seam-flag culling.
+    #[test]
+    fn two_layer_mesher_exposed_face_set_equals_dense() {
+        let density = 16u32;
+
+        // SDF shapes including flat/odd sizes (multi-chunk at d16: an 8-block axis = 128
+        // voxels = 2 chunks/axis).
+        for kind in [
+            TwoLayerShape::Sphere,
+            TwoLayerShape::Cylinder,
+            TwoLayerShape::Torus,
+            TwoLayerShape::Box,
+            TwoLayerShape::Tube,
+        ] {
+            for size in [[5u32, 5, 5], [5, 1, 5], [3, 1, 3], [8, 2, 8]] {
+                let scene = Scene::from_nodes(vec![two_layer_tool(
+                    kind,
+                    size,
+                    [0, 0, 0],
+                    MC::Stone,
+                    density,
+                )]);
+                assert_two_layer_face_parity(&scene, density, &format!("{kind:?} {size:?}"));
+            }
+        }
+
+        // Demo scene: three disjoint Tools (the shot --demo-scene shape set).
+        let demo = Scene::from_nodes(vec![
+            two_layer_tool(TwoLayerShape::Sphere, [5, 5, 5], [0, 0, 0], MC::Stone, density),
+            two_layer_tool(TwoLayerShape::Box, [5, 5, 5], [8, 0, 0], MC::Wood, density),
+            two_layer_tool(TwoLayerShape::Torus, [5, 5, 5], [0, 0, 6], MC::Plain, density),
+        ]);
+        assert_two_layer_face_parity(&demo, density, "demo-scene");
+
+        // Demo village: an instanced definition placed four times (the shot --demo-village).
+        {
+            let house = DefId(1);
+            let mut village = Scene::from_nodes(vec![
+                village_instance("House 1", house, [0, 0, 0], density),
+                village_instance("House 2", house, [6, 0, 0], density),
+                village_instance("House 3", house, [12, 0, 0], density),
+                village_instance("House 4", house, [18, 0, 0], density),
+            ]);
+            village.add_definition(
+                house,
+                "House".to_string(),
+                vec![
+                    two_layer_tool(TwoLayerShape::Box, [2, 2, 2], [0, 0, 0], MC::Stone, density),
+                    two_layer_tool(TwoLayerShape::Cylinder, [1, 2, 1], [0, 2, 0], MC::Wood, density),
+                ],
+            );
+            assert_two_layer_face_parity(&village, density, "demo-village");
+        }
+
+        // A LARGE solid box: the one-box coarse path must leave no interior seam or hole.
+        // 6 blocks @ d16 = 96 voxels/axis = 3 chunks/axis, so the interior chunks are fully
+        // coarse-solid and the seam-flag culling spans every chunk boundary.
+        let large = Scene::from_nodes(vec![two_layer_tool(
+            TwoLayerShape::Box,
+            [6, 6, 6],
+            [0, 0, 0],
+            MC::Stone,
+            density,
+        )]);
+        assert_two_layer_face_parity(&large, density, "large-solid-box");
+
+        // A SketchSolid REVOLVE (the shot --demo-sketch-revolve golden): a boundary-only
+        // producer (no coarse-solid blocks — its profile fill is not a coarse box), so this
+        // pins the microblock-cuboid + seam path for a non-SDF producer.
+        {
+            use crate::sketch::{PlaneAxis, RevolveAxis, Sketch, SketchPoint, SketchSolid};
+            let block = density as i64;
+            let r = |b: i64| b * block;
+            let h = |b: i64| b * block;
+            let profile = vec![
+                SketchPoint::new(0, h(0)),
+                SketchPoint::new(r(4), h(0)),
+                SketchPoint::new(r(4), h(1)),
+                SketchPoint::new(r(2), h(3)),
+                SketchPoint::new(r(2), h(5)),
+                SketchPoint::new(r(4), h(6)),
+                SketchPoint::new(r(3), h(8)),
+                SketchPoint::new(0, h(8)),
+            ];
+            let producer =
+                SketchSolid::revolve(Sketch::new(PlaneAxis::X, profile), RevolveAxis::InPlane1, 360);
+            let revolve = Scene::from_nodes(vec![Node::new(
+                "Vase",
+                NodeContent::SketchTool {
+                    producer,
+                    material: MC::Stone,
+                },
+            )]);
+            assert_two_layer_face_parity(&revolve, density, "sketch-revolve");
+        }
+
+        // OVERLAPPING multi-material (E2 carry-over): two boxes overlapping with different
+        // materials. The overlap region resolves last-writer-wins (document order) and must
+        // render the IDENTICAL exposed-face set as the dense path.
+        let overlap = Scene::from_nodes(vec![
+            two_layer_tool(TwoLayerShape::Box, [3, 3, 3], [0, 0, 0], MC::Stone, density),
+            two_layer_tool(TwoLayerShape::Box, [3, 3, 3], [1, 1, 0], MC::Wood, density),
+        ]);
+        assert_two_layer_face_parity(&overlap, density, "overlap-multi-material");
+    }
+
+    fn village_instance(name: &str, def: DefId, offset: [i64; 3], density: u32) -> Node {
+        let mut node = Node::new(name, NodeContent::Instance(def));
+        node.transform = NodeTransform::from_blocks(offset, density);
+        node
     }
 }

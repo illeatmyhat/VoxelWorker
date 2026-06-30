@@ -167,6 +167,54 @@ const CASES: &[GoldenCase] = &[
         name: "sketch-revolve-dome",
         args: &["--demo-sketch-revolve"],
     },
+    // ADR 0010 E3 (#50): a sketch→extrude (L-footprint) solid — a SketchSolid producer that
+    // is NOT band-clipped (its 3-block extrusion fits under the layer-track grid_z), so it is
+    // the SketchSolid case in the two-layer cross-check (the revolve golden happens to be
+    // band-clipped via the layer-track's default grid_z, which the two-layer FULL-band path
+    // cannot reproduce until E5 — see TWO_LAYER_CASE_NAMES).
+    GoldenCase {
+        name: "sketch-extrude-l",
+        args: &["--demo-sketch-extrude"],
+    },
+    // ADR 0010 E3 (#50): an overlapping multi-material scene — two solid boxes of different
+    // materials whose corner volumes overlap (the overlap resolves last-writer-wins by
+    // document order). Pins that an OVERLAP region renders identically; the two-layer
+    // cross-check (`two_layer_golden_matches_dense`) re-renders it through the two-layer
+    // path and asserts pixel-identity to THIS dense reference (the E2 carry-over).
+    GoldenCase {
+        name: "demo-overlap",
+        args: &["--demo-overlap"],
+    },
+];
+
+/// The subset of [`CASES`] whose scene is CHUNKABLE (has an intrinsic-size leaf), i.e. the
+/// cases the two-layer mesher actually meshes through (ADR 0010 E3 / #50). `debug-clouds` is
+/// Part-only (no chunkable extent) so it is excluded — `--two-layer` falls back to the dense
+/// path there, which the cross-check would test only trivially. Every name MUST exist in
+/// `CASES`.
+/// EXCLUDED, both LAYER-BAND-clip cases (band reclip stays on the dense path until E5 — the
+/// two-layer path retains no source grids to re-clip, so it shows the full model, not the
+/// band slab; an intentional out-of-scope difference, not a regression):
+/// * `onion-fog-perchunk` — an explicit `--onion`/`--layer-*` band.
+/// * `sketch-revolve-dome` — IMPLICITLY band-clipped: the layer-track upper bound is taken
+///   from the (default-cylinder) `shape` grid_z (80), below the revolve composite grid_z
+///   (128), so the dense golden clips the vase's upper third. The two-layer mesher's geometry
+///   IS proven identical to dense for the revolve by the lib face-parity test
+///   (`two_layer_mesher_exposed_face_set_equals_dense`); `sketch-extrude-l` is the
+///   NON-clipped SketchSolid pixel proof here.
+///
+/// Every other chunkable golden is included.
+const TWO_LAYER_CASE_NAMES: &[&str] = &[
+    "sphere-debug-faces",
+    "cylinder",
+    "torus",
+    "demo-village",
+    "demo-village-far",
+    "demo-village-points",
+    "cube-chrome-hover",
+    "roll-quarter",
+    "sketch-extrude-l",
+    "demo-overlap",
 ];
 
 /// Fixed orbit angles so the framing is identical to the committed reference. The
@@ -190,11 +238,14 @@ fn output_dir() -> PathBuf {
     dir
 }
 
-/// Run the real `shot` binary for `case`, writing a PNG to `out_path`.
-fn render_case(case: &GoldenCase, out_path: &Path) {
+/// Run the real `shot` binary for `case`, writing a PNG to `out_path`. `extra_args` appends
+/// flags (e.g. `--two-layer` for the ADR 0010 E3 golden cross-check) so the same case can be
+/// rendered through an alternate path and compared to the SAME committed reference.
+fn render_case_with(case: &GoldenCase, out_path: &Path, extra_args: &[&str]) {
     let shot = env!("CARGO_BIN_EXE_shot");
     let status = Command::new(shot)
         .args(case.args)
+        .args(extra_args)
         .args(CAMERA_ARGS)
         .args(["--width", &WIDTH.to_string()])
         .args(["--height", &HEIGHT.to_string()])
@@ -212,6 +263,11 @@ fn render_case(case: &GoldenCase, out_path: &Path) {
         case.name,
         out_path.display()
     );
+}
+
+/// Render `case` through the DEFAULT (dense) path.
+fn render_case(case: &GoldenCase, out_path: &Path) {
+    render_case_with(case, out_path, &[]);
 }
 
 /// Compare two same-size RGBA images under the tolerance model. Returns the
@@ -338,6 +394,75 @@ fn golden_images_match() {
     assert!(
         failures.is_empty(),
         "golden image regression(s):\n{}",
+        failures.join("\n")
+    );
+}
+
+/// ADR 0010 E3 (#50): render the chunkable golden cases THROUGH the two-layer mesh path
+/// (`shot --two-layer`: coarse one-box + microblock cuboids + seam-flag culling) and assert
+/// each is PIXEL-IDENTICAL to the SAME committed dense reference PNG. This is the display
+/// half of the E3 parity gate — the two-layer mesher is a pure optimization on the data
+/// seam, never an observable change. Includes the OVERLAP scene (the E2 carry-over: an
+/// overlapping multi-material region must render identically to the dense path).
+///
+/// Run: `cargo test --features gpu --test golden`. Read the actual PNGs on a mismatch (the
+/// large-solid `demo-village`/`demo-overlap` cases prove the one-box coarse path leaves no
+/// interior seam or hole).
+#[test]
+fn two_layer_golden_matches_dense() {
+    // Regeneration mode never targets the two-layer path (the references are the dense
+    // goldens); skip cleanly so `UPDATE_GOLDENS=1` only refreshes the dense set.
+    if std::env::var("UPDATE_GOLDENS").is_ok_and(|v| v == "1") {
+        return;
+    }
+    let golden_dir = golden_dir();
+    let out_dir = output_dir();
+    let mut failures: Vec<String> = Vec::new();
+
+    for name in TWO_LAYER_CASE_NAMES {
+        let case = CASES
+            .iter()
+            .find(|c| c.name == *name)
+            .unwrap_or_else(|| panic!("TWO_LAYER_CASE_NAMES references unknown case '{name}'"));
+        let reference_path = golden_dir.join(format!("{}.png", case.name));
+        if !reference_path.exists() {
+            failures.push(format!(
+                "[{}] no dense reference at {} — run the dense golden first",
+                case.name,
+                reference_path.display()
+            ));
+            continue;
+        }
+
+        // Render the case through the two-layer mesh path.
+        let actual_path = out_dir.join(format!("{}-two-layer-actual.png", case.name));
+        render_case_with(case, &actual_path, &["--two-layer"]);
+
+        let actual = load_rgba(&actual_path);
+        let reference = load_rgba(&reference_path);
+        let diff_path = out_dir.join(format!("{}-two-layer-diff.png", case.name));
+        let mismatch = compare_images(&actual, &reference, &diff_path);
+        println!(
+            "[{} two-layer] mismatch fraction = {:.5}% (threshold {:.3}%)",
+            case.name,
+            mismatch * 100.0,
+            MAX_MISMATCH_FRACTION * 100.0
+        );
+        if mismatch > MAX_MISMATCH_FRACTION {
+            failures.push(format!(
+                "[{} two-layer] mismatch {:.5}% exceeds {:.3}% — actual: {}  diff: {}",
+                case.name,
+                mismatch * 100.0,
+                MAX_MISMATCH_FRACTION * 100.0,
+                actual_path.display(),
+                diff_path.display()
+            ));
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "two-layer golden regression(s) vs dense reference:\n{}",
         failures.join("\n")
     );
 }

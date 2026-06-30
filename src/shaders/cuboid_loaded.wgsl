@@ -41,15 +41,18 @@ struct CuboidUniforms {
 @group(0) @binding(0)
 var<uniform> uniforms: CuboidUniforms;
 
-// ADR 0003 §3c: the on-face-grid flag NO LONGER rides `material_id` (the retired
-// `GRID_OVERLAY_BIT` mirror is gone). A loaded VS block selects its per-face texture
-// layer from the outward normal, never from `material_id`; the per-box on-face-grid
-// flag arrives in a DEDICATED vertex attribute and only gates the on-face grid branch.
+// ADR 0003 §3c / ADR 0010 E3: the on-face-grid flag is NEITHER in `material_id` (the
+// retired `GRID_OVERLAY_BIT` mirror) NOR a per-vertex attribute. A loaded VS block selects
+// its per-face texture layer from the outward normal; the on-face-grid flag is the per-draw
+// group(2) uniform (the chunk mesh is split into overlay-off / overlay-on draws).
+struct OverlayActive { value: u32 };
+@group(2) @binding(0)
+var<uniform> draw_overlay: OverlayActive;
 
-// Whether this face's on-face grid should draw: the per-box flag (a dedicated vertex
-// attribute) ANDed with the scene-wide master uniform (`grid_overlay_enabled`).
-fn on_face_grid_enabled(grid_overlay: u32) -> bool {
-    return uniforms.grid_overlay_enabled > 0.5 && grid_overlay != 0u;
+// Whether this face's on-face grid should draw: the per-DRAW overlay-active flag (group 2)
+// ANDed with the scene-wide master uniform (`grid_overlay_enabled`).
+fn on_face_grid_enabled() -> bool {
+    return uniforms.grid_overlay_enabled > 0.5 && draw_overlay.value != 0u;
 }
 
 // The loaded block's 6-layer face texture array (one layer per cube face). Z-up:
@@ -105,8 +108,8 @@ struct VertexInput {
     @location(0) world_position: vec3<f32>,
     @location(1) face_normal: vec3<f32>,
     @location(2) material_id: u32,
-    // ADR 0003 §3c: the per-box on-face-grid flag as a dedicated attribute (0 / 1).
-    @location(3) grid_overlay: u32,
+    // ADR 0010 E3: the on-face-grid flag is no longer a vertex attribute (it is the
+    // per-draw group(2) uniform `draw_overlay`).
 };
 
 struct VertexOutput {
@@ -114,8 +117,6 @@ struct VertexOutput {
     @location(0) world_normal: vec3<f32>,
     @location(1) @interpolate(flat) material_id: u32,
     @location(2) voxel_absolute_position: vec3<f32>,
-    // The per-box on-face-grid flag, flat across the face (ADR 0003 §3c).
-    @location(3) @interpolate(flat) grid_overlay: u32,
 };
 
 @vertex
@@ -124,7 +125,6 @@ fn vertex_main(vertex: VertexInput) -> VertexOutput {
     output.clip_position = uniforms.view_projection * vec4<f32>(vertex.world_position, 1.0);
     output.world_normal = vertex.face_normal;
     output.material_id = vertex.material_id;
-    output.grid_overlay = vertex.grid_overlay;
     output.voxel_absolute_position = vertex.world_position + uniforms.grid_half_extent;
     return output;
 }
@@ -196,7 +196,7 @@ fn fragment_main(
 
     // --- Position-based grid overlay (BUG 2 parity) ---
     // Per-object (issue #29 S4): master uniform ANDed with this face's flag bit.
-    if (on_face_grid_enabled(input.grid_overlay)) {
+    if (on_face_grid_enabled()) {
         let in_plane = step(abs(input.world_normal), vec3<f32>(0.5));
         let voxel_distance = abs(absolute - floor(absolute + 0.5));
         let density = uniforms.voxels_per_block;

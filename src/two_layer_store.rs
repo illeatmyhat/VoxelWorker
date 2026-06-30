@@ -104,6 +104,14 @@ pub struct MicroblockGeometry {
     /// The block's solid voxels, greedy-decomposed to single-material cuboids
     /// (block-local voxel indices `[0, density)`). Empty when the block resolved to no
     /// voxels (a boundary verdict the per-voxel pass found empty — still exact).
+    ///
+    /// Each cuboid's `material_id` is the cuboid mesher's **render-cell key** (ADR 0003
+    /// §3c): the clean categorical `block_id` in the low bits, the transient on-face-grid
+    /// overlay marker in [`crate::cuboid_mesh::MESH_GRID_OVERLAY_BIT`]. The decomposition
+    /// therefore splits a box across differing overlay states exactly like the dense
+    /// mesher, and E3's mesher reads the box's clean id + overlay back out of this key
+    /// without the render flag ever entering the categorical cell. Consumers that want the
+    /// clean id (E2 occupancy expansion) mask the overlay bit off.
     pub cuboids: Vec<VoxelBox>,
     /// Per-face solidity flags (the seam apron analogue) for this block.
     pub seam_solidity: SeamSolidity,
@@ -128,6 +136,11 @@ pub struct TwoLayerChunk {
     /// Per-block coarse layer, row-major over the chunk's `CHUNK_BLOCKS³` blocks
     /// (X fastest, then Y, then Z): `Some(id)` = coarse-solid, `None` = air or boundary.
     pub coarse: Vec<Option<BlockId>>,
+    /// Per-block on-face-grid overlay marker (ADR 0003 §3c), parallel to `coarse`: `true`
+    /// iff the coarse-solid block's single owning leaf had `grid_overlay` set. Meaningful
+    /// only where `coarse[i].is_some()`; the E3 mesher reads it to flag a coarse block's
+    /// one-box draw. A RENDER hint only — never part of the categorical id / occupancy.
+    pub coarse_overlay: Vec<bool>,
     /// Sparse boundary-block geometry, keyed by chunk-local block index `[bx, by, bz]`
     /// (each component `< CHUNK_BLOCKS`).
     pub microblocks: BTreeMap<[u32; 3], MicroblockGeometry>,
@@ -147,6 +160,7 @@ impl TwoLayerChunk {
         Self {
             voxels_per_block,
             coarse: vec![None; block_count],
+            coarse_overlay: vec![false; block_count],
             microblocks: BTreeMap::new(),
         }
     }
@@ -155,6 +169,13 @@ impl TwoLayerChunk {
     /// coarse-solid block; `None` for air or boundary).
     pub fn coarse_block(&self, block: [u32; 3]) -> Option<BlockId> {
         self.coarse[coarse_flat_index(block)]
+    }
+
+    /// The on-face-grid overlay marker (ADR 0003 §3c) of the coarse-solid block at
+    /// `block` — `true` iff that block's owning leaf had `grid_overlay` set. Only
+    /// meaningful when [`coarse_block`](Self::coarse_block) is `Some`.
+    pub fn coarse_block_overlay(&self, block: [u32; 3]) -> bool {
+        self.coarse_overlay[coarse_flat_index(block)]
     }
 
     /// The TOTAL voxel count this chunk STORES — the sum of every boundary block's
@@ -252,7 +273,10 @@ impl TwoLayerChunk {
         index_offset: [i64; 3],
     ) {
         for cuboid in &geometry.cuboids {
-            let block_id = BlockId(cuboid.material_id);
+            // The cuboid's `material_id` is the render-cell key (block_id | overlay<<15);
+            // occupancy is the CLEAN categorical id, so mask the overlay bit off (ADR
+            // 0003 §3c — the overlay never enters the occupancy / categorical cell).
+            let block_id = BlockId(crate::cuboid_mesh::clean_block_id(cuboid.material_id));
             for voxel_z in cuboid.min[2]..=cuboid.max[2] {
                 for voxel_y in cuboid.min[1]..=cuboid.max[1] {
                     for voxel_x in cuboid.min[0]..=cuboid.max[0] {
@@ -399,6 +423,35 @@ pub(crate) fn classify_chunk_block(
     }
 }
 
+/// The on-face-grid overlay (ADR 0003 §3c) of the SINGLE leaf overlapping `block_abs_voxels`.
+///
+/// A coarse-solid block is owned by exactly one leaf (the classifier forces any multi-leaf
+/// overlap to boundary), so its render overlay is unambiguous: this returns the first
+/// overlapping leaf's `grid_overlay`, or `false` if none overlaps (an unreachable case for a
+/// coarse-solid verdict — guarded defensively). The overlap test mirrors
+/// [`classify_chunk_block`]'s, so the same single leaf is found.
+fn single_overlapping_leaf_overlay(
+    leaves: &[LeafProducer],
+    block_abs_voxels: VoxelAabb,
+    voxels_per_block: u32,
+) -> bool {
+    for leaf in leaves {
+        let grid_dimensions = leaf.producer.full_dimensions(voxels_per_block);
+        let leaf_box = VoxelAabb::new(
+            leaf.world_offset_voxels,
+            [
+                leaf.world_offset_voxels[0] + grid_dimensions[0] as i64,
+                leaf.world_offset_voxels[1] + grid_dimensions[1] as i64,
+                leaf.world_offset_voxels[2] + grid_dimensions[2] as i64,
+            ],
+        );
+        if leaf_box.intersects(&block_abs_voxels) {
+            return leaf.grid_overlay;
+        }
+    }
+    false
+}
+
 /// The OFF-by-default capability that builds the [`TwoLayerChunk`] display cache from the
 /// one evaluator (ADR 0010 Decision 3 / 6). When the capability is OFF the live store
 /// stays on the dense [`crate::store::Store`] path; this type is only constructed when a
@@ -424,6 +477,40 @@ impl TwoLayerStore {
     /// Whether the two-layer capability is engaged.
     pub fn is_enabled(&self) -> bool {
         self.enabled
+    }
+
+    /// Build the [`TwoLayerChunk`] for EVERY covering chunk of `scene` (ADR 0010 E3): the
+    /// `(absolute_chunk_coord, chunk)` list the two-layer mesher
+    /// ([`crate::cuboid_mesh::CuboidMeshRenderer::new_from_two_layer_chunks`]) consumes,
+    /// visited in the SAME z,y,x order the dense store assembles. Returns an empty list when
+    /// the capability is OFF or the scene has no covering chunk range (a Part-only scene —
+    /// the caller falls back to the dense path). This keeps the `pub(crate)` chunk-range
+    /// logic inside the crate while exposing the covering-chunk build to the `shot` binary.
+    pub fn build_covering_chunks(
+        &self,
+        scene: &Scene,
+        voxels_per_block: u32,
+        lod: u32,
+    ) -> Vec<([i32; 3], TwoLayerChunk)> {
+        if !self.enabled {
+            return Vec::new();
+        }
+        let Some((min_chunk, max_chunk)) = scene.covering_chunk_range(voxels_per_block) else {
+            return Vec::new();
+        };
+        let mut chunks = Vec::new();
+        for chunk_z in min_chunk[2]..=max_chunk[2] {
+            for chunk_y in min_chunk[1]..=max_chunk[1] {
+                for chunk_x in min_chunk[0]..=max_chunk[0] {
+                    let coord = [chunk_x, chunk_y, chunk_z];
+                    let chunk = self
+                        .build_chunk(coord, scene, voxels_per_block, lod)
+                        .expect("the two-layer capability is enabled");
+                    chunks.push((coord, chunk));
+                }
+            }
+        }
+        chunks
     }
 
     /// Build the [`TwoLayerChunk`] for `chunk_coord` from the scene's one evaluator, or
@@ -490,7 +577,13 @@ fn build_two_layer_chunk(
                 match classify_chunk_block(&leaves, block_abs, voxels_per_block) {
                     BlockClassification::Air => {}
                     BlockClassification::CoarseSolid(block_id) => {
-                        chunk.coarse[coarse_flat_index(block)] = Some(block_id);
+                        let flat = coarse_flat_index(block);
+                        chunk.coarse[flat] = Some(block_id);
+                        // A coarse-solid block is owned by EXACTLY ONE leaf (the classifier
+                        // forces multi-leaf overlaps to boundary), so its on-face-grid
+                        // overlay (ADR 0003 §3c) is that single leaf's `grid_overlay`.
+                        chunk.coarse_overlay[flat] =
+                            single_overlapping_leaf_overlay(&leaves, block_abs, voxels_per_block);
                     }
                     BlockClassification::Boundary => {
                         let geometry =
@@ -580,17 +673,24 @@ fn resolve_boundary_block(
             if block_local.iter().any(|&c| c < 0 || c >= density as i64) {
                 continue; // Outside this block (the window clamps, but guard anyway).
             }
-            let material = match leaf.material {
+            let block_id = match leaf.material {
                 Some(id) => id.0,
                 None => voxel.block_id.0,
             };
+            // Stamp the cuboid mesher's RENDER-CELL key (ADR 0003 §3c): the clean
+            // categorical id in the low bits, this leaf's on-face-grid overlay in the
+            // dedicated bit. So `decompose_into_boxes` splits a box across differing
+            // overlay states exactly like the dense mesher, and the E3 mesher reads the
+            // box's clean id + overlay back out — without the render flag ever entering
+            // the categorical cell (the E2 occupancy expansion masks the bit off).
+            let render_key = crate::cuboid_mesh::compose_cell_key(block_id, leaf.grid_overlay);
             // Later document-order leaf wins on overlap: a plain overwrite reproduces
             // the dense Union (the walk visits in document order, last write persists).
             region.set(
                 block_local[0] as u32,
                 block_local[1] as u32,
                 block_local[2] as u32,
-                Some(material),
+                Some(render_key),
             );
         }
     }
