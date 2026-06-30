@@ -207,6 +207,10 @@ impl VoxelProducer for DebugCloudField {
     ) -> Option<crate::voxel::FieldInterval> {
         None
     }
+
+    fn full_dimensions(&self, _voxels_per_block: u32) -> [u32; 3] {
+        self.dimensions
+    }
 }
 
 /// Whether `point` lands inside any cloud puff. The field is the per-cloud radial

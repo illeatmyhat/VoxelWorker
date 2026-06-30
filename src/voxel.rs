@@ -563,6 +563,16 @@ pub trait VoxelProducer {
         let _ = (cell_local_voxels, voxels_per_block);
         None
     }
+
+    /// The producer's FULL grid dimensions in voxels (its `[0, full_dim)` local frame).
+    /// This is the span [`resolve`] writes into and the AABB the classifier / chunk
+    /// window clip against. A sized producer (an SDF Tool, a sketch solid) returns its
+    /// intrinsic extent; a region-sized producer (the cloud field) returns the region it
+    /// was constructed for. ADR 0010 E2 reads this to bound each leaf's contribution to a
+    /// chunk block.
+    ///
+    /// [`resolve`]: VoxelProducer::resolve
+    fn full_dimensions(&self, voxels_per_block: u32) -> [u32; 3];
 }
 
 /// Clamp a producer window to `[0, full_dim)` per axis and return the per-axis
@@ -1046,6 +1056,10 @@ impl VoxelProducer for SdfShape {
             field_at_center,
             circumradius * lipschitz_constant,
         ))
+    }
+
+    fn full_dimensions(&self, voxels_per_block: u32) -> [u32; 3] {
+        self.grid_dimensions(voxels_per_block)
     }
 }
 

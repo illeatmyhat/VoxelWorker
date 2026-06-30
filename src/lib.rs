@@ -46,6 +46,9 @@ pub mod spatial_index;
 // ADR 0003 data layer: residency + per-chunk resolve + bound-region reads. See store.rs.
 pub mod store;
 pub mod texture_atlas;
+// ADR 0010 E2: the OFF-by-default boundary-aware two-layer chunk store + block
+// classifier (coarse + microblock + seam flags), proven bit-exact vs the dense store.
+pub mod two_layer_store;
 // ADR 0003 §3f(0) (Slice 2+): the parametric blocks/voxels units parser core.
 pub mod units;
 pub mod vox_export;
@@ -100,6 +103,10 @@ pub use scene::{
     Part, Point, RegionBlocks, Scene,
 };
 pub use settings::AppConfig;
+pub use two_layer_store::{
+    resolve_region_two_layer, BlockClassification, MicroblockGeometry, SeamSolidity, TwoLayerChunk,
+    TwoLayerStore,
+};
 pub use sketch::{Operation, PlaneAxis, RevolveAxis, Sketch, SketchPoint, SketchSolid};
 pub use spatial_index::{LeafEntry, LeafFingerprint, LeafSpatialIndex, VoxelAabb};
 pub use vox_export::VoxExport;

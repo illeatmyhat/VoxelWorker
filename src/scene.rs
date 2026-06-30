@@ -2036,6 +2036,46 @@ impl Scene {
         }
     }
 
+    /// Collect every visible leaf as a [`LeafProducer`] (ADR 0010 E2): its world voxel
+    /// offset, a boxed [`VoxelProducer`], and its single-material override id. This is the
+    /// op-stack the two-layer classifier / boundary-resolve evaluate over — the SAME
+    /// leaves [`resolve_chunk_rebased`](Self::resolve_chunk_rebased) stamps, in the SAME
+    /// document (walk) order, so the two-layer round-trip composes identically (later-wins
+    /// Union on overlap). A region-sized Part (the cloud field) is sized to the composite
+    /// `placed_region_dimensions` exactly as the dense chunk resolve sizes it.
+    ///
+    /// `pub(crate)` — the evaluator seam ADR 0010 E2's [`crate::two_layer_store`] reads;
+    /// the dense store keeps using the private [`for_each_leaf`](Self::for_each_leaf).
+    pub(crate) fn leaf_producers(&self, voxels_per_block: u32) -> Vec<LeafProducer> {
+        let region_dimensions = self.placed_region_dimensions(voxels_per_block);
+        let mut leaves = Vec::new();
+        self.for_each_leaf(&mut |world_offset_voxels, content, _grid_on_faces| {
+            let (material, producer): (Option<crate::core_geom::BlockId>, Box<dyn VoxelProducer>) =
+                match content {
+                    NodeContent::Tool { shape, material } => {
+                        (material_id_for(*material), Box::new(shape.clone()))
+                    }
+                    NodeContent::SketchTool { producer, material } => {
+                        (material_id_for(*material), Box::new(producer.clone()))
+                    }
+                    NodeContent::Part(Part::DebugClouds { seed }) => (
+                        None,
+                        Box::new(DebugCloudField {
+                            dimensions: region_dimensions,
+                            seed: *seed,
+                        }),
+                    ),
+                    NodeContent::Group(_) | NodeContent::Instance(_) => return,
+                };
+            leaves.push(LeafProducer {
+                world_offset_voxels,
+                producer,
+                material,
+            });
+        });
+        leaves
+    }
+
     /// Recursive worker for [`for_each_leaf`](Self::for_each_leaf). `parent_offset`
     /// is the accumulated world VOXEL offset of the assembly that owns `nodes`;
     /// `def_path` is the stack of definition ids currently being expanded (for the
@@ -2799,6 +2839,23 @@ fn leaf_size_blocks(content: &NodeContent, voxels_per_block: u32) -> Option<[u32
 /// sub-block sketch's voxels are never dropped by a too-small cover.
 ///
 /// [`SketchTool`]: NodeContent::SketchTool
+/// One visible leaf of the op-stack as a resolvable producer (ADR 0010 E2). The
+/// two-layer classifier + boundary-resolve evaluate this list (in document order, Union
+/// on overlap) exactly as [`Scene::resolve_chunk_rebased`] stamps it. Yielded by
+/// [`Scene::leaf_producers`].
+pub(crate) struct LeafProducer {
+    /// The leaf's accumulated WORLD voxel offset (its corner-anchored low corner in the
+    /// scene's absolute voxel frame). A local cell `idx` has absolute index
+    /// `world_offset_voxels + idx` (ADR 0008 — the frame is carried).
+    pub world_offset_voxels: [i64; 3],
+    /// The boxed producer that resolves / bounds this leaf in its own `[0, full_dim)`
+    /// local voxel-index frame.
+    pub producer: Box<dyn VoxelProducer>,
+    /// The single-material override id a Tool stamps onto every voxel (`Some`), or `None`
+    /// for a Part that brings its own per-voxel materials (the cloud field emits id 0).
+    pub material: Option<crate::core_geom::BlockId>,
+}
+
 fn leaf_producer_grid_voxels(content: &NodeContent, _voxels_per_block: u32) -> Option<[i64; 3]> {
     match content {
         // The Tool's exact emitted grid is its canonical voxel size directly (ADR

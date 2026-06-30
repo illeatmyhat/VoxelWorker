@@ -477,6 +477,10 @@ impl VoxelProducer for SketchSolid {
         // cannot coarsely decide ⇒ straddle ⇒ BOUNDARY (per-voxel exact).
         Some(crate::voxel::FieldInterval::new(-1.0, 1.0))
     }
+
+    fn full_dimensions(&self, _voxels_per_block: u32) -> [u32; 3] {
+        self.grid_dimensions()
+    }
 }
 
 impl SketchSolid {
