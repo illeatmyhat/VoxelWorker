@@ -303,13 +303,42 @@ GPU-atlas pixel-identical; `demo-village` stays CPU (multi-producer).
 the CPU path when it cannot activate** (`fog.per_chunk_active()` gates the return), never
 regressing a renderable scene to no-fog. This makes ADR 0007 option **(C)** drop-empty-tile
 compaction the concrete remedy for the live path at cloud scale — not just a scale nicety,
-but what lets the GPU path *cover* the dense-cloud case at all. Promoted in priority for P2.
+but what lets the GPU path *cover* the dense-cloud case at all.
+
+### Landed — option (C) drop-empty-tile compaction (2026-06-29)
+
+`resolve_single_producer_fog_atlas` now COMPACTS: a `main_flags`-only pass
+(`GpuResolver::dispatch_interior_flags`) GPU-evaluates each covering chunk's C′ interior
+predicate, the per-chunk flags are read back, and the empty-interior tiles are dropped so the
+atlas packs **only the CPU non-empty set**. The `debug-clouds` golden (128³ @ d2) goes from
+4096 covering tiles (> `MAX_FOG_CHUNKS` → CPU fallback) to **679 non-empty tiles** (fits) and
+now renders on the **GPU atlas, pixel-identical** to the prior CPU-path golden. No new WGSL,
+no shader/renderer change: the fog raymarch is already `world_origin`-keyed, so a dropped
+empty tile renders exactly as the zeroed C′ tile it replaces (the goldens guard that).
+Surface added: `dispatch_interior_flags`; `ProducerInputs: Copy`. New `gpu_parity` test
+`gpu_atlas_compaction_drops_empty_interior_tiles` asserts the compacted set == the CPU
+non-empty set and that it fits where the covering set did not.
+
+**ADR revision — the GPU prefix-sum is NOT needed.** §2 anticipated (C) would "need a GPU
+prefix-sum to stay readback-free." It doesn't: a wgpu texture is HOST-allocated to known
+dimensions, and a worst-case `MAX_FOG_CHUNKS`-tile atlas is VRAM-prohibitive at real density
+(gigabytes), so the compact count must reach the CPU to size the texture **regardless of how
+it's computed**. Given that forced count-readback, compaction is a trivial CPU filter over the
+flags readback — a prefix-sum buys nothing here. The readback is one `u32` per covering chunk
+(tiny; the cost is the sync, not the bytes); the atlas occupancy itself still never
+round-trips. The live incremental path (below) keeps a *persistent* atlas, so this per-resolve
+sizing readback happens on edits, not per frame.
 
 ## Open (deferred to their phase)
 
 - **The live (`main.rs`) incremental wiring** — `AppCore` dirty-set → GPU re-resolve of dirty chunks
-  only → persistent atlas; the architecturally-invasive step. Verify whether `AppCore`'s resident set
-  is occupancy-aware (empty-interior boundary chunks already excluded) or visibility-only (then the
-  (C′) interior filter is still needed live).
+  only → persistent atlas; the architecturally-invasive step. **Resolved (2026-06-29, by reading the
+  code):** `AppCore`'s resident set is **visibility-only, NOT occupancy-aware** — `resident_render_chunks`
+  enumerates the full covering box and `ensure_resident` (Tier 3) resolves + caches every covering chunk
+  unconditionally, empty interiors included (callers filter with `!grid.occupied.is_empty()`). So the
+  (C′) interior filter / (C) compaction IS still needed live; the live path can reuse `dispatch_interior_flags`
+  + the compacting resolve. The dirty-set plumbing already exists at the mesh call site
+  (`rebuild_geometry` consumes `dirty_chunk_coords` + `incremental_ok`); the fog upload is the lone
+  wholesale re-densify left (the 592ms).
 - **P2 mesh-vs-raymarch** for the GPU display surface (decided at P2, not now).
 - **The pinned tolerance value**, only if a future case/adapter proves exact parity unattainable.

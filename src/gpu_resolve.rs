@@ -153,6 +153,9 @@ const DUMMY_PERM: &[u32] = &[0];
 /// The producer-specific input buffers bound at bindings 3 (profile), 4 (cloud puffs),
 /// and 5 (cloud permutation). Each producer fills the one(s) it uses and leaves the
 /// rest as dummies — bundled so the dispatch helpers stay under the argument limit.
+/// `Copy` (it holds only shared slices) so one value feeds both the flags pass and the
+/// atlas pass of the compacting resolve.
+#[derive(Clone, Copy)]
 struct ProducerInputs<'a> {
     profile: &'a [[i32; 2]],
     cloud_puffs: &'a [[f32; 4]],
@@ -464,14 +467,22 @@ impl GpuResolver {
     }
 
     /// GPU-resolve the per-chunk fog atlas for a SINGLE ported producer over its COVERING
-    /// chunk set, with NO readback — the live call-site swap (ADR 0007). The producer
-    /// resolves into grid indices `[0, grid)`, so the covering chunks are simply the box
-    /// `[0, ceil(grid/extent))` per axis (identical for SDF / sketch / cloud); the
-    /// interior-empty tiles among them are zeroed on the GPU (C′) so the atlas renders
-    /// identically to the CPU non-empty set. `recentre_voxels` (read off the resolved
-    /// grid, ADR 0008) shifts only `world_origin`. Returns `None` ONLY when the dispatch
-    /// would exceed the device's single-dimension workgroup limit — the caller then keeps
-    /// the CPU fog path (graceful, never a panic).
+    /// chunk set — the live call-site swap (ADR 0007). The producer resolves into grid
+    /// indices `[0, grid)`, so the covering chunks are simply the box
+    /// `[0, ceil(grid/extent))` per axis (identical for SDF / sketch / cloud).
+    ///
+    /// ADR 0007 option (C): the empty-interior tiles among the covering set are DROPPED
+    /// (not just zeroed in place as the earlier C′ did) — a per-chunk interior-occupancy
+    /// flags pass is read back and the atlas packs only the surviving CPU non-empty set.
+    /// This is what lets a dense producer whose covering tiles overflow the atlas budget
+    /// (`DebugClouds`) still fit the GPU path. The flags readback is forced by host-side
+    /// texture allocation, not a perf regression vs a prefix-sum (see the body). The atlas
+    /// occupancy itself never round-trips the CPU. `recentre_voxels` (read off the resolved
+    /// grid, ADR 0008) shifts only `world_origin`.
+    ///
+    /// Returns `None` when the producer has no interior voxels, or when the flags dispatch
+    /// over the full covering set would exceed the device's single-dimension workgroup
+    /// limit — the caller then keeps the CPU fog path (graceful, never a panic).
     pub fn resolve_single_producer_fog_atlas(
         &self,
         device: &wgpu::Device,
@@ -530,8 +541,9 @@ impl GpuResolver {
         }
         descriptor.num_chunks = coords.len() as u32;
 
-        // Single-dimension workgroup-fit check: degrade to the CPU path instead of the
-        // A/B backstop panic in `atlas_pipeline_run`.
+        // Single-dimension workgroup-fit check: the interior-flags pass below dispatches
+        // over the FULL covering set (`pad³ · covering` cells), so it is the binding one.
+        // Degrade to the CPU path instead of the A/B backstop panic in the dispatch.
         let pad = descriptor.pad as usize;
         let workgroups = (pad * pad * pad * coords.len()).div_ceil(64);
         if workgroups > device.limits().max_compute_workgroups_per_dimension as usize {
@@ -543,6 +555,30 @@ impl GpuResolver {
             SingleProducerKind::Sketch(_) => ProducerInputs::sketch(&profile_vec),
             SingleProducerKind::Clouds { .. } => ProducerInputs::clouds(&puffs_vec, &perm_vec),
         };
+
+        // ADR 0007 option (C) drop-empty-tile compaction. GPU-evaluate each covering
+        // chunk's INTERIOR occupancy (the `main_flags` C′ predicate), read the per-chunk
+        // flags back, and DROP the empty-interior tiles so the atlas packs only the CPU
+        // non-empty set. This shrinks the covering set down to what the CPU path keeps, so
+        // a dense producer (e.g. `DebugClouds`) whose covering tiles overflow the atlas
+        // budget still fits the GPU path instead of falling back to the CPU densify.
+        //
+        // The count readback is NOT the prefix-sum ADR 0007 anticipated: a wgpu texture is
+        // HOST-allocated to known dimensions, and a worst-case (MAX_FOG_CHUNKS-tile) atlas
+        // is VRAM-prohibitive at real density — so the compact count must reach the CPU to
+        // size the texture regardless. Given that forced readback, compaction is a trivial
+        // CPU filter; no GPU scan buys readback-freedom here (ADR 0007 revision).
+        let flags = self.dispatch_interior_flags(device, queue, descriptor, &coords, inputs);
+        let coords: Vec<[i32; 3]> = coords
+            .into_iter()
+            .zip(flags)
+            .filter_map(|(coord, occupied)| occupied.then_some(coord))
+            .collect();
+        if coords.is_empty() {
+            return None;
+        }
+        descriptor.num_chunks = coords.len() as u32;
+
         let (texture, geom) = self.atlas_pipeline_run(device, queue, descriptor, &coords, inputs);
 
         let world_origins = coords
@@ -838,6 +874,137 @@ impl GpuResolver {
         staging_buffer.unmap();
 
         occupancy
+    }
+
+    /// Run ONLY the `main_flags` (C′ interior-occupancy) pass over `chunk_coords` and read
+    /// back one boolean per chunk: `true` iff that covering chunk has ≥1 occupied INTERIOR
+    /// voxel — the exact predicate the CPU `build_per_chunk_fog_occupancy` uses to decide a
+    /// chunk is non-empty. The atlas (C) compaction filters the covering set on this. The
+    /// readback is small (one `u32` per chunk) and is forced anyway by host-side texture
+    /// sizing (see [`resolve_single_producer_fog_atlas`](Self::resolve_single_producer_fog_atlas)).
+    ///
+    /// `descriptor.num_chunks` must already equal `chunk_coords.len()` (the flag predicate
+    /// and the dispatch bound both read it). Binding 2 (`occupancy`) is unused by
+    /// `main_flags`, so a 1-word dummy satisfies the shared atlas bind-group layout.
+    fn dispatch_interior_flags(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        descriptor: Descriptor,
+        chunk_coords: &[[i32; 3]],
+        inputs: ProducerInputs,
+    ) -> Vec<bool> {
+        let num_chunks = chunk_coords.len();
+        if num_chunks == 0 {
+            return Vec::new();
+        }
+        let pad = descriptor.pad as usize;
+        let workgroups = (pad * pad * pad * num_chunks).div_ceil(64);
+        let max_dim = device.limits().max_compute_workgroups_per_dimension as usize;
+        assert!(
+            workgroups <= max_dim,
+            "gpu_resolve flags: {workgroups} workgroups exceeds the {max_dim} single-dimension \
+             limit (the caller checks this first; this is the backstop)"
+        );
+
+        let descriptor_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("gpu_resolve flags descriptor"),
+            contents: bytemuck::bytes_of(&descriptor),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let coords_padded: Vec<[i32; 4]> =
+            chunk_coords.iter().map(|&[x, y, z]| [x, y, z, 0]).collect();
+        let coords_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("gpu_resolve flags coords"),
+            contents: bytemuck::cast_slice(&coords_padded),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        let profile_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("gpu_resolve flags profile"),
+            contents: bytemuck::cast_slice(inputs.profile),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        let cloud_puffs_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("gpu_resolve flags cloud puffs"),
+            contents: bytemuck::cast_slice(inputs.cloud_puffs),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        let cloud_perm_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("gpu_resolve flags cloud perm"),
+            contents: bytemuck::cast_slice(inputs.cloud_perm),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        // Binding 2 is required by the layout but never touched by `main_flags`; a single
+        // dummy word keeps the runtime-sized storage array non-empty.
+        let dummy_occupancy = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("gpu_resolve flags dummy occupancy"),
+            contents: bytemuck::cast_slice(&[0u32]),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        let flags_size = (num_chunks * std::mem::size_of::<u32>()) as wgpu::BufferAddress;
+        let flags_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("gpu_resolve interior flags"),
+            size: flags_size,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_SRC
+                | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let staging_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("gpu_resolve flags readback"),
+            size: flags_size,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("gpu_resolve flags bg"),
+            layout: &self.atlas_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: descriptor_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: coords_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: dummy_occupancy.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: profile_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: cloud_puffs_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 5, resource: cloud_perm_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 6, resource: flags_buffer.as_entire_binding() },
+            ],
+        });
+
+        let mut encoder =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        encoder.clear_buffer(&flags_buffer, 0, None); // `main_flags` ORs into a zeroed buffer
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("gpu_resolve flags-only pass"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.flags_pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(workgroups as u32, 1, 1);
+        }
+        encoder.copy_buffer_to_buffer(&flags_buffer, 0, &staging_buffer, 0, flags_size);
+        queue.submit(Some(encoder.finish()));
+
+        let slice = staging_buffer.slice(..);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = sender.send(result);
+        });
+        device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .expect("device poll failed");
+        receiver
+            .recv()
+            .expect("map_async channel dropped")
+            .expect("buffer map failed");
+
+        let mapped = slice.get_mapped_range();
+        let words: &[u32] = bytemuck::cast_slice(&mapped);
+        let flags: Vec<bool> = words[..num_chunks].iter().map(|&w| w != 0).collect();
+        drop(mapped);
+        staging_buffer.unmap();
+        flags
     }
 
     /// Run the atlas path to an R8 texture and return it WITHOUT any readback (the live

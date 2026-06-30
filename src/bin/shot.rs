@@ -76,11 +76,11 @@ fn try_install_gpu_per_chunk_fog(
             atlas_dim: atlas.atlas_dim,
         },
     );
-    // The COVERING set can exceed the CPU non-empty set, so it may overflow the atlas
-    // budget where the CPU path would still fit (e.g. a dense `DebugClouds`). If the
-    // install couldn't activate, fall back to the CPU path rather than regressing a
-    // renderable scene to no-fog. (Shrinking the covering set — drop-empty-tile
-    // compaction, ADR 0007 option C — is the deferred remedy if this bites at scale.)
+    // The resolver compacts the covering set down to the CPU non-empty set (ADR 0007
+    // option C drop-empty-tile), so a dense `DebugClouds` whose covering tiles overflow the
+    // atlas budget now fits. Should the NON-EMPTY count itself still exceed the budget,
+    // `install_per_chunk_atlas` disables the path — fall back to the CPU densify rather than
+    // regressing a renderable scene to no-fog.
     fog.per_chunk_active()
 }
 

@@ -21,11 +21,11 @@
 #![allow(deprecated)]
 
 use voxel_worker::gpu_resolve::GpuResolver;
-use voxel_worker::renderer::{build_per_chunk_fog_occupancy, PerChunkFogOccupancy};
+use voxel_worker::renderer::{build_per_chunk_fog_occupancy, PerChunkFogOccupancy, MAX_FOG_CHUNKS};
 use voxel_worker::voxel::{signed_distance, GeometryParams, SdfShape, ShapeKind, VoxelGrid, VoxelProducer};
 use voxel_worker::{
-    DebugCloudField, GpuContext, MaterialChoice, Node, NodeContent, PlaneAxis, RevolveAxis, Scene,
-    Sketch, SketchPoint, SketchSolid,
+    DebugCloudField, GpuContext, MaterialChoice, Node, NodeContent, Part, PlaneAxis, RevolveAxis,
+    Scene, Sketch, SketchPoint, SketchSolid,
 };
 
 /// A divergent apron cell, located for the report.
@@ -450,4 +450,91 @@ fn gpu_atlas_matches_cpu_upload_packing() {
         "GPU atlas != CPU upload_grid_per_chunk packing:\n{}",
         failures.join("\n")
     );
+}
+
+
+// ===========================================================================
+// Compaction tier (ADR 0007 option C) — drop empty-interior covering tiles
+// ===========================================================================
+
+/// `resolve_single_producer_fog_atlas` must COMPACT the covering set down to exactly the
+/// CPU non-empty chunk set, so a dense producer whose covering tiles overflow the atlas
+/// budget still fits the GPU path (the dense-`DebugClouds` case from ADR 0007 finding #2).
+/// This is the `debug-clouds` golden's scene (128³ @ d2): 4096 covering tiles, but only
+/// ~679 non-empty — the full covering set exceeds MAX_FOG_CHUNKS while the compacted set
+/// fits. The fog shader is world_origin-keyed, so a dropped empty tile renders identically
+/// to the zeroed C′ tile it replaces (the goldens guard that render equivalence).
+#[test]
+fn gpu_atlas_compaction_drops_empty_interior_tiles() {
+    let gpu = pollster::block_on(GpuContext::new(None));
+    let resolver = GpuResolver::new(&gpu.device);
+
+    let dims = [128u32, 128, 128];
+    let vpb = 2u32;
+    let seed = 0u32;
+
+    // CPU reference: resolve the cloud field corner-anchored (recentre [0,0,0], the real
+    // Part-only frame) and bucket into the non-empty per-chunk set.
+    let field = DebugCloudField { dimensions: dims, seed };
+    let mut grid = VoxelGrid::new(dims);
+    field.resolve(&mut grid, vpb);
+    let reference = build_per_chunk_fog_occupancy(&grid, vpb);
+    let chunk_extent = reference.chunk_extent as i64;
+
+    // The covering set the resolver enumerates BEFORE compaction.
+    let ceil = |d: i64| (d + chunk_extent - 1) / chunk_extent;
+    let covering = (ceil(dims[0] as i64) * ceil(dims[1] as i64) * ceil(dims[2] as i64)) as usize;
+
+    // GPU compacting resolve through the real single-producer path.
+    let scene = Scene::single_node(Node::new(
+        "Clouds",
+        NodeContent::Part(Part::DebugClouds { seed }),
+    ));
+    let producer = scene.single_producer().expect("DebugClouds is a single producer");
+    let atlas = resolver
+        .resolve_single_producer_fog_atlas(&gpu.device, &gpu.queue, &producer, dims, [0, 0, 0], vpb)
+        .expect("the clouds dispatch fits and the producer has interior voxels");
+
+    // The scene must actually have empty-interior covering tiles to drop, else the test
+    // proves nothing.
+    assert!(
+        reference.volumes.len() < covering,
+        "test scene has no empty covering tiles to drop (covering={covering}, nonempty={})",
+        reference.volumes.len()
+    );
+
+    // Compaction shrank the covering set to EXACTLY the CPU non-empty set...
+    assert_eq!(
+        atlas.world_origins.len(),
+        reference.volumes.len(),
+        "compacted tile count must equal the CPU non-empty chunk count"
+    );
+
+    // ...and the surviving tiles ARE the CPU non-empty chunks (compared as a SET — the
+    // covering enumeration order differs from the CPU's coord sort, but the fog shader is
+    // world_origin-keyed so tile order is irrelevant). world_origin is an exact multiple of
+    // the (small) chunk extent here, so the f32 → i64 key is lossless.
+    let to_key = |o: [f32; 3]| [o[0] as i64, o[1] as i64, o[2] as i64];
+    let gpu_set: std::collections::HashSet<[i64; 3]> =
+        atlas.world_origins.iter().map(|&o| to_key(o)).collect();
+    let cpu_set: std::collections::HashSet<[i64; 3]> =
+        reference.volumes.iter().map(|v| to_key(v.world_origin)).collect();
+    assert_eq!(gpu_set, cpu_set, "compacted tiles must be exactly the CPU non-empty set");
+
+    // The headline: the full covering set overflows the budget but the compacted set fits,
+    // so the GPU path now COVERS this scene instead of falling back to the CPU densify.
+    assert!(
+        covering > MAX_FOG_CHUNKS,
+        "precondition: covering ({covering}) must overflow MAX_FOG_CHUNKS ({MAX_FOG_CHUNKS})"
+    );
+    assert!(
+        atlas.world_origins.len() <= MAX_FOG_CHUNKS,
+        "compacted count ({}) must fit MAX_FOG_CHUNKS ({MAX_FOG_CHUNKS})",
+        atlas.world_origins.len()
+    );
+
+    // The atlas is sized to the COMPACT count, not the covering count.
+    let expected_tiles = ((atlas.world_origins.len() as f64).cbrt().ceil() as u32).max(1);
+    assert_eq!(atlas.tiles_per_axis, expected_tiles, "atlas tiles sized to compact count");
+    assert_eq!(atlas.atlas_dim, expected_tiles * atlas.pad);
 }
