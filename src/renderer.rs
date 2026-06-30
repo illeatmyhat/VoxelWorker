@@ -3060,6 +3060,12 @@ pub struct PerChunkFogOccupancy {
 /// `chunk_coord = floor(voxel_index / chunk_extent)`; the chunk's interior origin in
 /// recentred world space is `chunk_coord * chunk_extent - half_grid` (voxel CORNER),
 /// so a world sample maps to chunk-local voxel space by `world - world_origin`.
+#[deprecated(
+    note = "CPU fog densify — superseded by the GPU per-chunk atlas (ADR 0007 live \
+            call-site swap). Kept only as the CPU fallback + A/B reference; DELETE when \
+            the live GPU perf refactor lands. New code installs via \
+            OnionFogRenderer::install_per_chunk_atlas."
+)]
 pub fn build_per_chunk_fog_occupancy(
     grid: &VoxelGrid,
     voxels_per_block: u32,
@@ -3237,6 +3243,21 @@ pub fn build_per_chunk_fog_occupancy(
 /// in practice; this mirrors `scene::narrow_chunk_coord` without exposing it.
 fn narrow_chunk_coord_local(value: i64) -> i32 {
     value.clamp(i32::MIN as i64, i32::MAX as i64) as i32
+}
+
+/// Tile geometry for [`OnionFogRenderer::install_per_chunk_atlas`] — the atlas the GPU
+/// resolver packed (ADR 0007). Bundled so the install call stays under the argument-count
+/// lint; mirrors `upload_grid_per_chunk`'s `PerChunkFogMeta` geometry fields.
+#[derive(Debug, Clone, Copy)]
+pub struct PerChunkAtlasGeometry {
+    /// `CHUNK_BLOCKS * voxels_per_block` — one chunk's voxel extent per axis.
+    pub chunk_extent: u32,
+    /// `chunk_extent + 2` — the apron'd per-axis tile span.
+    pub pad: u32,
+    /// Resident tiles per atlas axis (`ceil(cbrt(chunk_count))`).
+    pub tiles_per_axis: u32,
+    /// `tiles_per_axis * pad` — the atlas cube dimension per axis.
+    pub atlas_dim: u32,
 }
 
 /// Fullscreen volumetric-fog renderer for the onion skin (issue #12). Raymarches
@@ -3651,6 +3672,12 @@ impl OnionFogRenderer {
     /// global occupancy), so trilinear sampling is seam-smooth across chunk boundaries.
     /// The shader marches in recentred world space and, at each sample, maps the world
     /// point into the owning chunk's tile via the metadata records.
+    #[deprecated(
+        note = "CPU fog densify + upload — superseded by the GPU per-chunk atlas (ADR 0007 \
+                live call-site swap). Kept only as the CPU fallback; DELETE when the live \
+                GPU perf refactor lands. New code installs via install_per_chunk_atlas."
+    )]
+    #[allow(deprecated)] // calls the (also-deprecated) CPU densify it wraps.
     pub fn upload_grid_per_chunk(
         &mut self,
         device: &wgpu::Device,
@@ -3757,6 +3784,52 @@ impl OnionFogRenderer {
                 depth_or_array_layers: atlas_dim,
             },
         );
+        self.per_chunk_atlas_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        queue.write_buffer(&self.per_chunk_meta_buffer, 0, bytemuck::bytes_of(&meta));
+        self.per_chunk_active = true;
+        self.mode = FogMode::PerChunk;
+    }
+
+    /// Install a GPU-resolved per-chunk fog atlas + metadata with NO CPU densify
+    /// (ADR 0007 live call-site swap). `texture` is the R8 atlas a [`GpuResolver`]
+    /// produced; `world_origins` are the per-tile recentred `[0,0,0]`-voxel CORNERs in
+    /// tile order (`coord·extent − recentre`, ADR 0008). This bypasses
+    /// [`build_per_chunk_fog_occupancy`] / [`upload_grid_per_chunk`] entirely — the
+    /// metadata is rebuilt CPU-side from the tile geometry, the occupancy never round-trips
+    /// the CPU. Geometry that overflows the atlas budget disables the fog (consistent with
+    /// `upload_grid_per_chunk`'s overflow branches) rather than rendering with holes.
+    ///
+    /// [`GpuResolver`]: crate::gpu_resolve::GpuResolver
+    pub fn install_per_chunk_atlas(
+        &mut self,
+        queue: &wgpu::Queue,
+        texture: &wgpu::Texture,
+        world_origins: &[[f32; 3]],
+        geometry: PerChunkAtlasGeometry,
+    ) {
+        let PerChunkAtlasGeometry { chunk_extent, pad, tiles_per_axis, atlas_dim } = geometry;
+        let chunk_count = world_origins.len();
+        if chunk_count == 0 || chunk_count > MAX_FOG_CHUNKS || atlas_dim > self.max_grid_dimension {
+            self.per_chunk_active = false;
+            self.mode = FogMode::PerChunk;
+            return;
+        }
+        let mut meta = PerChunkFogMeta {
+            chunk_count: chunk_count as u32,
+            chunk_extent: chunk_extent as f32,
+            pad_extent: pad as f32,
+            tiles_per_axis,
+            atlas_dim: atlas_dim as f32,
+            _pad0: 0.0,
+            _pad1: 0.0,
+            _pad2: 0.0,
+            chunks: [[0.0; 4]; MAX_FOG_CHUNKS],
+        };
+        // Tile `i` of the GPU atlas holds chunk `i` (the shader packs `tile_index =
+        // chunk`), so the meta record order mirrors `world_origins` directly.
+        for (tile_index, origin) in world_origins.iter().enumerate() {
+            meta.chunks[tile_index] = [origin[0], origin[1], origin[2], tile_index as f32];
+        }
         self.per_chunk_atlas_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         queue.write_buffer(&self.per_chunk_meta_buffer, 0, bytemuck::bytes_of(&meta));
         self.per_chunk_active = true;
@@ -3941,6 +4014,7 @@ pub fn create_depth_view(device: &wgpu::Device, width: u32, height: u32) -> wgpu
 }
 
 #[cfg(test)]
+#[allow(deprecated)] // exercises the CPU fog densify (deprecated, kept as A/B reference).
 mod tests {
     use super::*;
 

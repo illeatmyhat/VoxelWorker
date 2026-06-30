@@ -77,8 +77,12 @@ pub use panel::{
     PanelState,
 };
 pub use assets::{CubeFaceSlot, FaceProvenance, FaceTextures};
+// The CPU fog densify is deprecated (ADR 0007) but still re-exported for the A/B net +
+// the CPU fallback; the re-export itself must allow the deprecation to keep CI green.
+#[allow(deprecated)]
+pub use renderer::build_per_chunk_fog_occupancy;
 pub use renderer::{
-    build_per_chunk_fog_occupancy, create_depth_view, create_msaa_color_view, ChunkFogVolume,
+    create_depth_view, create_msaa_color_view, ChunkFogVolume, PerChunkAtlasGeometry,
     FogMode, InfiniteGridRenderer, LayerBand, MaterialSource, OnionFogParams, PointsRenderer,
     SceneGridRenderer,
     TransformGizmoRenderer,

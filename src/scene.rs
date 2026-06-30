@@ -425,6 +425,21 @@ pub enum NodeContent {
     Instance(DefId),
 }
 
+/// The single ported producer of a one-leaf scene — the scope of the GPU fog path
+/// (ADR 0007 P1). `Clouds` carries only its seed; the resolver fills the cloud's
+/// region-derived dimensions from the resolved grid. Anything else (empty / multi-leaf /
+/// a generic `Part` / `Group` / `Instance`) yields `None` from [`Scene::single_producer`]
+/// and stays on the CPU fog path.
+#[derive(Debug, Clone)]
+pub enum SingleProducerKind {
+    /// An SDF primitive Tool.
+    Sdf(SdfShape),
+    /// A sketch extrude/revolve solid.
+    Sketch(SketchSolid),
+    /// A `DebugClouds` Part (corner-anchored, recentre `[0,0,0]`).
+    Clouds { seed: u32 },
+}
+
 /// Per-node grid display settings (issue #29 grid rework, S1). Each grid type a
 /// node can show is gated by a scene-wide master ANDed with the node's own flag;
 /// these are the per-node flags. All default **off** — a freshly-added object
@@ -1990,6 +2005,35 @@ impl Scene {
     fn for_each_leaf(&self, visitor: &mut dyn FnMut([i64; 3], &NodeContent, bool)) {
         let mut def_path: Vec<DefId> = Vec::new();
         self.walk_nodes(&self.roots, [0, 0, 0], &mut def_path, visitor);
+    }
+
+    /// `Some` iff this scene resolves to EXACTLY ONE ported producer leaf — an SDF Tool,
+    /// a sketch solid, or a `DebugClouds` Part — the scope of the GPU fog path (ADR 0007
+    /// P1). Returns `None` for empty, multi-leaf, or unported (generic `Part` / `Group` /
+    /// `Instance`) scenes, which stay on the CPU fog path.
+    pub fn single_producer(&self) -> Option<SingleProducerKind> {
+        let mut leaf_count = 0usize;
+        let mut producer: Option<SingleProducerKind> = None;
+        self.for_each_leaf(&mut |_offset, content, _grid_on_faces| {
+            leaf_count += 1;
+            producer = match content {
+                NodeContent::Tool { shape, .. } => Some(SingleProducerKind::Sdf(shape.clone())),
+                NodeContent::SketchTool { producer, .. } => {
+                    Some(SingleProducerKind::Sketch(producer.clone()))
+                }
+                NodeContent::Part(Part::DebugClouds { seed }) => {
+                    Some(SingleProducerKind::Clouds { seed: *seed })
+                }
+                // An unported leaf (a generic voxel Part); not GPU-resolvable in P1.
+                _ => None,
+            };
+        });
+        // Exactly one leaf AND it was a ported kind.
+        if leaf_count == 1 {
+            producer
+        } else {
+            None
+        }
     }
 
     /// Recursive worker for [`for_each_leaf`](Self::for_each_leaf). `parent_offset`

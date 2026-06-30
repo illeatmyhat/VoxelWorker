@@ -39,6 +39,64 @@ use voxel_worker::{
 };
 use voxel_worker::CuboidMeshRenderer;
 
+/// Try the ADR 0007 GPU per-chunk fog atlas for a SINGLE ported producer: detect it,
+/// GPU-resolve its covering-chunk atlas (no CPU densify, no readback), and install it
+/// into the fog renderer. Returns `true` when the GPU path took over; `false` to keep
+/// the CPU densify (a multi-producer scene, or a dispatch too large for this device).
+#[cfg(feature = "gpu")]
+fn try_install_gpu_per_chunk_fog(
+    fog: &mut OnionFogRenderer,
+    gpu: &GpuContext,
+    scene: &Scene,
+    grid: &VoxelGrid,
+    voxels_per_block: u32,
+) -> bool {
+    let Some(producer) = scene.single_producer() else {
+        return false;
+    };
+    let resolver = voxel_worker::gpu_resolve::GpuResolver::new(&gpu.device);
+    let Some(atlas) = resolver.resolve_single_producer_fog_atlas(
+        &gpu.device,
+        &gpu.queue,
+        &producer,
+        grid.dimensions,
+        grid.recentre_voxels,
+        voxels_per_block,
+    ) else {
+        return false;
+    };
+    fog.install_per_chunk_atlas(
+        &gpu.queue,
+        &atlas.texture,
+        &atlas.world_origins,
+        voxel_worker::PerChunkAtlasGeometry {
+            chunk_extent: atlas.chunk_extent,
+            pad: atlas.pad,
+            tiles_per_axis: atlas.tiles_per_axis,
+            atlas_dim: atlas.atlas_dim,
+        },
+    );
+    // The COVERING set can exceed the CPU non-empty set, so it may overflow the atlas
+    // budget where the CPU path would still fit (e.g. a dense `DebugClouds`). If the
+    // install couldn't activate, fall back to the CPU path rather than regressing a
+    // renderable scene to no-fog. (Shrinking the covering set — drop-empty-tile
+    // compaction, ADR 0007 option C — is the deferred remedy if this bites at scale.)
+    fog.per_chunk_active()
+}
+
+/// Without the `gpu` feature there is no compute resolver, so the CPU fog path is the
+/// only one (the GPU view-resolve is a `--features gpu` accelerator — ADR 0006/0007).
+#[cfg(not(feature = "gpu"))]
+fn try_install_gpu_per_chunk_fog(
+    _fog: &mut OnionFogRenderer,
+    _gpu: &GpuContext,
+    _scene: &Scene,
+    _grid: &VoxelGrid,
+    _voxels_per_block: u32,
+) -> bool {
+    false
+}
+
 struct ShotOptions {
     output_path: PathBuf,
     width: u32,
@@ -1521,23 +1579,23 @@ async fn run_capture(options: ShotOptions) {
             onion_fog_renderer.upload_grid(&gpu.device, &gpu.queue, &grid);
         }
         FogMode::PerChunk => {
-            onion_fog_renderer.upload_grid_per_chunk(
-                &gpu.device,
-                &gpu.queue,
-                &grid,
-                options.geometry.voxels_per_block,
-            );
-            let occ = voxel_worker::build_per_chunk_fog_occupancy(
-                &grid,
-                options.geometry.voxels_per_block,
-            );
+            let vpb = options.geometry.voxels_per_block;
+            // ADR 0007 live call-site swap: a single ported producer GPU-resolves its
+            // per-chunk fog atlas (no CPU densify, no readback); multi-producer scenes —
+            // or a dispatch too large for this device — fall back to the CPU path.
+            let via_gpu =
+                try_install_gpu_per_chunk_fog(&mut onion_fog_renderer, &gpu, &panel_state.scene, &grid, vpb);
+            if !via_gpu {
+                #[allow(deprecated)] // CPU fog densify — the fallback until the live GPU path.
+                onion_fog_renderer.upload_grid_per_chunk(&gpu.device, &gpu.queue, &grid, vpb);
+            }
             println!(
-                "fog: per-chunk mode — {} resident chunk volume(s){}",
-                occ.volumes.len(),
+                "fog: per-chunk mode ({}) — {}",
+                if via_gpu { "GPU atlas" } else { "CPU densify" },
                 if onion_fog_renderer.per_chunk_active() {
-                    " (atlas active)"
+                    "atlas active"
                 } else {
-                    " (atlas EMPTY/too-large — fog disabled)"
+                    "atlas EMPTY/too-large — fog disabled"
                 }
             );
         }

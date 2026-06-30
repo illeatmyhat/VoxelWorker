@@ -444,6 +444,9 @@ impl WindowedState {
     /// renders at scale where the legacy whole-grid single 3D texture would exceed
     /// `max_texture_dimension_3d` and disable itself. Shared by the initial upload and
     /// every `rebuild_geometry` re-upload so both code paths honour the same mode.
+    // The live windowed app still uses the deprecated CPU fog densify (ADR 0007): the
+    // GPU atlas swap lands in `shot` first, then here. DELETE this allow with the path.
+    #[allow(deprecated)]
     fn upload_fog_occupancy(
         onion_fog_renderer: &mut OnionFogRenderer,
         fog_mode: FogMode,

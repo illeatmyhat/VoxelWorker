@@ -232,15 +232,84 @@ atlas, and the A/B net asserts the texture (read back) is **byte-identical** to 
 including the empty-tile zero-fill and the row-alignment padding. So the GPU can now produce the exact
 R8 atlas the per-chunk fog raymarch samples; what remains is the live call-site swap.
 
+## Live call-site swap — design resolved (owner sign-off 2026-06-29)
+
+The swap replaces the CPU `build_per_chunk_fog_occupancy` + atlas pack at the fog-upload site with the
+GPU atlas path. Decisions taken (grilled against ADR 0006/0008):
+
+1. **`shot.rs` first is wiring/parity, not a perf win — and we don't pretend otherwise.** `shot.rs`
+   already densifies the grid for the cuboid mesh + the diameter/layer readouts, so redirecting *only
+   the fog source* to the GPU removes **zero** densify there. Its job is to exercise the no-readback
+   texture-install path end-to-end under the goldens before it goes live. The CPU fog densify path
+   (`build_per_chunk_fog_occupancy` + `upload_grid_per_chunk`) is therefore marked **`#[deprecated]` /
+   delete-when-the-live-perf-refactor-lands** — not justified-and-kept. (The cuboid mesh's own grid
+   densify is a separate consumer; it stays until the P2 GPU mesh.)
+
+2. **Residency = COVERING chunks (`Scene::covering_chunk_range`), with interior-empty tiles' aprons
+   zeroed on the GPU — option (C′).** The covering box is enumerated from the producer AABB (no
+   occupancy knowledge → no densify). A covering chunk with no **interior** occupied voxel but a
+   non-zero **apron** would render a 1-voxel fog "sliver" the CPU non-empty-set path never drew
+   (the CPU includes a chunk iff it has ≥1 interior voxel). Rather than (A) accept the sliver or (B)
+   filter to the non-empty set on the CPU (which re-imports the densify), the GPU reproduces the CPU
+   residency render itself: a **phase-1 interior `atomicOr` reduction** into a per-chunk `chunk_flags`
+   buffer, then `main_atlas` **gates its apron writes on that flag** — an interior-empty tile stays
+   all-zero, which raymarches identically to "no tile." No readback, no compaction. This holds the
+   `onion-fog-perchunk` (sphere) + `debug-clouds` goldens **render-identical**, so they are the guard
+   AND auto-cover the GPU path. (C) drop-empty-tiles-with-compaction was rejected for P1: it only wins
+   on atlas size at multi-producer scale — noise next to the 592ms being killed — and needs a GPU
+   prefix-sum to stay readback-free; held in reserve if a real scene proves the atlas budget bites.
+
+3. **Meta built CPU-side from chunk coords, no densify.** `chunks[i] = [coord[i]·extent −
+   grid.recentre_voxels, i]` (ADR 0008 — carry the recentre, never re-derive); `tiles_per_axis =
+   cbrt(chunk_count)`. Tile order binds to `chunk_coords[]` order because `main_atlas` packs
+   `tile_index = chunk`. In `shot.rs` `recentre_voxels` is read off the already-resolved grid; a
+   resolve-free recentre source (`floor(dim/2)` for a Tool, `[0,0,0]` for a corner-anchored Part) is a
+   live-app concern, deferred.
+
+4. **Install without readback.** A new no-readback driver method returns the `AtlasResult.texture`
+   (skip `copy_texture_to_buffer`), and `OnionFogRenderer` gets an `install_per_chunk_atlas(texture,
+   meta)` that bypasses `build_per_chunk_fog_occupancy`/`upload_grid_per_chunk` entirely.
+
+5. **Scope = single ported producer.** A scene with exactly one resolvable leaf of `Tool{shape}` →
+   `&SdfShape`, `SketchTool{producer}` → `&SketchSolid`, or `Part(DebugClouds{seed})` →
+   `DebugCloudField{ dimensions: region, seed }`. Multi-producer composites stay on the CPU path (P1).
+
+7. **Selection is automatic, not a flag.** When built with `--features gpu` AND the scene is a single
+   ported producer (decision 5), the `PerChunk` fog sources from the GPU atlas; otherwise the CPU
+   path. So the existing `onion-fog-perchunk` + `debug-clouds` goldens exercise the GPU path directly
+   (parity coverage with no new goldens), safe because (C′) is render-identical. An escape hatch forces
+   the CPU path for debugging.
+
+6. **The incremental, `AppCore`-resident-set-driven atlas is the live perf target — its `shot.rs`
+   golden is shelved.** The actual per-edit win (resolve only dirty chunks into a persistent atlas,
+   driven by `AppCore`'s residency/dirty-set bookkeeping, §2) needs an edit loop `shot.rs` doesn't
+   have, so it is built + Tracy-measured live, not golden-tested headless. The per-chunk covering-box
+   swap above is the headless-testable slice; the incremental path layers on top in `main.rs`.
+
+### Landed (2026-06-29)
+
+The swap shipped in `shot.rs` behind all gates (clippy `-D warnings` ±gpu, 405 lib tests,
+4 `gpu_parity`, the pixel goldens). New surface: `gpu_resolve.wgsl` `main_flags` +
+binding-6 `chunk_flags` (C′); `GpuResolver::resolve_single_producer_fog_atlas` →
+`GpuFogAtlas` (no readback); `OnionFogRenderer::install_per_chunk_atlas` +
+`PerChunkAtlasGeometry`; `Scene::single_producer`. The CPU densify
+(`build_per_chunk_fog_occupancy` + `upload_grid_per_chunk`) is `#[deprecated]`. Goldens
+confirm `onion-fog-perchunk` + the sphere/cylinder/torus/sketch-revolve scenes render
+GPU-atlas pixel-identical; `demo-village` stays CPU (multi-producer).
+
+**One refinement found in implementation:** the covering set can exceed the CPU
+*non-empty* set, so it overflows the atlas budget where the CPU path still fits (the dense
+`debug-clouds` golden: covering tiles > `MAX_FOG_CHUNKS`). So the install **falls back to
+the CPU path when it cannot activate** (`fog.per_chunk_active()` gates the return), never
+regressing a renderable scene to no-fog. This makes ADR 0007 option **(C)** drop-empty-tile
+compaction the concrete remedy for the live path at cloud scale — not just a scale nicety,
+but what lets the GPU path *cover* the dense-cloud case at all. Promoted in priority for P2.
+
 ## Open (deferred to their phase)
 
-- **Live call-site swap** — replace the per-edit CPU `build_per_chunk_fog_occupancy` + atlas pack at
-  the `main.rs` / `shot.rs` fog-upload sites with the GPU atlas path. The remaining design question is
-  the **chunk-set / residency** source: the GPU path enumerates COVERING chunks (from the producer
-  AABB) rather than the CPU's occupied-bucketed non-empty set, so empty tiles appear (benign — no
-  occupancy, no fog) but the atlas is no longer byte-identical to the CPU one; the goldens (pixel
-  tolerance) are the guard there, and any **as-yet-unported** producer (e.g. `DebugClouds` until its
-  quick port lands — §7) falls through to the CPU path per chunk as a temporary scaffold. This is the
-  architecturally-invasive step (touches `AppCore` dirty-set plumbing).
+- **The live (`main.rs`) incremental wiring** — `AppCore` dirty-set → GPU re-resolve of dirty chunks
+  only → persistent atlas; the architecturally-invasive step. Verify whether `AppCore`'s resident set
+  is occupancy-aware (empty-interior boundary chunks already excluded) or visibility-only (then the
+  (C′) interior filter is still needed live).
 - **P2 mesh-vs-raymarch** for the GPU display surface (decided at P2, not now).
 - **The pinned tolerance value**, only if a future case/adapter proves exact parity unattainable.

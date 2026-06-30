@@ -17,6 +17,8 @@
 //!
 //! Run: `cargo test --features gpu --test gpu_parity`
 #![cfg(feature = "gpu")]
+// This IS the A/B net for the (deprecated) CPU fog densify — referencing it is the point.
+#![allow(deprecated)]
 
 use voxel_worker::gpu_resolve::GpuResolver;
 use voxel_worker::renderer::{build_per_chunk_fog_occupancy, PerChunkFogOccupancy};

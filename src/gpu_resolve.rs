@@ -21,6 +21,7 @@ use crate::debug_clouds::{
     DebugCloudField, CLOUD_EDGE_BILLOW, CLOUD_NOISE_GAIN, CLOUD_NOISE_LACUNARITY,
     CLOUD_NOISE_OCTAVES, CLOUD_NOISE_WAVELENGTH_FRACTION,
 };
+use crate::scene::SingleProducerKind;
 use crate::sketch::{Operation, RevolveAxis, SketchSolid};
 use crate::voxel::{SdfShape, ShapeKind};
 
@@ -114,6 +115,35 @@ fn shape_kind_discriminant(kind: ShapeKind) -> u32 {
 /// `COPY_BYTES_PER_ROW_ALIGNMENT`), so the packed atlas buffer pads its rows to it.
 const COPY_BYTES_PER_ROW_ALIGNMENT: u32 = 256;
 
+/// A COMPUTE-visible uniform-buffer bind-group-layout entry at `binding`.
+fn bind_group_layout_entry_uniform(binding: u32) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    }
+}
+
+/// A COMPUTE-visible storage-buffer bind-group-layout entry at `binding` (`read_only`
+/// selects read vs read-write).
+fn bind_group_layout_entry_storage(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutEntry {
+    wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::COMPUTE,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    }
+}
+
 /// Placeholder bindings 3/4/5 for producers that don't use a given input (the layout
 /// always binds all three, so no storage binding is ever zero-sized).
 const DUMMY_PROFILE: &[[i32; 2]] = &[[0, 0]];
@@ -157,6 +187,26 @@ pub struct AtlasResult {
     pub pad: u32,
 }
 
+/// A GPU-resolved per-chunk fog atlas ready to install into `OnionFogRenderer` with NO
+/// readback (ADR 0007 live call-site swap). Tiles are packed in covering-chunk
+/// enumeration order; `world_origins[i]` is tile `i`'s chunk-`[0,0,0]` voxel CORNER in
+/// recentred world space (`coord·extent − recentre_voxels`, ADR 0008). Together with the
+/// geometry these reproduce `PerChunkFogMeta` on the CPU without any densify.
+pub struct GpuFogAtlas {
+    /// The R8 occupancy atlas the per-chunk fog raymarch samples.
+    pub texture: wgpu::Texture,
+    /// One recentred-world CORNER per resident tile, in tile order.
+    pub world_origins: Vec<[f32; 3]>,
+    /// `CHUNK_BLOCKS * voxels_per_block` — one chunk's voxel extent per axis.
+    pub chunk_extent: u32,
+    /// `chunk_extent + 2` — the apron'd per-axis tile span.
+    pub pad: u32,
+    /// Resident tiles per atlas axis (`ceil(cbrt(chunk_count))`).
+    pub tiles_per_axis: u32,
+    /// `tiles_per_axis * pad` — the atlas cube dimension per axis.
+    pub atlas_dim: u32,
+}
+
 /// Holds the compute pipelines + bind-group layout so a test can resolve many cases
 /// against one device without rebuilding the pipelines each call.
 pub struct GpuResolver {
@@ -165,7 +215,12 @@ pub struct GpuResolver {
     /// The atlas entry: packed occupancy bytes in the `upload_grid_per_chunk` atlas
     /// layout, ready for `copy_buffer_to_texture`.
     atlas_pipeline: wgpu::ComputePipeline,
+    /// Phase-1 of the atlas path (ADR 0007 C′): per-chunk interior-occupancy flag.
+    flags_pipeline: wgpu::ComputePipeline,
+    /// Layout for the A/B `main` entry (bindings 0–5, no `chunk_flags`).
     bind_group_layout: wgpu::BindGroupLayout,
+    /// Layout for the atlas + flags entries (bindings 0–6, incl. `chunk_flags`).
+    atlas_bind_group_layout: wgpu::BindGroupLayout,
 }
 
 impl GpuResolver {
@@ -249,9 +304,32 @@ impl GpuResolver {
                 ],
             });
 
+        // The atlas + flags entries add binding 6 (`chunk_flags`, read-write storage) on
+        // top of the A/B layout; the `main` entry never touches it, so it keeps the
+        // smaller 0–5 layout.
+        let atlas_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("gpu_resolve atlas bgl"),
+                entries: &[
+                    bind_group_layout_entry_uniform(0),
+                    bind_group_layout_entry_storage(1, true),
+                    bind_group_layout_entry_storage(2, false),
+                    bind_group_layout_entry_storage(3, true),
+                    bind_group_layout_entry_storage(4, true),
+                    bind_group_layout_entry_storage(5, true),
+                    // 6: per-chunk interior-occupancy flags (read-write storage)
+                    bind_group_layout_entry_storage(6, false),
+                ],
+            });
+
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("gpu_resolve pll"),
             bind_group_layouts: &[Some(&bind_group_layout)],
+            immediate_size: 0,
+        });
+        let atlas_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("gpu_resolve atlas pll"),
+            bind_group_layouts: &[Some(&atlas_bind_group_layout)],
             immediate_size: 0,
         });
 
@@ -265,9 +343,17 @@ impl GpuResolver {
         });
         let atlas_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("gpu_resolve atlas pipeline"),
-            layout: Some(&pipeline_layout),
+            layout: Some(&atlas_pipeline_layout),
             module: &shader,
             entry_point: Some("main_atlas"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        });
+        let flags_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("gpu_resolve flags pipeline"),
+            layout: Some(&atlas_pipeline_layout),
+            module: &shader,
+            entry_point: Some("main_flags"),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             cache: None,
         });
@@ -275,7 +361,9 @@ impl GpuResolver {
         Self {
             pipeline,
             atlas_pipeline,
+            flags_pipeline,
             bind_group_layout,
+            atlas_bind_group_layout,
         }
     }
 
@@ -373,6 +461,109 @@ impl GpuResolver {
         let (descriptor, puffs, perm) =
             Self::cloud_descriptor(field, voxels_per_block, chunk_coords.len() as u32);
         self.dispatch_atlas(device, queue, descriptor, chunk_coords, ProducerInputs::clouds(&puffs, &perm))
+    }
+
+    /// GPU-resolve the per-chunk fog atlas for a SINGLE ported producer over its COVERING
+    /// chunk set, with NO readback — the live call-site swap (ADR 0007). The producer
+    /// resolves into grid indices `[0, grid)`, so the covering chunks are simply the box
+    /// `[0, ceil(grid/extent))` per axis (identical for SDF / sketch / cloud); the
+    /// interior-empty tiles among them are zeroed on the GPU (C′) so the atlas renders
+    /// identically to the CPU non-empty set. `recentre_voxels` (read off the resolved
+    /// grid, ADR 0008) shifts only `world_origin`. Returns `None` ONLY when the dispatch
+    /// would exceed the device's single-dimension workgroup limit — the caller then keeps
+    /// the CPU fog path (graceful, never a panic).
+    pub fn resolve_single_producer_fog_atlas(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        producer: &SingleProducerKind,
+        grid_dimensions: [u32; 3],
+        recentre_voxels: [i64; 3],
+        voxels_per_block: u32,
+    ) -> Option<GpuFogAtlas> {
+        let vpb = voxels_per_block.max(1);
+
+        // Build the producer descriptor + its input buffers (reusing the spike builders).
+        // `num_chunks` is a placeholder until the covering set is enumerated, below; the
+        // unused producer-input vecs stay empty (their bindings get the dummies).
+        let mut profile_vec: Vec<[i32; 2]> = Vec::new();
+        let mut puffs_vec: Vec<[f32; 4]> = Vec::new();
+        let mut perm_vec: Vec<u32> = Vec::new();
+        let mut descriptor = match producer {
+            SingleProducerKind::Sdf(shape) => Self::sdf_descriptor(shape, vpb, 0),
+            SingleProducerKind::Sketch(solid) => {
+                let (descriptor, profile) = Self::sketch_descriptor(solid, vpb, 0);
+                profile_vec = profile;
+                descriptor
+            }
+            SingleProducerKind::Clouds { seed } => {
+                let field = DebugCloudField { dimensions: grid_dimensions, seed: *seed };
+                let (descriptor, puffs, perm) = Self::cloud_descriptor(&field, vpb, 0);
+                puffs_vec = puffs;
+                perm_vec = perm;
+                descriptor
+            }
+        };
+
+        // Covering chunk set in grid-index space (the shader bounds-checks against
+        // `descriptor.grid`, so enumerate from it). `chunk_extent` is CHUNK_BLOCKS * vpb.
+        let chunk_extent = descriptor.chunk_extent as i64;
+        let grid = descriptor.grid;
+        if grid[0] <= 0 || grid[1] <= 0 || grid[2] <= 0 || chunk_extent <= 0 {
+            return None;
+        }
+        let chunks_per_axis = [
+            ((grid[0] as i64 - 1) / chunk_extent + 1) as i32,
+            ((grid[1] as i64 - 1) / chunk_extent + 1) as i32,
+            ((grid[2] as i64 - 1) / chunk_extent + 1) as i32,
+        ];
+        let mut coords: Vec<[i32; 3]> = Vec::new();
+        for cz in 0..chunks_per_axis[2] {
+            for cy in 0..chunks_per_axis[1] {
+                for cx in 0..chunks_per_axis[0] {
+                    coords.push([cx, cy, cz]);
+                }
+            }
+        }
+        if coords.is_empty() {
+            return None;
+        }
+        descriptor.num_chunks = coords.len() as u32;
+
+        // Single-dimension workgroup-fit check: degrade to the CPU path instead of the
+        // A/B backstop panic in `atlas_pipeline_run`.
+        let pad = descriptor.pad as usize;
+        let workgroups = (pad * pad * pad * coords.len()).div_ceil(64);
+        if workgroups > device.limits().max_compute_workgroups_per_dimension as usize {
+            return None;
+        }
+
+        let inputs = match producer {
+            SingleProducerKind::Sdf(_) => ProducerInputs::sdf(),
+            SingleProducerKind::Sketch(_) => ProducerInputs::sketch(&profile_vec),
+            SingleProducerKind::Clouds { .. } => ProducerInputs::clouds(&puffs_vec, &perm_vec),
+        };
+        let (texture, geom) = self.atlas_pipeline_run(device, queue, descriptor, &coords, inputs);
+
+        let world_origins = coords
+            .iter()
+            .map(|&[cx, cy, cz]| {
+                [
+                    (cx as i64 * chunk_extent - recentre_voxels[0]) as f32,
+                    (cy as i64 * chunk_extent - recentre_voxels[1]) as f32,
+                    (cz as i64 * chunk_extent - recentre_voxels[2]) as f32,
+                ]
+            })
+            .collect();
+
+        Some(GpuFogAtlas {
+            texture,
+            world_origins,
+            chunk_extent: chunk_extent as u32,
+            pad: geom.pad,
+            tiles_per_axis: geom.tiles_per_axis,
+            atlas_dim: geom.atlas_dim,
+        })
     }
 
     /// Build the SDF producer descriptor (atlas fields left zero).
@@ -649,18 +840,20 @@ impl GpuResolver {
         occupancy
     }
 
-    /// Pack the GPU-evaluated occupancy into the `upload_grid_per_chunk` atlas layout as
-    /// packed bytes, `copy_buffer_to_texture` it into an R8 atlas, then read the texture
-    /// back (row-unpadded) for the A/B assertion. This exercises the production
-    /// texture-write mechanic (packed-byte buffer → 256-padded rows → R8 atlas).
-    fn dispatch_atlas(
+    /// Run the atlas path to an R8 texture and return it WITHOUT any readback (the live
+    /// install path, ADR 0007). Phase 1 (`main_flags`) populates the per-chunk interior
+    /// flags; phase 2 (`main_atlas`) packs occupancy bytes — gated on those flags (C′) —
+    /// and `copy_buffer_to_texture` lands them in the R8 atlas. The returned texture is
+    /// `TEXTURE_BINDING`-usable directly; `COPY_SRC` is set so the A/B path can read it
+    /// back. Geometry mirrors `upload_grid_per_chunk`.
+    fn atlas_pipeline_run(
         &self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         mut descriptor: Descriptor,
         chunk_coords: &[[i32; 3]],
         inputs: ProducerInputs,
-    ) -> AtlasResult {
+    ) -> (wgpu::Texture, AtlasGeom) {
         let pad = descriptor.pad;
         let cells_per_chunk = (pad * pad * pad) as usize;
         let num_chunks = chunk_coords.len();
@@ -672,21 +865,17 @@ impl GpuResolver {
         descriptor.tiles_per_axis = tiles_per_axis;
         descriptor.atlas_dim = atlas_dim;
         descriptor.padded_row = padded_row;
+        let geom = AtlasGeom { atlas_dim, tiles_per_axis, pad, padded_row };
 
         if num_chunks == 0 {
-            return AtlasResult {
-                texture: create_empty_atlas(device),
-                atlas: vec![0u8; (atlas_dim as usize).pow(3)],
-                atlas_dim,
-                tiles_per_axis,
-                pad,
-            };
+            return (create_empty_atlas(device), geom);
         }
         let workgroups = (cells_per_chunk * num_chunks).div_ceil(64);
         let max_dim = device.limits().max_compute_workgroups_per_dimension as usize;
         assert!(
             workgroups <= max_dim,
-            "gpu_resolve atlas: {workgroups} workgroups exceeds the {max_dim} single-dimension limit"
+            "gpu_resolve atlas: {workgroups} workgroups exceeds the {max_dim} single-dimension limit \
+             (the live path checks `atlas_dispatch_fits` first; this is the A/B-test backstop)"
         );
 
         // The packed-byte buffer (256-padded rows), as `atomic<u32>` words in the shader.
@@ -727,6 +916,14 @@ impl GpuResolver {
                 | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        // One interior-occupancy flag word per chunk (ADR 0007 C′); cleared, then OR'd
+        // by `main_flags`, then read by `main_atlas`.
+        let flags_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("gpu_resolve chunk flags"),
+            size: (num_chunks * std::mem::size_of::<u32>()) as wgpu::BufferAddress,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
 
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("gpu_resolve atlas texture"),
@@ -744,16 +941,10 @@ impl GpuResolver {
                 | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
-        let readback = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("gpu_resolve atlas readback"),
-            size: padded_bytes as wgpu::BufferAddress,
-            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
 
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("gpu_resolve atlas bg"),
-            layout: &self.bind_group_layout,
+            layout: &self.atlas_bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: descriptor_buffer.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 1, resource: coords_buffer.as_entire_binding() },
@@ -761,13 +952,27 @@ impl GpuResolver {
                 wgpu::BindGroupEntry { binding: 3, resource: profile_buffer.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 4, resource: cloud_puffs_buffer.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 5, resource: cloud_perm_buffer.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 6, resource: flags_buffer.as_entire_binding() },
             ],
         });
 
         let mut encoder =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        // The shader ORs occupancy bytes into a zero buffer, so clear it first.
+        // Both passes OR into zero buffers, so clear them first.
+        encoder.clear_buffer(&flags_buffer, 0, None);
         encoder.clear_buffer(&packed_buffer, 0, None);
+        // Phase 1: interior-occupancy flags (separate pass → its writes are visible to
+        // phase 2 via wgpu's automatic inter-pass storage barrier).
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("gpu_resolve flags pass"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.flags_pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(workgroups as u32, 1, 1);
+        }
+        // Phase 2: pack occupancy bytes, gated on the flags.
         {
             let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("gpu_resolve atlas pass"),
@@ -797,6 +1002,56 @@ impl GpuResolver {
             },
             extent,
         );
+        queue.submit(Some(encoder.finish()));
+
+        (texture, geom)
+    }
+
+    /// As [`atlas_pipeline_run`](Self::atlas_pipeline_run) but reads the R8 texture back
+    /// (row-unpadded) for the A/B assertion — the production texture-write mechanic under
+    /// the equivalence net (ADR 0007 §5).
+    fn dispatch_atlas(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        descriptor: Descriptor,
+        chunk_coords: &[[i32; 3]],
+        inputs: ProducerInputs,
+    ) -> AtlasResult {
+        let num_chunks = chunk_coords.len();
+        let (texture, geom) =
+            self.atlas_pipeline_run(device, queue, descriptor, chunk_coords, inputs);
+        let AtlasGeom { atlas_dim, tiles_per_axis, pad, padded_row } = geom;
+
+        if num_chunks == 0 {
+            return AtlasResult {
+                texture,
+                atlas: vec![0u8; (atlas_dim as usize).pow(3)],
+                atlas_dim,
+                tiles_per_axis,
+                pad,
+            };
+        }
+
+        let padded_bytes = padded_row as usize * atlas_dim as usize * atlas_dim as usize;
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("gpu_resolve atlas readback"),
+            size: padded_bytes as wgpu::BufferAddress,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let copy_layout = wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(padded_row),
+            rows_per_image: Some(atlas_dim),
+        };
+        let extent = wgpu::Extent3d {
+            width: atlas_dim,
+            height: atlas_dim,
+            depth_or_array_layers: atlas_dim,
+        };
+        let mut encoder =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {
                 texture: &texture,
@@ -846,6 +1101,14 @@ impl GpuResolver {
             pad,
         }
     }
+}
+
+/// Tile geometry of a packed atlas (mirrors `upload_grid_per_chunk`).
+struct AtlasGeom {
+    atlas_dim: u32,
+    tiles_per_axis: u32,
+    pad: u32,
+    padded_row: u32,
 }
 
 /// A 1×1×1 R8 atlas for the degenerate (zero-chunk) atlas result.

@@ -79,6 +79,11 @@ struct Descriptor {
 // DebugClouds Perlin permutation table (512 seed-shuffled entries, 0..255). One dummy
 // element for non-cloud producers.
 @group(0) @binding(5) var<storage, read> cloud_perm: array<u32>;
+// Per-chunk "has ≥1 INTERIOR occupied voxel" flag (ADR 0007 residency option C′). Used
+// by the atlas path ONLY: `main_flags` sets it, `main_atlas` reads it to suppress an
+// interior-empty chunk's apron writes so a COVERING tile renders identically to "no tile"
+// (the CPU non-empty-set residency). Bound only on the atlas/flags bind group layout.
+@group(0) @binding(6) var<storage, read_write> chunk_flags: array<atomic<u32>>;
 
 // --- SDF primitives (mirror src/voxel.rs `signed_distance_*`, glam f32) ---
 
@@ -411,6 +416,46 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     atomicStore(&occupancy[linear], occupied);
 }
 
+// Phase 1 of the atlas path (ADR 0007 C′): per chunk, OR a 1 into `chunk_flags[chunk]`
+// iff this cell is an INTERIOR voxel (apron index ∈ [1, chunk_extent], i.e. local ∈
+// [0, chunk_extent)) AND occupied. `main_atlas` then gates its writes on this flag so a
+// covering chunk with no interior occupancy (only an apron grazing the surface) stays an
+// all-zero tile — reproducing the CPU non-empty-set render without any densify/readback.
+@compute @workgroup_size(64)
+fn main_flags(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let linear = global_id.x;
+    let pad = desc.pad;
+    let cells_per_chunk = pad * pad * pad;
+    let total = desc.num_chunks * cells_per_chunk;
+    if (linear >= total) {
+        return;
+    }
+
+    let chunk = linear / cells_per_chunk;
+    var rem = linear % cells_per_chunk;
+    let ak = rem / (pad * pad);
+    rem = rem % (pad * pad);
+    let aj = rem / pad;
+    let ai = rem % pad;
+
+    // Interior iff every apron index is in [1, chunk_extent] (local voxel ∈ [0, extent)).
+    let ext = u32(desc.chunk_extent);
+    let interior = ai >= 1u && ai <= ext && aj >= 1u && aj <= ext && ak >= 1u && ak <= ext;
+    if (!interior) {
+        return;
+    }
+
+    let coord = chunk_coords[chunk].xyz;
+    let chunk_min = coord * desc.chunk_extent;
+    let g = chunk_min + vec3<i32>(i32(ai), i32(aj), i32(ak)) - vec3<i32>(1, 1, 1);
+    let voxel_index = g - desc.local_offset.xyz;
+    if (all(voxel_index >= vec3<i32>(0, 0, 0)) && all(voxel_index < desc.grid.xyz)) {
+        if (evaluate(voxel_index) != 0u) {
+            atomicOr(&chunk_flags[chunk], 1u);
+        }
+    }
+}
+
 // Pack the same per-chunk apron occupancy into the OnionFogRenderer atlas byte layout
 // (mirrors `upload_grid_per_chunk`'s tile placement), as PACKED BYTES in a 256-padded-row
 // buffer ready for `copy_buffer_to_texture` into the R8 atlas. One invocation per apron
@@ -443,6 +488,13 @@ fn main_atlas(@builtin(global_invocation_id) global_id: vec3<u32>) {
     }
     if (occupied == 0u) {
         return; // byte stays 0; nothing to OR
+    }
+    // ADR 0007 C′: suppress an interior-empty covering chunk's apron writes (its tile
+    // stays all-zero → renders as "no tile", matching the CPU non-empty-set residency).
+    // `main_flags` populated `chunk_flags` in a prior pass; an interior occupied cell
+    // always set its own chunk's flag, so it is never wrongly suppressed here.
+    if (atomicLoad(&chunk_flags[chunk]) == 0u) {
+        return;
     }
 
     // Tile slot of this chunk in the cubic atlas (linear tile index → 3D tile coord),
