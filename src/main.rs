@@ -187,6 +187,18 @@ fn face_for_axis_sign(axis: usize, positive: bool) -> CubeFace {
     }
 }
 
+/// The per-`block_id` `.vox` palette over the three procedural materials (ADR 0003
+/// §3a): slot `material_id` carries that material's average colour, so a multi-material
+/// scene exports each block in its own colour.
+fn vox_export_procedural_palette() -> voxel_worker::vox_export::BlockPaletteColors {
+    use voxel_worker::core_geom::MaterialChoice;
+    let mut palette = [[0u8; 4]; MaterialChoice::MATERIAL_COUNT];
+    for (slot, color) in palette.iter_mut().enumerate() {
+        *color = procedural_material_average_color(MaterialChoice::from_material_id(slot as u16));
+    }
+    palette
+}
+
 /// Default `.vox` filename from the shape + voxel dims (e.g. `cylinder_80x16x80.vox`).
 fn default_vox_filename(shape: &SdfShape, voxels_per_block: u32) -> String {
     let [grid_x, grid_y, grid_z] = shape.grid_dimensions(voxels_per_block);
@@ -786,6 +798,12 @@ impl WindowedState {
             Some(loaded) => loaded.average_color,
             None => procedural_material_average_color(self.panel_state.material),
         };
+        // ADR 0003 §3a: map each categorical `block_id` to its colour. The palette is
+        // the three procedural materials' colours; the ACTIVE material's slot takes the
+        // representative (a loaded VS block's average, when applied), so a single-active-
+        // material scene exports byte-identically to the old single-colour `.vox`.
+        let mut palette_colors = vox_export_procedural_palette();
+        palette_colors[self.panel_state.material.material_id() as usize] = representative;
 
         let default_name = default_vox_filename(&shape, density);
         let Some(path) = rfd::FileDialog::new()
@@ -808,7 +826,7 @@ impl WindowedState {
             0,
         );
         let export =
-            voxel_worker::VoxExport::from_region_voxels(region_dimensions, occupied, representative);
+            voxel_worker::VoxExport::from_region_voxels(region_dimensions, occupied, palette_colors);
         match export.write(&path) {
             Ok(bytes) => println!(
                 "wrote {} ({} voxels, {} model(s), {} bytes)",

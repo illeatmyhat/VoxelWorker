@@ -23,14 +23,24 @@
 //! Typical grids (e.g. 80×16×80) are a single model. The split is documented in
 //! [`VoxExport::model_count`].
 //!
-//! ## Colour
+//! ## Colour (ADR 0003 §3a — block-palette mapping)
 //!
-//! A minimal palette: the model's representative colour (the average colour of
-//! the active material) is written to palette index 1 and every voxel references
-//! it. `material_id` is currently always 0, so a single representative entry is
-//! sufficient for v1.
+//! Each voxel's categorical `block_id` (ADR 0003 §3a) maps through the active block
+//! palette to a `.vox` palette slot: file palette index `block_id + 1` carries that
+//! block's colour, and every voxel references its own block's slot. The palette is
+//! built over the existing three procedural materials (the categorical CAPABILITY; the
+//! rich VS palette content stays deferred), so a single-material scene (every voxel
+//! `block_id 0`) still references ONE slot and is byte-identical to the old single-
+//! representative-colour export. A multi-material scene now exports each block in its
+//! own palette colour rather than collapsing to one.
 
 use crate::voxel::VoxelGrid;
+
+/// The per-`block_id` RGBA palette the `.vox` export writes (ADR 0003 §3a). Index `i`
+/// is the colour for `block_id == i`; it is written to `.vox` file palette slot `i + 1`
+/// (MagicaVoxel palette is 1-based, 0 = empty). Sized to the procedural material set —
+/// the categorical capability over the existing three materials.
+pub type BlockPaletteColors = [[u8; 4]; crate::core_geom::MaterialChoice::MATERIAL_COUNT];
 
 /// MagicaVoxel per-axis maximum (coordinates are stored as `u8`, 0..=255).
 pub const VOX_AXIS_MAX: u32 = 256;
@@ -59,8 +69,9 @@ struct VoxModel {
 /// [`VoxExport::to_bytes`] or [`VoxExport::write`].
 pub struct VoxExport {
     models: Vec<VoxModel>,
-    /// RGBA palette entry written at file index 1 (the representative colour).
-    representative_rgba: [u8; 4],
+    /// Per-`block_id` RGBA palette (ADR 0003 §3a): slot `block_id` written to `.vox`
+    /// file palette index `block_id + 1`, which each voxel of that block references.
+    palette_colors: BlockPaletteColors,
     /// Total occupied voxels written across all models (== grid.occupied.len()).
     voxel_count: usize,
 }
@@ -69,9 +80,10 @@ impl VoxExport {
     /// Build the export from a resolved grid (Z-up, no axis swap) and tiling into
     /// ≤256 models if any dimension exceeds [`VOX_AXIS_MAX`].
     ///
-    /// `representative_rgba` is the single palette colour every voxel references
-    /// (e.g. the average colour of the active material texture).
-    pub fn from_grid(grid: &VoxelGrid, representative_rgba: [u8; 4]) -> Self {
+    /// `palette_colors` maps each `block_id` to its RGBA palette colour (ADR 0003 §3a;
+    /// build it with [`block_palette_from_active`] or pass the procedural material
+    /// colours). Each voxel references `block_id + 1` in the `.vox` palette.
+    pub fn from_grid(grid: &VoxelGrid, palette_colors: BlockPaletteColors) -> Self {
         // One bucketing path: the whole-grid case is the region case with a single
         // grid covering the whole region (issue #20 S6d). Keeping ONE code path
         // guarantees the region-scoped export can never drift from the whole-grid
@@ -79,8 +91,22 @@ impl VoxExport {
         Self::from_region_voxels(
             grid.dimensions,
             std::iter::once(&grid.occupied[..]),
-            representative_rgba,
+            palette_colors,
         )
+    }
+
+    /// Build a [`BlockPaletteColors`] in which the ACTIVE material's slot carries
+    /// `representative_rgba` and the other procedural materials carry a neutral grey.
+    /// This is the categorical seam the single-material `.vox` export used to inline as
+    /// one representative colour (ADR 0003 §3a): a single-material scene (every voxel
+    /// `block_id == active`) still references one slot, so its file bytes are unchanged.
+    pub fn block_palette_from_active(
+        active: crate::core_geom::MaterialChoice,
+        representative_rgba: [u8; 4],
+    ) -> BlockPaletteColors {
+        let mut palette = [[0x80, 0x80, 0x80, 0xff]; crate::core_geom::MaterialChoice::MATERIAL_COUNT];
+        palette[active.material_id() as usize] = representative_rgba;
+        palette
     }
 
     /// **Region-scoped `.vox` export (issue #20 S6d).** Build the SAME export
@@ -111,7 +137,7 @@ impl VoxExport {
     pub fn from_region_voxels<'voxels>(
         region_dimensions: [u32; 3],
         chunk_voxels: impl IntoIterator<Item = &'voxels [crate::voxel::Voxel]>,
-        representative_rgba: [u8; 4],
+        palette_colors: BlockPaletteColors,
     ) -> Self {
         let [grid_x, grid_y, grid_z] = region_dimensions;
         // Corner-anchoring decode: FLOORED half (`dim/2` integer division), so
@@ -156,9 +182,10 @@ impl VoxExport {
         for voxel in chunk_voxels.into_iter().flatten() {
             // Recover non-negative integer grid indices from the world-centred
             // voxel-centre position: `i = round(world_x + dim_x/2 - 0.5)`.
-            let i = (voxel.world_position[0] + half_x - 0.5).round();
-            let j = (voxel.world_position[1] + half_y - 0.5).round();
-            let k = (voxel.world_position[2] + half_z - 0.5).round();
+            let position = voxel.world_position();
+            let i = (position[0] + half_x - 0.5).round();
+            let j = (position[1] + half_y - 0.5).round();
+            let k = (position[2] + half_z - 0.5).round();
             if i < 0.0 || j < 0.0 || k < 0.0 {
                 continue;
             }
@@ -179,12 +206,20 @@ impl VoxExport {
             let Some(&model_pos) = model_index.get(&(tx, ty, tz)) else {
                 continue;
             };
-            // Z-up: vox (x, y, z) = (our i, our j, our k) — no swap.
+            // Z-up: vox (x, y, z) = (our i, our j, our k) — no swap. The categorical
+            // block id selects the `.vox` palette slot (`block_id + 1`; ADR 0003 §3a),
+            // so a multi-material model exports each block in its own colour. Clamp to
+            // the procedural palette so a stray id stays in range.
+            let palette_slot = voxel
+                .color_index()
+                .min(crate::core_geom::MaterialChoice::MATERIAL_COUNT as u16 - 1)
+                as u8
+                + 1;
             models[model_pos].voxels.push(VoxVoxel {
                 x: local_i as u8,
                 y: local_j as u8,
                 z: local_k as u8,
-                color_index: 1,
+                color_index: palette_slot,
             });
             voxel_count += 1;
         }
@@ -206,7 +241,7 @@ impl VoxExport {
 
         Self {
             models,
-            representative_rgba,
+            palette_colors,
             voxel_count,
         }
     }
@@ -257,13 +292,15 @@ impl VoxExport {
             write_chunk(&mut children, b"XYZI", &xyzi, &[]);
         }
 
-        // RGBA palette chunk: 256 entries. MagicaVoxel reads palette[i] for file
-        // index i+1, so our representative colour at file index 1 is the first
-        // array entry. The rest are a neutral grey so the file stays valid.
+        // RGBA palette chunk: 256 entries. MagicaVoxel reads palette[i] for file index
+        // i+1, so a voxel of `block_id` (which references file index `block_id + 1`)
+        // reads array entry `block_id` (ADR 0003 §3a — the categorical block-palette
+        // mapping). The procedural block colours fill the leading slots; the rest are a
+        // neutral grey so the file stays valid.
         let mut rgba = Vec::with_capacity(256 * 4);
         for entry in 0..256 {
-            if entry == 0 {
-                rgba.extend_from_slice(&self.representative_rgba);
+            if entry < self.palette_colors.len() {
+                rgba.extend_from_slice(&self.palette_colors[entry]);
             } else {
                 rgba.extend_from_slice(&[0x80, 0x80, 0x80, 0xff]);
             }
@@ -306,6 +343,7 @@ fn write_chunk(out: &mut Vec<u8>, id: &[u8; 4], content: &[u8], children: &[u8])
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core_geom::MaterialChoice;
     use crate::voxel::{SdfShape, ShapeKind};
 
     /// Resolve a small cylinder and round-trip it through `.vox`, asserting the
@@ -330,7 +368,7 @@ mod tests {
         let grid = scene.resolve_region(scene.full_extent_blocks(16), 16, 0);
         assert!(grid.occupied_count() > 0, "expected a non-empty grid");
 
-        let export = VoxExport::from_grid(&grid, [132, 126, 118, 255]);
+        let export = VoxExport::from_grid(&grid, VoxExport::block_palette_from_active(MaterialChoice::Stone, [132, 126, 118, 255]));
         assert_eq!(export.model_count(), 1, "small grid is a single model");
         assert_eq!(export.voxel_count(), grid.occupied_count());
 
@@ -372,7 +410,7 @@ mod tests {
         );
         let grid = scene.resolve_region(scene.full_extent_blocks(16), 16, 0);
         let [gx, gy, gz] = grid.dimensions; // 32 × 32 × 80
-        let export = VoxExport::from_grid(&grid, [132, 126, 118, 255]);
+        let export = VoxExport::from_grid(&grid, VoxExport::block_palette_from_active(MaterialChoice::Stone, [132, 126, 118, 255]));
         let bytes = export.to_bytes();
         let parsed = dot_vox::load_bytes(&bytes).expect("dot_vox should parse our file");
         let model = &parsed.models[0];
@@ -403,7 +441,7 @@ mod tests {
         );
         let grid = scene.resolve_region(scene.full_extent_blocks(16), 16, 0);
 
-        let export = VoxExport::from_grid(&grid, [200, 200, 200, 255]);
+        let export = VoxExport::from_grid(&grid, VoxExport::block_palette_from_active(MaterialChoice::Stone, [200, 200, 200, 255]));
         assert!(export.model_count() >= 2, "272-wide grid should split");
         // No voxels lost across the split.
         assert_eq!(export.voxel_count(), grid.occupied_count());
@@ -420,7 +458,6 @@ mod tests {
     // ===== Issue #20 S6d: region-scoped `.vox` export ============================
 
     use crate::chunk_cache::ChunkResolveCache;
-    use crate::core_geom::MaterialChoice;
     use crate::scene::{Node, NodeContent, Scene};
     use crate::voxel::GeometryParams;
 
@@ -448,7 +485,7 @@ mod tests {
     }
 
     fn assert_region_vox_export_equals_whole_grid(scene: &Scene, vpb: u32, label: &str) {
-        let rgba = [132, 126, 118, 255];
+        let rgba = VoxExport::block_palette_from_active(MaterialChoice::Stone, [132, 126, 118, 255]);
 
         // Whole-grid export: assemble the monolithic region grid, export via the
         // existing `from_grid` path.
@@ -583,7 +620,7 @@ mod tests {
         // ~4e6 voxels from origin. Region grid stays under 2^24 voxels wide so the full
         // voxel set survives (the per-chunk ground truth is matched exactly).
         let scene = far_offset_two_box_scene(vpb, 500_000);
-        let rgba = [132, 126, 118, 255];
+        let rgba = VoxExport::block_palette_from_active(MaterialChoice::Stone, [132, 126, 118, 255]);
 
         // Ground-truth voxel count (frame-independent): the per-chunk assembly rebases
         // each chunk in i64, so its occupied count is the TRUE distinct-voxel count.
@@ -627,7 +664,7 @@ mod tests {
     fn far_offset_region_export_round_trips_full_voxel_set() {
         let vpb = 16u32;
         let scene = far_offset_two_box_scene(vpb, 500_000);
-        let rgba = [132, 126, 118, 255];
+        let rgba = VoxExport::block_palette_from_active(MaterialChoice::Stone, [132, 126, 118, 255]);
 
         let mut cache = ChunkResolveCache::new();
         let (dims, occupied) = cache.bound_region_occupied(&scene, vpb, 0);

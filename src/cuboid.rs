@@ -230,9 +230,9 @@ pub fn region_from_voxel_grid(
     // half-integers). (Was `round(world + dim/2 − 0.5)` for the retired origin-centred
     // grid, which broke for odd dim.)
     for voxel in &grid.occupied {
-        let i = voxel.world_position[0].floor() as i64;
-        let j = voxel.world_position[1].floor() as i64;
-        let k = voxel.world_position[2].floor() as i64;
+        let i = voxel.local_index[0] as i64;
+        let j = voxel.local_index[1] as i64;
+        let k = voxel.local_index[2] as i64;
         if i < 0 || j < 0 || k < 0 {
             continue;
         }
@@ -249,7 +249,7 @@ pub fn region_from_voxel_grid(
         {
             continue;
         }
-        region.set(lx as u32, ly as u32, lz as u32, Some(voxel.material_id));
+        region.set(lx as u32, ly as u32, lz as u32, Some(crate::cuboid_mesh::mesh_cell_key(voxel)));
     }
     region
 }
@@ -540,13 +540,11 @@ mod tests {
             for j in 0..2u32 {
                 for i in 0..2u32 {
                     grid.occupied.push(Voxel {
-                        world_position: [
-                            i as f32 + 0.5,
-                            j as f32 + 0.5,
-                            k as f32 + 0.5,
-                        ],
+                        local_index: [i as i32, j as i32, k as i32],
                         block_local_coord: [i as u8, j as u8, k as u8],
-                        material_id: 5,
+                        block_id: crate::core_geom::BlockId(5),
+                        attrs: crate::core_geom::BlockAttrs::DEFAULT,
+                        grid_overlay: false,
                     });
                 }
             }
@@ -645,34 +643,44 @@ mod tests {
 
     #[test]
     fn grid_overlay_bit_blocks_box_merge() {
-        // Issue #29 S4: the on-face-grid flag bit is folded into `material_id` BEFORE
-        // decomposition, so two otherwise-identical-material voxels that differ only
-        // in the flag bit are DIFFERENT materials to the greedy mesher and must NOT
-        // merge — the flagged voxels carry the grid onto their own faces, the
-        // unflagged ones don't.
-        use crate::voxel::GRID_OVERLAY_BIT;
+        // ADR 0003 §3c: the on-face-grid flag is NO LONGER in the per-voxel `block_id`
+        // (the `GRID_OVERLAY_BIT` leak is gone). The CUBOID MESHER composes a transient
+        // region-cell key (`block_id | overlay<<15`, via `cuboid_mesh::mesh_cell_key`)
+        // from each voxel's clean `block_id` + its `grid_overlay` marker, so this opaque
+        // u16 (which `decompose_into_boxes` treats representation-agnostically) splits a
+        // box across differing overlay flags exactly as before — without a render flag
+        // ever entering the categorical id. Build the region keys via `mesh_cell_key`.
+        let make_voxel = |block: u16, overlay: bool| crate::voxel::Voxel {
+            local_index: [0, 0, 0],
+            block_local_coord: [0, 0, 0],
+            block_id: crate::core_geom::BlockId(block),
+            attrs: crate::core_geom::BlockAttrs::DEFAULT,
+            grid_overlay: overlay,
+        };
         let base = 1u16; // Wood
-        let flagged = base | GRID_OVERLAY_BIT;
-        // A 4×1×1 row: x<2 flagged, x>=2 plain — same base material, differing bit.
+        let flagged = crate::cuboid_mesh::mesh_cell_key(&make_voxel(base, true));
+        let plain = crate::cuboid_mesh::mesh_cell_key(&make_voxel(base, false));
+        assert_ne!(flagged, plain, "the overlay marker must change the mesher's cell key");
+        // A 4×1×1 row: x<2 flagged, x>=2 plain — same base block, differing overlay.
         let extent = [4, 1, 1];
         let region = region_from_fn(extent, |x, _y, _z| {
-            Some(if x < 2 { flagged } else { base })
+            Some(if x < 2 { flagged } else { plain })
         });
         let boxes = decompose_into_boxes(&region);
         assert_eq!(
             boxes.len(),
             2,
-            "differing grid bit must split the row into two boxes (no merge)"
+            "differing overlay flag must split the row into two boxes (no merge)"
         );
         assert_invariants(&region, &boxes);
-        // Each box keeps its exact (bit-bearing) material id, so the bit travels onto
-        // the box's faces — masked off only at colour-lookup time in the shader.
+        // Each box keeps its exact (overlay-bearing) cell key, so `emit_box_faces` later
+        // splits it back into the clean `block_id` + the per-box overlay attribute.
         let flagged_box = boxes.iter().find(|b| b.material_id == flagged).unwrap();
-        let plain_box = boxes.iter().find(|b| b.material_id == base).unwrap();
+        let plain_box = boxes.iter().find(|b| b.material_id == plain).unwrap();
         assert_eq!((flagged_box.min, flagged_box.max), ([0, 0, 0], [1, 0, 0]));
         assert_eq!((plain_box.min, plain_box.max), ([2, 0, 0], [3, 0, 0]));
-        // A row that is UNIFORMLY flagged still merges to one box (the bit is not a
-        // per-voxel splitter, only a per-material one).
+        // A row that is UNIFORMLY flagged still merges to one box (the marker is a
+        // per-box splitter, not a per-voxel one).
         let uniform = region_from_fn(extent, |_x, _y, _z| Some(flagged));
         assert_eq!(
             decompose_into_boxes(&uniform).len(),
@@ -838,13 +846,11 @@ mod tests {
             for j in 0..4u32 {
                 for i in 2..4u32 {
                     grid.occupied.push(Voxel {
-                        world_position: [
-                            i as f32 + 0.5,
-                            j as f32 + 0.5,
-                            k as f32 + 0.5,
-                        ],
+                        local_index: [i as i32, j as i32, k as i32],
                         block_local_coord: [0, 0, 0],
-                        material_id: 8,
+                        block_id: crate::core_geom::BlockId(8),
+                        attrs: crate::core_geom::BlockAttrs::DEFAULT,
+                        grid_overlay: false,
                     });
                 }
             }

@@ -26,24 +26,26 @@ use std::collections::BTreeSet;
 type OccupancyKey = ([i64; 3], [u8; 3], u16);
 
 fn key_of(voxel: &Voxel) -> OccupancyKey {
+    let position = voxel.world_position();
     (
         [
-            (voxel.world_position[0] * 2.0).round() as i64,
-            (voxel.world_position[1] * 2.0).round() as i64,
-            (voxel.world_position[2] * 2.0).round() as i64,
+            (position[0] * 2.0).round() as i64,
+            (position[1] * 2.0).round() as i64,
+            (position[2] * 2.0).round() as i64,
         ],
         voxel.block_local_coord,
-        voxel.material_id,
+        voxel.color_index(),
     )
 }
 
 /// The integer cell index `floor(world_position)` of an occupied voxel — the corner
 /// the centre `idx + 0.5` sits in. Used to decide window membership.
 fn cell_index_of(voxel: &Voxel) -> [i64; 3] {
+    let position = voxel.world_position();
     [
-        voxel.world_position[0].floor() as i64,
-        voxel.world_position[1].floor() as i64,
-        voxel.world_position[2].floor() as i64,
+        position[0].floor() as i64,
+        position[1].floor() as i64,
+        position[2].floor() as i64,
     ]
 }
 

@@ -1042,14 +1042,15 @@ mod tests {
             grid.occupied
                 .iter()
                 .map(|voxel: &Voxel| {
+                    let position = voxel.world_position();
                     (
                         [
-                            (voxel.world_position[0] * 2.0).round() as i32,
-                            (voxel.world_position[1] * 2.0).round() as i32,
-                            (voxel.world_position[2] * 2.0).round() as i32,
+                            (position[0] * 2.0).round() as i32,
+                            (position[1] * 2.0).round() as i32,
+                            (position[2] * 2.0).round() as i32,
                         ],
                         voxel.block_local_coord,
-                        voxel.material_id,
+                        voxel.color_index(),
                     )
                 })
                 .collect()

@@ -39,14 +39,42 @@ use crate::renderer::{LayerBand, DEPTH_FORMAT, MSAA_SAMPLE_COUNT};
 use crate::texture_atlas::MaterialAtlas;
 use crate::voxel::VoxelGrid;
 
-/// One mesh vertex of a cuboid face: world position, the face's outward normal,
-/// and the box's `material_id` (constant across the face).
+/// The transient on-face-grid bit the **cuboid mesher** folds into its region-cell key
+/// (ADR 0003 §3c). It is NOT the retired `crate::voxel::GRID_OVERLAY_BIT` — that flag is
+/// gone from the per-voxel categorical cell. Instead the mesher composes a *local*
+/// decomposition key `block_id | (grid_overlay << 15)` from each voxel's clean
+/// `block_id` + its transient `grid_overlay` marker, so `decompose_into_boxes` (which
+/// stays representation-agnostic) refuses to merge a box across differing overlay flags —
+/// exactly the old per-box split — without ever seeing a render flag inside the material.
+/// `emit_box_faces` then splits the key back into the clean `block_id` (low bits) and the
+/// per-box overlay (this bit), writing the overlay into a DEDICATED vertex attribute, so
+/// the shader reads the overlay separately and never masks it out of the material.
+const MESH_GRID_OVERLAY_BIT: u16 = 1 << 15;
+
+/// Compose the cuboid mesher's region-cell key for one resolved voxel (ADR 0003 §3c):
+/// the clean categorical colour index in the low bits, the transient on-face-grid marker
+/// in the high bit. Public so the `cuboid` adapter ([`crate::cuboid::region_from_voxel_grid`])
+/// builds the SAME key. The overlay bit lives ONLY in this render-side key — never in the
+/// persistent `Voxel` payload, the chunk-storage codec, or the `.vox` export.
+pub fn mesh_cell_key(voxel: &crate::voxel::Voxel) -> u16 {
+    let mut key = voxel.color_index();
+    if voxel.grid_overlay {
+        key |= MESH_GRID_OVERLAY_BIT;
+    }
+    key
+}
+
+/// One mesh vertex of a cuboid face: world position, the face's outward normal, the
+/// box's `block_id` (the clean colour index, constant across the face), and the box's
+/// per-draw on-face-grid flag (ADR 0003 §3c — a DEDICATED attribute, not a bit jammed
+/// into the material).
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 struct CuboidVertex {
     position: [f32; 3],
     normal: [f32; 3],
     material_id: u32,
+    grid_overlay: u32,
 }
 
 /// The six cube-face directions, each with its outward normal and the four
@@ -282,8 +310,9 @@ fn region_from_voxel_cloud(grid: &VoxelGrid) -> (VoxelRegion, [f32; 3]) {
     // Pass 1: the cloud's minimum voxel centre per axis (the anchor).
     let mut min_world = [f32::INFINITY; 3];
     for voxel in &grid.occupied {
+        let position = voxel.world_position();
         for (axis, min_axis) in min_world.iter_mut().enumerate() {
-            *min_axis = min_axis.min(voxel.world_position[axis]);
+            *min_axis = min_axis.min(position[axis]);
         }
     }
 
@@ -299,7 +328,7 @@ fn region_from_voxel_cloud(grid: &VoxelGrid) -> (VoxelRegion, [f32; 3]) {
     // Pass 2: the max index → region extent.
     let mut max_index = [0i64; 3];
     for voxel in &grid.occupied {
-        let index = region_index(voxel.world_position);
+        let index = region_index(voxel.world_position());
         for axis in 0..3 {
             max_index[axis] = max_index[axis].max(index[axis]);
         }
@@ -310,11 +339,12 @@ fn region_from_voxel_cloud(grid: &VoxelGrid) -> (VoxelRegion, [f32; 3]) {
         (max_index[2] + 1) as u32,
     ];
 
-    // Pass 3: stamp materials into the dense region.
+    // Pass 3: stamp the cuboid mesher's region-cell key (block_id + transient overlay
+    // bit, ADR 0003 §3c) into the dense region.
     let mut region = VoxelRegion::new_empty(extent);
     for voxel in &grid.occupied {
-        let [lx, ly, lz] = region_index(voxel.world_position);
-        region.set(lx as u32, ly as u32, lz as u32, Some(voxel.material_id));
+        let [lx, ly, lz] = region_index(voxel.world_position());
+        region.set(lx as u32, ly as u32, lz as u32, Some(mesh_cell_key(voxel)));
     }
 
     // World min-corner plane of region-local index 0 = its centre minus 0.5.
@@ -390,9 +420,10 @@ fn global_occupancy_from_chunks(chunk_grids: &[([i32; 3], &VoxelGrid)]) -> Globa
     for (_coord, grid) in chunk_grids {
         for voxel in &grid.occupied {
             any = true;
+            let position = voxel.world_position();
             for axis in 0..3 {
-                min_world[axis] = min_world[axis].min(voxel.world_position[axis]);
-                max_world[axis] = max_world[axis].max(voxel.world_position[axis]);
+                min_world[axis] = min_world[axis].min(position[axis]);
+                max_world[axis] = max_world[axis].max(position[axis]);
             }
         }
     }
@@ -413,11 +444,12 @@ fn global_occupancy_from_chunks(chunk_grids: &[([i32; 3], &VoxelGrid)]) -> Globa
     let mut occupied = vec![None; w as usize * h as usize * d as usize];
     for (_coord, grid) in chunk_grids {
         for voxel in &grid.occupied {
-            let x = (voxel.world_position[0] - min_world[0]).round() as u32;
-            let y = (voxel.world_position[1] - min_world[1]).round() as u32;
-            let z = (voxel.world_position[2] - min_world[2]).round() as u32;
+            let position = voxel.world_position();
+            let x = (position[0] - min_world[0]).round() as u32;
+            let y = (position[1] - min_world[1]).round() as u32;
+            let z = (position[2] - min_world[2]).round() as u32;
             let flat = (z as usize * h as usize + y as usize) * w as usize + x as usize;
-            occupied[flat] = Some(voxel.material_id);
+            occupied[flat] = Some(mesh_cell_key(voxel));
         }
     }
     GlobalOccupancy {
@@ -590,10 +622,11 @@ fn build_chunk_meshes_with_apron_filtered(
         let mut gmin = [i64::MAX; 3];
         let mut gmax = [i64::MIN; 3];
         for voxel in &grid.occupied {
+            let position = voxel.world_position();
             let index = [
-                (voxel.world_position[0] - (world_offset[0] + 0.5)).round() as i64,
-                (voxel.world_position[1] - (world_offset[1] + 0.5)).round() as i64,
-                (voxel.world_position[2] - (world_offset[2] + 0.5)).round() as i64,
+                (position[0] - (world_offset[0] + 0.5)).round() as i64,
+                (position[1] - (world_offset[1] + 0.5)).round() as i64,
+                (position[2] - (world_offset[2] + 0.5)).round() as i64,
             ];
             if !global_z_in_band(index[2]) {
                 continue;
@@ -602,7 +635,7 @@ fn build_chunk_meshes_with_apron_filtered(
                 gmin[axis] = gmin[axis].min(index[axis]);
                 gmax[axis] = gmax[axis].max(index[axis]);
             }
-            chunk_indices.push((index, voxel.material_id));
+            chunk_indices.push((index, mesh_cell_key(voxel)));
         }
         if chunk_indices.is_empty() {
             continue; // every voxel clipped away by the band
@@ -729,6 +762,13 @@ fn emit_box_faces(
     aabb.expand(glam::Vec3::new(lo[0] + world_offset[0], lo[1] + world_offset[1], lo[2] + world_offset[2]));
     aabb.expand(glam::Vec3::new(hi[0] + world_offset[0], hi[1] + world_offset[1], hi[2] + world_offset[2]));
 
+    // Split the box's region-cell key back into the clean colour index + the per-box
+    // on-face-grid flag (ADR 0003 §3c): the box never merged across differing overlay
+    // flags (the bit was part of the decomposition key), so the whole box shares ONE
+    // flag, written into the dedicated `grid_overlay` vertex attribute (not the material).
+    let material_id = (voxel_box.material_id & !MESH_GRID_OVERLAY_BIT) as u32;
+    let grid_overlay = u32::from(voxel_box.material_id & MESH_GRID_OVERLAY_BIT != 0);
+
     for face in &FACE_TEMPLATES {
         if !face_is_exposed(voxel_box, region, face.neighbor_delta) {
             continue;
@@ -744,7 +784,8 @@ fn emit_box_faces(
             vertices.push(CuboidVertex {
                 position: world,
                 normal: face.normal,
-                material_id: voxel_box.material_id as u32,
+                material_id,
+                grid_overlay,
             });
         }
         // Two CCW triangles per quad (matching the instanced winding scheme).
@@ -1173,6 +1214,13 @@ impl CuboidMeshRenderer {
                 wgpu::VertexAttribute {
                     offset: std::mem::size_of::<[f32; 6]>() as u64,
                     shader_location: 2,
+                    format: wgpu::VertexFormat::Uint32,
+                },
+                // ADR 0003 §3c: the per-box on-face-grid flag as a DEDICATED attribute,
+                // immediately after the `material_id` u32 (offset 6 floats + 1 u32 = 28).
+                wgpu::VertexAttribute {
+                    offset: std::mem::size_of::<[f32; 6]>() as u64 + std::mem::size_of::<u32>() as u64,
+                    shader_location: 3,
                     format: wgpu::VertexFormat::Uint32,
                 },
             ],
@@ -1706,10 +1754,11 @@ fn bucket_grid_into_chunk_grids(
     let chunk_extent = (crate::core_geom::CHUNK_BLOCKS * voxels_per_block.max(1)) as f32;
     let mut buckets: HashMap<[i32; 3], VoxelGrid> = HashMap::new();
     for voxel in &grid.occupied {
+        let position = voxel.world_position();
         let key = [
-            (voxel.world_position[0] / chunk_extent).floor() as i32,
-            (voxel.world_position[1] / chunk_extent).floor() as i32,
-            (voxel.world_position[2] / chunk_extent).floor() as i32,
+            (position[0] / chunk_extent).floor() as i32,
+            (position[1] / chunk_extent).floor() as i32,
+            (position[2] / chunk_extent).floor() as i32,
         ];
         buckets
             .entry(key)
@@ -1727,8 +1776,17 @@ mod tests {
     use super::*;
     use crate::voxel::Voxel;
 
-    /// Build a tiny grid from a set of (absolute index) occupied voxels, all one
-    /// material, with the given dimensions.
+    /// Build a tiny grid from a set of occupied voxel indices, all one material, with
+    /// the given dimensions, in the RECENTRED render frame the live cuboid path sees.
+    ///
+    /// The stored `local_index` reproduces the retired f32 fixture's
+    /// `world_position = index + 0.5 − dim/2` EXACTLY for an EVEN dim (where the centre
+    /// is a half-integer): `local_index = floor(index + 0.5 − dim/2)`, so
+    /// `world_position()` (= `local_index + 0.5`) equals the old value bit-for-bit and the
+    /// band-clip's `half = floor(dim/2)` frame assumption still holds. (An ODD dim's old
+    /// centre fell on an INTEGER, which the integer payload — whose centres are always
+    /// half-integers — cannot represent; the one odd-dim test below corner-anchors and
+    /// reads the world planes directly, since the mesher is anchor-shift-invariant.)
     fn grid_from_indices(dimensions: [u32; 3], cells: &[[u32; 3]], material: u16) -> VoxelGrid {
         let half = [
             dimensions[0] as f32 / 2.0,
@@ -1738,13 +1796,15 @@ mod tests {
         let mut grid = VoxelGrid::new(dimensions);
         for &[i, j, k] in cells {
             grid.occupied.push(Voxel {
-                world_position: [
-                    i as f32 + 0.5 - half[0],
-                    j as f32 + 0.5 - half[1],
-                    k as f32 + 0.5 - half[2],
+                local_index: [
+                    (i as f32 + 0.5 - half[0]).floor() as i32,
+                    (j as f32 + 0.5 - half[1]).floor() as i32,
+                    (k as f32 + 0.5 - half[2]).floor() as i32,
                 ],
                 block_local_coord: [0, 0, 0],
-                material_id: material,
+                block_id: crate::core_geom::BlockId(material),
+                attrs: crate::core_geom::BlockAttrs::DEFAULT,
+                grid_overlay: false,
             });
         }
         grid
@@ -1801,12 +1861,20 @@ mod tests {
         // faces are culled (backed by solid), so the combined silhouette is a
         // 2×1×1 box surface = 6 faces, not 12.
         let mut grid = grid_from_indices([4, 3, 3], &[[1, 1, 1]], 0);
-        // Second voxel, different material, adjacent in +X.
+        // Second voxel, different material, adjacent in +X — built in the SAME recentred
+        // frame `grid_from_indices` uses (`floor(index + 0.5 − dim/2)`) so it lands next
+        // to the first voxel.
         let half = [2.0f32, 1.5, 1.5];
         grid.occupied.push(Voxel {
-            world_position: [2.0 + 0.5 - half[0], 1.0 + 0.5 - half[1], 1.0 + 0.5 - half[2]],
+            local_index: [
+                (2.0 + 0.5 - half[0]).floor() as i32,
+                (1.0 + 0.5 - half[1]).floor() as i32,
+                (1.0 + 0.5 - half[2]).floor() as i32,
+            ],
             block_local_coord: [0, 0, 0],
-            material_id: 1,
+            block_id: crate::core_geom::BlockId(1),
+            attrs: crate::core_geom::BlockAttrs::DEFAULT,
+            grid_overlay: false,
         });
         let mesh = build_cuboid_mesh(&grid, 1);
         assert_eq!(mesh.box_count(), 2, "different materials → two boxes");
@@ -1826,14 +1894,18 @@ mod tests {
     /// and 1 along Y, i.e. world X-extent 3.
     #[test]
     fn merged_face_spans_one_uv_unit_per_voxel() {
-        let grid = grid_from_indices([5, 5, 5], &[[1, 2, 2], [2, 2, 2], [3, 2, 2]], 0);
+        // Use an EVEN grid dim (6) so the recentred fixture lands on half-integer
+        // centres the integer payload represents exactly (an odd dim's old centre fell on
+        // an integer — see `grid_from_indices`). The X-run [1,2,3] then occupies absolute
+        // voxels 1..=3 with planes at 1 and 4, exactly as before.
+        let grid = grid_from_indices([6, 6, 6], &[[1, 3, 3], [2, 3, 3], [3, 3, 3]], 0);
         let mesh = build_cuboid_mesh(&grid, 1);
         assert_eq!(mesh.box_count(), 1, "3-voxel X-run merges to one box");
 
         // Absolute voxel position = world position + half (dims/2). The UV in the
         // shader uses exactly this, so spanning 3 units in X across the face means
         // the texture tiles 3× (once per voxel) with a Repeat sampler.
-        let half = [2.5f32, 2.5, 2.5];
+        let half = [3.0f32, 3.0, 3.0];
         let abs_x: Vec<f32> = mesh
             .vertices
             .iter()
@@ -1911,7 +1983,7 @@ mod tests {
                     }
                     for voxel in &mut shifted.occupied {
                         for axis in 0..3 {
-                            voxel.world_position[axis] += shift;
+                            voxel.local_index[axis] += shift as i32;
                         }
                     }
 
@@ -2024,11 +2096,18 @@ mod tests {
         let run = grid_from_indices([5, 5, 5], &[[1, 2, 2], [2, 2, 2], [3, 2, 2]], 0);
         // Two adjacent boxes of different materials (a 2-box decomposition).
         let mut two_box = grid_from_indices([4, 3, 3], &[[1, 1, 1]], 0);
+        // Adjacent in +X, built in the SAME recentred frame as `grid_from_indices`.
         let half = [2.0f32, 1.5, 1.5];
         two_box.occupied.push(Voxel {
-            world_position: [2.0 + 0.5 - half[0], 1.0 + 0.5 - half[1], 1.0 + 0.5 - half[2]],
+            local_index: [
+                (2.0 + 0.5 - half[0]).floor() as i32,
+                (1.0 + 0.5 - half[1]).floor() as i32,
+                (1.0 + 0.5 - half[2]).floor() as i32,
+            ],
             block_local_coord: [0, 0, 0],
-            material_id: 1,
+            block_id: crate::core_geom::BlockId(1),
+            attrs: crate::core_geom::BlockAttrs::DEFAULT,
+            grid_overlay: false,
         });
 
         for grid in [single, run, two_box] {
@@ -2223,8 +2302,9 @@ mod tests {
     fn grid_world_offset(grid: &VoxelGrid) -> [f32; 3] {
         let mut min_world = [f32::INFINITY; 3];
         for v in &grid.occupied {
+            let position = v.world_position();
             for (axis, m) in min_world.iter_mut().enumerate() {
-                *m = m.min(v.world_position[axis]);
+                *m = m.min(position[axis]);
             }
         }
         [min_world[0] - 0.5, min_world[1] - 0.5, min_world[2] - 0.5]
@@ -2306,16 +2386,18 @@ mod tests {
     fn occupancy_indices(grid: &VoxelGrid) -> std::collections::HashSet<[i64; 3]> {
         let mut min_world = [f32::INFINITY; 3];
         for v in &grid.occupied {
+            let position = v.world_position();
             for (axis, m) in min_world.iter_mut().enumerate() {
-                *m = m.min(v.world_position[axis]);
+                *m = m.min(position[axis]);
             }
         }
         let mut set = std::collections::HashSet::new();
         for v in &grid.occupied {
+            let position = v.world_position();
             set.insert([
-                (v.world_position[0] - min_world[0]).round() as i64,
-                (v.world_position[1] - min_world[1]).round() as i64,
-                (v.world_position[2] - min_world[2]).round() as i64,
+                (position[0] - min_world[0]).round() as i64,
+                (position[1] - min_world[1]).round() as i64,
+                (position[2] - min_world[2]).round() as i64,
             ]);
         }
         set
@@ -2604,13 +2686,15 @@ mod tests {
             for j in 0..ny {
                 for i in 0..nx {
                     grid.occupied.push(crate::voxel::Voxel {
-                        world_position: [
-                            i as f32 + 0.5 - half[0],
-                            j as f32 + 0.5 - half[1],
-                            k as f32 + 0.5 - half[2],
+                        local_index: [
+                            (i as f32 + 0.5 - half[0]).floor() as i32,
+                            (j as f32 + 0.5 - half[1]).floor() as i32,
+                            (k as f32 + 0.5 - half[2]).floor() as i32,
                         ],
                         block_local_coord: [0, 0, 0],
-                        material_id: 0,
+                        block_id: crate::core_geom::BlockId(0),
+                        attrs: crate::core_geom::BlockAttrs::DEFAULT,
+                        grid_overlay: false,
                     });
                 }
             }
@@ -2693,8 +2777,9 @@ mod tests {
         // `round(world - min_world)`. We mask occupancy to `base_layer + gz ∈ band`.
         let mut min_world = [f32::INFINITY; 3];
         for v in &grid.occupied {
+            let position = v.world_position();
             for (axis, m) in min_world.iter_mut().enumerate() {
-                *m = m.min(v.world_position[axis]);
+                *m = m.min(position[axis]);
             }
         }
         let half_z = (dims[2] / 2) as f32; // corner-anchoring: floored half
@@ -2703,10 +2788,11 @@ mod tests {
             .occupied
             .iter()
             .map(|v| {
+                let position = v.world_position();
                 [
-                    (v.world_position[0] - min_world[0]).round() as i64,
-                    (v.world_position[1] - min_world[1]).round() as i64,
-                    (v.world_position[2] - min_world[2]).round() as i64,
+                    (position[0] - min_world[0]).round() as i64,
+                    (position[1] - min_world[1]).round() as i64,
+                    (position[2] - min_world[2]).round() as i64,
                 ]
             })
             .filter(|idx| {

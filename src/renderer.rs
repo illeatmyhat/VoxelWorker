@@ -3100,7 +3100,7 @@ pub fn build_per_chunk_fog_occupancy(
         // silently discarded ~7/8 of a corner-anchored `DebugClouds` field. A centred Tool
         // (`recentre = floor(dim/2)`) decodes byte-identically; a corner-anchored cloud
         // (`recentre = 0`) now also lands in `[0, dim)`.
-        let [i, j, k] = grid.voxel_index_of(voxel.world_position);
+        let [i, j, k] = grid.voxel_index_of(voxel.world_position());
         if i < 0 || j < 0 || k < 0 || i >= grid_x as i64 || j >= grid_y as i64 || k >= grid_z as i64
         {
             continue;
@@ -3608,9 +3608,10 @@ impl OnionFogRenderer {
         let half_y = (grid_y / 2) as f32;
         let half_z = (grid_z / 2) as f32;
         for voxel in &grid.occupied {
-            let i = (voxel.world_position[0] + half_x - 0.5).round() as i64;
-            let j = (voxel.world_position[1] + half_y - 0.5).round() as i64;
-            let k = (voxel.world_position[2] + half_z - 0.5).round() as i64;
+            let position = voxel.world_position();
+            let i = (position[0] + half_x - 0.5).round() as i64;
+            let j = (position[1] + half_y - 0.5).round() as i64;
+            let k = (position[2] + half_z - 0.5).round() as i64;
             if i < 0
                 || j < 0
                 || k < 0
@@ -4061,13 +4062,15 @@ mod tests {
         let half = [dims[0] as f32 / 2.0, dims[1] as f32 / 2.0, dims[2] as f32 / 2.0];
         for &[i, j, k] in coords {
             grid.occupied.push(Voxel {
-                world_position: [
-                    i as f32 + 0.5 - half[0],
-                    j as f32 + 0.5 - half[1],
-                    k as f32 + 0.5 - half[2],
+                local_index: [
+                    (i as f32 + 0.5 - half[0]).floor() as i32,
+                    (j as f32 + 0.5 - half[1]).floor() as i32,
+                    (k as f32 + 0.5 - half[2]).floor() as i32,
                 ],
                 block_local_coord: [0, 0, 0],
-                material_id: 0,
+                block_id: crate::core_geom::BlockId(0),
+                attrs: crate::core_geom::BlockAttrs::DEFAULT,
+                grid_overlay: false,
             });
         }
         grid
@@ -4206,7 +4209,7 @@ mod tests {
         // production builder.
         let mut occupied_voxels: HashSet<[i64; 3]> = HashSet::new();
         for voxel in &grid.occupied {
-            let [i, j, k] = grid.voxel_index_of(voxel.world_position);
+            let [i, j, k] = grid.voxel_index_of(voxel.world_position());
             if i < 0
                 || j < 0
                 || k < 0
@@ -4370,7 +4373,7 @@ mod tests {
         //    frame the prompt calls out. `grid_with_voxels` encodes world = i + 0.5 − half,
         //    so these voxels already have negative world coords; assert it round-trips.
         assert!(
-            grid_with_voxels([12, 12, 12], &[[0, 0, 0]]).occupied[0].world_position[0] < 0.0,
+            grid_with_voxels([12, 12, 12], &[[0, 0, 0]]).occupied[0].world_position()[0] < 0.0,
             "index-0 voxel in a dim-12 grid has negative recentred world_position"
         );
         assert_scatter_matches_gather(

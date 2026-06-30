@@ -9,21 +9,25 @@
 //! round-trip proof. It is NOT yet wired into the live resolve/render path (that
 //! store integration is a later S6 step); goldens are untouched.
 //!
-//! ## Why this is lossless despite dropping the f32 positions
+//! ## Why this is lossless (ADR 0003 §3a — the payload is already integer)
 //!
-//! Every resolved voxel centre sits at an integer-plus-half position: the producer
-//! emits `i as f32 + 0.5 − half` and every translation/rebase applied afterwards is
-//! an **integer voxel** count (`world_offset × density`, and the floating origin in
-//! whole voxels). So each stored `world_position[axis]` is exactly
-//! `voxel_index[axis] as f32 + 0.5` for an integer `voxel_index` — a fact this
-//! module relies on and the round-trip tests assert byte-for-byte. We store the
-//! integer `voxel_index` (relative to the chunk's min corner, in i64 so a far-placed
-//! chunk keeps full precision) and rebuild the f32 position as
-//! `(min_corner + local) as f32 + 0.5`, reproducing the producer's own arithmetic.
+//! Since ADR 0003 §3a the per-voxel payload stores the voxel's INTEGER index
+//! (`Voxel::local_index`) directly — the f32 centre is only ever reconstructed at
+//! consumption as `index + 0.5` ([`crate::voxel::Voxel::world_position`]). This codec
+//! therefore consumes the stored integer DIRECTLY (it no longer reverse-engineers an
+//! index out of an f32 via `floor()` + a uniform fractional-part debug-assert). We store
+//! the integer index relative to the chunk's min corner (in i64 so a far-placed chunk
+//! keeps full precision) and rebuild `local_index` as `min_corner + local`, the exact
+//! inverse. The `centre_fraction` field is retained for on-disk-format stability and is
+//! the constant `0.5` (a resolved voxel centre is always a half-integer).
 //!
-//! `block_local_coord` and `material_id` are stored directly (the former is the
-//! producer's intra-block coordinate, which a rebase by a non-block-multiple origin
-//! can decouple from the absolute index, so it is NOT reconstructed from position).
+//! `block_local_coord` and the categorical `block_id` are stored directly (the former is
+//! the producer's intra-block coordinate, which a rebase by a non-block-multiple origin
+//! can decouple from the absolute index, so it is NOT reconstructed from the index; the
+//! latter is the categorical block-palette id of §3a). The transient `grid_overlay`
+//! render marker (§3c) is NOT serialized — it is a resolve→mesh render hint, not stored
+//! truth (a chunk reloaded from a disk spill resolves its overlay afresh on the next
+//! mesh).
 //!
 //! ## Encoding choice — sparse, with a dense bit-packed fallback (heuristic)
 //!
@@ -103,22 +107,22 @@ pub struct CompressedChunk {
     /// The chunk grid's full voxel dimensions (`VoxelGrid::dimensions`), preserved
     /// so an empty chunk still round-trips its size.
     pub dimensions: [u32; 3],
-    /// The absolute voxel-index min corner of the occupied bounding box. The f32
-    /// position of a voxel at local box offset `o` is `(min_corner_voxels + o) as f32
-    /// + centre_fraction`. `[0; 3]` for an empty chunk.
+    /// The voxel-index min corner of the occupied bounding box (in the chunk grid's
+    /// carried frame). The `local_index` of a voxel at local box offset `o` is
+    /// `min_corner_voxels + o`; its f32 centre is `that + 0.5`. `[0; 3]` for an empty
+    /// chunk.
     pub min_corner_voxels: [i64; 3],
-    /// The shared fractional part of every occupied voxel centre, per axis (`pos −
-    /// floor(pos)`). Within one resolved grid this is uniform per axis (every voxel
-    /// comes from the same `i + 0.5 − half` formula plus integer translations), so
-    /// one value per axis reproduces every centre exactly: an even-dimensioned grid
-    /// centres at `n + 0.5`, an odd-dimensioned one at `n + 0.0`. `[0.0; 3]` for an
-    /// empty chunk.
+    /// The shared fractional part of every occupied voxel centre, per axis. Since the
+    /// payload is integer (ADR 0003 §3a) every reconstructed centre is `index + 0.5`, so
+    /// this is the constant `0.5` for a non-empty chunk (retained for on-disk-format
+    /// stability). `[0.0; 3]` for an empty chunk.
     pub centre_fraction: [f32; 3],
     /// The occupied bounding box spans (per axis, in voxels). `[0; 3]` for an empty
     /// chunk. `local_linear_index` in the sparse encoding (and the dense cell count)
     /// is row-major over these spans.
     pub box_spans: [u32; 3],
-    /// The distinct `material_id`s present, in first-seen scan order, no duplicates.
+    /// The distinct categorical `block_id`s present (as `u16`), in first-seen scan order,
+    /// no duplicates (ADR 0003 §3a — the block palette, not a 3-value material).
     pub material_palette: Vec<u16>,
     /// The occupancy payload (sparse or dense — whichever is smaller).
     pub occupancy: Occupancy,
@@ -133,17 +137,6 @@ impl CompressedChunk {
             Occupancy::Dense { block_local_coords, .. } => block_local_coords.len(),
         }
     }
-}
-
-/// The integer voxel index of a voxel centre: `floor(position)`.
-///
-/// Resolved voxel centres are always a half-integer (`n` for an odd-dimensioned
-/// axis, `n + 0.5` for an even one) plus integer translations, so `floor` recovers a
-/// unique integer index per cell; the sub-integer remainder is the shared
-/// `centre_fraction`. Computed in f64 so a far-placed chunk's large magnitude does
-/// not lose the integer part.
-fn voxel_index_axis(position: f32) -> i64 {
-    (position as f64).floor() as i64
 }
 
 /// Compress a resolved chunk [`VoxelGrid`] into a [`CompressedChunk`] (lossless).
@@ -167,30 +160,21 @@ pub fn compress(grid: &VoxelGrid) -> CompressedChunk {
         };
     }
 
-    // The shared per-axis fractional offset of every voxel centre, taken from the
-    // first occupied voxel. Within one resolved grid this is uniform per axis (same
-    // `i + 0.5 − half` formula + integer translations) — debug-asserted below.
-    let first = &grid.occupied[0];
-    let centre_fraction = [
-        (first.world_position[0] as f64 - (first.world_position[0] as f64).floor()) as f32,
-        (first.world_position[1] as f64 - (first.world_position[1] as f64).floor()) as f32,
-        (first.world_position[2] as f64 - (first.world_position[2] as f64).floor()) as f32,
-    ];
-    debug_assert!(
-        grid.occupied.iter().all(|voxel| (0..3).all(|axis| {
-            let frac = (voxel.world_position[axis] as f64
-                - (voxel.world_position[axis] as f64).floor()) as f32;
-            frac == centre_fraction[axis]
-        })),
-        "every voxel centre in a resolved grid must share the same per-axis fraction"
-    );
+    // ADR 0003 §3a: every resolved voxel centre is `index + 0.5` (the payload now stores
+    // the integer `local_index` directly), so the shared per-axis fractional offset is a
+    // constant `0.5` — there is nothing to reverse-engineer out of an f32 any more. Kept
+    // as a stored field so the on-disk format is stable and `decompress` rebuilds the
+    // `world_position()`-equivalent centre.
+    let centre_fraction = [0.5f32; 3];
 
-    // 1) Occupied bounding box in absolute voxel-index space.
+    // 1) Occupied bounding box in the grid's integer index space (read DIRECTLY from the
+    //    stored `local_index`, no f32 round-trip — ADR 0003 §3a: the codec consumes the
+    //    integer rather than recovering it from a position).
     let mut min_corner = [i64::MAX; 3];
     let mut max_corner = [i64::MIN; 3];
     for voxel in &grid.occupied {
         for axis in 0..3 {
-            let index = voxel_index_axis(voxel.world_position[axis]);
+            let index = voxel.local_index[axis] as i64;
             min_corner[axis] = min_corner[axis].min(index);
             max_corner[axis] = max_corner[axis].max(index);
         }
@@ -201,27 +185,28 @@ pub fn compress(grid: &VoxelGrid) -> CompressedChunk {
         (max_corner[2] - min_corner[2] + 1) as u32,
     ];
 
-    // 2) Material palette: distinct ids, first-seen order, de-duplicated.
+    // 2) Block palette: distinct categorical block ids, first-seen order, de-duplicated
+    //    (ADR 0003 §3a — the palette indexes the categorical cell, not a 3-value material).
     let mut material_palette: Vec<u16> = Vec::new();
     for voxel in &grid.occupied {
-        if !material_palette.contains(&voxel.material_id) {
-            material_palette.push(voxel.material_id);
+        if !material_palette.contains(&voxel.block_id.0) {
+            material_palette.push(voxel.block_id.0);
         }
     }
-    let palette_index_of = |material_id: u16| -> u32 {
+    let palette_index_of = |block_id: u16| -> u32 {
         material_palette
             .iter()
-            .position(|&id| id == material_id)
-            .expect("every material was inserted into the palette above") as u32
+            .position(|&id| id == block_id)
+            .expect("every block id was inserted into the palette above") as u32
     };
 
     // 3) Sparse occupancy (always built — it is the default and the size baseline).
     let span_xy = box_spans[0] as u64 * box_spans[1] as u64;
     let local_linear_index = |voxel: &Voxel| -> u64 {
         let local = [
-            (voxel_index_axis(voxel.world_position[0]) - min_corner[0]) as u64,
-            (voxel_index_axis(voxel.world_position[1]) - min_corner[1]) as u64,
-            (voxel_index_axis(voxel.world_position[2]) - min_corner[2]) as u64,
+            (voxel.local_index[0] as i64 - min_corner[0]) as u64,
+            (voxel.local_index[1] as i64 - min_corner[1]) as u64,
+            (voxel.local_index[2] as i64 - min_corner[2]) as u64,
         ];
         local[2] * span_xy + local[1] * box_spans[0] as u64 + local[0]
     };
@@ -230,7 +215,7 @@ pub fn compress(grid: &VoxelGrid) -> CompressedChunk {
         .iter()
         .map(|voxel| SparseCell {
             local_linear_index: local_linear_index(voxel),
-            palette_index: palette_index_of(voxel.material_id),
+            palette_index: palette_index_of(voxel.block_id.0),
             block_local_coord: voxel.block_local_coord,
         })
         .collect();
@@ -302,9 +287,9 @@ fn build_dense_if_smaller(
         .iter()
         .map(|voxel| {
             let local = [
-                (voxel_index_axis(voxel.world_position[0]) - min_corner[0]) as u64,
-                (voxel_index_axis(voxel.world_position[1]) - min_corner[1]) as u64,
-                (voxel_index_axis(voxel.world_position[2]) - min_corner[2]) as u64,
+                (voxel.local_index[0] as i64 - min_corner[0]) as u64,
+                (voxel.local_index[1] as i64 - min_corner[1]) as u64,
+                (voxel.local_index[2] as i64 - min_corner[2]) as u64,
             ];
             let linear = local[2] * span_xy + local[1] * box_spans[0] as u64 + local[0];
             (linear, voxel)
@@ -314,8 +299,8 @@ fn build_dense_if_smaller(
     for (linear, voxel) in &indexed {
         let palette_index = material_palette
             .iter()
-            .position(|&id| id == voxel.material_id)
-            .expect("material in palette") as u32;
+            .position(|&id| id == voxel.block_id.0)
+            .expect("block id in palette") as u32;
         cell_values[*linear as usize] = palette_index + 1;
         block_local_coords.push(voxel.block_local_coord);
     }
@@ -351,10 +336,16 @@ pub fn decompress(compressed: &CompressedChunk) -> VoxelGrid {
     let span_xy = span_x as u64 * span_y as u64;
     let min_corner = compressed.min_corner_voxels;
 
-    // Rebuild the f32 position of a cell at row-major local index `linear`, restoring
-    // the per-axis fractional offset captured at compress time.
-    let centre_fraction = compressed.centre_fraction;
-    let position_of = |linear: u64| -> [f32; 3] {
+    // Rebuild the INTEGER index of a cell at row-major local index `linear` (ADR 0003
+    // §3a: the payload stores the integer directly, so the codec restores it directly —
+    // `world_position()` reconstructs the `index + 0.5` centre at consumption). The
+    // stored `centre_fraction` is the constant 0.5 and is asserted, not used to rebuild.
+    debug_assert!(
+        compressed.centre_fraction.iter().all(|&fraction| fraction == 0.5)
+            || compressed.occupied_count() == 0,
+        "a non-empty resolved chunk's voxel centres share the 0.5 fraction"
+    );
+    let index_of = |linear: u64| -> [i32; 3] {
         let local_x = if span_x == 0 { 0 } else { linear % span_x as u64 };
         let local_y = if span_y == 0 {
             0
@@ -363,9 +354,9 @@ pub fn decompress(compressed: &CompressedChunk) -> VoxelGrid {
         };
         let local_z = if span_xy == 0 { 0 } else { linear / span_xy };
         [
-            (min_corner[0] + local_x as i64) as f32 + centre_fraction[0],
-            (min_corner[1] + local_y as i64) as f32 + centre_fraction[1],
-            (min_corner[2] + local_z as i64) as f32 + centre_fraction[2],
+            (min_corner[0] + local_x as i64) as i32,
+            (min_corner[1] + local_y as i64) as i32,
+            (min_corner[2] + local_z as i64) as i32,
         ]
     };
 
@@ -374,9 +365,13 @@ pub fn decompress(compressed: &CompressedChunk) -> VoxelGrid {
             grid.occupied.reserve(cells.len());
             for cell in cells {
                 grid.occupied.push(Voxel {
-                    world_position: position_of(cell.local_linear_index),
+                    local_index: index_of(cell.local_linear_index),
                     block_local_coord: cell.block_local_coord,
-                    material_id: compressed.material_palette[cell.palette_index as usize],
+                    block_id: crate::core_geom::BlockId(
+                        compressed.material_palette[cell.palette_index as usize],
+                    ),
+                    attrs: crate::core_geom::BlockAttrs::DEFAULT,
+                    grid_overlay: false,
                 });
             }
         }
@@ -396,9 +391,13 @@ pub fn decompress(compressed: &CompressedChunk) -> VoxelGrid {
                 }
                 let palette_index = (value - 1) as usize;
                 grid.occupied.push(Voxel {
-                    world_position: position_of(linear),
+                    local_index: index_of(linear),
                     block_local_coord: block_local_coords[next_coord],
-                    material_id: compressed.material_palette[palette_index],
+                    block_id: crate::core_geom::BlockId(
+                        compressed.material_palette[palette_index],
+                    ),
+                    attrs: crate::core_geom::BlockAttrs::DEFAULT,
+                    grid_overlay: false,
                 });
                 next_coord += 1;
             }
@@ -506,23 +505,18 @@ mod tests {
     }
 
     /// Canonicalise a grid's occupied set into a sorted multiset of
-    /// `(bit_exact_position, block_local_coord, material_id)`. Keying on the raw f32
-    /// bits (`to_bits`) makes the round-trip assertion **byte-for-byte** on every
-    /// position (a sub-ULP shift fails), and includes `block_local_coord` so the
-    /// intra-block coordinate is part of the losslessness guarantee. Order-independent
-    /// (the resolve path treats the occupied vec as a set).
+    /// `(local_index, block_local_coord, block_id)`. The index is now stored EXACTLY
+    /// (ADR 0003 §3a), so the round-trip assertion is byte-for-byte on the integer index
+    /// (no f32 ULP comparison needed); `block_local_coord` + the categorical `block_id`
+    /// keep the intra-block coordinate and the block in the losslessness guarantee.
+    /// Order-independent (the resolve path treats the occupied vec as a set).
     fn occupied_multiset(
         grid: &VoxelGrid,
-    ) -> std::collections::BTreeMap<([u32; 3], [u8; 3], u16), usize> {
+    ) -> std::collections::BTreeMap<([i32; 3], [u8; 3], u16), usize> {
         let mut multiset = std::collections::BTreeMap::new();
         for voxel in &grid.occupied {
-            let position_bits = [
-                voxel.world_position[0].to_bits(),
-                voxel.world_position[1].to_bits(),
-                voxel.world_position[2].to_bits(),
-            ];
             *multiset
-                .entry((position_bits, voxel.block_local_coord, voxel.material_id))
+                .entry((voxel.local_index, voxel.block_local_coord, voxel.block_id.0))
                 .or_insert(0) += 1;
         }
         multiset
@@ -585,13 +579,15 @@ mod tests {
             for y in 0..8 {
                 for x in 0..8 {
                     grid.occupied.push(Voxel {
-                        world_position: [
-                            x as f32 + 0.5 - half[0],
-                            y as f32 + 0.5 - half[1],
-                            z as f32 + 0.5 - half[2],
+                        local_index: [
+                            (x as f32 + 0.5 - half[0]).floor() as i32,
+                            (y as f32 + 0.5 - half[1]).floor() as i32,
+                            (z as f32 + 0.5 - half[2]).floor() as i32,
                         ],
                         block_local_coord: [(x % 4) as u8, (y % 4) as u8, (z % 4) as u8],
-                        material_id: 7,
+                        block_id: crate::core_geom::BlockId(7),
+                        attrs: crate::core_geom::BlockAttrs::DEFAULT,
+                        grid_overlay: false,
                     });
                 }
             }
@@ -625,13 +621,15 @@ mod tests {
                         (false, false) => 44,
                     };
                     grid.occupied.push(Voxel {
-                        world_position: [
-                            x as f32 + 0.5 - half[0],
-                            y as f32 + 0.5 - half[1],
-                            z as f32 + 0.5 - half[2],
+                        local_index: [
+                            (x as f32 + 0.5 - half[0]).floor() as i32,
+                            (y as f32 + 0.5 - half[1]).floor() as i32,
+                            (z as f32 + 0.5 - half[2]).floor() as i32,
                         ],
                         block_local_coord: [x as u8, y as u8, z as u8],
-                        material_id: material,
+                        block_id: crate::core_geom::BlockId(material),
+                        attrs: crate::core_geom::BlockAttrs::DEFAULT,
+                        grid_overlay: false,
                     });
                 }
             }
@@ -805,17 +803,19 @@ mod tests {
                                 if (lcg.next_u32() % 100) < fill_percent {
                                     let material = (lcg.next_u32() % materials) as u16;
                                     grid.occupied.push(Voxel {
-                                        world_position: [
-                                            x as f32 + 0.5 - half[0],
-                                            y as f32 + 0.5 - half[1],
-                                            z as f32 + 0.5 - half[2],
+                                        local_index: [
+                                            (x as f32 + 0.5 - half[0]).floor() as i32,
+                                            (y as f32 + 0.5 - half[1]).floor() as i32,
+                                            (z as f32 + 0.5 - half[2]).floor() as i32,
                                         ],
                                         block_local_coord: [
                                             (x % 4) as u8,
                                             (y % 4) as u8,
                                             (z % 4) as u8,
                                         ],
-                                        material_id: material,
+                                        block_id: crate::core_geom::BlockId(material),
+                                        attrs: crate::core_geom::BlockAttrs::DEFAULT,
+                                        grid_overlay: false,
                                     });
                                 }
                             }
@@ -844,9 +844,11 @@ mod tests {
         for y in 0..6 {
             for x in 0..6 {
                 grid.occupied.push(Voxel {
-                    world_position: [x as f32 + 0.5, y as f32 + 0.5, 0.5],
+                    local_index: [x, y, 0],
                     block_local_coord: [0, 0, 0],
-                    material_id: materials[x as usize],
+                    block_id: crate::core_geom::BlockId(materials[x as usize]),
+                    attrs: crate::core_geom::BlockAttrs::DEFAULT,
+                    grid_overlay: false,
                 });
             }
         }
@@ -990,13 +992,15 @@ mod tests {
                     // ~0.5% fill → ~320 voxels over 64000 cells, well under cells/48.
                     if lcg.next_u32() % 1000 < 5 {
                         sparse_grid.occupied.push(Voxel {
-                            world_position: [
-                                x as f32 + 0.5 - sparse_half[0],
-                                y as f32 + 0.5 - sparse_half[1],
-                                z as f32 + 0.5 - sparse_half[2],
+                            local_index: [
+                                (x as f32 + 0.5 - sparse_half[0]).floor() as i32,
+                                (y as f32 + 0.5 - sparse_half[1]).floor() as i32,
+                                (z as f32 + 0.5 - sparse_half[2]).floor() as i32,
                             ],
                             block_local_coord: [0, 0, 0],
-                            material_id: 1,
+                            block_id: crate::core_geom::BlockId(1),
+                            attrs: crate::core_geom::BlockAttrs::DEFAULT,
+                            grid_overlay: false,
                         });
                     }
                 }

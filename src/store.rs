@@ -753,12 +753,13 @@ mod tests {
     fn occupied_multiset(grid: &VoxelGrid) -> std::collections::BTreeMap<([u32; 3], u16), usize> {
         let mut multiset = std::collections::BTreeMap::new();
         for voxel in &grid.occupied {
+            let position = voxel.world_position();
             let key = [
-                voxel.world_position[0].to_bits(),
-                voxel.world_position[1].to_bits(),
-                voxel.world_position[2].to_bits(),
+                position[0].to_bits(),
+                position[1].to_bits(),
+                position[2].to_bits(),
             ];
-            *multiset.entry((key, voxel.material_id)).or_insert(0) += 1;
+            *multiset.entry((key, voxel.color_index())).or_insert(0) += 1;
         }
         multiset
     }
@@ -1306,15 +1307,16 @@ mod tests {
         let recentre = scene.recentre_voxels_for_resolve(voxels_per_block);
         for (coord, grid) in &chunks {
             for voxel in &grid.occupied {
+                let position = voxel.world_position();
                 for axis in 0..3 {
                     // Rebased absolute voxel index = floor(position) + recentre.
-                    let absolute = voxel.world_position[axis].floor() as i64 + recentre[axis];
+                    let absolute = position[axis].floor() as i64 + recentre[axis];
                     let owner = absolute.div_euclid(chunk_extent) as i32;
                     assert_eq!(
                         owner, coord[axis],
                         "[{label}] voxel at {:?} (axis {axis}) must be owned by chunk \
                          coord {coord:?}, not {owner}",
-                        voxel.world_position
+                        position
                     );
                 }
             }
@@ -1425,12 +1427,13 @@ mod tests {
         // Every voxel-centre `.5` fraction must survive the rebase (would be lost to
         // f32 rounding at 1.6e7 under the old subtract-AFTER-f32 path).
         for voxel in &far.occupied {
+            let position = voxel.world_position();
             for axis in 0..3 {
-                let frac = voxel.world_position[axis].fract().abs();
+                let frac = position[axis].fract().abs();
                 assert!(
                     (frac - 0.5).abs() < 1e-4,
                     "far voxel centre lost its .5 fraction (f32 jitter): {:?}",
-                    voxel.world_position
+                    position
                 );
             }
         }

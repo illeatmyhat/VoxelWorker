@@ -78,45 +78,76 @@ pub enum ShapeKind {
     Box,
 }
 
-/// Per-object on-face-grid flag bit packed into a voxel's `material_id`
-/// (issue #29 S4). The material id only ever carries a small enum value
-/// (Stone/Wood/Plain ⇒ 0/1/2; the shaders clamp it to ≤2 before any colour
-/// lookup), so the high bit is free to flag "draw the on-face voxel grid on this
-/// voxel's faces". The resolver ORs this bit into a voxel's `material_id` iff the
-/// producing node has `grids.voxel_grid_on_faces`; the GPU-upload path strips it
-/// again when the scene-wide `master_voxel_grid` is OFF (the master AND); and the
-/// both mesh shaders read `(material_id & GRID_OVERLAY_BIT) != 0` to gate the
-/// on-face grid branch, masking the bit OFF (via [`material_id_color_index`])
-/// before any atlas / base-colour lookup so the flag never corrupts the colour.
-///
-/// **This constant is mirrored verbatim in `shaders/cuboid.wgsl` and
-/// `shaders/cuboid_loaded.wgsl`** (`const GRID_OVERLAY_BIT: u32 = 32768u;`) — keep
-/// all three in sync.
-pub const GRID_OVERLAY_BIT: u16 = 1 << 15;
+pub use crate::core_geom::{BlockAttrs, BlockId};
 
-/// Strip the [`GRID_OVERLAY_BIT`] from a `material_id`, leaving only the real
-/// material handle used for the colour / atlas lookup. The shaders perform the
-/// same mask (`material_id & ~GRID_OVERLAY_BIT`, then clamp to ≤2); this is the
-/// CPU mirror so tests can assert the colour index round-trips.
-#[inline]
-pub fn material_id_color_index(material_id: u16) -> u16 {
-    material_id & !GRID_OVERLAY_BIT
-}
-
-/// One occupied voxel in the resolved grid.
+/// One occupied voxel in the resolved grid (ADR 0003 §3a — the chunk-local integer +
+/// categorical block-palette cell).
 ///
-/// `block_local_coord` is `(i % voxels_per_block, …)` — the voxel's position
-/// *within* its block, needed by the M4 texture-slice shader. `material_id`
-/// carries the real material handle in its low bits plus the optional
-/// [`GRID_OVERLAY_BIT`] flag (issue #29 S4) in its high bit.
-#[derive(Debug, Clone, Copy)]
+/// **The per-voxel record carries an INTEGER index, never an f32 position.** ADR 0003
+/// §3a / ADR 0008 (the voxel-frame invariant): the absolute i64 origin lives ONLY in
+/// the grid's carried frame (the chunk key / `recentre_voxels`), and each cell stores
+/// its voxel index `[i, j, k]` *within that frame*. f32 is produced ONLY at consumption
+/// via [`world_position`](Voxel::world_position) (`index + 0.5`), reproducing exactly
+/// the half-integer voxel centre the old f32 payload stored — but exactly, with no f32
+/// magnitude loss for a far-placed (origin-rebased) chunk. The stamp keeps the integer
+/// in i64 right up to the downcast to the field, so a far scene is exact rather than
+/// merely "exact for near scenes".
+///
+/// `block_local_coord` is `(i % voxels_per_block, …)` — the voxel's position *within*
+/// its block, needed by the M4 texture-slice shader. `block_id` is the categorical
+/// block-palette index (replacing the old 3-value `material_id` enum); `attrs` is the
+/// minimal forward-compat [`BlockAttrs`] placeholder (the typed stair-facing /
+/// connection schema of ADR 0003 §3a-bis stays deferred). The `GRID_OVERLAY_BIT`
+/// render flag is **no longer in this payload** — it is a per-draw / per-box render
+/// attribute (ADR 0003 §3c).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Voxel {
-    /// World-centred voxel-grid coordinate of the voxel centre.
-    pub world_position: [f32; 3],
+    /// Voxel index within the grid's CARRIED frame (ADR 0008): the absolute origin
+    /// (chunk key / `recentre_voxels`) lives on the grid, this is the local integer
+    /// index. `i32` carries any region-scoped index (recentred grids place index 0 at
+    /// a negative position) with full precision and no f32 rounding.
+    pub local_index: [i32; 3],
     /// Coordinate within the owning block: `(i % d, j % d, k % d)`.
     pub block_local_coord: [u8; 3],
-    /// Reserved material handle (unused in M2).
-    pub material_id: u16,
+    /// Categorical block-palette id (ADR 0003 §3a). For the three procedural materials
+    /// this is the old `material_id` value (Stone/Wood/Plain ⇒ 0/1/2), so existing
+    /// scenes resolve byte-identically; the rich VS palette content stays deferred.
+    pub block_id: BlockId,
+    /// Typed per-`block_id` attributes (ADR 0003 §3a-bis). A minimal forward-compat
+    /// placeholder here; the orientation / variant / connection schema is deferred.
+    pub attrs: BlockAttrs,
+    /// **Transient render marker — NOT part of the categorical cell** (ADR 0003 §3c).
+    /// The owning node's `grids.voxel_grid_on_faces` flag, carried so the cuboid mesher
+    /// can split a box on it and the draw can enable the on-face grid overlay. This is
+    /// the per-node render concern §3c removed from `block_id` (where the old
+    /// `GRID_OVERLAY_BIT` jammed it): it never rides the chunk-storage codec, the `.vox`
+    /// export, or the categorical id — it is a resolve→mesh render hint only, surfaced
+    /// to the shader as a dedicated overlay attribute, never masked out of the material.
+    pub grid_overlay: bool,
+}
+
+impl Voxel {
+    /// The voxel centre as an f32 position in the grid's carried frame — `index + 0.5`,
+    /// EXACTLY the half-integer centre the retired `world_position: [f32; 3]` field
+    /// stored (ADR 0003 §3a: f32 produced only at consumption). Every consumer that
+    /// decoded the old f32 back to an integer (`floor`, `round(world + half − 0.5)`, …)
+    /// keeps working byte-identically because this reproduces the same `index + 0.5`.
+    #[inline]
+    pub fn world_position(&self) -> [f32; 3] {
+        [
+            self.local_index[0] as f32 + 0.5,
+            self.local_index[1] as f32 + 0.5,
+            self.local_index[2] as f32 + 0.5,
+        ]
+    }
+
+    /// The categorical block id as the colour / atlas index the renderer + `.vox`
+    /// export use (today the 3-value palette maps 1:1 to the colour index). Replaces
+    /// the old `material_id_color_index` mask now that the render flag is gone.
+    #[inline]
+    pub fn color_index(&self) -> u16 {
+        self.block_id.0
+    }
 }
 
 /// The resolved truth consumed by the renderer / slice / export.
@@ -212,12 +243,13 @@ impl VoxelGrid {
         // Z-up: the band is a Z-layer (index 2) range; `k` (Z) is the layer scan.
         let mut rows: std::collections::HashMap<u64, Vec<bool>> = std::collections::HashMap::new();
         for voxel in &self.occupied {
-            let k = (voxel.world_position[2] + half_z - 0.5).round() as i64;
+            let position = voxel.world_position();
+            let k = (position[2] + half_z - 0.5).round() as i64;
             if k < band_min as i64 || k > band_max as i64 {
                 continue;
             }
-            let i = (voxel.world_position[0] + half_x - 0.5).round() as i64;
-            let j = (voxel.world_position[1] + half_y - 0.5).round() as i64;
+            let i = (position[0] + half_x - 0.5).round() as i64;
+            let j = (position[1] + half_y - 0.5).round() as i64;
             if i < 0 || i >= width as i64 || j < 0 || j >= grid_y as i64 {
                 continue;
             }
@@ -295,12 +327,13 @@ pub fn widest_run_in_band_over_chunks<'grid>(
     let mut rows: std::collections::HashMap<u64, Vec<bool>> = std::collections::HashMap::new();
     for grid in chunk_grids {
         for voxel in &grid.occupied {
-            let k = (voxel.world_position[2] + half_z - 0.5).round() as i64;
+            let position = voxel.world_position();
+            let k = (position[2] + half_z - 0.5).round() as i64;
             if k < band_min as i64 || k > band_max as i64 {
                 continue;
             }
-            let i = (voxel.world_position[0] + half_x - 0.5).round() as i64;
-            let j = (voxel.world_position[1] + half_y - 0.5).round() as i64;
+            let i = (position[0] + half_x - 0.5).round() as i64;
+            let j = (position[1] + half_y - 0.5).round() as i64;
             if i < 0 || i >= width as i64 || j < 0 || j >= grid_y as i64 {
                 continue;
             }
@@ -926,17 +959,15 @@ impl VoxelProducer for SdfShape {
                             <= SURFACE_ISOLEVEL
                         {
                             local.push(Voxel {
-                                world_position: [
-                                    i as f32 + 0.5,
-                                    j as f32 + 0.5,
-                                    k as f32 + 0.5,
-                                ],
+                                local_index: [i as i32, j as i32, k as i32],
                                 block_local_coord: [
                                     (i % voxels_per_block) as u8,
                                     (j % voxels_per_block) as u8,
                                     (k % voxels_per_block) as u8,
                                 ],
-                                material_id: 0,
+                                block_id: BlockId::DEFAULT,
+                                attrs: BlockAttrs::DEFAULT,
+                                grid_overlay: false,
                             });
                         }
                     }
@@ -1103,32 +1134,45 @@ pub fn signed_distance(
 }
 
 #[cfg(test)]
-mod grid_overlay_bit_tests {
+mod categorical_block_id_tests {
     use super::*;
 
-    /// Issue #29 S4: the flag bit is the high bit (1 << 15), well clear of every
-    /// real material handle (Stone/Wood/Plain ⇒ 0/1/2), so masking it off recovers
-    /// the real id for the colour lookup and the bit round-trips independently.
+    /// ADR 0003 §3a/§3c: the per-voxel cell carries the categorical `block_id` ONLY —
+    /// the colour index IS the block id (no render flag sharing the field, no mask). The
+    /// three procedural materials keep their old ids (Stone/Wood/Plain ⇒ 0/1/2), so an
+    /// existing scene resolves byte-identically.
     #[test]
-    fn flag_bit_is_high_and_masks_cleanly() {
-        assert_eq!(GRID_OVERLAY_BIT, 0x8000);
-        for material in 0u16..=2 {
-            // The bit never collides with a real material id.
-            assert_eq!(material & GRID_OVERLAY_BIT, 0, "material {material} must not set the flag bit");
-            // OR the bit on, then mask it off → the original material id.
-            let flagged = material | GRID_OVERLAY_BIT;
-            assert_ne!(flagged, material, "the bit must change the raw id");
-            assert_eq!(
-                material_id_color_index(flagged),
-                material,
-                "masking the flag bit off must recover the real material id"
-            );
-            // The unflagged id masks to itself (idempotent).
-            assert_eq!(material_id_color_index(material), material);
+    fn color_index_is_the_block_id_no_flag_in_the_field() {
+        for id in 0u16..=2 {
+            let voxel = Voxel {
+                local_index: [0, 0, 0],
+                block_local_coord: [0, 0, 0],
+                block_id: BlockId(id),
+                attrs: BlockAttrs::DEFAULT,
+                grid_overlay: false,
+            };
+            assert_eq!(voxel.color_index(), id, "the colour index is the block id verbatim");
+            assert!(voxel.color_index() <= 2, "the procedural ids stay in the shader's colour range");
         }
-        // The masked id always clamps into the shader's [0, 2] colour range.
-        for raw in [GRID_OVERLAY_BIT, GRID_OVERLAY_BIT | 2, 2] {
-            assert!(material_id_color_index(raw).min(2) <= 2);
+    }
+
+    /// The reconstructed f32 centre is exactly `index + 0.5` (ADR 0003 §3a: f32 produced
+    /// only at consumption), so `floor` recovers the stored integer index losslessly.
+    #[test]
+    fn world_position_reconstructs_index_plus_half() {
+        for index in [[0, 0, 0], [3, 5, 7], [-4, -1, -9], [1234, -5678, 9012]] {
+            let voxel = Voxel {
+                local_index: index,
+                block_local_coord: [0, 0, 0],
+                block_id: BlockId::DEFAULT,
+                attrs: BlockAttrs::DEFAULT,
+                grid_overlay: false,
+            };
+            let position = voxel.world_position();
+            for axis in 0..3 {
+                assert_eq!(position[axis], index[axis] as f32 + 0.5);
+                assert_eq!(position[axis].floor() as i32, index[axis]);
+            }
         }
     }
 }
@@ -1308,7 +1352,7 @@ mod sdf_size_units_tests {
         let mut max = [i64::MIN; 3];
         for voxel in &grid.occupied {
             for axis in 0..3 {
-                let index = voxel.world_position[axis].floor() as i64;
+                let index = voxel.local_index[axis] as i64;
                 min[axis] = min[axis].min(index);
                 max[axis] = max[axis].max(index + 1);
             }

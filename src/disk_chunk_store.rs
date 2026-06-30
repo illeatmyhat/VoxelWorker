@@ -398,17 +398,19 @@ mod tests {
             for y in 0..dim {
                 for x in 0..dim {
                     grid.occupied.push(Voxel {
-                        world_position: [
-                            x as f32 + 0.5 - half[0],
-                            y as f32 + 0.5 - half[1],
-                            z as f32 + 0.5 - half[2],
+                        local_index: [
+                            (x as f32 + 0.5 - half[0]).floor() as i32,
+                            (y as f32 + 0.5 - half[1]).floor() as i32,
+                            (z as f32 + 0.5 - half[2]).floor() as i32,
                         ],
                         block_local_coord: [
                             (x % 4) as u8,
                             (y % 4) as u8,
                             (z % 4) as u8,
                         ],
-                        material_id: seed,
+                        block_id: crate::core_geom::BlockId(seed),
+                        attrs: crate::core_geom::BlockAttrs::DEFAULT,
+                        grid_overlay: false,
                     });
                 }
             }
@@ -430,13 +432,14 @@ mod tests {
         let grid = decompress(chunk);
         let mut occupied = std::collections::BTreeMap::new();
         for voxel in &grid.occupied {
+            let position = voxel.world_position();
             let position_bits = [
-                voxel.world_position[0].to_bits(),
-                voxel.world_position[1].to_bits(),
-                voxel.world_position[2].to_bits(),
+                position[0].to_bits(),
+                position[1].to_bits(),
+                position[2].to_bits(),
             ];
             *occupied
-                .entry((position_bits, voxel.block_local_coord, voxel.material_id))
+                .entry((position_bits, voxel.block_local_coord, voxel.color_index()))
                 .or_insert(0) += 1;
         }
         (grid.dimensions, occupied)

@@ -2359,7 +2359,10 @@ impl Scene {
                 }
             }
             let translation_voxels = world_offset_voxels;
-            let (material_override, producer): (Option<u16>, Box<dyn VoxelProducer>) = match content
+            let (material_override, producer): (
+                Option<crate::core_geom::BlockId>,
+                Box<dyn VoxelProducer>,
+            ) = match content
             {
                 NodeContent::Tool { shape, material } => {
                     // `SdfShape` is no longer `Copy` (owns an optional boxed retained
@@ -2813,12 +2816,12 @@ fn leaf_producer_grid_voxels(content: &NodeContent, _voxels_per_block: u32) -> O
     }
 }
 
-/// Map a Tool's [`MaterialChoice`] to the `material_id` it stamps (ADR 0001 step 3
-/// "Materials"). A Tool is single-material by nature: every voxel it emits takes
-/// this one id, so distinct nodes render in distinct materials. Stone = 0,
-/// Wood = 1, Plain = 2 (see [`MaterialChoice::material_id`]).
-fn material_id_for(material: MaterialChoice) -> Option<u16> {
-    Some(material.material_id())
+/// Map a Tool's [`MaterialChoice`] to the categorical [`BlockId`](crate::core_geom::BlockId)
+/// it stamps (ADR 0001 step 3 "Materials"; ADR 0003 §3a). A Tool is single-material by
+/// nature: every voxel it emits takes this one block id, so distinct nodes render in
+/// distinct materials. Stone = 0, Wood = 1, Plain = 2 (see [`MaterialChoice::block_id`]).
+fn material_id_for(material: MaterialChoice) -> Option<crate::core_geom::BlockId> {
+    Some(material.block_id())
 }
 
 /// Resolve `producer` into its own local grid (centred at the origin, as the
@@ -2836,7 +2839,7 @@ fn stamp_producer(
     output: &mut VoxelGrid,
     region_dimensions: [u32; 3],
     translation_voxels: [i64; 3],
-    material_override: Option<u16>,
+    material_override: Option<crate::core_geom::BlockId>,
     grid_overlay: bool,
     producer: &dyn VoxelProducer,
     voxels_per_block: u32,
@@ -2868,16 +2871,20 @@ fn stamp_producer(
     output.occupied.reserve(local.occupied.len());
     for mut voxel in local.occupied {
         if !zero_offset {
-            voxel.world_position[0] += translation_voxels[0] as f32;
-            voxel.world_position[1] += translation_voxels[1] as f32;
-            voxel.world_position[2] += translation_voxels[2] as f32;
+            // ADR 0003 §3a / ADR 0008: translate the INTEGER index in the grid's frame
+            // (the absolute origin lives on the grid), never an f32 position. The add is
+            // i64 then downcast, so the placement is exact for any magnitude.
+            voxel.local_index[0] = (voxel.local_index[0] as i64 + translation_voxels[0]) as i32;
+            voxel.local_index[1] = (voxel.local_index[1] as i64 + translation_voxels[1]) as i32;
+            voxel.local_index[2] = (voxel.local_index[2] as i64 + translation_voxels[2]) as i32;
         }
         if let Some(id) = material_override {
-            voxel.material_id = id;
+            voxel.block_id = id;
         }
-        if grid_overlay {
-            voxel.material_id |= crate::voxel::GRID_OVERLAY_BIT;
-        }
+        // ADR 0003 §3c: the on-face-grid flag is a transient render marker on the cell,
+        // NOT the categorical `block_id` — the cuboid mesher reads it (splitting boxes on
+        // it) and the draw enables the overlay; it never enters the categorical id.
+        voxel.grid_overlay = grid_overlay;
         output.occupied.push(voxel);
     }
 }
@@ -2910,7 +2917,7 @@ fn stamp_producer_into_chunk(
     region_dimensions: [u32; 3],
     translation_voxels: [i64; 3],
     floating_origin_voxels: [i64; 3],
-    material_override: Option<u16>,
+    material_override: Option<crate::core_geom::BlockId>,
     grid_overlay: bool,
     producer: &dyn VoxelProducer,
     voxels_per_block: u32,
@@ -2951,24 +2958,27 @@ fn stamp_producer_into_chunk(
     // adds in f32 today — bit-identical framing — while a far chunk no longer loses
     // the voxel-centre `.5` to f32 rounding at ~1e6 magnitude (the S1 speckle).
     let rebased_translation = [
-        (translation_voxels[0] - floating_origin_voxels[0]) as f32,
-        (translation_voxels[1] - floating_origin_voxels[1]) as f32,
-        (translation_voxels[2] - floating_origin_voxels[2]) as f32,
+        translation_voxels[0] - floating_origin_voxels[0],
+        translation_voxels[1] - floating_origin_voxels[1],
+        translation_voxels[2] - floating_origin_voxels[2],
     ];
 
     output.occupied.reserve(local.occupied.len());
     for mut voxel in local.occupied {
-        // Store the rebased (origin-relative) f32 position.
-        voxel.world_position[0] += rebased_translation[0];
-        voxel.world_position[1] += rebased_translation[1];
-        voxel.world_position[2] += rebased_translation[2];
+        // Store the rebased (origin-relative) INTEGER index (ADR 0003 §3a). The rebase
+        // is a pure i64 subtraction done here BEFORE the downcast, so the far chunk's
+        // index keeps full precision — the f32 magnitude loss the old f32 payload took
+        // at ~1e6 (the S1 speckle) is gone, and `world_position()` (= index + 0.5)
+        // reproduces the small rebased centre exactly for a near scene.
+        voxel.local_index[0] = (voxel.local_index[0] as i64 + rebased_translation[0]) as i32;
+        voxel.local_index[1] = (voxel.local_index[1] as i64 + rebased_translation[1]) as i32;
+        voxel.local_index[2] = (voxel.local_index[2] as i64 + rebased_translation[2]) as i32;
 
         if let Some(id) = material_override {
-            voxel.material_id = id;
+            voxel.block_id = id;
         }
-        if grid_overlay {
-            voxel.material_id |= crate::voxel::GRID_OVERLAY_BIT;
-        }
+        // ADR 0003 §3c: transient render marker, not the categorical id (see stamp_producer).
+        voxel.grid_overlay = grid_overlay;
         output.occupied.push(voxel);
     }
 }
@@ -3274,10 +3284,11 @@ mod tests {
             grid.occupied
                 .iter()
                 .map(|voxel| {
+                    let position = voxel.world_position();
                     [
-                        (voxel.world_position[0] + half[0] - 0.5).round() as i64,
-                        (voxel.world_position[1] + half[1] - 0.5).round() as i64,
-                        (voxel.world_position[2] + half[2] - 0.5).round() as i64,
+                        (position[0] + half[0] - 0.5).round() as i64,
+                        (position[1] + half[1] - 0.5).round() as i64,
+                        (position[2] + half[2] - 0.5).round() as i64,
                     ]
                 })
                 .collect()
@@ -3286,13 +3297,14 @@ mod tests {
         let multiset = |grid: &VoxelGrid| {
             let mut set = std::collections::BTreeMap::<([u32; 3], u16), usize>::new();
             for voxel in &grid.occupied {
+                let position = voxel.world_position();
                 let key = (
                     [
-                        voxel.world_position[0].to_bits(),
-                        voxel.world_position[1].to_bits(),
-                        voxel.world_position[2].to_bits(),
+                        position[0].to_bits(),
+                        position[1].to_bits(),
+                        position[2].to_bits(),
                     ],
-                    voxel.material_id,
+                    voxel.color_index(),
                 );
                 *set.entry(key).or_insert(0) += 1;
             }
@@ -3311,24 +3323,26 @@ mod tests {
 
             // (a) every centre is a half-integer.
             for voxel in &monolithic.occupied {
+                let position = voxel.world_position();
                 for axis in 0..3 {
                     assert_eq!(
-                        voxel.world_position[axis].fract().abs(),
+                        position[axis].fract().abs(),
                         0.5,
                         "[{label}] centre {:?} axis {axis} must be a half-integer (on the lattice)",
-                        voxel.world_position
+                        position
                     );
                 }
             }
             // (c) every decoded index is in [0, dim).
             for voxel in &monolithic.occupied {
+                let position = voxel.world_position();
                 for (axis, &dim) in dims.iter().enumerate() {
                     let half = (dim / 2) as f32;
-                    let index = (voxel.world_position[axis] + half - 0.5).round() as i64;
+                    let index = (position[axis] + half - 0.5).round() as i64;
                     assert!(
                         index >= 0 && index < dim as i64,
                         "[{label}] voxel {:?} axis {axis} decodes to {index} OUTSIDE [0, {dim})",
-                        voxel.world_position
+                        position
                     );
                 }
             }
@@ -3446,8 +3460,9 @@ mod tests {
             // recentre 0), so the decode is `floor(world)`.
             let mut decoded = 0usize;
             for voxel in &monolithic.occupied {
+                let position = voxel.world_position();
                 for (axis, &dim) in dims.iter().enumerate() {
-                    let pos = voxel.world_position[axis];
+                    let pos = position[axis];
                     assert_eq!(
                         pos.fract().abs(), 0.5,
                         "[{label}] centre {pos} axis {axis} must be a half-integer"
@@ -3510,8 +3525,9 @@ mod tests {
         // offset by ~region_dim/2 and a slab would decode out of range.
         let recentre = scene.recentre_voxels_for_resolve(vpb);
         for voxel in &grid.occupied {
+            let position = voxel.world_position();
             for (axis, &dim) in dims.iter().enumerate() {
-                let pos = voxel.world_position[axis];
+                let pos = position[axis];
                 assert_eq!(
                     pos.fract().abs(), 0.5,
                     "mixed scene: centre {pos} axis {axis} must be a half-integer (same frame)"
@@ -3536,9 +3552,10 @@ mod tests {
             (0 - recentre[2]) as f32 + 0.5,
         ];
         let has_box_low_corner = grid.occupied.iter().any(|v| {
-            (v.world_position[0] - expected_low[0]).abs() < 1e-3
-                && (v.world_position[1] - expected_low[1]).abs() < 1e-3
-                && (v.world_position[2] - expected_low[2]).abs() < 1e-3
+            let position = v.world_position();
+            (position[0] - expected_low[0]).abs() < 1e-3
+                && (position[1] - expected_low[1]).abs() < 1e-3
+                && (position[2] - expected_low[2]).abs() < 1e-3
         });
         assert!(
             has_box_low_corner,
@@ -3589,10 +3606,11 @@ mod tests {
             grid.occupied
                 .iter()
                 .map(|voxel| {
+                    let position = voxel.world_position();
                     [
-                        voxel.world_position[0].round() as i64,
-                        voxel.world_position[1].round() as i64,
-                        voxel.world_position[2].round() as i64,
+                        position[0].round() as i64,
+                        position[1].round() as i64,
+                        position[2].round() as i64,
                     ]
                 })
                 .collect()
@@ -3626,7 +3644,7 @@ mod tests {
         let wood_id = MaterialChoice::Wood.material_id();
         assert!(grid.occupied_count() > 0, "the box must emit voxels");
         assert!(
-            grid.occupied.iter().all(|voxel| voxel.material_id == wood_id),
+            grid.occupied.iter().all(|voxel| voxel.color_index() == wood_id),
             "every voxel a Wood Tool stamps must carry the Wood material id"
         );
     }
@@ -3650,11 +3668,11 @@ mod tests {
         let wood_id = MaterialChoice::Wood.material_id();
         assert_ne!(stone_id, wood_id, "Stone and Wood must map to distinct ids");
         assert!(
-            grid.occupied.iter().any(|voxel| voxel.material_id == stone_id),
+            grid.occupied.iter().any(|voxel| voxel.color_index() == stone_id),
             "the Stone node's voxels must carry the Stone id"
         );
         assert!(
-            grid.occupied.iter().any(|voxel| voxel.material_id == wood_id),
+            grid.occupied.iter().any(|voxel| voxel.color_index() == wood_id),
             "the Wood node's voxels must carry the Wood id"
         );
     }
@@ -3666,7 +3684,6 @@ mod tests {
     /// density {1, 15, 16} so the bit survives every density's chunk bucketing.
     #[test]
     fn voxel_grid_flag_bit_set_iff_node_opts_in() {
-        use crate::voxel::{material_id_color_index, GRID_OVERLAY_BIT};
         for &voxels_per_block in &[1u32, 15, 16] {
             let shape = SdfShape::from_blocks(ShapeKind::Box, [1, 1, 1], 1, voxels_per_block);
             let wood_id = MaterialChoice::Wood.material_id();
@@ -3684,14 +3701,14 @@ mod tests {
             assert!(
                 grid.occupied
                     .iter()
-                    .all(|v| v.material_id & GRID_OVERLAY_BIT != 0),
+                    .all(|v| v.grid_overlay),
                 "density {voxels_per_block}: a node with voxel_grid_on_faces must flag every voxel"
             );
             assert!(
                 grid.occupied
                     .iter()
-                    .all(|v| material_id_color_index(v.material_id) == wood_id),
-                "density {voxels_per_block}: the masked colour index must round-trip to Wood (≤2)"
+                    .all(|v| v.color_index() == wood_id),
+                "density {voxels_per_block}: the colour index must round-trip to Wood (≤2)"
             );
 
             // Same node with the flag OFF → no voxel carries the bit (the default).
@@ -3705,7 +3722,7 @@ mod tests {
             assert!(
                 grid.occupied
                     .iter()
-                    .all(|v| v.material_id & GRID_OVERLAY_BIT == 0),
+                    .all(|v| !v.grid_overlay),
                 "density {voxels_per_block}: a node WITHOUT the flag must leave the bit clear"
             );
         }
@@ -3717,7 +3734,6 @@ mod tests {
     /// travels through the chunked resolve path (`resolve_chunk`) identically.
     #[test]
     fn voxel_grid_flag_bit_is_per_object() {
-        use crate::voxel::{material_id_color_index, GRID_OVERLAY_BIT};
         let voxels_per_block = 8u32;
         let base = SdfShape::from_blocks(ShapeKind::Box, [1, 1, 1], 1, voxels_per_block);
         // Stone node opts IN; Wood node opts OUT, placed disjointly.
@@ -3742,17 +3758,17 @@ mod tests {
         let stone_flagged = grid
             .occupied
             .iter()
-            .filter(|v| material_id_color_index(v.material_id) == stone_id)
-            .all(|v| v.material_id & GRID_OVERLAY_BIT != 0);
+            .filter(|v| v.color_index() == stone_id)
+            .all(|v| v.grid_overlay);
         let wood_unflagged = grid
             .occupied
             .iter()
-            .filter(|v| material_id_color_index(v.material_id) == wood_id)
-            .all(|v| v.material_id & GRID_OVERLAY_BIT == 0);
+            .filter(|v| v.color_index() == wood_id)
+            .all(|v| !v.grid_overlay);
         assert!(stone_flagged, "the enabled (Stone) node's voxels must all be flagged");
         assert!(wood_unflagged, "the disabled (Wood) node's voxels must all be unflagged");
         assert!(
-            grid.occupied.iter().any(|v| v.material_id & GRID_OVERLAY_BIT != 0),
+            grid.occupied.iter().any(|v| v.grid_overlay),
             "at least one voxel (the Stone node's) must carry the flag"
         );
     }
@@ -3786,10 +3802,11 @@ mod tests {
         grid.occupied
             .iter()
             .map(|voxel| {
+                let position = voxel.world_position();
                 [
-                    voxel.world_position[0].round() as i64,
-                    voxel.world_position[1].round() as i64,
-                    voxel.world_position[2].round() as i64,
+                    position[0].round() as i64,
+                    position[1].round() as i64,
+                    position[2].round() as i64,
                 ]
             })
             .collect()
@@ -3835,21 +3852,21 @@ mod tests {
         };
 
         // The composite centre lies between the two boxes; split there.
-        let mut xs: Vec<f32> = grid.occupied.iter().map(|v| v.world_position[0]).collect();
+        let mut xs: Vec<f32> = grid.occupied.iter().map(|v| v.world_position()[0]).collect();
         xs.sort_by(|a, b| a.partial_cmp(b).unwrap());
         let split_x = (xs.first().unwrap() + xs.last().unwrap()) / 2.0;
 
         let cluster_low: std::collections::HashSet<[i64; 3]> = grid
             .occupied
             .iter()
-            .filter(|v| v.world_position[0] < split_x)
-            .map(|v| key(v.world_position))
+            .filter(|v| v.world_position()[0] < split_x)
+            .map(|v| key(v.world_position()))
             .collect();
         let cluster_high: std::collections::HashSet<[i64; 3]> = grid
             .occupied
             .iter()
-            .filter(|v| v.world_position[0] >= split_x)
-            .map(|v| key(v.world_position))
+            .filter(|v| v.world_position()[0] >= split_x)
+            .map(|v| key(v.world_position()))
             .collect();
 
         assert!(!cluster_low.is_empty() && !cluster_high.is_empty(), "both boxes present");
@@ -3944,10 +3961,11 @@ mod tests {
         grid.occupied
             .iter()
             .map(|v| {
+                let position = v.world_position();
                 [
-                    (v.world_position[0] * 2.0) as i64,
-                    (v.world_position[1] * 2.0) as i64,
-                    (v.world_position[2] * 2.0) as i64,
+                    (position[0] * 2.0) as i64,
+                    (position[1] * 2.0) as i64,
+                    (position[2] * 2.0) as i64,
                 ]
             })
             .collect()
@@ -4079,21 +4097,21 @@ mod tests {
 
         // Disjoint: split the occupied set at the composite centre; each half is a
         // full house, and the two halves share no voxel position.
-        let xs: Vec<f32> = grid.occupied.iter().map(|v| v.world_position[0]).collect();
+        let xs: Vec<f32> = grid.occupied.iter().map(|v| v.world_position()[0]).collect();
         let split_x = (xs.iter().cloned().fold(f32::MAX, f32::min)
             + xs.iter().cloned().fold(f32::MIN, f32::max))
             / 2.0;
         let low: std::collections::HashSet<[i64; 3]> = grid
             .occupied
             .iter()
-            .filter(|v| v.world_position[0] < split_x)
-            .map(|v| [(v.world_position[0] * 2.0) as i64, (v.world_position[1] * 2.0) as i64, (v.world_position[2] * 2.0) as i64])
+            .filter(|v| v.world_position()[0] < split_x)
+            .map(|v| { let p = v.world_position(); [(p[0] * 2.0) as i64, (p[1] * 2.0) as i64, (p[2] * 2.0) as i64] })
             .collect();
         let high: std::collections::HashSet<[i64; 3]> = grid
             .occupied
             .iter()
-            .filter(|v| v.world_position[0] >= split_x)
-            .map(|v| [(v.world_position[0] * 2.0) as i64, (v.world_position[1] * 2.0) as i64, (v.world_position[2] * 2.0) as i64])
+            .filter(|v| v.world_position()[0] >= split_x)
+            .map(|v| { let p = v.world_position(); [(p[0] * 2.0) as i64, (p[1] * 2.0) as i64, (p[2] * 2.0) as i64] })
             .collect();
         assert_eq!(low.len(), def_count, "the low cluster is one full house");
         assert_eq!(high.len(), def_count, "the high cluster is one full house");
@@ -4376,12 +4394,13 @@ mod tests {
     ) -> std::collections::BTreeMap<([i64; 3], u16), usize> {
         let mut multiset = std::collections::BTreeMap::new();
         for voxel in &grid.occupied {
+            let position = voxel.world_position();
             let key = [
-                (voxel.world_position[0] - 0.5).round() as i64 + recentre_voxels[0],
-                (voxel.world_position[1] - 0.5).round() as i64 + recentre_voxels[1],
-                (voxel.world_position[2] - 0.5).round() as i64 + recentre_voxels[2],
+                (position[0] - 0.5).round() as i64 + recentre_voxels[0],
+                (position[1] - 0.5).round() as i64 + recentre_voxels[1],
+                (position[2] - 0.5).round() as i64 + recentre_voxels[2],
             ];
-            *multiset.entry((key, voxel.material_id)).or_insert(0) += 1;
+            *multiset.entry((key, voxel.color_index())).or_insert(0) += 1;
         }
         multiset
     }
@@ -4426,10 +4445,11 @@ mod tests {
                         let chunk = scene.resolve_chunk(chunk_coord, voxels_per_block, 0);
                         total_from_chunks += chunk.occupied_count();
                         for voxel in &chunk.occupied {
+                            let world_position = voxel.world_position();
                             for axis in 0..3 {
                                 let lo = (chunk_coord[axis] * chunk_extent_voxels) as f32;
                                 let hi = lo + chunk_extent_voxels as f32;
-                                let position = voxel.world_position[axis];
+                                let position = world_position[axis];
                                 assert!(
                                     position >= lo && position < hi,
                                     "[{label}] voxel {position} on axis {axis} escaped chunk \
@@ -4752,7 +4772,7 @@ mod tests {
         let span_hi = (offset_blocks + 4) as f32 * density;
         let expected_centre_voxels = (offset_blocks as f32 + 2.0) * density; // 1_600_032
         for voxel in &absolute.occupied {
-            let x = voxel.world_position[0];
+            let x = voxel.world_position()[0];
             assert!(
                 x >= span_lo && x < span_hi,
                 "far-box voxel X={x} must lie in the absolute span [{span_lo}, {span_hi}) \
@@ -4770,7 +4790,7 @@ mod tests {
         let mean_x: f64 = absolute
             .occupied
             .iter()
-            .map(|v| v.world_position[0] as f64)
+            .map(|v| v.world_position()[0] as f64)
             .sum::<f64>()
             / absolute.occupied_count() as f64;
         assert!(
@@ -5152,9 +5172,10 @@ mod tests {
         let mut min = [i64::MAX; 3];
         let mut max = [i64::MIN; 3];
         for voxel in &grid.occupied {
+            let world_position = voxel.world_position();
             for axis in 0..3 {
                 // Voxel centres sit at `n + 0.5`; `floor` recovers the cell index.
-                let index = voxel.world_position[axis].floor() as i64;
+                let index = world_position[axis].floor() as i64;
                 min[axis] = min[axis].min(index);
                 max[axis] = max[axis].max(index + 1); // half-open upper bound
             }
@@ -5273,9 +5294,10 @@ mod tests {
         let mut min = [f32::INFINITY; 3];
         let mut max = [f32::NEG_INFINITY; 3];
         for voxel in &grid.occupied {
+            let world_position = voxel.world_position();
             for axis in 0..3 {
-                min[axis] = min[axis].min(voxel.world_position[axis]);
-                max[axis] = max[axis].max(voxel.world_position[axis]);
+                min[axis] = min[axis].min(world_position[axis]);
+                max[axis] = max[axis].max(world_position[axis]);
             }
         }
         (min, max)
@@ -5342,8 +5364,7 @@ mod tests {
         // THE WIN: every voxel centre is a half-integer (frac == 0.5) — on the lattice,
         // inside a cell — NOT an integer straddling a boundary (the old odd-grid bug).
         for voxel in &grid.occupied {
-            for axis in 0..3 {
-                let pos = voxel.world_position[axis];
+            for (axis, pos) in voxel.world_position().into_iter().enumerate() {
                 assert_eq!(
                     pos.fract().abs(), 0.5,
                     "axis {axis} centre {pos} must be a HALF-INTEGER (on the voxel lattice) at d=1 odd extent"
@@ -5358,10 +5379,11 @@ mod tests {
             .occupied
             .iter()
             .map(|voxel| {
+                let position = voxel.world_position();
                 [
-                    voxel.world_position[0].floor() as i64,
-                    voxel.world_position[1].floor() as i64,
-                    voxel.world_position[2].floor() as i64,
+                    position[0].floor() as i64,
+                    position[1].floor() as i64,
+                    position[2].floor() as i64,
                 ]
             })
             .collect();

@@ -45,7 +45,7 @@ pub const CLOUD_NOISE_WAVELENGTH_FRACTION: f32 = 0.6;
 /// A single cloud puff.
 #[derive(Debug, Clone, Copy)]
 struct CloudPuff {
-    /// World-centred centre (same coordinate frame as `Voxel::world_position`).
+    /// World-centred centre (same coordinate frame as `Voxel::world_position()`).
     center: Vec3,
     /// Base radius in voxels (before noise displacement).
     radius: f32,
@@ -173,17 +173,19 @@ impl VoxelProducer for DebugCloudField {
                         );
                         if cloud_field_is_solid(sample, &clouds, &noise) {
                             local.push(Voxel {
-                                world_position: [
-                                    i as f32 + 0.5,
-                                    j as f32 + 0.5,
-                                    k as f32 + 0.5,
+                                local_index: [
+                                    i as i32,
+                                    j as i32,
+                                    k as i32,
                                 ],
                                 block_local_coord: [
                                     (i % voxels_per_block) as u8,
                                     (j % voxels_per_block) as u8,
                                     (k % voxels_per_block) as u8,
                                 ],
-                                material_id: 0,
+                                block_id: crate::core_geom::BlockId::DEFAULT,
+                                attrs: crate::core_geom::BlockAttrs::DEFAULT,
+                                grid_overlay: false,
                             });
                         }
                     }

@@ -1567,8 +1567,19 @@ async fn run_capture(options: ShotOptions) {
     // M8: `--export-vox` writes the resolved grid as a MagicaVoxel .vox and then
     // exits (no render needed — this is the headless verification path).
     if let Some(vox_path) = &options.export_vox_path {
+        // ADR 0003 §3a: map each categorical `block_id` to its colour via the procedural
+        // block palette (slot `material_id` = that material's average), so a multi-
+        // material grid exports each block in its own colour. The active material's slot
+        // keeps its representative colour, so a single-material grid is unchanged.
         let representative = procedural_material_average_color(options.material);
-        let export = VoxExport::from_grid(&grid, representative);
+        let mut palette_colors = VoxExport::block_palette_from_active(options.material, representative);
+        for (slot, color) in palette_colors.iter_mut().enumerate() {
+            *color = procedural_material_average_color(
+                voxel_worker::core_geom::MaterialChoice::from_material_id(slot as u16),
+            );
+        }
+        palette_colors[options.material.material_id() as usize] = representative;
+        let export = VoxExport::from_grid(&grid, palette_colors);
         match export.write(vox_path) {
             Ok(bytes) => println!(
                 "wrote {} ({} voxels, {} model(s), {} bytes)",

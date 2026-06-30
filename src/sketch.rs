@@ -560,17 +560,19 @@ impl SketchSolid {
                     index[in_plane_1] = cell_1;
                     index[normal] = layer;
                     Voxel {
-                        world_position: [
-                            index[0] as f32 + 0.5,
-                            index[1] as f32 + 0.5,
-                            index[2] as f32 + 0.5,
+                        local_index: [
+                            index[0] as i32,
+                            index[1] as i32,
+                            index[2] as i32,
                         ],
                         block_local_coord: [
                             (index[0] % density) as u8,
                             (index[1] % density) as u8,
                             (index[2] % density) as u8,
                         ],
-                        material_id: 0,
+                        block_id: crate::core_geom::BlockId::DEFAULT,
+                        attrs: crate::core_geom::BlockAttrs::DEFAULT,
+                        grid_overlay: false,
                     }
                 })
             })
@@ -761,17 +763,19 @@ impl SketchSolid {
                         }
 
                         local.push(Voxel {
-                            world_position: [
-                                index[0] as f32 + 0.5,
-                                index[1] as f32 + 0.5,
-                                index[2] as f32 + 0.5,
+                            local_index: [
+                                index[0] as i32,
+                                index[1] as i32,
+                                index[2] as i32,
                             ],
                             block_local_coord: [
                                 (index[0] % density) as u8,
                                 (index[1] % density) as u8,
                                 (index[2] % density) as u8,
                             ],
-                            material_id: 0,
+                            block_id: crate::core_geom::BlockId::DEFAULT,
+                            attrs: crate::core_geom::BlockAttrs::DEFAULT,
+                            grid_overlay: false,
                         });
                     }
                 }
@@ -800,14 +804,15 @@ mod tests {
         grid.occupied
             .iter()
             .map(|voxel| {
+                let position = voxel.world_position();
                 (
                     [
-                        (voxel.world_position[0] * 2.0).round() as i32,
-                        (voxel.world_position[1] * 2.0).round() as i32,
-                        (voxel.world_position[2] * 2.0).round() as i32,
+                        (position[0] * 2.0).round() as i32,
+                        (position[1] * 2.0).round() as i32,
+                        (position[2] * 2.0).round() as i32,
                     ],
                     voxel.block_local_coord,
-                    voxel.material_id,
+                    voxel.color_index(),
                 )
             })
             .collect()
@@ -913,8 +918,9 @@ mod tests {
         // anchored: centres are `idx + 0.5`, so the cell index is `world − 0.5`.
         let mut cells: BTreeSet<(i64, i64)> = BTreeSet::new();
         for voxel in &grid.occupied {
-            let cell_x = (voxel.world_position[0] - 0.5).round() as i64;
-            let cell_z = (voxel.world_position[2] - 0.5).round() as i64;
+            let position = voxel.world_position();
+            let cell_x = (position[0] - 0.5).round() as i64;
+            let cell_z = (position[2] - 0.5).round() as i64;
             cells.insert((cell_x, cell_z));
         }
         // The L occupies the full bottom two rows (z 0..2, all x) and the left two
@@ -988,7 +994,7 @@ mod tests {
         // block-local X = 17 % 16 = 1 (proves the sub-block fraction is carried).
         let has_local_one = grid.occupied.iter().any(|voxel| {
             // Corner-anchored: cell index = world − 0.5.
-            let cell_x = (voxel.world_position[0] - 0.5).round() as i64;
+            let cell_x = (voxel.world_position()[0] - 0.5).round() as i64;
             cell_x == 17 && voxel.block_local_coord[0] == 1
         });
         assert!(has_local_one, "sub-block block_local_coord must wrap at d=16");
@@ -1077,10 +1083,11 @@ mod tests {
         grid.occupied
             .iter()
             .map(|voxel| {
+                let position = voxel.world_position();
                 [
-                    (voxel.world_position[0] - 0.5).round() as i64,
-                    (voxel.world_position[1] - 0.5).round() as i64,
-                    (voxel.world_position[2] - 0.5).round() as i64,
+                    (position[0] - 0.5).round() as i64,
+                    (position[1] - 0.5).round() as i64,
+                    (position[2] - 0.5).round() as i64,
                 ]
             })
             .collect()
@@ -1330,8 +1337,9 @@ mod tests {
                     let mut min_cell = [i64::MAX; 3];
                     let mut max_cell = [i64::MIN; 3];
                     for voxel in &grid.occupied {
+                        let position = voxel.world_position();
                         for axis in 0..3 {
-                            let cell = (voxel.world_position[axis] - 0.5).round() as i64;
+                            let cell = (position[axis] - 0.5).round() as i64;
                             assert!(
                                 cell >= 0 && (cell as u32) < dims[axis],
                                 "{plane:?}/{revolve_axis:?}: cell {cell} out of [0,{}) on axis {axis}",
@@ -1438,7 +1446,7 @@ mod tests {
         half.resolve(&mut grid, density);
         let dim_y = grid.dimensions[1];
         let any_in_lower_half = grid.occupied.iter().any(|voxel| {
-            let cell_y = (voxel.world_position[1] - 0.5).round() as i64;
+            let cell_y = (voxel.world_position()[1] - 0.5).round() as i64;
             // centred-Y = cell_y + 0.5 - dim_y/2 < 0
             (cell_y as f32 + 0.5 - dim_y as f32 / 2.0) < 0.0
         });

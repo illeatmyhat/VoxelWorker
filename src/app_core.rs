@@ -2021,17 +2021,17 @@ mod undo_tests {
         assert!(!redo_effect.scene_changed, "redo of grid masters needs no re-resolve");
     }
 
-    /// Count the `GRID_OVERLAY_BIT`-flagged voxels in a fresh `rebuild` of `scene` at
-    /// `density`. `rebuild` routes through the per-chunk store (the chunk cache), so
-    /// this exercises the SAME invalidation path the live app uses — not the
-    /// always-full `resolve_region`.
+    /// Count the on-face-grid-flagged voxels (ADR 0003 §3c `grid_overlay` marker) in a
+    /// fresh `rebuild` of `scene` at `density`. `rebuild` routes through the per-chunk
+    /// store (the chunk cache), so this exercises the SAME invalidation path the live app
+    /// uses — not the always-full `resolve_region`.
     fn rebuild_grid_overlay_count(core: &mut AppCore, scene: &Scene, density: u32) -> usize {
         match core.rebuild(scene, density) {
             RebuildOutcome::Built(output) => output
                 .grid
                 .occupied
                 .iter()
-                .filter(|voxel| voxel.material_id & crate::voxel::GRID_OVERLAY_BIT != 0)
+                .filter(|voxel| voxel.grid_overlay)
                 .count(),
             RebuildOutcome::DensityRejected { .. } => {
                 panic!("density {density} unexpectedly rejected")
@@ -2115,8 +2115,9 @@ mod undo_tests {
         let mut min = [i64::MAX; 3];
         let mut max = [i64::MIN; 3];
         for voxel in &output.grid.occupied {
+            let position = voxel.world_position();
             for axis in 0..3 {
-                let corner = voxel.world_position[axis].floor() as i64;
+                let corner = position[axis].floor() as i64;
                 min[axis] = min[axis].min(corner);
                 max[axis] = max[axis].max(corner + 1); // half-open upper bound
             }
@@ -2209,7 +2210,7 @@ mod undo_tests {
         // voxels, and (critically) this populates the store + `previous_leaf_index`
         // so the NEXT rebuild diffs against it.
         let before = rebuild_grid_overlay_count(&mut core, &scene, density);
-        assert_eq!(before, 0, "with the flag OFF no voxel may carry GRID_OVERLAY_BIT");
+        assert_eq!(before, 0, "with the flag OFF no voxel may carry the grid_overlay marker");
 
         // Flip ONLY voxel_grid_on_faces ON via the intent door (no other edit).
         core.apply_intent(
