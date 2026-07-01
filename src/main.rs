@@ -34,6 +34,9 @@ use voxel_worker::{
 };
 use voxel_worker::core_geom::CHUNK_BLOCKS;
 use voxel_worker::CuboidMeshRenderer;
+use voxel_worker::{
+    GenerationTracker, GeometryRebuildRequest, GeometryWorker, ASYNC_REBUILD_CHUNK_THRESHOLD,
+};
 use voxel_worker::Scene;
 // ADR 0007: the GPU view-resolve pipelines are an opt-in display accelerator (`--features
 // gpu`); default builds keep the CPU fog densify so CI / GPU-less runs are unaffected.
@@ -64,6 +67,19 @@ struct WindowedState {
     /// instanced mesher was removed). Rebuilt from the resolve cache's per-chunk
     /// accessor on every geometry change in `rebuild_geometry`.
     cuboid_mesh_renderer: CuboidMeshRenderer,
+    /// Issue #60 (ADR 0003 §7): the background geometry-rebuild worker. A WHOLESALE
+    /// rebuild whose covering-chunk count exceeds [`ASYNC_REBUILD_CHUNK_THRESHOLD`] —
+    /// the ~3s large-object build — is dispatched here (cloned `device`/`queue`) instead
+    /// of built inline, so the UI never freezes. The main thread keeps rendering the
+    /// CURRENT `cuboid_mesh_renderer` (stale-while-rebuilding) until the worker's
+    /// freshly-built renderer arrives, then swaps it in. Small / incremental edits stay
+    /// synchronous. `None` in the (impossible-in-practice) case the worker failed to spawn.
+    geometry_worker: GeometryWorker,
+    /// Issue #60: the monotonic generation bookkeeping behind supersede. Each async
+    /// dispatch stamps a fresh generation; a received result is swapped in only when its
+    /// generation is still the newest dispatched (an edit mid-build supersedes the older
+    /// in-flight build, whose result is then discarded — see [`GenerationTracker`]).
+    geometry_generation: GenerationTracker,
     transform_gizmo_renderer: TransformGizmoRenderer,
     /// Per-object block lattice + floor grid (issue #29 S3). Its line batch is
     /// rebuilt each frame from the visible nodes' enabled grids.
@@ -471,6 +487,15 @@ impl WindowedState {
         let msaa_color_view =
             create_msaa_color_view(&gpu.device, width, height, COLOR_TARGET_FORMAT);
 
+        // Issue #60 (ADR 0003 §7): spawn the background geometry-rebuild worker with
+        // cloned GPU handles (wgpu 29 `Device`/`Queue` are `Send + Sync + Clone`, so the
+        // worker builds the mesh's GPU buffers off the main thread). A large wholesale
+        // rebuild dispatches here; the shell keeps rendering the current mesh until the
+        // worker's result arrives, then swaps it in.
+        let geometry_worker =
+            GeometryWorker::spawn(gpu.device.clone(), gpu.queue.clone(), COLOR_TARGET_FORMAT);
+        let geometry_generation = GenerationTracker::new();
+
         Self {
             window,
             surface,
@@ -480,6 +505,8 @@ impl WindowedState {
             egui_winit_state,
             panel_state,
             cuboid_mesh_renderer,
+            geometry_worker,
+            geometry_generation,
             transform_gizmo_renderer,
             scene_grid_renderer,
             points_renderer,
@@ -772,25 +799,60 @@ impl WindowedState {
         // two-layer path. A wholesale re-mesh (`None`: first build, density change, or a
         // region-spanning Part edit) recreates the renderer from the full resident set. Both
         // yield a byte-identical buffer set (proven in `cuboid_mesh`'s incremental parity test).
+        // The mesh's frame parameters, captured before `grid` is consumed by the fog
+        // below (the async request moves `two_layer_chunks`, so read `grid.dimensions`
+        // here). Issue #60: a SMALL/incremental edit stays inline; a large WHOLESALE
+        // rebuild dispatches to the worker (stale-while-rebuilding).
+        let grid_dimensions = grid.dimensions;
         match incremental_dirty_chunks {
             Some(dirty) => {
+                // Issue #54/#55 fast path: an incremental dirty-chunk re-mesh is already a
+                // few chunks — build it inline (no worker hop, no added latency), REGARDLESS
+                // of the async threshold (which gates only wholesale rebuilds).
+                //
+                // Issue #60: this applies to the CURRENT (possibly stale) renderer in place,
+                // so it must SUPERSEDE any in-flight async wholesale build — otherwise that
+                // older result would later swap in and clobber this incremental edit. Bumping
+                // the generation makes the tracker discard the stale async result on arrival.
+                self.geometry_generation.next_generation();
                 profiling::scope!("cuboid_incremental_two_layer");
                 self.cuboid_mesh_renderer.incremental_rebuild_from_two_layer_chunks(
                     &self.gpu.device,
                     &two_layer_chunks,
-                    grid.dimensions,
+                    grid_dimensions,
                     recentre_voxels,
                     density,
                     &dirty,
                 );
             }
+            None if two_layer_chunks.len() > ASYNC_REBUILD_CHUNK_THRESHOLD => {
+                // Issue #60: a LARGE wholesale rebuild (the ~3s two-layer classify was done
+                // above on the main thread; the heavy mesh CPU build + GPU upload is what
+                // remains) is dispatched to the worker so the UI never freezes. Stamp a fresh
+                // generation, send the owned chunks, and keep the CURRENT renderer drawing
+                // (stale-while-rebuilding). The result is polled + swapped in the event loop
+                // (`poll_geometry_worker`), discarded if a later edit superseded it.
+                let generation = self.geometry_generation.next_generation();
+                self.geometry_worker.dispatch(GeometryRebuildRequest {
+                    generation,
+                    two_layer_chunks,
+                    grid_dimensions,
+                    recentre_voxels,
+                    density,
+                });
+            }
             None => {
+                // A small wholesale rebuild (at/below the threshold): build inline — cheap
+                // enough not to hitch a frame, and it avoids the worker's one-frame swap
+                // latency. Also supersede any in-flight async build so its (now stale) result
+                // is discarded on arrival: bumping the generation makes the tracker reject it.
+                self.geometry_generation.next_generation();
                 self.cuboid_mesh_renderer = CuboidMeshRenderer::new_from_two_layer_chunks(
                     &self.gpu.device,
                     &self.gpu.queue,
                     COLOR_TARGET_FORMAT,
                     &two_layer_chunks,
-                    grid.dimensions,
+                    grid_dimensions,
                     recentre_voxels,
                     density,
                 );
@@ -881,6 +943,31 @@ impl WindowedState {
 
         self.grid = grid;
         self.measured_band = (u32::MAX, u32::MAX); // force a re-measure next frame.
+    }
+
+    /// Issue #60 (ADR 0003 §7): poll the geometry worker for a finished wholesale
+    /// rebuild and, if it is NOT stale, swap it in + request a redraw. Called each frame
+    /// in the event loop. Non-blocking — the app never waits on the worker.
+    ///
+    /// Stale-while-rebuilding: until a fresh result arrives, the current
+    /// `cuboid_mesh_renderer` keeps drawing. On arrival, the [`GenerationTracker`] decides
+    /// whether the result is still the newest dispatched (accept + swap) or was superseded
+    /// by a later edit (discard). The worker drains-to-latest, so at most the newest built
+    /// renderer is here; the tracker guards against a build that a mid-flight edit
+    /// (wholesale OR incremental — both bump the generation) already superseded.
+    fn poll_geometry_worker(&mut self) {
+        let Some(result) = self.geometry_worker.try_recv_result() else {
+            return;
+        };
+        if !self.geometry_generation.accepts(result.generation) {
+            // A later edit superseded this build — discard it (the stale mesh, or the newer
+            // inline/incremental result, is already what's showing).
+            return;
+        }
+        // Fresh: swap the freshly-built renderer in (GPU buffers already uploaded on the
+        // worker) and redraw so the new mesh shows this frame.
+        self.cuboid_mesh_renderer = result.renderer;
+        self.window.request_redraw();
     }
 
     /// Drain the background scan channel into a pending queue, then build a
@@ -1275,6 +1362,10 @@ impl WindowedState {
         let target_view = surface_texture
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
+
+        // Issue #60: poll the geometry worker — swap in a finished (non-stale) wholesale
+        // mesh rebuild before drawing so it shows this frame (stale-while-rebuilding).
+        self.poll_geometry_worker();
 
         // M6: drain the background scan channel and turn any new groups into
         // palette tiles (GPU thumbnail + egui texture registration on this thread).

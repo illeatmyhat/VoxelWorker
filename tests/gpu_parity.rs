@@ -626,3 +626,99 @@ fn gpu_multidim_dispatch_matches_cpu_and_trips_single_dim_limit() {
         "the solid box's covering set is fully occupied, so the GPU atlas keeps every chunk"
     );
 }
+
+// ===========================================================================
+// Issue #60 — async geometry-rebuild build-equivalence net
+// ===========================================================================
+
+/// The build-equivalence net (issue #60): a mesh built via the geometry WORKER's build
+/// entry (`geometry_worker::build_geometry`) must be BYTE-IDENTICAL to a synchronous build
+/// (`CuboidMeshRenderer::new_from_two_layer_chunks`) for the same large scene. Both call
+/// the exact same builder, so this guards that the worker's request→build path feeds it the
+/// same inputs and never diverges from the sync path — the correctness net the async move
+/// rests on. Equivalence is asserted on the built renderers' per-build mesh stats (chunk /
+/// face / triangle / box counts — the exposed-face set the two-layer mesher emits); a
+/// divergence in any is a build regression.
+///
+/// The scene is a 24³-block box → 6×6×6 = 216 covering chunks, comfortably above
+/// `ASYNC_REBUILD_CHUNK_THRESHOLD` (128), so it is representative of the LARGE wholesale
+/// rebuild the worker is actually dispatched for.
+#[test]
+fn worker_build_matches_sync_build_for_large_scene() {
+    use voxel_worker::{
+        build_geometry, CuboidMeshRenderer, GeometryRebuildRequest, TwoLayerStore,
+        ASYNC_REBUILD_CHUNK_THRESHOLD, COLOR_TARGET_FORMAT,
+    };
+
+    let gpu = pollster::block_on(GpuContext::new(None));
+
+    let vpb = 16u32;
+    let size_blocks_per_axis = 24u32;
+    let kind = ShapeKind::Box;
+    let wall_blocks = 1u32;
+    let geometry = GeometryParams {
+        shape: kind,
+        size_voxels: [size_blocks_per_axis * vpb; 3],
+        size_measurements: None,
+        voxels_per_block: vpb,
+        wall_blocks,
+    };
+    let scene = Scene::from_geometry(geometry, MaterialChoice::default());
+
+    // Resolve the covering two-layer chunks exactly as the live rebuild does.
+    let two_layer_chunks = TwoLayerStore::enabled().build_covering_chunks(&scene, vpb, 0);
+    let recentre_voxels = scene.recentre_voxels_for_resolve(vpb);
+    // Use the placed region dims (what the live shell passes for `grid.dimensions`).
+    let grid_dimensions = scene.placed_region_dimensions(vpb);
+
+    assert!(
+        two_layer_chunks.len() > ASYNC_REBUILD_CHUNK_THRESHOLD,
+        "the fixture must exceed the async threshold to be representative: {} chunks (need > {})",
+        two_layer_chunks.len(),
+        ASYNC_REBUILD_CHUNK_THRESHOLD
+    );
+
+    // (a) The SYNCHRONOUS build (the inline path).
+    let sync = CuboidMeshRenderer::new_from_two_layer_chunks(
+        &gpu.device,
+        &gpu.queue,
+        COLOR_TARGET_FORMAT,
+        &two_layer_chunks,
+        grid_dimensions,
+        recentre_voxels,
+        vpb,
+    );
+
+    // (b) The WORKER build entry (what runs on the background thread), fed the same request.
+    let request = GeometryRebuildRequest {
+        generation: 1,
+        two_layer_chunks,
+        grid_dimensions,
+        recentre_voxels,
+        density: vpb,
+    };
+    let worker = build_geometry(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT, &request);
+
+    assert_eq!(
+        sync.chunk_count(),
+        worker.chunk_count(),
+        "worker vs sync: resident render-chunk count must match"
+    );
+    assert_eq!(
+        sync.face_count(),
+        worker.face_count(),
+        "worker vs sync: exposed-face set must be byte-identical"
+    );
+    assert_eq!(
+        sync.triangle_count(),
+        worker.triangle_count(),
+        "worker vs sync: triangle count must match"
+    );
+    assert_eq!(
+        sync.box_count(),
+        worker.box_count(),
+        "worker vs sync: decomposed box count must match"
+    );
+    // Sanity: a solid box actually produced geometry (the net isn't trivially comparing 0==0).
+    assert!(sync.face_count() > 0, "the fixture box must mesh to a non-empty face set");
+}
