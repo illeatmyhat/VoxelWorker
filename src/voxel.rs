@@ -496,7 +496,11 @@ pub fn union_field_intervals(
 /// v1 has a single implementor ([`SdfShape`]); the trait exists so a sculpt
 /// overlay (REPRESENTATION.md option 2) can be added later without changing the
 /// renderer.
-pub trait VoxelProducer {
+// `Send + Sync`: every implementor ([`SdfShape`], the sketch producer, [`DebugCloudField`])
+// is plain immutable data, so a boxed producer can be SHARED read-only across rayon threads.
+// The #63 hoisted two-layer build computes the leaf list ONCE and shares the boxed producers
+// across the parallel per-chunk build — this bound is what lets `&[LeafProducer]` be `Sync`.
+pub trait VoxelProducer: Send + Sync {
     /// Write occupied voxels into `grid`. The grid's `dimensions` are assumed to
     /// already be set by the caller (so multiple producers can target one grid).
     /// `voxels_per_block` is the document-level density (ADR 0003 §3f(0): one grid
