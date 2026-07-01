@@ -32,10 +32,11 @@ use voxel_worker::{
     VIEW_CUBE_VIEWPORT_PIXELS,
 };
 use voxel_worker::CuboidMeshRenderer;
+use voxel_worker::Scene;
 // ADR 0007: the GPU view-resolve pipelines are an opt-in display accelerator (`--features
 // gpu`); default builds keep the CPU fog densify so CI / GPU-less runs are unaffected.
 #[cfg(feature = "gpu")]
-use voxel_worker::{gpu_resolve::GpuResolver, PerChunkAtlasGeometry, Scene};
+use voxel_worker::{gpu_resolve::GpuResolver, PerChunkAtlasGeometry};
 
 /// Drag threshold (pixels) distinguishing a click (snap) from a drag (orbit) on
 /// the view cube, and the general orbit-start threshold.
@@ -166,6 +167,14 @@ struct WindowedState {
     /// when egui consumed the move. The cube body never highlights (we skip its
     /// raycast for hover), so a body hover is treated as `None`.
     hovered_cube_zone: Option<CubeChromeZone>,
+    /// Issue #58: the onion-fog occupancy is DEMAND-DRIVEN — built/uploaded only when
+    /// the fog will actually be drawn (`onion_active`), never on the common edit path
+    /// where onion-skin is off (its default). This flag records that the current fog
+    /// occupancy is STALE relative to `self.grid`: set by `rebuild_geometry` (and at
+    /// startup) whenever it skips the fog build because onion is inactive, cleared the
+    /// moment the render path lazily builds the fog before drawing it. A pure band
+    /// scrub does NOT set it (the band clip is applied per-frame; occupancy is reused).
+    fog_occupancy_dirty: bool,
 }
 
 #[derive(Default)]
@@ -363,26 +372,39 @@ impl WindowedState {
         // ADR 0007: a single-producer scene resolves its atlas on the GPU (no CPU densify)
         // under `--features gpu`; otherwise the CPU densify path.
         let fog_mode = FogMode::PerChunk;
-        #[cfg(feature = "gpu")]
-        let gpu_fog_installed = Self::try_install_gpu_per_chunk_fog(
-            &gpu_resolver,
-            &mut onion_fog_renderer,
-            &gpu,
-            &panel_state.scene,
-            &grid,
-            panel_state.geometry.voxels_per_block,
-        );
-        #[cfg(not(feature = "gpu"))]
-        let gpu_fog_installed = false;
-        if !gpu_fog_installed {
-            Self::upload_fog_occupancy(
+        // Issue #58: DEMAND-DRIVEN fog. Onion-skin defaults OFF, so at startup the fog is
+        // never drawn — skip the build entirely and mark the occupancy stale. The render
+        // path builds it lazily the first frame onion-skin is enabled. If a startup config
+        // ever opened WITH onion-skin on (and not in debug-face mode), build it now.
+        let onion_active_at_startup =
+            panel_state.layer_range.onion_skin && !panel_state.debug_face_orientation;
+        let mut fog_occupancy_dirty = true;
+        if onion_active_at_startup {
+            #[cfg(feature = "gpu")]
+            let gpu_fog_installed = Self::try_install_gpu_per_chunk_fog(
+                &gpu_resolver,
                 &mut onion_fog_renderer,
-                fog_mode,
-                &gpu.device,
-                &gpu.queue,
+                &gpu,
+                &panel_state.scene,
                 &grid,
                 panel_state.geometry.voxels_per_block,
             );
+            #[cfg(not(feature = "gpu"))]
+            let gpu_fog_installed = false;
+            if !gpu_fog_installed {
+                Self::upload_fog_occupancy(
+                    &mut onion_fog_renderer,
+                    fog_mode,
+                    &gpu.device,
+                    &gpu.queue,
+                    &grid,
+                    panel_state.geometry.voxels_per_block,
+                );
+            }
+            println!("fog: built at startup (onion-skin active)");
+            fog_occupancy_dirty = false;
+        } else {
+            println!("fog: skipped at startup (onion inactive)");
         }
         let thumbnail_renderer = ThumbnailRenderer::new(&gpu.device, &gpu.queue);
 
@@ -464,6 +486,7 @@ impl WindowedState {
             press_position: None,
             press_in_view_cube: false,
             view_cube_drag_active: false,
+            fog_occupancy_dirty,
             // Default to the full target until the first frame fills it in.
             last_viewport_px: [0, 0, width, height],
             context_menu_open_at: None,
@@ -567,6 +590,64 @@ impl WindowedState {
         fog.per_chunk_active()
     }
 
+    /// Build + upload the onion-fog occupancy field for `grid`. ADR 0007 live call-site
+    /// swap: a single-producer scene resolves its per-chunk atlas on the GPU (no CPU
+    /// densify — the ~592ms/edit bottleneck) under `--features gpu`; a multi-producer
+    /// scene, or a default build, takes the CPU densify path (`#28 S5b` per-chunk).
+    ///
+    /// Issue #58: this is now the DEMAND-DRIVEN entry point — invoked only when the fog
+    /// will be drawn (`rebuild_geometry` when onion is active, or lazily by the render
+    /// path when the occupancy is stale). The GPU-atlas-vs-CPU-densify dispatch (#56) is
+    /// unchanged; only WHEN it runs moved. Callers own clearing `fog_occupancy_dirty`.
+    ///
+    /// Taken as an associated fn over explicit disjoint fields (not `&mut self`) so the
+    /// render-path caller can pass `&self.grid` while the other fog fields are borrowed —
+    /// `self.grid` is the live occupancy source there, so it can't be re-borrowed through
+    /// `&mut self`. `rebuild_geometry` passes its fresh local grid the same way.
+    #[allow(clippy::too_many_arguments)]
+    fn build_fog_occupancy(
+        #[cfg(feature = "gpu")] gpu_resolver: &GpuResolver,
+        onion_fog_renderer: &mut OnionFogRenderer,
+        gpu: &GpuContext,
+        // The scene drives only the GPU single-producer atlas resolve; in the CPU-only
+        // (non-`gpu`) build the densify reads the grid directly, so `scene` is unused there.
+        #[cfg_attr(not(feature = "gpu"), allow(unused_variables))] scene: &Scene,
+        fog_mode: FogMode,
+        grid: &VoxelGrid,
+        density: u32,
+    ) {
+        profiling::scope!("fog_upload");
+        #[cfg(feature = "gpu")]
+        let gpu_fog_installed = Self::try_install_gpu_per_chunk_fog(
+            gpu_resolver,
+            onion_fog_renderer,
+            gpu,
+            scene,
+            grid,
+            density,
+        );
+        #[cfg(not(feature = "gpu"))]
+        let gpu_fog_installed = false;
+        if !gpu_fog_installed {
+            // CPU densify fallback (multi-producer, dispatch too large for the GPU, or a
+            // default build). Own scope so a Tracy trace separates it from the GPU path
+            // — `upload_grid_per_chunk` itself is not annotated, so without this the
+            // fallback's cost hides inside `fog_upload`.
+            profiling::scope!("fog_cpu_densify");
+            println!("fog: per-chunk mode (CPU densify)");
+            Self::upload_fog_occupancy(
+                onion_fog_renderer,
+                fog_mode,
+                &gpu.device,
+                &gpu.queue,
+                grid,
+                density,
+            );
+        } else {
+            println!("fog: per-chunk mode (GPU atlas)");
+        }
+    }
+
     /// Re-resolve the grid + GPU geometry for the current scene. Camera UX change:
     /// this NEVER moves the camera — edits keep the orbit target + distance fixed.
     /// Explicit framing (startup fit, Home/Fit, Focus) is handled by their own paths.
@@ -657,38 +738,28 @@ impl WindowedState {
                 recentre_shift_voxels[2] as f32,
             );
         }
-        // Re-upload the fog's occupancy field for the new grid. ADR 0007 live call-site
-        // swap: a single-producer scene resolves its per-chunk atlas on the GPU (no CPU
-        // densify — the ~592ms/edit bottleneck) under `--features gpu`; a multi-producer
-        // scene, or a default build, takes the CPU densify path (`#28 S5b` per-chunk).
-        {
-            profiling::scope!("fog_upload");
-            #[cfg(feature = "gpu")]
-            let gpu_fog_installed = Self::try_install_gpu_per_chunk_fog(
+        // Re-upload the fog's occupancy field for the new grid — but ONLY when the fog
+        // is actually drawn (issue #58). Onion-skin defaults OFF, so the common edit path
+        // does ZERO fog work: mark the occupancy stale and let the render path build it
+        // lazily the first frame onion-skin is on. When onion IS active, build it now (the
+        // edit changed the geometry the fog visualises) so this frame renders correctly.
+        let onion_active =
+            self.panel_state.layer_range.onion_skin && !self.panel_state.debug_face_orientation;
+        if onion_active {
+            Self::build_fog_occupancy(
+                #[cfg(feature = "gpu")]
                 &self.gpu_resolver,
                 &mut self.onion_fog_renderer,
                 &self.gpu,
                 &self.panel_state.scene,
+                self.fog_mode,
                 &grid,
                 density,
             );
-            #[cfg(not(feature = "gpu"))]
-            let gpu_fog_installed = false;
-            if !gpu_fog_installed {
-                // CPU densify fallback (multi-producer, dispatch too large for the GPU, or a
-                // default build). Own scope so a Tracy trace separates it from the GPU path
-                // — `upload_grid_per_chunk` itself is not annotated, so without this the
-                // fallback's cost hides inside `fog_upload`.
-                profiling::scope!("fog_cpu_densify");
-                Self::upload_fog_occupancy(
-                    &mut self.onion_fog_renderer,
-                    self.fog_mode,
-                    &self.gpu.device,
-                    &self.gpu.queue,
-                    &grid,
-                    density,
-                );
-            }
+            self.fog_occupancy_dirty = false;
+        } else {
+            self.fog_occupancy_dirty = true;
+            println!("fog: skipped on rebuild (onion inactive)");
         }
         // The transform gizmo (issue #29 S2) is sized + positioned from the SELECTED
         // node in the per-frame render path (it must track selection changes, which
@@ -1402,6 +1473,25 @@ impl WindowedState {
         // (the grid itself is uploaded on geometry rebuild, not per frame).
         let onion_active = layer_range.onion_skin && !self.panel_state.debug_face_orientation;
         if onion_active {
+            // Issue #58: build the occupancy lazily the FIRST frame the fog is drawn after
+            // it went stale — i.e. the user just enabled onion-skin (or turned off
+            // debug-face), or edited while onion was off. A pure band scrub does NOT dirty
+            // the occupancy, so this is skipped and the built atlas is reused (the band
+            // clip is applied per-frame below via `onion_fog_params`). Once built, clear
+            // the flag so subsequent frames don't rebuild.
+            if self.fog_occupancy_dirty {
+                Self::build_fog_occupancy(
+                    #[cfg(feature = "gpu")]
+                    &self.gpu_resolver,
+                    &mut self.onion_fog_renderer,
+                    &self.gpu,
+                    &self.panel_state.scene,
+                    self.fog_mode,
+                    &self.grid,
+                    self.panel_state.geometry.voxels_per_block,
+                );
+                self.fog_occupancy_dirty = false;
+            }
             self.onion_fog_renderer.update(
                 &self.gpu.queue,
                 AppCore::onion_fog_params(view_projection, grid_dimensions, layer_range),
