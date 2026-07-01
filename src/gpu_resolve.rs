@@ -59,7 +59,11 @@ struct Descriptor {
     /// DebugClouds: fBm octave count + number of puffs in the `cloud_puffs` buffer.
     cloud_octaves: u32,
     num_puffs: u32,
-    _pad0: u32,
+    /// The x-extent of the (possibly 2-D) workgroup dispatch grid. The WGSL entries fold
+    /// `(workgroup_id.x + workgroup_id.y * dispatch_wg_x)` back into one linear workgroup
+    /// index, so a large scene can spread across a 2-D grid without any single dispatch
+    /// dimension exceeding `max_compute_workgroups_per_dimension` (65,535) — #56.
+    dispatch_wg_x: u32,
     _pad1: u32,
 }
 
@@ -93,9 +97,43 @@ impl Descriptor {
             padded_row: 0,
             cloud_octaves: 0,
             num_puffs: 0,
-            _pad0: 0,
+            dispatch_wg_x: 0,
             _pad1: 0,
         }
+    }
+}
+
+/// A workgroup dispatch spread across a 2-D grid so no single dimension exceeds the
+/// device's `max_compute_workgroups_per_dimension` (65,535). `total_workgroups` cells'
+/// worth of 64-wide workgroups are laid out as `wg_x` columns × `wg_y` rows; the tail
+/// row over-covers, so every entry bounds-checks the linear cell index against the real
+/// cell count as before. The WGSL folds `(wg.x + wg.y * wg_x)` back into one linear
+/// workgroup index (see `dispatch_wg_x`), so the occupancy math is byte-identical to the
+/// old 1-D dispatch — only the dispatch shape changes (#56).
+#[derive(Copy, Clone)]
+struct DispatchDims {
+    wg_x: u32,
+    wg_y: u32,
+}
+
+impl DispatchDims {
+    /// Lay `total_workgroups` out under the device's per-dimension limit. Uses one row
+    /// (`wg_y == 1`) while it fits, then spills into a 2-D grid. A 3rd dimension is never
+    /// needed for realistic scenes (`max_dim²` ≈ 4.3e9 workgroups ≈ 2.7e11 cells), but if
+    /// `wg_y` itself would overflow we panic loudly rather than silently under-dispatch.
+    fn cover(total_workgroups: u32, device: &wgpu::Device) -> Self {
+        let max_dim = device.limits().max_compute_workgroups_per_dimension;
+        if total_workgroups <= max_dim {
+            return Self { wg_x: total_workgroups.max(1), wg_y: 1 };
+        }
+        let wg_x = max_dim;
+        let wg_y = total_workgroups.div_ceil(wg_x);
+        assert!(
+            wg_y <= max_dim,
+            "gpu_resolve: {total_workgroups} workgroups needs a 3-D dispatch \
+             ({wg_x}×{wg_y} exceeds the {max_dim} per-dimension limit); scene too large"
+        );
+        Self { wg_x, wg_y }
     }
 }
 
@@ -480,9 +518,11 @@ impl GpuResolver {
     /// occupancy itself never round-trips the CPU. `recentre_voxels` (read off the resolved
     /// grid, ADR 0008) shifts only `world_origin`.
     ///
-    /// Returns `None` when the producer has no interior voxels, or when the flags dispatch
-    /// over the full covering set would exceed the device's single-dimension workgroup
-    /// limit — the caller then keeps the CPU fog path (graceful, never a panic).
+    /// Returns `None` when the producer has no interior voxels (the caller then keeps the
+    /// CPU fog path — graceful, never a panic). Cell/chunk count no longer gates the GPU
+    /// path: the dispatch spreads over a 2-D workgroup grid (#56), so a large covering set
+    /// stays on the GPU; only an interior-empty producer or a non-empty count over the atlas
+    /// budget (rejected downstream by `install_per_chunk_atlas`) keeps the CPU densify.
     pub fn resolve_single_producer_fog_atlas(
         &self,
         device: &wgpu::Device,
@@ -541,15 +581,11 @@ impl GpuResolver {
         }
         descriptor.num_chunks = coords.len() as u32;
 
-        // Single-dimension workgroup-fit check: the interior-flags pass below dispatches
-        // over the FULL covering set (`pad³ · covering` cells), so it is the binding one.
-        // Degrade to the CPU path instead of the A/B backstop panic in the dispatch.
-        let pad = descriptor.pad as usize;
-        let workgroups = (pad * pad * pad * coords.len()).div_ceil(64);
-        if workgroups > device.limits().max_compute_workgroups_per_dimension as usize {
-            return None;
-        }
-
+        // No single-dimension workgroup-fit bail here anymore (#56): the dispatch helpers
+        // spread the compute over a 2-D workgroup grid, so a large covering set (a 50×10×50
+        // cylinder needs ~2.3M workgroups) stays on the GPU instead of falling back to the
+        // 26s CPU densify. The remaining `None` returns below (no interior voxels, and the
+        // atlas over the MAX_FOG_CHUNKS budget via `install_per_chunk_atlas`) are legitimate.
         let inputs = match producer {
             SingleProducerKind::Sdf(_) => ProducerInputs::sdf(),
             SingleProducerKind::Sketch(_) => ProducerInputs::sketch(&profile_vec),
@@ -578,6 +614,21 @@ impl GpuResolver {
             return None;
         }
         descriptor.num_chunks = coords.len() as u32;
+
+        // Atlas-budget guard: the atlas pass packs every compacted chunk into ONE storage
+        // buffer (256-padded rows) before `copy_buffer_to_texture`. If that buffer would
+        // exceed the device's `max_storage_buffer_binding_size`, degrade to the CPU path
+        // rather than validation-error the bind group. (The device requests the adapter's
+        // real limit — usually GiBs — so this only trips for genuinely huge scenes; it is
+        // the legitimate "atlas over budget" `None`, alongside MAX_FOG_CHUNKS downstream.)
+        let tiles_per_axis = ((coords.len() as f64).cbrt().ceil() as u32).max(1);
+        let atlas_dim = tiles_per_axis * descriptor.pad;
+        let padded_row =
+            atlas_dim.div_ceil(COPY_BYTES_PER_ROW_ALIGNMENT) * COPY_BYTES_PER_ROW_ALIGNMENT;
+        let packed_bytes = padded_row as u64 * atlas_dim as u64 * atlas_dim as u64;
+        if packed_bytes > device.limits().max_storage_buffer_binding_size {
+            return None;
+        }
 
         let (texture, geom) = self.atlas_pipeline_run(device, queue, descriptor, &coords, inputs);
 
@@ -729,7 +780,7 @@ impl GpuResolver {
         &self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        descriptor: Descriptor,
+        mut descriptor: Descriptor,
         chunk_coords: &[[i32; 3]],
         inputs: ProducerInputs,
     ) -> Vec<Vec<u8>> {
@@ -741,16 +792,12 @@ impl GpuResolver {
         }
         let total_cells = cells_per_chunk * num_chunks;
 
-        // The spike dispatches one invocation per apron cell along x only; guard the
-        // single-dimension workgroup-count limit so a too-large case fails loudly here
-        // (the test matrix keeps high-density cases to a few chunks — see the test).
-        let workgroups = total_cells.div_ceil(64);
-        let max_dim = device.limits().max_compute_workgroups_per_dimension as usize;
-        assert!(
-            workgroups <= max_dim,
-            "gpu_resolve spike: {workgroups} workgroups exceeds the {max_dim} single-dimension \
-             limit; reduce chunk count or density for this case"
-        );
+        // One invocation per apron cell, spread across a 2-D workgroup grid so no single
+        // dispatch dimension exceeds `max_compute_workgroups_per_dimension` (#56). The WGSL
+        // folds the 2-D workgroup id back into the linear cell index via `dispatch_wg_x`.
+        let workgroups = (total_cells.div_ceil(64)) as u32;
+        let dims = DispatchDims::cover(workgroups, device);
+        descriptor.dispatch_wg_x = dims.wg_x;
 
         let descriptor_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("gpu_resolve descriptor"),
@@ -840,7 +887,7 @@ impl GpuResolver {
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
-            pass.dispatch_workgroups(workgroups as u32, 1, 1);
+            pass.dispatch_workgroups(dims.wg_x, dims.wg_y, 1);
         }
         encoder.copy_buffer_to_buffer(&output_buffer, 0, &staging_buffer, 0, output_size);
         queue.submit(Some(encoder.finish()));
@@ -890,7 +937,7 @@ impl GpuResolver {
         &self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        descriptor: Descriptor,
+        mut descriptor: Descriptor,
         chunk_coords: &[[i32; 3]],
         inputs: ProducerInputs,
     ) -> Vec<bool> {
@@ -899,13 +946,11 @@ impl GpuResolver {
             return Vec::new();
         }
         let pad = descriptor.pad as usize;
-        let workgroups = (pad * pad * pad * num_chunks).div_ceil(64);
-        let max_dim = device.limits().max_compute_workgroups_per_dimension as usize;
-        assert!(
-            workgroups <= max_dim,
-            "gpu_resolve flags: {workgroups} workgroups exceeds the {max_dim} single-dimension \
-             limit (the caller checks this first; this is the backstop)"
-        );
+        // Spread over a 2-D workgroup grid (see `DispatchDims`) so the full covering set —
+        // the binding dispatch — stays on the GPU even when it needs > 65,535 workgroups (#56).
+        let workgroups = (pad * pad * pad * num_chunks).div_ceil(64) as u32;
+        let dims = DispatchDims::cover(workgroups, device);
+        descriptor.dispatch_wg_x = dims.wg_x;
 
         let descriptor_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("gpu_resolve flags descriptor"),
@@ -981,7 +1026,7 @@ impl GpuResolver {
             });
             pass.set_pipeline(&self.flags_pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
-            pass.dispatch_workgroups(workgroups as u32, 1, 1);
+            pass.dispatch_workgroups(dims.wg_x, dims.wg_y, 1);
         }
         encoder.copy_buffer_to_buffer(&flags_buffer, 0, &staging_buffer, 0, flags_size);
         queue.submit(Some(encoder.finish()));
@@ -1037,13 +1082,11 @@ impl GpuResolver {
         if num_chunks == 0 {
             return (create_empty_atlas(device), geom);
         }
-        let workgroups = (cells_per_chunk * num_chunks).div_ceil(64);
-        let max_dim = device.limits().max_compute_workgroups_per_dimension as usize;
-        assert!(
-            workgroups <= max_dim,
-            "gpu_resolve atlas: {workgroups} workgroups exceeds the {max_dim} single-dimension limit \
-             (the live path checks `atlas_dispatch_fits` first; this is the A/B-test backstop)"
-        );
+        // Spread the flags + atlas passes over a 2-D workgroup grid so large scenes stay on
+        // the GPU (#56); the WGSL folds the 2-D workgroup id back via `dispatch_wg_x`.
+        let workgroups = (cells_per_chunk * num_chunks).div_ceil(64) as u32;
+        let dims = DispatchDims::cover(workgroups, device);
+        descriptor.dispatch_wg_x = dims.wg_x;
 
         // The packed-byte buffer (256-padded rows), as `atomic<u32>` words in the shader.
         let padded_bytes = padded_row as usize * atlas_dim as usize * atlas_dim as usize;
@@ -1137,7 +1180,7 @@ impl GpuResolver {
             });
             pass.set_pipeline(&self.flags_pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
-            pass.dispatch_workgroups(workgroups as u32, 1, 1);
+            pass.dispatch_workgroups(dims.wg_x, dims.wg_y, 1);
         }
         // Phase 2: pack occupancy bytes, gated on the flags.
         {
@@ -1147,7 +1190,7 @@ impl GpuResolver {
             });
             pass.set_pipeline(&self.atlas_pipeline);
             pass.set_bind_group(0, &bind_group, &[]);
-            pass.dispatch_workgroups(workgroups as u32, 1, 1);
+            pass.dispatch_workgroups(dims.wg_x, dims.wg_y, 1);
         }
         let copy_layout = wgpu::TexelCopyBufferLayout {
             offset: 0,

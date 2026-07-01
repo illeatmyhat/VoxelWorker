@@ -61,7 +61,11 @@ struct Descriptor {
     // DebugClouds: fBm octave count + number of cloud puffs in `cloud_puffs`.
     cloud_octaves: u32,
     num_puffs: u32,
-    _pad0: u32,
+    // The x-extent of the (possibly 2-D) workgroup dispatch grid, so every entry can
+    // fold a 2-D workgroup id back into one linear workgroup index (`wg.x + wg.y *
+    // dispatch_wg_x`). 2-D is needed because a large scene's total workgroup count
+    // exceeds `max_compute_workgroups_per_dimension` (65,535) on a single axis (#56).
+    dispatch_wg_x: u32,
     _pad1: u32,
 };
 
@@ -384,9 +388,21 @@ fn evaluate(voxel_index: vec3<i32>) -> u32 {
     }
 }
 
+// Fold a (possibly 2-D) workgroup id + in-workgroup index into the single linear cell
+// index the entries decode. `dispatch_wg_x` is the dispatch grid's x-extent, so the
+// linear workgroup index is `wg.x + wg.y * dispatch_wg_x` and the cell index is that
+// times the workgroup size (64) plus the local index. Matches the Rust dispatch (#56).
+fn linear_cell_index(workgroup_id: vec3<u32>, local_index: u32) -> u32 {
+    let linear_workgroup = workgroup_id.x + workgroup_id.y * desc.dispatch_wg_x;
+    return linear_workgroup * 64u + local_index;
+}
+
 @compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
-    let linear = global_id.x;
+fn main(
+    @builtin(workgroup_id) workgroup_id: vec3<u32>,
+    @builtin(local_invocation_index) local_index: u32,
+) {
+    let linear = linear_cell_index(workgroup_id, local_index);
     let pad = desc.pad;
     let cells_per_chunk = pad * pad * pad;
     let total = desc.num_chunks * cells_per_chunk;
@@ -422,8 +438,11 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 // covering chunk with no interior occupancy (only an apron grazing the surface) stays an
 // all-zero tile — reproducing the CPU non-empty-set render without any densify/readback.
 @compute @workgroup_size(64)
-fn main_flags(@builtin(global_invocation_id) global_id: vec3<u32>) {
-    let linear = global_id.x;
+fn main_flags(
+    @builtin(workgroup_id) workgroup_id: vec3<u32>,
+    @builtin(local_invocation_index) local_index: u32,
+) {
+    let linear = linear_cell_index(workgroup_id, local_index);
     let pad = desc.pad;
     let cells_per_chunk = pad * pad * pad;
     let total = desc.num_chunks * cells_per_chunk;
@@ -461,8 +480,11 @@ fn main_flags(@builtin(global_invocation_id) global_id: vec3<u32>) {
 // buffer ready for `copy_buffer_to_texture` into the R8 atlas. One invocation per apron
 // cell; the byte is OR'd into its u32 word (the buffer is cleared to 0 first).
 @compute @workgroup_size(64)
-fn main_atlas(@builtin(global_invocation_id) global_id: vec3<u32>) {
-    let linear = global_id.x;
+fn main_atlas(
+    @builtin(workgroup_id) workgroup_id: vec3<u32>,
+    @builtin(local_invocation_index) local_index: u32,
+) {
+    let linear = linear_cell_index(workgroup_id, local_index);
     let pad = desc.pad;
     let cells_per_chunk = pad * pad * pad;
     let total = desc.num_chunks * cells_per_chunk;

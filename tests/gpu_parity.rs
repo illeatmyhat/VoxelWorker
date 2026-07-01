@@ -538,3 +538,90 @@ fn gpu_atlas_compaction_drops_empty_interior_tiles() {
     assert_eq!(atlas.tiles_per_axis, expected_tiles, "atlas tiles sized to compact count");
     assert_eq!(atlas.atlas_dim, expected_tiles * atlas.pad);
 }
+
+// ===========================================================================
+// Multi-dimensional dispatch tier (#56) — large scenes stay on the GPU path
+// ===========================================================================
+
+/// The single-dimension workgroup limit the fix routes AROUND. A scene whose
+/// `pad³ · num_chunks / 64` exceeds this used to bail `resolve_single_producer_fog_atlas`
+/// to `None` → the 26s CPU densify; the 2-D dispatch now covers it. wgpu guarantees at
+/// least this on every backend (the real device limit is usually exactly this).
+const SINGLE_DIM_WORKGROUP_LIMIT: usize = 65_535;
+
+/// A solid box big enough that its covering-chunk dispatch REQUIRES a 2-D workgroup grid
+/// (`pad³ · num_chunks / 64 > 65_535`), so this case actually exercises the #56 fix. At
+/// d16 the chunk extent is 64 voxels (pad 66, 66³ = 287_496 cells/chunk), so a 256×256×64
+/// box covers 4×4×1 = 16 chunks → 16·287_496/64 ≈ 71_874 workgroups, well over the limit,
+/// yet only 16 non-empty chunks (< MAX_FOG_CHUNKS) so the scene stays on the GPU. A solid
+/// box has every covering chunk occupied, so no compaction hides the large dispatch.
+#[test]
+fn gpu_multidim_dispatch_matches_cpu_and_trips_single_dim_limit() {
+    let gpu = pollster::block_on(GpuContext::new(None));
+    let resolver = GpuResolver::new(&gpu.device);
+
+    let vpb = 16u32;
+    let size_voxels = [256u32, 256, 64];
+    let kind = ShapeKind::Box;
+    let wall_blocks = 1u32;
+
+    let shape = SdfShape::from_voxels(kind, size_voxels, wall_blocks);
+    let geometry = GeometryParams {
+        shape: kind,
+        size_voxels,
+        size_measurements: None,
+        voxels_per_block: vpb,
+        wall_blocks,
+    };
+    let scene = Scene::from_geometry(geometry, MaterialChoice::default());
+    let grid = scene.resolve_region(scene.full_extent_blocks(vpb), vpb, 0);
+    let reference = build_per_chunk_fog_occupancy(&grid, vpb);
+    let chunk_coords: Vec<[i32; 3]> = reference.volumes.iter().map(|v| v.chunk_coord).collect();
+    assert!(!chunk_coords.is_empty(), "CPU produced zero chunk volumes");
+
+    // Precondition: the dispatch MUST need a 2-D grid, else the fix is unexercised.
+    let pad = (reference.chunk_extent + 2) as usize;
+    let cells = pad * pad * pad * chunk_coords.len();
+    let workgroups = cells.div_ceil(64);
+    assert!(
+        workgroups > SINGLE_DIM_WORKGROUP_LIMIT,
+        "multi-dim precondition: {workgroups} workgroups ({} chunks × {pad}³) must exceed the \
+         {SINGLE_DIM_WORKGROUP_LIMIT} single-dimension limit",
+        chunk_coords.len()
+    );
+    assert!(
+        chunk_coords.len() <= MAX_FOG_CHUNKS,
+        "the scene must fit the atlas budget so it stays on the GPU (#56)"
+    );
+
+    // (a) A/B `main` pass (binding 2 = per-cell u32) over the multi-dim dispatch.
+    let gpu_occupancy = resolver.resolve_sdf_occupancy(&gpu.device, &gpu.queue, &shape, vpb, &chunk_coords);
+    let mismatches = collect_mismatches("multidim-box", &reference, &gpu_occupancy, pad);
+    assert!(
+        mismatches.is_empty(),
+        "GPU↔CPU occupancy diverged on the multi-dim `main` dispatch: {}/{} cells differ (first {:?})",
+        mismatches.len(),
+        cells,
+        mismatches.first().map(|m| (m.chunk_coord, m.apron, m.cpu, m.gpu))
+    );
+
+    // (b) The full single-producer atlas path (`main_flags` + `main_atlas`), which is the
+    // one that used to bail to `None`. It must now return `Some` and pack every covering
+    // chunk (a solid box has no empty interior, so no compaction).
+    let producer = scene.single_producer().expect("a from-geometry scene is a single producer");
+    let atlas = resolver
+        .resolve_single_producer_fog_atlas(
+            &gpu.device,
+            &gpu.queue,
+            &producer,
+            grid.dimensions,
+            grid.recentre_voxels,
+            vpb,
+        )
+        .expect("large single-producer scene must stay on the GPU path (#56), not fall back");
+    assert_eq!(
+        atlas.world_origins.len(),
+        reference.volumes.len(),
+        "the solid box's covering set is fully occupied, so the GPU atlas keeps every chunk"
+    );
+}
