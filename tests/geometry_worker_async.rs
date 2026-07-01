@@ -32,8 +32,10 @@
 use std::time::{Duration, Instant};
 
 use voxel_worker::{
-    GenerationTracker, GeometryRebuildRequest, GeometryRebuildResult, GeometryWorker, GpuContext,
-    MaterialChoice, Scene, TwoLayerStore, ASYNC_REBUILD_CHUNK_THRESHOLD, COLOR_TARGET_FORMAT,
+    route_geometry_rebuild, CuboidMeshRenderer, EditShape, GenerationTracker,
+    GeometryRebuildRequest, GeometryRebuildResult, GeometryWorker, GpuContext, LayerBand,
+    MaterialChoice, RebuildRoute, Scene, TwoLayerStore, ASYNC_REBUILD_CHUNK_THRESHOLD,
+    COLOR_TARGET_FORMAT,
 };
 use voxel_worker::{GeometryParams, ShapeKind};
 
@@ -70,6 +72,7 @@ fn build_request(generation: u64, blocks_per_axis: u32, vpb: u32) -> GeometryReb
         grid_dimensions,
         recentre_voxels,
         density: vpb,
+        band: LayerBand::FULL,
     }
 }
 
@@ -154,8 +157,11 @@ fn dispatch_is_non_blocking_and_result_arrives_with_correct_generation() {
         "the arrived result must carry the dispatched generation"
     );
     // Sanity: the box actually meshed (the worker built real geometry, not an empty stub).
+    let renderer = result
+        .renderer
+        .expect("a normal build returns a renderer (not a panicked None)");
     assert!(
-        result.renderer.face_count() > 0,
+        renderer.face_count() > 0,
         "the large box must mesh to a non-empty face set (the worker built real geometry)"
     );
 
@@ -214,8 +220,12 @@ fn burst_supersede_accepts_only_newest_generation_under_real_threading() {
                     "the newest generation ({newest}) must be accepted — it is the latest \
                      dispatched"
                 );
+                let renderer = result
+                    .renderer
+                    .as_ref()
+                    .expect("a normal build returns a renderer (not a panicked None)");
                 assert!(
-                    result.renderer.face_count() > 0,
+                    renderer.face_count() > 0,
                     "the accepted newest result must be a real (non-empty) build"
                 );
                 accepted_newest = true;
@@ -273,12 +283,16 @@ fn empty_request_does_not_hang_worker_and_it_survives_for_the_next() {
         grid_dimensions: [0, 0, 0],
         recentre_voxels: [0, 0, 0],
         density: 16,
+        band: LayerBand::FULL,
     };
     worker.dispatch(empty);
     let result = poll_until_result(&worker, "empty request");
     assert_eq!(result.generation, 1, "the empty build carries its generation");
     assert_eq!(
-        result.renderer.face_count(),
+        result
+            .renderer
+            .expect("an empty scene still returns a renderer (not a panicked None)")
+            .face_count(),
         0,
         "an empty scene meshes to zero faces (no geometry), but still returns a result"
     );
@@ -292,7 +306,172 @@ fn empty_request_does_not_hang_worker_and_it_survives_for_the_next() {
         "the worker services a normal request after an empty one (it did not wedge)"
     );
     assert!(
-        result.renderer.face_count() > 0,
+        result
+            .renderer
+            .expect("the follow-up returns a renderer")
+            .face_count()
+            > 0,
         "the follow-up box meshed — the worker loop is still healthy"
     );
 }
+
+// ===========================================================================
+// C1 — the outstanding-build interlock: no Frankenstein mesh
+// ===========================================================================
+
+/// Synchronously build a full renderer for a scene's covering set — the ground truth a
+/// non-Frankenstein install must equal (a full rebuild of the LATEST scene).
+fn sync_full_build(gpu: &GpuContext, request: &GeometryRebuildRequest) -> CuboidMeshRenderer {
+    CuboidMeshRenderer::new_from_two_layer_chunks(
+        &gpu.device,
+        &gpu.queue,
+        COLOR_TARGET_FORMAT,
+        &request.two_layer_chunks,
+        request.grid_dimensions,
+        request.recentre_voxels,
+        request.density,
+    )
+}
+
+/// C1 regression (integration): reproduce the exact stale-patch sequence and assert the
+/// finally-installed renderer equals a FULL rebuild of the LATEST scene — no Frankenstein.
+///
+/// The bug: a large edit dispatches an async wholesale build (gen 1, scene S1); the INSTALLED
+/// renderer is still S0 while the worker builds S1. Before S1 arrives the user makes another
+/// edit whose resolve returns `incremental_dirty_chunks = Some(..)`. The OLD code inline-
+/// patched the STALE S0 renderer (keeping every non-dirty S0 chunk) and bumped the generation
+/// → the gen-1 S1 result was discarded → chunks that differed S0→S1 but weren't in the new
+/// dirty set stayed at S0 forever (old geometry + one fresh patch).
+///
+/// The fix: while an async build is OUTSTANDING, `route_geometry_rebuild` routes EVERY edit —
+/// even an incremental one — to a fresh WHOLESALE-async dispatch from the CURRENT full
+/// covering set. So the install is a full wholesale of the latest scene, never a patch of a
+/// stale one. This test drives the SAME decision + the REAL worker + the REAL tracker the
+/// shell uses (`WindowedState::rebuild_geometry` / `poll_geometry_worker`); only the window-
+/// coupled swap is modelled by a local `installed` renderer (see the honesty note at the
+/// bottom).
+#[test]
+fn c1_outstanding_edit_reroutes_wholesale_no_frankenstein() {
+    let gpu = pollster::block_on(GpuContext::new(None));
+    let worker = GeometryWorker::spawn(gpu.device.clone(), gpu.queue.clone(), COLOR_TARGET_FORMAT);
+
+    // The shell's state we model: the installed renderer (S0), the generation tracker, and
+    // the C1 outstanding flag — exactly the fields `WindowedState` holds.
+    let mut tracker = GenerationTracker::new();
+    let mut async_outstanding = false;
+
+    // Three DISTINCT large scenes with DIFFERENT geometry (different sizes → different face
+    // sets), so "installed == latest" is a meaningful (not vacuous) assertion.
+    let s0 = build_request(0, 24, 16); // installed baseline
+    let s1 = build_request(0, 28, 16); // the first async edit dispatches this
+    let s2 = build_request(0, 32, 16); // the SECOND edit's LATEST scene (the resident cache)
+    for (name, req) in [("s0", &s0), ("s1", &s1), ("s2", &s2)] {
+        assert!(
+            req.two_layer_chunks.len() > ASYNC_REBUILD_CHUNK_THRESHOLD,
+            "{name} must exceed the async threshold to be representative"
+        );
+    }
+    let s2_truth = sync_full_build(&gpu, &s2).face_count();
+    let s0_face = sync_full_build(&gpu, &s0).face_count();
+    assert_ne!(
+        s0_face, s2_truth,
+        "the fixtures must differ so a Frankenstein (S0-derived) install would be DETECTABLE"
+    );
+
+    // The installed renderer starts as S0.
+    let mut installed = sync_full_build(&gpu, &s0);
+    assert_eq!(installed.face_count(), s0_face);
+
+    // --- Edit 1: a large wholesale edit → S1 dispatched async (the #60 case). ---
+    let route = route_geometry_rebuild(
+        async_outstanding,
+        EditShape::Wholesale {
+            chunk_count: s1.two_layer_chunks.len(),
+        },
+        ASYNC_REBUILD_CHUNK_THRESHOLD,
+    );
+    assert_eq!(route, RebuildRoute::WholesaleAsync);
+    let gen1 = tracker.next_generation();
+    async_outstanding = true;
+    let mut s1_dispatch = build_request(gen1, 28, 16);
+    s1_dispatch.generation = gen1;
+    worker.dispatch(s1_dispatch);
+
+    // --- Edit 2: BEFORE S1's result is polled, a small (incremental-shaped) edit to the
+    // LATEST scene S2. This is the exact C1 trigger. The resident cache is already S2. ---
+    let route = route_geometry_rebuild(
+        async_outstanding, // still true — S1 has NOT been installed
+        EditShape::Incremental,
+        ASYNC_REBUILD_CHUNK_THRESHOLD,
+    );
+    assert_eq!(
+        route,
+        RebuildRoute::WholesaleAsync,
+        "C1 interlock: an incremental edit while a build is outstanding must re-dispatch \
+         wholesale (from the CURRENT resident cache), NOT inline-patch the stale S0 renderer"
+    );
+    let gen2 = tracker.next_generation();
+    // Still outstanding (a wholesale-async re-dispatch keeps it true).
+    async_outstanding = true;
+    // The re-dispatch sends the CURRENT FULL covering set — S2, the latest resident cache.
+    let mut s2_dispatch = build_request(gen2, 32, 16);
+    s2_dispatch.generation = gen2;
+    worker.dispatch(s2_dispatch);
+
+    // --- Drive the shell's poll+accept loop until the newest (gen2 = S2) result installs.
+    // Along the way, a stale gen1 (S1) result — if the worker built it before draining — is
+    // DISCARDED (the tracker rejects it), never installed over the fresher S2. ---
+    let deadline = Instant::now() + WORKER_TIMEOUT;
+    let mut installed_newest = false;
+    while !installed_newest {
+        if let Some(result) = worker.try_recv_result() {
+            if tracker.accepts(result.generation) {
+                // The shell's `poll_geometry_worker`: accept → install + clear outstanding.
+                installed = result
+                    .renderer
+                    .expect("a normal build returns a renderer (not a panicked None)");
+                async_outstanding = false;
+                assert_eq!(result.generation, gen2, "only the newest (S2) is accepted");
+                installed_newest = true;
+            } else {
+                // A superseded (gen1 / S1) result — must be discarded, never installed.
+                assert_ne!(
+                    result.generation, gen2,
+                    "the newest must be accepted, not discarded"
+                );
+            }
+        }
+        if !installed_newest && Instant::now() >= deadline {
+            panic!("C1: the newest (S2) result never arrived — the worker loop hung");
+        }
+        if !installed_newest {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    // THE C1 ASSERTION: the finally-installed renderer is a FULL rebuild of the LATEST scene
+    // (S2) — NOT a patch of the stale S0 (which would have a different face set). The old
+    // inline-patch bug would have left an S0-derived Frankenstein here.
+    assert!(!async_outstanding, "installing the newest clears the outstanding flag");
+    assert_eq!(
+        installed.face_count(),
+        s2_truth,
+        "C1: the installed renderer must equal a full rebuild of the LATEST scene (no \
+         Frankenstein). Got {} faces, expected S2's {} (S0 was {})",
+        installed.face_count(),
+        s2_truth,
+        s0_face
+    );
+}
+
+// HONESTY NOTE (C1 headless coverage): the ROUTING decision (the actual fix — the outstanding
+// interlock that keeps an incremental edit from patching a stale renderer) is driven exactly
+// as the shell drives it (`route_geometry_rebuild` + the real `GenerationTracker` + the real
+// threaded `GeometryWorker`). What is NOT driven headlessly is the window-coupled SWAP itself
+// (`WindowedState`'s `cuboid_mesh_renderer` field + `request_redraw`): that lives inside a
+// live winit event loop with a surface, which these offscreen tests cannot spin up. So this
+// test models the install with a local `installed` renderer and asserts the same invariant
+// the shell's swap must preserve — installed face-set == a full rebuild of the LATEST scene.
+// The pure `route_geometry_rebuild` unit tests in `geometry_worker.rs` cover the decision
+// table exhaustively; this integration test proves the decision + worker + tracker compose
+// into a non-Frankenstein install.

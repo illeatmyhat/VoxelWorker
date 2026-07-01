@@ -38,6 +38,7 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::thread::JoinHandle;
 
 use crate::cuboid_mesh::CuboidMeshRenderer;
+use crate::renderer::LayerBand;
 use crate::two_layer_store::TwoLayerChunk;
 
 /// The covering-chunk count above which a WHOLESALE geometry rebuild is dispatched to
@@ -71,6 +72,14 @@ pub struct GeometryRebuildRequest {
     pub recentre_voxels: [i64; 3],
     /// The document density (voxels per block) the chunks were resolved at.
     pub density: u32,
+    /// The CURRENT layer-clip band at dispatch (issue #60 M2). The worker builds the
+    /// renderer already clipped to THIS band, so the swap frame does NOT trigger a full
+    /// synchronous `rebuild_for_band` re-mesh on the main thread (the multi-second hitch
+    /// #60 removed). During onion-skin scrubbing a clipped band is common, so a swapped-in
+    /// FULL-band renderer would otherwise re-mesh every chunk the instant it arrived. If the
+    /// band moved between dispatch and swap the per-frame `rebuild_for_band` still corrects
+    /// it — this only optimises the common stable-band case.
+    pub band: LayerBand,
 }
 
 /// A finished wholesale mesh built by the worker (issue #60): the whole
@@ -79,9 +88,12 @@ pub struct GeometryRebuildRequest {
 pub struct GeometryRebuildResult {
     /// The generation of the [`GeometryRebuildRequest`] this result was built for.
     pub generation: u64,
-    /// The freshly built renderer (crosses the channel whole — wgpu 29 handles are
-    /// `Send`). Swapped into `WindowedState::cuboid_mesh_renderer` when accepted.
-    pub renderer: CuboidMeshRenderer,
+    /// The freshly built renderer, or `None` if the build PANICKED on the worker (issue
+    /// #60 M1: GPU OOM, an internal assert, a bad dimension). A panicked build is caught
+    /// (the worker stays alive) and surfaced as a `None` result + a stderr log rather than
+    /// silently wedging the worker forever. The shell keeps its current (stale) renderer on
+    /// a `None` and does NOT clear the outstanding flag, so the next edit re-dispatches.
+    pub renderer: Option<CuboidMeshRenderer>,
 }
 
 /// The background geometry worker (issue #60): owns the cloned `device`/`queue` and a
@@ -169,16 +181,43 @@ fn run_geometry_worker(
         // Drain-to-latest: if the user edited again while we were idle-waiting, collapse
         // the queued requests to the NEWEST so we never build a superseded generation.
         let request = drain_to_latest(first, request_receiver);
-        let renderer = build_geometry(device, queue, color_format, &request);
+
+        // Issue #60 M1: a build panic (GPU OOM, an internal assert/debug_assert, a bad
+        // dimension) must NOT wedge the worker. Without this, the thread would exit, every
+        // future `dispatch` would keep succeeding, and `try_recv_result` would return `None`
+        // FOREVER — all large rebuilds silently dropped, no crash/log/feedback. Catch the
+        // panic (via the testable `build_catching`), log it, send back a `None`-renderer
+        // result so the shell can react, and keep the loop alive.
+        let generation = request.generation;
+        let renderer =
+            build_catching(generation, || build_geometry(device, queue, color_format, &request));
         if result_sender
             .send(GeometryRebuildResult {
-                generation: request.generation,
+                generation,
                 renderer,
             })
             .is_err()
         {
             // The shell is gone; stop.
             return;
+        }
+    }
+}
+
+/// Run a build closure under `catch_unwind` (issue #60 M1): return `Some(build)` on success,
+/// or `None` (after logging to stderr) if it PANICKED. Factored out of the worker loop so the
+/// panic-survival contract is unit-testable without a GPU — the loop's liveness escape hatch.
+/// Generic over the built value so a test can inject a panicking closure with a trivial type.
+pub(crate) fn build_catching<T>(generation: u64, build: impl FnOnce() -> T) -> Option<T> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(build)) {
+        Ok(value) => Some(value),
+        Err(_) => {
+            eprintln!(
+                "voxel-worker geometry rebuild PANICKED building generation {generation} — the \
+                 worker survived (caught); this rebuild is dropped and the shell keeps its \
+                 current mesh. The next edit will re-dispatch."
+            );
+            None
         }
     }
 }
@@ -207,7 +246,10 @@ pub fn build_geometry(
     color_format: wgpu::TextureFormat,
     request: &GeometryRebuildRequest,
 ) -> CuboidMeshRenderer {
-    CuboidMeshRenderer::new_from_two_layer_chunks(
+    // Issue #60 M2: build already clipped to the request's band so the swap frame does not
+    // re-mesh on the main thread. `LayerBand::FULL` (the common no-onion case) is identical
+    // to the plain `new_from_two_layer_chunks` output, so goldens/parity stay pixel-exact.
+    CuboidMeshRenderer::new_from_two_layer_chunks_banded(
         device,
         queue,
         color_format,
@@ -215,7 +257,74 @@ pub fn build_geometry(
         request.grid_dimensions,
         request.recentre_voxels,
         request.density,
+        request.band,
     )
+}
+
+/// The shape of the edit the resolve produced (issue #60 C1), consumed by
+/// [`route_geometry_rebuild`]. Either the edit localised to a few dirty chunks (an inline
+/// incremental fast-path candidate) or it needs a wholesale rebuild of `chunk_count`
+/// covering chunks (threshold-gated between inline and async).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditShape {
+    /// The edit localised — the resolve returned `incremental_dirty_chunks = Some(..)`.
+    Incremental,
+    /// The edit needs a full rebuild (`incremental_dirty_chunks = None`), covering
+    /// `chunk_count` chunks. The threshold decides inline-vs-async.
+    Wholesale { chunk_count: usize },
+}
+
+/// Where an edit's geometry rebuild is routed (issue #60 C1). Extracted as a pure decision
+/// so the C1 interlock — "do NOT inline-patch the currently-installed renderer while an
+/// async wholesale build is OUTSTANDING" — is unit-testable without a live window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RebuildRoute {
+    /// Apply an incremental dirty-chunk re-mesh to the CURRENTLY-installed renderer in
+    /// place (the #54/#55 fast path). Sound ONLY when no async build is outstanding — the
+    /// installed renderer then reflects the latest resolve.
+    InlineIncremental,
+    /// Rebuild the WHOLE renderer inline on the main thread (small wholesale, at/below the
+    /// async threshold — cheap enough not to hitch a frame).
+    WholesaleInline,
+    /// Dispatch a WHOLESALE rebuild from the CURRENT full covering set to the async worker
+    /// (stale-while-rebuilding). Chosen for a large wholesale edit AND — the C1 interlock —
+    /// for ANY edit (even an incremental one) while an async build is outstanding: the
+    /// installed renderer is STALE (S0) while the worker builds S1, so inline-patching it
+    /// would strand every chunk that differs S0→S1 but isn't in the new dirty set (the
+    /// Frankenstein mesh). Re-dispatching a fresh wholesale from the current `AppCore`
+    /// resident cache (always current on the main thread) is correct; the worker's
+    /// drain-to-latest converges once the user stops editing.
+    WholesaleAsync,
+}
+
+/// Decide where an edit's geometry rebuild is routed (issue #60 C1), given whether an async
+/// wholesale build is currently OUTSTANDING (dispatched but not yet accepted/installed) and
+/// the [`EditShape`] the resolve produced. Pure — no GPU, no window — so the C1 interlock is
+/// unit-testable.
+///
+/// The load-bearing rule: while an async build is outstanding the currently-installed
+/// renderer does NOT reflect the latest resolve (it is still S0 while the worker builds S1),
+/// so an incremental edit must NOT inline-patch it — that produces the Frankenstein mesh
+/// described in C1. Route EVERY edit to a fresh wholesale-async dispatch instead. Only when
+/// nothing is outstanding is the installed renderer current, so the inline incremental
+/// fast-path (and the small-wholesale-inline path) is safe to resume.
+pub fn route_geometry_rebuild(
+    async_outstanding: bool,
+    edit: EditShape,
+    async_threshold: usize,
+) -> RebuildRoute {
+    if async_outstanding {
+        // C1 interlock: never inline-patch a stale renderer. Re-dispatch a fresh wholesale
+        // async build from the current resident cache, regardless of the edit's shape.
+        return RebuildRoute::WholesaleAsync;
+    }
+    match edit {
+        EditShape::Incremental => RebuildRoute::InlineIncremental,
+        EditShape::Wholesale { chunk_count } if chunk_count > async_threshold => {
+            RebuildRoute::WholesaleAsync
+        }
+        EditShape::Wholesale { .. } => RebuildRoute::WholesaleInline,
+    }
 }
 
 /// The monotonic generation bookkeeping behind supersede (issue #60) — factored out of
@@ -310,5 +419,113 @@ mod tests {
         }
         assert!(tracker.accepts(last), "only the newest generation wins");
         assert_eq!(tracker.latest_dispatched(), 5);
+    }
+
+    const THRESHOLD: usize = ASYNC_REBUILD_CHUNK_THRESHOLD;
+
+    /// C1 interlock — the core fix. With an async wholesale build OUTSTANDING, an
+    /// incremental edit must NOT inline-patch the stale (S0) renderer (that strands every
+    /// chunk that differs S0→S1 but isn't in the new dirty set — the Frankenstein mesh).
+    /// It routes to a fresh WHOLESALE-async dispatch from the current resident cache.
+    #[test]
+    fn outstanding_incremental_routes_to_wholesale_async_not_inline() {
+        let route = route_geometry_rebuild(true, EditShape::Incremental, THRESHOLD);
+        assert_eq!(
+            route,
+            RebuildRoute::WholesaleAsync,
+            "an incremental edit while a build is outstanding must re-dispatch wholesale, \
+             never inline-patch the stale renderer (C1)"
+        );
+        assert_ne!(route, RebuildRoute::InlineIncremental);
+    }
+
+    /// C1 — a SMALL wholesale edit that would normally build inline ALSO routes to async
+    /// while outstanding: building it inline would overwrite the S0 renderer just as the
+    /// outstanding S1 is about to (or the reverse), so route to the worker for convergence.
+    #[test]
+    fn outstanding_small_wholesale_routes_to_wholesale_async() {
+        let small = EditShape::Wholesale { chunk_count: 1 };
+        assert_eq!(
+            route_geometry_rebuild(true, small, THRESHOLD),
+            RebuildRoute::WholesaleAsync,
+            "with a build outstanding EVERY edit re-dispatches wholesale-async"
+        );
+    }
+
+    /// C1 — a large wholesale edit while outstanding is also async (it would be anyway).
+    #[test]
+    fn outstanding_large_wholesale_routes_to_wholesale_async() {
+        let large = EditShape::Wholesale {
+            chunk_count: THRESHOLD + 1,
+        };
+        assert_eq!(
+            route_geometry_rebuild(true, large, THRESHOLD),
+            RebuildRoute::WholesaleAsync
+        );
+    }
+
+    /// No build outstanding: the inline incremental fast-path resumes (the installed
+    /// renderer reflects the latest resolve, so patching it in place is sound).
+    #[test]
+    fn not_outstanding_incremental_routes_inline() {
+        assert_eq!(
+            route_geometry_rebuild(false, EditShape::Incremental, THRESHOLD),
+            RebuildRoute::InlineIncremental,
+            "with nothing outstanding an incremental edit patches in place (the fast path)"
+        );
+    }
+
+    /// No build outstanding + a SMALL wholesale (at/below threshold) → inline wholesale.
+    #[test]
+    fn not_outstanding_small_wholesale_routes_inline() {
+        let at = EditShape::Wholesale {
+            chunk_count: THRESHOLD,
+        };
+        assert_eq!(
+            route_geometry_rebuild(false, at, THRESHOLD),
+            RebuildRoute::WholesaleInline,
+            "a wholesale rebuild AT the threshold builds inline"
+        );
+    }
+
+    /// No build outstanding + a LARGE wholesale (exceeds threshold) → async (the #60 case).
+    #[test]
+    fn not_outstanding_large_wholesale_routes_async() {
+        let large = EditShape::Wholesale {
+            chunk_count: THRESHOLD + 1,
+        };
+        assert_eq!(
+            route_geometry_rebuild(false, large, THRESHOLD),
+            RebuildRoute::WholesaleAsync,
+            "a wholesale rebuild exceeding the threshold dispatches to the worker"
+        );
+    }
+
+    /// M1 — the worker's liveness escape hatch: a build that PANICS is caught and mapped to
+    /// `None` (not a thread exit that would wedge the worker forever), and a SUBSEQUENT normal
+    /// build still succeeds. This is the pure core of the run-loop's panic survival — the
+    /// integration test drives it through the real thread, this proves the contract without a
+    /// GPU. We swap in a silent panic hook so the caught panic doesn't spam test output.
+    #[test]
+    fn build_catching_survives_a_panic_and_still_builds_next() {
+        let previous_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+
+        // A panicking build → None (caught), the "thread would have died" case.
+        let panicked: Option<u32> = build_catching(1, || panic!("simulated GPU OOM in build"));
+        assert!(
+            panicked.is_none(),
+            "a panicking build is caught and yields None — the worker does NOT die"
+        );
+
+        // The very next build still runs — the catch did not poison anything.
+        let normal: Option<u32> = build_catching(2, || 42);
+        assert_eq!(
+            normal,
+            Some(42),
+            "after a caught panic, a subsequent normal build still completes (no wedge)"
+        );
+
+        std::panic::set_hook(previous_hook);
     }
 }

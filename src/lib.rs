@@ -73,8 +73,8 @@ pub use chunk_storage::{compress, decompress, CompressedChunk, Occupancy, Sparse
 pub use disk_chunk_store::{DiskChunkStore, DiskChunkStoreStats};
 pub use cuboid_mesh::{build_cuboid_mesh, CuboidMesh, CuboidMeshRenderer};
 pub use geometry_worker::{
-    build_geometry, GenerationTracker, GeometryRebuildRequest, GeometryRebuildResult,
-    GeometryWorker, ASYNC_REBUILD_CHUNK_THRESHOLD,
+    build_geometry, route_geometry_rebuild, EditShape, GenerationTracker, GeometryRebuildRequest,
+    GeometryRebuildResult, GeometryWorker, RebuildRoute, ASYNC_REBUILD_CHUNK_THRESHOLD,
 };
 pub use texture_atlas::{AtlasSubRect, MaterialAtlas};
 pub use debug_clouds::DebugCloudField;

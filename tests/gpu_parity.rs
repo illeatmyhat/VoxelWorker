@@ -646,7 +646,7 @@ fn gpu_multidim_dispatch_matches_cpu_and_trips_single_dim_limit() {
 #[test]
 fn worker_build_matches_sync_build_for_large_scene() {
     use voxel_worker::{
-        build_geometry, CuboidMeshRenderer, GeometryRebuildRequest, TwoLayerStore,
+        build_geometry, CuboidMeshRenderer, GeometryRebuildRequest, LayerBand, TwoLayerStore,
         ASYNC_REBUILD_CHUNK_THRESHOLD, COLOR_TARGET_FORMAT,
     };
 
@@ -696,6 +696,8 @@ fn worker_build_matches_sync_build_for_large_scene() {
         grid_dimensions,
         recentre_voxels,
         density: vpb,
+        // FULL band — the worker's banded build at FULL is byte-identical to the sync build.
+        band: LayerBand::FULL,
     };
     let worker = build_geometry(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT, &request);
 

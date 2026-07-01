@@ -35,7 +35,8 @@ use voxel_worker::{
 use voxel_worker::core_geom::CHUNK_BLOCKS;
 use voxel_worker::CuboidMeshRenderer;
 use voxel_worker::{
-    GenerationTracker, GeometryRebuildRequest, GeometryWorker, ASYNC_REBUILD_CHUNK_THRESHOLD,
+    route_geometry_rebuild, EditShape, GenerationTracker, GeometryRebuildRequest, GeometryWorker,
+    RebuildRoute, ASYNC_REBUILD_CHUNK_THRESHOLD,
 };
 use voxel_worker::Scene;
 // ADR 0007: the GPU view-resolve pipelines are an opt-in display accelerator (`--features
@@ -80,6 +81,14 @@ struct WindowedState {
     /// generation is still the newest dispatched (an edit mid-build supersedes the older
     /// in-flight build, whose result is then discarded — see [`GenerationTracker`]).
     geometry_generation: GenerationTracker,
+    /// Issue #60 C1: whether an async WHOLESALE build is OUTSTANDING — dispatched but not
+    /// yet accepted/installed. While `true` the currently-installed `cuboid_mesh_renderer`
+    /// does NOT reflect the latest resolve (it is still S0 while the worker builds S1), so an
+    /// incremental edit must NOT inline-patch it (that strands every chunk that differs
+    /// S0→S1 but isn't in the new dirty set — the Frankenstein mesh). The rebuild is routed
+    /// to a fresh wholesale-async dispatch instead (see [`route_geometry_rebuild`]). Cleared
+    /// when `poll_geometry_worker` accepts + installs a result.
+    geometry_async_outstanding: bool,
     transform_gizmo_renderer: TransformGizmoRenderer,
     /// Per-object block lattice + floor grid (issue #29 S3). Its line batch is
     /// rebuilt each frame from the visible nodes' enabled grids.
@@ -507,6 +516,7 @@ impl WindowedState {
             cuboid_mesh_renderer,
             geometry_worker,
             geometry_generation,
+            geometry_async_outstanding: false,
             transform_gizmo_renderer,
             scene_grid_renderer,
             points_renderer,
@@ -755,6 +765,35 @@ impl WindowedState {
     /// Re-resolve the grid + GPU geometry for the current scene. Camera UX change:
     /// this NEVER moves the camera — edits keep the orbit target + distance fixed.
     /// Explicit framing (startup fit, Home/Fit, Focus) is handled by their own paths.
+    /// The EFFECTIVE layer-clip band the render path will apply this frame for a grid of
+    /// `grid_z` layers (issue #12 / #60 M2). Mirrors exactly what `update_uniforms` computes
+    /// (the scrubber → shader band, plus the debug-faces override that forces FULL), so the
+    /// async worker can build the mesh already clipped to THIS band and the swap frame's
+    /// `rebuild_for_band` becomes a no-op (no full main-thread re-mesh on the swap).
+    fn current_layer_band(&self, grid_z: u32) -> LayerBand {
+        // Debug-faces mode bypasses the band (the instanced check sees the whole model), so
+        // force FULL — matching `update_uniforms`' `effective_band`.
+        if self.panel_state.debug_face_orientation {
+            return LayerBand::FULL;
+        }
+        let layer_range = self.panel_state.layer_range;
+        if layer_range.is_full_range(grid_z) && !layer_range.onion_skin {
+            LayerBand::FULL
+        } else {
+            LayerBand {
+                band_min: layer_range.lower,
+                // `upper` is the last visible layer index; clamp into the grid so a
+                // full-range upper (== grid_z) still includes the top layer.
+                band_max: layer_range.upper.min(grid_z.saturating_sub(1)),
+                onion_depth: if layer_range.onion_skin {
+                    layer_range.onion_depth.clamp(1, 8)
+                } else {
+                    0
+                },
+            }
+        }
+    }
+
     fn rebuild_geometry(&mut self) {
         profiling::scope!("rebuild_geometry");
         let density = self.panel_state.geometry.voxels_per_block;
@@ -804,16 +843,38 @@ impl WindowedState {
         // here). Issue #60: a SMALL/incremental edit stays inline; a large WHOLESALE
         // rebuild dispatches to the worker (stale-while-rebuilding).
         let grid_dimensions = grid.dimensions;
-        match incremental_dirty_chunks {
-            Some(dirty) => {
+        // Issue #60 M2: the effective layer-clip band the render path will apply this frame.
+        // The async worker builds the mesh already clipped to this band so the swap frame's
+        // `rebuild_for_band` is a no-op (no full main-thread re-mesh — the hitch #60 removed).
+        let band = self.current_layer_band(grid_dimensions[2]);
+        // Issue #60 C1: classify the edit's shape and route it. The load-bearing rule is that
+        // while an async wholesale build is OUTSTANDING (dispatched, not yet installed) the
+        // currently-installed renderer is STALE (S0, the worker is building S1), so an
+        // incremental edit must NOT inline-patch it (the Frankenstein mesh). `route_geometry_
+        // rebuild` sends EVERY edit to a fresh wholesale-async dispatch while outstanding, and
+        // resumes the inline fast-paths only once nothing is outstanding.
+        let edit_shape = match &incremental_dirty_chunks {
+            Some(_) => EditShape::Incremental,
+            None => EditShape::Wholesale {
+                chunk_count: two_layer_chunks.len(),
+            },
+        };
+        let route = route_geometry_rebuild(
+            self.geometry_async_outstanding,
+            edit_shape,
+            ASYNC_REBUILD_CHUNK_THRESHOLD,
+        );
+        match route {
+            RebuildRoute::InlineIncremental => {
                 // Issue #54/#55 fast path: an incremental dirty-chunk re-mesh is already a
-                // few chunks — build it inline (no worker hop, no added latency), REGARDLESS
-                // of the async threshold (which gates only wholesale rebuilds).
+                // few chunks — build it inline (no worker hop, no added latency). Reached ONLY
+                // when nothing is outstanding, so the installed renderer reflects the latest
+                // resolve and patching it in place is sound.
                 //
-                // Issue #60: this applies to the CURRENT (possibly stale) renderer in place,
-                // so it must SUPERSEDE any in-flight async wholesale build — otherwise that
-                // older result would later swap in and clobber this incremental edit. Bumping
-                // the generation makes the tracker discard the stale async result on arrival.
+                // Bump the generation so any (phantom) in-flight result is discarded on
+                // arrival — the tracker rejects a non-newest generation.
+                let dirty = incremental_dirty_chunks
+                    .expect("InlineIncremental is only routed for an incremental edit");
                 self.geometry_generation.next_generation();
                 profiling::scope!("cuboid_incremental_two_layer");
                 self.cuboid_mesh_renderer.incremental_rebuild_from_two_layer_chunks(
@@ -825,29 +886,35 @@ impl WindowedState {
                     &dirty,
                 );
             }
-            None if two_layer_chunks.len() > ASYNC_REBUILD_CHUNK_THRESHOLD => {
-                // Issue #60: a LARGE wholesale rebuild (the ~3s two-layer classify was done
-                // above on the main thread; the heavy mesh CPU build + GPU upload is what
-                // remains) is dispatched to the worker so the UI never freezes. Stamp a fresh
-                // generation, send the owned chunks, and keep the CURRENT renderer drawing
-                // (stale-while-rebuilding). The result is polled + swapped in the event loop
-                // (`poll_geometry_worker`), discarded if a later edit superseded it.
+            RebuildRoute::WholesaleAsync => {
+                // Issue #60: dispatch a WHOLESALE rebuild to the worker so the UI never
+                // freezes (the ~3s classify ran above on the main thread; the heavy mesh CPU
+                // build + GPU upload is what goes async). Stamp a fresh generation, send the
+                // owned FULL covering set (the `AppCore` resident cache is always current on
+                // the main thread, so a full wholesale is correct even when the edit itself
+                // was incremental — the C1 interlock), and keep the CURRENT renderer drawing
+                // (stale-while-rebuilding). Mark the async build OUTSTANDING so the NEXT edit
+                // also routes here instead of inline-patching the still-stale renderer. The
+                // result is polled + swapped in the event loop (`poll_geometry_worker`).
                 let generation = self.geometry_generation.next_generation();
+                self.geometry_async_outstanding = true;
                 self.geometry_worker.dispatch(GeometryRebuildRequest {
                     generation,
                     two_layer_chunks,
                     grid_dimensions,
                     recentre_voxels,
                     density,
+                    band,
                 });
             }
-            None => {
-                // A small wholesale rebuild (at/below the threshold): build inline — cheap
-                // enough not to hitch a frame, and it avoids the worker's one-frame swap
-                // latency. Also supersede any in-flight async build so its (now stale) result
-                // is discarded on arrival: bumping the generation makes the tracker reject it.
+            RebuildRoute::WholesaleInline => {
+                // A small wholesale rebuild (at/below the threshold), nothing outstanding:
+                // build inline — cheap enough not to hitch a frame, and it avoids the worker's
+                // one-frame swap latency. Bump the generation so any phantom in-flight result
+                // is discarded on arrival. Build at the active band so the mesh matches the
+                // render path immediately (no swap-frame re-mesh — same M2 reasoning).
                 self.geometry_generation.next_generation();
-                self.cuboid_mesh_renderer = CuboidMeshRenderer::new_from_two_layer_chunks(
+                self.cuboid_mesh_renderer = CuboidMeshRenderer::new_from_two_layer_chunks_banded(
                     &self.gpu.device,
                     &self.gpu.queue,
                     COLOR_TARGET_FORMAT,
@@ -855,6 +922,7 @@ impl WindowedState {
                     grid_dimensions,
                     recentre_voxels,
                     density,
+                    band,
                 );
             }
         }
@@ -961,12 +1029,24 @@ impl WindowedState {
         };
         if !self.geometry_generation.accepts(result.generation) {
             // A later edit superseded this build — discard it (the stale mesh, or the newer
-            // inline/incremental result, is already what's showing).
+            // inline/incremental result, is already what's showing). The superseding edit set
+            // its own outstanding state (a re-dispatched wholesale keeps it `true`; an inline
+            // edit reached only when nothing was outstanding leaves it `false`), so we do NOT
+            // touch `geometry_async_outstanding` here.
             return;
         }
+        // Issue #60 M1: a `None` renderer means the worker's build PANICKED (it logged to
+        // stderr and stayed alive). Keep the current (stale) mesh and leave the outstanding
+        // flag SET so the next edit re-dispatches a fresh wholesale — never silently wedge.
+        let Some(renderer) = result.renderer else {
+            return;
+        };
         // Fresh: swap the freshly-built renderer in (GPU buffers already uploaded on the
-        // worker) and redraw so the new mesh shows this frame.
-        self.cuboid_mesh_renderer = result.renderer;
+        // worker) and redraw so the new mesh shows this frame. The newest dispatched build is
+        // now installed, so no async build is outstanding — the inline fast-paths resume
+        // (issue #60 C1).
+        self.cuboid_mesh_renderer = renderer;
+        self.geometry_async_outstanding = false;
         self.window.request_redraw();
     }
 
@@ -1562,23 +1642,11 @@ impl WindowedState {
         // Issue #12: translate the layer-range scrubber into the shader band. The
         // band is inclusive on both ends; the upper handle is a layer index, so a
         // single-layer band is `lower == upper`. A full range draws everything.
+        // Z-up: layers are Z-slices, so the band is a Z-layer range (index 2). The band
+        // is computed by the shared `current_layer_band` helper (issue #60 M2) so the async
+        // worker builds the mesh at the SAME band the render path applies here.
         let layer_range = self.panel_state.layer_range;
-        // Z-up: layers are Z-slices, so the band is a Z-layer range (index 2).
-        let band = if layer_range.is_full_range(grid_dimensions[2]) && !layer_range.onion_skin {
-            LayerBand::FULL
-        } else {
-            LayerBand {
-                band_min: layer_range.lower,
-                // `upper` is the last visible layer index; clamp into the grid so a
-                // full-range upper (== grid_z) still includes the top layer.
-                band_max: layer_range.upper.min(grid_dimensions[2].saturating_sub(1)),
-                onion_depth: if layer_range.onion_skin {
-                    layer_range.onion_depth.clamp(1, 8)
-                } else {
-                    0
-                },
-            }
-        };
+        let band = self.current_layer_band(grid_dimensions[2]);
         // Part of #20: the cuboid mesh path is the sole voxel renderer. Upload its
         // per-frame uniforms (camera + per-material base colours + band clip). A
         // loaded VS block textures it per-face (its 6-layer D2Array is bound at DRAW

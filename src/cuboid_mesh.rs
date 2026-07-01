@@ -1981,13 +1981,46 @@ impl CuboidMeshRenderer {
         recentre_voxels: [i64; 3],
         voxels_per_block: u32,
     ) -> Self {
+        // The synchronous path builds the FULL model (no band clip). Delegates to the banded
+        // builder with `LayerBand::FULL` so its output is byte-identical to before (goldens
+        // + gpu_parity stay pixel-exact).
+        Self::new_from_two_layer_chunks_banded(
+            device,
+            queue,
+            color_format,
+            chunks,
+            grid_dimensions,
+            recentre_voxels,
+            voxels_per_block,
+            LayerBand::FULL,
+        )
+    }
+
+    /// As [`new_from_two_layer_chunks`], but builds the mesh already CLIPPED to `band`
+    /// (issue #60 M2). The async worker uses this so the swapped-in renderer already matches
+    /// the active `effective_band` — the swap frame then does NOT trigger a full synchronous
+    /// `rebuild_for_band` re-mesh on the main thread (the multi-second hitch #60 removed,
+    /// which would fire on EVERY async swap during onion-skin scrubbing). Sets `current_band`
+    /// so the per-frame `update_uniforms` treats the band as already applied. `LayerBand::FULL`
+    /// is identical to the plain builder.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_from_two_layer_chunks_banded(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        color_format: wgpu::TextureFormat,
+        chunks: &[([i32; 3], crate::two_layer_store::TwoLayerChunk)],
+        grid_dimensions: [u32; 3],
+        recentre_voxels: [i64; 3],
+        voxels_per_block: u32,
+        band: LayerBand,
+    ) -> Self {
         profiling::scope!("cuboid_mesh_build_two_layer");
         let chunk_meshes = build_two_layer_chunk_meshes(
             chunks,
             grid_dimensions,
             recentre_voxels,
             voxels_per_block,
-            LayerBand::FULL,
+            band,
         );
         let mut renderer = Self::assemble(
             device,
@@ -2002,6 +2035,9 @@ impl CuboidMeshRenderer {
         renderer.source_two_layer_chunks = chunks.to_vec();
         renderer.source_two_layer_recentre = recentre_voxels;
         renderer.source_two_layer_density = voxels_per_block.max(1);
+        // The mesh was built AT `band`, so record it — a same-band `update_uniforms` is then
+        // a no-op instead of a full re-mesh (M2). A later band change still re-clips.
+        renderer.current_band = band;
         renderer
     }
 
