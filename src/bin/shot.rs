@@ -26,7 +26,7 @@ use voxel_worker::block_palette::{BlockPalette, LoadedMaterial, ThumbnailRendere
 use voxel_worker::scan_worker::{run_auto_scan_blocking, FaceResolver};
 use voxel_worker::{
     create_depth_view, create_msaa_color_view, procedural_material_average_color, render_frame,
-    run_egui_frame, AppCore, CubeFace, DefId, EguiPaintBridge, FogMode, FrameOverlays,
+    run_egui_frame, AppCore, CubeFace, DefId, EguiPaintBridge, FogMode, FogZSlab, FrameOverlays,
     GeometryParams,
     GpuContext, InfiniteGridRenderer, LayerBand, LayerRange, MaterialChoice, MaterialSource,
     PointsRenderer, SceneGridRenderer,
@@ -50,6 +50,7 @@ fn try_install_gpu_per_chunk_fog(
     scene: &Scene,
     grid: &VoxelGrid,
     voxels_per_block: u32,
+    fog_z_slab: Option<voxel_worker::FogZSlab>,
 ) -> bool {
     let Some(producer) = scene.single_producer() else {
         return false;
@@ -62,6 +63,7 @@ fn try_install_gpu_per_chunk_fog(
         grid.dimensions,
         grid.recentre_voxels,
         voxels_per_block,
+        fog_z_slab,
     ) else {
         return false;
     };
@@ -93,6 +95,7 @@ fn try_install_gpu_per_chunk_fog(
     _scene: &Scene,
     _grid: &VoxelGrid,
     _voxels_per_block: u32,
+    _fog_z_slab: Option<voxel_worker::FogZSlab>,
 ) -> bool {
     false
 }
@@ -1728,30 +1731,62 @@ async fn run_capture(options: ShotOptions) {
     // S5b) builds one apron'd volume per resident chunk so a scene too large for a single
     // whole-grid 3D texture still renders fog; WholeGrid (`--fog=wholegrid`, legacy, issue
     // #12) densifies one whole-grid 3D texture and disables itself past the 3D-texture limit.
-    match options.fog_mode {
-        FogMode::WholeGrid => {
-            onion_fog_renderer.upload_grid(&gpu.device, &gpu.queue, &grid);
+    // Issue #59: the onion-fog Z-slab (band ± onion_depth) to scope the eager fog build to.
+    // Three cases: (a) onion OFF → the fog is never drawn, so build the whole grid (`None`)
+    // unchanged (no golden touches this); (b) onion ON, band CLIPPED → the slab bounds the
+    // occupancy the raymarch samples, so the covering set (and atlas) shrinks to the slab
+    // while the drawn haze stays byte-identical; (c) onion ON, band FULL-RANGE → nothing
+    // outside to ghost, so SKIP the build entirely (zero fog chunks) — behaviour-identical
+    // to building the whole grid then drawing an invisible haze.
+    let (fog_z_slab, fog_full_range_skip) = if layer_range.onion_skin {
+        match FogZSlab::for_band(
+            LayerBand {
+                band_min: layer_range.lower,
+                band_max: layer_range.upper.min(grid_dimensions[2].saturating_sub(1)),
+                onion_depth: layer_range.onion_depth.clamp(1, 8),
+            },
+            grid_dimensions[2],
+        ) {
+            Some(slab) => (Some(slab), false),
+            None => (None, true), // full-range onion band → skip the fog build
         }
-        FogMode::PerChunk => {
-            let vpb = options.geometry.voxels_per_block;
-            // ADR 0007 live call-site swap: a single ported producer GPU-resolves its
-            // per-chunk fog atlas (no CPU densify, no readback); multi-producer scenes —
-            // or a dispatch too large for this device — fall back to the CPU path.
-            let via_gpu =
-                try_install_gpu_per_chunk_fog(&mut onion_fog_renderer, &gpu, &panel_state.scene, &grid, vpb);
-            if !via_gpu {
-                #[allow(deprecated)] // CPU fog densify — the fallback until the live GPU path.
-                onion_fog_renderer.upload_grid_per_chunk(&gpu.device, &gpu.queue, &grid, vpb);
+    } else {
+        (None, false) // onion off → whole grid, never drawn
+    };
+    if fog_full_range_skip {
+        println!("fog: skipped (onion active but band full-range — nothing to ghost)");
+    } else {
+        match options.fog_mode {
+            FogMode::WholeGrid => {
+                onion_fog_renderer.upload_grid(&gpu.device, &gpu.queue, &grid);
             }
-            println!(
-                "fog: per-chunk mode ({}) — {}",
-                if via_gpu { "GPU atlas" } else { "CPU densify" },
-                if onion_fog_renderer.per_chunk_active() {
-                    "atlas active"
-                } else {
-                    "atlas EMPTY/too-large — fog disabled"
+            FogMode::PerChunk => {
+                let vpb = options.geometry.voxels_per_block;
+                // ADR 0007 live call-site swap: a single ported producer GPU-resolves its
+                // per-chunk fog atlas (no CPU densify, no readback); multi-producer scenes —
+                // or a dispatch too large for this device — fall back to the CPU path.
+                let via_gpu = try_install_gpu_per_chunk_fog(
+                    &mut onion_fog_renderer,
+                    &gpu,
+                    &panel_state.scene,
+                    &grid,
+                    vpb,
+                    fog_z_slab,
+                );
+                if !via_gpu {
+                    #[allow(deprecated)] // CPU fog densify — the fallback until the live GPU path.
+                    onion_fog_renderer.upload_grid_per_chunk(&gpu.device, &gpu.queue, &grid, vpb, fog_z_slab);
                 }
-            );
+                println!(
+                    "fog: per-chunk mode ({}) — {}",
+                    if via_gpu { "GPU atlas" } else { "CPU densify" },
+                    if onion_fog_renderer.per_chunk_active() {
+                        "atlas active"
+                    } else {
+                        "atlas EMPTY/too-large — fog disabled"
+                    }
+                );
+            }
         }
     }
     // Z-up: the voxel-space grid_z of the ACTUALLY resolved grid (the composite for a
@@ -2095,7 +2130,9 @@ async fn run_capture(options: ShotOptions) {
         // Issue #29 Points fast-follow: the analytic infinite grid (Points' planes),
         // suppressed with the rest of Points unless `--points`.
         infinite_grid: options.show_points.then_some(&infinite_grid_renderer),
-        onion_fog: if onion_active {
+        // Issue #59: a full-range onion band ghosts nothing → draw no fog (the atlas was
+        // never built either). Matches the app's `fog_should_draw`.
+        onion_fog: if onion_active && !fog_full_range_skip {
             Some(&onion_fog_renderer)
         } else {
             None

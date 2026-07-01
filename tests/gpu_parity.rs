@@ -131,7 +131,7 @@ fn gpu_sdf_occupancy_matches_per_chunk_fog_exactly() {
         };
         let scene = Scene::from_geometry(geometry, MaterialChoice::default());
         let grid = scene.resolve_region(scene.full_extent_blocks(vpb), vpb, 0);
-        let reference = build_per_chunk_fog_occupancy(&grid, vpb);
+        let reference = build_per_chunk_fog_occupancy(&grid, vpb, None);
         let chunk_coords: Vec<[i32; 3]> = reference.volumes.iter().map(|v| v.chunk_coord).collect();
         if chunk_coords.is_empty() {
             failures.push(format!("{}: CPU produced zero chunk volumes", case.name));
@@ -248,7 +248,7 @@ fn gpu_sketch_occupancy_matches_per_chunk_fog_exactly() {
         let mut scene = Scene::single_node(node);
         scene.voxels_per_block = vpb;
         let grid = scene.resolve_region(scene.full_extent_blocks(vpb), vpb, 0);
-        let reference = build_per_chunk_fog_occupancy(&grid, vpb);
+        let reference = build_per_chunk_fog_occupancy(&grid, vpb, None);
         let chunk_coords: Vec<[i32; 3]> = reference.volumes.iter().map(|v| v.chunk_coord).collect();
         if chunk_coords.is_empty() {
             failures.push(format!("{}: CPU produced zero chunk volumes", case.name));
@@ -310,7 +310,7 @@ fn gpu_clouds_occupancy_matches_per_chunk_fog_exactly() {
         let mut grid = VoxelGrid::new(dims);
         field.resolve(&mut grid, vpb);
 
-        let reference = build_per_chunk_fog_occupancy(&grid, vpb);
+        let reference = build_per_chunk_fog_occupancy(&grid, vpb, None);
         let chunk_coords: Vec<[i32; 3]> = reference.volumes.iter().map(|v| v.chunk_coord).collect();
         if chunk_coords.is_empty() {
             failures.push(format!("{name}: CPU produced zero chunk volumes"));
@@ -416,7 +416,7 @@ fn gpu_atlas_matches_cpu_upload_packing() {
         };
         let scene = Scene::from_geometry(geometry, MaterialChoice::default());
         let grid = scene.resolve_region(scene.full_extent_blocks(vpb), vpb, 0);
-        let reference = build_per_chunk_fog_occupancy(&grid, vpb);
+        let reference = build_per_chunk_fog_occupancy(&grid, vpb, None);
         let chunk_coords: Vec<[i32; 3]> = reference.volumes.iter().map(|v| v.chunk_coord).collect();
         let (cpu, dim, tiles) = cpu_atlas(&reference);
         let result = resolver.resolve_sdf_atlas(&gpu.device, &gpu.queue, &shape, vpb, &chunk_coords);
@@ -436,7 +436,7 @@ fn gpu_atlas_matches_cpu_upload_packing() {
         let mut scene = Scene::single_node(node);
         scene.voxels_per_block = vpb;
         let grid = scene.resolve_region(scene.full_extent_blocks(vpb), vpb, 0);
-        let reference = build_per_chunk_fog_occupancy(&grid, vpb);
+        let reference = build_per_chunk_fog_occupancy(&grid, vpb, None);
         let chunk_coords: Vec<[i32; 3]> = reference.volumes.iter().map(|v| v.chunk_coord).collect();
         let (cpu, dim, tiles) = cpu_atlas(&reference);
         let result = resolver.resolve_sketch_atlas(&gpu.device, &gpu.queue, &producer, vpb, &chunk_coords);
@@ -478,7 +478,7 @@ fn gpu_atlas_compaction_drops_empty_interior_tiles() {
     let field = DebugCloudField { dimensions: dims, seed };
     let mut grid = VoxelGrid::new(dims);
     field.resolve(&mut grid, vpb);
-    let reference = build_per_chunk_fog_occupancy(&grid, vpb);
+    let reference = build_per_chunk_fog_occupancy(&grid, vpb, None);
     let chunk_extent = reference.chunk_extent as i64;
 
     // The covering set the resolver enumerates BEFORE compaction.
@@ -492,7 +492,7 @@ fn gpu_atlas_compaction_drops_empty_interior_tiles() {
     ));
     let producer = scene.single_producer().expect("DebugClouds is a single producer");
     let atlas = resolver
-        .resolve_single_producer_fog_atlas(&gpu.device, &gpu.queue, &producer, dims, [0, 0, 0], vpb)
+        .resolve_single_producer_fog_atlas(&gpu.device, &gpu.queue, &producer, dims, [0, 0, 0], vpb, None)
         .expect("the clouds dispatch fits and the producer has interior voxels");
 
     // The scene must actually have empty-interior covering tiles to drop, else the test
@@ -575,7 +575,7 @@ fn gpu_multidim_dispatch_matches_cpu_and_trips_single_dim_limit() {
     };
     let scene = Scene::from_geometry(geometry, MaterialChoice::default());
     let grid = scene.resolve_region(scene.full_extent_blocks(vpb), vpb, 0);
-    let reference = build_per_chunk_fog_occupancy(&grid, vpb);
+    let reference = build_per_chunk_fog_occupancy(&grid, vpb, None);
     let chunk_coords: Vec<[i32; 3]> = reference.volumes.iter().map(|v| v.chunk_coord).collect();
     assert!(!chunk_coords.is_empty(), "CPU produced zero chunk volumes");
 
@@ -617,6 +617,7 @@ fn gpu_multidim_dispatch_matches_cpu_and_trips_single_dim_limit() {
             grid.dimensions,
             grid.recentre_voxels,
             vpb,
+            None,
         )
         .expect("large single-producer scene must stay on the GPU path (#56), not fall back");
     assert_eq!(

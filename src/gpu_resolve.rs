@@ -506,8 +506,12 @@ impl GpuResolver {
 
     /// GPU-resolve the per-chunk fog atlas for a SINGLE ported producer over its COVERING
     /// chunk set — the live call-site swap (ADR 0007). The producer resolves into grid
-    /// indices `[0, grid)`, so the covering chunks are simply the box
-    /// `[0, ceil(grid/extent))` per axis (identical for SDF / sketch / cloud).
+    /// indices `[0, grid)`, so the covering chunks are the box `[0, ceil(grid/extent))`
+    /// per axis (identical for SDF / sketch / cloud), except the Z rows are scoped to
+    /// `fog_z_slab` (issue #59): the onion fog only hazes the band ± onion_depth, so
+    /// `Some(slab)` restricts the enumerated chunk-Z to the slab's covering rows (fewer
+    /// tiles → smaller atlas + dispatch), and `None` keeps every Z row (the eager
+    /// single-frame shot path). An empty slab returns `None` (no fog).
     ///
     /// ADR 0007 option (C): the empty-interior tiles among the covering set are DROPPED
     /// (not just zeroed in place as the earlier C′ did) — a per-chunk interior-occupancy
@@ -523,6 +527,7 @@ impl GpuResolver {
     /// path: the dispatch spreads over a 2-D workgroup grid (#56), so a large covering set
     /// stays on the GPU; only an interior-empty producer or a non-empty count over the atlas
     /// budget (rejected downstream by `install_per_chunk_atlas`) keeps the CPU densify.
+    #[allow(clippy::too_many_arguments)]
     pub fn resolve_single_producer_fog_atlas(
         &self,
         device: &wgpu::Device,
@@ -531,6 +536,7 @@ impl GpuResolver {
         grid_dimensions: [u32; 3],
         recentre_voxels: [i64; 3],
         voxels_per_block: u32,
+        fog_z_slab: Option<crate::renderer::FogZSlab>,
     ) -> Option<GpuFogAtlas> {
         let vpb = voxels_per_block.max(1);
 
@@ -568,8 +574,24 @@ impl GpuResolver {
             ((grid[1] as i64 - 1) / chunk_extent + 1) as i32,
             ((grid[2] as i64 - 1) / chunk_extent + 1) as i32,
         ];
+        // Issue #59: scope the covering set to the onion-fog Z-slab (Z-up: chunk-Z is
+        // index 2). The raymarch only hazes the band ± onion_depth, so chunks whose
+        // Z-extent misses the slab are never sampled — dropping them shrinks the atlas
+        // and the dispatch. `None` (no slab) keeps the whole grid's chunk-Z rows (the
+        // pre-#59 behaviour, still used by the eager single-frame shot fog build for a
+        // FULL band). An empty slab covers zero chunk-Z rows → `None` returned below.
+        let chunk_z_bounds = match fog_z_slab {
+            Some(slab) => match slab.covering_chunk_z_range(chunk_extent as u32) {
+                Some([lo, hi]) => [lo.max(0), hi.min(chunks_per_axis[2] - 1)],
+                None => return None,
+            },
+            None => [0, chunks_per_axis[2] - 1],
+        };
+        if chunk_z_bounds[0] > chunk_z_bounds[1] {
+            return None;
+        }
         let mut coords: Vec<[i32; 3]> = Vec::new();
-        for cz in 0..chunks_per_axis[2] {
+        for cz in chunk_z_bounds[0]..=chunk_z_bounds[1] {
             for cy in 0..chunks_per_axis[1] {
                 for cx in 0..chunks_per_axis[0] {
                     coords.push([cx, cy, cz]);

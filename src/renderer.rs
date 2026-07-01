@@ -172,6 +172,83 @@ impl LayerBand {
     };
 }
 
+/// The **Z-slab** (issue #59) the onion fog occupancy must cover: the voxel Z-range
+/// `[voxel_z_min, voxel_z_max)` around the visible band that the raymarch actually
+/// samples for its ghost haze. Z-up: layers are Z-slices, so the fog only needs the
+/// occupancy of chunks whose Z-extent intersects this slab — NOT the whole grid.
+///
+/// ADR 0008 (voxel-frame invariant): this is a Z-range in the resolved grid's voxel
+/// frame (the SAME `[0, grid_z)` frame the fog occupancy builders index), carried
+/// explicitly rather than re-derived at each call site.
+///
+/// The slab widens the visible band `[band_min, band_max]` by `onion_depth` layers on
+/// each side (the ghost falloff the raymarch samples), matching
+/// `AppCore::onion_fog_params`' onion-Z span `[lower − depth, upper + 1 + depth]`: the
+/// low edge is `band_min − onion_depth`, the high edge is `band_max + 1 + onion_depth`
+/// (the `+1` mirrors the params' `upper + 1`, since `band_max` is the last SOLID layer
+/// and the raymarch samples up to `upper + 1 + depth`). Both edges are clamped to
+/// `[0, grid_z]`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FogZSlab {
+    /// First voxel-Z layer the fog must cover (clamped to `[0, grid_z]`).
+    pub voxel_z_min: u32,
+    /// One-past-the-last voxel-Z layer the fog must cover (clamped to `[0, grid_z]`).
+    pub voxel_z_max: u32,
+}
+
+impl FogZSlab {
+    /// The slab the onion fog needs for `band` over a grid of height `grid_z`, or
+    /// `None` when the band is effectively FULL-RANGE (issue #59): a band that covers
+    /// (or exceeds) the whole grid has NO layers outside to ghost, so the raymarch
+    /// hazes nothing — the fog build (and draw) can be skipped entirely even with onion
+    /// on. That is behaviour-identical to today, where such a frame builds the whole
+    /// grid but draws no visible haze.
+    ///
+    /// `band.onion_depth` is `0` for a hard clip (no onion); the slab then collapses to
+    /// the band itself (still a valid, tighter-than-grid slab).
+    pub fn for_band(band: LayerBand, grid_z: u32) -> Option<FogZSlab> {
+        if grid_z == 0 {
+            return None;
+        }
+        // FULL-RANGE skip: nothing outside `[band_min, band_max]` to ghost. `LayerBand`
+        // clamps `band_max` into `[0, grid_z − 1]` at construction, so a band whose top
+        // reaches the last layer AND whose bottom is layer 0 covers the whole grid. The
+        // sentinel `LayerBand::FULL` (band_max == u32::MAX) also lands here.
+        if band.band_min == 0 && band.band_max >= grid_z.saturating_sub(1) {
+            return None;
+        }
+        let depth = band.onion_depth;
+        let voxel_z_min = band.band_min.saturating_sub(depth);
+        // `band_max` is the last SOLID layer; the raymarch samples up to `upper + 1 +
+        // depth`, so cover through `band_max + 1 + depth` (clamped to grid_z).
+        let voxel_z_max = band
+            .band_max
+            .saturating_add(1)
+            .saturating_add(depth)
+            .min(grid_z);
+        Some(FogZSlab {
+            voxel_z_min: voxel_z_min.min(grid_z),
+            voxel_z_max,
+        })
+    }
+
+    /// The inclusive chunk-Z coordinate range `[chunk_z_min, chunk_z_max]` whose chunks'
+    /// Z-extent `[cz·extent, (cz+1)·extent)` intersects this slab. A fog builder restricts
+    /// its covering chunk set to chunks whose `chunk_coord[2]` lands in this range. Both
+    /// fog paths anchor chunk 0 at voxel 0 (`chunk_coord = floor(voxel / extent)`), so the
+    /// chunk-Z of a voxel slab edge is `floor(edge / extent)`. The high edge uses the last
+    /// covered voxel (`voxel_z_max − 1`) so an empty slab yields no chunks.
+    pub fn covering_chunk_z_range(self, chunk_extent: u32) -> Option<[i32; 2]> {
+        let extent = chunk_extent.max(1);
+        if self.voxel_z_max <= self.voxel_z_min {
+            return None;
+        }
+        let chunk_z_min = (self.voxel_z_min / extent) as i32;
+        let chunk_z_max = ((self.voxel_z_max - 1) / extent) as i32;
+        Some([chunk_z_min, chunk_z_max])
+    }
+}
+
 // (The instanced `VoxelRenderer` + its per-chunk GPU instance cache were removed
 // with the legacy mesher — part of #20. The cuboid path is the sole renderer.)
 
@@ -3060,6 +3137,12 @@ pub struct PerChunkFogOccupancy {
 /// `chunk_coord = floor(voxel_index / chunk_extent)`; the chunk's interior origin in
 /// recentred world space is `chunk_coord * chunk_extent - half_grid` (voxel CORNER),
 /// so a world sample maps to chunk-local voxel space by `world - world_origin`.
+///
+/// Issue #59: `fog_z_slab`, when `Some`, RESTRICTS the covering set to chunks whose
+/// chunk-Z lands in the slab's covering chunk-Z range — the onion fog only hazes the
+/// band ± `onion_depth`, so a tall object with a thin band builds far fewer fog chunks
+/// (smaller atlas, less densify). `None` covers the whole grid (the historical
+/// behaviour, kept for the A/B reference + any non-onion caller).
 #[deprecated(
     note = "CPU fog densify — superseded by the GPU per-chunk atlas (ADR 0007 live \
             call-site swap). Kept only as the CPU fallback + A/B reference; DELETE when \
@@ -3069,9 +3152,16 @@ pub struct PerChunkFogOccupancy {
 pub fn build_per_chunk_fog_occupancy(
     grid: &VoxelGrid,
     voxels_per_block: u32,
+    fog_z_slab: Option<FogZSlab>,
 ) -> PerChunkFogOccupancy {
     let chunk_extent = (CHUNK_BLOCKS * voxels_per_block.max(1)) as i64;
     let [grid_x, grid_y, grid_z] = grid.dimensions;
+    // Issue #59: the inclusive chunk-Z coordinate window the slab covers (if any). A
+    // chunk outside this window is skipped — its occupancy is never sampled by the
+    // raymarch. `covering_chunk_z_range` returns `None` for an empty slab, which we
+    // treat as "no chunks" below.
+    let slab_chunk_z_range = fog_z_slab
+        .map(|slab| slab.covering_chunk_z_range(chunk_extent as u32));
     if grid_x == 0 || grid_y == 0 || grid_z == 0 {
         return PerChunkFogOccupancy {
             chunk_extent: chunk_extent as u32,
@@ -3120,6 +3210,20 @@ pub fn build_per_chunk_fog_occupancy(
             narrow_chunk_coord_local(j.div_euclid(chunk_extent)),
             narrow_chunk_coord_local(k.div_euclid(chunk_extent)),
         ];
+        // Issue #59: skip chunks whose chunk-Z is outside the onion-fog slab (Z-up:
+        // index 2). `Some(None)` means the slab covers zero chunks → every chunk is
+        // dropped; `None` (no slab) keeps the whole grid. The scatter below only writes
+        // into chunks that survive here, so a dropped chunk is never allocated or filled.
+        if let Some(range) = slab_chunk_z_range {
+            match range {
+                Some([chunk_z_min, chunk_z_max]) => {
+                    if coord[2] < chunk_z_min || coord[2] > chunk_z_max {
+                        continue;
+                    }
+                }
+                None => continue,
+            }
+        }
         let next_index = chunk_index_by_coord.len();
         chunk_index_by_coord.entry(coord).or_insert(next_index);
     }
@@ -3685,8 +3789,9 @@ impl OnionFogRenderer {
         queue: &wgpu::Queue,
         grid: &VoxelGrid,
         voxels_per_block: u32,
+        fog_z_slab: Option<FogZSlab>,
     ) {
-        let occupancy = build_per_chunk_fog_occupancy(grid, voxels_per_block);
+        let occupancy = build_per_chunk_fog_occupancy(grid, voxels_per_block, fog_z_slab);
         let pad = occupancy.chunk_extent as usize + 2;
         let chunk_count = occupancy.volumes.len();
         if chunk_count == 0 || pad == 0 {
@@ -4101,7 +4206,7 @@ mod tests {
         // voxel at x=4 (the neighbour that must appear in chunk-0's apron).
         let grid = grid_with_voxels(dims, &[[3, 0, 0], [4, 0, 0]]);
 
-        let occ = build_per_chunk_fog_occupancy(&grid, density);
+        let occ = build_per_chunk_fog_occupancy(&grid, density, None);
         assert_eq!(occ.chunk_extent, extent as u32);
         // Two chunks are occupied (x=3 in chunk 0, x=4 in chunk 1).
         assert_eq!(occ.volumes.len(), 2, "two chunks hold voxels");
@@ -4124,6 +4229,104 @@ mod tests {
         assert_eq!(apron_at(chunk0, extent, [-1, 0, 0]), 0, "empty apron stays empty");
     }
 
+    // ===== Issue #59: onion-fog Z-slab scoping ==================================
+
+    /// `FogZSlab::for_band` widens the band by `onion_depth` on each side (matching the
+    /// raymarch's `[lower − depth, upper + 1 + depth]` sample span), clamps to `[0,
+    /// grid_z]`, and returns `None` for a full-range band (nothing outside to ghost).
+    #[test]
+    fn fog_z_slab_matches_raymarch_span_and_skips_full_range() {
+        let grid_z = 128;
+        // Thin band [56, 72] with onion depth 8 → slab [56−8, 72+1+8] = [48, 81].
+        let slab = FogZSlab::for_band(
+            LayerBand { band_min: 56, band_max: 72, onion_depth: 8 },
+            grid_z,
+        )
+        .expect("a clipped band yields a slab");
+        assert_eq!(slab.voxel_z_min, 48);
+        assert_eq!(slab.voxel_z_max, 81);
+
+        // Clamp: a band near the top clamps the high edge to grid_z, the low to 0.
+        let clamped = FogZSlab::for_band(
+            LayerBand { band_min: 2, band_max: 126, onion_depth: 8 },
+            grid_z,
+        )
+        .expect("still not full-range (lower != 0)");
+        assert_eq!(clamped.voxel_z_min, 0, "low edge clamps to 0");
+        assert_eq!(clamped.voxel_z_max, grid_z, "high edge clamps to grid_z");
+
+        // Full-range band ([0, grid_z−1]) → None (skip the fog entirely).
+        assert!(
+            FogZSlab::for_band(
+                LayerBand { band_min: 0, band_max: grid_z - 1, onion_depth: 2 },
+                grid_z,
+            )
+            .is_none(),
+            "a full-range band ghosts nothing → no slab"
+        );
+        // The FULL sentinel also skips.
+        assert!(FogZSlab::for_band(LayerBand::FULL, grid_z).is_none());
+    }
+
+    /// `covering_chunk_z_range` maps a voxel slab to the inclusive chunk-Z rows whose
+    /// Z-extent intersects it (chunk 0 anchored at voxel 0).
+    #[test]
+    fn fog_slab_covering_chunk_z_range() {
+        // extent 64 (density 16). Slab [48, 81) → chunks floor(48/64)=0 .. floor(80/64)=1.
+        let slab = FogZSlab { voxel_z_min: 48, voxel_z_max: 81 };
+        assert_eq!(slab.covering_chunk_z_range(64), Some([0, 1]));
+        // A slab fully inside chunk 2: [130, 190) → floor(130/64)=2 .. floor(189/64)=2.
+        let inner = FogZSlab { voxel_z_min: 130, voxel_z_max: 190 };
+        assert_eq!(inner.covering_chunk_z_range(64), Some([2, 2]));
+        // Empty slab → no chunks.
+        let empty = FogZSlab { voxel_z_min: 40, voxel_z_max: 40 };
+        assert_eq!(empty.covering_chunk_z_range(64), None);
+    }
+
+    /// A slab scopes the CPU builder's covering set to the chunk-Z rows it intersects:
+    /// a tall object with a thin band builds far fewer fog chunks than the whole grid,
+    /// and the surviving chunks are byte-identical to the unscoped build (the slab only
+    /// DROPS out-of-band chunks; it never alters an in-band chunk's occupancy).
+    #[test]
+    fn per_chunk_slab_scopes_covering_set() {
+        let density = 1u32;
+        let extent = (CHUNK_BLOCKS * density) as i64; // 4 voxels per chunk axis
+        // A tall column: 1 chunk in X/Y, 8 chunks in Z (grid 4×4×32), one occupied voxel
+        // in every Z chunk so the whole-grid build produces 8 volumes.
+        let chunk_z_count = 8;
+        let dims = [extent as u32, extent as u32, (extent * chunk_z_count) as u32];
+        let coords: Vec<[u32; 3]> = (0..chunk_z_count)
+            .map(|cz| [0, 0, (cz * extent) as u32])
+            .collect();
+        let grid = grid_with_voxels(dims, &coords);
+
+        let whole = build_per_chunk_fog_occupancy(&grid, density, None);
+        assert_eq!(whole.volumes.len(), chunk_z_count as usize, "whole grid = 8 Z chunks");
+
+        // A thin band around Z chunk 3 only (voxels [12,16)). Slab covering chunk-Z 3..=3.
+        let slab = FogZSlab { voxel_z_min: 12, voxel_z_max: 16 };
+        let scoped = build_per_chunk_fog_occupancy(&grid, density, Some(slab));
+        assert_eq!(scoped.volumes.len(), 1, "thin band builds a single Z chunk, not 8");
+        assert_eq!(scoped.volumes[0].chunk_coord, [0, 0, 3]);
+        // The surviving chunk equals the same chunk in the whole-grid build byte-for-byte.
+        let whole_chunk3 = whole
+            .volumes
+            .iter()
+            .find(|v| v.chunk_coord == [0, 0, 3])
+            .expect("chunk-Z 3 resident in the whole build");
+        assert_eq!(
+            scoped.volumes[0].occupancy, whole_chunk3.occupancy,
+            "slab-scoped chunk occupancy is byte-identical to the unscoped build"
+        );
+
+        // A slab spanning chunk-Z 2..=4 (voxels [10, 18) → floor(10/4)=2 .. floor(17/4)=4).
+        let wide = FogZSlab { voxel_z_min: 10, voxel_z_max: 18 };
+        let scoped_wide = build_per_chunk_fog_occupancy(&grid, density, Some(wide));
+        let mut zs: Vec<i32> = scoped_wide.volumes.iter().map(|v| v.chunk_coord[2]).collect();
+        zs.sort_unstable();
+        assert_eq!(zs, vec![2, 3, 4], "a 3-chunk slab builds exactly those 3 Z chunks");
+    }
+
     /// An empty grid yields no volumes (fog disables itself), and the world origin of a
     /// chunk is its interior `[0,0,0]` voxel corner in recentred world space.
     #[test]
@@ -4133,7 +4336,7 @@ mod tests {
         let dims = [(extent * 2) as u32, extent as u32, extent as u32]; // 8x4x4
         let half = dims[0] as f32 / 2.0; // 4
         let grid = grid_with_voxels(dims, &[[5, 0, 0]]); // chunk 1 in X
-        let occ = build_per_chunk_fog_occupancy(&grid, density);
+        let occ = build_per_chunk_fog_occupancy(&grid, density, None);
         let chunk1 = occ
             .volumes
             .iter()
@@ -4144,7 +4347,7 @@ mod tests {
 
         // Empty grid → no volumes.
         let empty = VoxelGrid::new(dims);
-        assert!(build_per_chunk_fog_occupancy(&empty, density).volumes.is_empty());
+        assert!(build_per_chunk_fog_occupancy(&empty, density, None).volumes.is_empty());
     }
 
     /// When the resident non-empty chunk count exceeds `MAX_FOG_CHUNKS`, the builder
@@ -4164,7 +4367,7 @@ mod tests {
             .collect();
         let grid = grid_with_voxels(dims, &coords);
 
-        let occ = build_per_chunk_fog_occupancy(&grid, density);
+        let occ = build_per_chunk_fog_occupancy(&grid, density, None);
         assert!(
             occ.volumes.is_empty(),
             "over MAX_FOG_CHUNKS resident chunks must disable fog (no volumes), not truncate"
@@ -4177,7 +4380,7 @@ mod tests {
         let dims_at_cap =
             [(extent as usize * MAX_FOG_CHUNKS) as u32, extent as u32, extent as u32];
         let grid_at_cap = grid_with_voxels(dims_at_cap, &coords_at_cap);
-        let occ_at_cap = build_per_chunk_fog_occupancy(&grid_at_cap, density);
+        let occ_at_cap = build_per_chunk_fog_occupancy(&grid_at_cap, density, None);
         assert_eq!(
             occ_at_cap.volumes.len(),
             MAX_FOG_CHUNKS,
@@ -4284,7 +4487,7 @@ mod tests {
     /// `chunk_extent`, same number/order of volumes, same `chunk_coord`, bit-exact
     /// `world_origin`, and identical apron `occupancy` bytes for every chunk.
     fn assert_scatter_matches_gather(grid: &VoxelGrid, density: u32) {
-        let scatter = build_per_chunk_fog_occupancy(grid, density);
+        let scatter = build_per_chunk_fog_occupancy(grid, density, None);
         let gather = build_per_chunk_fog_occupancy_reference(grid, density);
         assert_eq!(scatter.chunk_extent, gather.chunk_extent, "chunk_extent");
         assert_eq!(
@@ -4425,7 +4628,7 @@ mod tests {
         // Single voxel at x=extent (chunk 1's interior origin). Chunk 0 has NO interior
         // voxel, so it gets no volume even though this voxel sits in its +X apron.
         let grid = grid_with_voxels(dims, &[[extent as u32, 0, 0]]);
-        let occ = build_per_chunk_fog_occupancy(&grid, density);
+        let occ = build_per_chunk_fog_occupancy(&grid, density, None);
 
         assert_eq!(occ.chunk_extent, extent as u32);
         assert_eq!(occ.volumes.len(), 1, "only chunk 1 is resident (interior owner)");

@@ -90,7 +90,7 @@ pub use assets::{CubeFaceSlot, FaceProvenance, FaceTextures};
 #[allow(deprecated)]
 pub use renderer::build_per_chunk_fog_occupancy;
 pub use renderer::{
-    create_depth_view, create_msaa_color_view, ChunkFogVolume, PerChunkAtlasGeometry,
+    create_depth_view, create_msaa_color_view, ChunkFogVolume, FogZSlab, PerChunkAtlasGeometry,
     FogMode, InfiniteGridRenderer, LayerBand, MaterialSource, OnionFogParams, PointsRenderer,
     SceneGridRenderer,
     TransformGizmoRenderer,

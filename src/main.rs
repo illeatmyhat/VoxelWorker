@@ -24,13 +24,15 @@ use voxel_worker::{
     EguiPaintBridge, FogMode,
     FrameOverlays,
     TransformGizmoRenderer,
-    GpuContext, InfiniteGridRenderer, LayerBand, MaterialSource, PointsRenderer,
+    FogZSlab,
+    GpuContext, InfiniteGridRenderer, LayerBand, LayerRange, MaterialSource, PointsRenderer,
     SceneGridRenderer,
     HomeView, OnionFogRenderer, OrbitCamera, PanelState, SdfShape, SnapTween, ViewCubeElement,
     ViewCubeMenuRequest,
     ViewCubeRenderer, VoxelGrid, COLOR_TARGET_FORMAT,
     VIEW_CUBE_VIEWPORT_PIXELS,
 };
+use voxel_worker::core_geom::CHUNK_BLOCKS;
 use voxel_worker::CuboidMeshRenderer;
 use voxel_worker::Scene;
 // ADR 0007: the GPU view-resolve pipelines are an opt-in display accelerator (`--features
@@ -175,6 +177,15 @@ struct WindowedState {
     /// moment the render path lazily builds the fog before drawing it. A pure band
     /// scrub does NOT set it (the band clip is applied per-frame; occupancy is reused).
     fog_occupancy_dirty: bool,
+    /// Issue #59: the inclusive chunk-Z covering range (Z-up) the fog occupancy was LAST
+    /// built for — the identity the band-aware rebuild compares. The fog now covers only
+    /// the band-slab `[band ± onion_depth]`, not the whole grid, so a band scrub that
+    /// shifts the needed covering chunk-Z rows must rebuild (the old rows aren't in the
+    /// atlas), while a scrub that stays within the same rows reuses it. Compared at CHUNK
+    /// granularity so a band move within one chunk-Z span does NOT rebuild (no per-voxel-
+    /// step atlas rebuilds during a scrub-drag). `None` = fog not built for any slab yet
+    /// (or last needed slab was full-range → no fog); the next onion frame builds.
+    fog_built_chunk_z_range: Option<[i32; 2]>,
 }
 
 #[derive(Default)]
@@ -379,30 +390,45 @@ impl WindowedState {
         let onion_active_at_startup =
             panel_state.layer_range.onion_skin && !panel_state.debug_face_orientation;
         let mut fog_occupancy_dirty = true;
+        // Issue #59: the chunk-Z covering range the fog is built for (`None` until built,
+        // or when the needed slab is full-range → no fog).
+        let mut fog_built_chunk_z_range: Option<[i32; 2]> = None;
+        let startup_density = panel_state.geometry.voxels_per_block;
+        // Issue #59: the band-slab the onion fog needs at startup (`None` = full-range →
+        // nothing outside the band to ghost → skip the fog build even with onion on).
+        let startup_slab = if onion_active_at_startup {
+            Self::fog_z_slab_for(panel_state.layer_range, grid.dimensions[2])
+        } else {
+            None
+        };
         if onion_active_at_startup {
-            #[cfg(feature = "gpu")]
-            let gpu_fog_installed = Self::try_install_gpu_per_chunk_fog(
-                &gpu_resolver,
-                &mut onion_fog_renderer,
-                &gpu,
-                &panel_state.scene,
-                &grid,
-                panel_state.geometry.voxels_per_block,
-            );
-            #[cfg(not(feature = "gpu"))]
-            let gpu_fog_installed = false;
-            if !gpu_fog_installed {
-                Self::upload_fog_occupancy(
-                    &mut onion_fog_renderer,
-                    fog_mode,
-                    &gpu.device,
-                    &gpu.queue,
-                    &grid,
-                    panel_state.geometry.voxels_per_block,
-                );
+            match startup_slab {
+                Some(slab) => {
+                    Self::build_fog_occupancy(
+                        #[cfg(feature = "gpu")]
+                        &gpu_resolver,
+                        &mut onion_fog_renderer,
+                        &gpu,
+                        &panel_state.scene,
+                        fog_mode,
+                        &grid,
+                        startup_density,
+                        Some(slab),
+                    );
+                    fog_occupancy_dirty = false;
+                    fog_built_chunk_z_range = Self::fog_covering_chunk_z_range(
+                        panel_state.layer_range,
+                        grid.dimensions[2],
+                        startup_density,
+                    );
+                    println!("fog: built at startup (onion-skin active, band-slab scoped)");
+                }
+                None => {
+                    // Full-range band with onion on: no layers outside to ghost → no fog.
+                    // Leave the occupancy stale; the render path skips the draw too.
+                    println!("fog: skipped at startup (onion active but band full-range)");
+                }
             }
-            println!("fog: built at startup (onion-skin active)");
-            fog_occupancy_dirty = false;
         } else {
             println!("fog: skipped at startup (onion inactive)");
         }
@@ -487,6 +513,7 @@ impl WindowedState {
             press_in_view_cube: false,
             view_cube_drag_active: false,
             fog_occupancy_dirty,
+            fog_built_chunk_z_range,
             // Default to the full target until the first frame fills it in.
             last_viewport_px: [0, 0, width, height],
             context_menu_open_at: None,
@@ -529,12 +556,20 @@ impl WindowedState {
         queue: &wgpu::Queue,
         grid: &VoxelGrid,
         voxels_per_block: u32,
+        fog_z_slab: Option<FogZSlab>,
     ) {
         match fog_mode {
+            // WholeGrid is the legacy single-3D-texture path (issue #12): it densifies
+            // the whole grid and cannot be Z-slabbed without changing its texture layout,
+            // so it ignores the slab. Only the default PerChunk path is scoped (#59).
             FogMode::WholeGrid => onion_fog_renderer.upload_grid(device, queue, grid),
-            FogMode::PerChunk => {
-                onion_fog_renderer.upload_grid_per_chunk(device, queue, grid, voxels_per_block)
-            }
+            FogMode::PerChunk => onion_fog_renderer.upload_grid_per_chunk(
+                device,
+                queue,
+                grid,
+                voxels_per_block,
+                fog_z_slab,
+            ),
         }
     }
 
@@ -559,6 +594,7 @@ impl WindowedState {
         scene: &Scene,
         grid: &VoxelGrid,
         voxels_per_block: u32,
+        fog_z_slab: Option<FogZSlab>,
     ) -> bool {
         profiling::scope!("fog_gpu_resolve");
         let Some(producer) = scene.single_producer() else {
@@ -571,6 +607,7 @@ impl WindowedState {
             grid.dimensions,
             grid.recentre_voxels,
             voxels_per_block,
+            fog_z_slab,
         ) else {
             return false;
         };
@@ -588,6 +625,40 @@ impl WindowedState {
         // The compacted non-empty set can still exceed the atlas budget; if the install
         // couldn't activate, fall back to the CPU densify rather than show no fog.
         fog.per_chunk_active()
+    }
+
+    /// The onion-fog Z-slab (issue #59) the fog occupancy must cover for the current
+    /// `layer_range` over a grid of height `grid_z` (Z-up: layers are Z-slices). The band
+    /// is derived the SAME way `AppCore::onion_fog_params` derives its onion-Z span —
+    /// solid band `[lower, upper.min(grid_z−1)]`, widened by `onion_depth` (clamped 1..8
+    /// when onion is on) — so the slab bounds exactly the occupancy the raymarch samples.
+    /// `None` when the band is FULL-RANGE (nothing outside to ghost → skip the fog build).
+    ///
+    /// This assumes onion-skin is active (the only path that draws fog); the caller gates
+    /// on `onion_active` before building fog at all.
+    fn fog_z_slab_for(layer_range: LayerRange, grid_z: u32) -> Option<FogZSlab> {
+        let band = LayerBand {
+            band_min: layer_range.lower,
+            band_max: layer_range.upper.min(grid_z.saturating_sub(1)),
+            onion_depth: layer_range.onion_depth.clamp(1, 8),
+        };
+        FogZSlab::for_band(band, grid_z)
+    }
+
+    /// The inclusive chunk-Z covering range the fog would build for `layer_range` over a
+    /// grid of height `grid_z` at `density` (issue #59). This is the CHUNK-granular
+    /// identity the band-aware rebuild logic compares: a band scrub that stays within the
+    /// same covering chunk-Z rows reuses the built atlas; one that shifts the rows (or
+    /// crosses the full-range boundary, `None`) rebuilds. Rebuilding at chunk (not voxel)
+    /// granularity avoids a rebuild on every voxel step of a scrub-drag.
+    fn fog_covering_chunk_z_range(
+        layer_range: LayerRange,
+        grid_z: u32,
+        density: u32,
+    ) -> Option<[i32; 2]> {
+        let chunk_extent = CHUNK_BLOCKS * density.max(1);
+        Self::fog_z_slab_for(layer_range, grid_z)
+            .and_then(|slab| slab.covering_chunk_z_range(chunk_extent))
     }
 
     /// Build + upload the onion-fog occupancy field for `grid`. ADR 0007 live call-site
@@ -615,6 +686,10 @@ impl WindowedState {
         fog_mode: FogMode,
         grid: &VoxelGrid,
         density: u32,
+        // Issue #59: the onion-fog Z-slab (band ± onion_depth) to scope the covering
+        // chunk set to. `None` covers the whole grid (unused by the live onion path,
+        // which always passes a slab, but kept for a would-be whole-grid caller).
+        fog_z_slab: Option<FogZSlab>,
     ) {
         profiling::scope!("fog_upload");
         #[cfg(feature = "gpu")]
@@ -625,6 +700,7 @@ impl WindowedState {
             scene,
             grid,
             density,
+            fog_z_slab,
         );
         #[cfg(not(feature = "gpu"))]
         let gpu_fog_installed = false;
@@ -642,6 +718,7 @@ impl WindowedState {
                 &gpu.queue,
                 grid,
                 density,
+                fog_z_slab,
             );
         } else {
             println!("fog: per-chunk mode (GPU atlas)");
@@ -738,27 +815,62 @@ impl WindowedState {
                 recentre_shift_voxels[2] as f32,
             );
         }
+        // Issue #12: clamp/rescale the layer band to the new grid_z (re-snapping to block
+        // multiples when snapping is on) BEFORE the fog build below, so the fog slab (#59)
+        // is computed against the SAME rescaled band the render path will draw this frame
+        // (the render path runs after this rebuild returns and reads the rescaled band).
+        // Z-up: index 2. `previous_grid_z` was captured before `grid` was reassigned.
+        self.panel_state.layer_range.rescale_to_grid_z(
+            previous_grid_z,
+            region_dimensions[2],
+            density,
+        );
+
         // Re-upload the fog's occupancy field for the new grid — but ONLY when the fog
         // is actually drawn (issue #58). Onion-skin defaults OFF, so the common edit path
         // does ZERO fog work: mark the occupancy stale and let the render path build it
         // lazily the first frame onion-skin is on. When onion IS active, build it now (the
         // edit changed the geometry the fog visualises) so this frame renders correctly.
+        //
+        // Issue #59: scope the build to the band-slab (band ± onion_depth). A full-range
+        // band (`None` slab) has nothing outside to ghost → skip the build (and draw)
+        // entirely even with onion on. Record the covering chunk-Z range so the render
+        // path's band-aware reuse can tell a within-slab scrub (reuse) from one that
+        // shifts the slab (rebuild).
         let onion_active =
             self.panel_state.layer_range.onion_skin && !self.panel_state.debug_face_orientation;
+        let new_grid_z = grid.dimensions[2];
         if onion_active {
-            Self::build_fog_occupancy(
-                #[cfg(feature = "gpu")]
-                &self.gpu_resolver,
-                &mut self.onion_fog_renderer,
-                &self.gpu,
-                &self.panel_state.scene,
-                self.fog_mode,
-                &grid,
-                density,
-            );
-            self.fog_occupancy_dirty = false;
+            match Self::fog_z_slab_for(self.panel_state.layer_range, new_grid_z) {
+                Some(slab) => {
+                    Self::build_fog_occupancy(
+                        #[cfg(feature = "gpu")]
+                        &self.gpu_resolver,
+                        &mut self.onion_fog_renderer,
+                        &self.gpu,
+                        &self.panel_state.scene,
+                        self.fog_mode,
+                        &grid,
+                        density,
+                        Some(slab),
+                    );
+                    self.fog_occupancy_dirty = false;
+                    self.fog_built_chunk_z_range = Self::fog_covering_chunk_z_range(
+                        self.panel_state.layer_range,
+                        new_grid_z,
+                        density,
+                    );
+                }
+                None => {
+                    // Full-range band with onion on: no ghost layers → no fog build/draw.
+                    self.fog_occupancy_dirty = true;
+                    self.fog_built_chunk_z_range = None;
+                    println!("fog: skipped on rebuild (band full-range)");
+                }
+            }
         } else {
             self.fog_occupancy_dirty = true;
+            self.fog_built_chunk_z_range = None;
             println!("fog: skipped on rebuild (onion inactive)");
         }
         // The transform gizmo (issue #29 S2) is sized + positioned from the SELECTED
@@ -767,14 +879,6 @@ impl WindowedState {
         // floor grid (issue #29 S3) is likewise (re)batched per frame from the
         // grid-enabled nodes — a per-node toggle needs no scene re-resolve.
 
-        // Issue #12: clamp/rescale the layer band to the new grid_z (re-snapping
-        // to block multiples when snapping is on), then invalidate the diameter
-        // cache so the readout re-measures against the new grid. Z-up: index 2.
-        self.panel_state.layer_range.rescale_to_grid_z(
-            previous_grid_z,
-            region_dimensions[2],
-            density,
-        );
         self.grid = grid;
         self.measured_band = (u32::MAX, u32::MAX); // force a re-measure next frame.
     }
@@ -1472,30 +1576,58 @@ impl WindowedState {
         // fullscreen raymarch of the occupancy grid hazes the layers around the band
         // (the grid itself is uploaded on geometry rebuild, not per frame).
         let onion_active = layer_range.onion_skin && !self.panel_state.debug_face_orientation;
+        // Issue #59: the fog draws only when onion is active AND the band is NOT full-range
+        // (a full-range band ghosts nothing). `false` for a full-range band even with onion
+        // on — behaviour-identical to today, where such a frame draws no visible haze.
+        let mut fog_should_draw = false;
         if onion_active {
-            // Issue #58: build the occupancy lazily the FIRST frame the fog is drawn after
-            // it went stale — i.e. the user just enabled onion-skin (or turned off
-            // debug-face), or edited while onion was off. A pure band scrub does NOT dirty
-            // the occupancy, so this is skipped and the built atlas is reused (the band
-            // clip is applied per-frame below via `onion_fog_params`). Once built, clear
-            // the flag so subsequent frames don't rebuild.
-            if self.fog_occupancy_dirty {
-                Self::build_fog_occupancy(
-                    #[cfg(feature = "gpu")]
-                    &self.gpu_resolver,
-                    &mut self.onion_fog_renderer,
-                    &self.gpu,
-                    &self.panel_state.scene,
-                    self.fog_mode,
-                    &self.grid,
-                    self.panel_state.geometry.voxels_per_block,
-                );
-                self.fog_occupancy_dirty = false;
+            let fog_density = self.panel_state.geometry.voxels_per_block;
+            let grid_z = grid_dimensions[2];
+            // Issue #59: the band-slab the fog needs THIS frame (`None` = full-range → no
+            // fog), and its covering chunk-Z rows (the reuse identity).
+            let needed_slab = Self::fog_z_slab_for(layer_range, grid_z);
+            let needed_chunk_z_range =
+                Self::fog_covering_chunk_z_range(layer_range, grid_z, fog_density);
+            match needed_slab {
+                Some(slab) => {
+                    // Band-aware rebuild (issue #58 + #59): rebuild the occupancy when it went
+                    // stale (geometry changed / onion just toggled on — `fog_occupancy_dirty`)
+                    // OR when the needed covering chunk-Z rows differ from the built ones (a
+                    // scrub that moved the slab beyond the built region — the whole grid is no
+                    // longer covered, so the old atlas is missing the newly-needed chunks).
+                    // Compared at CHUNK granularity: a band move within the same chunk-Z rows
+                    // reuses the atlas (the band clip is applied per-frame via
+                    // `onion_fog_params`), so a scrub-drag doesn't rebuild every voxel step.
+                    let slab_moved = self.fog_built_chunk_z_range != needed_chunk_z_range;
+                    if self.fog_occupancy_dirty || slab_moved {
+                        Self::build_fog_occupancy(
+                            #[cfg(feature = "gpu")]
+                            &self.gpu_resolver,
+                            &mut self.onion_fog_renderer,
+                            &self.gpu,
+                            &self.panel_state.scene,
+                            self.fog_mode,
+                            &self.grid,
+                            fog_density,
+                            Some(slab),
+                        );
+                        self.fog_occupancy_dirty = false;
+                        self.fog_built_chunk_z_range = needed_chunk_z_range;
+                    }
+                    self.onion_fog_renderer.update(
+                        &self.gpu.queue,
+                        AppCore::onion_fog_params(view_projection, grid_dimensions, layer_range),
+                    );
+                    fog_should_draw = true;
+                }
+                None => {
+                    // Full-range band (issue #59): nothing outside to ghost. Do NOT build or
+                    // draw fog. Leave the occupancy marked stale so the next non-full band
+                    // rebuilds (its covering rows also differ, forcing a rebuild regardless).
+                    self.fog_occupancy_dirty = true;
+                    self.fog_built_chunk_z_range = None;
+                }
             }
-            self.onion_fog_renderer.update(
-                &self.gpu.queue,
-                AppCore::onion_fog_params(view_projection, grid_dimensions, layer_range),
-            );
         }
 
         let overlays = FrameOverlays {
@@ -1522,7 +1654,9 @@ impl WindowedState {
             // Issue #29 Points fast-follow: the analytic infinite grid (Points' planes);
             // self-gates on no enabled plane.
             infinite_grid: Some(&self.infinite_grid_renderer),
-            onion_fog: if onion_active {
+            // Issue #59: draw fog only when there is a non-full-range band to ghost around
+            // (a full-range band with onion on draws nothing — `fog_should_draw` is false).
+            onion_fog: if fog_should_draw {
                 Some(&self.onion_fog_renderer)
             } else {
                 None
