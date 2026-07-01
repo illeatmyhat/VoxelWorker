@@ -882,6 +882,33 @@ fn build_two_layer_chunk_meshes(
     voxels_per_block: u32,
     band: LayerBand,
 ) -> Vec<CuboidChunkMesh> {
+    build_two_layer_chunk_meshes_filtered(
+        chunks,
+        None,
+        grid_dimensions,
+        recentre_voxels,
+        voxels_per_block,
+        band,
+    )
+}
+
+/// Like [`build_two_layer_chunk_meshes`] but meshes ONLY the chunks in `only` (when
+/// `Some`), the two-layer analogue of [`build_chunk_meshes_with_apron_filtered`] (issue
+/// #55). Seam-flag culling reads every chunk's neighbours from the FULL `chunks` set (the
+/// `chunk_by_coord` lookup below is over ALL chunks), so a subset build is byte-identical to
+/// the same chunks within a wholesale build — a skipped neighbour's coarse / microblock face
+/// solidity still culls the meshed chunk's seam faces. `None` meshes every chunk (the
+/// wholesale path). This is the seam the two-layer INCREMENTAL rebuild
+/// ([`CuboidMeshRenderer::incremental_rebuild_from_two_layer_chunks`]) uses: it passes the
+/// full resident set for correct seam culling but re-meshes only the dirty-dilated subset.
+fn build_two_layer_chunk_meshes_filtered(
+    chunks: &[([i32; 3], TwoLayerChunk)],
+    only: Option<&std::collections::HashSet<[i32; 3]>>,
+    grid_dimensions: [u32; 3],
+    recentre_voxels: [i64; 3],
+    voxels_per_block: u32,
+    band: LayerBand,
+) -> Vec<CuboidChunkMesh> {
     let density = voxels_per_block.max(1);
     let block_extent = density as i64;
 
@@ -984,6 +1011,14 @@ fn build_two_layer_chunk_meshes(
 
     let mut meshes = Vec::new();
     for (chunk_coord, chunk) in chunks {
+        // Incremental subset (issue #55): skip chunks not in the rebuild set. Seam culling
+        // still consults every chunk (the `chunk_by_coord` lookup above is over the FULL set),
+        // so a skipped neighbour's face solidity correctly culls the meshed chunk's seam faces.
+        if let Some(only) = only {
+            if !only.contains(chunk_coord) {
+                continue;
+            }
+        }
         // The chunk's low voxel corner in the RECENTRED frame (ADR 0008): a chunk-local
         // voxel index `lv` lands at world min-corner `chunk_min - recentre + lv`. Emitting
         // box corners there matches the dense path's `global_index + (min_world - 0.5)`
@@ -2350,6 +2385,116 @@ impl CuboidMeshRenderer {
                 match self.source_chunk_grids.iter_mut().find(|(c, _)| c == coord) {
                     Some(entry) => entry.1 = (*grid).clone(),
                     None => self.source_chunk_grids.push((*coord, (*grid).clone())),
+                }
+            }
+        }
+
+        // Recompute the diagnostics from the (now-correct) full buffer set. All chunks
+        // visible until the next frustum cull in `update_uniforms`.
+        self.total_box_count = self.chunk_buffers.values().map(|c| c.box_count).sum();
+        self.visible_chunks = self.chunk_buffers.keys().copied().collect();
+        self.visible_chunks.sort_unstable();
+    }
+
+    /// Incrementally update the per-chunk buffers for a geometry edit on the **two-layer**
+    /// path (issue #55 — the two-layer analogue of [`incremental_rebuild_from_chunks`]):
+    /// re-mesh + re-upload ONLY the chunks the edit (and its 26-neighbourhood seam footprint)
+    /// touched, drop vacated chunks, and KEEP every other chunk's existing buffers — instead
+    /// of the wholesale [`new_from_two_layer_chunks`] recreate that re-meshes + re-uploads the
+    /// WHOLE resident set every edit (the exact per-edit latency #40 fixed for the dense path,
+    /// regressed onto the two-layer live renderer after E5).
+    ///
+    /// `chunks` is the FULL post-edit covering set (the [`TwoLayerResidentCache`]'s resident
+    /// chunks), needed IN FULL so the re-meshed chunks' seam-flag culling consults every
+    /// neighbour; `recentre_voxels` / `voxels_per_block` are the resolve's carried frame
+    /// (ADR 0008); `grid_dimensions` the whole composite's voxel dims (band-clip mapping);
+    /// `evicted_dirty` the resident cache's evicted coords for this edit (from
+    /// [`TwoLayerResidentCache::invalidate_aabb`](crate::two_layer_store::TwoLayerResidentCache::invalidate_aabb)).
+    ///
+    /// The dirty set is dilated by the 26-neighbourhood via the SAME
+    /// [`cuboid_incremental_plan`] the dense path uses — the seam-solidity dependency footprint
+    /// is that same 26-neighbourhood (a neighbour's coarse / microblock face occupancy can cull
+    /// this chunk's seam faces). Applying the plan — re-mesh `rebuild`, drop `evict`, keep the
+    /// rest — yields a per-chunk buffer set IDENTICAL to a wholesale two-layer rebuild (proven
+    /// by `incremental_two_layer_gpu_buffer_rebuild_equals_wholesale`).
+    ///
+    /// PRECONDITION: this must be the two-layer path (built via
+    /// [`new_from_two_layer_chunks`]). A two-layer chunk is chunk-local-integer (ADR 0008), so
+    /// — unlike the dense path — a floating-origin recentre SHIFT does NOT staleen the resident
+    /// buffers (the recentre is a pure index offset re-applied here as `recentre_voxels`); the
+    /// caller need not fall back on a recentre shift, only on a DENSITY change (which resizes
+    /// every chunk's voxel extent and re-keys the whole buffer set). The active layer band is
+    /// preserved (re-meshes at `self.current_band`).
+    pub fn incremental_rebuild_from_two_layer_chunks(
+        &mut self,
+        device: &wgpu::Device,
+        chunks: &[([i32; 3], crate::two_layer_store::TwoLayerChunk)],
+        grid_dimensions: [u32; 3],
+        recentre_voxels: [i64; 3],
+        voxels_per_block: u32,
+        evicted_dirty: &[[i32; 3]],
+    ) {
+        profiling::scope!("cuboid_mesh_incremental_two_layer");
+        self.source_grid_dimensions = grid_dimensions;
+        self.source_two_layer_recentre = recentre_voxels;
+        self.source_two_layer_density = voxels_per_block.max(1);
+
+        // The renderer's KNOWN set is its retained two-layer chunks' coords (includes
+        // occupied-but-fully-occluded chunks that carry no buffer), so occluded chunks stay
+        // stable instead of being treated as "new" and re-meshed every edit.
+        let resident: Vec<[i32; 3]> =
+            self.source_two_layer_chunks.iter().map(|(c, _)| *c).collect();
+        let occupied: Vec<[i32; 3]> = chunks
+            .iter()
+            .filter(|(_, chunk)| chunk.has_geometry())
+            .map(|(coord, _)| *coord)
+            .collect();
+        let plan = cuboid_incremental_plan(&resident, evicted_dirty, &occupied);
+
+        // Re-mesh only the dirty-dilated subset (seam culling from the full set) at the
+        // active band, then upload those chunks' buffers.
+        let rebuild_set: std::collections::HashSet<[i32; 3]> =
+            plan.rebuild.iter().copied().collect();
+        let meshes = build_two_layer_chunk_meshes_filtered(
+            chunks,
+            Some(&rebuild_set),
+            grid_dimensions,
+            recentre_voxels,
+            voxels_per_block,
+            self.current_band,
+        );
+        let rebuilt_buffers = upload_chunk_meshes(device, &meshes);
+
+        // Apply. Drop evicted buffers, then drop EVERY rebuild coord's old buffer (a rebuild
+        // coord that now meshes to EMPTY — e.g. fully occluded by new neighbour occupancy —
+        // produces no buffer and must lose its stale one), then insert the freshly built
+        // buffers. Net result == wholesale two-layer rebuild's buffer set.
+        for coord in &plan.evict {
+            self.chunk_buffers.remove(coord);
+        }
+        for coord in &plan.rebuild {
+            self.chunk_buffers.remove(coord);
+        }
+        self.chunk_buffers.extend(rebuilt_buffers);
+
+        // Keep `source_two_layer_chunks` the COMPLETE current covering set (a later band
+        // reclip re-meshes from it): drop evicted, upsert each rebuilt coord's chunk.
+        // Untouched chunks are resident-cache hits → already correct. Rebuilding a chunk that
+        // went all-air still upserts its (empty) chunk so the retained set matches `chunks`.
+        let chunks_by_coord: std::collections::HashMap<[i32; 3], &crate::two_layer_store::TwoLayerChunk> =
+            chunks.iter().map(|(coord, chunk)| (*coord, chunk)).collect();
+        let evict_set: std::collections::HashSet<[i32; 3]> = plan.evict.iter().copied().collect();
+        self.source_two_layer_chunks
+            .retain(|(coord, _)| !evict_set.contains(coord));
+        for coord in &plan.rebuild {
+            if let Some(chunk) = chunks_by_coord.get(coord) {
+                match self
+                    .source_two_layer_chunks
+                    .iter_mut()
+                    .find(|(c, _)| c == coord)
+                {
+                    Some(entry) => entry.1 = (*chunk).clone(),
+                    None => self.source_two_layer_chunks.push((*coord, (*chunk).clone())),
                 }
             }
         }
@@ -4164,6 +4309,224 @@ mod tests {
             assert_eq!(
                 incremental_faces, full_faces,
                 "[{label}] incremental two-layer mesh faces must equal a FULL two-layer rebuild"
+            );
+        }
+    }
+
+    /// One chunk's GPU-buffer proxy: `(vertex bytes, overlay-off indices, overlay-on indices)`.
+    type ChunkBufferProxy = (Vec<u8>, Vec<u32>, Vec<u32>);
+
+    /// Map a two-layer mesh build to `coord -> (vertex bytes, off-indices, overlay-indices)` —
+    /// the per-chunk GPU buffer set proxy (the renderer uploads exactly these bytes via
+    /// [`upload_chunk_meshes`], concatenating the two index runs), so a byte-equal map ==
+    /// a byte-equal buffer set. Carries BOTH index runs (unlike the dense `mesh_map`) so the
+    /// overlay split is part of the parity claim.
+    fn two_layer_mesh_map(
+        meshes: &[CuboidChunkMesh],
+    ) -> std::collections::HashMap<[i32; 3], ChunkBufferProxy> {
+        meshes
+            .iter()
+            .map(|m| {
+                (
+                    m.coord,
+                    (
+                        bytemuck::cast_slice::<_, u8>(&m.vertices).to_vec(),
+                        m.indices.clone(),
+                        m.indices_overlay.clone(),
+                    ),
+                )
+            })
+            .collect()
+    }
+
+    /// **THE ISSUE #55 GATE (byte-parity + only-dirty-remeshed).** Drive an edit through the
+    /// [`TwoLayerResidentCache`] exactly as `AppCore::rebuild` does, then apply the
+    /// [`cuboid_incremental_plan`] on the two-layer chunk source exactly as
+    /// [`CuboidMeshRenderer::incremental_rebuild_from_two_layer_chunks`] does, and assert:
+    ///
+    /// 1. **Byte-parity** — the incrementally-updated per-chunk buffer set (kept-buffers ∪
+    ///    freshly-meshed rebuild subset, minus evicted) is BYTE-IDENTICAL to a wholesale
+    ///    two-layer re-mesh of the edited scene. This is the GPU-buffer analogue of the dense
+    ///    [`incremental_cuboid_rebuild_equals_wholesale`], and of the face-set
+    ///    [`incremental_two_layer_edit_meshes_identically_to_full_rebuild`].
+    /// 2. **Only-dirty-remeshed (the perf proof)** — the re-meshed set is the plan's dirty +
+    ///    26-neighbourhood-dilated rebuild set, STRICTLY smaller than the whole resident set
+    ///    (quantified on a many-chunk scene). Without this the slice is unverified: it is what
+    ///    proves per-edit mesh cost scales with the dirty set, not the scene size.
+    #[test]
+    fn incremental_two_layer_gpu_buffer_rebuild_equals_wholesale() {
+        use crate::two_layer_store::TwoLayerResidentCache;
+        let density = 16u32;
+
+        // Two ANCHOR boxes at fixed extremes PLUS an interior subject box. The anchors are
+        // present in EVERY scene, so the composite bounds — hence the recentre (floating origin)
+        // — stay PINNED across each edit. That models the live guard: the two-layer GPU-buffer
+        // incremental only runs when the recentre did NOT shift (a shift re-frames every kept
+        // buffer's baked vertices → the shell falls back to wholesale, `app_core.rs`). With the
+        // recentre pinned, the incremental path is genuinely exercised, and the subject box sits
+        // far from the anchors so an edit dirties a strict subset while most chunks stay resident.
+        let anchors = || {
+            vec![
+                two_layer_tool(TwoLayerShape::Box, [2, 2, 2], [-14, 0, 0], MC::Stone, density),
+                two_layer_tool(TwoLayerShape::Box, [2, 2, 2], [14, 8, 6], MC::Stone, density),
+            ]
+        };
+        // scene_a: anchors + subject box (index 2) at a fixed offset well inside the bounds.
+        let scene_a = {
+            let mut nodes = anchors();
+            nodes.push(two_layer_tool(TwoLayerShape::Box, [3, 3, 3], [4, 2, 2], MC::Wood, density));
+            Scene::from_nodes(nodes)
+        };
+        let subject = 2usize;
+
+        let recolor = {
+            let mut b = scene_a.clone();
+            if let NodeContent::Tool { material, .. } = &mut b.root_node_mut(subject).content {
+                *material = MC::Plain;
+            }
+            ("recolor", b)
+        };
+        let resize = {
+            // Shrink the subject box; the anchors keep the bounds pinned so the recentre holds.
+            let mut b = scene_a.clone();
+            let replacement =
+                two_layer_tool(TwoLayerShape::Box, [2, 2, 2], [4, 2, 2], MC::Wood, density);
+            let slot = b.root_node_mut(subject);
+            slot.content = replacement.content;
+            slot.transform = replacement.transform;
+            ("resize", b)
+        };
+        let move_edit = {
+            // Move the subject WITHIN the anchored bounds (recentre unchanged).
+            let mut b = scene_a.clone();
+            b.root_node_mut(subject).transform = NodeTransform::from_blocks([6, 2, 2], density);
+            ("move", b)
+        };
+        let remove_edit = {
+            let mut b = scene_a.clone();
+            let subject_id = b.roots[subject];
+            b.remove_node(subject_id);
+            ("remove", b)
+        };
+
+        for (label, scene_b) in [recolor, resize, move_edit, remove_edit] {
+            // Build scene A's resident set + its owned two-layer chunk source (what the renderer
+            // retains in `source_two_layer_chunks`).
+            let mut cache = TwoLayerResidentCache::enabled();
+            let chunks_a: Vec<([i32; 3], TwoLayerChunk)> = cache
+                .resident_two_layer_chunks(&scene_a, density, 0)
+                .into_iter()
+                .map(|(coord, chunk)| (coord, chunk.clone()))
+                .collect();
+            let dims = scene_a.placed_region_dimensions(density);
+            let recentre = scene_a.recentre_voxels_for_resolve(density);
+            // The renderer's initial (wholesale) buffer set for A.
+            let wholesale_a = build_two_layer_chunk_meshes(
+                &chunks_a,
+                dims,
+                recentre,
+                density,
+                LayerBand::FULL,
+            );
+
+            // The edit: invalidate the dirty AABB (or clear), then re-derive the resident set.
+            let index_a = scene_a.build_leaf_spatial_index(density);
+            let index_b = scene_b.build_leaf_spatial_index(density);
+            let evicted_dirty: Vec<[i32; 3]> = match index_b.edit_aabb_since(&index_a) {
+                Some(edit_aabb) => cache.invalidate_aabb(&edit_aabb, density),
+                None => {
+                    cache.clear();
+                    Vec::new()
+                }
+            };
+            // These edits are all localisable (a single moved/edited leaf), so the AABB path
+            // must have been taken — the perf claim only holds on the localised path.
+            assert!(
+                !evicted_dirty.is_empty(),
+                "[{label}] expected a localisable edit (non-empty evicted-dirty set)"
+            );
+            let dims_b = scene_b.placed_region_dimensions(density);
+            let recentre_b = scene_b.recentre_voxels_for_resolve(density);
+            // The anchors pin the bounds, so the recentre must NOT shift — the precondition
+            // under which the GPU-buffer incremental keeps untouched chunks' baked vertices.
+            assert_eq!(
+                recentre_b, recentre,
+                "[{label}] anchors should pin the recentre; a shift would force wholesale fallback"
+            );
+            let chunks_b: Vec<([i32; 3], TwoLayerChunk)> = cache
+                .resident_two_layer_chunks(&scene_b, density, 0)
+                .into_iter()
+                .map(|(coord, chunk)| (coord, chunk.clone()))
+                .collect();
+
+            // The plan — dilate the dirty set by the 26-neighbourhood, keep only non-empty
+            // chunks — exactly as `incremental_rebuild_from_two_layer_chunks` computes it.
+            let resident: Vec<[i32; 3]> = chunks_a.iter().map(|(c, _)| *c).collect();
+            let occupied: Vec<[i32; 3]> = chunks_b
+                .iter()
+                .filter(|(_, chunk)| chunk.has_geometry())
+                .map(|(coord, _)| *coord)
+                .collect();
+            let plan = cuboid_incremental_plan(&resident, &evicted_dirty, &occupied);
+
+            // --- ONLY-DIRTY-REMESHED (the perf proof) ---
+            // The re-meshed set is STRICTLY smaller than the resident set — most chunks keep
+            // their buffers. Quantify the gap so a regression to wholesale re-mesh fails here.
+            assert!(
+                plan.rebuild.len() < resident.len(),
+                "[{label}] incremental re-mesh must touch FEWER than every resident chunk \
+                 (rebuilt {} of {} resident) — else it's a wholesale re-mesh regression",
+                plan.rebuild.len(),
+                resident.len(),
+            );
+
+            // Re-mesh ONLY the rebuild subset (seam culling from the FULL post-edit set) and
+            // confirm the filtered build produced meshes for EXACTLY that subset (∩ non-empty)
+            // — never the whole resident set.
+            let rebuild_set: std::collections::HashSet<[i32; 3]> =
+                plan.rebuild.iter().copied().collect();
+            let rebuilt = build_two_layer_chunk_meshes_filtered(
+                &chunks_b,
+                Some(&rebuild_set),
+                dims_b,
+                recentre_b,
+                density,
+                LayerBand::FULL,
+            );
+            let remeshed_coords: std::collections::HashSet<[i32; 3]> =
+                rebuilt.iter().map(|m| m.coord).collect();
+            assert!(
+                remeshed_coords.is_subset(&rebuild_set),
+                "[{label}] the filtered two-layer build meshed a chunk OUTSIDE the dirty-dilated \
+                 rebuild set — seam culling must read neighbours but only EMIT the subset"
+            );
+
+            // --- BYTE-PARITY ---
+            // Apply the plan to A's buffer map (drop evicted + rebuild coords, insert the fresh
+            // meshes) and assert it byte-equals a wholesale re-mesh of B — the exact ops
+            // `incremental_rebuild_from_two_layer_chunks` performs on `chunk_buffers`.
+            let mut result = two_layer_mesh_map(&wholesale_a);
+            for coord in &plan.evict {
+                result.remove(coord);
+            }
+            for coord in &plan.rebuild {
+                result.remove(coord); // a rebuild coord meshing to empty drops out here
+            }
+            for (coord, entry) in two_layer_mesh_map(&rebuilt) {
+                result.insert(coord, entry);
+            }
+
+            let wholesale_b = build_two_layer_chunk_meshes(
+                &chunks_b,
+                dims_b,
+                recentre_b,
+                density,
+                LayerBand::FULL,
+            );
+            let target = two_layer_mesh_map(&wholesale_b);
+            assert_eq!(
+                result, target,
+                "[{label}] incremental two-layer buffer set must byte-equal the wholesale rebuild"
             );
         }
     }

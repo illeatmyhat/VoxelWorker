@@ -183,6 +183,15 @@ impl TwoLayerChunk {
         self.coarse_overlay[coarse_flat_index(block)]
     }
 
+    /// Whether this chunk holds ANY geometry (at least one coarse-solid block OR one
+    /// boundary block) — i.e. it would produce a mesh / occupancy. An all-air chunk returns
+    /// `false`. The two-layer analogue of the dense `!grid.occupied.is_empty()` the cuboid
+    /// incremental plan keys "occupied" off (issue #55): only non-empty chunks are meshed,
+    /// so a chunk that an edit turned all-air drops out of the rebuild set and is evicted.
+    pub fn has_geometry(&self) -> bool {
+        self.coarse.iter().any(Option::is_some) || !self.microblocks.is_empty()
+    }
+
     /// The TOTAL voxel count this chunk STORES — the sum of every boundary block's
     /// decomposed cuboid voxels. A coarse-solid block contributes ZERO (interior
     /// elision); this is the measured "surface-only" residency the ADR demands (an

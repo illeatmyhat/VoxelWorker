@@ -89,6 +89,22 @@ pub struct RebuildOutput {
     /// The composite recentre (floating origin, voxels; ADR 0008) the two-layer mesh
     /// lands its geometry in — the SAME frame the fog `grid` above is recentred to.
     pub recentre_voxels: [i64; 3],
+    /// **The chunk-granular incremental GPU-buffer re-mesh hint (issue #55).** `Some(dirty)`
+    /// when this rebuild LOCALISED — the edit's dirty world-AABB evicted exactly the `dirty`
+    /// chunks (from [`TwoLayerResidentCache::invalidate_aabb`]) and the density did NOT change
+    /// — so the shell can re-mesh + re-upload ONLY `dirty ∪ 26-neighbourhood(dirty) ∩ resident`
+    /// via [`CuboidMeshRenderer::incremental_rebuild_from_two_layer_chunks`], keeping every
+    /// other chunk's GPU buffers in place. `None` when the edit could NOT localise — the first
+    /// build (no previous index, wholesale [`clear`](TwoLayerResidentCache::clear)), a density
+    /// change (re-keys every chunk's voxel extent), or a region-spanning Part edit (no
+    /// localisable box) — in which case the shell re-meshes WHOLESALE via
+    /// [`CuboidMeshRenderer::new_from_two_layer_chunks`]. This is the same split the resident
+    /// cache itself uses (`invalidate_aabb` vs `clear`), surfaced to the GPU-buffer layer.
+    ///
+    /// [`TwoLayerResidentCache::invalidate_aabb`]: crate::two_layer_store::TwoLayerResidentCache::invalidate_aabb
+    /// [`CuboidMeshRenderer::incremental_rebuild_from_two_layer_chunks`]: crate::cuboid_mesh::CuboidMeshRenderer::incremental_rebuild_from_two_layer_chunks
+    /// [`CuboidMeshRenderer::new_from_two_layer_chunks`]: crate::cuboid_mesh::CuboidMeshRenderer::new_from_two_layer_chunks
+    pub incremental_dirty_chunks: Option<Vec<[i32; 3]>>,
     /// How far the floating-origin recentre SHIFTED this rebuild, in render-frame
     /// voxels (`new_recentre − previous_recentre`; `[0, 0, 0]` on the first build).
     /// The composite is re-centred on the world origin every rebuild, so when its
@@ -849,20 +865,51 @@ impl AppCore {
             new_recentre[1] - previous_recentre[1],
             new_recentre[2] - previous_recentre[2],
         ];
-        match self.previous_leaf_index.as_ref() {
+        // The chunk-granular GPU-buffer incremental (#55) reuses UNTOUCHED chunks' baked
+        // buffers verbatim, so it is only valid when those buffers are still in the right
+        // frame. Two guards force a wholesale re-mesh even for a localisable edit:
+        //   * DENSITY change — re-keys every chunk (chunk extent = CHUNK_BLOCKS × density),
+        //     so the whole resident buffer set is in a different voxel frame.
+        //   * RECENTRE (floating-origin) SHIFT — although a two-layer chunk is chunk-local-
+        //     integer (so the resident CACHE stays valid across a shift), the MESHER bakes the
+        //     recentre into each vertex's world position at emit time. A shift therefore
+        //     staleens every kept buffer's vertices (an untouched chunk's mesh would sit at the
+        //     old origin), exactly the dense `incremental_rebuild_from_chunks` precondition.
+        //     The cache invalidation below still runs (it is frame-independent); only the
+        //     GPU-buffer incremental falls back.
+        let density_changed = self.previous_density != Some(density);
+        let recentre_shifted = recentre_shift_voxels != [0; 3];
+        let buffers_reframed = density_changed || recentre_shifted;
+        // The incremental GPU-buffer re-mesh hint (#55): `Some(evicted_dirty)` only when the
+        // edit LOCALISED (an `invalidate_aabb` path) AND the resident buffers stayed in frame.
+        // Any wholesale `clear()` — first build, region-spanning Part edit — and any reframing
+        // (density change / recentre shift) yields `None`, so the shell re-meshes wholesale.
+        let incremental_dirty_chunks: Option<Vec<[i32; 3]>> = match self
+            .previous_leaf_index
+            .as_ref()
+        {
             Some(previous) => match new_leaf_index.edit_aabb_since(previous) {
                 Some(edit_aabb) => {
                     profiling::scope!("invalidate_aabb");
-                    self.two_layer_cache.invalidate_aabb(&edit_aabb, density);
+                    let evicted = self.two_layer_cache.invalidate_aabb(&edit_aabb, density);
+                    // `invalidate_aabb` clears everything on a density mismatch (returning all
+                    // resident coords); either way, a reframing forces a wholesale re-mesh.
+                    if buffers_reframed {
+                        None
+                    } else {
+                        Some(evicted)
+                    }
                 }
                 None => {
                     profiling::scope!("invalidate_clear");
                     self.two_layer_cache.clear();
+                    None
                 }
             },
             None => {
                 profiling::scope!("invalidate_clear");
                 self.two_layer_cache.clear();
+                None
             }
         };
         self.previous_recentre_voxels = Some(new_recentre);
@@ -903,6 +950,7 @@ impl AppCore {
             two_layer_chunks,
             recentre_voxels: new_recentre,
             recentre_shift_voxels,
+            incremental_dirty_chunks,
         })
     }
 

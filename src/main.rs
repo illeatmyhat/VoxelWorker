@@ -585,6 +585,7 @@ impl WindowedState {
             two_layer_chunks,
             recentre_voxels,
             recentre_shift_voxels,
+            incremental_dirty_chunks,
         } = match self.app_core.rebuild(&self.panel_state.scene, density) {
             RebuildOutcome::DensityRejected {
                 chunk_voxels_millions,
@@ -601,23 +602,42 @@ impl WindowedState {
         // Read the OLD grid_z before reassigning `self.grid`, for the layer-band
         // rescale below (Z-up: layers are Z-slices, index 2).
         let previous_grid_z = self.grid.dimensions[2];
-        // ADR 0010 E5: the cuboid mesh renderer is the sole voxel render path AND it now
-        // meshes THROUGH the two-layer store — a coarse-solid block is a one-box fast
-        // path, a boundary block its microblock cuboids, seam faces culled via the
-        // per-face solidity flags (no densified apron). The two-layer chunks are owned,
-        // so they outlive `app_core`. The `TwoLayerResidentCache` (#54) is the
-        // incremental seam (only dirty chunks re-classify); the mesher re-meshes
-        // wholesale from the resident set each rebuild (a GPU-buffer incremental re-mesh
-        // on the two-layer path is a later optimization, ADR 0010 Consequences).
-        self.cuboid_mesh_renderer = CuboidMeshRenderer::new_from_two_layer_chunks(
-            &self.gpu.device,
-            &self.gpu.queue,
-            COLOR_TARGET_FORMAT,
-            &two_layer_chunks,
-            grid.dimensions,
-            recentre_voxels,
-            density,
-        );
+        // ADR 0010 E5: the cuboid mesh renderer is the sole voxel render path AND it meshes
+        // THROUGH the two-layer store — a coarse-solid block is a one-box fast path, a boundary
+        // block its microblock cuboids, seam faces culled via the per-face solidity flags (no
+        // densified apron). The two-layer chunks are owned, so they outlive `app_core`.
+        //
+        // Issue #55 — chunk-granular incremental GPU-buffer re-mesh: when the edit LOCALISED
+        // (`incremental_dirty_chunks` is `Some`), re-mesh + re-upload ONLY the dirty chunks
+        // (dilated by the 26-neighbourhood seam footprint), keeping every untouched chunk's GPU
+        // buffer in place — the exact per-edit latency #40 fixed for the dense path, now on the
+        // two-layer path. A wholesale re-mesh (`None`: first build, density change, or a
+        // region-spanning Part edit) recreates the renderer from the full resident set. Both
+        // yield a byte-identical buffer set (proven in `cuboid_mesh`'s incremental parity test).
+        match incremental_dirty_chunks {
+            Some(dirty) => {
+                profiling::scope!("cuboid_incremental_two_layer");
+                self.cuboid_mesh_renderer.incremental_rebuild_from_two_layer_chunks(
+                    &self.gpu.device,
+                    &two_layer_chunks,
+                    grid.dimensions,
+                    recentre_voxels,
+                    density,
+                    &dirty,
+                );
+            }
+            None => {
+                self.cuboid_mesh_renderer = CuboidMeshRenderer::new_from_two_layer_chunks(
+                    &self.gpu.device,
+                    &self.gpu.queue,
+                    COLOR_TARGET_FORMAT,
+                    &two_layer_chunks,
+                    grid.dimensions,
+                    recentre_voxels,
+                    density,
+                );
+            }
+        }
 
         // Camera UX invariant: an edit must NEVER re-frame the view. The composite is
         // re-centred on the world origin every rebuild, so any extent change (add /
