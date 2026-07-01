@@ -29,7 +29,7 @@ use voxel_worker::{
     run_egui_frame, AppCore, CubeFace, DefId, EguiPaintBridge, FogMode, FrameOverlays,
     GeometryParams,
     GpuContext, InfiniteGridRenderer, LayerBand, LayerRange, MaterialChoice, MaterialSource,
-    PointsRenderer, RebuildOutcome, RebuildOutput, SceneGridRenderer,
+    PointsRenderer, SceneGridRenderer,
     Node, NodeBuilder, NodeContent, NodePath, OnionFogRenderer, OrbitCamera, PanelState, Part,
     Point,
     PlaneAxis, ProjectionMode, RegionBlocks, RevolveAxis, Scene, SdfShape, ShapeKind, Sketch, SketchSolid,
@@ -1452,7 +1452,7 @@ async fn run_capture(options: ShotOptions) {
     // produces them). `render_chunks_for_mesh` carries the per-chunk accessor
     // (chunkable path only) to the cuboid mesh build below; it borrows the store, so
     // `app_core` is left untouched until it is consumed + dropped there.
-    let mut app_core = AppCore::new(voxel_worker::Store::new(), OrbitCamera::default());
+    let mut app_core = AppCore::new(OrbitCamera::default());
     // Issue #20 S6c-1: `region_dimensions` (what the camera auto-frame, origin gizmo,
     // block lattice and fine floor grid are sized from) is read from the SCENE, not
     // by reaching into the assembled grid object. For a chunkable scene it equals
@@ -1463,6 +1463,11 @@ async fn run_capture(options: ShotOptions) {
     // A Part-only scene (`--shape debug-clouds`) has no composite extent, so it is
     // resolved through the explicit-region path and sized `region × density` (rather
     // than `placed_region_dimensions`, which is `[0,0,0]` for it).
+    // The dense reference `Store` (ADR 0010 E5) owns the per-chunk grids the default
+    // (dense) mesh path borrows via `render_chunks_for_mesh`; it must outlive that
+    // borrow, so it lives here at the `main` scope. `None` on the density-cap /
+    // Part-only branches (which build no dense per-chunk accessor).
+    let mut reference_store: Option<voxel_worker::Store> = None;
     let (grid, region_dimensions, mut render_chunks_for_mesh) =
         if voxel_worker::voxel::chunk_extent_exceeds_bound(density) {
             let chunk_extent = (voxel_worker::core_geom::CHUNK_BLOCKS * density.max(1)) as u64;
@@ -1492,33 +1497,19 @@ async fn run_capture(options: ShotOptions) {
             };
             (grid, region_dimensions, None)
         } else if scene.has_chunkable_extent(density) {
-            // Route the resolve through `AppCore::rebuild` (issue #27 S2/S3): the store
-            // lazily resolves each covering chunk and reassembles the SAME recentred
-            // grid the windowed app's rebuild produces, then hands back the region
-            // dimensions + the per-chunk render accessor — byte-identical to shot's
-            // former separate-cache path. (It resolves the scene's full composite
-            // extent, which for a single zero-offset shape equals `region`, so
-            // single-shape goldens are unchanged.)
-            match app_core.rebuild(&scene, density) {
-                RebuildOutcome::Built(RebuildOutput {
-                    grid,
-                    region_dimensions,
-                    render_chunks,
-                    // The recentre shift compensates the WINDOWED camera across edits;
-                    // `shot` sets its camera per-capture from CLI flags, so it ignores it.
-                    recentre_shift_voxels: _,
-                    // `shot` builds each capture's mesh wholesale (one resolve per run,
-                    // no persistent renderer to update incrementally), so issue #40's
-                    // dirty set + incremental gate are irrelevant here.
-                    dirty_chunk_coords: _,
-                    incremental_ok: _,
-                }) => (grid, region_dimensions, Some(render_chunks)),
-                // Unreachable: the density-cap branch above already handled the only
-                // rejection case (one chunk exceeding the per-chunk voxel bound).
-                RebuildOutcome::DensityRejected { .. } => {
-                    unreachable!("chunk_extent_exceeds_bound was false, so rebuild cannot reject")
-                }
-            }
+            // ADR 0010 E5: `shot` is the golden **DENSE REFERENCE ORACLE** — it resolves
+            // through the dense `Store` (the retired-from-runtime `resolve_region`, kept
+            // as the parity/golden reference) so the committed reference PNGs are the
+            // dense-path truth the two-layer live path is cross-checked against
+            // (`--two-layer` renders the E5 runtime path; the golden test asserts they
+            // are pixel-identical). `render_chunks_for_mesh` carries the per-chunk dense
+            // accessor to the cuboid mesh build below; it borrows the store, so the store
+            // must outlive the mesh build (owned here, dropped after).
+            let store = reference_store.insert(voxel_worker::Store::new());
+            let grid = store.resolve_region(&scene, density, 0);
+            let region_dimensions = AppCore::region_dimensions_for(&scene, density, &grid);
+            let render_chunks = store.resident_render_chunks(&scene, density, 0);
+            (grid, region_dimensions, Some(render_chunks))
         } else {
             // A Part-only scene (e.g. `--shape debug-clouds`) has no intrinsic-size
             // leaf, so there is no composite AABB to chunk — the cloud field sizes

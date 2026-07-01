@@ -23,15 +23,16 @@
 //!   occupancy (coarse fast-fill + boundary per-voxel) for the parity gate + as a
 //!   transition shim.
 //!
-//! ## What this slice is NOT (deferred — ADR 0010 E3/E4/E5)
+//! ## Status (ADR 0010 E5 LANDED — the two-layer path is the SOLE runtime display path)
 //!
-//! * **The mesher does not consume the layers yet** (E3 / #50): the seam-solidity flags
-//!   are populated + unit-tested here, but the cuboid mesher still runs on the dense path.
-//! * **Export / the diameter query are not repointed** (E4 / #51): they still read the
-//!   dense [`Store::resolve_region`](crate::store::Store::resolve_region).
-//! * **The dense `resolve_region` is NOT deleted** (E5): it stays the live default. This
-//!   capability is OFF by default and coexists exactly as the GPU fog coexists with the
-//!   CPU fallback.
+//! * **The mesher consumes the layers** (E3 / #50): `new_from_two_layer_chunks` (coarse
+//!   one-box + microblock cuboids + seam-flag culling) is the live display mesh path.
+//! * **Export + the diameter query stream cacheless from the evaluator** (E4 / #51):
+//!   `stream_vox_occupancy` / `streamed_widest_run_in_band`, no dense fallback.
+//! * **The live display cache is the [`TwoLayerResidentCache`]** (E5 / #54): chunk-granular
+//!   incremental edits; the fog grid is streamed from it (`expand_resident_chunks_into_grid`).
+//!   The dense [`Store::resolve_region`](crate::store::Store::resolve_region) is retired from
+//!   every RUNTIME path and kept ONLY as the test parity + golden reference oracle.
 //!
 //! ## Frame (ADR 0008 — the voxel-frame invariant)
 //!
@@ -219,12 +220,16 @@ impl TwoLayerChunk {
                         block_z as i64 * block_extent,
                     ];
                     if let Some(block_id) = self.coarse_block(block) {
-                        // Coarse-solid: fast d³ fill at the single block id.
+                        // Coarse-solid: fast d³ fill at the single block id, carrying the
+                        // block's on-face-grid overlay marker (ADR 0003 §3c) so the
+                        // expanded grid matches the dense resolve's `grid_overlay` bit
+                        // (E5 — the fog grid + the grid-overlay parity read).
                         Self::fill_solid_block(
                             output,
                             block_low_voxels,
                             density,
                             block_id,
+                            self.coarse_block_overlay(block),
                             index_offset,
                         );
                     } else if let Some(geometry) = self.microblocks.get(&block) {
@@ -242,12 +247,14 @@ impl TwoLayerChunk {
         }
     }
 
-    /// Fast-fill a coarse-solid block: every `density³` voxel at `block_id`.
+    /// Fast-fill a coarse-solid block: every `density³` voxel at `block_id`, all carrying
+    /// the block's `grid_overlay` render marker (ADR 0003 §3c).
     fn fill_solid_block(
         output: &mut Vec<Voxel>,
         block_low_voxels: [i64; 3],
         density: u32,
         block_id: BlockId,
+        grid_overlay: bool,
         index_offset: [i64; 3],
     ) {
         for voxel_z in 0..density {
@@ -262,6 +269,7 @@ impl TwoLayerChunk {
                         chunk_local,
                         [voxel_x as u8, voxel_y as u8, voxel_z as u8],
                         block_id,
+                        grid_overlay,
                         index_offset,
                     ));
                 }
@@ -279,8 +287,11 @@ impl TwoLayerChunk {
         for cuboid in &geometry.cuboids {
             // The cuboid's `material_id` is the render-cell key (block_id | overlay<<15);
             // occupancy is the CLEAN categorical id, so mask the overlay bit off (ADR
-            // 0003 §3c — the overlay never enters the occupancy / categorical cell).
+            // 0003 §3c — the overlay never enters the occupancy / categorical cell) but
+            // carry it onto the expanded voxel's `grid_overlay` render marker (E5 — so
+            // the grid matches the dense resolve's per-voxel overlay bit).
             let block_id = BlockId(crate::cuboid_mesh::clean_block_id(cuboid.material_id));
+            let grid_overlay = crate::cuboid_mesh::cell_key_has_overlay(cuboid.material_id);
             for voxel_z in cuboid.min[2]..=cuboid.max[2] {
                 for voxel_y in cuboid.min[1]..=cuboid.max[1] {
                     for voxel_x in cuboid.min[0]..=cuboid.max[0] {
@@ -293,6 +304,7 @@ impl TwoLayerChunk {
                             chunk_local,
                             [voxel_x as u8, voxel_y as u8, voxel_z as u8],
                             block_id,
+                            grid_overlay,
                             index_offset,
                         ));
                     }
@@ -303,14 +315,15 @@ impl TwoLayerChunk {
 }
 
 /// Build one [`Voxel`] at chunk-local voxel index `chunk_local + index_offset` (i64 add
-/// before the i32 downcast, ADR 0008), with `block_local_coord` and `block_id`. The
-/// `grid_overlay` render marker is `false` (E3 wires the two-layer mesher; this slice
-/// never feeds the renderer, so the parity gate compares the categorical id only).
+/// before the i32 downcast, ADR 0008), with `block_local_coord`, `block_id`, and the
+/// `grid_overlay` render marker (ADR 0003 §3c — carried through so the expanded grid
+/// matches the dense resolve's per-voxel overlay bit; E5).
 #[inline]
 fn stamped_voxel(
     chunk_local: [i64; 3],
     block_local_coord: [u8; 3],
     block_id: BlockId,
+    grid_overlay: bool,
     index_offset: [i64; 3],
 ) -> Voxel {
     Voxel {
@@ -322,7 +335,7 @@ fn stamped_voxel(
         block_local_coord,
         block_id,
         attrs: BlockAttrs::DEFAULT,
-        grid_overlay: false,
+        grid_overlay,
     }
 }
 
@@ -1005,6 +1018,44 @@ pub fn resolve_region_two_layer(
     }
 
     Some(output)
+}
+
+/// Expand an already-resident two-layer chunk set (ADR 0010 E5 — the
+/// [`TwoLayerResidentCache`] display path) into one recentred [`VoxelGrid`], in the
+/// EXACT frame the retired dense `Store::resolve_region` assembled. Unlike
+/// [`resolve_region_two_layer`] (which re-classifies each chunk from the scene via a
+/// stateless [`TwoLayerStore`]), this reuses the caller's ALREADY-BUILT resident
+/// chunks — so the windowed rebuild classifies each covering chunk once (incrementally)
+/// and reuses that work for both the mesher and the fog grid.
+///
+/// `chunks` is `(absolute_chunk_coord, &TwoLayerChunk)` per covering chunk (the
+/// [`TwoLayerResidentCache::resident_two_layer_chunks`] output); `region_dimensions` is
+/// the composite voxel extent ([`Scene::placed_region_dimensions`]); `recentre_voxels`
+/// is the composite recentre (ADR 0008). The occupied SET is bit-identical to
+/// [`resolve_region_two_layer`]'s (the E2 round-trip parity gate proves the shared
+/// expand path), so the fog + goldens are unchanged.
+pub fn expand_resident_chunks_into_grid(
+    chunks: &[([i32; 3], &TwoLayerChunk)],
+    region_dimensions: [u32; 3],
+    recentre_voxels: [i64; 3],
+    voxels_per_block: u32,
+) -> VoxelGrid {
+    let mut output = VoxelGrid::new(region_dimensions);
+    output.recentre_voxels = recentre_voxels;
+    let chunk_extent_voxels = (CHUNK_BLOCKS * voxels_per_block.max(1)) as i64;
+    for (chunk_coord, chunk) in chunks {
+        // Rebase chunk-local indices into the recentred frame: a voxel at chunk-local
+        // index `l` sits at absolute `chunk_min + l`, and the recentred frame subtracts
+        // the recentre — the SAME `chunk_min − recentre` offset `resolve_region_two_layer`
+        // applies (ADR 0008).
+        let index_offset = [
+            chunk_coord[0] as i64 * chunk_extent_voxels - recentre_voxels[0],
+            chunk_coord[1] as i64 * chunk_extent_voxels - recentre_voxels[1],
+            chunk_coord[2] as i64 * chunk_extent_voxels - recentre_voxels[2],
+        ];
+        chunk.expand_occupancy_into(&mut output.occupied, index_offset);
+    }
+    output
 }
 
 // ===== ADR 0010 E4 — the cacheless STREAMING exact sinks =====================

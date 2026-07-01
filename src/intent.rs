@@ -401,13 +401,12 @@ mod tests {
     use crate::camera::OrbitCamera;
     use crate::scene::{Node, NodeBuilder, NodeTransform, Point, Scene};
     use crate::sketch::{PlaneAxis, Sketch, SketchSolid};
-    use crate::store::Store;
     use crate::voxel::{ShapeKind, SdfShape};
 
     /// A headless [`AppCore`] for the dispatch tests. `apply_intent` reads no AppCore
-    /// state (it borrows the scene), so a default store + camera suffice — no GPU.
+    /// state (it borrows the scene), so a default camera suffices — no GPU.
     fn test_core() -> AppCore {
-        AppCore::new(Store::new(), OrbitCamera::default())
+        AppCore::new(OrbitCamera::default())
     }
 
     /// A box Tool shape at the given BLOCK size (the default-ish fixture shape),

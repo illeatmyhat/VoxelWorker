@@ -298,21 +298,21 @@ impl WindowedState {
         panel_state
             .layer_range
             .rescale_to_grid_z(0, grid_z, panel_state.geometry.voxels_per_block);
-        // Issue #20 Step 2: the diameter / scrubber readout reads the region-scoped,
-        // per-chunk `widest_run_in_band` (cross-seam stitched) rather than the
-        // assembled grid's whole-grid method — returning the SAME value (parity-proven
-        // in `chunk_cache::tests`) without depending on the monolithic grid object.
-        // We build the resolve cache here so the startup readout uses the same path the
-        // per-frame re-measure does; the chunks it resolves are cached for later reuse.
-        let mut chunk_resolve_cache = voxel_worker::chunk_cache::ChunkResolveCache::new();
+        // ADR 0010 E5: the diameter / scrubber readout STREAMS the cacheless two-layer
+        // evaluator (`streamed_widest_run_in_band` — coarse-solid blocks contribute an
+        // analytic run, boundary blocks per-voxel), the SAME path the per-frame
+        // re-measure takes. The two-layer capability is always ON now, so it never falls
+        // back; the retired dense `widest_run_in_band` survives only as the parity
+        // oracle. `unwrap_or(0)` covers the Part-only / empty scene (no covering range).
         let measured_band = (panel_state.layer_range.lower, panel_state.layer_range.upper);
-        let measured_diameter = chunk_resolve_cache.widest_run_in_band(
+        let measured_diameter = voxel_worker::streamed_widest_run_in_band(
+            &voxel_worker::TwoLayerStore::enabled(),
             &panel_state.scene,
             panel_state.geometry.voxels_per_block,
-            0,
             measured_band.0,
             measured_band.1,
-        );
+        )
+        .unwrap_or(0);
         println!(
             "resolved {} voxels for {:?} {:?}@{}",
             grid.occupied_count(),
@@ -320,17 +320,25 @@ impl WindowedState {
             shape.size_voxels,
             panel_state.geometry.voxels_per_block
         );
-        // The cuboid mesh renderer is the sole voxel render path (part of #20). The
-        // whole-grid wrapper buckets `grid` into per-chunk sub-grids internally — the
-        // same result the resolve cache's per-chunk accessor produces — so a startup
-        // build from `grid` is byte-identical to the per-chunk rebuild path used on
-        // every later geometry change in `rebuild_geometry`.
-        let cuboid_mesh_renderer = CuboidMeshRenderer::new(
+        // ADR 0010 E5: the cuboid mesh renderer is the sole voxel render path AND it
+        // meshes THROUGH the two-layer store (coarse one-box + microblock cuboids +
+        // seam-flag culling) — the SAME path `rebuild_geometry` takes on every later
+        // edit, so the startup frame (which renders until the first edit re-meshes) is
+        // pixel-identical to the two-layer runtime path. `build_covering_chunks` returns
+        // empty for a Part-only scene (the windowed startup default is always chunkable).
+        let startup_density = panel_state.geometry.voxels_per_block;
+        let startup_two_layer_chunks = voxel_worker::TwoLayerStore::enabled()
+            .build_covering_chunks(&panel_state.scene, startup_density, 0);
+        let startup_recentre =
+            panel_state.scene.recentre_voxels_for_resolve(startup_density);
+        let cuboid_mesh_renderer = CuboidMeshRenderer::new_from_two_layer_chunks(
             &gpu.device,
             &gpu.queue,
             COLOR_TARGET_FORMAT,
-            &grid,
-            panel_state.geometry.voxels_per_block,
+            &startup_two_layer_chunks,
+            grid.dimensions,
+            startup_recentre,
+            startup_density,
         );
         // The transform gizmo (issue #29 S2) is rebuilt/positioned to the SELECTED
         // node each frame; seed it at the region size (overwritten on first frame).
@@ -442,7 +450,7 @@ impl WindowedState {
             loaded_material: None,
             face_resolver: FaceResolver::auto(),
             grid,
-            app_core: AppCore::new(chunk_resolve_cache, camera),
+            app_core: AppCore::new(camera),
             measured_diameter,
             measured_band,
             depth_view,
@@ -574,10 +582,9 @@ impl WindowedState {
         let RebuildOutput {
             grid,
             region_dimensions,
-            render_chunks,
+            two_layer_chunks,
+            recentre_voxels,
             recentre_shift_voxels,
-            dirty_chunk_coords,
-            incremental_ok,
         } = match self.app_core.rebuild(&self.panel_state.scene, density) {
             RebuildOutcome::DensityRejected {
                 chunk_voxels_millions,
@@ -594,35 +601,23 @@ impl WindowedState {
         // Read the OLD grid_z before reassigning `self.grid`, for the layer-band
         // rescale below (Z-up: layers are Z-slices, index 2).
         let previous_grid_z = self.grid.dimensions[2];
-        // Part of #20: the cuboid mesh renderer is the sole voxel render path.
-        // Rebuild it from the per-chunk accessor (`(absolute_chunk_coord,
-        // &rebased_grid)` per covering chunk, 1-voxel apron). `render_chunks` holds
-        // an IMMUTABLE borrow of the store, so it is consumed here and dropped BEFORE
-        // any later `&mut AppCore` use.
-        //
-        // Issue #40: when the resolve took the TARGETED path and nothing re-keyed the
-        // whole world (no floating-origin shift, no density change), update only the
-        // chunks the edit (+ its apron neighbours) touched and keep every other chunk's
-        // GPU buffers — instead of recreating ALL of them (the measured ~600ms/edit
-        // cost). Otherwise (first build, recentre shift, density change, region-spanning
-        // edit) rebuild wholesale, which also re-seeds the persistent renderer's state.
-        if incremental_ok {
-            self.cuboid_mesh_renderer.incremental_rebuild_from_chunks(
-                &self.gpu.device,
-                &render_chunks,
-                grid.dimensions,
-                &dirty_chunk_coords,
-            );
-        } else {
-            self.cuboid_mesh_renderer = CuboidMeshRenderer::new_from_chunks(
-                &self.gpu.device,
-                &self.gpu.queue,
-                COLOR_TARGET_FORMAT,
-                &render_chunks,
-                grid.dimensions,
-            );
-        }
-        drop(render_chunks);
+        // ADR 0010 E5: the cuboid mesh renderer is the sole voxel render path AND it now
+        // meshes THROUGH the two-layer store — a coarse-solid block is a one-box fast
+        // path, a boundary block its microblock cuboids, seam faces culled via the
+        // per-face solidity flags (no densified apron). The two-layer chunks are owned,
+        // so they outlive `app_core`. The `TwoLayerResidentCache` (#54) is the
+        // incremental seam (only dirty chunks re-classify); the mesher re-meshes
+        // wholesale from the resident set each rebuild (a GPU-buffer incremental re-mesh
+        // on the two-layer path is a later optimization, ADR 0010 Consequences).
+        self.cuboid_mesh_renderer = CuboidMeshRenderer::new_from_two_layer_chunks(
+            &self.gpu.device,
+            &self.gpu.queue,
+            COLOR_TARGET_FORMAT,
+            &two_layer_chunks,
+            grid.dimensions,
+            recentre_voxels,
+            density,
+        );
 
         // Camera UX invariant: an edit must NEVER re-frame the view. The composite is
         // re-centred on the world origin every rebuild, so any extent change (add /
@@ -818,32 +813,24 @@ impl WindowedState {
         // per-voxel — so no dense whole-region grid is materialised and the 6M cap
         // dissolves on the export path. Each covering chunk's voxels are bucketed then
         // dropped. The streamed export is model-set-identical to the dense-path region
-        // export (the E4 parity gate); when the two-layer capability is OFF the call
-        // returns `None` and we fall back to the dense per-chunk `bound_region_occupied`
-        // path (issue #20 Step 2 — rebased in i64 before the f32 downcast).
+        // export (the E4 parity gate). ADR 0010 E5: the two-layer capability is always ON
+        // now (the sole runtime path), so the stream always yields — the retired dense
+        // `bound_region_occupied` fallback is gone. `stream_vox_occupancy` returns `Some`
+        // even for a Part-only / empty scene (an empty but valid `.vox`).
         let two_layer = voxel_worker::TwoLayerStore::enabled();
         let mut streamed_chunks: Vec<Vec<voxel_worker::Voxel>> = Vec::new();
-        let streamed = voxel_worker::stream_vox_occupancy(
+        let (region_dimensions, _recentre) = voxel_worker::stream_vox_occupancy(
             &two_layer,
             &self.panel_state.scene,
             density,
             |chunk_voxels| streamed_chunks.push(chunk_voxels),
+        )
+        .expect("the two-layer capability is enabled (ADR 0010 E5)");
+        let export = voxel_worker::VoxExport::from_region_voxel_chunks(
+            region_dimensions,
+            streamed_chunks,
+            palette_colors,
         );
-        let export = match streamed {
-            Some((region_dimensions, _recentre)) => voxel_worker::VoxExport::from_region_voxel_chunks(
-                region_dimensions,
-                streamed_chunks,
-                palette_colors,
-            ),
-            None => {
-                let (region_dimensions, occupied) = self.app_core.store.bound_region_occupied(
-                    &self.panel_state.scene,
-                    density,
-                    0,
-                );
-                voxel_worker::VoxExport::from_region_voxels(region_dimensions, occupied, palette_colors)
-            }
-        };
         match export.write(&path) {
             Ok(bytes) => println!(
                 "wrote {} ({} voxels, {} model(s), {} bytes)",
@@ -1115,10 +1102,9 @@ impl WindowedState {
             // ADR 0010 E4: re-measure the diameter by STREAMING the cacheless two-layer
             // evaluator — a coarse-solid block contributes its `d`-long run ANALYTICALLY
             // (no per-voxel expansion), a boundary block is per-voxel. Returns the SAME
-            // value as the dense region-scoped `widest_run_in_band` (the parity gate)
-            // without assembling a dense grid. When the two-layer capability is OFF the
-            // call returns `None` and we fall back to the dense per-chunk path (issue #20
-            // Step 2, cross-seam stitched).
+            // value as the retired dense region-scoped `widest_run_in_band` (the parity
+            // gate) without assembling a dense grid. ADR 0010 E5: the capability is always
+            // ON now, so the stream always yields — `unwrap_or(0)` covers the empty scene.
             let density = self.panel_state.geometry.voxels_per_block;
             let two_layer = voxel_worker::TwoLayerStore::enabled();
             self.measured_diameter = voxel_worker::streamed_widest_run_in_band(
@@ -1128,15 +1114,7 @@ impl WindowedState {
                 current_band.0,
                 current_band.1,
             )
-            .unwrap_or_else(|| {
-                self.app_core.store.widest_run_in_band(
-                    &self.panel_state.scene,
-                    density,
-                    0,
-                    current_band.0,
-                    current_band.1,
-                )
-            });
+            .unwrap_or(0);
             self.measured_band = current_band;
         }
 

@@ -84,6 +84,15 @@ pub fn clean_block_id(cell_key: u16) -> u16 {
     cell_key & !MESH_GRID_OVERLAY_BIT
 }
 
+/// Whether a render-cell key carries the on-face-grid overlay marker
+/// ([`MESH_GRID_OVERLAY_BIT`], ADR 0003 §3c) — the overlay half of
+/// [`compose_cell_key`]. Used where a consumer needs the render flag back out (the
+/// two-layer occupancy expansion carries it onto the expanded `Voxel::grid_overlay`).
+#[inline]
+pub fn cell_key_has_overlay(cell_key: u16) -> bool {
+    cell_key & MESH_GRID_OVERLAY_BIT != 0
+}
+
 /// One mesh vertex of a cuboid face: world position, the face's outward normal, and the
 /// box's `block_id` (the clean colour index, constant across the face).
 ///

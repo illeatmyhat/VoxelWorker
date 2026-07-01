@@ -1,6 +1,7 @@
 # ADR 0010 — Boundary-aware residency: the two-layer (coarse + microblock) chunk store, one evaluator serving display + exact sinks
 
-- **Status:** Proposed
+- **Status:** Accepted (E5 landed 2026-06-30 — the two-layer path is the SOLE runtime display path; the dense
+  `resolve_region` / dense `VoxelGrid` fallback are retired to a test-only parity/golden oracle)
 - **Date:** 2026-06-30
 - **Layer:** PRODUCTION PORT of [ADR 0009](0009-op-stack-truth-evaluator-and-sinks.md) §3–§4 (boundary-culling
   evaluation + boundary-aware chunk residency) into the real chunk store. **Refines [ADR 0003](0003-foundation-rework.md)
@@ -91,14 +92,27 @@ optimization** on the data seam, never an observable change.
   goldens pixel-identical.
 - **E4 — repoint export/query to the cacheless evaluator.** Coarse fast-fill / analytic run; boundary per-voxel. Parity:
   `.vox` + diameter == today. **Dissolves the 6M cap on the export path.**
-- **E5 — retire.** Remove the monolithic `resolve_region` + the dense fallback once coverage is complete.
+- **E5 — retire (LANDED 2026-06-30).** The two-layer path is now the **sole runtime display path**: the live
+  display cache is the `TwoLayerResidentCache` (chunk-granular incremental, #54), the shell meshes through
+  `new_from_two_layer_chunks`, the fog grid is streamed from the evaluator (`expand_resident_chunks_into_grid` /
+  `resolve_region_two_layer`), and export / diameter stream cacheless from the evaluator (E4) with the dense
+  fallbacks removed. The runtime capability flag + the dense `Store` runtime branches are gone. The monolithic
+  `Scene::resolve_region` / `Store::resolve_region` are **kept as the test-only parity + golden REFERENCE ORACLE**
+  (the `cache_region_matches_*` / `*_matches_dense` nets, `gpu_parity`'s CPU reference, and `shot`'s dense golden
+  cross-check all still bind them) — they are simply off every runtime path. An unboundable producer keeps the
+  evaluator's per-voxel boundary path (not the old dense densify).
 
 ## Consequences
 
 - The 800×800-revolve / `.vox` 6M-cap pattern is dissolved on **both** display and export (no dense interior is ever built).
-- `store.rs` stops being a dense `VoxelGrid` cache and becomes the **boundary-aware display cache**; `resolve_region` and
-  the dense `Voxel` f32 payload are retired (ADR 0006's "resolved into the chunked `VoxelGrid` … not negotiable" wording is
-  amended exactly as ADR 0009 §Consequences already foresaw — the read seam is an occupancy query / evaluator call).
+- The live display cache is the boundary-aware `TwoLayerResidentCache`; the dense `Store` / `resolve_region` are
+  **retired from every runtime path** (kept only as the test parity/golden oracle — see E5). ADR 0006's "resolved into
+  the chunked `VoxelGrid` … not negotiable" wording is **amended** exactly as ADR 0009 §Consequences already foresaw —
+  the read seam is an occupancy query / evaluator call (streaming exact sinks + a boundary-aware display cache), not a
+  resident dense grid. **One whole-region `VoxelGrid` remains on the display path**: the onion-fog densify still
+  consumes a `VoxelGrid`, so the evaluator STREAMS it (coarse fast-fill + boundary per-voxel) rather than caching a
+  dense interior — this is not the retired dense `resolve_region`, and the fog will drop it when the GPU brick-field
+  display sink (below) lands.
 - The **GPU brick-field display sink** (ADR 0007 generalized: 8³ bricks, clip-map LOD) is the **next** port and gets its own
   ADR — it consumes this evaluator's boundary set; the shipped fog atlas is already a brick map, so it is a short step.
 - **Incremental edit** reuses today's chunk-granular `invalidate_aabb` first (re-evaluate a dirty chunk's blocks);

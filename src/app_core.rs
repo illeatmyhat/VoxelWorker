@@ -1,8 +1,9 @@
 //! Headless orchestrator owning store + camera — the AppCore keystone.
 //!
 //! ADR 0003 (foundation rework). `AppCore` is the headless half of the app: it
-//! owns the [`Store`] (residency + per-chunk resolve) and the [`OrbitCamera`],
-//! and exposes the headless scene queries both binaries drive. The windowed
+//! owns the [`TwoLayerResidentCache`] (boundary-aware residency + per-chunk resolve;
+//! ADR 0010 E5 — the SOLE runtime display path) and the [`OrbitCamera`], and exposes
+//! the headless scene queries both binaries drive. The windowed
 //! shell (`WindowedState`) and `bin/shot` keep the GPU renderers + winit/egui
 //! plumbing and delegate to `AppCore` for the headless work; in **A3** `shot`
 //! re-points here, at which point the golden net tests the real app instead of a
@@ -23,16 +24,22 @@ use crate::panel::LayerRange;
 use crate::renderer::OnionFogParams;
 use crate::scene::{NodeContent, NodeId, NodeTransform, Part, Scene};
 use crate::spatial_index::LeafSpatialIndex;
-use crate::store::Store;
+use crate::two_layer_store::{
+    expand_resident_chunks_into_grid, resolve_region_two_layer, TwoLayerChunk,
+    TwoLayerResidentCache,
+};
 use crate::voxel::{chunk_extent_exceeds_bound, SdfShape, VoxelGrid};
 
 /// The headless orchestrator: owns the per-chunk resolve [`Store`] and the
 /// [`OrbitCamera`], and answers the headless scene queries the shell renders from.
 pub struct AppCore {
-    /// Per-chunk resolve cache (issue #27 S2): the resolve mechanism behind the
-    /// shell's geometry rebuild and the diameter readout. Lazily resolves each
-    /// covering chunk and keeps it resident for reuse.
-    pub store: Store,
+    /// The **boundary-aware two-layer** resolve cache (ADR 0010 E5 — the SOLE runtime
+    /// display path; the dense `Store` is retired to a test oracle). The resolve
+    /// mechanism behind the shell's geometry rebuild: it classifies each covering
+    /// chunk's blocks air / coarse-solid / boundary via the one evaluator, keeps the
+    /// two-layer chunks resident, and re-derives only the chunks an edit's world-AABB
+    /// intersects (chunk-granular incremental, #54).
+    pub two_layer_cache: TwoLayerResidentCache,
     /// The orbit camera (orbit angles + distance + projection). The windowed shell
     /// drives it from input; `shot` sets it from CLI flags.
     pub camera: OrbitCamera,
@@ -57,22 +64,31 @@ pub struct AppCore {
     command_stack: CommandStack,
 }
 
-/// The headless resolve output of a geometry [`rebuild`](AppCore::rebuild) (A2e).
-/// Holds the assembled region grid (owned) plus the per-chunk render accessor,
-/// which BORROWS the store — so the shell must consume both (build the cuboid mesh
-/// + upload the fog occupancy) BEFORE the next `&mut AppCore` call.
-pub struct RebuildOutput<'store> {
-    /// The assembled monolithic region grid (recentred): feeds the fog upload and
-    /// the shell's diameter re-measure.
+/// The headless resolve output of a geometry [`rebuild`](AppCore::rebuild) (A2e;
+/// ADR 0010 E5). Holds the assembled region grid (owned, for the fog) plus the
+/// **two-layer** covering chunks (owned) the shell meshes through
+/// [`CuboidMeshRenderer::new_from_two_layer_chunks`](crate::cuboid_mesh::CuboidMeshRenderer::new_from_two_layer_chunks).
+/// Both are owned, so the shell may hold the output across `&mut AppCore` calls.
+pub struct RebuildOutput {
+    /// The assembled monolithic region grid (recentred), streamed from the two-layer
+    /// evaluator ([`resolve_region_two_layer`]): feeds the fog upload and the shell's
+    /// diameter re-measure. This is the ONE remaining whole-region grid — the fog
+    /// densify still consumes a [`VoxelGrid`], so the evaluator streams it (coarse
+    /// fast-fill + boundary per-voxel), NOT the retired dense `Store::resolve_region`.
     pub grid: VoxelGrid,
     /// The region's voxel dimensions, read from the SCENE (see
     /// [`AppCore::region_dimensions_for`]) — what the camera auto-frame, gizmo,
     /// lattice, floor grid and layer scrubber are sized from.
     pub region_dimensions: [u32; 3],
-    /// The per-covering-chunk render accessor
-    /// (`(absolute_chunk_coord, &rebased_grid)`), borrowing the store. Drop it
-    /// before the next `&mut AppCore`.
-    pub render_chunks: Vec<([i32; 3], &'store VoxelGrid)>,
+    /// The **two-layer** covering chunks (`(absolute_chunk_coord, TwoLayerChunk)`),
+    /// owned so they outlive the cache borrow. The shell meshes them through
+    /// [`CuboidMeshRenderer::new_from_two_layer_chunks`](crate::cuboid_mesh::CuboidMeshRenderer::new_from_two_layer_chunks)
+    /// (coarse one-box + microblock cuboids + seam-flag culling) — the sole runtime
+    /// display mesh path (ADR 0010 E5). Empty for a Part-only scene (no covering range).
+    pub two_layer_chunks: Vec<([i32; 3], TwoLayerChunk)>,
+    /// The composite recentre (floating origin, voxels; ADR 0008) the two-layer mesh
+    /// lands its geometry in — the SAME frame the fog `grid` above is recentred to.
+    pub recentre_voxels: [i64; 3],
     /// How far the floating-origin recentre SHIFTED this rebuild, in render-frame
     /// voxels (`new_recentre − previous_recentre`; `[0, 0, 0]` on the first build).
     /// The composite is re-centred on the world origin every rebuild, so when its
@@ -83,37 +99,26 @@ pub struct RebuildOutput<'store> {
     /// only on EXPLICIT Fit/Home/Focus/orbit actions). The `shot` path ignores it
     /// (its camera is set per-capture from CLI flags), so goldens are unaffected.
     pub recentre_shift_voxels: [i64; 3],
-    /// The chunk coords the resolve cache EVICTED this rebuild (issue #40) — the
-    /// edit's dirty set, from [`Store::invalidate_aabb`](crate::store::Store::invalidate_aabb).
-    /// The shell feeds these to the cuboid mesher's incremental rebuild (re-mesh only
-    /// the dirty-dilated subset). Empty when `incremental_ok` is false.
-    pub dirty_chunk_coords: Vec<[i32; 3]>,
-    /// Whether the cuboid mesher may take its INCREMENTAL path this rebuild (issue #40)
-    /// — true only when the resolve took the targeted `invalidate_aabb` path AND
-    /// neither the floating origin (`recentre_shift_voxels == [0,0,0]`) nor the density
-    /// changed. Any of those re-keys / re-bases every resident chunk, so the renderer
-    /// must rebuild wholesale (`new_from_chunks`) instead. False on the first build.
-    pub incremental_ok: bool,
 }
 
 /// Outcome of [`AppCore::rebuild`]: either the resolve output, or a rejection when
 /// the density's PER-CHUNK voxel bound is exceeded. AppCore never writes panel
 /// state, so the shell surfaces the cap warning from the returned figure.
-pub enum RebuildOutcome<'store> {
-    /// The resolve succeeded; the store holds the freshly resolved covering chunks.
-    Built(RebuildOutput<'store>),
-    /// The density's single-chunk voxel capacity exceeds the bound; the store was
+pub enum RebuildOutcome {
+    /// The resolve succeeded; the cache holds the freshly resolved covering chunks.
+    Built(RebuildOutput),
+    /// The density's single-chunk voxel capacity exceeds the bound; the cache was
     /// left untouched. `chunk_voxels_millions` is the offending count (millions).
     DensityRejected { chunk_voxels_millions: f32 },
 }
 
 impl AppCore {
-    /// Assemble the headless core from an already-constructed store + camera. The
-    /// shell builds both (the store seeds the startup diameter readout, the camera
-    /// restores persisted orbit/projection) and hands them over here.
-    pub fn new(store: Store, camera: OrbitCamera) -> Self {
+    /// Assemble the headless core from a camera (ADR 0010 E5). The two-layer resolve
+    /// cache is constructed here (ENABLED — the sole runtime display path); the caller
+    /// supplies only the camera (restored orbit/projection).
+    pub fn new(camera: OrbitCamera) -> Self {
         Self {
-            store,
+            two_layer_cache: TwoLayerResidentCache::enabled(),
             camera,
             previous_leaf_index: None,
             previous_recentre_voxels: None,
@@ -812,7 +817,7 @@ impl AppCore {
     /// single-chunk voxel capacity exceeds the bound is rejected WITHOUT touching
     /// the store, returning the offending count so the shell can surface the cap
     /// warning (AppCore never writes panel state).
-    pub fn rebuild<'a>(&'a mut self, scene: &Scene, density: u32) -> RebuildOutcome<'a> {
+    pub fn rebuild(&mut self, scene: &Scene, density: u32) -> RebuildOutcome {
         profiling::scope!("app_core_rebuild");
         // Issue #27 S2: the resolve is chunked + lazy, so the voxel bound is a
         // PER-CHUNK bound, not a whole-scene total. Only a pathological density
@@ -825,12 +830,13 @@ impl AppCore {
             };
         }
 
-        // S3 targeted invalidation. The cuboid renderer rebuilds every covering
-        // chunk wholesale, so it needs no dirty set of its own — but the store's
-        // invalidation side effects ARE still required: `invalidate_aabb` evicts the
-        // edit's dirty chunks (so `resident_render_chunks` re-resolves them), and
-        // `clear()` handles the first build / density change / region-spanning edit
-        // where there is no localisable AABB.
+        // ADR 0010 E5: S3 targeted invalidation on the TWO-LAYER resident cache (#54).
+        // `invalidate_aabb` evicts the edit's dirty chunks (so the next
+        // `resident_two_layer_chunks` re-classifies only them); `clear()` handles the
+        // first build / density change / region-spanning Part edit where there is no
+        // localisable AABB. A two-layer chunk is chunk-local-integer (ADR 0008), so —
+        // unlike the retired dense store — a floating-origin SHIFT does NOT invalidate
+        // the cache (the recentre is a pure index offset applied at expand/mesh time).
         let new_leaf_index = scene.build_leaf_spatial_index(density);
         let new_recentre = scene.recentre_voxels_for_resolve(density);
         // The floating-origin shift since the last rebuild (render-frame voxels). The
@@ -843,75 +849,77 @@ impl AppCore {
             new_recentre[1] - previous_recentre[1],
             new_recentre[2] - previous_recentre[2],
         ];
-        // Capture the edit's evicted (dirty) chunk coords + whether the TARGETED
-        // invalidation path ran (issue #40). Only that path leaves the untouched chunks
-        // resident, so only then may the cuboid mesher rebuild incrementally; the
-        // wholesale `clear()` path re-resolves everything (dirty set is meaningless).
-        let (dirty_chunk_coords, took_aabb_path) = match self.previous_leaf_index.as_ref() {
+        match self.previous_leaf_index.as_ref() {
             Some(previous) => match new_leaf_index.edit_aabb_since(previous) {
                 Some(edit_aabb) => {
                     profiling::scope!("invalidate_aabb");
-                    (self.store.invalidate_aabb(&edit_aabb, density), true)
+                    self.two_layer_cache.invalidate_aabb(&edit_aabb, density);
                 }
                 None => {
                     profiling::scope!("invalidate_clear");
-                    self.store.clear();
-                    (Vec::new(), false)
+                    self.two_layer_cache.clear();
                 }
             },
             None => {
                 profiling::scope!("invalidate_clear");
-                self.store.clear();
-                (Vec::new(), false)
+                self.two_layer_cache.clear();
             }
         };
-        // Incremental is safe ONLY when the targeted path ran AND nothing re-keyed /
-        // re-based every resident chunk: a floating-origin shift (chunks are stored
-        // pre-rebased) or a density change (chunk extent changes) both invalidate the
-        // renderer's whole buffer set. `bind_region` (in `resolve_region` below) itself
-        // clears the cache on either change, so the renderer MUST match with a wholesale
-        // rebuild. The first build has `took_aabb_path == false`.
-        let density_unchanged = self.previous_density == Some(density);
-        let incremental_ok =
-            took_aabb_path && recentre_shift_voxels == [0; 3] && density_unchanged;
         self.previous_recentre_voxels = Some(new_recentre);
         self.previous_leaf_index = Some(new_leaf_index);
         self.previous_density = Some(density);
 
-        // Resolve the assembled grid (owned), then gather the per-chunk render
-        // accessor LAST — it borrows the store, so every `&mut store` call above
-        // must already be done. The grid drops straight into the fog upload; the
-        // accessor feeds the cuboid mesher, then the shell drops it.
-        let grid = {
-            profiling::scope!("resolve_region");
-            self.store.resolve_region(scene, density, 0)
+        // Ensure every covering chunk is resident (re-classifying only the dirty /
+        // missing ones), then build BOTH the mesher's owned chunk set and the fog grid
+        // from the SAME resident chunks (classified once). The two-layer mesher
+        // re-meshes wholesale from this set each rebuild (the resident cache is the
+        // incremental seam; a block-granular dirty-brick / GPU-buffer incremental
+        // re-mesh is a later optimization, ADR 0010 Consequences).
+        let placed_dimensions = scene.placed_region_dimensions(density);
+        let (two_layer_chunks, grid) = {
+            profiling::scope!("resident_two_layer_chunks");
+            let resident = self.two_layer_cache.resident_two_layer_chunks(scene, density, 0);
+            // The whole-region fog grid: the fog densify still consumes a `VoxelGrid`,
+            // so expand the resident chunks (coarse fast-fill + boundary per-voxel) into
+            // one recentred grid — bit-identical to the retired dense `resolve_region`
+            // (the E2 two-layer round-trip parity gate), so fog + goldens are unchanged.
+            let grid = expand_resident_chunks_into_grid(
+                &resident,
+                placed_dimensions,
+                new_recentre,
+                density,
+            );
+            // The mesher needs owned chunks that outlive the cache borrow.
+            let owned: Vec<([i32; 3], TwoLayerChunk)> = resident
+                .into_iter()
+                .map(|(coord, chunk)| (coord, chunk.clone()))
+                .collect();
+            (owned, grid)
         };
         let region_dimensions = Self::region_dimensions_for(scene, density, &grid);
-        let render_chunks = {
-            profiling::scope!("resident_render_chunks");
-            self.store.resident_render_chunks(scene, density, 0)
-        };
         RebuildOutcome::Built(RebuildOutput {
             grid,
             region_dimensions,
-            render_chunks,
+            two_layer_chunks,
+            recentre_voxels: new_recentre,
             recentre_shift_voxels,
-            dirty_chunk_coords,
-            incremental_ok,
         })
     }
 
     /// Resolve the whole [`Scene`] into a fresh grid (ADR 0001 step 2). Every
     /// visible node composites (union) into one region sized to the per-axis max of
     /// the nodes' extents, at full resolution (`lod 0`). `voxels_per_block` is the
-    /// global app density (the inspector mirror's density). For a one-node scene
-    /// this is identical to the step-1 behaviour.
+    /// global app density (the inspector mirror's density).
     ///
-    /// An associated function for now (it borrows the scene; A2d ownership boundary)
-    /// — it becomes a `&self` method once `AppCore` owns the scene in Phase B/C.
+    /// ADR 0010 E5: this streams the whole-region grid from the **two-layer evaluator**
+    /// (coarse fast-fill + boundary per-voxel), NOT the retired dense
+    /// `Scene::resolve_region` — bit-identical (the E2 round-trip parity gate), so the
+    /// startup grid the shell seeds its first-frame fog / dimensions from is unchanged.
+    /// A Part-only scene (no covering range) resolves to an empty grid, exactly as the
+    /// dense store path did.
     pub fn resolve_scene(scene: &Scene, voxels_per_block: u32) -> VoxelGrid {
-        let region = scene.full_extent_blocks(voxels_per_block);
-        scene.resolve_region(region, voxels_per_block, 0)
+        let store = crate::two_layer_store::TwoLayerStore::enabled();
+        resolve_region_two_layer(&store, scene, voxels_per_block, 0).unwrap_or_default()
     }
 
     /// The region dimensions (in voxels) the camera auto-frame, origin gizmo, block
@@ -1057,7 +1065,7 @@ pub fn default_replay_seed_scene() -> Scene {
 /// string directly (keeping the GPU render out of the unit test).
 pub fn replay_intent_script(script: &str) -> Result<Scene, String> {
     let mut scene = default_replay_seed_scene();
-    let mut app_core = AppCore::new(Store::new(), OrbitCamera::default());
+    let mut app_core = AppCore::new(OrbitCamera::default());
     for (line_index, raw_line) in script.lines().enumerate() {
         let line_number = line_index + 1;
         let trimmed = raw_line.trim();
@@ -1189,14 +1197,13 @@ mod undo_tests {
     use crate::intent::{whole_block_offset, Intent, NodeSpec};
     use crate::scene::{Node, NodeBuilder, NodeContent, NodeGrids, NodeTransform, Point, Scene};
     use crate::sketch::{PlaneAxis, RevolveAxis, Sketch, SketchSolid};
-    use crate::store::Store;
     use crate::units::Measurement;
     use crate::voxel::{SdfShape, ShapeKind};
 
     /// A headless [`AppCore`] for the undo tests (no GPU — `apply_intent`/`undo`/`redo`
     /// only touch the borrowed scene + the owned command stack).
     fn test_core() -> AppCore {
-        AppCore::new(Store::new(), OrbitCamera::default())
+        AppCore::new(OrbitCamera::default())
     }
 
     /// A rectangle-footprint sketch→extrude producer of the given BLOCK size at the

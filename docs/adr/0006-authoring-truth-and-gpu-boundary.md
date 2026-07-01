@@ -51,11 +51,21 @@ chunks dirty; the GPU sits *downstream* of resolve, never upstream of the journa
 ## Owner rulings (decided with the product owner — honored, not relitigated)
 
 **1. Resolve-to-truth is CPU-authoritative.** The single source of truth is the CPU model:
-`final = apply(overlay, evaluate(tree))` resolved into the chunked `VoxelGrid`, plus the `Intent`/command
-journal and the sparse-delta backbone. **A GPU-resident volume is never the truth.** Every non-render
-consumer (`.vox` export, the diameter/layer/slice readouts, chunk persistence + disk-spill, undo, the
-ADR 0004/0005 agent-authoring & analysis stack, and the lib-test/golden spine) reads the CPU resolved
-occupancy. This is the ADR 0003 read seam; it is not negotiable here.
+`final = apply(overlay, evaluate(tree))`, plus the `Intent`/command journal and the sparse-delta backbone.
+**A GPU-resident volume is never the truth.** Every non-render consumer (`.vox` export, the
+diameter/layer/slice readouts, chunk persistence, undo, the ADR 0004/0005 agent-authoring & analysis stack,
+and the lib-test/golden spine) reads the CPU resolved occupancy.
+
+> **Amended by [ADR 0010](0010-boundary-residency-two-layer-store.md) §Consequences (E5, 2026-06-30).** The
+> original wording — "resolved into the chunked `VoxelGrid` … not negotiable" — pinned a **resident dense
+> grid** as the read seam. ADR 0009 §Consequences foresaw, and ADR 0010 E5 landed, the boundary-residency
+> port: the read seam is now an **occupancy query / evaluator call** (one evaluator → a boundary-aware
+> two-layer display cache + cacheless streaming exact sinks), not a resident dense `VoxelGrid`. The read seam
+> and its CPU-authoritative discipline are unchanged — what is negotiable, and was renegotiated, is only the
+> *representation behind* it (a solid's interior is no longer densified). Disk-spill out-of-core moved with the
+> retired dense `Store` (it was never on the live path; the two-layer chunks are chunk-local and small).
+
+This is the ADR 0003 read seam.
 
 **2. One `Intent` door, many sources.** All mutation flows through the serializable `Intent` enum into
 `AppCore`. Human gizmo drags, a GPU sculpt brush, and the agent/LLM/solver **all synthesise `Intent`s**
@@ -115,8 +125,9 @@ legible and the revoke→scrub path lets a human discard an agent's whole batch 
 
 ## What we KEEP (design around, do not redesign)
 
-- **The CPU resolved-grid READ seam** (ADR 0003) — every consumer reads a resolved `VoxelGrid`; nothing
-  reads the SDF directly. Pinned.
+- **The CPU resolved-occupancy READ seam** (ADR 0003) — every consumer reads CPU-resolved occupancy; nothing
+  reads the SDF directly. Pinned. (ADR 0010 E5 amended the seam's *representation* from a resident dense
+  `VoxelGrid` to an occupancy query / evaluator call — see ruling 1 above; the seam itself is unchanged.)
 - **The one `Intent` door + the §7 sync/async invariant** — `apply_intent` mutates the tree, writes the
   sparse delta, marks chunks dirty; it does NOT resolve/mesh inline. The GPU is downstream of resolve.
 - **The `IntentEffect` classification** (scene-mutating vs selection/view) — reused as the lock gate axis
