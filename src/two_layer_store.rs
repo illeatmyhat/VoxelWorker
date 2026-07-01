@@ -46,6 +46,8 @@
 
 use std::collections::BTreeMap;
 
+use rayon::prelude::*;
+
 use crate::core_geom::{BlockAttrs, BlockId, CHUNK_BLOCKS};
 use crate::cuboid::{decompose_into_boxes, VoxelBox, VoxelRegion};
 use crate::scene::{LeafProducer, Scene};
@@ -524,19 +526,22 @@ impl TwoLayerStore {
         let Some((min_chunk, max_chunk)) = scene.covering_chunk_range(voxels_per_block) else {
             return Vec::new();
         };
-        let mut chunks = Vec::new();
-        for chunk_z in min_chunk[2]..=max_chunk[2] {
-            for chunk_y in min_chunk[1]..=max_chunk[1] {
-                for chunk_x in min_chunk[0]..=max_chunk[0] {
-                    let coord = [chunk_x, chunk_y, chunk_z];
-                    let chunk = self
-                        .build_chunk(coord, scene, voxels_per_block, lod)
-                        .expect("the two-layer capability is enabled");
-                    chunks.push((coord, chunk));
-                }
-            }
-        }
-        chunks
+        // Each covering chunk is built independently from the (read-only, `Sync`) scene by
+        // the pure `build_chunk`, so the wholesale build is embarrassingly parallel (#57).
+        // Enumerate the coords in the SAME z,y,x order the dense store assembles, then map
+        // each coord → its chunk with rayon. A parallel `.collect()` PRESERVES ordering, so
+        // the output Vec is byte-identical to the serial nested loop regardless of thread
+        // count — the parity gate proves each `build_chunk` is deterministic given the scene.
+        let coords = enumerate_covering_chunk_coords(min_chunk, max_chunk);
+        coords
+            .into_par_iter()
+            .map(|coord| {
+                let chunk = self
+                    .build_chunk(coord, scene, voxels_per_block, lod)
+                    .expect("the two-layer capability is enabled");
+                (coord, chunk)
+            })
+            .collect()
     }
 
     /// Build the [`TwoLayerChunk`] for `chunk_coord` from the scene's one evaluator, or
@@ -717,16 +722,26 @@ impl TwoLayerResidentCache {
             return Vec::new();
         };
 
-        // Fill misses (dirty-evicted or never-built) — the only step needing `&mut self`.
-        for chunk_z in min_chunk[2]..=max_chunk[2] {
-            for chunk_y in min_chunk[1]..=max_chunk[1] {
-                for chunk_x in min_chunk[0]..=max_chunk[0] {
-                    let coord = [chunk_x, chunk_y, chunk_z];
-                    self.resident
-                        .entry(coord)
-                        .or_insert_with(|| build_two_layer_chunk(coord, scene, voxels_per_block));
-                }
-            }
+        // Fill misses (dirty-evicted or never-built). The build (`build_two_layer_chunk`)
+        // is the ~3.5s cost and is pure given the scene, so parallelise the WHOLESALE fill
+        // (#57): gather the missing coords, build them in parallel into a Vec, THEN insert
+        // serially (the insert is cheap next to the build). This keeps the incremental
+        // dirty-set path (#54) intact — only chunks actually absent are (re)built, resident
+        // HITs are reused verbatim — while the initial build / density-change / recentre
+        // fallback (which re-fills many chunks at once) now runs across threads. Each chunk
+        // is deterministic given the scene, so the resident map is identical to the serial
+        // one-by-one fill regardless of thread count.
+        let missing_coords: Vec<[i32; 3]> =
+            enumerate_covering_chunk_coords(min_chunk, max_chunk)
+                .into_iter()
+                .filter(|coord| !self.resident.contains_key(coord))
+                .collect();
+        let freshly_built: Vec<([i32; 3], TwoLayerChunk)> = missing_coords
+            .into_par_iter()
+            .map(|coord| (coord, build_two_layer_chunk(coord, scene, voxels_per_block)))
+            .collect();
+        for (coord, chunk) in freshly_built {
+            self.resident.insert(coord, chunk);
         }
 
         // Gather the covering chunks as borrows (all HITs after the fill above).
@@ -744,6 +759,22 @@ impl TwoLayerResidentCache {
         }
         chunks
     }
+}
+
+/// Enumerate every covering chunk coord in the inclusive `[min_chunk, max_chunk]` range,
+/// in the SAME z,y,x order (X fastest, then Y, then Z) the dense store assembles them. This
+/// materialises the coords into a `Vec` so the wholesale build (#57) can `into_par_iter()`
+/// them and `.collect()` back into an identically-ordered result.
+fn enumerate_covering_chunk_coords(min_chunk: [i32; 3], max_chunk: [i32; 3]) -> Vec<[i32; 3]> {
+    let mut coords = Vec::new();
+    for chunk_z in min_chunk[2]..=max_chunk[2] {
+        for chunk_y in min_chunk[1]..=max_chunk[1] {
+            for chunk_x in min_chunk[0]..=max_chunk[0] {
+                coords.push([chunk_x, chunk_y, chunk_z]);
+            }
+        }
+    }
+    coords
 }
 
 /// Build one chunk's two-layer representation by classifying every block and resolving the
