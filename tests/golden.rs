@@ -168,10 +168,10 @@ const CASES: &[GoldenCase] = &[
         args: &["--demo-sketch-revolve"],
     },
     // ADR 0010 E3 (#50): a sketch→extrude (L-footprint) solid — a SketchSolid producer that
-    // is NOT band-clipped (its 3-block extrusion fits under the layer-track grid_z), so it is
-    // the SketchSolid case in the two-layer cross-check (the revolve golden happens to be
-    // band-clipped via the layer-track's default grid_z, which the two-layer FULL-band path
-    // cannot reproduce until E5 — see TWO_LAYER_CASE_NAMES).
+    // is NOT band-clipped (its 3-block extrusion fits under the layer-track grid_z), the
+    // non-clipped SketchSolid case in the two-layer cross-check. (The revolve golden IS
+    // band-clipped via the layer-track's default grid_z; ADR 0010 #53 taught the two-layer
+    // path to reclip, so BOTH are now in TWO_LAYER_CASE_NAMES.)
     GoldenCase {
         name: "sketch-extrude-l",
         args: &["--demo-sketch-extrude"],
@@ -192,27 +192,26 @@ const CASES: &[GoldenCase] = &[
 /// Part-only (no chunkable extent) so it is excluded — `--two-layer` falls back to the dense
 /// path there, which the cross-check would test only trivially. Every name MUST exist in
 /// `CASES`.
-/// EXCLUDED, both LAYER-BAND-clip cases (band reclip stays on the dense path until E5 — the
-/// two-layer path retains no source grids to re-clip, so it shows the full model, not the
-/// band slab; an intentional out-of-scope difference, not a regression):
-/// * `onion-fog-perchunk` — an explicit `--onion`/`--layer-*` band.
-/// * `sketch-revolve-dome` — IMPLICITLY band-clipped: the layer-track upper bound is taken
-///   from the (default-cylinder) `shape` grid_z (80), below the revolve composite grid_z
-///   (128), so the dense golden clips the vase's upper third. The two-layer mesher's geometry
-///   IS proven identical to dense for the revolve by the lib face-parity test
-///   (`two_layer_mesher_exposed_face_set_equals_dense`); `sketch-extrude-l` is the
-///   NON-clipped SketchSolid pixel proof here.
 ///
-/// Every other chunkable golden is included.
+/// ADR 0010 #53: the two LAYER-BAND-clip cases are now INCLUDED — the two-layer mesher honours
+/// a layer band (clips coarse blocks to the band one-box, clips microblock cuboids, synthesises
+/// cut-plane cap faces at the band edge), so the band slab renders pixel-identical to the dense
+/// banded path with no dense source grids:
+/// * `onion-fog-perchunk` — an explicit `--onion`/`--layer-*` band.
+/// * `sketch-revolve-dome` — IMPLICITLY band-clipped: the layer-track upper bound is taken from
+///   the (default-cylinder) `shape` grid_z (80), below the revolve composite grid_z (128), so
+///   the dense golden clips the vase's upper third — and the two-layer band reclip now matches.
 const TWO_LAYER_CASE_NAMES: &[&str] = &[
     "sphere-debug-faces",
     "cylinder",
     "torus",
+    "onion-fog-perchunk",
     "demo-village",
     "demo-village-far",
     "demo-village-points",
     "cube-chrome-hover",
     "roll-quarter",
+    "sketch-revolve-dome",
     "sketch-extrude-l",
     "demo-overlap",
 ];

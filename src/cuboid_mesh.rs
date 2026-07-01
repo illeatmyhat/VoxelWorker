@@ -851,19 +851,48 @@ fn in_plane_axes(axis: usize) -> (usize, usize) {
 /// analogue) rather than a densified neighbour apron.
 ///
 /// `chunks` is `(absolute_chunk_coord, TwoLayerChunk)` per covering chunk;
-/// `grid_dimensions` is unused here (the band reclip stays on the dense path until E5) but
-/// kept for call-site symmetry; `recentre_voxels` is the resolve's carried recentre (ADR
-/// 0008) so the emitted vertices land in the SAME world frame the dense path assembles
-/// (its global cloud-min anchor cancels to exactly this recentred index — proven in the
-/// E3 parity test). `voxels_per_block` is the chunk density.
+/// `grid_dimensions` is the whole composite voxel dims — only the Z half is read, to map a
+/// recentred-frame voxel index to its ABSOLUTE layer for the band clip (Z-up: layers are
+/// Z-slices); `recentre_voxels` is the resolve's carried recentre (ADR 0008) so the emitted
+/// vertices land in the SAME world frame the dense path assembles (its global cloud-min
+/// anchor cancels to exactly this recentred index — proven in the E3 parity test).
+/// `voxels_per_block` is the chunk density.
+///
+/// `band` (ADR 0010 #53): a layer-range (Z-slice) clip. `LayerBand::FULL` (the default) keeps
+/// the E3-proven FAST paths byte-for-byte — a coarse-solid block is ONE box, a boundary block
+/// its stored cuboids. An ACTIVE band (the layer scrubber) clips each block to the band's
+/// recentred voxel-Z range: a coarse block the band CUTS through emits the clipped one-box (the
+/// block ∩ band), a boundary block clips each cuboid; blocks fully outside the band are skipped.
+/// Cut-plane faces are VISIBLE — a band edge reads the out-of-band neighbour cell as AIR, so the
+/// clip synthesises a real cap face there, mirroring the dense [`build_chunk_meshes_with_apron`]
+/// banded behaviour exactly (it masks the apron + interior so a merged column caps at the edge).
 fn build_two_layer_chunk_meshes(
     chunks: &[([i32; 3], TwoLayerChunk)],
-    _grid_dimensions: [u32; 3],
+    grid_dimensions: [u32; 3],
     recentre_voxels: [i64; 3],
     voxels_per_block: u32,
+    band: LayerBand,
 ) -> Vec<CuboidChunkMesh> {
     let density = voxels_per_block.max(1);
     let block_extent = density as i64;
+
+    // Z-up band clip (ADR 0010 #53): the band is in ABSOLUTE layer indices. A voxel at
+    // recentred-frame min-corner `v` (the frame this mesher emits in) sits at world.z = v +
+    // 0.5, so its absolute layer = floor(world.z + half_z) = v + half_z (integer-valued for
+    // an integer `v`, `half_z`). Inverting the band into the recentred frame: a recentred
+    // voxel-Z `v` is in-band iff `band_min - half_z <= v <= band_max - half_z`. FLOORED half
+    // (matches the dense path's `floor(world.z + floor(dim/2))` for any dim parity).
+    let band_active = band.band_min > 0 || band.band_max != u32::MAX;
+    let half_z = (grid_dimensions[2] / 2) as i64;
+    let band_lo_recentred = band.band_min as i64 - half_z;
+    let band_hi_recentred = (band.band_max as i64).saturating_sub(half_z);
+    // Whether a recentred-frame voxel-Z index is inside the band.
+    let z_in_band = |recentred_z: i64| -> bool {
+        if !band_active {
+            return true;
+        }
+        recentred_z >= band_lo_recentred && recentred_z <= band_hi_recentred
+    };
     let chunk_extent_voxels = (CHUNK_BLOCKS * density) as i64;
 
     // A lookup of every covering chunk by coord so a block can consult its neighbour's
@@ -984,7 +1013,31 @@ fn build_two_layer_chunk_meshes(
                         chunk_min_recentred[2] + block_z as i64 * block_extent,
                     ];
 
-                    if let Some(block_id) = chunk.coarse_block(block) {
+                    // ADR 0010 #53: under an ACTIVE band, route every (coarse OR boundary)
+                    // block through the band-aware apron mesher — it densifies only the
+                    // block (never the whole solid interior), masks out-of-band Z to air on
+                    // BOTH interior and apron (so a band-edge cut synthesises a real cap
+                    // face), and skips blocks fully outside the band. FULL-band keeps the
+                    // E3-proven FAST paths byte-for-byte below.
+                    if band_active {
+                        let block_lo_z = block_low_recentred[2];
+                        let block_hi_z = block_lo_z + block_extent - 1;
+                        // Skip blocks the band does not touch at all (every voxel-Z out of band).
+                        if block_hi_z < band_lo_recentred || block_lo_z > band_hi_recentred {
+                            continue;
+                        }
+                        box_count += emit_block_banded(
+                            density,
+                            block_low_recentred,
+                            abs_block,
+                            &chunk_by_coord,
+                            &z_in_band,
+                            &mut vertices,
+                            &mut indices,
+                            &mut indices_overlay,
+                            &mut aabb,
+                        );
+                    } else if let Some(block_id) = chunk.coarse_block(block) {
                         // COARSE-SOLID → ONE box spanning the block (no per-voxel decompose).
                         let overlay = chunk.coarse_block_overlay(block);
                         emit_coarse_block_box(
@@ -1209,6 +1262,174 @@ fn emit_boundary_block_cuboids(
         };
         emit_box_faces(&shifted, &apron, region_offset, vertices, sink, aabb);
     }
+}
+
+/// Stamp the block at chunk-local-or-neighbour block index `abs_block`'s per-voxel occupancy
+/// into `region` at the apron-local offset `dst_lo` (so a neighbour block lands at the apron
+/// border), CLIPPED to the band via `z_in_band` (ADR 0010 #53). A coarse-solid block fills
+/// every `density³` cell at its render key; a boundary block stamps each cuboid; an air /
+/// missing block stamps nothing. `block_low_recentred_z` is the block's low voxel-Z in the
+/// recentred frame, so a block-local voxel-Z `vz` maps to recentred Z
+/// `block_low_recentred_z + vz` for the band test — masking out-of-band voxels to air on BOTH
+/// the meshed interior and the neighbour apron, exactly as the dense banded path masks apron.
+///
+/// Writes only cells whose apron-local index lands inside `region.extent` (a neighbour block
+/// contributes only its 1-voxel abutting border layer). Returns nothing; the caller sizes the
+/// apron and supplies `dst_lo`.
+#[allow(clippy::too_many_arguments)]
+fn stamp_block_into_region_banded(
+    chunk_by_coord: &std::collections::HashMap<[i32; 3], &TwoLayerChunk>,
+    abs_block: [i64; 3],
+    density: u32,
+    block_low_recentred_z: i64,
+    dst_lo: [i64; 3],
+    z_in_band: &dyn Fn(i64) -> bool,
+    region: &mut VoxelRegion,
+) {
+    let chunk_blocks = CHUNK_BLOCKS as i64;
+    let chunk_coord = [
+        abs_block[0].div_euclid(chunk_blocks) as i32,
+        abs_block[1].div_euclid(chunk_blocks) as i32,
+        abs_block[2].div_euclid(chunk_blocks) as i32,
+    ];
+    let Some(chunk) = chunk_by_coord.get(&chunk_coord) else {
+        return; // no covering chunk → air
+    };
+    let local = [
+        abs_block[0].rem_euclid(chunk_blocks) as u32,
+        abs_block[1].rem_euclid(chunk_blocks) as u32,
+        abs_block[2].rem_euclid(chunk_blocks) as u32,
+    ];
+    let [ex, ey, ez] = region.extent;
+
+    // Stamp one block-local voxel `(vx, vy, vz)` of render key `key` into the region, band-
+    // masked on Z and bounds-checked against the apron extent.
+    let stamp = |vx: u32, vy: u32, vz: u32, key: u16, region: &mut VoxelRegion| {
+        if !z_in_band(block_low_recentred_z + vz as i64) {
+            return;
+        }
+        let lx = dst_lo[0] + vx as i64;
+        let ly = dst_lo[1] + vy as i64;
+        let lz = dst_lo[2] + vz as i64;
+        if lx < 0 || ly < 0 || lz < 0 || lx >= ex as i64 || ly >= ey as i64 || lz >= ez as i64 {
+            return;
+        }
+        region.set(lx as u32, ly as u32, lz as u32, Some(key));
+    };
+
+    if let Some(block_id) = chunk.coarse_block(local) {
+        let key = compose_cell_key(block_id.0, chunk.coarse_block_overlay(local));
+        for vz in 0..density {
+            for vy in 0..density {
+                for vx in 0..density {
+                    stamp(vx, vy, vz, key, region);
+                }
+            }
+        }
+    } else if let Some(geometry) = chunk.microblocks.get(&local) {
+        for cuboid in &geometry.cuboids {
+            for vz in cuboid.min[2]..=cuboid.max[2] {
+                for vy in cuboid.min[1]..=cuboid.max[1] {
+                    for vx in cuboid.min[0]..=cuboid.max[0] {
+                        stamp(vx, vy, vz, cuboid.material_id, region);
+                    }
+                }
+            }
+        }
+    }
+    // else: air block, nothing to stamp.
+}
+
+/// Mesh ONE block (coarse OR boundary) under an ACTIVE layer band (ADR 0010 #53). Builds a
+/// `(density+2)³` apron region whose INTERIOR is the block's own band-clipped voxels and whose
+/// 1-voxel border is each neighbour block's abutting band-clipped face — then decomposes the
+/// interior and emits via [`emit_box_faces`]/[`face_is_exposed`], so a band-edge cut (the
+/// out-of-band neighbour cell reads as AIR) synthesises a real cap face, and a non-cut seam
+/// against a solid neighbour is still culled. This is the dense banded apron restricted to one
+/// block: it densifies ONLY the band-cut block (never the whole solid interior). Returns the
+/// number of boxes the interior decomposed into (the diagnostic box count).
+#[allow(clippy::too_many_arguments)]
+fn emit_block_banded(
+    density: u32,
+    block_low_recentred: [i64; 3],
+    abs_block: [i64; 3],
+    chunk_by_coord: &std::collections::HashMap<[i32; 3], &TwoLayerChunk>,
+    z_in_band: &dyn Fn(i64) -> bool,
+    vertices: &mut Vec<CuboidVertex>,
+    indices: &mut Vec<u32>,
+    indices_overlay: &mut Vec<u32>,
+    aabb: &mut Aabb,
+) -> u32 {
+    // Apron frame: a (density+2)³ region with the block's voxels at local index +1, so the
+    // 1-voxel border is the apron (identical to `emit_boundary_block_cuboids`).
+    let apron_extent = [density + 2, density + 2, density + 2];
+    let mut interior = VoxelRegion::new_empty(apron_extent);
+
+    // Interior = THIS block's own voxels at local +1, band-clipped on Z.
+    stamp_block_into_region_banded(
+        chunk_by_coord,
+        abs_block,
+        density,
+        block_low_recentred[2],
+        [1, 1, 1],
+        z_in_band,
+        &mut interior,
+    );
+
+    // The interior decomposition + the apron border share one region: decompose reads only the
+    // interior (+1 shift keeps the border air for the decompose), and `face_is_exposed` reads
+    // the SAME region's border. We therefore clone the interior-only region for decomposition
+    // BEFORE filling the apron border (so a box never grows into the border), then fill the
+    // border into the exposure region.
+    let decompose_region = interior.clone();
+    let mut apron = interior; // reuse as the exposure region; add the neighbour border below.
+
+    // Apron border: each of the 6 neighbour blocks' abutting face, band-clipped. A neighbour
+    // block landed at the apron border via `dst_lo` = its block offset relative to this block
+    // (−1 block on the low side, +1 on the high side, scaled to the apron's +1 interior
+    // origin). Only the single border layer of each neighbour falls inside the apron extent.
+    for (delta, dst_lo) in [
+        ([-1i64, 0, 0], [1 - density as i64, 1, 1]),
+        ([1, 0, 0], [1 + density as i64, 1, 1]),
+        ([0, -1, 0], [1, 1 - density as i64, 1]),
+        ([0, 1, 0], [1, 1 + density as i64, 1]),
+        ([0, 0, -1], [1, 1, 1 - density as i64]),
+        ([0, 0, 1], [1, 1, 1 + density as i64]),
+    ] {
+        let neighbour = [
+            abs_block[0] + delta[0],
+            abs_block[1] + delta[1],
+            abs_block[2] + delta[2],
+        ];
+        let neighbour_low_z = block_low_recentred[2] + delta[2] * density as i64;
+        stamp_block_into_region_banded(
+            chunk_by_coord,
+            neighbour,
+            density,
+            neighbour_low_z,
+            dst_lo,
+            z_in_band,
+            &mut apron,
+        );
+    }
+
+    // Region offset maps apron-local index 0 to the recentred frame: the block's low voxel is
+    // apron-local +1, so apron-local 0 sits at `block_low_recentred - 1`.
+    let region_offset = [
+        (block_low_recentred[0] - 1) as f32,
+        (block_low_recentred[1] - 1) as f32,
+        (block_low_recentred[2] - 1) as f32,
+    ];
+    let boxes = decompose_into_boxes(&decompose_region);
+    for voxel_box in &boxes {
+        let sink = if box_has_overlay(voxel_box) {
+            &mut *indices_overlay
+        } else {
+            &mut *indices
+        };
+        emit_box_faces(voxel_box, &apron, region_offset, vertices, sink, aabb);
+    }
+    boxes.len() as u32
 }
 
 /// The `(axis, side)` a face-template's `neighbor_delta` points along: axis 0/1/2 = X/Y/Z,
@@ -1612,8 +1833,16 @@ pub struct CuboidMeshRenderer {
     /// region before decomposition (real cap faces), so a band change re-meshes; we
     /// cache the last band and rebuild only when it differs.
     source_chunk_grids: Vec<([i32; 3], VoxelGrid)>,
+    /// The two-layer chunks the mesh was last built from (ADR 0010 #53), retained so a band
+    /// reclip (the layer scrubber) can re-mesh DIRECTLY from the two-layer store — no dense
+    /// source grids. Empty on the dense path; populated only by [`new_from_two_layer_chunks`].
+    /// `recentre`/`density` are the frame + density the two-layer mesher needs to re-emit in
+    /// the SAME world frame on every band change.
+    source_two_layer_chunks: Vec<([i32; 3], crate::two_layer_store::TwoLayerChunk)>,
+    source_two_layer_recentre: [i64; 3],
+    source_two_layer_density: u32,
     /// The whole composite grid's voxel dims (the band clip maps an absolute layer to
-    /// the global region-local Y; only the Y half is used).
+    /// the global region-local Z; only the Z half is used).
     source_grid_dimensions: [u32; 3],
     /// Total boxes across all chunks the last build produced (diagnostic).
     total_box_count: u32,
@@ -1696,9 +1925,9 @@ impl CuboidMeshRenderer {
     /// `chunks` is `(absolute_chunk_coord, TwoLayerChunk)` per covering chunk;
     /// `grid_dimensions` is the whole composite voxel dims; `recentre_voxels` is the
     /// resolve's carried recentre (ADR 0008) so the two-layer mesh lands in the SAME world
-    /// frame the dense path assembles. The layer band is FULL (band reclip stays on the
-    /// dense path until E5), so `source_chunk_grids` is left empty (a band change falls
-    /// back to a no-op — the two-layer display path is the E3-gated proof, not yet live).
+    /// frame the dense path assembles. The INITIAL build is FULL-band (the E3 fast paths);
+    /// the two-layer chunks are RETAINED so a later band reclip (the layer scrubber, ADR
+    /// 0010 #53) re-meshes DIRECTLY from the store — no dense source grids needed.
     pub fn new_from_two_layer_chunks(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -1714,17 +1943,22 @@ impl CuboidMeshRenderer {
             grid_dimensions,
             recentre_voxels,
             voxels_per_block,
+            LayerBand::FULL,
         );
-        // The two-layer display path is the E3-gated proof; band reclip + incremental
-        // edits stay on the dense path until E5, so there are no source grids to retain.
-        Self::assemble(
+        let mut renderer = Self::assemble(
             device,
             queue,
             color_format,
             chunk_meshes,
             Vec::new(),
             grid_dimensions,
-        )
+        );
+        // Retain the two-layer chunks + frame so `rebuild_for_band` re-meshes the band
+        // slab from the store (ADR 0010 #53) — the layer scrubber on the two-layer path.
+        renderer.source_two_layer_chunks = chunks.to_vec();
+        renderer.source_two_layer_recentre = recentre_voxels;
+        renderer.source_two_layer_density = voxels_per_block.max(1);
+        renderer
     }
 
     /// Shared GPU-resource assembly for both the dense ([`new_from_chunks`]) and two-layer
@@ -2022,6 +2256,11 @@ impl CuboidMeshRenderer {
             atlas_rects,
             bound_material: MaterialChoice::Plain,
             source_chunk_grids,
+            // The dense builders retain no two-layer chunks; `new_from_two_layer_chunks`
+            // overrides these after `assemble` so its band reclip re-meshes from the store.
+            source_two_layer_chunks: Vec::new(),
+            source_two_layer_recentre: [0; 3],
+            source_two_layer_density: 1,
             source_grid_dimensions: grid_dimensions,
             total_box_count,
             current_band: LayerBand::FULL,
@@ -2136,15 +2375,33 @@ impl CuboidMeshRenderer {
         if band == self.current_band {
             return;
         }
-        // ADR 0010 E3: the two-layer path retains NO source grids (band reclip stays on the
-        // dense path until E5), so a band change cannot be honoured by re-meshing — leave the
-        // FULL-band geometry in place rather than clearing it to zero chunks. The dense path
-        // (which DOES retain source grids) is unaffected.
-        if self.source_chunk_grids.is_empty() {
-            self.current_band = band;
+        self.current_band = band;
+
+        // ADR 0010 #53 — the TWO-LAYER path: when the renderer was built from the two-layer
+        // store (the chunks are retained), re-mesh the band slab DIRECTLY from those chunks —
+        // no dense source grids. A coarse block the band cuts emits the clipped one-box, a
+        // boundary block clips each cuboid, and cut-plane faces are synthesised (the band edge
+        // reads the out-of-band neighbour cell as air), mirroring the dense banded path.
+        if !self.source_two_layer_chunks.is_empty() {
+            let chunk_meshes = build_two_layer_chunk_meshes(
+                &self.source_two_layer_chunks,
+                self.source_grid_dimensions,
+                self.source_two_layer_recentre,
+                self.source_two_layer_density,
+                band,
+            );
+            self.total_box_count = chunk_meshes.iter().map(|m| m.box_count).sum();
+            self.chunk_buffers = upload_chunk_meshes(device, &chunk_meshes);
+            self.visible_chunks = self.chunk_buffers.keys().copied().collect();
+            self.visible_chunks.sort_unstable();
             return;
         }
-        self.current_band = band;
+
+        // The DENSE path retains per-chunk grids: re-mesh them clipped to the band. A path
+        // with NEITHER source (an empty build) leaves the geometry in place.
+        if self.source_chunk_grids.is_empty() {
+            return;
+        }
         let chunk_refs: Vec<([i32; 3], &VoxelGrid)> = self
             .source_chunk_grids
             .iter()
@@ -3560,7 +3817,8 @@ mod tests {
     ) -> std::collections::HashSet<UnitFace> {
         let store = TwoLayerStore::enabled();
         let chunks = store.build_covering_chunks(scene, density, 0);
-        let meshes = build_two_layer_chunk_meshes(&chunks, grid_dimensions, recentre, density);
+        let meshes =
+            build_two_layer_chunk_meshes(&chunks, grid_dimensions, recentre, density, LayerBand::FULL);
         let mut renderable = std::collections::HashSet::new();
         for mesh in &meshes {
             renderable.extend(renderable_unit_faces(
@@ -3750,6 +4008,153 @@ mod tests {
             two_layer_tool(TwoLayerShape::Box, [3, 3, 3], [1, 1, 0], MC::Wood, density),
         ]);
         assert_two_layer_face_parity(&overlap, density, "overlap-multi-material");
+    }
+
+    /// Band-masked occupancy of a dense grid, keyed in the recentred-index frame the two-layer
+    /// mesher emits in (a voxel at recentred index `v` sits at absolute layer `v[2] + half_z`,
+    /// FLOORED half — the SAME map the two-layer band clip inverts). Mirrors the banded-torus
+    /// test's masking, restated in the RECENTRED frame so it lines up with `world_offset`.
+    fn banded_occupancy_indices(
+        dense: &VoxelGrid,
+        band: LayerBand,
+    ) -> std::collections::HashSet<[i64; 3]> {
+        let mut min_world = [f32::INFINITY; 3];
+        for v in &dense.occupied {
+            let position = v.world_position();
+            for (axis, m) in min_world.iter_mut().enumerate() {
+                *m = m.min(position[axis]);
+            }
+        }
+        let half_z = (dense.dimensions[2] / 2) as f32;
+        let base_layer = (min_world[2] + half_z).floor() as i64;
+        dense
+            .occupied
+            .iter()
+            .map(|v| {
+                let position = v.world_position();
+                [
+                    (position[0] - min_world[0]).round() as i64,
+                    (position[1] - min_world[1]).round() as i64,
+                    (position[2] - min_world[2]).round() as i64,
+                ]
+            })
+            .filter(|idx| {
+                let layer = base_layer + idx[2];
+                layer >= band.band_min as i64 && layer <= band.band_max as i64
+            })
+            .collect()
+    }
+
+    /// ADR 0010 #53 GATE: the two-layer BANDED mesher's RENDERABLE face set equals the dense
+    /// path's band-masked genuine surface — proving the band reclip (coarse clipped one-box,
+    /// microblock cuboid clip, cut-plane cap faces) is a pure optimisation on the data seam,
+    /// identical to `build_cuboid_mesh_banded` on the dense path. Because `renderable_unit_faces`
+    /// tests the front cell against the BAND-MASKED occupancy, a cut-plane cap face (front cell
+    /// out of band ⇒ air) MUST be emitted, and a spurious over-emit or a hole both fail.
+    fn assert_two_layer_banded_face_parity(
+        scene: &Scene,
+        density: u32,
+        band: LayerBand,
+        label: &str,
+    ) {
+        let dense = scene.resolve_region(scene.full_extent_blocks(density), density, 0);
+        assert!(!dense.occupied.is_empty(), "[{label}] scene resolved empty");
+        let banded = banded_occupancy_indices(&dense, band);
+        assert!(!banded.is_empty(), "[{label}] band kept no voxels");
+        let genuine = genuine_exposed_faces(&banded);
+        let world_offset = grid_world_offset(&dense);
+
+        // Dense banded reference → its visible face subset must equal the banded ground truth.
+        let whole = build_cuboid_mesh_banded(&dense, density, band);
+        let mut whole_visible =
+            visible_unit_faces(&whole.vertices, &whole.indices, world_offset, &genuine);
+        whole_visible.extend(visible_unit_faces(
+            &whole.vertices,
+            &whole.indices_overlay,
+            world_offset,
+            &genuine,
+        ));
+        assert_eq!(
+            whole_visible, genuine,
+            "[{label}] dense banded reference visible faces != band-masked ground truth"
+        );
+
+        // Two-layer banded mesher → its RENDERABLE face set (front cell tested against the
+        // band-masked occupancy) must equal the same ground truth.
+        let store = TwoLayerStore::enabled();
+        let chunks = store.build_covering_chunks(scene, density, 0);
+        let meshes = build_two_layer_chunk_meshes(
+            &chunks,
+            dense.dimensions,
+            dense.recentre_voxels,
+            density,
+            band,
+        );
+        let mut renderable = std::collections::HashSet::new();
+        for mesh in &meshes {
+            renderable.extend(renderable_unit_faces(
+                &mesh.vertices,
+                &mesh.indices,
+                world_offset,
+                &banded,
+            ));
+            renderable.extend(renderable_unit_faces(
+                &mesh.vertices,
+                &mesh.indices_overlay,
+                world_offset,
+                &banded,
+            ));
+        }
+        assert_eq!(
+            renderable, genuine,
+            "[{label}] two-layer BANDED renderable faces != band-masked ground truth ({} vs {}) \
+             — a hole, a spurious cut-plane over-emit, or a missing cap face",
+            renderable.len(),
+            genuine.len()
+        );
+    }
+
+    /// THE ADR 0010 #53 GATE: the two-layer mesher honours a layer band identically to the dense
+    /// banded path across a matrix of bands — a band that CUTS through coarse-solid interiors (a
+    /// large box: the clipped one-box + cut cap face), a band that clips microblock cuboids (a
+    /// sphere), a band flush to a block boundary, and a thin single-block band. Multi-chunk at
+    /// d16 so the clip crosses chunk seams.
+    #[test]
+    fn two_layer_banded_mesher_matches_dense() {
+        let density = 16u32;
+        let band = |lo: u32, hi: u32| LayerBand {
+            band_min: lo,
+            band_max: hi,
+            onion_depth: 0,
+        };
+
+        // Large solid box (8 blocks = 128 voxels/axis = 2 chunks/axis): the coarse one-box
+        // interior must clip to the band and cap at the cut plane, across the chunk seam.
+        let large = Scene::from_nodes(vec![two_layer_tool(
+            TwoLayerShape::Box,
+            [8, 8, 8],
+            [0, 0, 0],
+            MC::Stone,
+            density,
+        )]);
+        // A band cutting mid-block (layer 40 is inside block 2 at d16), a block-flush band, and
+        // a thin single-layer slice.
+        for b in [band(0, 40), band(48, 96), band(0, 63), band(70, 70)] {
+            assert_two_layer_banded_face_parity(&large, density, b, "large-box-band");
+        }
+
+        // Sphere: a rounded boundary — the microblock cuboids clip to the band and the equator
+        // slice exposes a filled cross-section cap.
+        let sphere = Scene::from_nodes(vec![two_layer_tool(
+            TwoLayerShape::Sphere,
+            [5, 5, 5],
+            [0, 0, 0],
+            MC::Stone,
+            density,
+        )]);
+        for b in [band(0, 40), band(30, 50)] {
+            assert_two_layer_banded_face_parity(&sphere, density, b, "sphere-band");
+        }
     }
 
     fn village_instance(name: &str, def: DefId, offset: [i64; 3], density: u32) -> Node {
