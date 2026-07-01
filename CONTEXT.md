@@ -65,6 +65,24 @@ separate microblock entities). A solid interior is never voxelized.
   seam** without expanding a neighbour's voxels. The coarse-vs-microblock analogue
   of the dense-fog **apron**.
 
+## GPU brick-field display sink (the cached-brick raymarch)
+
+The GPU display derivation that raymarches a **cached** copy of the boundary set instead of the
+op-stack field (see `docs/adr/0011`; generalizes the ADR 0007 fog atlas).
+
+- **Brick** — a fixed cube of voxels cached in one **atlas slot** (a slice of an R8 3D texture
+  pool). A boundary block's voxels are packed into a **sculpted brick**; a coarse-solid block is a
+  **coarse brick** (a solid-block marker record, no atlas slot, no per-voxel data). Empty space
+  gets no brick. "Raymarch the cache, not the field": per-frame cost is independent of op-stack
+  complexity because rays sample cached bricks, never the analytic SDF.
+
+- **Clip-map occupancy pyramid** — coarser "any-brick-inside" occupancy levels above the fine brick
+  set (e.g. cells of 8 blocks, then 64 blocks). A ray's **hierarchical DDA** jumps straight to the
+  exit of the coarsest EMPTY level covering its position — one big stride through empty space —
+  descending to per-block brick work only where the finest level is occupied. World-fixed levels (a
+  min-mip of the brick set) are distinct from a **geometry clip-map** (nested camera-centred grids,
+  Losasso–Hoppe); the latter is the residency-ring variant for the off-screen case.
+
 ## Authoring truth
 
 - **Operation stack** — the ordered list of authoring operations for a part's geometry: parametric
