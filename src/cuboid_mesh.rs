@@ -4010,6 +4010,155 @@ mod tests {
         assert_two_layer_face_parity(&overlap, density, "overlap-multi-material");
     }
 
+    /// The RENDERABLE exposed-face set of a supplied two-layer chunk set (every emitted face
+    /// whose front cell is air per `occupied`), unioned over every chunk. Shared by the
+    /// incremental-edit mesh parity test below so it can mesh a chunk set assembled through the
+    /// resident cache (post-edit) rather than a fresh `build_covering_chunks`.
+    fn two_layer_chunk_set_renderable_faces(
+        chunks: &[([i32; 3], crate::two_layer_store::TwoLayerChunk)],
+        density: u32,
+        world_offset: [f32; 3],
+        recentre: [i64; 3],
+        grid_dimensions: [u32; 3],
+        occupied: &std::collections::HashSet<[i64; 3]>,
+    ) -> std::collections::HashSet<UnitFace> {
+        let meshes =
+            build_two_layer_chunk_meshes(chunks, grid_dimensions, recentre, density, LayerBand::FULL);
+        let mut renderable = std::collections::HashSet::new();
+        for mesh in &meshes {
+            renderable.extend(renderable_unit_faces(
+                &mesh.vertices,
+                &mesh.indices,
+                world_offset,
+                occupied,
+            ));
+            renderable.extend(renderable_unit_faces(
+                &mesh.vertices,
+                &mesh.indices_overlay,
+                world_offset,
+                occupied,
+            ));
+        }
+        renderable
+    }
+
+    /// **ADR 0010 #54 GATE (rendered parity):** a scene edited INCREMENTALLY on the two-layer
+    /// path (build scene A into a [`TwoLayerResidentCache`], invalidate the edit's dirty AABB
+    /// chunks, re-derive only those) meshes to the SAME renderable exposed-face set as (a) a
+    /// FULL from-scratch two-layer rebuild of the edited scene B and (b) the dense ground truth.
+    /// This is the mesh-face-set assertion for an edited scene the acceptance criteria call for:
+    /// an incremental edit is pixel-identical to a full rebuild and to the dense path.
+    ///
+    /// Covers move / recolor / resize / add / remove — each keeps the mesher's face set
+    /// identical to a full rebuild, proving the resident cache's chunk-granular invalidation
+    /// leaves no stale geometry and misses no fresh surface through the mesher.
+    #[test]
+    fn incremental_two_layer_edit_meshes_identically_to_full_rebuild() {
+        use crate::two_layer_store::TwoLayerResidentCache;
+        let density = 16u32;
+
+        // A base scene with a wide sphere (many chunks) plus an interior subject box, so an
+        // edit touches a strict subset while much of the chunk set stays resident.
+        let scene_a = Scene::from_nodes(vec![
+            two_layer_tool(TwoLayerShape::Sphere, [6, 6, 6], [0, 0, 0], MC::Stone, density),
+            two_layer_tool(TwoLayerShape::Box, [3, 3, 3], [10, 0, 0], MC::Wood, density),
+        ]);
+
+        let recolor = {
+            let mut b = scene_a.clone();
+            if let NodeContent::Tool { material, .. } = &mut b.root_node_mut(1).content {
+                *material = MC::Stone;
+            }
+            ("recolor", b)
+        };
+        let resize = {
+            let mut b = scene_a.clone();
+            let replacement =
+                two_layer_tool(TwoLayerShape::Box, [2, 2, 2], [10, 0, 0], MC::Wood, density);
+            let slot = b.root_node_mut(1);
+            slot.content = replacement.content;
+            slot.transform = replacement.transform;
+            ("resize", b)
+        };
+        let move_edit = {
+            let mut b = scene_a.clone();
+            b.root_node_mut(1).transform = NodeTransform::from_blocks([13, 0, 0], density);
+            ("move", b)
+        };
+        let add_edit = {
+            let mut b = scene_a.clone();
+            b.add_node(two_layer_tool(
+                TwoLayerShape::Box,
+                [2, 2, 2],
+                [16, 0, 0],
+                MC::Plain,
+                density,
+            ));
+            ("add", b)
+        };
+        let remove_edit = {
+            let mut b = scene_a.clone();
+            let subject = b.roots[1];
+            b.remove_node(subject);
+            ("remove", b)
+        };
+
+        for (label, scene_b) in [recolor, resize, move_edit, add_edit, remove_edit] {
+            // Drive the incremental edit through the resident cache exactly as app_core would.
+            let mut cache = TwoLayerResidentCache::enabled();
+            let _ = cache.resident_two_layer_chunks(&scene_a, density, 0);
+            let index_a = scene_a.build_leaf_spatial_index(density);
+            let index_b = scene_b.build_leaf_spatial_index(density);
+            match index_b.edit_aabb_since(&index_a) {
+                Some(edit_aabb) => {
+                    cache.invalidate_aabb(&edit_aabb, density);
+                }
+                None => cache.clear(),
+            }
+            let incremental_chunks: Vec<_> = cache
+                .resident_two_layer_chunks(&scene_b, density, 0)
+                .into_iter()
+                .map(|(coord, chunk)| (coord, chunk.clone()))
+                .collect();
+
+            // The dense ground truth for scene B (the pixel reference).
+            let dense = scene_b.resolve_region(scene_b.full_extent_blocks(density), density, 0);
+            assert!(!dense.occupied.is_empty(), "[{label}] scene resolved empty");
+            let occupancy = occupancy_indices(&dense);
+            let genuine = genuine_exposed_faces(&occupancy);
+            let world_offset = grid_world_offset(&dense);
+
+            // The incrementally-edited chunk set's renderable face set == dense ground truth.
+            let incremental_faces = two_layer_chunk_set_renderable_faces(
+                &incremental_chunks,
+                density,
+                world_offset,
+                dense.recentre_voxels,
+                dense.dimensions,
+                &occupancy,
+            );
+            assert_eq!(
+                incremental_faces, genuine,
+                "[{label}] incrementally-edited two-layer mesh RENDERABLE faces != dense ground \
+                 truth — a stale chunk (over-draw) or a missed fresh surface (hole)"
+            );
+
+            // And identical to a FULL from-scratch two-layer rebuild of scene B.
+            let full_faces = two_layer_renderable_faces(
+                &scene_b,
+                density,
+                world_offset,
+                dense.recentre_voxels,
+                dense.dimensions,
+                &occupancy,
+            );
+            assert_eq!(
+                incremental_faces, full_faces,
+                "[{label}] incremental two-layer mesh faces must equal a FULL two-layer rebuild"
+            );
+        }
+    }
+
     /// Band-masked occupancy of a dense grid, keyed in the recentred-index frame the two-layer
     /// mesher emits in (a voxel at recentred index `v` sits at absolute layer `v[2] + half_z`,
     /// FLOORED half — the SAME map the two-layer band clip inverts). Mirrors the banded-torus

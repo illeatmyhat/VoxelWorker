@@ -127,7 +127,11 @@ pub struct MicroblockGeometry {
 ///
 /// A coarse-solid block stores ZERO voxels (interior elision); only boundary blocks carry
 /// per-voxel geometry, and even those are stored as cuboids, never a dense `density³` grid.
-#[derive(Debug, Clone, Default)]
+///
+/// Derives [`PartialEq`]/[`Eq`] so the incremental-vs-full parity gate (ADR 0010 #54) can
+/// assert an incrementally-rebuilt chunk is IDENTICAL — coarse layer + overlay + microblock
+/// map + seam flags — to a full from-scratch rebuild of the same chunk.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TwoLayerChunk {
     /// The chunk's voxels-per-block density (chunk extent in voxels is
     /// `CHUNK_BLOCKS * density`). Carried so the expansion / interior count can size the
@@ -532,6 +536,191 @@ impl TwoLayerStore {
             return None;
         }
         Some(build_two_layer_chunk(chunk_coord, scene, voxels_per_block))
+    }
+}
+
+/// **The resident two-layer display cache (ADR 0010 #54 — chunk-granular incremental edits).**
+///
+/// The [`TwoLayerStore`] above is a *stateless* builder (every call re-classifies a chunk from
+/// the scene); this is its **incremental-edit counterpart**, the two-layer analogue of the dense
+/// [`crate::store::Store`]. It holds the resident [`TwoLayerChunk`]s across edits and re-derives
+/// **only the chunks an edit's world-AABB intersects** (chunk-granular, ADR 0002 Decision 3),
+/// mirroring [`Store::invalidate_aabb`](crate::store::Store::invalidate_aabb) exactly. Untouched
+/// chunks stay resident.
+///
+/// ## Why a dirty chunk re-runs the whole build
+///
+/// A dirty chunk drops its cached [`TwoLayerChunk`] and, on next access, re-runs the block
+/// classifier + two-layer build ([`build_two_layer_chunk`]) from scratch. Chunk-granular is
+/// sufficient to unblock E5 (retire the dense path); a **block-granular dirty-brick recompute**
+/// (re-classify only the blocks the edit AABB touches, keeping the rest of the chunk's coarse
+/// layer) is a later optimization, NOT this slice (ADR 0010 Consequences).
+///
+/// ## Frame (ADR 0008) — why a recentre shift does NOT invalidate the cache
+///
+/// A [`TwoLayerChunk`] is stored in **chunk-local integer** frame (its coarse ids + block-local
+/// cuboids never mention the absolute origin — that lives in the chunk COORD key). The recentre /
+/// floating origin is applied only at *expand* time as a pure index offset
+/// ([`TwoLayerChunk::expand_occupancy_into`]). So — unlike the dense [`Store`], which caches
+/// PRE-REBASED grids and must clear on a floating-origin shift — a recentre shift leaves every
+/// resident two-layer chunk VALID. Only a **density change** (which resizes each chunk's voxel
+/// extent) forces a wholesale clear; that is the one binding this cache tracks.
+///
+/// [`Store`]: crate::store::Store
+#[derive(Debug, Clone, Default)]
+pub struct TwoLayerResidentCache {
+    /// The two-layer capability flag (ADR 0010 Decision 6), forwarded to the stateless builder.
+    /// `false` (the default) means the cache stays empty and [`resident_two_layer_chunks`] is a
+    /// no-op, so a caller falls back to the dense path.
+    ///
+    /// [`resident_two_layer_chunks`]: Self::resident_two_layer_chunks
+    enabled: bool,
+    /// Resident chunks keyed by ABSOLUTE chunk coord (the only LOD in use is 0, ADR 0002 S4a).
+    resident: BTreeMap<[i32; 3], TwoLayerChunk>,
+    /// The density the resident chunks were built at. A change resizes every chunk's voxel
+    /// extent, so it forces a wholesale [`clear`](Self::clear) (mirrors
+    /// [`Store::rebind_if_changed`](crate::store::Store)'s density guard).
+    bound_density: Option<u32>,
+}
+
+impl TwoLayerResidentCache {
+    /// A resident cache with the two-layer capability ENABLED. The default ([`Default`]) is
+    /// DISABLED (empty, no-op), matching the ADR's "OFF by default, dense fallback" coexistence.
+    pub fn enabled() -> Self {
+        Self {
+            enabled: true,
+            resident: BTreeMap::new(),
+            bound_density: None,
+        }
+    }
+
+    /// Whether the two-layer capability is engaged.
+    pub fn is_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    /// The number of chunks currently resident (a diagnostic / test-observability count).
+    pub fn resident_len(&self) -> usize {
+        self.resident.len()
+    }
+
+    /// Drop every cached chunk (the all-or-nothing invalidation seam) — the two-layer analogue
+    /// of [`Store::clear`](crate::store::Store::clear). Used for the first build (no previous
+    /// scene to diff) and the edit kinds [`invalidate_aabb`](Self::invalidate_aabb) can't
+    /// localise (a density change, or a region-spanning Part edit).
+    pub fn clear(&mut self) {
+        self.resident.clear();
+        self.bound_density = None;
+    }
+
+    /// **Targeted invalidation (ADR 0010 #54, mirroring
+    /// [`Store::invalidate_aabb`](crate::store::Store::invalidate_aabb)).** Drop exactly the
+    /// cached chunks whose half-open box intersects the edit world-AABB `edit_aabb` (absolute
+    /// voxels, producer-true frame), at `voxels_per_block` — ADR 0002 Decision 3's whole-chunk
+    /// dirty granularity. Every other cached chunk stays resident untouched, so the next
+    /// [`resident_two_layer_chunks`](Self::resident_two_layer_chunks) re-runs the classifier +
+    /// build only for the evicted (dirty) chunks.
+    ///
+    /// `edit_aabb` is what
+    /// [`LeafSpatialIndex::edit_aabb_since`](crate::spatial_index::LeafSpatialIndex::edit_aabb_since)
+    /// returns: the union of an edit's old and new leaf boxes, so a moved node dirties chunks
+    /// around BOTH its source and destination. An empty `edit_aabb` evicts nothing.
+    ///
+    /// A density mismatch against the bound density is treated conservatively (the AABB was
+    /// computed at a different chunk size) by clearing everything — belt-and-braces, as the
+    /// caller already falls back to [`clear`](Self::clear) for a density change.
+    ///
+    /// **Returns the chunk coords actually evicted** (resident AND intersecting the edit AABB),
+    /// so the mesher's incremental plan ([`crate::cuboid_mesh::cuboid_incremental_plan`]) can
+    /// dilate exactly this dirty set by the 26-neighbourhood. The density-mismatch path returns
+    /// every previously-resident coord.
+    pub fn invalidate_aabb(
+        &mut self,
+        edit_aabb: &VoxelAabb,
+        voxels_per_block: u32,
+    ) -> Vec<[i32; 3]> {
+        if let Some(bound) = self.bound_density {
+            if bound != voxels_per_block {
+                let evicted: Vec<[i32; 3]> = self.resident.keys().copied().collect();
+                self.clear();
+                return evicted;
+            }
+        }
+        let Some((min_chunk, max_chunk)) = edit_aabb.covering_chunk_range(voxels_per_block) else {
+            return Vec::new(); // empty edit AABB — nothing to invalidate.
+        };
+        let mut evicted = Vec::new();
+        self.resident.retain(|coord, _| {
+            let inside = (0..3).all(|axis| coord[axis] >= min_chunk[axis] && coord[axis] <= max_chunk[axis]);
+            if inside {
+                evicted.push(*coord);
+            }
+            !inside
+        });
+        evicted
+    }
+
+    /// **Per-chunk two-layer accessor — the incremental analogue of
+    /// [`Store::resident_render_chunks`](crate::store::Store::resident_render_chunks).** Ensure
+    /// every covering chunk of `(scene, voxels_per_block, lod)` is resident (re-run the
+    /// classifier + build for any DIRTY or MISSING chunk, reuse resident HITs verbatim), then
+    /// return every covering chunk as `([i32; 3] absolute_chunk_coord, &TwoLayerChunk)` in the
+    /// SAME z,y,x order the dense store assembles.
+    ///
+    /// Because a two-layer chunk is chunk-local-integer (frame-independent), a resident HIT is
+    /// reused across a recentre shift; only [`invalidate_aabb`](Self::invalidate_aabb) (a dirty
+    /// edit) or a density change ([`clear`](Self::clear)) re-derives a chunk. The returned chunks
+    /// are BORROWED, so the `Vec` borrows `self` immutably; the fill (needing `&mut self`) runs
+    /// FIRST, then the gather is all HITs.
+    ///
+    /// Returns an empty `Vec` when the capability is OFF (dense fallback) or the scene has no
+    /// covering chunk range (a Part-only scene).
+    pub fn resident_two_layer_chunks(
+        &mut self,
+        scene: &Scene,
+        voxels_per_block: u32,
+        lod: u32,
+    ) -> Vec<([i32; 3], &TwoLayerChunk)> {
+        debug_assert_eq!(lod, 0, "E2 only builds full resolution (lod 0)");
+        if !self.enabled {
+            return Vec::new();
+        }
+        // A density change resizes every chunk's voxel extent; drop the stale residents.
+        if self.bound_density != Some(voxels_per_block) {
+            self.resident.clear();
+            self.bound_density = Some(voxels_per_block);
+        }
+
+        let Some((min_chunk, max_chunk)) = scene.covering_chunk_range(voxels_per_block) else {
+            return Vec::new();
+        };
+
+        // Fill misses (dirty-evicted or never-built) — the only step needing `&mut self`.
+        for chunk_z in min_chunk[2]..=max_chunk[2] {
+            for chunk_y in min_chunk[1]..=max_chunk[1] {
+                for chunk_x in min_chunk[0]..=max_chunk[0] {
+                    let coord = [chunk_x, chunk_y, chunk_z];
+                    self.resident
+                        .entry(coord)
+                        .or_insert_with(|| build_two_layer_chunk(coord, scene, voxels_per_block));
+                }
+            }
+        }
+
+        // Gather the covering chunks as borrows (all HITs after the fill above).
+        let resident = &self.resident;
+        let mut chunks = Vec::new();
+        for chunk_z in min_chunk[2]..=max_chunk[2] {
+            for chunk_y in min_chunk[1]..=max_chunk[1] {
+                for chunk_x in min_chunk[0]..=max_chunk[0] {
+                    let coord = [chunk_x, chunk_y, chunk_z];
+                    if let Some(chunk) = resident.get(&coord) {
+                        chunks.push((coord, chunk));
+                    }
+                }
+            }
+        }
+        chunks
     }
 }
 
@@ -1766,5 +1955,335 @@ mod tests {
              blocks (per-voxel); dense path would densify all {} region voxels",
             (blocks as u64 * density as u64).pow(3)
         );
+    }
+
+    // ===== ADR 0010 #54: chunk-granular INCREMENTAL edits on the two-layer path ======
+    //
+    // Mirrors `store.rs::incremental_rebuild_equals_full_rebuild_for_every_edit_kind`:
+    // for every edit kind, the two-layer resident cache after an INCREMENTAL edit
+    // (invalidate the dirty AABB's chunks, re-derive only those) is IDENTICAL — the
+    // coarse layer + overlay + microblock maps + seam flags, via the derived
+    // `TwoLayerChunk: PartialEq` — to a full from-scratch two-layer rebuild of scene B.
+
+    /// A tool node for the incremental edit scenes (mirrors `store.rs::tool_node`).
+    fn incr_tool_node(
+        kind: ShapeKind,
+        size: [u32; 3],
+        offset: [i64; 3],
+        material: MaterialChoice,
+        density: u32,
+    ) -> Node {
+        let shape = SdfShape::from_blocks(kind, size, 1, density);
+        let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
+        node.transform = NodeTransform::from_blocks(offset, density);
+        node
+    }
+
+    /// The full resident map a WHOLESALE two-layer rebuild produces for `scene`: every
+    /// covering chunk built from scratch, keyed by absolute coord. This is the parity
+    /// gate's ground truth — the "full rebuild" every incremental edit must equal.
+    fn full_two_layer_resident(
+        scene: &Scene,
+        density: u32,
+    ) -> BTreeMap<[i32; 3], TwoLayerChunk> {
+        let mut cache = TwoLayerResidentCache::enabled();
+        let chunks = cache.resident_two_layer_chunks(scene, density, 0);
+        chunks
+            .into_iter()
+            .map(|(coord, chunk)| (coord, chunk.clone()))
+            .collect()
+    }
+
+    /// Snapshot a resident cache's covering chunks (post-edit) as an owned coord→chunk
+    /// map, for the `== full` comparison.
+    fn resident_snapshot(
+        cache: &mut TwoLayerResidentCache,
+        scene: &Scene,
+        density: u32,
+    ) -> BTreeMap<[i32; 3], TwoLayerChunk> {
+        cache
+            .resident_two_layer_chunks(scene, density, 0)
+            .into_iter()
+            .map(|(coord, chunk)| (coord, chunk.clone()))
+            .collect()
+    }
+
+    /// Apply ONE incremental edit (scene_a → scene_b) to `cache` in place, driving the
+    /// dirty set exactly as `app_core::rebuild`: build the leaf spatial index for both
+    /// scenes, diff for the edit AABB, and `invalidate_aabb` the dirty chunks (or
+    /// `clear()` for the non-localisable fallback). Returns `(evicted_count, took_aabb_path)`
+    /// so the harness can assert the localisable edits touch a strict subset.
+    fn apply_two_layer_incremental_edit(
+        cache: &mut TwoLayerResidentCache,
+        scene_a: &Scene,
+        scene_b: &Scene,
+        density: u32,
+    ) -> (usize, bool) {
+        let index_a = scene_a.build_leaf_spatial_index(density);
+        let index_b = scene_b.build_leaf_spatial_index(density);
+        match index_b.edit_aabb_since(&index_a) {
+            Some(edit_aabb) => {
+                let evicted = cache.invalidate_aabb(&edit_aabb, density);
+                (evicted.len(), true)
+            }
+            None => {
+                // The wholesale fallback: a density change or a region-spanning Part edit
+                // has no localisable box (mirrors `app_core::rebuild`'s `clear()` arm).
+                cache.clear();
+                (0, false)
+            }
+        }
+    }
+
+    /// **THE #54 GATE — incremental == full for every LOCALISABLE edit kind.** For each of
+    /// add / remove / move / resize / recolor, the two-layer resident cache after the
+    /// incremental edit is IDENTICAL (coarse layer + overlay + microblock maps + seam
+    /// flags) to a full from-scratch two-layer rebuild of scene B, AND the edit touched a
+    /// strict SUBSET of the scene's chunks (proving it is genuinely incremental, not a
+    /// disguised full rebuild). Mirrors
+    /// `store.rs::incremental_rebuild_equals_full_rebuild_for_every_edit_kind`.
+    #[test]
+    fn incremental_two_layer_equals_full_rebuild_for_every_edit_kind() {
+        let density = 16u32;
+
+        // Three tools spread far apart in X so each occupies chunks the others don't
+        // touch (clean localised edits). The interior "subject" box sits between two
+        // static anchors that pin the composite extent (as in the dense net) — though
+        // note a recentre shift does NOT invalidate the two-layer cache (chunk-local
+        // frame), the anchors keep the setup parallel to the dense parity net.
+        let anchor_lo =
+            || incr_tool_node(ShapeKind::Sphere, [5, 5, 5], [0, 0, 0], MaterialChoice::Stone, density);
+        let anchor_hi =
+            || incr_tool_node(ShapeKind::Torus, [5, 5, 5], [120, 0, 0], MaterialChoice::Plain, density);
+        let scene_a = Scene::from_nodes(vec![
+            anchor_lo(),
+            incr_tool_node(ShapeKind::Box, [5, 5, 5], [60, 0, 0], MaterialChoice::Wood, density),
+            anchor_hi(),
+        ]);
+
+        let recolor = {
+            let mut b = scene_a.clone();
+            if let NodeContent::Tool { material, .. } = &mut b.root_node_mut(1).content {
+                *material = MaterialChoice::Stone;
+            }
+            ("recolor", b)
+        };
+        let resize = {
+            let mut b = scene_a.clone();
+            let replacement =
+                incr_tool_node(ShapeKind::Box, [3, 3, 3], [60, 0, 0], MaterialChoice::Wood, density);
+            let slot = b.root_node_mut(1);
+            slot.content = replacement.content;
+            slot.transform = replacement.transform;
+            ("resize", b)
+        };
+        let move_node = {
+            let mut b = scene_a.clone();
+            b.root_node_mut(1).transform = NodeTransform::from_blocks([70, 0, 0], density);
+            ("move", b)
+        };
+        let add_node = {
+            let mut b = scene_a.clone();
+            b.add_node(incr_tool_node(
+                ShapeKind::Box,
+                [3, 3, 3],
+                [90, 0, 0],
+                MaterialChoice::Stone,
+                density,
+            ));
+            ("add", b)
+        };
+        let remove_node = {
+            let mut b = scene_a.clone();
+            let interior_id = b.roots[1];
+            b.remove_node(interior_id);
+            ("remove", b)
+        };
+
+        for (label, scene_b) in [recolor, resize, move_node, add_node, remove_node] {
+            // Incremental: wholesale-build A, then apply the single edit and re-fill.
+            let mut cache = TwoLayerResidentCache::enabled();
+            let total_before = {
+                let _ = cache.resident_two_layer_chunks(&scene_a, density, 0);
+                cache.resident_len()
+            };
+            let (evicted, took_aabb_path) =
+                apply_two_layer_incremental_edit(&mut cache, &scene_a, &scene_b, density);
+            assert!(
+                took_aabb_path,
+                "[{label}] this edit kind must be localisable (the AABB path, not clear())"
+            );
+            let incremental = resident_snapshot(&mut cache, &scene_b, density);
+
+            // The full from-scratch rebuild for scene B (the truth).
+            let full = full_two_layer_resident(&scene_b, density);
+
+            assert_eq!(
+                incremental, full,
+                "[{label}] incremental two-layer cache (coarse layer + overlay + microblock \
+                 maps + seam flags per covering chunk) MUST equal a full from-scratch rebuild \
+                 of scene B — a stale chunk or a missed fresh chunk would differ here"
+            );
+
+            // Dirty-count-is-less: the edit evicted strictly fewer chunks than the scene's
+            // total resident count (so it is genuinely incremental, not a full rebuild).
+            let scene_chunks = total_before.max(full.len());
+            assert!(
+                evicted < scene_chunks,
+                "[{label}] a localised edit must evict strictly FEWER chunks ({evicted}) than \
+                 the scene's total ({scene_chunks}) — else it is a disguised full rebuild"
+            );
+        }
+    }
+
+    /// A localised recolor of one small far-flung node dirties only the handful of chunks
+    /// that node occupies, NOT the whole scene — the two-layer analogue of
+    /// `store.rs::localized_recolor_rebuilds_few_chunks`.
+    #[test]
+    fn incremental_two_layer_localized_recolor_evicts_few_chunks() {
+        let density = 16u32;
+        let scene_a = Scene::from_nodes(vec![
+            incr_tool_node(ShapeKind::Sphere, [9, 9, 9], [0, 0, 0], MaterialChoice::Stone, density),
+            incr_tool_node(ShapeKind::Box, [1, 1, 1], [80, 0, 0], MaterialChoice::Wood, density),
+        ]);
+        let mut scene_b = scene_a.clone();
+        if let NodeContent::Tool { material, .. } = &mut scene_b.root_node_mut(1).content {
+            *material = MaterialChoice::Stone;
+        }
+
+        let mut cache = TwoLayerResidentCache::enabled();
+        let total = {
+            let _ = cache.resident_two_layer_chunks(&scene_a, density, 0);
+            cache.resident_len()
+        };
+        let (evicted, took_aabb_path) =
+            apply_two_layer_incremental_edit(&mut cache, &scene_a, &scene_b, density);
+        assert!(took_aabb_path, "an in-place recolor must be localisable");
+        let incremental = resident_snapshot(&mut cache, &scene_b, density);
+
+        assert!(total >= 8, "the spread scene has many resident chunks ({total})");
+        assert!(
+            evicted * 2 < total,
+            "a localised recolor of a small node must evict far fewer than half the chunks: \
+             evicted {evicted} of {total}"
+        );
+        assert_eq!(incremental, full_two_layer_resident(&scene_b, density));
+    }
+
+    /// **Localisable move re-derives BOTH endpoints.** A moved node's dirty AABB spans its
+    /// source AND destination (the `edit_aabb_since` union), so the two-layer cache vacates
+    /// the source chunks and rebuilds the destination — and the result equals a full
+    /// rebuild (no stale geometry left at the old location).
+    #[test]
+    fn incremental_two_layer_move_clears_source_and_fills_destination() {
+        let density = 16u32;
+        // A wide anchor keeps many chunks resident that the moved box never touches, so a
+        // move touching a strict subset is meaningful.
+        let scene_a = Scene::from_nodes(vec![
+            incr_tool_node(ShapeKind::Sphere, [9, 9, 9], [0, 0, 0], MaterialChoice::Stone, density),
+            incr_tool_node(ShapeKind::Box, [2, 2, 2], [70, 0, 0], MaterialChoice::Wood, density),
+        ]);
+        let mut scene_b = scene_a.clone();
+        scene_b.root_node_mut(1).transform = NodeTransform::from_blocks([85, 0, 0], density);
+
+        let mut cache = TwoLayerResidentCache::enabled();
+        let total = {
+            let _ = cache.resident_two_layer_chunks(&scene_a, density, 0);
+            cache.resident_len()
+        };
+        let (evicted, took_aabb_path) =
+            apply_two_layer_incremental_edit(&mut cache, &scene_a, &scene_b, density);
+        assert!(took_aabb_path, "a move must be localisable");
+        let incremental = resident_snapshot(&mut cache, &scene_b, density);
+        assert_eq!(
+            incremental,
+            full_two_layer_resident(&scene_b, density),
+            "a move must leave no stale geometry at the source and match a full rebuild"
+        );
+        assert!(evicted < total, "a move touches a strict subset ({evicted} of {total})");
+    }
+
+    /// **WHOLESALE FALLBACK — a density change re-derives everything.** A density change
+    /// resizes every chunk's voxel extent, so `edit_aabb_since` returns `None` and the
+    /// cache clears (belt-and-braces: `invalidate_aabb` also clears on a density mismatch).
+    /// After the fallback the cache still equals a full rebuild at the NEW density.
+    #[test]
+    fn incremental_two_layer_density_change_falls_back_to_wholesale() {
+        let density_a = 16u32;
+        let density_b = 8u32;
+        let scene = Scene::from_nodes(vec![
+            incr_tool_node(ShapeKind::Sphere, [5, 5, 5], [0, 0, 0], MaterialChoice::Stone, density_a),
+        ]);
+
+        let mut cache = TwoLayerResidentCache::enabled();
+        let _ = cache.resident_two_layer_chunks(&scene, density_a, 0);
+        // The density-change diff: the same scene rebuilt at a different density has no
+        // localisable AABB (the indices differ in density), so `edit_aabb_since` is None.
+        let index_a = scene.build_leaf_spatial_index(density_a);
+        let index_b = scene.build_leaf_spatial_index(density_b);
+        assert!(
+            index_b.edit_aabb_since(&index_a).is_none(),
+            "a density change must have no localisable edit AABB (the wholesale fallback)"
+        );
+        cache.clear();
+        let incremental = resident_snapshot(&mut cache, &scene, density_b);
+        assert_eq!(
+            incremental,
+            full_two_layer_resident(&scene, density_b),
+            "after the density-change wholesale rebuild the cache must equal a full rebuild"
+        );
+    }
+
+    /// **WHOLESALE FALLBACK — editing an unbounded (region-spanning) producer.** Editing a
+    /// `DebugClouds` Part (its dirty region is "everywhere", `edit_aabb_since` returns
+    /// `None`) forces a wholesale clear; the rebuilt cache still equals a full rebuild.
+    /// This is the "unboundable-producer edit falls back to wholesale" acceptance case.
+    #[test]
+    fn incremental_two_layer_cloud_edit_falls_back_to_wholesale() {
+        use crate::scene::Part;
+        let density = 16u32;
+        let cloud = |seed: u32| {
+            let mut node = Node::new("Clouds", NodeContent::Part(Part::DebugClouds { seed }));
+            node.transform = NodeTransform::from_blocks([0, 0, 0], density);
+            node
+        };
+        let scene_a = Scene::from_nodes(vec![
+            incr_tool_node(ShapeKind::Box, [3, 3, 3], [0, 0, 0], MaterialChoice::Stone, density),
+            cloud(7),
+        ]);
+        // Edit the cloud's seed (a region-spanning content change; root index 1).
+        let mut scene_b = scene_a.clone();
+        if let NodeContent::Part(Part::DebugClouds { seed }) =
+            &mut scene_b.root_node_mut(1).content
+        {
+            *seed = 42;
+        }
+
+        let mut cache = TwoLayerResidentCache::enabled();
+        let _ = cache.resident_two_layer_chunks(&scene_a, density, 0);
+        let (_evicted, took_aabb_path) =
+            apply_two_layer_incremental_edit(&mut cache, &scene_a, &scene_b, density);
+        assert!(
+            !took_aabb_path,
+            "editing a region-spanning Part must take the wholesale fallback, not the AABB path"
+        );
+        let incremental = resident_snapshot(&mut cache, &scene_b, density);
+        assert_eq!(
+            incremental,
+            full_two_layer_resident(&scene_b, density),
+            "after the cloud-edit wholesale rebuild the cache must equal a full rebuild"
+        );
+    }
+
+    /// The capability OFF (the default): the resident cache is a no-op — it never fills and
+    /// `resident_two_layer_chunks` returns empty, so a caller falls back to the dense path.
+    #[test]
+    fn incremental_two_layer_capability_off_is_noop() {
+        let density = 16u32;
+        let scene = shape_scene(ShapeKind::Sphere, density);
+        let mut cache = TwoLayerResidentCache::default();
+        assert!(!cache.is_enabled());
+        assert!(cache.resident_two_layer_chunks(&scene, density, 0).is_empty());
+        assert_eq!(cache.resident_len(), 0);
     }
 }
