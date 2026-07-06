@@ -70,8 +70,10 @@ separate microblock entities). A solid interior is never voxelized.
 The GPU display derivation that raymarches a **cached** copy of the boundary set instead of the
 op-stack field (see `docs/adr/0011`; generalizes the ADR 0007 fog atlas).
 
-- **Brick** — a fixed cube of voxels cached in one **atlas slot** (a slice of an R8 3D texture
-  pool). A boundary block's voxels are packed into a **sculpted brick**; a coarse-solid block is a
+- **Brick** — **one block's** cube of voxels cached in one **atlas slot** (a slice of an R8 3D
+  texture pool). The granule is denominated in **blocks**, never a fixed voxel count: brick edge =
+  `voxels_per_block`, whatever the document's density is (the units law — density is fineness
+  only). A boundary block's voxels are packed into a **sculpted brick**; a coarse-solid block is a
   **coarse brick** (a solid-block marker record, no atlas slot, no per-voxel data). Empty space
   gets no brick. "Raymarch the cache, not the field": per-frame cost is independent of op-stack
   complexity because rays sample cached bricks, never the analytic SDF.
@@ -82,6 +84,12 @@ op-stack field (see `docs/adr/0011`; generalizes the ADR 0007 fog atlas).
   descending to per-block brick work only where the finest level is occupied. World-fixed levels (a
   min-mip of the brick set) are distinct from a **geometry clip-map** (nested camera-centred grids,
   Losasso–Hoppe); the latter is the residency-ring variant for the off-screen case.
+
+- **Render broadphase vs edit broadphase** — two different "what's near this box?" problems, never
+  one structure. The **render broadphase** answers per-frame ray queries (the clip-map pyramid +
+  resident-brick lookup). The **edit broadphase** answers per-edit dirty queries — which producers
+  overlap a region — via a single BVH of producer bounds (stateless, rebuilt per edit). One query,
+  one structure: the edit broadphase is shared by the wholesale build and incremental re-evaluation.
 
 ## Authoring truth
 
