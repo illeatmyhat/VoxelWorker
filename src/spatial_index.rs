@@ -5,7 +5,7 @@
 //! **whole-chunk dirty invalidation** (ADR 0002 Decision 3): an edit dirties only
 //! the chunks whose AABB its world-AABB intersects.
 //!
-//! Two pieces live here:
+//! Three pieces live here:
 //!
 //! * [`VoxelAabb`] — a half-open integer **absolute-voxel** box `[min, max)`, the
 //!   exact frame [`Scene::resolve_chunk`](crate::scene::Scene::resolve_chunk) and
@@ -16,6 +16,10 @@
 //!   by one `for_each_leaf` walk of the scene. It answers "which leaves' world-
 //!   AABBs intersect a query AABB" (a linear overlap scan), and "which chunks did
 //!   an edit dirty" by diffing two indices (the scene before vs after the edit).
+//! * [`EditBroadphaseBvh`] — THE edit broadphase (ADR 0011 Decision 4b, #66): a
+//!   per-build BVH over producer world-AABBs answering "which producers overlap
+//!   this box" for the two-layer wholesale build (and, later, G3's dirty-AABB →
+//!   producers query).
 //!
 //! ## Why a flat list (not an octree / grid)
 //!
@@ -256,6 +260,180 @@ impl LeafSpatialIndex {
     }
 }
 
+/// **The edit broadphase (ADR 0011 Decision 4b, #66): a BVH over producer world-AABBs.**
+///
+/// Answers "which input boxes overlap this query box" — the ONE broadphase query on the
+/// edit side. The two-layer wholesale build queries it once per covering chunk (chunk box
+/// → candidate producers), and G3's incremental dirty-brick recompute (#69) later reuses
+/// the same query for dirty-edit-AABB → overlapping producers. It replaces the #63
+/// per-chunk bucketing (`bucket_leaves_into_chunks`): one query, one structure.
+///
+/// **Stateless by ruling:** rebuilt from scratch per build/edit, never persisted or
+/// refitted across edits — no invalidation obligation, no stale-cache bug class (the C1
+/// lesson). Construction is a median-split over box centroids, O(N log N) (~1ms at the
+/// 10k-producer target); a persistent/refitted BVH is a measured future option only if
+/// the rebuild ever shows hot.
+///
+/// **Exactness:** a query returns EXACTLY the input indices whose box overlaps the query
+/// (the unit net asserts equality with a naive linear filter), **sorted ascending** — so
+/// a caller that supplied boxes in document order gets candidates back as a document-order
+/// subsequence (a filter, never a reorder; Union later-wins material resolution is
+/// preserved). Empty input boxes overlap nothing and are excluded at construction, the
+/// same half-open [`VoxelAabb::intersects`] convention as every other consumer.
+#[derive(Debug, Clone, Default)]
+pub struct EditBroadphaseBvh {
+    /// Depth-first flattened nodes: a node's LEFT child is `node_index + 1`; the RIGHT
+    /// child index is stored. Empty when no input box was non-empty.
+    nodes: Vec<EditBroadphaseNode>,
+    /// The input indices of the non-empty boxes, reordered by construction; a leaf node
+    /// owns the contiguous `[entry_start, entry_start + entry_count)` slice.
+    entry_input_indices: Vec<u32>,
+    /// The boxes parallel to `entry_input_indices` (so the per-entry overlap test reads
+    /// the reordered slice, never the caller's).
+    entry_aabbs: Vec<VoxelAabb>,
+}
+
+/// One BVH node: the bounds of every entry under it, plus its internal/leaf payload.
+#[derive(Debug, Clone, Copy)]
+struct EditBroadphaseNode {
+    /// The union of every entry box in this subtree.
+    aabb: VoxelAabb,
+    kind: EditBroadphaseNodeKind,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum EditBroadphaseNodeKind {
+    /// Two children: the left is the next node depth-first, the right is stored.
+    Internal { right_child: u32 },
+    /// A run of entries in [`EditBroadphaseBvh::entry_input_indices`] / `entry_aabbs`.
+    Leaf { entry_start: u32, entry_count: u32 },
+}
+
+/// Entries per leaf node before a subtree stops splitting. Small enough that the
+/// per-leaf linear overlap test stays trivial, large enough to keep the node count
+/// (and construction cost) down.
+const EDIT_BROADPHASE_LEAF_CAPACITY: usize = 8;
+
+impl EditBroadphaseBvh {
+    /// Build the BVH over `input_aabbs`; index `i` of the slice is the index a query
+    /// reports. Empty boxes are excluded (they overlap nothing).
+    pub fn build(input_aabbs: &[VoxelAabb]) -> Self {
+        let mut entries: Vec<(u32, VoxelAabb)> = input_aabbs
+            .iter()
+            .enumerate()
+            .filter(|(_, aabb)| !aabb.is_empty())
+            .map(|(input_index, aabb)| (input_index as u32, *aabb))
+            .collect();
+        let mut nodes = Vec::new();
+        if !entries.is_empty() {
+            build_edit_broadphase_subtree(&mut nodes, &mut entries, 0);
+        }
+        Self {
+            nodes,
+            entry_input_indices: entries.iter().map(|(input_index, _)| *input_index).collect(),
+            entry_aabbs: entries.iter().map(|(_, aabb)| *aabb).collect(),
+        }
+    }
+
+    /// Every input index whose box overlaps `query`, **sorted ascending** (= input order:
+    /// a document-order caller gets a document-order subsequence). Exactly the set a
+    /// naive linear `intersects` filter over the input slice returns.
+    pub fn overlapping_input_indices(&self, query: &VoxelAabb) -> Vec<usize> {
+        let mut overlapping = Vec::new();
+        if self.nodes.is_empty() || query.is_empty() {
+            return overlapping;
+        }
+        let mut pending_nodes: Vec<u32> = vec![0];
+        while let Some(node_index) = pending_nodes.pop() {
+            let node = &self.nodes[node_index as usize];
+            if !node.aabb.intersects(query) {
+                continue;
+            }
+            match node.kind {
+                EditBroadphaseNodeKind::Internal { right_child } => {
+                    pending_nodes.push(node_index + 1);
+                    pending_nodes.push(right_child);
+                }
+                EditBroadphaseNodeKind::Leaf {
+                    entry_start,
+                    entry_count,
+                } => {
+                    for entry in entry_start..entry_start + entry_count {
+                        if self.entry_aabbs[entry as usize].intersects(query) {
+                            overlapping.push(self.entry_input_indices[entry as usize] as usize);
+                        }
+                    }
+                }
+            }
+        }
+        // Traversal order is tree order, not input order — restore input (document) order.
+        overlapping.sort_unstable();
+        overlapping
+    }
+}
+
+/// Recursively emit the subtree over `entries` (which it reorders in place; the subtree's
+/// leaf runs index into the final reordered array at `entry_offset`). Returns the emitted
+/// root's node index. Median split on the longest axis of the CENTROID bounds — a
+/// balanced tree of depth `log2(N / capacity)`, so recursion stays shallow (~10 at 10k).
+fn build_edit_broadphase_subtree(
+    nodes: &mut Vec<EditBroadphaseNode>,
+    entries: &mut [(u32, VoxelAabb)],
+    entry_offset: usize,
+) -> u32 {
+    let node_index = nodes.len() as u32;
+    let mut bounds = entries[0].1;
+    for (_, aabb) in entries.iter().skip(1) {
+        bounds = bounds.union(aabb);
+    }
+
+    if entries.len() <= EDIT_BROADPHASE_LEAF_CAPACITY {
+        nodes.push(EditBroadphaseNode {
+            aabb: bounds,
+            kind: EditBroadphaseNodeKind::Leaf {
+                entry_start: entry_offset as u32,
+                entry_count: entries.len() as u32,
+            },
+        });
+        return node_index;
+    }
+
+    // Split axis = the widest spread of the DOUBLED centroids (min + max; halving would
+    // only lose parity information). Coincident centroids on every axis still split fine:
+    // the median partition then just halves the run arbitrarily.
+    let doubled_centroid =
+        |aabb: &VoxelAabb, axis: usize| aabb.min[axis] + aabb.max[axis];
+    let split_axis = (0..3)
+        .max_by_key(|&axis| {
+            let low = entries
+                .iter()
+                .map(|(_, aabb)| doubled_centroid(aabb, axis))
+                .min()
+                .expect("entries is non-empty");
+            let high = entries
+                .iter()
+                .map(|(_, aabb)| doubled_centroid(aabb, axis))
+                .max()
+                .expect("entries is non-empty");
+            high - low
+        })
+        .expect("three axes");
+    let middle = entries.len() / 2;
+    entries.select_nth_unstable_by_key(middle, |(_, aabb)| doubled_centroid(aabb, split_axis));
+
+    // Placeholder; the right child index is known only after the left subtree is emitted.
+    nodes.push(EditBroadphaseNode {
+        aabb: bounds,
+        kind: EditBroadphaseNodeKind::Internal { right_child: 0 },
+    });
+    let (left_entries, right_entries) = entries.split_at_mut(middle);
+    build_edit_broadphase_subtree(nodes, left_entries, entry_offset);
+    let right_child =
+        build_edit_broadphase_subtree(nodes, right_entries, entry_offset + middle);
+    nodes[node_index as usize].kind = EditBroadphaseNodeKind::Internal { right_child };
+    node_index
+}
+
 /// A hashable/orderable mirror of [`VoxelAabb`] for use as a map key in the diff.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct VoxelAabbKey {
@@ -317,6 +495,86 @@ mod tests {
         assert_eq!(b.union(&empty), b);
         let a = VoxelAabb::new([-2, 0, 0], [4, 4, 4]);
         assert_eq!(a.union(&b), VoxelAabb::new([-2, 0, 0], [7, 7, 7]));
+    }
+
+    /// The BVH's whole contract: a query returns EXACTLY the input indices a naive linear
+    /// `intersects` filter returns, sorted ascending (input = document order). Exercised
+    /// over a deterministic pseudo-random population including empty boxes, duplicates,
+    /// nested boxes, and far-flung outliers, with queries of every flavour (miss, point-ish,
+    /// spanning, everything, empty).
+    #[test]
+    fn edit_broadphase_bvh_matches_naive_filter() {
+        // Small deterministic LCG so the population is reproducible without a rand dep.
+        let mut lcg_state = 0x1234_5678_9abc_def0_u64;
+        let mut next_in = |range: i64| -> i64 {
+            lcg_state = lcg_state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((lcg_state >> 33) as i64).rem_euclid(range)
+        };
+
+        let mut boxes = Vec::new();
+        for _ in 0..300 {
+            let min = [
+                next_in(400) - 200,
+                next_in(400) - 200,
+                next_in(400) - 200,
+            ];
+            let extent = [next_in(60), next_in(60), next_in(60)]; // 0 ⇒ empty box
+            boxes.push(VoxelAabb::new(
+                min,
+                [min[0] + extent[0], min[1] + extent[1], min[2] + extent[2]],
+            ));
+        }
+        // Duplicates, a nested pair, an everything-box, and far-flung outliers (i64 range).
+        boxes.push(boxes[0]);
+        boxes.push(VoxelAabb::new([-500, -500, -500], [500, 500, 500]));
+        boxes.push(VoxelAabb::new([-10, -10, -10], [-5, -5, -5]));
+        boxes.push(VoxelAabb::new([-9, -9, -9], [-6, -6, -6]));
+        boxes.push(VoxelAabb::new(
+            [16_000_000_000, 0, 0],
+            [16_000_000_064, 64, 64],
+        ));
+
+        let bvh = EditBroadphaseBvh::build(&boxes);
+        let queries = [
+            VoxelAabb::new([0, 0, 0], [64, 64, 64]),
+            VoxelAabb::new([-200, -200, -200], [200, 200, 200]),
+            VoxelAabb::new([7, 7, 7], [8, 8, 8]),
+            VoxelAabb::new([10_000, 10_000, 10_000], [10_064, 10_064, 10_064]), // miss
+            VoxelAabb::new([15_999_999_999, 0, 0], [16_000_000_001, 1, 1]), // outlier hit
+            VoxelAabb::new([0, 0, 0], [0, 0, 0]),                           // empty query
+        ];
+        for query in &queries {
+            let naive: Vec<usize> = boxes
+                .iter()
+                .enumerate()
+                .filter(|(_, aabb)| aabb.intersects(query))
+                .map(|(input_index, _)| input_index)
+                .collect();
+            assert_eq!(
+                bvh.overlapping_input_indices(query),
+                naive,
+                "BVH candidates for {query:?} must equal the naive filter, ascending"
+            );
+        }
+    }
+
+    /// Degenerate populations: no boxes at all, and all-empty boxes, both yield an index
+    /// that answers every query with nothing (and never panics).
+    #[test]
+    fn edit_broadphase_bvh_handles_empty_populations() {
+        let query = VoxelAabb::new([-100, -100, -100], [100, 100, 100]);
+        assert!(EditBroadphaseBvh::build(&[])
+            .overlapping_input_indices(&query)
+            .is_empty());
+        let all_empty = [
+            VoxelAabb::new([0, 0, 0], [0, 0, 0]),
+            VoxelAabb::new([5, 5, 5], [5, 9, 9]),
+        ];
+        assert!(EditBroadphaseBvh::build(&all_empty)
+            .overlapping_input_indices(&query)
+            .is_empty());
     }
 
     #[test]

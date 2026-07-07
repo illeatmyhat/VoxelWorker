@@ -51,7 +51,7 @@ use rayon::prelude::*;
 use crate::core_geom::{BlockAttrs, BlockId, CHUNK_BLOCKS};
 use crate::cuboid::{decompose_into_boxes, VoxelBox, VoxelRegion};
 use crate::scene::{LeafProducer, Scene};
-use crate::spatial_index::VoxelAabb;
+use crate::spatial_index::{EditBroadphaseBvh, VoxelAabb};
 use crate::voxel::{
     union_field_intervals, FieldClassification, Voxel, VoxelGrid, SURFACE_ISOLEVEL,
 };
@@ -529,29 +529,24 @@ impl TwoLayerStore {
         debug_assert_eq!(lod, 0, "E2 only builds full resolution (lod 0)");
         // #63: HOIST the leaf list out of the per-chunk build — compute it ONCE (re-walking
         // the node tree + cloning every producer per covering chunk was the O(objects²) sink)
-        // and share the read-only slice across the parallel build. Then run a per-chunk leaf
-        // BROADPHASE (`bucket_leaves_into_chunks`): each chunk is classified against only the
-        // leaves whose AABB overlaps it, turning O(chunks × leaves) into ~O(chunks × candidates).
+        // and share the read-only slice across the parallel build. Then the EDIT BROADPHASE
+        // (#66, ADR 0011 Decision 4b): a stateless per-build BVH over the leaf world-AABBs;
+        // each chunk queries its own box and is classified against only the overlapping
+        // candidates, keeping the build ~O(chunks × (log leaves + candidates)).
         let leaves = scene.leaf_producers(voxels_per_block);
-        let buckets = bucket_leaves_into_chunks(&leaves, min_chunk, max_chunk, voxels_per_block);
-        // Each covering chunk is built independently from the (read-only, `Sync`) leaf slice,
-        // so the wholesale build is embarrassingly parallel (#57). Enumerate the coords in the
-        // SAME z,y,x order the dense store assembles (X fastest — matching `chunk_flat_index`,
-        // so coord `i` pairs with `buckets[i]`), then map each coord → its chunk with rayon. A
-        // parallel `.collect()` PRESERVES ordering, so the output Vec is byte-identical to the
-        // serial nested loop regardless of thread count.
+        let broadphase = leaf_edit_broadphase(&leaves, voxels_per_block);
+        // Each covering chunk is built independently from the (read-only, `Sync`) leaf slice
+        // + broadphase, so the wholesale build is embarrassingly parallel (#57). Enumerate
+        // the coords in the SAME z,y,x order the dense store assembles (X fastest), then map
+        // each coord → its chunk with rayon. A parallel `.collect()` PRESERVES ordering, so
+        // the output Vec is byte-identical to the serial nested loop regardless of thread
+        // count.
         let coords = enumerate_covering_chunk_coords(min_chunk, max_chunk);
         coords
             .into_par_iter()
-            .zip(buckets.into_par_iter())
-            .map(|(coord, candidate_indices)| {
-                // Resolve this chunk's candidate indices to borrows of the shared leaf slice
-                // (no clone — the classifier reads them read-only). Order is preserved from
-                // `bucket_leaves_into_chunks`, i.e. document order, so later-wins is unchanged.
-                let candidates: Vec<&LeafProducer> = candidate_indices
-                    .iter()
-                    .map(|&leaf_index| &leaves[leaf_index])
-                    .collect();
+            .map(|coord| {
+                let candidates =
+                    chunk_candidate_leaves(&broadphase, &leaves, coord, voxels_per_block);
                 let chunk =
                     build_two_layer_chunk_from_leaves(coord, &candidates, voxels_per_block);
                 (coord, chunk)
@@ -748,16 +743,12 @@ impl TwoLayerResidentCache {
         // one-by-one fill regardless of thread count.
         //
         // #63: HOIST the leaf list out of the per-chunk build (compute ONCE, not per missing
-        // chunk) and BROADPHASE it — bucket leaves into the chunks they overlap once, then
-        // build each missing chunk from only its candidate leaves. Only chunks actually absent
-        // are (re)built, resident HITs are reused verbatim (the #54 dirty-set path is intact).
+        // chunk); #66: the EDIT BROADPHASE (ADR 0011 Decision 4b) — a stateless per-build BVH
+        // over the leaf world-AABBs, queried per missing chunk, so each is built from only
+        // its overlapping candidate leaves. Only chunks actually absent are (re)built,
+        // resident HITs are reused verbatim (the #54 dirty-set path is intact).
         let leaves = scene.leaf_producers(voxels_per_block);
-        let buckets = bucket_leaves_into_chunks(&leaves, min_chunk, max_chunk, voxels_per_block);
-        let span = [
-            (max_chunk[0] - min_chunk[0] + 1).max(0) as usize,
-            (max_chunk[1] - min_chunk[1] + 1).max(0) as usize,
-            (max_chunk[2] - min_chunk[2] + 1).max(0) as usize,
-        ];
+        let broadphase = leaf_edit_broadphase(&leaves, voxels_per_block);
         let missing_coords: Vec<[i32; 3]> =
             enumerate_covering_chunk_coords(min_chunk, max_chunk)
                 .into_iter()
@@ -766,11 +757,8 @@ impl TwoLayerResidentCache {
         let freshly_built: Vec<([i32; 3], TwoLayerChunk)> = missing_coords
             .into_par_iter()
             .map(|coord| {
-                let candidates: Vec<&LeafProducer> = buckets
-                    [chunk_flat_index(coord, min_chunk, span)]
-                .iter()
-                .map(|&leaf_index| &leaves[leaf_index])
-                .collect();
+                let candidates =
+                    chunk_candidate_leaves(&broadphase, &leaves, coord, voxels_per_block);
                 (
                     coord,
                     build_two_layer_chunk_from_leaves(coord, &candidates, voxels_per_block),
@@ -830,76 +818,57 @@ fn leaf_world_aabb(leaf: &LeafProducer, voxels_per_block: u32) -> VoxelAabb {
     )
 }
 
-/// **Per-chunk leaf broadphase (#63).** Bucket each leaf's index into the candidate list of
-/// EVERY chunk its world AABB overlaps, for the inclusive covering range `[min_chunk,
-/// max_chunk]`, keyed by the chunk's flat index within that range (see [`chunk_flat_index`]).
-///
-/// Walking the leaves in document order and pushing each into its overlapping chunks keeps
-/// every per-chunk candidate list in document order (a subsequence — a filter, never a
-/// reorder), so later-wins Union material resolution is unchanged. The work is
-/// O(total leaf-chunk incidences) ONCE, replacing the per-chunk O(leaves) scan → the whole
-/// build goes from O(chunks × leaves) to ~O(chunks × avg_candidates), linear in scene size.
-///
-/// EXACTNESS: a leaf whose AABB does not overlap a chunk cannot affect any block in it, so a
-/// chunk classified against only its overlapping candidates is byte-identical to one
-/// classified against all leaves (the per-block AABB tests inside the classifier already
-/// narrow further per block — the broadphase just hands them a smaller exact-superset set).
-fn bucket_leaves_into_chunks(
-    leaves: &[LeafProducer],
-    min_chunk: [i32; 3],
-    max_chunk: [i32; 3],
-    voxels_per_block: u32,
-) -> Vec<Vec<usize>> {
-    let span = [
-        (max_chunk[0] - min_chunk[0] + 1).max(0) as usize,
-        (max_chunk[1] - min_chunk[1] + 1).max(0) as usize,
-        (max_chunk[2] - min_chunk[2] + 1).max(0) as usize,
-    ];
-    let chunk_count = span[0] * span[1] * span[2];
-    let mut buckets: Vec<Vec<usize>> = vec![Vec::new(); chunk_count];
-
-    for (leaf_index, leaf) in leaves.iter().enumerate() {
-        let leaf_box = leaf_world_aabb(leaf, voxels_per_block);
-        // The chunks this leaf's AABB spans, clamped to the covering range (a leaf can only
-        // ever fall inside the composite cover, but clamp defensively). `None` ⇒ empty box
-        // (a degenerate leaf) ⇒ overlaps no chunk.
-        let Some((leaf_min_chunk, leaf_max_chunk)) =
-            leaf_box.covering_chunk_range(voxels_per_block)
-        else {
-            continue;
-        };
-        let lo = [
-            leaf_min_chunk[0].max(min_chunk[0]),
-            leaf_min_chunk[1].max(min_chunk[1]),
-            leaf_min_chunk[2].max(min_chunk[2]),
-        ];
-        let hi = [
-            leaf_max_chunk[0].min(max_chunk[0]),
-            leaf_max_chunk[1].min(max_chunk[1]),
-            leaf_max_chunk[2].min(max_chunk[2]),
-        ];
-        for chunk_z in lo[2]..=hi[2] {
-            for chunk_y in lo[1]..=hi[1] {
-                for chunk_x in lo[0]..=hi[0] {
-                    let flat =
-                        chunk_flat_index([chunk_x, chunk_y, chunk_z], min_chunk, span);
-                    buckets[flat].push(leaf_index);
-                }
-            }
-        }
-    }
-    buckets
+/// **The edit broadphase over a scene's leaves (#66, ADR 0011 Decision 4b).** Build the
+/// stateless per-build [`EditBroadphaseBvh`] over every leaf's world AABB, indexed by the
+/// leaf's position in `leaves` (document order). Rebuilt from scratch on every wholesale
+/// build / edit — never persisted across edits (no invalidation obligation, the C1 lesson).
+fn leaf_edit_broadphase(leaves: &[LeafProducer], voxels_per_block: u32) -> EditBroadphaseBvh {
+    let leaf_aabbs: Vec<VoxelAabb> = leaves
+        .iter()
+        .map(|leaf| leaf_world_aabb(leaf, voxels_per_block))
+        .collect();
+    EditBroadphaseBvh::build(&leaf_aabbs)
 }
 
-/// The flat index of `chunk_coord` within the inclusive covering range whose low corner is
-/// `min_chunk` and whose per-axis span (count of chunks) is `span` — X fastest, then Y, then Z,
-/// matching [`enumerate_covering_chunk_coords`]'s order so a coord's bucket lines up with its
-/// position in the enumerated coord list.
-fn chunk_flat_index(chunk_coord: [i32; 3], min_chunk: [i32; 3], span: [usize; 3]) -> usize {
-    let local_x = (chunk_coord[0] - min_chunk[0]) as usize;
-    let local_y = (chunk_coord[1] - min_chunk[1]) as usize;
-    let local_z = (chunk_coord[2] - min_chunk[2]) as usize;
-    (local_z * span[1] + local_y) * span[0] + local_x
+/// The half-open absolute-voxel box of the chunk at `chunk_coord` — the query box the edit
+/// broadphase answers per covering chunk.
+fn chunk_world_voxel_aabb(chunk_coord: [i32; 3], voxels_per_block: u32) -> VoxelAabb {
+    let chunk_extent_voxels = (CHUNK_BLOCKS * voxels_per_block.max(1)) as i64;
+    let min = [
+        chunk_coord[0] as i64 * chunk_extent_voxels,
+        chunk_coord[1] as i64 * chunk_extent_voxels,
+        chunk_coord[2] as i64 * chunk_extent_voxels,
+    ];
+    VoxelAabb::new(
+        min,
+        [
+            min[0] + chunk_extent_voxels,
+            min[1] + chunk_extent_voxels,
+            min[2] + chunk_extent_voxels,
+        ],
+    )
+}
+
+/// Resolve one chunk's broadphase candidates to borrows of the shared leaf slice (no clone
+/// — the classifier reads them read-only). The BVH returns indices sorted ascending, i.e. a
+/// document-order subsequence of `leaves` (a filter, never a reorder), so later-wins Union
+/// material resolution is unchanged.
+///
+/// EXACTNESS: a leaf whose AABB does not overlap the chunk cannot affect any block in it, so
+/// a chunk classified against only its overlapping candidates is byte-identical to one
+/// classified against all leaves (the per-block AABB tests inside the classifier already
+/// narrow further per block — the broadphase just hands them a smaller exact-superset set).
+fn chunk_candidate_leaves<'leaf_slice>(
+    broadphase: &EditBroadphaseBvh,
+    leaves: &'leaf_slice [LeafProducer],
+    chunk_coord: [i32; 3],
+    voxels_per_block: u32,
+) -> Vec<&'leaf_slice LeafProducer> {
+    broadphase
+        .overlapping_input_indices(&chunk_world_voxel_aabb(chunk_coord, voxels_per_block))
+        .into_iter()
+        .map(|leaf_index| &leaves[leaf_index])
+        .collect()
 }
 
 /// Build one chunk's two-layer representation by classifying every block and resolving the
@@ -927,7 +896,7 @@ fn build_two_layer_chunk(
 ///
 /// `leaves` MUST be a document-order subsequence of `scene.leaf_producers(voxels_per_block)`
 /// (a filter, never a reorder) that INCLUDES every leaf whose world AABB overlaps this chunk.
-/// The broadphase ([`bucket_leaves_into_chunks`]) guarantees exactly that: a leaf whose AABB
+/// The edit broadphase ([`chunk_candidate_leaves`]) guarantees exactly that: a leaf whose AABB
 /// does NOT overlap the chunk cannot affect ANY block in it (the per-block AABB tests inside
 /// [`classify_chunk_block`] / [`resolve_boundary_block`] would skip it regardless), so passing
 /// only the chunk-overlapping candidates yields IDENTICAL coarse / microblock / seam output
@@ -1903,17 +1872,18 @@ mod tests {
         );
     }
 
-    /// **#63 broadphase exactness (belt-and-braces).** The per-chunk candidate set the
-    /// broadphase (`bucket_leaves_into_chunks`) hands each chunk MUST equal the naive
-    /// "all leaves filtered by AABB-overlaps-chunk" set — leaf-index-identical. If they
-    /// ever diverge, a chunk could be classified against the wrong candidate set and the
-    /// two-layer output would drift from the dense path (which the parity gate would catch,
-    /// but this pins the invariant directly at the bucketing boundary).
+    /// **#66 edit-broadphase exactness (belt-and-braces, the #63 gate carried over).** The
+    /// per-chunk candidate set the BVH ([`leaf_edit_broadphase`]) hands each chunk MUST
+    /// equal the naive "all leaves filtered by AABB-overlaps-chunk" set — leaf-index-
+    /// identical, in document order. If they ever diverge, a chunk could be classified
+    /// against the wrong candidate set and the two-layer output would drift from the dense
+    /// path (which the parity gate would catch, but this pins the invariant directly at the
+    /// broadphase boundary).
     #[test]
     fn broadphase_candidate_set_equals_naive_filter() {
         let density = 8u32;
         // A 4×4×4 grid of small boxes spaced 3 blocks apart — leaves land in many chunks,
-        // some sharing a chunk (adjacency), so the buckets are non-trivial.
+        // some sharing a chunk (adjacency), so the candidate sets are non-trivial.
         let mut nodes = Vec::new();
         for grid_z in 0..4i64 {
             for grid_y in 0..4i64 {
@@ -1931,30 +1901,13 @@ mod tests {
         let scene = Scene::from_nodes(nodes);
         let leaves = scene.leaf_producers(density);
         let (min_chunk, max_chunk) = scene.covering_chunk_range(density).unwrap();
-        let buckets = bucket_leaves_into_chunks(&leaves, min_chunk, max_chunk, density);
-        let span = [
-            (max_chunk[0] - min_chunk[0] + 1) as usize,
-            (max_chunk[1] - min_chunk[1] + 1) as usize,
-            (max_chunk[2] - min_chunk[2] + 1) as usize,
-        ];
-        let chunk_extent = (CHUNK_BLOCKS * density) as i64;
+        let broadphase = leaf_edit_broadphase(&leaves, density);
 
         for chunk_z in min_chunk[2]..=max_chunk[2] {
             for chunk_y in min_chunk[1]..=max_chunk[1] {
                 for chunk_x in min_chunk[0]..=max_chunk[0] {
                     let coord = [chunk_x, chunk_y, chunk_z];
-                    let chunk_box = VoxelAabb::new(
-                        [
-                            chunk_x as i64 * chunk_extent,
-                            chunk_y as i64 * chunk_extent,
-                            chunk_z as i64 * chunk_extent,
-                        ],
-                        [
-                            (chunk_x as i64 + 1) * chunk_extent,
-                            (chunk_y as i64 + 1) * chunk_extent,
-                            (chunk_z as i64 + 1) * chunk_extent,
-                        ],
-                    );
+                    let chunk_box = chunk_world_voxel_aabb(coord, density);
                     // Naive: every leaf whose world AABB overlaps this chunk's box, in
                     // document order (a filter — never a reorder).
                     let naive: Vec<usize> = leaves
@@ -1965,11 +1918,11 @@ mod tests {
                         })
                         .map(|(index, _)| index)
                         .collect();
-                    let bucket = &buckets[chunk_flat_index(coord, min_chunk, span)];
                     assert_eq!(
-                        *bucket, naive,
-                        "broadphase bucket for chunk {coord:?} must equal the naive \
-                         all-leaves-filtered set, in document order"
+                        broadphase.overlapping_input_indices(&chunk_box),
+                        naive,
+                        "edit-broadphase candidates for chunk {coord:?} must equal the \
+                         naive all-leaves-filtered set, in document order"
                     );
                 }
             }
@@ -2592,6 +2545,53 @@ mod tests {
             full_two_layer_resident(&scene_b, density),
             "after the cloud-edit wholesale rebuild the cache must equal a full rebuild"
         );
+    }
+
+    /// Wholesale-build timing probe across a WIDE object-count range (#66; the #63 lesson —
+    /// a small N hides a super-linear asymptote). Not a correctness gate: run manually with
+    /// `cargo test --release --lib wholesale_build_scaling_probe -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "timing probe, run manually with --release --ignored --nocapture"]
+    fn wholesale_build_scaling_probe() {
+        let density = 16u32;
+        for boxes_per_axis in [5i64, 12, 22] {
+            let mut nodes = Vec::new();
+            for grid_z in 0..boxes_per_axis {
+                for grid_y in 0..boxes_per_axis {
+                    for grid_x in 0..boxes_per_axis {
+                        nodes.push(make_tool_density(
+                            ShapeKind::Box,
+                            [grid_x * 4, grid_y * 4, grid_z * 4],
+                            MaterialChoice::Stone,
+                            density,
+                            2,
+                        ));
+                    }
+                }
+            }
+            let object_count = boxes_per_axis.pow(3);
+            let scene = Scene::from_nodes(nodes);
+            let leaves_started = std::time::Instant::now();
+            let leaves = scene.leaf_producers(density);
+            let leaves_elapsed = leaves_started.elapsed();
+            let (min_chunk, max_chunk) = scene.covering_chunk_range(density).unwrap();
+            let chunk_count = (0..3)
+                .map(|axis| (max_chunk[axis] - min_chunk[axis] + 1) as i64)
+                .product::<i64>();
+            let broadphase_started = std::time::Instant::now();
+            let broadphase = leaf_edit_broadphase(&leaves, density);
+            let broadphase_elapsed = broadphase_started.elapsed();
+            std::hint::black_box(&broadphase);
+            let build_started = std::time::Instant::now();
+            let chunks = TwoLayerStore::enabled().build_covering_chunks(&scene, density, 0);
+            let build_elapsed = build_started.elapsed();
+            eprintln!(
+                "N={object_count} objects, {chunk_count} covering chunks: leaf hoist \
+                 {leaves_elapsed:?}, edit-broadphase BVH rebuild {broadphase_elapsed:?}, \
+                 wholesale build {build_elapsed:?} ({} chunks emitted)",
+                chunks.len()
+            );
+        }
     }
 
     /// The capability OFF (the default): the resident cache is a no-op — it never fills and
