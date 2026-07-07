@@ -16,6 +16,9 @@
 pub mod app_core;
 pub mod assets;
 pub mod block_palette;
+// ADR 0011 G0: the brick-field BUILD (two-layer boundary set → sorted BrickRecords +
+// R8 sculpted-brick atlas), wired to nothing — parity-gated ahead of the G1 raymarch.
+pub mod brick_field;
 pub mod camera;
 pub mod chunk_cache;
 // ADR 0003 bottom layer: dependency-free geometry primitives + the streaming quantum.
@@ -69,6 +72,10 @@ pub use app_core::{
     default_replay_seed_scene, replay_intent_script, AppCore, RebuildOutcome, RebuildOutput,
 };
 pub use store::{ChunkCacheKey, ChunkResolveCache, Store};
+pub use brick_field::{
+    build_brick_field, pack_world_block_key, read_back_brick_atlas, unpack_world_block_key,
+    upload_brick_atlas, BrickFieldBuild, BrickPayload, BrickRecord,
+};
 pub use chunk_storage::{compress, decompress, CompressedChunk, Occupancy, SparseCell};
 pub use disk_chunk_store::{DiskChunkStore, DiskChunkStoreStats};
 pub use cuboid_mesh::{build_cuboid_mesh, CuboidMesh, CuboidMeshRenderer};

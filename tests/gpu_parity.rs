@@ -628,6 +628,307 @@ fn gpu_multidim_dispatch_matches_cpu_and_trips_single_dim_limit() {
 }
 
 // ===========================================================================
+// Brick-field build tier (ADR 0011 G0) — records + R8 atlas vs the boundary set
+// ===========================================================================
+
+/// Extract one brick slot's `edge³` bytes (block-local x-fastest) out of a dense
+/// `atlas_dim³` byte cube — the same linear-slot → 3D-tile layout the fog atlas packs.
+fn brick_slot_bytes(
+    atlas_bytes: &[u8],
+    atlas_dim: usize,
+    bricks_per_axis: u32,
+    edge: usize,
+    atlas_slot: u32,
+) -> Vec<u8> {
+    let tiles = bricks_per_axis.max(1);
+    let origin = [
+        (atlas_slot % tiles) as usize * edge,
+        ((atlas_slot / tiles) % tiles) as usize * edge,
+        (atlas_slot / (tiles * tiles)) as usize * edge,
+    ];
+    let mut brick_bytes = vec![0u8; edge.pow(3)];
+    for local_z in 0..edge {
+        for local_y in 0..edge {
+            for local_x in 0..edge {
+                let source = ((origin[2] + local_z) * atlas_dim + origin[1] + local_y)
+                    * atlas_dim
+                    + origin[0]
+                    + local_x;
+                brick_bytes[(local_z * edge + local_y) * edge + local_x] = atlas_bytes[source];
+            }
+        }
+    }
+    brick_bytes
+}
+
+/// **The ADR 0011 parity gate, clause (a)** — the G0 brick-build harness, wired to
+/// nothing: for each gated scene, pack the two-layer boundary set into the sorted
+/// `BrickRecord` array + the R8 sculpted-brick atlas, land the atlas in the texture,
+/// read it back, and assert:
+///
+/// * every boundary block's atlas brick is **byte-identical** (through the full texture
+///   round-trip) to the CPU boundary set's occupancy for that block — the oracle is
+///   `expand_occupancy_into`, the shipped expansion proven bit-exact vs the dense path,
+///   an independent path from the builder's cuboid rasterization;
+/// * every coarse-solid block emits exactly ONE kind-0 record carrying its block id and
+///   consumes NO atlas slot; air blocks emit nothing;
+/// * seam-solidity flags carry into the record set unchanged;
+/// * the granule is ONE BLOCK: brick edge == `voxels_per_block` at every density in the
+///   matrix (d16 AND non-16 — nothing may hard-code 16);
+/// * atlas slots are dense `0..sculpted_count` and every padding slot reads back zero.
+#[test]
+fn brick_field_build_matches_two_layer_boundary_set_byte_exactly() {
+    use voxel_worker::core_geom::CHUNK_BLOCKS;
+    use voxel_worker::{
+        build_brick_field, read_back_brick_atlas, upload_brick_atlas, BrickPayload,
+        NodeTransform, TwoLayerStore, Voxel,
+    };
+
+    let gpu = pollster::block_on(GpuContext::new(None));
+
+    // The gated matrix: coarse-heavy SDF at d16, odd-extent box at a NON-16 density
+    // (the block-denominated-granule ruling), the revolved vase at d4 (sketch tier),
+    // and a multi-tool union at d16 (multi-material sculpted bricks, later-wins).
+    // `require_coarse` marks the scenes whose interiors must prove the elision arm.
+    struct BrickCase {
+        name: &'static str,
+        scene: Scene,
+        voxels_per_block: u32,
+        require_coarse: bool,
+    }
+    let make_tool = |kind: ShapeKind, offset: [i64; 3], material: MaterialChoice, density: u32| {
+        let shape = SdfShape::from_blocks(kind, [5, 5, 5], 1, density);
+        let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
+        node.transform = NodeTransform::from_blocks(offset, density);
+        node
+    };
+    let vase = &SKETCH_CASES[4]; // revolve-vase-d4
+    let vase_producer = vase.build();
+    let mut vase_scene = Scene::single_node(Node::new(
+        "Sketch",
+        NodeContent::SketchTool { producer: vase_producer, material: MaterialChoice::default() },
+    ));
+    vase_scene.voxels_per_block = vase.voxels_per_block;
+    let cases = [
+        BrickCase {
+            name: "brick-sphere-80-d16",
+            scene: Scene::from_geometry(
+                GeometryParams {
+                    shape: ShapeKind::Sphere,
+                    size_voxels: [80, 80, 80],
+                    size_measurements: None,
+                    voxels_per_block: 16,
+                    wall_blocks: 1,
+                },
+                MaterialChoice::default(),
+            ),
+            voxels_per_block: 16,
+            require_coarse: true,
+        },
+        BrickCase {
+            name: "brick-box-31-17-49-d4",
+            scene: Scene::from_geometry(
+                GeometryParams {
+                    shape: ShapeKind::Box,
+                    size_voxels: [31, 17, 49],
+                    size_measurements: None,
+                    voxels_per_block: 4,
+                    wall_blocks: 1,
+                },
+                MaterialChoice::default(),
+            ),
+            voxels_per_block: 4,
+            require_coarse: true,
+        },
+        BrickCase {
+            name: "brick-revolve-vase-d4",
+            scene: vase_scene,
+            voxels_per_block: vase.voxels_per_block,
+            require_coarse: false,
+        },
+        BrickCase {
+            name: "brick-union-sphere-box-torus-d16",
+            scene: Scene::from_nodes(vec![
+                make_tool(ShapeKind::Sphere, [0, 0, 0], MaterialChoice::Stone, 16),
+                make_tool(ShapeKind::Box, [8, 0, 0], MaterialChoice::Wood, 16),
+                make_tool(ShapeKind::Torus, [0, 0, 6], MaterialChoice::Plain, 16),
+            ]),
+            voxels_per_block: 16,
+            require_coarse: true,
+        },
+    ];
+
+    let mut failures: Vec<String> = Vec::new();
+    for case in &cases {
+        let vpb = case.voxels_per_block;
+        let two_layer_chunks =
+            TwoLayerStore::enabled().build_covering_chunks(&case.scene, vpb, 0);
+        assert!(!two_layer_chunks.is_empty(), "{}: empty two-layer build", case.name);
+        let build = build_brick_field(&two_layer_chunks, vpb);
+
+        // The granule ruling: the brick edge is the document density, nothing else.
+        assert_eq!(build.brick_edge_voxels, vpb, "{}: brick edge must be one BLOCK", case.name);
+        assert!(
+            build
+                .brick_records
+                .windows(2)
+                .all(|pair| pair[0].packed_world_block_key < pair[1].packed_world_block_key),
+            "{}: records must sort strictly ascending",
+            case.name
+        );
+
+        // The full texture round-trip: upload → R8 texture → readback, byte-identical
+        // to the CPU-packed atlas (padding rows included — the write_texture mechanic).
+        let texture = upload_brick_atlas(&gpu.device, &gpu.queue, &build);
+        let readback =
+            read_back_brick_atlas(&gpu.device, &gpu.queue, &texture, build.atlas_dim_voxels);
+        if readback != build.sculpted_atlas_bytes {
+            failures.push(format!(
+                "{}: texture round-trip diverged from the CPU-packed atlas bytes",
+                case.name
+            ));
+            continue;
+        }
+
+        let edge = vpb as usize;
+        let atlas_dim = build.atlas_dim_voxels as usize;
+        let mut coarse_blocks = 0usize;
+        let mut sculpted_blocks = 0usize;
+        for (chunk_coord, chunk) in &two_layer_chunks {
+            // The oracle: the chunk's boundary-set occupancy via the SHIPPED expansion
+            // (chunk-local frame, offset zero) — independent of the brick rasterizer.
+            let mut expanded: Vec<Voxel> = Vec::new();
+            chunk.expand_occupancy_into(&mut expanded, [0, 0, 0]);
+            let chunk_extent = (CHUNK_BLOCKS * vpb) as usize;
+            let mut chunk_occupancy = vec![0u8; chunk_extent.pow(3)];
+            for voxel in &expanded {
+                let [x, y, z] = voxel.local_index;
+                chunk_occupancy
+                    [(z as usize * chunk_extent + y as usize) * chunk_extent + x as usize] = 255;
+            }
+
+            for block_z in 0..CHUNK_BLOCKS {
+                for block_y in 0..CHUNK_BLOCKS {
+                    for block_x in 0..CHUNK_BLOCKS {
+                        let block = [block_x, block_y, block_z];
+                        let world_block = [
+                            chunk_coord[0] as i64 * CHUNK_BLOCKS as i64 + block_x as i64,
+                            chunk_coord[1] as i64 * CHUNK_BLOCKS as i64 + block_y as i64,
+                            chunk_coord[2] as i64 * CHUNK_BLOCKS as i64 + block_z as i64,
+                        ];
+                        let record = build.find_record(world_block);
+                        if let Some(block_id) = chunk.coarse_block(block) {
+                            coarse_blocks += 1;
+                            let record =
+                                record.unwrap_or_else(|| panic!("{}: missing coarse record at {world_block:?}", case.name));
+                            assert_eq!(
+                                record.payload,
+                                BrickPayload::CoarseSolid { block_id },
+                                "{}: coarse record at {world_block:?} (kind 0, id carried, no slot)",
+                                case.name
+                            );
+                        } else if let Some(geometry) = chunk.microblocks.get(&block) {
+                            sculpted_blocks += 1;
+                            let record =
+                                record.unwrap_or_else(|| panic!("{}: missing sculpted record at {world_block:?}", case.name));
+                            let BrickPayload::Sculpted { atlas_slot } = record.payload else {
+                                panic!("{}: boundary block at {world_block:?} must be kind 1", case.name);
+                            };
+                            assert_eq!(
+                                record.seam_solidity, geometry.seam_solidity,
+                                "{}: seam flags must carry unchanged at {world_block:?}",
+                                case.name
+                            );
+                            // Gate (a): the brick's TEXTURE bytes == the boundary
+                            // set's occupancy for this block, byte for byte.
+                            let brick_bytes = brick_slot_bytes(
+                                &readback,
+                                atlas_dim,
+                                build.bricks_per_axis,
+                                edge,
+                                atlas_slot,
+                            );
+                            let mut expected = vec![0u8; edge.pow(3)];
+                            for local_z in 0..edge {
+                                for local_y in 0..edge {
+                                    for local_x in 0..edge {
+                                        expected[(local_z * edge + local_y) * edge + local_x] =
+                                            chunk_occupancy[((block_z as usize * edge + local_z)
+                                                * chunk_extent
+                                                + block_y as usize * edge
+                                                + local_y)
+                                                * chunk_extent
+                                                + block_x as usize * edge
+                                                + local_x];
+                                    }
+                                }
+                            }
+                            if brick_bytes != expected {
+                                let differing = brick_bytes
+                                    .iter()
+                                    .zip(&expected)
+                                    .filter(|(a, b)| a != b)
+                                    .count();
+                                failures.push(format!(
+                                    "{}: sculpted brick at {world_block:?} (slot {atlas_slot}) \
+                                     differs in {differing}/{} bytes",
+                                    case.name,
+                                    expected.len()
+                                ));
+                            }
+                        } else {
+                            assert!(
+                                record.is_none(),
+                                "{}: air block at {world_block:?} must emit nothing",
+                                case.name
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        // Record accounting: one record per non-air block, slots dense over exactly
+        // the sculpted set (coarse consumes no slot), padding slots all-zero.
+        assert_eq!(
+            build.brick_records.len(),
+            coarse_blocks + sculpted_blocks,
+            "{}: record count must equal the non-air block count",
+            case.name
+        );
+        assert_eq!(build.sculpted_brick_count(), sculpted_blocks, "{}", case.name);
+        let total_slots = build.bricks_per_axis.pow(3);
+        for padding_slot in sculpted_blocks as u32..total_slots {
+            let padding_bytes =
+                brick_slot_bytes(&readback, atlas_dim, build.bricks_per_axis, edge, padding_slot);
+            assert!(
+                padding_bytes.iter().all(|&byte| byte == 0),
+                "{}: unused atlas slot {padding_slot} must read back zero",
+                case.name
+            );
+        }
+        assert!(sculpted_blocks > 0, "{}: fixture must contain boundary blocks", case.name);
+        if case.require_coarse {
+            assert!(
+                coarse_blocks > 0,
+                "{}: fixture must contain coarse-solid blocks (interior elision unexercised)",
+                case.name
+            );
+        }
+        eprintln!(
+            "{}: {} coarse + {} sculpted bricks, atlas {}³ (edge {})",
+            case.name, coarse_blocks, sculpted_blocks, build.atlas_dim_voxels, vpb
+        );
+    }
+
+    assert!(
+        failures.is_empty(),
+        "brick-field build != CPU two-layer boundary set (ADR 0011 gate (a)):\n{}",
+        failures.join("\n")
+    );
+}
+
+// ===========================================================================
 // Issue #60 — async geometry-rebuild build-equivalence net
 // ===========================================================================
 
