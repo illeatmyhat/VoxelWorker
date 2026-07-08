@@ -77,6 +77,10 @@ struct BrickUniforms {
     // blocks/cell, w = L2 cell count. A zero count disables that level's skip (the
     // flat G1 block-DDA) — how the pyramid-on == off parity A/B's the same shader.
     clipmap_blocks_and_counts: vec4<u32>,
+    // ADR 0011 G4 third clip-map level: x = L3 blocks/cell, y = L3 cell count; zw
+    // reserved (a fourth level was measured not to pay — see the G4 report). Same
+    // zero-count = off convention.
+    clipmap_blocks_and_counts_hi: vec4<u32>,
     // The traversal AABB in the sv frame: the resident bricks' bounds intersected
     // with the band slab. Rays outside it never march.
     traversal_lo: vec4<f32>,
@@ -118,13 +122,15 @@ var<storage, read> brick_records: array<BrickGpuRecord>;
 @group(0) @binding(2)
 var sculpted_atlas: texture_3d<f32>;
 
-// ADR 0011 G2 clip-map occupancy levels: sorted (hi, lo) packed CELL keys, a
-// min-mip of the brick records. L1 = 8-block cells, L2 = 64-block cells. Empty
-// (count 0) ⇒ that level's hierarchical skip is off.
+// ADR 0011 G2/G4 clip-map occupancy levels: sorted (hi, lo) packed CELL keys, a
+// min-mip of the brick records. L1 = 8-block cells, L2 = 64-block cells, L3 =
+// 512-block cells. Empty (count 0) ⇒ that level's hierarchical skip is off.
 @group(0) @binding(3)
 var<storage, read> clipmap_level_1_keys: array<vec2<u32>>;
 @group(0) @binding(4)
 var<storage, read> clipmap_level_2_keys: array<vec2<u32>>;
+@group(0) @binding(5)
+var<storage, read> clipmap_level_3_keys: array<vec2<u32>>;
 
 // The SAME procedural material atlas + nearest/clamp sampler the cuboid mesh
 // binds, so a brick-path pixel samples the identical texel.
@@ -141,9 +147,12 @@ const NON_RESIDENT_ATLAS_SLOT: u32 = 0xffffffffu;
 // biased = coord + 2^20 per axis; packed u64 = z<<42 | y<<21 | x, split (hi, lo).
 const WORLD_BLOCK_KEY_BIAS: i32 = 1048576; // 1 << 20
 
-// Block-DDA step budget: no clip-map yet (G2), so a ray crosses at most the
-// traversal AABB's block diagonal — generous for every current scene.
-const MAX_BLOCK_STEPS: i32 = 1024;
+// Block-DDA step budget. The pyramid (G2/G4) collapses empty space to a handful
+// of strides, so the shipped path never approaches this; the ceiling only bounds
+// the FLAT fallback (pyramid off / all-occupied) crossing the traversal AABB's
+// block diagonal — sized for the wide anisotropic scatter targets (and the
+// pyramid-off perf baseline), not just the finest current view.
+const MAX_BLOCK_STEPS: i32 = 4096;
 // In-brick voxel-DDA budget: at most 3·edge + 3 voxels per brick (edge ≤ 64).
 const MAX_VOXEL_STEPS: i32 = 256;
 
@@ -279,6 +288,20 @@ fn clipmap_level_2_contains(key_hi: u32, key_lo: u32, count: u32) -> bool {
         if (low > high) { break; }
         let mid = (low + high) / 2;
         let cell = clipmap_level_2_keys[mid];
+        if (cell.x == key_hi && cell.y == key_lo) { return true; }
+        let cell_less = cell.x < key_hi || (cell.x == key_hi && cell.y < key_lo);
+        if (cell_less) { low = mid + 1; } else { high = mid - 1; }
+    }
+    return false;
+}
+
+fn clipmap_level_3_contains(key_hi: u32, key_lo: u32, count: u32) -> bool {
+    var low = 0;
+    var high = i32(count) - 1;
+    loop {
+        if (low > high) { break; }
+        let mid = (low + high) / 2;
+        let cell = clipmap_level_3_keys[mid];
         if (cell.x == key_hi && cell.y == key_lo) { return true; }
         let cell_less = cell.x < key_hi || (cell.x == key_hi && cell.y < key_lo);
         if (cell_less) { low = mid + 1; } else { high = mid - 1; }
@@ -464,20 +487,36 @@ fn march_brick_field(ray: Ray) -> MarchHit {
     for (var step = 0; step < MAX_BLOCK_STEPS; step = step + 1) {
         let absolute_block = block_cell + uniforms.block_bias_and_tiles.xyz;
 
-        // G2 hierarchical DDA: check the coarsest level covering this block; an empty
-        // cell jumps the ray to its exit in ONE stride, descending L2 → L1 → per-block.
-        // A zero count = level off (never skip). The jump falls through to a normal
-        // per-block step when it wouldn't advance (grazing / eps) — guaranteed progress.
+        // G2/G4 hierarchical DDA: check the coarsest level covering this block; an
+        // empty cell jumps the ray to its exit in ONE stride, descending
+        // L3 → L2 → L1 → per-block. A zero count = level off (never skip). The jump
+        // falls through to a normal per-block step when it wouldn't advance
+        // (grazing / eps) — guaranteed progress. Only the coarsest EMPTY level is
+        // attempted each step (the else-if chain the CPU march loop mirrors).
         let clipmap = uniforms.clipmap_blocks_and_counts;
+        let clipmap_hi = uniforms.clipmap_blocks_and_counts_hi;
+        let l3_blocks = i32(clipmap_hi.x);
         let l2_blocks = i32(clipmap.z);
         let l1_blocks = i32(clipmap.x);
+        let cell_3 = clipmap_cell_of(absolute_block, l3_blocks);
         let cell_2 = clipmap_cell_of(absolute_block, l2_blocks);
         let cell_1 = clipmap_cell_of(absolute_block, l1_blocks);
+        let key_3 = pack_world_block_key_split(cell_3);
         let key_2 = pack_world_block_key_split(cell_2);
         let key_1 = pack_world_block_key_split(cell_1);
+        let level_3_empty = clipmap_hi.y > 0u && !clipmap_level_3_contains(key_3.x, key_3.y, clipmap_hi.y);
         let level_2_empty = clipmap.w > 0u && !clipmap_level_2_contains(key_2.x, key_2.y, clipmap.w);
         let level_1_empty = clipmap.y > 0u && !clipmap_level_1_contains(key_1.x, key_1.y, clipmap.y);
-        if (level_2_empty) {
+        if (level_3_empty) {
+            let jump = clipmap_try_skip(ray, edge, clipmap_cell_box(cell_3, l3_blocks, edge_i), block_cell);
+            if (jump.advanced) {
+                if (jump.t_block_enter > t_exit) { break; }
+                block_cell = jump.block_cell;
+                t_max = jump.t_max;
+                t_block_enter = jump.t_block_enter;
+                continue;
+            }
+        } else if (level_2_empty) {
             let jump = clipmap_try_skip(ray, edge, clipmap_cell_box(cell_2, l2_blocks, edge_i), block_cell);
             if (jump.advanced) {
                 if (jump.t_block_enter > t_exit) { break; }

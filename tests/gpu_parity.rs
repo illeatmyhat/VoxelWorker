@@ -1657,9 +1657,12 @@ fn brick_raymarch_pyramid_on_equals_off() {
         let build = build_brick_field(&two_layer_chunks, vpb);
         assert!(!build.brick_records.is_empty(), "{}: empty brick field", case.name);
         let pyramid = ClipmapPyramid::from_records(&build.brick_records);
-        // The pyramid must actually carry cells, else "on == off" is vacuous.
+        // Every level must carry cells, else "on == off" is vacuous (the L3 skip is
+        // exercised too — G4).
         assert!(
-            !pyramid.level_1.cell_keys.is_empty() && !pyramid.level_2.cell_keys.is_empty(),
+            !pyramid.level_1.cell_keys.is_empty()
+                && !pyramid.level_2.cell_keys.is_empty()
+                && !pyramid.level_3.cell_keys.is_empty(),
             "{}: pyramid has no cells — the on/off comparison would be vacuous",
             case.name
         );
@@ -1734,10 +1737,11 @@ fn brick_raymarch_pyramid_on_equals_off() {
             ));
         } else {
             eprintln!(
-                "{}: pyramid on == off ({on_hits} hits; L1 {} cells, L2 {} cells)",
+                "{}: pyramid on == off ({on_hits} hits; L1 {} cells, L2 {} cells, L3 {} cells)",
                 case.name,
                 pyramid.level_1.cell_keys.len(),
-                pyramid.level_2.cell_keys.len()
+                pyramid.level_2.cell_keys.len(),
+                pyramid.level_3.cell_keys.len()
             );
         }
     }
@@ -1750,50 +1754,91 @@ fn brick_raymarch_pyramid_on_equals_off() {
     );
 }
 
-/// **ADR 0011 G2 perf probe (acceptance criterion).** The scattered-scene
-/// empty-space-skipping lift: a dozen small shapes far apart, the hierarchical DDA
-/// on vs off, reported as mean block-DDA steps per hitting ray (the CPU march's
-/// counted loop iterations — the same traversal the shader runs). `#[ignore]`d
-/// (measurement, not a gate); run with `cargo test --features gpu --release --
-/// --ignored clipmap_scattered_scene_skips_empty_space --nocapture`.
+/// **ADR 0011 G2/G4 perf probe (acceptance criterion).** The WIDE-scatter
+/// empty-space-skipping lift across clip-map depth: shapes spread over a
+/// ~2000-block extent with fully-empty L3 cells between them, marched at four level
+/// configs — OFF (flat DDA) / L1+L2 (the G2 two-level baseline) / +L3 (G4) / +L4
+/// (a hypothetical 4096-block level, EVALUATED here, not shipped) — reported as
+/// mean block-DDA steps per hitting ray (the CPU march's counted loop iterations,
+/// the same traversal the shader runs). `#[ignore]`d (measurement, not a gate); run
+/// with `cargo test --features gpu --release -- --ignored
+/// clipmap_scattered_scene_skips_empty_space --nocapture`.
+///
+/// On L4: a 1024-block-spaced scatter (~2060-block extent) fits inside ONE
+/// 4096-block L4 cell, so L4 has nothing to skip and measures identical to +L3.
+/// Scenes wide enough for empty L4 cells (8192+-block spans) cannot currently be
+/// BUILT: `build_covering_chunks` enumerates the scene AABB in 4-block chunks
+/// (2048³ ≈ 8.6e9 chunk builds at that span), so no realistic scene reaches L4's
+/// regime — the measured verdict for not shipping a 4th level.
 #[test]
 #[ignore = "perf probe — run explicitly with --release --ignored --nocapture"]
 fn clipmap_scattered_scene_skips_empty_space() {
     use voxel_worker::{
-        brick_representable_overlay, build_brick_field, cpu_march_brick_field_counted,
-        pack_gpu_records,
-        AppCore, BrickRaymarchRenderer, ClipmapPyramid, LayerBand, NodeTransform, OrbitCamera,
-        TwoLayerStore, COLOR_TARGET_FORMAT,
+        brick_representable_overlay, build_brick_field, cpu_march_levels_counted, pack_gpu_records,
+        AppCore, BrickRaymarchRenderer, ClipmapLevel, ClipmapPyramid, LayerBand, NodeTransform,
+        OrbitCamera, TwoLayerStore, CLIPMAP_LEVEL_1_BLOCKS_PER_CELL, CLIPMAP_LEVEL_2_BLOCKS_PER_CELL,
+        CLIPMAP_LEVEL_3_BLOCKS_PER_CELL, COLOR_TARGET_FORMAT,
     };
 
     let gpu = pollster::block_on(GpuContext::new(None));
-    let width = 160u32;
-    let height = 160u32;
+    let width = 320u32;
+    let height = 320u32;
     let vpb = 16u32;
 
-    // A wide scatter — a dozen small spheres spread far apart so rays cross large
-    // empty regions (where the pyramid pays off). Bigger spacing than the parity
-    // matrix's scattered case to make the lift unambiguous.
+    // A wide scatter: a 3×3×3 lattice of 13-block spheres spaced 1024 BLOCKS apart,
+    // so every adjacent pair straddles a fully-EMPTY 512-block L3 cell (block
+    // positions 0/1024/2048 → L3 cells 0/2/4 occupied, cells 1/3 empty). The
+    // INTERIOR spheres matter: a hull-corner lattice alone puts every visible
+    // object on the traversal-AABB surface, so hitting rays enter right next to
+    // their sphere and never cross a void — the center/face/edge spheres are seen
+    // THROUGH the gaps, so their rays cross ~1024 blocks of empty space: two
+    // 512-block strides under L3 vs sixteen 64-block strides under L2 vs ~1024
+    // flat steps. Extent ~2060 blocks, within the flat MAX_BLOCK_STEPS budget so
+    // the OFF baseline completes; 13-block spheres at 320² stay a few pixels wide
+    // so the auto-framed view actually hits them.
+    const SCATTER_SPACING_BLOCKS: i64 = 1024;
+    // The evaluated 4th level: 4096 blocks/cell, continuing the 8× progression. Not a
+    // production constant — this probe measures whether it would pay before we build it.
+    const CLIPMAP_LEVEL_4_BLOCKS_PER_CELL: u32 = 4096;
     let mut nodes = Vec::new();
-    for index in 0..12i64 {
-        let shape = SdfShape::from_blocks(ShapeKind::Sphere, [3, 3, 3], 1, vpb);
+    for index in 0..27i64 {
+        let shape = SdfShape::from_blocks(ShapeKind::Sphere, [13, 13, 13], 1, vpb);
         let mut node = Node::new(
             format!("s{index}"),
             NodeContent::Tool { shape, material: MaterialChoice::Stone },
         );
-        node.transform =
-            NodeTransform::from_blocks([(index % 4) * 40, (index / 4) * 40, (index % 3) * 48], vpb);
+        node.transform = NodeTransform::from_blocks(
+            [
+                (index % 3) * SCATTER_SPACING_BLOCKS,
+                ((index / 3) % 3) * SCATTER_SPACING_BLOCKS,
+                (index / 9) * SCATTER_SPACING_BLOCKS,
+            ],
+            vpb,
+        );
         nodes.push(node);
     }
     let scene = Scene::from_nodes(nodes);
     let two_layer_chunks = TwoLayerStore::enabled().build_covering_chunks(&scene, vpb, 0);
     let build = build_brick_field(&two_layer_chunks, vpb);
     let pyramid_on = ClipmapPyramid::from_records(&build.brick_records);
-    let pyramid_off = ClipmapPyramid::empty();
     let gpu_records = pack_gpu_records(&build, |_| false);
     let overlay_active = brick_representable_overlay(&two_layer_chunks).unwrap_or(false);
     let recentre = scene.recentre_voxels_for_resolve(vpb);
     let grid_dimensions = scene.placed_region_dimensions(vpb);
+
+    // The four clip-map configs, each a slice of levels COARSEST→FINEST (the descent
+    // order). OFF is the empty slice (flat block-DDA); +L4 prepends a hypothetical
+    // 4096-block level to the shipped three.
+    let level_1 = ClipmapLevel::from_records(&build.brick_records, CLIPMAP_LEVEL_1_BLOCKS_PER_CELL);
+    let level_2 = ClipmapLevel::from_records(&build.brick_records, CLIPMAP_LEVEL_2_BLOCKS_PER_CELL);
+    let level_3 = ClipmapLevel::from_records(&build.brick_records, CLIPMAP_LEVEL_3_BLOCKS_PER_CELL);
+    let level_4 = ClipmapLevel::from_records(&build.brick_records, CLIPMAP_LEVEL_4_BLOCKS_PER_CELL);
+    let configs: [(&str, Vec<&ClipmapLevel>); 4] = [
+        ("OFF (flat)", Vec::new()),
+        ("L1+L2 (G2)", vec![&level_2, &level_1]),
+        ("+L3 (G4)", vec![&level_3, &level_2, &level_1]),
+        ("+L4 (eval)", vec![&level_4, &level_3, &level_2, &level_1]),
+    ];
 
     let mut app_core = AppCore::new(OrbitCamera::default());
     app_core.camera.target = glam::Vec3::ZERO;
@@ -1820,42 +1865,70 @@ fn clipmap_scattered_scene_skips_empty_space() {
         Some(MaterialChoice::default()),
     );
 
-    // Sum block-DDA steps over the rays that HIT (empty-space skipping shows up on
-    // the rays that traverse the scene), pyramid on vs off. The two marches produce
-    // the identical hit set (proven by `brick_raymarch_pyramid_on_equals_off`), so
-    // this compares work-per-ray for the same pixels.
-    let (mut steps_on, mut steps_off, mut hitting_rays) = (0u64, 0u64, 0u64);
+    // Sum block-DDA steps over the rays that HIT (empty-space skipping shows up on the
+    // rays that traverse the scene), per config. The hit set is identical across configs
+    // (each level may only skip provably-empty space — the pyramid-on == off gate), so
+    // this compares work-per-ray over the same pixels; the finest config (+L4) defines
+    // the hit set.
+    let mut sums = [0u64; 4];
+    let mut hitting_rays = 0u64;
     for y in 0..height {
         for x in 0..width {
             let pixel = glam::Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
-            let (hit_on, on) = cpu_march_brick_field_counted(&frame, &gpu_records, &build, &pyramid_on, pixel);
-            let (_hit_off, off) = cpu_march_brick_field_counted(&frame, &gpu_records, &build, &pyramid_off, pixel);
-            if hit_on.is_some() {
-                steps_on += on as u64;
-                steps_off += off as u64;
+            let mut per_config = [0u32; 4];
+            let mut hit_any = false;
+            for (index, (_, levels)) in configs.iter().enumerate() {
+                let (hit, steps) =
+                    cpu_march_levels_counted(&frame, &gpu_records, &build, levels, pixel);
+                per_config[index] = steps;
+                if index == configs.len() - 1 {
+                    hit_any = hit.is_some();
+                }
+            }
+            if hit_any {
+                for index in 0..configs.len() {
+                    sums[index] += per_config[index] as u64;
+                }
                 hitting_rays += 1;
             }
         }
     }
     assert!(hitting_rays > 0, "the scattered probe view produced no hits");
-    let mean_on = steps_on as f64 / hitting_rays as f64;
-    let mean_off = steps_off as f64 / hitting_rays as f64;
+    let span_blocks = grid_dimensions.map(|d| d / vpb).iter().max().copied().unwrap_or(0);
+    let mean = |index: usize| sums[index] as f64 / hitting_rays as f64;
     eprintln!(
-        "clip-map scattered probe ({}³ blocks span, {} sculpted bricks, {} hitting rays):\n  \
-         mean block-steps/ray  pyramid OFF = {:.1}  ON = {:.1}  →  {:.2}× fewer steps\n  \
-         L1 {} cells, L2 {} cells",
-        grid_dimensions.map(|d| d / vpb).iter().max().copied().unwrap_or(0),
+        "clip-map WIDE-scatter probe ({}-block span, {} sculpted bricks, {} hitting rays)\n  \
+         L1 {} cells, L2 {} cells, L3 {} cells, L4 {} cells\n  \
+         mean block-steps/ray by clip-map config:",
+        span_blocks,
         build.sculpted_brick_count(),
         hitting_rays,
-        mean_off,
-        mean_on,
-        mean_off / mean_on.max(1.0),
-        pyramid_on.level_1.cell_keys.len(),
-        pyramid_on.level_2.cell_keys.len(),
+        level_1.cell_keys.len(),
+        level_2.cell_keys.len(),
+        level_3.cell_keys.len(),
+        level_4.cell_keys.len(),
+    );
+    for (index, (name, _)) in configs.iter().enumerate() {
+        eprintln!(
+            "    {name:<12} {:>8.1}  ({:.2}× vs OFF)",
+            mean(index),
+            mean(0) / mean(index).max(1.0),
+        );
+    }
+
+    // Gate: each coarser level is a monotone win (never more steps), the two-level
+    // pyramid beats flat, and G4's L3 strictly beats the L1+L2 baseline on this
+    // empty-L3-cell scene (the acceptance criterion — a measured ceiling improvement).
+    assert!(sums[1] < sums[0], "L1+L2 must beat flat (on {} vs {})", sums[1], sums[0]);
+    assert!(
+        sums[2] < sums[1],
+        "G4 +L3 must strictly reduce block-steps vs the L1+L2 baseline on a wide scatter \
+         with empty L3 cells (+L3 {} vs L1+L2 {})",
+        sums[2], sums[1]
     );
     assert!(
-        steps_on < steps_off,
-        "the hierarchical DDA must reduce block-steps on a scattered scene (on {steps_on} \
-         vs off {steps_off})"
+        sums[3] <= sums[2],
+        "+L4 may only skip more empty space, never less (+L4 {} vs +L3 {})",
+        sums[3], sums[2]
     );
 }

@@ -78,20 +78,33 @@ pub fn unpack_world_block_key(key: u64) -> [i64; 3] {
 }
 
 // ============================================================================
-// Clip-map occupancy pyramid (ADR 0011 Decision 4a / slice G2) — two WORLD-FIXED
-// coarse "any-brick-inside" levels above the brick set, a min-mip of the record
-// keys. The hierarchical DDA (brick_raymarch.wgsl) jumps a ray to the exit of the
-// coarsest EMPTY level covering its position — one stride through empty space —
-// descending to per-block brick work only where a level reports occupancy. This
-// is the port of ADR 0009's measured 160→10240 (~64×) scattered-ceiling lift.
+// Clip-map occupancy pyramid (ADR 0011 Decision 4a / slice G2+G4) — THREE
+// WORLD-FIXED coarse "any-brick-inside" levels above the brick set, a min-mip of
+// the record keys on an 8× cell progression (8 → 64 → 512 blocks/cell). The
+// hierarchical DDA (brick_raymarch.wgsl) jumps a ray to the exit of the coarsest
+// EMPTY level covering its position — one stride through empty space — descending
+// to per-block brick work only where a level reports occupancy. This is the port
+// of ADR 0009's measured 160→10240 (~64×) scattered-ceiling lift; G4 adds the
+// third level (512-block cells) so a wide scatter skips whole 512-block voids in
+// one stride instead of eight L2 strides, closing most of the raw scattered
+// ceiling gap vs the rasterized mesh (frustum/Z cull it gets for free).
+//
+// Why stop at three: the packed key is 21 bits/axis (±2^20 blocks), so a fourth
+// level (4096 blocks/cell) has at most ~512 cells of span to skip; on realistic
+// 10k-block-span scenes L3 already caps the empty-void skip at a handful of
+// strides and an L4 stride only replaces ~8 already-cheap L3 strides — measured
+// not to pay (see `clipmap_scattered_scene_skips_empty_space`'s +L4 column).
 // ============================================================================
 
 /// Level 1 (fine) clip-map cell edge, in BLOCKS — the benchmark's proven config
 /// (ADR 0011 Decision 4a). Block-denominated (density-agnostic by construction),
 /// never a hard-coded voxel count.
 pub const CLIPMAP_LEVEL_1_BLOCKS_PER_CELL: u32 = 8;
-/// Level 2 (coarse) clip-map cell edge, in BLOCKS (the benchmark's L2).
+/// Level 2 (middle) clip-map cell edge, in BLOCKS (the benchmark's L2) — 8× L1.
 pub const CLIPMAP_LEVEL_2_BLOCKS_PER_CELL: u32 = 64;
+/// Level 3 (coarse) clip-map cell edge, in BLOCKS (G4) — 8× L2, checked first by
+/// the hierarchical DDA so a wide empty void skips in one 512-block stride.
+pub const CLIPMAP_LEVEL_3_BLOCKS_PER_CELL: u32 = 512;
 
 /// One clip-map occupancy level: cells of `blocks_per_cell` blocks per axis, each
 /// a packed cell key (the SAME 21-bit z-major packing as a brick record's block
@@ -146,35 +159,48 @@ impl ClipmapLevel {
     }
 }
 
-/// The two-level clip-map pyramid (L1 = 8-block cells, L2 = 64-block cells; ADR
-/// 0011 Decision 4a, 2 levels first). A derived, rebuildable min-mip of the brick
-/// records — never truth (ADR 0006/0009 4c).
+/// The three-level clip-map pyramid (L1 = 8-block cells, L2 = 64-block cells, L3
+/// = 512-block cells; ADR 0011 Decision 4a + G4). A derived, rebuildable min-mip
+/// of the brick records — never truth (ADR 0006/0009 4c). The DDA descends the
+/// levels coarsest-first (L3 → L2 → L1) via [`Self::levels_coarse_to_fine`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClipmapPyramid {
     /// Fine level (8-block cells).
     pub level_1: ClipmapLevel,
-    /// Coarse level (64-block cells) — checked first by the hierarchical DDA.
+    /// Middle level (64-block cells).
     pub level_2: ClipmapLevel,
+    /// Coarse level (512-block cells) — checked first by the hierarchical DDA.
+    pub level_3: ClipmapLevel,
 }
 
 impl ClipmapPyramid {
-    /// Build both levels from a brick-field's sorted records (a pure function of
+    /// Build all levels from a brick-field's sorted records (a pure function of
     /// the record keys — the sink derives it next to the record set).
     pub fn from_records(records: &[BrickRecord]) -> Self {
         ClipmapPyramid {
             level_1: ClipmapLevel::from_records(records, CLIPMAP_LEVEL_1_BLOCKS_PER_CELL),
             level_2: ClipmapLevel::from_records(records, CLIPMAP_LEVEL_2_BLOCKS_PER_CELL),
+            level_3: ClipmapLevel::from_records(records, CLIPMAP_LEVEL_3_BLOCKS_PER_CELL),
         }
     }
 
-    /// The "pyramid off" form — both levels empty, so the shader's hierarchical
+    /// The "pyramid off" form — every level empty, so the shader's hierarchical
     /// skip never fires (the flat G1 block-DDA). Used by the pyramid-on == off
     /// parity assertion and the perf probe's baseline.
     pub fn empty() -> Self {
         ClipmapPyramid {
             level_1: ClipmapLevel::empty(CLIPMAP_LEVEL_1_BLOCKS_PER_CELL),
             level_2: ClipmapLevel::empty(CLIPMAP_LEVEL_2_BLOCKS_PER_CELL),
+            level_3: ClipmapLevel::empty(CLIPMAP_LEVEL_3_BLOCKS_PER_CELL),
         }
+    }
+
+    /// The levels ordered COARSEST → FINEST (L3, L2, L1) — the order the
+    /// hierarchical DDA descends (skip by the coarsest empty level covering the
+    /// ray's block). The CPU march mirror ([`crate::brick_raymarch::cpu_march_brick_field`])
+    /// and the perf probe iterate this slice.
+    pub fn levels_coarse_to_fine(&self) -> [&ClipmapLevel; 3] {
+        [&self.level_3, &self.level_2, &self.level_1]
     }
 }
 
@@ -1053,6 +1079,7 @@ mod tests {
             for (level, blocks_per_cell) in [
                 (&pyramid.level_1, CLIPMAP_LEVEL_1_BLOCKS_PER_CELL),
                 (&pyramid.level_2, CLIPMAP_LEVEL_2_BLOCKS_PER_CELL),
+                (&pyramid.level_3, CLIPMAP_LEVEL_3_BLOCKS_PER_CELL),
             ] {
                 assert_eq!(level.blocks_per_cell, blocks_per_cell);
                 assert!(
@@ -1084,8 +1111,10 @@ mod tests {
                 assert_eq!(level_set, true_cells);
                 assert!(!level.cell_keys.is_empty());
             }
-            // The coarse level must not be finer than L1 (fewer-or-equal cells).
+            // Each coarser level must not be finer than the one below (monotone
+            // cell counts as the cell size grows 8× per level).
             assert!(pyramid.level_2.cell_keys.len() <= pyramid.level_1.cell_keys.len());
+            assert!(pyramid.level_3.cell_keys.len() <= pyramid.level_2.cell_keys.len());
         }
     }
 

@@ -80,9 +80,11 @@ pub use brick_field::{
     unpack_world_block_key, upload_brick_atlas, BrickFieldBuild, BrickFieldUpdate, BrickPayload,
     BrickRecord, ClipmapLevel, ClipmapPyramid, IncrementalBrickField,
     CLIPMAP_LEVEL_1_BLOCKS_PER_CELL, CLIPMAP_LEVEL_2_BLOCKS_PER_CELL,
+    CLIPMAP_LEVEL_3_BLOCKS_PER_CELL,
 };
 pub use brick_raymarch::{
-    cpu_march_brick_field, cpu_march_brick_field_counted, cpu_march_exact_occupancy,
+    cpu_march_brick_field, cpu_march_brick_field_counted, cpu_march_levels_counted,
+    cpu_march_exact_occupancy,
     brick_representable_overlay, pack_gpu_records, BrickGpuRecord, BrickMarchFrame,
     BrickRaymarchRenderer, CpuMarchHit, NON_RESIDENT_ATLAS_SLOT,
 };
