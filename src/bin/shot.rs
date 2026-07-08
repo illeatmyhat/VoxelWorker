@@ -1704,11 +1704,14 @@ async fn run_capture(options: ShotOptions) {
                         &gpu.queue,
                         COLOR_TARGET_FORMAT,
                     );
+                    let pyramid =
+                        voxel_worker::ClipmapPyramid::from_records(&build.brick_records);
                     renderer.install_brick_field(
                         &gpu.device,
                         &gpu.queue,
                         &build,
                         &gpu_records,
+                        &pyramid,
                         grid.recentre_voxels,
                         material_id,
                         overlay_active,

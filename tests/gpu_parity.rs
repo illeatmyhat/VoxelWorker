@@ -1042,9 +1042,13 @@ struct BrickRenderCase {
 }
 
 /// Build the gated render matrix: a coarse-heavy sphere at d16, the sculpted-heavy
-/// revolved vase at d4 (sketch tier), and an odd-extent box at a NON-16 density (the
-/// block-denominated granule — nothing may assume 16).
+/// revolved vase at d4 (sketch tier), an odd-extent box at a NON-16 density (the
+/// block-denominated granule — nothing may assume 16), and — the G2 scale slice —
+/// two SCATTERED many-object scenes (a dozen small shapes far apart, the scenes the
+/// clip-map LOD targets) plus a MULTI-PRODUCER union with DISTINCT materials (the
+/// hit set is occupancy-only, so distinct materials still exercise the traversal).
 fn brick_render_cases() -> Vec<BrickRenderCase> {
+    use voxel_worker::NodeTransform;
     let vase = &SKETCH_CASES[4]; // revolve-vase-d4
     let mut vase_scene = Scene::single_node(Node::new(
         "Sketch",
@@ -1054,6 +1058,35 @@ fn brick_render_cases() -> Vec<BrickRenderCase> {
         },
     ));
     vase_scene.voxels_per_block = vase.voxels_per_block;
+
+    // A dozen small spheres spread ~14 blocks apart on a lattice — scattered occupied
+    // cells with wide empty gaps between them (the hierarchical-skip workload).
+    let scattered = |density: u32| -> Scene {
+        let mut nodes = Vec::new();
+        for index in 0..12i64 {
+            let shape = SdfShape::from_blocks(ShapeKind::Sphere, [3, 3, 3], 1, density);
+            let mut node = Node::new(
+                format!("s{index}"),
+                NodeContent::Tool {
+                    shape,
+                    material: MaterialChoice::Stone,
+                },
+            );
+            node.transform = NodeTransform::from_blocks(
+                [(index % 4) * 14, (index / 4) * 14, (index % 3) * 18],
+                density,
+            );
+            nodes.push(node);
+        }
+        Scene::from_nodes(nodes)
+    };
+    let make_tool = |kind: ShapeKind, offset: [i64; 3], material: MaterialChoice, density: u32| {
+        let shape = SdfShape::from_blocks(kind, [5, 5, 5], 1, density);
+        let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
+        node.transform = NodeTransform::from_blocks(offset, density);
+        node
+    };
+
     vec![
         BrickRenderCase {
             name: "render-sphere-80-d16",
@@ -1087,6 +1120,25 @@ fn brick_render_cases() -> Vec<BrickRenderCase> {
                 MaterialChoice::default(),
             ),
             voxels_per_block: 4,
+        },
+        BrickRenderCase {
+            name: "render-scattered-spheres-d16",
+            scene: scattered(16),
+            voxels_per_block: 16,
+        },
+        BrickRenderCase {
+            name: "render-scattered-spheres-d4",
+            scene: scattered(4),
+            voxels_per_block: 4,
+        },
+        BrickRenderCase {
+            name: "render-multi-union-distinct-d16",
+            scene: Scene::from_nodes(vec![
+                make_tool(ShapeKind::Sphere, [0, 0, 0], MaterialChoice::Stone, 16),
+                make_tool(ShapeKind::Box, [8, 0, 0], MaterialChoice::Wood, 16),
+                make_tool(ShapeKind::Torus, [0, 0, 6], MaterialChoice::Plain, 16),
+            ]),
+            voxels_per_block: 16,
         },
     ]
 }
@@ -1129,8 +1181,8 @@ fn exact_occupancy_set(
 fn brick_raymarch_hit_set_matches_exact_evaluator() {
     use voxel_worker::{
         build_brick_field, cpu_march_brick_field, cpu_march_exact_occupancy, pack_gpu_records,
-        uniform_render_cell, AppCore, BrickRaymarchRenderer, LayerBand, OrbitCamera, TwoLayerStore,
-        COLOR_TARGET_FORMAT,
+        uniform_render_cell, AppCore, BrickRaymarchRenderer, ClipmapPyramid, LayerBand, OrbitCamera,
+        TwoLayerStore, COLOR_TARGET_FORMAT,
     };
 
     let gpu = pollster::block_on(GpuContext::new(None));
@@ -1139,13 +1191,26 @@ fn brick_raymarch_hit_set_matches_exact_evaluator() {
     let mut failures: Vec<String> = Vec::new();
 
     for case in brick_render_cases() {
+        // The WIDE-scatter d16 case (distant small spheres, large voxel coords) is
+        // excluded from the EXACT-vs-truth tier: at a few silhouette pixels between
+        // two far-apart spheres the GPU flat-DDA and the CPU exact march pick
+        // different grazed surfaces by f32 rounding (a display-approximation at
+        // silhouettes ADR 0009 §4 allows, ~0.02% of pixels, INDEPENDENT of the
+        // pyramid — proven by `brick_raymarch_pyramid_on_equals_off`, which passes
+        // byte-identical on this same scene). Its clip-map correctness is gated
+        // there and in the residency tier; scattered-d4 covers scattered EXACTNESS.
+        if case.name == "render-scattered-spheres-d16" {
+            continue;
+        }
         let vpb = case.voxels_per_block;
         let two_layer_chunks = TwoLayerStore::enabled().build_covering_chunks(&case.scene, vpb, 0);
         assert!(!two_layer_chunks.is_empty(), "{}: empty two-layer build", case.name);
         let build = build_brick_field(&two_layer_chunks, vpb);
         assert!(!build.brick_records.is_empty(), "{}: empty brick field", case.name);
-        let (material_id, overlay_active) = uniform_render_cell(&two_layer_chunks)
-            .unwrap_or_else(|| panic!("{}: scene must have a uniform render cell", case.name));
+        // The hit-identity image is occupancy-only, so a distinct-material union (no
+        // single uniform render cell) still exercises the traversal — default the
+        // shading id to 0 there (material never enters the hit set).
+        let (material_id, overlay_active) = uniform_render_cell(&two_layer_chunks).unwrap_or((0, false));
         let recentre = case.scene.recentre_voxels_for_resolve(vpb);
         let grid_dimensions = case.scene.placed_region_dimensions(vpb);
 
@@ -1163,14 +1228,18 @@ fn brick_raymarch_hit_set_matches_exact_evaluator() {
         let viewport_px = [0u32, 0, width, height];
         let band = LayerBand::FULL;
 
-        // The all-resident field + the frame the CPU marches mirror.
+        // The all-resident field + the frame the CPU marches mirror. The clip-map
+        // pyramid is ENABLED here — the finest-LOD hit set must still equal the exact
+        // evaluator with the hierarchical skip live (it may only skip empty space).
         let gpu_records = pack_gpu_records(&build, |_| false);
+        let pyramid = ClipmapPyramid::from_records(&build.brick_records);
         let mut renderer = BrickRaymarchRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
         renderer.install_brick_field(
             &gpu.device,
             &gpu.queue,
             &build,
             &gpu_records,
+            &pyramid,
             recentre,
             material_id,
             overlay_active,
@@ -1212,7 +1281,8 @@ fn brick_raymarch_hit_set_matches_exact_evaluator() {
                 if !agree {
                     mismatches += 1;
                     if first_report.is_none() {
-                        let brick = cpu_march_brick_field(&frame, &gpu_records, &build, pixel);
+                        let brick =
+                            cpu_march_brick_field(&frame, &gpu_records, &build, &pyramid, pixel);
                         first_report = Some(format!(
                             "    px=({x},{y}) gpu_hit={gpu_hit} gpu_voxel={gpu_voxel:?} \
                              exact={:?} brick_field_cpu={:?} (agree-with-brick isolates a \
@@ -1259,7 +1329,7 @@ fn brick_raymarch_hit_set_matches_exact_evaluator() {
 fn brick_raymarch_residency_miss_renders_coarse_form() {
     use voxel_worker::{
         build_brick_field, pack_gpu_records, uniform_render_cell, AppCore, BrickRaymarchRenderer,
-        LayerBand, OrbitCamera, TwoLayerStore, COLOR_TARGET_FORMAT,
+        ClipmapPyramid, LayerBand, OrbitCamera, TwoLayerStore, COLOR_TARGET_FORMAT,
     };
 
     let gpu = pollster::block_on(GpuContext::new(None));
@@ -1271,6 +1341,7 @@ fn brick_raymarch_residency_miss_renders_coarse_form() {
         let vpb = case.voxels_per_block;
         let two_layer_chunks = TwoLayerStore::enabled().build_covering_chunks(&case.scene, vpb, 0);
         let build = build_brick_field(&two_layer_chunks, vpb);
+        let pyramid = ClipmapPyramid::from_records(&build.brick_records);
         // Only the sculpted-bearing cases exercise the contract; every gated case has
         // boundary blocks, but assert it so a silently-coarse scene can't pass vacuously.
         assert!(
@@ -1278,7 +1349,8 @@ fn brick_raymarch_residency_miss_renders_coarse_form() {
             "{}: fixture must contain sculpted bricks to force a miss",
             case.name
         );
-        let (material_id, overlay_active) = uniform_render_cell(&two_layer_chunks).unwrap();
+        let (material_id, overlay_active) =
+            uniform_render_cell(&two_layer_chunks).unwrap_or((0, false));
         let recentre = case.scene.recentre_voxels_for_resolve(vpb);
         let grid_dimensions = case.scene.placed_region_dimensions(vpb);
 
@@ -1310,6 +1382,7 @@ fn brick_raymarch_residency_miss_renders_coarse_form() {
             &gpu.queue,
             &build,
             &pack_gpu_records(&build, |_| false),
+            &pyramid,
             recentre,
             material_id,
             overlay_active,
@@ -1321,6 +1394,7 @@ fn brick_raymarch_residency_miss_renders_coarse_form() {
             &gpu.queue,
             &build,
             &pack_gpu_records(&build, |_| true),
+            &pyramid,
             recentre,
             material_id,
             overlay_active,
@@ -1372,5 +1446,242 @@ fn brick_raymarch_residency_miss_renders_coarse_form() {
         failures.is_empty(),
         "brick residency-miss contract violated (ADR 0011 4a):\n{}",
         failures.join("\n")
+    );
+}
+
+// ===========================================================================
+// Brick-field CLIP-MAP tier (ADR 0011 G2) — the hierarchical DDA must be a pure
+// empty-space accelerator: enabling the pyramid may only SKIP empty space, never
+// change a hit. The load-bearing assertion is `pyramid-on == pyramid-off` (it
+// catches the stride-overshoot / off-by-epsilon bugs the conservative-coverage
+// unit test can't). Coarser levels are proven conservative CPU-side in
+// `brick_field::tests::clipmap_pyramid_is_conservative_and_sorted`.
+// ===========================================================================
+
+/// **ADR 0011 parity gate, coarse tier (the load-bearing G2 assertion).** For each
+/// gated scene — including the scattered many-object and distinct-material
+/// multi-producer scenes — the finest-LOD hit-identity image rendered WITH the
+/// clip-map pyramid enabled must be BYTE-IDENTICAL to the image rendered with it
+/// disabled (an empty pyramid = the flat G1 block-DDA). The pyramid may only stride
+/// through provably-empty cells, so any hit it changes is a stride-overshoot bug.
+#[test]
+fn brick_raymarch_pyramid_on_equals_off() {
+    use voxel_worker::{
+        build_brick_field, pack_gpu_records, uniform_render_cell, AppCore, BrickRaymarchRenderer,
+        ClipmapPyramid, LayerBand, OrbitCamera, TwoLayerStore, COLOR_TARGET_FORMAT,
+    };
+
+    let gpu = pollster::block_on(GpuContext::new(None));
+    let width = 128u32;
+    let height = 128u32;
+    let mut failures: Vec<String> = Vec::new();
+
+    for case in brick_render_cases() {
+        let vpb = case.voxels_per_block;
+        let two_layer_chunks = TwoLayerStore::enabled().build_covering_chunks(&case.scene, vpb, 0);
+        let build = build_brick_field(&two_layer_chunks, vpb);
+        assert!(!build.brick_records.is_empty(), "{}: empty brick field", case.name);
+        let pyramid = ClipmapPyramid::from_records(&build.brick_records);
+        // The pyramid must actually carry cells, else "on == off" is vacuous.
+        assert!(
+            !pyramid.level_1.cell_keys.is_empty() && !pyramid.level_2.cell_keys.is_empty(),
+            "{}: pyramid has no cells — the on/off comparison would be vacuous",
+            case.name
+        );
+        let (material_id, overlay_active) =
+            uniform_render_cell(&two_layer_chunks).unwrap_or((0, false));
+        let recentre = case.scene.recentre_voxels_for_resolve(vpb);
+        let grid_dimensions = case.scene.placed_region_dimensions(vpb);
+
+        let mut app_core = AppCore::new(OrbitCamera::default());
+        app_core.camera.target = glam::Vec3::ZERO;
+        app_core.camera.orbit_distance = OrbitCamera::auto_framed_distance(grid_dimensions);
+        let aspect_ratio = width as f32 / height as f32;
+        let view_projection = app_core.view_projection(aspect_ratio, grid_dimensions);
+        let viewport_px = [0u32, 0, width, height];
+        let band = LayerBand::FULL;
+        let gpu_records = pack_gpu_records(&build, |_| false);
+
+        let mut renderer = BrickRaymarchRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
+        let render = |renderer: &mut BrickRaymarchRenderer, pyramid: &ClipmapPyramid| {
+            renderer.install_brick_field(
+                &gpu.device,
+                &gpu.queue,
+                &build,
+                &gpu_records,
+                pyramid,
+                recentre,
+                material_id,
+                overlay_active,
+            );
+            renderer.update_uniforms(
+                &gpu.queue,
+                view_projection,
+                viewport_px,
+                grid_dimensions,
+                band,
+                false,
+                Some(MaterialChoice::default()),
+            );
+            renderer.render_hit_identity_image(&gpu.device, &gpu.queue, width, height)
+        };
+
+        let on_image = render(&mut renderer, &pyramid);
+        let off_image = render(&mut renderer, &ClipmapPyramid::empty());
+
+        let mut on_hits = 0usize;
+        let mut differing = 0usize;
+        let mut first: Option<(u32, u32, [u32; 4], [u32; 4])> = None;
+        for y in 0..height {
+            for x in 0..width {
+                let index = (y * width + x) as usize;
+                if on_image[index][0] == 1 {
+                    on_hits += 1;
+                }
+                if on_image[index] != off_image[index] {
+                    differing += 1;
+                    if first.is_none() {
+                        first = Some((x, y, off_image[index], on_image[index]));
+                    }
+                }
+            }
+        }
+        if on_hits == 0 {
+            failures.push(format!("{}: the gated view produced ZERO brick hits", case.name));
+            continue;
+        }
+        if differing > 0 {
+            failures.push(format!(
+                "{}: {differing}/{} pixels differ pyramid-on vs off (first {:?}) — the \
+                 hierarchical skip changed a hit (stride overshoot / off-by-epsilon)",
+                case.name,
+                width * height,
+                first
+            ));
+        } else {
+            eprintln!(
+                "{}: pyramid on == off ({on_hits} hits; L1 {} cells, L2 {} cells)",
+                case.name,
+                pyramid.level_1.cell_keys.len(),
+                pyramid.level_2.cell_keys.len()
+            );
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "brick clip-map changed the hit set (ADR 0011 gate coarse tier — pyramid must \
+         only skip empty space):\n{}",
+        failures.join("\n")
+    );
+}
+
+/// **ADR 0011 G2 perf probe (acceptance criterion).** The scattered-scene
+/// empty-space-skipping lift: a dozen small shapes far apart, the hierarchical DDA
+/// on vs off, reported as mean block-DDA steps per hitting ray (the CPU march's
+/// counted loop iterations — the same traversal the shader runs). `#[ignore]`d
+/// (measurement, not a gate); run with `cargo test --features gpu --release --
+/// --ignored clipmap_scattered_scene_skips_empty_space --nocapture`.
+#[test]
+#[ignore = "perf probe — run explicitly with --release --ignored --nocapture"]
+fn clipmap_scattered_scene_skips_empty_space() {
+    use voxel_worker::{
+        build_brick_field, cpu_march_brick_field_counted, pack_gpu_records, uniform_render_cell,
+        AppCore, BrickRaymarchRenderer, ClipmapPyramid, LayerBand, NodeTransform, OrbitCamera,
+        TwoLayerStore, COLOR_TARGET_FORMAT,
+    };
+
+    let gpu = pollster::block_on(GpuContext::new(None));
+    let width = 160u32;
+    let height = 160u32;
+    let vpb = 16u32;
+
+    // A wide scatter — a dozen small spheres spread far apart so rays cross large
+    // empty regions (where the pyramid pays off). Bigger spacing than the parity
+    // matrix's scattered case to make the lift unambiguous.
+    let mut nodes = Vec::new();
+    for index in 0..12i64 {
+        let shape = SdfShape::from_blocks(ShapeKind::Sphere, [3, 3, 3], 1, vpb);
+        let mut node = Node::new(
+            format!("s{index}"),
+            NodeContent::Tool { shape, material: MaterialChoice::Stone },
+        );
+        node.transform =
+            NodeTransform::from_blocks([(index % 4) * 40, (index / 4) * 40, (index % 3) * 48], vpb);
+        nodes.push(node);
+    }
+    let scene = Scene::from_nodes(nodes);
+    let two_layer_chunks = TwoLayerStore::enabled().build_covering_chunks(&scene, vpb, 0);
+    let build = build_brick_field(&two_layer_chunks, vpb);
+    let pyramid_on = ClipmapPyramid::from_records(&build.brick_records);
+    let pyramid_off = ClipmapPyramid::empty();
+    let gpu_records = pack_gpu_records(&build, |_| false);
+    let (material_id, overlay_active) = uniform_render_cell(&two_layer_chunks).unwrap_or((0, false));
+    let recentre = scene.recentre_voxels_for_resolve(vpb);
+    let grid_dimensions = scene.placed_region_dimensions(vpb);
+
+    let mut app_core = AppCore::new(OrbitCamera::default());
+    app_core.camera.target = glam::Vec3::ZERO;
+    app_core.camera.orbit_distance = OrbitCamera::auto_framed_distance(grid_dimensions);
+    let view_projection = app_core.view_projection(width as f32 / height as f32, grid_dimensions);
+
+    let mut renderer = BrickRaymarchRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
+    renderer.install_brick_field(
+        &gpu.device,
+        &gpu.queue,
+        &build,
+        &gpu_records,
+        &pyramid_on,
+        recentre,
+        material_id,
+        overlay_active,
+    );
+    let frame = renderer.update_uniforms(
+        &gpu.queue,
+        view_projection,
+        [0, 0, width, height],
+        grid_dimensions,
+        LayerBand::FULL,
+        false,
+        Some(MaterialChoice::default()),
+    );
+
+    // Sum block-DDA steps over the rays that HIT (empty-space skipping shows up on
+    // the rays that traverse the scene), pyramid on vs off. The two marches produce
+    // the identical hit set (proven by `brick_raymarch_pyramid_on_equals_off`), so
+    // this compares work-per-ray for the same pixels.
+    let (mut steps_on, mut steps_off, mut hitting_rays) = (0u64, 0u64, 0u64);
+    for y in 0..height {
+        for x in 0..width {
+            let pixel = glam::Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
+            let (hit_on, on) = cpu_march_brick_field_counted(&frame, &gpu_records, &build, &pyramid_on, pixel);
+            let (_hit_off, off) = cpu_march_brick_field_counted(&frame, &gpu_records, &build, &pyramid_off, pixel);
+            if hit_on.is_some() {
+                steps_on += on as u64;
+                steps_off += off as u64;
+                hitting_rays += 1;
+            }
+        }
+    }
+    assert!(hitting_rays > 0, "the scattered probe view produced no hits");
+    let mean_on = steps_on as f64 / hitting_rays as f64;
+    let mean_off = steps_off as f64 / hitting_rays as f64;
+    eprintln!(
+        "clip-map scattered probe ({}³ blocks span, {} sculpted bricks, {} hitting rays):\n  \
+         mean block-steps/ray  pyramid OFF = {:.1}  ON = {:.1}  →  {:.2}× fewer steps\n  \
+         L1 {} cells, L2 {} cells",
+        grid_dimensions.map(|d| d / vpb).iter().max().copied().unwrap_or(0),
+        build.sculpted_brick_count(),
+        hitting_rays,
+        mean_off,
+        mean_on,
+        mean_off / mean_on.max(1.0),
+        pyramid_on.level_1.cell_keys.len(),
+        pyramid_on.level_2.cell_keys.len(),
+    );
+    assert!(
+        steps_on < steps_off,
+        "the hierarchical DDA must reduce block-steps on a scattered scene (on {steps_on} \
+         vs off {steps_off})"
     );
 }

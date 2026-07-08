@@ -416,11 +416,13 @@ impl WindowedState {
                 if !build.brick_records.is_empty() {
                     let mut renderer =
                         BrickRaymarchRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
+                    let pyramid = voxel_worker::ClipmapPyramid::from_records(&build.brick_records);
                     renderer.install_brick_field(
                         &gpu.device,
                         &gpu.queue,
                         &build,
                         &voxel_worker::pack_gpu_records(&build, |_| false),
+                        &pyramid,
                         startup_recentre,
                         material_id,
                         overlay_active,
@@ -957,11 +959,14 @@ impl WindowedState {
                                 COLOR_TARGET_FORMAT,
                             )
                         });
+                        let pyramid =
+                            voxel_worker::ClipmapPyramid::from_records(&build.brick_records);
                         renderer.install_brick_field(
                             &self.gpu.device,
                             &self.gpu.queue,
                             &build,
                             &voxel_worker::pack_gpu_records(&build, |_| false),
+                            &pyramid,
                             recentre_voxels,
                             material_id,
                             overlay_active,

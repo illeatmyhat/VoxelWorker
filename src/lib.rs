@@ -76,13 +76,14 @@ pub use app_core::{
 };
 pub use store::{ChunkCacheKey, ChunkResolveCache, Store};
 pub use brick_field::{
-    build_brick_field, pack_world_block_key, read_back_brick_atlas, unpack_world_block_key,
-    upload_brick_atlas, BrickFieldBuild, BrickPayload, BrickRecord,
+    build_brick_field, pack_clipmap_level_keys, pack_world_block_key, read_back_brick_atlas,
+    unpack_world_block_key, upload_brick_atlas, BrickFieldBuild, BrickPayload, BrickRecord,
+    ClipmapLevel, ClipmapPyramid, CLIPMAP_LEVEL_1_BLOCKS_PER_CELL, CLIPMAP_LEVEL_2_BLOCKS_PER_CELL,
 };
 pub use brick_raymarch::{
-    cpu_march_brick_field, cpu_march_exact_occupancy, pack_gpu_records, uniform_render_cell,
-    BrickGpuRecord, BrickMarchFrame, BrickRaymarchRenderer, CpuMarchHit,
-    NON_RESIDENT_ATLAS_SLOT,
+    cpu_march_brick_field, cpu_march_brick_field_counted, cpu_march_exact_occupancy,
+    pack_gpu_records, uniform_render_cell, BrickGpuRecord, BrickMarchFrame, BrickRaymarchRenderer,
+    CpuMarchHit, NON_RESIDENT_ATLAS_SLOT,
 };
 pub use chunk_storage::{compress, decompress, CompressedChunk, Occupancy, SparseCell};
 pub use disk_chunk_store::{DiskChunkStore, DiskChunkStoreStats};

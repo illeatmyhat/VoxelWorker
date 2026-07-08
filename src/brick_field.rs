@@ -76,6 +76,118 @@ pub fn unpack_world_block_key(key: u64) -> [i64; 3] {
     [unpack_lane(0), unpack_lane(1), unpack_lane(2)]
 }
 
+// ============================================================================
+// Clip-map occupancy pyramid (ADR 0011 Decision 4a / slice G2) — two WORLD-FIXED
+// coarse "any-brick-inside" levels above the brick set, a min-mip of the record
+// keys. The hierarchical DDA (brick_raymarch.wgsl) jumps a ray to the exit of the
+// coarsest EMPTY level covering its position — one stride through empty space —
+// descending to per-block brick work only where a level reports occupancy. This
+// is the port of ADR 0009's measured 160→10240 (~64×) scattered-ceiling lift.
+// ============================================================================
+
+/// Level 1 (fine) clip-map cell edge, in BLOCKS — the benchmark's proven config
+/// (ADR 0011 Decision 4a). Block-denominated (density-agnostic by construction),
+/// never a hard-coded voxel count.
+pub const CLIPMAP_LEVEL_1_BLOCKS_PER_CELL: u32 = 8;
+/// Level 2 (coarse) clip-map cell edge, in BLOCKS (the benchmark's L2).
+pub const CLIPMAP_LEVEL_2_BLOCKS_PER_CELL: u32 = 64;
+
+/// One clip-map occupancy level: cells of `blocks_per_cell` blocks per axis, each
+/// a packed cell key (the SAME 21-bit z-major packing as a brick record's block
+/// key, applied to the CELL coordinate = `floor_div(absolute_block,
+/// blocks_per_cell)`). `cell_keys` is sorted strictly ascending + unique — the
+/// order the in-shader binary search relies on, exactly like the record array.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClipmapLevel {
+    /// Cell edge in blocks (8 for L1, 64 for L2). Block-denominated.
+    pub blocks_per_cell: u32,
+    /// The occupied cells' packed keys, sorted ascending + deduplicated — a
+    /// SUPERSET of the true occupied cells by construction (every record's cell is
+    /// present), so the hierarchical DDA only ever skips provably-empty space.
+    pub cell_keys: Vec<u64>,
+}
+
+impl ClipmapLevel {
+    /// An empty level (no occupied cells) — the "pyramid off" form the renderer
+    /// installs to A/B the hierarchical skip (`record_count == 0` ⇒ the shader
+    /// never skips, so the march is the flat G1 block-DDA).
+    pub fn empty(blocks_per_cell: u32) -> Self {
+        ClipmapLevel {
+            blocks_per_cell: blocks_per_cell.max(1),
+            cell_keys: Vec::new(),
+        }
+    }
+
+    /// Fold a record set's block keys into this level's occupied-cell set: every
+    /// record's block maps to exactly one cell; the deduplicated, sorted set is
+    /// the min-mip. Pure function of the record keys (ADR 0011 4a).
+    pub fn from_records(records: &[BrickRecord], blocks_per_cell: u32) -> Self {
+        let blocks_per_cell = blocks_per_cell.max(1);
+        let cell_size = blocks_per_cell as i64;
+        let mut cell_keys: Vec<u64> = records
+            .iter()
+            .map(|record| {
+                let block = unpack_world_block_key(record.packed_world_block_key);
+                let cell = [
+                    block[0].div_euclid(cell_size),
+                    block[1].div_euclid(cell_size),
+                    block[2].div_euclid(cell_size),
+                ];
+                pack_world_block_key(cell)
+            })
+            .collect();
+        cell_keys.sort_unstable();
+        cell_keys.dedup();
+        ClipmapLevel {
+            blocks_per_cell,
+            cell_keys,
+        }
+    }
+}
+
+/// The two-level clip-map pyramid (L1 = 8-block cells, L2 = 64-block cells; ADR
+/// 0011 Decision 4a, 2 levels first). A derived, rebuildable min-mip of the brick
+/// records — never truth (ADR 0006/0009 4c).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClipmapPyramid {
+    /// Fine level (8-block cells).
+    pub level_1: ClipmapLevel,
+    /// Coarse level (64-block cells) — checked first by the hierarchical DDA.
+    pub level_2: ClipmapLevel,
+}
+
+impl ClipmapPyramid {
+    /// Build both levels from a brick-field's sorted records (a pure function of
+    /// the record keys — the sink derives it next to the record set).
+    pub fn from_records(records: &[BrickRecord]) -> Self {
+        ClipmapPyramid {
+            level_1: ClipmapLevel::from_records(records, CLIPMAP_LEVEL_1_BLOCKS_PER_CELL),
+            level_2: ClipmapLevel::from_records(records, CLIPMAP_LEVEL_2_BLOCKS_PER_CELL),
+        }
+    }
+
+    /// The "pyramid off" form — both levels empty, so the shader's hierarchical
+    /// skip never fires (the flat G1 block-DDA). Used by the pyramid-on == off
+    /// parity assertion and the perf probe's baseline.
+    pub fn empty() -> Self {
+        ClipmapPyramid {
+            level_1: ClipmapLevel::empty(CLIPMAP_LEVEL_1_BLOCKS_PER_CELL),
+            level_2: ClipmapLevel::empty(CLIPMAP_LEVEL_2_BLOCKS_PER_CELL),
+        }
+    }
+}
+
+/// Split a level's sorted u64 cell keys into the `(hi, lo)` u32 pairs the WGSL
+/// binary search consumes (no u64 in WGSL) — the pyramid analogue of
+/// `pack_gpu_records`' key split.
+pub fn pack_clipmap_level_keys(level: &ClipmapLevel) -> Vec<[u32; 2]> {
+    level
+        .cell_keys
+        .iter()
+        .map(|&key| [(key >> 32) as u32, key as u32])
+        .collect()
+}
+
 /// What a brick holds — ADR 0011 Decision 2's two record kinds. The enum makes
 /// "a coarse record consumes no atlas slot" structural, not a convention.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -578,6 +690,84 @@ mod tests {
         // The scene must actually exercise both kinds, else the mapping is untested.
         assert!(expected_coarse > 0, "fixture must contain coarse-solid blocks");
         assert!(expected_sculpted > 0, "fixture must contain boundary blocks");
+    }
+
+    /// The clip-map pyramid is CONSERVATIVE (ADR 0011 parity gate, coarse tier):
+    /// each level's occupied-cell set is a SUPERSET of the true occupied cells
+    /// (every record's cell present), sorted strictly ascending + unique, at ANY
+    /// density (block-denominated cells — nothing hard-codes 16). A scattered
+    /// multi-object scene so the levels actually span more than one cell.
+    #[test]
+    fn clipmap_pyramid_is_conservative_and_sorted() {
+        use crate::{Node, NodeContent, NodeTransform};
+        for &voxels_per_block in &[16u32, 4] {
+            // A dozen small shapes far apart — the scattered scene the LOD targets.
+            let mut nodes = Vec::new();
+            for i in 0..12i64 {
+                let shape = crate::voxel::SdfShape::from_blocks(
+                    ShapeKind::Sphere,
+                    [3, 3, 3],
+                    1,
+                    voxels_per_block,
+                );
+                let mut node = Node::new(
+                    format!("s{i}"),
+                    NodeContent::Tool {
+                        shape,
+                        material: MaterialChoice::Stone,
+                    },
+                );
+                // Spread them ~16 blocks apart on a lattice so cells are scattered.
+                node.transform = NodeTransform::from_blocks(
+                    [(i % 4) * 16, (i / 4) * 16, (i % 3) * 20],
+                    voxels_per_block,
+                );
+                nodes.push(node);
+            }
+            let scene = Scene::from_nodes(nodes);
+            let two_layer_chunks =
+                TwoLayerStore::enabled().build_covering_chunks(&scene, voxels_per_block, 0);
+            let build = build_brick_field(&two_layer_chunks, voxels_per_block);
+            assert!(!build.brick_records.is_empty());
+            let pyramid = ClipmapPyramid::from_records(&build.brick_records);
+
+            for (level, blocks_per_cell) in [
+                (&pyramid.level_1, CLIPMAP_LEVEL_1_BLOCKS_PER_CELL),
+                (&pyramid.level_2, CLIPMAP_LEVEL_2_BLOCKS_PER_CELL),
+            ] {
+                assert_eq!(level.blocks_per_cell, blocks_per_cell);
+                assert!(
+                    level.cell_keys.windows(2).all(|pair| pair[0] < pair[1]),
+                    "level {blocks_per_cell} keys must be sorted strictly ascending + unique"
+                );
+                // Truth: the cell of every record must be present (superset ⇒ the
+                // DDA never strides past a real surface).
+                let level_set: std::collections::BTreeSet<u64> =
+                    level.cell_keys.iter().copied().collect();
+                let cell_size = blocks_per_cell as i64;
+                let mut true_cells = std::collections::BTreeSet::new();
+                for record in &build.brick_records {
+                    let b = unpack_world_block_key(record.packed_world_block_key);
+                    let cell = [
+                        b[0].div_euclid(cell_size),
+                        b[1].div_euclid(cell_size),
+                        b[2].div_euclid(cell_size),
+                    ];
+                    true_cells.insert(pack_world_block_key(cell));
+                }
+                assert!(
+                    true_cells.is_subset(&level_set),
+                    "level {blocks_per_cell} must cover every occupied cell (conservative)"
+                );
+                // The min-mip carries no cell the records don't (exactness of the
+                // derivation — a spurious occupied cell would only cost perf, but
+                // proves the fold has no stray keys).
+                assert_eq!(level_set, true_cells);
+                assert!(!level.cell_keys.is_empty());
+            }
+            // The coarse level must not be finer than L1 (fewer-or-equal cells).
+            assert!(pyramid.level_2.cell_keys.len() <= pyramid.level_1.cell_keys.len());
+        }
     }
 
     /// CPU byte-exactness at a non-16 density: every sculpted brick's atlas bytes equal

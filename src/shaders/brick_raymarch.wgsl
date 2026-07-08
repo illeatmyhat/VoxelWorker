@@ -73,6 +73,10 @@ struct BrickUniforms {
     // frame) — the layer-range band clip, applied at traverse time (the mesh path
     // applies it at build time). zw unused.
     band_voxel_sv: vec4<i32>,
+    // ADR 0011 G2 clip-map pyramid: x = L1 blocks/cell, y = L1 cell count, z = L2
+    // blocks/cell, w = L2 cell count. A zero count disables that level's skip (the
+    // flat G1 block-DDA) — how the pyramid-on == off parity A/B's the same shader.
+    clipmap_blocks_and_counts: vec4<u32>,
     // The traversal AABB in the sv frame: the resident bricks' bounds intersected
     // with the band slab. Rays outside it never march.
     traversal_lo: vec4<f32>,
@@ -101,6 +105,14 @@ var<storage, read> brick_records: array<BrickGpuRecord>;
 // textureLoad — exact, no filtering.
 @group(0) @binding(2)
 var sculpted_atlas: texture_3d<f32>;
+
+// ADR 0011 G2 clip-map occupancy levels: sorted (hi, lo) packed CELL keys, a
+// min-mip of the brick records. L1 = 8-block cells, L2 = 64-block cells. Empty
+// (count 0) ⇒ that level's hierarchical skip is off.
+@group(0) @binding(3)
+var<storage, read> clipmap_level_1_keys: array<vec2<u32>>;
+@group(0) @binding(4)
+var<storage, read> clipmap_level_2_keys: array<vec2<u32>>;
 
 // The SAME procedural material atlas + nearest/clamp sampler the cuboid mesh
 // binds, so a brick-path pixel samples the identical texel.
@@ -224,6 +236,109 @@ fn floor_div(value: i32, divisor: i32) -> i32 {
     return select(quotient, quotient - 1, remainder != 0 && (remainder < 0) != (divisor < 0));
 }
 
+// ADR 0011 G2 — the hierarchical clip-map DDA helpers.
+
+// The hair a coarse-cell skip steps PAST the exit face before re-deriving the
+// block cell — larger than the per-block 1e-4 so the jump reliably lands in the
+// next cell. MUST match `CLIPMAP_JUMP_EPSILON` in brick_raymarch.rs.
+const CLIPMAP_JUMP_EPSILON: f32 = 1e-3;
+
+// Binary-search a sorted (hi, lo) key array for `count` cells — the cell-key twin
+// of `find_brick_record`. Two thin copies because WGSL can't index a storage
+// binding dynamically; each searches its own level array.
+fn clipmap_level_1_contains(key_hi: u32, key_lo: u32, count: u32) -> bool {
+    var low = 0;
+    var high = i32(count) - 1;
+    loop {
+        if (low > high) { break; }
+        let mid = (low + high) / 2;
+        let cell = clipmap_level_1_keys[mid];
+        if (cell.x == key_hi && cell.y == key_lo) { return true; }
+        let cell_less = cell.x < key_hi || (cell.x == key_hi && cell.y < key_lo);
+        if (cell_less) { low = mid + 1; } else { high = mid - 1; }
+    }
+    return false;
+}
+
+fn clipmap_level_2_contains(key_hi: u32, key_lo: u32, count: u32) -> bool {
+    var low = 0;
+    var high = i32(count) - 1;
+    loop {
+        if (low > high) { break; }
+        let mid = (low + high) / 2;
+        let cell = clipmap_level_2_keys[mid];
+        if (cell.x == key_hi && cell.y == key_lo) { return true; }
+        let cell_less = cell.x < key_hi || (cell.x == key_hi && cell.y < key_lo);
+        if (cell_less) { low = mid + 1; } else { high = mid - 1; }
+    }
+    return false;
+}
+
+// The clip-map cell of an absolute block, at `blocks_per_cell` blocks/axis.
+fn clipmap_cell_of(absolute_block: vec3<i32>, blocks_per_cell: i32) -> vec3<i32> {
+    return vec3<i32>(
+        floor_div(absolute_block.x, blocks_per_cell),
+        floor_div(absolute_block.y, blocks_per_cell),
+        floor_div(absolute_block.z, blocks_per_cell),
+    );
+}
+
+// The sv-frame float box a clip-map cell covers (block boundaries → voxels).
+struct CellBox { lo: vec3<f32>, hi: vec3<f32> };
+fn clipmap_cell_box(cell: vec3<i32>, blocks_per_cell: i32, edge: i32) -> CellBox {
+    let sv_block_lo = cell * blocks_per_cell - uniforms.block_bias_and_tiles.xyz;
+    var out: CellBox;
+    out.lo = vec3<f32>(sv_block_lo * edge);
+    out.hi = vec3<f32>((sv_block_lo + vec3<i32>(blocks_per_cell)) * edge);
+    return out;
+}
+
+// The result of a hierarchical skip: whether it advanced past the current block
+// (else the caller falls through to the per-block step, guaranteeing progress),
+// and the re-seeded block DDA state at the cell's exit.
+struct DdaJump {
+    advanced: bool,
+    block_cell: vec3<i32>,
+    t_max: vec3<f32>,
+    t_block_enter: f32,
+};
+
+// Jump the block DDA to the exit of `cell_box` (one stride through empty space)
+// and re-seed it at the landing position — the mirror of `cpu` cell_exit_and_reseed.
+fn clipmap_try_skip(ray: Ray, edge: f32, cell_box: CellBox, current_block_cell: vec3<i32>) -> DdaJump {
+    let inverse = 1.0 / ray.safe_direction;
+    let t_a = (cell_box.lo - ray.origin) * inverse;
+    let t_b = (cell_box.hi - ray.origin) * inverse;
+    let t_far = max(t_a, t_b);
+    let cell_exit = min(min(t_far.x, t_far.y), t_far.z);
+    let jump_t = cell_exit + CLIPMAP_JUMP_EPSILON;
+    let jump_position = ray.origin + ray.direction * jump_t;
+    let new_block = vec3<i32>(floor(jump_position / edge));
+    let block_step = vec3<i32>(sign(ray.direction));
+    var out: DdaJump;
+    out.advanced = any(new_block != current_block_cell);
+    out.block_cell = new_block;
+    out.t_block_enter = jump_t;
+    out.t_max = vec3<f32>(
+        select(
+            (f32(new_block.x) * edge - jump_position.x) / ray.safe_direction.x,
+            (f32(new_block.x + 1) * edge - jump_position.x) / ray.safe_direction.x,
+            block_step.x > 0,
+        ) + jump_t,
+        select(
+            (f32(new_block.y) * edge - jump_position.y) / ray.safe_direction.y,
+            (f32(new_block.y + 1) * edge - jump_position.y) / ray.safe_direction.y,
+            block_step.y > 0,
+        ) + jump_t,
+        select(
+            (f32(new_block.z) * edge - jump_position.z) / ray.safe_direction.z,
+            (f32(new_block.z + 1) * edge - jump_position.z) / ray.safe_direction.z,
+            block_step.z > 0,
+        ) + jump_t,
+    );
+    return out;
+}
+
 // Is a voxel of a sculpted brick occupied? Exact textureLoad of the R8 atlas.
 fn sculpted_voxel_occupied(atlas_slot: u32, brick_local_voxel: vec3<i32>) -> bool {
     let tiles = u32(uniforms.block_bias_and_tiles.w);
@@ -334,6 +449,40 @@ fn march_brick_field(ray: Ray) -> MarchHit {
 
     for (var step = 0; step < MAX_BLOCK_STEPS; step = step + 1) {
         let absolute_block = block_cell + uniforms.block_bias_and_tiles.xyz;
+
+        // G2 hierarchical DDA: check the coarsest level covering this block; an empty
+        // cell jumps the ray to its exit in ONE stride, descending L2 → L1 → per-block.
+        // A zero count = level off (never skip). The jump falls through to a normal
+        // per-block step when it wouldn't advance (grazing / eps) — guaranteed progress.
+        let clipmap = uniforms.clipmap_blocks_and_counts;
+        let l2_blocks = i32(clipmap.z);
+        let l1_blocks = i32(clipmap.x);
+        let cell_2 = clipmap_cell_of(absolute_block, l2_blocks);
+        let cell_1 = clipmap_cell_of(absolute_block, l1_blocks);
+        let key_2 = pack_world_block_key_split(cell_2);
+        let key_1 = pack_world_block_key_split(cell_1);
+        let level_2_empty = clipmap.w > 0u && !clipmap_level_2_contains(key_2.x, key_2.y, clipmap.w);
+        let level_1_empty = clipmap.y > 0u && !clipmap_level_1_contains(key_1.x, key_1.y, clipmap.y);
+        if (level_2_empty) {
+            let jump = clipmap_try_skip(ray, edge, clipmap_cell_box(cell_2, l2_blocks, edge_i), block_cell);
+            if (jump.advanced) {
+                if (jump.t_block_enter > t_exit) { break; }
+                block_cell = jump.block_cell;
+                t_max = jump.t_max;
+                t_block_enter = jump.t_block_enter;
+                continue;
+            }
+        } else if (level_1_empty) {
+            let jump = clipmap_try_skip(ray, edge, clipmap_cell_box(cell_1, l1_blocks, edge_i), block_cell);
+            if (jump.advanced) {
+                if (jump.t_block_enter > t_exit) { break; }
+                block_cell = jump.block_cell;
+                t_max = jump.t_max;
+                t_block_enter = jump.t_block_enter;
+                continue;
+            }
+        }
+
         let key = pack_world_block_key_split(absolute_block);
         let record_index = find_brick_record(key.x, key.y);
         if (record_index >= 0) {

@@ -31,7 +31,8 @@ use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
 use crate::brick_field::{
-    unpack_world_block_key, upload_brick_atlas, BrickFieldBuild, BrickPayload,
+    pack_clipmap_level_keys, pack_world_block_key, unpack_world_block_key, upload_brick_atlas,
+    BrickFieldBuild, BrickPayload, ClipmapLevel, ClipmapPyramid,
 };
 use crate::core_geom::MaterialChoice;
 use crate::cuboid_mesh::{cell_key_has_overlay, clean_block_id};
@@ -179,6 +180,10 @@ struct BrickUniformsPod {
     block_bias_and_tiles: [i32; 4],
     voxel_bias: [i32; 4],
     band_voxel_sv: [i32; 4],
+    // ADR 0011 G2 clip-map pyramid: [L1 blocks/cell, L1 cell count, L2 blocks/cell,
+    // L2 cell count]. A zero count disables that level's hierarchical skip (the
+    // flat G1 block-DDA), which is how the pyramid-on == off parity is A/B'd.
+    clipmap_blocks_and_counts: [u32; 4],
     traversal_lo: [f32; 4],
     traversal_hi: [f32; 4],
     material_base_colors: [[f32; 4]; MaterialChoice::MATERIAL_COUNT],
@@ -209,6 +214,13 @@ pub struct BrickRaymarchRenderer {
     /// Inclusive absolute world-block bounds of the resident record set (the
     /// traversal AABB's source); `None` when no field is installed.
     absolute_block_bounds: Option<([i64; 3], [i64; 3])>,
+    /// ADR 0011 G2 clip-map pyramid: cells/blocks per level + the installed cell
+    /// counts (0 ⇒ that level's hierarchical skip is off). Uploaded to the shader
+    /// as `clipmap_blocks_and_counts`.
+    clipmap_level_1_blocks: u32,
+    clipmap_level_1_count: u32,
+    clipmap_level_2_blocks: u32,
+    clipmap_level_2_count: u32,
 }
 
 impl BrickRaymarchRenderer {
@@ -247,6 +259,19 @@ impl BrickRaymarchRenderer {
         let atlas_texture = upload_brick_atlas(device, queue, &empty_build);
         let atlas_view = atlas_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
+        // Placeholder clip-map key buffers (count 0 ⇒ the shader never reads them).
+        let placeholder_keys = [[0u32, 0u32]];
+        let level_1_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("brick raymarch clip-map L1 keys"),
+            contents: bytemuck::cast_slice(&placeholder_keys),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        let level_2_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("brick raymarch clip-map L2 keys"),
+            contents: bytemuck::cast_slice(&placeholder_keys),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+
         let field_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("brick raymarch field layout"),
@@ -281,6 +306,27 @@ impl BrickRaymarchRenderer {
                         },
                         count: None,
                     },
+                    // ADR 0011 G2: the two clip-map occupancy levels (sorted cell keys).
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
                 ],
             });
         let field_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -298,6 +344,14 @@ impl BrickRaymarchRenderer {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: wgpu::BindingResource::TextureView(&atlas_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: level_1_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: level_2_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -446,6 +500,10 @@ impl BrickRaymarchRenderer {
             brick_edge_voxels: 1,
             bricks_per_axis: 0,
             absolute_block_bounds: None,
+            clipmap_level_1_blocks: crate::brick_field::CLIPMAP_LEVEL_1_BLOCKS_PER_CELL,
+            clipmap_level_1_count: 0,
+            clipmap_level_2_blocks: crate::brick_field::CLIPMAP_LEVEL_2_BLOCKS_PER_CELL,
+            clipmap_level_2_count: 0,
         }
     }
 
@@ -462,6 +520,7 @@ impl BrickRaymarchRenderer {
         queue: &wgpu::Queue,
         build: &BrickFieldBuild,
         gpu_records: &[BrickGpuRecord],
+        pyramid: &ClipmapPyramid,
         recentre_voxels: [i64; 3],
         material_id: u16,
         overlay_active: bool,
@@ -493,6 +552,34 @@ impl BrickRaymarchRenderer {
         });
         let atlas_texture = upload_brick_atlas(device, queue, build);
         let atlas_view = atlas_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        // The clip-map levels: split cell keys → (hi, lo) storage buffers. An empty
+        // level uploads a single zeroed placeholder (its count is 0, so the shader
+        // never reads it — that is the "pyramid off" install the A/B parity uses).
+        let placeholder_keys = [[0u32, 0u32]];
+        let level_1_keys = pack_clipmap_level_keys(&pyramid.level_1);
+        let level_2_keys = pack_clipmap_level_keys(&pyramid.level_2);
+        let level_1_bytes: &[u8] = if level_1_keys.is_empty() {
+            bytemuck::cast_slice(&placeholder_keys)
+        } else {
+            bytemuck::cast_slice(&level_1_keys)
+        };
+        let level_2_bytes: &[u8] = if level_2_keys.is_empty() {
+            bytemuck::cast_slice(&placeholder_keys)
+        } else {
+            bytemuck::cast_slice(&level_2_keys)
+        };
+        let level_1_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("brick raymarch clip-map L1 keys"),
+            contents: level_1_bytes,
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        let level_2_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("brick raymarch clip-map L2 keys"),
+            contents: level_2_bytes,
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+
         self.field_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("brick raymarch field bind group"),
             layout: &self.field_bind_group_layout,
@@ -509,8 +596,20 @@ impl BrickRaymarchRenderer {
                     binding: 2,
                     resource: wgpu::BindingResource::TextureView(&atlas_view),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: level_1_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: level_2_buffer.as_entire_binding(),
+                },
             ],
         });
+        self.clipmap_level_1_blocks = pyramid.level_1.blocks_per_cell;
+        self.clipmap_level_1_count = level_1_keys.len() as u32;
+        self.clipmap_level_2_blocks = pyramid.level_2.blocks_per_cell;
+        self.clipmap_level_2_count = level_2_keys.len() as u32;
         self.record_count = gpu_records.len() as u32;
         self.material_id = material_id;
         self.overlay_active = overlay_active;
@@ -525,6 +624,8 @@ impl BrickRaymarchRenderer {
     pub fn clear_brick_field(&mut self) {
         self.record_count = 0;
         self.absolute_block_bounds = None;
+        self.clipmap_level_1_count = 0;
+        self.clipmap_level_2_count = 0;
     }
 
     /// Whether a non-empty brick field is installed (the draw would show bricks).
@@ -689,6 +790,12 @@ impl BrickRaymarchRenderer {
                 0,
             ],
             band_voxel_sv: [frame.band_voxel_sv[0], frame.band_voxel_sv[1], 0, 0],
+            clipmap_blocks_and_counts: [
+                self.clipmap_level_1_blocks.max(1),
+                self.clipmap_level_1_count,
+                self.clipmap_level_2_blocks.max(1),
+                self.clipmap_level_2_count,
+            ],
             traversal_lo: frame.traversal_lo.extend(0.0).to_array(),
             traversal_hi: frame.traversal_hi.extend(0.0).to_array(),
             material_base_colors: base_colors,
@@ -905,22 +1012,62 @@ fn cpu_pack_key_split(absolute_block: [i32; 3]) -> (u32, u32) {
     )
 }
 
+/// The hair the hierarchical DDA steps PAST a coarse-cell exit face before
+/// re-deriving the block cell — larger than the per-block `1e-4` so the jump
+/// reliably lands in the next cell. MUST match `CLIPMAP_JUMP_EPSILON` in the WGSL.
+const CLIPMAP_JUMP_EPSILON: f32 = 1e-3;
+
+/// Is the clip-map cell containing `absolute_block` occupied — or the level OFF
+/// (empty ⇒ no hierarchical skip, the flat G1 DDA)? Mirrors the shader's
+/// `clipmap_cell_occupied`: floor-div the absolute block into the cell lattice,
+/// pack the cell key, binary-search the sorted level.
+fn cpu_clipmap_cell_occupied(level: &ClipmapLevel, absolute_block: glam::IVec3) -> bool {
+    if level.cell_keys.is_empty() {
+        return true;
+    }
+    let blocks = level.blocks_per_cell.max(1) as i32;
+    let cell = [
+        absolute_block.x.div_euclid(blocks) as i64,
+        absolute_block.y.div_euclid(blocks) as i64,
+        absolute_block.z.div_euclid(blocks) as i64,
+    ];
+    let key = pack_world_block_key(cell);
+    level.cell_keys.binary_search(&key).is_ok()
+}
+
 /// March one pixel-centre ray through the brick field on the CPU — a step-for-step
 /// f32 mirror of the WGSL `march_brick_field` (same op order, same tie-breaks, same
-/// clamped boxes and residency-miss branch), returning the hit voxel in absolute
-/// coordinates. The parity net asserts the GPU hit-identity image equals this.
+/// clamped boxes, residency-miss branch, and G2 hierarchical clip-map skip),
+/// returning the hit voxel in absolute coordinates. The parity net asserts the GPU
+/// hit-identity image equals this. `pyramid` with empty levels is the "pyramid off"
+/// form (the flat block-DDA) — the A/B baseline the pyramid-on == off parity uses.
 pub fn cpu_march_brick_field(
     frame: &BrickMarchFrame,
     records: &[BrickGpuRecord],
     build: &BrickFieldBuild,
+    pyramid: &ClipmapPyramid,
     pixel: glam::Vec2,
 ) -> Option<CpuMarchHit> {
+    cpu_march_brick_field_counted(frame, records, build, pyramid, pixel).0
+}
+
+/// [`cpu_march_brick_field`] plus the number of block-DDA loop iterations the ray
+/// took (each iteration is one hierarchical jump OR one per-block step) — the
+/// empty-space-skip metric the scattered-scene perf probe reports pyramid on vs off.
+pub fn cpu_march_brick_field_counted(
+    frame: &BrickMarchFrame,
+    records: &[BrickGpuRecord],
+    build: &BrickFieldBuild,
+    pyramid: &ClipmapPyramid,
+    pixel: glam::Vec2,
+) -> (Option<CpuMarchHit>, u32) {
     let (origin, direction) = cpu_camera_ray(frame, pixel);
     let safe = safe_direction(direction);
     let edge = frame.brick_edge_voxels as f32;
     let edge_i = frame.brick_edge_voxels;
     let bounds_lo = frame.traversal_lo;
     let bounds_hi = frame.traversal_hi;
+    let block_bias = glam::IVec3::from_array(frame.block_bias);
 
     let inverse = 1.0 / safe;
     let t_a = (bounds_lo - origin) * inverse;
@@ -930,7 +1077,7 @@ pub fn cpu_march_brick_field(
     let t_enter = t_near.x.max(t_near.y).max(t_near.z).max(0.0);
     let t_exit = t_far.x.min(t_far.y).min(t_far.z);
     if t_exit < t_enter {
-        return None;
+        return (None, 0);
     }
 
     let entry_position = origin + direction * (t_enter + 1e-4);
@@ -955,12 +1102,69 @@ pub fn cpu_march_brick_field(
     );
     let mut t_block_enter = t_enter;
 
+    // Re-seed the block DDA at the exit of the clip-map cell of `absolute_block`
+    // (cells `blocks` blocks/axis) — the CPU mirror of the shader `clipmap_try_skip`.
+    // Returns `(new_block_cell, new_t_max, jump_t)`; the caller compares `new_block`
+    // to the current cell to decide advancement (no capture of the mutated cell).
+    let cell_exit_and_reseed =
+        |absolute_block: glam::IVec3, blocks: i32| -> (glam::IVec3, glam::Vec3, f32) {
+            let cell = glam::IVec3::new(
+                absolute_block.x.div_euclid(blocks),
+                absolute_block.y.div_euclid(blocks),
+                absolute_block.z.div_euclid(blocks),
+            );
+            let sv_block_lo = cell * blocks - block_bias;
+            let cell_lo = sv_block_lo.as_vec3() * edge;
+            let cell_hi = (sv_block_lo + glam::IVec3::splat(blocks)).as_vec3() * edge;
+            let ta = (cell_lo - origin) * inverse;
+            let tb = (cell_hi - origin) * inverse;
+            let tfar = ta.max(tb);
+            let cell_exit = tfar.x.min(tfar.y).min(tfar.z);
+            let jump_t = cell_exit + CLIPMAP_JUMP_EPSILON;
+            let jump_pos = origin + direction * jump_t;
+            let new_block = (jump_pos / edge).floor().as_ivec3();
+            let new_t_max = glam::Vec3::new(
+                seed_axis(new_block.x, block_step.x, jump_pos.x, safe.x) + jump_t,
+                seed_axis(new_block.y, block_step.y, jump_pos.y, safe.y) + jump_t,
+                seed_axis(new_block.z, block_step.z, jump_pos.z, safe.z) + jump_t,
+            );
+            (new_block, new_t_max, jump_t)
+        };
+
+    let mut steps = 0u32;
     for _ in 0..1024 {
-        let absolute_block = [
-            block_cell.x + frame.block_bias[0],
-            block_cell.y + frame.block_bias[1],
-            block_cell.z + frame.block_bias[2],
-        ];
+        steps += 1;
+        let absolute_block_v = block_cell + block_bias;
+        // G2 hierarchical DDA: check the coarsest level first; an empty cell jumps
+        // the ray to that cell's exit in one stride, descending L2 → L1 → per-block.
+        // A jump that wouldn't advance the block cell falls through to a per-block
+        // step (guaranteed progress).
+        if !cpu_clipmap_cell_occupied(&pyramid.level_2, absolute_block_v) {
+            let (new_block, new_t_max, jump_t) =
+                cell_exit_and_reseed(absolute_block_v, pyramid.level_2.blocks_per_cell.max(1) as i32);
+            if new_block != block_cell {
+                if jump_t > t_exit {
+                    break;
+                }
+                block_cell = new_block;
+                t_max = new_t_max;
+                t_block_enter = jump_t;
+                continue;
+            }
+        } else if !cpu_clipmap_cell_occupied(&pyramid.level_1, absolute_block_v) {
+            let (new_block, new_t_max, jump_t) =
+                cell_exit_and_reseed(absolute_block_v, pyramid.level_1.blocks_per_cell.max(1) as i32);
+            if new_block != block_cell {
+                if jump_t > t_exit {
+                    break;
+                }
+                block_cell = new_block;
+                t_max = new_t_max;
+                t_block_enter = jump_t;
+                continue;
+            }
+        }
+        let absolute_block = [absolute_block_v.x, absolute_block_v.y, absolute_block_v.z];
         let (key_hi, key_lo) = cpu_pack_key_split(absolute_block);
         if let Some(record_index) = cpu_find_brick_record(records, key_hi, key_lo) {
             let record = records[record_index];
@@ -995,13 +1199,16 @@ pub fn cpu_march_brick_field(
                             .floor()
                             .as_ivec3()
                             .clamp(block_min_voxel, block_min_voxel + glam::IVec3::splat(edge_i - 1));
-                        return Some(CpuMarchHit {
-                            absolute_voxel: [
-                                voxel_cell.x + frame.voxel_bias[0],
-                                voxel_cell.y + frame.voxel_bias[1],
-                                voxel_cell.z + frame.voxel_bias[2],
-                            ],
-                        });
+                        return (
+                            Some(CpuMarchHit {
+                                absolute_voxel: [
+                                    voxel_cell.x + frame.voxel_bias[0],
+                                    voxel_cell.y + frame.voxel_bias[1],
+                                    voxel_cell.z + frame.voxel_bias[2],
+                                ],
+                            }),
+                            steps,
+                        );
                     }
                     // Sculpted brick voxel DDA — mirrors the shader loop.
                     let voxel_entry = origin + direction * (box_enter + 1e-4);
@@ -1040,13 +1247,16 @@ pub fn cpu_march_brick_field(
                             record.atlas_slot,
                             [brick_local.x, brick_local.y, brick_local.z],
                         ) {
-                            return Some(CpuMarchHit {
-                                absolute_voxel: [
-                                    voxel_cell.x + frame.voxel_bias[0],
-                                    voxel_cell.y + frame.voxel_bias[1],
-                                    voxel_cell.z + frame.voxel_bias[2],
-                                ],
-                            });
+                            return (
+                                Some(CpuMarchHit {
+                                    absolute_voxel: [
+                                        voxel_cell.x + frame.voxel_bias[0],
+                                        voxel_cell.y + frame.voxel_bias[1],
+                                        voxel_cell.z + frame.voxel_bias[2],
+                                    ],
+                                }),
+                                steps,
+                            );
                         }
                         if voxel_t_max.x <= voxel_t_max.y && voxel_t_max.x <= voxel_t_max.z {
                             voxel_cell.x += voxel_step.x;
@@ -1082,7 +1292,7 @@ pub fn cpu_march_brick_field(
         }
     }
 
-    None
+    (None, steps)
 }
 
 /// March one pixel-centre ray over the EXACT evaluator's occupancy — a plain
