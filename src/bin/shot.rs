@@ -1703,7 +1703,6 @@ async fn run_capture(options: ShotOptions) {
     // ADR 0011 G5: capture the built brick field so the onion fog can source its occupancy
     // from the boundary set (no CPU densify), exercising the fog-from-bricks path the
     // runtime uses — so `brick_golden_matches_dense` becomes the fog-from-bricks visual gate.
-    #[cfg(feature = "gpu")]
     let mut brick_fog_field: Option<voxel_worker::BrickFieldBuild> = None;
     if options.brick {
         if !cfg!(feature = "gpu") {
@@ -1916,7 +1915,6 @@ async fn run_capture(options: ShotOptions) {
                 // brick boundary set the display raymarches (no CPU densify, no producer
                 // re-resolve) — the fog-from-bricks path the runtime uses. Byte-identical to
                 // the CPU densify, so the committed dense golden stays the reference.
-                #[cfg(feature = "gpu")]
                 let brick_fog_sourced = if let Some(build) = brick_fog_field.as_ref() {
                     let occupancy = voxel_worker::build_per_chunk_fog_occupancy_from_bricks(
                         build,
@@ -1929,8 +1927,6 @@ async fn run_capture(options: ShotOptions) {
                 } else {
                     false
                 };
-                #[cfg(not(feature = "gpu"))]
-                let brick_fog_sourced = false;
                 if brick_fog_sourced {
                     println!(
                         "fog: per-chunk mode (brick sink) — {}",
