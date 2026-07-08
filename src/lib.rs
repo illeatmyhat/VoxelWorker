@@ -82,8 +82,8 @@ pub use brick_field::{
 };
 pub use brick_raymarch::{
     cpu_march_brick_field, cpu_march_brick_field_counted, cpu_march_exact_occupancy,
-    pack_gpu_records, uniform_render_cell, BrickGpuRecord, BrickMarchFrame, BrickRaymarchRenderer,
-    CpuMarchHit, NON_RESIDENT_ATLAS_SLOT,
+    brick_representable_overlay, pack_gpu_records, BrickGpuRecord, BrickMarchFrame,
+    BrickRaymarchRenderer, CpuMarchHit, NON_RESIDENT_ATLAS_SLOT,
 };
 pub use chunk_storage::{compress, decompress, CompressedChunk, Occupancy, SparseCell};
 pub use disk_chunk_store::{DiskChunkStore, DiskChunkStoreStats};

@@ -84,6 +84,11 @@ struct WindowedState {
     /// the GPU fog atlas resolves from the producer instead); the CPU fog densify
     /// must then not consume the empty grid (it would silently draw no fog).
     fog_grid_streamed: bool,
+    /// ADR 0011 G2: dedup for the "scene not brick-representable" fallback log — a
+    /// chunkable procedural scene whose blocks mix materials / disagree on overlay
+    /// keeps the mesh path, reported ONCE per fallback transition (not per drag edit).
+    #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
+    brick_fallback_reported: bool,
     /// Issue #60 (ADR 0003 §7): the background geometry-rebuild worker. A WHOLESALE
     /// rebuild whose covering-chunk count exceeds [`ASYNC_REBUILD_CHUNK_THRESHOLD`] —
     /// the ~3s large-object build — is dispatched here (cloned `device`/`queue`) instead
@@ -401,15 +406,17 @@ impl WindowedState {
             startup_recentre,
             startup_density,
         );
-        // ADR 0011 G1: engage the brick raymarch from the FIRST frame when the
-        // startup scene is gated (a single ported producer with a uniform render
-        // cell, `--features gpu`). Later edits refresh it in `rebuild_geometry`.
+        // ADR 0011 G2: engage the brick raymarch from the FIRST frame when the startup
+        // scene is brick-representable (`--features gpu`, a chunkable procedural scene
+        // whose every rendered block is single-material — per-record ids carry per-block
+        // materials, so multi-producer distinct-material scenes engage too). Later edits
+        // refresh it in `rebuild_geometry`.
         #[cfg_attr(not(feature = "gpu"), allow(unused_mut))]
         let mut brick_raymarch_renderer: Option<BrickRaymarchRenderer> = None;
         #[cfg(feature = "gpu")]
-        if panel_state.scene.single_producer().is_some() {
-            if let Some((material_id, overlay_active)) =
-                voxel_worker::uniform_render_cell(&startup_two_layer_chunks)
+        if panel_state.scene.has_chunkable_extent(startup_density) {
+            if let Some(overlay_active) =
+                voxel_worker::brick_representable_overlay(&startup_two_layer_chunks)
             {
                 let build =
                     voxel_worker::build_brick_field(&startup_two_layer_chunks, startup_density);
@@ -424,7 +431,6 @@ impl WindowedState {
                         &voxel_worker::pack_gpu_records(&build, |_| false),
                         &pyramid,
                         startup_recentre,
-                        material_id,
                         overlay_active,
                     );
                     println!(
@@ -571,6 +577,7 @@ impl WindowedState {
             // The startup grid was streamed by `resolve_scene` above (one-time);
             // per-edit rebuilds decide streaming from the brick engagement.
             fog_grid_streamed: true,
+            brick_fallback_reported: false,
             geometry_worker,
             geometry_generation,
             geometry_async_outstanding: false,
@@ -873,14 +880,20 @@ impl WindowedState {
         // GPU cuboid mesh and upload the fog (the camera is NOT touched). A density whose
         // single-chunk voxel capacity exceeds the bound is rejected with the store
         // untouched, so we surface the cap warning and bail.
-        // ADR 0011 G1: the brick display gate — a single ported producer under
-        // `--features gpu`, no loaded VS material. When gated, the fog atlas
-        // GPU-resolves from the producer, so the whole-region fog `VoxelGrid`
-        // stream (ADR 0010's flagged per-edit densify debt) is SKIPPED.
-        let brick_display_gate = cfg!(feature = "gpu")
+        // ADR 0011: the fog GPU-resolve is SINGLE-PRODUCER only
+        // (`resolve_single_producer_fog_atlas`), so only a single-producer scene skips the
+        // whole-region fog `VoxelGrid` stream (ADR 0010's flagged per-edit densify debt) —
+        // a multi-producer brick scene keeps streaming, its fog CPU-densifies as before.
+        let single_producer_fog_resolve = cfg!(feature = "gpu")
             && self.panel_state.scene.single_producer().is_some()
             && self.loaded_material.is_none();
-        let stream_fog_grid = !brick_display_gate;
+        let stream_fog_grid = !single_producer_fog_resolve;
+        // ADR 0011 G2: the brick DISPLAY gate widens beyond single-producer to any
+        // chunkable procedural scene; representability (every rendered block
+        // single-material, uniform overlay) is checked at install from the boundary set.
+        #[cfg(feature = "gpu")]
+        let brick_display_gate = self.panel_state.scene.has_chunkable_extent(density)
+            && self.loaded_material.is_none();
         let RebuildOutput {
             grid,
             region_dimensions,
@@ -947,8 +960,8 @@ impl WindowedState {
             #[cfg(feature = "gpu")]
             if brick_display_gate {
                 profiling::scope!("brick_field_build");
-                if let Some((material_id, overlay_active)) =
-                    voxel_worker::uniform_render_cell(&two_layer_chunks)
+                if let Some(overlay_active) =
+                    voxel_worker::brick_representable_overlay(&two_layer_chunks)
                 {
                     let build = voxel_worker::build_brick_field(&two_layer_chunks, density);
                     if !build.brick_records.is_empty() {
@@ -968,11 +981,20 @@ impl WindowedState {
                             &voxel_worker::pack_gpu_records(&build, |_| false),
                             &pyramid,
                             recentre_voxels,
-                            material_id,
                             overlay_active,
                         );
                         brick_field_installed = true;
                     }
+                    self.brick_fallback_reported = false;
+                } else if !self.brick_fallback_reported {
+                    // A chunkable procedural scene the brick sink can't represent (a block
+                    // mixes materials across its microblocks, or blocks disagree on the
+                    // overlay). Report once, then keep the mesh path until it clears.
+                    println!(
+                        "brick: scene not representable (a block mixes materials or blocks \
+                         disagree on the on-face grid) — mesh display path"
+                    );
+                    self.brick_fallback_reported = true;
                 }
             }
             if !brick_field_installed {

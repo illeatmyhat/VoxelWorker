@@ -34,6 +34,7 @@
 //! `--features gpu` parity tests assert this through the full texture round-trip.
 
 use crate::core_geom::{BlockId, CHUNK_BLOCKS};
+use crate::cuboid_mesh::clean_block_id;
 use crate::two_layer_store::{SeamSolidity, TwoLayerChunk};
 
 /// Signed world-block coordinates are biased into this many bits per axis inside the
@@ -219,6 +220,14 @@ impl BrickPayload {
 pub struct BrickRecord {
     /// [`pack_world_block_key`] of the block's absolute world-block coordinate.
     pub packed_world_block_key: u64,
+    /// The block's clean render-cell material colour index (`0..MATERIAL_COUNT`) — the
+    /// `block_id`'s colour index for a coarse block, the (single) microblock material for
+    /// a boundary block. The R8 atlas is occupancy-only (ADR 0011 G2), so this is the
+    /// per-BLOCK material the raymarch shades with, packed into the GPU record's `kind`
+    /// high bits by [`pack_gpu_records`]. A block that MIXES materials across its
+    /// microblocks is not brick-representable (it never engages the sink), so this holds
+    /// the first microblock's material there — unused, never shaded.
+    pub material_id: u16,
     /// Coarse (kind 0) or sculpted (kind 1) — see [`BrickPayload`].
     pub payload: BrickPayload,
     /// Per-face seam-solidity flags, carried UNCHANGED from the boundary set for a
@@ -353,6 +362,7 @@ pub fn build_brick_field(
                         );
                         brick_records.push(BrickRecord {
                             packed_world_block_key: pack_world_block_key(world_block),
+                            material_id: block_id.color_index(),
                             payload: BrickPayload::CoarseSolid { block_id },
                             // Fully solid through ⇒ every face is solid.
                             seam_solidity: SeamSolidity {
@@ -363,8 +373,17 @@ pub fn build_brick_field(
                         let atlas_slot = sculpted_brick_tiles.len() as u32;
                         sculpted_brick_tiles
                             .push(rasterize_brick_occupancy(geometry, brick_edge_voxels));
+                        // The block's material is the clean render-cell id of its
+                        // microblocks; a representable block is single-material, so the
+                        // first cuboid's id is the block's (a mixed block never engages).
+                        let material_id = geometry
+                            .cuboids
+                            .first()
+                            .map(|cuboid| clean_block_id(cuboid.material_id))
+                            .unwrap_or(0);
                         brick_records.push(BrickRecord {
                             packed_world_block_key: pack_world_block_key(world_block),
+                            material_id,
                             payload: BrickPayload::Sculpted { atlas_slot },
                             seam_solidity: geometry.seam_solidity,
                         });

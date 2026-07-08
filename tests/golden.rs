@@ -285,6 +285,29 @@ fn render_case(case: &GoldenCase, out_path: &Path) {
     render_case_with(case, out_path, &[]);
 }
 
+/// Run `shot` for `case` + `extra_args` (as [`render_case_with`]) but CAPTURE stdout —
+/// used to assert the brick sink actually engaged (its `display=bricks` line) or fell
+/// back, so a brick-vs-mesh comparison can't pass vacuously (mesh vs mesh).
+fn render_case_capturing(case: &GoldenCase, out_path: &Path, extra_args: &[&str]) -> String {
+    let shot = env!("CARGO_BIN_EXE_shot");
+    let output = Command::new(shot)
+        .args(case.args)
+        .args(extra_args)
+        .args(CAMERA_ARGS)
+        .args(["--width", &WIDTH.to_string()])
+        .args(["--height", &HEIGHT.to_string()])
+        .args(["--out", &out_path.to_string_lossy()])
+        .output()
+        .unwrap_or_else(|e| panic!("failed to launch shot for case '{}': {e}", case.name));
+    assert!(
+        output.status.success(),
+        "shot exited with failure for case '{}' (status {:?})",
+        case.name,
+        output.status
+    );
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
+
 /// Compare two same-size RGBA images under the tolerance model. Returns the
 /// fraction of differing pixels, and writes a diff image (differing pixels in red,
 /// matching pixels dimmed) to `diff_path` so failures are inspectable.
@@ -552,5 +575,63 @@ fn brick_golden_matches_dense() {
         failures.is_empty(),
         "brick golden regression(s) vs dense reference (ADR 0011 gate (c)):\n{}",
         failures.join("\n")
+    );
+}
+
+/// ADR 0011 G2 (#68): the multi-producer per-record-material golden. `--demo-two-material`
+/// is two DISTINCT-material boxes placed a whole chunk apart, so every rendered block is
+/// single-material — the widened brick gate engages, and the sink shades each hit from its
+/// OWN record's packed material id (not a scene-wide uniform), reproducing the mesh's
+/// two-tone render. Because the scene has no historical committed reference, this uses the
+/// FRESH-render-vs-FRESH-render technique: render the mesh path and the brick path THIS run
+/// and compare them under the SAME MSAA tolerance band the dense goldens use. The captured
+/// `--brick` stdout must show the sink engaged (`display=bricks`), so the comparison can't
+/// pass vacuously (mesh vs mesh).
+///
+/// (Note: `--demo-overlap`, though multi-material, offsets its boxes in WHOLE blocks, so
+/// every block is still single-material — it is representable and engages the brick path
+/// too. The genuinely-non-representable case, a block whose microblocks MIX materials, is
+/// gated by `brick_representable_overlay_rejects_mixed_block` in the lib tests, which
+/// builds that boundary set directly without needing a sub-block-offset demo scene.)
+#[test]
+fn brick_golden_multi_material_matches_mesh() {
+    if std::env::var("UPDATE_GOLDENS").is_ok_and(|v| v == "1") {
+        return;
+    }
+    let out_dir = output_dir();
+
+    // The gated multi-producer scene: mesh path vs brick path, both rendered fresh.
+    let case = GoldenCase {
+        name: "demo-two-material",
+        args: &["--demo-two-material"],
+    };
+    let mesh_path = out_dir.join("demo-two-material-mesh.png");
+    render_case_with(&case, &mesh_path, &[]);
+    let brick_path = out_dir.join("demo-two-material-brick-actual.png");
+    let brick_stdout = render_case_capturing(&case, &brick_path, &["--brick"]);
+    assert!(
+        brick_stdout.contains("display=bricks"),
+        "the multi-producer scene must ENGAGE the brick sink (else brick==mesh is vacuous); \
+         shot stdout was:\n{brick_stdout}"
+    );
+
+    let mesh = load_rgba(&mesh_path);
+    let brick = load_rgba(&brick_path);
+    let diff_path = out_dir.join("demo-two-material-brick-diff.png");
+    let mismatch = compare_images(&brick, &mesh, &diff_path);
+    println!(
+        "[demo-two-material brick] mismatch fraction = {:.5}% (threshold {:.3}%)",
+        mismatch * 100.0,
+        MAX_MISMATCH_FRACTION * 100.0
+    );
+    assert!(
+        mismatch <= MAX_MISMATCH_FRACTION,
+        "brick != mesh on the multi-producer distinct-material scene: {:.5}% > {:.3}% — \
+         brick: {}  mesh: {}  diff: {}",
+        mismatch * 100.0,
+        MAX_MISMATCH_FRACTION * 100.0,
+        brick_path.display(),
+        mesh_path.display(),
+        diff_path.display()
     );
 }

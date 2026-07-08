@@ -1181,7 +1181,8 @@ fn exact_occupancy_set(
 fn brick_raymarch_hit_set_matches_exact_evaluator() {
     use voxel_worker::{
         build_brick_field, cpu_march_brick_field, cpu_march_exact_occupancy, pack_gpu_records,
-        uniform_render_cell, AppCore, BrickRaymarchRenderer, ClipmapPyramid, LayerBand, OrbitCamera,
+        brick_representable_overlay, AppCore, BrickRaymarchRenderer, ClipmapPyramid, LayerBand,
+        OrbitCamera,
         TwoLayerStore, COLOR_TARGET_FORMAT,
     };
 
@@ -1207,10 +1208,10 @@ fn brick_raymarch_hit_set_matches_exact_evaluator() {
         assert!(!two_layer_chunks.is_empty(), "{}: empty two-layer build", case.name);
         let build = build_brick_field(&two_layer_chunks, vpb);
         assert!(!build.brick_records.is_empty(), "{}: empty brick field", case.name);
-        // The hit-identity image is occupancy-only, so a distinct-material union (no
-        // single uniform render cell) still exercises the traversal — default the
-        // shading id to 0 there (material never enters the hit set).
-        let (material_id, overlay_active) = uniform_render_cell(&two_layer_chunks).unwrap_or((0, false));
+        // The hit-identity image is occupancy-only, so material never enters the hit set;
+        // a distinct-material union is brick-representable at G2 (each block single-material)
+        // and still exercises the traversal. `unwrap_or(false)` keeps the overlay off.
+        let overlay_active = brick_representable_overlay(&two_layer_chunks).unwrap_or(false);
         let recentre = case.scene.recentre_voxels_for_resolve(vpb);
         let grid_dimensions = case.scene.placed_region_dimensions(vpb);
 
@@ -1241,7 +1242,6 @@ fn brick_raymarch_hit_set_matches_exact_evaluator() {
             &gpu_records,
             &pyramid,
             recentre,
-            material_id,
             overlay_active,
         );
         let frame = renderer.update_uniforms(
@@ -1328,7 +1328,8 @@ fn brick_raymarch_hit_set_matches_exact_evaluator() {
 #[test]
 fn brick_raymarch_residency_miss_renders_coarse_form() {
     use voxel_worker::{
-        build_brick_field, pack_gpu_records, uniform_render_cell, AppCore, BrickRaymarchRenderer,
+        brick_representable_overlay, build_brick_field, pack_gpu_records, AppCore,
+        BrickRaymarchRenderer,
         ClipmapPyramid, LayerBand, OrbitCamera, TwoLayerStore, COLOR_TARGET_FORMAT,
     };
 
@@ -1349,8 +1350,8 @@ fn brick_raymarch_residency_miss_renders_coarse_form() {
             "{}: fixture must contain sculpted bricks to force a miss",
             case.name
         );
-        let (material_id, overlay_active) =
-            uniform_render_cell(&two_layer_chunks).unwrap_or((0, false));
+        let overlay_active =
+            brick_representable_overlay(&two_layer_chunks).unwrap_or(false);
         let recentre = case.scene.recentre_voxels_for_resolve(vpb);
         let grid_dimensions = case.scene.placed_region_dimensions(vpb);
 
@@ -1384,7 +1385,6 @@ fn brick_raymarch_residency_miss_renders_coarse_form() {
             &pack_gpu_records(&build, |_| false),
             &pyramid,
             recentre,
-            material_id,
             overlay_active,
         );
         let resident_image = render_image(&renderer);
@@ -1396,7 +1396,6 @@ fn brick_raymarch_residency_miss_renders_coarse_form() {
             &pack_gpu_records(&build, |_| true),
             &pyramid,
             recentre,
-            material_id,
             overlay_active,
         );
         let miss_image = render_image(&renderer);
@@ -1467,7 +1466,8 @@ fn brick_raymarch_residency_miss_renders_coarse_form() {
 #[test]
 fn brick_raymarch_pyramid_on_equals_off() {
     use voxel_worker::{
-        build_brick_field, pack_gpu_records, uniform_render_cell, AppCore, BrickRaymarchRenderer,
+        brick_representable_overlay, build_brick_field, pack_gpu_records, AppCore,
+        BrickRaymarchRenderer,
         ClipmapPyramid, LayerBand, OrbitCamera, TwoLayerStore, COLOR_TARGET_FORMAT,
     };
 
@@ -1488,8 +1488,8 @@ fn brick_raymarch_pyramid_on_equals_off() {
             "{}: pyramid has no cells — the on/off comparison would be vacuous",
             case.name
         );
-        let (material_id, overlay_active) =
-            uniform_render_cell(&two_layer_chunks).unwrap_or((0, false));
+        let overlay_active =
+            brick_representable_overlay(&two_layer_chunks).unwrap_or(false);
         let recentre = case.scene.recentre_voxels_for_resolve(vpb);
         let grid_dimensions = case.scene.placed_region_dimensions(vpb);
 
@@ -1511,7 +1511,6 @@ fn brick_raymarch_pyramid_on_equals_off() {
                 &gpu_records,
                 pyramid,
                 recentre,
-                material_id,
                 overlay_active,
             );
             renderer.update_uniforms(
@@ -1586,7 +1585,8 @@ fn brick_raymarch_pyramid_on_equals_off() {
 #[ignore = "perf probe — run explicitly with --release --ignored --nocapture"]
 fn clipmap_scattered_scene_skips_empty_space() {
     use voxel_worker::{
-        build_brick_field, cpu_march_brick_field_counted, pack_gpu_records, uniform_render_cell,
+        brick_representable_overlay, build_brick_field, cpu_march_brick_field_counted,
+        pack_gpu_records,
         AppCore, BrickRaymarchRenderer, ClipmapPyramid, LayerBand, NodeTransform, OrbitCamera,
         TwoLayerStore, COLOR_TARGET_FORMAT,
     };
@@ -1616,7 +1616,7 @@ fn clipmap_scattered_scene_skips_empty_space() {
     let pyramid_on = ClipmapPyramid::from_records(&build.brick_records);
     let pyramid_off = ClipmapPyramid::empty();
     let gpu_records = pack_gpu_records(&build, |_| false);
-    let (material_id, overlay_active) = uniform_render_cell(&two_layer_chunks).unwrap_or((0, false));
+    let overlay_active = brick_representable_overlay(&two_layer_chunks).unwrap_or(false);
     let recentre = scene.recentre_voxels_for_resolve(vpb);
     let grid_dimensions = scene.placed_region_dimensions(vpb);
 
@@ -1633,7 +1633,6 @@ fn clipmap_scattered_scene_skips_empty_space() {
         &gpu_records,
         &pyramid_on,
         recentre,
-        material_id,
         overlay_active,
     );
     let frame = renderer.update_uniforms(

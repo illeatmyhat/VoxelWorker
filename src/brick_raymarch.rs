@@ -43,6 +43,23 @@ use crate::two_layer_store::TwoLayerChunk;
 /// residency-miss contract). Must match `NON_RESIDENT_ATLAS_SLOT` in the WGSL.
 pub const NON_RESIDENT_ATLAS_SLOT: u32 = u32::MAX;
 
+/// `BrickGpuRecord.kind` packs the record's block material-colour index in the bits
+/// ABOVE the kind discriminant (ADR 0011 G2 per-record shading): bits `[0, SHIFT)`
+/// hold the kind (0 coarse / 1 sculpted), bits `[SHIFT, 32)` the material id. One
+/// `u32`, no struct-layout change — a multi-producer scene of distinct per-block
+/// materials shades each hit from its own record. MUST match the decode in
+/// `shaders/brick_raymarch.wgsl`.
+pub const BRICK_RECORD_MATERIAL_ID_SHIFT: u32 = 8;
+
+/// Mask isolating the kind discriminant below [`BRICK_RECORD_MATERIAL_ID_SHIFT`].
+const BRICK_RECORD_KIND_MASK: u32 = (1 << BRICK_RECORD_MATERIAL_ID_SHIFT) - 1;
+
+/// The kind discriminant (0 coarse / 1 sculpted) of a packed `BrickGpuRecord.kind` —
+/// the mirror of the WGSL `record_kind(kind)`. The material id lives above it.
+fn record_kind_discriminant(kind: u32) -> u32 {
+    kind & BRICK_RECORD_KIND_MASK
+}
+
 /// One resident brick as the shader consumes it: the packed world-block key split
 /// into a `(hi, lo)` u32 pair (sorted ascending — the in-shader binary search's
 /// order), the record kind (0 coarse / 1 sculpted) and the atlas slot (or
@@ -68,7 +85,7 @@ pub fn pack_gpu_records(
         .iter()
         .map(|record| {
             let key = record.packed_world_block_key;
-            let (kind, atlas_slot) = match record.payload {
+            let (kind_discriminant, atlas_slot) = match record.payload {
                 BrickPayload::CoarseSolid { .. } => (0u32, 0u32),
                 BrickPayload::Sculpted { atlas_slot } => (
                     1u32,
@@ -79,6 +96,10 @@ pub fn pack_gpu_records(
                     },
                 ),
             };
+            // Pack the block material above the kind discriminant (ADR 0011 G2): the
+            // shader shades the hit from its own record, not a scene-wide uniform.
+            let kind =
+                kind_discriminant | ((record.material_id as u32) << BRICK_RECORD_MATERIAL_ID_SHIFT);
             BrickGpuRecord {
                 key_hi: (key >> 32) as u32,
                 key_lo: key as u32,
@@ -89,42 +110,64 @@ pub fn pack_gpu_records(
         .collect()
 }
 
-/// The single render cell (clean material id + on-face-grid overlay state) shared
-/// by EVERY non-air block of the boundary set, or `None` when the set mixes
-/// materials/overlay states. G1's brick path engages only on a uniform set (a
-/// single ported producer is uniform by construction) — the R8 atlas carries
-/// occupancy only, so a mixed-material set must stay on the mesh path.
-pub fn uniform_render_cell(
+/// Whether the boundary set is **brick-representable** (ADR 0011 G2), and, if so, the
+/// scene-wide on-face-grid overlay state the shader binds. `Some(overlay)` engages the
+/// brick path; `None` keeps the scene on the mesh path.
+///
+/// Representable ⇔ every non-air block is INTERNALLY single-cell (all its microblocks
+/// share one clean material id + overlay state) AND the whole scene shares ONE overlay
+/// state. Per-BLOCK materials may differ across blocks — [`pack_gpu_records`] packs each
+/// block's material into its record (G2). The two limits are structural: the R8 atlas is
+/// occupancy-only, so a block that MIXES materials across its microblocks can't be one
+/// occupancy brick; and the overlay is a scene-wide uniform (not per-record), so a scene
+/// whose blocks disagree on it can't be represented. Both fall back to the mesh path.
+///
+/// A single ported producer is trivially representable (uniform by construction) — the
+/// G1 gate — so widening to this predicate keeps every G1 scene engaged and adds the
+/// distinct-material multi-producer scenes.
+pub fn brick_representable_overlay(
     two_layer_chunks: &[([i32; 3], TwoLayerChunk)],
-) -> Option<(u16, bool)> {
-    let mut cell: Option<(u16, bool)> = None;
-    let mut fold = |candidate: (u16, bool)| -> bool {
-        match cell {
+) -> Option<bool> {
+    // The scene-wide overlay: every rendered block must agree on it.
+    let mut scene_overlay: Option<bool> = None;
+    let mut fold_scene_overlay = |overlay: bool| -> bool {
+        match scene_overlay {
             None => {
-                cell = Some(candidate);
+                scene_overlay = Some(overlay);
                 true
             }
-            Some(existing) => existing == candidate,
+            Some(existing) => existing == overlay,
         }
     };
     for (_, chunk) in two_layer_chunks {
+        // A coarse-solid block is single-material by construction; only its overlay
+        // participates in the scene-wide agreement.
         for (index, coarse) in chunk.coarse.iter().enumerate() {
-            if let Some(block_id) = coarse {
-                if !fold((block_id.0, chunk.coarse_overlay[index])) {
-                    return None;
-                }
+            if coarse.is_some() && !fold_scene_overlay(chunk.coarse_overlay[index]) {
+                return None;
             }
         }
+        // A boundary block must be internally single-cell (one material + overlay across
+        // its microblocks), then its overlay folds into the scene-wide agreement.
         for geometry in chunk.microblocks.values() {
+            let mut block_cell: Option<(u16, bool)> = None;
             for cuboid in &geometry.cuboids {
                 let key = cuboid.material_id;
-                if !fold((clean_block_id(key), cell_key_has_overlay(key))) {
+                let cell = (clean_block_id(key), cell_key_has_overlay(key));
+                match block_cell {
+                    None => block_cell = Some(cell),
+                    Some(existing) if existing != cell => return None, // mixed within a block
+                    Some(_) => {}
+                }
+            }
+            if let Some((_, overlay)) = block_cell {
+                if !fold_scene_overlay(overlay) {
                     return None;
                 }
             }
         }
     }
-    cell
+    Some(scene_overlay.unwrap_or(false))
 }
 
 /// The exact frame the march runs in — every value the shader's uniforms carry,
@@ -172,10 +215,12 @@ struct BrickUniformsPod {
     block_line_half_width: f32,
     voxel_line_alpha: f32,
     block_line_alpha: f32,
-    material_id: u32,
+    // Material is per-record (packed into `BrickGpuRecord.kind`, ADR 0011 G2), so no
+    // scene-wide material id rides here — `record_count` plus std140 padding fills the slot.
     record_count: u32,
-    _material_pad0: u32,
-    _material_pad1: u32,
+    _render_cell_pad0: u32,
+    _render_cell_pad1: u32,
+    _render_cell_pad2: u32,
     lattice_shift_and_edge: [i32; 4],
     block_bias_and_tiles: [i32; 4],
     voxel_bias: [i32; 4],
@@ -202,9 +247,8 @@ pub struct BrickRaymarchRenderer {
     field_bind_group: wgpu::BindGroup,
     material_bind_group: wgpu::BindGroup,
     record_count: u32,
-    /// The scene's single render cell (clean material id + overlay), derived from
-    /// the boundary set at install (`uniform_render_cell`).
-    material_id: u16,
+    /// The scene-wide on-face-grid overlay state, derived from the boundary set at
+    /// install (`brick_representable_overlay`). Material is per-record (ADR 0011 G2).
     overlay_active: bool,
     /// The composite recentre the boundary set was resolved under (ADR 0008 —
     /// carried from the install, the same value the two-layer mesher bakes).
@@ -494,7 +538,6 @@ impl BrickRaymarchRenderer {
             field_bind_group,
             material_bind_group,
             record_count: 0,
-            material_id: 0,
             overlay_active: false,
             recentre_voxels: [0, 0, 0],
             brick_edge_voxels: 1,
@@ -511,8 +554,9 @@ impl BrickRaymarchRenderer {
     /// sculpted atlas and rebuild the field bind group — the per-edit swap, no
     /// pipeline work. `gpu_records` is [`pack_gpu_records`]' output (possibly with
     /// forced non-resident slots); `recentre_voxels` the resolve's carried
-    /// recentre; `material_id` / `overlay_active` the uniform render cell
-    /// ([`uniform_render_cell`]).
+    /// recentre; `overlay_active` the scene-wide overlay state
+    /// ([`brick_representable_overlay`]). Material is per-record (packed in
+    /// `gpu_records`, ADR 0011 G2).
     #[allow(clippy::too_many_arguments)]
     pub fn install_brick_field(
         &mut self,
@@ -522,7 +566,6 @@ impl BrickRaymarchRenderer {
         gpu_records: &[BrickGpuRecord],
         pyramid: &ClipmapPyramid,
         recentre_voxels: [i64; 3],
-        material_id: u16,
         overlay_active: bool,
     ) {
         // Inclusive absolute block bounds over the record set (the sort is z-major,
@@ -611,7 +654,6 @@ impl BrickRaymarchRenderer {
         self.clipmap_level_2_blocks = pyramid.level_2.blocks_per_cell;
         self.clipmap_level_2_count = level_2_keys.len() as u32;
         self.record_count = gpu_records.len() as u32;
-        self.material_id = material_id;
         self.overlay_active = overlay_active;
         self.recentre_voxels = recentre_voxels;
         self.brick_edge_voxels = build.brick_edge_voxels;
@@ -767,10 +809,10 @@ impl BrickRaymarchRenderer {
             block_line_half_width: overlay.block_line_half_width,
             voxel_line_alpha: overlay.voxel_line_alpha,
             block_line_alpha: overlay.block_line_alpha,
-            material_id: self.material_id as u32,
             record_count: self.record_count,
-            _material_pad0: 0,
-            _material_pad1: 0,
+            _render_cell_pad0: 0,
+            _render_cell_pad1: 0,
+            _render_cell_pad2: 0,
             lattice_shift_and_edge: [
                 frame.lattice_shift[0],
                 frame.lattice_shift[1],
@@ -1190,8 +1232,10 @@ pub fn cpu_march_brick_field_counted(
                     };
                 box_enter = box_enter.max(0.0);
                 if box_exit >= box_enter {
-                    let coarse_form =
-                        record.kind == 0 || record.atlas_slot == NON_RESIDENT_ATLAS_SLOT;
+                    // Mirror the WGSL kind decode: the discriminant is the low bits of
+                    // `kind` (the material id rides above it, ADR 0011 G2).
+                    let coarse_form = record_kind_discriminant(record.kind) == 0
+                        || record.atlas_slot == NON_RESIDENT_ATLAS_SLOT;
                     if coarse_form {
                         let hit_position = origin + direction * (box_enter + 1e-4);
                         let block_min_voxel = block_cell * edge_i;
@@ -1382,4 +1426,90 @@ pub fn cpu_march_exact_occupancy(
     }
 
     None
+}
+
+#[cfg(test)]
+mod representability_tests {
+    //! ADR 0011 G2 — `brick_representable_overlay` decides the widened live gate. The
+    //! genuinely-non-representable cases (a block mixing materials; blocks disagreeing on
+    //! the overlay) are built directly here, so the fallback is gated without a
+    //! sub-block-offset demo scene (every whole-block-offset demo is single-material per
+    //! block and thus representable — see the golden's note on `--demo-overlap`).
+    use super::brick_representable_overlay;
+    use crate::cuboid::VoxelBox;
+    use crate::cuboid_mesh::compose_cell_key;
+    use crate::two_layer_store::{MicroblockGeometry, SeamSolidity, TwoLayerChunk};
+    use std::collections::BTreeMap;
+
+    fn geom(material_keys: &[u16]) -> MicroblockGeometry {
+        MicroblockGeometry {
+            cuboids: material_keys
+                .iter()
+                .map(|&material_id| VoxelBox {
+                    min: [0, 0, 0],
+                    max: [0, 0, 0],
+                    material_id,
+                })
+                .collect(),
+            seam_solidity: SeamSolidity {
+                solid: [[true; 2]; 3],
+            },
+        }
+    }
+
+    fn chunk_with(
+        microblocks: Vec<([u32; 3], MicroblockGeometry)>,
+    ) -> Vec<([i32; 3], TwoLayerChunk)> {
+        vec![(
+            [0, 0, 0],
+            TwoLayerChunk {
+                voxels_per_block: 4,
+                coarse: Vec::new(),
+                coarse_overlay: Vec::new(),
+                microblocks: microblocks.into_iter().collect::<BTreeMap<_, _>>(),
+            },
+        )]
+    }
+
+    #[test]
+    fn representable_across_distinct_single_material_blocks() {
+        // Two boundary blocks, each internally single-material but DIFFERENT materials —
+        // the G2 multi-producer case (per-record ids). Uniform overlay off ⇒ Some(false).
+        let chunks = chunk_with(vec![
+            ([0, 0, 0], geom(&[compose_cell_key(0, false)])),
+            ([1, 0, 0], geom(&[compose_cell_key(1, false)])),
+        ]);
+        assert_eq!(brick_representable_overlay(&chunks), Some(false));
+    }
+
+    #[test]
+    fn representable_with_uniform_overlay_on() {
+        let chunks = chunk_with(vec![
+            ([0, 0, 0], geom(&[compose_cell_key(0, true)])),
+            ([1, 0, 0], geom(&[compose_cell_key(1, true)])),
+        ]);
+        assert_eq!(brick_representable_overlay(&chunks), Some(true));
+    }
+
+    #[test]
+    fn brick_representable_overlay_rejects_mixed_block() {
+        // ONE block whose microblocks mix two materials — the R8 atlas is occupancy-only,
+        // so this block can't be a single brick ⇒ not representable.
+        let chunks = chunk_with(vec![(
+            [0, 0, 0],
+            geom(&[compose_cell_key(0, false), compose_cell_key(1, false)]),
+        )]);
+        assert_eq!(brick_representable_overlay(&chunks), None);
+    }
+
+    #[test]
+    fn rejects_overlay_disagreement_across_blocks() {
+        // Two single-material blocks that DISAGREE on the on-face grid — overlay is a
+        // scene-wide uniform (not per-record), so the set can't be represented.
+        let chunks = chunk_with(vec![
+            ([0, 0, 0], geom(&[compose_cell_key(0, false)])),
+            ([1, 0, 0], geom(&[compose_cell_key(0, true)])),
+        ]);
+        assert_eq!(brick_representable_overlay(&chunks), None);
+    }
 }

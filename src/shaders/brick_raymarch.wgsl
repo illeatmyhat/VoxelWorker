@@ -56,12 +56,12 @@ struct BrickUniforms {
     block_line_half_width: f32,
     voxel_line_alpha: f32,
     block_line_alpha: f32,
-    // The single-producer scene's material colour index (G1 engages only for a
-    // uniform-material record set) and the resident record count.
-    material_id: u32,
+    // Material is PER-RECORD (packed into `BrickGpuRecord.kind`, ADR 0011 G2), so no
+    // scene-wide material id rides here — `record_count` plus std140 padding fills the slot.
     record_count: u32,
-    _material_pad0: u32,
-    _material_pad1: u32,
+    _render_cell_pad0: u32,
+    _render_cell_pad1: u32,
+    _render_cell_pad2: u32,
     // xyz: the integer lattice shift re-aligning block boundaries in the render
     // frame ((recentre − half_extent) mod edge); w: the brick edge in voxels.
     lattice_shift_and_edge: vec4<i32>,
@@ -91,12 +91,24 @@ var<uniform> uniforms: BrickUniforms;
 // One resident brick, sorted ascending by (key_hi, key_lo) — the G0 packed
 // world-block key split for WGSL (no u64). `atlas_slot` == NON_RESIDENT marks a
 // sculpted brick whose payload is not resident (the residency-miss contract).
+// `kind` packs the block MATERIAL id above the kind discriminant (ADR 0011 G2):
+// bits [0, MATERIAL_ID_SHIFT) = kind (0 coarse / 1 sculpted), bits above = material.
 struct BrickGpuRecord {
     key_hi: u32,
     key_lo: u32,
     kind: u32,
     atlas_slot: u32,
 };
+
+// The kind/material split of `BrickGpuRecord.kind` — MUST match
+// `BRICK_RECORD_MATERIAL_ID_SHIFT` in brick_raymarch.rs.
+const BRICK_RECORD_MATERIAL_ID_SHIFT: u32 = 8u;
+fn record_kind(kind: u32) -> u32 {
+    return kind & ((1u << BRICK_RECORD_MATERIAL_ID_SHIFT) - 1u);
+}
+fn record_material_id(kind: u32) -> u32 {
+    return kind >> BRICK_RECORD_MATERIAL_ID_SHIFT;
+}
 
 @group(0) @binding(1)
 var<storage, read> brick_records: array<BrickGpuRecord>;
@@ -364,6 +376,8 @@ struct MarchHit {
     plane_sv: f32,
     hit_t: f32,
     voxel_cell: vec3<i32>,
+    // The hit block's material colour index, decoded from its record (ADR 0011 G2).
+    material_id: u32,
 }
 
 // Ray/AABB slab entry: max component of the near-face parameters (clamped to 0)
@@ -497,13 +511,15 @@ fn march_brick_field(ray: Ray) -> MarchHit {
                 && clamped_lo.z < clamped_hi.z) {
                 let entry = clamped_box_entry(ray, clamped_lo, clamped_hi);
                 if (entry.t_exit >= entry.t_enter) {
+                    let block_material = record_material_id(record.kind);
                     // Residency-miss contract: a sculpted record with no resident
                     // atlas payload renders its COARSE form.
-                    let coarse_form = record.kind == 0u
+                    let coarse_form = record_kind(record.kind) == 0u
                         || record.atlas_slot == NON_RESIDENT_ATLAS_SLOT;
                     if (coarse_form) {
                         var hit: MarchHit;
                         hit.hit = true;
+                        hit.material_id = block_material;
                         hit.entry_axis = entry.axis;
                         hit.normal_sign = -sign(ray.direction[entry.axis]);
                         hit.plane_sv = ray.origin[entry.axis]
@@ -568,6 +584,7 @@ fn march_brick_field(ray: Ray) -> MarchHit {
                         if (sculpted_voxel_occupied(record.atlas_slot, brick_local)) {
                             var hit: MarchHit;
                             hit.hit = true;
+                            hit.material_id = block_material;
                             hit.entry_axis = voxel_entry_axis;
                             hit.normal_sign = -sign(ray.direction[voxel_entry_axis]);
                             // The entered voxel face's exact plane coordinate.
@@ -651,8 +668,9 @@ fn material_base_colors_lookup(material_id: u32) -> vec3<f32> {
 }
 
 // `absolute` is the cuboid shader's `voxel_absolute_position` (world +
-// grid_half_extent); `world_normal` the face's outward unit normal.
-fn shade_cuboid_surface(absolute: vec3<f32>, world_normal: vec3<f32>) -> vec4<f32> {
+// grid_half_extent); `world_normal` the face's outward unit normal; `material_id` the
+// hit block's per-record material colour index (ADR 0011 G2).
+fn shade_cuboid_surface(absolute: vec3<f32>, world_normal: vec3<f32>, material_id: u32) -> vec4<f32> {
     let axis_magnitude = abs(world_normal);
     var u_value: f32;
     var v_value: f32;
@@ -671,7 +689,7 @@ fn shade_cuboid_surface(absolute: vec3<f32>, world_normal: vec3<f32>) -> vec4<f3
     }
     let texture_coord = vec2<f32>(u_value, v_value) / uniforms.voxels_per_block;
 
-    let atlas_rect = uniforms.material_atlas_rects[min(uniforms.material_id, 2u)];
+    let atlas_rect = uniforms.material_atlas_rects[min(material_id, 2u)];
     let tile_uv = fract(texture_coord);
     let atlas_uv = atlas_rect.xy + tile_uv * atlas_rect.zw;
     // Level 0 explicitly: no mips + nearest sampler makes this identical to the
@@ -686,7 +704,7 @@ fn shade_cuboid_surface(absolute: vec3<f32>, world_normal: vec3<f32>) -> vec4<f3
     var color = sampled * lighting;
 
     if (uniforms.material_modulation_enabled > 0.5) {
-        let base = material_base_colors_lookup(uniforms.material_id);
+        let base = material_base_colors_lookup(material_id);
         color = color * base;
     }
 
@@ -768,7 +786,7 @@ fn fragment_render(
     let clip = uniforms.view_projection * vec4<f32>(hit_world, 1.0);
 
     var output: FragmentOutput;
-    output.color = shade_cuboid_surface(absolute, world_normal);
+    output.color = shade_cuboid_surface(absolute, world_normal, hit.material_id);
     output.depth = clamp(clip.z / clip.w, 0.0, 1.0);
     return output;
 }

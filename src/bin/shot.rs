@@ -271,6 +271,13 @@ struct ShotOptions {
     /// pins that an overlapping multi-material scene renders identically on the dense and
     /// two-layer paths (the E2 carry-over). Overrides --shape/--size/--density.
     demo_overlap: bool,
+    /// `--demo-two-material` (ADR 0011 G2): two solid boxes of DISTINCT materials placed
+    /// SEPARATED so no block is shared — every rendered block is single-material, the
+    /// brick-representable multi-producer scene the G2 per-record-material golden locks
+    /// (brick == mesh). Unlike `--demo-overlap` (which mixes materials INSIDE a block and
+    /// correctly stays on the mesh path), this engages the brick sink. Overrides
+    /// --shape/--size/--density.
+    demo_two_material: bool,
     /// `--two-layer` (ADR 0010 E3 / #50): render the voxel mesh THROUGH the two-layer
     /// path — build each covering chunk's [`voxel_worker::two_layer_store::TwoLayerChunk`]
     /// (coarse one-box + microblock cuboids + seam-solidity flags) and mesh from it via
@@ -354,6 +361,7 @@ impl Default for ShotOptions {
             far_offset_near: false,
             synthetic_block: false,
             demo_overlap: false,
+            demo_two_material: false,
             two_layer: false,
             brick: false,
             brick_force_miss: false,
@@ -658,6 +666,9 @@ fn parse_options() -> ShotOptions {
             "--demo-overlap" => {
                 options.demo_overlap = true;
             }
+            "--demo-two-material" => {
+                options.demo_two_material = true;
+            }
             "--replay" => {
                 options.replay_path = Some(PathBuf::from(
                     args.next().expect("--replay requires a path argument"),
@@ -779,7 +790,7 @@ fn parse_options() -> ShotOptions {
                      \x20            [--force-demo-stem <texture/stem>]\n\
                      \x20            [--gizmo] [--select-node <usize>] [--lattice] [--floor] [--points] [--point-at <X Y Z>] [--no-viewcube]\n\
                      \x20            [--debug-faces] [--debug-chunks]\n\
-                     \x20            [--demo-scene] [--demo-overlap] [--demo-village] [--demo-village-far] [--demo-groups]\n\
+                     \x20            [--demo-scene] [--demo-overlap] [--demo-two-material] [--demo-village] [--demo-village-far] [--demo-groups]\n\
                      \x20            [--demo-sketch-extrude] [--demo-sketch-revolve]\n\
                      \x20            [--demo-far-offset] [--demo-far-offset-near]\n\
                      \x20            [--layer-lower <u32>] [--layer-upper <u32>] [--onion <u32>]\n\
@@ -976,6 +987,27 @@ fn build_demo_overlap(voxels_per_block: u32) -> Scene {
     let mut scene = selecting_first_node(Scene::from_nodes(vec![
         make(ShapeKind::Box, [0, 0, 0], MaterialChoice::Stone),
         make(ShapeKind::Box, [2, 2, 0], MaterialChoice::Wood),
+    ]));
+    scene.voxels_per_block = voxels_per_block;
+    scene
+}
+
+/// Build the `--demo-two-material` (ADR 0011 G2): two solid boxes of DISTINCT materials
+/// placed SEPARATED (a whole chunk of air between them) so NO block is shared — every
+/// rendered block is single-material. This is the brick-representable multi-producer scene
+/// (per-record material ids shade each block from its own record); the golden locks its
+/// brick render == its mesh render. The 4-block boxes sit 8 blocks apart in X (`CHUNK_
+/// BLOCKS` is 4, so they land in disjoint chunks with an empty chunk between).
+fn build_demo_two_material(voxels_per_block: u32) -> Scene {
+    let make = |offset: [i64; 3], material| {
+        let shape = SdfShape::from_blocks(ShapeKind::Box, [4, 4, 4], 1, voxels_per_block);
+        let mut node = Node::new(format!("{material:?}"), NodeContent::Tool { shape, material });
+        node.transform = voxel_worker::scene::NodeTransform::from_blocks(offset, voxels_per_block);
+        node
+    };
+    let mut scene = selecting_first_node(Scene::from_nodes(vec![
+        make([0, 0, 0], MaterialChoice::Stone),
+        make([8, 0, 0], MaterialChoice::Wood),
     ]));
     scene.voxels_per_block = voxels_per_block;
     scene
@@ -1342,6 +1374,8 @@ async fn run_capture(options: ShotOptions) {
         build_demo_village(options.geometry.voxels_per_block)
     } else if options.demo_overlap {
         build_demo_overlap(options.geometry.voxels_per_block)
+    } else if options.demo_two_material {
+        build_demo_two_material(options.geometry.voxels_per_block)
     } else if options.demo_scene {
         build_demo_scene(options.geometry.voxels_per_block)
     } else if options.debug_clouds {
@@ -1441,6 +1475,7 @@ async fn run_capture(options: ShotOptions) {
     // to the near box at the origin — the far-lands jitter is gone (S4b proof).
     let placed_scene = options.demo_scene
         || options.demo_overlap
+        || options.demo_two_material
         || options.demo_village
         || options.demo_village_far
         || options.demo_groups
@@ -1656,32 +1691,33 @@ async fn run_capture(options: ShotOptions) {
         return;
     }
 
-    // ADR 0011 G1: `--brick` sources the voxel display from the brick raymarch. The
-    // gate mirrors the live app's: `--features gpu`, a chunkable SINGLE-producer
-    // scene (SDF / SketchSolid — the ADR 0007-ported set; DebugClouds is Part-only,
-    // so the two-layer store has no boundary set for it), a uniform render cell
-    // (the R8 atlas is occupancy-only), and none of the mesh-only modes
-    // (debug-faces, loaded VS materials — those disengage below via `--scan-vs`
-    // never combining with `--brick` in any gated case).
+    // ADR 0011 G2: `--brick` sources the voxel display from the brick raymarch. The
+    // gate mirrors the live app's: `--features gpu`, a chunkable procedural scene
+    // (SDF / SketchSolid — the ADR 0007-ported set; DebugClouds is Part-only, so the
+    // two-layer store has no boundary set for it), brick-representable (every rendered
+    // block single-material + uniform overlay — per-record ids carry per-block materials,
+    // so multi-producer distinct-material scenes engage; the R8 atlas is occupancy-only,
+    // so a block mixing materials stays on the mesh), and none of the mesh-only modes
+    // (debug-faces, `--scan-vs` loaded VS textures).
     let mut brick_raymarch_renderer: Option<voxel_worker::BrickRaymarchRenderer> = None;
     if options.brick {
         if !cfg!(feature = "gpu") {
             println!("brick: --brick requires --features gpu — falling back to the mesh path");
         } else if !scene.has_chunkable_extent(options.geometry.voxels_per_block)
-            || panel_state.scene.single_producer().is_none()
             || options.debug_face_orientation
+            || options.scan_vs
         {
             println!(
-                "brick: scene not gated (needs a chunkable single-producer scene, no \
-                 debug-faces) — falling back to the mesh path"
+                "brick: scene not gated (needs a chunkable procedural scene, no debug-faces, \
+                 no loaded VS material) — falling back to the mesh path"
             );
         } else {
             let density = options.geometry.voxels_per_block;
             let two_layer_chunks = voxel_worker::two_layer_store::TwoLayerStore::enabled()
                 .build_covering_chunks(&scene, density, 0);
             let build = voxel_worker::build_brick_field(&two_layer_chunks, density);
-            match voxel_worker::uniform_render_cell(&two_layer_chunks) {
-                Some((material_id, overlay_active)) if !build.brick_records.is_empty() => {
+            match voxel_worker::brick_representable_overlay(&two_layer_chunks) {
+                Some(overlay_active) if !build.brick_records.is_empty() => {
                     let gpu_records = voxel_worker::pack_gpu_records(&build, |_| {
                         options.brick_force_miss
                     });
@@ -1713,14 +1749,14 @@ async fn run_capture(options: ShotOptions) {
                         &gpu_records,
                         &pyramid,
                         grid.recentre_voxels,
-                        material_id,
                         overlay_active,
                     );
                     brick_raymarch_renderer = Some(renderer);
                 }
                 _ => {
                     println!(
-                        "brick: boundary set is empty or mixes render cells — falling back \
+                        "brick: boundary set is empty or not representable (a block mixes \
+                         materials, or blocks disagree on the on-face grid) — falling back \
                          to the mesh path"
                     );
                 }
