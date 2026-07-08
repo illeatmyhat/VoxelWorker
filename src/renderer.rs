@@ -3156,12 +3156,6 @@ pub fn build_per_chunk_fog_occupancy(
 ) -> PerChunkFogOccupancy {
     let chunk_extent = (CHUNK_BLOCKS * voxels_per_block.max(1)) as i64;
     let [grid_x, grid_y, grid_z] = grid.dimensions;
-    // Issue #59: the inclusive chunk-Z coordinate window the slab covers (if any). A
-    // chunk outside this window is skipped — its occupancy is never sampled by the
-    // raymarch. `covering_chunk_z_range` returns `None` for an empty slab, which we
-    // treat as "no chunks" below.
-    let slab_chunk_z_range = fog_z_slab
-        .map(|slab| slab.covering_chunk_z_range(chunk_extent as u32));
     if grid_x == 0 || grid_y == 0 || grid_z == 0 {
         return PerChunkFogOccupancy {
             chunk_extent: chunk_extent as u32,
@@ -3181,7 +3175,7 @@ pub fn build_per_chunk_fog_occupancy(
     //
     // First pass: integer voxel coords of every occupied voxel (the SAME mapping the
     // whole-grid upload uses), deduplicated.
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashSet;
     let mut occupied_voxels: HashSet<[i64; 3]> = HashSet::new();
     for voxel in &grid.occupied {
         // ADR 0008: decode through the grid's single world→index authority, which uses the
@@ -3197,6 +3191,34 @@ pub fn build_per_chunk_fog_occupancy(
         }
         occupied_voxels.insert([i, j, k]);
     }
+
+    per_chunk_fog_from_occupied_indices(
+        occupied_voxels,
+        grid.recentre_voxels,
+        chunk_extent,
+        fog_z_slab,
+    )
+}
+
+/// Bucket a set of occupied GRID-INDEX voxels (recentred-frame integer indices, already
+/// clipped to the grid box) into apron'd per-chunk fog volumes — the shared core of the
+/// grid densify ([`build_per_chunk_fog_occupancy`]) and the brick-sourced fill
+/// ([`build_per_chunk_fog_occupancy_from_bricks`], ADR 0011 G5). Given the SAME occupied-
+/// index set, both paths produce BYTE-IDENTICAL volumes: the chunk set, ordering,
+/// world_origins, extent and apron bytes depend only on this set + the recentre + slab.
+fn per_chunk_fog_from_occupied_indices(
+    occupied_voxels: std::collections::HashSet<[i64; 3]>,
+    recentre_voxels: [i64; 3],
+    chunk_extent: i64,
+    fog_z_slab: Option<FogZSlab>,
+) -> PerChunkFogOccupancy {
+    use std::collections::HashMap;
+    // Issue #59: the inclusive chunk-Z coordinate window the slab covers (if any). A
+    // chunk outside this window is skipped — its occupancy is never sampled by the
+    // raymarch. `covering_chunk_z_range` returns `None` for an empty slab, which we
+    // treat as "no chunks" below.
+    let slab_chunk_z_range =
+        fog_z_slab.map(|slab| slab.covering_chunk_z_range(chunk_extent as u32));
 
     // The chunk set: a chunk gets a volume iff it holds ≥1 occupied voxel in its INTERIOR
     // `[0, extent)` — the SAME criterion the gather used (it bucketed by
@@ -3269,9 +3291,9 @@ pub fn build_per_chunk_fog_occupancy(
                 // hard-coded `floor(dim/2)`). For a centred Tool this equals the historical
                 // value; for a corner-anchored cloud (`recentre = 0`) it is `chunk_min`.
                 world_origin: [
-                    chunk_min[0] as f32 - grid.recentre_voxels[0] as f32,
-                    chunk_min[1] as f32 - grid.recentre_voxels[1] as f32,
-                    chunk_min[2] as f32 - grid.recentre_voxels[2] as f32,
+                    chunk_min[0] as f32 - recentre_voxels[0] as f32,
+                    chunk_min[1] as f32 - recentre_voxels[1] as f32,
+                    chunk_min[2] as f32 - recentre_voxels[2] as f32,
                 ],
                 occupancy: vec![0u8; pad * pad * pad],
             }
@@ -3347,6 +3369,109 @@ pub fn build_per_chunk_fog_occupancy(
 /// in practice; this mirrors `scene::narrow_chunk_coord` without exposing it.
 fn narrow_chunk_coord_local(value: i64) -> i32 {
     value.clamp(i32::MIN as i64, i32::MAX as i64) as i32
+}
+
+/// **ADR 0011 G5 — the brick-sourced onion-fog fill.** Reconstruct the per-chunk apron'd
+/// fog occupancy directly from a [`BrickFieldBuild`](crate::brick_field::BrickFieldBuild)
+/// (the sink's boundary set), with NO whole-region `VoxelGrid` stream — the last
+/// dense-shaped display consumer ADR 0010 flagged. Fog is boolean occupancy, so it does not
+/// care about the display path's material constraint: this fills for EVERY chunkable scene,
+/// including mixed-material-block scenes whose DISPLAY stays on the mesh path.
+///
+/// **Byte-identical to [`build_per_chunk_fog_occupancy`]** for the same scene: the brick
+/// field is built from the same two-layer boundary set the grid expands from (coarse block →
+/// solid `edge³`, boundary block → its rasterized cuboids; the G0 gate proves the atlas is
+/// byte-identical to the boundary occupancy). This function reconstructs the SAME occupied
+/// grid-index set (absolute voxel − recentre, clipped to `region_dimensions`) and runs the
+/// SAME [`per_chunk_fog_from_occupied_indices`] core — so the chunk set, world_origins,
+/// extent, the +1 APRON (fed from neighbour blocks' records, whether in-chunk or across a
+/// chunk seam) and the band SLAB all mean exactly what the grid densify made them mean.
+pub fn build_per_chunk_fog_occupancy_from_bricks(
+    build: &crate::brick_field::BrickFieldBuild,
+    region_dimensions: [u32; 3],
+    recentre_voxels: [i64; 3],
+    fog_z_slab: Option<FogZSlab>,
+) -> PerChunkFogOccupancy {
+    use crate::brick_field::{unpack_world_block_key, BrickPayload};
+    let edge = build.brick_edge_voxels.max(1) as i64;
+    let chunk_extent = (CHUNK_BLOCKS * build.brick_edge_voxels.max(1)) as i64;
+    let [grid_x, grid_y, grid_z] = region_dimensions;
+    if grid_x == 0 || grid_y == 0 || grid_z == 0 {
+        return PerChunkFogOccupancy {
+            chunk_extent: chunk_extent as u32,
+            volumes: Vec::new(),
+        };
+    }
+
+    // Reconstruct the occupied index set from the boundary records — the SAME set the grid
+    // densify produces, so the shared core yields byte-identical tiles. The index frame is
+    // the ABSOLUTE chunk-lattice voxel `A = world_block · edge + local`: that is exactly what
+    // `VoxelGrid::voxel_index_of` returns for an expanded voxel (its `+0.5` / `−0.5` /
+    // recentre terms cancel to `A`), so the grid path buckets on `A` and folds the recentre
+    // in ONLY at `world_origin` (which the shared core does). A voxel outside `[0, dims)` is
+    // clipped, exactly as `build_per_chunk_fog_occupancy` clips `grid.occupied`. A coarse-
+    // solid record contributes its whole `edge³` (interior fill); a sculpted record only its
+    // occupied atlas voxels (surface); air has no record. Walks the sparse boundary set —
+    // never a dense whole-region grid.
+    use std::collections::HashSet;
+    let mut occupied_voxels: HashSet<[i64; 3]> = HashSet::new();
+    let edge_usize = edge as usize;
+    let push_voxel = |occupied: &mut HashSet<[i64; 3]>, absolute: [i64; 3]| {
+        if absolute[0] < 0
+            || absolute[1] < 0
+            || absolute[2] < 0
+            || absolute[0] >= grid_x as i64
+            || absolute[1] >= grid_y as i64
+            || absolute[2] >= grid_z as i64
+        {
+            return;
+        }
+        occupied.insert(absolute);
+    };
+    for record in &build.brick_records {
+        let world_block = unpack_world_block_key(record.packed_world_block_key);
+        let block_low = [world_block[0] * edge, world_block[1] * edge, world_block[2] * edge];
+        match record.payload {
+            BrickPayload::CoarseSolid { .. } => {
+                for local_z in 0..edge {
+                    for local_y in 0..edge {
+                        for local_x in 0..edge {
+                            push_voxel(
+                                &mut occupied_voxels,
+                                [
+                                    block_low[0] + local_x,
+                                    block_low[1] + local_y,
+                                    block_low[2] + local_z,
+                                ],
+                            );
+                        }
+                    }
+                }
+            }
+            BrickPayload::Sculpted { atlas_slot } => {
+                let tile = build.sculpted_brick_occupancy(atlas_slot);
+                for local_z in 0..edge_usize {
+                    for local_y in 0..edge_usize {
+                        for local_x in 0..edge_usize {
+                            if tile[(local_z * edge_usize + local_y) * edge_usize + local_x] == 0 {
+                                continue;
+                            }
+                            push_voxel(
+                                &mut occupied_voxels,
+                                [
+                                    block_low[0] + local_x as i64,
+                                    block_low[1] + local_y as i64,
+                                    block_low[2] + local_z as i64,
+                                ],
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    per_chunk_fog_from_occupied_indices(occupied_voxels, recentre_voxels, chunk_extent, fog_z_slab)
 }
 
 /// Tile geometry for [`OnionFogRenderer::install_per_chunk_atlas`] — the atlas the GPU
@@ -3792,6 +3917,20 @@ impl OnionFogRenderer {
         fog_z_slab: Option<FogZSlab>,
     ) {
         let occupancy = build_per_chunk_fog_occupancy(grid, voxels_per_block, fog_z_slab);
+        self.upload_per_chunk_occupancy(device, queue, &occupancy);
+    }
+
+    /// Pack a pre-built [`PerChunkFogOccupancy`] into the per-chunk fog atlas + metadata —
+    /// the packing half of [`upload_grid_per_chunk`], shared with the ADR 0011 G5
+    /// brick-sourced fill ([`build_per_chunk_fog_occupancy_from_bricks`]). The occupancy's
+    /// origin (CPU grid densify vs brick boundary set) is irrelevant here: identical volumes
+    /// pack to an identical atlas, so the fog SHADER is untouched.
+    pub fn upload_per_chunk_occupancy(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        occupancy: &PerChunkFogOccupancy,
+    ) {
         let pad = occupancy.chunk_extent as usize + 2;
         let chunk_count = occupancy.volumes.len();
         if chunk_count == 0 || pad == 0 {
@@ -4641,6 +4780,124 @@ mod tests {
         // Exactly one occupied cell in the whole volume.
         let occupied_cells = chunk1.occupancy.iter().filter(|&&b| b == 255).count();
         assert_eq!(occupied_cells, 1, "exactly one apron cell set");
+    }
+
+    /// ADR 0011 G5 — the fog occupancy EXACTNESS gate: a per-chunk fog tile filled from the
+    /// brick field ([`build_per_chunk_fog_occupancy_from_bricks`]) is BYTE-IDENTICAL to the
+    /// tile the CPU densify ([`build_per_chunk_fog_occupancy`]) produces from the streamed
+    /// `VoxelGrid` — same chunk set, world_origins, extent, and (the trap) the +1 APRON and
+    /// band SLAB. Covers a single producer, a MULTI-producer scene (the one that still
+    /// streamed before G5), and a MIXED-material multi-producer scene (fog is boolean
+    /// occupancy, so it sources from bricks even where the DISPLAY falls back to the mesh),
+    /// at two densities, with and without a Z-slab.
+    #[test]
+    fn brick_sourced_fog_matches_cpu_densify_byte_for_byte() {
+        use crate::brick_field::build_brick_field;
+        use crate::core_geom::MaterialChoice;
+        use crate::scene::{Node, NodeContent, NodeTransform, Scene};
+        use crate::two_layer_store::{expand_resident_chunks_into_grid, TwoLayerChunk, TwoLayerStore};
+        use crate::voxel::{SdfShape, ShapeKind};
+
+        fn sphere_node(name: &str, offset_blocks: [i64; 3], density: u32) -> Node {
+            let shape = SdfShape::from_blocks(ShapeKind::Sphere, [4, 4, 4], 1, density);
+            let mut node = Node::new(
+                name.to_string(),
+                NodeContent::Tool { shape, material: MaterialChoice::Stone },
+            );
+            node.transform = NodeTransform::from_blocks(offset_blocks, density);
+            node
+        }
+
+        fn assert_paths_agree(scene: &Scene, density: u32) {
+            let store = TwoLayerStore::enabled();
+            let two_layer_chunks = store.build_covering_chunks(scene, density, 0);
+            assert!(!two_layer_chunks.is_empty(), "fixture must produce covering chunks");
+            let recentre = scene.recentre_voxels_for_resolve(density);
+            let dims = scene.placed_region_dimensions(density);
+            let chunk_refs: Vec<([i32; 3], &TwoLayerChunk)> =
+                two_layer_chunks.iter().map(|(coord, chunk)| (*coord, chunk)).collect();
+            let grid = expand_resident_chunks_into_grid(&chunk_refs, dims, recentre, density);
+            let build = build_brick_field(&two_layer_chunks, density);
+
+            // A middle-band slab (exercises the band scoping) plus the whole-grid `None`.
+            let grid_z = dims[2];
+            let slabs = [
+                None,
+                FogZSlab::for_band(
+                    LayerBand {
+                        band_min: grid_z / 4,
+                        band_max: (grid_z * 3 / 4).min(grid_z.saturating_sub(1)),
+                        onion_depth: 4,
+                    },
+                    grid_z,
+                ),
+            ];
+            for slab in slabs {
+                #[allow(deprecated)]
+                let cpu = build_per_chunk_fog_occupancy(&grid, density, slab);
+                let bricks =
+                    build_per_chunk_fog_occupancy_from_bricks(&build, dims, recentre, slab);
+                assert_eq!(cpu.chunk_extent, bricks.chunk_extent, "chunk extent");
+                assert_eq!(
+                    cpu.volumes.len(),
+                    bricks.volumes.len(),
+                    "same resident fog-chunk count (density {density}, slab {slab:?})"
+                );
+                for (cpu_volume, brick_volume) in cpu.volumes.iter().zip(&bricks.volumes) {
+                    assert_eq!(cpu_volume.chunk_coord, brick_volume.chunk_coord, "chunk coord");
+                    assert_eq!(
+                        cpu_volume.world_origin, brick_volume.world_origin,
+                        "world origin"
+                    );
+                    assert_eq!(
+                        cpu_volume.occupancy, brick_volume.occupancy,
+                        "apron'd tile bytes must be byte-identical (chunk {:?}, density \
+                         {density}, slab {slab:?})",
+                        cpu_volume.chunk_coord
+                    );
+                }
+                // A non-trivial fixture actually exercises occupied tiles.
+                assert!(
+                    cpu.volumes.iter().any(|v| v.occupancy.contains(&255)),
+                    "fixture must produce occupied fog tiles"
+                );
+            }
+        }
+
+        for &density in &[1u32, 4] {
+            // Single producer.
+            assert_paths_agree(&Scene::from_nodes(vec![sphere_node("s", [0, 0, 0], density)]), density);
+            // Multi-producer, spread across chunk boundaries (the scene that still streamed).
+            assert_paths_agree(
+                &Scene::from_nodes(vec![
+                    sphere_node("a", [0, 0, 0], density),
+                    sphere_node("b", [6, 0, 0], density),
+                    sphere_node("c", [0, 6, 5], density),
+                ]),
+                density,
+            );
+            // Mixed-material multi-producer: overlapping boxes of different materials so a
+            // block mixes materials (mesh display path) — fog still brick-sources exactly.
+            let mixed = Scene::from_nodes(vec![
+                {
+                    let shape = SdfShape::from_blocks(ShapeKind::Box, [4, 4, 4], 1, density);
+                    Node::new(
+                        "stone".to_string(),
+                        NodeContent::Tool { shape, material: MaterialChoice::Stone },
+                    )
+                },
+                {
+                    let shape = SdfShape::from_blocks(ShapeKind::Box, [4, 4, 4], 1, density);
+                    let mut node = Node::new(
+                        "wood".to_string(),
+                        NodeContent::Tool { shape, material: MaterialChoice::Wood },
+                    );
+                    node.transform = NodeTransform::from_blocks([2, 2, 0], density);
+                    node
+                },
+            ]);
+            assert_paths_agree(&mixed, density);
+        }
     }
 
     #[test]

@@ -1111,6 +1111,26 @@ impl AppCore {
     }
 }
 
+/// **ADR 0011 G5 — the runtime fog-stream decision (the retirement seam).** Whether a
+/// rebuild must STREAM the whole-region fog `VoxelGrid` (the last dense-shaped display
+/// consumer, ADR 0010's flagged debt), or whether the onion fog sources its occupancy
+/// elsewhere. On a `--features gpu` build the fog reconstructs from the **brick sink** for
+/// any chunkable procedural scene (`fog_from_bricks`), and from the single-producer GPU
+/// resolve for a non-chunkable producer — so a chunkable gpu scene NEVER streams. Only a
+/// non-gpu build, a loaded VS material (mesh-only shading), or a non-chunkable multi-producer
+/// scene (a rare Part-only edit) still streams. Pure so the runtime call site and the
+/// retirement-assertion test share ONE decision (no drift).
+pub fn runtime_streams_fog_grid(
+    gpu_feature: bool,
+    chunkable: bool,
+    single_producer: bool,
+    loaded_material: bool,
+) -> bool {
+    let fog_from_bricks = gpu_feature && chunkable && !loaded_material;
+    let single_producer_resolve = gpu_feature && single_producer && !loaded_material;
+    !(fog_from_bricks || single_producer_resolve)
+}
+
 /// The **default seed scene** the windowed app starts from (ADR 0003 Phase C, slice
 /// C3 — the base a `shot --replay` script is applied against). A single Tool node
 /// from the default geometry/material, the Origin Point synthesized, stable
@@ -2222,6 +2242,60 @@ mod undo_tests {
             skipped.region_dimensions, streamed.region_dimensions,
             "the region dimensions must not depend on streaming the grid"
         );
+    }
+
+    /// ADR 0011 G5: the runtime fog-stream decision truth table — a chunkable gpu scene
+    /// (single OR multi producer, display-representable or not) sources fog from the brick
+    /// sink and NEVER streams; a non-chunkable single producer resolves from its producer;
+    /// only a loaded VS material, a non-chunkable multi-producer scene, or a non-gpu build
+    /// still streams.
+    #[test]
+    fn runtime_streams_fog_grid_truth_table() {
+        // gpu + chunkable → fog from bricks, never streams (streaming is orthogonal to
+        // display representability — a mixed-material mesh scene is chunkable + no material).
+        assert!(!runtime_streams_fog_grid(true, true, true, false), "chunkable single");
+        assert!(
+            !runtime_streams_fog_grid(true, true, false, false),
+            "chunkable MULTI producer — the scene that streamed before G5"
+        );
+        // gpu + non-chunkable single producer → producer GPU-resolve, no stream.
+        assert!(!runtime_streams_fog_grid(true, false, true, false), "non-chunkable single");
+        // gpu + non-chunkable multi-producer (rare Part-only) → still streams (fallback).
+        assert!(runtime_streams_fog_grid(true, false, false, false), "non-chunkable multi");
+        // A loaded VS material (mesh-only) always streams, even chunkable.
+        assert!(runtime_streams_fog_grid(true, true, true, true), "loaded material streams");
+        // A non-gpu build always streams (the CPU display path).
+        assert!(runtime_streams_fog_grid(false, true, true, false), "non-gpu streams");
+        assert!(runtime_streams_fog_grid(false, false, false, false), "non-gpu streams");
+    }
+
+    /// ADR 0011 G5 retirement assertion (load-bearing): the RUNTIME decision that a
+    /// chunkable gpu scene never streams the fog `VoxelGrid`, composed with the rebuild seam
+    /// that a non-streamed rebuild expands NO occupancy — so `expand_resident_chunks_into_grid`
+    /// is never reached on the GPU display path. Uses a MULTI-producer scene (the one that
+    /// streamed before G5).
+    #[test]
+    fn gpu_display_rebuild_never_streams_fog_grid() {
+        let density = 16u32;
+        let scene = two_tool_scene();
+        let chunkable = scene.has_chunkable_extent(density);
+        assert!(chunkable, "the two-tool fixture is chunkable");
+        let single_producer = scene.single_producer().is_some();
+        assert!(!single_producer, "two tools is a MULTI-producer scene");
+        // The runtime (gpu, no loaded material) decides NOT to stream.
+        let streams = runtime_streams_fog_grid(true, chunkable, single_producer, false);
+        assert!(!streams, "a chunkable gpu scene must source fog from bricks, never stream");
+        // And the rebuild honouring that decision expands NO occupancy (the retirement).
+        let mut core = test_core();
+        let RebuildOutcome::Built(output) = core.rebuild(&scene, density, streams) else {
+            panic!("density {density} unexpectedly rejected");
+        };
+        assert!(
+            output.grid.occupied.is_empty(),
+            "the GPU display path must not build a display VoxelGrid (fog stream retired)"
+        );
+        // The dimension-only consumers still work (camera framing, layer track).
+        assert_eq!(output.region_dimensions, output.grid.dimensions);
     }
 
     /// The occupied-voxel CORNER bounding box of a single `shape` of `size_blocks` at

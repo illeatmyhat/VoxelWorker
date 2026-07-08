@@ -72,7 +72,8 @@ mod windowed_resolve_tests;
 mod cell_interval_parity_tests;
 
 pub use app_core::{
-    default_replay_seed_scene, replay_intent_script, AppCore, RebuildOutcome, RebuildOutput,
+    default_replay_seed_scene, replay_intent_script, runtime_streams_fog_grid, AppCore,
+    RebuildOutcome, RebuildOutput,
 };
 pub use store::{ChunkCacheKey, ChunkResolveCache, Store};
 pub use brick_field::{
@@ -115,6 +116,7 @@ pub use assets::{CubeFaceSlot, FaceProvenance, FaceTextures};
 // the CPU fallback; the re-export itself must allow the deprecation to keep CI green.
 #[allow(deprecated)]
 pub use renderer::build_per_chunk_fog_occupancy;
+pub use renderer::build_per_chunk_fog_occupancy_from_bricks;
 pub use renderer::{
     create_depth_view, create_msaa_color_view, ChunkFogVolume, FogZSlab, PerChunkAtlasGeometry,
     FogMode, InfiniteGridRenderer, LayerBand, MaterialSource, OnionFogParams, PointsRenderer,

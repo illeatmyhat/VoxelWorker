@@ -1700,6 +1700,11 @@ async fn run_capture(options: ShotOptions) {
     // so a block mixing materials stays on the mesh), and none of the mesh-only modes
     // (debug-faces, `--scan-vs` loaded VS textures).
     let mut brick_raymarch_renderer: Option<voxel_worker::BrickRaymarchRenderer> = None;
+    // ADR 0011 G5: capture the built brick field so the onion fog can source its occupancy
+    // from the boundary set (no CPU densify), exercising the fog-from-bricks path the
+    // runtime uses — so `brick_golden_matches_dense` becomes the fog-from-bricks visual gate.
+    #[cfg(feature = "gpu")]
+    let mut brick_fog_field: Option<voxel_worker::BrickFieldBuild> = None;
     if options.brick {
         if !cfg!(feature = "gpu") {
             println!("brick: --brick requires --features gpu — falling back to the mesh path");
@@ -1752,6 +1757,8 @@ async fn run_capture(options: ShotOptions) {
                         overlay_active,
                     );
                     brick_raymarch_renderer = Some(renderer);
+                    // The fog sources from the SAME boundary set (ADR 0011 G5).
+                    brick_fog_field = Some(build);
                 }
                 _ => {
                     println!(
@@ -1905,30 +1912,60 @@ async fn run_capture(options: ShotOptions) {
             }
             FogMode::PerChunk => {
                 let vpb = options.geometry.voxels_per_block;
-                // ADR 0007 live call-site swap: a single ported producer GPU-resolves its
-                // per-chunk fog atlas (no CPU densify, no readback); multi-producer scenes —
-                // or a dispatch too large for this device — fall back to the CPU path.
-                let via_gpu = try_install_gpu_per_chunk_fog(
-                    &mut onion_fog_renderer,
-                    &gpu,
-                    &panel_state.scene,
-                    &grid,
-                    vpb,
-                    fog_z_slab,
-                );
-                if !via_gpu {
-                    #[allow(deprecated)] // CPU fog densify — the fallback until the live GPU path.
-                    onion_fog_renderer.upload_grid_per_chunk(&gpu.device, &gpu.queue, &grid, vpb, fog_z_slab);
-                }
-                println!(
-                    "fog: per-chunk mode ({}) — {}",
-                    if via_gpu { "GPU atlas" } else { "CPU densify" },
-                    if onion_fog_renderer.per_chunk_active() {
-                        "atlas active"
-                    } else {
-                        "atlas EMPTY/too-large — fog disabled"
+                // ADR 0011 G5: when `--brick` engaged, source the fog occupancy from the SAME
+                // brick boundary set the display raymarches (no CPU densify, no producer
+                // re-resolve) — the fog-from-bricks path the runtime uses. Byte-identical to
+                // the CPU densify, so the committed dense golden stays the reference.
+                #[cfg(feature = "gpu")]
+                let brick_fog_sourced = if let Some(build) = brick_fog_field.as_ref() {
+                    let occupancy = voxel_worker::build_per_chunk_fog_occupancy_from_bricks(
+                        build,
+                        grid.dimensions,
+                        grid.recentre_voxels,
+                        fog_z_slab,
+                    );
+                    onion_fog_renderer.upload_per_chunk_occupancy(&gpu.device, &gpu.queue, &occupancy);
+                    true
+                } else {
+                    false
+                };
+                #[cfg(not(feature = "gpu"))]
+                let brick_fog_sourced = false;
+                if brick_fog_sourced {
+                    println!(
+                        "fog: per-chunk mode (brick sink) — {}",
+                        if onion_fog_renderer.per_chunk_active() {
+                            "atlas active"
+                        } else {
+                            "atlas EMPTY/too-large — fog disabled"
+                        }
+                    );
+                } else {
+                    // ADR 0007 live call-site swap: a single ported producer GPU-resolves its
+                    // per-chunk fog atlas (no CPU densify, no readback); multi-producer scenes —
+                    // or a dispatch too large for this device — fall back to the CPU path.
+                    let via_gpu = try_install_gpu_per_chunk_fog(
+                        &mut onion_fog_renderer,
+                        &gpu,
+                        &panel_state.scene,
+                        &grid,
+                        vpb,
+                        fog_z_slab,
+                    );
+                    if !via_gpu {
+                        #[allow(deprecated)] // CPU fog densify — the fallback until the live GPU path.
+                        onion_fog_renderer.upload_grid_per_chunk(&gpu.device, &gpu.queue, &grid, vpb, fog_z_slab);
                     }
-                );
+                    println!(
+                        "fog: per-chunk mode ({}) — {}",
+                        if via_gpu { "GPU atlas" } else { "CPU densify" },
+                        if onion_fog_renderer.per_chunk_active() {
+                            "atlas active"
+                        } else {
+                            "atlas EMPTY/too-large — fog disabled"
+                        }
+                    );
+                }
             }
         }
     }

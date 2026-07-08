@@ -79,16 +79,23 @@ struct WindowedState {
     /// the cuboid mesh; the mesh keeps rebuilding as the fallback + A/B reference
     /// (ADR 0011 Decision 6). `None` on default (no-GPU) builds, always.
     brick_raymarch_renderer: Option<BrickRaymarchRenderer>,
-    /// ADR 0011 G3: the PERSISTENT incremental brick field mirroring the installed
-    /// atlas — the CPU truth an incremental edit patches (dirty chunks re-evaluated,
-    /// only their slots written) instead of rebuilding the whole field. `Some` exactly
-    /// when `brick_raymarch_renderer` holds a field; reset from a wholesale
-    /// `build_brick_field` whenever the field is (re)installed wholesale, patched in
-    /// place on an incremental edit, and dropped when the brick path disengages. Kept in
-    /// lock-step with the installed field so `to_build()` always equals the resident
-    /// atlas (ADR 0011 G3 parity gate).
+    /// ADR 0011 G3: the PERSISTENT incremental brick field mirroring the boundary set —
+    /// the CPU truth an incremental edit patches (dirty chunks re-evaluated, only their
+    /// slots written) instead of rebuilding the whole field. `Some` for any chunkable
+    /// gpu-gated scene (ADR 0011 G5: it now feeds the FOG too, so it is maintained even
+    /// when the DISPLAY falls back to the mesh — a mixed-material scene); reset from a
+    /// wholesale `build_brick_field` on a wholesale edit, patched in place on an
+    /// incremental edit, and dropped when the scene leaves the gate / empties. `to_build()`
+    /// always equals the resident atlas + the fog occupancy source (ADR 0011 G3/G5 gate).
     #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
     incremental_brick_field: Option<voxel_worker::IncrementalBrickField>,
+    /// ADR 0011 G5: the current brick field the onion FOG sources its per-chunk occupancy
+    /// tiles from (`build_per_chunk_fog_occupancy_from_bricks`) — the boundary set of the
+    /// last rebuild, kept so the render-path's lazy fog rebuild has a source across frames
+    /// without re-streaming a `VoxelGrid`. `Some` iff a chunkable gpu-gated scene is
+    /// resident; `None` on non-gpu builds (always), loaded-material, and Part-only scenes.
+    #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
+    fog_brick_field: Option<voxel_worker::BrickFieldBuild>,
     /// ADR 0011 G1: whether `self.grid` actually holds STREAMED occupancy. `false`
     /// when the rebuild skipped the fog `VoxelGrid` stream (brick path engaged —
     /// the GPU fog atlas resolves from the producer instead); the CPU fog densify
@@ -514,6 +521,10 @@ impl WindowedState {
                         Some(slab),
                         // The startup grid is always streamed (`resolve_scene`).
                         true,
+                        // ADR 0011 G5: no brick fog source seeded yet at startup — the first
+                        // rebuild wires it; the streamed startup grid feeds this one build.
+                        #[cfg(feature = "gpu")]
+                        None,
                     );
                     fog_occupancy_dirty = false;
                     fog_built_chunk_z_range = Self::fog_covering_chunk_z_range(
@@ -591,6 +602,8 @@ impl WindowedState {
             cuboid_mesh_renderer,
             brick_raymarch_renderer,
             incremental_brick_field,
+            // ADR 0011 G5: seeded on the first rebuild (the startup grid still streams once).
+            fog_brick_field: None,
             // The startup grid was streamed by `resolve_scene` above (one-time);
             // per-edit rebuilds decide streaming from the brick engagement.
             fog_grid_streamed: true,
@@ -812,8 +825,32 @@ impl WindowedState {
         // display path (the rebuild skipped the stream); the CPU densify must then be
         // SKIPPED rather than consume the empty grid (it would silently draw no fog).
         grid_streamed: bool,
+        // ADR 0011 G5: the brick field the fog sources its per-chunk occupancy from, for a
+        // chunkable gpu-gated scene. `Some` ⇒ fog reconstructs its tiles from the boundary
+        // set (no `VoxelGrid` stream — the retirement), byte-identical to the CPU densify.
+        #[cfg(feature = "gpu")] fog_brick: Option<&voxel_worker::BrickFieldBuild>,
     ) {
         profiling::scope!("fog_upload");
+        // ADR 0011 G5: the primary path — reconstruct the per-chunk fog occupancy from the
+        // brick field (the boundary set), with NO whole-region `VoxelGrid` stream. Fog is
+        // boolean occupancy, so this covers every chunkable scene, mixed-material blocks
+        // included (their display stays on the mesh). Byte-identical to the CPU densify
+        // (`brick_sourced_fog_matches_cpu_densify_byte_for_byte`), so the fog SHADER and the
+        // `onion-fog-perchunk` golden are unchanged. PerChunk only (WholeGrid is the legacy
+        // single-3D-texture debug mode, which never rides the brick path).
+        #[cfg(feature = "gpu")]
+        if let (Some(build), FogMode::PerChunk) = (fog_brick, fog_mode) {
+            profiling::scope!("fog_brick_fill");
+            let occupancy = voxel_worker::build_per_chunk_fog_occupancy_from_bricks(
+                build,
+                grid.dimensions,
+                grid.recentre_voxels,
+                fog_z_slab,
+            );
+            onion_fog_renderer.upload_per_chunk_occupancy(&gpu.device, &gpu.queue, &occupancy);
+            println!("fog: per-chunk mode (brick sink)");
+            return;
+        }
         #[cfg(feature = "gpu")]
         let gpu_fog_installed = Self::try_install_gpu_per_chunk_fog(
             gpu_resolver,
@@ -827,13 +864,13 @@ impl WindowedState {
         #[cfg(not(feature = "gpu"))]
         let gpu_fog_installed = false;
         if !gpu_fog_installed && !grid_streamed {
-            // Brick path engaged but the GPU fog atlas could not install (a compact
-            // set past the atlas budget). Degrade to NO fog this frame — honest and
-            // visible — rather than densifying from an empty grid (invisible fog
-            // with no explanation) or re-streaming the whole region mid-frame.
+            // No brick source and the GPU fog atlas could not install (a compact set past
+            // the atlas budget on a non-chunkable single producer). Degrade to NO fog this
+            // frame — honest and visible — rather than densifying from an empty grid
+            // (invisible fog with no explanation) or re-streaming the whole region mid-frame.
             println!(
-                "fog: skipped — occupancy grid not streamed (brick display path) and the \
-                 GPU fog atlas was unavailable"
+                "fog: skipped — occupancy grid not streamed and no brick/GPU fog source \
+                 available"
             );
         } else if !gpu_fog_installed {
             // CPU densify fallback (multi-producer, dispatch too large for the GPU, or a
@@ -897,20 +934,30 @@ impl WindowedState {
         // GPU cuboid mesh and upload the fog (the camera is NOT touched). A density whose
         // single-chunk voxel capacity exceeds the bound is rejected with the store
         // untouched, so we surface the cap warning and bail.
-        // ADR 0011: the fog GPU-resolve is SINGLE-PRODUCER only
-        // (`resolve_single_producer_fog_atlas`), so only a single-producer scene skips the
-        // whole-region fog `VoxelGrid` stream (ADR 0010's flagged per-edit densify debt) —
-        // a multi-producer brick scene keeps streaming, its fog CPU-densifies as before.
-        let single_producer_fog_resolve = cfg!(feature = "gpu")
-            && self.panel_state.scene.single_producer().is_some()
-            && self.loaded_material.is_none();
-        let stream_fog_grid = !single_producer_fog_resolve;
-        // ADR 0011 G2: the brick DISPLAY gate widens beyond single-producer to any
-        // chunkable procedural scene; representability (every rendered block
-        // single-material, uniform overlay) is checked at install from the boundary set.
+        // ADR 0011 G5: fog is boolean occupancy, so it sources from the brick field for
+        // EVERY chunkable procedural scene — mixed-material-block scenes included (their
+        // DISPLAY stays on the mesh, but the fog brick occupancy is exact regardless of
+        // materials). This retires the last dense-shaped display consumer: a chunkable
+        // gpu-gated scene NEVER streams the fog `VoxelGrid`. A loaded VS material (mesh-only)
+        // or a NON-chunkable Part-only scene keeps the pre-G5 fog path (the single-producer
+        // GPU resolve, else the CPU densify), so those two edge cases still stream.
+        let chunkable = self.panel_state.scene.has_chunkable_extent(density);
+        let loaded_material = self.loaded_material.is_some();
+        let single_producer = self.panel_state.scene.single_producer().is_some();
+        // ONE decision, shared with the retirement-assertion test (no drift): a chunkable
+        // gpu scene sources fog from the brick sink, so it never streams the `VoxelGrid`.
+        let stream_fog_grid = voxel_worker::runtime_streams_fog_grid(
+            cfg!(feature = "gpu"),
+            chunkable,
+            single_producer,
+            loaded_material,
+        );
+        // ADR 0011 G2/G5: the brick sink engages for any chunkable procedural scene (no
+        // loaded VS material). The DISPLAY additionally needs representability (checked from
+        // the boundary set below); the FOG needs only chunkability — so this gate builds the
+        // brick field even when the display falls back to the mesh.
         #[cfg(feature = "gpu")]
-        let brick_display_gate = self.panel_state.scene.has_chunkable_extent(density)
-            && self.loaded_material.is_none();
+        let brick_display_gate = chunkable && !loaded_material;
         let RebuildOutput {
             grid,
             region_dimensions,
@@ -993,116 +1040,136 @@ impl WindowedState {
         // scene clears the field to the mesh fallback.
         {
             #[cfg_attr(not(feature = "gpu"), allow(unused_mut))]
-            let mut brick_field_installed = false;
+            let mut brick_display_installed = false;
             #[cfg(feature = "gpu")]
             if brick_display_gate {
                 profiling::scope!("brick_field_build");
-                if let Some(overlay_active) =
-                    voxel_worker::brick_representable_overlay(&two_layer_chunks)
-                {
-                    // Incremental patch iff the mesh route is InlineIncremental AND a field
-                    // is already resident to patch — mirrors `route_geometry_rebuild`, so the
-                    // C1 interlock composes (outstanding ⇒ route != InlineIncremental ⇒
-                    // wholesale here too).
-                    let patch_in_place = matches!(route, RebuildRoute::InlineIncremental)
-                        && self.incremental_brick_field.is_some()
-                        && self.brick_raymarch_renderer.is_some();
-                    if patch_in_place {
-                        let dirty = incremental_dirty_chunks
-                            .as_ref()
-                            .expect("InlineIncremental ⇒ incremental_dirty_chunks is Some");
-                        // Apply the dirty update to the CPU mirror, then materialise the
-                        // patched build (the field borrow releases before the renderer's).
-                        let (update, build) = {
-                            let field = self
-                                .incremental_brick_field
-                                .as_mut()
-                                .expect("patch_in_place ⇒ Some");
-                            debug_assert_eq!(
-                                field.brick_edge_voxels(),
-                                density,
-                                "an incremental edit never changes density (it routes wholesale)"
-                            );
-                            let update = field.apply_dirty_update(&two_layer_chunks, dirty);
-                            (update, field.to_build())
-                        };
-                        if build.brick_records.is_empty() {
-                            // The edit emptied the field — disengage to the mesh path.
-                            if let Some(renderer) = &mut self.brick_raymarch_renderer {
-                                renderer.clear_brick_field();
-                            }
-                            self.incremental_brick_field = None;
-                        } else {
-                            if update.atlas_grew {
-                                println!(
-                                    "brick: atlas grew — full re-pack ({} sculpted slots)",
-                                    build.sculpted_brick_count()
-                                );
-                            }
+                // (A) Maintain the CPU brick MIRROR — the FOG occupancy source (ADR 0011 G5),
+                // built for any chunkable scene regardless of display representability. Patch
+                // iff the mesh route is InlineIncremental AND a mirror already exists (mirrors
+                // `route_geometry_rebuild`, so the C1 interlock composes: outstanding ⇒ route
+                // != InlineIncremental ⇒ wholesale here too).
+                let patch_mirror = matches!(route, RebuildRoute::InlineIncremental)
+                    && self.incremental_brick_field.is_some();
+                let (build, update): (
+                    voxel_worker::BrickFieldBuild,
+                    Option<voxel_worker::BrickFieldUpdate>,
+                ) = if patch_mirror {
+                    let dirty = incremental_dirty_chunks
+                        .as_ref()
+                        .expect("InlineIncremental ⇒ incremental_dirty_chunks is Some");
+                    let field = self
+                        .incremental_brick_field
+                        .as_mut()
+                        .expect("patch_mirror ⇒ Some");
+                    debug_assert_eq!(
+                        field.brick_edge_voxels(),
+                        density,
+                        "an incremental edit never changes density (it routes wholesale)"
+                    );
+                    let update = field.apply_dirty_update(&two_layer_chunks, dirty);
+                    (field.to_build(), Some(update))
+                } else {
+                    // Wholesale (re)build; RESET the mirror so the next incremental edit
+                    // patches from a known-good full field.
+                    let build = voxel_worker::build_brick_field(&two_layer_chunks, density);
+                    self.incremental_brick_field = if build.brick_records.is_empty() {
+                        None
+                    } else {
+                        Some(voxel_worker::IncrementalBrickField::from_wholesale(&build))
+                    };
+                    (build, None)
+                };
+
+                if build.brick_records.is_empty() {
+                    // The edit emptied the field — no fog source, no display brick.
+                    self.incremental_brick_field = None;
+                    self.fog_brick_field = None;
+                } else {
+                    // (B) DISPLAY: install/patch the GPU raymarch renderer ONLY when the
+                    // boundary set is brick-REPRESENTABLE (single-material blocks + one
+                    // overlay). A mixed-material scene keeps the mesh display but still
+                    // fog-sources from `build` (fog is boolean occupancy — the G5 insight).
+                    match voxel_worker::brick_representable_overlay(&two_layer_chunks) {
+                        Some(overlay_active) => {
                             let pyramid =
                                 voxel_worker::ClipmapPyramid::from_records(&build.brick_records);
-                            let renderer = self
-                                .brick_raymarch_renderer
-                                .as_mut()
-                                .expect("patch_in_place ⇒ Some");
-                            renderer.patch_brick_field(
-                                &self.gpu.device,
-                                &self.gpu.queue,
-                                &build,
-                                &update,
-                                &voxel_worker::pack_gpu_records(&build, |_| false),
-                                &pyramid,
-                                recentre_voxels,
-                                overlay_active,
-                            );
-                            brick_field_installed = true;
-                        }
-                    } else {
-                        // Wholesale (re)build + install; RESET the incremental mirror so the
-                        // next incremental edit patches from a known-good full field.
-                        let build = voxel_worker::build_brick_field(&two_layer_chunks, density);
-                        if !build.brick_records.is_empty() {
-                            let renderer = self.brick_raymarch_renderer.get_or_insert_with(|| {
-                                BrickRaymarchRenderer::new(
+                            let gpu_records = voxel_worker::pack_gpu_records(&build, |_| false);
+                            // Patch in place iff we produced an incremental update AND a
+                            // renderer already holds a field; otherwise (wholesale, or the
+                            // display re-engaging from a mesh fallback) install fresh.
+                            if let (Some(update), true) =
+                                (update.as_ref(), self.brick_raymarch_renderer.is_some())
+                            {
+                                if update.atlas_grew {
+                                    println!(
+                                        "brick: atlas grew — full re-pack ({} sculpted slots)",
+                                        build.sculpted_brick_count()
+                                    );
+                                }
+                                let renderer = self
+                                    .brick_raymarch_renderer
+                                    .as_mut()
+                                    .expect("is_some checked");
+                                renderer.patch_brick_field(
                                     &self.gpu.device,
                                     &self.gpu.queue,
-                                    COLOR_TARGET_FORMAT,
-                                )
-                            });
-                            let pyramid =
-                                voxel_worker::ClipmapPyramid::from_records(&build.brick_records);
-                            renderer.install_brick_field(
-                                &self.gpu.device,
-                                &self.gpu.queue,
-                                &build,
-                                &voxel_worker::pack_gpu_records(&build, |_| false),
-                                &pyramid,
-                                recentre_voxels,
-                                overlay_active,
-                            );
-                            self.incremental_brick_field = Some(
-                                voxel_worker::IncrementalBrickField::from_wholesale(&build),
-                            );
-                            brick_field_installed = true;
+                                    &build,
+                                    update,
+                                    &gpu_records,
+                                    &pyramid,
+                                    recentre_voxels,
+                                    overlay_active,
+                                );
+                            } else {
+                                let renderer =
+                                    self.brick_raymarch_renderer.get_or_insert_with(|| {
+                                        BrickRaymarchRenderer::new(
+                                            &self.gpu.device,
+                                            &self.gpu.queue,
+                                            COLOR_TARGET_FORMAT,
+                                        )
+                                    });
+                                renderer.install_brick_field(
+                                    &self.gpu.device,
+                                    &self.gpu.queue,
+                                    &build,
+                                    &gpu_records,
+                                    &pyramid,
+                                    recentre_voxels,
+                                    overlay_active,
+                                );
+                            }
+                            brick_display_installed = true;
+                            self.brick_fallback_reported = false;
+                        }
+                        None => {
+                            // Not display-representable: mesh display, fog still from bricks.
+                            if !self.brick_fallback_reported {
+                                println!(
+                                    "brick: scene not representable (a block mixes materials \
+                                     or blocks disagree on the on-face grid) — mesh display, \
+                                     fog from bricks"
+                                );
+                                self.brick_fallback_reported = true;
+                            }
                         }
                     }
-                    self.brick_fallback_reported = false;
-                } else if !self.brick_fallback_reported {
-                    // A chunkable procedural scene the brick sink can't represent (a block
-                    // mixes materials across its microblocks, or blocks disagree on the
-                    // overlay). Report once, then keep the mesh path until it clears.
-                    println!(
-                        "brick: scene not representable (a block mixes materials or blocks \
-                         disagree on the on-face grid) — mesh display path"
-                    );
-                    self.brick_fallback_reported = true;
+                    // Fog sources from THIS rebuild's boundary set regardless of the display
+                    // path — the last dense-shaped display consumer is gone (ADR 0011 G5).
+                    self.fog_brick_field = Some(build);
                 }
+            } else {
+                // Gated off (loaded VS material, or Part-only under gpu): no brick mirror,
+                // no brick fog source — the pre-G5 fog path handles it. (This whole if/else
+                // is compiled out on non-gpu builds, where both fields stay `None` forever.)
+                self.incremental_brick_field = None;
+                self.fog_brick_field = None;
             }
-            if !brick_field_installed {
+            if !brick_display_installed {
                 if let Some(renderer) = &mut self.brick_raymarch_renderer {
                     renderer.clear_brick_field();
                 }
-                self.incremental_brick_field = None;
             }
         }
 
@@ -1226,6 +1293,8 @@ impl WindowedState {
                         density,
                         Some(slab),
                         stream_fog_grid,
+                        #[cfg(feature = "gpu")]
+                        self.fog_brick_field.as_ref(),
                     );
                     self.fog_occupancy_dirty = false;
                     self.fog_built_chunk_z_range = Self::fog_covering_chunk_z_range(
@@ -2038,6 +2107,8 @@ impl WindowedState {
                             fog_density,
                             Some(slab),
                             self.fog_grid_streamed,
+                            #[cfg(feature = "gpu")]
+                            self.fog_brick_field.as_ref(),
                         );
                         self.fog_occupancy_dirty = false;
                         self.fog_built_chunk_z_range = needed_chunk_z_range;
