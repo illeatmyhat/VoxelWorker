@@ -353,42 +353,27 @@ pub fn build_brick_field(
                         chunk_coord[1] as i64 * CHUNK_BLOCKS as i64 + block_y as i64,
                         chunk_coord[2] as i64 * CHUNK_BLOCKS as i64 + block_z as i64,
                     ];
-                    if let Some(block_id) = chunk.coarse_block(block) {
-                        // Coarse XOR boundary is the classifier's invariant; a block in
-                        // both layers would double-emit its key.
-                        debug_assert!(
-                            !chunk.microblocks.contains_key(&block),
-                            "a block must be coarse XOR boundary"
-                        );
-                        brick_records.push(BrickRecord {
-                            packed_world_block_key: pack_world_block_key(world_block),
-                            material_id: block_id.color_index(),
-                            payload: BrickPayload::CoarseSolid { block_id },
-                            // Fully solid through ⇒ every face is solid.
-                            seam_solidity: SeamSolidity {
-                                solid: [[true; 2]; 3],
-                            },
-                        });
-                    } else if let Some(geometry) = chunk.microblocks.get(&block) {
-                        let atlas_slot = sculpted_brick_tiles.len() as u32;
-                        sculpted_brick_tiles
-                            .push(rasterize_brick_occupancy(geometry, brick_edge_voxels));
-                        // The block's material is the clean render-cell id of its
-                        // microblocks; a representable block is single-material, so the
-                        // first cuboid's id is the block's (a mixed block never engages).
-                        let material_id = geometry
-                            .cuboids
-                            .first()
-                            .map(|cuboid| clean_block_id(cuboid.material_id))
-                            .unwrap_or(0);
-                        brick_records.push(BrickRecord {
-                            packed_world_block_key: pack_world_block_key(world_block),
+                    // Classify the block once (shared with the G3 incremental update so
+                    // both paths emit identical records); the wholesale build assigns
+                    // sculpted slots densely in record order.
+                    match classify_block_brick(chunk, block, world_block, brick_edge_voxels) {
+                        BlockBrick::Air => {}
+                        BlockBrick::Coarse(record) => brick_records.push(record),
+                        BlockBrick::Sculpted {
                             material_id,
-                            payload: BrickPayload::Sculpted { atlas_slot },
-                            seam_solidity: geometry.seam_solidity,
-                        });
+                            seam_solidity,
+                            tile,
+                        } => {
+                            let atlas_slot = sculpted_brick_tiles.len() as u32;
+                            sculpted_brick_tiles.push(tile);
+                            brick_records.push(BrickRecord {
+                                packed_world_block_key: pack_world_block_key(world_block),
+                                material_id,
+                                payload: BrickPayload::Sculpted { atlas_slot },
+                                seam_solidity,
+                            });
+                        }
                     }
-                    // else: air block — nothing (ADR 0011 Decision 2).
                 }
             }
         }
@@ -404,35 +389,8 @@ pub fn build_brick_field(
 
     // Tile geometry mirrors `upload_grid_per_chunk`: a cubic-ish slot grid bounded by
     // the SCULPTED count (coarse records consume none of it), then scatter each tile.
-    let sculpted_count = sculpted_brick_tiles.len();
-    let (bricks_per_axis, atlas_dim_voxels) = if sculpted_count == 0 {
-        (0, 0)
-    } else {
-        let tiles = ((sculpted_count as f64).cbrt().ceil() as u32).max(1);
-        (tiles, tiles * brick_edge_voxels)
-    };
-    let atlas_dim = atlas_dim_voxels as usize;
-    let mut sculpted_atlas_bytes = vec![0u8; atlas_dim * atlas_dim * atlas_dim];
-    let edge = brick_edge_voxels as usize;
-    for (atlas_slot, brick_bytes) in sculpted_brick_tiles.iter().enumerate() {
-        let tiles = bricks_per_axis;
-        let slot = atlas_slot as u32;
-        let origin = [
-            (slot % tiles) as usize * edge,
-            ((slot / tiles) % tiles) as usize * edge,
-            (slot / (tiles * tiles)) as usize * edge,
-        ];
-        for local_z in 0..edge {
-            for local_y in 0..edge {
-                let source_row = (local_z * edge + local_y) * edge;
-                let atlas_row = ((origin[2] + local_z) * atlas_dim + origin[1] + local_y)
-                    * atlas_dim
-                    + origin[0];
-                sculpted_atlas_bytes[atlas_row..atlas_row + edge]
-                    .copy_from_slice(&brick_bytes[source_row..source_row + edge]);
-            }
-        }
-    }
+    let (bricks_per_axis, atlas_dim_voxels, sculpted_atlas_bytes) =
+        pack_sculpted_atlas(&sculpted_brick_tiles, brick_edge_voxels);
 
     BrickFieldBuild {
         brick_records,
@@ -462,6 +420,348 @@ fn rasterize_brick_occupancy(
         }
     }
     brick_bytes
+}
+
+/// One block's brick contribution, INDEPENDENT of atlas-slot assignment — the shared
+/// classifier both the wholesale [`build_brick_field`] and the G3 incremental update
+/// ([`IncrementalBrickField::apply_dirty_update`]) run, so a block classifies to the
+/// exact same record kind + material + occupancy either way (only the slot NUMBER
+/// differs: wholesale packs `0..count` in record order, incremental allocates from a
+/// free-list). Keeping ONE classifier is what makes "incremental == wholesale byte-exact"
+/// structural rather than a convention two code paths must independently uphold.
+enum BlockBrick {
+    /// Air — no record (ADR 0011 Decision 2).
+    Air,
+    /// A coarse-solid block: the whole record (no atlas slot).
+    Coarse(BrickRecord),
+    /// A boundary block: the record MINUS its atlas slot (the caller's allocator assigns
+    /// it) plus the occupancy tile to land in that slot.
+    Sculpted {
+        material_id: u16,
+        seam_solidity: SeamSolidity,
+        tile: Vec<u8>,
+    },
+}
+
+/// Classify one block of a [`TwoLayerChunk`] into its [`BlockBrick`] — the coarse XOR
+/// boundary XOR air partition (ADR 0011 Decision 2). `world_block` is the block's
+/// absolute world-block coordinate (its packed key).
+fn classify_block_brick(
+    chunk: &TwoLayerChunk,
+    block: [u32; 3],
+    world_block: [i64; 3],
+    brick_edge_voxels: u32,
+) -> BlockBrick {
+    if let Some(block_id) = chunk.coarse_block(block) {
+        // Coarse XOR boundary is the classifier's invariant; a block in both layers
+        // would double-emit its key.
+        debug_assert!(
+            !chunk.microblocks.contains_key(&block),
+            "a block must be coarse XOR boundary"
+        );
+        BlockBrick::Coarse(BrickRecord {
+            packed_world_block_key: pack_world_block_key(world_block),
+            material_id: block_id.color_index(),
+            payload: BrickPayload::CoarseSolid { block_id },
+            // Fully solid through ⇒ every face is solid.
+            seam_solidity: SeamSolidity {
+                solid: [[true; 2]; 3],
+            },
+        })
+    } else if let Some(geometry) = chunk.microblocks.get(&block) {
+        // The block's material is the clean render-cell id of its microblocks; a
+        // representable block is single-material, so the first cuboid's id is the
+        // block's (a mixed block never engages the sink).
+        let material_id = geometry
+            .cuboids
+            .first()
+            .map(|cuboid| clean_block_id(cuboid.material_id))
+            .unwrap_or(0);
+        BlockBrick::Sculpted {
+            material_id,
+            seam_solidity: geometry.seam_solidity,
+            tile: rasterize_brick_occupancy(geometry, brick_edge_voxels),
+        }
+    } else {
+        BlockBrick::Air
+    }
+}
+
+/// Scatter a slot-indexed set of `edge³` occupancy tiles into the ADR 0007 tile-cube
+/// atlas layout: a cubic-ish `bricks_per_axis³` slot grid (bounded by the slot count,
+/// linear slot → 3D tile x-fastest), returning `(bricks_per_axis, atlas_dim_voxels,
+/// bytes)`. Shared by the wholesale build and [`IncrementalBrickField::to_build`] so the
+/// two produce byte-identical layouts for the same tile vector. A slot with a FREED
+/// (dead) tile is scattered as-is — its bytes are unreachable from any live record, so
+/// they may be garbage (the free-slot discipline).
+fn pack_sculpted_atlas(slot_tiles: &[Vec<u8>], brick_edge_voxels: u32) -> (u32, u32, Vec<u8>) {
+    let edge = brick_edge_voxels as usize;
+    let slot_count = slot_tiles.len();
+    let (bricks_per_axis, atlas_dim_voxels) = if slot_count == 0 {
+        (0, 0)
+    } else {
+        let tiles = ((slot_count as f64).cbrt().ceil() as u32).max(1);
+        (tiles, tiles * brick_edge_voxels)
+    };
+    let atlas_dim = atlas_dim_voxels as usize;
+    let mut bytes = vec![0u8; atlas_dim * atlas_dim * atlas_dim];
+    for (slot, tile) in slot_tiles.iter().enumerate() {
+        debug_assert_eq!(tile.len(), edge * edge * edge, "every slot tile is edge³");
+        let tiles = bricks_per_axis;
+        let s = slot as u32;
+        let origin = [
+            (s % tiles) as usize * edge,
+            ((s / tiles) % tiles) as usize * edge,
+            (s / (tiles * tiles)) as usize * edge,
+        ];
+        for local_z in 0..edge {
+            for local_y in 0..edge {
+                let source_row = (local_z * edge + local_y) * edge;
+                let atlas_row = ((origin[2] + local_z) * atlas_dim + origin[1] + local_y)
+                    * atlas_dim
+                    + origin[0];
+                bytes[atlas_row..atlas_row + edge]
+                    .copy_from_slice(&tile[source_row..source_row + edge]);
+            }
+        }
+    }
+    (bricks_per_axis, atlas_dim_voxels, bytes)
+}
+
+/// The absolute CHUNK coordinate that owns an absolute world block (`floor_div` by
+/// [`CHUNK_BLOCKS`]) — the partition the resident cache dirties on, so a record can be
+/// tested for membership in an edit's dirty-chunk set.
+fn chunk_coord_of_world_block(world_block: [i64; 3]) -> [i32; 3] {
+    let blocks = CHUNK_BLOCKS as i64;
+    [
+        world_block[0].div_euclid(blocks) as i32,
+        world_block[1].div_euclid(blocks) as i32,
+        world_block[2].div_euclid(blocks) as i32,
+    ]
+}
+
+/// What an [`IncrementalBrickField::apply_dirty_update`] touched — the per-edit "dirty
+/// region" made observable so the GPU sink patches ONLY these atlas slots (never the
+/// untouched ones) and the parity net can assert the cost is proportional to the edit.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BrickFieldUpdate {
+    /// Atlas slots (re)written this edit — newly allocated or overwritten sculpted
+    /// bricks. When `atlas_grew` is false these are the ONLY slots the GPU patch writes.
+    pub written_slots: Vec<u32>,
+    /// Slots FREED this edit (their block became air/coarse or its chunk was removed);
+    /// their tiles are now dead until reallocated. Free bytes are never uploaded.
+    pub freed_slots: Vec<u32>,
+    /// Whether the atlas tile geometry GREW (`bricks_per_axis` increased) — then every
+    /// slot's 3D position moved, so the sink MUST re-pack + re-upload the whole atlas
+    /// (the one legitimate wholesale re-pack, ADR 0011 pitfalls / ADR 0007 resize
+    /// precedent). False ⇒ untouched slots keep their texels.
+    pub atlas_grew: bool,
+}
+
+/// The PERSISTENT incremental brick field (ADR 0011 slice G3). Maintains the sorted
+/// [`BrickRecord`] array + a slot-allocated atlas ACROSS edits so a per-edit update
+/// re-evaluates only the DIRTY chunks' blocks and patches only their slots — the
+/// "per-edit cost proportional to the dirty region, not the scene" win ADR 0009 promised.
+///
+/// Slots are managed by a **free-list** (allocate on a new sculpted brick, free when a
+/// brick becomes air/coarse or its chunk is dirtied away), so slot numbers are STABLE
+/// across edits and differ from the wholesale build's dense `0..count`. The invariant the
+/// parity gate proves: after any edit, every LIVE record's slot bytes equal a from-scratch
+/// [`build_brick_field`] of the same scene (free slots may hold garbage — they are
+/// unreachable). The pyramid is REBUILT (not patched) from the merged record keys per
+/// edit (a cheap pure function; incremental pyramid patching is deferred to G4).
+#[derive(Debug, Clone)]
+pub struct IncrementalBrickField {
+    /// The brick edge in voxels (`voxels_per_block`, the ONE-BLOCK granule) — fixed for
+    /// the field's life (a density change resets the field via a wholesale rebuild).
+    brick_edge_voxels: u32,
+    /// Records sorted strictly ascending by packed world-block key — the same order and
+    /// content [`build_brick_field`] emits, only the sculpted records' slot NUMBERS differ.
+    records: Vec<BrickRecord>,
+    /// Per-slot occupancy tiles (`edge³` bytes each), indexed by atlas slot. A FREED
+    /// slot's entry is retained (kept `edge³` so the atlas packer never trips) but is
+    /// unreferenced — dead bytes until the slot is reallocated.
+    slot_tiles: Vec<Vec<u8>>,
+    /// Reusable slot indices freed by removed / transitioned sculpted bricks — the
+    /// free-list. A new sculpted brick pops from here before growing `slot_tiles`.
+    free_slots: Vec<u32>,
+}
+
+impl IncrementalBrickField {
+    /// Seed the incremental field from a wholesale [`build_brick_field`] (the reset a
+    /// scene load / density change / gate re-engagement performs). Slots are the build's
+    /// dense `0..sculpted_count`; the free-list starts empty.
+    pub fn from_wholesale(build: &BrickFieldBuild) -> Self {
+        let sculpted_count = build.sculpted_brick_count();
+        let slot_tiles: Vec<Vec<u8>> = (0..sculpted_count as u32)
+            .map(|slot| build.sculpted_brick_occupancy(slot))
+            .collect();
+        Self {
+            brick_edge_voxels: build.brick_edge_voxels,
+            records: build.brick_records.clone(),
+            slot_tiles,
+            free_slots: Vec::new(),
+        }
+    }
+
+    /// The brick edge (voxels_per_block) the field is bound to.
+    pub fn brick_edge_voxels(&self) -> u32 {
+        self.brick_edge_voxels
+    }
+
+    /// The live record count (coarse + sculpted).
+    pub fn record_count(&self) -> usize {
+        self.records.len()
+    }
+
+    /// The atlas slot high-water mark (live + freed slots) — the tile count the atlas is
+    /// sized to address. `>= ` the live sculpted count (holes from freed slots).
+    pub fn slot_high_water(&self) -> usize {
+        self.slot_tiles.len()
+    }
+
+    /// Re-evaluate ONLY the blocks of the dirty chunks and merge them into the field.
+    ///
+    /// * `fresh_chunks` — the FULL current covering set (dirty chunks freshly resolved,
+    ///   clean chunks reused verbatim). Only the dirty chunks are read.
+    /// * `dirty_chunks` — the chunk coords the edit invalidated
+    ///   ([`TwoLayerResidentCache::invalidate_aabb`](crate::two_layer_store::TwoLayerResidentCache::invalidate_aabb)
+    ///   evicted). Every changed block lives in one of these (a block's record is
+    ///   intrinsic — seam flags included — so no neighbour dilation is needed, unlike the
+    ///   mesh's cross-chunk seam culling).
+    ///
+    /// Removes every previous record whose block is in a dirty chunk (freeing its
+    /// sculpted slot), rebuilds those chunks' records fresh (allocating slots from the
+    /// free-list), and re-sorts. Returns the [`BrickFieldUpdate`] describing exactly which
+    /// slots were touched (the GPU patch's work-list).
+    pub fn apply_dirty_update(
+        &mut self,
+        fresh_chunks: &[([i32; 3], TwoLayerChunk)],
+        dirty_chunks: &[[i32; 3]],
+    ) -> BrickFieldUpdate {
+        let edge = self.brick_edge_voxels;
+        let dirty: std::collections::BTreeSet<[i32; 3]> = dirty_chunks.iter().copied().collect();
+        let previous_bricks_per_axis = sculpted_atlas_bricks_per_axis(self.slot_tiles.len());
+
+        // 1. Drop every previous record whose block is in a dirty chunk, freeing its slot.
+        let mut freed_slots = Vec::new();
+        self.records.retain(|record| {
+            let chunk =
+                chunk_coord_of_world_block(unpack_world_block_key(record.packed_world_block_key));
+            if dirty.contains(&chunk) {
+                if let BrickPayload::Sculpted { atlas_slot } = record.payload {
+                    freed_slots.push(atlas_slot);
+                }
+                false
+            } else {
+                true
+            }
+        });
+        // Freed slots return to the pool (ascending pop order keeps allocation
+        // deterministic — a nicety for test readability, not correctness).
+        self.free_slots.extend(freed_slots.iter().copied());
+        self.free_slots.sort_unstable();
+        self.free_slots.dedup();
+
+        // 2. Rebuild every dirty chunk's records from its FRESH data.
+        let mut written_slots = Vec::new();
+        for (chunk_coord, chunk) in fresh_chunks {
+            if !dirty.contains(chunk_coord) {
+                continue;
+            }
+            for block_z in 0..CHUNK_BLOCKS {
+                for block_y in 0..CHUNK_BLOCKS {
+                    for block_x in 0..CHUNK_BLOCKS {
+                        let block = [block_x, block_y, block_z];
+                        let world_block = [
+                            chunk_coord[0] as i64 * CHUNK_BLOCKS as i64 + block_x as i64,
+                            chunk_coord[1] as i64 * CHUNK_BLOCKS as i64 + block_y as i64,
+                            chunk_coord[2] as i64 * CHUNK_BLOCKS as i64 + block_z as i64,
+                        ];
+                        match classify_block_brick(chunk, block, world_block, edge) {
+                            BlockBrick::Air => {}
+                            BlockBrick::Coarse(record) => self.records.push(record),
+                            BlockBrick::Sculpted {
+                                material_id,
+                                seam_solidity,
+                                tile,
+                            } => {
+                                let slot = self.allocate_slot(tile);
+                                written_slots.push(slot);
+                                self.records.push(BrickRecord {
+                                    packed_world_block_key: pack_world_block_key(world_block),
+                                    material_id,
+                                    payload: BrickPayload::Sculpted { atlas_slot: slot },
+                                    seam_solidity,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. Re-sort (O(n log n) over records — trivially small next to atlas work).
+        self.records
+            .sort_unstable_by_key(|record| record.packed_world_block_key);
+        debug_assert!(
+            self.records
+                .windows(2)
+                .all(|pair| pair[0].packed_world_block_key < pair[1].packed_world_block_key),
+            "brick keys must stay unique + sorted after an incremental merge"
+        );
+
+        let atlas_grew =
+            sculpted_atlas_bricks_per_axis(self.slot_tiles.len()) != previous_bricks_per_axis;
+        BrickFieldUpdate {
+            written_slots,
+            freed_slots,
+            atlas_grew,
+        }
+    }
+
+    /// Allocate a slot for a fresh sculpted tile: reuse a freed slot if one is available
+    /// (keeping the high-water mark — and thus the atlas — from growing needlessly),
+    /// else append a new slot.
+    fn allocate_slot(&mut self, tile: Vec<u8>) -> u32 {
+        match self.free_slots.pop() {
+            Some(slot) => {
+                self.slot_tiles[slot as usize] = tile;
+                slot
+            }
+            None => {
+                let slot = self.slot_tiles.len() as u32;
+                self.slot_tiles.push(tile);
+                slot
+            }
+        }
+    }
+
+    /// Materialise the current field as a [`BrickFieldBuild`] (records + packed atlas) —
+    /// the form the GPU install / full re-upload and the parity net consume. The atlas is
+    /// sized to the slot high-water mark (live + freed holes), so a live record's slot
+    /// bytes are always in range.
+    pub fn to_build(&self) -> BrickFieldBuild {
+        let (bricks_per_axis, atlas_dim_voxels, sculpted_atlas_bytes) =
+            pack_sculpted_atlas(&self.slot_tiles, self.brick_edge_voxels);
+        BrickFieldBuild {
+            brick_records: self.records.clone(),
+            sculpted_atlas_bytes,
+            brick_edge_voxels: self.brick_edge_voxels,
+            bricks_per_axis,
+            atlas_dim_voxels,
+        }
+    }
+}
+
+/// The `bricks_per_axis` a slot-tile count packs to (`ceil(cbrt(count))`, 0 for empty) —
+/// the atlas tile-grid edge, shared by the packer and the grow test.
+fn sculpted_atlas_bricks_per_axis(slot_count: usize) -> u32 {
+    if slot_count == 0 {
+        0
+    } else {
+        ((slot_count as f64).cbrt().ceil() as u32).max(1)
+    }
 }
 
 /// Land the sculpted-brick atlas bytes in an R8Unorm 3D texture — the shipped fog-atlas
@@ -861,5 +1161,331 @@ mod tests {
             }
         }
         assert!(compared_bricks > 0, "fixture must contain sculpted bricks");
+    }
+}
+
+/// ADR 0011 slice G3 — the incremental dirty-brick atlas update net. The load-bearing
+/// assertion: an [`IncrementalBrickField`] patched edit-by-edit (only dirty chunks
+/// re-evaluated, slots free-listed) is byte-exact vs a from-scratch [`build_brick_field`]
+/// of the SAME scene, after EVERY step, across explicit block-kind transitions
+/// (air↔sculpted↔coarse) and add / move / recolour / delete edits.
+#[cfg(test)]
+mod incremental_tests {
+    use super::*;
+    use crate::core_geom::MaterialChoice;
+    use crate::scene::{Node, NodeContent, NodeTransform, Scene};
+    use crate::two_layer_store::{TwoLayerChunk, TwoLayerResidentCache};
+    use crate::voxel::{ShapeKind, SdfShape};
+
+    /// The owned covering set the shell feeds `apply_dirty_update` / `build_brick_field`
+    /// (the resident cache borrows, so clone out — exactly as `AppCore::rebuild` does).
+    fn covering_owned(
+        cache: &mut TwoLayerResidentCache,
+        scene: &Scene,
+        density: u32,
+    ) -> Vec<([i32; 3], TwoLayerChunk)> {
+        cache
+            .resident_two_layer_chunks(scene, density, 0)
+            .into_iter()
+            .map(|(coord, chunk)| (coord, chunk.clone()))
+            .collect()
+    }
+
+    /// A tool node (single material, so the scene stays brick-representable) of `blocks³`
+    /// at a block offset — the small edited object.
+    fn tool(kind: ShapeKind, offset_blocks: [i64; 3], material: MaterialChoice, density: u32) -> Node {
+        let shape = SdfShape::from_blocks(kind, [5, 5, 5], 1, density);
+        let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
+        node.transform = NodeTransform::from_blocks(offset_blocks, density);
+        node
+    }
+
+    /// The set of atlas slots the live sculpted records reference, plus a check that no
+    /// two live records share a slot (a "ghost brick" would show as a duplicate).
+    fn live_slots(build: &BrickFieldBuild) -> std::collections::BTreeSet<u32> {
+        let mut slots = std::collections::BTreeSet::new();
+        for record in &build.brick_records {
+            if let BrickPayload::Sculpted { atlas_slot } = record.payload {
+                assert!(
+                    slots.insert(atlas_slot),
+                    "live slot {atlas_slot} referenced twice (ghost brick)"
+                );
+            }
+        }
+        slots
+    }
+
+    /// Assert the incremental field materialisation is byte-exact vs the wholesale build
+    /// of the same scene: SAME record keys, kinds, materials, seam flags; each sculpted
+    /// record's atlas bytes equal (slot NUMBERS differ — the free-list vs dense `0..count`
+    /// — so compare the occupancy, not the slot). Free slots may hold garbage: they are
+    /// asserted unreachable from live records (the `live_slots` uniqueness check).
+    fn assert_incremental_matches_wholesale(
+        incremental: &BrickFieldBuild,
+        wholesale: &BrickFieldBuild,
+        label: &str,
+    ) {
+        assert_eq!(
+            incremental.brick_edge_voxels, wholesale.brick_edge_voxels,
+            "[{label}] brick edge must match"
+        );
+        assert_eq!(
+            incremental.brick_records.len(),
+            wholesale.brick_records.len(),
+            "[{label}] record count must match wholesale"
+        );
+        let _ = live_slots(incremental); // no ghost bricks (live slots unique)
+        for whole_record in &wholesale.brick_records {
+            let block = unpack_world_block_key(whole_record.packed_world_block_key);
+            let inc_record = incremental
+                .find_record(block)
+                .unwrap_or_else(|| panic!("[{label}] incremental missing record at {block:?}"));
+            assert_eq!(
+                inc_record.packed_world_block_key, whole_record.packed_world_block_key,
+                "[{label}] key mismatch at {block:?}"
+            );
+            assert_eq!(
+                inc_record.material_id, whole_record.material_id,
+                "[{label}] material mismatch at {block:?}"
+            );
+            assert_eq!(
+                inc_record.seam_solidity, whole_record.seam_solidity,
+                "[{label}] seam-solidity mismatch at {block:?}"
+            );
+            assert_eq!(
+                inc_record.payload.kind_discriminant(),
+                whole_record.payload.kind_discriminant(),
+                "[{label}] kind mismatch at {block:?}"
+            );
+            match (inc_record.payload, whole_record.payload) {
+                (
+                    BrickPayload::CoarseSolid { block_id: a },
+                    BrickPayload::CoarseSolid { block_id: b },
+                ) => assert_eq!(a, b, "[{label}] coarse block id mismatch at {block:?}"),
+                (
+                    BrickPayload::Sculpted { atlas_slot: inc_slot },
+                    BrickPayload::Sculpted { atlas_slot: whole_slot },
+                ) => {
+                    // Slot NUMBERS differ (free-list vs dense) — compare the bytes.
+                    assert_eq!(
+                        incremental.sculpted_brick_occupancy(inc_slot),
+                        wholesale.sculpted_brick_occupancy(whole_slot),
+                        "[{label}] sculpted occupancy bytes mismatch at {block:?}"
+                    );
+                }
+                _ => panic!("[{label}] payload kind disagreement at {block:?}"),
+            }
+        }
+    }
+
+    /// THE parity gate for G3 (issue #69 acceptance): drive a scripted sequence of edits
+    /// — recolour, move, shape-swap, delete, re-add — applying each INCREMENTALLY, and
+    /// after every step assert the incremental field equals a from-scratch wholesale build
+    /// of the same scene. Two fixed anchor tools at the extremes pin the covering set so an
+    /// incremental edit never grows it (the app's reframe guard — a growth routes wholesale).
+    /// A non-16 density exercises the block-denominated granule.
+    #[test]
+    fn incremental_dirty_update_equals_wholesale_after_every_step() {
+        let density = 4u32;
+        let material = MaterialChoice::Stone;
+        // Two anchors far apart fix the covering chunk range; the middle tool is edited.
+        let anchor_lo = tool(ShapeKind::Box, [-14, 0, 0], material, density);
+        let anchor_hi = tool(ShapeKind::Box, [14, 0, 0], material, density);
+        let scene_with = |middle: Option<Node>| {
+            let mut nodes = vec![anchor_lo.clone(), anchor_hi.clone()];
+            if let Some(m) = middle {
+                nodes.push(m);
+            }
+            Scene::from_nodes(nodes)
+        };
+
+        // The scripted edits (each keeps the anchors, edits the middle) — chosen to force
+        // block-kind transitions: add (air→sculpted/coarse), move (sculpted↔air↔coarse),
+        // recolour (sculpted/coarse material change), shape-swap (occupancy change), delete.
+        let scenes = [
+            ("initial", scene_with(None)),
+            ("add-sphere", scene_with(Some(tool(ShapeKind::Sphere, [0, 0, 0], MaterialChoice::Wood, density)))),
+            ("recolour", scene_with(Some(tool(ShapeKind::Sphere, [0, 0, 0], MaterialChoice::Plain, density)))),
+            ("move", scene_with(Some(tool(ShapeKind::Sphere, [2, 1, 0], MaterialChoice::Plain, density)))),
+            ("shape-swap", scene_with(Some(tool(ShapeKind::Box, [2, 1, 0], MaterialChoice::Plain, density)))),
+            ("delete", scene_with(None)),
+            ("re-add", scene_with(Some(tool(ShapeKind::Torus, [0, 0, 0], MaterialChoice::Wood, density)))),
+        ];
+
+        let mut cache = TwoLayerResidentCache::enabled();
+        cache.clear();
+        let scene0 = &scenes[0].1;
+        let mut previous_index = scene0.build_leaf_spatial_index(density);
+        let fresh0 = covering_owned(&mut cache, scene0, density);
+        let build0 = build_brick_field(&fresh0, density);
+        let mut field = IncrementalBrickField::from_wholesale(&build0);
+        let mut covering: std::collections::BTreeSet<[i32; 3]> =
+            fresh0.iter().map(|(coord, _)| *coord).collect();
+        assert_incremental_matches_wholesale(&field.to_build(), &build0, scenes[0].0);
+
+        let mut incremental_steps = 0usize;
+        for (label, scene) in &scenes[1..] {
+            let new_index = scene.build_leaf_spatial_index(density);
+            let edit_aabb = new_index.edit_aabb_since(&previous_index);
+            // Mirror `AppCore::rebuild`: localisable edit → invalidate its chunks; a `None`
+            // (wholesale) edit clears. Build the fresh covering set AFTER invalidation.
+            let dirty = match &edit_aabb {
+                Some(aabb) => cache.invalidate_aabb(aabb, density),
+                None => {
+                    cache.clear();
+                    Vec::new()
+                }
+            };
+            let fresh = covering_owned(&mut cache, scene, density);
+            let new_covering: std::collections::BTreeSet<[i32; 3]> =
+                fresh.iter().map(|(coord, _)| *coord).collect();
+
+            // Incremental applies only when localisable AND the covering set is invariant
+            // (the app routes a growth/reframe wholesale). Otherwise reset from wholesale.
+            if edit_aabb.is_some() && new_covering == covering {
+                field.apply_dirty_update(&fresh, &dirty);
+                incremental_steps += 1;
+            } else {
+                let build = build_brick_field(&fresh, density);
+                field = IncrementalBrickField::from_wholesale(&build);
+            }
+            covering = new_covering;
+
+            let wholesale = build_brick_field(&fresh, density);
+            assert_incremental_matches_wholesale(&field.to_build(), &wholesale, label);
+            previous_index = new_index;
+        }
+        assert!(
+            incremental_steps >= 4,
+            "the script must exercise the INCREMENTAL path on most steps (was {incremental_steps})"
+        );
+    }
+
+    /// Untouched-slot discipline (issue #69 acceptance): an edit confined to ONE chunk
+    /// writes only that chunk's blocks' slots (+ frees), never the whole scene's — the
+    /// "per-edit cost ∝ dirty region" claim made testable. A recolour keeps occupancy
+    /// identical, so exactly the dirty chunk's sculpted blocks are freed + rewritten.
+    #[test]
+    fn one_chunk_edit_writes_only_that_chunks_slots() {
+        let density = 4u32;
+        // Anchors fix the covering set; a compact middle tool occupies its own chunks.
+        let anchor_lo = tool(ShapeKind::Box, [-14, 0, 0], MaterialChoice::Stone, density);
+        let anchor_hi = tool(ShapeKind::Box, [14, 0, 0], MaterialChoice::Stone, density);
+        let scene_a = Scene::from_nodes(vec![
+            anchor_lo.clone(),
+            anchor_hi.clone(),
+            tool(ShapeKind::Sphere, [0, 0, 0], MaterialChoice::Wood, density),
+        ]);
+        let scene_b = Scene::from_nodes(vec![
+            anchor_lo,
+            anchor_hi,
+            // Same shape/placement, DIFFERENT material — a pure recolour (occupancy fixed).
+            tool(ShapeKind::Sphere, [0, 0, 0], MaterialChoice::Plain, density),
+        ]);
+
+        let mut cache = TwoLayerResidentCache::enabled();
+        cache.clear();
+        let index_a = scene_a.build_leaf_spatial_index(density);
+        let fresh_a = covering_owned(&mut cache, &scene_a, density);
+        let build_a = build_brick_field(&fresh_a, density);
+        let mut field = IncrementalBrickField::from_wholesale(&build_a);
+        let total_sculpted = build_a.sculpted_brick_count();
+
+        let index_b = scene_b.build_leaf_spatial_index(density);
+        let edit_aabb = index_b
+            .edit_aabb_since(&index_a)
+            .expect("a recolour is a localisable edit");
+        let dirty = cache.invalidate_aabb(&edit_aabb, density);
+        let fresh_b = covering_owned(&mut cache, &scene_b, density);
+
+        // Count the sculpted blocks living in the dirty chunks (the recolour re-writes
+        // exactly these — occupancy is unchanged, only the record material differs).
+        let dirty_set: std::collections::BTreeSet<[i32; 3]> = dirty.iter().copied().collect();
+        let expected_written: usize = fresh_b
+            .iter()
+            .filter(|(coord, _)| dirty_set.contains(coord))
+            .map(|(_, chunk)| chunk.microblocks.len())
+            .sum();
+
+        let update = field.apply_dirty_update(&fresh_b, &dirty);
+
+        assert!(
+            !dirty.is_empty() && dirty.len() < covering_owned(&mut cache, &scene_b, density).len(),
+            "the edit must dirty SOME but not ALL chunks (dirtied {} of the covering set)",
+            dirty.len()
+        );
+        assert_eq!(
+            update.written_slots.len(),
+            expected_written,
+            "an edit must write exactly the dirty chunks' sculpted slots, no more"
+        );
+        assert!(
+            update.written_slots.len() < total_sculpted,
+            "a one-region edit must write FEWER than every scene slot ({} of {})",
+            update.written_slots.len(),
+            total_sculpted
+        );
+        // A pure recolour keeps occupancy, so freed == rewritten (slots recycled in place)
+        // and the atlas does not grow.
+        assert_eq!(update.freed_slots.len(), expected_written, "recolour frees what it rewrites");
+        assert!(!update.atlas_grew, "a recolour does not grow the atlas");
+        // And the result is still byte-exact vs wholesale.
+        let wholesale = build_brick_field(&fresh_b, density);
+        assert_incremental_matches_wholesale(&field.to_build(), &wholesale, "one-chunk-recolour");
+    }
+
+    /// Perf probe (issue #69, `#[ignore]`d — run in release): a ~1–2k-block scene, a
+    /// one-region recolour, incremental patch vs a full `build_brick_field`. The headless
+    /// stand-in for the Tracy live latency measurement; numbers go in the commit message.
+    /// Run: `cargo test --release incremental_vs_wholesale_perf_probe -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "perf probe — run in release with --nocapture"]
+    fn incremental_vs_wholesale_perf_probe() {
+        use std::time::Instant;
+        let density = 8u32;
+        let anchor_lo = tool(ShapeKind::Box, [-20, 0, 0], MaterialChoice::Stone, density);
+        let anchor_hi = tool(ShapeKind::Box, [20, 0, 0], MaterialChoice::Stone, density);
+        let scene_a = Scene::from_nodes(vec![
+            anchor_lo.clone(),
+            anchor_hi.clone(),
+            tool(ShapeKind::Sphere, [0, 0, 0], MaterialChoice::Wood, density),
+        ]);
+        let scene_b = Scene::from_nodes(vec![
+            anchor_lo,
+            anchor_hi,
+            tool(ShapeKind::Sphere, [0, 0, 0], MaterialChoice::Plain, density),
+        ]);
+        let mut cache = TwoLayerResidentCache::enabled();
+        cache.clear();
+        let index_a = scene_a.build_leaf_spatial_index(density);
+        let fresh_a = covering_owned(&mut cache, &scene_a, density);
+        let build_a = build_brick_field(&fresh_a, density);
+        let mut field = IncrementalBrickField::from_wholesale(&build_a);
+
+        let index_b = scene_b.build_leaf_spatial_index(density);
+        let edit_aabb = index_b.edit_aabb_since(&index_a).expect("localisable");
+        let dirty = cache.invalidate_aabb(&edit_aabb, density);
+        let fresh_b = covering_owned(&mut cache, &scene_b, density);
+
+        let started = Instant::now();
+        let update = field.apply_dirty_update(&fresh_b, &dirty);
+        let _incremental_build = field.to_build();
+        let incremental = started.elapsed();
+
+        let started = Instant::now();
+        let _ = build_brick_field(&fresh_b, density);
+        let wholesale = started.elapsed();
+
+        println!(
+            "G3 perf probe: scene {} records, edit dirtied {} chunk(s) / {} slots — \
+             incremental {:?} vs wholesale {:?} ({:.1}× )",
+            build_a.brick_records.len(),
+            dirty.len(),
+            update.written_slots.len(),
+            incremental,
+            wholesale,
+            wholesale.as_secs_f64() / incremental.as_secs_f64().max(1e-9),
+        );
+        assert!(update.written_slots.len() < build_a.sculpted_brick_count());
     }
 }

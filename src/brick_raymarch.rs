@@ -32,7 +32,7 @@ use wgpu::util::DeviceExt;
 
 use crate::brick_field::{
     pack_clipmap_level_keys, pack_world_block_key, unpack_world_block_key, upload_brick_atlas,
-    BrickFieldBuild, BrickPayload, ClipmapLevel, ClipmapPyramid,
+    BrickFieldBuild, BrickFieldUpdate, BrickPayload, ClipmapLevel, ClipmapPyramid,
 };
 use crate::core_geom::MaterialChoice;
 use crate::cuboid_mesh::{cell_key_has_overlay, clean_block_id};
@@ -108,6 +108,45 @@ pub fn pack_gpu_records(
             }
         })
         .collect()
+}
+
+/// Write ONE sculpted brick's `edge³` occupancy tile into the persistent atlas texture
+/// at its slot's tile origin (ADR 0011 G3 per-slot patch). `write_texture` needs no
+/// 256-byte row alignment (unlike `copy_texture_to_buffer`), so a `bytes_per_row = edge`
+/// sub-region upload lands exactly the slot's cube — untouched slots are never rewritten.
+fn write_atlas_slot(
+    queue: &wgpu::Queue,
+    atlas_texture: &wgpu::Texture,
+    build: &BrickFieldBuild,
+    slot: u32,
+) {
+    let edge = build.brick_edge_voxels.max(1);
+    let tiles = build.bricks_per_axis.max(1);
+    let origin = wgpu::Origin3d {
+        x: (slot % tiles) * edge,
+        y: ((slot / tiles) % tiles) * edge,
+        z: (slot / (tiles * tiles)) * edge,
+    };
+    let tile_bytes = build.sculpted_brick_occupancy(slot);
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: atlas_texture,
+            mip_level: 0,
+            origin,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &tile_bytes,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(edge),
+            rows_per_image: Some(edge),
+        },
+        wgpu::Extent3d {
+            width: edge,
+            height: edge,
+            depth_or_array_layers: edge,
+        },
+    );
 }
 
 /// Whether the boundary set is **brick-representable** (ADR 0011 G2), and, if so, the
@@ -246,6 +285,19 @@ pub struct BrickRaymarchRenderer {
     field_bind_group_layout: wgpu::BindGroupLayout,
     field_bind_group: wgpu::BindGroup,
     material_bind_group: wgpu::BindGroup,
+    /// The PERSISTENT sculpted-brick atlas texture (ADR 0011 G3). Kept across edits so an
+    /// incremental patch ([`patch_brick_field`](Self::patch_brick_field)) writes only the
+    /// dirty slots' texels via `write_texture` — untouched slots keep their bytes. A
+    /// wholesale install or an atlas GROW recreates it.
+    atlas_texture: wgpu::Texture,
+    /// The persistent atlas texture's per-axis dimension in voxels (`>= 1`; the 1³
+    /// placeholder when no field is installed). A patch whose build dim differs must
+    /// recreate the texture (grow/shrink), not `write_texture` into a stale-sized one.
+    atlas_texture_dim: u32,
+    /// The number of atlas slots the LAST update wrote (ADR 0011 G3 "per-edit cost ∝ dirty
+    /// region" instrument): a wholesale install writes every sculpted slot; an incremental
+    /// patch writes only the dirty chunks' slots (unless the atlas grew — then every slot).
+    last_atlas_slots_written: u32,
     record_count: u32,
     /// The scene-wide on-face-grid overlay state, derived from the boundary set at
     /// install (`brick_representable_overlay`). Material is per-record (ADR 0011 G2).
@@ -301,6 +353,7 @@ impl BrickRaymarchRenderer {
             atlas_dim_voxels: 0,
         };
         let atlas_texture = upload_brick_atlas(device, queue, &empty_build);
+        let atlas_texture_dim = empty_build.atlas_dim_voxels.max(1);
         let atlas_view = atlas_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         // Placeholder clip-map key buffers (count 0 ⇒ the shader never reads them).
@@ -537,6 +590,9 @@ impl BrickRaymarchRenderer {
             field_bind_group_layout,
             field_bind_group,
             material_bind_group,
+            atlas_texture,
+            atlas_texture_dim,
+            last_atlas_slots_written: 0,
             record_count: 0,
             overlay_active: false,
             recentre_voxels: [0, 0, 0],
@@ -568,6 +624,105 @@ impl BrickRaymarchRenderer {
         recentre_voxels: [i64; 3],
         overlay_active: bool,
     ) {
+        // A wholesale install (re)creates the atlas texture from scratch and uploads
+        // every sculpted slot — the from-scratch / scene-load / gate-re-engage path.
+        let atlas_texture = upload_brick_atlas(device, queue, build);
+        self.atlas_texture = atlas_texture;
+        self.atlas_texture_dim = build.atlas_dim_voxels.max(1);
+        self.last_atlas_slots_written = build.sculpted_brick_count() as u32;
+        let atlas_view = self
+            .atlas_texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        self.rebuild_field_state(
+            device,
+            &atlas_view,
+            build,
+            gpu_records,
+            pyramid,
+            recentre_voxels,
+            overlay_active,
+        );
+    }
+
+    /// **ADR 0011 G3 — incremental dirty-brick patch.** Patch ONLY the dirty slots of the
+    /// PERSISTENT atlas from an [`IncrementalBrickField`](crate::brick_field::IncrementalBrickField)
+    /// update, then swap in the merged records + rebuilt pyramid — no wholesale atlas
+    /// re-upload, no occupancy readback. `update.written_slots` are the only texels
+    /// touched (untouched slots keep their bytes) UNLESS `update.atlas_grew`, where the
+    /// tile grid moved and the whole atlas is re-packed (the one legitimate wholesale
+    /// re-pack, ADR 0007 resize precedent). `build` is the field's current
+    /// [`to_build`](crate::brick_field::IncrementalBrickField::to_build) materialisation.
+    ///
+    /// Preconditions the live shell (`WindowedState::rebuild_geometry`) upholds: a field is
+    /// already installed AND its density/frame match `build` (an incremental edit never
+    /// changes density — that routes wholesale). Records + pyramid re-upload whole (they
+    /// are small — the traffic G3 kills is the atlas texels + the re-evaluation).
+    #[allow(clippy::too_many_arguments)]
+    pub fn patch_brick_field(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        build: &BrickFieldBuild,
+        update: &BrickFieldUpdate,
+        gpu_records: &[BrickGpuRecord],
+        pyramid: &ClipmapPyramid,
+        recentre_voxels: [i64; 3],
+        overlay_active: bool,
+    ) {
+        let target_dim = build.atlas_dim_voxels.max(1);
+        if update.atlas_grew || target_dim != self.atlas_texture_dim {
+            // The tile grid grew/shrank: every slot's 3D position moved, so recreate the
+            // texture and re-upload wholesale (ADR 0011 pitfalls — the resize is the one
+            // place a full re-pack is legitimate, logged by the caller).
+            self.atlas_texture = upload_brick_atlas(device, queue, build);
+            self.atlas_texture_dim = target_dim;
+            self.last_atlas_slots_written = build.sculpted_brick_count() as u32;
+        } else {
+            // Steady state: write ONLY the dirty slots' tiles into the persistent texture.
+            // Untouched slots — and freed (dead) slots — keep their texels untouched.
+            for &slot in &update.written_slots {
+                write_atlas_slot(queue, &self.atlas_texture, build, slot);
+            }
+            self.last_atlas_slots_written = update.written_slots.len() as u32;
+        }
+        let atlas_view = self
+            .atlas_texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        self.rebuild_field_state(
+            device,
+            &atlas_view,
+            build,
+            gpu_records,
+            pyramid,
+            recentre_voxels,
+            overlay_active,
+        );
+    }
+
+    /// The number of atlas slots the last install / patch wrote (ADR 0011 G3 instrument):
+    /// a wholesale install writes every sculpted slot; an incremental patch writes only
+    /// the dirty region's slots (or, on a grow, every slot). The "per-edit cost ∝ dirty
+    /// region" claim, made observable.
+    pub fn last_atlas_slots_written(&self) -> u32 {
+        self.last_atlas_slots_written
+    }
+
+    /// Re-upload the records + clip-map levels and rebuild the field bind group over
+    /// `atlas_view`, then set the frame scalars — the shared tail of
+    /// [`install_brick_field`](Self::install_brick_field) and
+    /// [`patch_brick_field`](Self::patch_brick_field). Atlas texture management is the
+    /// caller's (wholesale re-create vs per-slot patch); everything else is identical.
+    #[allow(clippy::too_many_arguments)]
+    fn rebuild_field_state(
+        &mut self,
+        device: &wgpu::Device,
+        atlas_view: &wgpu::TextureView,
+        build: &BrickFieldBuild,
+        gpu_records: &[BrickGpuRecord],
+        pyramid: &ClipmapPyramid,
+        recentre_voxels: [i64; 3],
+        overlay_active: bool,
+    ) {
         // Inclusive absolute block bounds over the record set (the sort is z-major,
         // so x/y still need the full scan; records are few — thousands).
         let mut absolute_block_bounds: Option<([i64; 3], [i64; 3])> = None;
@@ -593,8 +748,6 @@ impl BrickRaymarchRenderer {
             contents: record_bytes,
             usage: wgpu::BufferUsages::STORAGE,
         });
-        let atlas_texture = upload_brick_atlas(device, queue, build);
-        let atlas_view = atlas_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         // The clip-map levels: split cell keys → (hi, lo) storage buffers. An empty
         // level uploads a single zeroed placeholder (its count is 0, so the shader
@@ -637,7 +790,7 @@ impl BrickRaymarchRenderer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&atlas_view),
+                    resource: wgpu::BindingResource::TextureView(atlas_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 3,

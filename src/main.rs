@@ -79,6 +79,16 @@ struct WindowedState {
     /// the cuboid mesh; the mesh keeps rebuilding as the fallback + A/B reference
     /// (ADR 0011 Decision 6). `None` on default (no-GPU) builds, always.
     brick_raymarch_renderer: Option<BrickRaymarchRenderer>,
+    /// ADR 0011 G3: the PERSISTENT incremental brick field mirroring the installed
+    /// atlas — the CPU truth an incremental edit patches (dirty chunks re-evaluated,
+    /// only their slots written) instead of rebuilding the whole field. `Some` exactly
+    /// when `brick_raymarch_renderer` holds a field; reset from a wholesale
+    /// `build_brick_field` whenever the field is (re)installed wholesale, patched in
+    /// place on an incremental edit, and dropped when the brick path disengages. Kept in
+    /// lock-step with the installed field so `to_build()` always equals the resident
+    /// atlas (ADR 0011 G3 parity gate).
+    #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
+    incremental_brick_field: Option<voxel_worker::IncrementalBrickField>,
     /// ADR 0011 G1: whether `self.grid` actually holds STREAMED occupancy. `false`
     /// when the rebuild skipped the fog `VoxelGrid` stream (brick path engaged —
     /// the GPU fog atlas resolves from the producer instead); the CPU fog densify
@@ -413,6 +423,10 @@ impl WindowedState {
         // refresh it in `rebuild_geometry`.
         #[cfg_attr(not(feature = "gpu"), allow(unused_mut))]
         let mut brick_raymarch_renderer: Option<BrickRaymarchRenderer> = None;
+        // ADR 0011 G3: the persistent incremental field seeded from the startup wholesale
+        // build (kept in lock-step with `brick_raymarch_renderer`).
+        #[cfg_attr(not(feature = "gpu"), allow(unused_mut))]
+        let mut incremental_brick_field: Option<voxel_worker::IncrementalBrickField> = None;
         #[cfg(feature = "gpu")]
         if panel_state.scene.has_chunkable_extent(startup_density) {
             if let Some(overlay_active) =
@@ -438,6 +452,8 @@ impl WindowedState {
                         build.brick_records.len(),
                         build.sculpted_brick_count(),
                     );
+                    incremental_brick_field =
+                        Some(voxel_worker::IncrementalBrickField::from_wholesale(&build));
                     brick_raymarch_renderer = Some(renderer);
                 }
             }
@@ -574,6 +590,7 @@ impl WindowedState {
             panel_state,
             cuboid_mesh_renderer,
             brick_raymarch_renderer,
+            incremental_brick_field,
             // The startup grid was streamed by `resolve_scene` above (one-time);
             // per-edit rebuilds decide streaming from the brick engagement.
             fog_grid_streamed: true,
@@ -947,13 +964,33 @@ impl WindowedState {
         // incremental edit must NOT inline-patch it (the Frankenstein mesh). `route_geometry_
         // rebuild` sends EVERY edit to a fresh wholesale-async dispatch while outstanding, and
         // resumes the inline fast-paths only once nothing is outstanding.
-        // ADR 0011 G1: refresh the brick field from THIS rebuild's resident chunk
-        // set (the same boundary set the mesher consumes), before the async route
-        // can move `two_layer_chunks`. A gated scene installs/replaces the field
-        // (records + atlas swap, no pipeline work); anything else clears it so the
-        // frame falls back to the mesh path. The G0 build is wholesale per edit —
-        // dirty-brick incremental atlas updates are G3.
         self.fog_grid_streamed = stream_fog_grid;
+
+        // Issue #60 C1: classify + route the edit ONCE (shared by the brick sink and the
+        // mesh path). While an async wholesale build is OUTSTANDING every edit routes to a
+        // fresh wholesale-async dispatch (never inline-patch a stale artifact); only with
+        // nothing outstanding do the inline fast-paths resume.
+        let edit_shape = match &incremental_dirty_chunks {
+            Some(_) => EditShape::Incremental,
+            None => EditShape::Wholesale {
+                chunk_count: two_layer_chunks.len(),
+            },
+        };
+        let route = route_geometry_rebuild(
+            self.geometry_async_outstanding,
+            edit_shape,
+            ASYNC_REBUILD_CHUNK_THRESHOLD,
+        );
+
+        // ADR 0011 G1/G3: refresh the brick field from THIS rebuild's resident chunk set
+        // (the same boundary set the mesher consumes), before the async route can move
+        // `two_layer_chunks`. When the mesh route is `InlineIncremental` (an incremental
+        // edit, nothing outstanding) the field is PATCHED (G3): only the dirty chunks are
+        // re-evaluated and only their atlas slots written. Every other route — wholesale,
+        // or ANY edit while an async build is outstanding (the C1 interlock) — rebuilds the
+        // field WHOLESALE and resets the incremental mirror, so the brick sink never
+        // patches from a state the mesh path treats as stale. A non-representable / empty
+        // scene clears the field to the mesh fallback.
         {
             #[cfg_attr(not(feature = "gpu"), allow(unused_mut))]
             let mut brick_field_installed = false;
@@ -963,27 +1000,91 @@ impl WindowedState {
                 if let Some(overlay_active) =
                     voxel_worker::brick_representable_overlay(&two_layer_chunks)
                 {
-                    let build = voxel_worker::build_brick_field(&two_layer_chunks, density);
-                    if !build.brick_records.is_empty() {
-                        let renderer = self.brick_raymarch_renderer.get_or_insert_with(|| {
-                            BrickRaymarchRenderer::new(
+                    // Incremental patch iff the mesh route is InlineIncremental AND a field
+                    // is already resident to patch — mirrors `route_geometry_rebuild`, so the
+                    // C1 interlock composes (outstanding ⇒ route != InlineIncremental ⇒
+                    // wholesale here too).
+                    let patch_in_place = matches!(route, RebuildRoute::InlineIncremental)
+                        && self.incremental_brick_field.is_some()
+                        && self.brick_raymarch_renderer.is_some();
+                    if patch_in_place {
+                        let dirty = incremental_dirty_chunks
+                            .as_ref()
+                            .expect("InlineIncremental ⇒ incremental_dirty_chunks is Some");
+                        // Apply the dirty update to the CPU mirror, then materialise the
+                        // patched build (the field borrow releases before the renderer's).
+                        let (update, build) = {
+                            let field = self
+                                .incremental_brick_field
+                                .as_mut()
+                                .expect("patch_in_place ⇒ Some");
+                            debug_assert_eq!(
+                                field.brick_edge_voxels(),
+                                density,
+                                "an incremental edit never changes density (it routes wholesale)"
+                            );
+                            let update = field.apply_dirty_update(&two_layer_chunks, dirty);
+                            (update, field.to_build())
+                        };
+                        if build.brick_records.is_empty() {
+                            // The edit emptied the field — disengage to the mesh path.
+                            if let Some(renderer) = &mut self.brick_raymarch_renderer {
+                                renderer.clear_brick_field();
+                            }
+                            self.incremental_brick_field = None;
+                        } else {
+                            if update.atlas_grew {
+                                println!(
+                                    "brick: atlas grew — full re-pack ({} sculpted slots)",
+                                    build.sculpted_brick_count()
+                                );
+                            }
+                            let pyramid =
+                                voxel_worker::ClipmapPyramid::from_records(&build.brick_records);
+                            let renderer = self
+                                .brick_raymarch_renderer
+                                .as_mut()
+                                .expect("patch_in_place ⇒ Some");
+                            renderer.patch_brick_field(
                                 &self.gpu.device,
                                 &self.gpu.queue,
-                                COLOR_TARGET_FORMAT,
-                            )
-                        });
-                        let pyramid =
-                            voxel_worker::ClipmapPyramid::from_records(&build.brick_records);
-                        renderer.install_brick_field(
-                            &self.gpu.device,
-                            &self.gpu.queue,
-                            &build,
-                            &voxel_worker::pack_gpu_records(&build, |_| false),
-                            &pyramid,
-                            recentre_voxels,
-                            overlay_active,
-                        );
-                        brick_field_installed = true;
+                                &build,
+                                &update,
+                                &voxel_worker::pack_gpu_records(&build, |_| false),
+                                &pyramid,
+                                recentre_voxels,
+                                overlay_active,
+                            );
+                            brick_field_installed = true;
+                        }
+                    } else {
+                        // Wholesale (re)build + install; RESET the incremental mirror so the
+                        // next incremental edit patches from a known-good full field.
+                        let build = voxel_worker::build_brick_field(&two_layer_chunks, density);
+                        if !build.brick_records.is_empty() {
+                            let renderer = self.brick_raymarch_renderer.get_or_insert_with(|| {
+                                BrickRaymarchRenderer::new(
+                                    &self.gpu.device,
+                                    &self.gpu.queue,
+                                    COLOR_TARGET_FORMAT,
+                                )
+                            });
+                            let pyramid =
+                                voxel_worker::ClipmapPyramid::from_records(&build.brick_records);
+                            renderer.install_brick_field(
+                                &self.gpu.device,
+                                &self.gpu.queue,
+                                &build,
+                                &voxel_worker::pack_gpu_records(&build, |_| false),
+                                &pyramid,
+                                recentre_voxels,
+                                overlay_active,
+                            );
+                            self.incremental_brick_field = Some(
+                                voxel_worker::IncrementalBrickField::from_wholesale(&build),
+                            );
+                            brick_field_installed = true;
+                        }
                     }
                     self.brick_fallback_reported = false;
                 } else if !self.brick_fallback_reported {
@@ -1001,20 +1102,10 @@ impl WindowedState {
                 if let Some(renderer) = &mut self.brick_raymarch_renderer {
                     renderer.clear_brick_field();
                 }
+                self.incremental_brick_field = None;
             }
         }
 
-        let edit_shape = match &incremental_dirty_chunks {
-            Some(_) => EditShape::Incremental,
-            None => EditShape::Wholesale {
-                chunk_count: two_layer_chunks.len(),
-            },
-        };
-        let route = route_geometry_rebuild(
-            self.geometry_async_outstanding,
-            edit_shape,
-            ASYNC_REBUILD_CHUNK_THRESHOLD,
-        );
         match route {
             RebuildRoute::InlineIncremental => {
                 // Issue #54/#55 fast path: an incremental dirty-chunk re-mesh is already a

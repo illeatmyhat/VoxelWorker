@@ -32,10 +32,10 @@
 use std::time::{Duration, Instant};
 
 use voxel_worker::{
-    route_geometry_rebuild, CuboidMeshRenderer, EditShape, GenerationTracker,
-    GeometryRebuildRequest, GeometryRebuildResult, GeometryWorker, GpuContext, LayerBand,
-    MaterialChoice, RebuildRoute, Scene, TwoLayerStore, ASYNC_REBUILD_CHUNK_THRESHOLD,
-    COLOR_TARGET_FORMAT,
+    build_brick_field, route_geometry_rebuild, BrickFieldBuild, CuboidMeshRenderer, EditShape,
+    GenerationTracker, GeometryRebuildRequest, GeometryRebuildResult, GeometryWorker, GpuContext,
+    IncrementalBrickField, LayerBand, MaterialChoice, RebuildRoute, Scene, TwoLayerStore,
+    ASYNC_REBUILD_CHUNK_THRESHOLD, COLOR_TARGET_FORMAT,
 };
 use voxel_worker::{GeometryParams, ShapeKind};
 
@@ -462,6 +462,112 @@ fn c1_outstanding_edit_reroutes_wholesale_no_frankenstein() {
         s2_truth,
         s0_face
     );
+}
+
+// ===========================================================================
+// C1 (brick analogue, ADR 0011 G3) — the brick field follows the same
+// stale-while-rebuilding discipline: no incremental patch while async outstanding
+// ===========================================================================
+
+/// A wholesale brick field for a from-geometry box of `blocks³` at `vpb` — a distinct
+/// scene per size so "resident == latest" is a meaningful (not vacuous) assertion.
+fn brick_build(blocks: u32, vpb: u32) -> BrickFieldBuild {
+    let scene = Scene::from_geometry(
+        GeometryParams {
+            shape: ShapeKind::Box,
+            size_voxels: [blocks * vpb; 3],
+            size_measurements: None,
+            voxels_per_block: vpb,
+            wall_blocks: 1,
+        },
+        MaterialChoice::Stone,
+    );
+    let two_layer_chunks = TwoLayerStore::enabled().build_covering_chunks(&scene, vpb, 0);
+    build_brick_field(&two_layer_chunks, vpb)
+}
+
+/// C1 for the G3 brick sink: while an async WHOLESALE mesh build is OUTSTANDING, an
+/// incremental-shaped edit must NOT incrementally PATCH the brick field — it rebuilds the
+/// field WHOLESALE from the CURRENT scene, exactly as `route_geometry_rebuild` sends the
+/// mesh to a fresh wholesale-async dispatch. This proves the brick sink can never install a
+/// patch derived from a state the mesh path treats as stale (the C1 lesson, ported to the
+/// atlas). The finally-resident field equals a from-scratch build of the LATEST scene (S2),
+/// never S1/S0.
+///
+/// The decision is driven by the SAME pure `route_geometry_rebuild` + the SAME brick
+/// `patch_in_place = matches!(route, InlineIncremental) && field.is_some()` predicate the
+/// shell (`WindowedState::rebuild_geometry`) applies; only the window-coupled swap itself is
+/// modelled locally (see the honesty note at the bottom of this file).
+#[test]
+fn c1_brick_field_rebuilds_wholesale_while_outstanding_no_stale_patch() {
+    let vpb = 4u32;
+    let s0 = brick_build(6, vpb);
+    let s1 = brick_build(8, vpb);
+    let s2 = brick_build(10, vpb);
+    assert_ne!(
+        s0.brick_records.len(),
+        s2.brick_records.len(),
+        "the fixtures must differ so a stale (S0/S1-derived) field would be DETECTABLE"
+    );
+
+    // The shell's persistent brick state (starts == S0) + the C1 outstanding flag.
+    let mut field = IncrementalBrickField::from_wholesale(&s0);
+    assert_eq!(field.to_build(), s0, "the field starts as the installed baseline S0");
+    let mut async_outstanding = false;
+
+    // The brick sink's decision, mirroring the shell exactly: patch in place ONLY when the
+    // route is InlineIncremental and a field is resident.
+    let brick_patches_in_place = |route: RebuildRoute| matches!(route, RebuildRoute::InlineIncremental);
+
+    // --- Edit 1: a LARGE wholesale edit → S1, dispatched async (the #60 case). ---
+    let route1 = route_geometry_rebuild(
+        async_outstanding,
+        EditShape::Wholesale {
+            chunk_count: ASYNC_REBUILD_CHUNK_THRESHOLD + 1,
+        },
+        ASYNC_REBUILD_CHUNK_THRESHOLD,
+    );
+    assert_eq!(route1, RebuildRoute::WholesaleAsync);
+    async_outstanding = true;
+    assert!(
+        !brick_patches_in_place(route1),
+        "a wholesale edit rebuilds the brick field wholesale"
+    );
+    field = IncrementalBrickField::from_wholesale(&s1);
+    assert_eq!(
+        field.to_build(),
+        s1,
+        "after edit 1 (wholesale) the resident field is a full build of S1"
+    );
+
+    // --- Edit 2: an INCREMENTAL-shaped edit → S2 BEFORE S1's async result installs. ---
+    let route2 = route_geometry_rebuild(
+        async_outstanding, // still true — S1 has NOT installed
+        EditShape::Incremental,
+        ASYNC_REBUILD_CHUNK_THRESHOLD,
+    );
+    assert_eq!(
+        route2,
+        RebuildRoute::WholesaleAsync,
+        "C1: an incremental edit while a build is outstanding routes wholesale"
+    );
+    assert!(
+        !brick_patches_in_place(route2),
+        "C1: the brick field must NOT incrementally patch while an async build is outstanding \
+         (that would install a patch of a state the mesh path treats as stale)"
+    );
+    // The interlock: rebuild the brick field WHOLESALE from the CURRENT scene (S2).
+    field = IncrementalBrickField::from_wholesale(&s2);
+
+    // THE ASSERTION: the finally-resident brick field is a from-scratch build of the LATEST
+    // scene (S2) — never a stale S0/S1. `to_build` round-trips a wholesale seed byte-exactly.
+    let resident = field.to_build();
+    assert_eq!(
+        resident, s2,
+        "C1: the resident brick field must equal a wholesale build of the LATEST scene (S2)"
+    );
+    assert_ne!(resident, s1, "not the mid-flight scene S1");
+    assert_ne!(resident, s0, "not the stale baseline S0");
 }
 
 // HONESTY NOTE (C1 headless coverage): the ROUTING decision (the actual fix — the outstanding

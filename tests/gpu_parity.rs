@@ -1318,6 +1318,181 @@ fn brick_raymarch_hit_set_matches_exact_evaluator() {
     );
 }
 
+/// **ADR 0011 slice G3 — incremental patch render == wholesale install render.** Drive a
+/// scene through the LIVE incremental path (install scene A → apply a localised occupancy
+/// edit → `patch_brick_field` writing ONLY the dirty slots), render its hit-identity
+/// image, and assert it is PIXEL-IDENTICAL to a from-scratch `install_brick_field` of the
+/// same final scene B. This gates the whole G3 machinery THROUGH the render (not just the
+/// CPU data comparison in `brick_field`'s unit tests): the free-listed slot layout + the
+/// per-slot `write_texture` patch must render exactly as a dense wholesale install.
+#[test]
+fn brick_raymarch_incremental_patch_matches_wholesale_install() {
+    use voxel_worker::{
+        brick_representable_overlay, build_brick_field, pack_gpu_records, AppCore,
+        BrickRaymarchRenderer, ClipmapPyramid, IncrementalBrickField, LayerBand, Node, NodeContent,
+        NodeTransform, OrbitCamera, Scene, SdfShape, ShapeKind, TwoLayerResidentCache,
+        COLOR_TARGET_FORMAT,
+    };
+
+    let gpu = pollster::block_on(GpuContext::new(None));
+    let width = 128u32;
+    let height = 128u32;
+    let vpb = 8u32;
+
+    let tool = |kind: ShapeKind, offset: [i64; 3], material: MaterialChoice| -> Node {
+        let shape = SdfShape::from_blocks(kind, [5, 5, 5], 1, vpb);
+        let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
+        node.transform = NodeTransform::from_blocks(offset, vpb);
+        node
+    };
+    // Two anchors fix the covering set; the middle tool is edited (Sphere → moved Box) so
+    // the OCCUPANCY genuinely changes (the render would differ if the patch didn't land).
+    let anchor_lo = tool(ShapeKind::Box, [-14, 0, 0], MaterialChoice::Stone);
+    let anchor_hi = tool(ShapeKind::Box, [14, 0, 0], MaterialChoice::Stone);
+    let scene_a = Scene::from_nodes(vec![
+        anchor_lo.clone(),
+        anchor_hi.clone(),
+        tool(ShapeKind::Sphere, [0, 0, 0], MaterialChoice::Wood),
+    ]);
+    let scene_b = Scene::from_nodes(vec![
+        anchor_lo,
+        anchor_hi,
+        tool(ShapeKind::Box, [1, 0, 0], MaterialChoice::Wood),
+    ]);
+
+    // Derive the fresh covering sets + the dirty chunk set exactly as `AppCore::rebuild`.
+    let mut cache = TwoLayerResidentCache::enabled();
+    cache.clear();
+    let index_a = scene_a.build_leaf_spatial_index(vpb);
+    let fresh_a: Vec<_> = cache
+        .resident_two_layer_chunks(&scene_a, vpb, 0)
+        .into_iter()
+        .map(|(coord, chunk)| (coord, chunk.clone()))
+        .collect();
+    let build_a = build_brick_field(&fresh_a, vpb);
+    let mut field = IncrementalBrickField::from_wholesale(&build_a);
+    let overlay_a = brick_representable_overlay(&fresh_a).unwrap_or(false);
+
+    let index_b = scene_b.build_leaf_spatial_index(vpb);
+    let edit_aabb = index_b
+        .edit_aabb_since(&index_a)
+        .expect("the middle-tool edit is localisable");
+    let dirty = cache.invalidate_aabb(&edit_aabb, vpb);
+    let fresh_b: Vec<_> = cache
+        .resident_two_layer_chunks(&scene_b, vpb, 0)
+        .into_iter()
+        .map(|(coord, chunk)| (coord, chunk.clone()))
+        .collect();
+
+    let update = field.apply_dirty_update(&fresh_b, &dirty);
+    let incremental_build = field.to_build();
+    let wholesale_build = build_brick_field(&fresh_b, vpb);
+    assert_eq!(
+        incremental_build.brick_records.len(),
+        wholesale_build.brick_records.len(),
+        "the incremental field must have the same record count as the wholesale build of B \
+         (a covering-set change would break the incremental assumption)"
+    );
+    assert!(
+        !dirty.is_empty() && dirty.len() < fresh_b.len(),
+        "the edit must dirty SOME but not ALL chunks (dirtied {} of {})",
+        dirty.len(),
+        fresh_b.len()
+    );
+
+    let overlay_b = brick_representable_overlay(&fresh_b).unwrap_or(false);
+    let recentre_b = scene_b.recentre_voxels_for_resolve(vpb);
+    let grid_dimensions = scene_b.placed_region_dimensions(vpb);
+
+    // The headless camera framing B at the origin (the same rig the other brick tests use).
+    let mut app_core = AppCore::new(OrbitCamera::default());
+    app_core.camera.target = glam::Vec3::ZERO;
+    app_core.camera.orbit_distance = OrbitCamera::auto_framed_distance(grid_dimensions);
+    let aspect_ratio = width as f32 / height as f32;
+    let view_projection = app_core.view_projection(aspect_ratio, grid_dimensions);
+    let viewport_px = [0u32, 0, width, height];
+    let band = LayerBand::FULL;
+
+    // Path 1 — the INCREMENTAL path: install A, then PATCH to B (only dirty slots written).
+    let mut incremental_renderer =
+        BrickRaymarchRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
+    incremental_renderer.install_brick_field(
+        &gpu.device,
+        &gpu.queue,
+        &build_a,
+        &pack_gpu_records(&build_a, |_| false),
+        &ClipmapPyramid::from_records(&build_a.brick_records),
+        scene_a.recentre_voxels_for_resolve(vpb),
+        overlay_a,
+    );
+    incremental_renderer.patch_brick_field(
+        &gpu.device,
+        &gpu.queue,
+        &incremental_build,
+        &update,
+        &pack_gpu_records(&incremental_build, |_| false),
+        &ClipmapPyramid::from_records(&incremental_build.brick_records),
+        recentre_b,
+        overlay_b,
+    );
+    if !update.atlas_grew {
+        assert_eq!(
+            incremental_renderer.last_atlas_slots_written() as usize,
+            update.written_slots.len(),
+            "a steady-state patch writes exactly the dirty slots (no full re-upload)"
+        );
+    }
+    incremental_renderer.update_uniforms(
+        &gpu.queue,
+        view_projection,
+        viewport_px,
+        grid_dimensions,
+        band,
+        false,
+        Some(MaterialChoice::default()),
+    );
+    let incremental_image =
+        incremental_renderer.render_hit_identity_image(&gpu.device, &gpu.queue, width, height);
+
+    // Path 2 — a from-scratch WHOLESALE install of the SAME final scene B.
+    let mut wholesale_renderer =
+        BrickRaymarchRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
+    wholesale_renderer.install_brick_field(
+        &gpu.device,
+        &gpu.queue,
+        &wholesale_build,
+        &pack_gpu_records(&wholesale_build, |_| false),
+        &ClipmapPyramid::from_records(&wholesale_build.brick_records),
+        recentre_b,
+        overlay_b,
+    );
+    wholesale_renderer.update_uniforms(
+        &gpu.queue,
+        view_projection,
+        viewport_px,
+        grid_dimensions,
+        band,
+        false,
+        Some(MaterialChoice::default()),
+    );
+    let wholesale_image =
+        wholesale_renderer.render_hit_identity_image(&gpu.device, &gpu.queue, width, height);
+
+    let hits = incremental_image.iter().filter(|pixel| pixel[0] == 1).count();
+    assert!(hits > 0, "the gated view must produce brick hits (else the test is vacuous)");
+    let mismatches = incremental_image
+        .iter()
+        .zip(&wholesale_image)
+        .filter(|(a, b)| a != b)
+        .count();
+    assert_eq!(
+        mismatches, 0,
+        "incremental patch render must be pixel-identical to a wholesale install of the same \
+         scene ({mismatches}/{} pixels differ; {hits} hit pixels)",
+        width * height
+    );
+}
+
 /// **ADR 0011 residency-miss contract (decided at G1).** Forcing every sculpted
 /// record non-resident (`pack_gpu_records(.., |_| true)`) must render each such block
 /// as its COARSE form — a solid block-cube — never a miss/skip. A coarse cube is a
