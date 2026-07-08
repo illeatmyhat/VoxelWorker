@@ -1025,3 +1025,352 @@ fn worker_build_matches_sync_build_for_large_scene() {
     // Sanity: a solid box actually produced geometry (the net isn't trivially comparing 0==0).
     assert!(sync.face_count() > 0, "the fixture box must mesh to a non-empty face set");
 }
+
+// ===========================================================================
+// Brick-field RENDER tier (ADR 0011 G1) — the parity gate clause (b) + the
+// residency-miss contract. The G0 tier above proved the BUILD (records + atlas)
+// byte-exact; this tier proves the finest-LOD RAYMARCH hits the same surface the
+// CPU exact evaluator reports, and that a forced residency miss renders the
+// degraded-but-correct coarse form (never a miss/skip).
+// ===========================================================================
+
+/// A gated brick render case: a single-producer scene at some density.
+struct BrickRenderCase {
+    name: &'static str,
+    scene: Scene,
+    voxels_per_block: u32,
+}
+
+/// Build the gated render matrix: a coarse-heavy sphere at d16, the sculpted-heavy
+/// revolved vase at d4 (sketch tier), and an odd-extent box at a NON-16 density (the
+/// block-denominated granule — nothing may assume 16).
+fn brick_render_cases() -> Vec<BrickRenderCase> {
+    let vase = &SKETCH_CASES[4]; // revolve-vase-d4
+    let mut vase_scene = Scene::single_node(Node::new(
+        "Sketch",
+        NodeContent::SketchTool {
+            producer: vase.build(),
+            material: MaterialChoice::default(),
+        },
+    ));
+    vase_scene.voxels_per_block = vase.voxels_per_block;
+    vec![
+        BrickRenderCase {
+            name: "render-sphere-80-d16",
+            scene: Scene::from_geometry(
+                GeometryParams {
+                    shape: ShapeKind::Sphere,
+                    size_voxels: [80, 80, 80],
+                    size_measurements: None,
+                    voxels_per_block: 16,
+                    wall_blocks: 1,
+                },
+                MaterialChoice::default(),
+            ),
+            voxels_per_block: 16,
+        },
+        BrickRenderCase {
+            name: "render-revolve-vase-d4",
+            scene: vase_scene,
+            voxels_per_block: vase.voxels_per_block,
+        },
+        BrickRenderCase {
+            name: "render-box-31-17-49-d4",
+            scene: Scene::from_geometry(
+                GeometryParams {
+                    shape: ShapeKind::Box,
+                    size_voxels: [31, 17, 49],
+                    size_measurements: None,
+                    voxels_per_block: 4,
+                    wall_blocks: 1,
+                },
+                MaterialChoice::default(),
+            ),
+            voxels_per_block: 4,
+        },
+    ]
+}
+
+/// The exact-evaluator occupancy set in the march's ABSOLUTE voxel frame (raw world
+/// voxels): `chunk_coord · chunk_extent + chunk_local_index` for every voxel the
+/// shipped two-layer expansion emits (coarse-solid interiors + boundary microblocks).
+/// The march's `voxel_bias` recovers exactly this frame (the recentre cancels), so a
+/// march hit's `absolute_voxel` indexes straight into this set.
+fn exact_occupancy_set(
+    two_layer_chunks: &[([i32; 3], voxel_worker::two_layer_store::TwoLayerChunk)],
+    voxels_per_block: u32,
+) -> std::collections::HashSet<[i64; 3]> {
+    use voxel_worker::core_geom::CHUNK_BLOCKS;
+    let chunk_extent = (CHUNK_BLOCKS * voxels_per_block) as i64;
+    let mut occupied = std::collections::HashSet::new();
+    let mut expanded = Vec::new();
+    for (chunk_coord, chunk) in two_layer_chunks {
+        expanded.clear();
+        chunk.expand_occupancy_into(&mut expanded, [0, 0, 0]);
+        for voxel in &expanded {
+            occupied.insert([
+                chunk_coord[0] as i64 * chunk_extent + voxel.local_index[0] as i64,
+                chunk_coord[1] as i64 * chunk_extent + voxel.local_index[1] as i64,
+                chunk_coord[2] as i64 * chunk_extent + voxel.local_index[2] as i64,
+            ]);
+        }
+    }
+    occupied
+}
+
+/// **ADR 0011 parity gate, clause (b).** For each gated scene, install the G0 brick
+/// field on the GPU, render the single-sample hit-identity image, and assert every
+/// pixel's (hit flag + absolute hit voxel) is IDENTICAL to the CPU exact evaluator's
+/// per-pixel voxel DDA over the same frame — the finest-LOD raymarch resolves exactly
+/// the surface the truth reports. A mismatch is triaged with the CPU brick-field march
+/// (the f32 mirror of the shader): agreeing with it but not the exact set isolates a
+/// BUILD/frame bug; disagreeing with it isolates a SHADER bug.
+#[test]
+fn brick_raymarch_hit_set_matches_exact_evaluator() {
+    use voxel_worker::{
+        build_brick_field, cpu_march_brick_field, cpu_march_exact_occupancy, pack_gpu_records,
+        uniform_render_cell, AppCore, BrickRaymarchRenderer, LayerBand, OrbitCamera, TwoLayerStore,
+        COLOR_TARGET_FORMAT,
+    };
+
+    let gpu = pollster::block_on(GpuContext::new(None));
+    let width = 128u32;
+    let height = 128u32;
+    let mut failures: Vec<String> = Vec::new();
+
+    for case in brick_render_cases() {
+        let vpb = case.voxels_per_block;
+        let two_layer_chunks = TwoLayerStore::enabled().build_covering_chunks(&case.scene, vpb, 0);
+        assert!(!two_layer_chunks.is_empty(), "{}: empty two-layer build", case.name);
+        let build = build_brick_field(&two_layer_chunks, vpb);
+        assert!(!build.brick_records.is_empty(), "{}: empty brick field", case.name);
+        let (material_id, overlay_active) = uniform_render_cell(&two_layer_chunks)
+            .unwrap_or_else(|| panic!("{}: scene must have a uniform render cell", case.name));
+        let recentre = case.scene.recentre_voxels_for_resolve(vpb);
+        let grid_dimensions = case.scene.placed_region_dimensions(vpb);
+
+        // The exact-evaluator oracle (the truth the raymarch is checked against).
+        let occupied = exact_occupancy_set(&two_layer_chunks, vpb);
+        let occupied_fn = |absolute: [i64; 3]| occupied.contains(&absolute);
+
+        // The headless camera framing the composite at the origin — the same rig the
+        // shell/`shot` source `view_projection` from (a fixed iso view).
+        let mut app_core = AppCore::new(OrbitCamera::default());
+        app_core.camera.target = glam::Vec3::ZERO;
+        app_core.camera.orbit_distance = OrbitCamera::auto_framed_distance(grid_dimensions);
+        let aspect_ratio = width as f32 / height as f32;
+        let view_projection = app_core.view_projection(aspect_ratio, grid_dimensions);
+        let viewport_px = [0u32, 0, width, height];
+        let band = LayerBand::FULL;
+
+        // The all-resident field + the frame the CPU marches mirror.
+        let gpu_records = pack_gpu_records(&build, |_| false);
+        let mut renderer = BrickRaymarchRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
+        renderer.install_brick_field(
+            &gpu.device,
+            &gpu.queue,
+            &build,
+            &gpu_records,
+            recentre,
+            material_id,
+            overlay_active,
+        );
+        let frame = renderer.update_uniforms(
+            &gpu.queue,
+            view_projection,
+            viewport_px,
+            grid_dimensions,
+            band,
+            false,
+            Some(MaterialChoice::default()),
+        );
+        let gpu_image = renderer.render_hit_identity_image(&gpu.device, &gpu.queue, width, height);
+
+        let mut mismatches = 0usize;
+        let mut gpu_hits = 0usize;
+        let mut first_report: Option<String> = None;
+        for y in 0..height {
+            for x in 0..width {
+                let pixel_index = (y * width + x) as usize;
+                let gpu_pixel = gpu_image[pixel_index];
+                let gpu_hit = gpu_pixel[0] == 1;
+                // The shader bitcast i32 voxel lanes into u32; `as i32` reinterprets.
+                let gpu_voxel = [
+                    gpu_pixel[1] as i32,
+                    gpu_pixel[2] as i32,
+                    gpu_pixel[3] as i32,
+                ];
+                if gpu_hit {
+                    gpu_hits += 1;
+                }
+                let pixel = glam::Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
+                let cpu = cpu_march_exact_occupancy(&frame, &occupied_fn, pixel);
+                let agree = match cpu {
+                    Some(hit) => gpu_hit && hit.absolute_voxel == gpu_voxel,
+                    None => !gpu_hit,
+                };
+                if !agree {
+                    mismatches += 1;
+                    if first_report.is_none() {
+                        let brick = cpu_march_brick_field(&frame, &gpu_records, &build, pixel);
+                        first_report = Some(format!(
+                            "    px=({x},{y}) gpu_hit={gpu_hit} gpu_voxel={gpu_voxel:?} \
+                             exact={:?} brick_field_cpu={:?} (agree-with-brick isolates a \
+                             BUILD/frame bug; disagree isolates a SHADER bug)",
+                            cpu.map(|h| h.absolute_voxel),
+                            brick.map(|h| h.absolute_voxel),
+                        ));
+                    }
+                }
+            }
+        }
+
+        if gpu_hits == 0 {
+            failures.push(format!("{}: the gated view produced ZERO brick hits", case.name));
+            continue;
+        }
+        if mismatches > 0 {
+            failures.push(format!(
+                "{}: {mismatches}/{} pixels diverge from the exact evaluator (gpu_hits={gpu_hits})\n{}",
+                case.name,
+                width * height,
+                first_report.unwrap_or_default()
+            ));
+        } else {
+            eprintln!("{}: {gpu_hits} hit pixels, exact-parity clean", case.name);
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "brick raymarch hit set != CPU exact evaluator (ADR 0011 gate (b)):\n{}",
+        failures.join("\n")
+    );
+}
+
+/// **ADR 0011 residency-miss contract (decided at G1).** Forcing every sculpted
+/// record non-resident (`pack_gpu_records(.., |_| true)`) must render each such block
+/// as its COARSE form — a solid block-cube — never a miss/skip. A coarse cube is a
+/// superset of the sculpted occupancy it replaces, so the forced-miss silhouette must
+/// CONTAIN the all-resident silhouette pixel-for-pixel (and the pass must complete —
+/// proving the branch is taken, never an assert). This is the hole G4's eviction rings
+/// plug into.
+#[test]
+fn brick_raymarch_residency_miss_renders_coarse_form() {
+    use voxel_worker::{
+        build_brick_field, pack_gpu_records, uniform_render_cell, AppCore, BrickRaymarchRenderer,
+        LayerBand, OrbitCamera, TwoLayerStore, COLOR_TARGET_FORMAT,
+    };
+
+    let gpu = pollster::block_on(GpuContext::new(None));
+    let width = 128u32;
+    let height = 128u32;
+    let mut failures: Vec<String> = Vec::new();
+
+    for case in brick_render_cases() {
+        let vpb = case.voxels_per_block;
+        let two_layer_chunks = TwoLayerStore::enabled().build_covering_chunks(&case.scene, vpb, 0);
+        let build = build_brick_field(&two_layer_chunks, vpb);
+        // Only the sculpted-bearing cases exercise the contract; every gated case has
+        // boundary blocks, but assert it so a silently-coarse scene can't pass vacuously.
+        assert!(
+            build.sculpted_brick_count() > 0,
+            "{}: fixture must contain sculpted bricks to force a miss",
+            case.name
+        );
+        let (material_id, overlay_active) = uniform_render_cell(&two_layer_chunks).unwrap();
+        let recentre = case.scene.recentre_voxels_for_resolve(vpb);
+        let grid_dimensions = case.scene.placed_region_dimensions(vpb);
+
+        let mut app_core = AppCore::new(OrbitCamera::default());
+        app_core.camera.target = glam::Vec3::ZERO;
+        app_core.camera.orbit_distance = OrbitCamera::auto_framed_distance(grid_dimensions);
+        let aspect_ratio = width as f32 / height as f32;
+        let view_projection = app_core.view_projection(aspect_ratio, grid_dimensions);
+        let viewport_px = [0u32, 0, width, height];
+        let band = LayerBand::FULL;
+
+        let render_image = |renderer: &BrickRaymarchRenderer| {
+            renderer.update_uniforms(
+                &gpu.queue,
+                view_projection,
+                viewport_px,
+                grid_dimensions,
+                band,
+                false,
+                Some(MaterialChoice::default()),
+            );
+            renderer.render_hit_identity_image(&gpu.device, &gpu.queue, width, height)
+        };
+
+        let mut renderer = BrickRaymarchRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
+        // All-resident silhouette.
+        renderer.install_brick_field(
+            &gpu.device,
+            &gpu.queue,
+            &build,
+            &pack_gpu_records(&build, |_| false),
+            recentre,
+            material_id,
+            overlay_active,
+        );
+        let resident_image = render_image(&renderer);
+        // Forced residency miss: every sculpted record → NON_RESIDENT sentinel.
+        renderer.install_brick_field(
+            &gpu.device,
+            &gpu.queue,
+            &build,
+            &pack_gpu_records(&build, |_| true),
+            recentre,
+            material_id,
+            overlay_active,
+        );
+        let miss_image = render_image(&renderer);
+
+        let mut resident_hits = 0usize;
+        let mut miss_hits = 0usize;
+        let mut dropped = 0usize; // resident hit but the forced-miss render skipped it
+        for pixel_index in 0..(width * height) as usize {
+            let resident_hit = resident_image[pixel_index][0] == 1;
+            let miss_hit = miss_image[pixel_index][0] == 1;
+            if resident_hit {
+                resident_hits += 1;
+            }
+            if miss_hit {
+                miss_hits += 1;
+            }
+            if resident_hit && !miss_hit {
+                dropped += 1;
+            }
+        }
+
+        if resident_hits == 0 {
+            failures.push(format!("{}: no resident hits to check the contract against", case.name));
+            continue;
+        }
+        if dropped > 0 {
+            failures.push(format!(
+                "{}: {dropped} pixels hit under all-resident but MISSED under forced \
+                 residency-miss — the coarse-form fallback dropped a boundary block \
+                 (must render its solid cube, never skip)",
+                case.name
+            ));
+        }
+        assert!(
+            miss_hits >= resident_hits,
+            "{}: forced-miss silhouette ({miss_hits}) must contain the resident one \
+             ({resident_hits}) — coarse cubes only grow the solid",
+            case.name
+        );
+        eprintln!(
+            "{}: residency-miss coarse-form ok (resident {resident_hits} ⊆ miss {miss_hits})",
+            case.name
+        );
+    }
+
+    assert!(
+        failures.is_empty(),
+        "brick residency-miss contract violated (ADR 0011 4a):\n{}",
+        failures.join("\n")
+    );
+}

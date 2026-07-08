@@ -279,6 +279,18 @@ struct ShotOptions {
     /// (the E3 golden gate). DEFAULT OFF — the live renderer stays on the dense path until
     /// E5. Only the voxel MESH source changes; fog / overlays / export are unaffected.
     two_layer: bool,
+    /// `--brick` (ADR 0011 G1): source the voxel display from the **brick raymarch**
+    /// instead of the CPU cuboid mesh — build the two-layer boundary set, pack it into
+    /// the G0 brick field (sorted records + R8 sculpted atlas) and render via the
+    /// fullscreen block-DDA pass. Engages only under `--features gpu` for a chunkable
+    /// single-producer scene with a uniform render cell (the G1 gate); otherwise it
+    /// prints why and falls back to the mesh path. The mesh renderer is built EMPTY
+    /// when bricks engage, so the PNG provably comes from the brick atlas.
+    brick: bool,
+    /// `--brick-force-miss` (implies `--brick`): upload EVERY sculpted record with the
+    /// non-resident atlas-slot sentinel, forcing the residency-miss contract's coarse
+    /// fallback — the degraded-but-correct all-block-cubes render, for visual checks.
+    brick_force_miss: bool,
     /// `--replay <path>` (ADR 0003 Phase C, slice C3): build the scene by REPLAYING a
     /// newline-delimited-JSON Intent script through `AppCore::apply_intent` instead of
     /// from a `--shape`/`--demo-*` source. The file is one [`voxel_worker::Intent`] per
@@ -343,6 +355,8 @@ impl Default for ShotOptions {
             synthetic_block: false,
             demo_overlap: false,
             two_layer: false,
+            brick: false,
+            brick_force_miss: false,
             replay_path: None,
         }
     }
@@ -633,6 +647,13 @@ fn parse_options() -> ShotOptions {
             }
             "--two-layer" => {
                 options.two_layer = true;
+            }
+            "--brick" => {
+                options.brick = true;
+            }
+            "--brick-force-miss" => {
+                options.brick = true;
+                options.brick_force_miss = true;
             }
             "--demo-overlap" => {
                 options.demo_overlap = true;
@@ -1635,12 +1656,95 @@ async fn run_capture(options: ShotOptions) {
         return;
     }
 
+    // ADR 0011 G1: `--brick` sources the voxel display from the brick raymarch. The
+    // gate mirrors the live app's: `--features gpu`, a chunkable SINGLE-producer
+    // scene (SDF / SketchSolid — the ADR 0007-ported set; DebugClouds is Part-only,
+    // so the two-layer store has no boundary set for it), a uniform render cell
+    // (the R8 atlas is occupancy-only), and none of the mesh-only modes
+    // (debug-faces, loaded VS materials — those disengage below via `--scan-vs`
+    // never combining with `--brick` in any gated case).
+    let mut brick_raymarch_renderer: Option<voxel_worker::BrickRaymarchRenderer> = None;
+    if options.brick {
+        if !cfg!(feature = "gpu") {
+            println!("brick: --brick requires --features gpu — falling back to the mesh path");
+        } else if !scene.has_chunkable_extent(options.geometry.voxels_per_block)
+            || panel_state.scene.single_producer().is_none()
+            || options.debug_face_orientation
+        {
+            println!(
+                "brick: scene not gated (needs a chunkable single-producer scene, no \
+                 debug-faces) — falling back to the mesh path"
+            );
+        } else {
+            let density = options.geometry.voxels_per_block;
+            let two_layer_chunks = voxel_worker::two_layer_store::TwoLayerStore::enabled()
+                .build_covering_chunks(&scene, density, 0);
+            let build = voxel_worker::build_brick_field(&two_layer_chunks, density);
+            match voxel_worker::uniform_render_cell(&two_layer_chunks) {
+                Some((material_id, overlay_active)) if !build.brick_records.is_empty() => {
+                    let gpu_records = voxel_worker::pack_gpu_records(&build, |_| {
+                        options.brick_force_miss
+                    });
+                    let sculpted = build.sculpted_brick_count();
+                    println!(
+                        "brick raymarch: {} records ({} coarse + {} sculpted), atlas {}³, \
+                         {}display=bricks",
+                        build.brick_records.len(),
+                        build.brick_records.len() - sculpted,
+                        sculpted,
+                        build.atlas_dim_voxels,
+                        if options.brick_force_miss {
+                            "ALL sculpted forced non-resident (residency-miss), "
+                        } else {
+                            ""
+                        },
+                    );
+                    let mut renderer = voxel_worker::BrickRaymarchRenderer::new(
+                        &gpu.device,
+                        &gpu.queue,
+                        COLOR_TARGET_FORMAT,
+                    );
+                    renderer.install_brick_field(
+                        &gpu.device,
+                        &gpu.queue,
+                        &build,
+                        &gpu_records,
+                        grid.recentre_voxels,
+                        material_id,
+                        overlay_active,
+                    );
+                    brick_raymarch_renderer = Some(renderer);
+                }
+                _ => {
+                    println!(
+                        "brick: boundary set is empty or mixes render cells — falling back \
+                         to the mesh path"
+                    );
+                }
+            }
+        }
+    }
+
     // Part of #20: the cuboid mesh path is the sole voxel renderer. Since issue #20
     // S6c-2d it meshes PER CHUNK with a 1-voxel neighbour apron: built from the
     // resolve cache's per-chunk accessor (`resident_render_chunks`) so the goldens
     // exercise the per-chunk path, falling back to the whole-grid wrapper when the
     // scene has no chunkable extent (the wrapper buckets internally → identical mesh).
-    let mut cuboid_mesh_renderer = if options.two_layer && scene.has_chunkable_extent(options.geometry.voxels_per_block) {
+    let mut cuboid_mesh_renderer = if brick_raymarch_renderer.is_some() {
+        // ADR 0011 G1: bricks own the frame — build the mesh renderer EMPTY (the
+        // borrow of the dense store is released first) so the capture provably
+        // renders from the brick atlas, not the mesh.
+        if let Some(render_chunks) = render_chunks_for_mesh.take() {
+            drop(render_chunks);
+        }
+        CuboidMeshRenderer::new(
+            &gpu.device,
+            &gpu.queue,
+            COLOR_TARGET_FORMAT,
+            &VoxelGrid::new(grid_dimensions),
+            options.geometry.voxels_per_block,
+        )
+    } else if options.two_layer && scene.has_chunkable_extent(options.geometry.voxels_per_block) {
         // ADR 0010 E3 / #50: mesh THROUGH the two-layer path — build each covering chunk's
         // `TwoLayerChunk` (coarse one-box + microblock cuboids + seam flags) and mesh from
         // it. PROVES pixel-identity to the dense path (the E3 golden gate). The render-chunk
@@ -2087,6 +2191,21 @@ async fn run_capture(options: ShotOptions) {
         cuboid_mesh_renderer.chunk_count(),
     );
 
+    // ADR 0011 G1: the brick pass's per-frame uniforms mirror the cuboid path's
+    // shading inputs (camera, viewport, band clip, overlay master, bound material)
+    // so the two paths render pixel-comparable.
+    if let Some(brick_raymarch) = &brick_raymarch_renderer {
+        brick_raymarch.update_uniforms(
+            &gpu.queue,
+            view_projection,
+            prepared.viewport_px,
+            grid_dimensions,
+            band,
+            options.show_grid_overlay,
+            bound,
+        );
+    }
+
     // ADR 0002 E2 (#19): the frustum cull ran inside `update_uniforms`. Report the
     // drawn/total chunk counts so the chunking + culling are verifiable headlessly.
     if options.debug_chunks {
@@ -2138,6 +2257,9 @@ async fn run_capture(options: ShotOptions) {
             None
         },
         cuboid_mesh: &cuboid_mesh_renderer,
+        // ADR 0011 G1: when engaged, the brick raymarch takes the voxel-model draw
+        // (the mesh renderer above was built empty); everything else is unchanged.
+        brick_raymarch: brick_raymarch_renderer.as_ref(),
         target_width: options.width,
         target_height: options.height,
     };

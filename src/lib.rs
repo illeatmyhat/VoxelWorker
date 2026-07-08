@@ -19,6 +19,9 @@ pub mod block_palette;
 // ADR 0011 G0: the brick-field BUILD (two-layer boundary set → sorted BrickRecords +
 // R8 sculpted-brick atlas), wired to nothing — parity-gated ahead of the G1 raymarch.
 pub mod brick_field;
+// ADR 0011 G1: the minimal brick raymarch display sink (block DDA + record binary
+// search + sculpted voxel DDA, residency-miss contract, per-sample MSAA depth).
+pub mod brick_raymarch;
 pub mod camera;
 pub mod chunk_cache;
 // ADR 0003 bottom layer: dependency-free geometry primitives + the streaming quantum.
@@ -75,6 +78,11 @@ pub use store::{ChunkCacheKey, ChunkResolveCache, Store};
 pub use brick_field::{
     build_brick_field, pack_world_block_key, read_back_brick_atlas, unpack_world_block_key,
     upload_brick_atlas, BrickFieldBuild, BrickPayload, BrickRecord,
+};
+pub use brick_raymarch::{
+    cpu_march_brick_field, cpu_march_exact_occupancy, pack_gpu_records, uniform_render_cell,
+    BrickGpuRecord, BrickMarchFrame, BrickRaymarchRenderer, CpuMarchHit,
+    NON_RESIDENT_ATLAS_SLOT,
 };
 pub use chunk_storage::{compress, decompress, CompressedChunk, Occupancy, SparseCell};
 pub use disk_chunk_store::{DiskChunkStore, DiskChunkStoreStats};
@@ -430,10 +438,18 @@ pub struct FrameOverlays<'a> {
     /// around the displayed band. `None` when onion skin is off. Its uniforms must
     /// already be uploaded via `OnionFogRenderer::update`.
     pub onion_fog: Option<&'a renderer::OnionFogRenderer>,
-    /// The cuboid mesh renderer — the sole voxel render path (part of #20; the legacy
+    /// The cuboid mesh renderer — the CPU voxel render path (part of #20; the legacy
     /// instanced mesher was removed). Draws the voxels as a box-decomposed mesh; its
     /// uniforms must already be uploaded via `CuboidMeshRenderer::update_uniforms`.
+    /// Kept PERMANENTLY as the headless/no-GPU fallback + A/B reference (ADR 0011
+    /// Decision 6) even when the brick path below takes the frame.
     pub cuboid_mesh: &'a cuboid_mesh::CuboidMeshRenderer,
+    /// ADR 0011 G1: the brick raymarch display sink. `Some` replaces the cuboid
+    /// mesh DRAW for this frame (single ported-producer scenes on the GPU path) —
+    /// the pass runs in the same MSAA pass and writes ray-hit depth, so every
+    /// overlay/fog/cube/egui pass after it composites unchanged. `None` keeps the
+    /// mesh path (multi-producer, loaded materials, debug modes, no-GPU builds).
+    pub brick_raymarch: Option<&'a brick_raymarch::BrickRaymarchRenderer>,
     /// Target dimensions (needed to place the view-cube corner viewport).
     pub target_width: u32,
     pub target_height: u32,
@@ -511,15 +527,21 @@ pub fn render_frame(
         );
         voxel_pass.set_scissor_rect(viewport_x, viewport_y, viewport_width, viewport_height);
 
-        // The cuboid mesh path is the sole voxel renderer (part of #20). When a VS
-        // block is applied, hand it the block's 6-layer D2Array bind group so it
-        // textures the model per-face (selecting the layer by the face normal); no
-        // applied block → `None` keeps the procedural-atlas path.
-        let loaded_material = match material {
-            renderer::MaterialSource::Loaded(bind_group) => Some(bind_group),
-            renderer::MaterialSource::Procedural(_) => None,
-        };
-        overlays.cuboid_mesh.draw(&mut voxel_pass, loaded_material);
+        // The voxel model: the brick raymarch (ADR 0011 G1) when engaged, else the
+        // cuboid mesh path. When a VS block is applied the mesh path binds the
+        // block's 6-layer D2Array so it textures per-face; no applied block →
+        // `None` keeps the procedural-atlas path. The brick pass writes ray-hit
+        // depth into this same MSAA depth attachment, so the depth-tested overlays
+        // below (and the fog's depth-stop) composite identically on both paths.
+        if let Some(brick_raymarch) = overlays.brick_raymarch {
+            brick_raymarch.draw(&mut voxel_pass);
+        } else {
+            let loaded_material = match material {
+                renderer::MaterialSource::Loaded(bind_group) => Some(bind_group),
+                renderer::MaterialSource::Procedural(_) => None,
+            };
+            overlays.cuboid_mesh.draw(&mut voxel_pass, loaded_material);
+        }
 
         // Per-object block lattice + floor grid (issue #29 S3): same MSAA pass,
         // depth-tested so the solid model occludes them (a scaffold around/under it).

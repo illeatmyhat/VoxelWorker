@@ -833,7 +833,21 @@ impl AppCore {
     /// single-chunk voxel capacity exceeds the bound is rejected WITHOUT touching
     /// the store, returning the offending count so the shell can surface the cap
     /// warning (AppCore never writes panel state).
-    pub fn rebuild(&mut self, scene: &Scene, density: u32) -> RebuildOutcome {
+    ///
+    /// **ADR 0011 G1 — the fog `VoxelGrid` stream is now demand-driven.**
+    /// `stream_fog_grid = false` skips the whole-region occupancy expansion
+    /// (ADR 0010's flagged per-edit densify debt) and returns an EMPTY grid with the
+    /// correct dimensions + recentre — the shell passes `false` when the GPU brick
+    /// display path is engaged (a single ported producer under `--features gpu`),
+    /// where the fog atlas GPU-resolves from the producer and nothing reads the
+    /// grid's occupancy. Pass `true` to stream it (the mesh-path/no-GPU behaviour,
+    /// bit-identical to before).
+    pub fn rebuild(
+        &mut self,
+        scene: &Scene,
+        density: u32,
+        stream_fog_grid: bool,
+    ) -> RebuildOutcome {
         profiling::scope!("app_core_rebuild");
         // Issue #27 S2: the resolve is chunked + lazy, so the voxel bound is a
         // PER-CHUNK bound, not a whole-scene total. Only a pathological density
@@ -930,12 +944,21 @@ impl AppCore {
             // so expand the resident chunks (coarse fast-fill + boundary per-voxel) into
             // one recentred grid — bit-identical to the retired dense `resolve_region`
             // (the E2 two-layer round-trip parity gate), so fog + goldens are unchanged.
-            let grid = expand_resident_chunks_into_grid(
-                &resident,
-                placed_dimensions,
-                new_recentre,
-                density,
-            );
+            // ADR 0011 G1: SKIPPED (dimensions + recentre only, no occupancy) when the
+            // shell says nothing will read it — the GPU brick display path's fog atlas
+            // resolves from the producer, killing this last per-edit densify.
+            let grid = if stream_fog_grid {
+                expand_resident_chunks_into_grid(
+                    &resident,
+                    placed_dimensions,
+                    new_recentre,
+                    density,
+                )
+            } else {
+                let mut empty_grid = VoxelGrid::new(placed_dimensions);
+                empty_grid.recentre_voxels = new_recentre;
+                empty_grid
+            };
             // The mesher needs owned chunks that outlive the cache borrow.
             let owned: Vec<([i32; 3], TwoLayerChunk)> = resident
                 .into_iter()
@@ -2081,7 +2104,7 @@ mod undo_tests {
     /// store (the chunk cache), so this exercises the SAME invalidation path the live app
     /// uses — not the always-full `resolve_region`.
     fn rebuild_grid_overlay_count(core: &mut AppCore, scene: &Scene, density: u32) -> usize {
-        match core.rebuild(scene, density) {
+        match core.rebuild(scene, density, true) {
             RebuildOutcome::Built(output) => output
                 .grid
                 .occupied
@@ -2096,7 +2119,7 @@ mod undo_tests {
 
     /// Read the recentre shift a single `rebuild` of `scene` at `density` reports.
     fn rebuild_recentre_shift(core: &mut AppCore, scene: &Scene, density: u32) -> [i64; 3] {
-        match core.rebuild(scene, density) {
+        match core.rebuild(scene, density, true) {
             RebuildOutcome::Built(output) => output.recentre_shift_voxels,
             RebuildOutcome::DensityRejected { .. } => {
                 panic!("density {density} unexpectedly rejected")
@@ -2147,6 +2170,60 @@ mod undo_tests {
         assert_eq!(steady_shift, [0; 3], "an unchanged extent must not move the camera");
     }
 
+    /// ADR 0011 G1: `rebuild(.., stream_fog_grid = false)` must SKIP the whole-region
+    /// occupancy expansion (ADR 0010's flagged per-edit densify) and return an
+    /// empty-occupancy grid that still carries the correct dimensions + recentre — the
+    /// shell passes `false` on the GPU brick display path, where nothing reads the grid's
+    /// occupancy (the fog atlas GPU-resolves from the producer). `true` streams it, exactly
+    /// as before. This is the fog-`VoxelGrid`-stream kill the slice is for.
+    #[test]
+    fn rebuild_without_fog_stream_skips_occupancy_but_keeps_dims() {
+        let density = 16u32;
+        let mut scene =
+            Scene::from_nodes(vec![tool_node(box_shape([2, 2, 2]), MaterialChoice::Stone)]);
+        scene.ensure_node_ids();
+        scene.ensure_origin_point();
+        scene.voxels_per_block = density;
+        scene.active = scene.roots.first().copied();
+
+        // Two independent cores so the store state of one build never leaks into the other.
+        let mut streamed_core = test_core();
+        let RebuildOutcome::Built(streamed) = streamed_core.rebuild(&scene, density, true) else {
+            panic!("density {density} unexpectedly rejected (streamed)");
+        };
+        let mut skipped_core = test_core();
+        let RebuildOutcome::Built(skipped) = skipped_core.rebuild(&scene, density, false) else {
+            panic!("density {density} unexpectedly rejected (skipped)");
+        };
+
+        assert!(
+            !streamed.grid.occupied.is_empty(),
+            "the streamed grid must hold the resolved occupancy (the mesh-path behaviour)"
+        );
+        assert!(
+            skipped.grid.occupied.is_empty(),
+            "the brick-path grid must carry NO occupancy — the fog VoxelGrid stream stopped"
+        );
+        // Every dimension-only consumer (camera framing, the layer-track extent) must be
+        // unaffected: same dims, same recentre, same reported shift.
+        assert_eq!(
+            skipped.grid.dimensions, streamed.grid.dimensions,
+            "the empty grid must keep the correct dimensions"
+        );
+        assert_eq!(
+            skipped.grid.recentre_voxels, streamed.grid.recentre_voxels,
+            "the empty grid must keep the resolve recentre"
+        );
+        assert_eq!(
+            skipped.recentre_shift_voxels, streamed.recentre_shift_voxels,
+            "the reported recentre shift must not depend on streaming the grid"
+        );
+        assert_eq!(
+            skipped.region_dimensions, streamed.region_dimensions,
+            "the region dimensions must not depend on streaming the grid"
+        );
+    }
+
     /// The occupied-voxel CORNER bounding box of a single `shape` of `size_blocks` at
     /// offset `[0, 0, 0]`, resolved at `density` through **`AppCore::rebuild`** — the
     /// per-chunk store path the WINDOWED APP actually renders. Returns
@@ -2163,7 +2240,7 @@ mod undo_tests {
         scene.voxels_per_block = density;
         scene.active = scene.roots.first().copied();
         let mut core = test_core();
-        let RebuildOutcome::Built(output) = core.rebuild(&scene, density) else {
+        let RebuildOutcome::Built(output) = core.rebuild(&scene, density, true) else {
             panic!("density {density} unexpectedly rejected");
         };
         assert!(!output.grid.occupied.is_empty(), "shape resolved empty");

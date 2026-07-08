@@ -1660,7 +1660,7 @@ struct CuboidUniforms {
 /// indexes by `material_id`. Materials without a packed sub-rect (should not happen
 /// for the procedural set) fall back to the WHOLE atlas (`[0,0,1,1]`), so a missing
 /// id degrades to "sample the atlas" rather than panicking.
-fn atlas_rects_from(atlas: &MaterialAtlas) -> [[f32; 4]; MaterialChoice::MATERIAL_COUNT] {
+pub(crate) fn atlas_rects_from(atlas: &MaterialAtlas) -> [[f32; 4]; MaterialChoice::MATERIAL_COUNT] {
     let mut rects = [[0.0, 0.0, 1.0, 1.0]; MaterialChoice::MATERIAL_COUNT];
     for (slot, sub_rect) in rects.iter_mut().zip(atlas.sub_rects.iter()) {
         let [size_u, size_v] = sub_rect.inset_size();
@@ -1727,7 +1727,7 @@ fn build_overlay_bind_group(
 /// The cuboid atlas bind-group layout: a single 2D texture (binding 0) + sampler
 /// (binding 1). One atlas for ALL materials replaces the former per-material
 /// D2Array binds (ADR 0002 O8).
-fn build_atlas_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+pub(crate) fn build_atlas_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
     device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("cuboid atlas bind group layout"),
         entries: &[
@@ -1754,7 +1754,7 @@ fn build_atlas_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout
 /// Upload a packed [`MaterialAtlas`] image as a single RGBA8 sRGB 2D texture
 /// (Nearest, no mipmaps), matching the instanced path's sRGB decode so lighting +
 /// overlay run in linear space and the sRGB target re-encodes on write.
-fn upload_atlas_texture(
+pub(crate) fn upload_atlas_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     atlas: &MaterialAtlas,

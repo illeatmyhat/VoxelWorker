@@ -216,6 +216,22 @@ const TWO_LAYER_CASE_NAMES: &[&str] = &[
     "demo-overlap",
 ];
 
+/// ADR 0011 G1 (#67): the golden cases whose scene is a chunkable SINGLE producer with a
+/// uniform render cell — the ones the brick raymarch actually engages for (`shot --brick`).
+/// Each renders brick-path pixel-identical (within the tolerance model) to the SAME committed
+/// dense reference: the parity gate's clause (c). `onion-fog-perchunk` is the overlay-inclusive
+/// case (grill Q5 depth-compositing requirement) — its fog haze composites over the
+/// brick-drawn solid via the raymarch's `frag_depth`, and the view cube draws after. The
+/// village/overlap cases are multi-producer (not gated); `sphere-debug-faces` disengages
+/// bricks (debug-faces is a mesh-only mode). Every name MUST exist in `CASES`.
+const BRICK_CASE_NAMES: &[&str] = &[
+    "cylinder",
+    "torus",
+    "onion-fog-perchunk",
+    "sketch-revolve-dome",
+    "sketch-extrude-l",
+];
+
 /// Fixed orbit angles so the framing is identical to the committed reference. The
 /// distance is deliberately left to shot's auto-frame (it is a pure function of the
 /// per-case grid dimensions, which are fixed here, so it stays deterministic) — a
@@ -462,6 +478,79 @@ fn two_layer_golden_matches_dense() {
     assert!(
         failures.is_empty(),
         "two-layer golden regression(s) vs dense reference:\n{}",
+        failures.join("\n")
+    );
+}
+
+/// ADR 0011 G1 (#67): render the gated single-producer golden cases THROUGH the brick
+/// raymarch (`shot --brick`: block-DDA over the G0 sorted records + R8 sculpted atlas, the
+/// cuboid mesh built EMPTY so the pixels provably come from the atlas) and assert each is
+/// PIXEL-IDENTICAL to the SAME committed dense reference — the parity gate's clause (c). The
+/// finest-LOD raymarch is designed (per-sample MSAA rays + pixel-centre face evaluation) to
+/// reproduce the rasterized mesh, not merely approximate it, so this reuses the mesh path's
+/// own goldens with no new references. `onion-fog-perchunk` additionally proves depth
+/// compositing: its onion-fog haze + the view cube composite over the brick-drawn solid the
+/// same as over the mesh, so a byte-for-byte-equivalent render there IS the depth-compositing
+/// evidence (grill Q5 / the one integration point the ADR 0009 benchmark never exercised).
+///
+/// Run: `cargo test --features gpu --test golden`. On a mismatch, read the `-brick-actual.png`
+/// and `-brick-diff.png` artifacts — a silhouette-only diff points at MSAA sample positions,
+/// an interior diff at the shading transcription.
+#[test]
+fn brick_golden_matches_dense() {
+    // Regeneration mode targets only the dense references; skip so `UPDATE_GOLDENS=1` never
+    // writes a brick render as a reference.
+    if std::env::var("UPDATE_GOLDENS").is_ok_and(|v| v == "1") {
+        return;
+    }
+    let golden_dir = golden_dir();
+    let out_dir = output_dir();
+    let mut failures: Vec<String> = Vec::new();
+
+    for name in BRICK_CASE_NAMES {
+        let case = CASES
+            .iter()
+            .find(|c| c.name == *name)
+            .unwrap_or_else(|| panic!("BRICK_CASE_NAMES references unknown case '{name}'"));
+        let reference_path = golden_dir.join(format!("{}.png", case.name));
+        if !reference_path.exists() {
+            failures.push(format!(
+                "[{}] no dense reference at {} — run the dense golden first",
+                case.name,
+                reference_path.display()
+            ));
+            continue;
+        }
+
+        // Render the case through the brick raymarch path.
+        let actual_path = out_dir.join(format!("{}-brick-actual.png", case.name));
+        render_case_with(case, &actual_path, &["--brick"]);
+
+        let actual = load_rgba(&actual_path);
+        let reference = load_rgba(&reference_path);
+        let diff_path = out_dir.join(format!("{}-brick-diff.png", case.name));
+        let mismatch = compare_images(&actual, &reference, &diff_path);
+        println!(
+            "[{} brick] mismatch fraction = {:.5}% (threshold {:.3}%)",
+            case.name,
+            mismatch * 100.0,
+            MAX_MISMATCH_FRACTION * 100.0
+        );
+        if mismatch > MAX_MISMATCH_FRACTION {
+            failures.push(format!(
+                "[{} brick] mismatch {:.5}% exceeds {:.3}% — actual: {}  diff: {}",
+                case.name,
+                mismatch * 100.0,
+                MAX_MISMATCH_FRACTION * 100.0,
+                actual_path.display(),
+                diff_path.display()
+            ));
+        }
+    }
+
+    assert!(
+        failures.is_empty(),
+        "brick golden regression(s) vs dense reference (ADR 0011 gate (c)):\n{}",
         failures.join("\n")
     );
 }

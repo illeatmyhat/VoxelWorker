@@ -34,6 +34,9 @@ use voxel_worker::{
 };
 use voxel_worker::core_geom::CHUNK_BLOCKS;
 use voxel_worker::CuboidMeshRenderer;
+// ADR 0011 G1: the brick raymarch display sink (engaged for single ported-producer
+// scenes under `--features gpu`; the mesh path stays the fallback + A/B reference).
+use voxel_worker::BrickRaymarchRenderer;
 use voxel_worker::{
     route_geometry_rebuild, EditShape, GenerationTracker, GeometryRebuildRequest, GeometryWorker,
     RebuildRoute, ASYNC_REBUILD_CHUNK_THRESHOLD,
@@ -68,6 +71,19 @@ struct WindowedState {
     /// instanced mesher was removed). Rebuilt from the resolve cache's per-chunk
     /// accessor on every geometry change in `rebuild_geometry`.
     cuboid_mesh_renderer: CuboidMeshRenderer,
+    /// ADR 0011 G1: the brick raymarch display sink. Created on first engagement
+    /// (a single ported-producer scene under `--features gpu`) and kept — per-edit
+    /// work is `install_brick_field` (records + atlas swap, no pipeline rebuild).
+    /// When it holds a field and no mesh-only mode is active (debug-faces, a loaded
+    /// VS material), the frame's voxel model draws from the brick atlas INSTEAD of
+    /// the cuboid mesh; the mesh keeps rebuilding as the fallback + A/B reference
+    /// (ADR 0011 Decision 6). `None` on default (no-GPU) builds, always.
+    brick_raymarch_renderer: Option<BrickRaymarchRenderer>,
+    /// ADR 0011 G1: whether `self.grid` actually holds STREAMED occupancy. `false`
+    /// when the rebuild skipped the fog `VoxelGrid` stream (brick path engaged —
+    /// the GPU fog atlas resolves from the producer instead); the CPU fog densify
+    /// must then not consume the empty grid (it would silently draw no fog).
+    fog_grid_streamed: bool,
     /// Issue #60 (ADR 0003 §7): the background geometry-rebuild worker. A WHOLESALE
     /// rebuild whose covering-chunk count exceeds [`ASYNC_REBUILD_CHUNK_THRESHOLD`] —
     /// the ~3s large-object build — is dispatched here (cloned `device`/`queue`) instead
@@ -385,6 +401,39 @@ impl WindowedState {
             startup_recentre,
             startup_density,
         );
+        // ADR 0011 G1: engage the brick raymarch from the FIRST frame when the
+        // startup scene is gated (a single ported producer with a uniform render
+        // cell, `--features gpu`). Later edits refresh it in `rebuild_geometry`.
+        #[cfg_attr(not(feature = "gpu"), allow(unused_mut))]
+        let mut brick_raymarch_renderer: Option<BrickRaymarchRenderer> = None;
+        #[cfg(feature = "gpu")]
+        if panel_state.scene.single_producer().is_some() {
+            if let Some((material_id, overlay_active)) =
+                voxel_worker::uniform_render_cell(&startup_two_layer_chunks)
+            {
+                let build =
+                    voxel_worker::build_brick_field(&startup_two_layer_chunks, startup_density);
+                if !build.brick_records.is_empty() {
+                    let mut renderer =
+                        BrickRaymarchRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
+                    renderer.install_brick_field(
+                        &gpu.device,
+                        &gpu.queue,
+                        &build,
+                        &voxel_worker::pack_gpu_records(&build, |_| false),
+                        startup_recentre,
+                        material_id,
+                        overlay_active,
+                    );
+                    println!(
+                        "brick raymarch: startup field installed ({} records, {} sculpted)",
+                        build.brick_records.len(),
+                        build.sculpted_brick_count(),
+                    );
+                    brick_raymarch_renderer = Some(renderer);
+                }
+            }
+        }
         // The transform gizmo (issue #29 S2) is rebuilt/positioned to the SELECTED
         // node each frame; seed it at the region size (overwritten on first frame).
         let transform_gizmo_renderer =
@@ -439,6 +488,8 @@ impl WindowedState {
                         &grid,
                         startup_density,
                         Some(slab),
+                        // The startup grid is always streamed (`resolve_scene`).
+                        true,
                     );
                     fog_occupancy_dirty = false;
                     fog_built_chunk_z_range = Self::fog_covering_chunk_z_range(
@@ -514,6 +565,10 @@ impl WindowedState {
             egui_winit_state,
             panel_state,
             cuboid_mesh_renderer,
+            brick_raymarch_renderer,
+            // The startup grid was streamed by `resolve_scene` above (one-time);
+            // per-edit rebuilds decide streaming from the brick engagement.
+            fog_grid_streamed: true,
             geometry_worker,
             geometry_generation,
             geometry_async_outstanding: false,
@@ -727,6 +782,10 @@ impl WindowedState {
         // chunk set to. `None` covers the whole grid (unused by the live onion path,
         // which always passes a slab, but kept for a would-be whole-grid caller).
         fog_z_slab: Option<FogZSlab>,
+        // ADR 0011 G1: whether `grid` holds streamed occupancy. `false` on the brick
+        // display path (the rebuild skipped the stream); the CPU densify must then be
+        // SKIPPED rather than consume the empty grid (it would silently draw no fog).
+        grid_streamed: bool,
     ) {
         profiling::scope!("fog_upload");
         #[cfg(feature = "gpu")]
@@ -741,7 +800,16 @@ impl WindowedState {
         );
         #[cfg(not(feature = "gpu"))]
         let gpu_fog_installed = false;
-        if !gpu_fog_installed {
+        if !gpu_fog_installed && !grid_streamed {
+            // Brick path engaged but the GPU fog atlas could not install (a compact
+            // set past the atlas budget). Degrade to NO fog this frame — honest and
+            // visible — rather than densifying from an empty grid (invisible fog
+            // with no explanation) or re-streaming the whole region mid-frame.
+            println!(
+                "fog: skipped — occupancy grid not streamed (brick display path) and the \
+                 GPU fog atlas was unavailable"
+            );
+        } else if !gpu_fog_installed {
             // CPU densify fallback (multi-producer, dispatch too large for the GPU, or a
             // default build). Own scope so a Tracy trace separates it from the GPU path
             // — `upload_grid_per_chunk` itself is not annotated, so without this the
@@ -803,6 +871,14 @@ impl WindowedState {
         // GPU cuboid mesh and upload the fog (the camera is NOT touched). A density whose
         // single-chunk voxel capacity exceeds the bound is rejected with the store
         // untouched, so we surface the cap warning and bail.
+        // ADR 0011 G1: the brick display gate — a single ported producer under
+        // `--features gpu`, no loaded VS material. When gated, the fog atlas
+        // GPU-resolves from the producer, so the whole-region fog `VoxelGrid`
+        // stream (ADR 0010's flagged per-edit densify debt) is SKIPPED.
+        let brick_display_gate = cfg!(feature = "gpu")
+            && self.panel_state.scene.single_producer().is_some()
+            && self.loaded_material.is_none();
+        let stream_fog_grid = !brick_display_gate;
         let RebuildOutput {
             grid,
             region_dimensions,
@@ -810,7 +886,10 @@ impl WindowedState {
             recentre_voxels,
             recentre_shift_voxels,
             incremental_dirty_chunks,
-        } = match self.app_core.rebuild(&self.panel_state.scene, density) {
+        } = match self
+            .app_core
+            .rebuild(&self.panel_state.scene, density, stream_fog_grid)
+        {
             RebuildOutcome::DensityRejected {
                 chunk_voxels_millions,
             } => {
@@ -853,6 +932,51 @@ impl WindowedState {
         // incremental edit must NOT inline-patch it (the Frankenstein mesh). `route_geometry_
         // rebuild` sends EVERY edit to a fresh wholesale-async dispatch while outstanding, and
         // resumes the inline fast-paths only once nothing is outstanding.
+        // ADR 0011 G1: refresh the brick field from THIS rebuild's resident chunk
+        // set (the same boundary set the mesher consumes), before the async route
+        // can move `two_layer_chunks`. A gated scene installs/replaces the field
+        // (records + atlas swap, no pipeline work); anything else clears it so the
+        // frame falls back to the mesh path. The G0 build is wholesale per edit —
+        // dirty-brick incremental atlas updates are G3.
+        self.fog_grid_streamed = stream_fog_grid;
+        {
+            #[cfg_attr(not(feature = "gpu"), allow(unused_mut))]
+            let mut brick_field_installed = false;
+            #[cfg(feature = "gpu")]
+            if brick_display_gate {
+                profiling::scope!("brick_field_build");
+                if let Some((material_id, overlay_active)) =
+                    voxel_worker::uniform_render_cell(&two_layer_chunks)
+                {
+                    let build = voxel_worker::build_brick_field(&two_layer_chunks, density);
+                    if !build.brick_records.is_empty() {
+                        let renderer = self.brick_raymarch_renderer.get_or_insert_with(|| {
+                            BrickRaymarchRenderer::new(
+                                &self.gpu.device,
+                                &self.gpu.queue,
+                                COLOR_TARGET_FORMAT,
+                            )
+                        });
+                        renderer.install_brick_field(
+                            &self.gpu.device,
+                            &self.gpu.queue,
+                            &build,
+                            &voxel_worker::pack_gpu_records(&build, |_| false),
+                            recentre_voxels,
+                            material_id,
+                            overlay_active,
+                        );
+                        brick_field_installed = true;
+                    }
+                }
+            }
+            if !brick_field_installed {
+                if let Some(renderer) = &mut self.brick_raymarch_renderer {
+                    renderer.clear_brick_field();
+                }
+            }
+        }
+
         let edit_shape = match &incremental_dirty_chunks {
             Some(_) => EditShape::Incremental,
             None => EditShape::Wholesale {
@@ -983,6 +1107,7 @@ impl WindowedState {
                         &grid,
                         density,
                         Some(slab),
+                        stream_fog_grid,
                     );
                     self.fog_occupancy_dirty = false;
                     self.fog_built_chunk_z_range = Self::fog_covering_chunk_z_range(
@@ -1671,6 +1796,31 @@ impl WindowedState {
             band,
             self.panel_state.debug_face_orientation,
         );
+        // ADR 0011 G1: the brick raymarch takes THIS frame's voxel-model draw when a
+        // field is installed and no mesh-only display mode is active — debug-faces
+        // and a loaded VS material are per-frame toggles that never rebuild geometry,
+        // so the draw decision is per-frame (the field stays installed). Its uniforms
+        // mirror the cuboid upload above (camera, viewport, band, overlay master,
+        // bound material) so the two paths render pixel-comparable.
+        let brick_raymarch_engaged = match &self.brick_raymarch_renderer {
+            Some(renderer)
+                if renderer.has_brick_field()
+                    && !self.panel_state.debug_face_orientation
+                    && self.loaded_material.is_none() =>
+            {
+                renderer.update_uniforms(
+                    &self.gpu.queue,
+                    view_projection,
+                    prepared.viewport_px,
+                    grid_dimensions,
+                    band,
+                    self.panel_state.scene.master_voxel_grid,
+                    bound,
+                );
+                true
+            }
+            _ => false,
+        };
         // Transform gizmo (issue #29 S2): it FOLLOWS the selected node. Size it to
         // the selected node's own extent and bake its recentred pivot into the
         // camera matrix. `None` (nothing selected, or selection has no extent) hides
@@ -1769,6 +1919,7 @@ impl WindowedState {
                             &self.grid,
                             fog_density,
                             Some(slab),
+                            self.fog_grid_streamed,
                         );
                         self.fog_occupancy_dirty = false;
                         self.fog_built_chunk_z_range = needed_chunk_z_range;
@@ -1821,6 +1972,14 @@ impl WindowedState {
                 None
             },
             cuboid_mesh: &self.cuboid_mesh_renderer,
+            // ADR 0011 G1: when engaged (field installed, no mesh-only mode), the
+            // brick raymarch replaces the cuboid-mesh DRAW for this frame; the mesh
+            // stays built as the fallback + A/B reference (ADR 0011 Decision 6).
+            brick_raymarch: if brick_raymarch_engaged {
+                self.brick_raymarch_renderer.as_ref()
+            } else {
+                None
+            },
             target_width: self.surface_config.width,
             target_height: self.surface_config.height,
         };
