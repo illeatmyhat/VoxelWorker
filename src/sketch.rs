@@ -620,13 +620,6 @@ impl SketchSolid {
         grid.dimensions = dimensions;
         grid.occupied.clear();
 
-        // Respect the single-shape voxel cap (same MAX_GRID_VOXELS guard SdfShape /
-        // exceeds_voxel_cap apply): a pathological radius/height resolves to empty
-        // rather than allocating a blown grid. Checked BEFORE iterating.
-        if self.exceeds_voxel_cap() {
-            return;
-        }
-
         let Some((min, _max)) = self.profile_bounds() else {
             // Degenerate (no profile / zero turn / zero radial extent): empty, no panic.
             return;
@@ -693,6 +686,23 @@ impl SketchSolid {
         // historical `0..dimensions[*]` loops exactly.
         let [(win_x_lo, win_x_hi), (win_y_lo, win_y_hi), (win_z_lo, win_z_hi)] =
             crate::voxel::clamp_window_to_grid(window_local_voxels, dimensions);
+
+        // Single-resolve allocation cap ([`MAX_GRID_VOXELS`]) — scoped to the WINDOW,
+        // not the full grid. `resolve_into` only materialises the clamped window, so a
+        // huge full-grid revolve is fine to resolve one small window at a time (the
+        // two-layer/brick path, ADR 0010/0011): a per-chunk window never trips this.
+        // The cap still protects a genuine FULL-window dense resolve (`resolve` /
+        // `resolve_scene`), where the window IS the full grid, from a blown allocation.
+        // The old full-grid `exceeds_voxel_cap()` guard here wrongly returned empty for
+        // EVERY window of a large revolve, so large sketches resolved to nothing on the
+        // windowed display path — the bug this replaces.
+        // `clamp_window_to_grid` guarantees `hi >= lo` per axis, so each span is >= 0.
+        let window_voxel_count = (win_x_hi - win_x_lo) as u64
+            * (win_y_hi - win_y_lo) as u64
+            * (win_z_hi - win_z_lo) as u64;
+        if window_voxel_count > MAX_GRID_VOXELS {
+            return;
+        }
 
         // Iterate every grid cell. The axial axis uses an un-centred profile-space
         // mapping (matching the extrude rasterizer); the radial axes are centred.

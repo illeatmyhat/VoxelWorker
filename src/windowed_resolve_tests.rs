@@ -312,6 +312,63 @@ fn sketch_revolve_windowed_subset_contract() {
     assert_windowed_subset_contract(&partial_inplane1, 16, dim, "revolve-270-inplane1");
 }
 
+/// Regression (large-revolve render bug): a revolve whose FULL grid exceeds
+/// [`MAX_GRID_VOXELS`] must still resolve its per-chunk WINDOWS — the two-layer /
+/// brick display path resolves one small window at a time, so the single-resolve cap
+/// is scoped to the window, not the full grid. Before the fix, `resolve_revolve`
+/// bailed on the full-grid `exceeds_voxel_cap()` guard, so EVERY windowed call
+/// returned empty and any sufficiently large sketch rendered nothing (no mesh, no
+/// bricks, no fog). Here a ~360³ (≈47M-voxel) revolve — well over the 6M cap — must
+/// yield voxels in a small interior window, while a FULL-window resolve still caps
+/// to empty (the dense-path OOM guard is preserved).
+#[test]
+fn large_revolve_resolves_windows_despite_full_grid_cap() {
+    use crate::sketch::{PlaneAxis, RevolveAxis, Sketch, SketchSolid};
+    use crate::voxel::MAX_GRID_VOXELS;
+
+    // A 200×200-VOXEL rectangle revolved 360° → a cylinder, full grid
+    // 200×400×400 ≈ 32M voxels ≫ the 6M cap (rectangle spans are in voxels).
+    let big = SketchSolid::revolve(Sketch::rectangle(PlaneAxis::Z, 200, 200), RevolveAxis::InPlane0, 360);
+    let [full_x, full_y, full_z] = big.grid_dimensions();
+    assert!(
+        big.grid_voxel_count() > MAX_GRID_VOXELS,
+        "test scene must exceed the cap to be meaningful ({} voxels)",
+        big.grid_voxel_count()
+    );
+
+    // A small interior window straddling the disc centre (where the solid is dense):
+    // it MUST contain occupied voxels now (was empty before the fix).
+    let centre = [full_x as i64 / 2, full_y as i64 / 2, full_z as i64 / 2];
+    let window = VoxelAabb::new(
+        [centre[0] - 8, centre[1] - 8, centre[2] - 8],
+        [centre[0] + 8, centre[1] + 8, centre[2] + 8],
+    );
+    let windowed = windowed_resolve(&big, 16, window);
+    assert!(
+        !windowed.occupied.is_empty(),
+        "a small interior window of a large revolve must resolve voxels, not bail on the full-grid cap"
+    );
+    // Every returned voxel lies inside the requested window (the windowing contract).
+    for voxel in &windowed.occupied {
+        assert!(
+            cell_in_window(cell_index_of(voxel), window),
+            "windowed revolve must only write cells inside the window"
+        );
+    }
+
+    // The dense-path OOM guard is preserved: a FULL-window resolve of this
+    // over-cap scene still returns empty rather than allocating ~47M voxels.
+    let full_window = windowed_resolve(
+        &big,
+        16,
+        VoxelAabb::new([0, 0, 0], [full_x as i64, full_y as i64, full_z as i64]),
+    );
+    assert!(
+        full_window.occupied.is_empty(),
+        "a full-window resolve over the cap must still bail (OOM protection)"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // DebugCloudField
 // ---------------------------------------------------------------------------
