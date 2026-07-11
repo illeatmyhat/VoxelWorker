@@ -3095,6 +3095,20 @@ pub enum FogMode {
 /// under this initial size, so the common case never reallocates.
 pub const MAX_FOG_CHUNKS: usize = 1024;
 
+/// Work budget for the brick-sourced onion-fog occupancy fill
+/// ([`build_per_chunk_fog_occupancy_from_bricks`]), in voxel-inserts. That fill is
+/// **O(volume)** — a coarse-solid brick materialises its whole `edge³` interior into a
+/// `HashSet`, with no slab bound (the slab is applied only when bucketing afterwards). A
+/// large solid therefore attempts billions of inserts on the MAIN thread: an 8000×800×800
+/// box is ~5.1 B, freezing the app for minutes (or OOMing). `cecb2bd` retired the old
+/// fog-chunk cap that used to prevent this, so this WORK cap restores the protection: above
+/// it, onion fog disables itself for the build (empty occupancy — nothing hazes) instead of
+/// hanging. `≈ records × edge³` is the loop's exact iteration count, so it is an O(1)
+/// pre-estimate. ~4 M inserts ≈ a ~1 s worst-case fill (measured ~0.5 s at 2 M); a 128³
+/// solid (2.1 M) still builds, a 256³ (16.7 M ≈ 7 s) disables. The real fix — a
+/// block-granular occupancy that never materialises interior voxels — lifts the cap.
+pub const MAX_FOG_OCCUPANCY_INSERTS: u64 = 4_000_000;
+
 /// One resident chunk's apron'd occupancy plus where it lives, in the per-chunk fog
 /// path (issue #28 S5a). The occupancy is stored at `(extent + 2)³` so a **1-voxel
 /// apron** on every face replicates the neighbour occupancy and trilinear sampling
@@ -3383,6 +3397,25 @@ pub fn build_per_chunk_fog_occupancy_from_bricks(
     let chunk_extent = (CHUNK_BLOCKS * build.brick_edge_voxels.max(1)) as i64;
     let [grid_x, grid_y, grid_z] = region_dimensions;
     if grid_x == 0 || grid_y == 0 || grid_z == 0 {
+        return PerChunkFogOccupancy {
+            chunk_extent: chunk_extent as u32,
+            volumes: Vec::new(),
+        };
+    }
+
+    // O(volume) GUARD ([`MAX_FOG_OCCUPANCY_INSERTS`]): the fill below runs an `edge³` triple
+    // loop PER record, so `records × edge³` is its exact iteration count — an O(1) estimate.
+    // Above the budget (a large solid), skip the fill and return an empty occupancy so onion
+    // fog hazes nothing this frame, rather than freezing the main thread for minutes / OOMing
+    // (an 8000×800×800 box is ~5.1 B inserts). Restores the protection `cecb2bd` retired.
+    let estimated_inserts =
+        build.brick_records.len() as u64 * (edge as u64) * (edge as u64) * (edge as u64);
+    if estimated_inserts > MAX_FOG_OCCUPANCY_INSERTS {
+        eprintln!(
+            "fog: onion-skin occupancy skipped — {estimated_inserts} voxel-inserts exceed the \
+             {MAX_FOG_OCCUPANCY_INSERTS} budget (scene too large for the O(volume) fog fill); \
+             narrow the layer band or reduce the scene size"
+        );
         return PerChunkFogOccupancy {
             chunk_extent: chunk_extent as u32,
             volumes: Vec::new(),
@@ -4816,6 +4849,56 @@ mod tests {
         // Exactly one occupied cell in the whole volume.
         let occupied_cells = chunk1.occupancy.iter().filter(|&&b| b == 255).count();
         assert_eq!(occupied_cells, 1, "exactly one apron cell set");
+    }
+
+    /// The O(volume) fog-fill guard ([`MAX_FOG_OCCUPANCY_INSERTS`]): a solid large enough
+    /// that `records × edge³` exceeds the budget SKIPS the fill and returns an empty
+    /// occupancy (onion fog hazes nothing) instead of freezing the main thread — the fix for
+    /// the 8000×800×800 startup hang. A small scene under the budget still fills normally.
+    #[test]
+    fn brick_fog_fill_disables_itself_above_the_volume_budget() {
+        use crate::brick_field::build_brick_field;
+        use crate::core_geom::MaterialChoice;
+        use crate::scene::Scene;
+        use crate::two_layer_store::TwoLayerStore;
+        use crate::voxel::{GeometryParams, ShapeKind};
+
+        let density = 16u32;
+        let edge = density as u64;
+        let fog = |blocks: u32| {
+            let scene = Scene::from_geometry(
+                GeometryParams {
+                    shape: ShapeKind::Box,
+                    size_voxels: [blocks * density, blocks * density, blocks * density],
+                    size_measurements: None,
+                    voxels_per_block: density,
+                    wall_blocks: 1,
+                },
+                MaterialChoice::Stone,
+            );
+            let chunks = TwoLayerStore::enabled().build_covering_chunks(&scene, density, 0);
+            let build = build_brick_field(&chunks, density);
+            let dims = scene.placed_region_dimensions(density);
+            let recentre = scene.recentre_voxels_for_resolve(density);
+            let inserts = build.brick_records.len() as u64 * edge * edge * edge;
+            (inserts, build_per_chunk_fog_occupancy_from_bricks(&build, dims, recentre, None))
+        };
+
+        // 12³-block solid box: 1728 records × 16³ ≈ 7M inserts > the 4M budget → skipped.
+        let (big_inserts, big) = fog(12);
+        assert!(
+            big_inserts > MAX_FOG_OCCUPANCY_INSERTS,
+            "fixture must exceed the budget (got {big_inserts})"
+        );
+        assert!(big.volumes.is_empty(), "onion fog must disable itself for the oversized fill");
+
+        // 3³-block box: 27 records × 4096 ≈ 110k < budget → the fill runs (fog present).
+        let (small_inserts, small) = fog(3);
+        assert!(
+            small_inserts <= MAX_FOG_OCCUPANCY_INSERTS,
+            "control fixture must be under budget (got {small_inserts})"
+        );
+        assert!(!small.volumes.is_empty(), "a small scene still builds fog occupancy");
     }
 
     /// ADR 0011 G5 — the fog occupancy EXACTNESS gate: a per-chunk fog tile filled from the
