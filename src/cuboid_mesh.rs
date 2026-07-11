@@ -32,6 +32,7 @@
 use std::sync::Arc;
 
 use bytemuck::{Pod, Zeroable};
+use rayon::prelude::*;
 use wgpu::util::DeviceExt;
 
 use crate::core_geom::{MaterialChoice, CHUNK_BLOCKS};
@@ -1011,14 +1012,22 @@ fn build_two_layer_chunk_meshes_filtered(
         NeighbourFace::Cells(cells)
     };
 
-    let mut meshes = Vec::new();
-    for (chunk_coord, chunk) in chunks {
+    // Each chunk meshes INDEPENDENTLY: the per-chunk body below writes only its own local
+    // `vertices` / `indices` / `indices_overlay` / `aabb` / `box_count`, reading only shared-
+    // IMMUTABLE state (the `chunk_by_coord` map, the `face_solidity_at` / `face_cells_at` /
+    // `z_in_band` closures, the `only` filter, the band bounds). So the chunk list is meshed in
+    // parallel with rayon. A parallel `.collect()` PRESERVES the source order (issue #57
+    // convention), so the output Vec — hence GPU buffer order and the goldens — is byte-identical
+    // to the former serial loop.
+    let meshes: Vec<CuboidChunkMesh> = chunks
+        .par_iter()
+        .filter_map(|(chunk_coord, chunk)| {
         // Incremental subset (issue #55): skip chunks not in the rebuild set. Seam culling
         // still consults every chunk (the `chunk_by_coord` lookup above is over the FULL set),
         // so a skipped neighbour's face solidity correctly culls the meshed chunk's seam faces.
         if let Some(only) = only {
             if !only.contains(chunk_coord) {
-                continue;
+                return None;
             }
         }
         // The chunk's low voxel corner in the RECENTRED frame (ADR 0008): a chunk-local
@@ -1123,17 +1132,18 @@ fn build_two_layer_chunk_meshes_filtered(
         }
 
         if indices.is_empty() && indices_overlay.is_empty() {
-            continue;
+            return None;
         }
-        meshes.push(CuboidChunkMesh {
+        Some(CuboidChunkMesh {
             coord: *chunk_coord,
             vertices,
             indices,
             indices_overlay,
             aabb,
             box_count,
-        });
-    }
+        })
+        })
+        .collect();
     meshes
 }
 
