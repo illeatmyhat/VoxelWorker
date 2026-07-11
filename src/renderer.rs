@@ -3095,20 +3095,6 @@ pub enum FogMode {
 /// under this initial size, so the common case never reallocates.
 pub const MAX_FOG_CHUNKS: usize = 1024;
 
-/// Work budget for the brick-sourced onion-fog occupancy fill
-/// ([`build_per_chunk_fog_occupancy_from_bricks`]), in voxel-inserts. That fill is
-/// **O(volume)** — a coarse-solid brick materialises its whole `edge³` interior into a
-/// `HashSet`, with no slab bound (the slab is applied only when bucketing afterwards). A
-/// large solid therefore attempts billions of inserts on the MAIN thread: an 8000×800×800
-/// box is ~5.1 B, freezing the app for minutes (or OOMing). `cecb2bd` retired the old
-/// fog-chunk cap that used to prevent this, so this WORK cap restores the protection: above
-/// it, onion fog disables itself for the build (empty occupancy — nothing hazes) instead of
-/// hanging. `≈ records × edge³` is the loop's exact iteration count, so it is an O(1)
-/// pre-estimate. ~4 M inserts ≈ a ~1 s worst-case fill (measured ~0.5 s at 2 M); a 128³
-/// solid (2.1 M) still builds, a 256³ (16.7 M ≈ 7 s) disables. The real fix — a
-/// block-granular occupancy that never materialises interior voxels — lifts the cap.
-pub const MAX_FOG_OCCUPANCY_INSERTS: u64 = 4_000_000;
-
 /// One resident chunk's apron'd occupancy plus where it lives, in the per-chunk fog
 /// path (issue #28 S5a). The occupancy is stored at `(extent + 2)³` so a **1-voxel
 /// apron** on every face replicates the neighbour occupancy and trilinear sampling
@@ -3378,14 +3364,38 @@ fn narrow_chunk_coord_local(value: i64) -> i32 {
 /// care about the display path's material constraint: this fills for EVERY chunkable scene,
 /// including mixed-material-block scenes whose DISPLAY stays on the mesh path.
 ///
-/// **Byte-identical to [`build_per_chunk_fog_occupancy`]** for the same scene: the brick
-/// field is built from the same two-layer boundary set the grid expands from (coarse block →
-/// solid `edge³`, boundary block → its rasterized cuboids; the G0 gate proves the atlas is
-/// byte-identical to the boundary occupancy). This function reconstructs the SAME occupied
-/// grid-index set (absolute voxel − recentre, clipped to `region_dimensions`) and runs the
-/// SAME [`per_chunk_fog_from_occupied_indices`] core — so the chunk set, world_origins,
-/// extent, the +1 APRON (fed from neighbour blocks' records, whether in-chunk or across a
-/// chunk seam) and the band SLAB all mean exactly what the grid densify made them mean.
+/// **O(resident tile bytes), never O(scene volume).** Earlier revisions materialised every
+/// brick voxel into a global `HashSet<[i64;3]>` before bucketing — an `edge³` triple loop
+/// per record, so a large solid attempted billions of hashed inserts on the main thread and
+/// had to be guarded by a hard voxel-insert cap that DISABLED onion fog on any big scene. This
+/// fill writes each record's occupancy DIRECTLY into the covered chunk tiles: a coarse solid
+/// is a row-contiguous memset of its interior box, a sculpted brick a clipped copy of its
+/// atlas tile. There is no intermediate voxel set and no cap — the only work is the resident
+/// tiles' bytes, which the `fog_z_slab` bounds to the covering chunk-Z band. A 256³ solid (or
+/// larger) with a thin band now BUILDS fog in milliseconds instead of self-disabling.
+///
+/// **Byte-identical to [`build_per_chunk_fog_occupancy`]** for the same scene, which is the
+/// acceptance bar (`brick_sourced_fog_matches_cpu_densify_byte_for_byte`). The two paths agree
+/// on the chunk set, its sorted ORDERING, `world_origin`s, `chunk_extent`, and every apron
+/// byte because this fill reproduces the exact residency + scatter semantics of the shared
+/// core [`per_chunk_fog_from_occupied_indices`] (see its doc for the invariants):
+///
+/// * **Absolute frame.** A record's voxel box is `[world_block · edge, world_block · edge +
+///   edge)`; that absolute chunk-lattice index is exactly what `VoxelGrid::voxel_index_of`
+///   returns for an expanded voxel (its centring/recentre terms cancel), so the grid path
+///   buckets on the same index and folds the recentre in ONLY at `world_origin`. Voxels
+///   outside `[0, region_dimensions)` are clipped, exactly as the grid path clips
+///   `grid.occupied`.
+/// * **Owner chunk is exact.** `chunk_extent = CHUNK_BLOCKS · edge` and a record is one
+///   edge-aligned block, so its whole box lands in ONE chunk's interior — the owner
+///   `world_block.div_euclid(CHUNK_BLOCKS)`. A chunk is resident iff some record it owns has
+///   ≥1 in-bounds occupied voxel and its chunk-Z survives the slab (the same criterion the
+///   core applies to `voxel.div_euclid(chunk_extent)`).
+/// * **Apron across seams.** A tile carries a 1-voxel apron replicating neighbour occupancy.
+///   The fill pass visits EVERY record (not just in-slab owners) and writes each into the
+///   owner tile plus any of the ≤26 neighbour tiles whose apron box its voxels touch — so a
+///   record owned by an out-of-slab chunk still feeds an in-slab neighbour's apron across the
+///   chunk-Z seam, matching the core's per-voxel `{owner−1, owner, owner+1}` scatter.
 pub fn build_per_chunk_fog_occupancy_from_bricks(
     build: &crate::brick_field::BrickFieldBuild,
     region_dimensions: [u32; 3],
@@ -3393,96 +3403,241 @@ pub fn build_per_chunk_fog_occupancy_from_bricks(
     fog_z_slab: Option<FogZSlab>,
 ) -> PerChunkFogOccupancy {
     use crate::brick_field::{unpack_world_block_key, BrickPayload};
+    use std::collections::HashMap;
     let edge = build.brick_edge_voxels.max(1) as i64;
+    let blocks_per_chunk = CHUNK_BLOCKS as i64;
     let chunk_extent = (CHUNK_BLOCKS * build.brick_edge_voxels.max(1)) as i64;
-    let [grid_x, grid_y, grid_z] = region_dimensions;
-    if grid_x == 0 || grid_y == 0 || grid_z == 0 {
+    let region = [
+        region_dimensions[0] as i64,
+        region_dimensions[1] as i64,
+        region_dimensions[2] as i64,
+    ];
+    if region[0] == 0 || region[1] == 0 || region[2] == 0 {
         return PerChunkFogOccupancy {
             chunk_extent: chunk_extent as u32,
             volumes: Vec::new(),
         };
     }
 
-    // O(volume) GUARD ([`MAX_FOG_OCCUPANCY_INSERTS`]): the fill below runs an `edge³` triple
-    // loop PER record, so `records × edge³` is its exact iteration count — an O(1) estimate.
-    // Above the budget (a large solid), skip the fill and return an empty occupancy so onion
-    // fog hazes nothing this frame, rather than freezing the main thread for minutes / OOMing
-    // (an 8000×800×800 box is ~5.1 B inserts). Restores the protection `cecb2bd` retired.
-    let estimated_inserts =
-        build.brick_records.len() as u64 * (edge as u64) * (edge as u64) * (edge as u64);
-    if estimated_inserts > MAX_FOG_OCCUPANCY_INSERTS {
-        eprintln!(
-            "fog: onion-skin occupancy skipped — {estimated_inserts} voxel-inserts exceed the \
-             {MAX_FOG_OCCUPANCY_INSERTS} budget (scene too large for the O(volume) fog fill); \
-             narrow the layer band or reduce the scene size"
-        );
-        return PerChunkFogOccupancy {
-            chunk_extent: chunk_extent as u32,
-            volumes: Vec::new(),
-        };
-    }
-
-    // Reconstruct the occupied index set from the boundary records — the SAME set the grid
-    // densify produces, so the shared core yields byte-identical tiles. The index frame is
-    // the ABSOLUTE chunk-lattice voxel `A = world_block · edge + local`: that is exactly what
-    // `VoxelGrid::voxel_index_of` returns for an expanded voxel (its `+0.5` / `−0.5` /
-    // recentre terms cancel to `A`), so the grid path buckets on `A` and folds the recentre
-    // in ONLY at `world_origin` (which the shared core does). A voxel outside `[0, dims)` is
-    // clipped, exactly as `build_per_chunk_fog_occupancy` clips `grid.occupied`. A coarse-
-    // solid record contributes its whole `edge³` (interior fill); a sculpted record only its
-    // occupied atlas voxels (surface); air has no record. Walks the sparse boundary set —
-    // never a dense whole-region grid.
-    use std::collections::HashSet;
-    let mut occupied_voxels: HashSet<[i64; 3]> = HashSet::new();
-    let edge_usize = edge as usize;
-    let push_voxel = |occupied: &mut HashSet<[i64; 3]>, absolute: [i64; 3]| {
-        if absolute[0] < 0
-            || absolute[1] < 0
-            || absolute[2] < 0
-            || absolute[0] >= grid_x as i64
-            || absolute[1] >= grid_y as i64
-            || absolute[2] >= grid_z as i64
-        {
-            return;
-        }
-        occupied.insert(absolute);
-    };
-    for record in &build.brick_records {
-        let world_block = unpack_world_block_key(record.packed_world_block_key);
-        let block_low = [world_block[0] * edge, world_block[1] * edge, world_block[2] * edge];
-        match record.payload {
-            BrickPayload::CoarseSolid { .. } => {
-                for local_z in 0..edge {
-                    for local_y in 0..edge {
-                        for local_x in 0..edge {
-                            push_voxel(
-                                &mut occupied_voxels,
-                                [
-                                    block_low[0] + local_x,
-                                    block_low[1] + local_y,
-                                    block_low[2] + local_z,
-                                ],
-                            );
-                        }
-                    }
-                }
+    // Issue #59: the inclusive chunk-Z window the slab covers, matching the shared core's
+    // filter exactly — `None` = no slab (whole grid), `Some(None)` = empty slab (no chunks),
+    // `Some(Some([min, max]))` = keep chunks whose chunk-Z is in range. The chunk-Z of a
+    // record's owner is compared against this; an out-of-band owner creates NO chunk (but its
+    // records still feed an in-band neighbour's apron below, exactly as the core's scatter
+    // writes any voxel into a resident neighbour regardless of the voxel owner's residency).
+    let slab_chunk_z_range = fog_z_slab.map(|slab| slab.covering_chunk_z_range(chunk_extent as u32));
+    let chunk_z_survives_slab = |chunk_z: i32| -> bool {
+        match slab_chunk_z_range {
+            None => true,
+            Some(None) => false,
+            Some(Some([chunk_z_min, chunk_z_max])) => {
+                chunk_z >= chunk_z_min && chunk_z <= chunk_z_max
             }
+        }
+    };
+
+    // The owning chunk of a record's block, and the block's absolute voxel box clipped to the
+    // region (empty when the record lies wholly outside `region_dimensions`).
+    let record_owner_and_clipped_box = |record: &crate::brick_field::BrickRecord| {
+        let world_block = unpack_world_block_key(record.packed_world_block_key);
+        let owner = [
+            world_block[0].div_euclid(blocks_per_chunk),
+            world_block[1].div_euclid(blocks_per_chunk),
+            world_block[2].div_euclid(blocks_per_chunk),
+        ];
+        let block_low = [world_block[0] * edge, world_block[1] * edge, world_block[2] * edge];
+        let clip_low = [
+            block_low[0].max(0),
+            block_low[1].max(0),
+            block_low[2].max(0),
+        ];
+        let clip_high = [
+            (block_low[0] + edge).min(region[0]),
+            (block_low[1] + edge).min(region[1]),
+            (block_low[2] + edge).min(region[2]),
+        ];
+        (owner, block_low, clip_low, clip_high)
+    };
+
+    // PASS 1 — the resident chunk set. A chunk is resident iff a record it owns has ≥1
+    // in-bounds occupied voxel (coarse ⇒ its clipped box is non-empty; sculpted ⇒ ≥1 nonzero
+    // atlas voxel inside the clip) and its chunk-Z survives the slab. Collected then sorted so
+    // the volume ORDER is byte-identical to the core's `keys.sort_unstable()`.
+    let mut resident_chunks: std::collections::HashSet<[i32; 3]> = std::collections::HashSet::new();
+    let edge_usize = edge as usize;
+    for record in &build.brick_records {
+        let (owner, block_low, clip_low, clip_high) = record_owner_and_clipped_box(record);
+        let owner_coord = [
+            narrow_chunk_coord_local(owner[0]),
+            narrow_chunk_coord_local(owner[1]),
+            narrow_chunk_coord_local(owner[2]),
+        ];
+        if !chunk_z_survives_slab(owner_coord[2]) {
+            continue;
+        }
+        let clipped_box_empty = clip_low[0] >= clip_high[0]
+            || clip_low[1] >= clip_high[1]
+            || clip_low[2] >= clip_high[2];
+        if clipped_box_empty {
+            continue;
+        }
+        let occupied_in_bounds = match record.payload {
+            // A coarse solid fills its whole box, so a non-empty clip is automatically occupied.
+            BrickPayload::CoarseSolid { .. } => true,
+            // A sculpted brick occupies only nonzero atlas voxels; scan the clipped sub-box for
+            // the first, exactly the voxels the grid path would have inserted.
             BrickPayload::Sculpted { atlas_slot } => {
                 let tile = build.sculpted_brick_occupancy(atlas_slot);
-                for local_z in 0..edge_usize {
-                    for local_y in 0..edge_usize {
-                        for local_x in 0..edge_usize {
-                            if tile[(local_z * edge_usize + local_y) * edge_usize + local_x] == 0 {
-                                continue;
+                let mut any = false;
+                'scan: for absolute_z in clip_low[2]..clip_high[2] {
+                    let local_z = (absolute_z - block_low[2]) as usize;
+                    for absolute_y in clip_low[1]..clip_high[1] {
+                        let local_y = (absolute_y - block_low[1]) as usize;
+                        for absolute_x in clip_low[0]..clip_high[0] {
+                            let local_x = (absolute_x - block_low[0]) as usize;
+                            if tile[(local_z * edge_usize + local_y) * edge_usize + local_x] != 0 {
+                                any = true;
+                                break 'scan;
                             }
-                            push_voxel(
-                                &mut occupied_voxels,
-                                [
-                                    block_low[0] + local_x as i64,
-                                    block_low[1] + local_y as i64,
-                                    block_low[2] + local_z as i64,
-                                ],
-                            );
+                        }
+                    }
+                }
+                any
+            }
+        };
+        if occupied_in_bounds {
+            resident_chunks.insert(owner_coord);
+        }
+    }
+
+    let mut chunk_coords: Vec<[i32; 3]> = resident_chunks.into_iter().collect();
+    chunk_coords.sort_unstable();
+    let pad = (chunk_extent + 2) as usize; // apron: local −1 .. extent (inclusive)
+    let pad_i64 = pad as i64;
+    // Allocate the volumes in the sorted order the tile-pack (`upload_grid_per_chunk`) depends
+    // on, with the SAME `world_origin` formula as the shared core: interior origin (voxel
+    // CORNER of local [0,0,0]) is `chunk_coord · extent − recentre` (ADR 0008 carried recentre).
+    let mut volumes: Vec<ChunkFogVolume> = chunk_coords
+        .iter()
+        .map(|&coord| {
+            let chunk_min = [
+                coord[0] as i64 * chunk_extent,
+                coord[1] as i64 * chunk_extent,
+                coord[2] as i64 * chunk_extent,
+            ];
+            ChunkFogVolume {
+                chunk_coord: coord,
+                world_origin: [
+                    chunk_min[0] as f32 - recentre_voxels[0] as f32,
+                    chunk_min[1] as f32 - recentre_voxels[1] as f32,
+                    chunk_min[2] as f32 - recentre_voxels[2] as f32,
+                ],
+                occupancy: vec![0u8; pad * pad * pad],
+            }
+        })
+        .collect();
+    let mut slot_of_coord: HashMap<[i32; 3], usize> = HashMap::with_capacity(chunk_coords.len());
+    for (slot, &coord) in chunk_coords.iter().enumerate() {
+        slot_of_coord.insert(coord, slot);
+    }
+
+    // PASS 2 — write each record directly into the tiles it covers. For a target chunk `C`
+    // with `chunk_min = C · extent`, a voxel `v` writes at apron index `v − chunk_min + 1`
+    // when `v − chunk_min ∈ [−1, extent]`, i.e. `v ∈ [chunk_min − 1, chunk_min + extent]`.
+    // Intersecting the record's clipped box with that apron span per axis gives the exact
+    // sub-box to fill — the owner tile's interior, and the ≤26 neighbours' 1-voxel apron
+    // slabs where the box touches a seam. Candidate chunks per axis are `{owner−1, owner,
+    // owner+1}` (a record is edge-aligned inside one chunk, so no farther neighbour can be
+    // reached), matching the core's per-voxel `axis_candidates`. Only resident chunks are
+    // written, so an apron-only touch never creates a chunk. Every record is visited — an
+    // out-of-slab owner still feeds a resident neighbour's apron across the chunk-Z seam.
+    for record in &build.brick_records {
+        let (owner, block_low, clip_low, clip_high) = record_owner_and_clipped_box(record);
+        if clip_low[0] >= clip_high[0]
+            || clip_low[1] >= clip_high[1]
+            || clip_low[2] >= clip_high[2]
+        {
+            continue;
+        }
+        // Fetch the sculpted tile once per record (shared across its ≤27 candidate chunks).
+        let sculpted_tile = match record.payload {
+            BrickPayload::CoarseSolid { .. } => None,
+            BrickPayload::Sculpted { atlas_slot } => Some(build.sculpted_brick_occupancy(atlas_slot)),
+        };
+        for neighbour_z in -1..=1 {
+            let chunk_z = owner[2] + neighbour_z;
+            let chunk_min_z = chunk_z * chunk_extent;
+            let intersect_low_z = clip_low[2].max(chunk_min_z - 1);
+            let intersect_high_z = clip_high[2].min(chunk_min_z + chunk_extent + 1);
+            if intersect_low_z >= intersect_high_z {
+                continue;
+            }
+            for neighbour_y in -1..=1 {
+                let chunk_y = owner[1] + neighbour_y;
+                let chunk_min_y = chunk_y * chunk_extent;
+                let intersect_low_y = clip_low[1].max(chunk_min_y - 1);
+                let intersect_high_y = clip_high[1].min(chunk_min_y + chunk_extent + 1);
+                if intersect_low_y >= intersect_high_y {
+                    continue;
+                }
+                for neighbour_x in -1..=1 {
+                    let chunk_x = owner[0] + neighbour_x;
+                    let coord = [
+                        narrow_chunk_coord_local(chunk_x),
+                        narrow_chunk_coord_local(chunk_y),
+                        narrow_chunk_coord_local(chunk_z),
+                    ];
+                    let Some(&slot) = slot_of_coord.get(&coord) else {
+                        continue;
+                    };
+                    let chunk_min_x = chunk_x * chunk_extent;
+                    let intersect_low_x = clip_low[0].max(chunk_min_x - 1);
+                    let intersect_high_x = clip_high[0].min(chunk_min_x + chunk_extent + 1);
+                    if intersect_low_x >= intersect_high_x {
+                        continue;
+                    }
+                    let occupancy = &mut volumes[slot].occupancy;
+                    match &sculpted_tile {
+                        // Coarse solid: every voxel in the box is occupied — a row-contiguous
+                        // memset of the intersection at fog value 255 (the core's write value).
+                        None => {
+                            for absolute_z in intersect_low_z..intersect_high_z {
+                                let apron_z = absolute_z - chunk_min_z + 1;
+                                for absolute_y in intersect_low_y..intersect_high_y {
+                                    let apron_y = absolute_y - chunk_min_y + 1;
+                                    let row_base = ((apron_z * pad_i64 + apron_y) * pad_i64) as usize;
+                                    let apron_x_low = (intersect_low_x - chunk_min_x + 1) as usize;
+                                    let apron_x_high = (intersect_high_x - chunk_min_x + 1) as usize;
+                                    occupancy[row_base + apron_x_low..row_base + apron_x_high]
+                                        .fill(255);
+                                }
+                            }
+                        }
+                        // Sculpted brick: copy only the nonzero atlas voxels (as boolean 255),
+                        // clipped to this tile's apron intersection.
+                        Some(tile) => {
+                            for absolute_z in intersect_low_z..intersect_high_z {
+                                let apron_z = absolute_z - chunk_min_z + 1;
+                                let local_z = (absolute_z - block_low[2]) as usize;
+                                for absolute_y in intersect_low_y..intersect_high_y {
+                                    let apron_y = absolute_y - chunk_min_y + 1;
+                                    let local_y = (absolute_y - block_low[1]) as usize;
+                                    for absolute_x in intersect_low_x..intersect_high_x {
+                                        let local_x = (absolute_x - block_low[0]) as usize;
+                                        if tile[(local_z * edge_usize + local_y) * edge_usize
+                                            + local_x]
+                                            == 0
+                                        {
+                                            continue;
+                                        }
+                                        let apron_x = absolute_x - chunk_min_x + 1;
+                                        let flat = ((apron_z * pad_i64 + apron_y) * pad_i64
+                                            + apron_x)
+                                            as usize;
+                                        occupancy[flat] = 255;
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -3490,7 +3645,10 @@ pub fn build_per_chunk_fog_occupancy_from_bricks(
         }
     }
 
-    per_chunk_fog_from_occupied_indices(occupied_voxels, recentre_voxels, chunk_extent, fog_z_slab)
+    PerChunkFogOccupancy {
+        chunk_extent: chunk_extent as u32,
+        volumes,
+    }
 }
 
 /// Tile geometry for [`OnionFogRenderer::install_per_chunk_atlas`] — the atlas the GPU
@@ -4851,54 +5009,149 @@ mod tests {
         assert_eq!(occupied_cells, 1, "exactly one apron cell set");
     }
 
-    /// The O(volume) fog-fill guard ([`MAX_FOG_OCCUPANCY_INSERTS`]): a solid large enough
-    /// that `records × edge³` exceeds the budget SKIPS the fill and returns an empty
-    /// occupancy (onion fog hazes nothing) instead of freezing the main thread — the fix for
-    /// the 8000×800×800 startup hang. A small scene under the budget still fills normally.
+    /// ADR 0011 G5 — the CAP-REMOVAL regression. The old O(volume) fill materialised every
+    /// brick voxel into a `HashSet` and was guarded by a hard 4 M voxel-insert cap: a solid
+    /// big enough to exceed it (a 160³ = 4.1 M-voxel box) returned an EMPTY occupancy and onion
+    /// fog silently disabled itself. The O(tiles) rewrite has no cap — that same big solid now
+    /// BUILDS a correct non-empty occupancy, and on a thin Z-slab it is byte-identical to the
+    /// dense reference (the oracle's cost stays bounded because the slab keeps the compared
+    /// chunk set to a single chunk-Z row). This is the exact scene the cap used to kill.
     #[test]
-    fn brick_fog_fill_disables_itself_above_the_volume_budget() {
+    fn brick_fog_large_solid_builds_without_the_retired_volume_cap() {
         use crate::brick_field::build_brick_field;
         use crate::core_geom::MaterialChoice;
         use crate::scene::Scene;
-        use crate::two_layer_store::TwoLayerStore;
+        use crate::two_layer_store::{expand_resident_chunks_into_grid, TwoLayerChunk, TwoLayerStore};
         use crate::voxel::{GeometryParams, ShapeKind};
 
-        let density = 16u32;
-        let edge = density as u64;
-        let fog = |blocks: u32| {
-            let scene = Scene::from_geometry(
-                GeometryParams {
-                    shape: ShapeKind::Box,
-                    size_voxels: [blocks * density, blocks * density, blocks * density],
-                    size_measurements: None,
-                    voxels_per_block: density,
-                    wall_blocks: 1,
-                },
-                MaterialChoice::Stone,
+        let density = 16u32; // brick edge 16 → chunk_extent 64
+        let blocks = 10u32; // 160³ voxels = 4.1 M > the retired 4 M cap; 3³ = 27 chunks
+        let scene = Scene::from_geometry(
+            GeometryParams {
+                shape: ShapeKind::Box,
+                size_voxels: [blocks * density, blocks * density, blocks * density],
+                size_measurements: None,
+                voxels_per_block: density,
+                wall_blocks: 1,
+            },
+            MaterialChoice::Stone,
+        );
+        let two_layer_chunks = TwoLayerStore::enabled().build_covering_chunks(&scene, density, 0);
+        let build = build_brick_field(&two_layer_chunks, density);
+        let dims = scene.placed_region_dimensions(density);
+        let recentre = scene.recentre_voxels_for_resolve(density);
+
+        // The fixture genuinely exceeds the old cap: ≥ 4 M would-be inserts.
+        let would_be_inserts = build.brick_records.len() as u64 * (density as u64).pow(3);
+        assert!(
+            would_be_inserts > 4_000_000,
+            "fixture must exceed the retired cap (got {would_be_inserts})"
+        );
+
+        // A one-chunk-Z-row middle slab: onion band around the vertical middle, no ghost depth.
+        let grid_z = dims[2];
+        let slab = FogZSlab::for_band(
+            LayerBand { band_min: grid_z / 2, band_max: grid_z / 2, onion_depth: 0 },
+            grid_z,
+        );
+        assert!(slab.is_some(), "a middle band must yield a real (non-full-range) slab");
+
+        let bricks = build_per_chunk_fog_occupancy_from_bricks(&build, dims, recentre, slab);
+        assert!(
+            !bricks.volumes.is_empty(),
+            "the cap is gone: a 4.1 M-voxel solid now BUILDS fog instead of self-disabling"
+        );
+        assert!(
+            bricks.volumes.iter().any(|v| v.occupancy.contains(&255)),
+            "the built tiles are actually occupied"
+        );
+
+        // Byte-parity with the dense reference on the bounded slab.
+        let chunk_refs: Vec<([i32; 3], &TwoLayerChunk)> =
+            two_layer_chunks.iter().map(|(coord, chunk)| (*coord, chunk)).collect();
+        let grid = expand_resident_chunks_into_grid(&chunk_refs, dims, recentre, density);
+        #[allow(deprecated)]
+        let cpu = build_per_chunk_fog_occupancy(&grid, density, slab);
+        assert_eq!(cpu.volumes.len(), bricks.volumes.len(), "same resident fog-chunk count");
+        for (cpu_volume, brick_volume) in cpu.volumes.iter().zip(&bricks.volumes) {
+            assert_eq!(cpu_volume.chunk_coord, brick_volume.chunk_coord, "chunk coord");
+            assert_eq!(cpu_volume.world_origin, brick_volume.world_origin, "world origin");
+            assert_eq!(
+                cpu_volume.occupancy, brick_volume.occupancy,
+                "apron'd tile bytes byte-identical on the bounded slab (chunk {:?})",
+                cpu_volume.chunk_coord
             );
-            let chunks = TwoLayerStore::enabled().build_covering_chunks(&scene, density, 0);
-            let build = build_brick_field(&chunks, density);
-            let dims = scene.placed_region_dimensions(density);
-            let recentre = scene.recentre_voxels_for_resolve(density);
-            let inserts = build.brick_records.len() as u64 * edge * edge * edge;
-            (inserts, build_per_chunk_fog_occupancy_from_bricks(&build, dims, recentre, None))
-        };
+        }
+    }
 
-        // 12³-block solid box: 1728 records × 16³ ≈ 7M inserts > the 4M budget → skipped.
-        let (big_inserts, big) = fog(12);
-        assert!(
-            big_inserts > MAX_FOG_OCCUPANCY_INSERTS,
-            "fixture must exceed the budget (got {big_inserts})"
-        );
-        assert!(big.volumes.is_empty(), "onion fog must disable itself for the oversized fill");
+    /// ADR 0011 G5 — the two paths the OLD `HashSet` fill never separately stressed, all in one
+    /// scene: (a) SCULPTED records straddling the `region_dimensions` clip edge (a sphere with a
+    /// deliberately UNDER-sized region so its far voxels fall outside `[0, dims)`), and (b)
+    /// records just OUTSIDE a thin Z-slab feeding an in-slab chunk's apron ACROSS the chunk-Z
+    /// seam. Both the brick fill and the dense oracle clip to the same `dims` and apply the same
+    /// slab, so byte-parity must hold — this pins that the O(tiles) fill's clip and cross-seam
+    /// apron match the core exactly.
+    #[test]
+    fn brick_fog_sculpted_clip_edge_and_cross_seam_apron_match_oracle() {
+        use crate::brick_field::build_brick_field;
+        use crate::core_geom::MaterialChoice;
+        use crate::scene::{Node, NodeContent, NodeTransform, Scene};
+        use crate::two_layer_store::{expand_resident_chunks_into_grid, TwoLayerChunk, TwoLayerStore};
+        use crate::voxel::{SdfShape, ShapeKind};
 
-        // 3³-block box: 27 records × 4096 ≈ 110k < budget → the fill runs (fog present).
-        let (small_inserts, small) = fog(3);
-        assert!(
-            small_inserts <= MAX_FOG_OCCUPANCY_INSERTS,
-            "control fixture must be under budget (got {small_inserts})"
+        let density = 4u32; // chunk_extent = 16
+        // A sphere spanning several chunks in Z so a thin slab leaves records on both seams.
+        let shape = SdfShape::from_blocks(ShapeKind::Sphere, [10, 6, 10], 1, density);
+        let mut node = Node::new(
+            "sphere".to_string(),
+            NodeContent::Tool { shape, material: MaterialChoice::Stone },
         );
-        assert!(!small.volumes.is_empty(), "a small scene still builds fog occupancy");
+        node.transform = NodeTransform::from_blocks([0, 0, 0], density);
+        let scene = Scene::from_nodes(vec![node]);
+
+        let two_layer_chunks = TwoLayerStore::enabled().build_covering_chunks(&scene, density, 0);
+        let build = build_brick_field(&two_layer_chunks, density);
+        let recentre = scene.recentre_voxels_for_resolve(density);
+        let natural = scene.placed_region_dimensions(density);
+
+        // Under-size the region on X and Z so the sphere's far voxels straddle the clip edge on
+        // BOTH the brick fill and the oracle (which builds its grid at the same reduced dims).
+        let clipped_dims = [
+            natural[0].saturating_sub(density),
+            natural[1],
+            natural[2].saturating_sub(density),
+        ];
+        for &dims in &[natural, clipped_dims] {
+            let grid_z = dims[2];
+            let slab = FogZSlab::for_band(
+                LayerBand {
+                    band_min: grid_z / 2,
+                    band_max: grid_z / 2,
+                    onion_depth: 0,
+                },
+                grid_z,
+            );
+            let chunk_refs: Vec<([i32; 3], &TwoLayerChunk)> =
+                two_layer_chunks.iter().map(|(coord, chunk)| (*coord, chunk)).collect();
+            let grid = expand_resident_chunks_into_grid(&chunk_refs, dims, recentre, density);
+            #[allow(deprecated)]
+            let cpu = build_per_chunk_fog_occupancy(&grid, density, slab);
+            let bricks = build_per_chunk_fog_occupancy_from_bricks(&build, dims, recentre, slab);
+            assert_eq!(
+                cpu.volumes.len(),
+                bricks.volumes.len(),
+                "same resident fog-chunk count (dims {dims:?}, slab {slab:?})"
+            );
+            for (cpu_volume, brick_volume) in cpu.volumes.iter().zip(&bricks.volumes) {
+                assert_eq!(cpu_volume.chunk_coord, brick_volume.chunk_coord, "chunk coord");
+                assert_eq!(cpu_volume.world_origin, brick_volume.world_origin, "world origin");
+                assert_eq!(
+                    cpu_volume.occupancy, brick_volume.occupancy,
+                    "apron'd tile bytes byte-identical (chunk {:?}, dims {dims:?}, slab {slab:?})",
+                    cpu_volume.chunk_coord
+                );
+            }
+        }
     }
 
     /// ADR 0011 G5 — the fog occupancy EXACTNESS gate: a per-chunk fog tile filled from the
