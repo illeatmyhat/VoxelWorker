@@ -3072,6 +3072,61 @@ struct OnionFogUniforms {
 const ONION_FOG_COLOR_HEX: u32 = 0x9c_b4_d8;
 const ONION_FOG_STRENGTH: f32 = 0.10;
 
+/// Byte budget for the per-chunk fog atlas (F-A). The atlas is an R8 3D texture, so one
+/// texel is one byte — this single number bounds BOTH the CPU tile buffer we pack
+/// (`vec![0u8; atlas_dim³]`) AND the equal-sized `write_texture` GPU upload. A build whose
+/// packed atlas would exceed it disables per-chunk fog for that build (empty occupancy +
+/// console notice), exactly as the removed insert/chunk caps degraded — never a partial or
+/// holed render.
+///
+/// Rationale: the surviving guard checks only the atlas DIMENSION against
+/// `max_texture_dimension_3d` (typically 2048), which admits a 2048³ R8 atlas = 8.6 GB — on
+/// a large scene with onion on and a tall slab (~21k tiles ≈ 6 GB) this froze the app then
+/// OOM'd the host / lost the device. 512 MiB caps a single R8 3D atlas at a VRAM-sane size
+/// (≈ atlas_dim ≤ 812) and the equal CPU staging buffer, ~12× below that freeze case, while
+/// still admitting every realistic slab-scoped resident set (ADR 0011 G5 — the record set is
+/// surface-only, so the covering-chunk count the atlas packs stays modest).
+const MAX_FOG_ATLAS_BYTES: usize = 512 * 1024 * 1024;
+
+/// The packed per-chunk fog atlas geometry, or the reason per-chunk fog must disable itself
+/// (F-A). Decided PURELY from the tile count + pad extent + device 3D-texture limit, O(1) and
+/// before any allocation, so both the byte budget and the dimension ceiling are unit-testable
+/// without a GPU device.
+#[derive(Debug, PartialEq, Eq)]
+enum PerChunkAtlasFit {
+    /// The atlas fits: `tiles_per_axis` tiles per axis, cubic side `atlas_dim` texels.
+    Fits { tiles_per_axis: u32, atlas_dim: u32 },
+    /// No chunks (or a zero pad) — nothing to pack.
+    Empty,
+    /// `atlas_dim` exceeds the device `max_texture_dimension_3d`.
+    OverDimension { atlas_dim: u32 },
+    /// The R8 atlas byte count (`atlas_dim³`) exceeds [`MAX_FOG_ATLAS_BYTES`].
+    OverByteBudget { atlas_dim: u32, atlas_bytes: usize },
+}
+
+/// Decide the per-chunk fog atlas geometry for `chunk_count` tiles of pad-extent `pad`, given
+/// the device's `max_grid_dimension` (`max_texture_dimension_3d`). Arranges the tiles into a
+/// cubic-ish slot grid (`ceil(cbrt(count))` per axis) — the atlas side is bounded by the tile
+/// COUNT, not the whole-grid extent, which is why per-chunk dodges the single-3D-texture
+/// limit. Applies BOTH ceilings: the axis limit AND the [`MAX_FOG_ATLAS_BYTES`] byte budget
+/// (the atlas is R8, so `atlas_dim³` is exactly the CPU buffer and GPU upload byte count).
+/// See ADR 0011 G5.
+fn per_chunk_atlas_fit(chunk_count: usize, pad: usize, max_grid_dimension: u32) -> PerChunkAtlasFit {
+    if chunk_count == 0 || pad == 0 {
+        return PerChunkAtlasFit::Empty;
+    }
+    let tiles_per_axis = ((chunk_count as f64).cbrt().ceil() as u32).max(1);
+    let atlas_dim = tiles_per_axis * pad as u32;
+    if atlas_dim > max_grid_dimension {
+        return PerChunkAtlasFit::OverDimension { atlas_dim };
+    }
+    let atlas_bytes = (atlas_dim as usize).pow(3);
+    if atlas_bytes > MAX_FOG_ATLAS_BYTES {
+        return PerChunkAtlasFit::OverByteBudget { atlas_dim, atlas_bytes };
+    }
+    PerChunkAtlasFit::Fits { tiles_per_axis, atlas_dim }
+}
+
 /// Which occupancy source the onion fog raymarches (issue #28 S5a).
 ///
 /// * [`WholeGrid`](FogMode::WholeGrid) (DEFAULT) — the original path: ONE whole-grid
@@ -3201,6 +3256,42 @@ pub fn build_per_chunk_fog_occupancy(
     )
 }
 
+/// Whether a chunk at chunk-Z `chunk_z` survives the onion-fog slab window (issue #59).
+/// `slab_chunk_z_range` is the tri-state `covering_chunk_z_range` result: `None` = no slab
+/// (whole grid, keep all), `Some(None)` = empty slab (drop all), `Some(Some([min, max]))` =
+/// keep chunk-Zs in `[min, max]`. Shared by the grid densify core
+/// ([`per_chunk_fog_from_occupied_indices`]) and the brick-sourced fill
+/// ([`build_per_chunk_fog_occupancy_from_bricks`]) so both apply byte-identical slab semantics
+/// rather than hand-kept duplicates (ADR 0011 G5).
+fn chunk_z_survives_fog_slab(slab_chunk_z_range: Option<Option<[i32; 2]>>, chunk_z: i32) -> bool {
+    match slab_chunk_z_range {
+        None => true,
+        Some(None) => false,
+        Some(Some([chunk_z_min, chunk_z_max])) => chunk_z >= chunk_z_min && chunk_z <= chunk_z_max,
+    }
+}
+
+/// The recentred-world CORNER of a chunk's local `[0,0,0]` voxel: `chunk_coord · extent −
+/// recentre` (ADR 0008 carried recentre). Kept as `chunk_min as f32 − recentre as f32` (two
+/// f32 casts, then subtract) so both fog paths emit the byte-identical
+/// [`ChunkFogVolume::world_origin`] the fog raymarch keys on.
+fn chunk_fog_world_origin(
+    chunk_coord: [i32; 3],
+    chunk_extent: i64,
+    recentre_voxels: [i64; 3],
+) -> [f32; 3] {
+    let chunk_min = [
+        chunk_coord[0] as i64 * chunk_extent,
+        chunk_coord[1] as i64 * chunk_extent,
+        chunk_coord[2] as i64 * chunk_extent,
+    ];
+    [
+        chunk_min[0] as f32 - recentre_voxels[0] as f32,
+        chunk_min[1] as f32 - recentre_voxels[1] as f32,
+        chunk_min[2] as f32 - recentre_voxels[2] as f32,
+    ]
+}
+
 /// Bucket a set of occupied GRID-INDEX voxels (recentred-frame integer indices, already
 /// clipped to the grid box) into apron'd per-chunk fog volumes — the shared core of the
 /// grid densify ([`build_per_chunk_fog_occupancy`]) and the brick-sourced fill
@@ -3233,19 +3324,11 @@ fn per_chunk_fog_from_occupied_indices(
             narrow_chunk_coord_local(j.div_euclid(chunk_extent)),
             narrow_chunk_coord_local(k.div_euclid(chunk_extent)),
         ];
-        // Issue #59: skip chunks whose chunk-Z is outside the onion-fog slab (Z-up:
-        // index 2). `Some(None)` means the slab covers zero chunks → every chunk is
-        // dropped; `None` (no slab) keeps the whole grid. The scatter below only writes
-        // into chunks that survive here, so a dropped chunk is never allocated or filled.
-        if let Some(range) = slab_chunk_z_range {
-            match range {
-                Some([chunk_z_min, chunk_z_max]) => {
-                    if coord[2] < chunk_z_min || coord[2] > chunk_z_max {
-                        continue;
-                    }
-                }
-                None => continue,
-            }
+        // Issue #59: skip chunks whose chunk-Z is outside the onion-fog slab (Z-up: index 2).
+        // The scatter below only writes into chunks that survive here, so a dropped chunk is
+        // never allocated or filled. Shared tri-state semantics with the brick fill.
+        if !chunk_z_survives_fog_slab(slab_chunk_z_range, coord[2]) {
+            continue;
         }
         let next_index = chunk_index_by_coord.len();
         chunk_index_by_coord.entry(coord).or_insert(next_index);
@@ -3265,22 +3348,13 @@ fn per_chunk_fog_from_occupied_indices(
     let mut volumes: Vec<ChunkFogVolume> = keys
         .iter()
         .map(|&coord| {
-            let chunk_min = [
-                coord[0] as i64 * chunk_extent,
-                coord[1] as i64 * chunk_extent,
-                coord[2] as i64 * chunk_extent,
-            ];
             ChunkFogVolume {
                 chunk_coord: coord,
                 // Interior origin (voxel CORNER of local [0,0,0]) in recentred world space:
-                // `chunk_min − recentre` (ADR 0008 — the grid's CARRIED recentre, was a
-                // hard-coded `floor(dim/2)`). For a centred Tool this equals the historical
-                // value; for a corner-anchored cloud (`recentre = 0`) it is `chunk_min`.
-                world_origin: [
-                    chunk_min[0] as f32 - recentre_voxels[0] as f32,
-                    chunk_min[1] as f32 - recentre_voxels[1] as f32,
-                    chunk_min[2] as f32 - recentre_voxels[2] as f32,
-                ],
+                // `chunk_min − recentre` (ADR 0008 carried recentre). For a centred Tool this
+                // equals the historical value; for a corner-anchored cloud (`recentre = 0`) it
+                // is `chunk_min`. Shared formula with the brick fill.
+                world_origin: chunk_fog_world_origin(coord, chunk_extent, recentre_voxels),
                 occupancy: vec![0u8; pad * pad * pad],
             }
         })
@@ -3439,15 +3513,8 @@ pub fn build_per_chunk_fog_occupancy_from_bricks(
     // records still feed an in-band neighbour's apron below, exactly as the core's scatter
     // writes any voxel into a resident neighbour regardless of the voxel owner's residency).
     let slab_chunk_z_range = fog_z_slab.map(|slab| slab.covering_chunk_z_range(chunk_extent as u32));
-    let chunk_z_survives_slab = |chunk_z: i32| -> bool {
-        match slab_chunk_z_range {
-            None => true,
-            Some(None) => false,
-            Some(Some([chunk_z_min, chunk_z_max])) => {
-                chunk_z >= chunk_z_min && chunk_z <= chunk_z_max
-            }
-        }
-    };
+    let chunk_z_survives_slab =
+        |chunk_z: i32| -> bool { chunk_z_survives_fog_slab(slab_chunk_z_range, chunk_z) };
 
     // The owning chunk of a record's block, and the block's absolute voxel box clipped to the
     // region (empty when the record lies wholly outside `region_dimensions`).
@@ -3610,21 +3677,11 @@ pub fn build_per_chunk_fog_occupancy_from_bricks(
     // CORNER of local [0,0,0]) is `chunk_coord · extent − recentre` (ADR 0008 carried recentre).
     let mut volumes: Vec<ChunkFogVolume> = chunk_coords
         .iter()
-        .map(|&coord| {
-            let chunk_min = [
-                coord[0] as i64 * chunk_extent,
-                coord[1] as i64 * chunk_extent,
-                coord[2] as i64 * chunk_extent,
-            ];
-            ChunkFogVolume {
-                chunk_coord: coord,
-                world_origin: [
-                    chunk_min[0] as f32 - recentre_voxels[0] as f32,
-                    chunk_min[1] as f32 - recentre_voxels[1] as f32,
-                    chunk_min[2] as f32 - recentre_voxels[2] as f32,
-                ],
-                occupancy: vec![0u8; pad * pad * pad],
-            }
+        .map(|&coord| ChunkFogVolume {
+            chunk_coord: coord,
+            // Shared formula with the grid densify core (ADR 0008 carried recentre).
+            world_origin: chunk_fog_world_origin(coord, chunk_extent, recentre_voxels),
+            occupancy: vec![0u8; pad * pad * pad],
         })
         .collect();
     let mut slot_of_coord: HashMap<[i32; 3], usize> = HashMap::with_capacity(chunk_coords.len());
@@ -3709,6 +3766,18 @@ pub fn build_per_chunk_fog_occupancy_from_bricks(
             || clip_low[1] >= clip_high[1]
             || clip_low[2] >= clip_high[2]
         {
+            continue;
+        }
+        // Cleanup (issue #59): skip records that can reach NO in-slab chunk. A record writes
+        // only into its owner chunk and the ±1 chunk-Z neighbours (the loop below), and every
+        // resident chunk survives the slab (pass 1). So if none of the owner's three candidate
+        // chunk-Zs survive, every write below would miss `slot_of_coord` — skip the tile fetch
+        // + 27-candidate scan entirely. Byte-identical: only guaranteed no-op work is skipped,
+        // and the candidate chunk-Zs are computed exactly as the loop does.
+        let reaches_slab = (-1..=1).any(|neighbour_z| {
+            chunk_z_survives_slab(narrow_chunk_coord_local(owner[2] + neighbour_z))
+        });
+        if !reaches_slab {
             continue;
         }
         // Fetch the sculpted tile once per record (shared across its ≤27 candidate chunks).
@@ -4282,27 +4351,40 @@ impl OnionFogRenderer {
     ) {
         let pad = occupancy.chunk_extent as usize + 2;
         let chunk_count = occupancy.volumes.len();
-        if chunk_count == 0 || pad == 0 {
-            self.per_chunk_active = false;
-            self.mode = FogMode::PerChunk;
-            return;
-        }
-
-        // Arrange the resident chunk tiles into a cubic-ish 3D tile grid, so the atlas
-        // dimension per axis (`tiles_per_axis * pad`) stays small — bounded by the chunk
-        // COUNT, not the whole-grid extent. This is the core of why per-chunk dodges the
-        // single-3D-texture limit.
-        let tiles_per_axis = (chunk_count as f64).cbrt().ceil() as u32;
-        let tiles_per_axis = tiles_per_axis.max(1);
-        let atlas_dim = tiles_per_axis * pad as u32;
-        if atlas_dim > self.max_grid_dimension {
-            // The active region has too many chunks for the atlas to fit the 3D limit;
-            // fall back to disabled fog rather than failing. (S5b's region scoping keeps
-            // the resident set small; a region this large is out of S5a scope.)
-            self.per_chunk_active = false;
-            self.mode = FogMode::PerChunk;
-            return;
-        }
+        // Decide the atlas geometry + both ceilings (dimension AND the F-A byte budget) purely,
+        // before any allocation. An over-limit build disables per-chunk fog gracefully (empty
+        // occupancy + notice), exactly as the removed insert/chunk caps degraded — never a
+        // partial or holed render.
+        let (tiles_per_axis, atlas_dim) =
+            match per_chunk_atlas_fit(chunk_count, pad, self.max_grid_dimension) {
+                PerChunkAtlasFit::Fits { tiles_per_axis, atlas_dim } => (tiles_per_axis, atlas_dim),
+                PerChunkAtlasFit::Empty => {
+                    self.per_chunk_active = false;
+                    self.mode = FogMode::PerChunk;
+                    return;
+                }
+                PerChunkAtlasFit::OverDimension { .. } => {
+                    // Too many chunks for the atlas to fit the 3D-texture limit. (S5b's region
+                    // scoping keeps the resident set small; a region this large is out of scope.)
+                    self.per_chunk_active = false;
+                    self.mode = FogMode::PerChunk;
+                    return;
+                }
+                PerChunkAtlasFit::OverByteBudget { atlas_dim, atlas_bytes } => {
+                    // F-A: the dimension guard alone admits an atlas up to ~8.6 GB; the byte
+                    // budget (`MAX_FOG_ATLAS_BYTES`) is the real ceiling on the CPU buffer + GPU
+                    // upload. Disable rather than freeze/OOM on a huge slab-scoped set.
+                    println!(
+                        "fog: per-chunk disabled — {chunk_count} chunks would pack a \
+                         {atlas_dim}³ R8 atlas ({} MiB) over the {} MiB budget",
+                        atlas_bytes / (1024 * 1024),
+                        MAX_FOG_ATLAS_BYTES / (1024 * 1024),
+                    );
+                    self.per_chunk_active = false;
+                    self.mode = FogMode::PerChunk;
+                    return;
+                }
+            };
 
         // Pack every chunk's apron'd occupancy into the atlas at its tile slot, and
         // record each chunk's world origin + linear tile index in the metadata.
@@ -4727,6 +4809,47 @@ mod tests {
         );
         // An empty apron cell stays 0 (e.g. -1 in X, outside everything).
         assert_eq!(apron_at(chunk0, extent, [-1, 0, 0]), 0, "empty apron stays empty");
+    }
+
+    // ===== F-A: per-chunk fog atlas BYTE budget =================================
+
+    /// An in-budget resident set packs a `Fits` atlas, while a set whose R8 atlas would
+    /// exceed [`MAX_FOG_ATLAS_BYTES`] (yet still fit the 3D-texture DIMENSION) reports
+    /// `OverByteBudget` — the F-A regression: the old dimension-only guard let a ~8.6 GB
+    /// atlas through and froze/OOM'd the app.
+    #[test]
+    fn per_chunk_atlas_byte_budget_disables_over_budget_and_admits_in_budget() {
+        let max_grid_dimension = 2048; // a typical `max_texture_dimension_3d`
+
+        // In-budget: 100 chunks, pad 10 → ceil(cbrt(100))=5 tiles/axis → 50³ atlas = 125 KB.
+        let fit = per_chunk_atlas_fit(100, 10, max_grid_dimension);
+        assert_eq!(
+            fit,
+            PerChunkAtlasFit::Fits { tiles_per_axis: 5, atlas_dim: 50 },
+            "a small resident set fits the atlas budget"
+        );
+
+        // Over the BYTE budget but UNDER the dimension limit: 729000 chunks, pad 10 →
+        // cbrt = 90 tiles/axis → 900³ R8 atlas = 695 MiB > 512 MiB, and 900 < 2048.
+        let atlas_dim = 900u32;
+        let atlas_bytes = (atlas_dim as usize).pow(3);
+        assert!(atlas_bytes > MAX_FOG_ATLAS_BYTES, "test setup: over the byte budget");
+        assert!(atlas_dim < max_grid_dimension, "test setup: under the dimension limit");
+        assert_eq!(
+            per_chunk_atlas_fit(90 * 90 * 90, 10, max_grid_dimension),
+            PerChunkAtlasFit::OverByteBudget { atlas_dim, atlas_bytes },
+            "an over-budget set disables per-chunk fog (was admitted by the dimension-only guard)"
+        );
+
+        // The dimension limit still takes precedence when BOTH are exceeded.
+        assert_eq!(
+            per_chunk_atlas_fit(90 * 90 * 90, 10, 256),
+            PerChunkAtlasFit::OverDimension { atlas_dim: 900 },
+            "the 3D-texture dimension ceiling is checked before the byte budget"
+        );
+
+        // Empty input is its own graceful no-op (not a budget rejection).
+        assert_eq!(per_chunk_atlas_fit(0, 10, max_grid_dimension), PerChunkAtlasFit::Empty);
     }
 
     // ===== Issue #59: onion-fog Z-slab scoping ==================================

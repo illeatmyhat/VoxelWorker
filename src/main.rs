@@ -441,6 +441,30 @@ impl WindowedState {
             .build_covering_chunks(&panel_state.scene, startup_density, 0);
         let startup_recentre =
             panel_state.scene.recentre_voxels_for_resolve(startup_density);
+        // F-B (ADR 0011 G5): seed the onion-fog brick source at startup for ANY chunkable
+        // scene, on ANY build — feature-gpu or not, display-representable or not. The fog
+        // reconstructs its per-chunk occupancy from (surface records + covering chunks); the
+        // record set is SURFACE-ONLY (interior elision, ADR 0011 G5), so this startup build is
+        // cheap (∝surface, not ∝volume). Without it, a chunkable scene opened WITH onion-skin
+        // on rendered NO fog until the first edit: the startup `build_fog_occupancy` ran against
+        // a `None` source, hit the chunkable "no brick fog source → skip" guard, yet cleared
+        // `fog_occupancy_dirty`. Seeding here restores fog on the first frame (pre-session
+        // behavior). Reused by the gpu display block below so the field is built only once.
+        let startup_fog_brick_field: Option<FogBrickSource> =
+            if panel_state.scene.has_chunkable_extent(startup_density) {
+                let build =
+                    voxel_worker::build_brick_field(&startup_two_layer_chunks, startup_density);
+                if build.brick_records.is_empty() {
+                    None
+                } else {
+                    Some(FogBrickSource {
+                        build,
+                        two_layer_chunks: startup_two_layer_chunks.clone(),
+                    })
+                }
+            } else {
+                None
+            };
         // ADR 0011 G2: engage the brick raymarch from the FIRST frame when the startup
         // scene is brick-representable (`--features gpu`, a chunkable procedural scene
         // whose every rendered block is single-material — per-record ids carry per-block
@@ -456,37 +480,38 @@ impl WindowedState {
         #[cfg_attr(not(feature = "gpu"), allow(unused_mut))]
         let mut incremental_brick_field: Option<voxel_worker::IncrementalBrickField> = None;
         #[cfg(feature = "gpu")]
-        if panel_state.scene.has_chunkable_extent(startup_density) {
+        if let Some(fog_source) = startup_fog_brick_field.as_ref() {
+            // `Some` ⇒ chunkable AND a non-empty surface record set — reuse that build for the
+            // display raymarch (no second `build_brick_field`). Display still requires the scene
+            // be brick-REPRESENTABLE (single-material blocks + one overlay); a mixed-material
+            // scene keeps the mesh display but still fog-sources from `startup_fog_brick_field`.
             if let Some(overlay_active) =
                 voxel_worker::brick_representable_overlay(&startup_two_layer_chunks)
             {
-                let build =
-                    voxel_worker::build_brick_field(&startup_two_layer_chunks, startup_density);
-                if !build.brick_records.is_empty() {
-                    let mut renderer =
-                        BrickRaymarchRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
-                    let pyramid =
-                        voxel_worker::ClipmapPyramid::from_chunks(&startup_two_layer_chunks);
-                    renderer.install_brick_field(
-                        &gpu.device,
-                        &gpu.queue,
-                        &build,
-                        // The record set is surface-only by construction (ADR 0011 interior
-                        // elision fused into `build_brick_field`) — a plain 1:1 pack.
-                        &voxel_worker::pack_gpu_records(&build, |_| false),
-                        &pyramid,
-                        startup_recentre,
-                        overlay_active,
-                    );
-                    println!(
-                        "brick raymarch: startup field installed ({} records, {} sculpted)",
-                        build.brick_records.len(),
-                        build.sculpted_brick_count(),
-                    );
-                    incremental_brick_field =
-                        Some(voxel_worker::IncrementalBrickField::from_wholesale(&build));
-                    brick_raymarch_renderer = Some(renderer);
-                }
+                let build = &fog_source.build;
+                let mut renderer =
+                    BrickRaymarchRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
+                let pyramid =
+                    voxel_worker::ClipmapPyramid::from_chunks(&startup_two_layer_chunks);
+                renderer.install_brick_field(
+                    &gpu.device,
+                    &gpu.queue,
+                    build,
+                    // The record set is surface-only by construction (ADR 0011 interior
+                    // elision fused into `build_brick_field`) — a plain 1:1 pack.
+                    &voxel_worker::pack_gpu_records(build, |_| false),
+                    &pyramid,
+                    startup_recentre,
+                    overlay_active,
+                );
+                println!(
+                    "brick raymarch: startup field installed ({} records, {} sculpted)",
+                    build.brick_records.len(),
+                    build.sculpted_brick_count(),
+                );
+                incremental_brick_field =
+                    Some(voxel_worker::IncrementalBrickField::from_wholesale(build));
+                brick_raymarch_renderer = Some(renderer);
             }
         }
         // ADR 0010 E5: the cuboid mesh is the fallback voxel render path AND it meshes THROUGH
@@ -579,11 +604,12 @@ impl WindowedState {
                         startup_recentre,
                         startup_density,
                         Some(slab),
-                        // ADR 0011 G5: no brick fog source seeded yet at startup — the first
-                        // rebuild wires it. A chunkable scene has no fog source THIS one frame
-                        // (fog appears after the first rebuild); a single-producer scene still
-                        // resolves its GPU atlas inside `build_fog_occupancy`.
-                        None,
+                        // F-B: the startup fog source, seeded above for any chunkable scene, so
+                        // the fog fills on the FIRST frame (was `None` → the chunkable-skip guard
+                        // left the scene fog-less until the first edit). A non-chunkable
+                        // Part-only scene is `None` here and takes the transient densify /
+                        // single-producer GPU atlas paths inside `build_fog_occupancy`.
+                        startup_fog_brick_field.as_ref(),
                     );
                     fog_occupancy_dirty = false;
                     fog_built_chunk_z_range = Self::fog_covering_chunk_z_range(
@@ -663,8 +689,9 @@ impl WindowedState {
             brick_display_pending_clear: false,
             brick_raymarch_renderer,
             incremental_brick_field,
-            // ADR 0011 G5: seeded on the first rebuild — the fog reconstructs from it thereafter.
-            fog_brick_field: None,
+            // F-B (ADR 0011 G5): seeded at startup for any chunkable scene (above), refreshed on
+            // every rebuild — the fog reconstructs from it from the first frame onward.
+            fog_brick_field: startup_fog_brick_field,
             brick_fallback_reported: false,
             geometry_worker,
             geometry_generation,
