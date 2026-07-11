@@ -3087,11 +3087,12 @@ pub enum FogMode {
     PerChunk,
 }
 
-/// Cap on the number of resident chunk volumes the per-chunk fog tracks in one frame
-/// (issue #28 S5a). Each chunk contributes a `[u32; 4]` record to the metadata uniform
-/// (1024 × 16 B = 16 KiB, well under the 64 KiB uniform limit) and one apron'd tile in
-/// the atlas. A region scene stays far under this; the scrubber region-scoping (S5b)
-/// keeps it that way once the default flips.
+/// Initial capacity (in chunk records) of the per-chunk fog records STORAGE buffer
+/// (issue #28 S5a). This is no longer a hard cap: the records buffer grows on demand,
+/// so the resident chunk count is bounded only by the atlas 3D-texture dimension
+/// (guarded in `upload_per_chunk_occupancy`), not by the old 1024-entry uniform array
+/// (16 KiB; 4096 would have hit the 64 KiB uniform limit). A region scene stays far
+/// under this initial size, so the common case never reallocates.
 pub const MAX_FOG_CHUNKS: usize = 1024;
 
 /// One resident chunk's apron'd occupancy plus where it lives, in the per-chunk fog
@@ -3252,26 +3253,11 @@ fn per_chunk_fog_from_occupied_indices(
     let mut keys: Vec<[i32; 3]> = chunk_index_by_coord.keys().copied().collect();
     keys.sort_unstable();
     // Too many resident non-empty chunks for the per-chunk atlas to hold. Degrade
-    // gracefully and CONSISTENTLY with `upload_grid_per_chunk`'s other overflow branch
-    // (atlas-dimension-exceeded): return NO volumes so the upload takes its existing
-    // `chunk_count == 0` disable path (per_chunk_active = false) → the region shows NO
-    // fog (honest) rather than fog-with-holes (wrong: a previous `keys.truncate` dropped
-    // the overflow chunks, whose raymarch occupancy then read 0 → silent fog holes).
-    // The proper long-term fix (region-scope the fog to resident/visible chunks so the
-    // resident set stays small) is tracked in #20 step 4.
-    if keys.len() > MAX_FOG_CHUNKS {
-        eprintln!(
-            "per-chunk fog: {} non-empty chunks exceeds MAX_FOG_CHUNKS ({}); disabling \
-             per-chunk fog for this build (no fog) rather than rendering with holes",
-            keys.len(),
-            MAX_FOG_CHUNKS,
-        );
-        return PerChunkFogOccupancy {
-            chunk_extent: chunk_extent as u32,
-            volumes: Vec::new(),
-        };
-    }
-
+    // The resident chunk count is no longer capped here (the records now live in a
+    // growable storage buffer, not a fixed 1024-entry uniform array). The remaining
+    // ceiling — the atlas 3D-texture dimension — is enforced in
+    // `upload_per_chunk_occupancy`, which disables the fog gracefully (no holes) if the
+    // packed atlas would exceed the device's max 3D-texture size.
     let pad = (chunk_extent + 2) as usize; // apron: -1 .. extent (inclusive)
     // Allocate every chunk volume up front, in the SAME sorted order the gather used (the
     // tile-pack order in `upload_grid_per_chunk` depends on this ordering). Map each chunk
@@ -3514,8 +3500,15 @@ pub struct OnionFogRenderer {
     per_chunk_bind_group_layout: wgpu::BindGroupLayout,
     /// The packed apron'd per-chunk occupancy atlas (one tile per resident chunk).
     per_chunk_atlas_view: wgpu::TextureView,
-    /// Per-chunk metadata uniform (atlas tiling + per-chunk world origin / tile coord).
+    /// Per-chunk metadata uniform HEADER (atlas tiling only; records are separate).
     per_chunk_meta_buffer: wgpu::Buffer,
+    /// Per-chunk records STORAGE buffer: one `[f32; 4]` (`[world_origin.xyz,
+    /// tile_index]`) per resident chunk. Runtime-sized (grown on demand), replacing
+    /// the old fixed 1024-entry uniform array so the fog-chunk count is uncapped.
+    per_chunk_records_buffer: wgpu::Buffer,
+    /// Current capacity (in records) of `per_chunk_records_buffer`; grown when a build
+    /// needs more resident chunks than fit.
+    per_chunk_records_capacity: usize,
     /// Whether the last per-chunk upload produced a renderable atlas.
     per_chunk_active: bool,
 }
@@ -3524,10 +3517,16 @@ pub struct OnionFogRenderer {
 /// each sample point computes the chunk coord, looks up that chunk's atlas tile from
 /// `chunks[]`, and samples the apron'd tile. Field order matches the WGSL
 /// `PerChunkMeta` struct exactly.
+/// The per-chunk fog metadata HEADER (uniform). The per-chunk records — one
+/// `[world_origin.xyz, tile_index]` per resident chunk — used to live here as a
+/// fixed `[[f32; 4]; MAX_FOG_CHUNKS]` array, which capped a scene at 1024 non-empty
+/// fog chunks (16 KiB; 4096 would hit the 64 KiB uniform limit). They now live in a
+/// runtime-sized STORAGE buffer (`per_chunk_records_buffer`), so the real ceiling is
+/// the atlas 3D-texture dimension (guarded in `upload_per_chunk_occupancy`).
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
 struct PerChunkFogMeta {
-    /// Number of resident chunk records in `chunks` (≤ [`MAX_FOG_CHUNKS`]).
+    /// Number of resident chunk records in the records storage buffer.
     chunk_count: u32,
     /// Voxel extent of one chunk per axis (`CHUNK_BLOCKS * voxels_per_block`).
     chunk_extent: f32,
@@ -3540,11 +3539,6 @@ struct PerChunkFogMeta {
     _pad0: f32,
     _pad1: f32,
     _pad2: f32,
-    /// One record per resident chunk: `[world_origin.xyz, packed_tile_index]`. The
-    /// world origin is the chunk's interior `[0,0,0]` voxel CORNER in recentred world
-    /// space; `packed_tile_index` is the linear atlas tile index (decode to a 3D tile
-    /// coord in the shader). Unused entries are zeroed.
-    chunks: [[f32; 4]; MAX_FOG_CHUNKS],
 }
 
 impl OnionFogRenderer {
@@ -3725,12 +3719,23 @@ impl OnionFogRenderer {
                         },
                         count: None,
                     },
-                    // 4: per-chunk metadata uniform (atlas tiling + chunk records).
+                    // 4: per-chunk metadata uniform HEADER (atlas tiling).
                     wgpu::BindGroupLayoutEntry {
                         binding: 4,
                         visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
+                    // 5: per-chunk records storage buffer (runtime-sized; uncapped).
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 5,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
                             has_dynamic_offset: false,
                             min_binding_size: None,
                         },
@@ -3789,6 +3794,14 @@ impl OnionFogRenderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        // Records storage buffer: one [f32; 4] per resident chunk, grown on demand.
+        let per_chunk_records_capacity = MAX_FOG_CHUNKS;
+        let per_chunk_records_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("onion fog per-chunk records"),
+            size: (per_chunk_records_capacity * std::mem::size_of::<[f32; 4]>()) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
 
         Self {
             pipeline,
@@ -3803,8 +3816,27 @@ impl OnionFogRenderer {
             per_chunk_bind_group_layout,
             per_chunk_atlas_view,
             per_chunk_meta_buffer,
+            per_chunk_records_buffer,
+            per_chunk_records_capacity,
             per_chunk_active: false,
         }
+    }
+
+    /// Ensure `per_chunk_records_buffer` holds at least `needed` records, recreating it
+    /// (doubling growth) when it does not. The per-frame bind group always binds the
+    /// current buffer, so a swap here needs no other bookkeeping.
+    fn ensure_records_capacity(&mut self, device: &wgpu::Device, needed: usize) {
+        if needed <= self.per_chunk_records_capacity {
+            return;
+        }
+        let new_capacity = needed.next_power_of_two().max(self.per_chunk_records_capacity * 2);
+        self.per_chunk_records_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("onion fog per-chunk records"),
+            size: (new_capacity * std::mem::size_of::<[f32; 4]>()) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.per_chunk_records_capacity = new_capacity;
     }
 
     /// Upload the resolved voxel grid as a 3D occupancy texture (the cloud density
@@ -3959,7 +3991,7 @@ impl OnionFogRenderer {
         // record each chunk's world origin + linear tile index in the metadata.
         let atlas_texels = (atlas_dim as usize).pow(3);
         let mut atlas = vec![0u8; atlas_texels];
-        let mut meta = PerChunkFogMeta {
+        let meta = PerChunkFogMeta {
             chunk_count: chunk_count as u32,
             chunk_extent: occupancy.chunk_extent as f32,
             pad_extent: pad as f32,
@@ -3968,8 +4000,8 @@ impl OnionFogRenderer {
             _pad0: 0.0,
             _pad1: 0.0,
             _pad2: 0.0,
-            chunks: [[0.0; 4]; MAX_FOG_CHUNKS],
         };
+        let mut records: Vec<[f32; 4]> = Vec::with_capacity(chunk_count);
         for (tile_index, volume) in occupancy.volumes.iter().enumerate() {
             // Linear tile index → 3D tile coord in the atlas.
             let tx = (tile_index as u32) % tiles_per_axis;
@@ -3988,12 +4020,12 @@ impl OnionFogRenderer {
                     }
                 }
             }
-            meta.chunks[tile_index] = [
+            records.push([
                 volume.world_origin[0],
                 volume.world_origin[1],
                 volume.world_origin[2],
                 tile_index as f32,
-            ];
+            ]);
         }
 
         let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -4030,7 +4062,9 @@ impl OnionFogRenderer {
             },
         );
         self.per_chunk_atlas_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        self.ensure_records_capacity(device, records.len());
         queue.write_buffer(&self.per_chunk_meta_buffer, 0, bytemuck::bytes_of(&meta));
+        queue.write_buffer(&self.per_chunk_records_buffer, 0, bytemuck::cast_slice(&records));
         self.per_chunk_active = true;
         self.mode = FogMode::PerChunk;
     }
@@ -4047,6 +4081,7 @@ impl OnionFogRenderer {
     /// [`GpuResolver`]: crate::gpu_resolve::GpuResolver
     pub fn install_per_chunk_atlas(
         &mut self,
+        device: &wgpu::Device,
         queue: &wgpu::Queue,
         texture: &wgpu::Texture,
         world_origins: &[[f32; 3]],
@@ -4054,12 +4089,14 @@ impl OnionFogRenderer {
     ) {
         let PerChunkAtlasGeometry { chunk_extent, pad, tiles_per_axis, atlas_dim } = geometry;
         let chunk_count = world_origins.len();
-        if chunk_count == 0 || chunk_count > MAX_FOG_CHUNKS || atlas_dim > self.max_grid_dimension {
+        // No fog-chunk-count cap: records live in the growable storage buffer. The
+        // atlas 3D-texture dimension is the only remaining ceiling.
+        if chunk_count == 0 || atlas_dim > self.max_grid_dimension {
             self.per_chunk_active = false;
             self.mode = FogMode::PerChunk;
             return;
         }
-        let mut meta = PerChunkFogMeta {
+        let meta = PerChunkFogMeta {
             chunk_count: chunk_count as u32,
             chunk_extent: chunk_extent as f32,
             pad_extent: pad as f32,
@@ -4068,15 +4105,18 @@ impl OnionFogRenderer {
             _pad0: 0.0,
             _pad1: 0.0,
             _pad2: 0.0,
-            chunks: [[0.0; 4]; MAX_FOG_CHUNKS],
         };
         // Tile `i` of the GPU atlas holds chunk `i` (the shader packs `tile_index =
-        // chunk`), so the meta record order mirrors `world_origins` directly.
-        for (tile_index, origin) in world_origins.iter().enumerate() {
-            meta.chunks[tile_index] = [origin[0], origin[1], origin[2], tile_index as f32];
-        }
+        // chunk`), so the record order mirrors `world_origins` directly.
+        let records: Vec<[f32; 4]> = world_origins
+            .iter()
+            .enumerate()
+            .map(|(tile_index, origin)| [origin[0], origin[1], origin[2], tile_index as f32])
+            .collect();
         self.per_chunk_atlas_view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        self.ensure_records_capacity(device, records.len());
         queue.write_buffer(&self.per_chunk_meta_buffer, 0, bytemuck::bytes_of(&meta));
+        queue.write_buffer(&self.per_chunk_records_buffer, 0, bytemuck::cast_slice(&records));
         self.per_chunk_active = true;
         self.mode = FogMode::PerChunk;
     }
@@ -4185,6 +4225,10 @@ impl OnionFogRenderer {
                         wgpu::BindGroupEntry {
                             binding: 4,
                             resource: self.per_chunk_meta_buffer.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 5,
+                            resource: self.per_chunk_records_buffer.as_entire_binding(),
                         },
                     ],
                 });
@@ -4495,10 +4539,14 @@ mod tests {
     /// `upload_grid_per_chunk` take its `chunk_count == 0` graceful-disable path. (#20 s4
     /// region-scoping is the proper long-term fix that keeps the resident set small.)
     #[test]
-    fn per_chunk_fog_disables_past_max_fog_chunks() {
+    fn per_chunk_fog_uncapped_past_initial_capacity() {
         let density = 1u32;
         let extent = (CHUNK_BLOCKS * density) as i64; // 4 voxels per chunk per axis
-        // One occupied voxel in each of (MAX_FOG_CHUNKS + 1) distinct chunks along X.
+        // One occupied voxel in each of (MAX_FOG_CHUNKS + 1) distinct chunks along X —
+        // one MORE than the old hard cap. The records now live in a growable storage
+        // buffer, so the occupancy build no longer truncates or disables here; the only
+        // remaining ceiling (the atlas 3D-texture dimension) lives in
+        // `upload_per_chunk_occupancy`, not in this CPU build.
         let chunk_count = MAX_FOG_CHUNKS + 1;
         let dims = [(extent as usize * chunk_count) as u32, extent as u32, extent as u32];
         let coords: Vec<[u32; 3]> = (0..chunk_count)
@@ -4507,23 +4555,11 @@ mod tests {
         let grid = grid_with_voxels(dims, &coords);
 
         let occ = build_per_chunk_fog_occupancy(&grid, density, None);
-        assert!(
-            occ.volumes.is_empty(),
-            "over MAX_FOG_CHUNKS resident chunks must disable fog (no volumes), not truncate"
-        );
-
-        // The common case (≤ MAX_FOG_CHUNKS) still produces volumes — exactly at the cap.
-        let coords_at_cap: Vec<[u32; 3]> = (0..MAX_FOG_CHUNKS)
-            .map(|chunk_index| [(chunk_index as i64 * extent) as u32, 0, 0])
-            .collect();
-        let dims_at_cap =
-            [(extent as usize * MAX_FOG_CHUNKS) as u32, extent as u32, extent as u32];
-        let grid_at_cap = grid_with_voxels(dims_at_cap, &coords_at_cap);
-        let occ_at_cap = build_per_chunk_fog_occupancy(&grid_at_cap, density, None);
         assert_eq!(
-            occ_at_cap.volumes.len(),
-            MAX_FOG_CHUNKS,
-            "exactly MAX_FOG_CHUNKS resident chunks still renders (boundary is inclusive)"
+            occ.volumes.len(),
+            chunk_count,
+            "past the old MAX_FOG_CHUNKS cap, every non-empty chunk must still get a volume \
+             (the records buffer grows — no truncation, no disable)"
         );
     }
 

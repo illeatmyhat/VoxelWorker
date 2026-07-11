@@ -743,6 +743,7 @@ impl WindowedState {
             return false;
         };
         fog.install_per_chunk_atlas(
+            &gpu.device,
             &gpu.queue,
             &atlas.texture,
             &atlas.world_origins,

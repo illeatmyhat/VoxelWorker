@@ -68,6 +68,7 @@ fn try_install_gpu_per_chunk_fog(
         return false;
     };
     fog.install_per_chunk_atlas(
+        &gpu.device,
         &gpu.queue,
         &atlas.texture,
         &atlas.world_origins,
@@ -254,6 +255,11 @@ struct ShotOptions {
     /// capture confirms the revolve producer resolves + renders through the same
     /// pipeline as `SdfShape`. Overrides --shape/--size/--density.
     demo_sketch_revolve: bool,
+    /// `--demo-sketch-box <edge_voxels>`: a solid cube of the given voxel edge, built
+    /// via the SKETCH EXTRUDE path (a square profile extruded its own edge) — the
+    /// large-scene fixture for the two-layer / brick display + fog at scale. `Some(N)`
+    /// overrides --shape/--size/--density-shape (density still sets the voxel grain).
+    demo_sketch_box: Option<i64>,
     /// `--demo-groups` (ADR 0001 step 4, UI verification): build a scene with a
     /// top-level `Group` that has two child Tools, plus a sibling top-level Tool
     /// and one `Instance` of a definition — so the headless PANEL capture shows the
@@ -356,6 +362,7 @@ impl Default for ShotOptions {
             demo_village_far: false,
             demo_sketch_extrude: false,
             demo_sketch_revolve: false,
+            demo_sketch_box: None,
             demo_groups: false,
             far_offset: false,
             far_offset_near: false,
@@ -646,6 +653,14 @@ fn parse_options() -> ShotOptions {
             }
             "--demo-sketch-revolve" => {
                 options.demo_sketch_revolve = true;
+            }
+            "--demo-sketch-box" => {
+                options.demo_sketch_box = Some(
+                    args.next()
+                        .expect("--demo-sketch-box requires an edge length in voxels")
+                        .parse()
+                        .expect("--demo-sketch-box must be a positive integer"),
+                );
             }
             "--demo-groups" => {
                 options.demo_groups = true;
@@ -1107,6 +1122,33 @@ fn build_demo_village_at(voxels_per_block: u32, base_offset_blocks: [i64; 3]) ->
 /// quadrant removed (a reflex vertex), at the document density `d`, extruded
 /// `3` blocks (`3·d` voxels) along +Z (Z-up: "up"). The whole footprint is a whole
 /// multiple of blocks so it sits cleanly on the lattice in the recentred render frame.
+/// Build the `--demo-sketch-box <edge_voxels>` fixture: a solid cube of `edge_voxels`
+/// per axis, produced through the SKETCH EXTRUDE path — a square profile of
+/// `edge_voxels` per side extruded `edge_voxels` along +Z. Used to exercise the
+/// two-layer / brick display + per-chunk fog at large scale (e.g. an 800³ cube) at a
+/// fixed density. Profile coords are absolute voxels, so the cube's block size is
+/// `edge_voxels / voxels_per_block`.
+fn build_demo_sketch_box(edge_voxels: i64, voxels_per_block: u32) -> Scene {
+    let edge = edge_voxels.max(1);
+    let profile = vec![
+        SketchPoint::new(0, 0),
+        SketchPoint::new(edge, 0),
+        SketchPoint::new(edge, edge),
+        SketchPoint::new(0, edge),
+    ];
+    let producer = SketchSolid::extrude(Sketch::new(PlaneAxis::Z, profile), edge as u32);
+    let node = Node::new(
+        "Sketch box",
+        NodeContent::SketchTool {
+            producer,
+            material: MaterialChoice::Stone,
+        },
+    );
+    let mut scene = selecting_first_node(Scene::from_nodes(vec![node]));
+    scene.voxels_per_block = voxels_per_block;
+    scene
+}
+
 fn build_demo_sketch_extrude(voxels_per_block: u32) -> Scene {
     let density = voxels_per_block.max(1) as i64;
     let two = 2 * density;
@@ -1364,6 +1406,8 @@ async fn run_capture(options: ShotOptions) {
         build_far_offset_scene(options.geometry.voxels_per_block, options.far_offset)
     } else if options.demo_groups {
         build_demo_groups(options.geometry.voxels_per_block)
+    } else if let Some(edge_voxels) = options.demo_sketch_box {
+        build_demo_sketch_box(edge_voxels, options.geometry.voxels_per_block)
     } else if options.demo_sketch_extrude {
         build_demo_sketch_extrude(options.geometry.voxels_per_block)
     } else if options.demo_sketch_revolve {

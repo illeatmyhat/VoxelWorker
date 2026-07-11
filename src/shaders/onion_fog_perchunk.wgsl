@@ -28,9 +28,11 @@ struct FogUniforms {
     band_z_max: f32,
 };
 
-// Per-chunk metadata: atlas tiling + one record per resident chunk. Matches the
-// Rust `PerChunkFogMeta` struct (renderer.rs) exactly.
-const MAX_FOG_CHUNKS: u32 = 1024u;
+// Per-chunk metadata HEADER (atlas tiling). Matches the Rust `PerChunkFogMeta`
+// struct (renderer.rs) exactly. The per-chunk records used to live here as a fixed
+// `array<vec4, 1024>`, capping the scene at 1024 non-empty fog chunks (the 64 KiB
+// uniform limit); they now live in the `chunk_records` STORAGE buffer (binding 5),
+// which is runtime-sized, so the real ceiling is the atlas 3D-texture dimension.
 struct PerChunkMeta {
     chunk_count: u32,
     chunk_extent: f32,
@@ -40,8 +42,6 @@ struct PerChunkMeta {
     _pad0: f32,
     _pad1: f32,
     _pad2: f32,
-    // [world_origin.xyz, tile_index] per resident chunk.
-    chunks: array<vec4<f32>, MAX_FOG_CHUNKS>,
 };
 
 @group(0) @binding(0) var<uniform> fog: FogUniforms;
@@ -49,6 +49,9 @@ struct PerChunkMeta {
 @group(0) @binding(2) var occupancy_sampler: sampler;
 @group(0) @binding(3) var scene_depth: texture_depth_multisampled_2d;
 @group(0) @binding(4) var<uniform> chunk_meta: PerChunkMeta;
+// One record per resident chunk: `[world_origin.xyz, tile_index]`. Runtime-sized
+// (was a fixed 1024-entry uniform array) → no artificial fog-chunk cap.
+@group(0) @binding(5) var<storage, read> chunk_records: array<vec4<f32>>;
 
 const FOG_EDGE_LOW: f32 = 0.35;
 const FOG_EDGE_HIGH: f32 = 0.85;
@@ -89,13 +92,12 @@ fn sample_occupancy(world: vec3<f32>) -> f32 {
 
     // Find the resident record whose world_origin matches this chunk. world_origin is
     // chunk_coord*extent - semi_axes, so reconstruct and compare. Linear scan over the
-    // (small) resident set — region scenes have few chunks; the loop is bounded by
-    // chunk_count which is <= MAX_FOG_CHUNKS.
+    // resident set (bounded by chunk_count); records live in the storage buffer.
     let want_origin = chunk_coord * extent - fog.semi_axes;
     var found = false;
     var tile_index = 0u;
     for (var c = 0u; c < chunk_meta.chunk_count; c = c + 1u) {
-        let rec = chunk_meta.chunks[c];
+        let rec = chunk_records[c];
         let d = abs(rec.xyz - want_origin);
         if (d.x < 0.25 && d.y < 0.25 && d.z < 0.25) {
             tile_index = u32(rec.w + 0.5);
