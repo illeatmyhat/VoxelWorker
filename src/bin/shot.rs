@@ -1744,10 +1744,17 @@ async fn run_capture(options: ShotOptions) {
     // so a block mixing materials stays on the mesh), and none of the mesh-only modes
     // (debug-faces, `--scan-vs` loaded VS textures).
     let mut brick_raymarch_renderer: Option<voxel_worker::BrickRaymarchRenderer> = None;
-    // ADR 0011 G5: capture the built brick field so the onion fog can source its occupancy
-    // from the boundary set (no CPU densify), exercising the fog-from-bricks path the
-    // runtime uses — so `brick_golden_matches_dense` becomes the fog-from-bricks visual gate.
-    let mut brick_fog_field: Option<voxel_worker::BrickFieldBuild> = None;
+    // ADR 0011 G5: capture the built brick field AND its covering chunks so the onion fog
+    // can source its occupancy from the boundary set (no CPU densify), exercising the
+    // fog-from-bricks path the runtime uses — so `brick_golden_matches_dense` becomes the
+    // fog-from-bricks visual gate. The chunks ride along because the record set is
+    // SURFACE-ONLY (ADR 0011 interior elision): coarse/interior fog occupancy box-fills
+    // from the chunks, sculpted tiles from the build's atlas.
+    #[allow(clippy::type_complexity)]
+    let mut brick_fog_field: Option<(
+        voxel_worker::BrickFieldBuild,
+        Vec<([i32; 3], std::sync::Arc<voxel_worker::TwoLayerChunk>)>,
+    )> = None;
     if options.brick {
         if !cfg!(feature = "gpu") {
             println!("brick: --brick requires --features gpu — falling back to the mesh path");
@@ -1799,8 +1806,10 @@ async fn run_capture(options: ShotOptions) {
                         overlay_active,
                     );
                     brick_raymarch_renderer = Some(renderer);
-                    // The fog sources from the SAME boundary set (ADR 0011 G5).
-                    brick_fog_field = Some(build);
+                    // The fog sources from the SAME boundary set (ADR 0011 G5): the build's
+                    // sculpted records/atlas + the covering chunks (interiors are
+                    // chunk-sourced under the surface-only record contract).
+                    brick_fog_field = Some((build, two_layer_chunks));
                 }
                 _ => {
                     println!(
@@ -1958,9 +1967,10 @@ async fn run_capture(options: ShotOptions) {
                 // brick boundary set the display raymarches (no CPU densify, no producer
                 // re-resolve) — the fog-from-bricks path the runtime uses. Byte-identical to
                 // the CPU densify, so the committed dense golden stays the reference.
-                let brick_fog_sourced = if let Some(build) = brick_fog_field.as_ref() {
+                let brick_fog_sourced = if let Some((build, chunks)) = brick_fog_field.as_ref() {
                     let occupancy = voxel_worker::build_per_chunk_fog_occupancy_from_bricks(
                         build,
+                        chunks,
                         grid.dimensions,
                         grid.recentre_voxels,
                         fog_z_slab,

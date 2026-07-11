@@ -57,6 +57,18 @@ const VIEW_CUBE_VIEWPORT_MARGIN: u32 = 16;
 
 /// State that exists only once the window and GPU have been created (on first
 /// `resumed`). Kept in its own struct so `App` can start as `None` before then.
+/// The onion fog's brick-sourced occupancy inputs, kept together across frames (ADR 0011
+/// G5 + interior elision): the brick field build (sculpted records + atlas) AND the
+/// two-layer covering chunks it was built from. The record set is SURFACE-ONLY (interiors
+/// live in the chunks' coarse layer), so the fog fill box-fills coarse/interior occupancy
+/// from `two_layer_chunks` and copies sculpted tiles from `build`'s atlas — see
+/// `build_per_chunk_fog_occupancy_from_bricks`. The chunks are `Arc`-shared with the
+/// resident cache (an O(chunks) refcount-bump clone per rebuild, never a deep copy).
+struct FogBrickSource {
+    build: voxel_worker::BrickFieldBuild,
+    two_layer_chunks: Vec<([i32; 3], Arc<voxel_worker::TwoLayerChunk>)>,
+}
+
 struct WindowedState {
     /// Stored as Arc so the surface can be `Surface<'static>` (DEV_NOTES /
     /// Hard requirement #6): the surface is created from `window.clone()`.
@@ -98,13 +110,13 @@ struct WindowedState {
     /// always equals the resident atlas + the fog occupancy source (ADR 0011 G3/G5 gate).
     #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
     incremental_brick_field: Option<voxel_worker::IncrementalBrickField>,
-    /// ADR 0011 G5: the current brick field the onion FOG sources its per-chunk occupancy
-    /// tiles from (`build_per_chunk_fog_occupancy_from_bricks`) — the boundary set of the
-    /// last rebuild, kept so the render-path's lazy fog rebuild has a source across frames
-    /// without re-streaming a `VoxelGrid`. `Some` iff a chunkable gpu-gated scene is
-    /// resident; `None` on non-gpu builds (always), loaded-material, and Part-only scenes.
+    /// ADR 0011 G5: the current brick field + covering chunks the onion FOG sources its
+    /// per-chunk occupancy tiles from (`build_per_chunk_fog_occupancy_from_bricks`) — the
+    /// boundary set of the last rebuild, kept so the render-path's lazy fog rebuild has a
+    /// source across frames without re-streaming a `VoxelGrid`. `Some` iff a chunkable
+    /// scene is resident; `None` on loaded-material and Part-only scenes.
     #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
-    fog_brick_field: Option<voxel_worker::BrickFieldBuild>,
+    fog_brick_field: Option<FogBrickSource>,
     /// ADR 0011 G2: dedup for the "scene not brick-representable" fallback log — a
     /// chunkable procedural scene whose blocks mix materials / disagree on overlay
     /// keeps the mesh path, reported ONCE per fallback transition (not per drag edit).
@@ -872,19 +884,22 @@ impl WindowedState {
         // chunk set to. `None` covers the whole grid (unused by the live onion path,
         // which always passes a slab, but kept for a would-be whole-grid caller).
         fog_z_slab: Option<FogZSlab>,
-        // ADR 0011 G5: the brick field the fog sources its per-chunk occupancy from, for any
-        // chunkable scene (path 1). Plain CPU (`build_per_chunk_fog_occupancy_from_bricks`), so
-        // the non-gpu binary takes it too (the universal brick-fog law).
-        fog_brick: Option<&voxel_worker::BrickFieldBuild>,
+        // ADR 0011 G5: the brick field + covering chunks the fog sources its per-chunk
+        // occupancy from, for any chunkable scene (path 1). Plain CPU
+        // (`build_per_chunk_fog_occupancy_from_bricks`), so the non-gpu binary takes it too
+        // (the universal brick-fog law).
+        fog_brick: Option<&FogBrickSource>,
     ) {
         profiling::scope!("fog_upload");
-        // (1) The primary path — reconstruct the per-chunk fog occupancy from the brick field
-        // (the boundary set), with NO dense `VoxelGrid`. PerChunk only (WholeGrid is the legacy
+        // (1) The primary path — reconstruct the per-chunk fog occupancy from the two-layer
+        // chunks (coarse/interior) + the brick field's sculpted records/atlas (boundary),
+        // with NO dense `VoxelGrid`. PerChunk only (WholeGrid is the legacy
         // single-3D-texture debug mode, which never rides the brick path).
-        if let (Some(build), FogMode::PerChunk) = (fog_brick, fog_mode) {
+        if let (Some(source), FogMode::PerChunk) = (fog_brick, fog_mode) {
             profiling::scope!("fog_brick_fill");
             let occupancy = voxel_worker::build_per_chunk_fog_occupancy_from_bricks(
-                build,
+                &source.build,
+                &source.two_layer_chunks,
                 region_dimensions,
                 recentre_voxels,
                 fog_z_slab,
@@ -1225,8 +1240,13 @@ impl WindowedState {
                     // Fog sources from THIS rebuild's boundary set regardless of the display
                     // path — the last dense-shaped display consumer is gone (ADR 0011 G5). This
                     // runs on EVERY build (non-gpu included) and for a loaded VS material, whose
-                    // display stays on the mesh above.
-                    self.fog_brick_field = Some(build);
+                    // display stays on the mesh above. The covering chunks ride along because
+                    // the record set is SURFACE-ONLY (interior fog occupancy is chunk-sourced);
+                    // the clone is O(chunks) Arc refcount bumps, never a deep chunk copy.
+                    self.fog_brick_field = Some(FogBrickSource {
+                        build,
+                        two_layer_chunks: two_layer_chunks.clone(),
+                    });
                 }
             } else {
                 // Non-chunkable (a Part-only field): no brick mirror, no brick fog source — the
