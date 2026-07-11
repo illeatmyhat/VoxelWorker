@@ -512,6 +512,65 @@ fn segments_intersect(p0: [f64; 2], p1: [f64; 2], q0: [f64; 2], q1: [f64; 2]) ->
         || (d4 == 0 && on_segment(p0, p1, q1))
 }
 
+/// Whether the centred radial corner box `[a_lo, a_hi] × [b_lo, b_hi]` — over the two
+/// radial world axes `(radial_a, radial_b)` in ASCENDING index, matching
+/// [`SketchSolid::resolve_revolve`](SketchSolid::resolve_revolve)'s `centred[radial_a]` /
+/// `centred[radial_b]` — lies ENTIRELY inside the swept arc `[0, turn_degrees]` (partial
+/// coarse-solid condition 2, ADR 0010 Decision 2).
+///
+/// The resolve keeps a voxel iff its sweep angle `theta = atan2(centred[radial_b],
+/// centred[radial_a])` (normalised to `[0, 360)`) satisfies `theta <= turn_degrees`. A cell
+/// is coarse-solid only when EVERY sample angle is `<= turn_degrees`; since the passed box is
+/// the voxel-INDEX corner box (a superset of the actual sample centres `idx + 0.5 − half`),
+/// its angular span over-covers the true samples — never under (CONSERVATIVE-NEVER-NARROW).
+///
+/// Two configurations are unboundable and return `false` (⇒ BOUNDARY, still exact):
+/// - a box CONTAINING or TOUCHING the axis (origin `(0, 0)`) has an ambiguous/unbounded
+///   angular span (a cell adjacent to the revolve axis);
+/// - a box STRADDLING the `theta = 0` ray (the `+radial_a` axis: `b` crossing 0 while `a`
+///   reaches positive) holds samples at `theta → 360⁻`, which — for any partial
+///   `turn < 360` — exceed the arc, so the cell genuinely is not fully swept.
+///
+/// Otherwise the box lies in an open half-plane through the origin (angular width `< 180°`)
+/// and does NOT cross the `0/360` seam, so the four corner angles bound the whole span; the
+/// MAX corner angle must sit at least `ANGLE_EPS` inside `turn` so the resolve's f32 `atan2`
+/// rounding can never push a boundary sample past `turn` after a coarse claim.
+fn revolve_box_within_sweep_arc(a_lo: f64, a_hi: f64, b_lo: f64, b_hi: f64, turn_degrees: u32) -> bool {
+    // Unboundable: the box contains/touches the axis, or straddles the theta=0 ray.
+    //
+    // The seam of the normalised angle is the `+radial_a` axis alone (`b = 0, a > 0`):
+    // approaching from `b > 0` gives `theta → 0⁺`, from `b < 0` gives `theta → 360⁻`. A box
+    // that dips to `b < 0` while reaching UP TO OR ABOVE `b = 0` with any `a > 0` therefore
+    // holds samples at `theta → 360⁻` (an angle no partial arc `[0, turn < 360]` covers) AND
+    // crosses the seam, so its corner angles no longer bound the span. `b_hi >= 0` (not `> 0`)
+    // catches the box whose top edge rests exactly on the ray. A box entirely below the ray
+    // (`b_hi < 0`) or entirely left of the axis (`a_hi <= 0`) is seam-free and boundable.
+    let contains_or_touches_origin = a_lo <= 0.0 && a_hi >= 0.0 && b_lo <= 0.0 && b_hi >= 0.0;
+    let straddles_zero_ray = a_hi > 0.0 && b_lo < 0.0 && b_hi >= 0.0;
+    if contains_or_touches_origin || straddles_zero_ray {
+        return false;
+    }
+    // Sweep angle of a corner, normalised to [0, 360) exactly as `resolve_revolve` does.
+    let sweep_angle = |a: f64, b: f64| -> f64 {
+        let mut theta = b.atan2(a).to_degrees();
+        if theta < 0.0 {
+            theta += 360.0;
+        }
+        theta
+    };
+    // With the box in an open half-plane through the origin and off the 0/360 seam, its
+    // angular span is contiguous with width < 180°, so the four corner angles bound it and
+    // the MAX corner is the span's upper edge. The sweep gate has no lower bound (theta >= 0
+    // always), so only the max angle matters.
+    let max_angle = sweep_angle(a_lo, b_lo)
+        .max(sweep_angle(a_lo, b_hi))
+        .max(sweep_angle(a_hi, b_lo))
+        .max(sweep_angle(a_hi, b_hi));
+    // Widen the acceptance inward so the resolve's f32 angle can't cross `turn` post-claim.
+    const ANGLE_EPS: f64 = 1e-2;
+    max_angle <= turn_degrees as f64 - ANGLE_EPS
+}
+
 impl VoxelProducer for SketchSolid {
     fn resolve(&self, grid: &mut VoxelGrid, voxels_per_block: u32) {
         let [full_x, full_y, full_z] = self.grid_dimensions();
@@ -638,24 +697,34 @@ impl SketchSolid {
     }
 
     /// Whether a revolve cell (PROVEN fully inside `[0, full_dim)` by the caller) is
-    /// entirely solid — the coarse-solid test (ADR 0010). Full-turn only: a PARTIAL wedge
-    /// is not cleanly boundable per cell here, so it returns `false` (⇒ BOUNDARY, still
-    /// exact) — a documented deferral covered by the parity fuzz.
+    /// entirely solid — the coarse-solid test (ADR 0010 Decision 2). Handles BOTH a full
+    /// turn AND a PARTIAL wedge: a partial sweep is coarse-solid only when the cell is
+    /// solid in the radial/axial profile AND its ENTIRE angular span lies inside the swept
+    /// arc. Any doubt returns `false` (⇒ BOUNDARY, still exact per-voxel).
     ///
-    /// For a full turn the solid-of-revolution occupancy at a cell is
+    /// The solid-of-revolution occupancy at a voxel is `theta <= turn` (the sweep gate) AND
     /// `point_in_polygon(radius, axial)` (folded by `abs`; the resolve also tests `−radius`
-    /// only when the profile straddles the axis, which can only ADD occupancy). So the cell
-    /// is solid iff the `(radius-range × axial-range)` rectangle is entirely inside the
-    /// profile polygon, mapped into native `(c0, c1)` per [`RevolveAxis`] EXACTLY as
-    /// [`resolve_revolve`](Self::resolve_revolve) maps its per-voxel samples:
-    /// - axial: the SAMPLE-CENTRE span `[axial_min + cell.min + 0.5, axial_min + cell.max − 0.5]`
-    ///   (elides the axial END-CAP blocks, whose face is collinear with the profile edge);
-    /// - radius: over the two centred radial world axes (centred = `idx − half`), the
-    ///   `[nearest, farthest]` distance from the axis over the cell's voxel-corner box,
-    ///   widened by `EPS` so f32/f64 rounding can never SHRINK the tested rectangle below
-    ///   the true sample coverage (a wider rectangle only makes "inside" rarer ⇒ never an
-    ///   over-claim). The two are INDEPENDENT: axial uses the centre span, radius the
-    ///   conservative corner box + `EPS`.
+    /// only when the profile straddles the axis, which can only ADD occupancy — see below).
+    /// So a cell is coarse-solid iff BOTH hold for its whole footprint:
+    ///
+    /// 1. RADIAL/AXIAL — the `(radius-range × axial-range)` rectangle is entirely inside the
+    ///    profile polygon, mapped into native `(c0, c1)` per [`RevolveAxis`] EXACTLY as
+    ///    [`resolve_revolve`](Self::resolve_revolve) maps its per-voxel samples:
+    ///    - axial: the SAMPLE-CENTRE span `[axial_min + cell.min + 0.5, axial_min + cell.max − 0.5]`
+    ///      (elides the axial END-CAP blocks, whose face is collinear with the profile edge);
+    ///    - radius: over the two centred radial world axes (centred = `idx − half`), the
+    ///      `[nearest, farthest]` distance from the axis over the cell's voxel-corner box,
+    ///      widened by `EPS` so f32/f64 rounding can never SHRINK the tested rectangle below
+    ///      the true sample coverage (a wider rectangle only makes "inside" rarer ⇒ never an
+    ///      over-claim). Because the `−radius` branch only UNIONS more occupancy, `+radius`
+    ///      solidity is SUFFICIENT even for an axis-straddling profile (matching full-turn).
+    /// 2. ANGULAR (partial turns only) — the whole cell's sweep angle is inside `[0, turn]`
+    ///    (see [`revolve_box_within_sweep_arc`]). At 360° the gate is inert, so a full turn
+    ///    needs only condition 1.
+    ///
+    /// CONSERVATIVE-NEVER-NARROW: the two conditions use the SAME centred corner box the
+    /// resolve derives its per-voxel samples from (a superset of the sample centres), so a
+    /// coarse claim can never disagree with the per-voxel truth.
     fn revolve_cell_is_solid(
         &self,
         cell: crate::spatial_index::VoxelAabb,
@@ -663,10 +732,6 @@ impl SketchSolid {
         sweep: RevolveSweep,
         dimensions: [u32; 3],
     ) -> bool {
-        // Only full turns are elided; a partial wedge falls back to BOUNDARY.
-        if sweep.turn_degrees < 360 {
-            return false;
-        }
         let Some((min, _max)) = self.profile_bounds() else {
             return false;
         };
@@ -719,7 +784,17 @@ impl SketchSolid {
             RevolveAxis::InPlane0 => (axial_lo, axial_hi, r_lo, r_hi),
             RevolveAxis::InPlane1 => (r_lo, r_hi, axial_lo, axial_hi),
         };
-        rectangle_inside_polygon(&self.sketch.profile, c0_lo, c0_hi, c1_lo, c1_hi)
+        if !rectangle_inside_polygon(&self.sketch.profile, c0_lo, c0_hi, c1_lo, c1_hi) {
+            return false;
+        }
+        // Condition 1 (radial/axial) holds. A full turn needs nothing more (the sweep gate
+        // is inert at 360°). A partial turn additionally requires the cell's ENTIRE angular
+        // span inside `[0, turn]` — over the SAME centred radial corner box the resolve
+        // derives each per-voxel sweep angle from.
+        if sweep.turn_degrees >= 360 {
+            return true;
+        }
+        revolve_box_within_sweep_arc(a_lo, a_hi, b_lo, b_hi, sweep.turn_degrees)
     }
 
     /// The extrude resolve: rasterize the profile once and sweep it across

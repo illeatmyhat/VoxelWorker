@@ -1834,6 +1834,37 @@ mod tests {
         assert_two_layer_round_trip_matches_dense(&scene, density, "sketch-revolve");
     }
 
+    /// A PARTIAL-turn revolve with an AXIS-STRADDLING profile (radial spans negative→positive,
+    /// so the resolve's mirrored `−radius` union is live) — the ADR 0010 partial-sweep coarse
+    /// test must round-trip bit-identically to the dense oracle: interior blocks inside the
+    /// swept arc elide to coarse, the excluded wedge stays boundary/air, and the mirrored
+    /// occupancy is reproduced exactly.
+    #[test]
+    fn round_trip_matches_dense_for_partial_revolve() {
+        use crate::sketch::{PlaneAxis, RevolveAxis, Sketch, SketchPoint, SketchSolid};
+        let density = 16;
+        // Radial (c1) straddles the axis: [-20, 20]; axial (c0) [8, 56].
+        let profile = Sketch::new(
+            PlaneAxis::Z,
+            vec![
+                SketchPoint::new(8, -20),
+                SketchPoint::new(56, -20),
+                SketchPoint::new(56, 20),
+                SketchPoint::new(8, 20),
+            ],
+        );
+        let producer = SketchSolid::revolve(profile, RevolveAxis::InPlane0, 135);
+        let node = Node::new(
+            "PartialRevolve",
+            NodeContent::SketchTool {
+                producer,
+                material: MaterialChoice::Stone,
+            },
+        );
+        let scene = Scene::from_nodes(vec![node]);
+        assert_two_layer_round_trip_matches_dense(&scene, density, "sketch-partial-revolve");
+    }
+
     /// A region-spanning UNBOUNDABLE producer (the fBm cloud field) forces every covering
     /// block BOUNDARY (its `cell_field_interval` is `None`) and STILL round-trips
     /// bit-identically — the "unboundable ops fall back, still exact" acceptance criterion.
@@ -2091,6 +2122,30 @@ mod tests {
         let (coarse, _) = classify_scene(&scene);
         assert!(coarse > 0, "the triangle extrude must still elide its solid interior");
         assert_two_layer_round_trip_matches_dense(&scene, density, "sketch-triangle-extrude");
+
+        // (5) PARTIAL 270° revolve (a fat cylinder WEDGE, radial 6 blocks × axial 4 blocks):
+        // closing the ADR 0010 deferral — a partial sweep now elides its interior via the
+        // angular-containment coarse test. Before this fix `revolve_cell_is_solid` returned
+        // false for every partial-turn cell, so a wedge densified its WHOLE interior (0 coarse
+        // blocks); now interior blocks fully inside the [0°, 270°] arc AND the radial/axial
+        // profile classify coarse-solid, while the excluded fourth quadrant (270°–360°) stays
+        // boundary/air. The round-trip stays bit-identical to the dense oracle.
+        let wedge = SketchSolid::revolve(
+            Sketch::rectangle(PlaneAxis::X, 6 * density as i64, 4 * density as i64),
+            RevolveAxis::InPlane1,
+            270,
+        );
+        let scene = Scene::from_nodes(vec![Node::new(
+            "Wedge",
+            NodeContent::SketchTool { producer: wedge, material: MaterialChoice::Stone },
+        )]);
+        let (coarse, boundary) = classify_scene(&scene);
+        assert!(
+            coarse > 0,
+            "a PARTIAL 270° revolve wedge must now elide interior blocks to coarse-solid \
+             (the ADR 0010 partial-sweep deferral is closed), got {coarse} coarse / {boundary} boundary"
+        );
+        assert_two_layer_round_trip_matches_dense(&scene, density, "sketch-revolve-wedge");
     }
 
     /// A fully-interior block of a solid box classifies COARSE-SOLID (no voxels); a block

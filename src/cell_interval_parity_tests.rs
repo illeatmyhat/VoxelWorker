@@ -278,37 +278,78 @@ fn sketch_extrude_cell_interval_never_misclassifies() {
 
 #[test]
 fn sketch_revolve_cell_interval_never_misclassifies() {
-    use crate::sketch::{PlaneAxis, RevolveAxis, Sketch, SketchSolid};
-    let density = 16u32;
-    // A full 360° revolve (interior elides) and a PARTIAL 180° revolve (deferred to
-    // boundary) — both must never misclassify against brute force.
+    use crate::sketch::{PlaneAxis, RevolveAxis, Sketch, SketchPoint, SketchSolid};
+    // density 8 keeps a 6-block-diameter radius small enough to brute-force every cell of
+    // every arc/axis/profile config, while still leaving interior blocks strictly OFF the
+    // revolve axis — the only place a partial wedge can go coarse (axis-adjacent blocks are
+    // always boundary).
+    let density = 8u32;
+
+    // Two profiles: a ONE-SIDED lathe rectangle (radial >= 0) and an AXIS-STRADDLING one
+    // (radial spans negative→positive, exercising the resolve's mirrored `−radius` union so
+    // a coarse claim must be solid under the SAME union).
+    let one_sided = Sketch::rectangle(PlaneAxis::Z, 40, 24);
+    let straddling = Sketch::new(
+        PlaneAxis::Z,
+        vec![
+            SketchPoint::new(8, -24),
+            SketchPoint::new(40, -24),
+            SketchPoint::new(40, 24),
+            SketchPoint::new(8, 24),
+        ],
+    );
+
+    // Arcs sweeping across quadrant boundaries: a tiny sliver, contained in one quadrant,
+    // spanning 2 / 3 quadrants, a near-full start>end-class wrap (359), and the full turn.
+    // The wedge always opens from theta 0 (the +radial_a ray), so each arc's far edge lands
+    // in a different quadrant, testing the angular-containment seam handling.
+    let turns = [3u32, 45, 135, 270, 359, 360];
+    let axes = [RevolveAxis::InPlane0, RevolveAxis::InPlane1];
+
     let mut cases = 0u64;
     let mut air = 0u64;
     let mut solid = 0u64;
     let mut boundary = 0u64;
-    for (label, turn) in [("full-360", 360u32), ("partial-180", 180)] {
-        let profile = Sketch::rectangle(PlaneAxis::Z, 24, 16);
-        let producer = SketchSolid::revolve(profile, RevolveAxis::InPlane0, turn);
-        let cells = fuzz_cells(producer.grid_dimensions(), density, 0x5EF0_u64);
-        for &cell in &cells {
-            assert_cell_bound_exact(&producer, cell, density, &format!("Sketch-revolve {label}"));
-            if let Some(interval) = producer.cell_field_interval(cell, density) {
-                match interval.classify(SURFACE_ISOLEVEL) {
-                    FieldClassification::Air => air += 1,
-                    FieldClassification::CoarseSolid => solid += 1,
-                    FieldClassification::Boundary => boundary += 1,
+    let mut partial_solid = 0u64;
+    for (profile_label, profile) in [("one-sided", &one_sided), ("straddling", &straddling)] {
+        for &axis in &axes {
+            for &turn in &turns {
+                let producer = SketchSolid::revolve(profile.clone(), axis, turn);
+                let seed = 0x5EF0_u64 ^ (turn as u64) ^ ((axis as u64) << 20);
+                let cells = fuzz_cells(producer.grid_dimensions(), density, seed);
+                for &cell in &cells {
+                    let label = format!("Sketch-revolve {profile_label} {axis:?} {turn}°");
+                    assert_cell_bound_exact(&producer, cell, density, &label);
+                    if let Some(interval) = producer.cell_field_interval(cell, density) {
+                        match interval.classify(SURFACE_ISOLEVEL) {
+                            FieldClassification::Air => air += 1,
+                            FieldClassification::CoarseSolid => {
+                                solid += 1;
+                                if turn < 360 {
+                                    partial_solid += 1;
+                                }
+                            }
+                            FieldClassification::Boundary => boundary += 1,
+                        }
+                    }
+                    cases += 1;
                 }
             }
-            cases += 1;
         }
     }
-    // The full-turn revolve MUST elide some interior (coarse), proving the radius/axial
-    // rectangle test fires; the partial turn contributes only air/boundary (deferred).
+    // Both the full turn AND at least one PARTIAL wedge must elide interior blocks to coarse
+    // (proving the radius/axial rectangle test AND the new angular-containment test fire); the
+    // fuzz must also exercise air + boundary.
     assert!(solid > 0, "sketch-revolve fuzz never produced a SOLID verdict (elision dead)");
+    assert!(
+        partial_solid > 0,
+        "PARTIAL-turn revolve never produced a coarse-solid verdict (angular elision dead)"
+    );
     assert!(air > 0, "sketch-revolve fuzz never produced an AIR verdict");
     assert!(boundary > 0, "sketch-revolve fuzz never produced a BOUNDARY verdict");
     eprintln!(
-        "Sketch-revolve parity: {cases} cells classified ({air} air, {solid} solid, {boundary} boundary)"
+        "Sketch-revolve parity: {cases} cells classified ({air} air, {solid} solid \
+         [{partial_solid} partial-turn], {boundary} boundary)"
     );
 }
 
