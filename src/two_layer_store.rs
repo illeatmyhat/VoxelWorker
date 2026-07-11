@@ -2572,6 +2572,42 @@ mod tests {
         }
     }
 
+    /// Perf probe (interior-elision win): time the LIVE two-layer build for a large
+    /// SOLID sketch-extrude box — the path the app actually runs (NOT shot's dense
+    /// `resolve_region` golden oracle). Before elision every interior block resolved
+    /// per-voxel (O(volume)); after, interiors classify coarse (O(surface)). Reports the
+    /// coarse/sculpted split + wall-clock. Run:
+    /// `cargo test --release two_layer_sketch_box_build_probe -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "perf probe — run in release with --nocapture"]
+    fn two_layer_sketch_box_build_probe() {
+        use crate::sketch::{PlaneAxis, Sketch, SketchSolid};
+        let density = 16u32;
+        for blocks in [25i64, 50] {
+            let edge = blocks * density as i64; // 400, then 800 voxels/axis (block-aligned)
+            let extrude =
+                SketchSolid::extrude(Sketch::rectangle(PlaneAxis::Z, edge, edge), edge as u32);
+            let scene = Scene::from_nodes(vec![Node::new(
+                "Box",
+                NodeContent::SketchTool { producer: extrude, material: MaterialChoice::Stone },
+            )]);
+            let start = std::time::Instant::now();
+            let chunks = TwoLayerStore::enabled().build_covering_chunks(&scene, density, 0);
+            let elapsed = start.elapsed();
+            let coarse: u64 = chunks
+                .iter()
+                .map(|(_, chunk)| chunk.coarse.iter().filter(|id| id.is_some()).count() as u64)
+                .sum();
+            let sculpted: u64 = chunks.iter().map(|(_, chunk)| chunk.microblocks.len() as u64).sum();
+            println!(
+                "sketch box {edge}³ voxels ({blocks} blocks/axis): two-layer build {:?} — \
+                 {coarse} coarse + {sculpted} sculpted blocks over {} chunks",
+                elapsed,
+                chunks.len()
+            );
+        }
+    }
+
     /// A localised recolor of one small far-flung node dirties only the handful of chunks
     /// that node occupies, NOT the whole scene — the two-layer analogue of
     /// `store.rs::localized_recolor_rebuilds_few_chunks`.
