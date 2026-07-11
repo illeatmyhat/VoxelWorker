@@ -1771,15 +1771,15 @@ async fn run_capture(options: ShotOptions) {
             let two_layer_chunks = voxel_worker::two_layer_store::TwoLayerStore::enabled()
                 .build_covering_chunks(&scene, density, 0);
             // shot's --brick goldens verify the brick display against the dense reference
-            // INCLUDING onion-band cut planes, so install the interior-INCLUSIVE oracle
-            // build: a band clip can start a ray inside the solid, where the live
-            // surface-only record set (ADR 0011 interior elision) intentionally holds no
-            // records — a pre-existing live-display limitation of the elided buffer (since
-            // the b1cadb7 record-buffer elision), NOT covered by these goldens. The fog
-            // fill below is byte-identical under either build (it ignores coarse records;
-            // the sculpted set is never elided). Goldens are small scenes — the oracle
-            // build's O(all blocks) cost is irrelevant here.
-            let build = voxel_worker::build_brick_field_all_blocks(&two_layer_chunks, density);
+            // INCLUDING onion-band cut planes. This installs the LIVE surface-only build
+            // (ADR 0011 interior elision) — the exact record set the running app uploads —
+            // so the goldens pin the live path, not a test-only oracle. A band cut plane can
+            // start a ray inside the solid where the surface-only set holds no record; the
+            // raymarch's block-occupancy fallback (the pyramid rides the same chunks and
+            // carries the block-granular interior mask) resolves those elided interiors to
+            // their coarse cubes, so the cross-section renders correctly. The fog fill below
+            // is unaffected (it ignores coarse records; the sculpted set is never elided).
+            let build = voxel_worker::build_brick_field(&two_layer_chunks, density);
             match voxel_worker::brick_representable_overlay(&two_layer_chunks) {
                 Some(overlay_active) if !build.brick_records.is_empty() => {
                     let gpu_records = voxel_worker::pack_gpu_records(&build, |_| {

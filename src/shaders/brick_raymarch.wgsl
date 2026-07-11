@@ -57,10 +57,14 @@ struct BrickUniforms {
     voxel_line_alpha: f32,
     block_line_alpha: f32,
     // Material is PER-RECORD (packed into `BrickGpuRecord.kind`, ADR 0011 G2), so no
-    // scene-wide material id rides here — `record_count` plus std140 padding fills the slot.
+    // scene-wide material id rides here — `record_count` plus the band-clip fields fill the slot.
     record_count: u32,
-    _render_cell_pad0: u32,
-    _render_cell_pad1: u32,
+    // ADR 0011 band-clip interior fallback: 1 when a LAYER BAND actually clips the solid's
+    // Z-extent (a cut plane can enter an elided interior). Only then does a record MISS consult
+    // the block-occupancy map — under a full band the surface set is already hit-identical.
+    band_clip_active: u32,
+    // The block-occupancy cell count (the `occupancy_cells` binary-search span); 0 ⇒ off.
+    occupancy_cell_count: u32,
     _render_cell_pad2: u32,
     // xyz: the integer lattice shift re-aligning block boundaries in the render
     // frame ((recentre − half_extent) mod edge); w: the brick edge in voxels.
@@ -131,6 +135,24 @@ var<storage, read> clipmap_level_1_keys: array<vec2<u32>>;
 var<storage, read> clipmap_level_2_keys: array<vec2<u32>>;
 @group(0) @binding(5)
 var<storage, read> clipmap_level_3_keys: array<vec2<u32>>;
+
+// ADR 0011 band-clip interior-occupancy map: one cell per PRESENT 8-block region (sorted
+// ascending by packed cell key — same order as the L1 clip-map cells), carrying a 512-bit
+// block-occupancy bitmask + a fallback material. Consulted ONLY when `band_clip_active` and
+// the surface-only record search misses: a set bit ⇒ an elided coarse interior the band cut
+// exposed, rendered as its coarse block-cube. `occupancy_cell_count == 0` ⇒ off. Mirrors
+// `BlockOccupancyMasks` in brick_field.rs.
+struct OccupancyCell {
+    key_hi: u32,
+    key_lo: u32,
+    // The coarse-cube shade for a fallback hit (the cell's first occupied block's material).
+    material: u32,
+    _pad: u32,
+    // 512-bit mask: bit = (local_z*8 + local_y)*8 + local_x, local = block mod 8.
+    mask: array<u32, 16>,
+};
+@group(0) @binding(6)
+var<storage, read> occupancy_cells: array<OccupancyCell>;
 
 // The SAME procedural material atlas + nearest/clamp sampler the cuboid mesh
 // binds, so a brick-path pixel samples the identical texel.
@@ -307,6 +329,39 @@ fn clipmap_level_3_contains(key_hi: u32, key_lo: u32, count: u32) -> bool {
         if (cell_less) { low = mid + 1; } else { high = mid - 1; }
     }
     return false;
+}
+
+// Binary-search the block-occupancy map for a cell key; returns its index or -1. The cell
+// key is the 8-block clip-map cell of the block (`pack_world_block_key_split(cell_of(.., 8))`).
+fn find_occupancy_cell(key_hi: u32, key_lo: u32) -> i32 {
+    var low = 0;
+    var high = i32(uniforms.occupancy_cell_count) - 1;
+    loop {
+        if (low > high) { break; }
+        let mid = (low + high) / 2;
+        let cell = occupancy_cells[mid];
+        if (cell.key_hi == key_hi && cell.key_lo == key_lo) { return mid; }
+        let cell_less = cell.key_hi < key_hi || (cell.key_hi == key_hi && cell.key_lo < key_lo);
+        if (cell_less) { low = mid + 1; } else { high = mid - 1; }
+    }
+    return -1;
+}
+
+// Euclidean mod 8 (block-local coordinate within an 8-block occupancy cell).
+fn block_local_mod8(value: i32) -> i32 {
+    return ((value % 8) + 8) % 8;
+}
+
+// Is `absolute_block` occupied in occupancy cell `cell_index` (the 512-bit mask's bit)?
+fn occupancy_block_present(cell_index: i32, absolute_block: vec3<i32>) -> bool {
+    let local = vec3<i32>(
+        block_local_mod8(absolute_block.x),
+        block_local_mod8(absolute_block.y),
+        block_local_mod8(absolute_block.z),
+    );
+    let bit = (local.z * 8 + local.y) * 8 + local.x;
+    let word = occupancy_cells[cell_index].mask[bit / 32];
+    return (word & (1u << u32(bit % 32))) != 0u;
 }
 
 // The clip-map cell of an absolute block, at `blocks_per_cell` blocks/axis.
@@ -538,8 +593,37 @@ fn march_brick_field(ray: Ray) -> MarchHit {
 
         let key = pack_world_block_key_split(absolute_block);
         let record_index = find_brick_record(key.x, key.y);
+
+        // Resolve this block's geometry from its record, OR — on a record MISS under an active
+        // band clip — from the block-occupancy map: a band cut-plane can enter an elided coarse
+        // interior the surface-only record set omitted (ADR 0011 interior elision). A present
+        // occupancy bit renders its COARSE block-cube, exactly the record the interior-inclusive
+        // oracle build would carry. Under a full band this branch never fires (band_clip_active
+        // 0), keeping the common path a single record lookup.
+        var has_geometry = record_index >= 0;
+        var is_coarse = false;
+        var block_material = 0u;
+        var resolved_atlas_slot = 0u;
         if (record_index >= 0) {
             let record = brick_records[record_index];
+            block_material = record_material_id(record.kind);
+            // Residency-miss contract: a sculpted record with no resident atlas payload
+            // renders its COARSE form.
+            is_coarse = record_kind(record.kind) == 0u
+                || record.atlas_slot == NON_RESIDENT_ATLAS_SLOT;
+            resolved_atlas_slot = record.atlas_slot;
+        } else if (uniforms.band_clip_active != 0u && uniforms.occupancy_cell_count > 0u) {
+            let occupancy_cell = clipmap_cell_of(absolute_block, 8);
+            let occupancy_key = pack_world_block_key_split(occupancy_cell);
+            let cell_index = find_occupancy_cell(occupancy_key.x, occupancy_key.y);
+            if (cell_index >= 0 && occupancy_block_present(cell_index, absolute_block)) {
+                has_geometry = true;
+                is_coarse = true; // an elided interior block is coarse-solid by definition
+                block_material = occupancy_cells[cell_index].material;
+            }
+        }
+
+        if (has_geometry) {
             // The block's box, CLAMPED to the traversal bounds (band cut planes
             // become cap faces; a partially-banded block keeps only its slab).
             let block_lo = vec3<f32>(block_cell) * edge;
@@ -550,12 +634,7 @@ fn march_brick_field(ray: Ray) -> MarchHit {
                 && clamped_lo.z < clamped_hi.z) {
                 let entry = clamped_box_entry(ray, clamped_lo, clamped_hi);
                 if (entry.t_exit >= entry.t_enter) {
-                    let block_material = record_material_id(record.kind);
-                    // Residency-miss contract: a sculpted record with no resident
-                    // atlas payload renders its COARSE form.
-                    let coarse_form = record_kind(record.kind) == 0u
-                        || record.atlas_slot == NON_RESIDENT_ATLAS_SLOT;
-                    if (coarse_form) {
+                    if (is_coarse) {
                         var hit: MarchHit;
                         hit.hit = true;
                         hit.material_id = block_material;
@@ -620,7 +699,7 @@ fn march_brick_field(ray: Ray) -> MarchHit {
                             break;
                         }
                         let brick_local = voxel_cell - block_min_voxel;
-                        if (sculpted_voxel_occupied(record.atlas_slot, brick_local)) {
+                        if (sculpted_voxel_occupied(resolved_atlas_slot, brick_local)) {
                             var hit: MarchHit;
                             hit.hit = true;
                             hit.material_id = block_material;

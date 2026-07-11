@@ -32,7 +32,8 @@ use wgpu::util::DeviceExt;
 
 use crate::brick_field::{
     pack_clipmap_level_keys, pack_world_block_key, unpack_world_block_key, upload_brick_atlas,
-    BrickFieldBuild, BrickFieldUpdate, BrickPayload, ClipmapLevel, ClipmapPyramid,
+    BlockOccupancyMasks, BrickFieldBuild, BrickFieldUpdate, BrickPayload, ClipmapLevel,
+    ClipmapPyramid, BLOCK_OCCUPANCY_MASK_WORDS,
 };
 use crate::core_geom::MaterialChoice;
 use crate::cuboid_mesh::{cell_key_has_overlay, clean_block_id};
@@ -244,11 +245,49 @@ pub struct BrickMarchFrame {
     pub voxel_bias: [i32; 3],
     /// `[first_in_band, one_past_last]` voxel-Z in the shifted frame (band clip).
     pub band_voxel_sv: [i32; 2],
+    /// Whether the band actually clips the resident solid's Z-extent — the gate for the
+    /// block-occupancy interior fallback (a cut plane can enter an elided coarse interior).
+    /// False under a full/non-clipping band, where the surface-only set is already hit-identical.
+    pub band_clip_active: bool,
     /// The traversal AABB (resident-brick bounds ∩ band slab), shifted frame.
     pub traversal_lo: glam::Vec3,
     pub traversal_hi: glam::Vec3,
     pub brick_edge_voxels: i32,
     pub bricks_per_axis: u32,
+}
+
+/// One block-occupancy cell as the shader consumes it (ADR 0011 band-clip interior fallback):
+/// the split `(hi, lo)` cell key, the fallback material, and the `512`-bit block bitmask. Field
+/// order + packing MUST match `OccupancyCell` in `shaders/brick_raymarch.wgsl` (std430: all
+/// `u32`, so a flat 80-byte record, `mask` stride 4). Sorted ascending by key — the shader's
+/// binary-search order.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+struct OccupancyCellPod {
+    key_hi: u32,
+    key_lo: u32,
+    material: u32,
+    _pad: u32,
+    mask: [u32; BLOCK_OCCUPANCY_MASK_WORDS],
+}
+
+/// Pack the block-occupancy map into the shader's sorted cell records (the parallel SoA
+/// `cell_keys`/`cell_masks`/`cell_materials` → AoS). Empty ⇒ a single zeroed placeholder (its
+/// count is 0, so the shader never binary-searches it).
+fn pack_occupancy_cells(masks: &BlockOccupancyMasks) -> Vec<OccupancyCellPod> {
+    masks
+        .cell_keys
+        .iter()
+        .zip(&masks.cell_masks)
+        .zip(&masks.cell_materials)
+        .map(|((&key, &mask), &material)| OccupancyCellPod {
+            key_hi: (key >> 32) as u32,
+            key_lo: key as u32,
+            material,
+            _pad: 0,
+            mask,
+        })
+        .collect()
 }
 
 /// The GPU-side uniform block; field order and 16-byte packing MUST match
@@ -270,10 +309,13 @@ struct BrickUniformsPod {
     voxel_line_alpha: f32,
     block_line_alpha: f32,
     // Material is per-record (packed into `BrickGpuRecord.kind`, ADR 0011 G2), so no
-    // scene-wide material id rides here — `record_count` plus std140 padding fills the slot.
+    // scene-wide material id rides here — `record_count` plus the band-clip fields fill the slot.
     record_count: u32,
-    _render_cell_pad0: u32,
-    _render_cell_pad1: u32,
+    // ADR 0011 band-clip interior fallback: 1 when the band clips the solid's Z-extent, so a
+    // record MISS consults the block-occupancy map (elided coarse interiors the band exposes).
+    band_clip_active: u32,
+    // The block-occupancy cell count (`occupancy_cells` binary-search span); 0 ⇒ off.
+    occupancy_cell_count: u32,
     _render_cell_pad2: u32,
     lattice_shift_and_edge: [i32; 4],
     block_bias_and_tiles: [i32; 4],
@@ -337,6 +379,10 @@ pub struct BrickRaymarchRenderer {
     clipmap_level_2_count: u32,
     clipmap_level_3_blocks: u32,
     clipmap_level_3_count: u32,
+    /// ADR 0011 band-clip interior fallback: the present block-occupancy cell count uploaded
+    /// last install (0 ⇒ the shader's record-miss fallback never fires). The occupancy buffer is
+    /// rebuilt with the records/pyramid in [`rebuild_field_state`](Self::rebuild_field_state).
+    occupancy_cell_count: u32,
 }
 
 impl BrickRaymarchRenderer {
@@ -391,6 +437,13 @@ impl BrickRaymarchRenderer {
         let level_3_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("brick raymarch clip-map L3 keys"),
             contents: bytemuck::cast_slice(&placeholder_keys),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        // Placeholder occupancy buffer (count 0 ⇒ the shader never binary-searches it).
+        let placeholder_occupancy = [OccupancyCellPod::zeroed()];
+        let occupancy_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("brick raymarch block-occupancy cells"),
+            contents: bytemuck::cast_slice(&placeholder_occupancy),
             usage: wgpu::BufferUsages::STORAGE,
         });
 
@@ -460,6 +513,17 @@ impl BrickRaymarchRenderer {
                         },
                         count: None,
                     },
+                    // ADR 0011 band-clip interior fallback: the block-occupancy cells.
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 6,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
+                    },
                 ],
             });
         let field_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -489,6 +553,10 @@ impl BrickRaymarchRenderer {
                 wgpu::BindGroupEntry {
                     binding: 5,
                     resource: level_3_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: occupancy_buffer.as_entire_binding(),
                 },
             ],
         });
@@ -645,6 +713,7 @@ impl BrickRaymarchRenderer {
             clipmap_level_2_count: 0,
             clipmap_level_3_blocks: crate::brick_field::CLIPMAP_LEVEL_3_BLOCKS_PER_CELL,
             clipmap_level_3_count: 0,
+            occupancy_cell_count: 0,
         }
     }
 
@@ -829,6 +898,21 @@ impl BrickRaymarchRenderer {
             usage: wgpu::BufferUsages::STORAGE,
         });
 
+        // ADR 0011 band-clip interior fallback: the block-occupancy cells (empty ⇒ a single
+        // zeroed placeholder; its count is 0, so the shader never binary-searches it).
+        let placeholder_occupancy = [OccupancyCellPod::zeroed()];
+        let occupancy_cells = pack_occupancy_cells(&pyramid.interior_masks);
+        let occupancy_bytes: &[u8] = if occupancy_cells.is_empty() {
+            bytemuck::cast_slice(&placeholder_occupancy)
+        } else {
+            bytemuck::cast_slice(&occupancy_cells)
+        };
+        let occupancy_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("brick raymarch block-occupancy cells"),
+            contents: occupancy_bytes,
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+
         self.field_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("brick raymarch field bind group"),
             layout: &self.field_bind_group_layout,
@@ -857,8 +941,13 @@ impl BrickRaymarchRenderer {
                     binding: 5,
                     resource: level_3_buffer.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: occupancy_buffer.as_entire_binding(),
+                },
             ],
         });
+        self.occupancy_cell_count = occupancy_cells.len() as u32;
         self.clipmap_level_1_blocks = pyramid.level_1.blocks_per_cell;
         self.clipmap_level_1_count = level_1_keys.len() as u32;
         self.clipmap_level_2_blocks = pyramid.level_2.blocks_per_cell;
@@ -881,6 +970,7 @@ impl BrickRaymarchRenderer {
         self.clipmap_level_1_count = 0;
         self.clipmap_level_2_count = 0;
         self.clipmap_level_3_count = 0;
+        self.occupancy_cell_count = 0;
     }
 
     /// Whether a non-empty brick field is installed (the draw would show bricks).
@@ -952,8 +1042,16 @@ impl BrickRaymarchRenderer {
         let clamp_i32 = |value: i64| value.clamp(i32::MIN as i64 + 1, i32::MAX as i64 - 1) as i32;
         let band_lo_sv = clamp_i32(band.band_min as i64 + lattice_shift[2] as i64);
         let band_hi_sv = clamp_i32(band.band_max as i64 + 1 + lattice_shift[2] as i64);
+        // The band ACTUALLY clips the solid when it narrows the resident Z-extent — only then
+        // can a cut plane enter an elided coarse interior, so only then does the record-miss
+        // block-occupancy fallback fire (ADR 0011 band-clip interior fix). A full/loose band
+        // leaves the surface-only set hit-identical, so the fallback stays off (common path).
+        let pre_band_lo_z = traversal_lo.z;
+        let pre_band_hi_z = traversal_hi.z;
         traversal_lo.z = traversal_lo.z.max(band_lo_sv as f32);
         traversal_hi.z = traversal_hi.z.min(band_hi_sv as f32);
+        let band_clip_active =
+            traversal_lo.z > pre_band_lo_z || traversal_hi.z < pre_band_hi_z;
 
         BrickMarchFrame {
             view_projection,
@@ -969,6 +1067,7 @@ impl BrickRaymarchRenderer {
             block_bias,
             voxel_bias,
             band_voxel_sv: [band_lo_sv, band_hi_sv],
+            band_clip_active,
             traversal_lo,
             traversal_hi,
             brick_edge_voxels: self.brick_edge_voxels.max(1) as i32,
@@ -1023,8 +1122,8 @@ impl BrickRaymarchRenderer {
             voxel_line_alpha: overlay.voxel_line_alpha,
             block_line_alpha: overlay.block_line_alpha,
             record_count: self.record_count,
-            _render_cell_pad0: 0,
-            _render_cell_pad1: 0,
+            band_clip_active: u32::from(frame.band_clip_active),
+            occupancy_cell_count: self.occupancy_cell_count,
             _render_cell_pad2: 0,
             lattice_shift_and_edge: [
                 frame.lattice_shift[0],

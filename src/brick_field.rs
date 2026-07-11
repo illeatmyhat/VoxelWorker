@@ -265,6 +265,12 @@ pub struct ClipmapPyramid {
     pub level_2: ClipmapLevel,
     /// Coarse level (512-block cells) — checked first by the hierarchical DDA.
     pub level_3: ClipmapLevel,
+    /// The block-granular interior-occupancy signal ([`BlockOccupancyMasks`]) — the
+    /// band-clip cross-section fix (ADR 0011). Populated by [`from_chunks`](Self::from_chunks);
+    /// EMPTY for the record-sourced / off constructors (they run FULL-band only, where the
+    /// fallback never fires). Not part of the clip-map SKIP contract — the DDA never reads it;
+    /// it rides here so the live install sites carry it without a new argument.
+    pub interior_masks: BlockOccupancyMasks,
 }
 
 impl ClipmapPyramid {
@@ -278,6 +284,9 @@ impl ClipmapPyramid {
             level_1: ClipmapLevel::from_records(records, CLIPMAP_LEVEL_1_BLOCKS_PER_CELL),
             level_2: ClipmapLevel::from_records(records, CLIPMAP_LEVEL_2_BLOCKS_PER_CELL),
             level_3: ClipmapLevel::from_records(records, CLIPMAP_LEVEL_3_BLOCKS_PER_CELL),
+            // The oracle pyramid is a SKIP min-mip only (its record set is interior-inclusive,
+            // so no band-clip miss-fallback signal is needed); the live from_chunks path carries it.
+            interior_masks: BlockOccupancyMasks::empty(),
         }
     }
 
@@ -292,6 +301,9 @@ impl ClipmapPyramid {
             level_1: ClipmapLevel::from_chunks(chunks, CLIPMAP_LEVEL_1_BLOCKS_PER_CELL),
             level_2: ClipmapLevel::from_chunks(chunks, CLIPMAP_LEVEL_2_BLOCKS_PER_CELL),
             level_3: ClipmapLevel::from_chunks(chunks, CLIPMAP_LEVEL_3_BLOCKS_PER_CELL),
+            // The band-clip interior-occupancy signal (this epic): block-granular, bitpacked,
+            // consulted only on a record miss under an active band clip (ADR 0011).
+            interior_masks: BlockOccupancyMasks::from_chunks(chunks),
         }
     }
 
@@ -303,6 +315,7 @@ impl ClipmapPyramid {
             level_1: ClipmapLevel::empty(CLIPMAP_LEVEL_1_BLOCKS_PER_CELL),
             level_2: ClipmapLevel::empty(CLIPMAP_LEVEL_2_BLOCKS_PER_CELL),
             level_3: ClipmapLevel::empty(CLIPMAP_LEVEL_3_BLOCKS_PER_CELL),
+            interior_masks: BlockOccupancyMasks::empty(),
         }
     }
 
@@ -324,6 +337,186 @@ pub fn pack_clipmap_level_keys(level: &ClipmapLevel) -> Vec<[u32; 2]> {
         .iter()
         .map(|&key| [(key >> 32) as u32, key as u32])
         .collect()
+}
+
+/// The clip-map cell edge (in blocks) the [`BlockOccupancyMasks`] bitmask cells use —
+/// the same 8-block granule as the pyramid's [`ClipmapLevel`] L1, so a `512`-block
+/// interior-occupancy cell is one `u32[16]` bitmask.
+pub const BLOCK_OCCUPANCY_CELL_BLOCKS: u32 = CLIPMAP_LEVEL_1_BLOCKS_PER_CELL;
+/// Blocks per [`BlockOccupancyMasks`] cell (`8³ = 512`) — the bitmask's bit count.
+const BLOCK_OCCUPANCY_BITS_PER_CELL: usize =
+    (BLOCK_OCCUPANCY_CELL_BLOCKS * BLOCK_OCCUPANCY_CELL_BLOCKS * BLOCK_OCCUPANCY_CELL_BLOCKS)
+        as usize;
+/// `u32` words in one cell's occupancy bitmask (`512 / 32 = 16`).
+pub const BLOCK_OCCUPANCY_MASK_WORDS: usize = BLOCK_OCCUPANCY_BITS_PER_CELL / 32;
+
+/// **ADR 0011 — the band-clip interior-occupancy signal (this fix).** A block-granular,
+/// bitpacked occupancy map over the two-layer chunks, consulted by the raymarch ONLY when a
+/// LAYER-BAND clip is active AND the surface-only record search misses.
+///
+/// The surface-only record set (interior elision, `b1cadb7`/`6f0718e`) omits fully-occluded
+/// interior blocks. Under a FULL band that is hit-identical (a ray reaches an interior block
+/// only through a solid surface neighbour that keeps its record, stopping the ray first —
+/// [`BrickOcclusionOracle`]). But a band cut-plane SLICES a solid, so a ray can start/enter
+/// INSIDE the solid at a block whose record was elided: the record search misses,
+/// indistinguishable at the record level from genuine air, and the cross-section renders
+/// hollow. This map is the distinguishing signal: an occupied bit + a record miss ⇒ an
+/// elided coarse interior ⇒ render its coarse block-cube (exactly the record the interior-
+/// inclusive oracle build would have carried).
+///
+/// **Why bitpacked, not more records (the owner's no-dense-grid / no-O(volume)-records law):**
+/// storage is one bit per occupied-region block (a `u32[16]` per PRESENT 8-block cell, empty
+/// cells stored nothing), i.e. `volume/8` bytes at worst — ~192× leaner than the 24-byte
+/// records the surface-only contract deleted, and never a dense whole-region volume. Built
+/// from the chunks (a fully-solid chunk sets its `CHUNK_BLOCKS³` bits in bulk, no O(volume)
+/// hashing), rebuilt per EDIT like the pyramid — never per band scrub (the band is a uniform).
+///
+/// The cell keys are the 8-block clip-map cell keys ([`pack_world_block_key`] of
+/// `floor_div(block, 8)`), sorted ascending — the same order the shader binary-searches.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct BlockOccupancyMasks {
+    /// Present 8-block cells' packed keys, sorted strictly ascending + deduplicated.
+    pub cell_keys: Vec<u64>,
+    /// Per-cell `512`-bit occupancy bitmask (`bit = (local_z*8 + local_y)*8 + local_x`,
+    /// `local = block.rem_euclid(8)`), one `[u32; 16]` per key. Parallel to `cell_keys`.
+    pub cell_masks: Vec<[u32; BLOCK_OCCUPANCY_MASK_WORDS]>,
+    /// Per-cell fallback material colour index (the first occupied block's, in build order) —
+    /// the coarse-cube's shade when the record-miss fallback fires. Exact for a uniform-material
+    /// interior cell (every current band golden); best-effort where a cell mixes materials
+    /// (the documented tolerance edge — the R8 atlas is occupancy-only, so per-interior-block
+    /// material would re-introduce the O(volume) record set this contract deleted). Parallel to
+    /// `cell_keys`.
+    pub cell_materials: Vec<u32>,
+}
+
+impl BlockOccupancyMasks {
+    /// The empty map (no occupied cells) — the "off" form for the record-sourced /
+    /// pyramid-off constructors that never carry an interior signal (they run FULL-band only).
+    pub fn empty() -> Self {
+        BlockOccupancyMasks::default()
+    }
+
+    /// Set one block's bit (and, first-writer-wins, its cell material) in the cell map.
+    fn insert_block(
+        cells: &mut std::collections::BTreeMap<u64, ([u32; BLOCK_OCCUPANCY_MASK_WORDS], u32)>,
+        world_block: [i64; 3],
+        material: u32,
+    ) {
+        let cell_size = BLOCK_OCCUPANCY_CELL_BLOCKS as i64;
+        let cell = [
+            world_block[0].div_euclid(cell_size),
+            world_block[1].div_euclid(cell_size),
+            world_block[2].div_euclid(cell_size),
+        ];
+        let local = [
+            world_block[0].rem_euclid(cell_size) as usize,
+            world_block[1].rem_euclid(cell_size) as usize,
+            world_block[2].rem_euclid(cell_size) as usize,
+        ];
+        let bit = (local[2] * BLOCK_OCCUPANCY_CELL_BLOCKS as usize + local[1])
+            * BLOCK_OCCUPANCY_CELL_BLOCKS as usize
+            + local[0];
+        let entry = cells
+            .entry(pack_world_block_key(cell))
+            .or_insert(([0u32; BLOCK_OCCUPANCY_MASK_WORDS], material));
+        entry.0[bit / 32] |= 1u32 << (bit % 32);
+    }
+
+    /// Build the block-granular occupancy map from the two-layer chunks — the interior-elision
+    /// companion of [`ClipmapPyramid::from_chunks`], marking EVERY non-air block (coarse-solid or
+    /// microblock), so a record-miss inside a band-clipped solid resolves to its coarse cube.
+    ///
+    /// A fully-solid chunk (all `CHUNK_BLOCKS³` coarse, no microblocks) sets its block bits in
+    /// BULK from the chunk's first block colour — one map lookup + a constant bit-set, no
+    /// per-block hashing (the interior-elision cost discipline). Partial/boundary chunks set one
+    /// bit per occupied block. Cell keys are the same 8-block keys the pyramid's L1 carries.
+    pub fn from_chunks(chunks: &[([i32; 3], Arc<TwoLayerChunk>)]) -> Self {
+        let mut cells: std::collections::BTreeMap<
+            u64,
+            ([u32; BLOCK_OCCUPANCY_MASK_WORDS], u32),
+        > = std::collections::BTreeMap::new();
+        let chunk_blocks = CHUNK_BLOCKS as i64;
+        for (chunk_coord, chunk) in chunks {
+            let base = [
+                chunk_coord[0] as i64 * chunk_blocks,
+                chunk_coord[1] as i64 * chunk_blocks,
+                chunk_coord[2] as i64 * chunk_blocks,
+            ];
+            let fully_solid =
+                chunk.microblocks.is_empty() && chunk.coarse.iter().all(Option::is_some);
+            if fully_solid {
+                // Bulk: the whole `CHUNK_BLOCKS³` block box is occupied at the chunk's first
+                // block colour — no per-block visit beyond the constant bit-set (a 4-aligned
+                // chunk box lands wholly inside one 8-block cell per axis).
+                let material = chunk
+                    .coarse_block([0, 0, 0])
+                    .map(|block_id| block_id.color_index() as u32)
+                    .unwrap_or(0);
+                for block_z in 0..CHUNK_BLOCKS {
+                    for block_y in 0..CHUNK_BLOCKS {
+                        for block_x in 0..CHUNK_BLOCKS {
+                            Self::insert_block(
+                                &mut cells,
+                                [
+                                    base[0] + block_x as i64,
+                                    base[1] + block_y as i64,
+                                    base[2] + block_z as i64,
+                                ],
+                                material,
+                            );
+                        }
+                    }
+                }
+            } else {
+                for block_z in 0..CHUNK_BLOCKS {
+                    for block_y in 0..CHUNK_BLOCKS {
+                        for block_x in 0..CHUNK_BLOCKS {
+                            let block = [block_x, block_y, block_z];
+                            let material = if let Some(block_id) = chunk.coarse_block(block) {
+                                block_id.color_index() as u32
+                            } else if let Some(geometry) = chunk.microblocks.get(&block) {
+                                geometry
+                                    .cuboids
+                                    .first()
+                                    .map(|cuboid| clean_block_id(cuboid.material_id) as u32)
+                                    .unwrap_or(0)
+                            } else {
+                                continue;
+                            };
+                            Self::insert_block(
+                                &mut cells,
+                                [
+                                    base[0] + block_x as i64,
+                                    base[1] + block_y as i64,
+                                    base[2] + block_z as i64,
+                                ],
+                                material,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        let mut cell_keys = Vec::with_capacity(cells.len());
+        let mut cell_masks = Vec::with_capacity(cells.len());
+        let mut cell_materials = Vec::with_capacity(cells.len());
+        for (key, (mask, material)) in cells {
+            cell_keys.push(key);
+            cell_masks.push(mask);
+            cell_materials.push(material);
+        }
+        BlockOccupancyMasks {
+            cell_keys,
+            cell_masks,
+            cell_materials,
+        }
+    }
+
+    /// The present-cell count (== the shader's occupancy binary-search span; 0 ⇒ the
+    /// band-clip interior fallback never fires).
+    pub fn cell_count(&self) -> u32 {
+        self.cell_keys.len() as u32
+    }
 }
 
 /// What a brick holds — ADR 0011 Decision 2's two record kinds. The enum makes
@@ -1705,9 +1898,105 @@ mod tests {
                 let full_build = build_brick_field_all_blocks(&chunks, voxels_per_block);
                 let from_records = ClipmapPyramid::from_records(&full_build.brick_records);
                 let from_chunks = ClipmapPyramid::from_chunks(&chunks);
+                // Compare the SKIP levels only: `interior_masks` is a band-clip signal the
+                // record-sourced oracle never carries (it is interior-inclusive), so it is
+                // deliberately built empty there — it is not part of the min-mip identity claim.
                 assert_eq!(
-                    from_chunks, from_records,
+                    (&from_chunks.level_1, &from_chunks.level_2, &from_chunks.level_3),
+                    (&from_records.level_1, &from_records.level_2, &from_records.level_3),
                     "chunk-sourced pyramid must equal the full-record oracle (density {voxels_per_block})"
+                );
+            }
+        }
+    }
+
+    /// **The band-clip interior-occupancy map marks EXACTLY the full-record block set (this
+    /// fix).** [`BlockOccupancyMasks::from_chunks`] must report a set bit for every block the
+    /// interior-INCLUSIVE oracle build (`build_brick_field_all_blocks`) carries a record for —
+    /// no more, no fewer — since that record set is what a band-clipped ray needs to resolve as
+    /// coarse cubes where the surface-only build elided them. Covers a solid box (the bulk
+    /// fully-solid path, heavy interior) and a scattered scene (the per-block partial path).
+    #[test]
+    fn block_occupancy_masks_mark_exactly_the_full_record_blocks() {
+        use crate::{Node, NodeContent, NodeTransform};
+        for &voxels_per_block in &[16u32, 4] {
+            let box_scene = Scene::from_geometry(
+                GeometryParams {
+                    shape: ShapeKind::Box,
+                    size_voxels: [
+                        7 * voxels_per_block,
+                        7 * voxels_per_block,
+                        7 * voxels_per_block,
+                    ],
+                    size_measurements: None,
+                    voxels_per_block,
+                    wall_blocks: 1,
+                },
+                MaterialChoice::Stone,
+            );
+            let mut nodes = Vec::new();
+            for i in 0..8i64 {
+                let shape = crate::voxel::SdfShape::from_blocks(
+                    ShapeKind::Sphere,
+                    [3, 3, 3],
+                    1,
+                    voxels_per_block,
+                );
+                let mut node = Node::new(
+                    format!("s{i}"),
+                    NodeContent::Tool { shape, material: MaterialChoice::Stone },
+                );
+                node.transform =
+                    NodeTransform::from_blocks([(i % 3) * 14, (i / 3) * 14, (i % 2) * 18], voxels_per_block);
+                nodes.push(node);
+            }
+            let scattered_scene = Scene::from_nodes(nodes);
+
+            for scene in [box_scene, scattered_scene] {
+                let chunks =
+                    TwoLayerStore::enabled().build_covering_chunks(&scene, voxels_per_block, 0);
+                let full_build = build_brick_field_all_blocks(&chunks, voxels_per_block);
+                let masks = BlockOccupancyMasks::from_chunks(&chunks);
+                assert!(!masks.cell_keys.is_empty(), "the scene must occupy blocks");
+
+                // Every full-record block reads as an occupied bit.
+                let cell_size = BLOCK_OCCUPANCY_CELL_BLOCKS as i64;
+                let bit_set = |world_block: [i64; 3]| -> bool {
+                    let cell = [
+                        world_block[0].div_euclid(cell_size),
+                        world_block[1].div_euclid(cell_size),
+                        world_block[2].div_euclid(cell_size),
+                    ];
+                    let Ok(index) = masks.cell_keys.binary_search(&pack_world_block_key(cell)) else {
+                        return false;
+                    };
+                    let local = [
+                        world_block[0].rem_euclid(cell_size) as usize,
+                        world_block[1].rem_euclid(cell_size) as usize,
+                        world_block[2].rem_euclid(cell_size) as usize,
+                    ];
+                    let bit = (local[2] * cell_size as usize + local[1]) * cell_size as usize
+                        + local[0];
+                    masks.cell_masks[index][bit / 32] & (1u32 << (bit % 32)) != 0
+                };
+                let mut expected_set: std::collections::BTreeSet<[i64; 3]> =
+                    std::collections::BTreeSet::new();
+                for record in &full_build.brick_records {
+                    let block = unpack_world_block_key(record.packed_world_block_key);
+                    assert!(bit_set(block), "full-record block {block:?} missing from the mask");
+                    expected_set.insert(block);
+                }
+                // And no bit is set beyond the full-record set (the mask is not a superset).
+                let mut mask_bits = 0u64;
+                for mask in &masks.cell_masks {
+                    for word in mask {
+                        mask_bits += word.count_ones() as u64;
+                    }
+                }
+                assert_eq!(
+                    mask_bits,
+                    expected_set.len() as u64,
+                    "mask must set exactly the full-record blocks (density {voxels_per_block})"
                 );
             }
         }

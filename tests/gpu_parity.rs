@@ -1447,6 +1447,129 @@ fn brick_surface_elision_hit_set_unchanged() {
     );
 }
 
+/// **ADR 0011 band-clip interior fix — a LAYER BAND slicing a solid renders the elided
+/// interior identically to the full-record oracle.** The sibling `..._hit_set_unchanged`
+/// proves surface==full under a FULL band (a ray reaches an interior only through a surface
+/// record that stops it first). A band CUT PLANE breaks that: it can start a ray INSIDE the
+/// solid at a block whose coarse record was elided (interior elision) — the record search
+/// misses, the cross-section would render hollow. This gate renders the surface-only build
+/// and the interior-inclusive oracle build through a mid-Z band that CLIPS each coarse-heavy
+/// solid, and asserts the hit-identity images are BYTE-IDENTICAL: the block-occupancy fallback
+/// (a set bit + a record miss ⇒ the elided coarse cube) reproduces the oracle's records exactly.
+#[test]
+fn brick_surface_elision_band_clip_renders_interior() {
+    use voxel_worker::{
+        brick_representable_overlay, build_brick_field, build_brick_field_all_blocks,
+        pack_gpu_records, AppCore, BrickRaymarchRenderer, ClipmapPyramid, LayerBand, OrbitCamera,
+        TwoLayerStore, COLOR_TARGET_FORMAT,
+    };
+
+    let gpu = pollster::block_on(GpuContext::new(None));
+    let width = 128u32;
+    let height = 128u32;
+    let mut failures: Vec<String> = Vec::new();
+    // At least one case must (a) elide a solid interior AND (b) actually clip it with the band,
+    // else the fallback is unexercised and the test is vacuous.
+    let mut total_elided = 0usize;
+    let mut any_band_clipped = false;
+
+    for case in brick_render_cases() {
+        let vpb = case.voxels_per_block;
+        let two_layer_chunks = TwoLayerStore::enabled().build_covering_chunks(&case.scene, vpb, 0);
+        let full_build = build_brick_field_all_blocks(&two_layer_chunks, vpb);
+        let surface_build = build_brick_field(&two_layer_chunks, vpb);
+        if full_build.brick_records.is_empty() {
+            continue;
+        }
+        let overlay_active = brick_representable_overlay(&two_layer_chunks).unwrap_or(false);
+        let recentre = case.scene.recentre_voxels_for_resolve(vpb);
+        let grid_dimensions = case.scene.placed_region_dimensions(vpb);
+        let grid_z = grid_dimensions[2];
+        if grid_z < 3 {
+            continue;
+        }
+        // A mid-Z band that slices the solid's middle third — a cut plane through the interior.
+        let band = LayerBand {
+            band_min: grid_z / 3,
+            band_max: (grid_z * 2 / 3).min(grid_z - 1),
+            onion_depth: 0,
+        };
+
+        let full_records = pack_gpu_records(&full_build, |_| false);
+        let surface_records = pack_gpu_records(&surface_build, |_| false);
+        total_elided += full_records.len() - surface_records.len();
+        // The pyramid (chunk-sourced, identical both sides) carries the block-occupancy masks.
+        let pyramid = ClipmapPyramid::from_chunks(&two_layer_chunks);
+
+        let mut app_core = AppCore::new(OrbitCamera::default());
+        app_core.camera.target = glam::Vec3::ZERO;
+        app_core.camera.orbit_distance = OrbitCamera::auto_framed_distance(grid_dimensions);
+        let aspect_ratio = width as f32 / height as f32;
+        let view_projection = app_core.view_projection(aspect_ratio, grid_dimensions);
+        let viewport_px = [0u32, 0, width, height];
+
+        let mut band_clip_seen = false;
+        let mut render = |build: &voxel_worker::BrickFieldBuild, gpu_records: &[_]| {
+            let mut renderer =
+                BrickRaymarchRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
+            renderer.install_brick_field(
+                &gpu.device,
+                &gpu.queue,
+                build,
+                gpu_records,
+                &pyramid,
+                recentre,
+                overlay_active,
+            );
+            let frame = renderer.update_uniforms(
+                &gpu.queue,
+                view_projection,
+                viewport_px,
+                grid_dimensions,
+                band,
+                false,
+                Some(MaterialChoice::default()),
+            );
+            band_clip_seen = frame.band_clip_active;
+            renderer.render_hit_identity_image(&gpu.device, &gpu.queue, width, height)
+        };
+        let full_image = render(&full_build, &full_records);
+        let surface_image = render(&surface_build, &surface_records);
+        any_band_clipped |= band_clip_seen;
+
+        let hits = full_image.iter().filter(|pixel| pixel[0] == 1).count();
+        if hits == 0 {
+            continue; // the band framed the solid out — not this case's job
+        }
+        let mismatches = full_image
+            .iter()
+            .zip(&surface_image)
+            .filter(|(full, surface)| full != surface)
+            .count();
+        if mismatches > 0 {
+            failures.push(format!(
+                "{}: {mismatches}/{} band-clipped pixels differ between the oracle and the \
+                 surface-only+occupancy-fallback builds (elided {} of {} records)",
+                case.name,
+                width * height,
+                full_records.len() - surface_records.len(),
+                full_records.len(),
+            ));
+        }
+    }
+
+    assert!(
+        total_elided > 0 && any_band_clipped,
+        "no case both elided an interior AND band-clipped it — the fallback is unexercised \
+         (elided {total_elided}, band-clipped {any_band_clipped})"
+    );
+    assert!(
+        failures.is_empty(),
+        "band-clip interior fallback != interior-inclusive oracle (ADR 0011):\n{}",
+        failures.join("\n")
+    );
+}
+
 /// **ADR 0011 slice G3 — incremental patch render == wholesale install render.** Drive a
 /// scene through the LIVE incremental path (install scene A → apply a localised occupancy
 /// edit → `patch_brick_field` writing ONLY the dirty slots), render its hit-identity
