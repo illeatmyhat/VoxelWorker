@@ -1689,9 +1689,10 @@ mod tests {
         assert_two_layer_round_trip_matches_dense(&scene, density, "demo-village");
     }
 
-    /// A sketch-revolve solid (the 800×800-revolve CLASS that stressed the dense cap): a
-    /// sketch always classifies BOUNDARY (its polygon fill is not a coarse box), so this
-    /// pins the per-voxel boundary path round-trips bit-identically to the dense store.
+    /// A sketch-revolve solid (the 800×800-revolve CLASS that stressed the dense cap): the
+    /// interior now ELIDES to coarse-solid blocks (ADR 0010 rollout) while the round-trip
+    /// stays bit-identical to the dense store — pinning the coarse + boundary composition
+    /// exact.
     #[test]
     fn round_trip_matches_dense_for_sketch_revolve() {
         use crate::sketch::{PlaneAxis, RevolveAxis, Sketch, SketchSolid};
@@ -1803,6 +1804,169 @@ mod tests {
             "interior elision: {total_chunks} chunks ({interior_chunks} fully interior); \
              two-layer stored {total_stored} voxels vs dense interior {dense_interior_voxels}"
         );
+    }
+
+    /// INTERIOR ELISION for the SKETCH producer — the completion of the ADR 0010 rollout.
+    /// A SOLID extrude box and a full 360° revolve now classify their interiors
+    /// COARSE-SOLID (dominating the surface-only boundary shell), and a CONCAVE L extrude
+    /// elides its interior while keeping the reflex-corner block BOUNDARY and the removed
+    /// quadrant AIR (proving the polygon test, not just axis-aligned rectangles). Every
+    /// case also round-trips bit-identically to the dense oracle (the over-claim police).
+    #[test]
+    fn sketch_interior_elides_to_coarse_solid() {
+        use crate::sketch::{PlaneAxis, RevolveAxis, Sketch, SketchPoint, SketchSolid};
+        let density = 8u32;
+
+        // Count (coarse, boundary) blocks across a producer's covering chunk range by
+        // classifying every block directly (no per-voxel resolve → fast).
+        let classify_scene = |scene: &Scene| -> (u64, u64) {
+            let leaves = scene.leaf_producers(density);
+            let leaves: Vec<&LeafProducer> = leaves.iter().collect();
+            let (min_chunk, max_chunk) = scene.covering_chunk_range(density).unwrap();
+            let chunk_extent = (CHUNK_BLOCKS * density) as i64;
+            let block = density as i64;
+            let (mut coarse, mut boundary) = (0u64, 0u64);
+            for cz in min_chunk[2]..=max_chunk[2] {
+                for cy in min_chunk[1]..=max_chunk[1] {
+                    for cx in min_chunk[0]..=max_chunk[0] {
+                        for bz in 0..CHUNK_BLOCKS {
+                            for by in 0..CHUNK_BLOCKS {
+                                for bx in 0..CHUNK_BLOCKS {
+                                    let low = [
+                                        cx as i64 * chunk_extent + bx as i64 * block,
+                                        cy as i64 * chunk_extent + by as i64 * block,
+                                        cz as i64 * chunk_extent + bz as i64 * block,
+                                    ];
+                                    let cell = VoxelAabb::new(
+                                        low,
+                                        [low[0] + block, low[1] + block, low[2] + block],
+                                    );
+                                    match classify_chunk_block(&leaves, cell, density) {
+                                        BlockClassification::CoarseSolid(_) => coarse += 1,
+                                        BlockClassification::Boundary => boundary += 1,
+                                        BlockClassification::Air => {}
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            (coarse, boundary)
+        };
+
+        // (1) SOLID extrude box, 8 blocks per axis (64³ voxels), BLOCK-ALIGNED: every block
+        // is fully solid (the axis-aligned wall blocks too — their face lattice line is
+        // collinear with the profile edge but every voxel centre is inside), so the whole
+        // box is COARSE with ZERO boundary blocks (the sample-centre rectangle win).
+        let edge = 8 * density as i64;
+        let extrude =
+            SketchSolid::extrude(Sketch::rectangle(PlaneAxis::Z, edge, edge), edge as u32);
+        let scene = Scene::from_nodes(vec![Node::new(
+            "Box",
+            NodeContent::SketchTool { producer: extrude, material: MaterialChoice::Stone },
+        )]);
+        let (coarse, boundary) = classify_scene(&scene);
+        assert_eq!(
+            boundary, 0,
+            "a block-aligned solid box has NO boundary blocks (walls are fully solid ⇒ coarse)"
+        );
+        assert_eq!(
+            coarse,
+            (CHUNK_BLOCKS as u64 * 2).pow(3),
+            "every block of the 8-block-per-axis box must be coarse-solid, got {coarse}"
+        );
+        assert_two_layer_round_trip_matches_dense(&scene, density, "sketch-extrude-box");
+
+        // (2) FULL 360° revolve (a solid cylinder, radial 3 blocks × axial 4 blocks):
+        // interior near the axis elides to coarse.
+        let revolve = SketchSolid::revolve(
+            Sketch::rectangle(PlaneAxis::X, 3 * density as i64, 4 * density as i64),
+            RevolveAxis::InPlane1,
+            360,
+        );
+        let scene = Scene::from_nodes(vec![Node::new(
+            "Cyl",
+            NodeContent::SketchTool { producer: revolve, material: MaterialChoice::Stone },
+        )]);
+        let (coarse, _) = classify_scene(&scene);
+        assert!(coarse > 0, "full 360 revolve must elide interior blocks to coarse-solid");
+        assert_two_layer_round_trip_matches_dense(&scene, density, "sketch-revolve-cyl");
+
+        // (3) CONCAVE L extrude (notch corner at voxel 20 = mid-block at d8, so the reflex
+        // edges CUT a block): interior elides, the reflex-corner block stays boundary, and
+        // the removed quadrant is NOT coarse (a plain rectangle would over-claim it solid).
+        let l_profile = vec![
+            SketchPoint::new(0, 0),
+            SketchPoint::new(32, 0),
+            SketchPoint::new(32, 20),
+            SketchPoint::new(20, 20), // reflex vertex, mid-block
+            SketchPoint::new(20, 32),
+            SketchPoint::new(0, 32),
+        ];
+        let l = SketchSolid::extrude(Sketch::new(PlaneAxis::Z, l_profile), 24);
+        let scene = Scene::from_nodes(vec![Node::new(
+            "L",
+            NodeContent::SketchTool { producer: l, material: MaterialChoice::Wood },
+        )]);
+        let leaves = scene.leaf_producers(density);
+        let leaves: Vec<&LeafProducer> = leaves.iter().collect();
+        // Deep inside the bottom bar (not touching any face) ⇒ coarse.
+        assert_eq!(
+            classify_chunk_block(&leaves, VoxelAabb::new([8, 8, 8], [16, 16, 16]), density),
+            BlockClassification::CoarseSolid(MaterialChoice::Wood.block_id()),
+            "an interior L block must be coarse-solid"
+        );
+        // The block the reflex edges cut through ([16,24)² in-plane, spanning y=20 & x=20)
+        // ⇒ boundary (a coarse claim would over-fill the notch).
+        assert_eq!(
+            classify_chunk_block(&leaves, VoxelAabb::new([16, 16, 8], [24, 24, 16]), density),
+            BlockClassification::Boundary,
+            "the L reflex-corner block must stay boundary"
+        );
+        // The removed top-right quadrant ([24,32)² in-plane) overlaps the producer AABB so
+        // it classifies BOUNDARY (resolves per-voxel to EMPTY) — crucially NOT coarse-solid,
+        // which is exactly what a naive bbox-solid claim would have wrongly returned.
+        assert_eq!(
+            classify_chunk_block(&leaves, VoxelAabb::new([24, 24, 8], [32, 32, 16]), density),
+            BlockClassification::Boundary,
+            "the removed L quadrant must NOT be coarse-solid (the polygon excludes it)"
+        );
+        let (coarse, _) = classify_scene(&scene);
+        assert!(coarse > 0, "the L extrude must still elide its solid interior");
+        assert_two_layer_round_trip_matches_dense(&scene, density, "sketch-L-extrude");
+
+        // (4) NON-BLOCK-ALIGNED interior edge: a right-triangle profile whose hypotenuse
+        // (x + y = 24) cuts through block INTERIORS at d8. A block the hypotenuse crosses
+        // stays BOUNDARY; a block fully below it goes coarse — proving the sample-centre
+        // test still distinguishes true-boundary blocks from fully-solid axis-aligned walls.
+        let triangle = vec![
+            SketchPoint::new(0, 0),
+            SketchPoint::new(24, 0),
+            SketchPoint::new(0, 24),
+        ];
+        let tri = SketchSolid::extrude(Sketch::new(PlaneAxis::Z, triangle), 24);
+        let scene = Scene::from_nodes(vec![Node::new(
+            "Tri",
+            NodeContent::SketchTool { producer: tri, material: MaterialChoice::Stone },
+        )]);
+        let leaves = scene.leaf_producers(density);
+        let leaves: Vec<&LeafProducer> = leaves.iter().collect();
+        // Fully below the hypotenuse (max x+y = 15 < 24) ⇒ coarse.
+        assert_eq!(
+            classify_chunk_block(&leaves, VoxelAabb::new([0, 0, 8], [8, 8, 16]), density),
+            BlockClassification::CoarseSolid(MaterialChoice::Stone.block_id()),
+            "a block fully below the triangle hypotenuse must be coarse-solid"
+        );
+        // The hypotenuse passes through this block's interior ⇒ boundary (not coarse).
+        assert_eq!(
+            classify_chunk_block(&leaves, VoxelAabb::new([8, 8, 8], [16, 16, 16]), density),
+            BlockClassification::Boundary,
+            "a block the hypotenuse cuts through the interior of must stay boundary"
+        );
+        let (coarse, _) = classify_scene(&scene);
+        assert!(coarse > 0, "the triangle extrude must still elide its solid interior");
+        assert_two_layer_round_trip_matches_dense(&scene, density, "sketch-triangle-extrude");
     }
 
     /// A fully-interior block of a solid box classifies COARSE-SOLID (no voxels); a block

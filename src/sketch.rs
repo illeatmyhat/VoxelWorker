@@ -410,6 +410,108 @@ fn point_in_polygon(profile: &[SketchPoint], sample_0: f64, sample_1: f64) -> bo
     inside
 }
 
+/// Whether the CLOSED axis-aligned rectangle `[c0_lo, c0_hi] × [c1_lo, c1_hi]` lies
+/// ENTIRELY inside the profile polygon, in the profile's native `(c0, c1)` space (the SAME
+/// space [`point_in_polygon`] samples). The coarse-solid interior-elision test (ADR 0010).
+///
+/// Callers pass the SAMPLE-CENTRE rectangle — the span of a block's per-voxel sample
+/// centres (`min + idx + 0.5`), NOT the voxel corners — so the polygon boundary that runs
+/// along a block face sits 0.5 beyond the outermost centre and no longer "crosses" (an
+/// axis-aligned face block IS fully solid and elides).
+///
+/// EXACT by connectedness: if no polygon edge crosses the closed rectangle then it contains
+/// no piece of the polygon boundary, so it is wholly inside or wholly outside — one interior
+/// sample (the centre, which is not on any edge given no crossing) decides. So the rectangle
+/// is inside iff **no polygon edge intersects it AND its centre is inside**; every sample
+/// centre then lies inside ⇒ every voxel solid. Conservative: a rectangle whose edge grazes
+/// a polygon edge counts as crossing ⇒ BOUNDARY (still exact). A DEGENERATE rectangle (a span
+/// that collapses to a single voxel ⇒ `hi == lo`, i.e. a segment or a point) is handled
+/// directly: the edge tests run against the degenerate box and the centre reduces to the
+/// point/segment-midpoint — for a single-voxel block this is exactly `point_in_polygon` at
+/// that voxel's own centre, matching the per-voxel resolve. Correct for convex, concave (the
+/// L reflex corner), and rectangle profiles alike.
+fn rectangle_inside_polygon(
+    profile: &[SketchPoint],
+    c0_lo: f64,
+    c0_hi: f64,
+    c1_lo: f64,
+    c1_hi: f64,
+) -> bool {
+    let count = profile.len();
+    // Allow a degenerate (single-voxel) span (`hi == lo`); only a truly inverted box is
+    // rejected. The sample-centre span guarantees `hi >= lo` (width = voxels − 1 >= 0).
+    if count < 3 || c0_hi < c0_lo || c1_hi < c1_lo {
+        return false;
+    }
+    let rect_min = [c0_lo, c1_lo];
+    let rect_max = [c0_hi, c1_hi];
+    let mut previous = count - 1;
+    for current in 0..count {
+        let a = profile[current].offset_voxels;
+        let b = profile[previous].offset_voxels;
+        let a = [a[0] as f64, a[1] as f64];
+        let b = [b[0] as f64, b[1] as f64];
+        if segment_intersects_rect(a, b, rect_min, rect_max) {
+            return false;
+        }
+        previous = current;
+    }
+    point_in_polygon(profile, (c0_lo + c0_hi) * 0.5, (c1_lo + c1_hi) * 0.5)
+}
+
+/// Whether segment `a→b` intersects the CLOSED axis-aligned rectangle
+/// `[rect_min, rect_max]` (component-wise min <= max). True iff an endpoint is inside the
+/// rectangle OR the segment crosses one of the four rectangle edges — complete for a
+/// convex box. Points are `[coord0, coord1]` in the profile's native space.
+fn segment_intersects_rect(a: [f64; 2], b: [f64; 2], rect_min: [f64; 2], rect_max: [f64; 2]) -> bool {
+    let inside = |p: [f64; 2]| {
+        p[0] >= rect_min[0] && p[0] <= rect_max[0] && p[1] >= rect_min[1] && p[1] <= rect_max[1]
+    };
+    if inside(a) || inside(b) {
+        return true;
+    }
+    let corners = [
+        [rect_min[0], rect_min[1]],
+        [rect_max[0], rect_min[1]],
+        [rect_max[0], rect_max[1]],
+        [rect_min[0], rect_max[1]],
+    ];
+    (0..4).any(|edge| segments_intersect(a, b, corners[edge], corners[(edge + 1) % 4]))
+}
+
+/// Robust segment–segment intersection (proper crossings AND collinear / endpoint
+/// touches), via orientation signs. Used only for the exact rectangle-inside-polygon test.
+fn segments_intersect(p0: [f64; 2], p1: [f64; 2], q0: [f64; 2], q1: [f64; 2]) -> bool {
+    let orient = |a: [f64; 2], b: [f64; 2], c: [f64; 2]| -> i32 {
+        let value = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+        if value > 0.0 {
+            1
+        } else if value < 0.0 {
+            -1
+        } else {
+            0
+        }
+    };
+    // `c` (collinear with `a→b`) lies within `a→b`'s bounding box.
+    let on_segment = |a: [f64; 2], b: [f64; 2], c: [f64; 2]| -> bool {
+        c[0] >= a[0].min(b[0])
+            && c[0] <= a[0].max(b[0])
+            && c[1] >= a[1].min(b[1])
+            && c[1] <= a[1].max(b[1])
+    };
+    let d1 = orient(q0, q1, p0);
+    let d2 = orient(q0, q1, p1);
+    let d3 = orient(p0, p1, q0);
+    let d4 = orient(p0, p1, q1);
+    if d1 != d2 && d3 != d4 {
+        return true;
+    }
+    (d1 == 0 && on_segment(q0, q1, p0))
+        || (d2 == 0 && on_segment(q0, q1, p1))
+        || (d3 == 0 && on_segment(p0, p1, q0))
+        || (d4 == 0 && on_segment(p0, p1, q1))
+}
+
 impl VoxelProducer for SketchSolid {
     fn resolve(&self, grid: &mut VoxelGrid, voxels_per_block: u32) {
         let [full_x, full_y, full_z] = self.grid_dimensions();
@@ -440,19 +542,27 @@ impl VoxelProducer for SketchSolid {
         }
     }
 
-    /// Conservative field interval over a block cell (ADR 0010 Decision 2). A sketch's
-    /// occupied set is a SUBSET of the producer's grid AABB `[0, full_dim)` (the profile
-    /// bbox extruded / revolved into that span), but inside the bbox the actual filled
-    /// region is a polygon, not a box — so this NEVER claims a cell is coarse-solid (that
-    /// would over-claim the bbox as filled). Instead:
+    /// Conservative field interval over a block cell (ADR 0010 Decision 2), honouring the
+    /// interior-elision contract for BOTH extrude and revolve (this FINISHES the
+    /// boundary-residency rollout for `SketchSolid` — see ADR 0009 §3–§4 / ADR 0010).
     ///
-    /// - a cell lying ENTIRELY OUTSIDE the producer's grid AABB is provably AIR (no voxel
-    ///   can be occupied there) — return an all-positive interval;
-    /// - any cell overlapping the AABB returns a STRADDLING interval ⇒ BOUNDARY ⇒ resolved
-    ///   per-voxel by the even-odd polygon test. Still exact, just unelided (the ADR's
-    ///   accepted "conservative from the profile bbox; when unsure, straddle" path).
+    /// The occupied set is a SUBSET of the producer's grid AABB `[0, full_dim)`; inside the
+    /// AABB the fill is the extruded / revolved polygon. Three verdicts:
     ///
-    /// The frame is the producer's local voxel-index frame `[0, full_dim)` (ADR 0008).
+    /// - a cell lying ENTIRELY OUTSIDE the grid AABB is provably AIR — all-positive
+    ///   interval `(1, 2)`;
+    /// - a cell lying ENTIRELY INSIDE the grid AABB whose whole footprint is PROVABLY solid
+    ///   (the operation-specific test below) is COARSE-SOLID — all-negative interval
+    ///   `(-2, -1)` (`maximum = −1 <= isolevel` ⇒ [`CoarseSolid`](crate::voxel::FieldClassification::CoarseSolid));
+    /// - everything else STRADDLES `(-1, 1)` ⇒ BOUNDARY ⇒ resolved per-voxel by the even-odd
+    ///   polygon test. Still exact, just unelided.
+    ///
+    /// CONSERVATIVE-NEVER-NARROW: coarse-solid is claimed ONLY when provably fully solid; on
+    /// any doubt the boundary interval is returned (always correct). A cell that pokes
+    /// outside the extent on ANY axis holds clamped-away air (`resolve_into` clamps the
+    /// window to `[0, full_dim)`), so it can never be coarse — only a cell wholly inside the
+    /// extent is a coarse candidate. The frame is the producer's local voxel-index frame
+    /// `[0, full_dim)` (ADR 0008 — carried, never re-derived).
     fn cell_field_interval(
         &self,
         cell_local_voxels: crate::spatial_index::VoxelAabb,
@@ -462,19 +572,38 @@ impl VoxelProducer for SketchSolid {
         if cell_local_voxels.is_empty() {
             return None;
         }
-        let [full_x, full_y, full_z] = self.grid_dimensions();
+        let dimensions = self.grid_dimensions();
+        let [full_x, full_y, full_z] = dimensions;
         // A degenerate (empty-occupancy) producer: every cell is AIR.
         let grid_aabb = crate::spatial_index::VoxelAabb::new(
             [0, 0, 0],
             [full_x as i64, full_y as i64, full_z as i64],
         );
         if grid_aabb.is_empty() || !cell_local_voxels.intersects(&grid_aabb) {
-            // Wholly outside the producer extent ⇒ provably AIR. An all-positive
-            // interval classifies as air without claiming a (false) coarse solid.
+            // Wholly outside the producer extent ⇒ provably AIR.
             return Some(crate::voxel::FieldInterval::new(1.0, 2.0));
         }
-        // Overlaps the extent: the polygon fill inside the bbox is not a box, so we
-        // cannot coarsely decide ⇒ straddle ⇒ BOUNDARY (per-voxel exact).
+        // Only a cell wholly inside `[0, full_dim)` can be coarse-solid (an overhang cell
+        // has air voxels the resolve clamps away). This also discharges the extrude
+        // normal-span condition and the revolve axial/radial extent conditions, since
+        // `grid_dimensions()` sizes those axes exactly.
+        let fully_inside_extent = (0..3).all(|axis| {
+            cell_local_voxels.min[axis] >= 0
+                && cell_local_voxels.max[axis] <= dimensions[axis] as i64
+        });
+        if fully_inside_extent {
+            let provably_solid = match self.operation {
+                Operation::Extrude { .. } => self.extrude_cell_is_solid(cell_local_voxels),
+                Operation::Revolve { axis, sweep } => {
+                    self.revolve_cell_is_solid(cell_local_voxels, axis, sweep, dimensions)
+                }
+            };
+            if provably_solid {
+                return Some(crate::voxel::FieldInterval::new(-2.0, -1.0));
+            }
+        }
+        // Straddles the surface (or a partial-turn / axis-containing / doubtful cell) ⇒
+        // BOUNDARY (per-voxel exact).
         Some(crate::voxel::FieldInterval::new(-1.0, 1.0))
     }
 
@@ -484,6 +613,115 @@ impl VoxelProducer for SketchSolid {
 }
 
 impl SketchSolid {
+    /// Whether an extrude cell (in the producer's local voxel-index frame, PROVEN fully
+    /// inside `[0, full_dim)` by the caller) is entirely solid — the coarse-solid test
+    /// (ADR 0010). The normal span is already `⊆ [0, height_voxels]` (the caller's
+    /// full-inside check + `grid_dimensions()[normal] = height_voxels`), so solidity
+    /// reduces to: the cell's in-plane footprint RECTANGLE is entirely inside the profile
+    /// polygon. The rectangle is the SAMPLE-CENTRE span, exactly as
+    /// [`resolve_extrude`](Self::resolve_extrude) samples occupancy
+    /// (`profile = bbox_min + idx + 0.5`): a cell spanning local `[c_lo, c_hi)` maps to
+    /// `[min + c_lo + 0.5, min + c_hi − 0.5]`. Testing that (not the voxel corners) elides an
+    /// axis-aligned FACE block — fully solid, but with its face lattice line collinear with
+    /// the profile edge — while never over-claiming (the edge sits 0.5 beyond the outermost
+    /// sample centre).
+    fn extrude_cell_is_solid(&self, cell: crate::spatial_index::VoxelAabb) -> bool {
+        let Some((min, _max)) = self.profile_bounds() else {
+            return false;
+        };
+        let [in_plane_0, in_plane_1] = self.sketch.plane.in_plane_axes();
+        let c0_lo = (min[0] + cell.min[in_plane_0]) as f64 + 0.5;
+        let c0_hi = (min[0] + cell.max[in_plane_0]) as f64 - 0.5;
+        let c1_lo = (min[1] + cell.min[in_plane_1]) as f64 + 0.5;
+        let c1_hi = (min[1] + cell.max[in_plane_1]) as f64 - 0.5;
+        rectangle_inside_polygon(&self.sketch.profile, c0_lo, c0_hi, c1_lo, c1_hi)
+    }
+
+    /// Whether a revolve cell (PROVEN fully inside `[0, full_dim)` by the caller) is
+    /// entirely solid — the coarse-solid test (ADR 0010). Full-turn only: a PARTIAL wedge
+    /// is not cleanly boundable per cell here, so it returns `false` (⇒ BOUNDARY, still
+    /// exact) — a documented deferral covered by the parity fuzz.
+    ///
+    /// For a full turn the solid-of-revolution occupancy at a cell is
+    /// `point_in_polygon(radius, axial)` (folded by `abs`; the resolve also tests `−radius`
+    /// only when the profile straddles the axis, which can only ADD occupancy). So the cell
+    /// is solid iff the `(radius-range × axial-range)` rectangle is entirely inside the
+    /// profile polygon, mapped into native `(c0, c1)` per [`RevolveAxis`] EXACTLY as
+    /// [`resolve_revolve`](Self::resolve_revolve) maps its per-voxel samples:
+    /// - axial: the SAMPLE-CENTRE span `[axial_min + cell.min + 0.5, axial_min + cell.max − 0.5]`
+    ///   (elides the axial END-CAP blocks, whose face is collinear with the profile edge);
+    /// - radius: over the two centred radial world axes (centred = `idx − half`), the
+    ///   `[nearest, farthest]` distance from the axis over the cell's voxel-corner box,
+    ///   widened by `EPS` so f32/f64 rounding can never SHRINK the tested rectangle below
+    ///   the true sample coverage (a wider rectangle only makes "inside" rarer ⇒ never an
+    ///   over-claim). The two are INDEPENDENT: axial uses the centre span, radius the
+    ///   conservative corner box + `EPS`.
+    fn revolve_cell_is_solid(
+        &self,
+        cell: crate::spatial_index::VoxelAabb,
+        axis: RevolveAxis,
+        sweep: RevolveSweep,
+        dimensions: [u32; 3],
+    ) -> bool {
+        // Only full turns are elided; a partial wedge falls back to BOUNDARY.
+        if sweep.turn_degrees < 360 {
+            return false;
+        }
+        let Some((min, _max)) = self.profile_bounds() else {
+            return false;
+        };
+        let [in_plane_0, in_plane_1] = self.sketch.plane.in_plane_axes();
+        let normal = self.sketch.plane.normal_axis();
+        let (axial_world_axis, axial_min, radial_in_plane_axis) = match axis {
+            RevolveAxis::InPlane0 => (in_plane_0, min[0], in_plane_1),
+            RevolveAxis::InPlane1 => (in_plane_1, min[1], in_plane_0),
+        };
+        // The two radial world axes in ASCENDING index, matching `resolve_revolve`.
+        let mut radial_world_axes = [radial_in_plane_axis, normal];
+        radial_world_axes.sort_unstable();
+        let [radial_a, radial_b] = radial_world_axes;
+
+        let half = [
+            dimensions[0] as f64 / 2.0,
+            dimensions[1] as f64 / 2.0,
+            dimensions[2] as f64 / 2.0,
+        ];
+
+        // Axial rectangle range in profile-axial coords — the SAMPLE-CENTRE span, matching
+        // the resolve's `axial_min + idx + 0.5` sampler exactly (a single-voxel span
+        // collapses to a point, handled by `rectangle_inside_polygon`).
+        let axial_lo = (axial_min + cell.min[axial_world_axis]) as f64 + 0.5;
+        let axial_hi = (axial_min + cell.max[axial_world_axis]) as f64 - 0.5;
+
+        // Centred radial voxel-corner box per radial world axis (centred = idx − half).
+        let a_lo = cell.min[radial_a] as f64 - half[radial_a];
+        let a_hi = cell.max[radial_a] as f64 - half[radial_a];
+        let b_lo = cell.min[radial_b] as f64 - half[radial_b];
+        let b_hi = cell.max[radial_b] as f64 - half[radial_b];
+        // Nearest coordinate to the axis is 0 when the box straddles 0, else the closer face.
+        let nearest = |lo: f64, hi: f64| -> f64 {
+            if lo <= 0.0 && hi >= 0.0 {
+                0.0
+            } else {
+                lo.abs().min(hi.abs())
+            }
+        };
+        let farthest = |lo: f64, hi: f64| -> f64 { lo.abs().max(hi.abs()) };
+        let r_near = (nearest(a_lo, a_hi).powi(2) + nearest(b_lo, b_hi).powi(2)).sqrt();
+        let r_far = (farthest(a_lo, a_hi).powi(2) + farthest(b_lo, b_hi).powi(2)).sqrt();
+        const EPS: f64 = 1e-4;
+        let r_lo = (r_near - EPS).max(0.0);
+        let r_hi = r_far + EPS;
+
+        // Map (radius, axial) into the profile's native (c0, c1) order, matching the
+        // resolve's `inside` closure: InPlane0 ⇒ (axial, radius); InPlane1 ⇒ (radius, axial).
+        let (c0_lo, c0_hi, c1_lo, c1_hi) = match axis {
+            RevolveAxis::InPlane0 => (axial_lo, axial_hi, r_lo, r_hi),
+            RevolveAxis::InPlane1 => (r_lo, r_hi, axial_lo, axial_hi),
+        };
+        rectangle_inside_polygon(&self.sketch.profile, c0_lo, c0_hi, c1_lo, c1_hi)
+    }
+
     /// The extrude resolve: rasterize the profile once and sweep it across
     /// `height_voxels` layers along the plane normal. Byte-identical to the prior
     /// `SketchExtrude::resolve` (the height now arrives from the matched operation).

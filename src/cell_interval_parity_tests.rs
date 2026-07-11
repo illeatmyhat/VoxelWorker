@@ -247,36 +247,69 @@ fn sketch_extrude_cell_interval_never_misclassifies() {
 
     let mut cases = 0u64;
     let mut air = 0u64;
+    let mut solid = 0u64;
+    let mut boundary = 0u64;
     for (label, sketch) in [("rect", rectangle), ("L", l_shape)] {
-        let solid = SketchSolid::extrude(sketch, 24);
-        let cells = fuzz_cells(solid.grid_dimensions(), density, 0x57E7_u64);
+        let producer = SketchSolid::extrude(sketch, 24);
+        let cells = fuzz_cells(producer.grid_dimensions(), density, 0x57E7_u64);
         for &cell in &cells {
-            assert_cell_bound_exact(&solid, cell, density, &format!("Sketch-extrude {label}"));
-            if let Some(interval) = solid.cell_field_interval(cell, density) {
-                if interval.classify(SURFACE_ISOLEVEL) == FieldClassification::Air {
-                    air += 1;
+            // The over-claim police: any coarse claim (all-inside or the L reflex corner)
+            // must match brute force EXACTLY.
+            assert_cell_bound_exact(&producer, cell, density, &format!("Sketch-extrude {label}"));
+            if let Some(interval) = producer.cell_field_interval(cell, density) {
+                match interval.classify(SURFACE_ISOLEVEL) {
+                    FieldClassification::Air => air += 1,
+                    FieldClassification::CoarseSolid => solid += 1,
+                    FieldClassification::Boundary => boundary += 1,
                 }
             }
             cases += 1;
         }
     }
-    assert!(air > 0, "sketch fuzz never produced an AIR verdict");
-    eprintln!("Sketch-extrude parity: {cases} cells classified ({air} provable-air)");
+    // Interior elision must actually fire (a solid extrude interior is coarse), and the
+    // concave L must still leave straddling blocks boundary.
+    assert!(air > 0, "sketch-extrude fuzz never produced an AIR verdict");
+    assert!(solid > 0, "sketch-extrude fuzz never produced a SOLID verdict (elision dead)");
+    assert!(boundary > 0, "sketch-extrude fuzz never produced a BOUNDARY verdict");
+    eprintln!(
+        "Sketch-extrude parity: {cases} cells classified ({air} air, {solid} solid, {boundary} boundary)"
+    );
 }
 
 #[test]
 fn sketch_revolve_cell_interval_never_misclassifies() {
     use crate::sketch::{PlaneAxis, RevolveAxis, Sketch, SketchSolid};
     let density = 16u32;
-    let profile = Sketch::rectangle(PlaneAxis::Z, 24, 16);
-    let solid = SketchSolid::revolve(profile, RevolveAxis::InPlane0, 360);
-    let cells = fuzz_cells(solid.grid_dimensions(), density, 0x5EF0_u64);
+    // A full 360° revolve (interior elides) and a PARTIAL 180° revolve (deferred to
+    // boundary) — both must never misclassify against brute force.
     let mut cases = 0u64;
-    for &cell in &cells {
-        assert_cell_bound_exact(&solid, cell, density, "Sketch-revolve");
-        cases += 1;
+    let mut air = 0u64;
+    let mut solid = 0u64;
+    let mut boundary = 0u64;
+    for (label, turn) in [("full-360", 360u32), ("partial-180", 180)] {
+        let profile = Sketch::rectangle(PlaneAxis::Z, 24, 16);
+        let producer = SketchSolid::revolve(profile, RevolveAxis::InPlane0, turn);
+        let cells = fuzz_cells(producer.grid_dimensions(), density, 0x5EF0_u64);
+        for &cell in &cells {
+            assert_cell_bound_exact(&producer, cell, density, &format!("Sketch-revolve {label}"));
+            if let Some(interval) = producer.cell_field_interval(cell, density) {
+                match interval.classify(SURFACE_ISOLEVEL) {
+                    FieldClassification::Air => air += 1,
+                    FieldClassification::CoarseSolid => solid += 1,
+                    FieldClassification::Boundary => boundary += 1,
+                }
+            }
+            cases += 1;
+        }
     }
-    eprintln!("Sketch-revolve parity: {cases} cells classified");
+    // The full-turn revolve MUST elide some interior (coarse), proving the radius/axial
+    // rectangle test fires; the partial turn contributes only air/boundary (deferred).
+    assert!(solid > 0, "sketch-revolve fuzz never produced a SOLID verdict (elision dead)");
+    assert!(air > 0, "sketch-revolve fuzz never produced an AIR verdict");
+    assert!(boundary > 0, "sketch-revolve fuzz never produced a BOUNDARY verdict");
+    eprintln!(
+        "Sketch-revolve parity: {cases} cells classified ({air} air, {solid} solid, {boundary} boundary)"
+    );
 }
 
 #[test]
