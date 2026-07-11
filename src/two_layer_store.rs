@@ -2804,6 +2804,72 @@ mod tests {
         }
     }
 
+    /// Perf probe (`#[ignore]`d — run in release): per-stage timing of the FULL brick
+    /// pipeline a wholesale rebuild runs after the two-layer classify, on solid
+    /// sketch-extrude cubes of growing block span. This is the interior-elision regression
+    /// guard for the 8000³-cube freeze fix (ADR 0011 surface-only record contract): at
+    /// density 16 the 500-blk/axis cube is 125M blocks, and before the surface-only build
+    /// every stage was O(all blocks) — ~12.5s of serial main-thread work and ~6 GB of
+    /// transient record traffic per rebuild. With the record set ∝ surface, every stage
+    /// must stay sub-second and the record count ~1.5M (the shell), not 125M.
+    ///
+    /// `cargo test --release brick_pipeline_scaling_probe -- --ignored --nocapture`
+    /// The 500-blk/axis case (the actual 8000³ user scene) is opt-in via
+    /// `VOXELWORKER_PROBE_LARGE=1` — it is the slowest case and the smaller spans already
+    /// expose any O(volume) regression as a super-quadratic jump between rows.
+    #[test]
+    #[ignore = "perf probe — run in release with --nocapture"]
+    fn brick_pipeline_scaling_probe() {
+        use crate::brick_field::{
+            build_brick_field, BrickRecord, ClipmapPyramid, IncrementalBrickField,
+        };
+        use crate::brick_raymarch::pack_gpu_records;
+        use crate::sketch::{PlaneAxis, Sketch, SketchSolid};
+        let density = 16u32;
+        let mut block_spans = vec![50i64, 125, 250];
+        if std::env::var_os("VOXELWORKER_PROBE_LARGE").is_some() {
+            block_spans.push(500); // the 8000³-voxel user cube
+        }
+        for blocks in block_spans {
+            let edge = blocks * density as i64;
+            let extrude =
+                SketchSolid::extrude(Sketch::rectangle(PlaneAxis::Z, edge, edge), edge as u32);
+            let scene = Scene::from_nodes(vec![Node::new(
+                "Box",
+                NodeContent::SketchTool { producer: extrude, material: MaterialChoice::Stone },
+            )]);
+            let stage_start = std::time::Instant::now();
+            let chunks = TwoLayerStore::enabled().build_covering_chunks(&scene, density, 0);
+            let classify_elapsed = stage_start.elapsed();
+            let stage_start = std::time::Instant::now();
+            let build = build_brick_field(&chunks, density);
+            let field_elapsed = stage_start.elapsed();
+            let record_megabytes =
+                (build.brick_records.len() * std::mem::size_of::<BrickRecord>()) as f64 / 1.0e6;
+            let stage_start = std::time::Instant::now();
+            let gpu_records = pack_gpu_records(&build, |_| false);
+            let pack_elapsed = stage_start.elapsed();
+            let stage_start = std::time::Instant::now();
+            let pyramid = ClipmapPyramid::from_chunks(&chunks);
+            let pyramid_elapsed = stage_start.elapsed();
+            let stage_start = std::time::Instant::now();
+            let incremental_mirror = IncrementalBrickField::from_wholesale(&build);
+            let wholesale_elapsed = stage_start.elapsed();
+            println!(
+                "brick pipeline probe {edge}^3 vx ({blocks} blk/axis): classify {} chunks \
+                 {classify_elapsed:?} | brick_field {} surface records ({record_megabytes:.0} MB) \
+                 {field_elapsed:?} | gpu_pack {} records {pack_elapsed:?} | \
+                 pyramid(from_chunks) {pyramid_elapsed:?} | \
+                 from_wholesale (records clone) {wholesale_elapsed:?}",
+                chunks.len(),
+                build.brick_records.len(),
+                gpu_records.len(),
+            );
+            drop(incremental_mirror);
+            drop(pyramid);
+        }
+    }
+
     /// A localised recolor of one small far-flung node dirties only the handful of chunks
     /// that node occupies, NOT the whole scene — the two-layer analogue of
     /// `store.rs::localized_recolor_rebuilds_few_chunks`.

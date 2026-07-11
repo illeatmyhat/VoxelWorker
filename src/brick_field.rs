@@ -5,14 +5,27 @@
 //! atlas-mechanic-proven step and ADR 0010's E1), gated by `tests/gpu_parity.rs`
 //! before any live raymarch (G1) consumes it.
 //!
-//! The mapping is ADR 0011 Decision 2, one-to-one onto the [`TwoLayerChunk`] partition:
+//! The mapping is ADR 0011 Decision 2 onto the [`TwoLayerChunk`] partition, **surface-only**
+//! (ADR 0011 interior elision — the record-set contract since the 8000³-freeze fix):
 //!
 //! * **air block** → no record (the ray skips it via the clip-map, later).
 //! * **coarse-solid block** → one [`BrickPayload::CoarseSolid`] record: a solid
-//!   block-cube at its [`BlockId`], **no atlas slot, no per-voxel data** — the
-//!   interior-elision win carried onto the GPU.
+//!   block-cube at its [`BlockId`], **no atlas slot, no per-voxel data** — UNLESS the
+//!   block is fully occluded (all six face-neighbours present + solid on the shared
+//!   face), in which case it emits NOTHING: a ray can never reach it first, so its
+//!   record would be dead weight hauled through every stage. Interiors live in the
+//!   two-layer chunks' coarse layer, not in the record set.
 //! * **boundary block** (a `microblocks` entry) → one [`BrickPayload::Sculpted`] record
 //!   whose atlas slot holds the block's voxel occupancy, rasterized from its cuboids.
+//!   Every boundary block keeps its record (the sculpted set is never elided), so the
+//!   atlas and the fog's sculpted tiles stay complete.
+//!
+//! **Consumers under this contract:** the shader record buffer binary-searches exactly
+//! this set (no second elision pass); the clip-map pyramid derives from the CHUNKS
+//! ([`ClipmapPyramid::from_chunks`], interiors included); the fog box-fills coarse
+//! occupancy from the CHUNKS (`build_per_chunk_fog_occupancy_from_bricks`). The
+//! interior-inclusive build survives as the parity oracle
+//! ([`build_brick_field_all_blocks`]).
 //!
 //! **The brick granule is ONE BLOCK** (ADR 0011 Decision 1): the brick edge is
 //! `voxels_per_block` — block-denominated, correct at ANY density; nothing here may
@@ -446,31 +459,126 @@ impl BrickFieldBuild {
     }
 }
 
-/// Build the brick field from a scene's two-layer boundary set (the
-/// `build_covering_chunks` / resident-cache output): walk every chunk's block
-/// partition, emit one record per non-air block, rasterize each boundary block's
-/// cuboids into its atlas slot, and sort the records by packed world-block key.
+/// Build the **surface-only** brick field from a scene's two-layer boundary set (the
+/// `build_covering_chunks` / resident-cache output): walk every chunk's block partition,
+/// emit one record per SURFACE non-air block — a fully-occluded coarse interior block
+/// emits nothing (ADR 0011 interior elision, fused into the build via
+/// [`BrickOcclusionOracle`]; interiors stay queryable through the chunks) — rasterize each
+/// boundary block's cuboids into its atlas slot, and sort the records by packed
+/// world-block key.
+///
+/// **O(surface), not O(volume) (the 8000³-freeze fix):** an all-interior chunk (fully
+/// solid, fully-solid face-neighbours) is skipped whole without visiting its blocks, so a
+/// 125M-block solid emits ~1.5M records and the build touches only the ~1-chunk-thick
+/// boundary shell. Every consumer downstream (sort, GPU pack, incremental mirror clone)
+/// inherits the ∝-surface cost. The interior-INCLUSIVE build survives as
+/// [`build_brick_field_all_blocks`], the parity oracle.
 ///
 /// `voxels_per_block` is the document density every chunk was built at (each chunk
 /// carries it; a mismatch is a caller bug, asserted in debug).
 ///
 /// **Why the classify pass stays SERIAL (measured).** The per-block classify + slot
-/// assignment is coarse-dominated and memory-bound (an 8000×800×800 solid box is ~1.25M
-/// blocks, almost all coarse-solid — the cheap interval verdict, no rasterize), so a rayon
-/// per-chunk split measured NO net win: the parallel classify gain was cancelled by the
-/// extra ordered-merge pass needed to keep the sculpted atlas-slot numbering byte-identical
-/// (slots are assigned in traversal order — ADR 0011 G3's incremental-atlas contract — so a
-/// parallel build must re-derive that exact order, adding an O(records) merge). Only the
-/// final key sort is worth parallelising (below). The record ORDER + sculpted slot numbering
-/// are therefore produced by the same serial traversal as before — bit-for-bit unchanged.
+/// assignment is coarse-dominated and memory-bound, so a rayon per-chunk split measured NO
+/// net win: the parallel classify gain was cancelled by the extra ordered-merge pass needed
+/// to keep the sculpted atlas-slot numbering byte-identical (slots are assigned in
+/// traversal order — ADR 0011 G3's incremental-atlas contract — so a parallel build must
+/// re-derive that exact order, adding an O(records) merge). Only the final key sort and the
+/// oracle's chunk classification are worth parallelising. The record ORDER + sculpted slot
+/// numbering are produced by the same serial traversal as the oracle build — sculpted slots
+/// bit-for-bit identical (the sculpted set is never elided).
 pub fn build_brick_field(
     two_layer_chunks: &[([i32; 3], Arc<TwoLayerChunk>)],
     voxels_per_block: u32,
 ) -> BrickFieldBuild {
-    // NOTE (this epic): `build_brick_field` will emit SURFACE-ONLY records; until that flip
-    // lands it delegates to the interior-inclusive reference. `build_brick_field_all_blocks`
-    // stays the full-set oracle the parity tests compare against.
-    build_brick_field_all_blocks(two_layer_chunks, voxels_per_block)
+    let brick_edge_voxels = voxels_per_block.max(1);
+    let oracle = BrickOcclusionOracle::new(two_layer_chunks);
+    let mut brick_records: Vec<BrickRecord> = Vec::new();
+    // One `edge³` byte tile per sculpted brick, in slot order; scattered into the
+    // atlas cube once the final count fixes the tile geometry.
+    let mut sculpted_brick_tiles: Vec<Vec<u8>> = Vec::new();
+
+    for (chunk_coord, chunk) in two_layer_chunks {
+        debug_assert_eq!(
+            chunk.voxels_per_block, brick_edge_voxels,
+            "every chunk of one build shares the document density"
+        );
+        // Interior-chunk fast path (∝ surface, the 8000³-freeze fix): a fully-solid chunk
+        // ringed by fully-solid face-neighbours is all-occluded — emit NOTHING for it
+        // without visiting a single block. An interior chunk has no microblocks by
+        // definition, so no sculpted record is skipped here.
+        if oracle.chunk_is_all_interior(*chunk_coord) {
+            continue;
+        }
+        let occlusion = oracle.context_for_chunk(*chunk_coord, chunk.as_ref());
+        for block_z in 0..CHUNK_BLOCKS {
+            for block_y in 0..CHUNK_BLOCKS {
+                for block_x in 0..CHUNK_BLOCKS {
+                    let block = [block_x, block_y, block_z];
+                    let world_block = [
+                        chunk_coord[0] as i64 * CHUNK_BLOCKS as i64 + block_x as i64,
+                        chunk_coord[1] as i64 * CHUNK_BLOCKS as i64 + block_y as i64,
+                        chunk_coord[2] as i64 * CHUNK_BLOCKS as i64 + block_z as i64,
+                    ];
+                    // Classify the block once (shared with the G3 incremental update so
+                    // both paths emit identical records); the wholesale build assigns
+                    // sculpted slots densely in record order.
+                    match classify_block_brick(chunk, block, world_block, brick_edge_voxels) {
+                        BlockBrick::Air => {}
+                        // A coarse-solid block emits ONLY when a ray could reach it: the
+                        // fused interior elision (never emitted ⇒ never sorted, packed,
+                        // uploaded). Interiors stay queryable through the chunks.
+                        BlockBrick::Coarse(record) => {
+                            if !occlusion.coarse_block_occluded(block) {
+                                brick_records.push(record);
+                            }
+                        }
+                        // A boundary (sculpted) block is surface by definition here: its
+                        // record — and thus the atlas + fog tile set — is NEVER elided,
+                        // so sculpted slot numbering matches the interior-inclusive
+                        // oracle build tile-for-tile.
+                        BlockBrick::Sculpted {
+                            material_id,
+                            seam_solidity,
+                            tile,
+                        } => {
+                            let atlas_slot = sculpted_brick_tiles.len() as u32;
+                            sculpted_brick_tiles.push(tile);
+                            brick_records.push(BrickRecord {
+                                packed_world_block_key: pack_world_block_key(world_block),
+                                material_id,
+                                payload: BrickPayload::Sculpted { atlas_slot },
+                                seam_solidity,
+                            });
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // The keys are UNIQUE (each world block appears in exactly one chunk — asserted below),
+    // so a parallel unstable sort yields the byte-identical order a serial sort would, at any
+    // thread count. (A filtered emission of the serial traversal stays traversal-ordered, so
+    // this is the same sort the interior-inclusive build performs — the shader binary search
+    // and the G3 patch protocol see a sorted, unique array either way.)
+    brick_records.par_sort_unstable_by_key(|record| record.packed_world_block_key);
+    debug_assert!(
+        brick_records
+            .windows(2)
+            .all(|pair| pair[0].packed_world_block_key < pair[1].packed_world_block_key),
+        "brick keys must be unique (each world block appears in exactly one chunk)"
+    );
+
+    let (bricks_per_axis, atlas_dim_voxels, sculpted_atlas_bytes) =
+        pack_sculpted_atlas(&sculpted_brick_tiles, brick_edge_voxels);
+
+    BrickFieldBuild {
+        brick_records,
+        sculpted_atlas_bytes,
+        brick_edge_voxels,
+        bricks_per_axis,
+        atlas_dim_voxels,
+    }
 }
 
 /// The interior-INCLUSIVE brick-field build: one record per NON-AIR block (coarse-solid or
@@ -553,84 +661,152 @@ pub fn build_brick_field_all_blocks(
     }
 }
 
-/// **Interior-elision mask for the DISPLAY record buffer (ADR 0011 — the brick sink's
-/// analogue of the mesh's interior-face culling and the sketch producer's coarse-solid
-/// elision).** Returns a per-record `keep` flag over the full, sorted `records` (aligned to
-/// `records` index-for-index): `true` for a block a ray could reach, `false` for one whose
-/// SIX face-neighbours are each present AND solid on the shared face — a fully-occluded
-/// interior block.
+/// The six face-neighbour chunk offsets — the reach of a block's occlusion verdict at the
+/// chunk granularity (a block's six face-neighbours land in its own chunk or one of these).
+const FACE_NEIGHBOUR_CHUNK_OFFSETS: [[i32; 3]; 6] = [
+    [1, 0, 0],
+    [-1, 0, 0],
+    [0, 1, 0],
+    [0, -1, 0],
+    [0, 0, 1],
+    [0, 0, -1],
+];
+
+/// **The occlusion oracle over a two-layer covering set (ADR 0011 interior elision — the
+/// brick sink's analogue of the mesh's interior-face culling).** Decides which coarse-solid
+/// blocks are FULLY OCCLUDED — all six face-neighbours present AND solid on the shared face
+/// — so [`build_brick_field`] / [`IncrementalBrickField::apply_dirty_update`] can fuse the
+/// interior elision INTO record emission (the record set is surface-only by construction;
+/// no post-hoc mask pass over an O(volume) record array).
 ///
-/// Such a block is never a ray's first hit: the block-DDA
-/// ([`cpu_march_brick_field`](crate::brick_raymarch::cpu_march_brick_field)) returns at
-/// the FIRST block carrying a record, and a ray reaching an interior block must first pass
-/// through the solid neighbour surrounding it (which keeps its record). So eliding the
-/// `false` records from the shader's record buffer is **hit-identical** — proven in
-/// `tests/gpu_parity.rs::brick_surface_elision_hit_set_unchanged`. The clip-map, atlas and
-/// fog keep the FULL set; only the per-edit record buffer the shader binary-searches
-/// shrinks (∝ surface, not volume, for a large solid).
+/// A fully-occluded block is never a ray's first hit: the block-DDA
+/// ([`cpu_march_brick_field`](crate::brick_raymarch::cpu_march_brick_field)) returns at the
+/// FIRST block carrying a record, and a ray reaching an occluded block must first pass
+/// through the solid neighbour surrounding it (which keeps its record). So never emitting it
+/// is **hit-identical** — proven against the interior-inclusive oracle build in
+/// `tests/gpu_parity.rs::brick_surface_elision_hit_set_unchanged`.
 ///
-/// **Why the `chunks`, not the records:** occlusion is a per-block NEIGHBOUR property, and a
-/// [`TwoLayerChunk`] resolves a neighbour in O(1) (index its coarse layer / microblocks) —
-/// whereas a probe into the 1.25M-record set needs a hash/binary-search per neighbour (a
-/// measured 1.2s for an 8000×800×800 box, dwarfing the upload it saves). The two-layer
-/// store is the right oracle; `records` only fixes the output order + the sculpted
-/// neighbour's seam flags. `records` MUST be `build_brick_field(chunks, …).brick_records`.
-///
-/// **Chunk-level fast path:** a chunk that is itself fully coarse-solid AND whose six
-/// FACE-neighbour chunks are all fully coarse-solid has every one of its blocks interior
-/// (each block's six neighbours land in this chunk or a full neighbour, all solid) — so all
-/// 64 elide with a single set lookup. Only the ~1-chunk-thick boundary shell (and any chunk
-/// carrying microblocks) does the per-block six-neighbour test. For a large solid the
-/// interior chunks dominate, so the pass is ∝ surface.
+/// **Chunk-level fast path ([`Self::chunk_is_all_interior`]):** a chunk that is itself fully
+/// coarse-solid AND whose six FACE-neighbour chunks are all fully coarse-solid has every one
+/// of its blocks occluded (each block's six neighbours land in this chunk or a full
+/// neighbour, all solid) — the builder skips the whole chunk with one set lookup, visiting
+/// none of its blocks. Only the ~1-chunk-thick boundary shell (and any chunk carrying
+/// microblocks) does per-block work, so the build is ∝ surface, not volume.
 ///
 /// **Conservative direction:** a neighbour that is ABSENT (air) or only PARTIALLY solid on
-/// the shared face keeps the block. The mask is thus always a superset of the truly-visible
-/// blocks — it can never drop a block a ray can see, only ever an unreachable interior one.
-pub fn surface_record_mask(
-    records: &[BrickRecord],
-    chunks: &[([i32; 3], Arc<TwoLayerChunk>)],
-) -> Vec<bool> {
-    use std::collections::{HashMap, HashSet};
-    let chunk_by_coord: HashMap<[i32; 3], &TwoLayerChunk> =
-        chunks.iter().map(|(coord, chunk)| (*coord, chunk.as_ref())).collect();
-    // A chunk is "full-solid" iff every one of its CHUNK_BLOCKS³ blocks is coarse-solid and
-    // it carries no microblocks — then every block of it is solid on every face.
-    let full_solid: HashSet<[i32; 3]> = chunks
-        .iter()
-        .filter(|(_, chunk)| chunk.microblocks.is_empty() && chunk.coarse.iter().all(Option::is_some))
-        .map(|(coord, _)| *coord)
-        .collect();
-    // A block's six face-neighbours land in this chunk or a FACE-adjacent chunk, so a
-    // full-solid chunk ringed by full-solid face-neighbours is all-interior.
-    let interior_chunk: HashSet<[i32; 3]> = full_solid
-        .iter()
-        .filter(|coord| {
-            [[1i32, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]
-                .iter()
-                .all(|d| full_solid.contains(&[coord[0] + d[0], coord[1] + d[1], coord[2] + d[2]]))
-        })
-        .copied()
-        .collect();
+/// the shared face keeps the block. The emitted set is thus always a superset of the
+/// truly-visible blocks — elision can never drop a block a ray can see.
+struct BrickOcclusionOracle<'a> {
+    /// Every covering chunk by absolute chunk coord (the neighbour-resolution index).
+    chunk_by_coord: std::collections::HashMap<[i32; 3], &'a TwoLayerChunk>,
+    /// Chunks that are fully coarse-solid AND ringed by fully coarse-solid face-neighbours —
+    /// every block of these is provably occluded (the bulk fast path).
+    interior_chunk: std::collections::HashSet<[i32; 3]>,
+}
 
-    let chunk_blocks = CHUNK_BLOCKS as i64;
-    // Is the neighbour of world-`block` across `(axis, delta)` present AND solid on the face
-    // it shares with `block` (its `facing_side`)? Resolved through the two-layer chunk store.
-    let neighbour_face_solid = |block: [i64; 3], axis: usize, delta: i64, facing_side: usize| {
-        let mut neighbour = block;
-        neighbour[axis] += delta;
-        let chunk_coord = [
-            neighbour[0].div_euclid(chunk_blocks) as i32,
-            neighbour[1].div_euclid(chunk_blocks) as i32,
-            neighbour[2].div_euclid(chunk_blocks) as i32,
-        ];
-        let Some(chunk) = chunk_by_coord.get(&chunk_coord) else {
+impl<'a> BrickOcclusionOracle<'a> {
+    /// Classify the chunk set once (parallel — the full-solidity scan is a pure per-chunk
+    /// fold, and set membership is order-free).
+    fn new(chunks: &'a [([i32; 3], Arc<TwoLayerChunk>)]) -> Self {
+        let chunk_by_coord: std::collections::HashMap<[i32; 3], &TwoLayerChunk> = chunks
+            .iter()
+            .map(|(coord, chunk)| (*coord, chunk.as_ref()))
+            .collect();
+        // A chunk is "full-solid" iff every one of its CHUNK_BLOCKS³ blocks is coarse-solid
+        // and it carries no microblocks — then every block of it is solid on every face.
+        let full_solid: std::collections::HashSet<[i32; 3]> = chunks
+            .par_iter()
+            .filter(|(_, chunk)| {
+                chunk.microblocks.is_empty() && chunk.coarse.iter().all(Option::is_some)
+            })
+            .map(|(coord, _)| *coord)
+            .collect();
+        let interior_chunk: std::collections::HashSet<[i32; 3]> = full_solid
+            .par_iter()
+            .filter(|coord| {
+                FACE_NEIGHBOUR_CHUNK_OFFSETS.iter().all(|d| {
+                    full_solid.contains(&[coord[0] + d[0], coord[1] + d[1], coord[2] + d[2]])
+                })
+            })
+            .copied()
+            .collect();
+        Self {
+            chunk_by_coord,
+            interior_chunk,
+        }
+    }
+
+    /// Whether every block of `chunk_coord` is provably occluded (the bulk fast path): the
+    /// chunk and its six face-neighbours are all fully coarse-solid. The builder emits
+    /// nothing for such a chunk without visiting a single block.
+    fn chunk_is_all_interior(&self, chunk_coord: [i32; 3]) -> bool {
+        self.interior_chunk.contains(&chunk_coord)
+    }
+
+    /// The per-chunk occlusion context: this chunk plus its six face-neighbour chunk refs,
+    /// hoisted ONCE per chunk so the per-block six-neighbour test needs no hashing.
+    fn context_for_chunk(
+        &self,
+        chunk_coord: [i32; 3],
+        chunk: &'a TwoLayerChunk,
+    ) -> ChunkOcclusionContext<'a> {
+        // [axis][side]: side 0 = the low-face neighbour (coord − 1), side 1 = high (+1).
+        let mut face_neighbours: [[Option<&TwoLayerChunk>; 2]; 3] = [[None; 2]; 3];
+        for (axis, sides) in face_neighbours.iter_mut().enumerate() {
+            for (side, slot) in sides.iter_mut().enumerate() {
+                let mut coord = chunk_coord;
+                coord[axis] += if side == 0 { -1 } else { 1 };
+                *slot = self.chunk_by_coord.get(&coord).copied();
+            }
+        }
+        ChunkOcclusionContext {
+            chunk,
+            face_neighbours,
+        }
+    }
+}
+
+/// One chunk's occlusion window: the chunk itself + its six face-neighbour chunks (resolved
+/// once — see [`BrickOcclusionOracle::context_for_chunk`]). Answers the per-block
+/// six-neighbour occlusion test in O(1) chunk resolution (a block's neighbours land in this
+/// chunk or a face-adjacent one, never farther).
+struct ChunkOcclusionContext<'a> {
+    chunk: &'a TwoLayerChunk,
+    /// `[axis][side]`: side 0 = the low-face neighbour chunk, 1 = high. `None` = absent (air).
+    face_neighbours: [[Option<&'a TwoLayerChunk>; 2]; 3],
+}
+
+impl ChunkOcclusionContext<'_> {
+    /// Whether the coarse-solid block at chunk-local `block` is FULLY OCCLUDED: each axis
+    /// capped on BOTH sides — the +1 neighbour's LOW face covers this block's HIGH face, and
+    /// the −1 neighbour's HIGH face covers its LOW. Occluded ⇒ no record is emitted.
+    fn coarse_block_occluded(&self, block: [u32; 3]) -> bool {
+        (0..3).all(|axis| {
+            self.neighbour_face_solid(block, axis, 1) && self.neighbour_face_solid(block, axis, -1)
+        })
+    }
+
+    /// Is the neighbour of chunk-local `block` across `(axis, delta)` present AND solid on
+    /// the face it shares with `block`? A coarse-solid neighbour is solid on every face; a
+    /// boundary neighbour consults its per-face seam flag; an air block / absent chunk is
+    /// not solid (the conservative direction). Semantics identical to resolving through the
+    /// absolute-coordinate chunk map — only the chunk lookup is hoisted.
+    fn neighbour_face_solid(&self, block: [u32; 3], axis: usize, delta: i64) -> bool {
+        // The face the NEIGHBOUR shares with `block`: stepping +1 lands on the neighbour's
+        // LOW face (side 0); stepping −1 on its HIGH face (side 1).
+        let facing_side = if delta > 0 { 0 } else { 1 };
+        let stepped = block[axis] as i64 + delta;
+        let mut local = block;
+        let neighbour_chunk = if (0..CHUNK_BLOCKS as i64).contains(&stepped) {
+            local[axis] = stepped as u32;
+            Some(self.chunk)
+        } else {
+            local[axis] = stepped.rem_euclid(CHUNK_BLOCKS as i64) as u32;
+            self.face_neighbours[axis][if delta > 0 { 1 } else { 0 }]
+        };
+        let Some(chunk) = neighbour_chunk else {
             return false;
         };
-        let local = [
-            neighbour[0].rem_euclid(chunk_blocks) as u32,
-            neighbour[1].rem_euclid(chunk_blocks) as u32,
-            neighbour[2].rem_euclid(chunk_blocks) as u32,
-        ];
         if chunk.coarse_block(local).is_some() {
             true
         } else if let Some(geometry) = chunk.microblocks.get(&local) {
@@ -638,36 +814,7 @@ pub fn surface_record_mask(
         } else {
             false
         }
-    };
-
-    // Per-record occlusion test in PARALLEL: each record's verdict is independent and reads
-    // only the immutable `chunk_by_coord` / `interior_chunk` maps + the pure `neighbour_face_
-    // solid` closure (all `Sync`). A `par_iter().map(...).collect()` PRESERVES record order, so
-    // the returned `keep` mask stays aligned index-for-index to `records` — the invariant
-    // `pack_surface_gpu_records`' `zip(keep).filter(...)` and the
-    // `brick_surface_elision_hit_set_unchanged` gate rely on. No shared mutation, no ordering
-    // leak — the mask is byte-identical to the serial fold regardless of thread count.
-    records
-        .par_iter()
-        .map(|record| {
-            let block = unpack_world_block_key(record.packed_world_block_key);
-            let chunk_coord = [
-                block[0].div_euclid(chunk_blocks) as i32,
-                block[1].div_euclid(chunk_blocks) as i32,
-                block[2].div_euclid(chunk_blocks) as i32,
-            ];
-            // Fast path: a block of an all-interior chunk is provably occluded.
-            if interior_chunk.contains(&chunk_coord) {
-                return false;
-            }
-            // Occluded ⇔ each axis is capped on BOTH sides: the +1 neighbour's LOW face
-            // covers this block's HIGH face, and the −1 neighbour's HIGH face covers its LOW.
-            let occluded = (0..3).all(|axis| {
-                neighbour_face_solid(block, axis, 1, 0) && neighbour_face_solid(block, axis, -1, 1)
-            });
-            !occluded
-        })
-        .collect()
+    }
 }
 
 /// Rasterize one boundary block's cuboids into an `edge³` occupancy tile (0/255,
@@ -889,20 +1036,42 @@ impl IncrementalBrickField {
         self.slot_tiles.len()
     }
 
-    /// Re-evaluate ONLY the blocks of the dirty chunks and merge them into the field.
+    /// Re-evaluate ONLY the blocks of the dirty chunks (plus, for occlusion verdicts, their
+    /// 26-neighbourhood ring) and merge them into the field.
     ///
     /// * `fresh_chunks` — the FULL current covering set (dirty chunks freshly resolved,
-    ///   clean chunks reused verbatim). Only the dirty chunks are read.
+    ///   clean chunks reused verbatim). Only the dirty chunks + their ring are read.
     /// * `dirty_chunks` — the chunk coords the edit invalidated
     ///   ([`TwoLayerResidentCache::invalidate_aabb`](crate::two_layer_store::TwoLayerResidentCache::invalidate_aabb)
-    ///   evicted). Every changed block lives in one of these (a block's record is
-    ///   intrinsic — seam flags included — so no neighbour dilation is needed, unlike the
-    ///   mesh's cross-chunk seam culling).
+    ///   evicted). Every OCCUPANCY change lives in one of these; a block's record content
+    ///   (key, material, seam flags, occupancy) is intrinsic to its own chunk.
     ///
-    /// Removes every previous record whose block is in a dirty chunk (freeing its
-    /// sculpted slot), rebuilds those chunks' records fresh (allocating slots from the
-    /// free-list), and re-sorts. Returns the [`BrickFieldUpdate`] describing exactly which
-    /// slots were touched (the GPU patch's work-list).
+    /// **The occlusion dilation (ADR 0011 interior elision — the tricky seam).** Under the
+    /// surface-only record contract, whether a coarse block emits a record at all depends on
+    /// its six FACE-NEIGHBOURS — which may live in an adjacent, NON-dirty chunk. An edit can
+    /// therefore flip records in the 1-chunk dilation of the dirty set: carving a hole
+    /// exposes previously-interior blocks of the neighbour chunk (their records must appear),
+    /// and filling can occlude previously-surface blocks (their records must vanish). So the
+    /// re-mask covers the dirty set DILATED by the 26-neighbourhood (the same dilation the
+    /// mesh's cross-chunk seam culling uses; face-dilation would suffice for the 6-neighbour
+    /// test, the 26-ring is the conservative shared convention):
+    ///
+    /// * **dirty chunks** — all records dropped (sculpted slots freed) and rebuilt from the
+    ///   fresh data, exactly as before, with occlusion fused in.
+    /// * **ring chunks** (dilated \ dirty) — their DATA is unchanged, only occlusion verdicts
+    ///   of their COARSE blocks can flip: coarse records are dropped and re-derived against
+    ///   the fresh oracle. Sculpted records (and their atlas slots) are KEPT untouched —
+    ///   occupancy didn't change, so the per-edit atlas write-set stays ∝ the dirty region
+    ///   (the `one_chunk_edit_writes_only_that_chunks_slots` guarantee). Coarse records carry
+    ///   no slot, so the ring contributes zero atlas traffic.
+    /// * **outside the dilation** — a block's verdict reads only its own chunk + face
+    ///   neighbours, all unchanged, so its record is provably identical; kept verbatim.
+    ///
+    /// Byte-equality vs a from-scratch surface-only [`build_brick_field`] after every edit is
+    /// the acceptance bar (`incremental_dirty_update_equals_wholesale_after_every_step`, the
+    /// cross-chunk carve case, and the gpu_parity render gate). Returns the
+    /// [`BrickFieldUpdate`] describing exactly which slots were touched (the GPU patch's
+    /// work-list).
     pub fn apply_dirty_update(
         &mut self,
         fresh_chunks: &[([i32; 3], Arc<TwoLayerChunk>)],
@@ -910,9 +1079,27 @@ impl IncrementalBrickField {
     ) -> BrickFieldUpdate {
         let edge = self.brick_edge_voxels;
         let dirty: std::collections::BTreeSet<[i32; 3]> = dirty_chunks.iter().copied().collect();
+        // The occlusion ring: the dirty set's 26-neighbourhood minus the dirty set itself.
+        let mut ring: std::collections::BTreeSet<[i32; 3]> = std::collections::BTreeSet::new();
+        for coord in &dirty {
+            for offset_z in -1i32..=1 {
+                for offset_y in -1i32..=1 {
+                    for offset_x in -1i32..=1 {
+                        let neighbour =
+                            [coord[0] + offset_x, coord[1] + offset_y, coord[2] + offset_z];
+                        if !dirty.contains(&neighbour) {
+                            ring.insert(neighbour);
+                        }
+                    }
+                }
+            }
+        }
         let previous_bricks_per_axis = sculpted_atlas_bricks_per_axis(self.slot_tiles.len());
 
-        // 1. Drop every previous record whose block is in a dirty chunk, freeing its slot.
+        // 1. Drop every previous record whose block is in a dirty chunk (freeing its slot),
+        //    and every COARSE record of a ring chunk (its occlusion verdict may have flipped;
+        //    ring SCULPTED records are kept — their chunk's data is unchanged, so record and
+        //    slot are still exact, and the atlas is never touched for the ring).
         let mut freed_slots = Vec::new();
         self.records.retain(|record| {
             let chunk =
@@ -922,6 +1109,8 @@ impl IncrementalBrickField {
                     freed_slots.push(atlas_slot);
                 }
                 false
+            } else if ring.contains(&chunk) {
+                matches!(record.payload, BrickPayload::Sculpted { .. })
             } else {
                 true
             }
@@ -932,12 +1121,23 @@ impl IncrementalBrickField {
         self.free_slots.sort_unstable();
         self.free_slots.dedup();
 
-        // 2. Rebuild every dirty chunk's records from its FRESH data.
+        // 2. Rebuild the dirty chunks' records fully — and the ring chunks' COARSE records —
+        //    from the FRESH data, with occlusion verdicts from the fresh oracle (the same
+        //    fused elision `build_brick_field` performs, so incremental == wholesale stays
+        //    structural).
+        let oracle = BrickOcclusionOracle::new(fresh_chunks);
         let mut written_slots = Vec::new();
         for (chunk_coord, chunk) in fresh_chunks {
-            if !dirty.contains(chunk_coord) {
+            let chunk_is_dirty = dirty.contains(chunk_coord);
+            if !chunk_is_dirty && !ring.contains(chunk_coord) {
                 continue;
             }
+            // Interior-chunk fast path, exactly as the wholesale build: an all-interior
+            // chunk emits nothing (it has no microblocks, so no sculpted record is skipped).
+            if oracle.chunk_is_all_interior(*chunk_coord) {
+                continue;
+            }
+            let occlusion = oracle.context_for_chunk(*chunk_coord, chunk.as_ref());
             for block_z in 0..CHUNK_BLOCKS {
                 for block_y in 0..CHUNK_BLOCKS {
                     for block_x in 0..CHUNK_BLOCKS {
@@ -949,12 +1149,21 @@ impl IncrementalBrickField {
                         ];
                         match classify_block_brick(chunk, block, world_block, edge) {
                             BlockBrick::Air => {}
-                            BlockBrick::Coarse(record) => self.records.push(record),
+                            BlockBrick::Coarse(record) => {
+                                if !occlusion.coarse_block_occluded(block) {
+                                    self.records.push(record);
+                                }
+                            }
                             BlockBrick::Sculpted {
                                 material_id,
                                 seam_solidity,
                                 tile,
                             } => {
+                                // Ring chunks keep their existing sculpted records (data
+                                // unchanged); only a DIRTY chunk re-allocates and rewrites.
+                                if !chunk_is_dirty {
+                                    continue;
+                                }
                                 let slot = self.allocate_slot(tile);
                                 written_slots.push(slot);
                                 self.records.push(BrickRecord {
@@ -1189,11 +1398,14 @@ mod tests {
         assert!(pack_world_block_key([-1, 0, 0]) < pack_world_block_key([0, 0, 0]));
     }
 
-    /// A gated scene's brick set maps the two-layer partition one-to-one: coarse-solid
-    /// → one kind-0 record (id carried, no slot), boundary → one kind-1 record (dense
-    /// unique slots, seam flags carried unchanged), air → nothing; records sorted
-    /// strictly ascending. This is the CPU half of the ADR 0011 gate clause (a); the
-    /// `--features gpu` parity test re-asserts the bytes through the texture round-trip.
+    /// The interior-INCLUSIVE oracle build ([`build_brick_field_all_blocks`]) maps the
+    /// two-layer partition one-to-one: coarse-solid → one kind-0 record (id carried, no
+    /// slot), boundary → one kind-1 record (dense unique slots, seam flags carried
+    /// unchanged), air → nothing; records sorted strictly ascending. This is the CPU half
+    /// of the ADR 0011 gate clause (a) for the record/atlas PACKING mechanics (which the
+    /// surface-only live build shares); the surface-only record CONTRACT itself is gated by
+    /// `build_emits_only_surface_records_of_a_solid_box`. The `--features gpu` parity test
+    /// re-asserts the bytes through the texture round-trip.
     #[test]
     fn brick_records_map_two_layer_partition_one_to_one() {
         // d4 deliberately (ADR 0011 Decision 1): the brick edge must follow the
@@ -1211,7 +1423,7 @@ mod tests {
         );
         let two_layer_chunks =
             TwoLayerStore::enabled().build_covering_chunks(&scene, voxels_per_block, 0);
-        let build = build_brick_field(&two_layer_chunks, voxels_per_block);
+        let build = build_brick_field_all_blocks(&two_layer_chunks, voxels_per_block);
 
         assert_eq!(build.brick_edge_voxels, voxels_per_block);
         assert!(
@@ -1280,14 +1492,16 @@ mod tests {
         assert!(expected_sculpted > 0, "fixture must contain boundary blocks");
     }
 
-    /// **Interior elision, CPU tier (ADR 0011 — the display record buffer).**
-    /// [`surface_record_mask`] over a SOLID box keeps exactly the surface blocks (a block
-    /// with ≥1 absent/air neighbour) and drops the strictly-interior ones (all six
-    /// neighbours present + solid). Checked against an independent neighbour-count oracle;
-    /// the `--features gpu` [`brick_surface_elision_hit_set_unchanged`] proves the elided
-    /// buffer renders the same hit set.
+    /// **The surface-only record contract (ADR 0011 interior elision, fused into the
+    /// build).** [`build_brick_field`] over a SOLID box emits exactly the surface blocks (a
+    /// block with ≥1 absent/air neighbour) of the interior-inclusive oracle build
+    /// ([`build_brick_field_all_blocks`]) and omits the strictly-interior ones (all six
+    /// neighbours present + solid) — checked against an independent neighbour-presence
+    /// oracle over the FULL key set. The `--features gpu`
+    /// `brick_surface_elision_hit_set_unchanged` proves the surface-only build renders the
+    /// same hit set as the oracle build.
     #[test]
-    fn surface_record_mask_drops_fully_occluded_interior_of_a_solid_box() {
+    fn build_emits_only_surface_records_of_a_solid_box() {
         let voxels_per_block = 4;
         // A solid box (ShapeKind::Box ignores wall_blocks — that is Tube-only), 6 blocks
         // per axis, so there is a genuine 4×4×4 fully-occluded interior to elide.
@@ -1303,50 +1517,62 @@ mod tests {
         );
         let two_layer_chunks =
             TwoLayerStore::enabled().build_covering_chunks(&scene, voxels_per_block, 0);
-        let build = build_brick_field(&two_layer_chunks, voxels_per_block);
-        assert!(!build.brick_records.is_empty(), "fixture must build records");
+        let full_build = build_brick_field_all_blocks(&two_layer_chunks, voxels_per_block);
+        let surface_build = build_brick_field(&two_layer_chunks, voxels_per_block);
+        assert!(!full_build.brick_records.is_empty(), "fixture must build records");
         // Every block of a solid box is coarse-solid (all faces solid).
         assert!(
-            build
+            full_build
                 .brick_records
                 .iter()
                 .all(|r| r.seam_solidity.solid == [[true; 2]; 3]),
             "a solid box classifies every block coarse-solid"
         );
 
-        let mask = surface_record_mask(&build.brick_records, &two_layer_chunks);
-        assert_eq!(mask.len(), build.brick_records.len());
-
         // Independent oracle: with all blocks coarse-solid, a block is INTERIOR iff all six
-        // of its neighbours are present in the record set. (The tiny fixture never nears the
-        // packed-key lane limit, so no range guard is needed.)
-        let keys: std::collections::HashSet<u64> =
-            build.brick_records.iter().map(|r| r.packed_world_block_key).collect();
-        let mut expected_surface = 0usize;
-        for (record, &keep) in build.brick_records.iter().zip(&mask) {
-            let block = unpack_world_block_key(record.packed_world_block_key);
-            let all_neighbours_present = [
-                [1i64, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1],
-            ]
+        // of its neighbours are present in the FULL record set. (The tiny fixture never
+        // nears the packed-key lane limit, so no range guard is needed.)
+        let full_keys: std::collections::HashSet<u64> = full_build
+            .brick_records
             .iter()
-            .all(|d| {
-                let nb = [block[0] + d[0], block[1] + d[1], block[2] + d[2]];
-                keys.contains(&pack_world_block_key(nb))
-            });
-            let expected_keep = !all_neighbours_present;
-            assert_eq!(keep, expected_keep, "block {block:?} elision disagrees with the oracle");
-            if keep {
-                expected_surface += 1;
-            }
-        }
-        let kept = mask.iter().filter(|&&k| k).count();
-        assert_eq!(kept, expected_surface);
-        // A solid box has a genuine interior to elide AND a surface to keep — the split is
+            .map(|r| r.packed_world_block_key)
+            .collect();
+        let expected_surface_keys: Vec<u64> = full_build
+            .brick_records
+            .iter()
+            .map(|r| r.packed_world_block_key)
+            .filter(|&key| {
+                let block = unpack_world_block_key(key);
+                let all_neighbours_present = [
+                    [1i64, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1],
+                ]
+                .iter()
+                .all(|d| {
+                    let nb = [block[0] + d[0], block[1] + d[1], block[2] + d[2]];
+                    full_keys.contains(&pack_world_block_key(nb))
+                });
+                !all_neighbours_present
+            })
+            .collect();
+        let surface_keys: Vec<u64> = surface_build
+            .brick_records
+            .iter()
+            .map(|r| r.packed_world_block_key)
+            .collect();
+        assert_eq!(
+            surface_keys, expected_surface_keys,
+            "the surface-only build must emit exactly the oracle's surface blocks, in order"
+        );
+        // A solid box has a genuine interior to omit AND a surface to keep — the split is
         // non-trivial in both directions (else the elision would be vacuous or wrong).
-        let dropped = mask.len() - kept;
-        assert!(dropped > 0, "a solid box must have fully-occluded interior blocks to elide");
-        assert!(kept > 0, "the surface blocks must be kept");
-        assert!(kept < mask.len(), "not every block can be surface for a solid box");
+        assert!(
+            surface_build.brick_records.len() < full_build.brick_records.len(),
+            "a solid box must have fully-occluded interior blocks to omit"
+        );
+        assert!(!surface_build.brick_records.is_empty(), "the surface blocks must be kept");
+        // Both builds pack the identical sculpted atlas (the sculpted set is never elided).
+        assert_eq!(surface_build.sculpted_atlas_bytes, full_build.sculpted_atlas_bytes);
+        assert_eq!(surface_build.bricks_per_axis, full_build.bricks_per_axis);
     }
 
     /// The clip-map pyramid is CONSERVATIVE (ADR 0011 parity gate, coarse tier):
@@ -1826,6 +2052,147 @@ mod incremental_tests {
         // And the result is still byte-exact vs wholesale.
         let wholesale = build_brick_field(&fresh_b, density);
         assert_incremental_matches_wholesale(&field.to_build(), &wholesale, "one-chunk-recolour");
+    }
+
+    /// **The occlusion-dilation seam (ADR 0011 interior elision).** Under the surface-only
+    /// record contract, an edit can flip records in NON-dirty neighbour chunks: carving away
+    /// a block un-occludes the face-adjacent blocks across the chunk boundary (their records
+    /// must APPEAR), and filling it back occludes them again (their records must VANISH).
+    /// Two chunk-filling solid boxes abut across a chunk boundary; deleting the second is
+    /// the carve, re-adding it the fill. After each step the incrementally-patched field
+    /// must equal a from-scratch surface-only wholesale build byte-for-byte — this is what
+    /// the 26-neighbourhood ring re-derivation in `apply_dirty_update` exists for. The test
+    /// also asserts the scenario is REAL: the carve changes the record set of a chunk that
+    /// was NOT in the dirty set (else the fixture is vacuous).
+    #[test]
+    fn incremental_carve_across_chunk_boundary_flips_neighbour_occlusion() {
+        let density = 4u32;
+        let material = MaterialChoice::Stone;
+        let chunk_span = CHUNK_BLOCKS as i64;
+        // A solid SKETCH-EXTRUDE cube of exactly CHUNK_BLOCKS³ blocks at a chunk-aligned
+        // offset — the sketch producer classifies COARSE-solid blocks to the very face
+        // (unlike an SDF Box tool, whose 1-block shell resolves as boundary microblocks and
+        // would never exercise coarse-record occlusion flips at the interface).
+        let chunk_filling_box = |offset_blocks: [i64; 3]| -> Node {
+            let edge_voxels = chunk_span * density as i64;
+            let producer = crate::sketch::SketchSolid::extrude(
+                crate::sketch::Sketch::rectangle(
+                    crate::sketch::PlaneAxis::Z,
+                    edge_voxels,
+                    edge_voxels,
+                ),
+                edge_voxels as u32,
+            );
+            let mut node = Node::new(
+                format!("box@{offset_blocks:?}"),
+                NodeContent::SketchTool { producer, material },
+            );
+            node.transform = NodeTransform::from_blocks(offset_blocks, density);
+            node
+        };
+        // Anchors pin the covering set so the delete / re-add stays an incremental edit.
+        let anchor_lo = chunk_filling_box([-4 * chunk_span, 0, 0]);
+        let anchor_hi = chunk_filling_box([4 * chunk_span, 0, 0]);
+        // The resident pair: box A and box B abutting on +X across a chunk boundary. Box A's
+        // +X-face blocks are occluded exactly while box B exists.
+        let box_a = chunk_filling_box([0, 0, 0]);
+        let box_b = chunk_filling_box([chunk_span, 0, 0]);
+        let scene_with_b = Scene::from_nodes(vec![
+            anchor_lo.clone(),
+            anchor_hi.clone(),
+            box_a.clone(),
+            box_b.clone(),
+        ]);
+        let scene_without_b =
+            Scene::from_nodes(vec![anchor_lo.clone(), anchor_hi.clone(), box_a.clone()]);
+
+        let mut cache = TwoLayerResidentCache::enabled();
+        cache.clear();
+        let index_with_b = scene_with_b.build_leaf_spatial_index(density);
+        let fresh_with_b = covering_owned(&mut cache, &scene_with_b, density);
+        let build_with_b = build_brick_field(&fresh_with_b, density);
+        let mut field = IncrementalBrickField::from_wholesale(&build_with_b);
+
+        // --- Step 1: CARVE (delete box B) — exposes box A's face blocks across the seam.
+        let index_without_b = scene_without_b.build_leaf_spatial_index(density);
+        let carve_aabb = index_without_b
+            .edit_aabb_since(&index_with_b)
+            .expect("a node delete is a localisable edit");
+        let carve_dirty = cache.invalidate_aabb(&carve_aabb, density);
+        let fresh_without_b = covering_owned(&mut cache, &scene_without_b, density);
+        assert_eq!(
+            fresh_with_b.len(),
+            fresh_without_b.len(),
+            "the anchors must pin the covering set (incremental precondition)"
+        );
+        field.apply_dirty_update(&fresh_without_b, &carve_dirty);
+        let wholesale_without_b = build_brick_field(&fresh_without_b, density);
+        assert_incremental_matches_wholesale(
+            &field.to_build(),
+            &wholesale_without_b,
+            "carve-across-boundary",
+        );
+
+        // The scenario must be REAL: some chunk OUTSIDE the dirty set changed its record
+        // set (box A's face blocks un-occluded) — else the ring re-derivation is untested.
+        let dirty_set: std::collections::BTreeSet<[i32; 3]> =
+            carve_dirty.iter().copied().collect();
+        let records_by_chunk = |build: &BrickFieldBuild| {
+            let mut by_chunk: std::collections::BTreeMap<[i32; 3], Vec<u64>> =
+                std::collections::BTreeMap::new();
+            for record in &build.brick_records {
+                let chunk = {
+                    let block = unpack_world_block_key(record.packed_world_block_key);
+                    [
+                        block[0].div_euclid(CHUNK_BLOCKS as i64) as i32,
+                        block[1].div_euclid(CHUNK_BLOCKS as i64) as i32,
+                        block[2].div_euclid(CHUNK_BLOCKS as i64) as i32,
+                    ]
+                };
+                by_chunk.entry(chunk).or_default().push(record.packed_world_block_key);
+            }
+            by_chunk
+        };
+        let before_by_chunk = records_by_chunk(&build_with_b);
+        let after_by_chunk = records_by_chunk(&wholesale_without_b);
+        let non_dirty_chunk_changed = before_by_chunk
+            .iter()
+            .any(|(chunk, keys)| {
+                !dirty_set.contains(chunk) && after_by_chunk.get(chunk) != Some(keys)
+            });
+        assert!(
+            non_dirty_chunk_changed,
+            "fixture must flip records in a NON-dirty chunk (the occlusion ring); \
+             dirty set: {dirty_set:?}"
+        );
+
+        // --- Step 2: FILL (re-add box B) — re-occludes box A's face blocks.
+        let fill_aabb = index_with_b
+            .edit_aabb_since(&index_without_b)
+            .expect("a node re-add is a localisable edit");
+        let fill_dirty = cache.invalidate_aabb(&fill_aabb, density);
+        let fresh_refilled = covering_owned(&mut cache, &scene_with_b, density);
+        field.apply_dirty_update(&fresh_refilled, &fill_dirty);
+        let wholesale_refilled = build_brick_field(&fresh_refilled, density);
+        assert_incremental_matches_wholesale(
+            &field.to_build(),
+            &wholesale_refilled,
+            "fill-across-boundary",
+        );
+        // Fill restores the original record keys (slot numbers may differ — free-listed).
+        assert_eq!(
+            wholesale_refilled
+                .brick_records
+                .iter()
+                .map(|r| r.packed_world_block_key)
+                .collect::<Vec<_>>(),
+            build_with_b
+                .brick_records
+                .iter()
+                .map(|r| r.packed_world_block_key)
+                .collect::<Vec<_>>(),
+            "re-adding box B must restore the original surface record keys"
+        );
     }
 
     /// Perf probe (issue #69, `#[ignore]`d — run in release): a ~1–2k-block scene, a

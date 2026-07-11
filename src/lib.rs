@@ -77,8 +77,7 @@ pub use app_core::{
 pub use store::{ChunkCacheKey, ChunkResolveCache, Store};
 pub use brick_field::{
     build_brick_field, build_brick_field_all_blocks, pack_clipmap_level_keys, pack_world_block_key,
-    read_back_brick_atlas,
-    surface_record_mask, unpack_world_block_key, upload_brick_atlas, BrickFieldBuild,
+    read_back_brick_atlas, unpack_world_block_key, upload_brick_atlas, BrickFieldBuild,
     BrickFieldUpdate, BrickPayload, BrickRecord, ClipmapLevel, ClipmapPyramid,
     IncrementalBrickField, CLIPMAP_LEVEL_1_BLOCKS_PER_CELL, CLIPMAP_LEVEL_2_BLOCKS_PER_CELL,
     CLIPMAP_LEVEL_3_BLOCKS_PER_CELL,
@@ -86,7 +85,7 @@ pub use brick_field::{
 pub use brick_raymarch::{
     cpu_march_brick_field, cpu_march_brick_field_counted, cpu_march_levels_counted,
     cpu_march_exact_occupancy,
-    brick_representable_overlay, pack_gpu_records, pack_surface_gpu_records, BrickGpuRecord,
+    brick_representable_overlay, pack_gpu_records, BrickGpuRecord,
     BrickMarchFrame, BrickRaymarchRenderer, CpuMarchHit, NON_RESIDENT_ATLAS_SLOT,
 };
 pub use chunk_storage::{compress, decompress, CompressedChunk, Occupancy, SparseCell};

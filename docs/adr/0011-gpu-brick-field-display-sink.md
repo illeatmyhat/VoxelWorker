@@ -90,6 +90,21 @@ The sink maps that partition onto brick kinds one-to-one:
   fully-solid neighbour without expanding it — the coarse-vs-microblock analogue of the fog apron (CONTEXT.md "Seam
   solidity"), and the brick-field's equivalent of ADR 0007's C′ apron-zeroing.
 
+> **Amendment (2026-07, the 8000³-freeze fix): the record set is SURFACE-ONLY.** "One coarse record per solid block"
+> still made the CPU pipeline O(all blocks): a 500³-block solid emitted 125M records, and every downstream stage
+> (sort, elision mask, pyramid fold, GPU pack, incremental-mirror clone) hauled the ~123.5M fully-occluded interior
+> records it would then discard — a measured 12.5s main-thread freeze + ~6 GB transient. The contract is now:
+> a coarse-solid block whose six face-neighbours are all present and solid on the shared face **emits no record at
+> all** (`build_brick_field` fuses the occlusion decision into emission, with an interior-CHUNK fast path that skips
+> fully-solid chunks ringed by fully-solid face-neighbours without visiting their blocks). Boundary (sculpted) blocks
+> are surface by definition and are never elided, so the atlas is unchanged. Interiors remain queryable through the
+> two-layer chunks: the clip-map pyramid derives from the CHUNKS (`ClipmapPyramid::from_chunks`), and the fog fill
+> box-fills coarse occupancy from the CHUNKS (`build_per_chunk_fog_occupancy_from_bricks`). Incremental edits
+> re-derive occlusion verdicts over the dirty set dilated by the 26-neighbourhood
+> (`IncrementalBrickField::apply_dirty_update` — a carve can expose previously-interior blocks in a NON-dirty
+> neighbour chunk). The interior-inclusive build survives as the parity oracle (`build_brick_field_all_blocks`),
+> gated hit-identical to the surface-only build in `brick_surface_elision_hit_set_unchanged`.
+
 This is why ADR 0010 called it "a short step": the fog atlas is *already this shape* (boundary-residency R8 occupancy in
 a 3D texture atlas); the brick-field adds (i) the coarse-brick analytic marker for solid interiors, (ii) a sparse resident
 record set instead of a covering-box tile grid, and (iii) the broadphase + LOD below.

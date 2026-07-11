@@ -5167,8 +5167,17 @@ mod tests {
         let dims = scene.placed_region_dimensions(density);
         let recentre = scene.recentre_voxels_for_resolve(density);
 
-        // The fixture genuinely exceeds the old cap: ≥ 4 M would-be inserts.
-        let would_be_inserts = build.brick_records.len() as u64 * (density as u64).pow(3);
+        // The fixture genuinely exceeds the old cap: ≥ 4 M would-be inserts. The retired
+        // cap's currency was the SOLID's total voxels (the record set is surface-only now,
+        // so count occupied blocks from the chunks, not from the elided record set).
+        let occupied_blocks: u64 = two_layer_chunks
+            .iter()
+            .map(|(_, chunk)| {
+                chunk.coarse.iter().filter(|id| id.is_some()).count() as u64
+                    + chunk.microblocks.len() as u64
+            })
+            .sum();
+        let would_be_inserts = occupied_blocks * (density as u64).pow(3);
         assert!(
             would_be_inserts > 4_000_000,
             "fixture must exceed the retired cap (got {would_be_inserts})"

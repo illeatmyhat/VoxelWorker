@@ -462,11 +462,9 @@ impl WindowedState {
                         &gpu.device,
                         &gpu.queue,
                         &build,
-                        &voxel_worker::pack_surface_gpu_records(
-                            &build,
-                            &startup_two_layer_chunks,
-                            |_| false,
-                        ),
+                        // The record set is surface-only by construction (ADR 0011 interior
+                        // elision fused into `build_brick_field`) — a plain 1:1 pack.
+                        &voxel_worker::pack_gpu_records(&build, |_| false),
                         &pyramid,
                         startup_recentre,
                         overlay_active,
@@ -1165,17 +1163,14 @@ impl WindowedState {
                         Some(overlay_active) => {
                             let pyramid =
                                 voxel_worker::ClipmapPyramid::from_chunks(&two_layer_chunks);
-                            // ADR 0011 interior elision: the record buffer the shader binary-
-                            // searches carries only the SURFACE (potentially-visible) blocks —
-                            // a fully-occluded interior block is never a ray's first hit, so
-                            // eliding it is hit-identical (gated in gpu_parity). For a large
-                            // solid this drops the per-edit record upload from ∝volume to
-                            // ∝surface. The clip-map (above), atlas + fog keep the FULL set.
-                            let gpu_records = voxel_worker::pack_surface_gpu_records(
-                                &build,
-                                &two_layer_chunks,
-                                |_| false,
-                            );
+                            // ADR 0011 interior elision: the record set is SURFACE-ONLY by
+                            // construction (`build_brick_field` fuses the occlusion decision
+                            // into emission — a fully-occluded interior block never becomes a
+                            // record, so nothing here needs a second mask pass). For a large
+                            // solid the per-edit record upload is ∝surface, not ∝volume.
+                            // Interiors live in the two-layer chunks: the clip-map (above)
+                            // and the fog box-fill both derive from the chunks.
+                            let gpu_records = voxel_worker::pack_gpu_records(&build, |_| false);
                             // Patch in place iff we produced an incremental update AND a
                             // renderer already holds a field; otherwise (wholesale, or the
                             // display re-engaging from a mesh fallback) install fresh.

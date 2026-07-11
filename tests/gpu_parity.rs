@@ -676,11 +676,18 @@ fn brick_slot_bytes(
 /// * the granule is ONE BLOCK: brick edge == `voxels_per_block` at every density in the
 ///   matrix (d16 AND non-16 — nothing may hard-code 16);
 /// * atlas slots are dense `0..sculpted_count` and every padding slot reads back zero.
+// NOTE (ADR 0011 surface-only record contract): this gate runs on the interior-INCLUSIVE
+// oracle build (`build_brick_field_all_blocks`) — it asserts the one-to-one partition
+// mapping + atlas byte-exactness, which the surface-only live build shares (identical
+// classifier, identical sculpted set + slot numbering; only occluded coarse records are
+// omitted). The surface contract itself is gated by
+// `brick_field::build_emits_only_surface_records_of_a_solid_box` (CPU) and
+// `brick_surface_elision_hit_set_unchanged` (render).
 #[test]
 fn brick_field_build_matches_two_layer_boundary_set_byte_exactly() {
     use voxel_worker::core_geom::CHUNK_BLOCKS;
     use voxel_worker::{
-        build_brick_field, read_back_brick_atlas, upload_brick_atlas, BrickPayload,
+        build_brick_field_all_blocks, read_back_brick_atlas, upload_brick_atlas, BrickPayload,
         NodeTransform, TwoLayerStore, Voxel,
     };
 
@@ -764,7 +771,7 @@ fn brick_field_build_matches_two_layer_boundary_set_byte_exactly() {
         let two_layer_chunks =
             TwoLayerStore::enabled().build_covering_chunks(&case.scene, vpb, 0);
         assert!(!two_layer_chunks.is_empty(), "{}: empty two-layer build", case.name);
-        let build = build_brick_field(&two_layer_chunks, vpb);
+        let build = build_brick_field_all_blocks(&two_layer_chunks, vpb);
 
         // The granule ruling: the brick edge is the document density, nothing else.
         assert_eq!(build.brick_edge_voxels, vpb, "{}: brick edge must be one BLOCK", case.name);
@@ -1236,7 +1243,7 @@ fn brick_raymarch_hit_set_matches_exact_evaluator() {
         // pyramid is ENABLED here — the finest-LOD hit set must still equal the exact
         // evaluator with the hierarchical skip live (it may only skip empty space).
         let gpu_records = pack_gpu_records(&build, |_| false);
-        let pyramid = ClipmapPyramid::from_records(&build.brick_records);
+        let pyramid = ClipmapPyramid::from_chunks(&two_layer_chunks);
         let mut renderer = BrickRaymarchRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
         renderer.install_brick_field(
             &gpu.device,
@@ -1321,19 +1328,21 @@ fn brick_raymarch_hit_set_matches_exact_evaluator() {
     );
 }
 
-/// **ADR 0011 interior elision — the SURFACE record buffer renders identically to the FULL
-/// one.** For every brick render case, install the field with the FULL packed records
-/// ([`pack_gpu_records`]) and again with the interior-elided
-/// ([`pack_surface_gpu_records`]) — the clip-map, atlas and frame identical — and assert
-/// the hit-identity images are BYTE-IDENTICAL. This is the display proof that eliding a
+/// **ADR 0011 interior elision — the SURFACE-ONLY build renders identically to the
+/// interior-INCLUSIVE oracle build.** For every brick render case, install the field from
+/// the oracle build ([`build_brick_field_all_blocks`] — one record per non-air block) and
+/// again from the live surface-only build ([`build_brick_field`] — occluded coarse
+/// interiors never emitted) — the clip-map (chunk-derived, identical on both sides), atlas
+/// (identical: the sculpted set is never elided) and frame identical — and assert the
+/// hit-identity images are BYTE-IDENTICAL. This is the display proof that never emitting a
 /// fully-occluded interior block (its six neighbours all solid) never changes a ray's first
 /// hit: the ray stops at the surrounding surface record before ever reaching it. The CPU
-/// half is `brick_field::surface_record_mask_drops_fully_occluded_interior_of_a_solid_box`.
+/// half is `brick_field::build_emits_only_surface_records_of_a_solid_box`.
 #[test]
 fn brick_surface_elision_hit_set_unchanged() {
     use voxel_worker::{
-        brick_representable_overlay, build_brick_field, pack_gpu_records,
-        pack_surface_gpu_records, AppCore, BrickRaymarchRenderer, ClipmapPyramid, LayerBand,
+        brick_representable_overlay, build_brick_field, build_brick_field_all_blocks,
+        pack_gpu_records, AppCore, BrickRaymarchRenderer, ClipmapPyramid, LayerBand,
         OrbitCamera, TwoLayerStore, COLOR_TARGET_FORMAT,
     };
 
@@ -1348,20 +1357,28 @@ fn brick_surface_elision_hit_set_unchanged() {
     for case in brick_render_cases() {
         let vpb = case.voxels_per_block;
         let two_layer_chunks = TwoLayerStore::enabled().build_covering_chunks(&case.scene, vpb, 0);
-        let build = build_brick_field(&two_layer_chunks, vpb);
-        if build.brick_records.is_empty() {
+        let full_build = build_brick_field_all_blocks(&two_layer_chunks, vpb);
+        let surface_build = build_brick_field(&two_layer_chunks, vpb);
+        if full_build.brick_records.is_empty() {
             continue;
         }
+        // The two builds must pack the identical sculpted atlas (slot numbering follows the
+        // shared traversal order over the never-elided sculpted set).
+        assert_eq!(
+            full_build.sculpted_atlas_bytes, surface_build.sculpted_atlas_bytes,
+            "{}: surface-only build must pack the identical atlas",
+            case.name
+        );
         let overlay_active = brick_representable_overlay(&two_layer_chunks).unwrap_or(false);
         let recentre = case.scene.recentre_voxels_for_resolve(vpb);
         let grid_dimensions = case.scene.placed_region_dimensions(vpb);
 
-        let full_records = pack_gpu_records(&build, |_| false);
-        let surface_records = pack_surface_gpu_records(&build, &two_layer_chunks, |_| false);
+        let full_records = pack_gpu_records(&full_build, |_| false);
+        let surface_records = pack_gpu_records(&surface_build, |_| false);
         total_elided += full_records.len() - surface_records.len();
-        // The clip-map is FULL on both sides (its superset invariant is untouched); only the
-        // record buffer the shader binary-searches differs.
-        let pyramid = ClipmapPyramid::from_records(&build.brick_records);
+        // The clip-map derives from the CHUNKS (interiors included) — identical on both
+        // sides; only the record buffer the shader binary-searches differs.
+        let pyramid = ClipmapPyramid::from_chunks(&two_layer_chunks);
 
         let mut app_core = AppCore::new(OrbitCamera::default());
         app_core.camera.target = glam::Vec3::ZERO;
@@ -1371,13 +1388,13 @@ fn brick_surface_elision_hit_set_unchanged() {
         let viewport_px = [0u32, 0, width, height];
         let band = LayerBand::FULL;
 
-        let render = |gpu_records: &[_]| {
+        let render = |build: &voxel_worker::BrickFieldBuild, gpu_records: &[_]| {
             let mut renderer =
                 BrickRaymarchRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
             renderer.install_brick_field(
                 &gpu.device,
                 &gpu.queue,
-                &build,
+                build,
                 gpu_records,
                 &pyramid,
                 recentre,
@@ -1394,8 +1411,8 @@ fn brick_surface_elision_hit_set_unchanged() {
             );
             renderer.render_hit_identity_image(&gpu.device, &gpu.queue, width, height)
         };
-        let full_image = render(&full_records);
-        let surface_image = render(&surface_records);
+        let full_image = render(&full_build, &full_records);
+        let surface_image = render(&surface_build, &surface_records);
 
         let hits = full_image.iter().filter(|pixel| pixel[0] == 1).count();
         if hits == 0 {
@@ -1409,7 +1426,7 @@ fn brick_surface_elision_hit_set_unchanged() {
             .count();
         if mismatches > 0 {
             failures.push(format!(
-                "{}: {mismatches}/{} pixels differ between full and surface-elided records \
+                "{}: {mismatches}/{} pixels differ between the oracle and surface-only builds \
                  (elided {} of {} records)",
                 case.name,
                 width * height,
@@ -1425,7 +1442,7 @@ fn brick_surface_elision_hit_set_unchanged() {
     );
     assert!(
         failures.is_empty(),
-        "surface-elided record buffer != full record buffer (ADR 0011 interior elision):\n{}",
+        "surface-only build != interior-inclusive oracle build (ADR 0011 interior elision):\n{}",
         failures.join("\n")
     );
 }
@@ -1533,7 +1550,7 @@ fn brick_raymarch_incremental_patch_matches_wholesale_install() {
         &gpu.queue,
         &build_a,
         &pack_gpu_records(&build_a, |_| false),
-        &ClipmapPyramid::from_records(&build_a.brick_records),
+        &ClipmapPyramid::from_chunks(&fresh_a),
         scene_a.recentre_voxels_for_resolve(vpb),
         overlay_a,
     );
@@ -1543,7 +1560,7 @@ fn brick_raymarch_incremental_patch_matches_wholesale_install() {
         &incremental_build,
         &update,
         &pack_gpu_records(&incremental_build, |_| false),
-        &ClipmapPyramid::from_records(&incremental_build.brick_records),
+        &ClipmapPyramid::from_chunks(&fresh_b),
         recentre_b,
         overlay_b,
     );
@@ -1574,7 +1591,7 @@ fn brick_raymarch_incremental_patch_matches_wholesale_install() {
         &gpu.queue,
         &wholesale_build,
         &pack_gpu_records(&wholesale_build, |_| false),
-        &ClipmapPyramid::from_records(&wholesale_build.brick_records),
+        &ClipmapPyramid::from_chunks(&fresh_b),
         recentre_b,
         overlay_b,
     );
@@ -1605,6 +1622,201 @@ fn brick_raymarch_incremental_patch_matches_wholesale_install() {
     );
 }
 
+/// **ADR 0011 interior elision × G3 — the CARVE seam through the render.** Under the
+/// surface-only record contract, deleting a solid that abutted another across a CHUNK
+/// boundary un-occludes the neighbour chunk's face blocks: their records must APPEAR even
+/// though their chunk is NOT in the edit's dirty set (the `apply_dirty_update`
+/// 26-neighbourhood ring re-derivation). Drive that exact edit through the LIVE incremental
+/// path (install A = two abutting chunk-filling boxes → delete one → `patch_brick_field`)
+/// and assert the render is PIXEL-IDENTICAL to a from-scratch wholesale install of the
+/// carved scene, and that the surviving record keys are BYTE-IDENTICAL to the wholesale
+/// build's. The CPU-side byte equality (occupancy included) is gated in
+/// `brick_field::incremental_carve_across_chunk_boundary_flips_neighbour_occlusion`.
+#[test]
+fn brick_raymarch_incremental_carve_exposes_interior_across_chunk_boundary() {
+    use voxel_worker::core_geom::CHUNK_BLOCKS;
+    use voxel_worker::{
+        brick_representable_overlay, build_brick_field, pack_gpu_records, AppCore,
+        BrickRaymarchRenderer, ClipmapPyramid, IncrementalBrickField, LayerBand, Node, NodeContent,
+        NodeTransform, OrbitCamera, PlaneAxis, Scene, Sketch, SketchSolid,
+        TwoLayerResidentCache, COLOR_TARGET_FORMAT,
+    };
+
+    let gpu = pollster::block_on(GpuContext::new(None));
+    let width = 128u32;
+    let height = 128u32;
+    let vpb = 4u32;
+    let chunk_span = CHUNK_BLOCKS as i64;
+
+    // A solid SKETCH-EXTRUDE cube of exactly CHUNK_BLOCKS³ blocks at a chunk-aligned offset
+    // — the sketch producer classifies COARSE-solid blocks to the very face (an SDF Box
+    // tool's 1-block shell resolves as boundary microblocks, which are never elided and
+    // would not exercise the coarse occlusion flip).
+    let chunk_filling_box = |offset_blocks: [i64; 3]| -> Node {
+        let edge_voxels = chunk_span * vpb as i64;
+        let producer = SketchSolid::extrude(
+            Sketch::rectangle(PlaneAxis::Z, edge_voxels, edge_voxels),
+            edge_voxels as u32,
+        );
+        let mut node = Node::new(
+            format!("box@{offset_blocks:?}"),
+            NodeContent::SketchTool { producer, material: MaterialChoice::Stone },
+        );
+        node.transform = NodeTransform::from_blocks(offset_blocks, vpb);
+        node
+    };
+    let anchor_lo = chunk_filling_box([-4 * chunk_span, 0, 0]);
+    let anchor_hi = chunk_filling_box([4 * chunk_span, 0, 0]);
+    let box_a = chunk_filling_box([0, 0, 0]);
+    let box_b = chunk_filling_box([chunk_span, 0, 0]);
+    let scene_with_b = Scene::from_nodes(vec![
+        anchor_lo.clone(),
+        anchor_hi.clone(),
+        box_a.clone(),
+        box_b.clone(),
+    ]);
+    let scene_carved = Scene::from_nodes(vec![anchor_lo, anchor_hi, box_a]);
+
+    let mut cache = TwoLayerResidentCache::enabled();
+    cache.clear();
+    let index_with_b = scene_with_b.build_leaf_spatial_index(vpb);
+    let fresh_with_b = cache.resident_two_layer_chunks(&scene_with_b, vpb, 0);
+    let build_with_b = build_brick_field(&fresh_with_b, vpb);
+    let mut field = IncrementalBrickField::from_wholesale(&build_with_b);
+    let overlay_with_b = brick_representable_overlay(&fresh_with_b).unwrap_or(false);
+
+    let index_carved = scene_carved.build_leaf_spatial_index(vpb);
+    let carve_aabb = index_carved
+        .edit_aabb_since(&index_with_b)
+        .expect("a node delete is a localisable edit");
+    let dirty = cache.invalidate_aabb(&carve_aabb, vpb);
+    let fresh_carved = cache.resident_two_layer_chunks(&scene_carved, vpb, 0);
+    assert_eq!(
+        fresh_with_b.len(),
+        fresh_carved.len(),
+        "the anchors must pin the covering set (incremental precondition)"
+    );
+
+    let update = field.apply_dirty_update(&fresh_carved, &dirty);
+    let incremental_build = field.to_build();
+    let wholesale_build = build_brick_field(&fresh_carved, vpb);
+    // The record KEYS must match wholesale byte-for-byte — including the re-appeared
+    // records of box A's face blocks, whose chunk is NOT dirty (the ring re-derivation).
+    assert_eq!(
+        incremental_build
+            .brick_records
+            .iter()
+            .map(|r| r.packed_world_block_key)
+            .collect::<Vec<_>>(),
+        wholesale_build
+            .brick_records
+            .iter()
+            .map(|r| r.packed_world_block_key)
+            .collect::<Vec<_>>(),
+        "patched record keys must equal the wholesale surface-only build's"
+    );
+    // The carve must have grown the NON-dirty neighbour's record set (box A's exposed
+    // face) — otherwise the ring seam is untested.
+    let dirty_set: std::collections::BTreeSet<[i32; 3]> = dirty.iter().copied().collect();
+    let non_dirty_records = |build: &voxel_worker::BrickFieldBuild| -> usize {
+        build
+            .brick_records
+            .iter()
+            .filter(|record| {
+                let block =
+                    voxel_worker::unpack_world_block_key(record.packed_world_block_key);
+                let chunk = [
+                    block[0].div_euclid(CHUNK_BLOCKS as i64) as i32,
+                    block[1].div_euclid(CHUNK_BLOCKS as i64) as i32,
+                    block[2].div_euclid(CHUNK_BLOCKS as i64) as i32,
+                ];
+                !dirty_set.contains(&chunk)
+            })
+            .count()
+    };
+    assert!(
+        non_dirty_records(&wholesale_build) > non_dirty_records(&build_with_b),
+        "the carve must EXPOSE records in a non-dirty chunk (the fixture must be real)"
+    );
+
+    let overlay_carved = brick_representable_overlay(&fresh_carved).unwrap_or(false);
+    let recentre_carved = scene_carved.recentre_voxels_for_resolve(vpb);
+    let grid_dimensions = scene_carved.placed_region_dimensions(vpb);
+
+    let mut app_core = AppCore::new(OrbitCamera::default());
+    app_core.camera.target = glam::Vec3::ZERO;
+    app_core.camera.orbit_distance = OrbitCamera::auto_framed_distance(grid_dimensions);
+    let aspect_ratio = width as f32 / height as f32;
+    let view_projection = app_core.view_projection(aspect_ratio, grid_dimensions);
+    let viewport_px = [0u32, 0, width, height];
+    let band = LayerBand::FULL;
+
+    let render = |renderer: &mut BrickRaymarchRenderer| {
+        renderer.update_uniforms(
+            &gpu.queue,
+            view_projection,
+            viewport_px,
+            grid_dimensions,
+            band,
+            false,
+            Some(MaterialChoice::default()),
+        );
+        renderer.render_hit_identity_image(&gpu.device, &gpu.queue, width, height)
+    };
+
+    // Path 1 — install A (both boxes), then PATCH the carve in.
+    let mut incremental_renderer =
+        BrickRaymarchRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
+    incremental_renderer.install_brick_field(
+        &gpu.device,
+        &gpu.queue,
+        &build_with_b,
+        &pack_gpu_records(&build_with_b, |_| false),
+        &ClipmapPyramid::from_chunks(&fresh_with_b),
+        scene_with_b.recentre_voxels_for_resolve(vpb),
+        overlay_with_b,
+    );
+    incremental_renderer.patch_brick_field(
+        &gpu.device,
+        &gpu.queue,
+        &incremental_build,
+        &update,
+        &pack_gpu_records(&incremental_build, |_| false),
+        &ClipmapPyramid::from_chunks(&fresh_carved),
+        recentre_carved,
+        overlay_carved,
+    );
+    let incremental_image = render(&mut incremental_renderer);
+
+    // Path 2 — a from-scratch wholesale install of the carved scene.
+    let mut wholesale_renderer =
+        BrickRaymarchRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
+    wholesale_renderer.install_brick_field(
+        &gpu.device,
+        &gpu.queue,
+        &wholesale_build,
+        &pack_gpu_records(&wholesale_build, |_| false),
+        &ClipmapPyramid::from_chunks(&fresh_carved),
+        recentre_carved,
+        overlay_carved,
+    );
+    let wholesale_image = render(&mut wholesale_renderer);
+
+    let hits = incremental_image.iter().filter(|pixel| pixel[0] == 1).count();
+    assert!(hits > 0, "the carved scene must produce brick hits (else the test is vacuous)");
+    let mismatches = incremental_image
+        .iter()
+        .zip(&wholesale_image)
+        .filter(|(a, b)| a != b)
+        .count();
+    assert_eq!(
+        mismatches, 0,
+        "carve-patched render must be pixel-identical to a wholesale install of the carved \
+         scene ({mismatches}/{} pixels differ; {hits} hit pixels)",
+        width * height
+    );
+}
+
 /// **ADR 0011 residency-miss contract (decided at G1).** Forcing every sculpted
 /// record non-resident (`pack_gpu_records(.., |_| true)`) must render each such block
 /// as its COARSE form — a solid block-cube — never a miss/skip. A coarse cube is a
@@ -1629,7 +1841,7 @@ fn brick_raymarch_residency_miss_renders_coarse_form() {
         let vpb = case.voxels_per_block;
         let two_layer_chunks = TwoLayerStore::enabled().build_covering_chunks(&case.scene, vpb, 0);
         let build = build_brick_field(&two_layer_chunks, vpb);
-        let pyramid = ClipmapPyramid::from_records(&build.brick_records);
+        let pyramid = ClipmapPyramid::from_chunks(&two_layer_chunks);
         // Only the sculpted-bearing cases exercise the contract; every gated case has
         // boundary blocks, but assert it so a silently-coarse scene can't pass vacuously.
         assert!(
@@ -1768,7 +1980,9 @@ fn brick_raymarch_pyramid_on_equals_off() {
         let two_layer_chunks = TwoLayerStore::enabled().build_covering_chunks(&case.scene, vpb, 0);
         let build = build_brick_field(&two_layer_chunks, vpb);
         assert!(!build.brick_records.is_empty(), "{}: empty brick field", case.name);
-        let pyramid = ClipmapPyramid::from_records(&build.brick_records);
+        // The LIVE pyramid constructor (chunk-derived, interiors included) — this A/B is
+        // the rendering-equivalence proof for the chunk-sourced pyramid (ADR 0011).
+        let pyramid = ClipmapPyramid::from_chunks(&two_layer_chunks);
         // Every level must carry cells, else "on == off" is vacuous (the L3 skip is
         // exercised too — G4).
         assert!(

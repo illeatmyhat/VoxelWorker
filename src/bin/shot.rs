@@ -1770,7 +1770,16 @@ async fn run_capture(options: ShotOptions) {
             let density = options.geometry.voxels_per_block;
             let two_layer_chunks = voxel_worker::two_layer_store::TwoLayerStore::enabled()
                 .build_covering_chunks(&scene, density, 0);
-            let build = voxel_worker::build_brick_field(&two_layer_chunks, density);
+            // shot's --brick goldens verify the brick display against the dense reference
+            // INCLUDING onion-band cut planes, so install the interior-INCLUSIVE oracle
+            // build: a band clip can start a ray inside the solid, where the live
+            // surface-only record set (ADR 0011 interior elision) intentionally holds no
+            // records — a pre-existing live-display limitation of the elided buffer (since
+            // the b1cadb7 record-buffer elision), NOT covered by these goldens. The fog
+            // fill below is byte-identical under either build (it ignores coarse records;
+            // the sculpted set is never elided). Goldens are small scenes — the oracle
+            // build's O(all blocks) cost is irrelevant here.
+            let build = voxel_worker::build_brick_field_all_blocks(&two_layer_chunks, density);
             match voxel_worker::brick_representable_overlay(&two_layer_chunks) {
                 Some(overlay_active) if !build.brick_records.is_empty() => {
                     let gpu_records = voxel_worker::pack_gpu_records(&build, |_| {

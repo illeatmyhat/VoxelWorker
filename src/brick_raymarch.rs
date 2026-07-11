@@ -73,9 +73,19 @@ pub struct BrickGpuRecord {
     pub atlas_slot: u32,
 }
 
-/// Pack the G0 build's records for the GPU. `non_resident` marks sculpted slots to
-/// upload as [`NON_RESIDENT_ATLAS_SLOT`] — the residency-miss test's forced-miss
-/// hook (and G4's future eviction seam); pass `|_| false` for the all-resident set.
+/// Pack the build's records for the GPU. The record set is already **surface-only** (ADR
+/// 0011 interior elision, fused into
+/// [`build_brick_field`](crate::brick_field::build_brick_field): a fully-occluded interior
+/// block never emits a record — no second mask pass exists), so this is a plain 1:1 mapping
+/// and the uploaded buffer is ∝ surface, not volume, for a large solid. Hit-identity of the
+/// surface-only set vs the interior-inclusive oracle build is gated in
+/// `tests/gpu_parity.rs::brick_surface_elision_hit_set_unchanged`; interiors stay
+/// queryable through the two-layer chunks (the clip-map derives from the chunks, the fog
+/// box-fills coarse occupancy from the chunks).
+///
+/// `non_resident` marks sculpted slots to upload as [`NON_RESIDENT_ATLAS_SLOT`] — the
+/// residency-miss test's forced-miss hook (and G4's future eviction seam); pass
+/// `|_| false` for the all-resident set.
 pub fn pack_gpu_records(
     build: &BrickFieldBuild,
     mut non_resident: impl FnMut(u32) -> bool,
@@ -87,33 +97,7 @@ pub fn pack_gpu_records(
         .collect()
 }
 
-/// As [`pack_gpu_records`], but ELIDES fully-occluded interior blocks (ADR 0011 interior
-/// elision — the brick display sink's analogue of the mesh's interior-face culling). A
-/// block whose six neighbours are all solid on the shared face can never be a ray's first
-/// hit (the ray stops at the surrounding solid), so dropping it from the record buffer the
-/// shader binary-searches is **hit-identical** — gated in
-/// `tests/gpu_parity.rs::brick_surface_elision_hit_set_unchanged`. The clip-map, atlas and
-/// fog keep the FULL set (built from `build`); only the per-edit record buffer shrinks —
-/// ∝ surface, not volume, for a large solid (a 500×50×50-block box drops ~1.14M of 1.25M
-/// records). Ordering is preserved (a filter over the sorted set stays sorted), so the
-/// in-shader binary search is unaffected.
-pub fn pack_surface_gpu_records(
-    build: &BrickFieldBuild,
-    chunks: &[([i32; 3], std::sync::Arc<crate::two_layer_store::TwoLayerChunk>)],
-    mut non_resident: impl FnMut(u32) -> bool,
-) -> Vec<BrickGpuRecord> {
-    let keep = crate::brick_field::surface_record_mask(&build.brick_records, chunks);
-    build
-        .brick_records
-        .iter()
-        .zip(keep)
-        .filter(|&(_, keep)| keep)
-        .map(|(record, _)| gpu_record_of(record, &mut non_resident))
-        .collect()
-}
-
-/// Pack one brick record into its GPU form — the shared per-record body of
-/// [`pack_gpu_records`] and [`pack_surface_gpu_records`].
+/// Pack one brick record into its GPU form — the per-record body of [`pack_gpu_records`].
 fn gpu_record_of(
     record: &crate::brick_field::BrickRecord,
     non_resident: &mut impl FnMut(u32) -> bool,
