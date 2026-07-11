@@ -72,8 +72,7 @@ mod windowed_resolve_tests;
 mod cell_interval_parity_tests;
 
 pub use app_core::{
-    default_replay_seed_scene, replay_intent_script, runtime_streams_fog_grid, AppCore,
-    RebuildOutcome, RebuildOutput,
+    default_replay_seed_scene, replay_intent_script, AppCore, RebuildOutcome, RebuildOutput,
 };
 pub use store::{ChunkCacheKey, ChunkResolveCache, Store};
 pub use brick_field::{

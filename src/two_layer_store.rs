@@ -30,7 +30,9 @@
 //! * **Export + the diameter query stream cacheless from the evaluator** (E4 / #51):
 //!   `stream_vox_occupancy` / `streamed_widest_run_in_band`, no dense fallback.
 //! * **The live display cache is the [`TwoLayerResidentCache`]** (E5 / #54): chunk-granular
-//!   incremental edits; the fog grid is streamed from it (`expand_resident_chunks_into_grid`).
+//!   incremental edits; the mesher + brick fog sink read its resident set directly (ADR 0011
+//!   G5 retired the dense fog-grid stream — `expand_resident_chunks_into_grid` is now a
+//!   `#[cfg(test)]` parity oracle).
 //!   The dense [`Store::resolve_region`](crate::store::Store::resolve_region) is retired from
 //!   every RUNTIME path and kept ONLY as the test parity + golden reference oracle.
 //!
@@ -1209,16 +1211,22 @@ pub fn resolve_region_two_layer(
 /// [`TwoLayerResidentCache`] display path) into one recentred [`VoxelGrid`], in the
 /// EXACT frame the retired dense `Store::resolve_region` assembled. Unlike
 /// [`resolve_region_two_layer`] (which re-classifies each chunk from the scene via a
-/// stateless [`TwoLayerStore`]), this reuses the caller's ALREADY-BUILT resident
-/// chunks — so the windowed rebuild classifies each covering chunk once (incrementally)
-/// and reuses that work for both the mesher and the fog grid.
+/// stateless [`TwoLayerStore`]), this reuses the caller's ALREADY-BUILT resident chunks.
 ///
 /// `chunks` is `(absolute_chunk_coord, Arc<TwoLayerChunk>)` per covering chunk (the
 /// [`TwoLayerResidentCache::resident_two_layer_chunks`] output); `region_dimensions` is
 /// the composite voxel extent ([`Scene::placed_region_dimensions`]); `recentre_voxels`
 /// is the composite recentre (ADR 0008). The occupied SET is bit-identical to
-/// [`resolve_region_two_layer`]'s (the E2 round-trip parity gate proves the shared
-/// expand path), so the fog + goldens are unchanged.
+/// [`resolve_region_two_layer`]'s (the E2 round-trip parity gate proves the shared expand
+/// path).
+///
+/// **ADR 0011 G5 — demoted to a TEST-ONLY oracle (`#[cfg(test)]`).** With the fog
+/// `VoxelGrid` stream retired, no runtime path expands the resident set into a dense grid;
+/// this survives only so parity tests (the brick-vs-densify fog nets, the render-frame
+/// coordinate guard, the grid-overlay invalidation test) can materialise the same occupancy
+/// the retired stream produced, and assert against it. A runtime caller reappearing here would
+/// be the O(volume) densify coming back.
+#[cfg(test)]
 pub fn expand_resident_chunks_into_grid(
     chunks: &[([i32; 3], Arc<TwoLayerChunk>)],
     region_dimensions: [u32; 3],

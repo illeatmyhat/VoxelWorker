@@ -1610,7 +1610,7 @@ async fn run_capture(options: ShotOptions) {
             // must outlive the mesh build (owned here, dropped after).
             let store = reference_store.insert(voxel_worker::Store::new());
             let grid = store.resolve_region(&scene, density, 0);
-            let region_dimensions = AppCore::region_dimensions_for(&scene, density, &grid);
+            let region_dimensions = AppCore::region_dimensions_for(&scene, density);
             let render_chunks = store.resident_render_chunks(&scene, density, 0);
             (grid, region_dimensions, Some(render_chunks))
         } else {

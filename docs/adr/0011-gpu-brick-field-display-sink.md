@@ -1,6 +1,13 @@
 # ADR 0011 — The GPU brick-field display sink: raymarch a cached 8³-brick atlas of the boundary set, clip-map LOD, BVH broadphase
 
-- **Status:** **Accepted (owner grill completed 2026-07-05/06; not yet built — slices G0→G5 pending).**
+- **Status:** **Accepted + SHIPPED (epic #64, slices G0→G5 all landed 2026-07-08; owner grill 2026-07-05/06).**
+  Live brick raymarch (hit-set parity EXACT vs the evaluator, brick == mesh), L1–L3 clip-map pyramid, edit-BVH
+  broadphase, incremental persistent atlas, and fog-from-bricks are all in the runtime. **G5 dense-grid retirement
+  completed 2026-07-11**: the fog `VoxelGrid` stream is now GONE — the universal brick-fog law sources onion fog from
+  the brick sink for EVERY chunkable scene on EVERY build (gpu or not, loaded VS material included), `AppCore::rebuild`
+  assembles no dense grid, the shell carries no `VoxelGrid` husk, and `expand_resident_chunks_into_grid` /
+  `Scene::resolve_region` survive only as `#[cfg(test)]` parity oracles + `bin/shot.rs`'s golden reference. The sole
+  surviving dense resolve is the transient, non-chunkable-only Part-only fog densify (a degenerate empty region).
   Sub-decisions are tagged **[DECIDED-0009]** (settled by ADR 0009's benchmark) or **[DECIDED-grill]** (ruled in the
   owner grill; the former [OPEN-grill] positions, each resolved in §Open questions at the end). One draft position was
   overturned as a units error (Decision 1: the granule is one BLOCK, not a voxel count — amends ADR 0009's "8³").

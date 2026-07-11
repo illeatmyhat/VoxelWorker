@@ -26,10 +26,7 @@ use crate::panel::LayerRange;
 use crate::renderer::OnionFogParams;
 use crate::scene::{NodeContent, NodeId, NodeTransform, Part, Scene};
 use crate::spatial_index::LeafSpatialIndex;
-use crate::two_layer_store::{
-    expand_resident_chunks_into_grid, resolve_region_two_layer, TwoLayerChunk,
-    TwoLayerResidentCache,
-};
+use crate::two_layer_store::{resolve_region_two_layer, TwoLayerChunk, TwoLayerResidentCache};
 use crate::voxel::{chunk_extent_exceeds_bound, SdfShape, VoxelGrid};
 
 /// The headless orchestrator: owns the per-chunk resolve [`Store`] and the
@@ -67,17 +64,18 @@ pub struct AppCore {
 }
 
 /// The headless resolve output of a geometry [`rebuild`](AppCore::rebuild) (A2e;
-/// ADR 0010 E5). Holds the assembled region grid (owned, for the fog) plus the
-/// **two-layer** covering chunks (owned) the shell meshes through
-/// [`CuboidMeshRenderer::new_from_two_layer_chunks`](crate::cuboid_mesh::CuboidMeshRenderer::new_from_two_layer_chunks).
-/// Both are owned, so the shell may hold the output across `&mut AppCore` calls.
+/// ADR 0010 E5). Holds ONLY the **two-layer** covering chunks (owned) the shell meshes
+/// through
+/// [`CuboidMeshRenderer::new_from_two_layer_chunks`](crate::cuboid_mesh::CuboidMeshRenderer::new_from_two_layer_chunks),
+/// plus the region dimensions + recentre the display frame is sized from.
+///
+/// **ADR 0011 G5 — the dense grid is gone.** A rebuild NO LONGER assembles a whole-region
+/// `VoxelGrid`. Fog reconstructs from the brick sink (`fog_brick_field`) for any chunkable
+/// scene, and the display meshes from `two_layer_chunks` — neither needs a dense occupancy
+/// array. The only surviving dense resolve is the transient, non-chunkable-only Part-only fog
+/// densify inside the shell's `build_fog_occupancy` (a degenerate empty region), and the
+/// export / query test oracles. So this output is purely sparse + scalar metadata.
 pub struct RebuildOutput {
-    /// The assembled monolithic region grid (recentred), streamed from the two-layer
-    /// evaluator ([`resolve_region_two_layer`]): feeds the fog upload and the shell's
-    /// diameter re-measure. This is the ONE remaining whole-region grid — the fog
-    /// densify still consumes a [`VoxelGrid`], so the evaluator streams it (coarse
-    /// fast-fill + boundary per-voxel), NOT the retired dense `Store::resolve_region`.
-    pub grid: VoxelGrid,
     /// The region's voxel dimensions, read from the SCENE (see
     /// [`AppCore::region_dimensions_for`]) — what the camera auto-frame, gizmo,
     /// lattice, floor grid and layer scrubber are sized from.
@@ -98,7 +96,8 @@ pub struct RebuildOutput {
     /// makes it an O(chunks) refcount bump and composes with the brick readers directly.
     pub two_layer_chunks: Vec<([i32; 3], Arc<TwoLayerChunk>)>,
     /// The composite recentre (floating origin, voxels; ADR 0008) the two-layer mesh
-    /// lands its geometry in — the SAME frame the fog `grid` above is recentred to.
+    /// lands its geometry in — the SAME frame the fog occupancy is reconstructed in (the
+    /// brick fill / GPU atlas / transient Part-only densify all recentre to this).
     pub recentre_voxels: [i64; 3],
     /// **The chunk-granular incremental GPU-buffer re-mesh hint (issue #55).** `Some(dirty)`
     /// when this rebuild LOCALISED — the edit's dirty world-AABB evicted exactly the `dirty`
@@ -837,28 +836,21 @@ impl AppCore {
     /// `LeafSpatialIndex::edit_aabb_since`). The reassembled grid is byte-identical
     /// either way (the same chunks are re-resolved; untouched chunks are reused).
     ///
-    /// Returns the assembled grid + region dimensions + the per-chunk render
-    /// accessor, which BORROWS the store. The returned [`RebuildOutcome`] therefore
-    /// borrows `self`, so the shell must consume it (build the cuboid mesh, upload
-    /// the fog occupancy) BEFORE the next `&mut AppCore` call. A density whose
-    /// single-chunk voxel capacity exceeds the bound is rejected WITHOUT touching
-    /// the store, returning the offending count so the shell can surface the cap
-    /// warning (AppCore never writes panel state).
+    /// Returns the region dimensions + recentre + the per-chunk render accessor, which
+    /// BORROWS the store. The returned [`RebuildOutcome`] therefore borrows `self`, so the
+    /// shell must consume it (build the cuboid mesh, refresh the brick fog field) BEFORE the
+    /// next `&mut AppCore` call. A density whose single-chunk voxel capacity exceeds the bound
+    /// is rejected WITHOUT touching the store, returning the offending count so the shell can
+    /// surface the cap warning (AppCore never writes panel state).
     ///
-    /// **ADR 0011 G1 — the fog `VoxelGrid` stream is now demand-driven.**
-    /// `stream_fog_grid = false` skips the whole-region occupancy expansion
-    /// (ADR 0010's flagged per-edit densify debt) and returns an EMPTY grid with the
-    /// correct dimensions + recentre — the shell passes `false` when the GPU brick
-    /// display path is engaged (a single ported producer under `--features gpu`),
-    /// where the fog atlas GPU-resolves from the producer and nothing reads the
-    /// grid's occupancy. Pass `true` to stream it (the mesh-path/no-GPU behaviour,
-    /// bit-identical to before).
-    pub fn rebuild(
-        &mut self,
-        scene: &Scene,
-        density: u32,
-        stream_fog_grid: bool,
-    ) -> RebuildOutcome {
+    /// **ADR 0011 G5 — no dense grid is ever assembled.** A rebuild produces ONLY the sparse
+    /// two-layer covering chunks + scalar metadata; the whole-region `VoxelGrid` expansion
+    /// (ADR 0010's flagged per-edit densify debt) is GONE. Fog reconstructs from the brick
+    /// sink (which the shell packs from the same `two_layer_chunks`), the display meshes from
+    /// them, and the camera / scrubber read `region_dimensions` — nothing reads a dense
+    /// occupancy array. The only surviving dense resolve is the transient, non-chunkable-only
+    /// Part-only fog densify in the shell (a degenerate empty region) + the test oracles.
+    pub fn rebuild(&mut self, scene: &Scene, density: u32) -> RebuildOutcome {
         profiling::scope!("app_core_rebuild");
         // Issue #27 S2: the resolve is chunked + lazy, so the voxel bound is a
         // PER-CHUNK bound, not a whole-scene total. Only a pathological density
@@ -942,46 +934,23 @@ impl AppCore {
         self.previous_density = Some(density);
 
         // Ensure every covering chunk is resident (re-classifying only the dirty /
-        // missing ones), then build BOTH the mesher's owned chunk set and the fog grid
-        // from the SAME resident chunks (classified once). The two-layer mesher
-        // re-meshes wholesale from this set each rebuild (the resident cache is the
-        // incremental seam; a block-granular dirty-brick / GPU-buffer incremental
-        // re-mesh is a later optimization, ADR 0010 Consequences).
-        let placed_dimensions = scene.placed_region_dimensions(density);
-        let (two_layer_chunks, grid) = {
+        // missing ones); the SAME `Arc`-shared set feeds both the mesher and the brick fog
+        // sink in the shell (classified once). The two-layer mesher re-meshes wholesale from
+        // this set each rebuild (the resident cache is the incremental seam).
+        //
+        // ADR 0011 G5: NO whole-region `VoxelGrid` is expanded here anymore — the last
+        // per-edit densify (ADR 0010's flagged debt) is retired. The resident set is the sole
+        // display truth; fog reconstructs from it via the brick sink in the shell.
+        let two_layer_chunks: Vec<([i32; 3], Arc<TwoLayerChunk>)> = {
             profiling::scope!("resident_two_layer_chunks");
             // The resident cache hands out an OWNED, `Arc`-shared covering set (an O(1)
             // refcount bump per chunk — NOT the old O(all-blocks) deep clone). It already
-            // outlives the `&mut self` cache borrow, so it feeds the fog expand below AND
-            // becomes `RebuildOutput.two_layer_chunks` directly, with no further copy.
-            let resident: Vec<([i32; 3], Arc<TwoLayerChunk>)> =
-                self.two_layer_cache.resident_two_layer_chunks(scene, density, 0);
-            // The whole-region fog grid: the fog densify still consumes a `VoxelGrid`,
-            // so expand the resident chunks (coarse fast-fill + boundary per-voxel) into
-            // one recentred grid — bit-identical to the retired dense `resolve_region`
-            // (the E2 two-layer round-trip parity gate), so fog + goldens are unchanged.
-            // ADR 0011 G1: SKIPPED (dimensions + recentre only, no occupancy) when the
-            // shell says nothing will read it — the GPU brick display path's fog atlas
-            // resolves from the producer, killing this last per-edit densify.
-            let grid = if stream_fog_grid {
-                expand_resident_chunks_into_grid(
-                    &resident,
-                    placed_dimensions,
-                    new_recentre,
-                    density,
-                )
-            } else {
-                let mut empty_grid = VoxelGrid::new(placed_dimensions);
-                empty_grid.recentre_voxels = new_recentre;
-                empty_grid
-            };
-            // The `Arc`-shared resident set already outlives the cache borrow — move it out
-            // as the rebuild's covering chunks with no per-chunk copy.
-            (resident, grid)
+            // outlives the `&mut self` cache borrow, so it becomes `RebuildOutput.
+            // two_layer_chunks` directly, with no further copy.
+            self.two_layer_cache.resident_two_layer_chunks(scene, density, 0)
         };
-        let region_dimensions = Self::region_dimensions_for(scene, density, &grid);
+        let region_dimensions = Self::region_dimensions_for(scene, density);
         RebuildOutcome::Built(RebuildOutput {
-            grid,
             region_dimensions,
             two_layer_chunks,
             recentre_voxels: new_recentre,
@@ -997,68 +966,46 @@ impl AppCore {
     ///
     /// ADR 0010 E5: this streams the whole-region grid from the **two-layer evaluator**
     /// (coarse fast-fill + boundary per-voxel), NOT the retired dense
-    /// `Scene::resolve_region` — bit-identical (the E2 round-trip parity gate), so the
-    /// startup grid the shell seeds its first-frame fog / dimensions from is unchanged.
-    /// A Part-only scene (no covering range) resolves to an empty grid, exactly as the
-    /// dense store path did.
+    /// `Scene::resolve_region` — bit-identical (the E2 round-trip parity gate). A Part-only
+    /// scene (no covering range) resolves to an empty grid, exactly as the dense store did.
+    ///
+    /// **ADR 0011 G5 — this is now a TEST/TRANSIENT-ONLY dense resolve.** No runtime display
+    /// path calls it on a chunkable scene (that would be the retired O(volume) densify). Its
+    /// two remaining callers are (1) the parity test oracles, and (2) the shell's transient
+    /// Part-only fog densify (`build_fog_occupancy`), which resolves a NON-chunkable scene —
+    /// a degenerate empty region — then immediately drops the grid. A chunkable scene must
+    /// never reach it at runtime.
     pub fn resolve_scene(scene: &Scene, voxels_per_block: u32) -> VoxelGrid {
         let store = crate::two_layer_store::TwoLayerStore::enabled();
         resolve_region_two_layer(&store, scene, voxels_per_block, 0).unwrap_or_default()
     }
 
-    /// The startup grid door — the SINGLE decision the windowed shell seeds its first
-    /// frame from (`WindowedState::new`). Mirrors the per-edit rebuild seam
-    /// ([`AppCore::rebuild`], the `stream_fog_grid` branch) EXACTLY so startup and every
-    /// later edit construct the grid the same way: when the runtime sources fog from the
-    /// brick sink (ADR 0011 G5) the whole-region occupancy is NEVER built — the grid is
-    /// dimensions + recentre only, matching `expand_resident_chunks_into_grid`'s skipped
-    /// branch. Only a non-gpu build, or a non-chunkable multi-producer scene, still streams
-    /// the resolved occupancy.
-    ///
-    /// This closes the startup OOM: a persisted 8000×800×800 scene resolved through
-    /// `resolve_scene` would build a dense ~5.1-billion-cell `VoxelGrid` (~28.5 GB RSS →
-    /// OOM hang before the first print). ADR 0011 G5: this now holds on EVERY build — the
-    /// non-gpu binary also sources fog from the brick sink, so it too seeds a dims-only grid
-    /// (before this it streamed the whole region and would have OOM'd on the persisted scene).
-    ///
-    /// Returns `(grid, streamed)` where `streamed` tells the shell whether `grid` carries
-    /// occupancy (feeds the startup fog build's `grid_streamed` flag + the persisted
-    /// `fog_grid_streamed` field).
-    pub fn startup_grid(scene: &Scene, density: u32) -> (VoxelGrid, bool) {
-        let streamed = runtime_streams_fog_grid(
-            scene.has_chunkable_extent(density),
-            scene.single_producer().is_some(),
-        );
-        if streamed {
-            (Self::resolve_scene(scene, density), true)
-        } else {
-            let mut grid = VoxelGrid::new(scene.placed_region_dimensions(density));
-            grid.recentre_voxels = scene.recentre_voxels_for_resolve(density);
-            (grid, false)
-        }
+    /// The startup region door — the SINGLE place the windowed shell seeds its first-frame
+    /// display frame from (`WindowedState::new`). ADR 0011 G5: with the dense grid retired
+    /// this constructs NO `VoxelGrid` at all — it returns only the region dimensions + the
+    /// resolve recentre (the camera auto-frame, layer scrubber and fog frame consume these),
+    /// exactly what the per-edit [`AppCore::rebuild`] yields. This is what closes the startup
+    /// OOM on BOTH binaries: a persisted 8000×800×800 scene once resolved a dense
+    /// ~5.1-billion-cell grid (~28.5 GB RSS → OOM hang before the first print), and the non-gpu
+    /// binary streamed the same region; now neither materialises any occupancy at startup.
+    pub fn startup_region(scene: &Scene, density: u32) -> ([u32; 3], [i64; 3]) {
+        (
+            scene.placed_region_dimensions(density),
+            scene.recentre_voxels_for_resolve(density),
+        )
     }
 
     /// The region dimensions (in voxels) the camera auto-frame, origin gizmo, block
-    /// lattice, fine floor grid and layer scrubber are sized from — read from the
-    /// SCENE, not by reaching into the assembled `VoxelGrid` (issue #20 S6c-1, prep
-    /// for the per-chunk renderer of S6c step 4). This is a behaviour-preserving
-    /// substitution: for a chunkable scene (every Tool scene, including the startup
-    /// default) the assembled grid is literally sized to
-    /// [`Scene::placed_region_dimensions`] — so this returns BYTE-IDENTICAL
-    /// dimensions (proven in
-    /// `scene::tests::placed_region_dimensions_equals_assembled_grid`).
-    ///
-    /// A **Part-only** scene (e.g. a lone debug-cloud field) has no composite
-    /// extent, so `placed_region_dimensions` would be `[0, 0, 0]`; that scene is
-    /// resolved through the explicit-region path instead, so we fall back to the
-    /// assembled grid's own dimensions — which (being the grid the consumers used
-    /// before) is trivially identical to the old behaviour for that case.
-    pub fn region_dimensions_for(scene: &Scene, density: u32, grid: &VoxelGrid) -> [u32; 3] {
-        if scene.has_chunkable_extent(density) {
-            scene.placed_region_dimensions(density)
-        } else {
-            grid.dimensions
-        }
+    /// lattice, fine floor grid and layer scrubber are sized from — read purely from the
+    /// SCENE (issue #20 S6c-1). ADR 0011 G5: with the dense grid retired there is no
+    /// assembled `VoxelGrid` to reach into, so this is just
+    /// [`Scene::placed_region_dimensions`]. For a chunkable scene (every Tool scene,
+    /// including the startup default) that is the composite extent (proven byte-identical to
+    /// the old assembled grid in `scene::tests::placed_region_dimensions_equals_assembled_grid`);
+    /// a **Part-only** scene (a lone debug-cloud field) has no composite extent, so this is
+    /// `[0, 0, 0]` — exactly the empty grid's dimensions the old Part-only fallback returned.
+    pub fn region_dimensions_for(scene: &Scene, density: u32) -> [u32; 3] {
+        scene.placed_region_dimensions(density)
     }
 
     /// The camera's view-projection matrix for the given viewport aspect ratio —
@@ -1156,26 +1103,6 @@ impl AppCore {
     }
 }
 
-/// **ADR 0011 G5 — the runtime fog-stream decision (the retirement seam).** Whether a
-/// rebuild must STREAM the whole-region fog `VoxelGrid` (the last dense-shaped display
-/// consumer, ADR 0010's flagged debt), or whether the onion fog sources its occupancy
-/// elsewhere.
-///
-/// **The universal brick-fog law (ADR 0011 G5, the dense-grid retirement).** Fog is BOOLEAN
-/// occupancy, so the brick sink (`build_per_chunk_fog_occupancy_from_bricks`) reconstructs it
-/// for ANY chunkable scene — on EVERY build (gpu or not), mixed materials and a loaded VS
-/// texture included (a material changes shading, never occupancy). So this decision no longer
-/// depends on the `gpu` feature or on `loaded_material`: a chunkable scene NEVER streams. A
-/// non-chunkable SINGLE producer (a lone `DebugClouds` Part) resolves from its producer (the
-/// GPU per-chunk atlas under `--features gpu`), so it does not stream either. Only a
-/// non-chunkable MULTI-producer scene — a degenerate Part-only field with no composite extent,
-/// which resolves EMPTY — has neither source and still "streams" (an empty resolve). Pure so
-/// the runtime call site and the retirement-assertion test share ONE decision (no drift).
-pub fn runtime_streams_fog_grid(chunkable: bool, single_producer: bool) -> bool {
-    let fog_from_bricks = chunkable;
-    let producer_resolve = single_producer;
-    !(fog_from_bricks || producer_resolve)
-}
 
 /// The **default seed scene** the windowed app starts from (ADR 0003 Phase C, slice
 /// C3 — the base a `shot --replay` script is applied against). A single Tool node
@@ -2170,13 +2097,20 @@ mod undo_tests {
     /// store (the chunk cache), so this exercises the SAME invalidation path the live app
     /// uses — not the always-full `resolve_region`.
     fn rebuild_grid_overlay_count(core: &mut AppCore, scene: &Scene, density: u32) -> usize {
-        match core.rebuild(scene, density, true) {
-            RebuildOutcome::Built(output) => output
-                .grid
-                .occupied
-                .iter()
-                .filter(|voxel| voxel.grid_overlay)
-                .count(),
+        match core.rebuild(scene, density) {
+            RebuildOutcome::Built(output) => {
+                // ADR 0011 G5: `rebuild` no longer returns a dense grid. Expand the resident
+                // two-layer chunks it DID return (the cache's output, so this still exercises
+                // the S3 invalidation path) through the test-oracle expander, then count the
+                // flagged voxels — the property under test is unchanged.
+                let grid = crate::two_layer_store::expand_resident_chunks_into_grid(
+                    &output.two_layer_chunks,
+                    output.region_dimensions,
+                    output.recentre_voxels,
+                    density,
+                );
+                grid.occupied.iter().filter(|voxel| voxel.grid_overlay).count()
+            }
             RebuildOutcome::DensityRejected { .. } => {
                 panic!("density {density} unexpectedly rejected")
             }
@@ -2185,7 +2119,7 @@ mod undo_tests {
 
     /// Read the recentre shift a single `rebuild` of `scene` at `density` reports.
     fn rebuild_recentre_shift(core: &mut AppCore, scene: &Scene, density: u32) -> [i64; 3] {
-        match core.rebuild(scene, density, true) {
+        match core.rebuild(scene, density) {
             RebuildOutcome::Built(output) => output.recentre_shift_voxels,
             RebuildOutcome::DensityRejected { .. } => {
                 panic!("density {density} unexpectedly rejected")
@@ -2236,153 +2170,57 @@ mod undo_tests {
         assert_eq!(steady_shift, [0; 3], "an unchanged extent must not move the camera");
     }
 
-    /// ADR 0011 G1: `rebuild(.., stream_fog_grid = false)` must SKIP the whole-region
-    /// occupancy expansion (ADR 0010's flagged per-edit densify) and return an
-    /// empty-occupancy grid that still carries the correct dimensions + recentre — the
-    /// shell passes `false` on the GPU brick display path, where nothing reads the grid's
-    /// occupancy (the fog atlas GPU-resolves from the producer). `true` streams it, exactly
-    /// as before. This is the fog-`VoxelGrid`-stream kill the slice is for.
+    /// ADR 0011 G5 startup door (the OOM-hang regression guard): the startup door builds NO
+    /// `VoxelGrid` at all — it returns only the region dimensions + resolve recentre. The
+    /// persisted 8000×800×800 scene can therefore no longer build a dense ~5.1-billion-cell
+    /// grid at startup, on EITHER binary (the door is `gpu`-feature-agnostic). The dims match
+    /// the placed region and the recentre matches the resolve frame the camera + fog consume.
     #[test]
-    fn rebuild_without_fog_stream_skips_occupancy_but_keeps_dims() {
-        let density = 16u32;
-        let mut scene =
-            Scene::from_nodes(vec![tool_node(box_shape([2, 2, 2]), MaterialChoice::Stone)]);
-        scene.ensure_node_ids();
-        scene.ensure_origin_point();
-        scene.voxels_per_block = density;
-        scene.active = scene.roots.first().copied();
-
-        // Two independent cores so the store state of one build never leaks into the other.
-        let mut streamed_core = test_core();
-        let RebuildOutcome::Built(streamed) = streamed_core.rebuild(&scene, density, true) else {
-            panic!("density {density} unexpectedly rejected (streamed)");
-        };
-        let mut skipped_core = test_core();
-        let RebuildOutcome::Built(skipped) = skipped_core.rebuild(&scene, density, false) else {
-            panic!("density {density} unexpectedly rejected (skipped)");
-        };
-
-        assert!(
-            !streamed.grid.occupied.is_empty(),
-            "the streamed grid must hold the resolved occupancy (the mesh-path behaviour)"
-        );
-        assert!(
-            skipped.grid.occupied.is_empty(),
-            "the brick-path grid must carry NO occupancy — the fog VoxelGrid stream stopped"
-        );
-        // Every dimension-only consumer (camera framing, the layer-track extent) must be
-        // unaffected: same dims, same recentre, same reported shift.
-        assert_eq!(
-            skipped.grid.dimensions, streamed.grid.dimensions,
-            "the empty grid must keep the correct dimensions"
-        );
-        assert_eq!(
-            skipped.grid.recentre_voxels, streamed.grid.recentre_voxels,
-            "the empty grid must keep the resolve recentre"
-        );
-        assert_eq!(
-            skipped.recentre_shift_voxels, streamed.recentre_shift_voxels,
-            "the reported recentre shift must not depend on streaming the grid"
-        );
-        assert_eq!(
-            skipped.region_dimensions, streamed.region_dimensions,
-            "the region dimensions must not depend on streaming the grid"
-        );
-    }
-
-    /// ADR 0011 G5: the runtime fog-stream decision truth table under the UNIVERSAL brick-fog
-    /// law. Fog is boolean occupancy, so ANY chunkable scene (single OR multi producer, any
-    /// build, loaded VS material included) sources it from the brick sink and NEVER streams; a
-    /// non-chunkable single producer resolves from its producer. Only a non-chunkable
-    /// MULTI-producer scene — a degenerate Part-only field — still "streams" (an empty resolve).
-    /// The decision no longer depends on the `gpu` feature or `loaded_material` (both retired
-    /// as dimensions), so the non-gpu binary now takes the brick-fog path too.
-    #[test]
-    fn runtime_streams_fog_grid_truth_table() {
-        // Chunkable → fog from bricks, never streams — single or multi producer alike (the
-        // multi-producer chunkable scene streamed before G5; the loaded-VS-material scene
-        // streamed before this universalisation — both now source from bricks).
-        assert!(!runtime_streams_fog_grid(true, true), "chunkable single");
-        assert!(
-            !runtime_streams_fog_grid(true, false),
-            "chunkable MULTI producer — the scene that streamed before G5"
-        );
-        // Non-chunkable single producer (a lone DebugClouds Part) → producer resolve, no stream.
-        assert!(!runtime_streams_fog_grid(false, true), "non-chunkable single");
-        // Non-chunkable MULTI-producer (a degenerate Part-only field) → the sole stream case.
-        assert!(runtime_streams_fog_grid(false, false), "non-chunkable multi");
-    }
-
-    /// ADR 0011 G5 startup door (the OOM-hang regression guard): the startup grid a
-    /// chunkable scene seeds is dimensions + recentre ONLY — occupancy is NEVER resolved, so
-    /// the persisted 8000×800×800 scene can no longer build a dense ~5.1-billion-cell grid at
-    /// startup. Under the UNIVERSAL brick-fog law this holds regardless of the `gpu` feature
-    /// (the decision no longer takes it), so this one test covers both build flavours.
-    #[test]
-    fn startup_grid_chunkable_scene_builds_no_occupancy() {
+    fn startup_region_returns_dims_and_recentre_no_grid() {
         let density = 16u32;
         let scene = default_replay_seed_scene();
         assert!(scene.has_chunkable_extent(density), "the seed scene is chunkable");
-        let (grid, streamed) = AppCore::startup_grid(&scene, density);
-        assert!(!streamed, "a chunkable scene sources fog from bricks, never streams");
-        assert_eq!(grid.occupied_count(), 0, "the startup grid must build NO occupancy");
+        let (dimensions, recentre) = AppCore::startup_region(&scene, density);
         assert_eq!(
-            grid.dimensions,
+            dimensions,
             scene.placed_region_dimensions(density),
-            "dimensions-only grid must match the placed region"
+            "startup dimensions must match the placed region"
         );
         assert_eq!(
-            grid.recentre_voxels,
+            recentre,
             scene.recentre_voxels_for_resolve(density),
-            "the recentre must match the resolve frame (fog + camera consume it)"
+            "startup recentre must match the resolve frame (fog + camera consume it)"
         );
     }
 
-    /// ADR 0011 G5 non-gpu OOM guard (the dense-grid retirement's headline fix): before the
-    /// universal brick-fog law the non-gpu binary STREAMED the whole region at startup and
-    /// would have OOM'd on the persisted 8000×800×800 scene. A chunkable scene now builds NO
-    /// occupancy on the non-gpu path either — the streaming decision is `gpu`-feature-agnostic,
-    /// so this asserts the SAME dims-only grid the gpu path gets (proven above) is what a
-    /// non-gpu build seeds. (The two paths call the identical `startup_grid`, so this pins that
-    /// the retirement is not silently gpu-only.)
+    /// ADR 0011 G5 retirement assertion (load-bearing): a rebuild yields ONLY the sparse
+    /// two-layer covering chunks + scalar metadata — there is NO dense `VoxelGrid` in the
+    /// output type at all (the field is gone, compile-enforced). This pins the retirement at
+    /// runtime: even the multi-producer scene that streamed a whole-region grid before G5 now
+    /// produces the sparse set the mesher + brick fog sink consume, and the region dimensions
+    /// still match the scene's placed region (the camera / scrubber consumer contract).
     #[test]
-    fn startup_grid_chunkable_scene_never_streams_on_any_build() {
-        let density = 16u32;
-        let scene = default_replay_seed_scene();
-        // `startup_grid` no longer branches on the `gpu` feature, so its result is the
-        // whole-build answer: a chunkable scene is dims-only, never a dense stream.
-        let (grid, streamed) = AppCore::startup_grid(&scene, density);
-        assert!(!streamed, "chunkable scene never streams — brick sink is the fog source");
-        assert_eq!(grid.occupied_count(), 0, "no dense occupancy on any build");
-    }
-
-    /// ADR 0011 G5 retirement assertion (load-bearing): the RUNTIME decision that a
-    /// chunkable gpu scene never streams the fog `VoxelGrid`, composed with the rebuild seam
-    /// that a non-streamed rebuild expands NO occupancy — so `expand_resident_chunks_into_grid`
-    /// is never reached on the GPU display path. Uses a MULTI-producer scene (the one that
-    /// streamed before G5).
-    #[test]
-    fn gpu_display_rebuild_never_streams_fog_grid() {
+    fn rebuild_yields_sparse_two_layer_output_no_dense_grid() {
         let density = 16u32;
         let scene = two_tool_scene();
-        let chunkable = scene.has_chunkable_extent(density);
-        assert!(chunkable, "the two-tool fixture is chunkable");
-        let single_producer = scene.single_producer().is_some();
-        assert!(!single_producer, "two tools is a MULTI-producer scene");
-        // The runtime decides NOT to stream (universal brick-fog law: any chunkable scene).
-        let streams = runtime_streams_fog_grid(chunkable, single_producer);
-        assert!(!streams, "a chunkable scene must source fog from bricks, never stream");
-        // And the rebuild honouring that decision expands NO occupancy (the retirement).
+        assert!(scene.has_chunkable_extent(density), "the two-tool fixture is chunkable");
+        assert!(scene.single_producer().is_none(), "two tools is a MULTI-producer scene");
         let mut core = test_core();
-        let RebuildOutcome::Built(output) = core.rebuild(&scene, density, streams) else {
+        let RebuildOutcome::Built(output) = core.rebuild(&scene, density) else {
             panic!("density {density} unexpectedly rejected");
         };
+        // The sole display truth is the sparse resident set — a chunkable scene always covers
+        // at least one chunk. (The absence of a dense grid is enforced by `RebuildOutput`'s
+        // shape; this asserts the surviving sparse output is well-formed.)
         assert!(
-            output.grid.occupied.is_empty(),
-            "the GPU display path must not build a display VoxelGrid (fog stream retired)"
+            !output.two_layer_chunks.is_empty(),
+            "a chunkable rebuild must return its sparse covering chunks"
         );
-        // The dimension-only consumers still work (camera framing, layer track).
-        assert_eq!(output.region_dimensions, output.grid.dimensions);
+        assert_eq!(
+            output.region_dimensions,
+            scene.placed_region_dimensions(density),
+            "the region dimensions must match the placed region (camera / scrubber contract)"
+        );
     }
 
     /// The occupied-voxel CORNER bounding box of a single `shape` of `size_blocks` at
@@ -2401,13 +2239,22 @@ mod undo_tests {
         scene.voxels_per_block = density;
         scene.active = scene.roots.first().copied();
         let mut core = test_core();
-        let RebuildOutcome::Built(output) = core.rebuild(&scene, density, true) else {
+        let RebuildOutcome::Built(output) = core.rebuild(&scene, density) else {
             panic!("density {density} unexpectedly rejected");
         };
-        assert!(!output.grid.occupied.is_empty(), "shape resolved empty");
+        // ADR 0011 G5: `rebuild` returns no dense grid. Expand its OWN resident two-layer
+        // chunks (the exact windowed-app path) through the test-oracle expander — bit-identical
+        // to the retired rebuild grid, so the pinned render-frame coordinates are unchanged.
+        let grid = crate::two_layer_store::expand_resident_chunks_into_grid(
+            &output.two_layer_chunks,
+            output.region_dimensions,
+            output.recentre_voxels,
+            density,
+        );
+        assert!(!grid.occupied.is_empty(), "shape resolved empty");
         let mut min = [i64::MAX; 3];
         let mut max = [i64::MIN; 3];
-        for voxel in &output.grid.occupied {
+        for voxel in &grid.occupied {
             let position = voxel.world_position();
             for axis in 0..3 {
                 let corner = position[axis].floor() as i64;
