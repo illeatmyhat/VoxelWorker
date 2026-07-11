@@ -454,33 +454,109 @@ pub(crate) fn classify_chunk_block(
     }
 }
 
-/// The on-face-grid overlay (ADR 0003 §3c) of the SINGLE leaf overlapping `block_abs_voxels`.
-///
-/// A coarse-solid block is owned by exactly one leaf (the classifier forces any multi-leaf
-/// overlap to boundary), so its render overlay is unambiguous: this returns the first
-/// overlapping leaf's `grid_overlay`, or `false` if none overlaps (an unreachable case for a
-/// coarse-solid verdict — guarded defensively). The overlap test mirrors
-/// [`classify_chunk_block`]'s, so the same single leaf is found.
+/// The leaf's grid AABB in the SCENE's absolute voxel frame: `[off, off + grid)`,
+/// corner-anchored at its `world_offset_voxels`. The single box construction shared by the
+/// classify / overlap / whole-chunk paths (they must all test the SAME leaf extent).
+fn leaf_world_box(leaf: &LeafProducer, voxels_per_block: u32) -> VoxelAabb {
+    let grid_dimensions = leaf.producer.full_dimensions(voxels_per_block);
+    VoxelAabb::new(
+        leaf.world_offset_voxels,
+        [
+            leaf.world_offset_voxels[0] + grid_dimensions[0] as i64,
+            leaf.world_offset_voxels[1] + grid_dimensions[1] as i64,
+            leaf.world_offset_voxels[2] + grid_dimensions[2] as i64,
+        ],
+    )
+}
+
+/// The FIRST leaf whose grid AABB overlaps `block_abs_voxels`, or `None` if none does. The
+/// overlap test mirrors [`classify_chunk_block`]'s exactly, so the same leaf is found. A
+/// coarse-solid block is owned by exactly one leaf (the classifier forces any multi-leaf
+/// overlap to boundary), so for a coarse verdict this first hit IS the single owning leaf.
+fn single_overlapping_leaf<'a>(
+    leaves: &[&'a LeafProducer],
+    block_abs_voxels: VoxelAabb,
+    voxels_per_block: u32,
+) -> Option<&'a LeafProducer> {
+    leaves
+        .iter()
+        .copied()
+        .find(|leaf| leaf_world_box(leaf, voxels_per_block).intersects(&block_abs_voxels))
+}
+
+/// The on-face-grid overlay (ADR 0003 §3c) of the SINGLE leaf overlapping `block_abs_voxels`,
+/// or `false` if none overlaps (an unreachable case for a coarse-solid verdict — guarded
+/// defensively).
 fn single_overlapping_leaf_overlay(
     leaves: &[&LeafProducer],
     block_abs_voxels: VoxelAabb,
     voxels_per_block: u32,
 ) -> bool {
-    for &leaf in leaves {
-        let grid_dimensions = leaf.producer.full_dimensions(voxels_per_block);
-        let leaf_box = VoxelAabb::new(
-            leaf.world_offset_voxels,
-            [
-                leaf.world_offset_voxels[0] + grid_dimensions[0] as i64,
-                leaf.world_offset_voxels[1] + grid_dimensions[1] as i64,
-                leaf.world_offset_voxels[2] + grid_dimensions[2] as i64,
-            ],
-        );
-        if leaf_box.intersects(&block_abs_voxels) {
-            return leaf.grid_overlay;
+    single_overlapping_leaf(leaves, block_abs_voxels, voxels_per_block)
+        .is_some_and(|leaf| leaf.grid_overlay)
+}
+
+/// The whole-CHUNK fast-path verdict (ADR 0010 Decision 2 — chunk-granular interval
+/// elision). Evaluating the composed field interval ONCE at the whole-chunk cell can
+/// decide the ENTIRE chunk without the 64 per-block calls, but only when the chunk verdict
+/// PROVABLY implies the identical per-block outcome (CONSERVATIVE-NEVER-NARROW).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WholeChunkVerdict {
+    /// The whole chunk is provably AIR: every block is empty, so the chunk is the empty
+    /// [`TwoLayerChunk`] (no coarse ids, no microblocks).
+    AllAir,
+    /// The whole chunk is provably one coarse-solid material: every block is
+    /// [`BlockClassification::CoarseSolid`] at `block_id` with the same `overlay`.
+    AllCoarse { block_id: BlockId, overlay: bool },
+    /// The chunk straddles the surface / is multi-leaf ambiguous / unboundable: fall back
+    /// to the per-block classify (the always-safe path).
+    PerBlock,
+}
+
+/// Classify a whole chunk from ONE composed interval at the chunk cell (ADR 0010 Decision 2).
+///
+/// **Why the chunk verdict is byte-identical to the per-block sweep.** The composed field
+/// interval is *inclusion-monotone*: for a sub-block box `B ⊆ chunk` every operand's bound
+/// over `B` nests inside its bound over the chunk (the Lipschitz-centre bound because
+/// `dist(centre_chunk, centre_B) + circumradius(B) ≤ circumradius(chunk)` for nested
+/// axis-aligned boxes; the sketch discrete bound because `B`'s footprint rectangle is a
+/// SUBSET of the chunk's), and a sub-block's overlapping-leaf set is a SUBSET of the chunk's
+/// (`B ⊆ chunk`). Therefore:
+///
+/// * **AIR** (`minimum > isolevel`) ⇒ every block's `minimum` is `≥` the chunk's ⇒ every
+///   block is AIR ⇒ the empty chunk. (Even a block the per-block sweep called BOUNDARY would
+///   resolve to zero voxels here, since the chunk is provably all-outside — still empty.)
+/// * **COARSE-SOLID** — [`classify_chunk_block`] only yields it for a SINGLE single-material
+///   leaf, so the resolution is provably uniform across the chunk. We ADDITIONALLY require
+///   that leaf's grid AABB to CONTAIN the whole chunk, so every sub-block lies inside the
+///   leaf's extent ⇒ that one leaf overlaps every block (no block collapses to AIR) ⇒ every
+///   block's `maximum` is `≤` the chunk's ⇒ every block is `CoarseSolid(block_id)` with the
+///   same `overlay`. (For `SketchSolid`/`SdfShape` a coarse chunk is always fully interior,
+///   so the containment guard never rejects a legitimate coarse chunk; it only defends
+///   against a hypothetical producer whose field is negative OUTSIDE its own AABB.)
+/// * anything else ⇒ `PerBlock`.
+fn classify_whole_chunk(
+    leaves: &[&LeafProducer],
+    chunk_abs_voxels: VoxelAabb,
+    voxels_per_block: u32,
+) -> WholeChunkVerdict {
+    match classify_chunk_block(leaves, chunk_abs_voxels, voxels_per_block) {
+        BlockClassification::Air => WholeChunkVerdict::AllAir,
+        BlockClassification::Boundary => WholeChunkVerdict::PerBlock,
+        BlockClassification::CoarseSolid(block_id) => {
+            // classify_chunk_block returns CoarseSolid ONLY for a single single-material
+            // leaf; recover it (the sole overlapping leaf) to read its overlay AND to prove
+            // its grid AABB encloses the whole chunk.
+            match single_overlapping_leaf(leaves, chunk_abs_voxels, voxels_per_block) {
+                Some(leaf)
+                    if leaf_world_box(leaf, voxels_per_block).contains_box(&chunk_abs_voxels) =>
+                {
+                    WholeChunkVerdict::AllCoarse { block_id, overlay: leaf.grid_overlay }
+                }
+                _ => WholeChunkVerdict::PerBlock,
+            }
         }
     }
-    false
 }
 
 /// The OFF-by-default capability that builds the [`TwoLayerChunk`] display cache from the
@@ -934,13 +1010,53 @@ fn build_two_layer_chunk_from_leaves(
 ) -> TwoLayerChunk {
     let density = voxels_per_block.max(1);
     let chunk_extent_voxels = (CHUNK_BLOCKS * density) as i64;
-    let block_extent = density as i64;
-
     let chunk_min_voxels = [
         chunk_coord[0] as i64 * chunk_extent_voxels,
         chunk_coord[1] as i64 * chunk_extent_voxels,
         chunk_coord[2] as i64 * chunk_extent_voxels,
     ];
+
+    // CHUNK-GRANULAR INTERVAL FAST PATH (ADR 0010 Decision 2): decide the whole chunk from
+    // ONE composed interval at the chunk cell. A solid interior chunk is 1 interval call
+    // instead of 64 per-block calls — the O(volume) → O(surface) win for large solids.
+    // Only a verdict that PROVABLY implies the identical per-block outcome short-circuits;
+    // any ambiguity falls back to the byte-identical per-block sweep below.
+    let chunk_abs = VoxelAabb::new(
+        chunk_min_voxels,
+        [
+            chunk_min_voxels[0] + chunk_extent_voxels,
+            chunk_min_voxels[1] + chunk_extent_voxels,
+            chunk_min_voxels[2] + chunk_extent_voxels,
+        ],
+    );
+    match classify_whole_chunk(leaves, chunk_abs, voxels_per_block) {
+        WholeChunkVerdict::AllAir => return TwoLayerChunk::empty(density),
+        WholeChunkVerdict::AllCoarse { block_id, overlay } => {
+            let mut chunk = TwoLayerChunk::empty(density);
+            for flat in 0..chunk.coarse.len() {
+                chunk.coarse[flat] = Some(block_id);
+                chunk.coarse_overlay[flat] = overlay;
+            }
+            return chunk;
+        }
+        WholeChunkVerdict::PerBlock => {}
+    }
+
+    build_two_layer_chunk_per_block(chunk_min_voxels, leaves, density, voxels_per_block)
+}
+
+/// The per-block classify sweep — the always-correct fallback of
+/// [`build_two_layer_chunk_from_leaves`] (and the parity oracle the fast-path test compares
+/// against). Classifies every one of the chunk's `CHUNK_BLOCKS³` blocks independently and
+/// resolves boundary blocks per-voxel. `chunk_min_voxels` is the chunk's low corner in
+/// absolute voxels.
+fn build_two_layer_chunk_per_block(
+    chunk_min_voxels: [i64; 3],
+    leaves: &[&LeafProducer],
+    density: u32,
+    voxels_per_block: u32,
+) -> TwoLayerChunk {
+    let block_extent = density as i64;
 
     let mut chunk = TwoLayerChunk::empty(density);
 
@@ -2213,6 +2329,141 @@ mod tests {
             BlockClassification::Boundary,
             "a block two leaves both fill must be boundary (per-voxel material resolution)"
         );
+    }
+
+    /// **CHUNK-GRANULAR FAST-PATH BYTE-IDENTITY (ADR 0010 Decision 2).** Over every covering
+    /// chunk of a battery of mixed scenes, the whole-chunk interval fast path
+    /// ([`build_two_layer_chunk_from_leaves`]) produces a `TwoLayerChunk` BYTE-IDENTICAL to
+    /// the forced per-block sweep ([`build_two_layer_chunk_per_block`]) — coarse layer +
+    /// overlay + microblock maps + seam flags. This pins the fast path's
+    /// CONSERVATIVE-NEVER-NARROW contract directly (the round-trip-vs-dense gates check
+    /// occupancy; this checks the exact two-layer STRUCTURE the fast path claims).
+    ///
+    /// The scenes exercise every fast-path arm: solid interiors (whole-chunk COARSE), the
+    /// surface shell + concave/diagonal profiles (whole-chunk BOUNDARY → per-block),
+    /// multi-leaf overlaps with DIFFERENT materials (uniformity guard forces per-block),
+    /// `DebugClouds` (unboundable → per-block), and a partial revolve (angular ambiguity).
+    #[test]
+    fn whole_chunk_fast_path_matches_per_block_sweep() {
+        use crate::scene::Part;
+        use crate::sketch::{PlaneAxis, RevolveAxis, Sketch, SketchPoint, SketchSolid};
+
+        // Assert fast-path == per-block over EVERY covering chunk of `scene`.
+        fn assert_identical(scene: &Scene, density: u32, label: &str) {
+            let leaves = scene.leaf_producers(density);
+            let leaves: Vec<&LeafProducer> = leaves.iter().collect();
+            let Some((min_chunk, max_chunk)) = scene.covering_chunk_range(density) else {
+                return;
+            };
+            let chunk_extent = (CHUNK_BLOCKS * density) as i64;
+            let mut coarse_chunks = 0u64;
+            for cz in min_chunk[2]..=max_chunk[2] {
+                for cy in min_chunk[1]..=max_chunk[1] {
+                    for cx in min_chunk[0]..=max_chunk[0] {
+                        let coord = [cx, cy, cz];
+                        let fast = build_two_layer_chunk_from_leaves(coord, &leaves, density);
+                        let chunk_min = [
+                            cx as i64 * chunk_extent,
+                            cy as i64 * chunk_extent,
+                            cz as i64 * chunk_extent,
+                        ];
+                        let per_block =
+                            build_two_layer_chunk_per_block(chunk_min, &leaves, density, density);
+                        assert_eq!(
+                            fast, per_block,
+                            "[{label}] chunk {coord:?}: fast-path classification must be \
+                             BYTE-IDENTICAL to the per-block sweep"
+                        );
+                        if fast.coarse.iter().all(Option::is_some) && !fast.coarse.is_empty() {
+                            coarse_chunks += 1;
+                        }
+                    }
+                }
+            }
+            eprintln!("[{label}] fast-path==per-block over all chunks ({coarse_chunks} all-coarse)");
+        }
+
+        let density = 8u32;
+
+        // (a) SOLID sketch-extrude box — the whole-CHUNK-COARSE perf target (interior chunks
+        // resolve in ONE interval call). Block-aligned so interiors AND walls are coarse.
+        let edge = 8 * density as i64;
+        let box_scene = Scene::from_nodes(vec![Node::new(
+            "Box",
+            NodeContent::SketchTool {
+                producer: SketchSolid::extrude(Sketch::rectangle(PlaneAxis::Z, edge, edge), edge as u32),
+                material: MaterialChoice::Stone,
+            },
+        )]);
+        assert_identical(&box_scene, density, "sketch-extrude-box");
+
+        // (b) SDF shapes — curved surfaces give a real boundary shell + coarse interiors,
+        // and exercise the Lipschitz-centre interval's inclusion-monotonicity.
+        for kind in [ShapeKind::Sphere, ShapeKind::Box, ShapeKind::Cylinder, ShapeKind::Torus] {
+            let scene = Scene::from_nodes(vec![make_tool_density(
+                kind,
+                [0, 0, 0],
+                MaterialChoice::Stone,
+                density,
+                6,
+            )]);
+            assert_identical(&scene, density, &format!("sdf-{kind:?}"));
+        }
+
+        // (c) MULTI-LEAF overlap, DIFFERENT materials — the uniformity guard must force the
+        // overlap chunks to per-block (Union later-wins material is not coarsely decidable).
+        let overlap_scene = Scene::from_nodes(vec![
+            make_tool_density(ShapeKind::Box, [0, 0, 0], MaterialChoice::Stone, density, 6),
+            make_tool_density(ShapeKind::Box, [3, 0, 0], MaterialChoice::Wood, density, 6),
+        ]);
+        assert_identical(&overlap_scene, density, "multi-leaf-materials");
+
+        // (d) DebugClouds — unboundable (`cell_field_interval == None`) ⇒ the whole chunk
+        // falls back to per-block; every chunk must still match.
+        let cloud_scene = Scene::from_nodes(vec![Node::new(
+            "Clouds",
+            NodeContent::Part(Part::DebugClouds { seed: 7 }),
+        )]);
+        assert_identical(&cloud_scene, density, "debug-clouds");
+
+        // (e) CONCAVE L extrude — reflex-corner + removed quadrant keep boundary/air chunks
+        // adjacent to coarse interiors.
+        let l_scene = Scene::from_nodes(vec![Node::new(
+            "L",
+            NodeContent::SketchTool {
+                producer: SketchSolid::extrude(
+                    Sketch::new(
+                        PlaneAxis::Z,
+                        vec![
+                            SketchPoint::new(0, 0),
+                            SketchPoint::new(32, 0),
+                            SketchPoint::new(32, 20),
+                            SketchPoint::new(20, 20),
+                            SketchPoint::new(20, 32),
+                            SketchPoint::new(0, 32),
+                        ],
+                    ),
+                    24,
+                ),
+                material: MaterialChoice::Wood,
+            },
+        )]);
+        assert_identical(&l_scene, density, "sketch-L-extrude");
+
+        // (f) PARTIAL 270° revolve — angular ambiguity keeps the excluded wedge boundary/air
+        // while the swept interior elides to coarse.
+        let wedge_scene = Scene::from_nodes(vec![Node::new(
+            "Wedge",
+            NodeContent::SketchTool {
+                producer: SketchSolid::revolve(
+                    Sketch::rectangle(PlaneAxis::X, 6 * density as i64, 4 * density as i64),
+                    RevolveAxis::InPlane1,
+                    270,
+                ),
+                material: MaterialChoice::Stone,
+            },
+        )]);
+        assert_identical(&wedge_scene, density, "sketch-revolve-wedge");
     }
 
     /// **#66 edit-broadphase exactness (belt-and-braces, the #63 gate carried over).** The

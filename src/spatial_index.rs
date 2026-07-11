@@ -74,6 +74,21 @@ impl VoxelAabb {
         (0..3).all(|axis| self.min[axis] < other.max[axis] && other.min[axis] < self.max[axis])
     }
 
+    /// Whether this box fully CONTAINS `other` (every voxel of `other` lies inside
+    /// `self`). Half-open: `self.min <= other.min` and `other.max <= self.max` on every
+    /// axis. An empty `other` is never contained (it owns no voxel to be contained).
+    ///
+    /// Used by the two-layer whole-chunk classify fast path (ADR 0010 Decision 2) to prove
+    /// a single covering leaf's grid AABB encloses the whole chunk box — so every sub-block
+    /// is inside that leaf's extent and the chunk-granular coarse verdict provably implies
+    /// the identical per-block verdict.
+    pub fn contains_box(&self, other: &VoxelAabb) -> bool {
+        if other.is_empty() || self.is_empty() {
+            return false;
+        }
+        (0..3).all(|axis| self.min[axis] <= other.min[axis] && other.max[axis] <= self.max[axis])
+    }
+
     /// The smallest box containing both inputs (an empty box contributes nothing).
     pub fn union(&self, other: &VoxelAabb) -> VoxelAabb {
         if self.is_empty() {
