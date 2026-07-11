@@ -380,6 +380,68 @@ pub fn route_mesh_build(
     ))
 }
 
+/// The brick display's fate when a rebuild did NOT (re)install it (F1 — the deferred handover
+/// decision, brick-display perf follow-up to epic #64). Pure so the "keep the stale brick
+/// drawing until the async replacement mesh installs" rule is unit-testable without a window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrickDisplayHandover {
+    /// The brick raymarch is (still) the live display this rebuild — no handover; any pending
+    /// deferred clear is cancelled (the brick is drawing, not being replaced).
+    KeepAsDisplay,
+    /// Hand the display back to the cuboid mesh NOW: clear the stale brick field this frame.
+    /// Chosen when the replacement mesh is already current, OR the brick can't/needn't draw (a
+    /// mesh-only display mode is active — debug-face / loaded material), OR no live field remains.
+    ClearNow,
+    /// DEFER the clear (F1): a stale brick field is still live, the replacement mesh is building
+    /// ASYNC, and the brick would still draw — keep it on-screen so the model never blanks for the
+    /// seconds the worker takes, and clear it in the mesh-install seam once the fresh mesh lands.
+    DeferUntilInstall,
+}
+
+/// Decide the brick display's handover when a rebuild did not (re)install the brick sink (F1).
+/// Pure — no GPU, no window — so the deferred-clear rule is unit-testable like the routing.
+///
+/// * `brick_reinstalled_this_rebuild` — the brick installed/patched a field this rebuild (it is
+///   the live display). Then it KEEPS the frame; there is nothing to hand over.
+/// * `replacement_mesh_current_this_frame` — the fallback mesh became current this frame (an
+///   inline build/patch). Then the brick can be cleared immediately (the mesh draws instead).
+/// * `brick_would_draw_if_kept` — the brick WOULD draw if its field were kept (no debug-face,
+///   no loaded material). When false, keeping a stale field is pointless AND risks a stale patch
+///   (F2), so clear now.
+/// * `has_live_brick_field` — a non-empty brick field is actually resident to keep. When false
+///   there is nothing to defer, so clear now (a no-op on the empty field).
+///
+/// Only when the brick is NOT the display, the replacement is still building async, the brick
+/// would draw, and a live field exists does the clear DEFER — the one case the model would
+/// otherwise blank.
+pub fn brick_display_handover(
+    brick_reinstalled_this_rebuild: bool,
+    replacement_mesh_current_this_frame: bool,
+    brick_would_draw_if_kept: bool,
+    has_live_brick_field: bool,
+) -> BrickDisplayHandover {
+    if brick_reinstalled_this_rebuild {
+        return BrickDisplayHandover::KeepAsDisplay;
+    }
+    if replacement_mesh_current_this_frame || !brick_would_draw_if_kept || !has_live_brick_field {
+        return BrickDisplayHandover::ClearNow;
+    }
+    BrickDisplayHandover::DeferUntilInstall
+}
+
+/// Whether an incremental brick edit may PATCH the resident GPU field in place, or must INSTALL
+/// a fresh field (F2 — brick-display perf follow-up to epic #64). Pure so the "a cleared/empty
+/// field cannot be patched" rule is unit-testable.
+///
+/// Patch iff an incremental `update` was produced AND the renderer actually HOLDS A LIVE FIELD.
+/// Gating on live residency (not merely renderer-present) is the fix: during a loaded-material
+/// (or any cleared) window the renderer's field was zeroed while the CPU mirror kept patching,
+/// so a patch would write only the LAST edit's slots over an empty field — a stale atlas. A
+/// present-but-empty renderer must therefore re-INSTALL a fresh full field on re-engage.
+pub fn brick_patch_in_place(has_incremental_update: bool, renderer_holds_live_field: bool) -> bool {
+    has_incremental_update && renderer_holds_live_field
+}
+
 /// The monotonic generation bookkeeping behind supersede (issue #60) — factored out of
 /// the live shell so the accept/discard decision is unit-testable without a window.
 ///
@@ -635,6 +697,91 @@ mod tests {
             route_mesh_build(false, false, true, EditShape::Incremental, THRESHOLD),
             MeshBuildRoute::Build(RebuildRoute::WholesaleAsync),
         );
+    }
+
+    // --- brick_display_handover: the F1 deferred-clear rule ---
+
+    /// When the brick (re)installed this rebuild it IS the live display — keep it, cancel any
+    /// pending deferred clear, regardless of the other flags.
+    #[test]
+    fn brick_reinstalled_keeps_display() {
+        for &mesh_current in &[false, true] {
+            for &would_draw in &[false, true] {
+                for &has_field in &[false, true] {
+                    assert_eq!(
+                        brick_display_handover(true, mesh_current, would_draw, has_field),
+                        BrickDisplayHandover::KeepAsDisplay,
+                        "a brick that installed this rebuild is the display"
+                    );
+                }
+            }
+        }
+    }
+
+    /// THE F1 CASE: brick disengaged, the replacement mesh is building ASYNC (not current this
+    /// frame), the brick would still draw, and a live field remains → DEFER the clear so the
+    /// stale brick keeps drawing until the fresh mesh installs (the model never blanks).
+    #[test]
+    fn disengaged_async_live_brick_defers_clear() {
+        assert_eq!(
+            brick_display_handover(false, false, true, true),
+            BrickDisplayHandover::DeferUntilInstall,
+            "keep the stale brick drawing until the async replacement mesh lands"
+        );
+    }
+
+    /// The replacement mesh became current THIS frame (an inline build/patch) → clear the brick
+    /// now; the fresh mesh draws instead, no blank.
+    #[test]
+    fn disengaged_mesh_current_clears_now() {
+        assert_eq!(
+            brick_display_handover(false, true, true, true),
+            BrickDisplayHandover::ClearNow,
+            "an inline replacement mesh is current — hand over immediately"
+        );
+    }
+
+    /// A mesh-only mode is active (debug-face / loaded material) so the brick would NOT draw even
+    /// if kept → clear now (keeping a stale field is pointless and risks a stale patch, F2). This
+    /// preserves the pre-F1 behaviour for the loaded-material window.
+    #[test]
+    fn disengaged_brick_would_not_draw_clears_now() {
+        assert_eq!(
+            brick_display_handover(false, false, false, true),
+            BrickDisplayHandover::ClearNow,
+            "if the brick can't draw anyway, don't defer — clear (avoids the F2 stale patch)"
+        );
+    }
+
+    /// No live brick field remains (the edit emptied it) → nothing to defer, clear now (a no-op
+    /// on the already-empty field).
+    #[test]
+    fn disengaged_no_live_field_clears_now() {
+        assert_eq!(
+            brick_display_handover(false, false, true, false),
+            BrickDisplayHandover::ClearNow,
+            "no live field to keep — clear now"
+        );
+    }
+
+    // --- brick_patch_in_place: the F2 stale-patch gate ---
+
+    /// Patch only when an incremental update exists AND the renderer holds a LIVE field.
+    #[test]
+    fn patch_requires_update_and_live_field() {
+        assert!(
+            brick_patch_in_place(true, true),
+            "an incremental update onto a live resident field patches in place"
+        );
+        // F2: a present-but-CLEARED renderer (no live field) must INSTALL fresh, never patch —
+        // patching would write only the last edit's slots over the emptied atlas (a stale atlas).
+        assert!(
+            !brick_patch_in_place(true, false),
+            "an update onto a cleared/empty field must re-install, not patch (F2)"
+        );
+        // No incremental update (a wholesale build) always installs.
+        assert!(!brick_patch_in_place(false, true));
+        assert!(!brick_patch_in_place(false, false));
     }
 
     /// M1 — the worker's liveness escape hatch: a build that PANICS is caught and mapped to

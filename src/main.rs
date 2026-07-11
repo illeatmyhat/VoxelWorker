@@ -92,6 +92,15 @@ struct WindowedState {
     /// debug-face / loaded-material transition — rebuilds it WHOLESALE. Composed into the C1
     /// interlock via [`route_mesh_build`]. Always `false` on non-gpu builds (no brick sink).
     mesh_stale: bool,
+    /// F1 (brick-display perf follow-up to epic #64): a DEFERRED brick-display handover is
+    /// pending. When an edit drops brick representability while the replacement cuboid mesh
+    /// builds ASYNC, the (now stale) brick field is KEPT drawing so the model never blanks for
+    /// the seconds the worker takes — `clear_brick_field` is deferred to the mesh-install seam
+    /// ([`Self::complete_brick_display_handover`], run from [`Self::finish_mesh_install`]).
+    /// `true` only while such a handover is outstanding; always `false` on non-gpu builds (the
+    /// reconcile that sets it is gpu-gated, so the brick can never be the display there).
+    #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
+    brick_display_pending_clear: bool,
     /// ADR 0011 G1: the brick raymarch display sink. Created on first engagement
     /// (a single ported-producer scene under `--features gpu`) and kept — per-edit
     /// work is `install_brick_field` (records + atlas swap, no pipeline rebuild).
@@ -492,8 +501,14 @@ impl WindowedState {
         // it stale. `ensure_display_mesh_current` (or an edit that drops brick engagement) builds
         // the real mesh the moment it is next needed. The empty renderer still carries the
         // pipeline / material bind-group layout / sampler the loaded-material path binds against.
-        let brick_engaged_at_startup =
-            brick_raymarch_renderer.is_some() && !panel_state.debug_face_orientation;
+        // Shared engagement predicate (the ONE brick-display gate — same terms as the rebuild,
+        // `ensure_display_mesh_current`, and the per-frame draw gate). No VS material is ever
+        // loaded at startup, so the loaded-material term is `false`.
+        let brick_engaged_at_startup = Self::brick_display_engaged_predicate(
+            brick_raymarch_renderer.is_some(),
+            panel_state.debug_face_orientation,
+            false,
+        );
         let mesh_stale = brick_engaged_at_startup;
         let cuboid_mesh_renderer = CuboidMeshRenderer::new_from_two_layer_chunks(
             &gpu.device,
@@ -645,6 +660,7 @@ impl WindowedState {
             panel_state,
             cuboid_mesh_renderer,
             mesh_stale,
+            brick_display_pending_clear: false,
             brick_raymarch_renderer,
             incremental_brick_field,
             // ADR 0011 G5: seeded on the first rebuild — the fog reconstructs from it thereafter.
@@ -952,6 +968,62 @@ impl WindowedState {
         // `transient_grid` is dropped here — the retirement holds.
     }
 
+    /// Is the ADR 0011 brick raymarch the live voxel display (so the fallback cuboid mesh is
+    /// NOT drawn)? [pure] The SINGLE engagement predicate behind every gate — startup, the
+    /// rebuild skip, [`Self::ensure_display_mesh_current`], and the per-frame draw gate — so
+    /// they can never drift term-for-term. Engaged iff a live brick field is resident AND no
+    /// mesh-only display mode is active (debug-face orientation or a loaded VS material, both of
+    /// which need the mesh's per-face shading; bricks carry only categorical block ids).
+    fn brick_display_engaged_predicate(
+        has_live_brick_field: bool,
+        debug_face_orientation: bool,
+        has_loaded_material: bool,
+    ) -> bool {
+        has_live_brick_field && !debug_face_orientation && !has_loaded_material
+    }
+
+    /// The per-frame brick-display engagement gate against the LIVE renderer/panel state — the
+    /// shared read used by BOTH the draw path and [`Self::ensure_display_mesh_current`], which
+    /// MUST agree term-for-term. Delegates to [`Self::brick_display_engaged_predicate`]. On
+    /// non-gpu builds `brick_raymarch_renderer` is always `None`, so this is always `false`.
+    fn brick_display_engaged(&self) -> bool {
+        Self::brick_display_engaged_predicate(
+            self.brick_raymarch_renderer
+                .as_ref()
+                .is_some_and(|renderer| renderer.has_brick_field()),
+            self.panel_state.debug_face_orientation,
+            self.loaded_material.is_some(),
+        )
+    }
+
+    /// F1: complete a DEFERRED brick-display handover. When an edit dropped brick
+    /// representability while a large replacement mesh built ASYNC, the stale brick field was
+    /// kept drawing (`brick_display_pending_clear`) so the model never blanked. Once the fresh
+    /// mesh installs (this seam, via [`Self::finish_mesh_install`]) the stale field is cleared
+    /// so the mesh takes the frame. A no-op when no handover is pending.
+    fn complete_brick_display_handover(&mut self) {
+        if self.brick_display_pending_clear {
+            #[cfg(feature = "gpu")]
+            if let Some(renderer) = &mut self.brick_raymarch_renderer {
+                renderer.clear_brick_field();
+            }
+            self.brick_display_pending_clear = false;
+        }
+    }
+
+    /// The mesh-install seam (issue #60 supersede + brick-display perf follow-up). EVERY path
+    /// that makes a freshly built/patched cuboid mesh the CURRENT display funnels through here:
+    /// bump the generation (so a superseded in-flight worker result is discarded on arrival),
+    /// drop the async-outstanding flag, clear `mesh_stale` (the mesh now reflects the latest
+    /// resolve), and complete any deferred brick-display handover (F1). This is the SOLE writer
+    /// that clears `mesh_stale`; the only other `mesh_stale` writer is the Skip arm's set-true.
+    fn finish_mesh_install(&mut self) {
+        self.geometry_generation.next_generation();
+        self.geometry_async_outstanding = false;
+        self.mesh_stale = false;
+        self.complete_brick_display_handover();
+    }
+
     /// Re-resolve the grid + GPU geometry for the current scene. Camera UX change:
     /// this NEVER moves the camera — edits keep the orbit target + distance fixed.
     /// Explicit framing (startup fit, Home/Fit, Focus) is handled by their own paths.
@@ -1171,12 +1243,25 @@ impl WindowedState {
                             // Interiors live in the two-layer chunks: the clip-map (above)
                             // and the fog box-fill both derive from the chunks.
                             let gpu_records = voxel_worker::pack_gpu_records(&build, |_| false);
-                            // Patch in place iff we produced an incremental update AND a
-                            // renderer already holds a field; otherwise (wholesale, or the
-                            // display re-engaging from a mesh fallback) install fresh.
-                            if let (Some(update), true) =
-                                (update.as_ref(), self.brick_raymarch_renderer.is_some())
-                            {
+                            // Patch in place iff we produced an incremental update AND the
+                            // renderer actually HOLDS A LIVE FIELD; otherwise (wholesale, or the
+                            // display re-engaging from a mesh fallback) install fresh. F2: gate on
+                            // `has_brick_field`, NOT merely `is_some()` — during a loaded-material
+                            // (or any cleared) window `clear_brick_field` zeroed the renderer's
+                            // field while the CPU mirror kept patching, so a patch here would write
+                            // only the LAST edit's slots over an empty field (a stale atlas). A
+                            // clear left the renderer present-but-empty, so re-engage must install.
+                            let renderer_holds_live_field = self
+                                .brick_raymarch_renderer
+                                .as_ref()
+                                .is_some_and(|renderer| renderer.has_brick_field());
+                            if voxel_worker::brick_patch_in_place(
+                                update.is_some(),
+                                renderer_holds_live_field,
+                            ) {
+                                let update = update
+                                    .as_ref()
+                                    .expect("brick_patch_in_place true ⇒ an update was produced");
                                 if update.atlas_grew {
                                     println!(
                                         "brick: atlas grew — full re-pack ({} sculpted slots)",
@@ -1186,7 +1271,7 @@ impl WindowedState {
                                 let renderer = self
                                     .brick_raymarch_renderer
                                     .as_mut()
-                                    .expect("is_some checked");
+                                    .expect("brick_patch_in_place true ⇒ a live field is resident");
                                 renderer.patch_brick_field(
                                     &self.gpu.device,
                                     &self.gpu.queue,
@@ -1250,14 +1335,12 @@ impl WindowedState {
                 self.incremental_brick_field = None;
                 self.fog_brick_field = None;
             }
-            // Clearing the gpu raymarch display when it did not install is a gpu-only concern —
-            // the renderer is `None` on non-gpu builds, so this whole cleanup compiles out.
-            #[cfg(feature = "gpu")]
-            if !brick_display_installed {
-                if let Some(renderer) = &mut self.brick_raymarch_renderer {
-                    renderer.clear_brick_field();
-                }
-            }
+            // NOTE: the gpu raymarch display is NOT cleared here anymore. When it did not install
+            // the display must hand back to the mesh, but clearing NOW (before the replacement
+            // mesh is current) blanked the model for the seconds a large async rebuild takes.
+            // The handover is reconciled AFTER the mesh route is decided below (F1) — cleared
+            // immediately when the mesh is current this frame, DEFERRED to the install seam when
+            // the replacement builds async and the stale brick can keep drawing.
             brick_display_installed
         };
 
@@ -1269,14 +1352,26 @@ impl WindowedState {
         // and mark it stale; the C1 interlock composes via `route_mesh_build` (a stale mesh, like
         // an outstanding async build, is never inline-patched — it rebuilds wholesale when next
         // needed). On non-gpu builds `brick_display_installed` is always false → always Build.
-        let brick_display_engaged =
-            brick_display_installed && !self.panel_state.debug_face_orientation;
+        let brick_display_engaged = Self::brick_display_engaged_predicate(
+            brick_display_installed,
+            self.panel_state.debug_face_orientation,
+            self.loaded_material.is_some(),
+        );
         let mesh_route = route_mesh_build(
             brick_display_engaged,
             self.mesh_stale,
             self.geometry_async_outstanding,
             edit_shape,
             ASYNC_REBUILD_CHUNK_THRESHOLD,
+        );
+        // F1: does the mesh become CURRENT this frame (an inline build/patch), vs building async
+        // (WholesaleAsync) or being skipped (brick still the display)? The brick-handover
+        // reconcile below reads it to decide whether to clear the stale brick now or defer.
+        #[cfg_attr(not(feature = "gpu"), allow(unused_variables))]
+        let mesh_became_current = matches!(
+            mesh_route,
+            MeshBuildRoute::Build(RebuildRoute::InlineIncremental)
+                | MeshBuildRoute::Build(RebuildRoute::WholesaleInline)
         );
 
         match mesh_route {
@@ -1295,11 +1390,10 @@ impl WindowedState {
                 // when nothing is outstanding, so the installed renderer reflects the latest
                 // resolve and patching it in place is sound.
                 //
-                // Bump the generation so any (phantom) in-flight result is discarded on
-                // arrival — the tracker rejects a non-newest generation.
+                // `finish_mesh_install` bumps the generation so any (phantom) in-flight result is
+                // discarded on arrival — the tracker rejects a non-newest generation.
                 let dirty = incremental_dirty_chunks
                     .expect("InlineIncremental is only routed for an incremental edit");
-                self.geometry_generation.next_generation();
                 profiling::scope!("cuboid_incremental_two_layer");
                 self.cuboid_mesh_renderer.incremental_rebuild_from_two_layer_chunks(
                     &self.gpu.device,
@@ -1310,8 +1404,9 @@ impl WindowedState {
                     &dirty,
                 );
                 // Reached only with `mesh_stale == false` (a stale mesh forces wholesale via
-                // `route_mesh_build`), so the in-place patch is sound; keep it non-stale.
-                self.mesh_stale = false;
+                // `route_mesh_build`), so the in-place patch is sound. The install seam clears
+                // `mesh_stale` + bumps the generation (cleanup b: the sole non-Skip stale writer).
+                self.finish_mesh_install();
             }
             MeshBuildRoute::Build(RebuildRoute::WholesaleAsync) => {
                 // Issue #60: dispatch a WHOLESALE rebuild to the worker so the UI never
@@ -1334,16 +1429,19 @@ impl WindowedState {
                     band,
                 });
                 // The worker owns the (re)build now; the outstanding flag carries the C1
-                // interlock, so the mesh is no longer treated as skip-stale.
-                self.mesh_stale = false;
+                // interlock. `mesh_stale` is intentionally NOT cleared here (cleanup b: only
+                // `finish_mesh_install` clears it, and only the Skip arm sets it true) — leaving
+                // it set while the async build is outstanding is harmless (the outstanding flag
+                // already forces wholesale routing), and `poll_geometry_worker` clears it via
+                // `finish_mesh_install` the moment the result installs.
             }
             MeshBuildRoute::Build(RebuildRoute::WholesaleInline) => {
                 // A small wholesale rebuild (at/below the threshold), nothing outstanding:
                 // build inline — cheap enough not to hitch a frame, and it avoids the worker's
                 // one-frame swap latency. Bump the generation so any phantom in-flight result
                 // is discarded on arrival. Build at the active band so the mesh matches the
-                // render path immediately (no swap-frame re-mesh — same M2 reasoning).
-                self.geometry_generation.next_generation();
+                // render path immediately (no swap-frame re-mesh — same M2 reasoning). The
+                // install seam bumps the generation + clears `mesh_stale`.
                 self.cuboid_mesh_renderer = CuboidMeshRenderer::new_from_two_layer_chunks_banded(
                     &self.gpu.device,
                     &self.gpu.queue,
@@ -1354,7 +1452,42 @@ impl WindowedState {
                     density,
                     band,
                 );
-                self.mesh_stale = false;
+                self.finish_mesh_install();
+            }
+        }
+
+        // F1 brick-display handover reconcile (gpu-only; `brick_raymarch_renderer` is `None`
+        // otherwise). When brick did NOT install this rebuild, the display must hand back to the
+        // cuboid mesh. Clear the stale brick field NOW when the replacement mesh is already
+        // current this frame (inline), OR the brick can't/needn't draw (a mesh-only mode is
+        // active), OR no live field remains. But when a stale field is still live AND the
+        // replacement builds ASYNC AND the brick would still draw (no debug-face / loaded
+        // material), KEEP it drawing — clearing now blanks the model for the seconds the worker
+        // takes. `finish_mesh_install` (via `complete_brick_display_handover`) clears it when the
+        // fresh mesh lands. When brick DID install it is the display: cancel any pending handover.
+        #[cfg(feature = "gpu")]
+        {
+            use voxel_worker::BrickDisplayHandover;
+            let has_live_brick_field = self
+                .brick_raymarch_renderer
+                .as_ref()
+                .is_some_and(|renderer| renderer.has_brick_field());
+            let brick_would_draw_if_kept = !self.panel_state.debug_face_orientation
+                && self.loaded_material.is_none();
+            match voxel_worker::brick_display_handover(
+                brick_display_installed,
+                mesh_became_current,
+                brick_would_draw_if_kept,
+                has_live_brick_field,
+            ) {
+                BrickDisplayHandover::KeepAsDisplay => self.brick_display_pending_clear = false,
+                BrickDisplayHandover::ClearNow => {
+                    if let Some(renderer) = &mut self.brick_raymarch_renderer {
+                        renderer.clear_brick_field();
+                    }
+                    self.brick_display_pending_clear = false;
+                }
+                BrickDisplayHandover::DeferUntilInstall => self.brick_display_pending_clear = true,
             }
         }
 
@@ -1476,13 +1609,13 @@ impl WindowedState {
             return;
         };
         // Fresh: swap the freshly-built renderer in (GPU buffers already uploaded on the
-        // worker) and redraw so the new mesh shows this frame. The newest dispatched build is
-        // now installed, so no async build is outstanding — the inline fast-paths resume
-        // (issue #60 C1).
+        // worker) and redraw so the new mesh shows this frame. The install seam drops the
+        // async-outstanding flag (the inline fast-paths resume — issue #60 C1), clears
+        // `mesh_stale` (a freshly built worker mesh reflects the latest resolve), and completes
+        // any deferred brick-display handover (F1 — clear the stale brick kept drawing during
+        // the rebuild, now the fresh mesh takes the frame).
         self.cuboid_mesh_renderer = renderer;
-        self.geometry_async_outstanding = false;
-        // A freshly built worker mesh reflects the latest resolve — never stale.
-        self.mesh_stale = false;
+        self.finish_mesh_install();
         self.window.request_redraw();
     }
 
@@ -1492,58 +1625,77 @@ impl WindowedState {
     /// display flags that can drop that engagement WITHOUT a `scene_changed` rebuild, so the
     /// skipped mesh would otherwise be drawn stale/empty. This closes that gap: called every
     /// frame before the voxel draw, it is a no-op unless the mesh is stale AND the brick will
-    /// not draw. The rebuild is WHOLESALE + inline from the current resident two-layer set
-    /// (the scene is unchanged — no re-resolve; same build path as startup), a one-off
-    /// ~hundreds-of-ms hitch on a debug/material toggle, never per edit.
+    /// not draw.
+    ///
+    /// F3: the rebuild REUSES the resident two-layer cache (the scene is unchanged, so this is an
+    /// O(chunks) `Arc`-refcount handout — NOT a stateless from-scratch `build_covering_chunks`
+    /// re-resolve, which FROZE the main thread for seconds on a large scene the instant a
+    /// material tile / debug-face toggled). A small covering set builds inline; a large one is
+    /// dispatched to the async geometry worker so the UI never freezes (the current display —
+    /// the mesh, or the deferred brick raymarch of F1 — keeps drawing until the fresh mesh lands).
     fn ensure_display_mesh_current(&mut self) {
         if !self.mesh_stale {
             return;
         }
-        // Will the brick raymarch draw this frame? Mirrors `brick_raymarch_engaged`: a field is
-        // installed, not debug-face mode, and no loaded VS material. If so the (stale) mesh stays
-        // hidden — leave it stale, keep skipping the build.
-        #[cfg(feature = "gpu")]
-        let brick_engaged = self
-            .brick_raymarch_renderer
-            .as_ref()
-            .is_some_and(|renderer| renderer.has_brick_field())
-            && !self.panel_state.debug_face_orientation
-            && self.loaded_material.is_none();
-        #[cfg(not(feature = "gpu"))]
-        let brick_engaged = false;
-        if brick_engaged {
+        // Will the brick raymarch draw this frame? The shared per-frame gate (term-identical to
+        // the draw path). If engaged, the (stale) mesh stays hidden — leave it stale, skip.
+        if self.brick_display_engaged() {
+            return;
+        }
+        // A wholesale build is already in flight for this stale mesh — wait for it (its
+        // `poll_geometry_worker` install clears `mesh_stale` via `finish_mesh_install`). Don't
+        // re-dispatch every frame while it builds (that would flood the worker).
+        if self.geometry_async_outstanding {
             return;
         }
         // The mesh is about to be the display but is stale — rebuild it wholesale from the
-        // resident two-layer set (scene unchanged, so `build_covering_chunks` yields the same
-        // set the last resolve produced; identical to the startup mesh build). Bump the
-        // generation and drop any outstanding async so a superseded in-flight result is
-        // discarded rather than swapped in over this fresh mesh.
+        // RESIDENT two-layer cache (scene unchanged ⇒ the same set the last resolve produced,
+        // handed out as O(chunks) Arc bumps). Route like any wholesale edit: small inline, large
+        // async. The frame parameters come from the last rebuild's stored recentre + region.
         let density = self.panel_state.geometry.voxels_per_block;
-        let chunks = voxel_worker::TwoLayerStore::enabled().build_covering_chunks(
-            &self.panel_state.scene,
-            density,
-            0,
-        );
-        let recentre = self
-            .panel_state
-            .scene
-            .recentre_voxels_for_resolve(density);
-        let band = self.current_layer_band(self.region_dimensions[2]);
-        self.geometry_generation.next_generation();
-        self.geometry_async_outstanding = false;
-        self.cuboid_mesh_renderer = CuboidMeshRenderer::new_from_two_layer_chunks_banded(
-            &self.gpu.device,
-            &self.gpu.queue,
-            COLOR_TARGET_FORMAT,
-            &chunks,
-            self.region_dimensions,
-            recentre,
-            density,
-            band,
-        );
-        self.mesh_stale = false;
-        println!("mesh: rebuilt fallback (brick display disengaged — debug-face / material)");
+        let chunks = self
+            .app_core
+            .two_layer_cache
+            .resident_two_layer_chunks(&self.panel_state.scene, density, 0);
+        let grid_dimensions = self.region_dimensions;
+        let recentre = self.recentre_voxels;
+        let band = self.current_layer_band(grid_dimensions[2]);
+        if chunks.len() > ASYNC_REBUILD_CHUNK_THRESHOLD {
+            // Large: dispatch async so the toggle never freezes. Keep drawing the current display
+            // until the result installs (`poll_geometry_worker` → `finish_mesh_install` clears
+            // `mesh_stale`). `mesh_stale` stays set meanwhile; the outstanding guard above keeps
+            // us from re-dispatching each frame.
+            let generation = self.geometry_generation.next_generation();
+            self.geometry_async_outstanding = true;
+            self.geometry_worker.dispatch(GeometryRebuildRequest {
+                generation,
+                two_layer_chunks: chunks,
+                grid_dimensions,
+                recentre_voxels: recentre,
+                density,
+                band,
+            });
+            println!(
+                "mesh: fallback rebuild dispatched async (brick display disengaged — \
+                 debug-face / material)"
+            );
+        } else {
+            // Small: build inline (cheap), then install (bumps the generation + clears stale).
+            self.cuboid_mesh_renderer = CuboidMeshRenderer::new_from_two_layer_chunks_banded(
+                &self.gpu.device,
+                &self.gpu.queue,
+                COLOR_TARGET_FORMAT,
+                &chunks,
+                grid_dimensions,
+                recentre,
+                density,
+                band,
+            );
+            self.finish_mesh_install();
+            println!(
+                "mesh: rebuilt fallback inline (brick display disengaged — debug-face / material)"
+            );
+        }
     }
 
     /// Drain the background scan channel into a pending queue, then build a
@@ -2180,24 +2332,26 @@ impl WindowedState {
         // so the draw decision is per-frame (the field stays installed). Its uniforms
         // mirror the cuboid upload above (camera, viewport, band, overlay master,
         // bound material) so the two paths render pixel-comparable.
-        let brick_raymarch_engaged = match &self.brick_raymarch_renderer {
-            Some(renderer)
-                if renderer.has_brick_field()
-                    && !self.panel_state.debug_face_orientation
-                    && self.loaded_material.is_none() =>
-            {
-                renderer.update_uniforms(
-                    &self.gpu.queue,
-                    view_projection,
-                    prepared.viewport_px,
-                    grid_dimensions,
-                    band,
-                    self.panel_state.scene.master_voxel_grid,
-                    bound,
-                );
-                true
-            }
-            _ => false,
+        // Shared engagement gate (term-identical to `ensure_display_mesh_current`): a live brick
+        // field AND no mesh-only mode. When engaged, upload the raymarch uniforms (mirroring the
+        // cuboid upload above) so the brick draw replaces the mesh draw this frame.
+        let brick_raymarch_engaged = if self.brick_display_engaged() {
+            let renderer = self
+                .brick_raymarch_renderer
+                .as_ref()
+                .expect("brick_display_engaged ⇒ renderer holds a live field");
+            renderer.update_uniforms(
+                &self.gpu.queue,
+                view_projection,
+                prepared.viewport_px,
+                grid_dimensions,
+                band,
+                self.panel_state.scene.master_voxel_grid,
+                bound,
+            );
+            true
+        } else {
+            false
         };
         // Transform gizmo (issue #29 S2): it FOLLOWS the selected node. Size it to
         // the selected node's own extent and bake its recentred pivot into the
