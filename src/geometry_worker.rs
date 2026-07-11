@@ -327,6 +327,56 @@ pub fn route_geometry_rebuild(
     }
 }
 
+/// Whether — and how — an edit must (re)build the fallback CUBOID MESH, given that the
+/// ADR 0011 brick raymarch is the actual display sink (perf follow-up to epic #64). The
+/// mesh is drawn ONLY when the brick raymarch is not engaged (no installed field, debug-face
+/// mode, or a loaded VS material); when the brick IS the display the mesh is pure redundant
+/// per-edit work — the ~333ms serial build on a big scene — and is SKIPPED, leaving it stale.
+///
+/// A skipped-stale mesh is exactly as untrustworthy as a still-building async result: it does
+/// NOT reflect the latest resolve, so an incremental edit must NOT inline-patch it (that would
+/// strand every chunk that changed while the mesh was skipped — the same Frankenstein-mesh
+/// hazard the C1 interlock guards). Staleness therefore composes into the interlock by OR-ing
+/// with `async_outstanding` before delegating to [`route_geometry_rebuild`], forcing a fresh
+/// wholesale build the moment the mesh is next needed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MeshBuildRoute {
+    /// The brick raymarch is engaged — the fallback mesh is not drawn. Skip building it and
+    /// mark it STALE (the caller records staleness so the next build-required edit goes
+    /// wholesale, never an inline patch of the stranded buffers).
+    Skip,
+    /// The mesh is (or is about to become) the display — build it via this underlying route.
+    Build(RebuildRoute),
+}
+
+/// Decide whether the fallback cuboid mesh needs building for this edit (the brick-display
+/// perf follow-up to epic #64). Pure — no GPU, no window — so the skip/stale/interlock rule
+/// is unit-testable in the lib, like [`route_geometry_rebuild`].
+///
+/// * `brick_display_engaged` — the brick raymarch will draw this frame (a field is installed,
+///   no debug-face mode, no loaded VS material). When `true` the mesh is redundant → `Skip`.
+/// * `mesh_stale` — the currently-installed mesh was previously SKIPPED (or otherwise does not
+///   reflect the latest resolve). A stale mesh cannot be inline-patched, so it is OR-ed into
+///   the C1 interlock, forcing a wholesale build.
+pub fn route_mesh_build(
+    brick_display_engaged: bool,
+    mesh_stale: bool,
+    async_outstanding: bool,
+    edit: EditShape,
+    async_threshold: usize,
+) -> MeshBuildRoute {
+    if brick_display_engaged {
+        return MeshBuildRoute::Skip;
+    }
+    // The mesh is the display this frame — it must become valid. Fold staleness into the
+    // interlock: a stale mesh, like an outstanding async build, must not be inline-patched.
+    MeshBuildRoute::Build(route_geometry_rebuild(
+        async_outstanding || mesh_stale,
+        edit,
+        async_threshold,
+    ))
+}
+
 /// The monotonic generation bookkeeping behind supersede (issue #60) — factored out of
 /// the live shell so the accept/discard decision is unit-testable without a window.
 ///
@@ -498,6 +548,89 @@ mod tests {
             route_geometry_rebuild(false, large, THRESHOLD),
             RebuildRoute::WholesaleAsync,
             "a wholesale rebuild exceeding the threshold dispatches to the worker"
+        );
+    }
+
+    // --- route_mesh_build: skip the fallback mesh while the brick display is engaged ---
+
+    /// Brick engaged → the fallback mesh is never drawn, so skip building it regardless of the
+    /// edit's shape, staleness, or an outstanding async — this is the ~333ms-per-edit win.
+    #[test]
+    fn brick_engaged_skips_mesh_regardless() {
+        for &stale in &[false, true] {
+            for &outstanding in &[false, true] {
+                for edit in [
+                    EditShape::Incremental,
+                    EditShape::Wholesale { chunk_count: 1 },
+                    EditShape::Wholesale {
+                        chunk_count: THRESHOLD + 1,
+                    },
+                ] {
+                    assert_eq!(
+                        route_mesh_build(true, stale, outstanding, edit, THRESHOLD),
+                        MeshBuildRoute::Skip,
+                        "engaged brick display always skips the redundant mesh build"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Brick NOT engaged + a fresh (non-stale) mesh + nothing outstanding → the normal
+    /// `route_geometry_rebuild` decision applies unchanged (the mesh is the live display).
+    #[test]
+    fn mesh_display_fresh_uses_normal_routing() {
+        assert_eq!(
+            route_mesh_build(false, false, false, EditShape::Incremental, THRESHOLD),
+            MeshBuildRoute::Build(RebuildRoute::InlineIncremental),
+            "a fresh live mesh takes the inline incremental fast-path"
+        );
+        assert_eq!(
+            route_mesh_build(
+                false,
+                false,
+                false,
+                EditShape::Wholesale { chunk_count: 1 },
+                THRESHOLD
+            ),
+            MeshBuildRoute::Build(RebuildRoute::WholesaleInline),
+        );
+    }
+
+    /// The core new rule: an incremental edit onto a SKIPPED-STALE mesh must NOT inline-patch
+    /// (the mesh was skipped, so its buffers are stranded/empty — patching strands every
+    /// intervening change, the Frankenstein mesh). Staleness forces a wholesale build exactly
+    /// like the C1 interlock does for an outstanding async build.
+    #[test]
+    fn stale_mesh_incremental_forces_wholesale_not_inline() {
+        let route = route_mesh_build(false, true, false, EditShape::Incremental, THRESHOLD);
+        assert_eq!(
+            route,
+            MeshBuildRoute::Build(RebuildRoute::WholesaleAsync),
+            "a stale mesh must rebuild wholesale when it becomes the display, never inline-patch"
+        );
+        assert_ne!(route, MeshBuildRoute::Build(RebuildRoute::InlineIncremental));
+    }
+
+    /// Interlock composition: staleness OR an outstanding async — either one forces wholesale.
+    /// A stale mesh with nothing outstanding still routes wholesale (staleness alone suffices).
+    #[test]
+    fn stale_composes_with_c1_interlock() {
+        // Stale + not-outstanding small wholesale still routes async (stale ⇒ no inline patch).
+        assert_eq!(
+            route_mesh_build(
+                false,
+                true,
+                false,
+                EditShape::Wholesale { chunk_count: 1 },
+                THRESHOLD
+            ),
+            MeshBuildRoute::Build(RebuildRoute::WholesaleAsync),
+        );
+        // Not-stale but outstanding: the existing C1 interlock still forces async.
+        assert_eq!(
+            route_mesh_build(false, false, true, EditShape::Incremental, THRESHOLD),
+            MeshBuildRoute::Build(RebuildRoute::WholesaleAsync),
         );
     }
 
