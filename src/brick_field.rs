@@ -161,6 +161,83 @@ impl ClipmapLevel {
             cell_keys,
         }
     }
+
+    /// Fold every non-air block of the two-layer chunk set into this level's occupied-cell
+    /// set — the **chunk-sourced** min-mip that replaces [`from_records`](Self::from_records)
+    /// now that the record set is SURFACE-ONLY (ADR 0011 interior elision, this epic). The
+    /// pyramid must stay a conservative superset over EVERY occupied block (interior included,
+    /// so the DDA never strides past an occupied cell), which the surface record set no longer
+    /// enumerates — but the chunks do (their coarse layer holds the interior).
+    ///
+    /// **Solid-chunk bulk fast path (the interior-elision win carried to the pyramid):** a
+    /// fully-solid chunk (all `CHUNK_BLOCKS³` coarse-solid, no microblocks) covers one aligned
+    /// block box, so its occupied cells are the cell range that box spans — bulk-added WITHOUT
+    /// visiting its 64 blocks. A boundary / partial chunk adds one cell per occupied (coarse or
+    /// microblock) block. The resulting cell set is BYTE-IDENTICAL to [`from_records`] over the
+    /// full, interior-inclusive record set (proven by
+    /// `clipmap_from_chunks_equals_from_full_records`): every occupied block's cell is present,
+    /// no others.
+    pub fn from_chunks(chunks: &[([i32; 3], Arc<TwoLayerChunk>)], blocks_per_cell: u32) -> Self {
+        let blocks_per_cell = blocks_per_cell.max(1);
+        let cell_size = blocks_per_cell as i64;
+        let chunk_blocks = CHUNK_BLOCKS as i64;
+        let mut cell_keys: Vec<u64> = Vec::new();
+        for (chunk_coord, chunk) in chunks {
+            let chunk_block_low = [
+                chunk_coord[0] as i64 * chunk_blocks,
+                chunk_coord[1] as i64 * chunk_blocks,
+                chunk_coord[2] as i64 * chunk_blocks,
+            ];
+            let fully_solid =
+                chunk.microblocks.is_empty() && chunk.coarse.iter().all(Option::is_some);
+            if fully_solid {
+                // The chunk's whole block box [low, low + CHUNK_BLOCKS) maps to this aligned
+                // cell range — add each cell once, no per-block visit (the bulk fast path).
+                let cell_lo = [
+                    chunk_block_low[0].div_euclid(cell_size),
+                    chunk_block_low[1].div_euclid(cell_size),
+                    chunk_block_low[2].div_euclid(cell_size),
+                ];
+                let cell_hi = [
+                    (chunk_block_low[0] + chunk_blocks - 1).div_euclid(cell_size),
+                    (chunk_block_low[1] + chunk_blocks - 1).div_euclid(cell_size),
+                    (chunk_block_low[2] + chunk_blocks - 1).div_euclid(cell_size),
+                ];
+                for cell_z in cell_lo[2]..=cell_hi[2] {
+                    for cell_y in cell_lo[1]..=cell_hi[1] {
+                        for cell_x in cell_lo[0]..=cell_hi[0] {
+                            cell_keys.push(pack_world_block_key([cell_x, cell_y, cell_z]));
+                        }
+                    }
+                }
+            } else {
+                for block_z in 0..CHUNK_BLOCKS {
+                    for block_y in 0..CHUNK_BLOCKS {
+                        for block_x in 0..CHUNK_BLOCKS {
+                            let block = [block_x, block_y, block_z];
+                            let occupied = chunk.coarse_block(block).is_some()
+                                || chunk.microblocks.contains_key(&block);
+                            if !occupied {
+                                continue;
+                            }
+                            let cell = [
+                                (chunk_block_low[0] + block_x as i64).div_euclid(cell_size),
+                                (chunk_block_low[1] + block_y as i64).div_euclid(cell_size),
+                                (chunk_block_low[2] + block_z as i64).div_euclid(cell_size),
+                            ];
+                            cell_keys.push(pack_world_block_key(cell));
+                        }
+                    }
+                }
+            }
+        }
+        cell_keys.par_sort_unstable();
+        cell_keys.dedup();
+        ClipmapLevel {
+            blocks_per_cell,
+            cell_keys,
+        }
+    }
 }
 
 /// The three-level clip-map pyramid (L1 = 8-block cells, L2 = 64-block cells, L3
@@ -178,13 +255,30 @@ pub struct ClipmapPyramid {
 }
 
 impl ClipmapPyramid {
-    /// Build all levels from a brick-field's sorted records (a pure function of
-    /// the record keys — the sink derives it next to the record set).
+    /// Build all levels from a brick-field's sorted records (a pure function of the record
+    /// keys). **Oracle/legacy:** now that the live record set is surface-only, a pyramid the
+    /// DDA can skip against must cover interior cells too, so the live sinks build from the
+    /// CHUNKS via [`from_chunks`](Self::from_chunks); this constructor stays as the parity
+    /// oracle (fed a full, interior-inclusive record set) and for the pyramid-shape unit tests.
     pub fn from_records(records: &[BrickRecord]) -> Self {
         ClipmapPyramid {
             level_1: ClipmapLevel::from_records(records, CLIPMAP_LEVEL_1_BLOCKS_PER_CELL),
             level_2: ClipmapLevel::from_records(records, CLIPMAP_LEVEL_2_BLOCKS_PER_CELL),
             level_3: ClipmapLevel::from_records(records, CLIPMAP_LEVEL_3_BLOCKS_PER_CELL),
+        }
+    }
+
+    /// Build all levels from the two-layer chunk set — the LIVE pyramid constructor (ADR 0011
+    /// interior elision). The surface-only record set omits interior blocks the DDA's skip
+    /// pyramid must still cover, so the min-mip is derived from the chunks (which retain the
+    /// interior in their coarse layer), with a solid-chunk bulk fast path. Conservative-superset
+    /// identical to [`from_records`](Self::from_records) over a full record set — see
+    /// [`ClipmapLevel::from_chunks`].
+    pub fn from_chunks(chunks: &[([i32; 3], Arc<TwoLayerChunk>)]) -> Self {
+        ClipmapPyramid {
+            level_1: ClipmapLevel::from_chunks(chunks, CLIPMAP_LEVEL_1_BLOCKS_PER_CELL),
+            level_2: ClipmapLevel::from_chunks(chunks, CLIPMAP_LEVEL_2_BLOCKS_PER_CELL),
+            level_3: ClipmapLevel::from_chunks(chunks, CLIPMAP_LEVEL_3_BLOCKS_PER_CELL),
         }
     }
 
@@ -370,6 +464,21 @@ impl BrickFieldBuild {
 /// final key sort is worth parallelising (below). The record ORDER + sculpted slot numbering
 /// are therefore produced by the same serial traversal as before — bit-for-bit unchanged.
 pub fn build_brick_field(
+    two_layer_chunks: &[([i32; 3], Arc<TwoLayerChunk>)],
+    voxels_per_block: u32,
+) -> BrickFieldBuild {
+    // NOTE (this epic): `build_brick_field` will emit SURFACE-ONLY records; until that flip
+    // lands it delegates to the interior-inclusive reference. `build_brick_field_all_blocks`
+    // stays the full-set oracle the parity tests compare against.
+    build_brick_field_all_blocks(two_layer_chunks, voxels_per_block)
+}
+
+/// The interior-INCLUSIVE brick-field build: one record per NON-AIR block (coarse-solid or
+/// boundary), the pre-elision reference. **Oracle only** — the live sink uses the surface-only
+/// [`build_brick_field`]; this stays as the parity oracle for the interior-elision gates
+/// (`brick_surface_elision_hit_set_unchanged`, `clipmap_from_chunks_equals_from_full_records`)
+/// and any consumer that genuinely needs every block (none on the live path).
+pub fn build_brick_field_all_blocks(
     two_layer_chunks: &[([i32; 3], Arc<TwoLayerChunk>)],
     voxels_per_block: u32,
 ) -> BrickFieldBuild {
@@ -1318,6 +1427,63 @@ mod tests {
             // cell counts as the cell size grows 8× per level).
             assert!(pyramid.level_2.cell_keys.len() <= pyramid.level_1.cell_keys.len());
             assert!(pyramid.level_3.cell_keys.len() <= pyramid.level_2.cell_keys.len());
+        }
+    }
+
+    /// The **chunk-sourced** pyramid ([`ClipmapPyramid::from_chunks`]) is BYTE-IDENTICAL to the
+    /// legacy record-sourced one ([`ClipmapPyramid::from_records`]) over the FULL, interior-
+    /// inclusive record set — the direct oracle for the interior-elision pyramid rework (ADR
+    /// 0011). `build_brick_field_all_blocks` is the interior-inclusive reference build (the live
+    /// `build_brick_field` is surface-only, so its records would give a subset pyramid). Covers a
+    /// solid box (heavy interior → the bulk fast path) and a scattered scene (partial chunks),
+    /// at two densities.
+    #[test]
+    fn clipmap_from_chunks_equals_from_full_records() {
+        use crate::{Node, NodeContent, NodeTransform};
+        for &voxels_per_block in &[16u32, 4] {
+            // (a) A solid box: every interior chunk is fully-solid → exercises the bulk path.
+            let box_scene = Scene::from_geometry(
+                GeometryParams {
+                    shape: ShapeKind::Box,
+                    size_voxels: [
+                        7 * voxels_per_block,
+                        7 * voxels_per_block,
+                        7 * voxels_per_block,
+                    ],
+                    size_measurements: None,
+                    voxels_per_block,
+                    wall_blocks: 1,
+                },
+                MaterialChoice::Stone,
+            );
+            // (b) A scattered scene: many partial chunks → exercises the per-block path.
+            let mut nodes = Vec::new();
+            for i in 0..8i64 {
+                let shape =
+                    crate::voxel::SdfShape::from_blocks(ShapeKind::Sphere, [3, 3, 3], 1, voxels_per_block);
+                let mut node = Node::new(
+                    format!("s{i}"),
+                    NodeContent::Tool { shape, material: MaterialChoice::Stone },
+                );
+                node.transform = NodeTransform::from_blocks(
+                    [(i % 3) * 14, (i / 3) * 14, (i % 2) * 18],
+                    voxels_per_block,
+                );
+                nodes.push(node);
+            }
+            let scattered_scene = Scene::from_nodes(nodes);
+
+            for scene in [box_scene, scattered_scene] {
+                let chunks =
+                    TwoLayerStore::enabled().build_covering_chunks(&scene, voxels_per_block, 0);
+                let full_build = build_brick_field_all_blocks(&chunks, voxels_per_block);
+                let from_records = ClipmapPyramid::from_records(&full_build.brick_records);
+                let from_chunks = ClipmapPyramid::from_chunks(&chunks);
+                assert_eq!(
+                    from_chunks, from_records,
+                    "chunk-sourced pyramid must equal the full-record oracle (density {voxels_per_block})"
+                );
+            }
         }
     }
 

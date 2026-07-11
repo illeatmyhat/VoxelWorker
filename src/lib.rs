@@ -76,7 +76,8 @@ pub use app_core::{
 };
 pub use store::{ChunkCacheKey, ChunkResolveCache, Store};
 pub use brick_field::{
-    build_brick_field, pack_clipmap_level_keys, pack_world_block_key, read_back_brick_atlas,
+    build_brick_field, build_brick_field_all_blocks, pack_clipmap_level_keys, pack_world_block_key,
+    read_back_brick_atlas,
     surface_record_mask, unpack_world_block_key, upload_brick_atlas, BrickFieldBuild,
     BrickFieldUpdate, BrickPayload, BrickRecord, ClipmapLevel, ClipmapPyramid,
     IncrementalBrickField, CLIPMAP_LEVEL_1_BLOCKS_PER_CELL, CLIPMAP_LEVEL_2_BLOCKS_PER_CELL,

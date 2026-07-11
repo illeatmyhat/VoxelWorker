@@ -444,7 +444,8 @@ impl WindowedState {
                 if !build.brick_records.is_empty() {
                     let mut renderer =
                         BrickRaymarchRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
-                    let pyramid = voxel_worker::ClipmapPyramid::from_records(&build.brick_records);
+                    let pyramid =
+                        voxel_worker::ClipmapPyramid::from_chunks(&startup_two_layer_chunks);
                     renderer.install_brick_field(
                         &gpu.device,
                         &gpu.queue,
@@ -1148,7 +1149,7 @@ impl WindowedState {
                     match voxel_worker::brick_representable_overlay(&two_layer_chunks) {
                         Some(overlay_active) => {
                             let pyramid =
-                                voxel_worker::ClipmapPyramid::from_records(&build.brick_records);
+                                voxel_worker::ClipmapPyramid::from_chunks(&two_layer_chunks);
                             // ADR 0011 interior elision: the record buffer the shader binary-
                             // searches carries only the SURFACE (potentially-visible) blocks —
                             // a fully-occluded interior block is never a ray's first hit, so

@@ -1788,8 +1788,7 @@ async fn run_capture(options: ShotOptions) {
                         &gpu.queue,
                         COLOR_TARGET_FORMAT,
                     );
-                    let pyramid =
-                        voxel_worker::ClipmapPyramid::from_records(&build.brick_records);
+                    let pyramid = voxel_worker::ClipmapPyramid::from_chunks(&two_layer_chunks);
                     renderer.install_brick_field(
                         &gpu.device,
                         &gpu.queue,
