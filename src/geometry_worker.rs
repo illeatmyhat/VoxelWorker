@@ -35,6 +35,7 @@
 //! without a live window.
 
 use std::sync::mpsc::{Receiver, Sender};
+use std::sync::Arc;
 use std::thread::JoinHandle;
 
 use crate::cuboid_mesh::CuboidMeshRenderer;
@@ -63,9 +64,11 @@ pub struct GeometryRebuildRequest {
     /// generation matches the newest request the shell has dispatched (see
     /// [`GenerationTracker`]).
     pub generation: u64,
-    /// The two-layer covering chunks the resolve produced (owned; `Send`). Meshed via
-    /// coarse one-box + microblock cuboids + seam-flag culling — the sole runtime path.
-    pub two_layer_chunks: Vec<([i32; 3], TwoLayerChunk)>,
+    /// The two-layer covering chunks the resolve produced, `Arc`-shared out of the resident
+    /// cache (`Arc<TwoLayerChunk>` is `Send + Sync`, so the request stays `Send` — the move
+    /// into the worker is O(chunks) refcount bumps, not a deep chunk copy). Meshed via coarse
+    /// one-box + microblock cuboids + seam-flag culling — the sole runtime mesh path.
+    pub two_layer_chunks: Vec<([i32; 3], Arc<TwoLayerChunk>)>,
     /// The whole composite grid's voxel dims (the band-clip layer mapping).
     pub grid_dimensions: [u32; 3],
     /// The composite recentre (floating origin, voxels; ADR 0008) the mesh lands in.

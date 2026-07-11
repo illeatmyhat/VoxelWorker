@@ -5021,7 +5021,7 @@ mod tests {
         use crate::brick_field::build_brick_field;
         use crate::core_geom::MaterialChoice;
         use crate::scene::Scene;
-        use crate::two_layer_store::{expand_resident_chunks_into_grid, TwoLayerChunk, TwoLayerStore};
+        use crate::two_layer_store::{expand_resident_chunks_into_grid, TwoLayerStore};
         use crate::voxel::{GeometryParams, ShapeKind};
 
         let density = 16u32; // brick edge 16 → chunk_extent 64
@@ -5067,9 +5067,7 @@ mod tests {
         );
 
         // Byte-parity with the dense reference on the bounded slab.
-        let chunk_refs: Vec<([i32; 3], &TwoLayerChunk)> =
-            two_layer_chunks.iter().map(|(coord, chunk)| (*coord, chunk)).collect();
-        let grid = expand_resident_chunks_into_grid(&chunk_refs, dims, recentre, density);
+        let grid = expand_resident_chunks_into_grid(&two_layer_chunks, dims, recentre, density);
         #[allow(deprecated)]
         let cpu = build_per_chunk_fog_occupancy(&grid, density, slab);
         assert_eq!(cpu.volumes.len(), bricks.volumes.len(), "same resident fog-chunk count");
@@ -5096,7 +5094,7 @@ mod tests {
         use crate::brick_field::build_brick_field;
         use crate::core_geom::MaterialChoice;
         use crate::scene::{Node, NodeContent, NodeTransform, Scene};
-        use crate::two_layer_store::{expand_resident_chunks_into_grid, TwoLayerChunk, TwoLayerStore};
+        use crate::two_layer_store::{expand_resident_chunks_into_grid, TwoLayerStore};
         use crate::voxel::{SdfShape, ShapeKind};
 
         let density = 4u32; // chunk_extent = 16
@@ -5131,9 +5129,7 @@ mod tests {
                 },
                 grid_z,
             );
-            let chunk_refs: Vec<([i32; 3], &TwoLayerChunk)> =
-                two_layer_chunks.iter().map(|(coord, chunk)| (*coord, chunk)).collect();
-            let grid = expand_resident_chunks_into_grid(&chunk_refs, dims, recentre, density);
+            let grid = expand_resident_chunks_into_grid(&two_layer_chunks, dims, recentre, density);
             #[allow(deprecated)]
             let cpu = build_per_chunk_fog_occupancy(&grid, density, slab);
             let bricks = build_per_chunk_fog_occupancy_from_bricks(&build, dims, recentre, slab);
@@ -5167,7 +5163,7 @@ mod tests {
         use crate::brick_field::build_brick_field;
         use crate::core_geom::MaterialChoice;
         use crate::scene::{Node, NodeContent, NodeTransform, Scene};
-        use crate::two_layer_store::{expand_resident_chunks_into_grid, TwoLayerChunk, TwoLayerStore};
+        use crate::two_layer_store::{expand_resident_chunks_into_grid, TwoLayerStore};
         use crate::voxel::{SdfShape, ShapeKind};
 
         fn sphere_node(name: &str, offset_blocks: [i64; 3], density: u32) -> Node {
@@ -5186,9 +5182,7 @@ mod tests {
             assert!(!two_layer_chunks.is_empty(), "fixture must produce covering chunks");
             let recentre = scene.recentre_voxels_for_resolve(density);
             let dims = scene.placed_region_dimensions(density);
-            let chunk_refs: Vec<([i32; 3], &TwoLayerChunk)> =
-                two_layer_chunks.iter().map(|(coord, chunk)| (*coord, chunk)).collect();
-            let grid = expand_resident_chunks_into_grid(&chunk_refs, dims, recentre, density);
+            let grid = expand_resident_chunks_into_grid(&two_layer_chunks, dims, recentre, density);
             let build = build_brick_field(&two_layer_chunks, density);
 
             // A middle-band slab (exercises the band scoping) plus the whole-grid `None`.

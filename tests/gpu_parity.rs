@@ -1149,7 +1149,10 @@ fn brick_render_cases() -> Vec<BrickRenderCase> {
 /// The march's `voxel_bias` recovers exactly this frame (the recentre cancels), so a
 /// march hit's `absolute_voxel` indexes straight into this set.
 fn exact_occupancy_set(
-    two_layer_chunks: &[([i32; 3], voxel_worker::two_layer_store::TwoLayerChunk)],
+    two_layer_chunks: &[(
+        [i32; 3],
+        std::sync::Arc<voxel_worker::two_layer_store::TwoLayerChunk>,
+    )],
     voxels_per_block: u32,
 ) -> std::collections::HashSet<[i64; 3]> {
     use voxel_worker::core_geom::CHUNK_BLOCKS;

@@ -99,7 +99,7 @@ pub fn pack_gpu_records(
 /// in-shader binary search is unaffected.
 pub fn pack_surface_gpu_records(
     build: &BrickFieldBuild,
-    chunks: &[([i32; 3], crate::two_layer_store::TwoLayerChunk)],
+    chunks: &[([i32; 3], std::sync::Arc<crate::two_layer_store::TwoLayerChunk>)],
     mut non_resident: impl FnMut(u32) -> bool,
 ) -> Vec<BrickGpuRecord> {
     let keep = crate::brick_field::surface_record_mask(&build.brick_records, chunks);
@@ -196,7 +196,7 @@ fn write_atlas_slot(
 /// G1 gate — so widening to this predicate keeps every G1 scene engaged and adds the
 /// distinct-material multi-producer scenes.
 pub fn brick_representable_overlay(
-    two_layer_chunks: &[([i32; 3], TwoLayerChunk)],
+    two_layer_chunks: &[([i32; 3], std::sync::Arc<TwoLayerChunk>)],
 ) -> Option<bool> {
     // The scene-wide overlay: every rendered block must agree on it.
     let mut scene_overlay: Option<bool> = None;
@@ -1720,15 +1720,15 @@ mod representability_tests {
 
     fn chunk_with(
         microblocks: Vec<([u32; 3], MicroblockGeometry)>,
-    ) -> Vec<([i32; 3], TwoLayerChunk)> {
+    ) -> Vec<([i32; 3], std::sync::Arc<TwoLayerChunk>)> {
         vec![(
             [0, 0, 0],
-            TwoLayerChunk {
+            std::sync::Arc::new(TwoLayerChunk {
                 voxels_per_block: 4,
                 coarse: Vec::new(),
                 coarse_overlay: Vec::new(),
                 microblocks: microblocks.into_iter().collect::<BTreeMap<_, _>>(),
-            },
+            }),
         )]
     }
 

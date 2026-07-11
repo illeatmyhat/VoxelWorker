@@ -16,6 +16,8 @@
 //! scene. Resolve state + the borrow-sensitive `AppCore::rebuild` land in
 //! **A2e**; `render` reads all headless data from here in **A2f**.
 
+use std::sync::Arc;
+
 use crate::camera::OrbitCamera;
 use crate::command::{Command, CommandStack, Inverse};
 use crate::core_geom::CHUNK_BLOCKS;
@@ -80,12 +82,21 @@ pub struct RebuildOutput {
     /// [`AppCore::region_dimensions_for`]) — what the camera auto-frame, gizmo,
     /// lattice, floor grid and layer scrubber are sized from.
     pub region_dimensions: [u32; 3],
-    /// The **two-layer** covering chunks (`(absolute_chunk_coord, TwoLayerChunk)`),
-    /// owned so they outlive the cache borrow. The shell meshes them through
+    /// The **two-layer** covering chunks (`(absolute_chunk_coord, Arc<TwoLayerChunk>)`),
+    /// `Arc`-shared out of the resident cache so they outlive the cache borrow WITHOUT a
+    /// deep copy. The shell meshes them through
     /// [`CuboidMeshRenderer::new_from_two_layer_chunks`](crate::cuboid_mesh::CuboidMeshRenderer::new_from_two_layer_chunks)
     /// (coarse one-box + microblock cuboids + seam-flag culling) — the sole runtime
-    /// display mesh path (ADR 0010 E5). Empty for a Part-only scene (no covering range).
-    pub two_layer_chunks: Vec<([i32; 3], TwoLayerChunk)>,
+    /// display mesh path (ADR 0010 E5) — and the brick sink packs its records from the same
+    /// set (ADR 0011 G3). Empty for a Part-only scene (no covering range).
+    ///
+    /// **Why `Arc`, not owned chunks.** Every rebuild used to deep-clone EVERY resident
+    /// chunk into an owned `Vec` here (O(all-blocks) per edit) purely so the set could
+    /// outlive the cache borrow / be moved into the async mesh request. Since the brick
+    /// display's mesh route is `Skip`, the owned set is consumed only by borrowing readers
+    /// on the primary path, so that deep clone was pure waste; sharing an `Arc` per chunk
+    /// makes it an O(chunks) refcount bump and composes with the brick readers directly.
+    pub two_layer_chunks: Vec<([i32; 3], Arc<TwoLayerChunk>)>,
     /// The composite recentre (floating origin, voxels; ADR 0008) the two-layer mesh
     /// lands its geometry in — the SAME frame the fog `grid` above is recentred to.
     pub recentre_voxels: [i64; 3],
@@ -939,7 +950,12 @@ impl AppCore {
         let placed_dimensions = scene.placed_region_dimensions(density);
         let (two_layer_chunks, grid) = {
             profiling::scope!("resident_two_layer_chunks");
-            let resident = self.two_layer_cache.resident_two_layer_chunks(scene, density, 0);
+            // The resident cache hands out an OWNED, `Arc`-shared covering set (an O(1)
+            // refcount bump per chunk — NOT the old O(all-blocks) deep clone). It already
+            // outlives the `&mut self` cache borrow, so it feeds the fog expand below AND
+            // becomes `RebuildOutput.two_layer_chunks` directly, with no further copy.
+            let resident: Vec<([i32; 3], Arc<TwoLayerChunk>)> =
+                self.two_layer_cache.resident_two_layer_chunks(scene, density, 0);
             // The whole-region fog grid: the fog densify still consumes a `VoxelGrid`,
             // so expand the resident chunks (coarse fast-fill + boundary per-voxel) into
             // one recentred grid — bit-identical to the retired dense `resolve_region`
@@ -959,12 +975,9 @@ impl AppCore {
                 empty_grid.recentre_voxels = new_recentre;
                 empty_grid
             };
-            // The mesher needs owned chunks that outlive the cache borrow.
-            let owned: Vec<([i32; 3], TwoLayerChunk)> = resident
-                .into_iter()
-                .map(|(coord, chunk)| (coord, chunk.clone()))
-                .collect();
-            (owned, grid)
+            // The `Arc`-shared resident set already outlives the cache borrow — move it out
+            // as the rebuild's covering chunks with no per-chunk copy.
+            (resident, grid)
         };
         let region_dimensions = Self::region_dimensions_for(scene, density, &grid);
         RebuildOutcome::Built(RebuildOutput {

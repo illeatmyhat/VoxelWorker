@@ -33,6 +33,10 @@
 //! block must emit exactly one coarse record and consume no atlas slot. The
 //! `--features gpu` parity tests assert this through the full texture round-trip.
 
+use std::sync::Arc;
+
+use rayon::prelude::*;
+
 use crate::core_geom::{BlockId, CHUNK_BLOCKS};
 use crate::cuboid_mesh::clean_block_id;
 use crate::two_layer_store::{SeamSolidity, TwoLayerChunk};
@@ -355,8 +359,18 @@ impl BrickFieldBuild {
 ///
 /// `voxels_per_block` is the document density every chunk was built at (each chunk
 /// carries it; a mismatch is a caller bug, asserted in debug).
+///
+/// **Why the classify pass stays SERIAL (measured).** The per-block classify + slot
+/// assignment is coarse-dominated and memory-bound (an 8000×800×800 solid box is ~1.25M
+/// blocks, almost all coarse-solid — the cheap interval verdict, no rasterize), so a rayon
+/// per-chunk split measured NO net win: the parallel classify gain was cancelled by the
+/// extra ordered-merge pass needed to keep the sculpted atlas-slot numbering byte-identical
+/// (slots are assigned in traversal order — ADR 0011 G3's incremental-atlas contract — so a
+/// parallel build must re-derive that exact order, adding an O(records) merge). Only the
+/// final key sort is worth parallelising (below). The record ORDER + sculpted slot numbering
+/// are therefore produced by the same serial traversal as before — bit-for-bit unchanged.
 pub fn build_brick_field(
-    two_layer_chunks: &[([i32; 3], TwoLayerChunk)],
+    two_layer_chunks: &[([i32; 3], Arc<TwoLayerChunk>)],
     voxels_per_block: u32,
 ) -> BrickFieldBuild {
     let brick_edge_voxels = voxels_per_block.max(1);
@@ -405,7 +419,10 @@ pub fn build_brick_field(
         }
     }
 
-    brick_records.sort_unstable_by_key(|record| record.packed_world_block_key);
+    // The keys are UNIQUE (each world block appears in exactly one chunk — asserted below),
+    // so a parallel unstable sort yields the byte-identical order a serial sort would, at any
+    // thread count. This is the one part of the build that measurably parallelises.
+    brick_records.par_sort_unstable_by_key(|record| record.packed_world_block_key);
     debug_assert!(
         brick_records
             .windows(2)
@@ -462,11 +479,11 @@ pub fn build_brick_field(
 /// blocks — it can never drop a block a ray can see, only ever an unreachable interior one.
 pub fn surface_record_mask(
     records: &[BrickRecord],
-    chunks: &[([i32; 3], TwoLayerChunk)],
+    chunks: &[([i32; 3], Arc<TwoLayerChunk>)],
 ) -> Vec<bool> {
     use std::collections::{HashMap, HashSet};
     let chunk_by_coord: HashMap<[i32; 3], &TwoLayerChunk> =
-        chunks.iter().map(|(coord, chunk)| (*coord, chunk)).collect();
+        chunks.iter().map(|(coord, chunk)| (*coord, chunk.as_ref())).collect();
     // A chunk is "full-solid" iff every one of its CHUNK_BLOCKS³ blocks is coarse-solid and
     // it carries no microblocks — then every block of it is solid on every face.
     let full_solid: HashSet<[i32; 3]> = chunks
@@ -514,8 +531,15 @@ pub fn surface_record_mask(
         }
     };
 
+    // Per-record occlusion test in PARALLEL: each record's verdict is independent and reads
+    // only the immutable `chunk_by_coord` / `interior_chunk` maps + the pure `neighbour_face_
+    // solid` closure (all `Sync`). A `par_iter().map(...).collect()` PRESERVES record order, so
+    // the returned `keep` mask stays aligned index-for-index to `records` — the invariant
+    // `pack_surface_gpu_records`' `zip(keep).filter(...)` and the
+    // `brick_surface_elision_hit_set_unchanged` gate rely on. No shared mutation, no ordering
+    // leak — the mask is byte-identical to the serial fold regardless of thread count.
     records
-        .iter()
+        .par_iter()
         .map(|record| {
             let block = unpack_world_block_key(record.packed_world_block_key);
             let chunk_coord = [
@@ -772,7 +796,7 @@ impl IncrementalBrickField {
     /// slots were touched (the GPU patch's work-list).
     pub fn apply_dirty_update(
         &mut self,
-        fresh_chunks: &[([i32; 3], TwoLayerChunk)],
+        fresh_chunks: &[([i32; 3], Arc<TwoLayerChunk>)],
         dirty_chunks: &[[i32; 3]],
     ) -> BrickFieldUpdate {
         let edge = self.brick_edge_voxels;
@@ -1391,12 +1415,8 @@ mod incremental_tests {
         cache: &mut TwoLayerResidentCache,
         scene: &Scene,
         density: u32,
-    ) -> Vec<([i32; 3], TwoLayerChunk)> {
-        cache
-            .resident_two_layer_chunks(scene, density, 0)
-            .into_iter()
-            .map(|(coord, chunk)| (coord, chunk.clone()))
-            .collect()
+    ) -> Vec<([i32; 3], Arc<TwoLayerChunk>)> {
+        cache.resident_two_layer_chunks(scene, density, 0)
     }
 
     /// A tool node (single material, so the scene stays brick-representable) of `blocks³`

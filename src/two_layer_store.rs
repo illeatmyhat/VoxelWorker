@@ -45,6 +45,7 @@
 //! so the round-trip is occupancy-identical to the dense path.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use rayon::prelude::*;
 
@@ -519,7 +520,7 @@ impl TwoLayerStore {
         scene: &Scene,
         voxels_per_block: u32,
         lod: u32,
-    ) -> Vec<([i32; 3], TwoLayerChunk)> {
+    ) -> Vec<([i32; 3], Arc<TwoLayerChunk>)> {
         if !self.enabled {
             return Vec::new();
         }
@@ -549,7 +550,12 @@ impl TwoLayerStore {
                     chunk_candidate_leaves(&broadphase, &leaves, coord, voxels_per_block);
                 let chunk =
                     build_two_layer_chunk_from_leaves(coord, &candidates, voxels_per_block);
-                (coord, chunk)
+                // `Arc`-wrap the freshly built chunk so this owned covering set can be
+                // handed to the mesh / brick / fog readers, retained in the mesh
+                // renderer, AND moved into the async `GeometryRebuildRequest` with only
+                // O(1) refcount bumps — never a deep `TwoLayerChunk` copy (the per-edit
+                // clone this cleanup killed; ADR 0011 G3 record/atlas territory).
+                (coord, Arc::new(chunk))
             })
             .collect()
     }
@@ -613,7 +619,18 @@ pub struct TwoLayerResidentCache {
     /// [`resident_two_layer_chunks`]: Self::resident_two_layer_chunks
     enabled: bool,
     /// Resident chunks keyed by ABSOLUTE chunk coord (the only LOD in use is 0, ADR 0002 S4a).
-    resident: BTreeMap<[i32; 3], TwoLayerChunk>,
+    ///
+    /// Stored as `Arc<TwoLayerChunk>` so [`resident_two_layer_chunks`](Self::resident_two_layer_chunks)
+    /// can hand the owned covering set out to the readers (mesh / brick / fog) and into the async
+    /// `GeometryRebuildRequest` with an O(1) refcount bump each, never a deep chunk copy per rebuild.
+    ///
+    /// **Mutation discipline (why an `Arc` is safe here).** A dirty chunk is never mutated
+    /// through its `Arc` while shell copies are alive: the cache only ever REPLACES a chunk's
+    /// entry with a freshly built `Arc` (evict via [`invalidate_aabb`](Self::invalidate_aabb) /
+    /// [`clear`](Self::clear), then re-`insert` in [`resident_two_layer_chunks`]), so an
+    /// outstanding shared copy keeps seeing the exact chunk it was handed. No `Arc::make_mut` /
+    /// in-place edit path exists — the resident chunk is immutable once built.
+    resident: BTreeMap<[i32; 3], Arc<TwoLayerChunk>>,
     /// The density the resident chunks were built at. A change resizes every chunk's voxel
     /// extent, so it forces a wholesale [`clear`](Self::clear) (mirrors
     /// [`Store::rebind_if_changed`](crate::store::Store)'s density guard).
@@ -701,14 +718,16 @@ impl TwoLayerResidentCache {
     /// [`Store::resident_render_chunks`](crate::store::Store::resident_render_chunks).** Ensure
     /// every covering chunk of `(scene, voxels_per_block, lod)` is resident (re-run the
     /// classifier + build for any DIRTY or MISSING chunk, reuse resident HITs verbatim), then
-    /// return every covering chunk as `([i32; 3] absolute_chunk_coord, &TwoLayerChunk)` in the
+    /// return every covering chunk as `([i32; 3] absolute_chunk_coord, Arc<TwoLayerChunk>)` in the
     /// SAME z,y,x order the dense store assembles.
     ///
     /// Because a two-layer chunk is chunk-local-integer (frame-independent), a resident HIT is
     /// reused across a recentre shift; only [`invalidate_aabb`](Self::invalidate_aabb) (a dirty
     /// edit) or a density change ([`clear`](Self::clear)) re-derives a chunk. The returned chunks
-    /// are BORROWED, so the `Vec` borrows `self` immutably; the fill (needing `&mut self`) runs
-    /// FIRST, then the gather is all HITs.
+    /// are `Arc`-SHARED (an O(1) refcount bump per covering chunk, NOT a deep copy), so the caller
+    /// owns a covering set that outlives this `&mut self` borrow and can be meshed, fog-expanded,
+    /// brick-packed AND moved into the async mesh request without cloning a single chunk. The fill
+    /// (needing `&mut self`) runs FIRST, then the gather clones the resident `Arc`s.
     ///
     /// Returns an empty `Vec` when the capability is OFF (dense fallback) or the scene has no
     /// covering chunk range (a Part-only scene).
@@ -717,7 +736,7 @@ impl TwoLayerResidentCache {
         scene: &Scene,
         voxels_per_block: u32,
         lod: u32,
-    ) -> Vec<([i32; 3], &TwoLayerChunk)> {
+    ) -> Vec<([i32; 3], Arc<TwoLayerChunk>)> {
         debug_assert_eq!(lod, 0, "E2 only builds full resolution (lod 0)");
         if !self.enabled {
             return Vec::new();
@@ -754,14 +773,18 @@ impl TwoLayerResidentCache {
                 .into_iter()
                 .filter(|coord| !self.resident.contains_key(coord))
                 .collect();
-        let freshly_built: Vec<([i32; 3], TwoLayerChunk)> = missing_coords
+        let freshly_built: Vec<([i32; 3], Arc<TwoLayerChunk>)> = missing_coords
             .into_par_iter()
             .map(|coord| {
                 let candidates =
                     chunk_candidate_leaves(&broadphase, &leaves, coord, voxels_per_block);
                 (
                     coord,
-                    build_two_layer_chunk_from_leaves(coord, &candidates, voxels_per_block),
+                    Arc::new(build_two_layer_chunk_from_leaves(
+                        coord,
+                        &candidates,
+                        voxels_per_block,
+                    )),
                 )
             })
             .collect();
@@ -769,7 +792,8 @@ impl TwoLayerResidentCache {
             self.resident.insert(coord, chunk);
         }
 
-        // Gather the covering chunks as borrows (all HITs after the fill above).
+        // Gather the covering chunks as O(1) `Arc` clones (all HITs after the fill above) — the
+        // caller gets an owned, shareable covering set with no deep chunk copy.
         let resident = &self.resident;
         let mut chunks = Vec::new();
         for chunk_z in min_chunk[2]..=max_chunk[2] {
@@ -777,7 +801,7 @@ impl TwoLayerResidentCache {
                 for chunk_x in min_chunk[0]..=max_chunk[0] {
                     let coord = [chunk_x, chunk_y, chunk_z];
                     if let Some(chunk) = resident.get(&coord) {
-                        chunks.push((coord, chunk));
+                        chunks.push((coord, Arc::clone(chunk)));
                     }
                 }
             }
@@ -1189,14 +1213,14 @@ pub fn resolve_region_two_layer(
 /// chunks — so the windowed rebuild classifies each covering chunk once (incrementally)
 /// and reuses that work for both the mesher and the fog grid.
 ///
-/// `chunks` is `(absolute_chunk_coord, &TwoLayerChunk)` per covering chunk (the
+/// `chunks` is `(absolute_chunk_coord, Arc<TwoLayerChunk>)` per covering chunk (the
 /// [`TwoLayerResidentCache::resident_two_layer_chunks`] output); `region_dimensions` is
 /// the composite voxel extent ([`Scene::placed_region_dimensions`]); `recentre_voxels`
 /// is the composite recentre (ADR 0008). The occupied SET is bit-identical to
 /// [`resolve_region_two_layer`]'s (the E2 round-trip parity gate proves the shared
 /// expand path), so the fog + goldens are unchanged.
 pub fn expand_resident_chunks_into_grid(
-    chunks: &[([i32; 3], &TwoLayerChunk)],
+    chunks: &[([i32; 3], Arc<TwoLayerChunk>)],
     region_dimensions: [u32; 3],
     recentre_voxels: [i64; 3],
     voxels_per_block: u32,
@@ -2535,7 +2559,7 @@ mod tests {
         let chunks = cache.resident_two_layer_chunks(scene, density, 0);
         chunks
             .into_iter()
-            .map(|(coord, chunk)| (coord, chunk.clone()))
+            .map(|(coord, chunk)| (coord, (*chunk).clone()))
             .collect()
     }
 
@@ -2549,7 +2573,7 @@ mod tests {
         cache
             .resident_two_layer_chunks(scene, density, 0)
             .into_iter()
-            .map(|(coord, chunk)| (coord, chunk.clone()))
+            .map(|(coord, chunk)| (coord, (*chunk).clone()))
             .collect()
     }
 

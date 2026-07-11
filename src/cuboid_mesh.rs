@@ -29,6 +29,8 @@
 //! the absolute index, so a box spanning voxels `min..=max` becomes the world AABB
 //! `[min - half, (max+1) - half]`.
 
+use std::sync::Arc;
+
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
@@ -876,7 +878,7 @@ fn in_plane_axes(axis: usize) -> (usize, usize) {
 /// clip synthesises a real cap face there, mirroring the dense [`build_chunk_meshes_with_apron`]
 /// banded behaviour exactly (it masks the apron + interior so a merged column caps at the edge).
 fn build_two_layer_chunk_meshes(
-    chunks: &[([i32; 3], TwoLayerChunk)],
+    chunks: &[([i32; 3], Arc<TwoLayerChunk>)],
     grid_dimensions: [u32; 3],
     recentre_voxels: [i64; 3],
     voxels_per_block: u32,
@@ -902,7 +904,7 @@ fn build_two_layer_chunk_meshes(
 /// ([`CuboidMeshRenderer::incremental_rebuild_from_two_layer_chunks`]) uses: it passes the
 /// full resident set for correct seam culling but re-meshes only the dirty-dilated subset.
 fn build_two_layer_chunk_meshes_filtered(
-    chunks: &[([i32; 3], TwoLayerChunk)],
+    chunks: &[([i32; 3], Arc<TwoLayerChunk>)],
     only: Option<&std::collections::HashSet<[i32; 3]>>,
     grid_dimensions: [u32; 3],
     recentre_voxels: [i64; 3],
@@ -934,7 +936,7 @@ fn build_two_layer_chunk_meshes_filtered(
     // A lookup of every covering chunk by coord so a block can consult its neighbour's
     // coarse / microblock face solidity across a block OR chunk seam.
     let chunk_by_coord: std::collections::HashMap<[i32; 3], &TwoLayerChunk> =
-        chunks.iter().map(|(coord, chunk)| (*coord, chunk)).collect();
+        chunks.iter().map(|(coord, chunk)| (*coord, chunk.as_ref())).collect();
 
     // The block-face solidity of the block at ABSOLUTE block coord `abs_block` (across all
     // chunks): resolve which chunk + chunk-local block it is, then read its layer.
@@ -1882,7 +1884,7 @@ pub struct CuboidMeshRenderer {
     /// source grids. Empty on the dense path; populated only by [`new_from_two_layer_chunks`].
     /// `recentre`/`density` are the frame + density the two-layer mesher needs to re-emit in
     /// the SAME world frame on every band change.
-    source_two_layer_chunks: Vec<([i32; 3], crate::two_layer_store::TwoLayerChunk)>,
+    source_two_layer_chunks: Vec<([i32; 3], Arc<crate::two_layer_store::TwoLayerChunk>)>,
     source_two_layer_recentre: [i64; 3],
     source_two_layer_density: u32,
     /// The whole composite grid's voxel dims (the band clip maps an absolute layer to
@@ -1976,7 +1978,7 @@ impl CuboidMeshRenderer {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         color_format: wgpu::TextureFormat,
-        chunks: &[([i32; 3], crate::two_layer_store::TwoLayerChunk)],
+        chunks: &[([i32; 3], Arc<crate::two_layer_store::TwoLayerChunk>)],
         grid_dimensions: [u32; 3],
         recentre_voxels: [i64; 3],
         voxels_per_block: u32,
@@ -2008,7 +2010,7 @@ impl CuboidMeshRenderer {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         color_format: wgpu::TextureFormat,
-        chunks: &[([i32; 3], crate::two_layer_store::TwoLayerChunk)],
+        chunks: &[([i32; 3], Arc<crate::two_layer_store::TwoLayerChunk>)],
         grid_dimensions: [u32; 3],
         recentre_voxels: [i64; 3],
         voxels_per_block: u32,
@@ -2464,7 +2466,7 @@ impl CuboidMeshRenderer {
     pub fn incremental_rebuild_from_two_layer_chunks(
         &mut self,
         device: &wgpu::Device,
-        chunks: &[([i32; 3], crate::two_layer_store::TwoLayerChunk)],
+        chunks: &[([i32; 3], Arc<crate::two_layer_store::TwoLayerChunk>)],
         grid_dimensions: [u32; 3],
         recentre_voxels: [i64; 3],
         voxels_per_block: u32,
@@ -2517,20 +2519,22 @@ impl CuboidMeshRenderer {
         // reclip re-meshes from it): drop evicted, upsert each rebuilt coord's chunk.
         // Untouched chunks are resident-cache hits → already correct. Rebuilding a chunk that
         // went all-air still upserts its (empty) chunk so the retained set matches `chunks`.
-        let chunks_by_coord: std::collections::HashMap<[i32; 3], &crate::two_layer_store::TwoLayerChunk> =
+        let chunks_by_coord: std::collections::HashMap<[i32; 3], &Arc<crate::two_layer_store::TwoLayerChunk>> =
             chunks.iter().map(|(coord, chunk)| (*coord, chunk)).collect();
         let evict_set: std::collections::HashSet<[i32; 3]> = plan.evict.iter().copied().collect();
         self.source_two_layer_chunks
             .retain(|(coord, _)| !evict_set.contains(coord));
         for coord in &plan.rebuild {
-            if let Some(chunk) = chunks_by_coord.get(coord) {
+            if let Some(&chunk) = chunks_by_coord.get(coord) {
+                // `Arc::clone` (O(1)) — the retained source set shares the resident chunk,
+                // never deep-copies it.
                 match self
                     .source_two_layer_chunks
                     .iter_mut()
                     .find(|(c, _)| c == coord)
                 {
-                    Some(entry) => entry.1 = (*chunk).clone(),
-                    None => self.source_two_layer_chunks.push((*coord, (*chunk).clone())),
+                    Some(entry) => entry.1 = Arc::clone(chunk),
+                    None => self.source_two_layer_chunks.push((*coord, Arc::clone(chunk))),
                 }
             }
         }
@@ -4205,7 +4209,7 @@ mod tests {
     /// incremental-edit mesh parity test below so it can mesh a chunk set assembled through the
     /// resident cache (post-edit) rather than a fresh `build_covering_chunks`.
     fn two_layer_chunk_set_renderable_faces(
-        chunks: &[([i32; 3], crate::two_layer_store::TwoLayerChunk)],
+        chunks: &[([i32; 3], Arc<crate::two_layer_store::TwoLayerChunk>)],
         density: u32,
         world_offset: [f32; 3],
         recentre: [i64; 3],
@@ -4449,11 +4453,8 @@ mod tests {
             // Build scene A's resident set + its owned two-layer chunk source (what the renderer
             // retains in `source_two_layer_chunks`).
             let mut cache = TwoLayerResidentCache::enabled();
-            let chunks_a: Vec<([i32; 3], TwoLayerChunk)> = cache
-                .resident_two_layer_chunks(&scene_a, density, 0)
-                .into_iter()
-                .map(|(coord, chunk)| (coord, chunk.clone()))
-                .collect();
+            let chunks_a: Vec<([i32; 3], Arc<TwoLayerChunk>)> =
+                cache.resident_two_layer_chunks(&scene_a, density, 0);
             let dims = scene_a.placed_region_dimensions(density);
             let recentre = scene_a.recentre_voxels_for_resolve(density);
             // The renderer's initial (wholesale) buffer set for A.
@@ -4489,11 +4490,8 @@ mod tests {
                 recentre_b, recentre,
                 "[{label}] anchors should pin the recentre; a shift would force wholesale fallback"
             );
-            let chunks_b: Vec<([i32; 3], TwoLayerChunk)> = cache
-                .resident_two_layer_chunks(&scene_b, density, 0)
-                .into_iter()
-                .map(|(coord, chunk)| (coord, chunk.clone()))
-                .collect();
+            let chunks_b: Vec<([i32; 3], Arc<TwoLayerChunk>)> =
+                cache.resident_two_layer_chunks(&scene_b, density, 0);
 
             // The plan — dilate the dirty set by the 26-neighbourhood, keep only non-empty
             // chunks — exactly as `incremental_rebuild_from_two_layer_chunks` computes it.
