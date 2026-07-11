@@ -993,6 +993,40 @@ impl AppCore {
         resolve_region_two_layer(&store, scene, voxels_per_block, 0).unwrap_or_default()
     }
 
+    /// The startup grid door — the SINGLE decision the windowed shell seeds its first
+    /// frame from (`WindowedState::new`). Mirrors the per-edit rebuild seam
+    /// ([`AppCore::rebuild`], the `stream_fog_grid` branch) EXACTLY so startup and every
+    /// later edit construct the grid the same way: when the runtime sources fog from the
+    /// brick sink (ADR 0011 G5) the whole-region occupancy is NEVER built — the grid is
+    /// dimensions + recentre only, matching `expand_resident_chunks_into_grid`'s skipped
+    /// branch. Only a non-gpu build, or a non-chunkable multi-producer scene, still streams
+    /// the resolved occupancy.
+    ///
+    /// This closes the startup OOM: a persisted 8000×800×800 scene resolved through
+    /// `resolve_scene` would build a dense ~5.1-billion-cell `VoxelGrid` (~28.5 GB RSS →
+    /// OOM hang before the first print). `loaded_material` is always `false` here — no VS
+    /// material is resolved at startup (the material scan is async, `main.rs` `spawn_auto_scan`).
+    ///
+    /// Returns `(grid, streamed)` where `streamed` tells the shell whether `grid` carries
+    /// occupancy (feeds the startup fog build's `grid_streamed` flag + the persisted
+    /// `fog_grid_streamed` field).
+    pub fn startup_grid(scene: &Scene, density: u32, gpu_feature: bool) -> (VoxelGrid, bool) {
+        let streamed = runtime_streams_fog_grid(
+            gpu_feature,
+            scene.has_chunkable_extent(density),
+            scene.single_producer().is_some(),
+            // No VS material is loaded at startup — the scan is async.
+            false,
+        );
+        if streamed {
+            (Self::resolve_scene(scene, density), true)
+        } else {
+            let mut grid = VoxelGrid::new(scene.placed_region_dimensions(density));
+            grid.recentre_voxels = scene.recentre_voxels_for_resolve(density);
+            (grid, false)
+        }
+    }
+
     /// The region dimensions (in voxels) the camera auto-frame, origin gizmo, block
     /// lattice, fine floor grid and layer scrubber are sized from — read from the
     /// SCENE, not by reaching into the assembled `VoxelGrid` (issue #20 S6c-1, prep
@@ -2267,6 +2301,47 @@ mod undo_tests {
         // A non-gpu build always streams (the CPU display path).
         assert!(runtime_streams_fog_grid(false, true, true, false), "non-gpu streams");
         assert!(runtime_streams_fog_grid(false, false, false, false), "non-gpu streams");
+    }
+
+    /// ADR 0011 G5 startup door (the OOM-hang regression guard): the startup grid a
+    /// chunkable gpu scene seeds is dimensions + recentre ONLY — occupancy is NEVER
+    /// resolved, so the persisted 8000×800×800 scene can no longer build a dense
+    /// ~5.1-billion-cell grid at startup. Mirrors the per-edit rebuild's non-streamed
+    /// branch (`gpu_display_rebuild_never_streams_fog_grid`), one door up at startup.
+    #[test]
+    fn startup_grid_chunkable_gpu_scene_builds_no_occupancy() {
+        let density = 16u32;
+        let scene = default_replay_seed_scene();
+        assert!(scene.has_chunkable_extent(density), "the seed scene is chunkable");
+        let (grid, streamed) = AppCore::startup_grid(&scene, density, true);
+        assert!(!streamed, "a chunkable gpu scene sources fog from bricks, never streams");
+        assert_eq!(grid.occupied_count(), 0, "the startup grid must build NO occupancy");
+        assert_eq!(
+            grid.dimensions,
+            scene.placed_region_dimensions(density),
+            "dimensions-only grid must match the placed region"
+        );
+        assert_eq!(
+            grid.recentre_voxels,
+            scene.recentre_voxels_for_resolve(density),
+            "the recentre must match the resolve frame (fog + camera consume it)"
+        );
+    }
+
+    /// ADR 0011 G5 startup door, streaming arm: a non-gpu build still streams the resolved
+    /// occupancy, byte-identical to `resolve_scene` (the CPU display path). `streamed` is
+    /// `true`, so the shell's startup fog build + `fog_grid_streamed` see occupancy.
+    #[test]
+    fn startup_grid_non_gpu_streams_resolved_occupancy() {
+        let density = 16u32;
+        let scene = default_replay_seed_scene();
+        let (grid, streamed) = AppCore::startup_grid(&scene, density, false);
+        assert!(streamed, "a non-gpu build streams the CPU display grid");
+        let resolved = AppCore::resolve_scene(&scene, density);
+        assert_eq!(grid.dimensions, resolved.dimensions, "dimensions match resolve_scene");
+        assert_eq!(grid.recentre_voxels, resolved.recentre_voxels, "recentre matches");
+        assert_eq!(grid.occupied, resolved.occupied, "occupancy byte-equal to resolve_scene");
+        assert!(!grid.occupied.is_empty(), "the streamed grid carries occupancy");
     }
 
     /// ADR 0011 G5 retirement assertion (load-bearing): the RUNTIME decision that a

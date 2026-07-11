@@ -360,7 +360,17 @@ impl WindowedState {
             None => PanelState::with_view_cube_default(),
         };
         let shape = SdfShape::from_geometry(panel_state.geometry.clone());
-        let grid = AppCore::resolve_scene(&panel_state.scene, panel_state.geometry.voxels_per_block);
+        // ADR 0011 G5: the startup grid goes through the SAME fog-stream decision the
+        // per-edit rebuild makes (`AppCore::rebuild`'s `stream_fog_grid` branch). A
+        // chunkable gpu scene sources fog from the brick sink, so the whole-region
+        // occupancy is NEVER built — the grid is dimensions + recentre only. This closes
+        // the startup OOM: `resolve_scene` on the persisted 8000×800×800 scene built a
+        // dense ~5.1-billion-cell grid (~28.5 GB → OOM hang before the first print).
+        let (grid, stream_startup_grid) = AppCore::startup_grid(
+            &panel_state.scene,
+            panel_state.geometry.voxels_per_block,
+            cfg!(feature = "gpu"),
+        );
         // Issue #20 S6c-1: the camera auto-frame, origin gizmo, block lattice, fine
         // floor grid and the layer scrubber are sized from the scene's region
         // dimensions DIRECTLY, not by reaching into the assembled grid object. For a
@@ -396,12 +406,20 @@ impl WindowedState {
             measured_band.1,
         )
         .unwrap_or(0);
+        // Report region dimensions + whether occupancy was streamed. On the brick-sink
+        // path the grid is dimensions-only (occupancy never built), so `occupied_count()`
+        // would misleadingly print 0 — report the streaming decision instead.
         println!(
-            "resolved {} voxels for {:?} {:?}@{}",
-            grid.occupied_count(),
+            "resolved region {:?} for {:?} {:?}@{} (occupancy {})",
+            region_dimensions,
             shape.kind,
             shape.size_voxels,
-            panel_state.geometry.voxels_per_block
+            panel_state.geometry.voxels_per_block,
+            if stream_startup_grid {
+                format!("streamed: {} voxels", grid.occupied_count())
+            } else {
+                "not streamed (fog sources from brick sink)".to_string()
+            }
         );
         // ADR 0010 E5: the cuboid mesh renderer is the sole voxel render path AND it
         // meshes THROUGH the two-layer store (coarse one-box + microblock cuboids +
@@ -523,8 +541,11 @@ impl WindowedState {
                         &grid,
                         startup_density,
                         Some(slab),
-                        // The startup grid is always streamed (`resolve_scene`).
-                        true,
+                        // ADR 0011 G5: whether the startup grid carries streamed occupancy
+                        // (the SAME decision `AppCore::startup_grid` made). On the brick-sink
+                        // path this is `false`, so `build_fog_occupancy` degrades to the bounded
+                        // GPU atlas or skips — never an O(volume) densify from an empty grid.
+                        stream_startup_grid,
                         // ADR 0011 G5: no brick fog source seeded yet at startup — the first
                         // rebuild wires it; the streamed startup grid feeds this one build.
                         #[cfg(feature = "gpu")]
@@ -608,9 +629,9 @@ impl WindowedState {
             incremental_brick_field,
             // ADR 0011 G5: seeded on the first rebuild (the startup grid still streams once).
             fog_brick_field: None,
-            // The startup grid was streamed by `resolve_scene` above (one-time);
-            // per-edit rebuilds decide streaming from the brick engagement.
-            fog_grid_streamed: true,
+            // Whether the startup grid carries streamed occupancy (`AppCore::startup_grid`);
+            // per-edit rebuilds re-decide streaming from the brick engagement.
+            fog_grid_streamed: stream_startup_grid,
             brick_fallback_reported: false,
             geometry_worker,
             geometry_generation,
