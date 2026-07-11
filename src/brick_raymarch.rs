@@ -99,9 +99,10 @@ pub fn pack_gpu_records(
 /// in-shader binary search is unaffected.
 pub fn pack_surface_gpu_records(
     build: &BrickFieldBuild,
+    chunks: &[([i32; 3], crate::two_layer_store::TwoLayerChunk)],
     mut non_resident: impl FnMut(u32) -> bool,
 ) -> Vec<BrickGpuRecord> {
-    let keep = crate::brick_field::surface_record_mask(&build.brick_records);
+    let keep = crate::brick_field::surface_record_mask(&build.brick_records, chunks);
     build
         .brick_records
         .iter()

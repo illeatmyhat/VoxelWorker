@@ -427,22 +427,12 @@ pub fn build_brick_field(
     }
 }
 
-/// Whether a world-block coordinate fits the packed-key lanes ([`pack_world_block_key`]
-/// asserts otherwise). Used to skip an out-of-range NEIGHBOUR probe without panicking —
-/// a neighbour one block past a valid block only exceeds the lane at the ±2^20 extreme,
-/// which no target scene reaches, but a display-path pass must never panic on it.
-fn world_block_in_key_range(world_block: [i64; 3]) -> bool {
-    world_block.iter().all(|&coordinate| {
-        let biased = coordinate + WORLD_BLOCK_KEY_BIAS;
-        (0..(1i64 << WORLD_BLOCK_KEY_BITS_PER_AXIS)).contains(&biased)
-    })
-}
-
 /// **Interior-elision mask for the DISPLAY record buffer (ADR 0011 — the brick sink's
 /// analogue of the mesh's interior-face culling and the sketch producer's coarse-solid
-/// elision).** Returns a per-record `keep` flag over the full, sorted `records`: `true`
-/// for a block a ray could reach, `false` for one whose SIX face-neighbours are each
-/// present AND solid on the shared face — a fully-occluded interior block.
+/// elision).** Returns a per-record `keep` flag over the full, sorted `records` (aligned to
+/// `records` index-for-index): `true` for a block a ray could reach, `false` for one whose
+/// SIX face-neighbours are each present AND solid on the shared face — a fully-occluded
+/// interior block.
 ///
 /// Such a block is never a ray's first hit: the block-DDA
 /// ([`cpu_march_brick_field`](crate::brick_raymarch::cpu_march_brick_field)) returns at
@@ -453,30 +443,90 @@ fn world_block_in_key_range(world_block: [i64; 3]) -> bool {
 /// fog keep the FULL set; only the per-edit record buffer the shader binary-searches
 /// shrinks (∝ surface, not volume, for a large solid).
 ///
+/// **Why the `chunks`, not the records:** occlusion is a per-block NEIGHBOUR property, and a
+/// [`TwoLayerChunk`] resolves a neighbour in O(1) (index its coarse layer / microblocks) —
+/// whereas a probe into the 1.25M-record set needs a hash/binary-search per neighbour (a
+/// measured 1.2s for an 8000×800×800 box, dwarfing the upload it saves). The two-layer
+/// store is the right oracle; `records` only fixes the output order + the sculpted
+/// neighbour's seam flags. `records` MUST be `build_brick_field(chunks, …).brick_records`.
+///
+/// **Chunk-level fast path:** a chunk that is itself fully coarse-solid AND whose six
+/// FACE-neighbour chunks are all fully coarse-solid has every one of its blocks interior
+/// (each block's six neighbours land in this chunk or a full neighbour, all solid) — so all
+/// 64 elide with a single set lookup. Only the ~1-chunk-thick boundary shell (and any chunk
+/// carrying microblocks) does the per-block six-neighbour test. For a large solid the
+/// interior chunks dominate, so the pass is ∝ surface.
+///
 /// **Conservative direction:** a neighbour that is ABSENT (air) or only PARTIALLY solid on
 /// the shared face keeps the block. The mask is thus always a superset of the truly-visible
 /// blocks — it can never drop a block a ray can see, only ever an unreachable interior one.
-pub fn surface_record_mask(records: &[BrickRecord]) -> Vec<bool> {
-    use std::collections::HashMap;
-    let index: HashMap<u64, usize> = records
+pub fn surface_record_mask(
+    records: &[BrickRecord],
+    chunks: &[([i32; 3], TwoLayerChunk)],
+) -> Vec<bool> {
+    use std::collections::{HashMap, HashSet};
+    let chunk_by_coord: HashMap<[i32; 3], &TwoLayerChunk> =
+        chunks.iter().map(|(coord, chunk)| (*coord, chunk)).collect();
+    // A chunk is "full-solid" iff every one of its CHUNK_BLOCKS³ blocks is coarse-solid and
+    // it carries no microblocks — then every block of it is solid on every face.
+    let full_solid: HashSet<[i32; 3]> = chunks
         .iter()
-        .enumerate()
-        .map(|(record_index, record)| (record.packed_world_block_key, record_index))
+        .filter(|(_, chunk)| chunk.microblocks.is_empty() && chunk.coarse.iter().all(Option::is_some))
+        .map(|(coord, _)| *coord)
         .collect();
-    // Is the neighbour of `block` across `(axis, delta)` present AND solid on the face it
-    // shares with `block` — i.e. its `facing_side` (the opposite side to `block`'s)?
+    // A block's six face-neighbours land in this chunk or a FACE-adjacent chunk, so a
+    // full-solid chunk ringed by full-solid face-neighbours is all-interior.
+    let interior_chunk: HashSet<[i32; 3]> = full_solid
+        .iter()
+        .filter(|coord| {
+            [[1i32, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]
+                .iter()
+                .all(|d| full_solid.contains(&[coord[0] + d[0], coord[1] + d[1], coord[2] + d[2]]))
+        })
+        .copied()
+        .collect();
+
+    let chunk_blocks = CHUNK_BLOCKS as i64;
+    // Is the neighbour of world-`block` across `(axis, delta)` present AND solid on the face
+    // it shares with `block` (its `facing_side`)? Resolved through the two-layer chunk store.
     let neighbour_face_solid = |block: [i64; 3], axis: usize, delta: i64, facing_side: usize| {
         let mut neighbour = block;
         neighbour[axis] += delta;
-        world_block_in_key_range(neighbour)
-            && index
-                .get(&pack_world_block_key(neighbour))
-                .is_some_and(|&i| records[i].seam_solidity.face_is_solid(axis, facing_side))
+        let chunk_coord = [
+            neighbour[0].div_euclid(chunk_blocks) as i32,
+            neighbour[1].div_euclid(chunk_blocks) as i32,
+            neighbour[2].div_euclid(chunk_blocks) as i32,
+        ];
+        let Some(chunk) = chunk_by_coord.get(&chunk_coord) else {
+            return false;
+        };
+        let local = [
+            neighbour[0].rem_euclid(chunk_blocks) as u32,
+            neighbour[1].rem_euclid(chunk_blocks) as u32,
+            neighbour[2].rem_euclid(chunk_blocks) as u32,
+        ];
+        if chunk.coarse_block(local).is_some() {
+            true
+        } else if let Some(geometry) = chunk.microblocks.get(&local) {
+            geometry.seam_solidity.face_is_solid(axis, facing_side)
+        } else {
+            false
+        }
     };
+
     records
         .iter()
         .map(|record| {
             let block = unpack_world_block_key(record.packed_world_block_key);
+            let chunk_coord = [
+                block[0].div_euclid(chunk_blocks) as i32,
+                block[1].div_euclid(chunk_blocks) as i32,
+                block[2].div_euclid(chunk_blocks) as i32,
+            ];
+            // Fast path: a block of an all-interior chunk is provably occluded.
+            if interior_chunk.contains(&chunk_coord) {
+                return false;
+            }
             // Occluded ⇔ each axis is capped on BOTH sides: the +1 neighbour's LOW face
             // covers this block's HIGH face, and the −1 neighbour's HIGH face covers its LOW.
             let occluded = (0..3).all(|axis| {
@@ -1131,11 +1181,12 @@ mod tests {
             "a solid box classifies every block coarse-solid"
         );
 
-        let mask = surface_record_mask(&build.brick_records);
+        let mask = surface_record_mask(&build.brick_records, &two_layer_chunks);
         assert_eq!(mask.len(), build.brick_records.len());
 
         // Independent oracle: with all blocks coarse-solid, a block is INTERIOR iff all six
-        // of its neighbours are present in the record set.
+        // of its neighbours are present in the record set. (The tiny fixture never nears the
+        // packed-key lane limit, so no range guard is needed.)
         let keys: std::collections::HashSet<u64> =
             build.brick_records.iter().map(|r| r.packed_world_block_key).collect();
         let mut expected_surface = 0usize;
@@ -1147,7 +1198,7 @@ mod tests {
             .iter()
             .all(|d| {
                 let nb = [block[0] + d[0], block[1] + d[1], block[2] + d[2]];
-                world_block_in_key_range(nb) && keys.contains(&pack_world_block_key(nb))
+                keys.contains(&pack_world_block_key(nb))
             });
             let expected_keep = !all_neighbours_present;
             assert_eq!(keep, expected_keep, "block {block:?} elision disagrees with the oracle");

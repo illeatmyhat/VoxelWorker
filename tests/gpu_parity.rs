@@ -1354,7 +1354,7 @@ fn brick_surface_elision_hit_set_unchanged() {
         let grid_dimensions = case.scene.placed_region_dimensions(vpb);
 
         let full_records = pack_gpu_records(&build, |_| false);
-        let surface_records = pack_surface_gpu_records(&build, |_| false);
+        let surface_records = pack_surface_gpu_records(&build, &two_layer_chunks, |_| false);
         total_elided += full_records.len() - surface_records.len();
         // The clip-map is FULL on both sides (its superset invariant is untouched); only the
         // record buffer the shader binary-searches differs.

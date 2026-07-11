@@ -449,7 +449,11 @@ impl WindowedState {
                         &gpu.device,
                         &gpu.queue,
                         &build,
-                        &voxel_worker::pack_gpu_records(&build, |_| false),
+                        &voxel_worker::pack_surface_gpu_records(
+                            &build,
+                            &startup_two_layer_chunks,
+                            |_| false,
+                        ),
                         &pyramid,
                         startup_recentre,
                         overlay_active,
@@ -1101,8 +1105,11 @@ impl WindowedState {
                             // eliding it is hit-identical (gated in gpu_parity). For a large
                             // solid this drops the per-edit record upload from ∝volume to
                             // ∝surface. The clip-map (above), atlas + fog keep the FULL set.
-                            let gpu_records =
-                                voxel_worker::pack_surface_gpu_records(&build, |_| false);
+                            let gpu_records = voxel_worker::pack_surface_gpu_records(
+                                &build,
+                                &two_layer_chunks,
+                                |_| false,
+                            );
                             // Patch in place iff we produced an incremental update AND a
                             // renderer already holds a field; otherwise (wholesale, or the
                             // display re-engaging from a mesh fallback) install fresh.
