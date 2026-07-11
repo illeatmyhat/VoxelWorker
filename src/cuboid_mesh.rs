@@ -2901,6 +2901,52 @@ mod tests {
     use super::*;
     use crate::voxel::Voxel;
 
+    /// Perf probe (mesh-display scaling guard): per-size timing + emission counts of the pure
+    /// CPU two-layer mesh generation — the path the display takes when a loaded VS material
+    /// disengages the brick raymarch. Run:
+    /// `cargo test --release mesh_pipeline_scaling_probe -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "perf probe — run in release with --nocapture"]
+    fn mesh_pipeline_scaling_probe() {
+        use crate::core_geom::MaterialChoice;
+        use crate::scene::{Node, NodeContent, Scene};
+        use crate::sketch::{PlaneAxis, Sketch, SketchSolid};
+        let density = 16u32;
+        for blocks in [50i64, 125, 250, 500] {
+            let edge = blocks * density as i64;
+            let extrude =
+                SketchSolid::extrude(Sketch::rectangle(PlaneAxis::Z, edge, edge), edge as u32);
+            let scene = Scene::from_nodes(vec![Node::new(
+                "Box",
+                NodeContent::SketchTool { producer: extrude, material: MaterialChoice::Stone },
+            )]);
+            let chunks =
+                crate::two_layer_store::TwoLayerStore::enabled().build_covering_chunks(
+                    &scene, density, 0,
+                );
+            let dims = scene.placed_region_dimensions(density);
+            let recentre = scene.recentre_voxels_for_resolve(density);
+            let start = std::time::Instant::now();
+            let meshes =
+                build_two_layer_chunk_meshes(&chunks, dims, recentre, density, LayerBand::FULL);
+            let elapsed = start.elapsed();
+            let boxes: u64 = meshes.iter().map(|mesh| mesh.box_count as u64).sum();
+            let vertices: u64 = meshes.iter().map(|mesh| mesh.vertices.len() as u64).sum();
+            let indices: u64 = meshes
+                .iter()
+                .map(|mesh| (mesh.indices.len() + mesh.indices_overlay.len()) as u64)
+                .sum();
+            let vertex_megabytes =
+                (vertices * std::mem::size_of::<CuboidVertex>() as u64) as f64 / 1.0e6;
+            println!(
+                "mesh {edge}^3 vx: {} chunk meshes | {boxes} boxes | \
+                 {vertices} vertices ({vertex_megabytes:.0} MB) | {indices} indices | \
+                 CPU mesh-gen {elapsed:?}",
+                meshes.len(),
+            );
+        }
+    }
+
     /// Build a tiny grid from a set of occupied voxel indices, all one material, with
     /// the given dimensions, in the RECENTRED render frame the live cuboid path sees.
     ///

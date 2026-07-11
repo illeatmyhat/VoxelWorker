@@ -37,6 +37,9 @@ pub mod frustum;
 // Issue #60 (ADR 0003 §7): the async wholesale geometry-rebuild worker — moves the
 // heavy two-layer mesh CPU build + GPU upload off the main thread (stale-while-rebuilding).
 pub mod geometry_worker;
+// ADR 0010 E5 follow-up: the async diameter / widest-run measurement worker — moves the
+// O(total blocks) layer-band readout off the event-loop thread (stale-while-measuring).
+pub mod diameter_worker;
 pub mod gpu;
 // ADR 0007 P1 spike: the GPU view-resolve A/B equivalence net (the repo's first
 // compute pipeline). Display/test infra only — never authoritative (ADR 0006 §4).
@@ -97,6 +100,7 @@ pub use geometry_worker::{
     GeometryRebuildResult, GeometryWorker, MeshBuildRoute, RebuildRoute,
     ASYNC_REBUILD_CHUNK_THRESHOLD,
 };
+pub use diameter_worker::{DiameterRequest, DiameterResult, DiameterWorker};
 pub use texture_atlas::{AtlasSubRect, MaterialAtlas};
 pub use debug_clouds::DebugCloudField;
 pub use camera::{

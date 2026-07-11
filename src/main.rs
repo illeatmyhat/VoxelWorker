@@ -38,8 +38,9 @@ use voxel_worker::CuboidMeshRenderer;
 // scenes under `--features gpu`; the mesh path stays the fallback + A/B reference).
 use voxel_worker::BrickRaymarchRenderer;
 use voxel_worker::{
-    route_geometry_rebuild, route_mesh_build, EditShape, GenerationTracker, GeometryRebuildRequest,
-    GeometryWorker, MeshBuildRoute, RebuildRoute, ASYNC_REBUILD_CHUNK_THRESHOLD,
+    route_geometry_rebuild, route_mesh_build, DiameterRequest, DiameterWorker, EditShape,
+    GenerationTracker, GeometryRebuildRequest, GeometryWorker, MeshBuildRoute, RebuildRoute,
+    ASYNC_REBUILD_CHUNK_THRESHOLD,
 };
 use voxel_worker::Scene;
 // ADR 0007: the GPU view-resolve pipelines are an opt-in display accelerator (`--features
@@ -215,10 +216,23 @@ struct WindowedState {
     /// to it (`self.app_core.store` / `self.app_core.camera`) and keeps the GPU
     /// renderers + winit/egui plumbing.
     app_core: AppCore,
-    /// Cached widest-run measurement + the band it was computed for, so we only
-    /// re-measure when the band or grid actually changes.
+    /// Cached widest-run measurement (the "Ø N vx" readout) shown in the panel. Updated
+    /// asynchronously: it holds the PREVIOUS (stale) value until a fresh measurement from the
+    /// [`DiameterWorker`] lands, so the UI never blocks on the O(total blocks) query.
     measured_diameter: u32,
+    /// The band the most recent measurement was DISPATCHED for (not necessarily landed yet).
+    /// A change (band scrub, or the grid-edit reset to `(u32::MAX, u32::MAX)`) re-dispatches.
     measured_band: (u32, u32),
+    /// ADR 0010 E5 follow-up: the background diameter / widest-run measurement worker — the
+    /// layer-band readout is streamed off the event-loop thread so a huge scene never freezes
+    /// the UI on a scrub. The shell shows the stale `measured_diameter` until a fresh result
+    /// arrives (`poll_diameter_worker`).
+    diameter_worker: DiameterWorker,
+    /// Supersede bookkeeping for `diameter_worker`: each dispatch stamps a fresh generation; a
+    /// received result is accepted only when its generation is still the newest dispatched (a
+    /// mid-measure scrub/edit supersedes the older in-flight measurement — its result is
+    /// discarded, exactly as the geometry worker's [`GenerationTracker`]).
+    diameter_generation: GenerationTracker,
     depth_view: wgpu::TextureView,
     /// 4× MSAA colour target for the 3D pass; resolved into the surface texture.
     msaa_color_view: wgpu::TextureView,
@@ -406,21 +420,16 @@ impl WindowedState {
         panel_state
             .layer_range
             .rescale_to_grid_z(0, grid_z, panel_state.geometry.voxels_per_block);
-        // ADR 0010 E5: the diameter / scrubber readout STREAMS the cacheless two-layer
-        // evaluator (`streamed_widest_run_in_band` — coarse-solid blocks contribute an
-        // analytic run, boundary blocks per-voxel), the SAME path the per-frame
-        // re-measure takes. The two-layer capability is always ON now, so it never falls
-        // back; the retired dense `widest_run_in_band` survives only as the parity
-        // oracle. `unwrap_or(0)` covers the Part-only / empty scene (no covering range).
-        let measured_band = (panel_state.layer_range.lower, panel_state.layer_range.upper);
-        let measured_diameter = voxel_worker::streamed_widest_run_in_band(
-            &voxel_worker::TwoLayerStore::enabled(),
-            &panel_state.scene,
-            panel_state.geometry.voxels_per_block,
-            measured_band.0,
-            measured_band.1,
-        )
-        .unwrap_or(0);
+        // ADR 0010 E5 follow-up: the diameter / scrubber readout is measured ASYNCHRONOUSLY
+        // (the streamed cacheless query is O(total blocks) — sub-second on a huge solid but not
+        // free, and a persisted config could load a large scene at startup). Seed a stale `0`
+        // and an impossible band so the first render frame's `current_band != measured_band`
+        // guard dispatches the first measurement to the `DiameterWorker`; the readout fills in
+        // when it lands. No occupancy is ever resolved synchronously on the main thread here.
+        let measured_band = (u32::MAX, u32::MAX);
+        let measured_diameter = 0u32;
+        let diameter_worker = DiameterWorker::spawn();
+        let diameter_generation = GenerationTracker::new();
         // ADR 0011 G5: no occupancy is ever resolved at startup (dims-only door) — fog sources
         // from the brick sink on the first rebuild.
         println!(
@@ -718,6 +727,8 @@ impl WindowedState {
             app_core: AppCore::new(camera),
             measured_diameter,
             measured_band,
+            diameter_worker,
+            diameter_generation,
             depth_view,
             msaa_color_view,
             home_view,
@@ -1646,6 +1657,24 @@ impl WindowedState {
         self.window.request_redraw();
     }
 
+    /// ADR 0010 E5 follow-up: poll the diameter worker for a finished widest-run measurement
+    /// and, if it is still the newest dispatched (not superseded by a later scrub/edit), swap
+    /// it into `measured_diameter` + request a redraw so the readout updates this frame.
+    /// Non-blocking — the app never waits on the worker; the previous (stale) value shows
+    /// meanwhile. A superseded result is discarded via the [`GenerationTracker`].
+    fn poll_diameter_worker(&mut self) {
+        let Some(result) = self.diameter_worker.try_recv_result() else {
+            return;
+        };
+        if !self.diameter_generation.accepts(result.generation) {
+            // A later scrub/edit superseded this measurement — discard it (the newer one is
+            // in flight; the stale readout keeps showing until it lands).
+            return;
+        }
+        self.measured_diameter = result.diameter;
+        self.window.request_redraw();
+    }
+
     /// Rebuild the fallback cuboid mesh IF it is stale and about to become the display
     /// (brick-display perf follow-up to epic #64). The mesh is skipped while the ADR 0011 brick
     /// raymarch is engaged; a debug-face toggle or a loaded-material change are pure per-frame
@@ -2123,6 +2152,8 @@ impl WindowedState {
         // Issue #60: poll the geometry worker — swap in a finished (non-stale) wholesale
         // mesh rebuild before drawing so it shows this frame (stale-while-rebuilding).
         self.poll_geometry_worker();
+        // ADR 0010 E5 follow-up: accept a finished (non-stale) diameter measurement.
+        self.poll_diameter_worker();
 
         // M6: drain the background scan channel and turn any new groups into
         // palette tiles (GPU thumbnail + egui texture registration on this thread).
@@ -2141,22 +2172,23 @@ impl WindowedState {
         )[2];
         let current_band = (self.panel_state.layer_range.lower, self.panel_state.layer_range.upper);
         if current_band != self.measured_band {
-            // ADR 0010 E4: re-measure the diameter by STREAMING the cacheless two-layer
-            // evaluator — a coarse-solid block contributes its `d`-long run ANALYTICALLY
-            // (no per-voxel expansion), a boundary block is per-voxel. Returns the SAME
-            // value as the retired dense region-scoped `widest_run_in_band` (the parity
-            // gate) without assembling a dense grid. ADR 0010 E5: the capability is always
-            // ON now, so the stream always yields — `unwrap_or(0)` covers the empty scene.
+            // ADR 0010 E5 follow-up: re-measure the diameter ASYNCHRONOUSLY. The streamed
+            // cacheless query (a coarse block contributes its run block-granular, boundary
+            // per-voxel — the SAME value the retired dense `widest_run_in_band` returns) is
+            // O(total blocks): sub-second on a huge solid but not free, and it must never
+            // block the event-loop thread. Dispatch it to the `DiameterWorker`; the shell
+            // keeps showing the previous (stale) `measured_diameter` until the result lands
+            // (`poll_diameter_worker`). Record `current_band` as dispatched so we don't
+            // re-dispatch every frame; a later scrub or a grid edit (which resets
+            // `measured_band` to `(u32::MAX, u32::MAX)`) supersedes it via the generation.
             let density = self.panel_state.geometry.voxels_per_block;
-            let two_layer = voxel_worker::TwoLayerStore::enabled();
-            self.measured_diameter = voxel_worker::streamed_widest_run_in_band(
-                &two_layer,
-                &self.panel_state.scene,
+            let generation = self.diameter_generation.next_generation();
+            self.diameter_worker.dispatch(DiameterRequest {
+                generation,
+                scene: self.panel_state.scene.clone(),
                 density,
-                current_band.0,
-                current_band.1,
-            )
-            .unwrap_or(0);
+                band: current_band,
+            });
             self.measured_band = current_band;
         }
 

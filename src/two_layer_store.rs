@@ -1551,145 +1551,120 @@ pub fn streamed_widest_run_in_band(
     ];
     let density = voxels_per_block.max(1) as i64;
     let chunk_extent_voxels = CHUNK_BLOCKS as i64 * density;
-    let chunk_extent = chunk_extent_voxels as usize;
+    let grid_y_i = grid_y as i64;
+    let band_min_i = band_min as i64;
+    let band_max_i = band_max as i64;
 
-    // ADR 0010 E4 / startup-OOM fix (coordinator audit): fold the widest run one
-    // **(chunk_z, chunk_y) band at a time** rather than retaining one grid_x-wide bitset
-    // per touched (z, y) row for the WHOLE region at once. The prior global
-    // `HashMap<_, Vec<bool>>` was O(volume): a persisted 8000×800×800 solid box is ≈640k
-    // rows × 8000 bools ≈ 5.1 GB (plus billions of per-voxel X writes) — an OOM hang at
-    // startup and a multi-second stall on every band scrub. Every global row maps to
-    // EXACTLY ONE (chunk_z, chunk_y) band (the recentred z/y ranges partition disjointly),
-    // so a band is complete once its `chunk_x` sweep finishes; we fold its widest run and
-    // reuse the buffers. Live state is bounded to `chunk_extent²` rows.
+    // ADR 0010 E5 — BLOCK-ROW DEDUP (the O(volume)→O(total blocks) diameter fix).
     //
-    // Each live row holds its occupied X as a sorted, disjoint, non-touching INTERVAL list
-    // (half-open `[lo, hi)`), NOT a dense bitset: a coarse-solid block feeds ONE analytic
-    // span `[x0, x0 + density)` per row (no per-voxel X fill), adjacent blocks' spans
-    // coalesce, and the widest contiguous run in a row is `max(hi − lo)`. Byte-identical to
-    // the dense `widest_run_in_band` oracle (the `streamed_widest_run_matches_dense_*`
-    // parity gate) — the same global X indices, stitched the same way across seams.
-    let band_row_count = chunk_extent * chunk_extent;
-    let mut band_rows: Vec<Vec<(i64, i64)>> = vec![Vec::new(); band_row_count];
-    let mut row_touched = vec![false; band_row_count];
-    let mut touched_rows: Vec<usize> = Vec::new();
-    let mut widest = 0u32;
+    // The widest run is folded one **(chunk_z, chunk_y) band at a time**: every global
+    // (z, y) row maps to EXACTLY ONE band (the recentred z/y ranges partition disjointly),
+    // so a band is complete once its `chunk_x` sweep finishes. Bands are independent, so the
+    // fold runs across them in PARALLEL with a deterministic `max` reduction — live state is
+    // bounded per band, never a region-wide bitset (the prior `Vec<bool>` per (z,y) row was
+    // O(volume): a 8000×800×800 solid was ≈5 GB and OOM-hung startup).
+    //
+    // The fatal remaining cost was per-VOXEL-row work WITHIN a band: a coarse-solid block
+    // stamped its `[x0, x0+d)` span into every one of the `d²` voxel rows it covers, so a
+    // solid cube was O(voxels) (edge² rows × the blocks per row) — 64M rows at 8000³, a 127s
+    // main-thread freeze. THE DEDUP: every `d²` voxel row under the SAME BLOCK-ROW (same
+    // block_y, block_z) receives IDENTICAL coarse spans, so each block-row's coarse span set
+    // is accumulated ONCE — block-granular (one `[x0, x0+d)` per coarse block, ×density
+    // widths) — and its widest contiguous run is counted once for the whole block-row (valid
+    // iff its z-range meets the band and its y-range meets `[0, grid_y)`, exactly the old
+    // per-voxel band/grid clip). Per-voxel work survives ONLY for the voxel rows a BOUNDARY
+    // (microblock) block actually intersects: those are expanded per voxel and then MERGED
+    // with their block-row's coarse spans (so a run crossing a coarse↔boundary seam is one
+    // contiguous span). A solid cube is then O(total blocks) — the chunk-enumeration floor —
+    // not O(voxels).
+    //
+    // Each accumulator holds occupied X as a sorted, disjoint, non-touching INTERVAL list
+    // (half-open `[lo, hi)`); the widest contiguous run in a row is `max(hi − lo)`.
+    // Byte-identical to the dense `widest_run_in_band` oracle (the
+    // `streamed_widest_run_matches_dense_*` parity gate) — the same global X indices,
+    // stitched the same way across seams, folded to the same max.
+    const BLOCK_ROWS: usize = CHUNK_BLOCKS as usize * CHUNK_BLOCKS as usize;
 
-    // Insert the half-open recentred-X span `[x_start, x_end)` (clamped to the band, the
-    // grid and `[0, width)`) into the LOCAL band row for `(global_y, global_z)`. `z_base` /
-    // `y_base` are the band's global-row origins (`to_global[1..=2]`, constant over
-    // `chunk_x`), so the local row is `(global_z − z_base)·chunk_extent + (global_y −
-    // y_base)`, always inside `[0, chunk_extent)²`.
-    let set_span = |band_rows: &mut [Vec<(i64, i64)>],
-                    row_touched: &mut [bool],
-                    touched_rows: &mut Vec<usize>,
-                    z_base: i64,
-                    y_base: i64,
-                    global_y: i64,
-                    global_z: i64,
-                    x_start: i64,
-                    x_end: i64| {
-        if global_z < band_min as i64 || global_z > band_max as i64 {
-            return;
-        }
-        if global_y < 0 || global_y >= grid_y as i64 {
-            return;
-        }
-        let lo = x_start.max(0);
-        let hi = x_end.min(width as i64);
-        if lo >= hi {
-            return;
-        }
-        let local_row =
-            (global_z - z_base) as usize * chunk_extent + (global_y - y_base) as usize;
-        if !row_touched[local_row] {
-            row_touched[local_row] = true;
-            touched_rows.push(local_row);
-        }
-        insert_run(&mut band_rows[local_row], lo, hi);
-    };
-
+    let mut bands: Vec<(i32, i32)> = Vec::new();
     for chunk_z in min_chunk[2]..=max_chunk[2] {
         for chunk_y in min_chunk[1]..=max_chunk[1] {
-            // The band's global-row origins (`to_global[1..=2]`, constant over `chunk_x`).
-            let z_base = chunk_z as i64 * chunk_extent_voxels - recentre_voxels[2] + half[2];
-            let y_base = chunk_y as i64 * chunk_extent_voxels - recentre_voxels[1] + half[1];
-            for chunk_x in min_chunk[0]..=max_chunk[0] {
-                let chunk_coord = [chunk_x, chunk_y, chunk_z];
-                let Some(chunk) = store.build_chunk(chunk_coord, scene, voxels_per_block, 0) else {
-                    continue;
-                };
-                let chunk_min = [
-                    chunk_x as i64 * chunk_extent_voxels,
-                    chunk_y as i64 * chunk_extent_voxels,
-                    chunk_z as i64 * chunk_extent_voxels,
-                ];
-                // The recentred→global map: global = (chunk_min + local − recentre) + half.
-                let to_global = [
-                    chunk_min[0] - recentre_voxels[0] + half[0],
-                    chunk_min[1] - recentre_voxels[1] + half[1],
-                    chunk_min[2] - recentre_voxels[2] + half[2],
-                ];
-                for block_z in 0..CHUNK_BLOCKS {
-                    for block_y in 0..CHUNK_BLOCKS {
-                        for block_x in 0..CHUNK_BLOCKS {
-                            let block = [block_x, block_y, block_z];
-                            let block_low = [
-                                block_x as i64 * density,
-                                block_y as i64 * density,
-                                block_z as i64 * density,
-                            ];
-                            if chunk.coarse_block(block).is_some() {
-                                // ANALYTIC: every (y, z) cell of this d³ block is solid,
-                                // so each row gets the contiguous X span `[x0, x0 + d)`
-                                // — no per-voxel expansion.
-                                let x0 = to_global[0] + block_low[0];
-                                for local_z in 0..density {
-                                    let gz = to_global[2] + block_low[2] + local_z;
-                                    for local_y in 0..density {
-                                        let gy = to_global[1] + block_low[1] + local_y;
-                                        set_span(
-                                            &mut band_rows,
-                                            &mut row_touched,
-                                            &mut touched_rows,
-                                            z_base,
-                                            y_base,
-                                            gy,
-                                            gz,
-                                            x0,
-                                            x0 + density,
-                                        );
+            bands.push((chunk_z, chunk_y));
+        }
+    }
+
+    // The widest occupied run within ONE (chunk_z, chunk_y) band. Pure over the shared
+    // immutable inputs (store/scene/frame scalars), so it parallelises across bands.
+    let band_widest = |(chunk_z, chunk_y): (i32, i32)| -> u32 {
+        // The band's global-row origins (`to_global[1..=2]`, constant over `chunk_x`).
+        let z_base = chunk_z as i64 * chunk_extent_voxels - recentre_voxels[2] + half[2];
+        let y_base = chunk_y as i64 * chunk_extent_voxels - recentre_voxels[1] + half[1];
+
+        // Per block-row (index `block_z * CHUNK_BLOCKS + block_y`) coarse X spans — the ONE
+        // span set shared by every voxel row the block-row covers. Boundary cuboid spans are
+        // expanded per voxel row, keyed by their global `(z, y)` (sparse — surface rows only),
+        // and merged with the block-row's coarse spans at fold time.
+        let mut coarse_block_runs: [Vec<(i64, i64)>; BLOCK_ROWS] =
+            std::array::from_fn(|_| Vec::new());
+        let mut boundary_rows: std::collections::HashMap<(i64, i64), Vec<(i64, i64)>> =
+            std::collections::HashMap::new();
+
+        for chunk_x in min_chunk[0]..=max_chunk[0] {
+            let chunk_coord = [chunk_x, chunk_y, chunk_z];
+            let Some(chunk) = store.build_chunk(chunk_coord, scene, voxels_per_block, 0) else {
+                continue;
+            };
+            // The recentred→global X origin: global_x = chunk_min_x + block_low_x + local
+            // − recentre + half. Spans arrive in ascending X (chunk_x, block_x, local all
+            // increase), so `insert_run`'s append fast path coalesces a solid row in O(1).
+            let to_global_x = chunk_x as i64 * chunk_extent_voxels - recentre_voxels[0] + half[0];
+            for block_z in 0..CHUNK_BLOCKS {
+                for block_y in 0..CHUNK_BLOCKS {
+                    let block_row =
+                        block_z as usize * CHUNK_BLOCKS as usize + block_y as usize;
+                    for block_x in 0..CHUNK_BLOCKS {
+                        let block = [block_x, block_y, block_z];
+                        let block_low_x = block_x as i64 * density;
+                        if chunk.coarse_block(block).is_some() {
+                            // ANALYTIC / block-granular: the contiguous span `[x0, x0+d)` is
+                            // identical for every voxel row this coarse block covers — recorded
+                            // ONCE for the whole block-row (no per-voxel expansion).
+                            let x0 = to_global_x + block_low_x;
+                            let lo = x0.max(0);
+                            let hi = (x0 + density).min(width as i64);
+                            if lo < hi {
+                                insert_run(&mut coarse_block_runs[block_row], lo, hi);
+                            }
+                        } else if let Some(geometry) = chunk.microblocks.get(&block) {
+                            // BOUNDARY: per-cuboid spans expanded into every voxel row they
+                            // cover, band/grid/width-clipped exactly as the dense readout.
+                            for cuboid in &geometry.cuboids {
+                                for local_z in cuboid.min[2]..=cuboid.max[2] {
+                                    let gz = z_base + block_z as i64 * density + local_z as i64;
+                                    if gz < band_min_i || gz > band_max_i {
+                                        continue;
                                     }
-                                }
-                            } else if let Some(geometry) = chunk.microblocks.get(&block) {
-                                // BOUNDARY: per-cuboid spans (each cuboid feeds its X run
-                                // into every (y, z) row it covers).
-                                for cuboid in &geometry.cuboids {
-                                    for local_z in cuboid.min[2]..=cuboid.max[2] {
-                                        let gz =
-                                            to_global[2] + block_low[2] + local_z as i64;
-                                        for local_y in cuboid.min[1]..=cuboid.max[1] {
-                                            let gy =
-                                                to_global[1] + block_low[1] + local_y as i64;
-                                            let x_lo = to_global[0]
-                                                + block_low[0]
-                                                + cuboid.min[0] as i64;
-                                            let x_hi = to_global[0]
-                                                + block_low[0]
-                                                + cuboid.max[0] as i64
-                                                + 1;
-                                            set_span(
-                                                &mut band_rows,
-                                                &mut row_touched,
-                                                &mut touched_rows,
-                                                z_base,
-                                                y_base,
-                                                gy,
-                                                gz,
-                                                x_lo,
-                                                x_hi,
-                                            );
+                                    for local_y in cuboid.min[1]..=cuboid.max[1] {
+                                        let gy =
+                                            y_base + block_y as i64 * density + local_y as i64;
+                                        if gy < 0 || gy >= grid_y_i {
+                                            continue;
                                         }
+                                        let x_lo = (to_global_x + block_low_x
+                                            + cuboid.min[0] as i64)
+                                            .max(0);
+                                        let x_hi = (to_global_x
+                                            + block_low_x
+                                            + cuboid.max[0] as i64
+                                            + 1)
+                                            .min(width as i64);
+                                        if x_lo >= x_hi {
+                                            continue;
+                                        }
+                                        insert_run(
+                                            boundary_rows.entry((gz, gy)).or_default(),
+                                            x_lo,
+                                            x_hi,
+                                        );
                                     }
                                 }
                             }
@@ -1697,19 +1672,51 @@ pub fn streamed_widest_run_in_band(
                     }
                 }
             }
-            // The band's rows are complete — fold the widest contiguous run over its
-            // touched rows, then reset them for the next band (retaining allocation).
-            for &local_row in &touched_rows {
-                for &(run_lo, run_hi) in &band_rows[local_row] {
-                    widest = widest.max((run_hi - run_lo) as u32);
-                }
-                band_rows[local_row].clear();
-                row_touched[local_row] = false;
-            }
-            touched_rows.clear();
         }
-    }
 
+        let mut widest = 0u32;
+        // (1) All-coarse contribution: each block-row with coarse runs AND ≥1 valid voxel row
+        // (its z-range meets the band, its y-range meets `[0, grid_y)`) carries that widest
+        // coarse run in every one of its voxel rows.
+        for block_z in 0..CHUNK_BLOCKS {
+            for block_y in 0..CHUNK_BLOCKS {
+                let block_row = block_z as usize * CHUNK_BLOCKS as usize + block_y as usize;
+                let runs = &coarse_block_runs[block_row];
+                if runs.is_empty() {
+                    continue;
+                }
+                let z_lo = z_base + block_z as i64 * density;
+                if z_lo + density - 1 < band_min_i || z_lo > band_max_i {
+                    continue;
+                }
+                let y_lo = y_base + block_y as i64 * density;
+                if y_lo + density - 1 < 0 || y_lo >= grid_y_i {
+                    continue;
+                }
+                for &(lo, hi) in runs {
+                    widest = widest.max((hi - lo) as u32);
+                }
+            }
+        }
+        // (2) Boundary rows: merge each with its block-row's coarse spans, fold the widest —
+        // a run crossing a coarse↔boundary seam is one contiguous span. The global (z, y) key
+        // recovers its block-row: `block_z = (gz − z_base) / d`, `block_y = (gy − y_base) / d`.
+        for (&(gz, gy), spans) in &boundary_rows {
+            let block_z = (gz - z_base) / density;
+            let block_y = (gy - y_base) / density;
+            let block_row = block_z as usize * CHUNK_BLOCKS as usize + block_y as usize;
+            let mut merged = coarse_block_runs[block_row].clone();
+            for &(lo, hi) in spans {
+                insert_run(&mut merged, lo, hi);
+            }
+            for &(lo, hi) in &merged {
+                widest = widest.max((hi - lo) as u32);
+            }
+        }
+        widest
+    };
+
+    let widest = bands.into_par_iter().map(band_widest).max().unwrap_or(0);
     Some(widest)
 }
 
@@ -2770,6 +2777,29 @@ mod tests {
         assert_streamed_widest_run_matches_dense(&scene, density, "disjoint-runs-mixed-blocks");
     }
 
+    /// **COARSE + BOUNDARY in the SAME block-row, band slicing mid-block (the block-row
+    /// dedup guard).** A small SOLID box has, along an interior `(block_y, block_z)`
+    /// block-row, boundary FACE blocks at both X extremes flanking coarse INTERIOR blocks —
+    /// so the dedup must both (a) count the block-row's coarse run once and (b) refine the
+    /// boundary voxel rows per-voxel and MERGE them across the coarse↔boundary seam. The
+    /// helper's single-Z-slice bands `(0,0)` / `(mid,mid)` cut a 16-voxel-tall block mid-height
+    /// (a partial block layer), exercising the block-row's band clip. Must match the dense
+    /// oracle exactly across every band.
+    #[test]
+    fn streamed_widest_run_matches_dense_for_coarse_and_boundary_in_same_block_row() {
+        let density = 16;
+        // A 4-block solid cube: interior blocks classify coarse, the six faces boundary, so an
+        // interior block-row is boundary-coarse-…-coarse-boundary along X.
+        let scene = Scene::from_nodes(vec![make_tool_density(
+            ShapeKind::Box,
+            [0, 0, 0],
+            MaterialChoice::Stone,
+            density,
+            4,
+        )]);
+        assert_streamed_widest_run_matches_dense(&scene, density, "coarse+boundary-same-block-row");
+    }
+
     /// **6M-CAP DISSOLUTION (query side):** the streamed diameter of an
     /// 800×800-revolve-class solid is accounted with coarse blocks ANALYTICALLY (no
     /// per-voxel expansion), so the whole-region densify the dense path needs never
@@ -3016,6 +3046,39 @@ mod tests {
                 "[{label}] a localised edit must evict strictly FEWER chunks ({evicted}) than \
                  the scene's total ({scene_chunks}) — else it is a disguised full rebuild"
             );
+        }
+    }
+
+    /// Perf probe (block-row-dedup regression guard): the full-band diameter re-measure —
+    /// the query that fires when the layer band or grid changes. Before the ADR 0010 E5
+    /// block-row dedup this was O(volume) (a coarse block stamped all `d²` of its voxel rows):
+    /// 130ms @800³ → 127s @8000³, freezing the main thread. After, it is O(total blocks) and
+    /// runs on the background diameter worker (never the UI thread). Reports wall-clock across
+    /// four solid-cube edge lengths. Run:
+    /// `cargo test --release widest_run_scaling_probe -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "perf probe — run in release with --nocapture"]
+    fn widest_run_scaling_probe() {
+        use crate::sketch::{PlaneAxis, Sketch, SketchSolid};
+        let density = 16u32;
+        for blocks in [50i64, 125, 250, 500] {
+            let edge = blocks * density as i64;
+            let extrude =
+                SketchSolid::extrude(Sketch::rectangle(PlaneAxis::Z, edge, edge), edge as u32);
+            let scene = Scene::from_nodes(vec![Node::new(
+                "Box",
+                NodeContent::SketchTool { producer: extrude, material: MaterialChoice::Stone },
+            )]);
+            let start = std::time::Instant::now();
+            let widest = streamed_widest_run_in_band(
+                &TwoLayerStore::enabled(),
+                &scene,
+                density,
+                0,
+                edge as u32,
+            );
+            let elapsed = start.elapsed();
+            println!("widest-run {edge}^3 vx full band: {widest:?} in {elapsed:?}");
         }
     }
 
