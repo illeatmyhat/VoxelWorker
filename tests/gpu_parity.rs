@@ -1318,6 +1318,115 @@ fn brick_raymarch_hit_set_matches_exact_evaluator() {
     );
 }
 
+/// **ADR 0011 interior elision — the SURFACE record buffer renders identically to the FULL
+/// one.** For every brick render case, install the field with the FULL packed records
+/// ([`pack_gpu_records`]) and again with the interior-elided
+/// ([`pack_surface_gpu_records`]) — the clip-map, atlas and frame identical — and assert
+/// the hit-identity images are BYTE-IDENTICAL. This is the display proof that eliding a
+/// fully-occluded interior block (its six neighbours all solid) never changes a ray's first
+/// hit: the ray stops at the surrounding surface record before ever reaching it. The CPU
+/// half is `brick_field::surface_record_mask_drops_fully_occluded_interior_of_a_solid_box`.
+#[test]
+fn brick_surface_elision_hit_set_unchanged() {
+    use voxel_worker::{
+        brick_representable_overlay, build_brick_field, pack_gpu_records,
+        pack_surface_gpu_records, AppCore, BrickRaymarchRenderer, ClipmapPyramid, LayerBand,
+        OrbitCamera, TwoLayerStore, COLOR_TARGET_FORMAT,
+    };
+
+    let gpu = pollster::block_on(GpuContext::new(None));
+    let width = 128u32;
+    let height = 128u32;
+    let mut failures: Vec<String> = Vec::new();
+    // At least one case must actually exercise elision (a solid interior), else the test is
+    // vacuous — it would pass trivially if surface==full everywhere.
+    let mut total_elided = 0usize;
+
+    for case in brick_render_cases() {
+        let vpb = case.voxels_per_block;
+        let two_layer_chunks = TwoLayerStore::enabled().build_covering_chunks(&case.scene, vpb, 0);
+        let build = build_brick_field(&two_layer_chunks, vpb);
+        if build.brick_records.is_empty() {
+            continue;
+        }
+        let overlay_active = brick_representable_overlay(&two_layer_chunks).unwrap_or(false);
+        let recentre = case.scene.recentre_voxels_for_resolve(vpb);
+        let grid_dimensions = case.scene.placed_region_dimensions(vpb);
+
+        let full_records = pack_gpu_records(&build, |_| false);
+        let surface_records = pack_surface_gpu_records(&build, |_| false);
+        total_elided += full_records.len() - surface_records.len();
+        // The clip-map is FULL on both sides (its superset invariant is untouched); only the
+        // record buffer the shader binary-searches differs.
+        let pyramid = ClipmapPyramid::from_records(&build.brick_records);
+
+        let mut app_core = AppCore::new(OrbitCamera::default());
+        app_core.camera.target = glam::Vec3::ZERO;
+        app_core.camera.orbit_distance = OrbitCamera::auto_framed_distance(grid_dimensions);
+        let aspect_ratio = width as f32 / height as f32;
+        let view_projection = app_core.view_projection(aspect_ratio, grid_dimensions);
+        let viewport_px = [0u32, 0, width, height];
+        let band = LayerBand::FULL;
+
+        let render = |gpu_records: &[_]| {
+            let mut renderer =
+                BrickRaymarchRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
+            renderer.install_brick_field(
+                &gpu.device,
+                &gpu.queue,
+                &build,
+                gpu_records,
+                &pyramid,
+                recentre,
+                overlay_active,
+            );
+            renderer.update_uniforms(
+                &gpu.queue,
+                view_projection,
+                viewport_px,
+                grid_dimensions,
+                band,
+                false,
+                Some(MaterialChoice::default()),
+            );
+            renderer.render_hit_identity_image(&gpu.device, &gpu.queue, width, height)
+        };
+        let full_image = render(&full_records);
+        let surface_image = render(&surface_records);
+
+        let hits = full_image.iter().filter(|pixel| pixel[0] == 1).count();
+        if hits == 0 {
+            failures.push(format!("{}: the gated view produced ZERO brick hits", case.name));
+            continue;
+        }
+        let mismatches = full_image
+            .iter()
+            .zip(&surface_image)
+            .filter(|(full, surface)| full != surface)
+            .count();
+        if mismatches > 0 {
+            failures.push(format!(
+                "{}: {mismatches}/{} pixels differ between full and surface-elided records \
+                 (elided {} of {} records)",
+                case.name,
+                width * height,
+                full_records.len() - surface_records.len(),
+                full_records.len(),
+            ));
+        }
+    }
+
+    assert!(
+        total_elided > 0,
+        "no case had a fully-occluded interior to elide — the test is vacuous"
+    );
+    assert!(
+        failures.is_empty(),
+        "surface-elided record buffer != full record buffer (ADR 0011 interior elision):\n{}",
+        failures.join("\n")
+    );
+}
+
 /// **ADR 0011 slice G3 — incremental patch render == wholesale install render.** Drive a
 /// scene through the LIVE incremental path (install scene A → apply a localised occupancy
 /// edit → `patch_brick_field` writing ONLY the dirty slots), render its hit-identity

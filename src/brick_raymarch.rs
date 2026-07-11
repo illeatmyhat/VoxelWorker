@@ -83,31 +83,61 @@ pub fn pack_gpu_records(
     build
         .brick_records
         .iter()
-        .map(|record| {
-            let key = record.packed_world_block_key;
-            let (kind_discriminant, atlas_slot) = match record.payload {
-                BrickPayload::CoarseSolid { .. } => (0u32, 0u32),
-                BrickPayload::Sculpted { atlas_slot } => (
-                    1u32,
-                    if non_resident(atlas_slot) {
-                        NON_RESIDENT_ATLAS_SLOT
-                    } else {
-                        atlas_slot
-                    },
-                ),
-            };
-            // Pack the block material above the kind discriminant (ADR 0011 G2): the
-            // shader shades the hit from its own record, not a scene-wide uniform.
-            let kind =
-                kind_discriminant | ((record.material_id as u32) << BRICK_RECORD_MATERIAL_ID_SHIFT);
-            BrickGpuRecord {
-                key_hi: (key >> 32) as u32,
-                key_lo: key as u32,
-                kind,
-                atlas_slot,
-            }
-        })
+        .map(|record| gpu_record_of(record, &mut non_resident))
         .collect()
+}
+
+/// As [`pack_gpu_records`], but ELIDES fully-occluded interior blocks (ADR 0011 interior
+/// elision — the brick display sink's analogue of the mesh's interior-face culling). A
+/// block whose six neighbours are all solid on the shared face can never be a ray's first
+/// hit (the ray stops at the surrounding solid), so dropping it from the record buffer the
+/// shader binary-searches is **hit-identical** — gated in
+/// `tests/gpu_parity.rs::brick_surface_elision_hit_set_unchanged`. The clip-map, atlas and
+/// fog keep the FULL set (built from `build`); only the per-edit record buffer shrinks —
+/// ∝ surface, not volume, for a large solid (a 500×50×50-block box drops ~1.14M of 1.25M
+/// records). Ordering is preserved (a filter over the sorted set stays sorted), so the
+/// in-shader binary search is unaffected.
+pub fn pack_surface_gpu_records(
+    build: &BrickFieldBuild,
+    mut non_resident: impl FnMut(u32) -> bool,
+) -> Vec<BrickGpuRecord> {
+    let keep = crate::brick_field::surface_record_mask(&build.brick_records);
+    build
+        .brick_records
+        .iter()
+        .zip(keep)
+        .filter(|&(_, keep)| keep)
+        .map(|(record, _)| gpu_record_of(record, &mut non_resident))
+        .collect()
+}
+
+/// Pack one brick record into its GPU form — the shared per-record body of
+/// [`pack_gpu_records`] and [`pack_surface_gpu_records`].
+fn gpu_record_of(
+    record: &crate::brick_field::BrickRecord,
+    non_resident: &mut impl FnMut(u32) -> bool,
+) -> BrickGpuRecord {
+    let key = record.packed_world_block_key;
+    let (kind_discriminant, atlas_slot) = match record.payload {
+        BrickPayload::CoarseSolid { .. } => (0u32, 0u32),
+        BrickPayload::Sculpted { atlas_slot } => (
+            1u32,
+            if non_resident(atlas_slot) {
+                NON_RESIDENT_ATLAS_SLOT
+            } else {
+                atlas_slot
+            },
+        ),
+    };
+    // Pack the block material above the kind discriminant (ADR 0011 G2): the
+    // shader shades the hit from its own record, not a scene-wide uniform.
+    let kind = kind_discriminant | ((record.material_id as u32) << BRICK_RECORD_MATERIAL_ID_SHIFT);
+    BrickGpuRecord {
+        key_hi: (key >> 32) as u32,
+        key_lo: key as u32,
+        kind,
+        atlas_slot,
+    }
 }
 
 /// Write ONE sculpted brick's `edge³` occupancy tile into the persistent atlas texture

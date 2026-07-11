@@ -1095,7 +1095,14 @@ impl WindowedState {
                         Some(overlay_active) => {
                             let pyramid =
                                 voxel_worker::ClipmapPyramid::from_records(&build.brick_records);
-                            let gpu_records = voxel_worker::pack_gpu_records(&build, |_| false);
+                            // ADR 0011 interior elision: the record buffer the shader binary-
+                            // searches carries only the SURFACE (potentially-visible) blocks —
+                            // a fully-occluded interior block is never a ray's first hit, so
+                            // eliding it is hit-identical (gated in gpu_parity). For a large
+                            // solid this drops the per-edit record upload from ∝volume to
+                            // ∝surface. The clip-map (above), atlas + fog keep the FULL set.
+                            let gpu_records =
+                                voxel_worker::pack_surface_gpu_records(&build, |_| false);
                             // Patch in place iff we produced an incremental update AND a
                             // renderer already holds a field; otherwise (wholesale, or the
                             // display re-engaging from a mesh fallback) install fresh.

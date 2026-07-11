@@ -427,6 +427,66 @@ pub fn build_brick_field(
     }
 }
 
+/// Whether a world-block coordinate fits the packed-key lanes ([`pack_world_block_key`]
+/// asserts otherwise). Used to skip an out-of-range NEIGHBOUR probe without panicking —
+/// a neighbour one block past a valid block only exceeds the lane at the ±2^20 extreme,
+/// which no target scene reaches, but a display-path pass must never panic on it.
+fn world_block_in_key_range(world_block: [i64; 3]) -> bool {
+    world_block.iter().all(|&coordinate| {
+        let biased = coordinate + WORLD_BLOCK_KEY_BIAS;
+        (0..(1i64 << WORLD_BLOCK_KEY_BITS_PER_AXIS)).contains(&biased)
+    })
+}
+
+/// **Interior-elision mask for the DISPLAY record buffer (ADR 0011 — the brick sink's
+/// analogue of the mesh's interior-face culling and the sketch producer's coarse-solid
+/// elision).** Returns a per-record `keep` flag over the full, sorted `records`: `true`
+/// for a block a ray could reach, `false` for one whose SIX face-neighbours are each
+/// present AND solid on the shared face — a fully-occluded interior block.
+///
+/// Such a block is never a ray's first hit: the block-DDA
+/// ([`cpu_march_brick_field`](crate::brick_raymarch::cpu_march_brick_field)) returns at
+/// the FIRST block carrying a record, and a ray reaching an interior block must first pass
+/// through the solid neighbour surrounding it (which keeps its record). So eliding the
+/// `false` records from the shader's record buffer is **hit-identical** — proven in
+/// `tests/gpu_parity.rs::brick_surface_elision_hit_set_unchanged`. The clip-map, atlas and
+/// fog keep the FULL set; only the per-edit record buffer the shader binary-searches
+/// shrinks (∝ surface, not volume, for a large solid).
+///
+/// **Conservative direction:** a neighbour that is ABSENT (air) or only PARTIALLY solid on
+/// the shared face keeps the block. The mask is thus always a superset of the truly-visible
+/// blocks — it can never drop a block a ray can see, only ever an unreachable interior one.
+pub fn surface_record_mask(records: &[BrickRecord]) -> Vec<bool> {
+    use std::collections::HashMap;
+    let index: HashMap<u64, usize> = records
+        .iter()
+        .enumerate()
+        .map(|(record_index, record)| (record.packed_world_block_key, record_index))
+        .collect();
+    // Is the neighbour of `block` across `(axis, delta)` present AND solid on the face it
+    // shares with `block` — i.e. its `facing_side` (the opposite side to `block`'s)?
+    let neighbour_face_solid = |block: [i64; 3], axis: usize, delta: i64, facing_side: usize| {
+        let mut neighbour = block;
+        neighbour[axis] += delta;
+        world_block_in_key_range(neighbour)
+            && index
+                .get(&pack_world_block_key(neighbour))
+                .is_some_and(|&i| records[i].seam_solidity.face_is_solid(axis, facing_side))
+    };
+    records
+        .iter()
+        .map(|record| {
+            let block = unpack_world_block_key(record.packed_world_block_key);
+            // Occluded ⇔ each axis is capped on BOTH sides: the +1 neighbour's LOW face
+            // covers this block's HIGH face, and the −1 neighbour's HIGH face covers its LOW.
+            let occluded = (0..3).all(|axis| {
+                neighbour_face_solid(block, axis, 1, 0) && neighbour_face_solid(block, axis, -1, 1)
+            });
+            !occluded
+        })
+        .collect()
+}
+
 /// Rasterize one boundary block's cuboids into an `edge³` occupancy tile (0/255,
 /// block-local x-fastest). Occupancy only: the cuboid `material_id` render-cell key
 /// (id + overlay bit) never enters the R8 payload — any voxel a cuboid covers is 255.
@@ -1035,6 +1095,74 @@ mod tests {
         // The scene must actually exercise both kinds, else the mapping is untested.
         assert!(expected_coarse > 0, "fixture must contain coarse-solid blocks");
         assert!(expected_sculpted > 0, "fixture must contain boundary blocks");
+    }
+
+    /// **Interior elision, CPU tier (ADR 0011 — the display record buffer).**
+    /// [`surface_record_mask`] over a SOLID box keeps exactly the surface blocks (a block
+    /// with ≥1 absent/air neighbour) and drops the strictly-interior ones (all six
+    /// neighbours present + solid). Checked against an independent neighbour-count oracle;
+    /// the `--features gpu` [`brick_surface_elision_hit_set_unchanged`] proves the elided
+    /// buffer renders the same hit set.
+    #[test]
+    fn surface_record_mask_drops_fully_occluded_interior_of_a_solid_box() {
+        let voxels_per_block = 4;
+        // A solid box (ShapeKind::Box ignores wall_blocks — that is Tube-only), 6 blocks
+        // per axis, so there is a genuine 4×4×4 fully-occluded interior to elide.
+        let scene = Scene::from_geometry(
+            GeometryParams {
+                shape: ShapeKind::Box,
+                size_voxels: [6 * voxels_per_block, 6 * voxels_per_block, 6 * voxels_per_block],
+                size_measurements: None,
+                voxels_per_block,
+                wall_blocks: 1,
+            },
+            MaterialChoice::Stone,
+        );
+        let two_layer_chunks =
+            TwoLayerStore::enabled().build_covering_chunks(&scene, voxels_per_block, 0);
+        let build = build_brick_field(&two_layer_chunks, voxels_per_block);
+        assert!(!build.brick_records.is_empty(), "fixture must build records");
+        // Every block of a solid box is coarse-solid (all faces solid).
+        assert!(
+            build
+                .brick_records
+                .iter()
+                .all(|r| r.seam_solidity.solid == [[true; 2]; 3]),
+            "a solid box classifies every block coarse-solid"
+        );
+
+        let mask = surface_record_mask(&build.brick_records);
+        assert_eq!(mask.len(), build.brick_records.len());
+
+        // Independent oracle: with all blocks coarse-solid, a block is INTERIOR iff all six
+        // of its neighbours are present in the record set.
+        let keys: std::collections::HashSet<u64> =
+            build.brick_records.iter().map(|r| r.packed_world_block_key).collect();
+        let mut expected_surface = 0usize;
+        for (record, &keep) in build.brick_records.iter().zip(&mask) {
+            let block = unpack_world_block_key(record.packed_world_block_key);
+            let all_neighbours_present = [
+                [1i64, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1],
+            ]
+            .iter()
+            .all(|d| {
+                let nb = [block[0] + d[0], block[1] + d[1], block[2] + d[2]];
+                world_block_in_key_range(nb) && keys.contains(&pack_world_block_key(nb))
+            });
+            let expected_keep = !all_neighbours_present;
+            assert_eq!(keep, expected_keep, "block {block:?} elision disagrees with the oracle");
+            if keep {
+                expected_surface += 1;
+            }
+        }
+        let kept = mask.iter().filter(|&&k| k).count();
+        assert_eq!(kept, expected_surface);
+        // A solid box has a genuine interior to elide AND a surface to keep — the split is
+        // non-trivial in both directions (else the elision would be vacuous or wrong).
+        let dropped = mask.len() - kept;
+        assert!(dropped > 0, "a solid box must have fully-occluded interior blocks to elide");
+        assert!(kept > 0, "the surface blocks must be kept");
+        assert!(kept < mask.len(), "not every block can be surface for a solid box");
     }
 
     /// The clip-map pyramid is CONSERVATIVE (ADR 0011 parity gate, coarse tier):
