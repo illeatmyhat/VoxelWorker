@@ -1653,26 +1653,30 @@ impl WindowedState {
         // ADR 0010 E4: build the `.vox` by STREAMING the cacheless two-layer evaluator
         // region-scoped — a coarse-solid block is a fast `d³` fill, a boundary block is
         // per-voxel — so no dense whole-region grid is materialised and the 6M cap
-        // dissolves on the export path. Each covering chunk's voxels are bucketed then
-        // dropped. The streamed export is model-set-identical to the dense-path region
-        // export (the E4 parity gate). ADR 0010 E5: the two-layer capability is always ON
-        // now (the sole runtime path), so the stream always yields — the retired dense
+        // dissolves on the export path. Each covering chunk's voxels are bucketed
+        // DIRECTLY into the `.vox` model set by the incremental `VoxExportBuilder` then
+        // DROPPED — peak transient memory is O(one chunk + the output buffers), NEVER the
+        // O(all-voxels) `Vec<Vec<Voxel>>` accumulate-then-convert intermediate the button
+        // used to build (the owner's peak-memory law: no O(volume) accumulation on any
+        // path). The model count/sizes are a pure function of the region dimensions, so
+        // the builder pre-creates the model set from `placed_region_dimensions` up front —
+        // the SAME value `stream_vox_occupancy` produces — and one streaming pass suffices.
+        // The streamed export stays model-set-identical to the dense-path region export
+        // (the E4 parity gate). ADR 0010 E5: the two-layer capability is always ON now (the
+        // sole runtime path), so the stream always yields — the retired dense
         // `bound_region_occupied` fallback is gone. `stream_vox_occupancy` returns `Some`
         // even for a Part-only / empty scene (an empty but valid `.vox`).
         let two_layer = voxel_worker::TwoLayerStore::enabled();
-        let mut streamed_chunks: Vec<Vec<voxel_worker::Voxel>> = Vec::new();
-        let (region_dimensions, _recentre) = voxel_worker::stream_vox_occupancy(
+        let region_dimensions = self.panel_state.scene.placed_region_dimensions(density);
+        let mut builder = voxel_worker::VoxExportBuilder::new(region_dimensions, palette_colors);
+        voxel_worker::stream_vox_occupancy(
             &two_layer,
             &self.panel_state.scene,
             density,
-            |chunk_voxels| streamed_chunks.push(chunk_voxels),
+            |chunk_voxels| builder.ingest_chunk(&chunk_voxels),
         )
         .expect("the two-layer capability is enabled (ADR 0010 E5)");
-        let export = voxel_worker::VoxExport::from_region_voxel_chunks(
-            region_dimensions,
-            streamed_chunks,
-            palette_colors,
-        );
+        let export = builder.finish();
         match export.write(&path) {
             Ok(bytes) => println!(
                 "wrote {} ({} voxels, {} model(s), {} bytes)",

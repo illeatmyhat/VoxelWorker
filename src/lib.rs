@@ -138,7 +138,7 @@ pub use two_layer_store::{
 };
 pub use sketch::{Operation, PlaneAxis, RevolveAxis, Sketch, SketchPoint, SketchSolid};
 pub use spatial_index::{LeafEntry, LeafFingerprint, LeafSpatialIndex, VoxelAabb};
-pub use vox_export::VoxExport;
+pub use vox_export::{VoxExport, VoxExportBuilder};
 pub use voxel::{
     widest_run_in_band_over_chunks, GeometryParams, SdfShape, ShapeKind, Voxel, VoxelGrid,
     VoxelProducer,

@@ -176,117 +176,19 @@ impl VoxExport {
     /// is consumed (so an owned per-chunk stream never holds the whole region). Both
     /// [`from_region_voxels`](Self::from_region_voxels) (borrowed slices) and
     /// [`from_region_voxel_chunks`](Self::from_region_voxel_chunks) (owned chunk Vecs)
-    /// flatten into this one path, so the streamed and dense exports can never drift.
+    /// flatten into this one path — which drives the same incremental
+    /// [`VoxExportBuilder`] the live streaming export button feeds one chunk at a time,
+    /// so the streamed and dense exports can never drift.
     fn from_region_voxel_iter(
         region_dimensions: [u32; 3],
         voxels: impl Iterator<Item = crate::voxel::Voxel>,
         palette_colors: BlockPaletteColors,
     ) -> Self {
-        let [grid_x, grid_y, grid_z] = region_dimensions;
-        // Corner-anchoring decode: FLOORED half (`dim/2` integer division), so
-        // `round(world + floor(dim/2) − 0.5)` recovers the exact index for an odd dim
-        // too (see voxel.rs::widest_run_in_band).
-        let half_x = (grid_x / 2) as f32;
-        let half_y = (grid_y / 2) as f32;
-        let half_z = (grid_z / 2) as f32;
-
-        // Number of tiles along each grid axis so every tile is ≤ 256.
-        let tiles_x = grid_x.div_ceil(VOX_AXIS_MAX).max(1);
-        let tiles_y = grid_y.div_ceil(VOX_AXIS_MAX).max(1);
-        let tiles_z = grid_z.div_ceil(VOX_AXIS_MAX).max(1);
-
-        // Each tile's grid-space size (≤ 256); the last tile on an axis is the
-        // remainder.
-        let tile_size = |total: u32, index: u32| -> u32 {
-            let origin = index * VOX_AXIS_MAX;
-            (total - origin).min(VOX_AXIS_MAX)
-        };
-
-        // Build an indexable list of models (tile_x, tile_y, tile_z order).
-        let mut models: Vec<VoxModel> = Vec::new();
-        let mut model_index = std::collections::HashMap::new();
-        for ty in 0..tiles_y {
-            for tz in 0..tiles_z {
-                for tx in 0..tiles_x {
-                    let sx = tile_size(grid_x, tx);
-                    let sy = tile_size(grid_y, ty);
-                    let sz = tile_size(grid_z, tz);
-                    model_index.insert((tx, ty, tz), models.len());
-                    // Z-up: vox size = (our X, our Y, our Z) — no swap.
-                    models.push(VoxModel {
-                        size: [sx, sy, sz],
-                        voxels: Vec::new(),
-                    });
-                }
-            }
-        }
-
-        let mut voxel_count = 0usize;
+        let mut builder = VoxExportBuilder::new(region_dimensions, palette_colors);
         for voxel in voxels {
-            // Recover non-negative integer grid indices from the world-centred
-            // voxel-centre position: `i = round(world_x + dim_x/2 - 0.5)`.
-            let position = voxel.world_position();
-            let i = (position[0] + half_x - 0.5).round();
-            let j = (position[1] + half_y - 0.5).round();
-            let k = (position[2] + half_z - 0.5).round();
-            if i < 0.0 || j < 0.0 || k < 0.0 {
-                continue;
-            }
-            let i = i as u32;
-            let j = j as u32;
-            let k = k as u32;
-            if i >= grid_x || j >= grid_y || k >= grid_z {
-                continue;
-            }
-
-            let tx = i / VOX_AXIS_MAX;
-            let ty = j / VOX_AXIS_MAX;
-            let tz = k / VOX_AXIS_MAX;
-            let local_i = i % VOX_AXIS_MAX;
-            let local_j = j % VOX_AXIS_MAX;
-            let local_k = k % VOX_AXIS_MAX;
-
-            let Some(&model_pos) = model_index.get(&(tx, ty, tz)) else {
-                continue;
-            };
-            // Z-up: vox (x, y, z) = (our i, our j, our k) — no swap. The categorical
-            // block id selects the `.vox` palette slot (`block_id + 1`; ADR 0003 §3a),
-            // so a multi-material model exports each block in its own colour. Clamp to
-            // the procedural palette so a stray id stays in range.
-            let palette_slot = voxel
-                .color_index()
-                .min(crate::core_geom::MaterialChoice::MATERIAL_COUNT as u16 - 1)
-                as u8
-                + 1;
-            models[model_pos].voxels.push(VoxVoxel {
-                x: local_i as u8,
-                y: local_j as u8,
-                z: local_k as u8,
-                color_index: palette_slot,
-            });
-            voxel_count += 1;
+            builder.ingest_voxel(voxel);
         }
-
-        // Drop empty models (a sparse split can leave some tiles with nothing).
-        models.retain(|model| !model.voxels.is_empty());
-        // Always emit at least one (possibly empty) model so the file is valid.
-        if models.is_empty() {
-            models.push(VoxModel {
-                // Z-up: no swap — vox size = (our X, our Y, our Z).
-                size: [
-                    grid_x.clamp(1, VOX_AXIS_MAX),
-                    grid_y.clamp(1, VOX_AXIS_MAX),
-                    grid_z.clamp(1, VOX_AXIS_MAX),
-                ],
-                voxels: Vec::new(),
-            });
-        }
-
-        Self {
-            models,
-            palette_colors,
-            voxel_count,
-        }
+        builder.finish()
     }
 
     /// Number of models written (1 unless the 256-limit forced a tiled split).
@@ -365,6 +267,185 @@ impl VoxExport {
         let bytes = self.to_bytes();
         std::fs::write(path, &bytes)?;
         Ok(bytes.len())
+    }
+}
+
+/// **Incremental streaming `.vox` builder (ADR 0010 E4).** Buckets a stream of occupied
+/// voxels into the `.vox` 256-tile model set ONE chunk (or one voxel) at a time, so the
+/// export never holds more than a single streamed chunk's voxels plus the per-model
+/// output buffers — the inherent `.vox` output cost. This is the seam the live export
+/// button drives over [`crate::two_layer_store::stream_vox_occupancy`]: each covering
+/// chunk's freshly-expanded `Vec<Voxel>` is ingested then DROPPED, so peak transient
+/// memory is O(one chunk + the output buffers), never O(all occupied voxels). It
+/// dissolves the `Vec<Vec<Voxel>>` accumulate-then-convert intermediate the button used
+/// to materialise before calling [`VoxExport::from_region_voxel_chunks`] — the owner's
+/// peak-memory law: no O(volume) accumulation on any path.
+///
+/// ## Why the model set can be pre-created (single pass, no bounds pre-scan)
+///
+/// The model COUNT and SIZES are a pure function of `region_dimensions` (the 256-tiling),
+/// and the palette is supplied explicitly (ADR 0003 §3a) — neither depends on scanning the
+/// occupancy. So [`new`](Self::new) builds the full (empty) model set up front and every
+/// voxel lands in its model by the SAME corner-anchored decode
+/// [`VoxExport::from_region_voxels`] uses. One streaming pass suffices; the format never
+/// forces a second pass over the voxels.
+///
+/// The dense [`VoxExport::from_region_voxels`] / [`VoxExport::from_region_voxel_chunks`]
+/// paths flatten their voxels into this SAME builder, so a live streamed export is
+/// byte-identical to the accumulate-then-convert export for the same voxel stream (the
+/// order in which chunks are ingested is the order `stream_vox_occupancy` emits them, which
+/// is exactly the order `from_region_voxel_chunks` flattens the accumulated `Vec`s).
+pub struct VoxExportBuilder {
+    /// The region's voxel dimensions (the tiling/decode frame) — the exact value
+    /// [`crate::scene::Scene::placed_region_dimensions`] and
+    /// [`crate::two_layer_store::stream_vox_occupancy`] produce.
+    region_dimensions: [u32; 3],
+    /// Corner-anchoring half-extents (FLOORED `dim/2`) reused per voxel: the decode
+    /// `round(world + floor(dim/2) − 0.5)` recovers the exact index for an odd dim too.
+    half: [f32; 3],
+    /// The pre-created 256-tile model set (tile_x, tile_y, tile_z order), each growing
+    /// only its own per-model voxel buffer as voxels are ingested.
+    models: Vec<VoxModel>,
+    /// `(tile_x, tile_y, tile_z) -> models[index]` so a decoded voxel finds its model.
+    model_index: std::collections::HashMap<(u32, u32, u32), usize>,
+    palette_colors: BlockPaletteColors,
+    voxel_count: usize,
+}
+
+impl VoxExportBuilder {
+    /// Pre-create the full 256-tile model set for `region_dimensions` (empty voxel
+    /// buffers) and the palette, ready to [`ingest_chunk`](Self::ingest_chunk) a stream.
+    /// The model sizes/count are fixed here — they are a pure function of the region.
+    pub fn new(region_dimensions: [u32; 3], palette_colors: BlockPaletteColors) -> Self {
+        let [grid_x, grid_y, grid_z] = region_dimensions;
+        // Corner-anchoring decode: FLOORED half (`dim/2` integer division), so
+        // `round(world + floor(dim/2) − 0.5)` recovers the exact index for an odd dim
+        // too (see voxel.rs::widest_run_in_band).
+        let half = [(grid_x / 2) as f32, (grid_y / 2) as f32, (grid_z / 2) as f32];
+
+        // Number of tiles along each grid axis so every tile is ≤ 256.
+        let tiles_x = grid_x.div_ceil(VOX_AXIS_MAX).max(1);
+        let tiles_y = grid_y.div_ceil(VOX_AXIS_MAX).max(1);
+        let tiles_z = grid_z.div_ceil(VOX_AXIS_MAX).max(1);
+
+        // Each tile's grid-space size (≤ 256); the last tile on an axis is the
+        // remainder.
+        let tile_size = |total: u32, index: u32| -> u32 {
+            let origin = index * VOX_AXIS_MAX;
+            (total - origin).min(VOX_AXIS_MAX)
+        };
+
+        // Build an indexable list of models (tile_x, tile_y, tile_z order).
+        let mut models: Vec<VoxModel> = Vec::new();
+        let mut model_index = std::collections::HashMap::new();
+        for ty in 0..tiles_y {
+            for tz in 0..tiles_z {
+                for tx in 0..tiles_x {
+                    let sx = tile_size(grid_x, tx);
+                    let sy = tile_size(grid_y, ty);
+                    let sz = tile_size(grid_z, tz);
+                    model_index.insert((tx, ty, tz), models.len());
+                    // Z-up: vox size = (our X, our Y, our Z) — no swap.
+                    models.push(VoxModel {
+                        size: [sx, sy, sz],
+                        voxels: Vec::new(),
+                    });
+                }
+            }
+        }
+
+        Self {
+            region_dimensions,
+            half,
+            models,
+            model_index,
+            palette_colors,
+            voxel_count: 0,
+        }
+    }
+
+    /// Bucket every voxel in one STREAMED chunk into its model, so the caller can DROP
+    /// the chunk buffer afterward (ADR 0010 E4): only one chunk's voxels are ever
+    /// resident. This is the sink [`crate::two_layer_store::stream_vox_occupancy`] drives.
+    pub fn ingest_chunk(&mut self, chunk_voxels: &[crate::voxel::Voxel]) {
+        for voxel in chunk_voxels {
+            self.ingest_voxel(*voxel);
+        }
+    }
+
+    /// Decode one voxel's corner-anchored grid index, tile it, and push it into its
+    /// model (dropping it if it falls outside the region — the same guard the dense
+    /// path used). The block id selects the `.vox` palette slot (ADR 0003 §3a).
+    fn ingest_voxel(&mut self, voxel: crate::voxel::Voxel) {
+        let [grid_x, grid_y, grid_z] = self.region_dimensions;
+        // Recover non-negative integer grid indices from the world-centred
+        // voxel-centre position: `i = round(world_x + dim_x/2 - 0.5)`.
+        let position = voxel.world_position();
+        let i = (position[0] + self.half[0] - 0.5).round();
+        let j = (position[1] + self.half[1] - 0.5).round();
+        let k = (position[2] + self.half[2] - 0.5).round();
+        if i < 0.0 || j < 0.0 || k < 0.0 {
+            return;
+        }
+        let i = i as u32;
+        let j = j as u32;
+        let k = k as u32;
+        if i >= grid_x || j >= grid_y || k >= grid_z {
+            return;
+        }
+
+        let tx = i / VOX_AXIS_MAX;
+        let ty = j / VOX_AXIS_MAX;
+        let tz = k / VOX_AXIS_MAX;
+        let local_i = i % VOX_AXIS_MAX;
+        let local_j = j % VOX_AXIS_MAX;
+        let local_k = k % VOX_AXIS_MAX;
+
+        let Some(&model_pos) = self.model_index.get(&(tx, ty, tz)) else {
+            return;
+        };
+        // Z-up: vox (x, y, z) = (our i, our j, our k) — no swap. The categorical
+        // block id selects the `.vox` palette slot (`block_id + 1`; ADR 0003 §3a),
+        // so a multi-material model exports each block in its own colour. Clamp to
+        // the procedural palette so a stray id stays in range.
+        let palette_slot = voxel
+            .color_index()
+            .min(crate::core_geom::MaterialChoice::MATERIAL_COUNT as u16 - 1)
+            as u8
+            + 1;
+        self.models[model_pos].voxels.push(VoxVoxel {
+            x: local_i as u8,
+            y: local_j as u8,
+            z: local_k as u8,
+            color_index: palette_slot,
+        });
+        self.voxel_count += 1;
+    }
+
+    /// Finalise the streamed export: drop the empty tiles a sparse split leaves behind,
+    /// keeping at least one (possibly empty) model so the file stays valid.
+    pub fn finish(mut self) -> VoxExport {
+        // Drop empty models (a sparse split can leave some tiles with nothing).
+        self.models.retain(|model| !model.voxels.is_empty());
+        // Always emit at least one (possibly empty) model so the file is valid.
+        if self.models.is_empty() {
+            let [grid_x, grid_y, grid_z] = self.region_dimensions;
+            self.models.push(VoxModel {
+                // Z-up: no swap — vox size = (our X, our Y, our Z).
+                size: [
+                    grid_x.clamp(1, VOX_AXIS_MAX),
+                    grid_y.clamp(1, VOX_AXIS_MAX),
+                    grid_z.clamp(1, VOX_AXIS_MAX),
+                ],
+                voxels: Vec::new(),
+            });
+        }
+
+        VoxExport {
+            models: self.models,
+            palette_colors: self.palette_colors,
+            voxel_count: self.voxel_count,
+        }
     }
 }
 
@@ -829,6 +910,80 @@ mod tests {
             "[{label}] the streamed export must write one voxel per resolved cell (no \
              duplicate-at-overlap entries)"
         );
+    }
+
+    /// **THE STREAMED-SINK PEAK-MEMORY PROOF (ADR 0010 E4).** The live export button now
+    /// buckets each streamed chunk DIRECTLY into a [`VoxExportBuilder`] then drops it
+    /// (peak = O(one chunk + output buffers)), instead of accumulating every chunk into a
+    /// `Vec<Vec<Voxel>>` before one `from_region_voxel_chunks` conversion (peak =
+    /// O(all voxels)). This asserts the two produce a BYTE-IDENTICAL `.vox` for a
+    /// multi-chunk scene: both drive the SAME `stream_vox_occupancy` (identical chunk
+    /// order), and the incremental builder IS the core `from_region_voxel_chunks` flattens
+    /// into — so the memory fix is a pure no-op on the written file, down to voxel emission
+    /// order and palette bytes. The accumulate-then-convert path is kept here as the oracle.
+    fn assert_streamed_builder_matches_accumulated(scene: &Scene, vpb: u32, label: &str) {
+        let rgba = VoxExport::block_palette_from_active(Mat::Stone, [132, 126, 118, 255]);
+        let store = TwoLayerStore::enabled();
+
+        // Incremental streaming sink (the live button): bucket each chunk, then drop it —
+        // only one chunk's voxels are ever resident.
+        let region_dimensions = scene.placed_region_dimensions(vpb);
+        let mut builder = VoxExportBuilder::new(region_dimensions, rgba);
+        let (dims_stream, _recentre) =
+            stream_vox_occupancy(&store, scene, vpb, |chunk| builder.ingest_chunk(&chunk))
+                .expect("the two-layer capability is enabled");
+        assert_eq!(
+            dims_stream, region_dimensions,
+            "[{label}] the builder must be pre-created with the SAME dims the stream emits"
+        );
+        let streamed = builder.finish();
+
+        // Accumulate-then-convert ORACLE (the retired path): push every chunk into a
+        // Vec<Vec<Voxel>> before converting — O(all voxels) peak.
+        let mut accumulated_chunks: Vec<Vec<crate::voxel::Voxel>> = Vec::new();
+        stream_vox_occupancy(&store, scene, vpb, |chunk| accumulated_chunks.push(chunk))
+            .expect("the two-layer capability is enabled");
+        let accumulated =
+            VoxExport::from_region_voxel_chunks(region_dimensions, accumulated_chunks, rgba);
+
+        assert_eq!(
+            streamed.voxel_count(),
+            accumulated.voxel_count(),
+            "[{label}] streamed-sink voxel count must equal the accumulate-then-convert path"
+        );
+        assert_eq!(
+            streamed.model_count(),
+            accumulated.model_count(),
+            "[{label}] streamed-sink model count must equal the accumulate-then-convert path"
+        );
+        assert_eq!(
+            streamed.to_bytes(),
+            accumulated.to_bytes(),
+            "[{label}] the streamed-sink `.vox` bytes must be IDENTICAL to the \
+             accumulate-then-convert export (the peak-memory fix is a no-op on the file)"
+        );
+    }
+
+    #[test]
+    fn streamed_builder_matches_accumulated_for_multi_chunk_scenes() {
+        let vpb = 16u32;
+        let make_tool = |kind, offset: [i64; 3], material| {
+            let shape = SdfShape::from_blocks(kind, [5, 5, 5], 1, vpb);
+            let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
+            node.transform = crate::scene::NodeTransform::from_blocks(offset, vpb);
+            node
+        };
+        // A multi-leaf scene spanning several chunks across leaves.
+        let demo = Scene::from_nodes(vec![
+            make_tool(ShapeKind::Sphere, [0, 0, 0], Mat::Stone),
+            make_tool(ShapeKind::Box, [8, 0, 0], Mat::Wood),
+            make_tool(ShapeKind::Torus, [0, 0, 6], Mat::Plain),
+        ]);
+        assert_streamed_builder_matches_accumulated(&demo, vpb, "demo-scene");
+
+        // A wide box forcing a 256-split (multiple models across many chunks).
+        let wide = shape_scene(ShapeKind::Box, vpb, [20, 1, 1]);
+        assert_streamed_builder_matches_accumulated(&wide, vpb, "wide-box-split");
     }
 
     #[test]
