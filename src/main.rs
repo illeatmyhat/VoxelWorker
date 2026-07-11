@@ -370,15 +370,15 @@ impl WindowedState {
         };
         let shape = SdfShape::from_geometry(panel_state.geometry.clone());
         // ADR 0011 G5: the startup grid goes through the SAME fog-stream decision the
-        // per-edit rebuild makes (`AppCore::rebuild`'s `stream_fog_grid` branch). A
-        // chunkable gpu scene sources fog from the brick sink, so the whole-region
-        // occupancy is NEVER built — the grid is dimensions + recentre only. This closes
-        // the startup OOM: `resolve_scene` on the persisted 8000×800×800 scene built a
-        // dense ~5.1-billion-cell grid (~28.5 GB → OOM hang before the first print).
+        // per-edit rebuild makes (`AppCore::rebuild`'s `stream_fog_grid` branch). Under the
+        // universal brick-fog law a chunkable scene sources fog from the brick sink on EVERY
+        // build, so the whole-region occupancy is NEVER built — the grid is dimensions +
+        // recentre only. This closes the startup OOM on both binaries: `resolve_scene` on the
+        // persisted 8000×800×800 scene built a dense ~5.1-billion-cell grid (~28.5 GB → OOM
+        // hang before the first print), and the non-gpu binary streamed the same region.
         let (grid, stream_startup_grid) = AppCore::startup_grid(
             &panel_state.scene,
             panel_state.geometry.voxels_per_block,
-            cfg!(feature = "gpu"),
         );
         // Issue #20 S6c-1: the camera auto-frame, origin gizmo, block lattice, fine
         // floor grid and the layer scrubber are sized from the scene's region
@@ -580,7 +580,6 @@ impl WindowedState {
                         stream_startup_grid,
                         // ADR 0011 G5: no brick fog source seeded yet at startup — the first
                         // rebuild wires it; the streamed startup grid feeds this one build.
-                        #[cfg(feature = "gpu")]
                         None,
                     );
                     fog_occupancy_dirty = false;
@@ -884,20 +883,22 @@ impl WindowedState {
         // display path (the rebuild skipped the stream); the CPU densify must then be
         // SKIPPED rather than consume the empty grid (it would silently draw no fog).
         grid_streamed: bool,
-        // ADR 0011 G5: the brick field the fog sources its per-chunk occupancy from, for a
-        // chunkable gpu-gated scene. `Some` ⇒ fog reconstructs its tiles from the boundary
-        // set (no `VoxelGrid` stream — the retirement), byte-identical to the CPU densify.
-        #[cfg(feature = "gpu")] fog_brick: Option<&voxel_worker::BrickFieldBuild>,
+        // ADR 0011 G5: the brick field the fog sources its per-chunk occupancy from, for any
+        // chunkable scene. `Some` ⇒ fog reconstructs its tiles from the boundary set (no
+        // `VoxelGrid` stream — the retirement), byte-identical to the CPU densify. Un-gated
+        // from `--features gpu`: `build_per_chunk_fog_occupancy_from_bricks` is plain CPU, so
+        // the non-gpu binary takes this path too (the universal brick-fog law).
+        fog_brick: Option<&voxel_worker::BrickFieldBuild>,
     ) {
         profiling::scope!("fog_upload");
         // ADR 0011 G5: the primary path — reconstruct the per-chunk fog occupancy from the
         // brick field (the boundary set), with NO whole-region `VoxelGrid` stream. Fog is
-        // boolean occupancy, so this covers every chunkable scene, mixed-material blocks
-        // included (their display stays on the mesh). Byte-identical to the CPU densify
-        // (`brick_sourced_fog_matches_cpu_densify_byte_for_byte`), so the fog SHADER and the
-        // `onion-fog-perchunk` golden are unchanged. PerChunk only (WholeGrid is the legacy
-        // single-3D-texture debug mode, which never rides the brick path).
-        #[cfg(feature = "gpu")]
+        // boolean occupancy, so this covers every chunkable scene on every build: mixed-material
+        // blocks and a loaded VS material included (their display stays on the mesh). Byte-
+        // identical to the CPU densify (`brick_sourced_fog_matches_cpu_densify_byte_for_byte`),
+        // so the fog SHADER and the `onion-fog-perchunk` golden are unchanged. PerChunk only
+        // (WholeGrid is the legacy single-3D-texture debug mode, which never rides the brick
+        // path).
         if let (Some(build), FogMode::PerChunk) = (fog_brick, fog_mode) {
             profiling::scope!("fog_brick_fill");
             let occupancy = voxel_worker::build_per_chunk_fog_occupancy_from_bricks(
@@ -1001,22 +1002,24 @@ impl WindowedState {
         // or a NON-chunkable Part-only scene keeps the pre-G5 fog path (the single-producer
         // GPU resolve, else the CPU densify), so those two edge cases still stream.
         let chunkable = self.panel_state.scene.has_chunkable_extent(density);
+        // Only the gpu brick DISPLAY gate reads this (a loaded material forces the mesh
+        // display); the fog mirror + stream decision no longer depend on it.
+        #[cfg_attr(not(feature = "gpu"), allow(unused_variables))]
         let loaded_material = self.loaded_material.is_some();
         let single_producer = self.panel_state.scene.single_producer().is_some();
-        // ONE decision, shared with the retirement-assertion test (no drift): a chunkable
-        // gpu scene sources fog from the brick sink, so it never streams the `VoxelGrid`.
-        let stream_fog_grid = voxel_worker::runtime_streams_fog_grid(
-            cfg!(feature = "gpu"),
-            chunkable,
-            single_producer,
-            loaded_material,
-        );
-        // ADR 0011 G2/G5: the brick sink engages for any chunkable procedural scene (no
-        // loaded VS material). The DISPLAY additionally needs representability (checked from
-        // the boundary set below); the FOG needs only chunkability — so this gate builds the
-        // brick field even when the display falls back to the mesh.
-        #[cfg(feature = "gpu")]
-        let brick_display_gate = chunkable && !loaded_material;
+        // ONE decision, shared with the retirement-assertion test (no drift): fog is boolean
+        // occupancy, so ANY chunkable scene sources it from the brick sink on every build (gpu
+        // or not, loaded VS material included) and never streams the `VoxelGrid`.
+        let stream_fog_grid =
+            voxel_worker::runtime_streams_fog_grid(chunkable, single_producer);
+        // ADR 0011 G5 — the universal brick-fog gate. The FOG mirror (`fog_brick_field` /
+        // `incremental_brick_field`, both plain CPU) is maintained for ANY chunkable scene on
+        // ANY build: fog needs only boolean occupancy, so a loaded VS material (mesh-only
+        // shading) still fog-sources from bricks. The DISPLAY raymarch keeps its stricter
+        // conditions inside the block (`--features gpu` + `!loaded_material` + brick
+        // representability) — a mixed-material or textured scene meshes its display while the
+        // fog still comes from `build`.
+        let brick_fog_gate = chunkable;
         let RebuildOutput {
             grid,
             region_dimensions,
@@ -1083,40 +1086,48 @@ impl WindowedState {
             },
         };
         // The BRICK MIRROR's patch-vs-wholesale decision (below). It shares the C1 interlock
-        // with the mesh path but is INDEPENDENT of mesh staleness — the brick field is always
-        // maintained when the display gate is on, so it uses the plain route. The mesh's own
-        // route (`route_mesh_build`, after the brick block) additionally folds in mesh
-        // staleness + the brick-display-engaged skip. Only consumed in the gpu brick block.
-        #[cfg_attr(not(feature = "gpu"), allow(unused_variables))]
+        // with the mesh path but is INDEPENDENT of mesh staleness — the brick FOG mirror is
+        // maintained for any chunkable scene on any build, so it uses the plain route. The
+        // mesh's own route (`route_mesh_build`, after the brick block) additionally folds in
+        // mesh staleness + the brick-display-engaged skip.
         let route = route_geometry_rebuild(
             self.geometry_async_outstanding,
             edit_shape,
             ASYNC_REBUILD_CHUNK_THRESHOLD,
         );
 
-        // ADR 0011 G1/G3: refresh the brick field from THIS rebuild's resident chunk set
+        // ADR 0011 G1/G3/G5: refresh the brick field from THIS rebuild's resident chunk set
         // (the same boundary set the mesher consumes), before the async route can move
         // `two_layer_chunks`. When the mesh route is `InlineIncremental` (an incremental
         // edit, nothing outstanding) the field is PATCHED (G3): only the dirty chunks are
         // re-evaluated and only their atlas slots written. Every other route — wholesale,
         // or ANY edit while an async build is outstanding (the C1 interlock) — rebuilds the
         // field WHOLESALE and resets the incremental mirror, so the brick sink never
-        // patches from a state the mesh path treats as stale. A non-representable / empty
-        // scene clears the field to the mesh fallback. The block YIELDS whether the brick
-        // DISPLAY was installed this rebuild — the mesh-skip decision below reads it.
+        // patches from a state the mesh path treats as stale. A non-chunkable / empty scene
+        // clears the field to the mesh fallback.
+        //
+        // The FOG MIRROR (`build`, `fog_brick_field`, `incremental_brick_field`) is plain CPU
+        // and runs for ANY chunkable scene on ANY build (`brick_fog_gate`) — the universal
+        // brick-fog law (ADR 0011 G5). The gpu DISPLAY raymarch (installed in section (B)
+        // below) keeps its stricter `--features gpu` + `!loaded_material` + representability
+        // conditions; a mixed-material or textured scene meshes its display while the fog still
+        // reconstructs from `build`. The block YIELDS whether the brick DISPLAY was installed
+        // this rebuild — the mesh-skip decision below reads it (always `false` on non-gpu).
         let brick_display_installed = {
             #[cfg_attr(not(feature = "gpu"), allow(unused_mut))]
             let mut brick_display_installed = false;
-            #[cfg(feature = "gpu")]
-            if brick_display_gate {
+            if brick_fog_gate {
                 profiling::scope!("brick_field_build");
                 // (A) Maintain the CPU brick MIRROR — the FOG occupancy source (ADR 0011 G5),
                 // built for any chunkable scene regardless of display representability. Patch
                 // iff the mesh route is InlineIncremental AND a mirror already exists (mirrors
                 // `route_geometry_rebuild`, so the C1 interlock composes: outstanding ⇒ route
-                // != InlineIncremental ⇒ wholesale here too).
+                // != InlineIncremental ⇒ wholesale here too). `update` (the GPU atlas-slot
+                // descriptor) is consumed only by the gpu display in (B); on a non-gpu build
+                // the in-place mirror patch is what matters and the descriptor is discarded.
                 let patch_mirror = matches!(route, RebuildRoute::InlineIncremental)
                     && self.incremental_brick_field.is_some();
+                #[cfg_attr(not(feature = "gpu"), allow(unused_variables))]
                 let (build, update): (
                     voxel_worker::BrickFieldBuild,
                     Option<voxel_worker::BrickFieldUpdate>,
@@ -1152,10 +1163,14 @@ impl WindowedState {
                     self.incremental_brick_field = None;
                     self.fog_brick_field = None;
                 } else {
-                    // (B) DISPLAY: install/patch the GPU raymarch renderer ONLY when the
-                    // boundary set is brick-REPRESENTABLE (single-material blocks + one
-                    // overlay). A mixed-material scene keeps the mesh display but still
-                    // fog-sources from `build` (fog is boolean occupancy — the G5 insight).
+                    // (B) DISPLAY: install/patch the GPU raymarch renderer ONLY under
+                    // `--features gpu`, with NO loaded VS material (a material needs the mesh's
+                    // per-face shading — bricks carry only categorical block ids), and ONLY
+                    // when the boundary set is brick-REPRESENTABLE (single-material blocks + one
+                    // overlay). A mixed-material or textured scene keeps the mesh display but
+                    // still fog-sources from `build` (fog is boolean occupancy — the G5 insight).
+                    #[cfg(feature = "gpu")]
+                    if !loaded_material {
                     match voxel_worker::brick_representable_overlay(&two_layer_chunks) {
                         Some(overlay_active) => {
                             let pyramid =
@@ -1231,17 +1246,23 @@ impl WindowedState {
                             }
                         }
                     }
+                    } // end `#[cfg(feature = "gpu")] if !loaded_material` (the display gate)
                     // Fog sources from THIS rebuild's boundary set regardless of the display
-                    // path — the last dense-shaped display consumer is gone (ADR 0011 G5).
+                    // path — the last dense-shaped display consumer is gone (ADR 0011 G5). This
+                    // runs on EVERY build (non-gpu included) and for a loaded VS material, whose
+                    // display stays on the mesh above.
                     self.fog_brick_field = Some(build);
                 }
             } else {
-                // Gated off (loaded VS material, or Part-only under gpu): no brick mirror,
-                // no brick fog source — the pre-G5 fog path handles it. (This whole if/else
-                // is compiled out on non-gpu builds, where both fields stay `None` forever.)
+                // Non-chunkable (a Part-only field): no brick mirror, no brick fog source — the
+                // pre-G5 fog path (single-producer GPU atlas, else the CPU densify on the
+                // transient/streamed grid) handles it. Runs on every build now.
                 self.incremental_brick_field = None;
                 self.fog_brick_field = None;
             }
+            // Clearing the gpu raymarch display when it did not install is a gpu-only concern —
+            // the renderer is `None` on non-gpu builds, so this whole cleanup compiles out.
+            #[cfg(feature = "gpu")]
             if !brick_display_installed {
                 if let Some(renderer) = &mut self.brick_raymarch_renderer {
                     renderer.clear_brick_field();
@@ -1253,7 +1274,7 @@ impl WindowedState {
         // Brick-display perf follow-up to epic #64: the fallback cuboid mesh is DRAWN only when
         // the brick raymarch is not engaged. Engagement mirrors the per-frame gate
         // (`brick_raymarch_engaged`): a field installed this rebuild AND no debug-face mode.
-        // (A loaded VS material forces `brick_display_gate` false ⇒ `brick_display_installed`
+        // (A loaded VS material skips the display install ⇒ `brick_display_installed` stays
         // false, so it is already covered.) When engaged the mesh is redundant → SKIP the build
         // and mark it stale; the C1 interlock composes via `route_mesh_build` (a stale mesh, like
         // an outstanding async build, is never inline-patched — it rebuilds wholesale when next
@@ -1404,7 +1425,6 @@ impl WindowedState {
                         density,
                         Some(slab),
                         stream_fog_grid,
-                        #[cfg(feature = "gpu")]
                         self.fog_brick_field.as_ref(),
                     );
                     self.fog_occupancy_dirty = false;
@@ -2286,7 +2306,6 @@ impl WindowedState {
                             fog_density,
                             Some(slab),
                             self.fog_grid_streamed,
-                            #[cfg(feature = "gpu")]
                             self.fog_brick_field.as_ref(),
                         );
                         self.fog_occupancy_dirty = false;

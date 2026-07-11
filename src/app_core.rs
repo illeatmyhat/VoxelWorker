@@ -1017,19 +1017,17 @@ impl AppCore {
     ///
     /// This closes the startup OOM: a persisted 8000×800×800 scene resolved through
     /// `resolve_scene` would build a dense ~5.1-billion-cell `VoxelGrid` (~28.5 GB RSS →
-    /// OOM hang before the first print). `loaded_material` is always `false` here — no VS
-    /// material is resolved at startup (the material scan is async, `main.rs` `spawn_auto_scan`).
+    /// OOM hang before the first print). ADR 0011 G5: this now holds on EVERY build — the
+    /// non-gpu binary also sources fog from the brick sink, so it too seeds a dims-only grid
+    /// (before this it streamed the whole region and would have OOM'd on the persisted scene).
     ///
     /// Returns `(grid, streamed)` where `streamed` tells the shell whether `grid` carries
     /// occupancy (feeds the startup fog build's `grid_streamed` flag + the persisted
     /// `fog_grid_streamed` field).
-    pub fn startup_grid(scene: &Scene, density: u32, gpu_feature: bool) -> (VoxelGrid, bool) {
+    pub fn startup_grid(scene: &Scene, density: u32) -> (VoxelGrid, bool) {
         let streamed = runtime_streams_fog_grid(
-            gpu_feature,
             scene.has_chunkable_extent(density),
             scene.single_producer().is_some(),
-            // No VS material is loaded at startup — the scan is async.
-            false,
         );
         if streamed {
             (Self::resolve_scene(scene, density), true)
@@ -1161,21 +1159,22 @@ impl AppCore {
 /// **ADR 0011 G5 — the runtime fog-stream decision (the retirement seam).** Whether a
 /// rebuild must STREAM the whole-region fog `VoxelGrid` (the last dense-shaped display
 /// consumer, ADR 0010's flagged debt), or whether the onion fog sources its occupancy
-/// elsewhere. On a `--features gpu` build the fog reconstructs from the **brick sink** for
-/// any chunkable procedural scene (`fog_from_bricks`), and from the single-producer GPU
-/// resolve for a non-chunkable producer — so a chunkable gpu scene NEVER streams. Only a
-/// non-gpu build, a loaded VS material (mesh-only shading), or a non-chunkable multi-producer
-/// scene (a rare Part-only edit) still streams. Pure so the runtime call site and the
-/// retirement-assertion test share ONE decision (no drift).
-pub fn runtime_streams_fog_grid(
-    gpu_feature: bool,
-    chunkable: bool,
-    single_producer: bool,
-    loaded_material: bool,
-) -> bool {
-    let fog_from_bricks = gpu_feature && chunkable && !loaded_material;
-    let single_producer_resolve = gpu_feature && single_producer && !loaded_material;
-    !(fog_from_bricks || single_producer_resolve)
+/// elsewhere.
+///
+/// **The universal brick-fog law (ADR 0011 G5, the dense-grid retirement).** Fog is BOOLEAN
+/// occupancy, so the brick sink (`build_per_chunk_fog_occupancy_from_bricks`) reconstructs it
+/// for ANY chunkable scene — on EVERY build (gpu or not), mixed materials and a loaded VS
+/// texture included (a material changes shading, never occupancy). So this decision no longer
+/// depends on the `gpu` feature or on `loaded_material`: a chunkable scene NEVER streams. A
+/// non-chunkable SINGLE producer (a lone `DebugClouds` Part) resolves from its producer (the
+/// GPU per-chunk atlas under `--features gpu`), so it does not stream either. Only a
+/// non-chunkable MULTI-producer scene — a degenerate Part-only field with no composite extent,
+/// which resolves EMPTY — has neither source and still "streams" (an empty resolve). Pure so
+/// the runtime call site and the retirement-assertion test share ONE decision (no drift).
+pub fn runtime_streams_fog_grid(chunkable: bool, single_producer: bool) -> bool {
+    let fog_from_bricks = chunkable;
+    let producer_resolve = single_producer;
+    !(fog_from_bricks || producer_resolve)
 }
 
 /// The **default seed scene** the windowed app starts from (ADR 0003 Phase C, slice
@@ -2291,43 +2290,41 @@ mod undo_tests {
         );
     }
 
-    /// ADR 0011 G5: the runtime fog-stream decision truth table — a chunkable gpu scene
-    /// (single OR multi producer, display-representable or not) sources fog from the brick
-    /// sink and NEVER streams; a non-chunkable single producer resolves from its producer;
-    /// only a loaded VS material, a non-chunkable multi-producer scene, or a non-gpu build
-    /// still streams.
+    /// ADR 0011 G5: the runtime fog-stream decision truth table under the UNIVERSAL brick-fog
+    /// law. Fog is boolean occupancy, so ANY chunkable scene (single OR multi producer, any
+    /// build, loaded VS material included) sources it from the brick sink and NEVER streams; a
+    /// non-chunkable single producer resolves from its producer. Only a non-chunkable
+    /// MULTI-producer scene — a degenerate Part-only field — still "streams" (an empty resolve).
+    /// The decision no longer depends on the `gpu` feature or `loaded_material` (both retired
+    /// as dimensions), so the non-gpu binary now takes the brick-fog path too.
     #[test]
     fn runtime_streams_fog_grid_truth_table() {
-        // gpu + chunkable → fog from bricks, never streams (streaming is orthogonal to
-        // display representability — a mixed-material mesh scene is chunkable + no material).
-        assert!(!runtime_streams_fog_grid(true, true, true, false), "chunkable single");
+        // Chunkable → fog from bricks, never streams — single or multi producer alike (the
+        // multi-producer chunkable scene streamed before G5; the loaded-VS-material scene
+        // streamed before this universalisation — both now source from bricks).
+        assert!(!runtime_streams_fog_grid(true, true), "chunkable single");
         assert!(
-            !runtime_streams_fog_grid(true, true, false, false),
+            !runtime_streams_fog_grid(true, false),
             "chunkable MULTI producer — the scene that streamed before G5"
         );
-        // gpu + non-chunkable single producer → producer GPU-resolve, no stream.
-        assert!(!runtime_streams_fog_grid(true, false, true, false), "non-chunkable single");
-        // gpu + non-chunkable multi-producer (rare Part-only) → still streams (fallback).
-        assert!(runtime_streams_fog_grid(true, false, false, false), "non-chunkable multi");
-        // A loaded VS material (mesh-only) always streams, even chunkable.
-        assert!(runtime_streams_fog_grid(true, true, true, true), "loaded material streams");
-        // A non-gpu build always streams (the CPU display path).
-        assert!(runtime_streams_fog_grid(false, true, true, false), "non-gpu streams");
-        assert!(runtime_streams_fog_grid(false, false, false, false), "non-gpu streams");
+        // Non-chunkable single producer (a lone DebugClouds Part) → producer resolve, no stream.
+        assert!(!runtime_streams_fog_grid(false, true), "non-chunkable single");
+        // Non-chunkable MULTI-producer (a degenerate Part-only field) → the sole stream case.
+        assert!(runtime_streams_fog_grid(false, false), "non-chunkable multi");
     }
 
     /// ADR 0011 G5 startup door (the OOM-hang regression guard): the startup grid a
-    /// chunkable gpu scene seeds is dimensions + recentre ONLY — occupancy is NEVER
-    /// resolved, so the persisted 8000×800×800 scene can no longer build a dense
-    /// ~5.1-billion-cell grid at startup. Mirrors the per-edit rebuild's non-streamed
-    /// branch (`gpu_display_rebuild_never_streams_fog_grid`), one door up at startup.
+    /// chunkable scene seeds is dimensions + recentre ONLY — occupancy is NEVER resolved, so
+    /// the persisted 8000×800×800 scene can no longer build a dense ~5.1-billion-cell grid at
+    /// startup. Under the UNIVERSAL brick-fog law this holds regardless of the `gpu` feature
+    /// (the decision no longer takes it), so this one test covers both build flavours.
     #[test]
-    fn startup_grid_chunkable_gpu_scene_builds_no_occupancy() {
+    fn startup_grid_chunkable_scene_builds_no_occupancy() {
         let density = 16u32;
         let scene = default_replay_seed_scene();
         assert!(scene.has_chunkable_extent(density), "the seed scene is chunkable");
-        let (grid, streamed) = AppCore::startup_grid(&scene, density, true);
-        assert!(!streamed, "a chunkable gpu scene sources fog from bricks, never streams");
+        let (grid, streamed) = AppCore::startup_grid(&scene, density);
+        assert!(!streamed, "a chunkable scene sources fog from bricks, never streams");
         assert_eq!(grid.occupied_count(), 0, "the startup grid must build NO occupancy");
         assert_eq!(
             grid.dimensions,
@@ -2341,20 +2338,22 @@ mod undo_tests {
         );
     }
 
-    /// ADR 0011 G5 startup door, streaming arm: a non-gpu build still streams the resolved
-    /// occupancy, byte-identical to `resolve_scene` (the CPU display path). `streamed` is
-    /// `true`, so the shell's startup fog build + `fog_grid_streamed` see occupancy.
+    /// ADR 0011 G5 non-gpu OOM guard (the dense-grid retirement's headline fix): before the
+    /// universal brick-fog law the non-gpu binary STREAMED the whole region at startup and
+    /// would have OOM'd on the persisted 8000×800×800 scene. A chunkable scene now builds NO
+    /// occupancy on the non-gpu path either — the streaming decision is `gpu`-feature-agnostic,
+    /// so this asserts the SAME dims-only grid the gpu path gets (proven above) is what a
+    /// non-gpu build seeds. (The two paths call the identical `startup_grid`, so this pins that
+    /// the retirement is not silently gpu-only.)
     #[test]
-    fn startup_grid_non_gpu_streams_resolved_occupancy() {
+    fn startup_grid_chunkable_scene_never_streams_on_any_build() {
         let density = 16u32;
         let scene = default_replay_seed_scene();
-        let (grid, streamed) = AppCore::startup_grid(&scene, density, false);
-        assert!(streamed, "a non-gpu build streams the CPU display grid");
-        let resolved = AppCore::resolve_scene(&scene, density);
-        assert_eq!(grid.dimensions, resolved.dimensions, "dimensions match resolve_scene");
-        assert_eq!(grid.recentre_voxels, resolved.recentre_voxels, "recentre matches");
-        assert_eq!(grid.occupied, resolved.occupied, "occupancy byte-equal to resolve_scene");
-        assert!(!grid.occupied.is_empty(), "the streamed grid carries occupancy");
+        // `startup_grid` no longer branches on the `gpu` feature, so its result is the
+        // whole-build answer: a chunkable scene is dims-only, never a dense stream.
+        let (grid, streamed) = AppCore::startup_grid(&scene, density);
+        assert!(!streamed, "chunkable scene never streams — brick sink is the fog source");
+        assert_eq!(grid.occupied_count(), 0, "no dense occupancy on any build");
     }
 
     /// ADR 0011 G5 retirement assertion (load-bearing): the RUNTIME decision that a
@@ -2370,9 +2369,9 @@ mod undo_tests {
         assert!(chunkable, "the two-tool fixture is chunkable");
         let single_producer = scene.single_producer().is_some();
         assert!(!single_producer, "two tools is a MULTI-producer scene");
-        // The runtime (gpu, no loaded material) decides NOT to stream.
-        let streams = runtime_streams_fog_grid(true, chunkable, single_producer, false);
-        assert!(!streams, "a chunkable gpu scene must source fog from bricks, never stream");
+        // The runtime decides NOT to stream (universal brick-fog law: any chunkable scene).
+        let streams = runtime_streams_fog_grid(chunkable, single_producer);
+        assert!(!streams, "a chunkable scene must source fog from bricks, never stream");
         // And the rebuild honouring that decision expands NO occupancy (the retirement).
         let mut core = test_core();
         let RebuildOutcome::Built(output) = core.rebuild(&scene, density, streams) else {
