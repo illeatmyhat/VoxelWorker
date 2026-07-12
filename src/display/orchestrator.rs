@@ -18,11 +18,11 @@ use std::sync::Arc;
 
 use crate::{
     build_brick_field, route_brick_rebuild, route_mesh_build, spawn_brick_worker,
-    spawn_geometry_worker, BrickFieldBuild, BrickFieldUpdate, BrickRaymarchRenderer,
+    spawn_geometry_worker, BrickFieldUpdate, BrickRaymarchRenderer,
     BrickRebuildAction, BrickRebuildOutcome, BrickRebuildRequest, BrickWorker, CuboidMeshRenderer,
     EditShape, GenerationTracker, GeometryRebuildRequest, GeometryWorker, IncrementalBrickField,
-    LayerBand, MeshBuildRoute, RebuildRoute, Scene, TwoLayerChunk, TwoLayerResidentCache,
-    ASYNC_REBUILD_CHUNK_THRESHOLD,
+    LayerBand, MeshBuildRoute, RebuildRoute, Scene, SculptedAtlasPayload, TwoLayerChunk,
+    TwoLayerResidentCache, ASYNC_REBUILD_CHUNK_THRESHOLD,
 };
 // Consumed only by the GPU display-install paths (compiled out of a non-gpu build, where the
 // orchestrator maintains just the CPU brick mirror).
@@ -235,24 +235,28 @@ impl DisplayOrchestrator {
                     let mut renderer =
                         BrickRaymarchRenderer::new(&device, &queue, color_format);
                     let pyramid = ClipmapPyramid::from_chunks(two_layer_chunks);
+                    // Seed the mirror (single owner) BY MOVE and install from its records +
+                    // upload payload — one copy of the field (item 9).
+                    let (mirror, atlas) = IncrementalBrickField::from_wholesale(build);
+                    // The record set is surface-only by construction (ADR 0011 interior
+                    // elision fused into `build_brick_field`) — a plain 1:1 pack.
+                    let gpu_records = pack_gpu_records(mirror.records(), |_| false);
                     renderer.install_brick_field(
                         &device,
                         &queue,
-                        &build,
-                        // The record set is surface-only by construction (ADR 0011 interior
-                        // elision fused into `build_brick_field`) — a plain 1:1 pack.
-                        &pack_gpu_records(&build, |_| false),
+                        mirror.records(),
+                        &atlas,
+                        &gpu_records,
                         &pyramid,
                         recentre_voxels,
                         overlay_active,
                     );
                     println!(
                         "brick raymarch: startup field installed ({} records, {} sculpted)",
-                        build.brick_records.len(),
-                        build.sculpted_brick_count(),
+                        mirror.records().len(),
+                        mirror.sculpted_brick_count(),
                     );
-                    incremental_brick_field =
-                        Some(IncrementalBrickField::from_wholesale(&build));
+                    incremental_brick_field = Some(mirror);
                     brick_raymarch_renderer = Some(renderer);
                 }
             }
@@ -581,8 +585,15 @@ impl DisplayOrchestrator {
                 // non-gpu build the in-place mirror patch is what matters and the descriptor
                 // is discarded.
                 let patch_mirror = matches!(brick_route, BrickRebuildAction::PatchInline);
+                // `update` is the GPU atlas-slot descriptor (patch path); `wholesale_atlas` is
+                // the upload payload MOVED out of a wholesale build (item 9 — one copy of the
+                // field). The patch path reads records/geometry/dirty bytes from the resident
+                // mirror directly (no `to_build()`), so it produces no payload here.
                 #[cfg_attr(not(feature = "gpu"), allow(unused_variables))]
-                let (build, update): (BrickFieldBuild, Option<BrickFieldUpdate>) = if patch_mirror {
+                let (update, wholesale_atlas): (
+                    Option<BrickFieldUpdate>,
+                    Option<SculptedAtlasPayload>,
+                ) = if patch_mirror {
                     let dirty = incremental_dirty_chunks
                         .as_ref()
                         .expect("PatchInline ⇒ incremental_dirty_chunks is Some");
@@ -596,20 +607,29 @@ impl DisplayOrchestrator {
                         "an incremental edit never changes density (it routes wholesale)"
                     );
                     let update = field.apply_dirty_update(&two_layer_chunks, dirty);
-                    (field.to_build(), Some(update))
+                    (Some(update), None)
                 } else {
-                    // Wholesale (re)build; RESET the mirror so the next incremental edit
+                    // Wholesale (re)build; RESET the mirror BY MOVE (records move into the
+                    // mirror, atlas bytes into the upload payload) so the next incremental edit
                     // patches from a known-good full field.
                     let build = build_brick_field(&two_layer_chunks, density);
-                    self.incremental_brick_field = if build.brick_records.is_empty() {
-                        None
+                    if build.brick_records.is_empty() {
+                        self.incremental_brick_field = None;
+                        (None, None)
                     } else {
-                        Some(IncrementalBrickField::from_wholesale(&build))
-                    };
-                    (build, None)
+                        let (mirror, atlas) = IncrementalBrickField::from_wholesale(build);
+                        self.incremental_brick_field = Some(mirror);
+                        (None, Some(atlas))
+                    }
                 };
 
-                if build.brick_records.is_empty() {
+                // The field is empty iff no mirror survived (a wholesale emptied it, or an
+                // incremental patch removed the last record) — read from the single owner.
+                let records_empty = self
+                    .incremental_brick_field
+                    .as_ref()
+                    .is_none_or(|field| field.records().is_empty());
+                if records_empty {
                     // The edit emptied the field — no display brick.
                     self.incremental_brick_field = None;
                 } else {
@@ -625,13 +645,19 @@ impl DisplayOrchestrator {
                     match brick_representable_overlay(&two_layer_chunks) {
                         Some(overlay_active) => {
                             let pyramid = ClipmapPyramid::from_chunks(&two_layer_chunks);
+                            // The single-owner mirror is the truth for records + atlas geometry;
+                            // the renderer seams read straight from it (item 9).
+                            let mirror = self
+                                .incremental_brick_field
+                                .as_ref()
+                                .expect("records_empty false ⇒ a resident mirror");
                             // ADR 0011 interior elision: the record set is SURFACE-ONLY by
                             // construction (`build_brick_field` fuses the occlusion decision
                             // into emission — a fully-occluded interior block never becomes a
                             // record, so nothing here needs a second mask pass). For a large
                             // solid the per-edit record upload is ∝surface, not ∝volume.
                             // Interiors live in the two-layer chunks the clip-map derives from.
-                            let gpu_records = pack_gpu_records(&build, |_| false);
+                            let gpu_records = pack_gpu_records(mirror.records(), |_| false);
                             // Patch in place iff we produced an incremental update AND the
                             // renderer actually HOLDS A LIVE, CURRENT FIELD; otherwise (wholesale,
                             // or the display re-engaging from a mesh fallback) install fresh. The
@@ -654,7 +680,7 @@ impl DisplayOrchestrator {
                                 if update.atlas_grew {
                                     println!(
                                         "brick: atlas grew — full re-pack ({} sculpted slots)",
-                                        build.sculpted_brick_count()
+                                        mirror.sculpted_brick_count()
                                     );
                                 }
                                 let renderer = self
@@ -664,7 +690,7 @@ impl DisplayOrchestrator {
                                 renderer.patch_brick_field(
                                     &self.device,
                                     &self.queue,
-                                    &build,
+                                    mirror,
                                     update,
                                     &gpu_records,
                                     &pyramid,
@@ -672,6 +698,11 @@ impl DisplayOrchestrator {
                                     overlay_active,
                                 );
                             } else {
+                                // Wholesale install: the upload payload was moved out of the
+                                // build; a re-engaging incremental edit (no wholesale payload)
+                                // re-packs it once from the mirror (the legitimate resize pack).
+                                let atlas = wholesale_atlas
+                                    .unwrap_or_else(|| mirror.pack_atlas_payload());
                                 let renderer =
                                     self.brick_raymarch_renderer.get_or_insert_with(|| {
                                         BrickRaymarchRenderer::new(
@@ -683,7 +714,8 @@ impl DisplayOrchestrator {
                                 renderer.install_brick_field(
                                     &self.device,
                                     &self.queue,
-                                    &build,
+                                    mirror.records(),
+                                    &atlas,
                                     &gpu_records,
                                     &pyramid,
                                     recentre_voxels,
@@ -990,13 +1022,19 @@ impl DisplayOrchestrator {
                 #[cfg(feature = "gpu")]
                 {
                     let crate::BrickDisplayInstall {
-                        build,
+                        atlas,
                         gpu_records,
                         pyramid,
                         overlay_active,
                         mirror,
                     } = *install;
+                    // The mirror is the single owner; install reads its records + the upload
+                    // payload the worker moved out of the build alongside it (item 9).
                     self.incremental_brick_field = Some(mirror);
+                    let mirror = self
+                        .incremental_brick_field
+                        .as_ref()
+                        .expect("just stored the mirror");
                     // Wholesale semantics: always a fresh INSTALL (never a patch) — the
                     // worker built the complete field, and a cleared/stale resident field
                     // must not be patched (the F2 gate's lesson).
@@ -1006,7 +1044,8 @@ impl DisplayOrchestrator {
                     renderer.install_brick_field(
                         &self.device,
                         &self.queue,
-                        &build,
+                        mirror.records(),
+                        &atlas,
                         &gpu_records,
                         &pyramid,
                         result.recentre_voxels,
@@ -1014,8 +1053,8 @@ impl DisplayOrchestrator {
                     );
                     println!(
                         "brick: async wholesale field installed ({} records, {} sculpted)",
-                        build.brick_records.len(),
-                        build.sculpted_brick_count(),
+                        mirror.records().len(),
+                        mirror.sculpted_brick_count(),
                     );
                     self.brick_fallback_reported = false;
                     // The brick is (again) the display: cancel any pending deferred clear.

@@ -3166,25 +3166,28 @@ mod tests {
             let stage_start = std::time::Instant::now();
             let build = build_brick_field(&chunks, density);
             let field_elapsed = stage_start.elapsed();
+            let record_count = build.brick_records.len();
             let record_megabytes =
-                (build.brick_records.len() * std::mem::size_of::<BrickRecord>()) as f64 / 1.0e6;
+                (record_count * std::mem::size_of::<BrickRecord>()) as f64 / 1.0e6;
             let stage_start = std::time::Instant::now();
-            let gpu_records = pack_gpu_records(&build, |_| false);
+            let gpu_records = pack_gpu_records(&build.brick_records, |_| false);
             let pack_elapsed = stage_start.elapsed();
             let stage_start = std::time::Instant::now();
             let pyramid = ClipmapPyramid::from_chunks(&chunks);
             let pyramid_elapsed = stage_start.elapsed();
             let stage_start = std::time::Instant::now();
-            let incremental_mirror = IncrementalBrickField::from_wholesale(&build);
+            // Single-owner rework (item 9): from_wholesale now MOVES the records + atlas bytes
+            // (no records clone), seeding only the bit tiles.
+            let (incremental_mirror, _atlas) = IncrementalBrickField::from_wholesale(build);
             let wholesale_elapsed = stage_start.elapsed();
             println!(
                 "brick pipeline probe {edge}^3 vx ({blocks} blk/axis): classify {} chunks \
                  {classify_elapsed:?} | brick_field {} surface records ({record_megabytes:.0} MB) \
                  {field_elapsed:?} | gpu_pack {} records {pack_elapsed:?} | \
                  pyramid(from_chunks) {pyramid_elapsed:?} | \
-                 from_wholesale (records clone) {wholesale_elapsed:?}",
+                 from_wholesale (records move + tile seed) {wholesale_elapsed:?}",
                 chunks.len(),
-                build.brick_records.len(),
+                record_count,
                 gpu_records.len(),
             );
             drop(incremental_mirror);

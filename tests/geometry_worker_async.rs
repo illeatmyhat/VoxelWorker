@@ -471,7 +471,7 @@ fn c1_brick_field_rebuilds_wholesale_while_outstanding_no_stale_patch() {
     );
 
     // The shell's persistent brick state (starts == S0) + the C1 outstanding flag.
-    let mut field = IncrementalBrickField::from_wholesale(&s0);
+    let (mut field, _) = IncrementalBrickField::from_wholesale(s0.clone());
     assert_eq!(field.to_build(), s0, "the field starts as the installed baseline S0");
     let mut async_outstanding = false;
 
@@ -493,7 +493,7 @@ fn c1_brick_field_rebuilds_wholesale_while_outstanding_no_stale_patch() {
         !brick_patches_in_place(route1),
         "a wholesale edit rebuilds the brick field wholesale"
     );
-    field = IncrementalBrickField::from_wholesale(&s1);
+    field = IncrementalBrickField::from_wholesale(s1.clone()).0;
     assert_eq!(
         field.to_build(),
         s1,
@@ -517,7 +517,7 @@ fn c1_brick_field_rebuilds_wholesale_while_outstanding_no_stale_patch() {
          (that would install a patch of a state the mesh path treats as stale)"
     );
     // The interlock: rebuild the brick field WHOLESALE from the CURRENT scene (S2).
-    field = IncrementalBrickField::from_wholesale(&s2);
+    field = IncrementalBrickField::from_wholesale(s2.clone()).0;
 
     // THE ASSERTION: the finally-resident brick field is a from-scratch build of the LATEST
     // scene (S2) — never a stale S0/S1. `to_build` round-trips a wholesale seed byte-exactly.

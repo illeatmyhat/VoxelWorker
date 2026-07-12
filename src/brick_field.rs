@@ -586,10 +586,63 @@ pub struct BrickFieldBuild {
     pub atlas_dim_voxels: u32,
 }
 
+/// The GPU upload payload for the sculpted-brick atlas — the ONE place the flat R8 byte
+/// blob still lives after item 9's single-owner rework (see `docs/architecture/`, the
+/// brick-field display chapter). A wholesale build hands this to
+/// [`BrickRaymarchRenderer::install_brick_field`](crate::brick_raymarch::BrickRaymarchRenderer::install_brick_field)
+/// by MOVE ([`IncrementalBrickField::from_wholesale`]); the incremental patch path never
+/// materialises one except on the legitimate atlas-grow re-pack
+/// ([`IncrementalBrickField::pack_atlas_payload`]). Carries the atlas GEOMETRY alongside
+/// the bytes so the install seam sets its frame scalars without a `BrickFieldBuild`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SculptedAtlasPayload {
+    /// `atlas_dim_voxels³` occupancy bytes (0 empty / 255 occupied), slot-packed — the
+    /// bytes [`upload_brick_atlas`] lands in the R8 3D texture.
+    pub bytes: Vec<u8>,
+    /// The atlas texture dimension per axis (`bricks_per_axis * brick_edge_voxels`; 0 when
+    /// the build has no sculpted brick).
+    pub atlas_dim_voxels: u32,
+    /// Sculpted-brick tile slots per atlas axis (`ceil(cbrt(slot_count))`) — the tile-grid
+    /// edge the frame scalars carry.
+    pub bricks_per_axis: u32,
+    /// The brick edge in voxels (`voxels_per_block`, the ONE-BLOCK granule).
+    pub brick_edge_voxels: u32,
+    /// Live sculpted-brick count (the wholesale install's `last_atlas_slots_written`).
+    pub sculpted_slot_count: u32,
+}
+
+/// The sculpted atlas's tile geometry — `bricks_per_axis` / `atlas_dim_voxels` / brick edge,
+/// factored so the incremental owner and the packer never drift on the tile-cube math.
+/// ([`IncrementalBrickField::atlas_geometry`].)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SculptedAtlasGeometry {
+    /// Sculpted-brick tile slots per atlas axis (`ceil(cbrt(slot_high_water))`).
+    pub bricks_per_axis: u32,
+    /// The atlas texture dimension per axis (`bricks_per_axis * brick_edge_voxels`).
+    pub atlas_dim_voxels: u32,
+    /// The brick edge in voxels (`voxels_per_block`).
+    pub brick_edge_voxels: u32,
+}
+
 /// The occupancy byte a solid voxel packs to — the fog atlas's 0/255 R8 convention.
 const SCULPTED_BRICK_OCCUPIED: u8 = 255;
 
 impl BrickFieldBuild {
+    /// Materialise this build's sculpted atlas as an upload [`SculptedAtlasPayload`] — the
+    /// wholesale-build → install adapter for the callers that keep the `BrickFieldBuild`
+    /// around (the `shot` golden tool and the parity tests). CLONES the atlas bytes; the
+    /// live worker/orchestrator paths move them instead via
+    /// [`IncrementalBrickField::from_wholesale`].
+    pub fn atlas_payload(&self) -> SculptedAtlasPayload {
+        SculptedAtlasPayload {
+            bytes: self.sculpted_atlas_bytes.clone(),
+            atlas_dim_voxels: self.atlas_dim_voxels,
+            bricks_per_axis: self.bricks_per_axis,
+            brick_edge_voxels: self.brick_edge_voxels,
+            sculpted_slot_count: self.sculpted_brick_count() as u32,
+        }
+    }
+
     /// Resolve the record for an absolute world-block coordinate by binary search over
     /// the sorted array — the CPU mirror of the in-shader residency lookup (ADR 0011
     /// 4b), and the parity harness's per-block accessor. `None` = air.
@@ -1320,11 +1373,18 @@ pub struct IncrementalBrickField {
 }
 
 impl IncrementalBrickField {
-    /// Seed the incremental field from a wholesale [`build_brick_field`] (the reset a
-    /// scene load / density change / gate re-engagement performs). Slots are the build's
-    /// dense `0..sculpted_count`; the free-list starts empty.
-    pub fn from_wholesale(build: &BrickFieldBuild) -> Self {
+    /// Seed the incremental field from a wholesale [`build_brick_field`] BY MOVE (the reset
+    /// a scene load / density change / gate re-engagement performs), returning the mirror
+    /// AND the [`SculptedAtlasPayload`] the install seam uploads. Consuming the build is the
+    /// single-owner win (`docs/architecture/`, the brick-field display chapter): the record
+    /// Vec moves straight into the mirror (no clone) and the flat atlas byte blob moves into
+    /// the payload — the wholesale channel/inline reset now ships ONE copy of the field, not
+    /// a build plus a mirror seeded from it. Slots are the build's dense `0..sculpted_count`;
+    /// the free-list starts empty.
+    pub fn from_wholesale(build: BrickFieldBuild) -> (Self, SculptedAtlasPayload) {
         let sculpted_count = build.sculpted_brick_count();
+        // Unpack the flat atlas bytes into the mirror's bit tiles BEFORE moving the blob into
+        // the payload (the one O(sculpted) seeding cost, unchanged from before).
         let slot_tiles: Vec<BrickOccupancyTile> = (0..sculpted_count as u32)
             .map(|slot| {
                 BrickOccupancyTile::from_bytes(
@@ -1333,11 +1393,77 @@ impl IncrementalBrickField {
                 )
             })
             .collect();
-        Self {
-            brick_edge_voxels: build.brick_edge_voxels,
-            records: build.brick_records.clone(),
+        let BrickFieldBuild {
+            brick_records,
+            sculpted_atlas_bytes,
+            brick_edge_voxels,
+            bricks_per_axis,
+            atlas_dim_voxels,
+        } = build;
+        let payload = SculptedAtlasPayload {
+            bytes: sculpted_atlas_bytes,
+            atlas_dim_voxels,
+            bricks_per_axis,
+            brick_edge_voxels,
+            sculpted_slot_count: sculpted_count as u32,
+        };
+        let mirror = Self {
+            brick_edge_voxels,
+            records: brick_records,
             slot_tiles,
             free_slots: Vec::new(),
+        };
+        (mirror, payload)
+    }
+
+    /// The live records — the sorted [`BrickRecord`] array the GPU record pack + the
+    /// pyramid derive from. The mirror is the single CPU owner (item 9): the renderer's
+    /// install/patch seams read records straight from here, never via [`to_build`](Self::to_build).
+    pub fn records(&self) -> &[BrickRecord] {
+        &self.records
+    }
+
+    /// How many live records are sculpted bricks (mirror of
+    /// [`BrickFieldBuild::sculpted_brick_count`]) — the wholesale install's slot count.
+    pub fn sculpted_brick_count(&self) -> usize {
+        self.records
+            .iter()
+            .filter(|record| matches!(record.payload, BrickPayload::Sculpted { .. }))
+            .count()
+    }
+
+    /// The sculpted atlas's tile geometry, derived from the slot high-water mark exactly as
+    /// [`pack_sculpted_atlas`] would — the frame scalars + slot-origin inputs the patch seam
+    /// needs without materialising a build.
+    pub fn atlas_geometry(&self) -> SculptedAtlasGeometry {
+        let bricks_per_axis = sculpted_atlas_bricks_per_axis(self.slot_tiles.len());
+        SculptedAtlasGeometry {
+            bricks_per_axis,
+            atlas_dim_voxels: bricks_per_axis * self.brick_edge_voxels,
+            brick_edge_voxels: self.brick_edge_voxels,
+        }
+    }
+
+    /// One slot's `edge³` occupancy bytes (bit tile → R8 bytes, O(brick)) — the DIRTY-SLOT
+    /// upload the incremental patch writes, straight from the owning tile (no whole-atlas
+    /// re-pack). A freed/dead slot yields its stale bytes (unreachable, never uploaded).
+    pub fn sculpted_slot_bytes(&self, slot: u32) -> Vec<u8> {
+        self.slot_tiles[slot as usize].unpack_to_bytes()
+    }
+
+    /// Materialise the full atlas as a [`SculptedAtlasPayload`] — the ONE legitimate
+    /// wholesale re-pack, done only on an atlas GROW (`BrickFieldUpdate::atlas_grew`) where
+    /// every slot's 3D position moved. Reuses [`pack_sculpted_atlas`] so it stays
+    /// byte-identical to [`to_build`](Self::to_build)'s atlas.
+    pub fn pack_atlas_payload(&self) -> SculptedAtlasPayload {
+        let (bricks_per_axis, atlas_dim_voxels, bytes) =
+            pack_sculpted_atlas(&self.slot_tiles, self.brick_edge_voxels);
+        SculptedAtlasPayload {
+            bytes,
+            atlas_dim_voxels,
+            bricks_per_axis,
+            brick_edge_voxels: self.brick_edge_voxels,
+            sculpted_slot_count: self.sculpted_brick_count() as u32,
         }
     }
 
@@ -1536,10 +1662,17 @@ impl IncrementalBrickField {
         }
     }
 
-    /// Materialise the current field as a [`BrickFieldBuild`] (records + packed atlas) —
-    /// the form the GPU install / full re-upload and the parity net consume. The atlas is
-    /// sized to the slot high-water mark (live + freed holes), so a live record's slot
-    /// bytes are always in range.
+    /// Materialise the current field as a [`BrickFieldBuild`] (records + packed atlas).
+    ///
+    /// **Parity-oracle materialisation ONLY (item 9).** No production / per-frame path may
+    /// call this: it clones ALL records and re-packs the ENTIRE flat atlas blob, the exact
+    /// cost the single-owner rework removed from the per-edit patch path. The renderer's
+    /// install/patch seams now read records / atlas geometry / dirty-slot bytes straight
+    /// from the mirror ([`records`](Self::records), [`atlas_geometry`](Self::atlas_geometry),
+    /// [`sculpted_slot_bytes`](Self::sculpted_slot_bytes), [`pack_atlas_payload`](Self::pack_atlas_payload)).
+    /// This survives as the parity gate's witness — `to_build() == build_brick_field(...)`
+    /// after every edit is the G3 acceptance bar. The atlas is sized to the slot high-water
+    /// mark (live + freed holes), so a live record's slot bytes are always in range.
     pub fn to_build(&self) -> BrickFieldBuild {
         let (bricks_per_axis, atlas_dim_voxels, sculpted_atlas_bytes) =
             pack_sculpted_atlas(&self.slot_tiles, self.brick_edge_voxels);
@@ -1571,9 +1704,9 @@ fn sculpted_atlas_bricks_per_axis(slot_count: usize) -> u32 {
 pub fn upload_brick_atlas(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    build: &BrickFieldBuild,
+    atlas: &SculptedAtlasPayload,
 ) -> wgpu::Texture {
-    let atlas_dim = build.atlas_dim_voxels.max(1);
+    let atlas_dim = atlas.atlas_dim_voxels.max(1);
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("brick-field sculpted atlas"),
         size: wgpu::Extent3d {
@@ -1590,7 +1723,7 @@ pub fn upload_brick_atlas(
             | wgpu::TextureUsages::COPY_SRC,
         view_formats: &[],
     });
-    if build.atlas_dim_voxels > 0 {
+    if atlas.atlas_dim_voxels > 0 {
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &texture,
@@ -1598,7 +1731,7 @@ pub fn upload_brick_atlas(
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            &build.sculpted_atlas_bytes,
+            &atlas.bytes,
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(atlas_dim),
@@ -2457,7 +2590,7 @@ mod incremental_tests {
         let mut previous_index = scene0.build_leaf_spatial_index(density);
         let fresh0 = covering_owned(&mut cache, scene0, density);
         let build0 = build_brick_field(&fresh0, density);
-        let mut field = IncrementalBrickField::from_wholesale(&build0);
+        let mut field = IncrementalBrickField::from_wholesale(build0.clone()).0;
         let mut covering: std::collections::BTreeSet<[i32; 3]> =
             fresh0.iter().map(|(coord, _)| *coord).collect();
         assert_incremental_matches_wholesale(&field.to_build(), &build0, scenes[0].0);
@@ -2486,7 +2619,7 @@ mod incremental_tests {
                 incremental_steps += 1;
             } else {
                 let build = build_brick_field(&fresh, density);
-                field = IncrementalBrickField::from_wholesale(&build);
+                field = IncrementalBrickField::from_wholesale(build).0;
             }
             covering = new_covering;
 
@@ -2527,7 +2660,7 @@ mod incremental_tests {
         let index_a = scene_a.build_leaf_spatial_index(density);
         let fresh_a = covering_owned(&mut cache, &scene_a, density);
         let build_a = build_brick_field(&fresh_a, density);
-        let mut field = IncrementalBrickField::from_wholesale(&build_a);
+        let mut field = IncrementalBrickField::from_wholesale(build_a.clone()).0;
         let total_sculpted = build_a.sculpted_brick_count();
 
         let index_b = scene_b.build_leaf_spatial_index(density);
@@ -2571,6 +2704,78 @@ mod incremental_tests {
         // And the result is still byte-exact vs wholesale.
         let wholesale = build_brick_field(&fresh_b, density);
         assert_incremental_matches_wholesale(&field.to_build(), &wholesale, "one-chunk-recolour");
+    }
+
+    /// **The patch-parity witness (item 9).** The renderer's patch path no longer materialises
+    /// `to_build()` per edit — it reads each dirty slot's bytes and the atlas geometry straight
+    /// from the mirror. This pins those owner-side accessors to what a `to_build()`
+    /// materialisation would have produced: after an incremental edit, every written slot's
+    /// `sculpted_slot_bytes` equals `to_build().sculpted_brick_occupancy` for that slot, and
+    /// `atlas_geometry()` matches the build's tile geometry. If these ever drift, the GPU patch
+    /// would upload the wrong texels while the parity gate (which still uses `to_build`) stayed
+    /// green — so this is the guard the deleted per-edit `to_build` used to provide implicitly.
+    #[test]
+    fn patched_slot_bytes_and_geometry_match_to_build_materialisation() {
+        let density = 4u32;
+        let anchor_lo = tool(ShapeKind::Box, [-14, 0, 0], MaterialChoice::Stone, density);
+        let anchor_hi = tool(ShapeKind::Box, [14, 0, 0], MaterialChoice::Stone, density);
+        let scene_a = Scene::from_nodes(vec![
+            anchor_lo.clone(),
+            anchor_hi.clone(),
+            tool(ShapeKind::Sphere, [0, 0, 0], MaterialChoice::Wood, density),
+        ]);
+        // A pure recolour (occupancy fixed) — writes the dirty chunk's slots without growing.
+        let scene_b = Scene::from_nodes(vec![
+            anchor_lo,
+            anchor_hi,
+            tool(ShapeKind::Sphere, [0, 0, 0], MaterialChoice::Plain, density),
+        ]);
+
+        let mut cache = TwoLayerResidentCache::enabled();
+        cache.clear();
+        let index_a = scene_a.build_leaf_spatial_index(density);
+        let fresh_a = covering_owned(&mut cache, &scene_a, density);
+        let build_a = build_brick_field(&fresh_a, density);
+        let mut field = IncrementalBrickField::from_wholesale(build_a).0;
+
+        let index_b = scene_b.build_leaf_spatial_index(density);
+        let edit_aabb = index_b
+            .edit_aabb_since(&index_a)
+            .expect("a recolour is a localisable edit");
+        let dirty = cache.invalidate_aabb(&edit_aabb, density);
+        let fresh_b = covering_owned(&mut cache, &scene_b, density);
+
+        let update = field.apply_dirty_update(&fresh_b, &dirty);
+        assert!(!update.written_slots.is_empty(), "the recolour must write some slots");
+
+        // The materialisation the patch path used to build per edit — the witness.
+        let materialised = field.to_build();
+        let geometry = field.atlas_geometry();
+        assert_eq!(
+            geometry.brick_edge_voxels, materialised.brick_edge_voxels,
+            "mirror edge matches the materialisation"
+        );
+        assert_eq!(
+            geometry.bricks_per_axis, materialised.bricks_per_axis,
+            "mirror tile-grid edge matches the materialisation"
+        );
+        assert_eq!(
+            geometry.atlas_dim_voxels, materialised.atlas_dim_voxels,
+            "mirror atlas dimension matches the materialisation"
+        );
+        for &slot in &update.written_slots {
+            assert_eq!(
+                field.sculpted_slot_bytes(slot),
+                materialised.sculpted_brick_occupancy(slot),
+                "written slot {slot} bytes must equal the to_build() materialisation"
+            );
+        }
+        // The full re-pack payload equals the materialisation's atlas byte-for-byte.
+        assert_eq!(
+            field.pack_atlas_payload().bytes,
+            materialised.sculpted_atlas_bytes,
+            "the grow-path re-pack equals the materialised atlas"
+        );
     }
 
     /// **The occlusion-dilation seam (ADR 0011 interior elision).** Under the surface-only
@@ -2630,7 +2835,7 @@ mod incremental_tests {
         let index_with_b = scene_with_b.build_leaf_spatial_index(density);
         let fresh_with_b = covering_owned(&mut cache, &scene_with_b, density);
         let build_with_b = build_brick_field(&fresh_with_b, density);
-        let mut field = IncrementalBrickField::from_wholesale(&build_with_b);
+        let mut field = IncrementalBrickField::from_wholesale(build_with_b.clone()).0;
 
         // --- Step 1: CARVE (delete box B) — exposes box A's face blocks across the seam.
         let index_without_b = scene_without_b.build_leaf_spatial_index(density);
@@ -2740,7 +2945,7 @@ mod incremental_tests {
         let index_a = scene_a.build_leaf_spatial_index(density);
         let fresh_a = covering_owned(&mut cache, &scene_a, density);
         let build_a = build_brick_field(&fresh_a, density);
-        let mut field = IncrementalBrickField::from_wholesale(&build_a);
+        let mut field = IncrementalBrickField::from_wholesale(build_a.clone()).0;
 
         let index_b = scene_b.build_leaf_spatial_index(density);
         let edit_aabb = index_b.edit_aabb_since(&index_a).expect("localisable");

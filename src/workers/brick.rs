@@ -38,7 +38,7 @@
 use std::sync::Arc;
 
 use crate::brick_field::{
-    build_brick_field, BrickFieldBuild, ClipmapPyramid, IncrementalBrickField,
+    build_brick_field, ClipmapPyramid, IncrementalBrickField, SculptedAtlasPayload,
 };
 use crate::brick_raymarch::{brick_representable_overlay, pack_gpu_records, BrickGpuRecord};
 use crate::two_layer_store::TwoLayerChunk;
@@ -97,17 +97,19 @@ pub enum BrickRebuildOutcome {
 /// The complete display install set a representable wholesale build produced — every
 /// argument the main-thread `install_brick_field` upload needs, built off-thread.
 pub struct BrickDisplayInstall {
-    /// The wholesale field (records + sculpted atlas bytes) — `mirror.to_build()`
-    /// equals this by construction (the G3 gate); both are shipped so the install
-    /// does not re-derive either on the main thread.
-    pub build: BrickFieldBuild,
+    /// The sculpted-atlas UPLOAD payload — the ONE copy of the flat atlas bytes crossing the
+    /// channel (item 9: the mirror is the single owner of records + tiles, so the former
+    /// duplicate `BrickFieldBuild` is gone; the install reads records from `mirror`).
+    pub atlas: SculptedAtlasPayload,
     /// The packed GPU record set (all-resident, surface-only per ADR 0011).
     pub gpu_records: Vec<BrickGpuRecord>,
     /// The L1–L3 clip-map pyramid derived from the same chunks.
     pub pyramid: ClipmapPyramid,
     /// The scene-wide on-face-grid overlay state the shader binds.
     pub overlay_active: bool,
-    /// The fresh incremental mirror, seeded from `build`.
+    /// The fresh incremental mirror — the single CPU owner of the records + slot tiles; the
+    /// install seam packs its records and reads its geometry (`atlas` is its upload payload,
+    /// moved out of the wholesale build alongside it).
     pub mirror: IncrementalBrickField,
 }
 
@@ -132,12 +134,15 @@ pub struct BrickRebuildResult {
 /// share one entry, like [`build_geometry`](crate::workers::geometry::build_geometry).
 pub fn build_brick_rebuild(request: &BrickRebuildRequest) -> BrickRebuildOutcome {
     let build = build_brick_field(&request.two_layer_chunks, request.density);
+    // Check emptiness BEFORE constructing the mirror (as before) — an empty scene ships no field.
     if build.brick_records.is_empty() {
         return BrickRebuildOutcome::Empty;
     }
-    // Seed the fresh mirror from the wholesale build so the shell's next inline edit
-    // patches from a known-good full field (`to_build()` == `build`, the G3 gate).
-    let mirror = IncrementalBrickField::from_wholesale(&build);
+    // Seed the fresh mirror from the wholesale build BY MOVE (item 9: the records move in, the
+    // atlas bytes move into the upload payload — one copy of the field, not a build plus a
+    // mirror seeded from it). The mirror is the single owner; the payload is only used when
+    // display artifacts are wanted (a non-gpu MirrorOnly build simply drops it).
+    let (mirror, atlas) = IncrementalBrickField::from_wholesale(build);
     if !request.build_display_artifacts {
         return BrickRebuildOutcome::MirrorOnly { mirror };
     }
@@ -145,10 +150,10 @@ pub fn build_brick_rebuild(request: &BrickRebuildRequest) -> BrickRebuildOutcome
         Some(overlay_active) => {
             let pyramid = ClipmapPyramid::from_chunks(&request.two_layer_chunks);
             // Surface-only by construction (ADR 0011 interior elision fused into
-            // emission) — a plain all-resident 1:1 pack.
-            let gpu_records = pack_gpu_records(&build, |_| false);
+            // emission) — a plain all-resident 1:1 pack, read from the mirror's records.
+            let gpu_records = pack_gpu_records(mirror.records(), |_| false);
             BrickRebuildOutcome::Display(Box::new(BrickDisplayInstall {
-                build,
+                atlas,
                 gpu_records,
                 pyramid,
                 overlay_active,
@@ -227,14 +232,21 @@ mod tests {
             panic!("a single-material box is representable — expected Display");
         };
         let BrickDisplayInstall {
-            build,
+            atlas,
             gpu_records,
             pyramid,
             overlay_active,
             mirror,
         } = *install;
         let sync_build = build_brick_field(&chunks, vpb);
-        assert_eq!(build, sync_build, "field build matches the synchronous call");
+        assert_eq!(
+            atlas.bytes, sync_build.sculpted_atlas_bytes,
+            "shipped atlas payload bytes match the synchronous build"
+        );
+        assert_eq!(
+            atlas.atlas_dim_voxels, sync_build.atlas_dim_voxels,
+            "shipped atlas dimension matches the synchronous build"
+        );
         assert_eq!(
             pyramid,
             ClipmapPyramid::from_chunks(&chunks),
@@ -242,7 +254,7 @@ mod tests {
         );
         assert_eq!(
             gpu_records,
-            pack_gpu_records(&sync_build, |_| false),
+            pack_gpu_records(&sync_build.brick_records, |_| false),
             "GPU record pack matches the synchronous call"
         );
         assert_eq!(

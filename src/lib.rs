@@ -78,7 +78,8 @@ pub use brick_field::{
     build_brick_field, build_brick_field_all_blocks, pack_clipmap_level_keys, pack_world_block_key,
     read_back_brick_atlas, unpack_world_block_key, upload_brick_atlas, BrickFieldBuild,
     BrickFieldUpdate, BrickPayload, BrickRecord, ClipmapLevel, ClipmapPyramid,
-    IncrementalBrickField, CLIPMAP_LEVEL_1_BLOCKS_PER_CELL, CLIPMAP_LEVEL_2_BLOCKS_PER_CELL,
+    IncrementalBrickField, SculptedAtlasGeometry, SculptedAtlasPayload,
+    CLIPMAP_LEVEL_1_BLOCKS_PER_CELL, CLIPMAP_LEVEL_2_BLOCKS_PER_CELL,
     CLIPMAP_LEVEL_3_BLOCKS_PER_CELL,
 };
 pub use brick_raymarch::{

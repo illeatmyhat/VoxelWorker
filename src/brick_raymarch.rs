@@ -32,8 +32,9 @@ use wgpu::util::DeviceExt;
 
 use crate::brick_field::{
     pack_clipmap_level_keys, pack_world_block_key, unpack_world_block_key, upload_brick_atlas,
-    BlockOccupancyMasks, BrickFieldBuild, BrickFieldUpdate, BrickPayload, ClipmapLevel,
-    ClipmapPyramid, BLOCK_OCCUPANCY_MASK_WORDS,
+    BlockOccupancyMasks, BrickFieldBuild, BrickFieldUpdate, BrickPayload, BrickRecord,
+    ClipmapLevel, ClipmapPyramid, IncrementalBrickField, SculptedAtlasPayload,
+    BLOCK_OCCUPANCY_MASK_WORDS,
 };
 use crate::core_geom::MaterialChoice;
 use crate::cuboid_mesh::{cell_key_has_overlay, clean_block_id};
@@ -98,11 +99,10 @@ pub struct BrickGpuRecord {
 /// residency-miss test's forced-miss hook (and G4's future eviction seam); pass
 /// `|_| false` for the all-resident set.
 pub fn pack_gpu_records(
-    build: &BrickFieldBuild,
+    records: &[BrickRecord],
     mut non_resident: impl FnMut(u32) -> bool,
 ) -> Vec<BrickGpuRecord> {
-    build
-        .brick_records
+    records
         .iter()
         .map(|record| gpu_record_of(record, &mut non_resident))
         .collect()
@@ -143,17 +143,18 @@ fn gpu_record_of(
 fn write_atlas_slot(
     queue: &wgpu::Queue,
     atlas_texture: &wgpu::Texture,
-    build: &BrickFieldBuild,
+    tile_bytes: &[u8],
+    brick_edge_voxels: u32,
+    bricks_per_axis: u32,
     slot: u32,
 ) {
-    let edge = build.brick_edge_voxels.max(1);
-    let tiles = build.bricks_per_axis.max(1);
+    let edge = brick_edge_voxels.max(1);
+    let tiles = bricks_per_axis.max(1);
     let origin = wgpu::Origin3d {
         x: (slot % tiles) * edge,
         y: ((slot / tiles) % tiles) * edge,
         z: (slot / (tiles * tiles)) * edge,
     };
-    let tile_bytes = build.sculpted_brick_occupancy(slot);
     queue.write_texture(
         wgpu::TexelCopyTextureInfo {
             texture: atlas_texture,
@@ -161,7 +162,7 @@ fn write_atlas_slot(
             origin,
             aspect: wgpu::TextureAspect::All,
         },
-        &tile_bytes,
+        tile_bytes,
         wgpu::TexelCopyBufferLayout {
             offset: 0,
             bytes_per_row: Some(edge),
@@ -466,15 +467,15 @@ impl BrickRaymarchRenderer {
             contents: bytemuck::cast_slice(&placeholder),
             usage: wgpu::BufferUsages::STORAGE,
         });
-        let empty_build = BrickFieldBuild {
-            brick_records: Vec::new(),
-            sculpted_atlas_bytes: Vec::new(),
-            brick_edge_voxels: 1,
-            bricks_per_axis: 0,
+        let empty_atlas = SculptedAtlasPayload {
+            bytes: Vec::new(),
             atlas_dim_voxels: 0,
+            bricks_per_axis: 0,
+            brick_edge_voxels: 1,
+            sculpted_slot_count: 0,
         };
-        let atlas_texture = upload_brick_atlas(device, queue, &empty_build);
-        let atlas_texture_dim = empty_build.atlas_dim_voxels.max(1);
+        let atlas_texture = upload_brick_atlas(device, queue, &empty_atlas);
+        let atlas_texture_dim = empty_atlas.atlas_dim_voxels.max(1);
         let atlas_view = atlas_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         // Placeholder clip-map key buffers (count 0 ⇒ the shader never reads them).
@@ -934,7 +935,8 @@ impl BrickRaymarchRenderer {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        build: &BrickFieldBuild,
+        records: &[BrickRecord],
+        atlas: &SculptedAtlasPayload,
         gpu_records: &[BrickGpuRecord],
         pyramid: &ClipmapPyramid,
         recentre_voxels: [i64; 3],
@@ -942,17 +944,19 @@ impl BrickRaymarchRenderer {
     ) {
         // A wholesale install (re)creates the atlas texture from scratch and uploads
         // every sculpted slot — the from-scratch / scene-load / gate-re-engage path.
-        let atlas_texture = upload_brick_atlas(device, queue, build);
+        let atlas_texture = upload_brick_atlas(device, queue, atlas);
         self.atlas_texture = atlas_texture;
-        self.atlas_texture_dim = build.atlas_dim_voxels.max(1);
-        self.last_atlas_slots_written = build.sculpted_brick_count() as u32;
+        self.atlas_texture_dim = atlas.atlas_dim_voxels.max(1);
+        self.last_atlas_slots_written = atlas.sculpted_slot_count;
         let atlas_view = self
             .atlas_texture
             .create_view(&wgpu::TextureViewDescriptor::default());
         self.rebuild_field_state(
             device,
             &atlas_view,
-            build,
+            records,
+            atlas.brick_edge_voxels,
+            atlas.bricks_per_axis,
             gpu_records,
             pyramid,
             recentre_voxels,
@@ -966,11 +970,12 @@ impl BrickRaymarchRenderer {
     /// re-upload, no occupancy readback. `update.written_slots` are the only texels
     /// touched (untouched slots keep their bytes) UNLESS `update.atlas_grew`, where the
     /// tile grid moved and the whole atlas is re-packed (the one legitimate wholesale
-    /// re-pack, ADR 0007 resize precedent). `build` is the field's current
-    /// [`to_build`](crate::brick_field::IncrementalBrickField::to_build) materialisation.
+    /// re-pack, ADR 0007 resize precedent). Records, atlas geometry, and each dirty slot's
+    /// bytes are read straight from `mirror` (the single CPU owner — item 9), so the
+    /// per-edit path never materialises a `BrickFieldBuild`.
     ///
     /// Preconditions the live shell (`WindowedState::rebuild_geometry`) upholds: a field is
-    /// already installed AND its density/frame match `build` (an incremental edit never
+    /// already installed AND its density/frame match the mirror (an incremental edit never
     /// changes density — that routes wholesale). Records + pyramid re-upload whole (they
     /// are small — the traffic G3 kills is the atlas texels + the re-evaluation).
     #[allow(clippy::too_many_arguments)]
@@ -978,26 +983,38 @@ impl BrickRaymarchRenderer {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        build: &BrickFieldBuild,
+        mirror: &IncrementalBrickField,
         update: &BrickFieldUpdate,
         gpu_records: &[BrickGpuRecord],
         pyramid: &ClipmapPyramid,
         recentre_voxels: [i64; 3],
         overlay_active: bool,
     ) {
-        let target_dim = build.atlas_dim_voxels.max(1);
+        // Read the atlas geometry + dirty-slot bytes straight from the single-owner mirror —
+        // no `to_build()` (item 9: the per-edit full records clone + whole-atlas re-pack is gone).
+        let geometry = mirror.atlas_geometry();
+        let target_dim = geometry.atlas_dim_voxels.max(1);
         if update.atlas_grew || target_dim != self.atlas_texture_dim {
             // The tile grid grew/shrank: every slot's 3D position moved, so recreate the
             // texture and re-upload wholesale (ADR 0011 pitfalls — the resize is the one
             // place a full re-pack is legitimate, logged by the caller).
-            self.atlas_texture = upload_brick_atlas(device, queue, build);
+            let atlas = mirror.pack_atlas_payload();
+            self.atlas_texture = upload_brick_atlas(device, queue, &atlas);
             self.atlas_texture_dim = target_dim;
-            self.last_atlas_slots_written = build.sculpted_brick_count() as u32;
+            self.last_atlas_slots_written = atlas.sculpted_slot_count;
         } else {
             // Steady state: write ONLY the dirty slots' tiles into the persistent texture.
             // Untouched slots — and freed (dead) slots — keep their texels untouched.
             for &slot in &update.written_slots {
-                write_atlas_slot(queue, &self.atlas_texture, build, slot);
+                let tile_bytes = mirror.sculpted_slot_bytes(slot);
+                write_atlas_slot(
+                    queue,
+                    &self.atlas_texture,
+                    &tile_bytes,
+                    geometry.brick_edge_voxels,
+                    geometry.bricks_per_axis,
+                    slot,
+                );
             }
             self.last_atlas_slots_written = update.written_slots.len() as u32;
         }
@@ -1007,7 +1024,9 @@ impl BrickRaymarchRenderer {
         self.rebuild_field_state(
             device,
             &atlas_view,
-            build,
+            mirror.records(),
+            geometry.brick_edge_voxels,
+            geometry.bricks_per_axis,
             gpu_records,
             pyramid,
             recentre_voxels,
@@ -1033,7 +1052,9 @@ impl BrickRaymarchRenderer {
         &mut self,
         device: &wgpu::Device,
         atlas_view: &wgpu::TextureView,
-        build: &BrickFieldBuild,
+        records: &[BrickRecord],
+        brick_edge_voxels: u32,
+        bricks_per_axis: u32,
         gpu_records: &[BrickGpuRecord],
         pyramid: &ClipmapPyramid,
         recentre_voxels: [i64; 3],
@@ -1042,7 +1063,7 @@ impl BrickRaymarchRenderer {
         // Inclusive absolute block bounds over the record set (the sort is z-major,
         // so x/y still need the full scan; records are few — thousands).
         let mut absolute_block_bounds: Option<([i64; 3], [i64; 3])> = None;
-        for record in &build.brick_records {
+        for record in records {
             let block = unpack_world_block_key(record.packed_world_block_key);
             absolute_block_bounds = Some(match absolute_block_bounds {
                 None => (block, block),
@@ -1170,8 +1191,8 @@ impl BrickRaymarchRenderer {
         self.record_count = gpu_records.len() as u32;
         self.overlay_active = overlay_active;
         self.recentre_voxels = recentre_voxels;
-        self.brick_edge_voxels = build.brick_edge_voxels;
-        self.bricks_per_axis = build.bricks_per_axis;
+        self.brick_edge_voxels = brick_edge_voxels;
+        self.bricks_per_axis = bricks_per_axis;
         self.absolute_block_bounds = absolute_block_bounds;
     }
 

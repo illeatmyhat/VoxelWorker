@@ -1681,7 +1681,7 @@ async fn run_capture(options: ShotOptions) {
             let build = voxel_worker::build_brick_field(&two_layer_chunks, density);
             match voxel_worker::brick_representable_overlay(&two_layer_chunks) {
                 Some(overlay_active) if !build.brick_records.is_empty() => {
-                    let gpu_records = voxel_worker::pack_gpu_records(&build, |_| {
+                    let gpu_records = voxel_worker::pack_gpu_records(&build.brick_records, |_| {
                         options.brick_force_miss
                     });
                     let sculpted = build.sculpted_brick_count();
@@ -1704,10 +1704,12 @@ async fn run_capture(options: ShotOptions) {
                         COLOR_TARGET_FORMAT,
                     );
                     let pyramid = voxel_worker::ClipmapPyramid::from_chunks(&two_layer_chunks);
+                    let atlas = build.atlas_payload();
                     renderer.install_brick_field(
                         &gpu.device,
                         &gpu.queue,
-                        &build,
+                        &build.brick_records,
+                        &atlas,
                         &gpu_records,
                         &pyramid,
                         grid.recentre_voxels,

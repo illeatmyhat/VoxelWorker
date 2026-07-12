@@ -236,7 +236,7 @@ fn brick_field_build_matches_two_layer_boundary_set_byte_exactly() {
 
         // The full texture round-trip: upload → R8 texture → readback, byte-identical
         // to the CPU-packed atlas (padding rows included — the write_texture mechanic).
-        let texture = upload_brick_atlas(&gpu.device, &gpu.queue, &build);
+        let texture = upload_brick_atlas(&gpu.device, &gpu.queue, &build.atlas_payload());
         let readback =
             read_back_brick_atlas(&gpu.device, &gpu.queue, &texture, build.atlas_dim_voxels);
         if readback != build.sculpted_atlas_bytes {
@@ -692,13 +692,14 @@ fn brick_raymarch_hit_set_matches_exact_evaluator() {
         // The all-resident field + the frame the CPU marches mirror. The clip-map
         // pyramid is ENABLED here — the finest-LOD hit set must still equal the exact
         // evaluator with the hierarchical skip live (it may only skip empty space).
-        let gpu_records = pack_gpu_records(&build, |_| false);
+        let gpu_records = pack_gpu_records(&build.brick_records, |_| false);
         let pyramid = ClipmapPyramid::from_chunks(&two_layer_chunks);
         let mut renderer = BrickRaymarchRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
         renderer.install_brick_field(
             &gpu.device,
             &gpu.queue,
-            &build,
+            &build.brick_records,
+            &build.atlas_payload(),
             &gpu_records,
             &pyramid,
             recentre,
@@ -858,13 +859,14 @@ fn brick_loaded_material_hit_samples_mesh_rule_texel() {
     let view_projection = app_core.view_projection(width as f32 / height as f32, grid_dimensions);
     let viewport_px = [0u32, 0, width, height];
 
-    let gpu_records = pack_gpu_records(&build, |_| false);
+    let gpu_records = pack_gpu_records(&build.brick_records, |_| false);
     let pyramid = ClipmapPyramid::from_chunks(&two_layer_chunks);
     let mut renderer = BrickRaymarchRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
     renderer.install_brick_field(
         &gpu.device,
         &gpu.queue,
-        &build,
+        &build.brick_records,
+        &build.atlas_payload(),
         &gpu_records,
         &pyramid,
         recentre,
@@ -1028,8 +1030,8 @@ fn brick_surface_elision_hit_set_unchanged() {
         let recentre = case.scene.recentre_voxels_for_resolve(vpb);
         let grid_dimensions = case.scene.placed_region_dimensions(vpb);
 
-        let full_records = pack_gpu_records(&full_build, |_| false);
-        let surface_records = pack_gpu_records(&surface_build, |_| false);
+        let full_records = pack_gpu_records(&full_build.brick_records, |_| false);
+        let surface_records = pack_gpu_records(&surface_build.brick_records, |_| false);
         total_elided += full_records.len() - surface_records.len();
         // The clip-map derives from the CHUNKS (interiors included) — identical on both
         // sides; only the record buffer the shader binary-searches differs.
@@ -1049,7 +1051,8 @@ fn brick_surface_elision_hit_set_unchanged() {
             renderer.install_brick_field(
                 &gpu.device,
                 &gpu.queue,
-                build,
+                &build.brick_records,
+                &build.atlas_payload(),
                 gpu_records,
                 &pyramid,
                 recentre,
@@ -1150,8 +1153,8 @@ fn brick_surface_elision_band_clip_renders_interior() {
             onion_depth: 0,
         };
 
-        let full_records = pack_gpu_records(&full_build, |_| false);
-        let surface_records = pack_gpu_records(&surface_build, |_| false);
+        let full_records = pack_gpu_records(&full_build.brick_records, |_| false);
+        let surface_records = pack_gpu_records(&surface_build.brick_records, |_| false);
         total_elided += full_records.len() - surface_records.len();
         // The pyramid (chunk-sourced, identical both sides) carries the block-occupancy masks.
         let pyramid = ClipmapPyramid::from_chunks(&two_layer_chunks);
@@ -1170,7 +1173,8 @@ fn brick_surface_elision_band_clip_renders_interior() {
             renderer.install_brick_field(
                 &gpu.device,
                 &gpu.queue,
-                build,
+                &build.brick_records,
+                &build.atlas_payload(),
                 gpu_records,
                 &pyramid,
                 recentre,
@@ -1277,7 +1281,7 @@ fn brick_raymarch_incremental_patch_matches_wholesale_install() {
         .map(|(coord, chunk)| (coord, chunk.clone()))
         .collect();
     let build_a = build_brick_field(&fresh_a, vpb);
-    let mut field = IncrementalBrickField::from_wholesale(&build_a);
+    let mut field = IncrementalBrickField::from_wholesale(build_a.clone()).0;
     let overlay_a = brick_representable_overlay(&fresh_a).unwrap_or(false);
 
     let index_b = scene_b.build_leaf_spatial_index(vpb);
@@ -1326,8 +1330,9 @@ fn brick_raymarch_incremental_patch_matches_wholesale_install() {
     incremental_renderer.install_brick_field(
         &gpu.device,
         &gpu.queue,
-        &build_a,
-        &pack_gpu_records(&build_a, |_| false),
+        &build_a.brick_records,
+        &build_a.atlas_payload(),
+        &pack_gpu_records(&build_a.brick_records, |_| false),
         &ClipmapPyramid::from_chunks(&fresh_a),
         scene_a.recentre_voxels_for_resolve(vpb),
         overlay_a,
@@ -1335,9 +1340,9 @@ fn brick_raymarch_incremental_patch_matches_wholesale_install() {
     incremental_renderer.patch_brick_field(
         &gpu.device,
         &gpu.queue,
-        &incremental_build,
+        &field,
         &update,
-        &pack_gpu_records(&incremental_build, |_| false),
+        &pack_gpu_records(field.records(), |_| false),
         &ClipmapPyramid::from_chunks(&fresh_b),
         recentre_b,
         overlay_b,
@@ -1367,8 +1372,9 @@ fn brick_raymarch_incremental_patch_matches_wholesale_install() {
     wholesale_renderer.install_brick_field(
         &gpu.device,
         &gpu.queue,
-        &wholesale_build,
-        &pack_gpu_records(&wholesale_build, |_| false),
+        &wholesale_build.brick_records,
+        &wholesale_build.atlas_payload(),
+        &pack_gpu_records(&wholesale_build.brick_records, |_| false),
         &ClipmapPyramid::from_chunks(&fresh_b),
         recentre_b,
         overlay_b,
@@ -1460,7 +1466,7 @@ fn brick_raymarch_incremental_carve_exposes_interior_across_chunk_boundary() {
     let index_with_b = scene_with_b.build_leaf_spatial_index(vpb);
     let fresh_with_b = cache.resident_two_layer_chunks(&scene_with_b, vpb, 0);
     let build_with_b = build_brick_field(&fresh_with_b, vpb);
-    let mut field = IncrementalBrickField::from_wholesale(&build_with_b);
+    let mut field = IncrementalBrickField::from_wholesale(build_with_b.clone()).0;
     let overlay_with_b = brick_representable_overlay(&fresh_with_b).unwrap_or(false);
 
     let index_carved = scene_carved.build_leaf_spatial_index(vpb);
@@ -1548,8 +1554,9 @@ fn brick_raymarch_incremental_carve_exposes_interior_across_chunk_boundary() {
     incremental_renderer.install_brick_field(
         &gpu.device,
         &gpu.queue,
-        &build_with_b,
-        &pack_gpu_records(&build_with_b, |_| false),
+        &build_with_b.brick_records,
+        &build_with_b.atlas_payload(),
+        &pack_gpu_records(&build_with_b.brick_records, |_| false),
         &ClipmapPyramid::from_chunks(&fresh_with_b),
         scene_with_b.recentre_voxels_for_resolve(vpb),
         overlay_with_b,
@@ -1557,9 +1564,9 @@ fn brick_raymarch_incremental_carve_exposes_interior_across_chunk_boundary() {
     incremental_renderer.patch_brick_field(
         &gpu.device,
         &gpu.queue,
-        &incremental_build,
+        &field,
         &update,
-        &pack_gpu_records(&incremental_build, |_| false),
+        &pack_gpu_records(field.records(), |_| false),
         &ClipmapPyramid::from_chunks(&fresh_carved),
         recentre_carved,
         overlay_carved,
@@ -1572,8 +1579,9 @@ fn brick_raymarch_incremental_carve_exposes_interior_across_chunk_boundary() {
     wholesale_renderer.install_brick_field(
         &gpu.device,
         &gpu.queue,
-        &wholesale_build,
-        &pack_gpu_records(&wholesale_build, |_| false),
+        &wholesale_build.brick_records,
+        &wholesale_build.atlas_payload(),
+        &pack_gpu_records(&wholesale_build.brick_records, |_| false),
         &ClipmapPyramid::from_chunks(&fresh_carved),
         recentre_carved,
         overlay_carved,
@@ -1658,8 +1666,9 @@ fn brick_raymarch_residency_miss_renders_coarse_form() {
         renderer.install_brick_field(
             &gpu.device,
             &gpu.queue,
-            &build,
-            &pack_gpu_records(&build, |_| false),
+            &build.brick_records,
+            &build.atlas_payload(),
+            &pack_gpu_records(&build.brick_records, |_| false),
             &pyramid,
             recentre,
             overlay_active,
@@ -1669,8 +1678,9 @@ fn brick_raymarch_residency_miss_renders_coarse_form() {
         renderer.install_brick_field(
             &gpu.device,
             &gpu.queue,
-            &build,
-            &pack_gpu_records(&build, |_| true),
+            &build.brick_records,
+            &build.atlas_payload(),
+            &pack_gpu_records(&build.brick_records, |_| true),
             &pyramid,
             recentre,
             overlay_active,
@@ -1782,14 +1792,16 @@ fn brick_raymarch_pyramid_on_equals_off() {
         let view_projection = app_core.view_projection(aspect_ratio, grid_dimensions);
         let viewport_px = [0u32, 0, width, height];
         let band = LayerBand::FULL;
-        let gpu_records = pack_gpu_records(&build, |_| false);
+        let gpu_records = pack_gpu_records(&build.brick_records, |_| false);
+        let atlas = build.atlas_payload();
 
         let mut renderer = BrickRaymarchRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
         let render = |renderer: &mut BrickRaymarchRenderer, pyramid: &ClipmapPyramid| {
             renderer.install_brick_field(
                 &gpu.device,
                 &gpu.queue,
-                &build,
+                &build.brick_records,
+                &atlas,
                 &gpu_records,
                 pyramid,
                 recentre,
@@ -1925,7 +1937,7 @@ fn clipmap_scattered_scene_skips_empty_space() {
     let two_layer_chunks = TwoLayerStore::enabled().build_covering_chunks(&scene, vpb, 0);
     let build = build_brick_field(&two_layer_chunks, vpb);
     let pyramid_on = ClipmapPyramid::from_records(&build.brick_records);
-    let gpu_records = pack_gpu_records(&build, |_| false);
+    let gpu_records = pack_gpu_records(&build.brick_records, |_| false);
     let overlay_active = brick_representable_overlay(&two_layer_chunks).unwrap_or(false);
     let recentre = scene.recentre_voxels_for_resolve(vpb);
     let grid_dimensions = scene.placed_region_dimensions(vpb);
@@ -1953,7 +1965,8 @@ fn clipmap_scattered_scene_skips_empty_space() {
     renderer.install_brick_field(
         &gpu.device,
         &gpu.queue,
-        &build,
+        &build.brick_records,
+        &build.atlas_payload(),
         &gpu_records,
         &pyramid_on,
         recentre,
@@ -2068,7 +2081,7 @@ fn onion_ghost_marches_only_the_onion_slabs() {
     let two_layer_chunks = TwoLayerStore::enabled().build_covering_chunks(&case.scene, vpb, 0);
     let build = build_brick_field(&two_layer_chunks, vpb);
     assert!(!build.brick_records.is_empty(), "the sphere shell must produce records");
-    let records = pack_gpu_records(&build, |_| false);
+    let records = pack_gpu_records(&build.brick_records, |_| false);
     let overlay_active = brick_representable_overlay(&two_layer_chunks).unwrap_or(false);
     let pyramid = ClipmapPyramid::from_chunks(&two_layer_chunks);
     let recentre = case.scene.recentre_voxels_for_resolve(vpb);
@@ -2104,7 +2117,8 @@ fn onion_ghost_marches_only_the_onion_slabs() {
     renderer.install_brick_field(
         &gpu.device,
         &gpu.queue,
-        &build,
+        &build.brick_records,
+        &build.atlas_payload(),
         &records,
         &pyramid,
         recentre,
