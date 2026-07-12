@@ -32,22 +32,18 @@
 use std::time::{Duration, Instant};
 
 use voxel_worker::{
-    build_brick_field, route_geometry_rebuild, BrickFieldBuild, CuboidMeshRenderer, EditShape,
-    GenerationTracker, GeometryRebuildRequest, GeometryRebuildResult, GeometryWorker, GpuContext,
-    IncrementalBrickField, LayerBand, MaterialChoice, RebuildRoute, Scene, TwoLayerStore,
+    build_brick_field, route_geometry_rebuild, spawn_geometry_worker, BrickFieldBuild,
+    CuboidMeshRenderer, EditShape, GenerationTracker, GeometryRebuildRequest, GpuContext,
+    IncrementalBrickField, LayerBand, MaterialChoice, RebuildRoute, TwoLayerStore,
     ASYNC_REBUILD_CHUNK_THRESHOLD, COLOR_TARGET_FORMAT,
 };
-use voxel_worker::{GeometryParams, ShapeKind};
+
+mod common;
 
 /// The bounded ceiling any poll-loop waits for the worker before failing LOUDLY. A hang is
 /// a bug, so a timeout is a hard failure — never an unbounded wait. Generous (the large
 /// fixture builds in well under a second on CI hardware) so a slow machine doesn't flake.
 const WORKER_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// How long a NON-blocking `dispatch` is allowed to take before we call it "blocking". The
-/// full build is many milliseconds; dispatch is a single channel `send`, so this is a wide
-/// margin that still catches a regression that made dispatch wait on the build.
-const DISPATCH_NONBLOCK_CEILING: Duration = Duration::from_millis(250);
 
 /// Resolve a from-geometry box scene into the owned two-layer covering chunks + frame
 /// params a real wholesale rebuild dispatches — exactly as `WindowedState` does
@@ -55,14 +51,7 @@ const DISPATCH_NONBLOCK_CEILING: Duration = Duration::from_millis(250);
 /// `blocks_per_axis` sizes the covering set so a test can land above or below the async
 /// threshold deterministically.
 fn build_request(generation: u64, blocks_per_axis: u32, vpb: u32) -> GeometryRebuildRequest {
-    let geometry = GeometryParams {
-        shape: ShapeKind::Box,
-        size_voxels: [blocks_per_axis * vpb; 3],
-        size_measurements: None,
-        voxels_per_block: vpb,
-        wall_blocks: 1,
-    };
-    let scene = Scene::from_geometry(geometry, MaterialChoice::default());
+    let scene = common::box_scene(blocks_per_axis, vpb, MaterialChoice::default());
     let two_layer_chunks = TwoLayerStore::enabled().build_covering_chunks(&scene, vpb, 0);
     let recentre_voxels = scene.recentre_voxels_for_resolve(vpb);
     let grid_dimensions = scene.placed_region_dimensions(vpb);
@@ -92,26 +81,6 @@ fn large_request(generation: u64) -> GeometryRebuildRequest {
     request
 }
 
-/// Poll the worker with a BOUNDED wait, yielding between polls (mirrors the event loop's
-/// per-frame `try_recv_result`). Returns the first result, or fails loudly on timeout — a
-/// hang is a bug, so we never wait unbounded.
-fn poll_until_result(worker: &GeometryWorker, context: &str) -> GeometryRebuildResult {
-    let deadline = Instant::now() + WORKER_TIMEOUT;
-    loop {
-        if let Some(result) = worker.try_recv_result() {
-            return result;
-        }
-        if Instant::now() >= deadline {
-            panic!(
-                "{context}: worker produced no result within {WORKER_TIMEOUT:?} — the loop \
-                 hung (a bug), never an acceptable unbounded wait"
-            );
-        }
-        std::thread::yield_now();
-        std::thread::sleep(Duration::from_millis(1));
-    }
-}
-
 // ===========================================================================
 // Test 1 — non-blocking dispatch
 // ===========================================================================
@@ -123,7 +92,7 @@ fn poll_until_result(worker: &GeometryWorker, context: &str) -> GeometryRebuildR
 #[test]
 fn dispatch_is_non_blocking_and_result_arrives_with_correct_generation() {
     let gpu = pollster::block_on(GpuContext::new(None));
-    let worker = GeometryWorker::spawn(gpu.device.clone(), gpu.queue.clone(), COLOR_TARGET_FORMAT);
+    let worker = spawn_geometry_worker(gpu.device.clone(), gpu.queue.clone(), COLOR_TARGET_FORMAT);
 
     let generation = 1u64;
     let request = large_request(generation);
@@ -132,9 +101,10 @@ fn dispatch_is_non_blocking_and_result_arrives_with_correct_generation() {
     let started = Instant::now();
     worker.dispatch(request);
     let dispatch_elapsed = started.elapsed();
+    let ceiling = common::DISPATCH_NONBLOCK_CEILING;
     assert!(
-        dispatch_elapsed < DISPATCH_NONBLOCK_CEILING,
-        "dispatch blocked for {dispatch_elapsed:?} (ceiling {DISPATCH_NONBLOCK_CEILING:?}) — \
+        dispatch_elapsed < ceiling,
+        "dispatch blocked for {dispatch_elapsed:?} (ceiling {ceiling:?}) — \
          it must NOT wait on the build; the UI would freeze"
     );
 
@@ -151,7 +121,7 @@ fn dispatch_is_non_blocking_and_result_arrives_with_correct_generation() {
     );
 
     // (c) after the worker finishes, a bounded poll returns the result with OUR generation.
-    let result = poll_until_result(&worker, "non-blocking dispatch");
+    let result = common::poll_until_result(&worker, WORKER_TIMEOUT, "non-blocking dispatch");
     assert_eq!(
         result.generation, generation,
         "the arrived result must carry the dispatched generation"
@@ -186,7 +156,7 @@ fn dispatch_is_non_blocking_and_result_arrives_with_correct_generation() {
 #[test]
 fn burst_supersede_accepts_only_newest_generation_under_real_threading() {
     let gpu = pollster::block_on(GpuContext::new(None));
-    let worker = GeometryWorker::spawn(gpu.device.clone(), gpu.queue.clone(), COLOR_TARGET_FORMAT);
+    let worker = spawn_geometry_worker(gpu.device.clone(), gpu.queue.clone(), COLOR_TARGET_FORMAT);
 
     // The shell's generation bookkeeping — the SAME type the live app holds. We stamp each
     // dispatch with `next_generation` and accept via `accepts`, exactly as the shell does.
@@ -274,7 +244,7 @@ fn burst_supersede_accepts_only_newest_generation_under_real_threading() {
 #[test]
 fn empty_request_does_not_hang_worker_and_it_survives_for_the_next() {
     let gpu = pollster::block_on(GpuContext::new(None));
-    let worker = GeometryWorker::spawn(gpu.device.clone(), gpu.queue.clone(), COLOR_TARGET_FORMAT);
+    let worker = spawn_geometry_worker(gpu.device.clone(), gpu.queue.clone(), COLOR_TARGET_FORMAT);
 
     // A request with NO covering chunks — the degenerate "empty scene / zero chunks" case.
     let empty = GeometryRebuildRequest {
@@ -286,7 +256,7 @@ fn empty_request_does_not_hang_worker_and_it_survives_for_the_next() {
         band: LayerBand::FULL,
     };
     worker.dispatch(empty);
-    let result = poll_until_result(&worker, "empty request");
+    let result = common::poll_until_result(&worker, WORKER_TIMEOUT, "empty request");
     assert_eq!(result.generation, 1, "the empty build carries its generation");
     assert_eq!(
         result
@@ -300,7 +270,7 @@ fn empty_request_does_not_hang_worker_and_it_survives_for_the_next() {
     // The worker survived the degenerate request — a normal follow-up still builds.
     let follow_up = large_request(2);
     worker.dispatch(follow_up);
-    let result = poll_until_result(&worker, "post-empty follow-up");
+    let result = common::poll_until_result(&worker, WORKER_TIMEOUT, "post-empty follow-up");
     assert_eq!(
         result.generation, 2,
         "the worker services a normal request after an empty one (it did not wedge)"
@@ -353,7 +323,7 @@ fn sync_full_build(gpu: &GpuContext, request: &GeometryRebuildRequest) -> Cuboid
 #[test]
 fn c1_outstanding_edit_reroutes_wholesale_no_frankenstein() {
     let gpu = pollster::block_on(GpuContext::new(None));
-    let worker = GeometryWorker::spawn(gpu.device.clone(), gpu.queue.clone(), COLOR_TARGET_FORMAT);
+    let worker = spawn_geometry_worker(gpu.device.clone(), gpu.queue.clone(), COLOR_TARGET_FORMAT);
 
     // The shell's state we model: the installed renderer (S0), the generation tracker, and
     // the C1 outstanding flag — exactly the fields `WindowedState` holds.
@@ -472,17 +442,7 @@ fn c1_outstanding_edit_reroutes_wholesale_no_frankenstein() {
 /// A wholesale brick field for a from-geometry box of `blocks³` at `vpb` — a distinct
 /// scene per size so "resident == latest" is a meaningful (not vacuous) assertion.
 fn brick_build(blocks: u32, vpb: u32) -> BrickFieldBuild {
-    let scene = Scene::from_geometry(
-        GeometryParams {
-            shape: ShapeKind::Box,
-            size_voxels: [blocks * vpb; 3],
-            size_measurements: None,
-            voxels_per_block: vpb,
-            wall_blocks: 1,
-        },
-        MaterialChoice::Stone,
-    );
-    let two_layer_chunks = TwoLayerStore::enabled().build_covering_chunks(&scene, vpb, 0);
+    let two_layer_chunks = common::box_covering_chunks(blocks, vpb, MaterialChoice::Stone);
     build_brick_field(&two_layer_chunks, vpb)
 }
 

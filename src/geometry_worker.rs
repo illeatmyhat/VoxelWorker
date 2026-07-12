@@ -27,20 +27,18 @@
 //!
 //! ## Supersede / generation (drain-to-latest)
 //! Every request carries a monotonic [`generation`](GeometryRebuildRequest::generation).
-//! If the user edits again mid-build, the shell sends a newer request; the worker
-//! **drains its queue to the latest** (never backlogs — it builds only the newest
-//! pending request) and the shell **discards any received result whose generation is
-//! stale** (an older generation than the newest request it has dispatched). The
-//! accept/discard decision is factored into [`GenerationTracker`] so it is unit-testable
-//! without a live window.
+//! The shared drain-to-latest/supersede plumbing lives in [`crate::worker::Worker`]: the
+//! worker builds only the newest pending request. The shell **discards any received result
+//! whose generation is stale** (an older generation than the newest request it has
+//! dispatched); that accept/discard decision is factored into [`GenerationTracker`] so it
+//! is unit-testable without a live window.
 
-use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
-use std::thread::JoinHandle;
 
 use crate::cuboid_mesh::CuboidMeshRenderer;
 use crate::renderer::LayerBand;
 use crate::two_layer_store::TwoLayerChunk;
+use crate::worker::{build_catching, Worker};
 
 /// The covering-chunk count above which a WHOLESALE geometry rebuild is dispatched to
 /// the background worker instead of built inline (issue #60).
@@ -99,145 +97,37 @@ pub struct GeometryRebuildResult {
     pub renderer: Option<CuboidMeshRenderer>,
 }
 
-/// The background geometry worker (issue #60): owns the cloned `device`/`queue` and a
-/// build loop. The shell sends [`GeometryRebuildRequest`]s and polls
-/// [`try_recv_result`](Self::try_recv_result) each frame.
-pub struct GeometryWorker {
-    request_sender: Sender<GeometryRebuildRequest>,
-    result_receiver: Receiver<GeometryRebuildResult>,
-    /// Kept so the worker thread's lifetime is tied to the handle; the channel close on
-    /// drop signals the loop to exit (its `recv` errors and it returns).
-    _worker: JoinHandle<()>,
-}
+/// The background geometry worker (issue #60): a [`Worker`] whose build closure owns the
+/// cloned `device`/`queue` and turns each [`GeometryRebuildRequest`] into a
+/// [`GeometryRebuildResult`]. Spawn it via [`spawn_geometry_worker`]. The shell dispatches
+/// requests and polls each frame; the shared drain-to-latest/supersede loop is
+/// [`Worker`]'s.
+pub type GeometryWorker = Worker<GeometryRebuildRequest, GeometryRebuildResult>;
 
-impl GeometryWorker {
-    /// Spawn the worker with cloned GPU handles (issue #60). `device`/`queue` are cloned
-    /// (wgpu 29 Arc-backed) so the worker can create the mesh's GPU buffers off the main
-    /// thread; `color_format` is the render target format the pipelines are built for.
-    ///
-    /// The loop **drains its request channel to the latest** before building (so a burst
-    /// of edits collapses to one build of the newest request — never a backlog), builds
-    /// via the SAME [`CuboidMeshRenderer::new_from_two_layer_chunks`] the sync path uses,
-    /// and sends the result back. It exits when the request channel closes (the shell,
-    /// hence the `GeometryWorker`, dropped).
-    pub fn spawn(
-        device: wgpu::Device,
-        queue: wgpu::Queue,
-        color_format: wgpu::TextureFormat,
-    ) -> Self {
-        let (request_sender, request_receiver) = std::sync::mpsc::channel::<GeometryRebuildRequest>();
-        let (result_sender, result_receiver) = std::sync::mpsc::channel::<GeometryRebuildResult>();
-        let worker = std::thread::Builder::new()
-            .name("voxel-worker geometry rebuild".to_string())
-            .spawn(move || {
-                run_geometry_worker(
-                    &device,
-                    &queue,
-                    color_format,
-                    &request_receiver,
-                    &result_sender,
-                );
-            })
-            .expect("failed to spawn geometry worker");
-        Self {
-            request_sender,
-            result_receiver,
-            _worker: worker,
-        }
-    }
-
-    /// Dispatch a wholesale rebuild request to the worker (issue #60). Non-blocking; the
-    /// worker drains to the latest, so sending a newer request while one is in flight
-    /// supersedes it. A send error (worker gone) is ignored — the shell falls back to the
-    /// stale mesh, never blocks.
-    pub fn dispatch(&self, request: GeometryRebuildRequest) {
-        let _ = self.request_sender.send(request);
-    }
-
-    /// Poll the worker's result channel WITHOUT blocking (issue #60): return the latest
-    /// finished result if one has arrived, else `None`. Called each frame in the event
-    /// loop; the shell then checks the result's generation against its tracker and, if
-    /// fresh, swaps in the renderer + requests a redraw.
-    ///
-    /// Drains to the newest available result (an in-flight supersede can leave more than
-    /// one queued) so the shell never integrates a stale build when a newer one is ready.
-    pub fn try_recv_result(&self) -> Option<GeometryRebuildResult> {
-        let mut latest = None;
-        while let Ok(result) = self.result_receiver.try_recv() {
-            latest = Some(result);
-        }
-        latest
-    }
-}
-
-/// The worker loop (issue #60): block on the request channel, drain to the newest
-/// pending request, build the mesh, send the result. Exits when the channel closes.
-fn run_geometry_worker(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
+/// Spawn the geometry worker with cloned GPU handles (issue #60). `device`/`queue` are
+/// cloned (wgpu 29 Arc-backed) so the worker can create the mesh's GPU buffers off the main
+/// thread; `color_format` is the render target format the pipelines are built for. The
+/// closure captures all three and builds via the SAME
+/// [`CuboidMeshRenderer::new_from_two_layer_chunks`] the sync path uses, so the output is
+/// byte-identical.
+///
+/// A build panic (GPU OOM, an internal assert, a bad dimension) must NOT wedge the worker,
+/// so the build runs under [`build_catching`]: a panic is caught, logged, and surfaced as a
+/// `None`-renderer result the shell can react to, and the worker loop stays alive.
+pub fn spawn_geometry_worker(
+    device: wgpu::Device,
+    queue: wgpu::Queue,
     color_format: wgpu::TextureFormat,
-    request_receiver: &Receiver<GeometryRebuildRequest>,
-    result_sender: &Sender<GeometryRebuildResult>,
-) {
-    // Block for the next request; when it closes (shell dropped) the loop ends.
-    while let Ok(first) = request_receiver.recv() {
-        // Drain-to-latest: if the user edited again while we were idle-waiting, collapse
-        // the queued requests to the NEWEST so we never build a superseded generation.
-        let request = drain_to_latest(first, request_receiver);
-
-        // Issue #60 M1: a build panic (GPU OOM, an internal assert/debug_assert, a bad
-        // dimension) must NOT wedge the worker. Without this, the thread would exit, every
-        // future `dispatch` would keep succeeding, and `try_recv_result` would return `None`
-        // FOREVER — all large rebuilds silently dropped, no crash/log/feedback. Catch the
-        // panic (via the testable `build_catching`), log it, send back a `None`-renderer
-        // result so the shell can react, and keep the loop alive.
+) -> GeometryWorker {
+    Worker::spawn("voxel-worker geometry rebuild", move |request: GeometryRebuildRequest| {
         let generation = request.generation;
         let renderer =
-            build_catching(generation, || build_geometry(device, queue, color_format, &request));
-        if result_sender
-            .send(GeometryRebuildResult {
-                generation,
-                renderer,
-            })
-            .is_err()
-        {
-            // The shell is gone; stop.
-            return;
+            build_catching(generation, || build_geometry(&device, &queue, color_format, &request));
+        GeometryRebuildResult {
+            generation,
+            renderer,
         }
-    }
-}
-
-/// Run a build closure under `catch_unwind` (issue #60 M1): return `Some(build)` on success,
-/// or `None` (after logging to stderr) if it PANICKED. Factored out of the worker loop so the
-/// panic-survival contract is unit-testable without a GPU — the loop's liveness escape hatch.
-/// Generic over the built value so a test can inject a panicking closure with a trivial type.
-pub(crate) fn build_catching<T>(generation: u64, build: impl FnOnce() -> T) -> Option<T> {
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(build)) {
-        Ok(value) => Some(value),
-        Err(_) => {
-            eprintln!(
-                "voxel-worker geometry rebuild PANICKED building generation {generation} — the \
-                 worker survived (caught); this rebuild is dropped and the shell keeps its \
-                 current mesh. The next edit will re-dispatch."
-            );
-            None
-        }
-    }
-}
-
-/// Collapse any additional queued requests into the newest one (drain-to-latest, issue
-/// #60), starting from `first`. Non-blocking after `first` — takes whatever is already
-/// queued. The worker never backlogs: it builds only the latest pending request. Generic
-/// over the request type so every worker loop (geometry, brick) shares the ONE contract.
-pub(crate) fn drain_to_latest<Request>(
-    first: Request,
-    request_receiver: &Receiver<Request>,
-) -> Request {
-    let mut latest = first;
-    while let Ok(newer) = request_receiver.try_recv() {
-        latest = newer;
-    }
-    latest
+    })
 }
 
 /// Build the wholesale cuboid mesh for a request (issue #60) — the SAME call the
@@ -802,33 +692,5 @@ mod tests {
         assert!(!brick_patch_in_place(false, true, false));
         assert!(!brick_patch_in_place(false, false, false));
         assert!(!brick_patch_in_place(false, true, true));
-    }
-
-    /// M1 — the worker's liveness escape hatch: a build that PANICS is caught and mapped to
-    /// `None` (not a thread exit that would wedge the worker forever), and a SUBSEQUENT normal
-    /// build still succeeds. This is the pure core of the run-loop's panic survival — the
-    /// integration test drives it through the real thread, this proves the contract without a
-    /// GPU. We swap in a silent panic hook so the caught panic doesn't spam test output.
-    #[test]
-    fn build_catching_survives_a_panic_and_still_builds_next() {
-        let previous_hook = std::panic::take_hook();
-        std::panic::set_hook(Box::new(|_| {}));
-
-        // A panicking build → None (caught), the "thread would have died" case.
-        let panicked: Option<u32> = build_catching(1, || panic!("simulated GPU OOM in build"));
-        assert!(
-            panicked.is_none(),
-            "a panicking build is caught and yields None — the worker does NOT die"
-        );
-
-        // The very next build still runs — the catch did not poison anything.
-        let normal: Option<u32> = build_catching(2, || 42);
-        assert_eq!(
-            normal,
-            Some(42),
-            "after a caught panic, a subsequent normal build still completes (no wedge)"
-        );
-
-        std::panic::set_hook(previous_hook);
     }
 }

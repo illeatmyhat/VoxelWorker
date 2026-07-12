@@ -24,33 +24,20 @@
 use std::time::{Duration, Instant};
 
 use voxel_worker::{
-    build_brick_field, BrickRebuildOutcome, BrickRebuildRequest, BrickRebuildResult,
-    BrickWorker, GenerationTracker, GeometryParams, MaterialChoice, Scene, ShapeKind,
-    TwoLayerStore, ASYNC_REBUILD_CHUNK_THRESHOLD,
+    build_brick_field, spawn_brick_worker, BrickRebuildOutcome, BrickRebuildRequest,
+    GenerationTracker, MaterialChoice, ASYNC_REBUILD_CHUNK_THRESHOLD,
 };
+
+mod common;
 
 /// The bounded ceiling any poll-loop waits for the worker before failing LOUDLY. A hang
 /// is a bug, so a timeout is a hard failure — never an unbounded wait.
 const WORKER_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// How long a NON-blocking `dispatch` is allowed to take before we call it "blocking".
-/// The full build is many milliseconds; dispatch is a single channel `send`.
-const DISPATCH_NONBLOCK_CEILING: Duration = Duration::from_millis(250);
-
 /// Build a wholesale brick request for a from-geometry box of `blocks³` at `vpb` —
 /// exactly the covering set + scalars the live shell dispatches.
 fn build_request(generation: u64, blocks: u32, vpb: u32) -> BrickRebuildRequest {
-    let scene = Scene::from_geometry(
-        GeometryParams {
-            shape: ShapeKind::Box,
-            size_voxels: [blocks * vpb; 3],
-            size_measurements: None,
-            voxels_per_block: vpb,
-            wall_blocks: 1,
-        },
-        MaterialChoice::Stone,
-    );
-    let two_layer_chunks = TwoLayerStore::enabled().build_covering_chunks(&scene, vpb, 0);
+    let two_layer_chunks = common::box_covering_chunks(blocks, vpb, MaterialChoice::Stone);
     BrickRebuildRequest {
         generation,
         two_layer_chunks,
@@ -74,25 +61,6 @@ fn large_request(generation: u64) -> BrickRebuildRequest {
     request
 }
 
-/// Poll the worker with a BOUNDED wait, yielding between polls (mirrors the event loop's
-/// per-frame `try_recv_result`). Fails loudly on timeout — a hang is a bug.
-fn poll_until_result(worker: &BrickWorker, context: &str) -> BrickRebuildResult {
-    let deadline = Instant::now() + WORKER_TIMEOUT;
-    loop {
-        if let Some(result) = worker.try_recv_result() {
-            return result;
-        }
-        if Instant::now() >= deadline {
-            panic!(
-                "{context}: worker produced no result within {WORKER_TIMEOUT:?} — the loop \
-                 hung (a bug), never an acceptable unbounded wait"
-            );
-        }
-        std::thread::yield_now();
-        std::thread::sleep(Duration::from_millis(1));
-    }
-}
-
 // ===========================================================================
 // Test 1 — non-blocking dispatch + artifacts byte-identical to a sync build
 // ===========================================================================
@@ -103,7 +71,7 @@ fn poll_until_result(worker: &BrickWorker, context: &str) -> BrickRebuildResult 
 /// synchronous calls the pre-async shell made (the build-equivalence net).
 #[test]
 fn dispatch_is_non_blocking_and_result_matches_sync_build() {
-    let worker = BrickWorker::spawn();
+    let worker = spawn_brick_worker();
     let generation = 1u64;
     let request = large_request(generation);
     // The ground truth the worker's artifacts must equal — the SAME calls the
@@ -115,9 +83,10 @@ fn dispatch_is_non_blocking_and_result_matches_sync_build() {
     let started = Instant::now();
     worker.dispatch(request);
     let dispatch_elapsed = started.elapsed();
+    let ceiling = common::DISPATCH_NONBLOCK_CEILING;
     assert!(
-        dispatch_elapsed < DISPATCH_NONBLOCK_CEILING,
-        "dispatch blocked for {dispatch_elapsed:?} (ceiling {DISPATCH_NONBLOCK_CEILING:?}) — \
+        dispatch_elapsed < ceiling,
+        "dispatch blocked for {dispatch_elapsed:?} (ceiling {ceiling:?}) — \
          it must NOT wait on the build; the UI would freeze"
     );
     // Best-effort asynchrony observation (a build this size is many ms; an instant
@@ -127,7 +96,7 @@ fn dispatch_is_non_blocking_and_result_matches_sync_build() {
         "a poll immediately after dispatching a large build unexpectedly had a result"
     );
 
-    let result = poll_until_result(&worker, "non-blocking dispatch");
+    let result = common::poll_until_result(&worker, WORKER_TIMEOUT, "non-blocking dispatch");
     assert_eq!(result.generation, generation);
     assert_eq!(
         result.recentre_voxels, recentre,
@@ -162,7 +131,7 @@ fn dispatch_is_non_blocking_and_result_matches_sync_build() {
 /// never clobbered by an older in-flight brick build.
 #[test]
 fn burst_supersede_accepts_only_newest_generation_under_real_threading() {
-    let worker = BrickWorker::spawn();
+    let worker = spawn_brick_worker();
     let mut tracker = GenerationTracker::new();
 
     const BURST: u64 = 6;
@@ -225,7 +194,7 @@ fn burst_supersede_accepts_only_newest_generation_under_real_threading() {
 /// request generation, and the worker survives to service a subsequent normal request.
 #[test]
 fn empty_request_does_not_hang_worker_and_it_survives_for_the_next() {
-    let worker = BrickWorker::spawn();
+    let worker = spawn_brick_worker();
     worker.dispatch(BrickRebuildRequest {
         generation: 1,
         two_layer_chunks: Vec::new(),
@@ -233,7 +202,7 @@ fn empty_request_does_not_hang_worker_and_it_survives_for_the_next() {
         recentre_voxels: [0; 3],
         build_display_artifacts: true,
     });
-    let result = poll_until_result(&worker, "empty request");
+    let result = common::poll_until_result(&worker, WORKER_TIMEOUT, "empty request");
     assert_eq!(result.generation, 1);
     assert!(
         matches!(result.outcome, Some(BrickRebuildOutcome::Empty)),
@@ -242,7 +211,7 @@ fn empty_request_does_not_hang_worker_and_it_survives_for_the_next() {
 
     // The worker survived the degenerate request — a normal follow-up still builds.
     worker.dispatch(large_request(2));
-    let result = poll_until_result(&worker, "post-empty follow-up");
+    let result = common::poll_until_result(&worker, WORKER_TIMEOUT, "post-empty follow-up");
     assert_eq!(result.generation, 2, "the worker did not wedge");
     assert!(
         matches!(result.outcome, Some(BrickRebuildOutcome::Display(_))),

@@ -64,6 +64,9 @@ pub mod two_layer_store;
 pub mod units;
 pub mod vox_export;
 pub mod voxel;
+// The generic background worker (drain-to-latest + supersede + panic-catch) behind the
+// geometry / diameter / brick async display pipelines — one machine, three build closures.
+pub mod worker;
 
 #[cfg(test)]
 mod windowed_resolve_tests;
@@ -91,19 +94,20 @@ pub use brick_raymarch::{
     BrickMarchFrame, BrickRaymarchRenderer, CpuMarchHit, NON_RESIDENT_ATLAS_SLOT,
 };
 pub use brick_worker::{
-    build_brick_rebuild, route_brick_rebuild, BrickDisplayInstall, BrickRebuildAction,
-    BrickRebuildOutcome, BrickRebuildRequest, BrickRebuildResult, BrickWorker,
+    build_brick_rebuild, route_brick_rebuild, spawn_brick_worker, BrickDisplayInstall,
+    BrickRebuildAction, BrickRebuildOutcome, BrickRebuildRequest, BrickRebuildResult, BrickWorker,
 };
 pub use chunk_storage::{compress, decompress, CompressedChunk, Occupancy, SparseCell};
 pub use disk_chunk_store::{DiskChunkStore, DiskChunkStoreStats};
 pub use cuboid_mesh::{build_cuboid_mesh, CuboidMesh, CuboidMeshRenderer};
 pub use geometry_worker::{
     brick_display_handover, brick_patch_in_place, build_geometry, route_geometry_rebuild,
-    route_mesh_build, BrickDisplayHandover, EditShape, GenerationTracker, GeometryRebuildRequest,
-    GeometryRebuildResult, GeometryWorker, MeshBuildRoute, RebuildRoute,
+    route_mesh_build, spawn_geometry_worker, BrickDisplayHandover, EditShape, GenerationTracker,
+    GeometryRebuildRequest, GeometryRebuildResult, GeometryWorker, MeshBuildRoute, RebuildRoute,
     ASYNC_REBUILD_CHUNK_THRESHOLD,
 };
-pub use diameter_worker::{DiameterRequest, DiameterResult, DiameterWorker};
+pub use diameter_worker::{spawn_diameter_worker, DiameterRequest, DiameterResult, DiameterWorker};
+pub use worker::Worker;
 pub use texture_atlas::{AtlasSubRect, MaterialAtlas};
 pub use debug_clouds::DebugCloudField;
 pub use camera::{

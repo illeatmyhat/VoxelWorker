@@ -21,7 +21,7 @@
 //! mirror there ([`BrickRebuildOutcome::MirrorOnly`]).
 //!
 //! ## Supersede / generation (drain-to-latest)
-//! Identical contract to [`GeometryWorker`](crate::geometry_worker::GeometryWorker):
+//! The same contract as every display worker, on the shared [`crate::worker::Worker`]:
 //! every request carries a monotonic generation, the worker drains its queue to the
 //! latest, and the shell (via [`GenerationTracker`](crate::geometry_worker::GenerationTracker))
 //! discards any result whose generation a later edit superseded.
@@ -40,16 +40,14 @@
 //! the generation, so the superseded in-flight result is discarded on arrival; do not
 //! remove that bump. The decision is pure so the interlock is unit-testable.
 
-use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
-use std::thread::JoinHandle;
 
 use crate::brick_field::{
     build_brick_field, BrickFieldBuild, ClipmapPyramid, IncrementalBrickField,
 };
 use crate::brick_raymarch::{brick_representable_overlay, pack_gpu_records, BrickGpuRecord};
-use crate::geometry_worker::{build_catching, drain_to_latest};
 use crate::two_layer_store::TwoLayerChunk;
+use crate::worker::{build_catching, Worker};
 
 /// A request to rebuild the brick pipeline WHOLESALE on the worker. Carries the
 /// resolve's covering chunks (`Arc`-shared, `Send`) plus the frame scalars — the same
@@ -213,81 +211,28 @@ pub fn build_brick_rebuild(request: &BrickRebuildRequest) -> BrickRebuildOutcome
     }
 }
 
-/// The background brick-pipeline worker: a pure-CPU build loop on a dedicated thread.
-/// The shell sends [`BrickRebuildRequest`]s and polls
-/// [`try_recv_result`](Self::try_recv_result) each frame.
-pub struct BrickWorker {
-    request_sender: Sender<BrickRebuildRequest>,
-    result_receiver: Receiver<BrickRebuildResult>,
-    /// Kept so the worker thread's lifetime is tied to the handle; the channel close on
-    /// drop signals the loop to exit (its `recv` errors and it returns).
-    _worker: JoinHandle<()>,
-}
+/// The background brick-pipeline worker: a [`Worker`] whose pure-CPU build closure turns
+/// each [`BrickRebuildRequest`] into a [`BrickRebuildResult`]. Spawn it via
+/// [`spawn_brick_worker`]. The shell dispatches requests and polls each frame; the shared
+/// drain-to-latest/supersede loop is [`Worker`]'s.
+pub type BrickWorker = Worker<BrickRebuildRequest, BrickRebuildResult>;
 
-impl BrickWorker {
-    /// Spawn the worker on a dedicated thread. The loop drains its request channel to
-    /// the latest (a burst of edits collapses to one build of the newest request),
-    /// builds via [`build_brick_rebuild`], and sends the result back. It exits when the
-    /// request channel closes (the shell, hence the `BrickWorker`, dropped).
-    pub fn spawn() -> Self {
-        let (request_sender, request_receiver) = std::sync::mpsc::channel::<BrickRebuildRequest>();
-        let (result_sender, result_receiver) = std::sync::mpsc::channel::<BrickRebuildResult>();
-        let worker = std::thread::Builder::new()
-            .name("voxel-worker brick rebuild".to_string())
-            .spawn(move || run_brick_worker(&request_receiver, &result_sender))
-            .expect("failed to spawn brick worker");
-        Self {
-            request_sender,
-            result_receiver,
-            _worker: worker,
-        }
-    }
-
-    /// Dispatch a wholesale rebuild request (non-blocking). The worker drains to the
-    /// latest, so sending a newer request while one is in flight supersedes it. A send
-    /// error (worker gone) is ignored — the shell keeps its stale field, never blocks.
-    pub fn dispatch(&self, request: BrickRebuildRequest) {
-        let _ = self.request_sender.send(request);
-    }
-
-    /// Poll the result channel WITHOUT blocking: return the latest finished result if
-    /// one has arrived, else `None`. Drains to the newest available (an in-flight
-    /// supersede can leave more than one queued) so the shell never integrates a stale
-    /// build when a newer one is ready.
-    pub fn try_recv_result(&self) -> Option<BrickRebuildResult> {
-        let mut latest = None;
-        while let Ok(result) = self.result_receiver.try_recv() {
-            latest = Some(result);
-        }
-        latest
-    }
-}
-
-/// The worker loop: block on the request channel, drain to the newest pending request,
-/// build (panic-caught — a build panic must not wedge the worker, the issue #60 M1
-/// lesson), send the result. Exits when the channel closes.
-fn run_brick_worker(
-    request_receiver: &Receiver<BrickRebuildRequest>,
-    result_sender: &Sender<BrickRebuildResult>,
-) {
-    while let Ok(first) = request_receiver.recv() {
-        // Drain-to-latest (the shared issue #60 contract): collapse a burst of queued
-        // requests to the NEWEST so we never build a superseded generation.
-        let request = drain_to_latest(first, request_receiver);
+/// Spawn the brick-pipeline worker on a dedicated thread. The closure builds via
+/// [`build_brick_rebuild`] and carries the request's recentre through to the result (ADR
+/// 0008: the frame value travels with the build, never re-derived at install). Like the
+/// geometry worker, the build runs under [`build_catching`] so a build panic is caught and
+/// surfaced as a `None` outcome the shell can react to, keeping the loop alive.
+pub fn spawn_brick_worker() -> BrickWorker {
+    Worker::spawn("voxel-worker brick rebuild", |request: BrickRebuildRequest| {
         let generation = request.generation;
+        let recentre_voxels = request.recentre_voxels;
         let outcome = build_catching(generation, || build_brick_rebuild(&request));
-        if result_sender
-            .send(BrickRebuildResult {
-                generation,
-                recentre_voxels: request.recentre_voxels,
-                outcome,
-            })
-            .is_err()
-        {
-            // The shell is gone; stop.
-            return;
+        BrickRebuildResult {
+            generation,
+            recentre_voxels,
+            outcome,
         }
-    }
+    })
 }
 
 #[cfg(test)]

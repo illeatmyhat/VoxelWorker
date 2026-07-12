@@ -36,9 +36,10 @@ use voxel_worker::CuboidMeshRenderer;
 // scenes under `--features gpu`; the mesh path stays the fallback + A/B reference).
 use voxel_worker::BrickRaymarchRenderer;
 use voxel_worker::{
-    route_brick_rebuild, route_mesh_build, BrickRebuildAction, BrickRebuildOutcome,
-    BrickRebuildRequest, BrickWorker, DiameterRequest, DiameterWorker, EditShape,
-    GenerationTracker, GeometryRebuildRequest, GeometryWorker, MeshBuildRoute, RebuildRoute,
+    route_brick_rebuild, route_mesh_build, spawn_brick_worker, spawn_diameter_worker,
+    spawn_geometry_worker, BrickRebuildAction, BrickRebuildOutcome, BrickRebuildRequest,
+    BrickWorker, DiameterRequest, DiameterWorker, EditShape, GenerationTracker,
+    GeometryRebuildRequest, GeometryWorker, MeshBuildRoute, RebuildRoute,
     ASYNC_REBUILD_CHUNK_THRESHOLD,
 };
 
@@ -389,7 +390,7 @@ impl WindowedState {
         // when it lands. No occupancy is ever resolved synchronously on the main thread here.
         let measured_band = (u32::MAX, u32::MAX);
         let measured_diameter = 0u32;
-        let diameter_worker = DiameterWorker::spawn();
+        let diameter_worker = spawn_diameter_worker();
         let diameter_generation = GenerationTracker::new();
         // ADR 0011 G5: no occupancy is ever resolved at startup (dims-only door).
         println!(
@@ -439,7 +440,7 @@ impl WindowedState {
         // spawned BEFORE the startup brick decision so a giant persisted scene dispatches
         // its first wholesale build here instead of freezing the pre-first-frame startup
         // for the ~2s record build + pyramid + classify.
-        let brick_worker = BrickWorker::spawn();
+        let brick_worker = spawn_brick_worker();
         #[cfg_attr(not(feature = "gpu"), allow(unused_mut))]
         let mut brick_generation = GenerationTracker::new();
         #[cfg_attr(not(feature = "gpu"), allow(unused_mut))]
@@ -596,7 +597,7 @@ impl WindowedState {
         // rebuild dispatches here; the shell keeps rendering the current mesh until the
         // worker's result arrives, then swaps it in.
         let geometry_worker =
-            GeometryWorker::spawn(gpu.device.clone(), gpu.queue.clone(), COLOR_TARGET_FORMAT);
+            spawn_geometry_worker(gpu.device.clone(), gpu.queue.clone(), COLOR_TARGET_FORMAT);
         let geometry_generation = GenerationTracker::new();
 
         Self {
