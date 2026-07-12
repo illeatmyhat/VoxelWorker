@@ -282,6 +282,20 @@ impl PanelResponse {
     }
 }
 
+/// The export section's live state, passed in by the shell so the panel stays free of
+/// file-system concerns (slow-paths item 2 — the `.vox` write runs on a background
+/// worker). While an export is in flight the button is disabled and `status_line` carries
+/// the progress readout; otherwise `status_line` is the last completion / failure /
+/// large-export message (or `None`). The shell formats the line — the panel only shows it.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ExportPanelState<'a> {
+    /// True while an export is running: the button is disabled (the shell serialises
+    /// exports, so a second one can never be queued).
+    pub in_flight: bool,
+    /// The already-formatted line to show under the button, or `None`.
+    pub status_line: Option<&'a str>,
+}
+
 /// Build the right-hand side panel into the root [`egui::Ui`] of the frame.
 ///
 /// `grid_z` is the current grid height in voxels (Z-up: layers are Z-slices, so the
@@ -293,6 +307,7 @@ pub fn build_panel(
     state: &mut PanelState,
     grid_z: u32,
     measured_diameter: u32,
+    export: ExportPanelState,
     palette: &BlockPalette,
 ) -> PanelResponse {
     let mut response = PanelResponse::default();
@@ -316,7 +331,7 @@ pub fn build_panel(
             build_inspector_section(ui, state, &mut response);
             build_camera_section(ui, state);
             build_display_section(ui, state, &mut response);
-            build_export_section(ui, &mut response);
+            build_export_section(ui, &mut response, export);
             build_layers_section(ui, state, grid_z, measured_diameter);
 
             if let Some(millions) = state.voxel_cap_warning_millions {
@@ -1815,18 +1830,25 @@ fn build_display_section(ui: &mut egui::Ui, state: &mut PanelState, response: &m
     ui.separator();
 }
 
-/// Export section (M8): a single "Export .vox" button. The click is reported via
-/// [`PanelResponse::clicked_export_vox`]; the caller opens the OS save dialog and
-/// writes the resolved grid (so the panel stays free of file-system concerns).
-fn build_export_section(ui: &mut egui::Ui, response: &mut PanelResponse) {
+/// Export section (M8): a single "Export .vox" button plus a progress / status line
+/// (slow-paths item 2). The click is reported via [`PanelResponse::clicked_export_vox`];
+/// the caller opens the OS save dialog and dispatches the write to the background export
+/// worker (so the panel stays free of file-system concerns). While an export is in flight
+/// the button is disabled — the shell serialises exports — and `export.status_line`
+/// carries the "Exporting… done/total" progress; otherwise it is the last completion /
+/// failure / large-export message.
+fn build_export_section(ui: &mut egui::Ui, response: &mut PanelResponse, export: ExportPanelState) {
     ui.add_space(8.0);
     ui.strong("Export");
-    if ui
-        .button("Export .vox")
+    let button = ui
+        .add_enabled(!export.in_flight, egui::Button::new("Export .vox"))
         .on_hover_text("Write the resolved voxels as a MagicaVoxel .vox file")
-        .clicked()
-    {
+        .on_disabled_hover_text("An export is already running — it will finish in the background");
+    if button.clicked() {
         response.clicked_export_vox = true;
+    }
+    if let Some(line) = export.status_line {
+        ui.label(egui::RichText::new(line).small().weak());
     }
     ui.separator();
 }

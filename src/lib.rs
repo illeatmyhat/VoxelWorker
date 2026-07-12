@@ -107,6 +107,9 @@ pub use workers::geometry::{
 pub use workers::diameter::{
     spawn_diameter_worker, DiameterRequest, DiameterResult, DiameterWorker,
 };
+pub use workers::export::{
+    spawn_vox_export_worker, VoxExportRequest, VoxExportResult, VoxExportSummary, VoxExportWorker,
+};
 pub use workers::Worker;
 pub use texture_atlas::{AtlasSubRect, MaterialAtlas};
 pub use debug_clouds::DebugCloudField;
@@ -120,7 +123,7 @@ pub use gpu::GpuContext;
 pub use intent::{Intent, IntentEffect, NodeSpec};
 pub use core_geom::MaterialChoice;
 pub use panel::{
-    build_panel, LayerRange, PanelResponse,
+    build_panel, ExportPanelState, LayerRange, PanelResponse,
     PanelState,
 };
 pub use assets::{CubeFaceSlot, FaceProvenance, FaceTextures};
@@ -257,6 +260,7 @@ pub fn run_egui_frame(
     panel_state: &mut PanelState,
     grid_z: u32,
     measured_diameter: u32,
+    export: panel::ExportPanelState,
     palette: &block_palette::BlockPalette,
     raw_input: egui::RawInput,
     size_in_pixels: [u32; 2],
@@ -279,7 +283,7 @@ pub fn run_egui_frame(
         egui::vec2(size_in_pixels[0] as f32, size_in_pixels[1] as f32),
     );
     let full_output = bridge.context.run_ui(raw_input, |ui| {
-        panel_response = build_panel(ui, panel_state, grid_z, measured_diameter, palette);
+        panel_response = build_panel(ui, panel_state, grid_z, measured_diameter, export, palette);
         // After both panels have been shown inside the root ui, the remaining
         // space is the central viewport.
         central_rect_points = ui.available_rect_before_wrap();

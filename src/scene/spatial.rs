@@ -84,6 +84,21 @@ impl Scene {
         Some((min_chunk, max_chunk))
     }
 
+    /// The number of covering chunks the `.vox` streaming export will visit at
+    /// `voxels_per_block` — the product of the per-axis chunk-range extents from
+    /// [`covering_chunk_range`](Self::covering_chunk_range), or `0` for a Part-only /
+    /// empty scene (no covering range). Public so the shell can size the export progress
+    /// readout's denominator without materialising any occupancy; the async export worker
+    /// increments its per-chunk counter to exactly this total.
+    pub fn covering_chunk_count(&self, voxels_per_block: u32) -> u64 {
+        let Some((min_chunk, max_chunk)) = self.covering_chunk_range(voxels_per_block) else {
+            return 0;
+        };
+        (0..3)
+            .map(|axis| (max_chunk[axis] - min_chunk[axis] + 1) as u64)
+            .product()
+    }
+
     /// Build a [`LeafSpatialIndex`](crate::spatial_index::LeafSpatialIndex) over the
     /// scene's leaves at `voxels_per_block` (issue #27 S3).
     ///

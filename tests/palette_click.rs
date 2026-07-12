@@ -79,7 +79,14 @@ fn windowed_palette_tile_click_reaches_apply_path() {
     let mut run = |raw_input: RawInput, palette: &BlockPalette, state: &mut PanelState| {
         let mut response = None;
         let _ = bridge.context.run_ui(raw_input, |ui| {
-            response = Some(build_panel(ui, state, grid_y, measured_diameter, palette));
+            response = Some(build_panel(
+                ui,
+                state,
+                grid_y,
+                measured_diameter,
+                voxel_worker::ExportPanelState::default(),
+                palette,
+            ));
         });
         response.unwrap()
     };

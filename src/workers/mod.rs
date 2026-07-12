@@ -14,7 +14,9 @@
 //! with the domains (their `route_*` decisions + [`crate::display::routing::GenerationTracker`]).
 //!
 //! The domain workers themselves live in the submodules: [`brick`], [`diameter`],
-//! [`geometry`], and the one-shot streaming [`scan`].
+//! [`export`], [`geometry`], and the one-shot streaming [`scan`]. The [`export`] worker
+//! diverges from the supersede contract below — a `.vox` is a user-chosen file, so the
+//! shell serialises exports rather than draining to the latest (see its module doc).
 //!
 //! ## Supersede / generation (drain-to-latest)
 //! A build carries whatever supersede key its domain chose (a monotonic generation). If
@@ -29,6 +31,7 @@ use std::thread::JoinHandle;
 
 pub mod brick;
 pub mod diameter;
+pub mod export;
 pub mod geometry;
 pub mod scan;
 

@@ -29,7 +29,14 @@ fn run_frame(state: &mut PanelState, raw_input: RawInput) -> voxel_worker::Panel
     // Mirror `run_egui_frame`: `build_panel` shows its own side + bottom panels inside
     // the root `ui` handed to `run_ui` (grid_y / measured_diameter are readout-only).
     let _ = context.run_ui(raw_input, |ui| {
-        response = build_panel(ui, state, 16, 0, &palette);
+        response = build_panel(
+            ui,
+            state,
+            16,
+            0,
+            voxel_worker::ExportPanelState::default(),
+            &palette,
+        );
     });
     response
 }

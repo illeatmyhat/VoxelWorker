@@ -2042,6 +2042,8 @@ async fn run_capture(options: ShotOptions) {
         &mut panel_state,
         render_grid_z,
         measured_diameter,
+        // The headless capture never runs an export; the section renders idle.
+        voxel_worker::ExportPanelState::default(),
         &palette,
         raw_input,
         [options.width, options.height],

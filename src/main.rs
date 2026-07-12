@@ -35,8 +35,9 @@ use voxel_worker::{
 // lives in the `DisplayOrchestrator`; the shell holds one and calls it at its integration
 // points. See `docs/architecture/03-display.md`.
 use voxel_worker::{
-    spawn_diameter_worker, DiameterRequest, DiameterWorker, DisplayOrchestrator,
-    DisplayRefreshContext, GenerationTracker,
+    spawn_diameter_worker, spawn_vox_export_worker, DiameterRequest, DiameterWorker,
+    DisplayOrchestrator, DisplayRefreshContext, GenerationTracker, VoxExportRequest,
+    VoxExportWorker,
 };
 
 /// Drag threshold (pixels) distinguishing a click (snap) from a drag (orbit) on
@@ -130,6 +131,24 @@ struct WindowedState {
     /// mid-measure scrub/edit supersedes the older in-flight measurement — its result is
     /// discarded, exactly as the geometry worker's [`GenerationTracker`]).
     diameter_generation: GenerationTracker,
+    /// Slow-paths backlog item 2: the background `.vox` export worker. A `.vox` write
+    /// re-streams the whole scene occupancy + serialises it — multi-second on a huge scene
+    /// — so it runs off the event-loop thread. Unlike the display workers it carries NO
+    /// supersede generation (an export is a user-chosen file, never superseded); the shell
+    /// serialises via `export_outstanding` below (see `workers::export`).
+    vox_export_worker: VoxExportWorker,
+    /// True while an export request is in flight. Disables the export button (so a second
+    /// export can never be queued — the worker's drain-to-latest would otherwise silently
+    /// drop it) and gates the progress readout. Cleared when the result lands.
+    export_outstanding: bool,
+    /// While an export is in flight: `(per-chunk counter the worker bumps, total covering
+    /// chunks)`. The panel reads it for the "Exporting… done/total chunks" line. A `0`
+    /// denominator (empty / Part-only scene) shows just the count.
+    export_progress: Option<(Arc<std::sync::atomic::AtomicU64>, u64)>,
+    /// The last export completion or failure message (replaces the old `println!`/
+    /// `eprintln!`), plus the large-export warning. Shown as small weak text under the
+    /// export button once no export is in flight.
+    export_status: Option<String>,
     depth_view: wgpu::TextureView,
     /// 4× MSAA colour target for the 3D pass; resolved into the surface texture.
     msaa_color_view: wgpu::TextureView,
@@ -310,6 +329,7 @@ impl WindowedState {
         let measured_diameter = 0u32;
         let diameter_worker = spawn_diameter_worker();
         let diameter_generation = GenerationTracker::new();
+        let vox_export_worker = spawn_vox_export_worker();
         // ADR 0011 G5: no occupancy is ever resolved at startup (dims-only door).
         println!(
             "resolved region {:?} for {:?} {:?}@{} (no dense occupancy)",
@@ -437,6 +457,10 @@ impl WindowedState {
             measured_band,
             diameter_worker,
             diameter_generation,
+            vox_export_worker,
+            export_outstanding: false,
+            export_progress: None,
+            export_status: None,
             depth_view,
             msaa_color_view,
             home_view,
@@ -725,10 +749,19 @@ impl WindowedState {
         }
     }
 
-    /// Re-resolve the current geometry and write it to a user-chosen `.vox` file
-    /// (M8). The default filename encodes the shape + voxel dims (e.g.
-    /// `cylinder_80x16x80.vox`). The palette colour is the active material's
-    /// representative colour (a loaded block's average, or the procedural one).
+    /// Open the `.vox` save dialog and DISPATCH the export to the background worker
+    /// (slow-paths item 2 — the build + write used to run inline here and freeze the UI
+    /// for the whole multi-second export). The default filename encodes the shape + voxel
+    /// dims (e.g. `cylinder_80x16x80.vox`). The palette colour is the active material's
+    /// representative colour (a loaded block's average, or the procedural one), computed
+    /// here on the main thread exactly as before.
+    ///
+    /// The dialog (a native modal, not the slow part) stays on this thread; everything
+    /// after it — [`TwoLayerStore`] build, streaming resolve, serialise, write — moves to
+    /// the [`VoxExportWorker`]. The button is disabled while `export_outstanding`, so this
+    /// can't be re-entered mid-export (the worker carries no supersede generation — an
+    /// export is a user-chosen file — so the shell serialises instead; see
+    /// `workers::export`). The completion/failure readout lands in `poll_vox_export_worker`.
     fn export_vox(&mut self) {
         let density = self.panel_state.geometry.voxels_per_block;
         let shape = SdfShape::from_geometry(self.panel_state.geometry.clone());
@@ -756,42 +789,65 @@ impl WindowedState {
         else {
             return;
         };
-        // ADR 0010 E4: build the `.vox` by STREAMING the cacheless two-layer evaluator
-        // region-scoped — a coarse-solid block is a fast `d³` fill, a boundary block is
-        // per-voxel — so no dense whole-region grid is materialised and the 6M cap
-        // dissolves on the export path. Each covering chunk's voxels are bucketed
-        // DIRECTLY into the `.vox` model set by the incremental `VoxExportBuilder` then
-        // DROPPED — peak transient memory is O(one chunk + the output buffers), NEVER the
-        // O(all-voxels) `Vec<Vec<Voxel>>` accumulate-then-convert intermediate the button
-        // used to build (the owner's peak-memory law: no O(volume) accumulation on any
-        // path). The model count/sizes are a pure function of the region dimensions, so
-        // the builder pre-creates the model set from `placed_region_dimensions` up front —
-        // the SAME value `stream_vox_occupancy` produces — and one streaming pass suffices.
-        // The streamed export stays model-set-identical to the dense-path region export
-        // (the E4 parity gate). ADR 0010 E5: the two-layer capability is always ON now (the
-        // sole runtime path), so the stream always yields — the retired dense
-        // `bound_region_occupied` fallback is gone. `stream_vox_occupancy` returns `Some`
-        // even for a Part-only / empty scene (an empty but valid `.vox`).
-        let two_layer = voxel_worker::TwoLayerStore::enabled();
+
+        // Size the progress denominator (covering chunks) + a large-export warning WITHOUT
+        // resolving any occupancy — the worker's per-chunk counter counts up to exactly
+        // this total (the streaming build ingests one covering chunk at a time; ADR 0010
+        // E4). `0` for a Part-only / empty scene (still exports a valid empty `.vox`).
+        let total_chunks = self.panel_state.scene.covering_chunk_count(density);
         let region_dimensions = self.panel_state.scene.placed_region_dimensions(density);
-        let mut builder = voxel_worker::VoxExportBuilder::new(region_dimensions, palette_colors);
-        voxel_worker::stream_vox_occupancy(
-            &two_layer,
-            &self.panel_state.scene,
+        // Large-export warning (non-blocking text, NOT a modal): the user's 8000³ scene is
+        // ~1.95M covering chunks; a small model is hundreds. Above the threshold, warn that
+        // the dispatched export may take a while and produce a large file.
+        const LARGE_EXPORT_CHUNK_THRESHOLD: u64 = 100_000;
+        self.export_status = (total_chunks > LARGE_EXPORT_CHUNK_THRESHOLD).then(|| {
+            let [width, height, depth] = region_dimensions;
+            format!(
+                "Large export dispatched: {width}×{height}×{depth} voxels — this may take a \
+                 while and produce a large file"
+            )
+        });
+
+        // Clone the scene out of the document and hand the whole build to the worker. The
+        // shell keeps a clone of the progress counter to read each frame; `export_outstanding`
+        // disables the button so a second export can't be queued (drain-to-latest would drop
+        // it — an export must never be silently superseded; see `workers::export`).
+        let progress_chunks = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        self.export_progress = Some((Arc::clone(&progress_chunks), total_chunks));
+        self.export_outstanding = true;
+        self.vox_export_worker.dispatch(VoxExportRequest {
+            scene: self.panel_state.scene.clone(),
             density,
-            |chunk_voxels| builder.ingest_chunk(&chunk_voxels),
-        )
-        .expect("the two-layer capability is enabled (ADR 0010 E5)");
-        let export = builder.finish();
-        match export.write(&path) {
-            Ok(bytes) => println!(
-                "wrote {} ({} voxels, {} model(s), {} bytes)",
-                path.display(),
-                export.voxel_count(),
-                export.model_count(),
-                bytes
-            ),
-            Err(error) => eprintln!("export .vox failed: {error}"),
+            palette_colors,
+            path,
+            progress_chunks,
+        });
+    }
+
+    /// Poll the `.vox` export worker for a finished write (slow-paths item 2). On a
+    /// result, clear the in-flight flag + progress pair and set `export_status` to the
+    /// summary or the error, then request a redraw so the panel readout updates. While an
+    /// export is still in flight, request a redraw anyway so the "Exporting… done/total"
+    /// count keeps advancing even if the app would otherwise idle. Non-blocking — the UI
+    /// never waits on the worker.
+    fn poll_vox_export_worker(&mut self) {
+        if let Some(result) = self.vox_export_worker.try_recv_result() {
+            self.export_outstanding = false;
+            self.export_progress = None;
+            self.export_status = Some(match result.outcome {
+                Ok(summary) => format!(
+                    "wrote {} ({} voxels, {} model(s), {} bytes)",
+                    summary.path.display(),
+                    summary.voxel_count,
+                    summary.model_count,
+                    summary.bytes
+                ),
+                Err(error) => format!("export .vox failed: {error}"),
+            });
+            self.window.request_redraw();
+        } else if self.export_outstanding {
+            // Keep frames coming so the progress readout refreshes while we wait.
+            self.window.request_redraw();
         }
     }
 
@@ -1055,6 +1111,10 @@ impl WindowedState {
         // ADR 0010 E5 follow-up: accept a finished (non-stale) diameter measurement.
         self.poll_diameter_worker();
 
+        // Slow-paths item 2: accept a finished `.vox` export (or keep frames coming so its
+        // progress readout advances while it runs).
+        self.poll_vox_export_worker();
+
         // M6: drain the background scan channel and turn any new groups into
         // palette tiles (GPU thumbnail + egui texture registration on this thread).
         self.poll_scan();
@@ -1110,6 +1170,32 @@ impl WindowedState {
             ];
         }
 
+        // Slow-paths item 2: the export section's live line. While an export is in flight
+        // show the per-chunk progress (plus the large-export warning, if any, that was
+        // stashed in `export_status` at dispatch); otherwise show the last completion /
+        // failure message. Owned here so it outlives the borrow into `run_egui_frame`.
+        let export_status_line = if self.export_outstanding {
+            let progress = self.export_progress.as_ref().map(|(counter, total)| {
+                let done = counter.load(std::sync::atomic::Ordering::Relaxed);
+                if *total > 0 {
+                    format!("Exporting… {done}/{total} chunks")
+                } else {
+                    format!("Exporting… {done} chunks")
+                }
+            });
+            match (self.export_status.as_deref(), progress) {
+                (Some(warning), Some(progress)) => Some(format!("{warning}\n{progress}")),
+                (Some(warning), None) => Some(warning.to_string()),
+                (None, progress) => progress,
+            }
+        } else {
+            self.export_status.clone()
+        };
+        let export_panel = voxel_worker::ExportPanelState {
+            in_flight: self.export_outstanding,
+            status_line: export_status_line.as_deref(),
+        };
+
         let mut prepared = {
             profiling::scope!("egui_frame");
             run_egui_frame(
@@ -1119,6 +1205,7 @@ impl WindowedState {
             &mut self.panel_state,
             grid_z,
             self.measured_diameter,
+            export_panel,
             &self.palette,
             raw_input,
             [self.surface_config.width, self.surface_config.height],
