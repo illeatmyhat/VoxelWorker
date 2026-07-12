@@ -361,6 +361,11 @@ pub struct BrickRaymarchRenderer {
     /// render is builder-independent), while the solid (drawn first) occludes the ghost.
     ghost_render_pipeline: wgpu::RenderPipeline,
     hit_identity_pipeline: wgpu::RenderPipeline,
+    /// ADR 0011 G2 — the single-sample COLOUR entry (`fragment_color_identity`) the
+    /// colour-parity test reads back: shades each hit exactly as the MSAA render pass'
+    /// centre-ray evaluation would, into a plain `Rgba8Unorm` target. Same pipeline
+    /// layout (group 2 = loaded material) as the render pipeline.
+    color_identity_pipeline: wgpu::RenderPipeline,
     /// The uniform buffer: [`BRICK_UNIFORM_SLOT_COUNT`] `BrickUniformsPod` slots
     /// (solid + two ghost slabs), each `uniform_slot_stride` bytes, indexed by dynamic
     /// offset (ADR 0012 H1).
@@ -376,6 +381,18 @@ pub struct BrickRaymarchRenderer {
     field_bind_group_layout: wgpu::BindGroupLayout,
     field_bind_group: wgpu::BindGroup,
     material_bind_group: wgpu::BindGroup,
+    /// ADR 0011 G2 — the group(2) LOADED-material bind group bound when NO VS block is
+    /// applied: a dummy 1×1×6 D2Array (the shader ignores it while `voxel_bias.w == 0`).
+    /// When a block is applied the app binds `LoadedMaterial::bind_group` at group(2)
+    /// instead (built against the SAME `renderer::build_face_material_layout`), so the
+    /// raymarch textures per-face by the owner's lattice rule. Kept alive here so the
+    /// hit-identity / colour / ghost passes (which never sample it) can still satisfy
+    /// the 3-group pipeline layout.
+    dummy_loaded_material_bind_group: wgpu::BindGroup,
+    /// Whether a VS block is applied this frame — mirrored into `voxel_bias.w` so the
+    /// shader shades solid hits from the loaded D2Array (`true`) or the procedural
+    /// atlas (`false`). Set by [`set_loaded_material_active`](Self::set_loaded_material_active).
+    loaded_material_active: bool,
     /// The PERSISTENT sculpted-brick atlas texture (ADR 0011 G3). Kept across edits so an
     /// incremental patch ([`patch_brick_field`](Self::patch_brick_field)) writes only the
     /// dirty slots' texels via `write_texture` — untouched slots keep their bytes. A
@@ -641,13 +658,50 @@ impl BrickRaymarchRenderer {
             ],
         });
 
+        // ADR 0011 G2 — the group(2) LOADED-material slot. Its layout is the SAME
+        // `renderer::build_face_material_layout` the mesh path (and `LoadedMaterial`)
+        // uses, so an applied block's bind group binds here directly. A dummy 1×1×6
+        // sRGB D2Array binds when no block is applied (the shader ignores it while
+        // `voxel_bias.w == 0`); the same nearest/clamp sampler slices it like the mesh.
+        let loaded_material_layout = crate::renderer::build_face_material_layout(device);
+        let dummy_loaded_texture = crate::renderer::upload_face_material_texture(
+            device,
+            queue,
+            1,
+            1,
+            &[&[0u8, 0, 0, 255]; 6],
+        );
+        let dummy_loaded_view = dummy_loaded_texture.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        });
+        let dummy_loaded_material_bind_group =
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("brick raymarch dummy loaded material bind group"),
+                layout: &loaded_material_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&dummy_loaded_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&material_sampler),
+                    },
+                ],
+            });
+
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("brick raymarch shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/brick_raymarch.wgsl").into()),
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("brick raymarch pipeline layout"),
-            bind_group_layouts: &[Some(&field_bind_group_layout), Some(&material_bind_group_layout)],
+            bind_group_layouts: &[
+                Some(&field_bind_group_layout),
+                Some(&material_bind_group_layout),
+                Some(&loaded_material_layout),
+            ],
             immediate_size: 0,
         });
 
@@ -794,10 +848,52 @@ impl BrickRaymarchRenderer {
                 cache: None,
             });
 
+        // ADR 0011 G2 — the colour-parity pass: single sample, no depth, the SHADED
+        // colour into a plain `Rgba8Unorm` target (read back by tests/gpu_parity.rs).
+        let color_identity_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("brick raymarch colour-identity pipeline"),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vertex_main"),
+                    buffers: &[],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fragment_color_identity"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::Rgba8Unorm,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    strip_index_format: None,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode: None,
+                    unclipped_depth: false,
+                    polygon_mode: wgpu::PolygonMode::Fill,
+                    conservative: false,
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState {
+                    count: 1,
+                    mask: !0,
+                    alpha_to_coverage_enabled: false,
+                },
+                multiview_mask: None,
+                cache: None,
+            });
+
         Self {
             render_pipeline,
             ghost_render_pipeline,
             hit_identity_pipeline,
+            color_identity_pipeline,
             uniform_buffer,
             uniform_slot_stride,
             ghost_lower_active: false,
@@ -805,6 +901,8 @@ impl BrickRaymarchRenderer {
             field_bind_group_layout,
             field_bind_group,
             material_bind_group,
+            dummy_loaded_material_bind_group,
+            loaded_material_active: false,
             atlas_texture,
             atlas_texture_dim,
             last_atlas_slots_written: 0,
@@ -1285,7 +1383,11 @@ impl BrickRaymarchRenderer {
                 frame.voxel_bias[0],
                 frame.voxel_bias[1],
                 frame.voxel_bias[2],
-                0,
+                // w = loaded_material_active (ADR 0011 G2): shade solid hits from the
+                // loaded 6-layer D2Array by the lattice rule instead of the procedural
+                // atlas. The ghost draws pass this too but never shade (ghost_mode short-
+                // circuits before `shade_cuboid_surface`), so it is inert for them.
+                i32::from(self.loaded_material_active),
             ],
             band_voxel_sv: [frame.band_voxel_sv[0], frame.band_voxel_sv[1], 0, 0],
             clipmap_blocks_and_counts: [
@@ -1377,9 +1479,26 @@ impl BrickRaymarchRenderer {
         slot as u64 * self.uniform_slot_stride as u64
     }
 
+    /// Set whether a VS block is applied this frame — mirrored into `voxel_bias.w` by the
+    /// next [`update_uniforms`](Self::update_uniforms) so the shader shades solid hits from
+    /// the loaded 6-layer D2Array (the owner's lattice rule) instead of the procedural
+    /// atlas (ADR 0011 G2). Call BEFORE `update_uniforms`; pass the SAME block's bind group
+    /// to [`draw`](Self::draw). A no-op state change when it matches the current value.
+    pub fn set_loaded_material_active(&mut self, active: bool) {
+        self.loaded_material_active = active;
+    }
+
     /// Draw the brick raymarch INSIDE the shared MSAA voxel pass (viewport +
     /// scissor already set by `render_frame`). Uniforms must be uploaded first.
-    pub fn draw<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {
+    /// `loaded_material` is the applied VS block's group(2) bind group (built against
+    /// `renderer::build_face_material_layout`, ADR 0011 G2); `None` binds the dummy —
+    /// pass `Some(..)` exactly when [`set_loaded_material_active(true)`](Self::set_loaded_material_active)
+    /// was set this frame so the sampled texture matches the shading branch.
+    pub fn draw<'a>(
+        &'a self,
+        pass: &mut wgpu::RenderPass<'a>,
+        loaded_material: Option<&'a wgpu::BindGroup>,
+    ) {
         if self.record_count == 0 {
             return;
         }
@@ -1391,6 +1510,11 @@ impl BrickRaymarchRenderer {
             &[self.slot_offset(BRICK_UNIFORM_SLOT_SOLID) as u32],
         );
         pass.set_bind_group(1, &self.material_bind_group, &[]);
+        pass.set_bind_group(
+            2,
+            loaded_material.unwrap_or(&self.dummy_loaded_material_bind_group),
+            &[],
+        );
         pass.draw(0..3, 0..1);
     }
 
@@ -1406,6 +1530,9 @@ impl BrickRaymarchRenderer {
         }
         pass.set_pipeline(&self.ghost_render_pipeline);
         pass.set_bind_group(1, &self.material_bind_group, &[]);
+        // The ghost is flat-tinted (never samples a material) but the 3-group pipeline
+        // layout still requires group(2) bound — the dummy loaded material suffices.
+        pass.set_bind_group(2, &self.dummy_loaded_material_bind_group, &[]);
         if self.ghost_lower_active {
             pass.set_bind_group(
                 0,
@@ -1489,6 +1616,8 @@ impl BrickRaymarchRenderer {
                 &[self.slot_offset(BRICK_UNIFORM_SLOT_SOLID) as u32],
             );
             pass.set_bind_group(1, &self.material_bind_group, &[]);
+            // Hit-identity never samples a material; the dummy satisfies group(2).
+            pass.set_bind_group(2, &self.dummy_loaded_material_bind_group, &[]);
             pass.draw(0..3, 0..1);
         }
         encoder.copy_texture_to_buffer(
@@ -1541,6 +1670,130 @@ impl BrickRaymarchRenderer {
         readback.unmap();
         pixels
     }
+
+    /// ADR 0011 G2 — render the SHADED colour image (the colour-parity harness): one
+    /// `Rgba8Unorm` pixel per hit, shaded exactly as the MSAA render pass' centre-ray
+    /// evaluation. `loaded_material` binds the applied block's group(2) D2Array (call
+    /// [`set_loaded_material_active(true)`](Self::set_loaded_material_active) +
+    /// `update_uniforms` first so the shading branch matches); `None` binds the dummy.
+    /// Non-hit pixels are the cleared background. Used ONLY by tests/gpu_parity.rs.
+    pub fn render_color_image(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        width: u32,
+        height: u32,
+        loaded_material: Option<&wgpu::BindGroup>,
+    ) -> Vec<[u8; 4]> {
+        let target = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("brick colour-identity target"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let target_view = target.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let bytes_per_pixel = 4u32;
+        let unpadded_row = width * bytes_per_pixel;
+        let padded_row = unpadded_row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+            * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("brick colour-identity readback"),
+            size: padded_row as u64 * height as u64,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let mut encoder =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("brick colour-identity pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &target_view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.color_identity_pipeline);
+            pass.set_bind_group(
+                0,
+                &self.field_bind_group,
+                &[self.slot_offset(BRICK_UNIFORM_SLOT_SOLID) as u32],
+            );
+            pass.set_bind_group(1, &self.material_bind_group, &[]);
+            pass.set_bind_group(
+                2,
+                loaded_material.unwrap_or(&self.dummy_loaded_material_bind_group),
+                &[],
+            );
+            pass.draw(0..3, 0..1);
+        }
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &target,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_row),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        queue.submit(Some(encoder.finish()));
+
+        let slice = readback.slice(..);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = sender.send(result);
+        });
+        device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .expect("device poll failed");
+        receiver
+            .recv()
+            .expect("map_async channel dropped")
+            .expect("buffer map failed");
+
+        let mapped = slice.get_mapped_range();
+        let mut pixels = Vec::with_capacity((width * height) as usize);
+        for row in 0..height {
+            let row_start = (row * padded_row) as usize;
+            let row_bytes = &mapped[row_start..row_start + unpadded_row as usize];
+            for pixel in row_bytes.chunks_exact(4) {
+                pixels.push([pixel[0], pixel[1], pixel[2], pixel[3]]);
+            }
+        }
+        drop(mapped);
+        readback.unmap();
+        pixels
+    }
 }
 
 // ============================================================================
@@ -1549,10 +1802,13 @@ impl BrickRaymarchRenderer {
 // ============================================================================
 
 /// A CPU march hit: the hit voxel in ABSOLUTE voxel coordinates (the exact
-/// evaluator's frame).
+/// evaluator's frame), plus the entered face's outward normal as an exact ±1 axis
+/// vector (`[i32; 3]`, so `Eq` still derives). The normal drives the loaded-material
+/// shading rule (`face_layer`) the colour-parity test cross-checks (ADR 0011 G2).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CpuMarchHit {
     pub absolute_voxel: [i32; 3],
+    pub face_normal: [i32; 3],
 }
 
 /// The pixel-centre camera ray in the shifted march frame — mirrors `camera_ray`.
@@ -1570,6 +1826,16 @@ fn cpu_camera_ray(frame: &BrickMarchFrame, pixel: glam::Vec2) -> (glam::Vec3, gl
         frame.lattice_shift[2] as f32,
     );
     (near_world + frame.grid_half_extent + shift, direction)
+}
+
+/// The outward face normal (an exact ±1 axis vector) for a march that ENTERED a box
+/// through face `axis`: the normal opposes the ray's motion on that axis (mirrors the
+/// shader's `hit.normal_sign = -sign(ray.direction[axis])`). Feeds `face_layer` for the
+/// loaded-material colour-parity check (ADR 0011 G2).
+fn axis_normal(axis: usize, direction: glam::Vec3) -> [i32; 3] {
+    let mut normal = [0i32; 3];
+    normal[axis] = if direction[axis] > 0.0 { -1 } else { 1 };
+    normal
 }
 
 fn safe_direction(direction: glam::Vec3) -> glam::Vec3 {
@@ -1846,11 +2112,14 @@ pub fn cpu_march_levels_counted(
                                     voxel_cell.y + frame.voxel_bias[1],
                                     voxel_cell.z + frame.voxel_bias[2],
                                 ],
+                                face_normal: axis_normal(entry_axis, direction),
                             }),
                             steps,
                         );
                     }
-                    // Sculpted brick voxel DDA — mirrors the shader loop.
+                    // Sculpted brick voxel DDA — mirrors the shader loop (tracking the
+                    // per-voxel entry axis for the hit face's normal).
+                    let mut voxel_entry_axis = entry_axis;
                     let voxel_entry = origin + direction * (box_enter + 1e-4);
                     let mut voxel_cell = voxel_entry.floor().as_ivec3();
                     let voxel_step = block_step;
@@ -1894,6 +2163,7 @@ pub fn cpu_march_levels_counted(
                                         voxel_cell.y + frame.voxel_bias[1],
                                         voxel_cell.z + frame.voxel_bias[2],
                                     ],
+                                    face_normal: axis_normal(voxel_entry_axis, direction),
                                 }),
                                 steps,
                             );
@@ -1901,15 +2171,17 @@ pub fn cpu_march_levels_counted(
                         if voxel_t_max.x <= voxel_t_max.y && voxel_t_max.x <= voxel_t_max.z {
                             voxel_cell.x += voxel_step.x;
                             voxel_t_max.x += voxel_t_delta.x;
+                            voxel_entry_axis = 0;
                         } else if voxel_t_max.y <= voxel_t_max.z {
                             voxel_cell.y += voxel_step.y;
                             voxel_t_max.y += voxel_t_delta.y;
+                            voxel_entry_axis = 1;
                         } else {
                             voxel_cell.z += voxel_step.z;
                             voxel_t_max.z += voxel_t_delta.z;
+                            voxel_entry_axis = 2;
                         }
                     }
-                    let _ = entry_axis; // entry axis feeds shading, not identity
                 }
             }
         }
@@ -1982,6 +2254,14 @@ pub fn cpu_march_exact_occupancy(
         seed_voxel(voxel_cell.z, step.z, entry_position.z, safe.z) + t_enter,
     );
     let mut t_voxel_enter = t_enter;
+    // The entered face's axis — the AABB entry (x→y→z ties), updated each DDA step.
+    let mut entry_axis = if t_near.x >= t_near.y && t_near.x >= t_near.z {
+        0usize
+    } else if t_near.y >= t_near.z {
+        1
+    } else {
+        2
+    };
 
     // Generous budget: the traversal AABB's voxel diagonal for every gated scene.
     for _ in 0..4096 {
@@ -2000,6 +2280,7 @@ pub fn cpu_march_exact_occupancy(
                         voxel_cell.y + frame.voxel_bias[1],
                         voxel_cell.z + frame.voxel_bias[2],
                     ],
+                    face_normal: axis_normal(entry_axis, direction),
                 });
             }
         }
@@ -2010,14 +2291,17 @@ pub fn cpu_march_exact_occupancy(
             voxel_cell.x += step.x;
             t_voxel_enter = t_max.x;
             t_max.x += t_delta.x;
+            entry_axis = 0;
         } else if t_max.y <= t_max.z {
             voxel_cell.y += step.y;
             t_voxel_enter = t_max.y;
             t_max.y += t_delta.y;
+            entry_axis = 1;
         } else {
             voxel_cell.z += step.z;
             t_voxel_enter = t_max.z;
             t_max.z += t_delta.z;
+            entry_axis = 2;
         }
     }
 

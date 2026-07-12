@@ -451,12 +451,10 @@ impl WindowedState {
         // the real mesh the moment it is next needed. The empty renderer still carries the
         // pipeline / material bind-group layout / sampler the loaded-material path binds against.
         // Shared engagement predicate (the ONE brick-display gate — same terms as the rebuild,
-        // `ensure_display_mesh_current`, and the per-frame draw gate). No VS material is ever
-        // loaded at startup, so the loaded-material term is `false`.
+        // `ensure_display_mesh_current`, and the per-frame draw gate).
         let brick_engaged_at_startup = Self::brick_display_engaged_predicate(
             brick_raymarch_renderer.is_some(),
             panel_state.debug_face_orientation,
-            false,
         );
         let mesh_stale = brick_engaged_at_startup;
         let cuboid_mesh_renderer = CuboidMeshRenderer::new_from_two_layer_chunks(
@@ -606,15 +604,21 @@ impl WindowedState {
     /// Is the ADR 0011 brick raymarch the live voxel display (so the fallback cuboid mesh is
     /// NOT drawn)? [pure] The SINGLE engagement predicate behind every gate — startup, the
     /// rebuild skip, [`Self::ensure_display_mesh_current`], and the per-frame draw gate — so
-    /// they can never drift term-for-term. Engaged iff a live brick field is resident AND no
-    /// mesh-only display mode is active (debug-face orientation or a loaded VS material, both of
-    /// which need the mesh's per-face shading; bricks carry only categorical block ids).
+    /// they can never drift term-for-term. Engaged iff a live brick field is resident AND
+    /// debug-face orientation is off.
+    ///
+    /// ADR 0011 G2 — a loaded VS material NO LONGER disengages the brick display: the block
+    /// texture is a pure function of the lattice (the owner's determinism rule), so the
+    /// raymarch shades solid hits per-face from the block's 6-layer D2Array by the SAME rule
+    /// the merged mesh uses (`face_layer` + per-face UV + `fract`), with zero per-brick data.
+    /// The mesh stays the fallback ONLY for genuinely non-representable scenes (a block whose
+    /// microblocks MIX materials — `brick_representable_overlay` returns `None`, so no field
+    /// installs). Debug-faces still disengages (it needs the mesh's per-vertex face colours).
     fn brick_display_engaged_predicate(
         has_live_brick_field: bool,
         debug_face_orientation: bool,
-        has_loaded_material: bool,
     ) -> bool {
-        has_live_brick_field && !debug_face_orientation && !has_loaded_material
+        has_live_brick_field && !debug_face_orientation
     }
 
     /// The per-frame brick-display engagement gate against the LIVE renderer/panel state — the
@@ -627,7 +631,6 @@ impl WindowedState {
                 .as_ref()
                 .is_some_and(|renderer| renderer.has_brick_field()),
             self.panel_state.debug_face_orientation,
-            self.loaded_material.is_some(),
         )
     }
 
@@ -701,15 +704,11 @@ impl WindowedState {
         // single-chunk voxel capacity exceeds the bound is rejected with the store
         // untouched, so we surface the cap warning and bail.
         let chunkable = self.panel_state.scene.has_chunkable_extent(density);
-        // Only the gpu brick DISPLAY gate reads this (a loaded material forces the mesh
-        // display).
-        #[cfg_attr(not(feature = "gpu"), allow(unused_variables))]
-        let loaded_material = self.loaded_material.is_some();
         // The brick mirror (`incremental_brick_field`, plain CPU) is maintained for ANY
         // chunkable scene. The DISPLAY raymarch keeps its stricter conditions inside the block
-        // (`--features gpu` + `!loaded_material` + brick representability) — a mixed-material or
-        // textured scene meshes its display. ADR 0012 retired the onion fog occupancy, so a
-        // non-gpu build maintains the mirror without a consumer.
+        // (`--features gpu` + brick representability). ADR 0011 G2 — a loaded VS material no
+        // longer gates the display (it textures the raymarch per-face); ADR 0012 retired the
+        // onion fog occupancy, so a non-gpu build maintains the mirror without a consumer.
         let brick_gate = chunkable;
         let RebuildOutput {
             region_dimensions,
@@ -847,12 +846,14 @@ impl WindowedState {
                     self.incremental_brick_field = None;
                 } else {
                     // (B) DISPLAY: install/patch the GPU raymarch renderer ONLY under
-                    // `--features gpu`, with NO loaded VS material (a material needs the mesh's
-                    // per-face shading — bricks carry only categorical block ids), and ONLY
-                    // when the boundary set is brick-REPRESENTABLE (single-material blocks + one
-                    // overlay). A mixed-material or textured scene keeps the mesh display.
+                    // `--features gpu` and ONLY when the boundary set is brick-REPRESENTABLE
+                    // (single-material blocks + one overlay). ADR 0011 G2 — a loaded VS material
+                    // NO LONGER skips the install: the raymarch textures per-face from the
+                    // block's D2Array by the lattice rule, so a representable scene stays on the
+                    // brick display with or without an applied block. Only a mixed-material scene
+                    // (`brick_representable_overlay` → `None`) keeps the mesh display.
                     #[cfg(feature = "gpu")]
-                    if !loaded_material {
+                    {
                     match voxel_worker::brick_representable_overlay(&two_layer_chunks) {
                         Some(overlay_active) => {
                             let pyramid =
@@ -936,7 +937,7 @@ impl WindowedState {
                             }
                         }
                     }
-                    } // end `#[cfg(feature = "gpu")] if !loaded_material` (the display gate)
+                    } // end `#[cfg(feature = "gpu")]` display-install block
                     // `build` (this rebuild's boundary set) is consumed only by the gpu display
                     // install above; ADR 0012 retired the fog occupancy consumer, so on a non-gpu
                     // build the mirror is maintained (`incremental_brick_field`) but not drawn.
@@ -957,15 +958,16 @@ impl WindowedState {
         // Brick-display perf follow-up to epic #64: the fallback cuboid mesh is DRAWN only when
         // the brick raymarch is not engaged. Engagement mirrors the per-frame gate
         // (`brick_raymarch_engaged`): a field installed this rebuild AND no debug-face mode.
-        // (A loaded VS material skips the display install ⇒ `brick_display_installed` stays
-        // false, so it is already covered.) When engaged the mesh is redundant → SKIP the build
-        // and mark it stale; the C1 interlock composes via `route_mesh_build` (a stale mesh, like
-        // an outstanding async build, is never inline-patched — it rebuilds wholesale when next
-        // needed). On non-gpu builds `brick_display_installed` is always false → always Build.
+        // ADR 0011 G2 — a loaded VS material now KEEPS the brick display (it textures the
+        // raymarch per-face), so it no longer forces the mesh; only a non-representable scene
+        // (no field installed ⇒ `brick_display_installed` false) meshes. When engaged the mesh
+        // is redundant → SKIP the build and mark it stale; the C1 interlock composes via
+        // `route_mesh_build` (a stale mesh, like an outstanding async build, is never inline-
+        // patched — it rebuilds wholesale when next needed). On non-gpu builds
+        // `brick_display_installed` is always false → always Build.
         let brick_display_engaged = Self::brick_display_engaged_predicate(
             brick_display_installed,
             self.panel_state.debug_face_orientation,
-            self.loaded_material.is_some(),
         );
         let mesh_route = route_mesh_build(
             brick_display_engaged,
@@ -1082,8 +1084,9 @@ impl WindowedState {
                 .brick_raymarch_renderer
                 .as_ref()
                 .is_some_and(|renderer| renderer.has_brick_field());
-            let brick_would_draw_if_kept = !self.panel_state.debug_face_orientation
-                && self.loaded_material.is_none();
+            // ADR 0011 G2 — a loaded VS material now keeps drawing as textured bricks, so it no
+            // longer forces a handover to the mesh (mirrors the flipped engagement predicate).
+            let brick_would_draw_if_kept = !self.panel_state.debug_face_orientation;
             match voxel_worker::brick_display_handover(
                 brick_display_installed,
                 mesh_became_current,
@@ -1927,10 +1930,14 @@ impl WindowedState {
         // the fog atlas rebuild.
         let onion_ghost_active = band.onion_depth > 0;
         let brick_raymarch_engaged = if self.brick_display_engaged() {
+            let has_loaded_material = self.loaded_material.is_some();
             let renderer = self
                 .brick_raymarch_renderer
                 .as_mut()
                 .expect("brick_display_engaged ⇒ renderer holds a live field");
+            // ADR 0011 G2: mirror the applied-block state into the shader so solid hits
+            // shade from the block's D2Array (its bind group is passed to `draw`).
+            renderer.set_loaded_material_active(has_loaded_material);
             renderer.update_uniforms(
                 &self.gpu.queue,
                 view_projection,

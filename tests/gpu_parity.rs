@@ -778,6 +778,211 @@ fn brick_raymarch_hit_set_matches_exact_evaluator() {
     );
 }
 
+/// **ADR 0011 G2 — a LOADED-material raymarch hit samples the same texel the mesh's
+/// lattice rule computes for that voxel face.** A loaded VS block no longer disengages the
+/// brick display; instead the raymarch shades each solid hit per-face from the block's
+/// 6-layer D2Array by `face_layer` + per-face UV + `fract` — copied verbatim from
+/// `cuboid_loaded.wgsl`. This gates that copy END-TO-END on the GPU: bind a synthetic
+/// per-face material of six DISTINCT SOLID colours (so the texel is UV-independent — no
+/// silhouette-filtering ambiguity), render the shaded colour image, then for every INTERIOR
+/// hit pixel recompute the expected texel independently — the CPU march's hit-face normal →
+/// `face_layer` → that layer's colour, through the SAME sRGB-decode + directional lighting
+/// the shader applies — and require a match. Cross-path filtering differs only at
+/// silhouettes, so per-path gating (interior pixels where the single-sample GPU centre ray
+/// and the CPU centre ray agree on the hit) is used, NOT a cross-path byte compare.
+#[test]
+fn brick_loaded_material_hit_samples_mesh_rule_texel() {
+    use voxel_worker::{
+        brick_representable_overlay, build_brick_field, cpu_march_brick_field, pack_gpu_records,
+        AppCore, BrickRaymarchRenderer, ClipmapPyramid, LayerBand, OrbitCamera, TwoLayerStore,
+        COLOR_TARGET_FORMAT,
+    };
+
+    // Mirror the shader's `face_layer` (cuboid_loaded.wgsl:73-84) EXACTLY — the property
+    // under test is that the GPU sampled THIS layer for the hit face's normal.
+    fn face_layer(normal: [i32; 3]) -> usize {
+        if normal[2] != 0 {
+            if normal[2] > 0 { 2 } else { 3 }
+        } else if normal[0] != 0 {
+            if normal[0] > 0 { 0 } else { 1 }
+        } else if normal[1] < 0 {
+            4
+        } else {
+            5
+        }
+    }
+    // The shader's per-channel sRGB decode (the D2Array is Rgba8UnormSrgb) + directional
+    // lighting (identical constants to shade_cuboid_surface), then re-quantised to the
+    // Rgba8Unorm (linear) target the colour-identity pass writes.
+    fn srgb_to_linear(s: f32) -> f32 {
+        if s <= 0.04045 {
+            s / 12.92
+        } else {
+            ((s + 0.055) / 1.055).powf(2.4)
+        }
+    }
+    fn expected_pixel(color: [u8; 4], normal: [i32; 3]) -> [u8; 3] {
+        let n = glam::Vec3::new(normal[0] as f32, normal[1] as f32, normal[2] as f32);
+        let light = glam::Vec3::new(0.4, 0.9, 0.5).normalize();
+        let diffuse = n.normalize().dot(light).max(0.0);
+        let lighting = 0.45 + 0.55 * diffuse;
+        let mut out = [0u8; 3];
+        for channel in 0..3 {
+            let linear = srgb_to_linear(color[channel] as f32 / 255.0) * lighting;
+            out[channel] = (linear.clamp(0.0, 1.0) * 255.0).round() as u8;
+        }
+        out
+    }
+
+    let gpu = pollster::block_on(GpuContext::new(None));
+    let width = 96u32;
+    let height = 96u32;
+
+    // A hollow box → axis-aligned coarse faces (every hit is a flat block face), the
+    // cleanest exercise of per-face layer selection.
+    let case = brick_render_cases()
+        .into_iter()
+        .find(|c| c.name == "render-box-31-17-49-d4")
+        .expect("box render case present");
+    let vpb = case.voxels_per_block;
+    let two_layer_chunks = TwoLayerStore::enabled().build_covering_chunks(&case.scene, vpb, 0);
+    let build = build_brick_field(&two_layer_chunks, vpb);
+    assert!(!build.brick_records.is_empty(), "empty brick field");
+    let overlay_active = brick_representable_overlay(&two_layer_chunks).unwrap_or(false);
+    let recentre = case.scene.recentre_voxels_for_resolve(vpb);
+    let grid_dimensions = case.scene.placed_region_dimensions(vpb);
+
+    let mut app_core = AppCore::new(OrbitCamera::default());
+    app_core.camera.target = glam::Vec3::ZERO;
+    app_core.camera.orbit_distance = OrbitCamera::auto_framed_distance(grid_dimensions);
+    let view_projection = app_core.view_projection(width as f32 / height as f32, grid_dimensions);
+    let viewport_px = [0u32, 0, width, height];
+
+    let gpu_records = pack_gpu_records(&build, |_| false);
+    let pyramid = ClipmapPyramid::from_chunks(&two_layer_chunks);
+    let mut renderer = BrickRaymarchRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
+    renderer.install_brick_field(
+        &gpu.device,
+        &gpu.queue,
+        &build,
+        &gpu_records,
+        &pyramid,
+        recentre,
+        overlay_active,
+    );
+
+    // A synthetic per-face material: six distinct solid colours, one per D2Array layer
+    // (the mesh path's own headless fixture — no VS assets needed). 2×2 so `fract` tiling
+    // is exercised even though every texel of a layer is identical.
+    let layer_colors: [[u8; 4]; 6] = [
+        [200, 50, 50, 255],
+        [50, 200, 50, 255],
+        [50, 50, 200, 255],
+        [200, 200, 50, 255],
+        [200, 50, 200, 255],
+        [50, 200, 200, 255],
+    ];
+    let layer_bytes: Vec<Vec<u8>> = layer_colors
+        .iter()
+        .map(|color| color.repeat(4)) // 2×2 pixels
+        .collect();
+    let layer_slices: [&[u8]; 6] = std::array::from_fn(|i| layer_bytes[i].as_slice());
+    let material_layout = voxel_worker::renderer::build_face_material_layout(&gpu.device);
+    let sampler = gpu.device.create_sampler(&wgpu::SamplerDescriptor {
+        label: Some("test loaded material sampler"),
+        address_mode_u: wgpu::AddressMode::ClampToEdge,
+        address_mode_v: wgpu::AddressMode::ClampToEdge,
+        address_mode_w: wgpu::AddressMode::ClampToEdge,
+        mag_filter: wgpu::FilterMode::Nearest,
+        min_filter: wgpu::FilterMode::Nearest,
+        mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+        ..Default::default()
+    });
+    let loaded = voxel_worker::block_palette::LoadedMaterial::from_face_layers(
+        &gpu.device,
+        &gpu.queue,
+        &material_layout,
+        &sampler,
+        2,
+        2,
+        &layer_slices,
+        "synthetic per-face test material".to_string(),
+    );
+
+    // Mirror the applied-block state into the shader (bound = None → no modulation, overlay
+    // off), then render the shaded colour with the block's D2Array bound at group(2).
+    renderer.set_loaded_material_active(true);
+    let frame = renderer.update_uniforms(
+        &gpu.queue,
+        view_projection,
+        viewport_px,
+        grid_dimensions,
+        LayerBand::FULL,
+        false,
+        None,
+    );
+    let color_image =
+        renderer.render_color_image(&gpu.device, &gpu.queue, width, height, Some(&loaded.bind_group));
+
+    let mut compared = 0usize;
+    let mut texel_mismatches = 0usize;
+    let mut hit_disagreements = 0usize;
+    let mut first_report: Option<String> = None;
+    for y in 0..height {
+        for x in 0..width {
+            let gpu_pixel = color_image[(y * width + x) as usize];
+            let gpu_hit = gpu_pixel[3] == 255;
+            let pixel = glam::Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
+            let cpu = cpu_march_brick_field(&frame, &gpu_records, &build, &pyramid, pixel);
+            match (cpu, gpu_hit) {
+                (Some(hit), true) => {
+                    compared += 1;
+                    let color = layer_colors[face_layer(hit.face_normal)];
+                    let expected = expected_pixel(color, hit.face_normal);
+                    let close =
+                        (0..3).all(|c| (gpu_pixel[c] as i32 - expected[c] as i32).abs() <= 2);
+                    if !close {
+                        texel_mismatches += 1;
+                        if first_report.is_none() {
+                            first_report = Some(format!(
+                                "    px=({x},{y}) normal={:?} layer={} gpu={:?} expected={:?}",
+                                hit.face_normal,
+                                face_layer(hit.face_normal),
+                                &gpu_pixel[..3],
+                                expected,
+                            ));
+                        }
+                    }
+                }
+                // Silhouette disagreement (one path hits, the other misses) — allowed a
+                // tiny budget (f32 grazing at the outline; not the interior texel property).
+                (Some(_), false) | (None, true) => hit_disagreements += 1,
+                (None, false) => {}
+            }
+        }
+    }
+
+    assert!(compared > 200, "too few interior hit pixels compared ({compared})");
+    assert_eq!(
+        texel_mismatches,
+        0,
+        "loaded-material raymarch hit sampled the WRONG texel for {texel_mismatches}/{compared} \
+         interior pixels (ADR 0011 G2 lattice rule):\n{}",
+        first_report.unwrap_or_default()
+    );
+    // The silhouette budget is generous: only the 1-px outline can disagree.
+    let outline_budget = (width + height) as usize * 4;
+    assert!(
+        hit_disagreements <= outline_budget,
+        "too many hit disagreements ({hit_disagreements} > {outline_budget}) — not a silhouette \
+         effect"
+    );
+    eprintln!(
+        "loaded-material texel parity clean: {compared} interior pixels, \
+         {hit_disagreements} silhouette disagreements"
+    );
+}
+
 /// **ADR 0011 interior elision — the SURFACE-ONLY build renders identically to the
 /// interior-INCLUSIVE oracle build.** For every brick render case, install the field from
 /// the oracle build ([`build_brick_field_all_blocks`] — one record per non-air block) and

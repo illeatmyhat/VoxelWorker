@@ -538,13 +538,17 @@ pub fn render_frame(
         // `None` keeps the procedural-atlas path. The brick pass writes ray-hit
         // depth into this same MSAA depth attachment, so the depth-tested overlays
         // below (and the fog's depth-stop) composite identically on both paths.
+        let loaded_material = match material {
+            renderer::MaterialSource::Loaded(bind_group) => Some(bind_group),
+            renderer::MaterialSource::Procedural(_) => None,
+        };
         if let Some(brick_raymarch) = overlays.brick_raymarch {
-            brick_raymarch.draw(&mut voxel_pass);
+            // ADR 0011 G2: a loaded VS block now textures the raymarch too — bind the
+            // block's 6-layer D2Array at group(2) so solid hits shade per-face by the
+            // owner's lattice rule (the brick renderer's `loaded_material_active` flag,
+            // set alongside its uniforms, selects that branch). `None` binds the dummy.
+            brick_raymarch.draw(&mut voxel_pass, loaded_material);
         } else {
-            let loaded_material = match material {
-                renderer::MaterialSource::Loaded(bind_group) => Some(bind_group),
-                renderer::MaterialSource::Procedural(_) => None,
-            };
             overlays.cuboid_mesh.draw(&mut voxel_pass, loaded_material);
         }
 

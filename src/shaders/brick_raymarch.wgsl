@@ -76,7 +76,9 @@ struct BrickUniforms {
     lattice_shift_and_edge: vec4<i32>,
     // xyz: absolute block = sv block cell + this bias; w: atlas tiles per axis.
     block_bias_and_tiles: vec4<i32>,
-    // xyz: absolute voxel = sv voxel cell + this bias; w unused.
+    // xyz: absolute voxel = sv voxel cell + this bias; w = loaded_material_active
+    // (1 when a VS block is applied — shade solid hits from the 6-layer D2Array by the
+    // owner's lattice-determinism rule instead of the procedural atlas, ADR 0011 G2).
     voxel_bias: vec4<i32>,
     // x: first in-band voxel Z (sv frame); y: one-past-last in-band voxel Z (sv
     // frame) — the layer-range band clip, applied at traverse time (the mesh path
@@ -168,6 +170,37 @@ var<storage, read> occupancy_cells: array<OccupancyCell>;
 var material_texture: texture_2d<f32>;
 @group(1) @binding(1)
 var material_sampler: sampler;
+
+// ADR 0011 G2 — the LOADED VS-block material: the mesh path's 6-layer face D2Array
+// (one PNG per cube face). Group 2 mirrors `renderer::build_face_material_layout`
+// (D2Array + sampler), so `LoadedMaterial::bind_group` — built against that same
+// layout — binds here directly (a dummy 1×1×6 array binds when no block is applied).
+// A solid hit shades from THIS when `voxel_bias.w != 0`, else from the procedural
+// atlas above. The owner's insight: the texture is a pure function of the lattice, so
+// NO per-brick texture data is needed — `face_layer` + the per-face UV + `fract` (all
+// copied verbatim from cuboid_loaded.wgsl) reproduce the merged-mesh face texel-exactly
+// for a raymarch hit, at ANY scale, with zero per-voxel data.
+@group(2) @binding(0)
+var loaded_material_texture: texture_2d_array<f32>;
+@group(2) @binding(1)
+var loaded_material_sampler: sampler;
+
+// Pick the texture-array layer for a cube face from its outward normal — COPIED
+// VERBATIM from `face_layer` in shaders/cuboid_loaded.wgsl:73-84 (and the CPU
+// `face_layer` in cuboid_mesh.rs / `CubeFaceSlot`), byte-same constants + axis
+// conventions, so per-face textures land on the SAME faces the mesh path shows. Z-up:
+// +Z = up (2), -Z = down (3); the four horizontals are ±X (east/west) and ±Y
+// (south/north). Cite the source so any drift is visible.
+fn face_layer(face_normal: vec3<f32>) -> i32 {
+    let axis_magnitude = abs(face_normal);
+    if (axis_magnitude.z > 0.5) {
+        return select(3, 2, face_normal.z > 0.0);
+    } else if (axis_magnitude.x > 0.5) {
+        return select(1, 0, face_normal.x > 0.0);
+    } else {
+        return select(5, 4, face_normal.y < 0.0);
+    }
+}
 
 // The sentinel marking a sculpted record whose atlas payload is NOT resident;
 // must match `NON_RESIDENT_ATLAS_SLOT` in brick_raymarch.rs.
@@ -815,12 +848,27 @@ fn shade_cuboid_surface(absolute: vec3<f32>, world_normal: vec3<f32>, material_i
     }
     let texture_coord = vec2<f32>(u_value, v_value) / uniforms.voxels_per_block;
 
-    let atlas_rect = uniforms.material_atlas_rects[min(material_id, 2u)];
+    // Tile the per-voxel slice with `fract` (a merged/coarse face spans many voxels, so
+    // texture_coord runs 0..N/density) — shared by both material paths.
     let tile_uv = fract(texture_coord);
-    let atlas_uv = atlas_rect.xy + tile_uv * atlas_rect.zw;
-    // Level 0 explicitly: no mips + nearest sampler makes this identical to the
-    // mesh path's textureSample, and it is legal in non-uniform control flow.
-    let sampled = textureSampleLevel(material_texture, material_sampler, atlas_uv, 0.0).rgb;
+    var sampled: vec3<f32>;
+    if (uniforms.voxel_bias.w != 0) {
+        // LOADED VS block: the texture is a pure function of the lattice (the owner's
+        // determinism rule) — pick the per-face D2Array layer from the outward normal and
+        // sample `fract(texture_coord)`, so a raymarch hit lands the EXACT texel the merged
+        // mesh face does. `face_layer` + this UV + `fract` are copied verbatim from
+        // cuboid_loaded.wgsl (ADR 0011 G2 per-record materials); band-clip cross-section faces
+        // + the block-occupancy fallback cubes reach here with their clip/step normal, so they
+        // shade by the same rule. Level 0 explicitly (no mips) — legal in non-uniform flow.
+        let layer = face_layer(world_normal);
+        sampled = textureSampleLevel(loaded_material_texture, loaded_material_sampler, tile_uv, layer, 0.0).rgb;
+    } else {
+        let atlas_rect = uniforms.material_atlas_rects[min(material_id, 2u)];
+        let atlas_uv = atlas_rect.xy + tile_uv * atlas_rect.zw;
+        // Level 0 explicitly: no mips + nearest sampler makes this identical to the
+        // mesh path's textureSample, and it is legal in non-uniform control flow.
+        sampled = textureSampleLevel(material_texture, material_sampler, atlas_uv, 0.0).rgb;
+    }
 
     let light_direction = normalize(vec3<f32>(0.4, 0.9, 0.5));
     let normal = normalize(world_normal);
@@ -1233,4 +1281,30 @@ fn fragment_hit_identity(@builtin(position) position: vec4<f32>) -> @location(0)
         bitcast<u32>(absolute_voxel.y),
         bitcast<u32>(absolute_voxel.z),
     );
+}
+
+// The colour-parity harness entry (tests/gpu_parity.rs): a single-sample pass that
+// SHADES each hit exactly as `fragment_render`'s centre-ray evaluation would (same
+// plane-intersection, same `shade_cuboid_surface`), into a plain colour target. Used
+// to gate that a LOADED-material raymarch hit samples the same texel the mesh's
+// lattice rule computes for that voxel face (ADR 0011 G2). Single sample ⇒ the sample
+// ray IS the pixel-centre ray, so no per-sample loop is needed.
+@fragment
+fn fragment_color_identity(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
+    let pixel_centre = floor(position.xy) + vec2<f32>(0.5);
+    let ray = camera_ray(pixel_centre);
+    let hit = march_brick_field(ray);
+    if (!hit.hit) {
+        discard;
+    }
+    // Centre-ray evaluation on the hit face's plane (mirrors `fragment_render`).
+    let plane_distance = hit.plane_sv - ray.origin[hit.entry_axis];
+    let t_centre = plane_distance / ray.safe_direction[hit.entry_axis];
+    var evaluation_sv = ray.origin + ray.direction * t_centre;
+    evaluation_sv[hit.entry_axis] = hit.plane_sv;
+    let shift = vec3<f32>(uniforms.lattice_shift_and_edge.xyz);
+    let absolute = evaluation_sv - shift;
+    var world_normal = vec3<f32>(0.0);
+    world_normal[hit.entry_axis] = hit.normal_sign;
+    return shade_cuboid_surface(absolute, world_normal, hit.material_id);
 }
