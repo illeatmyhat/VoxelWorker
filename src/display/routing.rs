@@ -5,7 +5,15 @@
 //! (re)built — inline on the main thread, or dispatched to a background worker
 //! (stale-while-rebuilding) — and how a stale artifact is guarded against an unsound
 //! inline patch. They are pure (no GPU, no window), so every routing invariant is
-//! unit-testable in the lib. The state machine that ACTS on these decisions still lives
+//! unit-testable in the lib.
+//!
+//! The three per-pipeline functions ([`route_geometry_rebuild`], [`route_mesh_build`],
+//! [`route_brick_rebuild`]) are thin wrappers over ONE shared policy,
+//! [`route_derived_artifact`], applied to a per-artifact [`DerivedArtifactState`]. They differ
+//! only in which staleness inputs they fold into that state (mesh staleness, mirror residency,
+//! engagement) and in the single load-bearing divergence recorded as
+//! `inline_install_supersedes_in_flight` — so the interlock, the one rule that must never be
+//! dialectal, is defined and tested exactly once. The state machine that ACTS on these decisions still lives
 //! in `main.rs` (a later slice extracts a DisplayOrchestrator alongside this module); the
 //! async workers that execute a dispatched rebuild live in [`crate::geometry_worker`] and
 //! [`crate::brick_worker`]; and the generation bookkeeping behind supersede is
@@ -74,34 +82,109 @@ pub enum RebuildRoute {
     WholesaleAsync,
 }
 
-/// Decide where an edit's geometry rebuild is routed (issue #60 C1), given whether an async
-/// wholesale build is currently OUTSTANDING (dispatched but not yet accepted/installed) and
-/// the [`EditShape`] the resolve produced. Pure — no GPU, no window — so the C1 interlock is
-/// unit-testable.
+/// The routing-relevant state of ONE derived display artifact — the cuboid fallback mesh, the
+/// brick raymarch field, and every future one the display grows (the per-voxel material atlas,
+/// an export snapshot, a nav/occupancy summary for agents). The four booleans are the entire
+/// input surface the shared routing policy needs; each artifact's wrapper fills them from its
+/// own residency bookkeeping. See [`route_derived_artifact`] for the policy that consumes them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DerivedArtifactState {
+    /// The resident artifact reflects the LATEST resolve — it is neither stale nor a
+    /// placeholder. When false the resident copy cannot be inline-patched (patching a stale
+    /// artifact strands every change it does not reflect — the Frankenstein-artifact hazard the
+    /// interlock guards); a wholesale rebuild is forced.
+    pub current: bool,
+    /// An async WHOLESALE rebuild is in flight — dispatched to a worker, not yet accepted and
+    /// installed. Like a non-`current` artifact, an outstanding rebuild means the resident copy
+    /// is stale (it reflects S0 while the worker builds S1), so it must not be inline-patched.
+    pub outstanding: bool,
+    /// A patch TARGET is resident — the mesh's re-meshable buffers, or the brick's incremental
+    /// mirror. When false there is nothing sound to patch in place, so even a localised edit
+    /// rebuilds wholesale.
+    pub patchable: bool,
+    /// The shell's INLINE install seam bumps the supersede generation, so building a small
+    /// wholesale INLINE while a rebuild is still outstanding is sound: the in-flight worker
+    /// result is discarded on arrival (its generation is stale). True for the brick, whose
+    /// `finish_brick_install` seam bumps the generation; false for the mesh/geometry, which have
+    /// no such inline seam and so must route EVERY mid-flight edit to the worker for convergence.
+    /// THE one load-bearing difference between the artifacts' dialects — see the interlock note
+    /// in the module doc; never erase it or fold it away.
+    pub inline_install_supersedes_in_flight: bool,
+}
+
+/// The one routing policy shared by every derived display artifact — the single rule the three
+/// per-artifact wrappers ([`route_geometry_rebuild`], [`route_mesh_build`],
+/// [`route_brick_rebuild`]) now express: *patch inline iff the resident artifact is current and
+/// the edit is localised; otherwise rebuild wholesale — inline below the chunk threshold, async
+/// above it; while the resident copy is stale (outstanding OR not current) never patch, and —
+/// unless this artifact's inline install seam supersedes an in-flight result — never build a
+/// wholesale inline either.* Pure (no GPU, no window) so the interlock is unit-testable.
 ///
-/// The load-bearing rule: while an async build is outstanding the currently-installed
-/// renderer does NOT reflect the latest resolve (it is still S0 while the worker builds S1),
-/// so an incremental edit must NOT inline-patch it — that produces the Frankenstein mesh
-/// described in C1. Route EVERY edit to a fresh wholesale-async dispatch instead. Only when
-/// nothing is outstanding is the installed renderer current, so the inline incremental
-/// fast-path (and the small-wholesale-inline path) is safe to resume.
+/// The decision, in table form:
+/// * `Incremental` edit AND the resident copy is current AND patchable AND nothing outstanding →
+///   [`InlineIncremental`](RebuildRoute::InlineIncremental) (the patch fast path).
+/// * Otherwise a wholesale is needed. It is *interlocked* — forced to the worker — when the
+///   resident copy is stale (`outstanding || !current`) AND this artifact does NOT supersede an
+///   in-flight result on inline install. Route [`WholesaleAsync`](RebuildRoute::WholesaleAsync)
+///   when interlocked OR the wholesale's covering count exceeds the threshold; else
+///   [`WholesaleInline`](RebuildRoute::WholesaleInline).
+///
+/// An `Incremental` edit that cannot take the fast path carries no wholesale covering count
+/// (`EditShape::Incremental` is count-less). For the geometry/mesh artifacts that case is always
+/// interlocked (their `patchable` is always true, so failing the fast path implies stale, and
+/// they do not supersede), so it routes async and the absent count is never consulted. The brick
+/// never reaches the core with a count-less incremental wholesale — its wrapper converts an
+/// incremental edit that cannot patch into an explicit `Wholesale { chunk_count }` first. So the
+/// count-less wholesale path is only reachable by a direct call with an artifact-shape no wrapper
+/// produces; there it routes conservatively to the worker (no size to justify an inline build).
+pub fn route_derived_artifact(
+    state: DerivedArtifactState,
+    edit: EditShape,
+    async_threshold: usize,
+) -> RebuildRoute {
+    if edit == EditShape::Incremental && !state.outstanding && state.current && state.patchable {
+        return RebuildRoute::InlineIncremental;
+    }
+    // A wholesale is needed. It is forced to the worker when the resident copy is stale AND this
+    // artifact cannot soundly install a wholesale inline over an in-flight result.
+    let interlocked =
+        (state.outstanding || !state.current) && !state.inline_install_supersedes_in_flight;
+    let exceeds_threshold = match edit {
+        EditShape::Wholesale { chunk_count } => chunk_count > async_threshold,
+        // A count-less incremental wholesale (see the doc): no size justifies an inline build,
+        // so route to the worker conservatively.
+        EditShape::Incremental => true,
+    };
+    if interlocked || exceeds_threshold {
+        RebuildRoute::WholesaleAsync
+    } else {
+        RebuildRoute::WholesaleInline
+    }
+}
+
+/// Decide where an edit's geometry rebuild is routed (issue #60 C1), given whether an async
+/// wholesale build is currently OUTSTANDING (dispatched but not yet accepted/installed) and the
+/// [`EditShape`] the resolve produced. A thin wrapper over [`route_derived_artifact`]: the
+/// installed renderer is always current and always inline-patchable, so an outstanding build is
+/// geometry's only stale-forcing input (the C1 interlock). Pure — no GPU, no window.
 pub fn route_geometry_rebuild(
     async_outstanding: bool,
     edit: EditShape,
     async_threshold: usize,
 ) -> RebuildRoute {
-    if async_outstanding {
-        // C1 interlock: never inline-patch a stale renderer. Re-dispatch a fresh wholesale
-        // async build from the current resident cache, regardless of the edit's shape.
-        return RebuildRoute::WholesaleAsync;
-    }
-    match edit {
-        EditShape::Incremental => RebuildRoute::InlineIncremental,
-        EditShape::Wholesale { chunk_count } if chunk_count > async_threshold => {
-            RebuildRoute::WholesaleAsync
-        }
-        EditShape::Wholesale { .. } => RebuildRoute::WholesaleInline,
-    }
+    // The installed renderer is always current on the main thread and always inline-patchable
+    // (re-meshable buffers), and geometry has no inline supersede seam — so an outstanding async
+    // build is the only thing that forces a stale rebuild here (the C1 interlock).
+    route_derived_artifact(
+        DerivedArtifactState {
+            current: true,
+            outstanding: async_outstanding,
+            patchable: true,
+            inline_install_supersedes_in_flight: false,
+        },
+        edit,
+        async_threshold,
+    )
 }
 
 /// Whether — and how — an edit must (re)build the fallback CUBOID MESH, given that the
@@ -145,10 +228,16 @@ pub fn route_mesh_build(
     if brick_display_engaged {
         return MeshBuildRoute::Skip;
     }
-    // The mesh is the display this frame — it must become valid. Fold staleness into the
-    // interlock: a stale mesh, like an outstanding async build, must not be inline-patched.
-    MeshBuildRoute::Build(route_geometry_rebuild(
-        async_outstanding || mesh_stale,
+    // The mesh is the display this frame — it must become valid. A stale (previously-skipped)
+    // mesh is `current: false`, which forces a wholesale rebuild exactly as an outstanding async
+    // build does; the mesh has no inline supersede seam, so both stale conditions interlock.
+    MeshBuildRoute::Build(route_derived_artifact(
+        DerivedArtifactState {
+            current: !mesh_stale,
+            outstanding: async_outstanding,
+            patchable: true,
+            inline_install_supersedes_in_flight: false,
+        },
         edit,
         async_threshold,
     ))
@@ -286,18 +375,24 @@ pub enum BrickRebuildAction {
     WholesaleAsync,
 }
 
-/// Decide where an edit's brick rebuild is routed. Pure — no GPU, no window — so the
-/// outstanding-interlock is unit-testable, like `route_geometry_rebuild`.
+/// Decide where an edit's brick rebuild is routed. A thin wrapper over the shared
+/// [`route_derived_artifact`] policy, translating the brick's residency inputs into a
+/// [`DerivedArtifactState`] and mapping the result to the brick's action enum. Pure — no GPU, no
+/// window — so the interlock is unit-testable.
 ///
-/// The load-bearing rule: while an async brick build is outstanding the resident mirror
-/// (and the renderer's live field) do NOT reflect the latest resolve, so an incremental
-/// edit must NOT patch them — route EVERY mid-flight edit to a fresh WHOLESALE rebuild
-/// instead. An incremental edit with NO resident mirror (the field emptied earlier, or
-/// startup dispatched async) also has nothing sound to patch, so it goes wholesale. The
-/// covering-set size then gates inline vs async, matching the mesh threshold gate —
-/// INCLUDING while outstanding: a small mid-flight wholesale rebuilds inline (it is
-/// immediately current; the shell's inline install seam bumps the generation so the
-/// superseded in-flight result is discarded — see the module doc's divergence note).
+/// The load-bearing divergence from the mesh/geometry artifacts, carried through the shared
+/// policy as `inline_install_supersedes_in_flight: true`: while an async brick build is
+/// outstanding a SMALL mid-flight wholesale rebuilds INLINE rather than re-dispatching. That is
+/// sound ONLY because the shell's inline install seam (`finish_brick_install` in `main.rs`) bumps
+/// the supersede generation, so the superseded in-flight result is discarded on arrival — see the
+/// module doc's interlock note. A large mid-flight wholesale still re-dispatches async.
+///
+/// The brick alone must feed the shared core an explicit covering count when an incremental edit
+/// cannot patch (no resident mirror, or mid-flight): `EditShape::Incremental` is count-less, so
+/// this wrapper converts an incremental edit that will NOT patch into an explicit
+/// `Wholesale { chunk_count: covering_chunk_count }`, threshold-gated like any wholesale. The core
+/// then owns the inline-vs-async decision; the wrapper only owns this artifact-specific
+/// incremental-vs-wholesale translation, which requires the brick's mirror-residency knowledge.
 pub fn route_brick_rebuild(
     async_outstanding: bool,
     incremental_edit: bool,
@@ -305,13 +400,32 @@ pub fn route_brick_rebuild(
     covering_chunk_count: usize,
     async_threshold: usize,
 ) -> BrickRebuildAction {
-    if !async_outstanding && mirror_resident && incremental_edit {
-        return BrickRebuildAction::PatchInline;
-    }
-    if covering_chunk_count > async_threshold {
-        BrickRebuildAction::WholesaleAsync
+    // An incremental edit is expressible as a localised patch only when a mirror is resident and
+    // no rebuild is outstanding; otherwise it must be realised as a wholesale of its covering set
+    // (which carries the count the shared policy needs to gate inline vs async).
+    let edit = if incremental_edit && mirror_resident && !async_outstanding {
+        EditShape::Incremental
     } else {
-        BrickRebuildAction::WholesaleInline
+        EditShape::Wholesale {
+            chunk_count: covering_chunk_count,
+        }
+    };
+    let route = route_derived_artifact(
+        DerivedArtifactState {
+            // The live brick field is always current on the main thread; residency of a patch
+            // target is the brick's `patchable`, and the inline install seam supersedes in flight.
+            current: true,
+            outstanding: async_outstanding,
+            patchable: mirror_resident,
+            inline_install_supersedes_in_flight: true,
+        },
+        edit,
+        async_threshold,
+    );
+    match route {
+        RebuildRoute::InlineIncremental => BrickRebuildAction::PatchInline,
+        RebuildRoute::WholesaleInline => BrickRebuildAction::WholesaleInline,
+        RebuildRoute::WholesaleAsync => BrickRebuildAction::WholesaleAsync,
     }
 }
 
@@ -687,5 +801,209 @@ mod tests {
             route_brick_rebuild(false, false, true, THRESHOLD, THRESHOLD),
             BrickRebuildAction::WholesaleInline
         );
+    }
+
+    // --- route_derived_artifact: the shared policy's exhaustive decision table ---
+
+    /// The three edit shapes the exhaustive table iterates: a localised edit, a wholesale AT the
+    /// threshold (builds inline when not interlocked), and a wholesale ABOVE it (async).
+    const EDIT_SHAPES: [EditShape; 3] = [
+        EditShape::Incremental,
+        EditShape::Wholesale {
+            chunk_count: THRESHOLD,
+        },
+        EditShape::Wholesale {
+            chunk_count: THRESHOLD + 1,
+        },
+    ];
+
+    /// An independent restatement of the routing table, used to pin [`route_derived_artifact`]
+    /// exhaustively. Kept deliberately as a readable if-ladder (not a copy of the implementation's
+    /// expression form) so a refactor that changes the policy must change BOTH to stay green.
+    fn expected_route(
+        state: DerivedArtifactState,
+        edit: EditShape,
+        threshold: usize,
+    ) -> RebuildRoute {
+        // The patch fast path: a localised edit onto a current, patchable, settled artifact.
+        let can_patch = matches!(edit, EditShape::Incremental)
+            && state.current
+            && state.patchable
+            && !state.outstanding;
+        if can_patch {
+            return RebuildRoute::InlineIncremental;
+        }
+        // A wholesale is needed. The resident copy is stale when a rebuild is outstanding or it is
+        // not current; that forces the worker UNLESS this artifact supersedes an inline install.
+        let stale = state.outstanding || !state.current;
+        let forced_to_worker = stale && !state.inline_install_supersedes_in_flight;
+        let big_enough_for_worker = match edit {
+            EditShape::Wholesale { chunk_count } => chunk_count > threshold,
+            EditShape::Incremental => true,
+        };
+        if forced_to_worker || big_enough_for_worker {
+            RebuildRoute::WholesaleAsync
+        } else {
+            RebuildRoute::WholesaleInline
+        }
+    }
+
+    /// Iterate every combination of the four state booleans × the three edit shapes and assert
+    /// [`route_derived_artifact`] reproduces the independent table — the policy tested once,
+    /// exhaustively (map item 3).
+    #[test]
+    fn derived_artifact_table_is_exhaustive() {
+        for &current in &[false, true] {
+            for &outstanding in &[false, true] {
+                for &patchable in &[false, true] {
+                    for &supersedes in &[false, true] {
+                        let state = DerivedArtifactState {
+                            current,
+                            outstanding,
+                            patchable,
+                            inline_install_supersedes_in_flight: supersedes,
+                        };
+                        for edit in EDIT_SHAPES {
+                            assert_eq!(
+                                route_derived_artifact(state, edit, THRESHOLD),
+                                expected_route(state, edit, THRESHOLD),
+                                "state={state:?} edit={edit:?} disagrees with the table"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The one cross-check that pins the load-bearing divergence: a mesh-shaped artifact
+    /// (`inline_install_supersedes_in_flight = false`) with a rebuild outstanding routes even a
+    /// SMALL wholesale to the worker — it cannot soundly install inline over an in-flight result.
+    #[test]
+    fn mesh_shaped_outstanding_small_wholesale_is_async() {
+        let mesh_shaped = DerivedArtifactState {
+            current: true,
+            outstanding: true,
+            patchable: true,
+            inline_install_supersedes_in_flight: false,
+        };
+        assert_eq!(
+            route_derived_artifact(mesh_shaped, EditShape::Wholesale { chunk_count: 1 }, THRESHOLD),
+            RebuildRoute::WholesaleAsync,
+            "no inline supersede seam → a mid-flight small wholesale re-dispatches"
+        );
+    }
+
+    /// The mirror-image cross-check: a brick-shaped artifact
+    /// (`inline_install_supersedes_in_flight = true`) with a rebuild outstanding builds the SAME
+    /// small wholesale INLINE — the inline install seam bumps the generation, so the superseded
+    /// in-flight result is discarded on arrival. THE divergence the wrappers must preserve.
+    #[test]
+    fn brick_shaped_outstanding_small_wholesale_is_inline() {
+        let brick_shaped = DerivedArtifactState {
+            current: true,
+            outstanding: true,
+            patchable: true,
+            inline_install_supersedes_in_flight: true,
+        };
+        assert_eq!(
+            route_derived_artifact(brick_shaped, EditShape::Wholesale { chunk_count: 1 }, THRESHOLD),
+            RebuildRoute::WholesaleInline,
+            "an inline supersede seam makes a mid-flight small wholesale safe to build inline"
+        );
+    }
+
+    // --- wrapper equivalence: each dialect equals the shared policy on the artifact's state ---
+
+    /// [`route_geometry_rebuild`] equals the shared policy on geometry's state (always current,
+    /// always patchable, never superseding inline) across a small input grid.
+    #[test]
+    fn geometry_wrapper_matches_shared_policy() {
+        for &outstanding in &[false, true] {
+            for edit in EDIT_SHAPES {
+                let expected = route_derived_artifact(
+                    DerivedArtifactState {
+                        current: true,
+                        outstanding,
+                        patchable: true,
+                        inline_install_supersedes_in_flight: false,
+                    },
+                    edit,
+                    THRESHOLD,
+                );
+                assert_eq!(route_geometry_rebuild(outstanding, edit, THRESHOLD), expected);
+            }
+        }
+    }
+
+    /// [`route_mesh_build`] equals `Skip` when the brick is engaged, else the shared policy on the
+    /// mesh's state (staleness feeds `current`, no inline supersede seam), across a small grid.
+    #[test]
+    fn mesh_wrapper_matches_shared_policy() {
+        for &engaged in &[false, true] {
+            for &stale in &[false, true] {
+                for &outstanding in &[false, true] {
+                    for edit in EDIT_SHAPES {
+                        let got = route_mesh_build(engaged, stale, outstanding, edit, THRESHOLD);
+                        let expected = if engaged {
+                            MeshBuildRoute::Skip
+                        } else {
+                            MeshBuildRoute::Build(route_derived_artifact(
+                                DerivedArtifactState {
+                                    current: !stale,
+                                    outstanding,
+                                    patchable: true,
+                                    inline_install_supersedes_in_flight: false,
+                                },
+                                edit,
+                                THRESHOLD,
+                            ))
+                        };
+                        assert_eq!(got, expected);
+                    }
+                }
+            }
+        }
+    }
+
+    /// [`route_brick_rebuild`] equals the shared policy on the brick's state (mirror residency
+    /// feeds `patchable`, inline supersede seam is true) with the wrapper's incremental→wholesale
+    /// covering-count conversion, mapped to the brick action enum, across a small grid.
+    #[test]
+    fn brick_wrapper_matches_shared_policy() {
+        for &outstanding in &[false, true] {
+            for &incremental in &[false, true] {
+                for &mirror in &[false, true] {
+                    for &covering in &[1usize, THRESHOLD, THRESHOLD + 1] {
+                        let got = route_brick_rebuild(
+                            outstanding, incremental, mirror, covering, THRESHOLD,
+                        );
+                        let edit = if incremental && mirror && !outstanding {
+                            EditShape::Incremental
+                        } else {
+                            EditShape::Wholesale {
+                                chunk_count: covering,
+                            }
+                        };
+                        let core = route_derived_artifact(
+                            DerivedArtifactState {
+                                current: true,
+                                outstanding,
+                                patchable: mirror,
+                                inline_install_supersedes_in_flight: true,
+                            },
+                            edit,
+                            THRESHOLD,
+                        );
+                        let expected = match core {
+                            RebuildRoute::InlineIncremental => BrickRebuildAction::PatchInline,
+                            RebuildRoute::WholesaleInline => BrickRebuildAction::WholesaleInline,
+                            RebuildRoute::WholesaleAsync => BrickRebuildAction::WholesaleAsync,
+                        };
+                        assert_eq!(got, expected);
+                    }
+                }
+            }
+        }
     }
 }
