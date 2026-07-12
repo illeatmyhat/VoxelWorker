@@ -21,7 +21,7 @@
 //! mirror there ([`BrickRebuildOutcome::MirrorOnly`]).
 //!
 //! ## Supersede / generation (drain-to-latest)
-//! The same contract as every display worker, on the shared [`crate::worker::Worker`]:
+//! The same contract as every display worker, on the shared [`crate::workers::Worker`]:
 //! every request carries a monotonic generation, the worker drains its queue to the
 //! latest, and the shell (via
 //! [`GenerationTracker`](crate::display::routing::GenerationTracker)) discards any result
@@ -42,7 +42,7 @@ use crate::brick_field::{
 };
 use crate::brick_raymarch::{brick_representable_overlay, pack_gpu_records, BrickGpuRecord};
 use crate::two_layer_store::TwoLayerChunk;
-use crate::worker::{build_catching, Worker};
+use crate::workers::{build_catching, Worker};
 
 /// A request to rebuild the brick pipeline WHOLESALE on the worker. Carries the
 /// resolve's covering chunks (`Arc`-shared, `Send`) plus the frame scalars — the same
@@ -129,7 +129,7 @@ pub struct BrickRebuildResult {
 /// makes, in the same order (record build → representability classify → pyramid +
 /// record pack), so the outcome is byte-identical to an inline build (asserted by the
 /// build-equivalence test). Factored out so the worker loop and the equivalence test
-/// share one entry, like [`build_geometry`](crate::geometry_worker::build_geometry).
+/// share one entry, like [`build_geometry`](crate::workers::geometry::build_geometry).
 pub fn build_brick_rebuild(request: &BrickRebuildRequest) -> BrickRebuildOutcome {
     let build = build_brick_field(&request.two_layer_chunks, request.density);
     if build.brick_records.is_empty() {

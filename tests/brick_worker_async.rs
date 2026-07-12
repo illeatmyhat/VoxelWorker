@@ -109,7 +109,7 @@ fn dispatch_is_non_blocking_and_result_matches_sync_build() {
     // One anchor assert that the THREADED result is the shared `build_brick_rebuild`
     // output — the full artifact-by-artifact byte equivalence (pyramid, GPU records,
     // mirror round-trip) is the unit test `display_outcome_equals_synchronous_build`
-    // in `brick_worker.rs`, over the same entry point; not duplicated here.
+    // in `workers/brick.rs`, over the same entry point; not duplicated here.
     assert_eq!(
         install.build,
         build_brick_field(&chunks, density),

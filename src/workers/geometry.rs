@@ -27,7 +27,7 @@
 //!
 //! ## Supersede / generation (drain-to-latest)
 //! Every request carries a monotonic [`generation`](GeometryRebuildRequest::generation).
-//! The shared drain-to-latest/supersede plumbing lives in [`crate::worker::Worker`]: the
+//! The shared drain-to-latest/supersede plumbing lives in [`crate::workers::Worker`]: the
 //! worker builds only the newest pending request. The shell **discards any received result
 //! whose generation is stale** (an older generation than the newest request it has
 //! dispatched); that accept/discard decision is factored into
@@ -39,7 +39,7 @@ use std::sync::Arc;
 use crate::cuboid_mesh::CuboidMeshRenderer;
 use crate::renderer::LayerBand;
 use crate::two_layer_store::TwoLayerChunk;
-use crate::worker::{build_catching, Worker};
+use crate::workers::{build_catching, Worker};
 
 /// A request to build a wholesale cuboid mesh on the worker (issue #60). Carries the
 /// OWNED two-layer chunks the resolve produced plus the frame parameters

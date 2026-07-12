@@ -22,9 +22,6 @@ pub mod brick_field;
 // ADR 0011 G1: the minimal brick raymarch display sink (block DDA + record binary
 // search + sculpted voxel DDA, residency-miss contract, per-sample MSAA depth).
 pub mod brick_raymarch;
-// Perf follow-up to epic #64 (issue #60 pattern): the async wholesale brick-pipeline
-// worker — record build + pyramid + classify off the main thread (stale-while-rebuilding).
-pub mod brick_worker;
 pub mod camera;
 pub mod chunk_cache;
 // The display subsystem: the pure per-edit routing policy for the two display pipelines
@@ -40,18 +37,11 @@ pub mod cuboid_mesh;
 pub mod debug_clouds;
 pub mod disk_chunk_store;
 pub mod frustum;
-// Issue #60 (ADR 0003 §7): the async wholesale geometry-rebuild worker — moves the
-// heavy two-layer mesh CPU build + GPU upload off the main thread (stale-while-rebuilding).
-pub mod geometry_worker;
-// ADR 0010 E5 follow-up: the async diameter / widest-run measurement worker — moves the
-// O(total blocks) layer-band readout off the event-loop thread (stale-while-measuring).
-pub mod diameter_worker;
 pub mod gpu;
 // ADR 0003 Phase C: the single serializable mutation boundary (Intent → apply_intent).
 pub mod intent;
 pub mod panel;
 pub mod renderer;
-pub mod scan_worker;
 pub mod scene;
 pub mod settings;
 // ADR 0003 §3i (Slice 2a): the sketch → extrude → volume producer, alongside SdfShape.
@@ -67,9 +57,10 @@ pub mod two_layer_store;
 pub mod units;
 pub mod vox_export;
 pub mod voxel;
-// The generic background worker (drain-to-latest + supersede + panic-catch) behind the
-// geometry / diameter / brick async display pipelines — one machine, three build closures.
-pub mod worker;
+// The background workers, grouped: the generic drain-to-latest/supersede/panic-catch
+// Worker in `workers::mod`, with the geometry / diameter / brick / scan domain workers
+// as its submodules.
+pub mod workers;
 
 #[cfg(test)]
 mod windowed_resolve_tests;
@@ -96,7 +87,7 @@ pub use brick_raymarch::{
     brick_representable_overlay, pack_gpu_records, BrickGpuRecord,
     BrickMarchFrame, BrickRaymarchRenderer, CpuMarchHit, NON_RESIDENT_ATLAS_SLOT,
 };
-pub use brick_worker::{
+pub use workers::brick::{
     build_brick_rebuild, spawn_brick_worker, BrickDisplayInstall, BrickRebuildOutcome,
     BrickRebuildRequest, BrickRebuildResult, BrickWorker,
 };
@@ -109,12 +100,14 @@ pub use display::routing::{
 pub use chunk_storage::{compress, decompress, CompressedChunk, Occupancy, SparseCell};
 pub use disk_chunk_store::{DiskChunkStore, DiskChunkStoreStats};
 pub use cuboid_mesh::{build_cuboid_mesh, CuboidMesh, CuboidMeshRenderer};
-pub use geometry_worker::{
+pub use workers::geometry::{
     build_geometry, spawn_geometry_worker, GeometryRebuildRequest, GeometryRebuildResult,
     GeometryWorker,
 };
-pub use diameter_worker::{spawn_diameter_worker, DiameterRequest, DiameterResult, DiameterWorker};
-pub use worker::Worker;
+pub use workers::diameter::{
+    spawn_diameter_worker, DiameterRequest, DiameterResult, DiameterWorker,
+};
+pub use workers::Worker;
 pub use texture_atlas::{AtlasSubRect, MaterialAtlas};
 pub use debug_clouds::DebugCloudField;
 pub use camera::{

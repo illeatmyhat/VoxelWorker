@@ -11,8 +11,8 @@
 //! acts on the routing decisions; it is constructible without a window, so the state machine
 //! — not just its pure fragments — is unit-testable. The winit shell keeps input, surface,
 //! egui, and camera, and calls the orchestrator at its (few) integration points. The async
-//! workers that EXECUTE a dispatched rebuild remain in `crate::geometry_worker` and
-//! `crate::brick_worker` (they hold the GPU handles and the build closures).
+//! workers that EXECUTE a dispatched rebuild remain in `crate::workers::geometry` and
+//! `crate::workers::brick` (they hold the GPU handles and the build closures).
 
 pub mod orchestrator;
 pub mod routing;

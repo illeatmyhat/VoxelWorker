@@ -152,7 +152,7 @@ fn dispatch_is_non_blocking_and_result_arrives_with_correct_generation() {
 /// newest dispatched; every stale result is discarded. Assert the newest generation is
 /// ultimately accepted and no accepted result is ever stale — the "a mid-build edit is
 /// never clobbered by an older in-flight build" invariant, exercised through the threaded
-/// path (not the pure tracker, which `geometry_worker`'s unit tests already cover).
+/// path (not the pure tracker, which `workers::geometry`'s unit tests already cover).
 #[test]
 fn burst_supersede_accepts_only_newest_generation_under_real_threading() {
     let gpu = pollster::block_on(GpuContext::new(None));
@@ -538,6 +538,6 @@ fn c1_brick_field_rebuilds_wholesale_while_outstanding_no_stale_patch() {
 // live winit event loop with a surface, which these offscreen tests cannot spin up. So this
 // test models the install with a local `installed` renderer and asserts the same invariant
 // the shell's swap must preserve — installed face-set == a full rebuild of the LATEST scene.
-// The pure `route_geometry_rebuild` unit tests in `geometry_worker.rs` cover the decision
+// The pure `route_geometry_rebuild` unit tests in `workers/geometry.rs` cover the decision
 // table exhaustively; this integration test proves the decision + worker + tracker compose
 // into a non-Frankenstein install.

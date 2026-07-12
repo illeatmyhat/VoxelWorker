@@ -17,7 +17,7 @@
 //!
 //! ## Supersede / generation (drain-to-latest)
 //! Every request carries a monotonic `generation`. A burst of edits/scrubs collapses to one
-//! measurement of the NEWEST request via the shared [`crate::worker::Worker`]
+//! measurement of the NEWEST request via the shared [`crate::workers::Worker`]
 //! drain-to-latest loop, and the shell discards any result whose generation is not the
 //! newest it dispatched — reusing
 //! [`GenerationTracker`](crate::display::routing::GenerationTracker) on the shell side, like
@@ -25,7 +25,7 @@
 
 use crate::scene::Scene;
 use crate::two_layer_store::{streamed_widest_run_in_band, TwoLayerStore};
-use crate::worker::Worker;
+use crate::workers::Worker;
 
 /// A request to measure the widest occupied run in a layer band (the diameter readout).
 /// Carries an OWNED scene clone + the frame scalars — all `Send` plain data.

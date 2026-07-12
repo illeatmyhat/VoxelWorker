@@ -390,7 +390,7 @@ fn brick_field_build_matches_two_layer_boundary_set_byte_exactly() {
 // ===========================================================================
 
 /// The build-equivalence net (issue #60): a mesh built via the geometry WORKER's build
-/// entry (`geometry_worker::build_geometry`) must be BYTE-IDENTICAL to a synchronous build
+/// entry (`workers::geometry::build_geometry`) must be BYTE-IDENTICAL to a synchronous build
 /// (`CuboidMeshRenderer::new_from_two_layer_chunks`) for the same large scene. Both call
 /// the exact same builder, so this guards that the worker's request→build path feeds it the
 /// same inputs and never diverges from the sync path — the correctness net the async move

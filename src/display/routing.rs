@@ -15,8 +15,8 @@
 //! `inline_install_supersedes_in_flight` — so the interlock, the one rule that must never be
 //! dialectal, is defined and tested exactly once. The state machine that ACTS on these decisions
 //! lives in `src/display/orchestrator.rs` (the [`DisplayOrchestrator`](super::orchestrator::DisplayOrchestrator));
-//! the async workers that execute a dispatched rebuild live in [`crate::geometry_worker`] and
-//! [`crate::brick_worker`]; and the generation bookkeeping behind supersede is
+//! the async workers that execute a dispatched rebuild live in [`crate::workers::geometry`] and
+//! [`crate::workers::brick`]; and the generation bookkeeping behind supersede is
 //! [`GenerationTracker`].
 //!
 //! ## The interlock (the fog/mesh-era law: NEVER patch a stale artifact)

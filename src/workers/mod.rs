@@ -13,6 +13,9 @@
 //! decide WHICH rebuild is dispatched, and whether an arriving result is accepted, live
 //! with the domains (their `route_*` decisions + [`crate::display::routing::GenerationTracker`]).
 //!
+//! The domain workers themselves live in the submodules: [`brick`], [`diameter`],
+//! [`geometry`], and the one-shot streaming [`scan`].
+//!
 //! ## Supersede / generation (drain-to-latest)
 //! A build carries whatever supersede key its domain chose (a monotonic generation). If
 //! the user edits again mid-build, the shell dispatches a newer request; the worker
@@ -23,6 +26,11 @@
 
 use std::sync::mpsc::{Receiver, Sender};
 use std::thread::JoinHandle;
+
+pub mod brick;
+pub mod diameter;
+pub mod geometry;
+pub mod scan;
 
 /// A background worker running one domain's rebuild on a dedicated thread. The shell
 /// [`dispatch`](Self::dispatch)es `Request`s and polls [`try_recv_result`](Self::try_recv_result)
