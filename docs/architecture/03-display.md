@@ -72,6 +72,12 @@ Its vocabulary:
   function of the block lattice — the same rule the mesh path uses — so the two display
   paths are pixel-comparable by construction and no per-brick shading state exists.
 
+One contract governs the atlas as a cache: **a residency miss degrades, never
+breaks**. A record whose sculpted voxels are not resident renders as its coarse form —
+a full solid block in its material — never an assertion, never a skipped hit. Under
+this contract any future eviction policy is, by construction, a fidelity trade at
+worst: nothing a cache decision can do makes geometry vanish or a frame fail.
+
 Per-edit, the brick field is **incrementally patched**: dirty chunks re-emit their
 records, freed sculpted slots return to a free list, and only touched atlas slots are
 re-uploaded. A wholesale rebuild (density change, region-spanning edit) rebuilds the

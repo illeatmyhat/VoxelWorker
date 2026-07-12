@@ -1,6 +1,9 @@
 # ADR 0004 — Agent-authoring & generative building stack
 
-- **Status:** Proposed
+- **Status:** Proposed. **Amended 2026-07-12:** still unimplemented; the Intent door this
+  stack assumes is built and live (`docs/architecture/01-document.md`), so the stack
+  layers on top without further foundation work. The architecture set deliberately
+  scopes the agent kit out (`docs/architecture/README.md`); this record remains its spec.
 - **Date:** 2026-06-27
 - **Layer:** FEATURES-ON-TOP of [ADR 0003](0003-foundation-rework.md). **Not built until the ADR 0003
   foundation phases are underway** (concretely: the Phase C `Intent` door + Phase H `query`/`diagnostics`

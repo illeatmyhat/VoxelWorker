@@ -3,27 +3,16 @@
 Canonical terms for VoxelWorker. This file is a **glossary only** — no implementation detail,
 no decisions (those live in `docs/adr/`). Define a term here the first time an ambiguity bites.
 
-## Fog residency (the per-chunk onion fog)
+## Chunks
 
 - **Chunk** — a fixed cube tile of voxel space (`CHUNK_BLOCKS` blocks per axis). Space is sliced
-  into chunks so a scene too large for one 3D texture can still be stored/rendered tile-by-tile.
+  into chunks so residency, invalidation, meshing, and display caching can all operate
+  tile-by-tile at any scene size.
 
-- **Apron** — the 1-voxel border each chunk tile carries, copied from its neighbours, so trilinear
-  fog sampling blends smoothly across chunk seams instead of showing a hard line at every tile edge.
-  A tile is stored at `(extent + 2)³`; apron index `0` is the neighbour voxel at chunk-local `−1`.
-
-- **Resident / non-empty chunk set** — the chunks the **CPU** fog path stores: a chunk is included
-  **iff it has ≥1 occupied voxel in its interior** (`[0, extent)`, apron excluded). Empty space
-  stores nothing; a ray through an unstored chunk reads "no fog."
-
-- **Covering chunk set** — the chunks the **GPU** fog path enumerates: **every** chunk whose box
-  overlaps the producer's bounding AABB (`Scene::covering_chunk_range`). Chosen because it needs no
-  occupancy knowledge (no densify). It is a **superset** of the non-empty set.
-
-- **Sliver** — the rendering difference between the two sets above. A covering chunk can have an
-  empty interior but a non-zero apron (its border touches the shape's surface). The non-empty set
-  drops such a chunk; the covering set keeps it, drawing a 1-voxel band of extra fog at the surface.
-  Eliminated by zeroing interior-empty tiles' aprons (ADR 0007 residency option C′).
+- **Covering chunk set** — **every** chunk whose box overlaps the scene's bounding AABB
+  (`Scene::covering_chunk_range`), enumerated without any occupancy knowledge. The unit of
+  wholesale evaluation: a resolve classifies each covering chunk's blocks and empty chunks
+  simply store nothing.
 
 ## Block vs voxel
 
@@ -62,8 +51,8 @@ separate microblock entities). A solid interior is never voxelized.
 
 - **Seam solidity** — per-boundary-block, per-face solidity flags (VS
   `sideAlmostSolid`/`sidecenterSolid`) used to **cull faces across a chunk/block
-  seam** without expanding a neighbour's voxels. The coarse-vs-microblock analogue
-  of the dense-fog **apron**.
+  seam** without expanding a neighbour's voxels: a tiny pre-digested summary of
+  exactly what a neighbour is entitled to know.
 
 ## GPU brick-field display sink (the cached-brick raymarch)
 

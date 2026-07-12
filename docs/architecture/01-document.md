@@ -22,6 +22,15 @@ orientation), a material choice, and per-node display toggles (grids, visibility
 graph is small — proportional to the user's design decisions, never to the voxels those
 decisions imply.
 
+**Reuse is lossless by construction.** An instance places its definition at an integer
+lattice offset in one of the twenty-four axis-aligned orientations — the proper
+rotations of the cube, the full symmetry the block lattice admits. Every such
+orientation is an exact permutation of voxel indices, so an instance is
+voxel-for-voxel its definition: rotating a carved gargoyle can never resample,
+blur, or drift it. Transforms outside that group are not placements; they are
+authoring operations (a producer's own parameters), where losslessness is defined
+by the producer, not by the lattice.
+
 ## Producers
 
 A leaf producer is the atom of geometry. Producers are **parametric and analytic**: a
@@ -82,8 +91,12 @@ The payoff for this austerity:
   command stack; undo is applying the inverse. There is no widget-specific undo code.
 - **The document is replayable.** A sequence of intents is a test fixture, a repro
   case, and a collaboration substrate, for free.
-- **Authority is unambiguous.** However many hands can edit — human, brush, agent —
-  they contend at one door, where a single-writer discipline can be enforced.
+- **Authority is unambiguous, and single-writer.** However many hands can edit —
+  human, brush, agent — they contend at one door, and the door admits one at a time:
+  an editing hand holds *presence* over the document, and another acquires it only
+  when the first releases. This is turn-taking, not merge-based collaboration —
+  conflicts are prevented at the door rather than resolved after the fact, and the
+  command stack stays a single unambiguous history.
 
 ## Persistence
 

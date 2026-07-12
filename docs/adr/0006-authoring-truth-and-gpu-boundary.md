@@ -1,6 +1,8 @@
 # ADR 0006 — Authoring truth is CPU/`Intent`-authoritative; the GPU is a display + optional input shell
 
-- **Status:** Proposed
+- **Status:** Proposed. **Amended 2026-07-12: Accepted** — the system has operated under
+  this ruling since it was written (it is Law 4 of `docs/architecture/README.md`); the
+  formal flip was simply never recorded.
 - **Date:** 2026-06-29
 - **Layer:** BOUNDARY RULING. Not a feature-on-top like [ADR 0004](0004-agent-authoring-stack.md) /
   [ADR 0005](0005-architecture-completeness.md); it sits beside [ADR 0003](0003-foundation-rework.md) (the

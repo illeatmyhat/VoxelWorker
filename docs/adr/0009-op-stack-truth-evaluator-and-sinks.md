@@ -1,6 +1,10 @@
 # ADR 0009 — Operation-stack is truth; one boundary evaluator, many sinks; drop the resident dense grid
 
-- **Status:** Proposed
+- **Status:** Proposed. **Amended 2026-07-12: Accepted & implemented** — the operation
+  stack is the sole truth, the one-evaluator/many-sinks split is the live runtime (via
+  ADR 0010/0011), and the resident dense grid is fully retired (dense code survives only
+  as test oracles). Note: the "8³ brick" granule here was amended by ADR 0011 (the
+  granule is one BLOCK). Living shape: `docs/architecture/02-evaluation.md`.
 - **Date:** 2026-06-29
 - **Layer:** BOUNDARY RULING + foundation refinement. **Extends and sharpens [ADR 0006](0006-authoring-truth-and-gpu-boundary.md)**
   (the CPU/GPU authoring-truth boundary), **generalizes [ADR 0007](0007-gpu-view-resolve.md)** (the GPU fog resolver is

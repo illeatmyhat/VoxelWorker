@@ -11,6 +11,13 @@
   Sub-decisions are tagged **[DECIDED-0009]** (settled by ADR 0009's benchmark) or **[DECIDED-grill]** (ruled in the
   owner grill; the former [OPEN-grill] positions, each resolved in §Open questions at the end). One draft position was
   overturned as a units error (Decision 1: the granule is one BLOCK, not a voxel count — amends ADR 0009's "8³").
+  **Amended 2026-07-12:** two post-ship contract changes are live — brick records are
+  **surface-only at emission** (interior elision fused into the build; the all-blocks
+  build survives as the parity oracle), and the wholesale pipeline (record build +
+  pyramid + classify) runs **asynchronously** on a dedicated worker with generation
+  supersede (stale-while-rebuilding). The fog-from-bricks consumer named above was
+  retired with the volumetric fog subsystem by ADR 0012. Living shape:
+  `docs/architecture/03-display.md` / `04-work.md`.
 - **Date:** 2026-07-01
 - **Layer:** PRODUCTION PORT of the **GPU display sink** — the next port after [ADR 0010](0010-boundary-residency-two-layer-store.md).
   **Generalizes [ADR 0007](0007-gpu-view-resolve.md)** (the shipped per-chunk R8 fog atlas is already a brick map;

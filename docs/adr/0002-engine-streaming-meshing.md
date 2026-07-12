@@ -1,6 +1,12 @@
 # ADR 0002 — Engine phase: streaming, meshing & coordinates
 
 - **Status:** Accepted (O1–O7 signed off 2026-06-25). **O8** (atlas-UV'd vs per-material mesh geometry) — **resolved DONE 2026-06-25**: the cuboid mesher emits atlas-UV'd geometry (E3c-1), and the **cuboid path is now the DEFAULT** (E3c-2). The instanced path is retained behind `--mesher instanced` as a debug fallback. **Acceptance note:** the goldens were **rebaselined from the cuboid path**, NOT pixel-matched to the instanced path — the ~3–5% full-frame difference (merged-face triangulation, edge AA, procedural-noise phase, surface shading) is expected and acceptable per the matrix below; the switch is gated on feature/material parity (E3b) + a visually-reviewed golden baseline, not pixel-equivalence.
+- **Status amendment 2026-07-12:** largely **superseded** — the engine phase this record
+  governed was reworked by ADR 0003 and its successors (0009/0010/0011): the instanced
+  mesher is gone, streaming/residency is the two-layer chunk store, and the display sink
+  is the brick raymarch. Retained as decision history for the cuboid-mesher switch and
+  the coordinate groundwork. Living shape: `docs/architecture/02-evaluation.md` /
+  `03-display.md`.
 - **Date:** 2026-06-25
 - **Sub-ADR of:** [ADR 0001](0001-scene-graph-parts-and-tools.md) ("Scale" section, build-sequence steps 5–7).
 - **Issues:** Part of #14. Decomposes #18 (step 5), #19 (step 6), #20 (step 7). Leans on #24 (golden images).

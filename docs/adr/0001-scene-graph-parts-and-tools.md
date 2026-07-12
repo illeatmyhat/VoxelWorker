@@ -1,6 +1,9 @@
 # ADR 0001 — Scene graph: parts vs tools (assembly layer)
 
-- **Status:** Accepted (design signed off; implementation begins at sequence step 1)
+- **Status:** Accepted (design signed off; implementation begins at sequence step 1).
+  **Amended 2026-07-12:** shipped in part — the node graph, groups, and definition/instance
+  reuse are live; lattice orientations and connectors remain design-only. The living shape
+  is `docs/architecture/01-document.md`.
 - **Date:** 2026-06-25
 - **Supersedes / extends:** the single-producer assumption baked into `GeometryParams`;
   builds on the resolved-grid seam in `REPRESENTATION.md`.

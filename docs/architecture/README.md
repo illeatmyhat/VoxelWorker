@@ -87,6 +87,16 @@ writes upward. When a lower layer needs to influence the document (a GPU-side br
 an agent proposal), it does so by emitting an intent at the top like everyone else —
 that is what "one door" means.
 
+## Scope
+
+This set describes the **core planner**: document, evaluation, display, work, proof.
+One companion layer is deliberately outside it: the agent-authoring kit — the
+vocabulary an autonomous builder needs *above* the intent door (connectors and joints
+between parts, spatial queries, design diagnostics, generative patterns). That layer
+is specified in its own documents and rests entirely on what this set describes;
+nothing in the core is specific to who is editing, and an agent enters as one more
+client of the same intent door.
+
 ## Reading order
 
 | Document | What it owns |
