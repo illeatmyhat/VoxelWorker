@@ -9,6 +9,45 @@ an authority on anything. The design goal, like evaluation's, is a cost envelope
 
 Two display paths exist, with a strict seniority between them.
 
+## What kind of renderer this is
+
+The renderer sits at a deliberate point in a well-explored design space, and naming
+its neighbours is the fastest way to say what it is:
+
+- **From the edit-list school** (the lineage of Dreams and Claybook — systems whose
+  truth is a list of sculpting operations, not a mesh) it takes its one structural
+  idea: **march the cache, not the field**. The renderer never evaluates the
+  document's analytic fields; it walks a derived occupancy cache, so a frame's cost
+  is independent of how many operations compose the document, and an edit re-bakes
+  only its dirty region.
+- **From that same school it pointedly refuses the renderer.** Those systems draw an
+  *impression* — splatted point clouds, temporally accumulated softness — because
+  their medium tolerates approximation. This medium does not: a chiseled block in the
+  target game *is* a lattice of boolean microvoxels with a per-block material, and
+  the planner's promise is that the screen shows exactly what will be built. The
+  display is therefore **exact occupancy, always** — approximation is not a style
+  this system declined but a correctness violation it cannot express.
+- **Signed-distance mathematics lives only in evaluation.** Producers are analytic
+  fields and compose by boolean operators, but what rendering consumes is their
+  *discretization*: rays never sphere-trace a distance, they step the block lattice
+  with a grid DDA (hierarchical over the occupancy pyramid). Distance-like queries
+  answer per-edit questions; per-frame work is lattice walking over cached bits.
+- **Against the deep-octree school** (sparse voxel octrees) it chooses a **shallow
+  brick map**: a flat sorted record array, a pooled atlas, and a few coarse
+  occupancy levels. The brick granule is one *block* — the unit the document, the
+  game, and the material system already share — and flat structures are trivially
+  patchable per edit (swap records, recycle atlas slots), where deep hierarchies
+  make incremental update their hardest problem. The pyramid's few levels buy all
+  the empty-space skipping the scenes require; depth beyond that would purchase
+  asymptotics the workload never asks for.
+- **From the host game itself** comes the storage ontology: bulk blocks kept coarse,
+  chiseled blocks kept as separate micro-geometry — the split the two-layer chunk
+  mirrors and the display inherits.
+
+One sentence, then: the document layer thinks like a sculpting edit list, the storage
+layer thinks like the target game, and the display layer is a classical
+exact-occupancy brick-map raymarcher with a rasterized-mesh understudy.
+
 ## The brick field — the primary display
 
 The primary display raymarches a **cached brick field**: "march the cache, not the

@@ -126,6 +126,16 @@ sounds wasteful and is not: at authoring scales the rebuild is microseconds, and
 structure that is *always freshly built* can never be stale — the entire class of
 "index out of sync with reality" defects is not fixed but made unexpressible.
 
+*The next three entries are, taken together, the renderer.* The primary display is a
+*raymarcher*: for every pixel, a ray is walked cell-by-cell across the block grid (a
+"DDA" — the digital equivalent of drawing a straight line through graph-paper squares)
+until it meets something solid. Everything the ray consults along the way is one of
+these three structures — the records say *whether and what*, the atlas says *what
+shape inside*, and the pyramid says *how far ahead is certainly empty*. The ray never
+consults the document's geometry operations themselves; it walks a cache. That is the
+renderer's founding bargain (see [Display](03-display.md) for its lineage): frame cost
+tracks what is on screen, not how the design was authored.
+
 ## 8. Sorted display records — a frame's cost decoupled from the scene
 
 **What it is.** The primary display draws by casting rays into a *cache* of the scene.
