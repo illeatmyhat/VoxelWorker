@@ -27,6 +27,9 @@ pub mod brick_raymarch;
 pub mod brick_worker;
 pub mod camera;
 pub mod chunk_cache;
+// The display subsystem: the pure per-edit routing policy for the two display pipelines
+// (cuboid mesh + brick raymarch). The DisplayOrchestrator state machine joins it later.
+pub mod display;
 // ADR 0003 bottom layer: dependency-free geometry primitives + the streaming quantum.
 pub mod core_geom;
 pub mod chunk_storage;
@@ -94,17 +97,20 @@ pub use brick_raymarch::{
     BrickMarchFrame, BrickRaymarchRenderer, CpuMarchHit, NON_RESIDENT_ATLAS_SLOT,
 };
 pub use brick_worker::{
-    build_brick_rebuild, route_brick_rebuild, spawn_brick_worker, BrickDisplayInstall,
-    BrickRebuildAction, BrickRebuildOutcome, BrickRebuildRequest, BrickRebuildResult, BrickWorker,
+    build_brick_rebuild, spawn_brick_worker, BrickDisplayInstall, BrickRebuildOutcome,
+    BrickRebuildRequest, BrickRebuildResult, BrickWorker,
+};
+pub use display::routing::{
+    brick_display_handover, brick_patch_in_place, route_brick_rebuild, route_geometry_rebuild,
+    route_mesh_build, BrickDisplayHandover, BrickRebuildAction, EditShape, GenerationTracker,
+    MeshBuildRoute, RebuildRoute, ASYNC_REBUILD_CHUNK_THRESHOLD,
 };
 pub use chunk_storage::{compress, decompress, CompressedChunk, Occupancy, SparseCell};
 pub use disk_chunk_store::{DiskChunkStore, DiskChunkStoreStats};
 pub use cuboid_mesh::{build_cuboid_mesh, CuboidMesh, CuboidMeshRenderer};
 pub use geometry_worker::{
-    brick_display_handover, brick_patch_in_place, build_geometry, route_geometry_rebuild,
-    route_mesh_build, spawn_geometry_worker, BrickDisplayHandover, EditShape, GenerationTracker,
-    GeometryRebuildRequest, GeometryRebuildResult, GeometryWorker, MeshBuildRoute, RebuildRoute,
-    ASYNC_REBUILD_CHUNK_THRESHOLD,
+    build_geometry, spawn_geometry_worker, GeometryRebuildRequest, GeometryRebuildResult,
+    GeometryWorker,
 };
 pub use diameter_worker::{spawn_diameter_worker, DiameterRequest, DiameterResult, DiameterWorker};
 pub use worker::Worker;

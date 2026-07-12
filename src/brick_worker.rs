@@ -23,22 +23,17 @@
 //! ## Supersede / generation (drain-to-latest)
 //! The same contract as every display worker, on the shared [`crate::worker::Worker`]:
 //! every request carries a monotonic generation, the worker drains its queue to the
-//! latest, and the shell (via [`GenerationTracker`](crate::geometry_worker::GenerationTracker))
-//! discards any result whose generation a later edit superseded.
+//! latest, and the shell (via
+//! [`GenerationTracker`](crate::display::routing::GenerationTracker)) discards any result
+//! whose generation a later edit superseded.
 //!
 //! ## The interlock (the fog/mesh-era law: NEVER patch a stale artifact)
-//! While an async wholesale brick build is OUTSTANDING the resident
-//! [`IncrementalBrickField`] mirror (and the renderer's live field) reflect S0 while
-//! the worker builds S1 — so an incremental edit must NOT patch them (that would strand
-//! every brick that differs S0→S1 but isn't in the new dirty set, the Frankenstein
-//! field). [`route_brick_rebuild`] therefore routes EVERY mid-flight edit WHOLESALE.
-//! One DELIBERATE divergence from
-//! [`route_geometry_rebuild`](crate::geometry_worker::route_geometry_rebuild) (which
-//! sends every mid-flight edit async): a mid-flight wholesale whose covering set is
-//! SMALL rebuilds INLINE — immediately current, no worker latency. That is sound ONLY
-//! because the shell's inline install seam (`finish_brick_install` in `main.rs`) bumps
-//! the generation, so the superseded in-flight result is discarded on arrival; do not
-//! remove that bump. The decision is pure so the interlock is unit-testable.
+//! Where a brick edit is routed — and its DELIBERATE divergence from the geometry mesh
+//! (a mid-flight SMALL wholesale rebuilds INLINE for bricks, sound only because the
+//! shell's inline install seam `finish_brick_install` bumps the generation) — is decided
+//! by [`route_brick_rebuild`](crate::display::routing::route_brick_rebuild). The interlock
+//! law and that divergence note live next to the function, in the
+//! [`crate::display::routing`] module doc.
 
 use std::sync::Arc;
 
@@ -130,53 +125,6 @@ pub struct BrickRebuildResult {
     pub outcome: Option<BrickRebuildOutcome>,
 }
 
-/// Where a brick rebuild is routed. The brick analogue of
-/// [`RebuildRoute`](crate::geometry_worker::RebuildRoute), with the patch precondition
-/// (a resident mirror) folded in so the shell reads ONE decision.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BrickRebuildAction {
-    /// Patch the resident mirror in place via `apply_dirty_update` (the G3 fast path).
-    /// Sound ONLY when nothing is outstanding AND a mirror is resident — the mirror
-    /// then reflects the latest resolve.
-    PatchInline,
-    /// Rebuild the field WHOLESALE inline on the main thread (a small covering set —
-    /// cheap enough not to hitch a frame, and it avoids the worker's swap latency).
-    WholesaleInline,
-    /// Dispatch a WHOLESALE rebuild of the CURRENT full covering set to the async
-    /// worker (stale-while-rebuilding). Chosen for a large covering set AND — the
-    /// interlock — for ANY edit while an async brick build is outstanding.
-    WholesaleAsync,
-}
-
-/// Decide where an edit's brick rebuild is routed. Pure — no GPU, no window — so the
-/// outstanding-interlock is unit-testable, like `route_geometry_rebuild`.
-///
-/// The load-bearing rule: while an async brick build is outstanding the resident mirror
-/// (and the renderer's live field) do NOT reflect the latest resolve, so an incremental
-/// edit must NOT patch them — route EVERY mid-flight edit to a fresh WHOLESALE rebuild
-/// instead. An incremental edit with NO resident mirror (the field emptied earlier, or
-/// startup dispatched async) also has nothing sound to patch, so it goes wholesale. The
-/// covering-set size then gates inline vs async, matching the mesh threshold gate —
-/// INCLUDING while outstanding: a small mid-flight wholesale rebuilds inline (it is
-/// immediately current; the shell's inline install seam bumps the generation so the
-/// superseded in-flight result is discarded — see the module doc's divergence note).
-pub fn route_brick_rebuild(
-    async_outstanding: bool,
-    incremental_edit: bool,
-    mirror_resident: bool,
-    covering_chunk_count: usize,
-    async_threshold: usize,
-) -> BrickRebuildAction {
-    if !async_outstanding && mirror_resident && incremental_edit {
-        return BrickRebuildAction::PatchInline;
-    }
-    if covering_chunk_count > async_threshold {
-        BrickRebuildAction::WholesaleAsync
-    } else {
-        BrickRebuildAction::WholesaleInline
-    }
-}
-
 /// Build a wholesale brick rebuild's artifacts — the SAME calls the synchronous path
 /// makes, in the same order (record build → representability classify → pyramid +
 /// record pack), so the outcome is byte-identical to an inline build (asserted by the
@@ -239,78 +187,9 @@ pub fn spawn_brick_worker() -> BrickWorker {
 mod tests {
     use super::*;
     use crate::core_geom::MaterialChoice;
-    use crate::geometry_worker::ASYNC_REBUILD_CHUNK_THRESHOLD;
     use crate::scene::Scene;
     use crate::two_layer_store::TwoLayerStore;
     use crate::voxel::{GeometryParams, ShapeKind};
-
-    const THRESHOLD: usize = ASYNC_REBUILD_CHUNK_THRESHOLD;
-
-    // --- route_brick_rebuild: the outstanding-interlock decision table ---
-
-    /// The interlock — while an async brick build is outstanding, EVERY edit (even an
-    /// incremental one with a resident mirror) rebuilds wholesale: patching the
-    /// S0 mirror while the worker builds S1 would strand every S0→S1 brick outside the
-    /// new dirty set (the Frankenstein field). A large covering set re-dispatches async;
-    /// a SMALL one rebuilds wholesale INLINE (immediately current — the shell's inline
-    /// install seam bumps the generation so the in-flight result is discarded).
-    #[test]
-    fn outstanding_forces_wholesale_never_patch() {
-        for &incremental_edit in &[false, true] {
-            for &mirror_resident in &[false, true] {
-                let large =
-                    route_brick_rebuild(true, incremental_edit, mirror_resident, THRESHOLD + 1, THRESHOLD);
-                assert_eq!(
-                    large,
-                    BrickRebuildAction::WholesaleAsync,
-                    "outstanding + a large covering set re-dispatches async"
-                );
-                assert_ne!(large, BrickRebuildAction::PatchInline);
-                let small = route_brick_rebuild(true, incremental_edit, mirror_resident, 1, THRESHOLD);
-                assert_eq!(small, BrickRebuildAction::WholesaleInline);
-            }
-        }
-    }
-
-    /// The quiet fast path: nothing outstanding + a resident mirror + an incremental
-    /// edit patches in place (the G3 per-edit cost, proportional to the dirty set).
-    #[test]
-    fn quiet_incremental_with_mirror_patches_inline() {
-        assert_eq!(
-            route_brick_rebuild(false, true, true, THRESHOLD + 1, THRESHOLD),
-            BrickRebuildAction::PatchInline,
-            "the covering-set size is irrelevant to a patch (its cost is the dirty set)"
-        );
-    }
-
-    /// An incremental edit with NO resident mirror (emptied earlier, or startup
-    /// dispatched async and nothing landed yet) has nothing sound to patch — it goes
-    /// wholesale, threshold-gated between inline and async like any wholesale.
-    #[test]
-    fn incremental_without_mirror_goes_wholesale() {
-        assert_eq!(
-            route_brick_rebuild(false, true, false, THRESHOLD + 1, THRESHOLD),
-            BrickRebuildAction::WholesaleAsync
-        );
-        assert_eq!(
-            route_brick_rebuild(false, true, false, THRESHOLD, THRESHOLD),
-            BrickRebuildAction::WholesaleInline,
-            "a wholesale AT the threshold builds inline (matches the mesh gate)"
-        );
-    }
-
-    /// A wholesale-shaped edit ignores the mirror and gates on the covering-set size.
-    #[test]
-    fn wholesale_edit_threshold_gates_inline_vs_async() {
-        assert_eq!(
-            route_brick_rebuild(false, false, true, THRESHOLD + 1, THRESHOLD),
-            BrickRebuildAction::WholesaleAsync
-        );
-        assert_eq!(
-            route_brick_rebuild(false, false, true, THRESHOLD, THRESHOLD),
-            BrickRebuildAction::WholesaleInline
-        );
-    }
 
     // --- build_brick_rebuild: byte-equivalence with the synchronous path ---
 

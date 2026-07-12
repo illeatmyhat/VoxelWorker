@@ -11,7 +11,7 @@
 //! This module owns that shared plumbing ONCE; each domain module supplies only its
 //! request/result types and a build closure. The supersede/interlock contracts that
 //! decide WHICH rebuild is dispatched, and whether an arriving result is accepted, live
-//! with the domains (their `route_*` decisions + [`crate::geometry_worker::GenerationTracker`]).
+//! with the domains (their `route_*` decisions + [`crate::display::routing::GenerationTracker`]).
 //!
 //! ## Supersede / generation (drain-to-latest)
 //! A build carries whatever supersede key its domain chose (a monotonic generation). If
