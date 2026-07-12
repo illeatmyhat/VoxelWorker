@@ -57,9 +57,15 @@ per-frame uniform; the onion region is the same geometry under a different clip 
    matches across display paths — while the solid, drawn first, still occludes the ghost. The read-only variant
    accumulated overlapping translucent ghost surfaces and diverged per builder; the owner accepted the depth-write
    render as the shipped behaviour.
-3. **Aesthetic trade, accepted by the owner:** crisp translucent voxels replace the trilinear thickness-weighted
-   haze. This is judged BETTER for the actual purpose (layer context while chiseling) and is what makes the
-   deletion possible.
+3. **Aesthetic trade, accepted by the owner — then RECOVERED on the brick path (H1.5, `788885a`, owner-approved
+   after a live trial):** the brick raymarch's ghost is `fragment_ghost_haze` — the same pyramid-accelerated slab
+   DDA, but accumulating the ray's in-solid path length and shading `tint × (1 − exp(−k·thickness))` with the
+   retired fog's exact strength (`k = 0.10/voxel`). Thickness is exact DDA (better than the old trilinear tiles);
+   coarse/mask interiors accumulate analytically (one add per block), saturation early-outs at optical depth
+   ~5.6, one centre ray per pixel (haze has no hard edges to antialias), depth write OFF (one fragment per slab
+   per pixel ⇒ order-independent composite; solid occlusion via first-in-solid `frag_depth`). Zero new memory;
+   band scrubs stay uniform-only. The CUBOID-MESH fallback keeps the crisp translucent ghost (rasterized surfaces
+   carry no thickness) — the two paths' onion aesthetics intentionally differ, gated per-path.
 4. **Delete the volumetric fog subsystem (H2):** `OnionFogRenderer`'s raymarch/atlas machinery (per-chunk AND the
    shot-only whole-grid mode), `build_per_chunk_fog_occupancy` + `build_per_chunk_fog_occupancy_from_bricks` +
    `FogBrickSource`, the `FogZSlab` band-slab machinery (issue #59), `MAX_FOG_ATLAS_BYTES` / `MAX_FOG_CHUNKS`,
