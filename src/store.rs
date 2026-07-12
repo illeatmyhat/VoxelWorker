@@ -376,6 +376,13 @@ impl Store {
     /// absolute chunk before the subtraction, so the two frames can differ there.
     /// That is the very precision problem S4's camera-relative rebasing exists to
     /// solve; it is out of scope for S2 and is NOT a golden.)
+    ///
+    /// **Oracle — compile-gated.** This is the dense reference resolver the sparse
+    /// runtime path is cross-checked against (and the `shot` golden tool renders from);
+    /// it is excluded from production builds behind the `oracle` feature (tests reach it
+    /// via `cfg(test)`), so production code cannot reach a dense path — see the proof
+    /// chapter's "Oracles" section (`docs/architecture/05-proof.md`).
+    #[cfg(any(test, feature = "oracle"))]
     pub fn resolve_region(&mut self, scene: &Scene, voxels_per_block: u32, lod: u32) -> VoxelGrid {
         debug_assert_eq!(lod, 0, "S2 only resolves full resolution (lod 0)");
 

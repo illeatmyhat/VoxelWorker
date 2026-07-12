@@ -26,8 +26,8 @@ use crate::panel::LayerRange;
 use crate::renderer::OnionFogParams;
 use crate::scene::{NodeContent, NodeId, NodeTransform, Part, Scene};
 use crate::spatial_index::LeafSpatialIndex;
-use crate::two_layer_store::{resolve_region_two_layer, TwoLayerChunk, TwoLayerResidentCache};
-use crate::voxel::{chunk_extent_exceeds_bound, SdfShape, VoxelGrid};
+use crate::two_layer_store::{TwoLayerChunk, TwoLayerResidentCache};
+use crate::voxel::{chunk_extent_exceeds_bound, SdfShape};
 
 /// The headless orchestrator: owns the per-chunk resolve [`Store`] and the
 /// [`OrbitCamera`], and answers the headless scene queries the shell renders from.
@@ -71,9 +71,10 @@ pub struct AppCore {
 ///
 /// **ADR 0011 G5 — the dense grid is gone.** A rebuild NO LONGER assembles a whole-region
 /// `VoxelGrid`. The display meshes from `two_layer_chunks` and the brick sink packs from the
-/// same set — neither needs a dense occupancy array. The only surviving dense resolve is the
-/// export / query test oracles (`resolve_scene`). So this output is purely sparse + scalar
-/// metadata.
+/// same set — neither needs a dense occupancy array. The only surviving dense resolves are the
+/// compile-gated `oracle`-feature resolvers the parity tests cross-check against
+/// (`Store::resolve_region` / `resolve_region_two_layer`), never a production path. So this
+/// output is purely sparse + scalar metadata.
 pub struct RebuildOutput {
     /// The region's voxel dimensions, read from the SCENE (see
     /// [`AppCore::region_dimensions_for`]) — what the camera auto-frame, gizmo,
@@ -985,15 +986,6 @@ impl AppCore {
     /// `Scene::resolve_region` — bit-identical (the E2 round-trip parity gate). A Part-only
     /// scene (no covering range) resolves to an empty grid, exactly as the dense store did.
     ///
-    /// **ADR 0011 G5 — this is now a TEST-ONLY dense resolve.** No runtime display path calls
-    /// it on a chunkable scene (that would be the retired O(volume) densify); its only callers
-    /// are the parity test oracles. A chunkable scene must never reach it at runtime.
-    /// (ADR 0012 retired the onion fog, which was the last transient runtime caller.)
-    pub fn resolve_scene(scene: &Scene, voxels_per_block: u32) -> VoxelGrid {
-        let store = crate::two_layer_store::TwoLayerStore::enabled();
-        resolve_region_two_layer(&store, scene, voxels_per_block, 0).unwrap_or_default()
-    }
-
     /// The startup region door — the SINGLE place the windowed shell seeds its first-frame
     /// display frame from (`WindowedState::new`). ADR 0011 G5: with the dense grid retired
     /// this constructs NO `VoxelGrid` at all — it returns only the region dimensions + the

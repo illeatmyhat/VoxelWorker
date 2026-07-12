@@ -2111,6 +2111,14 @@ impl Scene {
     /// **Identical-behaviour guarantee:** for a one-node scene whose `region`
     /// equals the node's full extent with a zero offset, the stamp is the
     /// identity, so the result equals what the bare producer emits today.
+    ///
+    /// **Oracle — compile-gated.** This is a dense, O(volume) whole-region resolver:
+    /// the measuring stick the sparse runtime path is held against, never a runtime
+    /// path itself. It is excluded from production builds behind the `oracle` feature
+    /// (tests reach it via `cfg(test)`), so "memory follows the surface" is enforced by
+    /// the compiler, not by review — see the proof chapter's "Oracles" section
+    /// (`docs/architecture/05-proof.md`).
+    #[cfg(any(test, feature = "oracle"))]
     pub fn resolve_region(
         &self,
         region: RegionBlocks,
@@ -2410,6 +2418,13 @@ impl Scene {
     /// composite extent and its voxels keep their absolute composite positions;
     /// compared against [`resolve_region`]'s output it differs only by the
     /// recentre offset.
+    ///
+    /// **Oracle — compile-gated.** A dense whole-region resolver kept only to prove the
+    /// chunk decomposition reconstructs the scene; it is excluded from production builds
+    /// behind the `oracle` feature (tests reach it via `cfg(test)`) so a dense path is a
+    /// compile error, not a review catch — see the proof chapter's "Oracles" section
+    /// (`docs/architecture/05-proof.md`).
+    #[cfg(any(test, feature = "oracle"))]
     pub fn resolve_region_via_chunks(&self, voxels_per_block: u32, lod: u32) -> VoxelGrid {
         debug_assert_eq!(lod, 0, "S0 only resolves full resolution (lod 0)");
 
@@ -2856,6 +2871,11 @@ fn material_id_for(material: MaterialChoice) -> Option<crate::core_geom::BlockId
 /// producer). When `material_override` is `Some(id)`, every stamped voxel takes
 /// that id (a Tool's single material); when `None`, each voxel keeps the material
 /// the producer emitted (a Part's own per-voxel materials).
+///
+/// Private helper of the dense [`Scene::resolve_region`] oracle only (the per-chunk
+/// path uses [`stamp_producer_into_chunk`]), so it carries the same `oracle` compile
+/// gate — see the proof chapter's "Oracles" section (`docs/architecture/05-proof.md`).
+#[cfg(any(test, feature = "oracle"))]
 fn stamp_producer(
     output: &mut VoxelGrid,
     region_dimensions: [u32; 3],

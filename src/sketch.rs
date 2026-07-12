@@ -1005,7 +1005,8 @@ impl SketchSolid {
         // huge full-grid revolve is fine to resolve one small window at a time (the
         // two-layer/brick path, ADR 0010/0011): a per-chunk window never trips this.
         // The cap still protects a genuine FULL-window dense resolve (`resolve` /
-        // `resolve_scene`), where the window IS the full grid, from a blown allocation.
+        // the `oracle`-gated whole-region resolvers), where the window IS the full grid,
+        // from a blown allocation.
         // The old full-grid `exceeds_voxel_cap()` guard here wrongly returned empty for
         // EVERY window of a large revolve, so large sketches resolved to nothing on the
         // windowed display path — the bug this replaces.

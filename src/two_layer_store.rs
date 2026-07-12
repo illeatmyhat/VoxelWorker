@@ -1272,6 +1272,14 @@ fn compute_seam_solidity(region: &VoxelRegion) -> SeamSolidity {
 ///
 /// Returns `None` when the capability is OFF (the caller stays on the dense path) or the
 /// scene has no covering chunk range (a Part-only scene — handled by the dense path).
+///
+/// **Oracle — compile-gated.** This streams a whole-region dense [`VoxelGrid`] purely so
+/// the parity gate can compare it against `Store::resolve_region`; no runtime display
+/// path assembles a whole-region grid. It is excluded from production builds behind the
+/// `oracle` feature (tests reach it via `cfg(test)`), so a dense whole-region resolve is
+/// a compile error in production — see the proof chapter's "Oracles" section
+/// (`docs/architecture/05-proof.md`).
+#[cfg(any(test, feature = "oracle"))]
 pub fn resolve_region_two_layer(
     store: &TwoLayerStore,
     scene: &Scene,

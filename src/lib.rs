@@ -143,10 +143,13 @@ pub use scene::{
 };
 pub use settings::AppConfig;
 pub use two_layer_store::{
-    resolve_region_two_layer, stream_vox_occupancy, streamed_widest_run_in_band,
-    BlockClassification, MicroblockGeometry, SeamSolidity, TwoLayerChunk, TwoLayerResidentCache,
-    TwoLayerStore,
+    stream_vox_occupancy, streamed_widest_run_in_band, BlockClassification, MicroblockGeometry,
+    SeamSolidity, TwoLayerChunk, TwoLayerResidentCache, TwoLayerStore,
 };
+// The dense whole-region resolve oracle is compile-gated out of production builds
+// (see the proof chapter's "Oracles" section, `docs/architecture/05-proof.md`).
+#[cfg(any(test, feature = "oracle"))]
+pub use two_layer_store::resolve_region_two_layer;
 pub use sketch::{Operation, PlaneAxis, RevolveAxis, Sketch, SketchPoint, SketchSolid};
 pub use spatial_index::{LeafEntry, LeafFingerprint, LeafSpatialIndex, VoxelAabb};
 pub use vox_export::{VoxExport, VoxExportBuilder};

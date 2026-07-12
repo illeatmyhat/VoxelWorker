@@ -751,7 +751,7 @@ mod tests {
 
     /// **The rewired export is behaviour-equivalent to the old monolithic export, far
     /// from the origin (issue #20 Step 2).** The live export button now routes through
-    /// `ChunkResolveCache::vox_export` instead of `resolve_scene` + `from_grid`. This
+    /// `ChunkResolveCache::vox_export` instead of a dense whole-region resolve + `from_grid`. This
     /// proves the rewiring is safe at far offset: for a scene whose composite is
     /// centred ~250,000 blocks out (4e6 voxels — well into the f32 large-magnitude
     /// regime), the region-scoped export's model SET (sizes + per-model voxels) equals

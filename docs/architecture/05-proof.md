@@ -14,6 +14,11 @@ the measuring stick production code is held against, and the only place in the s
 where volume-proportional memory is legal (Law 2 stops at the test boundary, on
 purpose: an oracle's honesty *is* its density).
 
+The dense whole-region resolvers are compile-gated behind an `oracle` feature (the
+tests reach them through `cfg(test)`, and the reference-render tool opts in), so a
+production build cannot name a dense path at all — reaching for one is a compile error,
+not a review catch.
+
 Every load-bearing fast path names its oracle:
 
 | Fast path | Oracle it must match |

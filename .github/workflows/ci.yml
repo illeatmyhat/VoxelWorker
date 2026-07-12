@@ -13,7 +13,9 @@ jobs:
   # GitHub runners have NO GPU. Building never needs one; the GPU-dependent
   # integration test is gated behind the off-by-default `gpu` feature, so the
   # default `cargo test` is green here. The `shot` binary needs a GPU at run
-  # time, so we build it but never execute it.
+  # time, so we build it but never execute it. `shot` is the dense-oracle golden
+  # tool, so it carries `required-features = ["oracle"]`; the build steps pass
+  # `--features oracle` or `cargo build --bins` would silently skip it.
   lint-build-test:
     name: Lint, build & test (Linux)
     runs-on: ubuntu-latest
@@ -34,7 +36,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Build all binaries
-        run: cargo build --bins
+        run: cargo build --bins --features oracle
 
       - name: Clippy (deny warnings)
         run: cargo clippy --all-targets -- -D warnings
@@ -55,4 +57,4 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Build all binaries
-        run: cargo build --bins
+        run: cargo build --bins --features oracle

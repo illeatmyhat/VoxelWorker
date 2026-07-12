@@ -14,6 +14,11 @@ path = "src/main.rs"
 [[bin]]
 name = "shot"
 path = "src/bin/shot.rs"
+# `shot` is the golden DENSE REFERENCE ORACLE: it resolves through the dense
+# whole-region resolvers, which are compile-gated behind the `oracle` feature.
+# Requiring the feature here means a plain `cargo build --bins` SKIPS `shot`
+# rather than failing, and building it opts the oracle surface in.
+required-features = ["oracle"]
 
 [features]
 # Off by default so `cargo test` is green on GPU-less CI runners.
@@ -21,6 +26,11 @@ path = "src/bin/shot.rs"
 # (GPU-device-dependent) integration tests.
 default = []
 gpu = []
+# Enables the dense whole-region resolve oracles (the O(volume) reference
+# resolvers the parity tests and the `shot` golden tool cross-check the sparse
+# runtime path against). Never on in production builds: `cargo test` sees them
+# via `cfg(test)`, and the `shot` binary opts in via `required-features`.
+oracle = []
 # Opt-in CPU frame profiling via the Tracy backend (zones + frame marks).
 # OFF by default: with the feature absent the `profiling` facade compiles to
 # no-ops and `tracy-client` (and its C/C++ `tracy-client-sys`) is NOT pulled in.

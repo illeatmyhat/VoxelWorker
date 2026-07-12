@@ -149,16 +149,18 @@ impl winit::application::ApplicationHandler for App {
 GPU-less CI runner). It renders 5 canonical cases through the real `shot` binary (found via
 `CARGO_BIN_EXE_shot`) at a fixed `1280x720` + fixed orbit angles, then tolerance-compares each PNG
 against a committed reference under `tests/golden/`. This proves the cuboid-mesher renderer rewrite
-does not change the pixels.
+does not change the pixels. `shot` is the dense-oracle golden tool, so it carries
+`required-features = ["oracle"]`; the `oracle` feature must be enabled or Cargo skips building
+`shot` and `CARGO_BIN_EXE_shot` is undefined.
 
 ```bash
-# Run the golden comparison (needs a real GPU):
-cargo test --features gpu --test golden
+# Run the golden comparison (needs a real GPU; `oracle` builds the `shot` binary):
+cargo test --features "gpu,oracle" --test golden
 
 # Regenerate the references after an INTENDED visual change, then visually check each PNG:
-UPDATE_GOLDENS=1 cargo test --features gpu --test golden
+UPDATE_GOLDENS=1 cargo test --features "gpu,oracle" --test golden
 ```
-(PowerShell: `$env:UPDATE_GOLDENS = "1"; cargo test --features gpu --test golden`.)
+(PowerShell: `$env:UPDATE_GOLDENS = "1"; cargo test --features "gpu,oracle" --test golden`.)
 
 Tolerance: a pixel "differs" when its max per-channel abs diff exceeds 8/255; the test fails when
 more than 0.5% of pixels differ. On a mismatch, `<case>-actual.png` + `<case>-diff.png` are written
@@ -167,8 +169,9 @@ to the temp dir and the mismatch fraction is printed. The 5 references live unde
 
 ## Verification protocol for each milestone
 
-1. `cargo build` (both bins) must succeed with no errors. Warnings: fix or justify.
-2. `cargo run --bin shot -- <args> --out shots/mN.png` produces a PNG.
+1. `cargo build --features oracle` (both bins — `oracle` is required to build `shot`) must succeed
+   with no errors. Warnings: fix or justify.
+2. `cargo run --bin shot --features oracle -- <args> --out shots/mN.png` produces a PNG.
 3. Compare against the prototype behavior described in ARCHITECTURE.md / DATA.md.
 4. Report: files touched, build status, screenshot path, deviations from spec (+why), blockers,
    what the next milestone needs. Keep the report concise — the orchestrator reads the PNG.
