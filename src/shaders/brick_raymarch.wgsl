@@ -926,6 +926,295 @@ fn fragment_render(
     return output;
 }
 
+// ============================================================================
+// ADR 0012 H1.5 (spike) — Beer–Lambert HAZE ghost: thickness-weighted onion
+// translucency, restoring the retired volumetric fog's aerogel look from the
+// brick field alone (no fog tiles, no new data).
+// ============================================================================
+
+// Optical density per voxel of in-solid path length — matches the retired
+// volumetric fog's `ONION_FOG_STRENGTH` (0.10) so the haze reads identically
+// wispy: opacity = 1 − exp(−k · thickness_voxels).
+const HAZE_STRENGTH_PER_VOXEL: f32 = 0.10;
+// Stop marching once k·t exceeds this: exp(−5.6) < 1/255, so further solid
+// cannot change the 8-bit output — the accumulation's natural early-out
+// (≈ 56 voxels of solid at k = 0.10).
+const HAZE_SATURATION_OPTICAL_DEPTH: f32 = 5.6;
+
+// The haze march's result: the ray's TOTAL in-solid path length across the slab
+// traversal AABB (sv-frame units = voxels), and the first in-solid parameter
+// (for the solid-occlusion depth test); `first_hit_t < 0` ⇒ nothing occupied.
+struct HazeResult {
+    accumulated_length: f32,
+    first_hit_t: f32,
+}
+
+// The SAME pyramid-accelerated block DDA as `march_brick_field`, but instead of
+// returning at the first hit it ACCUMULATES in-solid path length across the whole
+// slab: a coarse block (record kind 0, non-resident sculpted, or band-exposed
+// occupancy-mask interior) contributes its clamped box interval ANALYTICALLY (one
+// add — no per-voxel work in solid interiors); a sculpted brick contributes each
+// occupied voxel's crossing length via the voxel DDA. Since z(t) is monotonic
+// along a ray, one onion slab is crossed in ONE t-interval, so this per-slab
+// total is exactly the slab's thickness contribution (no double counting, and
+// per-slab solid occlusion via `first_hit_t` is exact — see `fragment_ghost_haze`).
+fn march_brick_haze(ray: Ray) -> HazeResult {
+    var result: HazeResult;
+    result.accumulated_length = 0.0;
+    result.first_hit_t = -1.0;
+
+    let edge = f32(uniforms.lattice_shift_and_edge.w);
+    let edge_i = uniforms.lattice_shift_and_edge.w;
+    let bounds_lo = uniforms.traversal_lo.xyz;
+    let bounds_hi = uniforms.traversal_hi.xyz;
+
+    let inverse = 1.0 / ray.safe_direction;
+    let t_a = (bounds_lo - ray.origin) * inverse;
+    let t_b = (bounds_hi - ray.origin) * inverse;
+    let t_near = min(t_a, t_b);
+    let t_far = max(t_a, t_b);
+    let t_enter = max(max(max(t_near.x, t_near.y), t_near.z), 0.0);
+    let t_exit = min(min(t_far.x, t_far.y), t_far.z);
+    if (t_exit < t_enter) {
+        return result;
+    }
+
+    let entry_position = ray.origin + ray.direction * (t_enter + 1e-4);
+    var block_cell = vec3<i32>(floor(entry_position / edge));
+    let block_step = vec3<i32>(sign(ray.direction));
+    let t_delta = abs(vec3<f32>(edge) / ray.safe_direction);
+    var t_max = vec3<f32>(
+        select(
+            (f32(block_cell.x) * edge - entry_position.x) / ray.safe_direction.x,
+            (f32(block_cell.x + 1) * edge - entry_position.x) / ray.safe_direction.x,
+            block_step.x > 0,
+        ) + t_enter,
+        select(
+            (f32(block_cell.y) * edge - entry_position.y) / ray.safe_direction.y,
+            (f32(block_cell.y + 1) * edge - entry_position.y) / ray.safe_direction.y,
+            block_step.y > 0,
+        ) + t_enter,
+        select(
+            (f32(block_cell.z) * edge - entry_position.z) / ray.safe_direction.z,
+            (f32(block_cell.z + 1) * edge - entry_position.z) / ray.safe_direction.z,
+            block_step.z > 0,
+        ) + t_enter,
+    );
+    var t_block_enter = t_enter;
+
+    for (var step = 0; step < MAX_BLOCK_STEPS; step = step + 1) {
+        let absolute_block = block_cell + uniforms.block_bias_and_tiles.xyz;
+
+        // Identical hierarchical empty-space skip to the solid march.
+        let clipmap = uniforms.clipmap_blocks_and_counts;
+        let clipmap_hi = uniforms.clipmap_blocks_and_counts_hi;
+        let l3_blocks = i32(clipmap_hi.x);
+        let l2_blocks = i32(clipmap.z);
+        let l1_blocks = i32(clipmap.x);
+        let cell_3 = clipmap_cell_of(absolute_block, l3_blocks);
+        let cell_2 = clipmap_cell_of(absolute_block, l2_blocks);
+        let cell_1 = clipmap_cell_of(absolute_block, l1_blocks);
+        let key_3 = pack_world_block_key_split(cell_3);
+        let key_2 = pack_world_block_key_split(cell_2);
+        let key_1 = pack_world_block_key_split(cell_1);
+        let level_3_empty = clipmap_hi.y > 0u && !clipmap_level_3_contains(key_3.x, key_3.y, clipmap_hi.y);
+        let level_2_empty = clipmap.w > 0u && !clipmap_level_2_contains(key_2.x, key_2.y, clipmap.w);
+        let level_1_empty = clipmap.y > 0u && !clipmap_level_1_contains(key_1.x, key_1.y, clipmap.y);
+        if (level_3_empty) {
+            let jump = clipmap_try_skip(ray, edge, clipmap_cell_box(cell_3, l3_blocks, edge_i), block_cell);
+            if (jump.advanced) {
+                if (jump.t_block_enter > t_exit) { break; }
+                block_cell = jump.block_cell;
+                t_max = jump.t_max;
+                t_block_enter = jump.t_block_enter;
+                continue;
+            }
+        } else if (level_2_empty) {
+            let jump = clipmap_try_skip(ray, edge, clipmap_cell_box(cell_2, l2_blocks, edge_i), block_cell);
+            if (jump.advanced) {
+                if (jump.t_block_enter > t_exit) { break; }
+                block_cell = jump.block_cell;
+                t_max = jump.t_max;
+                t_block_enter = jump.t_block_enter;
+                continue;
+            }
+        } else if (level_1_empty) {
+            let jump = clipmap_try_skip(ray, edge, clipmap_cell_box(cell_1, l1_blocks, edge_i), block_cell);
+            if (jump.advanced) {
+                if (jump.t_block_enter > t_exit) { break; }
+                block_cell = jump.block_cell;
+                t_max = jump.t_max;
+                t_block_enter = jump.t_block_enter;
+                continue;
+            }
+        }
+
+        let key = pack_world_block_key_split(absolute_block);
+        let record_index = find_brick_record(key.x, key.y);
+
+        // Same geometry resolution as the solid march: record, or — on a miss under
+        // the (always-active-in-a-slab) band clip — the block-occupancy interior map.
+        var has_geometry = record_index >= 0;
+        var is_coarse = false;
+        var resolved_atlas_slot = 0u;
+        if (record_index >= 0) {
+            let record = brick_records[record_index];
+            is_coarse = record_kind(record.kind) == 0u
+                || record.atlas_slot == NON_RESIDENT_ATLAS_SLOT;
+            resolved_atlas_slot = record.atlas_slot;
+        } else if (uniforms.band_clip_active != 0u && uniforms.occupancy_cell_count > 0u) {
+            let occupancy_cell = clipmap_cell_of(absolute_block, 8);
+            let occupancy_key = pack_world_block_key_split(occupancy_cell);
+            let cell_index = find_occupancy_cell(occupancy_key.x, occupancy_key.y);
+            if (cell_index >= 0 && occupancy_block_present(cell_index, absolute_block)) {
+                has_geometry = true;
+                is_coarse = true;
+            }
+        }
+
+        if (has_geometry) {
+            let block_lo = vec3<f32>(block_cell) * edge;
+            let block_hi = block_lo + vec3<f32>(edge);
+            let clamped_lo = max(block_lo, bounds_lo);
+            let clamped_hi = min(block_hi, bounds_hi);
+            if (clamped_lo.x < clamped_hi.x && clamped_lo.y < clamped_hi.y
+                && clamped_lo.z < clamped_hi.z) {
+                let entry = clamped_box_entry(ray, clamped_lo, clamped_hi);
+                if (entry.t_exit >= entry.t_enter) {
+                    if (is_coarse) {
+                        // Whole clamped block interval in one add — solid interiors
+                        // (elided records + occupancy-mask blocks) cost O(1) each.
+                        result.accumulated_length += entry.t_exit - entry.t_enter;
+                        if (result.first_hit_t < 0.0) {
+                            result.first_hit_t = entry.t_enter;
+                        }
+                    } else {
+                        // Sculpted brick: voxel DDA, accumulating each OCCUPIED
+                        // voxel's crossing length (exit − enter, clamped to the box).
+                        let voxel_entry_position =
+                            ray.origin + ray.direction * (entry.t_enter + 1e-4);
+                        var voxel_cell = vec3<i32>(floor(voxel_entry_position));
+                        let voxel_step = vec3<i32>(sign(ray.direction));
+                        let voxel_t_delta = abs(1.0 / ray.safe_direction);
+                        var voxel_t_max = vec3<f32>(
+                            select(
+                                (f32(voxel_cell.x) - voxel_entry_position.x) / ray.safe_direction.x,
+                                (f32(voxel_cell.x + 1) - voxel_entry_position.x) / ray.safe_direction.x,
+                                voxel_step.x > 0,
+                            ) + entry.t_enter,
+                            select(
+                                (f32(voxel_cell.y) - voxel_entry_position.y) / ray.safe_direction.y,
+                                (f32(voxel_cell.y + 1) - voxel_entry_position.y) / ray.safe_direction.y,
+                                voxel_step.y > 0,
+                            ) + entry.t_enter,
+                            select(
+                                (f32(voxel_cell.z) - voxel_entry_position.z) / ray.safe_direction.z,
+                                (f32(voxel_cell.z + 1) - voxel_entry_position.z) / ray.safe_direction.z,
+                                voxel_step.z > 0,
+                            ) + entry.t_enter,
+                        );
+                        let block_min_voxel = block_cell * edge_i;
+                        let block_max_voxel = block_min_voxel + vec3<i32>(edge_i);
+                        let band_z_lo = max(block_min_voxel.z, uniforms.band_voxel_sv.x);
+                        let band_z_hi = min(block_max_voxel.z, uniforms.band_voxel_sv.y);
+                        var t_voxel_enter = entry.t_enter;
+                        for (var voxel_step_index = 0; voxel_step_index < MAX_VOXEL_STEPS;
+                            voxel_step_index = voxel_step_index + 1) {
+                            if (voxel_cell.x < block_min_voxel.x || voxel_cell.y < block_min_voxel.y
+                                || voxel_cell.z < band_z_lo
+                                || voxel_cell.x >= block_max_voxel.x
+                                || voxel_cell.y >= block_max_voxel.y
+                                || voxel_cell.z >= band_z_hi) {
+                                break;
+                            }
+                            // This voxel's exit parameter (the next DDA boundary),
+                            // clamped to the clamped-box exit.
+                            let voxel_exit = min(
+                                min(min(voxel_t_max.x, voxel_t_max.y), voxel_t_max.z),
+                                entry.t_exit,
+                            );
+                            let brick_local = voxel_cell - block_min_voxel;
+                            if (sculpted_voxel_occupied(resolved_atlas_slot, brick_local)) {
+                                result.accumulated_length +=
+                                    max(voxel_exit - t_voxel_enter, 0.0);
+                                if (result.first_hit_t < 0.0) {
+                                    result.first_hit_t = t_voxel_enter;
+                                }
+                            }
+                            if (voxel_t_max.x <= voxel_t_max.y && voxel_t_max.x <= voxel_t_max.z) {
+                                t_voxel_enter = voxel_t_max.x;
+                                voxel_cell.x = voxel_cell.x + voxel_step.x;
+                                voxel_t_max.x = voxel_t_max.x + voxel_t_delta.x;
+                            } else if (voxel_t_max.y <= voxel_t_max.z) {
+                                t_voxel_enter = voxel_t_max.y;
+                                voxel_cell.y = voxel_cell.y + voxel_step.y;
+                                voxel_t_max.y = voxel_t_max.y + voxel_t_delta.y;
+                            } else {
+                                t_voxel_enter = voxel_t_max.z;
+                                voxel_cell.z = voxel_cell.z + voxel_step.z;
+                                voxel_t_max.z = voxel_t_max.z + voxel_t_delta.z;
+                            }
+                        }
+                    }
+                    // Saturation early-out: below one 8-bit level of remaining
+                    // transmittance, more solid cannot change the pixel.
+                    if (result.accumulated_length * HAZE_STRENGTH_PER_VOXEL
+                        >= HAZE_SATURATION_OPTICAL_DEPTH) {
+                        return result;
+                    }
+                }
+            }
+        }
+
+        if (t_block_enter > t_exit) {
+            break;
+        }
+        if (t_max.x <= t_max.y && t_max.x <= t_max.z) {
+            block_cell.x = block_cell.x + block_step.x;
+            t_block_enter = t_max.x;
+            t_max.x = t_max.x + t_delta.x;
+        } else if (t_max.y <= t_max.z) {
+            block_cell.y = block_cell.y + block_step.y;
+            t_block_enter = t_max.y;
+            t_max.y = t_max.y + t_delta.y;
+        } else {
+            block_cell.z = block_cell.z + block_step.z;
+            t_block_enter = t_max.z;
+            t_max.z = t_max.z + t_delta.z;
+        }
+    }
+
+    return result;
+}
+
+// The HAZE ghost entry (ADR 0012 H1.5 spike). ONE march per PIXEL (centre ray —
+// a soft haze has no hard edges to antialias, so no per-sample rays: a 4× refund
+// vs the crisp ghost). Opacity is Beer–Lambert over the accumulated in-solid
+// thickness; colour is the ghost tint. `frag_depth` is the slab's FIRST in-solid
+// point so the (read-only) depth test occludes a slab that lies wholly behind
+// the solid band — exact per slab, because z(t) is monotonic so a slab's
+// t-interval sits entirely on one side of any solid-band hit.
+@fragment
+fn fragment_ghost_haze(@builtin(position) position: vec4<f32>) -> FragmentOutput {
+    let pixel_centre = floor(position.xy) + vec2<f32>(0.5);
+    let ray = camera_ray(pixel_centre);
+    let haze = march_brick_haze(ray);
+    if (haze.first_hit_t < 0.0 || haze.accumulated_length <= 0.0) {
+        discard;
+    }
+    let opacity = 1.0 - exp(-HAZE_STRENGTH_PER_VOXEL * haze.accumulated_length);
+
+    let hit_sv = ray.origin + ray.direction * haze.first_hit_t;
+    let shift = vec3<f32>(uniforms.lattice_shift_and_edge.xyz);
+    let hit_world = hit_sv - shift - uniforms.grid_half_extent;
+    let clip = uniforms.view_projection * vec4<f32>(hit_world, 1.0);
+
+    var output: FragmentOutput;
+    output.color = vec4<f32>(uniforms.ghost_tint.rgb, opacity);
+    output.depth = clamp(clip.z / clip.w, 0.0, 1.0);
+    return output;
+}
+
 // The parity-harness entry (tests/gpu_parity.rs): a single-sample pass that
 // reports the hit voxel's ABSOLUTE coordinate per pixel instead of a colour —
 // (hit flag, x, y, z) with the i32 coordinates bitcast into u32 lanes.

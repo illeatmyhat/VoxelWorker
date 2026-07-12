@@ -698,15 +698,19 @@ impl BrickRaymarchRenderer {
             cache: None,
         });
 
-        // ADR 0012 (H1): the onion GHOST pipeline — identical to `render_pipeline` except it
-        // ALPHA-BLENDS the flat-tinted ghost over the solid. Depth test `Less`, depth WRITE
-        // ON: each pixel shows only the NEAREST ghost surface (blended once), so the render is
-        // a pure function of the visible surface and matches the cuboid mesh ghost the same
-        // way the OPAQUE brick solid already matches the mesh (the depth-write-OFF alternative
-        // accumulated overlapping translucent hits order-dependently and diverged from the
-        // mesh face-for-face). The solid (drawn first) still occludes the ghost via `frag_depth`.
+        // ADR 0012 H1.5 (spike) — the onion GHOST pipeline is the Beer–Lambert HAZE
+        // variant: `fragment_ghost_haze` accumulates the ray's in-solid path length across
+        // the slab and outputs the tint at `1 − exp(−k·thickness)` — the retired volumetric
+        // fog's aerogel look, sourced from the brick field alone. Alpha-blended, depth test
+        // `Less` with depth WRITE OFF: the haze march produces exactly ONE fragment per slab
+        // per pixel (all in-slab thickness is folded in-shader), so there is no intra-slab
+        // overlap for a depth write to disambiguate (the crisp ghost's reason for write-ON),
+        // and with the SAME tint RGB on both slabs the two-slab alpha composite is
+        // order-independent. The solid (drawn first, depth written) still occludes each slab
+        // via the haze's first-in-solid `frag_depth` — exact per slab, since z(t) is
+        // monotonic so a slab's t-interval lies entirely on one side of any solid-band hit.
         let ghost_render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("brick raymarch onion ghost pipeline"),
+            label: Some("brick raymarch onion ghost haze pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
@@ -716,7 +720,7 @@ impl BrickRaymarchRenderer {
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
-                entry_point: Some("fragment_render"),
+                entry_point: Some("fragment_ghost_haze"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: color_format,
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),
@@ -735,7 +739,7 @@ impl BrickRaymarchRenderer {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: DEPTH_FORMAT,
-                depth_write_enabled: Some(true),
+                depth_write_enabled: Some(false),
                 depth_compare: Some(wgpu::CompareFunction::Less),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
