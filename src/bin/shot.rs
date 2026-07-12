@@ -2328,7 +2328,7 @@ async fn run_capture(options: ShotOptions) {
     // ADR 0011 G1: the brick pass's per-frame uniforms mirror the cuboid path's
     // shading inputs (camera, viewport, band clip, overlay master, bound material)
     // so the two paths render pixel-comparable.
-    if let Some(brick_raymarch) = &brick_raymarch_renderer {
+    if let Some(brick_raymarch) = &mut brick_raymarch_renderer {
         brick_raymarch.update_uniforms(
             &gpu.queue,
             view_projection,
@@ -2337,6 +2337,14 @@ async fn run_capture(options: ShotOptions) {
             band,
             options.show_grid_overlay,
             bound,
+        );
+        // ADR 0012 (H1): prepare the onion GHOST slabs (self-gates on `band.onion_depth`).
+        brick_raymarch.update_ghost_uniforms(
+            &gpu.queue,
+            view_projection,
+            prepared.viewport_px,
+            grid_dimensions,
+            band,
         );
     }
 
@@ -2383,13 +2391,15 @@ async fn run_capture(options: ShotOptions) {
         // Issue #29 Points fast-follow: the analytic infinite grid (Points' planes),
         // suppressed with the rest of Points unless `--points`.
         infinite_grid: options.show_points.then_some(&infinite_grid_renderer),
-        // Issue #59: a full-range onion band ghosts nothing → draw no fog (the atlas was
-        // never built either). Matches the app's `fog_should_draw`.
-        onion_fog: if onion_active && !fog_full_range_skip {
-            Some(&onion_fog_renderer)
-        } else {
-            None
-        },
+        // ADR 0012 (H1): the volumetric fog is retired — the display ghosts the onion
+        // slabs instead (prepared in the cuboid/brick `update_uniforms` above, drawn by
+        // `render_frame` when `onion_ghost_active`). Fog upload code stays compiling
+        // (H2 deletes it) but is no longer drawn. `fog_full_range_skip` is now only a
+        // bookkeeping flag for the dead fog path.
+        onion_fog: None,
+        // ADR 0012 (H1): draw the onion ghost pass when the band is a real onion slab
+        // (`band.onion_depth > 0` ⇔ onion skin on, non-full-range, not debug-faces).
+        onion_ghost_active: band.onion_depth > 0,
         cuboid_mesh: &cuboid_mesh_renderer,
         // ADR 0011 G1: when engaged, the brick raymarch takes the voxel-model draw
         // (the mesh renderer above was built empty); everything else is unchanged.

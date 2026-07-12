@@ -2394,10 +2394,17 @@ impl WindowedState {
         // Shared engagement gate (term-identical to `ensure_display_mesh_current`): a live brick
         // field AND no mesh-only mode. When engaged, upload the raymarch uniforms (mirroring the
         // cuboid upload above) so the brick draw replaces the mesh draw this frame.
+        // ADR 0012 (H1): the onion GHOST replaces the volumetric fog. Active when onion
+        // skin is on and the band is a real slab (`current_layer_band` sets a non-zero
+        // `onion_depth` exactly then; debug-face mode forces FULL → 0). The engaged display
+        // path draws the ghost after its solid pass (`render_frame`); a band scrub is a pure
+        // uniform update on the brick path, a thin-slab re-mesh on the cuboid path — never
+        // the fog atlas rebuild.
+        let onion_ghost_active = band.onion_depth > 0;
         let brick_raymarch_engaged = if self.brick_display_engaged() {
             let renderer = self
                 .brick_raymarch_renderer
-                .as_ref()
+                .as_mut()
                 .expect("brick_display_engaged ⇒ renderer holds a live field");
             renderer.update_uniforms(
                 &self.gpu.queue,
@@ -2407,6 +2414,15 @@ impl WindowedState {
                 band,
                 self.panel_state.scene.master_voxel_grid,
                 bound,
+            );
+            // Prepare the two onion ghost slab uniforms (slots 1 + 2). Self-gates on
+            // `band.onion_depth == 0`, so this is a cheap no-op when onion is off.
+            renderer.update_ghost_uniforms(
+                &self.gpu.queue,
+                view_projection,
+                prepared.viewport_px,
+                grid_dimensions,
+                band,
             );
             true
         } else {
@@ -2470,67 +2486,15 @@ impl WindowedState {
         self.view_cube_renderer
             .update_uniforms(&self.gpu.queue, self.app_core.camera.view_cube_view_projection());
 
-        // Issue #12: onion-skin volumetric fog. Active only when onion skin is on
-        // and not in debug-face mode. Upload the camera + band world-Z ranges (Z-up)
-        // so the
-        // fullscreen raymarch of the occupancy grid hazes the layers around the band
-        // (the grid itself is uploaded on geometry rebuild, not per frame).
-        let onion_active = layer_range.onion_skin && !self.panel_state.debug_face_orientation;
-        // Issue #59: the fog draws only when onion is active AND the band is NOT full-range
-        // (a full-range band ghosts nothing). `false` for a full-range band even with onion
-        // on — behaviour-identical to today, where such a frame draws no visible haze.
-        let mut fog_should_draw = false;
-        if onion_active {
-            let fog_density = self.panel_state.geometry.voxels_per_block;
-            let grid_z = grid_dimensions[2];
-            // Issue #59: the band-slab the fog needs THIS frame (`None` = full-range → no
-            // fog), and its covering chunk-Z rows (the reuse identity).
-            let needed_slab = Self::fog_z_slab_for(layer_range, grid_z);
-            let needed_chunk_z_range =
-                Self::fog_covering_chunk_z_range(layer_range, grid_z, fog_density);
-            match needed_slab {
-                Some(slab) => {
-                    // Band-aware rebuild (issue #58 + #59): rebuild the occupancy when it went
-                    // stale (geometry changed / onion just toggled on — `fog_occupancy_dirty`)
-                    // OR when the needed covering chunk-Z rows differ from the built ones (a
-                    // scrub that moved the slab beyond the built region — the whole grid is no
-                    // longer covered, so the old atlas is missing the newly-needed chunks).
-                    // Compared at CHUNK granularity: a band move within the same chunk-Z rows
-                    // reuses the atlas (the band clip is applied per-frame via
-                    // `onion_fog_params`), so a scrub-drag doesn't rebuild every voxel step.
-                    let slab_moved = self.fog_built_chunk_z_range != needed_chunk_z_range;
-                    if self.fog_occupancy_dirty || slab_moved {
-                        Self::build_fog_occupancy(
-                            #[cfg(feature = "gpu")]
-                            &self.gpu_resolver,
-                            &mut self.onion_fog_renderer,
-                            &self.gpu,
-                            &self.panel_state.scene,
-                            self.fog_mode,
-                            self.region_dimensions,
-                            self.recentre_voxels,
-                            fog_density,
-                            Some(slab),
-                            self.fog_brick_field.as_ref(),
-                        );
-                        self.fog_occupancy_dirty = false;
-                        self.fog_built_chunk_z_range = needed_chunk_z_range;
-                    }
-                    self.onion_fog_renderer.update(
-                        &self.gpu.queue,
-                        AppCore::onion_fog_params(view_projection, grid_dimensions, layer_range),
-                    );
-                    fog_should_draw = true;
-                }
-                None => {
-                    // Full-range band (issue #59): nothing outside to ghost. Do NOT build or
-                    // draw fog. Leave the occupancy marked stale so the next non-full band
-                    // rebuilds (its covering rows also differ, forcing a rebuild regardless).
-                    self.fog_occupancy_dirty = true;
-                    self.fog_built_chunk_z_range = None;
-                }
-            }
-        }
+        // ADR 0012 (H1): the onion-skin VOLUMETRIC FOG is retired. Onion context now draws
+        // as the display paths' ghost pass (prepared above: the brick slabs in
+        // `update_ghost_uniforms`, the cuboid slabs in `update_uniforms` → `rebuild_for_band`;
+        // drawn in `render_frame` when `onion_ghost_active`). The live app no longer builds or
+        // uploads any fog occupancy — the `OnionFogRenderer` + `build_fog_occupancy` machinery
+        // stays compiling until H2 deletes it, but is never invoked here. `onion_active` is
+        // retained for the (soon-dead) fog fields' bookkeeping equivalence, but the ghost
+        // gate is `onion_ghost_active` (computed above).
+        let _ = layer_range;
 
         let overlays = FrameOverlays {
             gizmo: gizmo_placement
@@ -2556,13 +2520,12 @@ impl WindowedState {
             // Issue #29 Points fast-follow: the analytic infinite grid (Points' planes);
             // self-gates on no enabled plane.
             infinite_grid: Some(&self.infinite_grid_renderer),
-            // Issue #59: draw fog only when there is a non-full-range band to ghost around
-            // (a full-range band with onion on draws nothing — `fog_should_draw` is false).
-            onion_fog: if fog_should_draw {
-                Some(&self.onion_fog_renderer)
-            } else {
-                None
-            },
+            // ADR 0012 (H1): the volumetric fog is retired — never populated by the live app.
+            onion_fog: None,
+            // ADR 0012 (H1): draw the onion GHOST pass this frame (the engaged display path
+            // ghosts the onion slabs after its solid draw). Its uniforms/geometry were
+            // prepared by the renderers' `update_uniforms` / `update_ghost_uniforms` above.
+            onion_ghost_active,
             cuboid_mesh: &self.cuboid_mesh_renderer,
             // ADR 0011 G1: when engaged (field installed, no mesh-only mode), the
             // brick raymarch replaces the cuboid-mesh DRAW for this frame; the mesh

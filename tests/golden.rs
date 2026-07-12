@@ -108,21 +108,22 @@ const CASES: &[GoldenCase] = &[
             "2",
         ],
     },
-    // Issue #28 S5b: lock the PER-CHUNK onion fog (now the default) with a clearly-
-    // fogged scene. An 8³-block sphere (grid 128³, 8 resident chunk volumes — 2 per
-    // axis) with an onion-skinned equatorial band: layers [56,72] render as the crisp
-    // solid stone disk, while the sphere's volume ABOVE and BELOW the band ghosts as a
-    // soft blue/grey haze (8 onion layers each side). The haze is sampled from the
-    // per-chunk fog atlas (the S5b default) and crosses every chunk seam, so this golden
-    // proves the per-chunk path produces CONTINUOUS fog with no seam lines at a fixed
-    // camera. `--fog=perchunk` is explicit so the case stays pinned to the per-chunk
-    // path even if the default is ever changed again.
+    // ADR 0012 (H1): the onion GHOST pass — replaces the retired volumetric fog golden.
+    // An 8³-block sphere (grid 128³) with an onion-skinned equatorial band: layers [56,72]
+    // render as the crisp solid stone disk, while the sphere's shell ABOVE and BELOW the
+    // band ghosts as crisp TRANSLUCENT voxels (8 onion layers each side, the retired fog
+    // haze's blue/grey hue). The ghost is two thin per-slab meshes (cuboid path) / two
+    // per-slab raymarches (brick path), alpha-blended, depth test `Less` + write ON (nearest
+    // ghost surface). This golden pins the DENSE mesh ghost (draws in the onion slabs, solid
+    // band unfogged). The translucent ghost is NOT pixel-identical across display paths (the
+    // underlying solid's per-path shading shows through the ghost), so it is deliberately
+    // EXCLUDED from the two-layer + brick cross-checks — the brick ghost is gated separately by
+    // `onion_ghost_marches_only_the_onion_slabs` in `tests/gpu_parity.rs`.
     GoldenCase {
-        name: "onion-fog-perchunk",
+        name: "onion-ghost",
         args: &[
             "--shape", "sphere", "--size-x", "8", "--size-y", "8", "--size-z", "8",
             "--onion", "8", "--layer-lower", "56", "--layer-upper", "72",
-            "--fog", "perchunk",
         ],
     },
     // Issue #29 S5: the world reference grid (Points). The same instanced village,
@@ -197,15 +198,22 @@ const CASES: &[GoldenCase] = &[
 /// a layer band (clips coarse blocks to the band one-box, clips microblock cuboids, synthesises
 /// cut-plane cap faces at the band edge), so the band slab renders pixel-identical to the dense
 /// banded path with no dense source grids:
-/// * `onion-fog-perchunk` — an explicit `--onion`/`--layer-*` band.
 /// * `sketch-revolve-dome` — IMPLICITLY band-clipped: the layer-track upper bound is taken from
 ///   the (default-cylinder) `shape` grid_z (80), below the revolve composite grid_z (128), so
 ///   the dense golden clips the vase's upper third — and the two-layer band reclip now matches.
+///
+/// ADR 0012 (H1): `onion-ghost` is NOT in this list. The onion ghost is a TRANSLUCENT
+/// alpha-blended pass, so the underlying solid's shading shows through the whole ghost cap —
+/// and the dense apron mesh, the two-layer mesh, and the brick raymarch shade / decompose the
+/// solid differently enough (and the two-layer banded mesh hits the known band-clip×elision
+/// seam at a ghost-slab edge) that the translucent composite is NOT pixel-identical across
+/// paths, even though the OPAQUE solid is. The ghost is therefore gated PER-PATH: the mesh
+/// ghost by `golden_images_match` (the dense reference), the brick ghost by
+/// `onion_ghost_marches_only_the_onion_slabs` in `tests/gpu_parity.rs`.
 const TWO_LAYER_CASE_NAMES: &[&str] = &[
     "sphere-debug-faces",
     "cylinder",
     "torus",
-    "onion-fog-perchunk",
     "demo-village",
     "demo-village-far",
     "demo-village-points",
@@ -219,15 +227,18 @@ const TWO_LAYER_CASE_NAMES: &[&str] = &[
 /// ADR 0011 G1 (#67): the golden cases whose scene is a chunkable SINGLE producer with a
 /// uniform render cell — the ones the brick raymarch actually engages for (`shot --brick`).
 /// Each renders brick-path pixel-identical (within the tolerance model) to the SAME committed
-/// dense reference: the parity gate's clause (c). `onion-fog-perchunk` is the overlay-inclusive
-/// case (grill Q5 depth-compositing requirement) — its fog haze composites over the
-/// brick-drawn solid via the raymarch's `frag_depth`, and the view cube draws after. The
+/// dense reference: the parity gate's clause (c). The
 /// village/overlap cases are multi-producer (not gated); `sphere-debug-faces` disengages
 /// bricks (debug-faces is a mesh-only mode). Every name MUST exist in `CASES`.
+///
+/// ADR 0012 (H1): `onion-ghost` is NOT here — its TRANSLUCENT ghost pass composites the
+/// underlying solid's per-path shading through the whole cap, so brick vs dense-mesh is not
+/// pixel-identical (≈6% on the ghost cap) even though the OPAQUE solid is. The brick ghost is
+/// instead gated by `onion_ghost_marches_only_the_onion_slabs` in `tests/gpu_parity.rs` (the
+/// ghost draws ONLY in the onion slabs) + the dense mesh ghost by `golden_images_match`.
 const BRICK_CASE_NAMES: &[&str] = &[
     "cylinder",
     "torus",
-    "onion-fog-perchunk",
     "sketch-revolve-dome",
     "sketch-extrude-l",
 ];

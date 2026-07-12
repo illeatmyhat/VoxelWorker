@@ -448,7 +448,22 @@ pub struct FrameOverlays<'a> {
     /// raymarch composites a faint haze over the resolved scene for the layers
     /// around the displayed band. `None` when onion skin is off. Its uniforms must
     /// already be uploaded via `OnionFogRenderer::update`.
+    ///
+    /// **ADR 0012 (H1):** the live app no longer populates this — the volumetric fog
+    /// is superseded by the ghost pass (`onion_ghost_active` below). The field + the
+    /// `OnionFogRenderer` type stay compiling until H2 deletes the subsystem.
     pub onion_fog: Option<&'a renderer::OnionFogRenderer>,
+    /// ADR 0012 (H1): draw the onion GHOST pass this frame. When `true`, immediately
+    /// after the solid voxel draw (inside the shared MSAA pass), the engaged display
+    /// path (brick raymarch when present, else the cuboid mesh) draws its translucent
+    /// ghost of the voxels in the onion slabs — recentred-Z in `[onion_z_min,
+    /// band_z_min) ∪ (band_z_max, onion_z_max]`. Depth-tested `Less` + alpha-blended, with
+    /// depth WRITE ON so only the NEAREST ghost surface shows (blended once — a
+    /// builder-independent render that matches across display paths); the solid, drawn
+    /// first, still occludes the ghost. Replaces the volumetric fog pass; a band scrub is a pure uniform (brick)
+    /// or thin-slab-remesh (mesh) update, never the fog atlas rebuild. The ghost
+    /// uniforms/geometry must already be prepared by the renderers' `update_uniforms`.
+    pub onion_ghost_active: bool,
     /// The cuboid mesh renderer — the CPU voxel render path (part of #20; the legacy
     /// instanced mesher was removed). Draws the voxels as a box-decomposed mesh; its
     /// uniforms must already be uploaded via `CuboidMeshRenderer::update_uniforms`.
@@ -552,6 +567,22 @@ pub fn render_frame(
                 renderer::MaterialSource::Procedural(_) => None,
             };
             overlays.cuboid_mesh.draw(&mut voxel_pass, loaded_material);
+        }
+
+        // ADR 0012 (H1) — the onion GHOST pass. Immediately after the SOLID band draw,
+        // in the SAME MSAA pass, the engaged display path ghosts the voxels in the onion
+        // slabs (recentred-Z outside the band, within ±onion_depth). Depth-tested
+        // `Less` + alpha-blended, with depth WRITE ON so only the nearest ghost surface
+        // shows (a builder-independent render); the just-drawn solid still occludes it. The
+        // brick ghost is two per-slab raymarches; the mesh ghost is two thin per-slab
+        // meshes — both shaded flat translucent (the retired fog haze's hue). This
+        // REPLACES the former volumetric fog pass (Pass 1a below, now always `None`).
+        if overlays.onion_ghost_active {
+            if let Some(brick_raymarch) = overlays.brick_raymarch {
+                brick_raymarch.draw_ghost(&mut voxel_pass);
+            } else {
+                overlays.cuboid_mesh.draw_ghost(&mut voxel_pass);
+            }
         }
 
         // Per-object block lattice + floor grid (issue #29 S3): same MSAA pass,

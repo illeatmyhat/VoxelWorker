@@ -55,6 +55,16 @@ pub const BRICK_RECORD_MATERIAL_ID_SHIFT: u32 = 8;
 /// Mask isolating the kind discriminant below [`BRICK_RECORD_MATERIAL_ID_SHIFT`].
 const BRICK_RECORD_KIND_MASK: u32 = (1 << BRICK_RECORD_MATERIAL_ID_SHIFT) - 1;
 
+/// ADR 0012 (H1) — the dynamic-offset uniform slots the field bind group indexes. The
+/// SINGLE uniform buffer holds three `BrickUniformsPod` slots (each aligned up to the
+/// device's `min_uniform_buffer_offset_alignment`): the SOLID band draw, plus the LOWER
+/// and UPPER onion GHOST slabs. One bind group, records/atlas/clip-map shared; only the
+/// bound dynamic offset (and the shading uniforms it selects) differ per draw.
+const BRICK_UNIFORM_SLOT_SOLID: u32 = 0;
+const BRICK_UNIFORM_SLOT_GHOST_LOWER: u32 = 1;
+const BRICK_UNIFORM_SLOT_GHOST_UPPER: u32 = 2;
+const BRICK_UNIFORM_SLOT_COUNT: u64 = 3;
+
 /// The kind discriminant (0 coarse / 1 sculpted) of a packed `BrickGpuRecord.kind` —
 /// the mirror of the WGSL `record_kind(kind)`. The material id lives above it.
 fn record_kind_discriminant(kind: u32) -> u32 {
@@ -316,7 +326,9 @@ struct BrickUniformsPod {
     band_clip_active: u32,
     // The block-occupancy cell count (`occupancy_cells` binary-search span); 0 ⇒ off.
     occupancy_cell_count: u32,
-    _render_cell_pad2: u32,
+    // ADR 0012 (H1): the onion GHOST flag (0 = solid shade, 1 = flat translucent tint).
+    // Occupies the former `_render_cell_pad2` slot.
+    ghost_mode: u32,
     lattice_shift_and_edge: [i32; 4],
     block_bias_and_tiles: [i32; 4],
     voxel_bias: [i32; 4],
@@ -332,6 +344,9 @@ struct BrickUniformsPod {
     traversal_hi: [f32; 4],
     material_base_colors: [[f32; 4]; MaterialChoice::MATERIAL_COUNT],
     material_atlas_rects: [[f32; 4]; MaterialChoice::MATERIAL_COUNT],
+    // ADR 0012 (H1): the onion ghost tint (linear RGB + src alpha), read only when
+    // `ghost_mode != 0`. Appended so the solid draw's uniform layout is unchanged.
+    ghost_tint: [f32; 4],
 }
 
 /// The G1 brick raymarch renderer: owns the record buffer, the sculpted atlas
@@ -340,8 +355,24 @@ struct BrickUniformsPod {
 /// entry + the single-sample hit-identity entry the parity net reads back).
 pub struct BrickRaymarchRenderer {
     render_pipeline: wgpu::RenderPipeline,
+    /// ADR 0012 (H1): the onion GHOST pipeline — same shader + layout as
+    /// `render_pipeline`, but alpha-blends the flat-tinted ghost over the solid with the
+    /// depth test `Less` with depth WRITE ON (so the nearest ghost surface wins — the
+    /// render is builder-independent), while the solid (drawn first) occludes the ghost.
+    ghost_render_pipeline: wgpu::RenderPipeline,
     hit_identity_pipeline: wgpu::RenderPipeline,
+    /// The uniform buffer: [`BRICK_UNIFORM_SLOT_COUNT`] `BrickUniformsPod` slots
+    /// (solid + two ghost slabs), each `uniform_slot_stride` bytes, indexed by dynamic
+    /// offset (ADR 0012 H1).
     uniform_buffer: wgpu::Buffer,
+    /// The per-slot byte stride (`size_of::<BrickUniformsPod>` rounded up to the device's
+    /// `min_uniform_buffer_offset_alignment`) — the dynamic offset multiplier.
+    uniform_slot_stride: u32,
+    /// (ADR 0012 H1) Whether each onion GHOST slab has a valid non-empty Z-range this
+    /// frame (its uniform slot was written), so [`draw_ghost`](Self::draw_ghost) skips a
+    /// degenerate slab (e.g. no layers below a band anchored at layer 0).
+    ghost_lower_active: bool,
+    ghost_upper_active: bool,
     field_bind_group_layout: wgpu::BindGroupLayout,
     field_bind_group: wgpu::BindGroup,
     material_bind_group: wgpu::BindGroup,
@@ -396,12 +427,19 @@ impl BrickRaymarchRenderer {
         queue: &wgpu::Queue,
         color_format: wgpu::TextureFormat,
     ) -> Self {
+        // ADR 0012 (H1): ONE uniform buffer of three dynamic-offset slots (solid + two
+        // onion ghost slabs). Each slot is padded up to the device's uniform-offset
+        // alignment so a dynamic offset lands slot `n` exactly.
+        let uniform_size = std::mem::size_of::<BrickUniformsPod>() as u64;
+        let uniform_alignment = device.limits().min_uniform_buffer_offset_alignment as u64;
+        let uniform_slot_stride = uniform_size.div_ceil(uniform_alignment) * uniform_alignment;
         let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("brick raymarch uniforms"),
-            size: std::mem::size_of::<BrickUniformsPod>() as u64,
+            size: uniform_slot_stride * BRICK_UNIFORM_SLOT_COUNT,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        let uniform_slot_stride = uniform_slot_stride as u32;
 
         // Placeholder field: one zeroed record + a 1³ atlas (record_count 0 means
         // the binary search never reads either).
@@ -456,8 +494,12 @@ impl BrickRaymarchRenderer {
                         visibility: wgpu::ShaderStages::FRAGMENT,
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Uniform,
-                            has_dynamic_offset: false,
-                            min_binding_size: None,
+                            // ADR 0012 (H1): dynamic offset selects the solid / ghost-lower /
+                            // ghost-upper slot from the one 3-slot uniform buffer.
+                            has_dynamic_offset: true,
+                            min_binding_size: std::num::NonZeroU64::new(
+                                std::mem::size_of::<BrickUniformsPod>() as u64,
+                            ),
                         },
                         count: None,
                     },
@@ -532,7 +574,13 @@ impl BrickRaymarchRenderer {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: uniform_buffer.as_entire_binding(),
+                    // Sized to ONE slot (dynamic offset selects which) — not the whole
+                    // 3-slot buffer, so `offset + size` stays in bounds at every slot.
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &uniform_buffer,
+                        offset: 0,
+                        size: std::num::NonZeroU64::new(uniform_size),
+                    }),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
@@ -650,6 +698,57 @@ impl BrickRaymarchRenderer {
             cache: None,
         });
 
+        // ADR 0012 (H1): the onion GHOST pipeline — identical to `render_pipeline` except it
+        // ALPHA-BLENDS the flat-tinted ghost over the solid. Depth test `Less`, depth WRITE
+        // ON: each pixel shows only the NEAREST ghost surface (blended once), so the render is
+        // a pure function of the visible surface and matches the cuboid mesh ghost the same
+        // way the OPAQUE brick solid already matches the mesh (the depth-write-OFF alternative
+        // accumulated overlapping translucent hits order-dependently and diverged from the
+        // mesh face-for-face). The solid (drawn first) still occludes the ghost via `frag_depth`.
+        let ghost_render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("brick raymarch onion ghost pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vertex_main"),
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fragment_render"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: color_format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState {
+                count: MSAA_SAMPLE_COUNT,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview_mask: None,
+            cache: None,
+        });
+
         // The parity-harness pass: single sample, no depth, hit voxel identity into
         // an Rgba32Uint target (read back by tests/gpu_parity.rs only).
         let hit_identity_pipeline =
@@ -693,8 +792,12 @@ impl BrickRaymarchRenderer {
 
         Self {
             render_pipeline,
+            ghost_render_pipeline,
             hit_identity_pipeline,
             uniform_buffer,
+            uniform_slot_stride,
+            ghost_lower_active: false,
+            ghost_upper_active: false,
             field_bind_group_layout,
             field_bind_group,
             material_bind_group,
@@ -919,7 +1022,15 @@ impl BrickRaymarchRenderer {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: self.uniform_buffer.as_entire_binding(),
+                    // ADR 0012 (H1): sized to ONE slot (dynamic offset selects solid /
+                    // ghost-lower / ghost-upper), so `offset + size` is valid at every slot.
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &self.uniform_buffer,
+                        offset: 0,
+                        size: std::num::NonZeroU64::new(
+                            std::mem::size_of::<BrickUniformsPod>() as u64,
+                        ),
+                    }),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
@@ -1101,20 +1212,49 @@ impl BrickRaymarchRenderer {
             ),
             None => (0.0, [[1.0, 1.0, 1.0, 0.0]; MaterialChoice::MATERIAL_COUNT]),
         };
+        let grid_overlay_enabled = if grid_overlay_master && self.overlay_active {
+            1.0
+        } else {
+            0.0
+        };
+        // The SOLID draw's uniform: slot 0, `ghost_mode = 0` (its zeroed tint is unread).
+        // Dynamic offset 0 selects it, so this is byte-identical to the pre-0012 single-slot
+        // buffer (parity + non-onion goldens unaffected).
+        let uniforms = self.build_uniforms_pod(
+            &frame,
+            grid_overlay_enabled,
+            modulation_enabled,
+            base_colors,
+            0,
+            [0.0; 4],
+        );
+        queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
+        frame
+    }
+
+    /// Assemble a [`BrickUniformsPod`] for one draw (ADR 0012 H1: shared by the solid draw
+    /// and the two ghost-slab draws). `ghost_mode`/`ghost_tint` select the flat translucent
+    /// ghost shade; every other field is the frame + shading the shader consumes.
+    #[allow(clippy::too_many_arguments)]
+    fn build_uniforms_pod(
+        &self,
+        frame: &BrickMarchFrame,
+        grid_overlay_enabled: f32,
+        modulation_enabled: f32,
+        base_colors: [[f32; 4]; MaterialChoice::MATERIAL_COUNT],
+        ghost_mode: u32,
+        ghost_tint: [f32; 4],
+    ) -> BrickUniformsPod {
         let material_atlas = crate::texture_atlas::MaterialAtlas::from_procedural_materials();
         let overlay = crate::renderer::grid_overlay_params();
-        let uniforms = BrickUniformsPod {
+        BrickUniformsPod {
             view_projection: frame.view_projection.to_cols_array_2d(),
             inverse_view_projection: frame.inverse_view_projection.to_cols_array_2d(),
             viewport: frame.viewport,
             grid_half_extent: frame.grid_half_extent.to_array(),
             voxels_per_block: self.brick_edge_voxels.max(1) as f32,
             voxel_line_color: overlay.voxel_line_color,
-            grid_overlay_enabled: if grid_overlay_master && self.overlay_active {
-                1.0
-            } else {
-                0.0
-            },
+            grid_overlay_enabled,
             block_line_color: overlay.block_line_color,
             material_modulation_enabled: modulation_enabled,
             voxel_line_half_width: overlay.voxel_line_half_width,
@@ -1124,7 +1264,7 @@ impl BrickRaymarchRenderer {
             record_count: self.record_count,
             band_clip_active: u32::from(frame.band_clip_active),
             occupancy_cell_count: self.occupancy_cell_count,
-            _render_cell_pad2: 0,
+            ghost_mode,
             lattice_shift_and_edge: [
                 frame.lattice_shift[0],
                 frame.lattice_shift[1],
@@ -1160,9 +1300,77 @@ impl BrickRaymarchRenderer {
             traversal_hi: frame.traversal_hi.extend(0.0).to_array(),
             material_base_colors: base_colors,
             material_atlas_rects: crate::cuboid_mesh::atlas_rects_from(&material_atlas),
-        };
-        queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
-        frame
+            ghost_tint,
+        }
+    }
+
+    /// (ADR 0012 H1) Upload the two onion GHOST slab uniforms (slots 1 + 2) for `band`.
+    /// Each slab is the SAME march as the solid but with its band clamped to ONE onion
+    /// slab — `[band_min − depth, band_min)` (lower) and `(band_max, band_max + depth]`
+    /// (upper), the recentred-Z remainder of `AppCore::onion_fog_params`' onion span — plus
+    /// `ghost_mode = 1` + the flat tint. The traversal-AABB clamp `march_frame` applies for
+    /// the slab band IS the onion clip (so a slab draw hits only its slab's voxels, capped at
+    /// the slab edges exactly as the mesh ghost's per-slab geometry, and `band_clip_active`
+    /// re-fires the elided-interior occupancy fallback). Records the per-slab active flags
+    /// [`draw_ghost`](Self::draw_ghost) reads; a degenerate slab (no layers that side of the
+    /// band, or no field installed) is left inactive. Call AFTER
+    /// [`update_uniforms`](Self::update_uniforms) each frame onion skin is on.
+    pub fn update_ghost_uniforms(
+        &mut self,
+        queue: &wgpu::Queue,
+        view_projection: glam::Mat4,
+        viewport_px: [u32; 4],
+        grid_dimensions: [u32; 3],
+        band: LayerBand,
+    ) {
+        self.ghost_lower_active = false;
+        self.ghost_upper_active = false;
+        if self.record_count == 0 || band.onion_depth == 0 {
+            return;
+        }
+        let tint = crate::renderer::onion_ghost_tint();
+        let neutral = [[1.0, 1.0, 1.0, 0.0]; MaterialChoice::MATERIAL_COUNT];
+        let depth = band.onion_depth;
+        let last_layer = grid_dimensions[2].saturating_sub(1);
+        // Lower slab: layers [band_min − depth, band_min − 1]; skipped when the band bottom
+        // is already layer 0 (nothing below to ghost).
+        if band.band_min > 0 {
+            let slab = LayerBand {
+                band_min: band.band_min.saturating_sub(depth),
+                band_max: band.band_min - 1,
+                onion_depth: 0,
+            };
+            let frame = self.march_frame(view_projection, viewport_px, grid_dimensions, slab);
+            let pod = self.build_uniforms_pod(&frame, 0.0, 0.0, neutral, 1, tint);
+            queue.write_buffer(
+                &self.uniform_buffer,
+                self.slot_offset(BRICK_UNIFORM_SLOT_GHOST_LOWER),
+                bytemuck::bytes_of(&pod),
+            );
+            self.ghost_lower_active = true;
+        }
+        // Upper slab: layers [band_max + 1, band_max + depth]; skipped when the band top is
+        // already the last layer (nothing above to ghost).
+        if band.band_max < last_layer {
+            let slab = LayerBand {
+                band_min: band.band_max + 1,
+                band_max: (band.band_max + depth).min(last_layer),
+                onion_depth: 0,
+            };
+            let frame = self.march_frame(view_projection, viewport_px, grid_dimensions, slab);
+            let pod = self.build_uniforms_pod(&frame, 0.0, 0.0, neutral, 1, tint);
+            queue.write_buffer(
+                &self.uniform_buffer,
+                self.slot_offset(BRICK_UNIFORM_SLOT_GHOST_UPPER),
+                bytemuck::bytes_of(&pod),
+            );
+            self.ghost_upper_active = true;
+        }
+    }
+
+    /// The byte offset of dynamic-offset uniform `slot` (ADR 0012 H1).
+    fn slot_offset(&self, slot: u32) -> u64 {
+        slot as u64 * self.uniform_slot_stride as u64
     }
 
     /// Draw the brick raymarch INSIDE the shared MSAA voxel pass (viewport +
@@ -1172,9 +1380,44 @@ impl BrickRaymarchRenderer {
             return;
         }
         pass.set_pipeline(&self.render_pipeline);
-        pass.set_bind_group(0, &self.field_bind_group, &[]);
+        // ADR 0012 (H1): dynamic offset selects the SOLID uniform slot.
+        pass.set_bind_group(
+            0,
+            &self.field_bind_group,
+            &[self.slot_offset(BRICK_UNIFORM_SLOT_SOLID) as u32],
+        );
         pass.set_bind_group(1, &self.material_bind_group, &[]);
         pass.draw(0..3, 0..1);
+    }
+
+    /// (ADR 0012 H1) Draw the onion GHOST pass: one fullscreen raymarch per ACTIVE onion
+    /// slab (lower then upper — the same order the cuboid mesh ghost draws), each selecting
+    /// its ghost uniform slot by dynamic offset. Flat-tinted + alpha-blended, depth test
+    /// `Less` with depth WRITE ON (nearest ghost surface wins). MUST run AFTER [`draw`](Self::draw)
+    /// inside the same MSAA pass; `update_ghost_uniforms` must have prepared the slots. A
+    /// no-op when no field is installed or neither slab is active.
+    pub fn draw_ghost<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>) {
+        if self.record_count == 0 {
+            return;
+        }
+        pass.set_pipeline(&self.ghost_render_pipeline);
+        pass.set_bind_group(1, &self.material_bind_group, &[]);
+        if self.ghost_lower_active {
+            pass.set_bind_group(
+                0,
+                &self.field_bind_group,
+                &[self.slot_offset(BRICK_UNIFORM_SLOT_GHOST_LOWER) as u32],
+            );
+            pass.draw(0..3, 0..1);
+        }
+        if self.ghost_upper_active {
+            pass.set_bind_group(
+                0,
+                &self.field_bind_group,
+                &[self.slot_offset(BRICK_UNIFORM_SLOT_GHOST_UPPER) as u32],
+            );
+            pass.draw(0..3, 0..1);
+        }
     }
 
     /// Render the hit-identity image (the parity harness): one `[hit, x, y, z]`
@@ -1235,7 +1478,12 @@ impl BrickRaymarchRenderer {
                 multiview_mask: None,
             });
             pass.set_pipeline(&self.hit_identity_pipeline);
-            pass.set_bind_group(0, &self.field_bind_group, &[]);
+            // ADR 0012 (H1): the parity harness reads the SOLID slot.
+            pass.set_bind_group(
+                0,
+                &self.field_bind_group,
+                &[self.slot_offset(BRICK_UNIFORM_SLOT_SOLID) as u32],
+            );
             pass.set_bind_group(1, &self.material_bind_group, &[]);
             pass.draw(0..3, 0..1);
         }

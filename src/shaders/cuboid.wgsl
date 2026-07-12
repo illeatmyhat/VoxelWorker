@@ -61,7 +61,13 @@ struct CuboidUniforms {
     // texture / material / overlay. A trailing pad fills the 16-byte slot so the
     // array below stays 16-aligned.
     debug_face_mode: f32,
-    _band_pad: f32,
+    // ADR 0012 (H1): the onion GHOST flag. 0 = normal textured solid render; 1 = the
+    // ghost pass — every fragment shades as the flat translucent `ghost_tint` (NO
+    // texture / material / overlay), because the onion-slab geometry itself IS the clip
+    // (the mesh ghost draws two thin per-slab meshes, so no shader-side band test is
+    // needed). Occupies the former `_band_pad` slot; 0 for the solid draw keeps its
+    // uniform bytes identical (non-onion goldens byte-green).
+    ghost_mode: f32,
     // Per-material base colours ([r,g,b,_pad], LINEAR), relative to the bound
     // texture's average — identical to the instanced path's step-3b array.
     material_base_colors: array<vec4<f32>, 3>,
@@ -72,6 +78,9 @@ struct CuboidUniforms {
     // per-material texture. The inset (half-texel) window keeps the fract-tiling off
     // the cell's outer edge; the atlas's replicated-edge gutter absorbs any spill.
     material_atlas_rects: array<vec4<f32>, 3>,
+    // ADR 0012 (H1): the onion ghost tint (linear RGB + src alpha), read only when
+    // `ghost_mode > 0.5`. Appended so the solid draw's uniform layout is unchanged.
+    ghost_tint: vec4<f32>,
 };
 
 @group(0) @binding(0)
@@ -198,6 +207,16 @@ fn fragment_main(
             debug_color = mix(vec3<f32>(1.0, 1.0, 1.0), vec3<f32>(0.0, 0.0, 0.0), stripe);
         }
         return vec4<f32>(debug_color, 1.0);
+    }
+
+    // --- Onion ghost pass (ADR 0012 H1) ---
+    // The ghost geometry IS the onion slab (built clipped per-slab, `cuboid_mesh.rs`),
+    // so no band test is needed here: every ghost fragment shades as the flat
+    // translucent tint (no texture / lighting / material / overlay), matching the brick
+    // raymarch ghost's flat tint so the two paths ghost pixel-comparably. Alpha-blended
+    // + depth-tested read-only by the ghost pipeline, so solid geometry occludes it.
+    if (uniforms.ghost_mode > 0.5) {
+        return uniforms.ghost_tint;
     }
 
     // --- Per-voxel texture slice (BUG 1 parity) ---

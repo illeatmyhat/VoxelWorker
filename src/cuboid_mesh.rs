@@ -1657,7 +1657,10 @@ struct CuboidUniforms {
     band_min: f32,
     band_max: f32,
     debug_face_mode: f32,
-    _band_pad: f32,
+    /// ADR 0012 (H1): the onion GHOST flag (0 = normal solid render, 1 = flat
+    /// translucent ghost tint). Occupies the former `_band_pad` slot; `0.0` for the
+    /// solid draw keeps the solid uniform bytes identical (non-onion goldens byte-green).
+    ghost_mode: f32,
     material_base_colors: [[f32; 4]; MaterialChoice::MATERIAL_COUNT],
     /// Per-material atlas sub-rect (ADR 0002 E3c-1 / O8), indexed by `material_id`:
     /// `[inset_min_u, inset_min_v, inset_size_u, inset_size_v]`. The shader maps the
@@ -1665,6 +1668,9 @@ struct CuboidUniforms {
     /// chunk of mixed materials is ONE mesh = ONE draw (no per-material texture
     /// bind). Each `vec4` is naturally 16-aligned.
     material_atlas_rects: [[f32; 4]; MaterialChoice::MATERIAL_COUNT],
+    /// ADR 0012 (H1): the onion ghost tint (linear RGB + src alpha), read only when
+    /// `ghost_mode > 0.5`. Appended so the solid draw's uniform layout is unchanged.
+    ghost_tint: [f32; 4],
 }
 
 /// Convert a packed [`MaterialAtlas`]'s per-material sub-rects into the uniform
@@ -1912,6 +1918,28 @@ pub struct CuboidMeshRenderer {
     /// materials so they slice/filter exactly like the procedural atlas. Exposed via
     /// [`Self::material_sampler`].
     loaded_material_sampler: wgpu::Sampler,
+    // --- ADR 0012 (H1): the onion GHOST pass ---
+    /// The ghost pipeline: the SAME procedural `cuboid.wgsl` vertex/fragment (its
+    /// `ghost_mode` branch flat-tints), but alpha-blended over the solid with the depth
+    /// test ON (`Less`) and depth WRITE OFF, so solid geometry occludes the ghost and
+    /// the ghost occludes nothing. Used for BOTH procedural and loaded-material scenes
+    /// (the ghost never textures — flat tint even over `cuboid_loaded`).
+    ghost_pipeline: wgpu::RenderPipeline,
+    /// The ghost draw's uniform buffer (`ghost_mode = 1` + tint), separate from the
+    /// solid `uniform_buffer` so the same frame carries both states.
+    ghost_uniform_buffer: wgpu::Buffer,
+    ghost_uniform_bind_group: wgpu::BindGroup,
+    /// The GHOST geometry: two thin per-slab meshes clipped to the onion slabs below /
+    /// above the band (`[band_min − depth, band_min)` and `(band_max, band_max + depth]`,
+    /// ADR 0012). Built via the SAME banded mesher the solid uses (so the two paths — and
+    /// the dense vs two-layer builds — ghost identically), just at the slab bands. Empty
+    /// when onion is off. Kept as two maps because a tall chunk can straddle both slabs.
+    ghost_lower_buffers: std::collections::HashMap<[i32; 3], CuboidChunkBuffers>,
+    ghost_upper_buffers: std::collections::HashMap<[i32; 3], CuboidChunkBuffers>,
+    /// The band the ghost slabs were last built for (`None` = never built / cleared), so
+    /// a same-band frame skips the slab re-mesh and a band change (or the first frame
+    /// after an async swap that built only the solid) rebuilds them.
+    ghost_built_band: Option<LayerBand>,
 }
 
 impl CuboidMeshRenderer {
@@ -2098,6 +2126,23 @@ impl CuboidMeshRenderer {
             }],
         });
 
+        // ADR 0012 (H1): the onion ghost draw's own uniform buffer + bind group (same
+        // layout as the solid, a separate buffer so one frame carries both states).
+        let ghost_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("cuboid ghost uniforms"),
+            size: std::mem::size_of::<CuboidUniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let ghost_uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("cuboid ghost uniform bind group"),
+            layout: &uniform_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: ghost_uniform_buffer.as_entire_binding(),
+            }],
+        });
+
         // --- Per-draw on-face-grid overlay-active uniform (group 2, ADR 0003 §3c) ---
         // The overlay flag is no longer a vertex attribute (ADR 0010 E3): a chunk mesh is
         // split into an overlay-off and an overlay-on draw, each selecting this per-draw
@@ -2243,6 +2288,61 @@ impl CuboidMeshRenderer {
         let pipeline = build_pipeline("cuboid pipeline", Some(wgpu::Face::Back));
         let debug_pipeline = build_pipeline("cuboid debug pipeline", None);
 
+        // ADR 0012 (H1): the onion GHOST pipeline. Same shader + layout as the solid, but
+        // alpha-blends the flat-tinted ghost OVER the solid, depth-tested `Less`. Depth WRITE
+        // is ON (not off): each pixel then shows only the NEAREST ghost surface, blended once
+        // — NOT an order-dependent accumulation of every overlapping translucent face. This
+        // makes the ghost render a pure function of the visible surface, so it is IDENTICAL
+        // across the display paths whose greedy decomposition / raymarch differ face-for-face
+        // (dense vs two-layer mesh, and the brick raymarch) exactly as the OPAQUE solid render
+        // already matches — the `brick_golden_matches_dense` / two-layer cross-checks depend
+        // on it. Solid geometry (drawn first) still occludes the ghost via the same depth
+        // buffer; the ghost may occlude the depth-tested overlays drawn after it, which for a
+        // translucent context slab is acceptable. Back-face culled like the solid.
+        let ghost_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("cuboid onion ghost pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vertex_main"),
+                buffers: std::slice::from_ref(&vertex_layout),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fragment_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: color_format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: Some(wgpu::Face::Back),
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState {
+                count: MSAA_SAMPLE_COUNT,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview_mask: None,
+            cache: None,
+        });
+
         // --- Loaded-VS-block pipelines (part of #20) ---
         // A second shader + pipeline pair that binds the applied block's 6-layer
         // D2Array at group(1) (built externally by `LoadedMaterial`, against the
@@ -2358,6 +2458,12 @@ impl CuboidMeshRenderer {
             current_band: LayerBand::FULL,
             loaded_material_layout,
             loaded_material_sampler,
+            ghost_pipeline,
+            ghost_uniform_buffer,
+            ghost_uniform_bind_group,
+            ghost_lower_buffers: std::collections::HashMap::new(),
+            ghost_upper_buffers: std::collections::HashMap::new(),
+            ghost_built_band: None,
         }
     }
 
@@ -2576,48 +2682,103 @@ impl CuboidMeshRenderer {
     /// would leave a merged column's slab open-topped). No-op when the band is
     /// unchanged.
     fn rebuild_for_band(&mut self, device: &wgpu::Device, band: LayerBand) {
-        if band == self.current_band {
-            return;
+        // --- SOLID geometry (clipped to the exact [band_min, band_max]; `onion_depth` is
+        // NOT a solid input, so the solid band is unchanged by ADR 0012). Skipped when the
+        // band is unchanged (the M2 no-swap-rehitch property). ---
+        if band != self.current_band {
+            self.current_band = band;
+            if let Some(chunk_meshes) = self.build_band_meshes(band) {
+                self.total_box_count = chunk_meshes.iter().map(|m| m.box_count).sum();
+                self.chunk_buffers = upload_chunk_meshes(device, &chunk_meshes);
+                // All chunks visible until the next frustum cull in `update_uniforms`.
+                self.visible_chunks = self.chunk_buffers.keys().copied().collect();
+                self.visible_chunks.sort_unstable();
+            }
+            // A source-less (empty) build leaves the geometry in place (matches pre-0012).
         }
-        self.current_band = band;
 
-        // ADR 0010 #53 — the TWO-LAYER path: when the renderer was built from the two-layer
-        // store (the chunks are retained), re-mesh the band slab DIRECTLY from those chunks —
-        // no dense source grids. A coarse block the band cuts emits the clipped one-box, a
-        // boundary block clips each cuboid, and cut-plane faces are synthesised (the band edge
-        // reads the out-of-band neighbour cell as air), mirroring the dense banded path.
+        // --- GHOST geometry (ADR 0012 H1): the thin per-slab onion meshes. Rebuilt on a
+        // band change OR when never built for this band (the first frame after an async
+        // swap that pre-built only the solid — the slabs are cheap, so this is not the
+        // multi-second re-mesh #60 removed). ---
+        if self.ghost_built_band != Some(band) {
+            self.rebuild_ghost_slabs(device, band);
+            self.ghost_built_band = Some(band);
+        }
+    }
+
+    /// Build the per-chunk SOLID meshes clipped to `band` from whichever source the
+    /// renderer retains (the two-layer store, else the dense per-chunk grids). `None`
+    /// when the renderer has neither source (an empty build). The two-layer analogue of
+    /// the dense apron mesher, kept as ONE helper so [`rebuild_for_band`] and the ghost
+    /// slab build share the exact same clip semantics (ADR 0012: the two ghost slabs are
+    /// just this build at the slab bands).
+    fn build_band_meshes(&self, band: LayerBand) -> Option<Vec<CuboidChunkMesh>> {
         if !self.source_two_layer_chunks.is_empty() {
-            let chunk_meshes = build_two_layer_chunk_meshes(
+            return Some(build_two_layer_chunk_meshes(
                 &self.source_two_layer_chunks,
                 self.source_grid_dimensions,
                 self.source_two_layer_recentre,
                 self.source_two_layer_density,
                 band,
-            );
-            self.total_box_count = chunk_meshes.iter().map(|m| m.box_count).sum();
-            self.chunk_buffers = upload_chunk_meshes(device, &chunk_meshes);
-            self.visible_chunks = self.chunk_buffers.keys().copied().collect();
-            self.visible_chunks.sort_unstable();
-            return;
+            ));
         }
-
-        // The DENSE path retains per-chunk grids: re-mesh them clipped to the band. A path
-        // with NEITHER source (an empty build) leaves the geometry in place.
         if self.source_chunk_grids.is_empty() {
-            return;
+            return None;
         }
         let chunk_refs: Vec<([i32; 3], &VoxelGrid)> = self
             .source_chunk_grids
             .iter()
             .map(|(coord, g)| (*coord, g))
             .collect();
-        let chunk_meshes =
-            build_chunk_meshes_with_apron(&chunk_refs, self.source_grid_dimensions, band);
-        self.total_box_count = chunk_meshes.iter().map(|m| m.box_count).sum();
-        self.chunk_buffers = upload_chunk_meshes(device, &chunk_meshes);
-        // All chunks visible until the next frustum cull in `update_uniforms`.
-        self.visible_chunks = self.chunk_buffers.keys().copied().collect();
-        self.visible_chunks.sort_unstable();
+        Some(build_chunk_meshes_with_apron(
+            &chunk_refs,
+            self.source_grid_dimensions,
+            band,
+        ))
+    }
+
+    /// (ADR 0012 H1) Rebuild the two onion GHOST slab meshes for `band`: the layers
+    /// `[band_min − depth, band_min)` (lower slab) and `(band_max, band_max + depth]`
+    /// (upper slab), the recentred-Z remainder of the onion span `AppCore::onion_fog_params`
+    /// derives (floored half, Z-up, depth clamped 1..8). Each slab is meshed by the SAME
+    /// banded builder the solid uses, so it carries real cap faces at the slab edges — the
+    /// brick raymarch ghost's per-slab traversal clamp produces the same caps, which is what
+    /// keeps `brick_golden_matches_dense` green. Empty (both maps cleared) when onion is off
+    /// (`onion_depth == 0`) or a slab falls outside the grid.
+    fn rebuild_ghost_slabs(&mut self, device: &wgpu::Device, band: LayerBand) {
+        self.ghost_lower_buffers.clear();
+        self.ghost_upper_buffers.clear();
+        if band.onion_depth == 0 {
+            return;
+        }
+        let depth = band.onion_depth;
+        let grid_z = self.source_grid_dimensions[2];
+        let last_layer = grid_z.saturating_sub(1);
+        // Lower slab: layers [band_min − depth, band_min − 1]. Skipped when the band bottom
+        // is already layer 0 (nothing below to ghost).
+        if band.band_min > 0 {
+            let slab = LayerBand {
+                band_min: band.band_min.saturating_sub(depth),
+                band_max: band.band_min - 1,
+                onion_depth: 0,
+            };
+            if let Some(meshes) = self.build_band_meshes(slab) {
+                self.ghost_lower_buffers = upload_chunk_meshes(device, &meshes);
+            }
+        }
+        // Upper slab: layers [band_max + 1, band_max + depth]. Skipped when the band top is
+        // already the last layer (nothing above to ghost).
+        if band.band_max < last_layer {
+            let slab = LayerBand {
+                band_min: band.band_max + 1,
+                band_max: (band.band_max + depth).min(last_layer),
+                onion_depth: 0,
+            };
+            if let Some(meshes) = self.build_band_meshes(slab) {
+                self.ghost_upper_buffers = upload_chunk_meshes(device, &meshes);
+            }
+        }
     }
 
     /// Total exposed quad faces across all resident chunks (diagnostic, both overlay runs).
@@ -2742,11 +2903,27 @@ impl CuboidMeshRenderer {
             band_min: band.band_min as f32,
             band_max: band.band_max as f32,
             debug_face_mode: if debug_face_mode { 1.0 } else { 0.0 },
-            _band_pad: 0.0,
+            // ADR 0012 (H1): the SOLID draw is never the ghost — 0 here keeps the solid
+            // uniform bytes identical to pre-onion-ghost (non-onion goldens byte-green).
+            ghost_mode: 0.0,
             material_base_colors: base_colors,
             material_atlas_rects: self.atlas_rects,
+            ghost_tint: [0.0, 0.0, 0.0, 0.0],
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
+
+        // ADR 0012 (H1) — the onion GHOST uniform. Identical camera/frame to the solid,
+        // but `ghost_mode = 1` (flat translucent tint) + the tint colour. Both onion
+        // slabs share this ONE uniform (the slab distinction lives in the per-slab GHOST
+        // geometry, not the uniform), so a band scrub only re-meshes the thin slabs and
+        // never touches this buffer's shape. The tint is the SAME constant the brick
+        // ghost binds — `brick_golden_matches_dense` depends on the two matching.
+        let ghost_uniforms = CuboidUniforms {
+            ghost_mode: 1.0,
+            ghost_tint: crate::renderer::onion_ghost_tint(),
+            ..uniforms
+        };
+        queue.write_buffer(&self.ghost_uniform_buffer, 0, bytemuck::bytes_of(&ghost_uniforms));
 
         // Frustum-cull the per-chunk buffers by their world AABBs (sorted for a
         // deterministic draw order; cross-chunk order is pixel-irrelevant — opaque +
@@ -2830,6 +3007,48 @@ impl CuboidMeshRenderer {
                 let start = chunk.index_count;
                 render_pass
                     .draw_indexed(start..start + chunk.index_count_overlay, 0, 0..1);
+            }
+        }
+    }
+
+    /// (ADR 0012 H1) Draw the onion GHOST pass: the two thin per-slab meshes flat-tinted
+    /// translucent, alpha-blended over the solid with the depth test `Less` + depth WRITE ON
+    /// (nearest ghost surface wins, builder-independent). MUST be called AFTER [`draw`], inside
+    /// the same MSAA pass (the solid's depth is what occludes the ghost). A no-op when onion is off (both slab
+    /// maps empty). Group(1) binds the procedural atlas even for loaded-material scenes —
+    /// the ghost shader flat-tints and never samples it (flat tint even over `cuboid_loaded`).
+    /// Both slabs are drawn with the whole index buffer per chunk (overlay-off + overlay-on
+    /// runs together): the ghost ignores the on-face grid overlay, so one draw suffices.
+    pub fn draw_ghost(&self, render_pass: &mut wgpu::RenderPass<'_>) {
+        if self.ghost_lower_buffers.is_empty() && self.ghost_upper_buffers.is_empty() {
+            return;
+        }
+        render_pass.set_pipeline(&self.ghost_pipeline);
+        render_pass.set_bind_group(0, &self.ghost_uniform_bind_group, &[]);
+        render_pass.set_bind_group(1, &self.atlas_bind_group, &[]);
+        // Overlay disabled for the ghost (the shader flat-tints before any overlay); bind
+        // the off-slot (0) so group(2) is satisfied.
+        render_pass.set_bind_group(2, &self.overlay_bind_group, &[0]);
+        // Lower slab THEN upper slab — the same order the brick raymarch ghost draws its
+        // two slabs, so any screen overlap of the two blends identically across paths.
+        // Within a slab, iterate in SORTED coord order: the ghost writes no depth, so a
+        // stable draw order keeps the alpha-blend result deterministic across runs AND
+        // identical between the dense and two-layer builds (the two_layer golden gate).
+        for buffers in [&self.ghost_lower_buffers, &self.ghost_upper_buffers] {
+            let mut coords: Vec<[i32; 3]> = buffers.keys().copied().collect();
+            coords.sort_unstable();
+            for coord in coords {
+                let Some(chunk) = buffers.get(&coord) else {
+                    continue;
+                };
+                let total = chunk.index_count + chunk.index_count_overlay;
+                if total == 0 {
+                    continue;
+                }
+                render_pass.set_vertex_buffer(0, chunk.vertex_buffer.slice(..));
+                render_pass
+                    .set_index_buffer(chunk.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                render_pass.draw_indexed(0..total, 0, 0..1);
             }
         }
     }

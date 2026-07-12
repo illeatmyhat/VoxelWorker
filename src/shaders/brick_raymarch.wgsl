@@ -65,7 +65,12 @@ struct BrickUniforms {
     band_clip_active: u32,
     // The block-occupancy cell count (the `occupancy_cells` binary-search span); 0 ⇒ off.
     occupancy_cell_count: u32,
-    _render_cell_pad2: u32,
+    // ADR 0012 (H1): the onion GHOST flag. 0 = normal solid shade; 1 = the ghost pass —
+    // the hit shades as the flat translucent `ghost_tint` (no texture / material /
+    // overlay). The onion-slab clip is the traversal AABB itself (the ghost draw sets the
+    // band to ONE onion slab, so `traversal_lo/hi.z` bound the slab); no extra Z test is
+    // needed here. Occupies the former `_render_cell_pad2` slot.
+    ghost_mode: u32,
     // xyz: the integer lattice shift re-aligning block boundaries in the render
     // frame ((recentre − half_extent) mod edge); w: the brick edge in voxels.
     lattice_shift_and_edge: vec4<i32>,
@@ -91,6 +96,9 @@ struct BrickUniforms {
     traversal_hi: vec4<f32>,
     material_base_colors: array<vec4<f32>, 3>,
     material_atlas_rects: array<vec4<f32>, 3>,
+    // ADR 0012 (H1): the onion ghost tint (linear RGB + src alpha), read only when
+    // `ghost_mode != 0`. Appended so the solid draw's uniform layout is unchanged.
+    ghost_tint: vec4<f32>,
 };
 
 @group(0) @binding(0)
@@ -904,7 +912,16 @@ fn fragment_render(
     let clip = uniforms.view_projection * vec4<f32>(hit_world, 1.0);
 
     var output: FragmentOutput;
-    output.color = shade_cuboid_surface(absolute, world_normal, hit.material_id);
+    // ADR 0012 (H1): the onion ghost shades flat translucent (no texture / material /
+    // overlay), matching the cuboid mesh ghost's flat tint so the two paths ghost
+    // pixel-comparably. The ghost pipeline alpha-blends this + tests depth read-only, so
+    // the `frag_depth` below still gates the ghost behind solid geometry (its own solid
+    // pass ran first) but the pipeline discards the depth write.
+    if (uniforms.ghost_mode != 0u) {
+        output.color = uniforms.ghost_tint;
+    } else {
+        output.color = shade_cuboid_surface(absolute, world_normal, hit.material_id);
+    }
     output.depth = clamp(clip.z / clip.w, 0.0, 1.0);
     return output;
 }

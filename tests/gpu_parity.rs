@@ -2381,3 +2381,146 @@ fn clipmap_scattered_scene_skips_empty_space() {
         sums[3], sums[2]
     );
 }
+
+/// **ADR 0012 (H1) — the onion GHOST pass marches ONLY the onion slabs.** The brick ghost
+/// draws two per-slab raymarches, each clamped to ONE onion slab (`update_ghost_uniforms`
+/// clamps the traversal AABB to the slab's band). This gates that confinement through the
+/// hit-identity harness at each slab band: (a) the LOWER slab's hits all sit strictly BELOW
+/// the solid band, (b) the UPPER slab's hits all sit strictly ABOVE it — so the ghost never
+/// draws INSIDE the band — and (c) both slabs actually draw on a tall solid (nonempty). It
+/// also gates the "band scrub = uniform-only on the brick path" promise (ADR 0012): rebinding
+/// the ghost uniforms for two different bands leaves the installed field (record count)
+/// untouched — no re-mesh, no atlas re-upload.
+#[test]
+fn onion_ghost_marches_only_the_onion_slabs() {
+    use voxel_worker::{
+        brick_representable_overlay, build_brick_field, pack_gpu_records, AppCore,
+        BrickRaymarchRenderer, ClipmapPyramid, LayerBand, OrbitCamera, TwoLayerStore,
+        COLOR_TARGET_FORMAT,
+    };
+
+    let gpu = pollster::block_on(GpuContext::new(None));
+    let width = 128u32;
+    let height = 128u32;
+
+    // The tall hollow sphere (grid_z ~80) — its shell crosses a mid band AND onion slabs
+    // both sides, so all three clips render hits.
+    let case = brick_render_cases()
+        .into_iter()
+        .find(|c| c.name == "render-sphere-80-d16")
+        .expect("render matrix carries the tall sphere case");
+    let vpb = case.voxels_per_block;
+    let two_layer_chunks = TwoLayerStore::enabled().build_covering_chunks(&case.scene, vpb, 0);
+    let build = build_brick_field(&two_layer_chunks, vpb);
+    assert!(!build.brick_records.is_empty(), "the sphere shell must produce records");
+    let records = pack_gpu_records(&build, |_| false);
+    let overlay_active = brick_representable_overlay(&two_layer_chunks).unwrap_or(false);
+    let pyramid = ClipmapPyramid::from_chunks(&two_layer_chunks);
+    let recentre = case.scene.recentre_voxels_for_resolve(vpb);
+    let grid_dimensions = case.scene.placed_region_dimensions(vpb);
+    let grid_z = grid_dimensions[2];
+
+    let depth = 4u32;
+    let band = LayerBand {
+        band_min: grid_z / 2 - 2,
+        band_max: grid_z / 2 + 1,
+        onion_depth: depth,
+    };
+    // The two onion slabs the ghost draws — the recentred-Z remainder of the onion span.
+    let lower_slab = LayerBand {
+        band_min: band.band_min - depth,
+        band_max: band.band_min - 1,
+        onion_depth: 0,
+    };
+    let upper_slab = LayerBand {
+        band_min: band.band_max + 1,
+        band_max: band.band_max + depth,
+        onion_depth: 0,
+    };
+
+    let mut app_core = AppCore::new(OrbitCamera::default());
+    app_core.camera.target = glam::Vec3::ZERO;
+    app_core.camera.orbit_distance = OrbitCamera::auto_framed_distance(grid_dimensions);
+    let aspect_ratio = width as f32 / height as f32;
+    let view_projection = app_core.view_projection(aspect_ratio, grid_dimensions);
+    let viewport_px = [0u32, 0, width, height];
+
+    let mut renderer = BrickRaymarchRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
+    renderer.install_brick_field(
+        &gpu.device,
+        &gpu.queue,
+        &build,
+        &records,
+        &pyramid,
+        recentre,
+        overlay_active,
+    );
+
+    // The absolute-voxel-Z set of the hits a given band clip renders, via the SOLID
+    // hit-identity march (the ghost slab uses the SAME `march_frame(slab)` traversal clamp,
+    // so this exactly mirrors what the ghost pass would draw for that slab).
+    let hit_zs = |renderer: &BrickRaymarchRenderer, clip: LayerBand| -> Vec<i32> {
+        renderer.update_uniforms(
+            &gpu.queue,
+            view_projection,
+            viewport_px,
+            grid_dimensions,
+            clip,
+            false,
+            Some(MaterialChoice::default()),
+        );
+        renderer
+            .render_hit_identity_image(&gpu.device, &gpu.queue, width, height)
+            .into_iter()
+            .filter(|pixel| pixel[0] == 1)
+            .map(|pixel| pixel[3] as i32) // absolute voxel Z (i32 bit-reinterpret)
+            .collect()
+    };
+
+    let band_zs = hit_zs(&renderer, band);
+    let lower_zs = hit_zs(&renderer, lower_slab);
+    let upper_zs = hit_zs(&renderer, upper_slab);
+
+    assert!(!band_zs.is_empty(), "the mid band must render some solid voxels");
+    assert!(!lower_zs.is_empty(), "the lower onion slab must ghost some voxels (tall solid)");
+    assert!(!upper_zs.is_empty(), "the upper onion slab must ghost some voxels (tall solid)");
+
+    let band_lo = *band_zs.iter().min().unwrap();
+    let band_hi = *band_zs.iter().max().unwrap();
+    assert!(
+        lower_zs.iter().all(|&z| z < band_lo),
+        "a lower-slab ghost hit fell inside/above the band (band_lo {band_lo}, lower max {})",
+        lower_zs.iter().max().unwrap()
+    );
+    assert!(
+        upper_zs.iter().all(|&z| z > band_hi),
+        "an upper-slab ghost hit fell inside/below the band (band_hi {band_hi}, upper min {})",
+        upper_zs.iter().min().unwrap()
+    );
+
+    // Uniform-only (ADR 0012): rebinding the ghost slabs for two different bands must NOT
+    // touch the installed field — no re-mesh / atlas re-upload on a brick-path band scrub.
+    let record_count_before = renderer.record_count();
+    renderer.update_ghost_uniforms(&gpu.queue, view_projection, viewport_px, grid_dimensions, band);
+    let scrubbed = LayerBand {
+        band_min: band.band_min + 3,
+        band_max: band.band_max + 3,
+        onion_depth: depth,
+    };
+    renderer.update_ghost_uniforms(
+        &gpu.queue,
+        view_projection,
+        viewport_px,
+        grid_dimensions,
+        scrubbed,
+    );
+    assert_eq!(
+        renderer.record_count(),
+        record_count_before,
+        "a ghost band scrub must be uniform-only (no field re-install / re-upload)"
+    );
+    assert!(
+        renderer.has_brick_field(),
+        "the installed field stays live across ghost band scrubs"
+    );
+}
