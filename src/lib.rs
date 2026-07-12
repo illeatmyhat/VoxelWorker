@@ -100,6 +100,7 @@ pub use brick_worker::{
     build_brick_rebuild, spawn_brick_worker, BrickDisplayInstall, BrickRebuildOutcome,
     BrickRebuildRequest, BrickRebuildResult, BrickWorker,
 };
+pub use display::orchestrator::{DisplayOrchestrator, DisplayRefreshContext};
 pub use display::routing::{
     brick_display_handover, brick_patch_in_place, route_brick_rebuild, route_geometry_rebuild,
     route_mesh_build, BrickDisplayHandover, BrickRebuildAction, EditShape, GenerationTracker,
