@@ -227,11 +227,12 @@ pub(crate) fn build_catching<T>(generation: u64, build: impl FnOnce() -> T) -> O
 
 /// Collapse any additional queued requests into the newest one (drain-to-latest, issue
 /// #60), starting from `first`. Non-blocking after `first` — takes whatever is already
-/// queued. The worker never backlogs: it builds only the latest pending request.
-fn drain_to_latest(
-    first: GeometryRebuildRequest,
-    request_receiver: &Receiver<GeometryRebuildRequest>,
-) -> GeometryRebuildRequest {
+/// queued. The worker never backlogs: it builds only the latest pending request. Generic
+/// over the request type so every worker loop (geometry, brick) shares the ONE contract.
+pub(crate) fn drain_to_latest<Request>(
+    first: Request,
+    request_receiver: &Receiver<Request>,
+) -> Request {
     let mut latest = first;
     while let Ok(newer) = request_receiver.try_recv() {
         latest = newer;
@@ -430,16 +431,25 @@ pub fn brick_display_handover(
 }
 
 /// Whether an incremental brick edit may PATCH the resident GPU field in place, or must INSTALL
-/// a fresh field (F2 — brick-display perf follow-up to epic #64). Pure so the "a cleared/empty
-/// field cannot be patched" rule is unit-testable.
+/// a fresh field (F2 — brick-display perf follow-up to epic #64). Pure so the "a cleared/empty/
+/// placeholder field cannot be patched" rule is unit-testable.
 ///
-/// Patch iff an incremental `update` was produced AND the renderer actually HOLDS A LIVE FIELD.
-/// Gating on live residency (not merely renderer-present) is the fix: during a loaded-material
-/// (or any cleared) window the renderer's field was zeroed while the CPU mirror kept patching,
-/// so a patch would write only the LAST edit's slots over an empty field — a stale atlas. A
-/// present-but-empty renderer must therefore re-INSTALL a fresh full field on re-engage.
-pub fn brick_patch_in_place(has_incremental_update: bool, renderer_holds_live_field: bool) -> bool {
-    has_incremental_update && renderer_holds_live_field
+/// Patch iff an incremental `update` was produced AND the renderer actually HOLDS A LIVE FIELD
+/// AND that field is not a stale handover placeholder. The two staleness inputs:
+/// * `renderer_holds_live_field` — gating on live residency (not merely renderer-present) is
+///   the F2 fix: during a loaded-material (or any cleared) window the renderer's field was
+///   zeroed while the CPU mirror kept patching, so a patch would write only the LAST edit's
+///   slots over an empty field — a stale atlas. A present-but-empty renderer must re-INSTALL.
+/// * `field_pending_replacement` — during an F1 deferred-handover window the live field is a
+///   STALE visual placeholder kept drawing only until the replacement mesh lands; it does not
+///   reflect the latest resolve, so an edit that restores representability must INSTALL a
+///   fresh field, never patch the placeholder (the same Frankenstein hazard, one level up).
+pub fn brick_patch_in_place(
+    has_incremental_update: bool,
+    renderer_holds_live_field: bool,
+    field_pending_replacement: bool,
+) -> bool {
+    has_incremental_update && renderer_holds_live_field && !field_pending_replacement
 }
 
 /// The monotonic generation bookkeeping behind supersede (issue #60) — factored out of
@@ -766,22 +776,32 @@ mod tests {
 
     // --- brick_patch_in_place: the F2 stale-patch gate ---
 
-    /// Patch only when an incremental update exists AND the renderer holds a LIVE field.
+    /// Patch only when an incremental update exists AND the renderer holds a LIVE field
+    /// AND that field is not a stale F1-handover placeholder.
     #[test]
-    fn patch_requires_update_and_live_field() {
+    fn patch_requires_update_and_live_current_field() {
         assert!(
-            brick_patch_in_place(true, true),
-            "an incremental update onto a live resident field patches in place"
+            brick_patch_in_place(true, true, false),
+            "an incremental update onto a live, current resident field patches in place"
         );
         // F2: a present-but-CLEARED renderer (no live field) must INSTALL fresh, never patch —
         // patching would write only the last edit's slots over the emptied atlas (a stale atlas).
         assert!(
-            !brick_patch_in_place(true, false),
+            !brick_patch_in_place(true, false, false),
             "an update onto a cleared/empty field must re-install, not patch (F2)"
         );
+        // F1 placeholder: a live field awaiting a deferred handover clear is a STALE visual
+        // placeholder — an edit that restores representability must INSTALL fresh, never patch
+        // the placeholder (patching writes one edit's slots over a field reflecting neither
+        // the old nor the new resolve).
+        assert!(
+            !brick_patch_in_place(true, true, true),
+            "an update onto a pending-replacement placeholder must re-install, not patch"
+        );
         // No incremental update (a wholesale build) always installs.
-        assert!(!brick_patch_in_place(false, true));
-        assert!(!brick_patch_in_place(false, false));
+        assert!(!brick_patch_in_place(false, true, false));
+        assert!(!brick_patch_in_place(false, false, false));
+        assert!(!brick_patch_in_place(false, true, true));
     }
 
     /// M1 — the worker's liveness escape hatch: a build that PANICS is caught and mapped to

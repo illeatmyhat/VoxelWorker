@@ -151,6 +151,25 @@ impl AppCore {
         }
     }
 
+    /// An `AppCore` whose two-layer resolve cache is PRE-WARMED with the startup covering
+    /// set (async-brick startup follow-up to epic #64). The windowed shell builds its
+    /// startup chunks THROUGH this cache so a pre-first-edit display seam — the fallback
+    /// mesh rebuild after an async brick build lands `NotRepresentable` — hands out the
+    /// RESIDENT chunks as O(chunks) `Arc` bumps instead of synchronously re-resolving the
+    /// whole covering set on the main thread (the multi-second frame-one freeze). Edit-time
+    /// semantics are identical to [`Self::new`]: the first [`rebuild`](Self::rebuild) still
+    /// clears the cache (`previous_leaf_index` starts `None`), so no stale chunk can survive
+    /// the first edit.
+    pub fn with_warm_two_layer_cache(
+        camera: OrbitCamera,
+        two_layer_cache: TwoLayerResidentCache,
+    ) -> Self {
+        Self {
+            two_layer_cache,
+            ..Self::new(camera)
+        }
+    }
+
     /// **The single serializable mutation boundary (ADR 0003 Phase C, slice C1).**
     /// Apply one [`Intent`] to `scene` by dispatching to the SAME edit op / field
     /// write the panel performs today, returning the [`IntentEffect`] (the typed

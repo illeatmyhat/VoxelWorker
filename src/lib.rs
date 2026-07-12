@@ -22,6 +22,9 @@ pub mod brick_field;
 // ADR 0011 G1: the minimal brick raymarch display sink (block DDA + record binary
 // search + sculpted voxel DDA, residency-miss contract, per-sample MSAA depth).
 pub mod brick_raymarch;
+// Perf follow-up to epic #64 (issue #60 pattern): the async wholesale brick-pipeline
+// worker — record build + pyramid + classify off the main thread (stale-while-rebuilding).
+pub mod brick_worker;
 pub mod camera;
 pub mod chunk_cache;
 // ADR 0003 bottom layer: dependency-free geometry primitives + the streaming quantum.
@@ -86,6 +89,10 @@ pub use brick_raymarch::{
     cpu_march_exact_occupancy,
     brick_representable_overlay, pack_gpu_records, BrickGpuRecord,
     BrickMarchFrame, BrickRaymarchRenderer, CpuMarchHit, NON_RESIDENT_ATLAS_SLOT,
+};
+pub use brick_worker::{
+    build_brick_rebuild, route_brick_rebuild, BrickDisplayInstall, BrickRebuildAction,
+    BrickRebuildOutcome, BrickRebuildRequest, BrickRebuildResult, BrickWorker,
 };
 pub use chunk_storage::{compress, decompress, CompressedChunk, Occupancy, SparseCell};
 pub use disk_chunk_store::{DiskChunkStore, DiskChunkStoreStats};
