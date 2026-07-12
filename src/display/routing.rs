@@ -13,9 +13,9 @@
 //! only in which staleness inputs they fold into that state (mesh staleness, mirror residency,
 //! engagement) and in the single load-bearing divergence recorded as
 //! `inline_install_supersedes_in_flight` — so the interlock, the one rule that must never be
-//! dialectal, is defined and tested exactly once. The state machine that ACTS on these decisions still lives
-//! in `main.rs` (a later slice extracts a DisplayOrchestrator alongside this module); the
-//! async workers that execute a dispatched rebuild live in [`crate::geometry_worker`] and
+//! dialectal, is defined and tested exactly once. The state machine that ACTS on these decisions
+//! lives in `src/display/orchestrator.rs` (the [`DisplayOrchestrator`](super::orchestrator::DisplayOrchestrator));
+//! the async workers that execute a dispatched rebuild live in [`crate::geometry_worker`] and
 //! [`crate::brick_worker`]; and the generation bookkeeping behind supersede is
 //! [`GenerationTracker`].
 //!
@@ -28,9 +28,10 @@
 //! mid-flight edit WHOLESALE. One DELIBERATE divergence from [`route_geometry_rebuild`]
 //! (which sends every mid-flight edit async): a mid-flight wholesale whose covering set is
 //! SMALL rebuilds INLINE — immediately current, no worker latency. That is sound ONLY
-//! because the shell's inline install seam (`finish_brick_install` in `main.rs`) bumps
-//! the generation, so the superseded in-flight result is discarded on arrival; do not
-//! remove that bump. The decision is pure so the interlock is unit-testable.
+//! because the shell's inline install seam (`DisplayOrchestrator::finish_brick_install` in
+//! `src/display/orchestrator.rs`) bumps the generation, so the superseded in-flight result is
+//! discarded on arrival; do not remove that bump. The decision is pure so the interlock is
+//! unit-testable.
 
 /// The covering-chunk count above which a WHOLESALE geometry rebuild is dispatched to
 /// the background worker instead of built inline (issue #60).
@@ -383,7 +384,8 @@ pub enum BrickRebuildAction {
 /// The load-bearing divergence from the mesh/geometry artifacts, carried through the shared
 /// policy as `inline_install_supersedes_in_flight: true`: while an async brick build is
 /// outstanding a SMALL mid-flight wholesale rebuilds INLINE rather than re-dispatching. That is
-/// sound ONLY because the shell's inline install seam (`finish_brick_install` in `main.rs`) bumps
+/// sound ONLY because the shell's inline install seam (`DisplayOrchestrator::finish_brick_install`
+/// in `src/display/orchestrator.rs`) bumps
 /// the supersede generation, so the superseded in-flight result is discarded on arrival — see the
 /// module doc's interlock note. A large mid-flight wholesale still re-dispatches async.
 ///

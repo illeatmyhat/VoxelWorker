@@ -50,6 +50,29 @@ pub fn box_covering_chunks(
     TwoLayerStore::enabled().build_covering_chunks(&box_scene(blocks, vpb, material), vpb, 0)
 }
 
+/// Poll a `condition` closure with a BOUNDED wait, yielding between polls (mirrors the event
+/// loop's per-frame try-recv). Returns once `condition` returns `true`, or fails LOUDLY once
+/// `timeout` elapses — a hang is a bug, never an acceptable unbounded wait. The closure variant
+/// of [`poll_until_result`], for callers whose "done" signal isn't a bare [`Worker`] result (e.g.
+/// an orchestrator poll that installs into its OWN state and returns a `bool`). Same 1ms sleep
+/// interval as [`poll_until_result`].
+pub fn poll_until(mut condition: impl FnMut() -> bool, timeout: Duration, context: &str) {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if condition() {
+            return;
+        }
+        if Instant::now() >= deadline {
+            panic!(
+                "{context}: the condition never held within {timeout:?} — the loop hung (a \
+                 bug), never an acceptable unbounded wait"
+            );
+        }
+        std::thread::yield_now();
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
 /// Poll a worker with a BOUNDED wait, yielding between polls (mirrors the event loop's
 /// per-frame `try_recv_result`). Returns the first result, or fails loudly once `timeout`
 /// elapses — a hang is a bug, so we never wait unbounded. Generic over the worker's

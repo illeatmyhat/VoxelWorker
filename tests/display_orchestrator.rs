@@ -14,7 +14,7 @@
 #![cfg(feature = "gpu")]
 
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use voxel_worker::{
     DisplayOrchestrator, DisplayRefreshContext, GpuContext, LayerBand, MaterialChoice,
@@ -151,18 +151,14 @@ fn first_build_large_dispatches_async_then_installs_on_poll() {
 
     // Poll until the worker's result installs — the shell's per-frame brick poll.
     let mut cache = TwoLayerResidentCache::enabled();
-    let deadline = Instant::now() + WORKER_TIMEOUT;
-    let mut installed = false;
-    while !installed {
-        let context = fixture.context(&mut cache, false);
-        if orchestrator.poll_brick_worker(context) {
-            installed = true;
-        } else if Instant::now() >= deadline {
-            panic!("the async brick field never installed within {WORKER_TIMEOUT:?}");
-        } else {
-            std::thread::sleep(Duration::from_millis(1));
-        }
-    }
+    common::poll_until(
+        || {
+            let context = fixture.context(&mut cache, false);
+            orchestrator.poll_brick_worker(context)
+        },
+        WORKER_TIMEOUT,
+        "the async brick field never installed",
+    );
 
     assert!(
         orchestrator.brick_raymarch_renderer().is_some(),
@@ -306,17 +302,11 @@ fn poll_geometry_worker_installs_async_fallback_mesh() {
     );
 
     // Poll the geometry worker until the async mesh installs.
-    let deadline = Instant::now() + WORKER_TIMEOUT;
-    let mut installed = false;
-    while !installed {
-        if orchestrator.poll_geometry_worker() {
-            installed = true;
-        } else if Instant::now() >= deadline {
-            panic!("the async fallback mesh never installed within {WORKER_TIMEOUT:?}");
-        } else {
-            std::thread::sleep(Duration::from_millis(1));
-        }
-    }
+    common::poll_until(
+        || orchestrator.poll_geometry_worker(),
+        WORKER_TIMEOUT,
+        "the async fallback mesh never installed",
+    );
     assert!(
         orchestrator.cuboid_mesh_renderer().face_count() > 0,
         "the installed async fallback mesh is non-empty (real geometry)"

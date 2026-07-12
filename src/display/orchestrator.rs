@@ -121,7 +121,7 @@ pub struct DisplayOrchestrator {
     /// of built inline, so the UI never freezes. The main thread keeps rendering the
     /// CURRENT `cuboid_mesh_renderer` (stale-while-rebuilding) until the worker's
     /// freshly-built renderer arrives, then swaps it in. Small / incremental edits stay
-    /// synchronous. `None` in the (impossible-in-practice) case the worker failed to spawn.
+    /// synchronous.
     geometry_worker: GeometryWorker,
     /// Issue #60: the monotonic generation bookkeeping behind supersede. Each async
     /// dispatch stamps a fresh generation; a received result is swapped in only when its
@@ -369,6 +369,27 @@ impl DisplayOrchestrator {
         }
     }
 
+    /// Apply a pure [`BrickDisplayHandover`] decision (F1) to the resident brick display state —
+    /// the ONE mutation the three handover sites share: the rebuild's F1 reconcile, and the
+    /// brick worker's `NotRepresentable` + `Empty` arrivals. `KeepAsDisplay`/`ClearNow` cancel any
+    /// pending deferred clear (and `ClearNow` also drops the live field this frame); `DeferUntilInstall`
+    /// arms the deferred clear so the stale brick keeps drawing until the replacement mesh lands
+    /// ([`Self::complete_brick_display_handover`]). Gpu-only — `BrickDisplayHandover` and the field
+    /// clear are the gpu display's concern (on non-gpu the brick is never the display).
+    #[cfg(feature = "gpu")]
+    fn apply_brick_display_handover(&mut self, decision: BrickDisplayHandover) {
+        match decision {
+            BrickDisplayHandover::KeepAsDisplay => self.brick_display_pending_clear = false,
+            BrickDisplayHandover::ClearNow => {
+                if let Some(renderer) = &mut self.brick_raymarch_renderer {
+                    renderer.clear_brick_field();
+                }
+                self.brick_display_pending_clear = false;
+            }
+            BrickDisplayHandover::DeferUntilInstall => self.brick_display_pending_clear = true,
+        }
+    }
+
     /// The mesh-install seam (issue #60 supersede + brick-display perf follow-up). EVERY path
     /// that makes a freshly built/patched cuboid mesh the CURRENT display funnels through here:
     /// bump the generation (so a superseded in-flight worker result is discarded on arrival),
@@ -418,6 +439,33 @@ impl DisplayOrchestrator {
             // only by the gpu raymarch; a non-gpu build maintains just the CPU mirror,
             // matching the synchronous path where the display block is compiled out.
             build_display_artifacts: cfg!(feature = "gpu"),
+        });
+    }
+
+    /// Dispatch a WHOLESALE cuboid-mesh rebuild to the async geometry worker: mint the next
+    /// generation, mark the build OUTSTANDING (the C1 interlock — every edit routes wholesale
+    /// until the result installs), and send the owned covering set + frame params. The mesh
+    /// analogue of [`Self::dispatch_wholesale_brick_rebuild`], shared by [`Self::rebuild`]'s
+    /// WholesaleAsync arm and [`Self::rebuild_stale_display_mesh`]. The generation is minted
+    /// BEFORE the outstanding flag is set BEFORE the dispatch — the C1 interlock depends on
+    /// that exact ordering.
+    fn dispatch_wholesale_mesh_rebuild(
+        &mut self,
+        two_layer_chunks: Vec<([i32; 3], Arc<TwoLayerChunk>)>,
+        grid_dimensions: [u32; 3],
+        recentre_voxels: [i64; 3],
+        density: u32,
+        band: LayerBand,
+    ) {
+        let generation = self.geometry_generation.next_generation();
+        self.geometry_async_outstanding = true;
+        self.geometry_worker.dispatch(GeometryRebuildRequest {
+            generation,
+            two_layer_chunks,
+            grid_dimensions,
+            recentre_voxels,
+            density,
+            band,
         });
     }
 
@@ -755,16 +803,13 @@ impl DisplayOrchestrator {
                 // (stale-while-rebuilding). Mark the async build OUTSTANDING so the NEXT edit
                 // also routes here instead of inline-patching the still-stale renderer. The
                 // result is polled + swapped in the event loop (`poll_geometry_worker`).
-                let generation = self.geometry_generation.next_generation();
-                self.geometry_async_outstanding = true;
-                self.geometry_worker.dispatch(GeometryRebuildRequest {
-                    generation,
+                self.dispatch_wholesale_mesh_rebuild(
                     two_layer_chunks,
                     grid_dimensions,
                     recentre_voxels,
                     density,
                     band,
-                });
+                );
                 // The worker owns the (re)build now; the outstanding flag carries the C1
                 // interlock. `mesh_stale` is intentionally NOT cleared here (cleanup b: only
                 // `finish_mesh_install` clears it, and only the Skip arm sets it true) — leaving
@@ -811,21 +856,12 @@ impl DisplayOrchestrator {
             // ADR 0011 G2 — a loaded VS material now keeps drawing as textured bricks, so it no
             // longer forces a handover to the mesh (mirrors the flipped engagement predicate).
             let brick_would_draw_if_kept = !debug_face_orientation;
-            match brick_display_handover(
+            self.apply_brick_display_handover(brick_display_handover(
                 brick_display_installed,
                 mesh_became_current,
                 brick_would_draw_if_kept,
                 has_live_brick_field,
-            ) {
-                BrickDisplayHandover::KeepAsDisplay => self.brick_display_pending_clear = false,
-                BrickDisplayHandover::ClearNow => {
-                    if let Some(renderer) = &mut self.brick_raymarch_renderer {
-                        renderer.clear_brick_field();
-                    }
-                    self.brick_display_pending_clear = false;
-                }
-                BrickDisplayHandover::DeferUntilInstall => self.brick_display_pending_clear = true,
-            }
+            ));
         }
     }
 
@@ -899,13 +935,12 @@ impl DisplayOrchestrator {
             BrickRebuildOutcome::Empty => {
                 // The scene emptied: drop the mirror and clear any live display field — the
                 // mesh (trivially cheap for an empty scene) takes over via the per-frame
-                // `ensure_display_mesh_current` seam.
+                // `ensure_display_mesh_current` seam. The field-clear + pending-clear reset is
+                // exactly the `ClearNow` handover action (the mirror drop is the extra step
+                // this arm adds; on non-gpu `brick_display_pending_clear` is already false).
                 self.incremental_brick_field = None;
                 #[cfg(feature = "gpu")]
-                if let Some(renderer) = &mut self.brick_raymarch_renderer {
-                    renderer.clear_brick_field();
-                }
-                self.brick_display_pending_clear = false;
+                self.apply_brick_display_handover(BrickDisplayHandover::ClearNow);
             }
             BrickRebuildOutcome::MirrorOnly { mirror } => {
                 // A non-gpu build: only the CPU mirror is maintained (no display sink).
@@ -936,25 +971,18 @@ impl DisplayOrchestrator {
                         .as_ref()
                         .is_some_and(|renderer| renderer.has_brick_field());
                     let brick_would_draw = !context.debug_face_orientation;
-                    match brick_display_handover(
+                    let decision = brick_display_handover(
                         false,
                         !self.mesh_stale,
                         brick_would_draw,
                         has_live_brick_field,
-                    ) {
-                        BrickDisplayHandover::KeepAsDisplay => unreachable!(
-                            "brick_reinstalled_this_rebuild is literally false here"
-                        ),
-                        BrickDisplayHandover::ClearNow => {
-                            if let Some(renderer) = &mut self.brick_raymarch_renderer {
-                                renderer.clear_brick_field();
-                            }
-                            self.brick_display_pending_clear = false;
-                        }
-                        BrickDisplayHandover::DeferUntilInstall => {
-                            self.brick_display_pending_clear = true;
-                        }
-                    }
+                    );
+                    debug_assert_ne!(
+                        decision,
+                        BrickDisplayHandover::KeepAsDisplay,
+                        "brick_reinstalled_this_rebuild is literally false here"
+                    );
+                    self.apply_brick_display_handover(decision);
                     self.rebuild_stale_display_mesh(context);
                 }
             }
@@ -1076,16 +1104,7 @@ impl DisplayOrchestrator {
             // until the result installs (`poll_geometry_worker` → `finish_mesh_install` clears
             // `mesh_stale`). `mesh_stale` stays set meanwhile; the outstanding guard above keeps
             // us from re-dispatching each frame.
-            let generation = self.geometry_generation.next_generation();
-            self.geometry_async_outstanding = true;
-            self.geometry_worker.dispatch(GeometryRebuildRequest {
-                generation,
-                two_layer_chunks: chunks,
-                grid_dimensions,
-                recentre_voxels: recentre,
-                density,
-                band,
-            });
+            self.dispatch_wholesale_mesh_rebuild(chunks, grid_dimensions, recentre, density, band);
             println!(
                 "mesh: fallback rebuild dispatched async (brick display disengaged — \
                  debug-face / material)"
