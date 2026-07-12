@@ -18,14 +18,12 @@
 //! * **boundary block** (a `microblocks` entry) → one [`BrickPayload::Sculpted`] record
 //!   whose atlas slot holds the block's voxel occupancy, rasterized from its cuboids.
 //!   Every boundary block keeps its record (the sculpted set is never elided), so the
-//!   atlas and the fog's sculpted tiles stay complete.
+//!   atlas's sculpted tiles stay complete.
 //!
 //! **Consumers under this contract:** the shader record buffer binary-searches exactly
 //! this set (no second elision pass); the clip-map pyramid derives from the CHUNKS
-//! ([`ClipmapPyramid::from_chunks`], interiors included); the fog box-fills coarse
-//! occupancy from the CHUNKS (`build_per_chunk_fog_occupancy_from_bricks`). The
-//! interior-inclusive build survives as the parity oracle
-//! ([`build_brick_field_all_blocks`]).
+//! ([`ClipmapPyramid::from_chunks`], interiors included). The interior-inclusive build
+//! survives as the parity oracle ([`build_brick_field_all_blocks`]).
 //!
 //! **The brick granule is ONE BLOCK** (ADR 0011 Decision 1): the brick edge is
 //! `voxels_per_block` — block-denominated, correct at ANY density; nothing here may

@@ -1,8 +1,8 @@
 # ADR 0012 — Onion skin as ghost-shaded clip slabs on the display passes; retire the volumetric fog subsystem
 
-- **Status:** **Accepted (owner decision 2026-07-11)** — implementation in two slices: H1 (ghost passes live on both
-  display paths, fog machinery dark but compiling), H2 (delete the volumetric fog subsystem + retire ADR 0007's
-  `gpu_resolve` evaluator, whose last live consumer dies with it).
+- **Status:** **Accepted & shipped (2026-07-11)** — both slices landed: H1 (ghost passes live on both display paths,
+  fog machinery dark but compiling) and H2 (deleted the volumetric fog subsystem + retired ADR 0007's `gpu_resolve`
+  evaluator, whose last live consumer died with it).
 - **Date:** 2026-07-11
 - **Layer:** DISPLAY simplification. **Supersedes the volumetric onion-fog pipeline** (issue #28 per-chunk atlas,
   issue #59 band slabs, ADR 0007's fog resolve, ADR 0011 G5's fog-from-bricks). Governed by
@@ -43,10 +43,20 @@ per-frame uniform; the onion region is the same geometry under a different clip 
    shader-side clip test selects the onion slabs — recentred-Z in `[onion_z_min, band_z_min) ∪ (band_z_max,
    onion_z_max]`, the SAME frame math `AppCore::onion_fog_params` derives today (floored half, Z-up, depth clamped
    1..8) — and shades hits as a translucent ghost (tint matching the current haze hue). No occupancy is built,
-   uploaded, or cached: a band scrub is a pure uniform update, O(1) at any scene size.
-2. **Pass ordering + blending:** the ghost pass draws after the solid band pass with depth test ON (read-only,
-   no depth write) and alpha blending, so solid geometry occludes the ghost correctly and ghosts never occlude
-   anything.
+   uploaded, or cached. **As-built (H1) deviation on the cuboid mesh path:** the mesh ghost is NOT a
+   widen-the-band-then-shader-clip of the solid mesh (which would lose the solid band's end caps). Instead the ghost
+   is a SEPARATE per-slab geometry set — two thin meshes built by the same banded mesher, in the SAME
+   `rebuild_for_band` event as the solid — so the solid pass stays byte-unchanged (non-onion goldens byte-green) and
+   the band caps are preserved. On the brick raymarch path the ghost IS the pure per-slab uniform update this ADR
+   described (two traversal-AABB-clamped marches), so a brick-path band scrub stays O(1); only the mesh path pays a
+   thin per-slab re-mesh, and only on an actual band change (M2 no-swap-rehitch preserved).
+2. **Pass ordering + blending:** the ghost pass draws after the solid band pass with alpha blending, so solid
+   geometry occludes the ghost correctly and ghosts never occlude anything. **As-built (H1) deviation:** the ghost
+   draws with depth test `Less` and depth WRITE ON (not the read-only depth this ADR first specified). Writing depth
+   makes only the NEAREST ghost surface blend at each pixel — an order-independent, builder-independent render that
+   matches across display paths — while the solid, drawn first, still occludes the ghost. The read-only variant
+   accumulated overlapping translucent ghost surfaces and diverged per builder; the owner accepted the depth-write
+   render as the shipped behaviour.
 3. **Aesthetic trade, accepted by the owner:** crisp translucent voxels replace the trilinear thickness-weighted
    haze. This is judged BETTER for the actual purpose (layer context while chiseling) and is what makes the
    deletion possible.

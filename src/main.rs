@@ -21,18 +21,16 @@ use voxel_worker::{
     procedural_material_average_color, render_frame,
     run_egui_frame, AppConfig, AppCore, ChromeClickAction, CubeChromeZone, CubeFace, CubeRect,
     RebuildOutcome, RebuildOutput,
-    EguiPaintBridge, FogMode,
+    EguiPaintBridge,
     FrameOverlays,
     TransformGizmoRenderer,
-    FogZSlab,
-    GpuContext, InfiniteGridRenderer, LayerBand, LayerRange, MaterialSource, PointsRenderer,
+    GpuContext, InfiniteGridRenderer, LayerBand, MaterialSource, PointsRenderer,
     SceneGridRenderer,
-    HomeView, OnionFogRenderer, OrbitCamera, PanelState, SdfShape, SnapTween, ViewCubeElement,
+    HomeView, OrbitCamera, PanelState, SdfShape, SnapTween, ViewCubeElement,
     ViewCubeMenuRequest,
-    ViewCubeRenderer, VoxelGrid, COLOR_TARGET_FORMAT,
+    ViewCubeRenderer, COLOR_TARGET_FORMAT,
     VIEW_CUBE_VIEWPORT_PIXELS,
 };
-use voxel_worker::core_geom::CHUNK_BLOCKS;
 use voxel_worker::CuboidMeshRenderer;
 // ADR 0011 G1: the brick raymarch display sink (engaged for single ported-producer
 // scenes under `--features gpu`; the mesh path stays the fallback + A/B reference).
@@ -42,11 +40,6 @@ use voxel_worker::{
     GenerationTracker, GeometryRebuildRequest, GeometryWorker, MeshBuildRoute, RebuildRoute,
     ASYNC_REBUILD_CHUNK_THRESHOLD,
 };
-use voxel_worker::Scene;
-// ADR 0007: the GPU view-resolve pipelines are an opt-in display accelerator (`--features
-// gpu`); default builds keep the CPU fog densify so CI / GPU-less runs are unaffected.
-#[cfg(feature = "gpu")]
-use voxel_worker::{gpu_resolve::GpuResolver, PerChunkAtlasGeometry};
 
 /// Drag threshold (pixels) distinguishing a click (snap) from a drag (orbit) on
 /// the view cube, and the general orbit-start threshold.
@@ -58,18 +51,6 @@ const VIEW_CUBE_VIEWPORT_MARGIN: u32 = 16;
 
 /// State that exists only once the window and GPU have been created (on first
 /// `resumed`). Kept in its own struct so `App` can start as `None` before then.
-/// The onion fog's brick-sourced occupancy inputs, kept together across frames (ADR 0011
-/// G5 + interior elision): the brick field build (sculpted records + atlas) AND the
-/// two-layer covering chunks it was built from. The record set is SURFACE-ONLY (interiors
-/// live in the chunks' coarse layer), so the fog fill box-fills coarse/interior occupancy
-/// from `two_layer_chunks` and copies sculpted tiles from `build`'s atlas — see
-/// `build_per_chunk_fog_occupancy_from_bricks`. The chunks are `Arc`-shared with the
-/// resident cache (an O(chunks) refcount-bump clone per rebuild, never a deep copy).
-struct FogBrickSource {
-    build: voxel_worker::BrickFieldBuild,
-    two_layer_chunks: Vec<([i32; 3], Arc<voxel_worker::TwoLayerChunk>)>,
-}
-
 struct WindowedState {
     /// Stored as Arc so the surface can be `Surface<'static>` (DEV_NOTES /
     /// Hard requirement #6): the surface is created from `window.clone()`.
@@ -113,20 +94,11 @@ struct WindowedState {
     /// ADR 0011 G3: the PERSISTENT incremental brick field mirroring the boundary set —
     /// the CPU truth an incremental edit patches (dirty chunks re-evaluated, only their
     /// slots written) instead of rebuilding the whole field. `Some` for any chunkable
-    /// gpu-gated scene (ADR 0011 G5: it now feeds the FOG too, so it is maintained even
-    /// when the DISPLAY falls back to the mesh — a mixed-material scene); reset from a
-    /// wholesale `build_brick_field` on a wholesale edit, patched in place on an
-    /// incremental edit, and dropped when the scene leaves the gate / empties. `to_build()`
-    /// always equals the resident atlas + the fog occupancy source (ADR 0011 G3/G5 gate).
+    /// gpu-gated scene; reset from a wholesale `build_brick_field` on a wholesale edit,
+    /// patched in place on an incremental edit, and dropped when the scene leaves the
+    /// gate / empties. `to_build()` always equals the resident atlas (ADR 0011 G3 gate).
     #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
     incremental_brick_field: Option<voxel_worker::IncrementalBrickField>,
-    /// ADR 0011 G5: the current brick field + covering chunks the onion FOG sources its
-    /// per-chunk occupancy tiles from (`build_per_chunk_fog_occupancy_from_bricks`) — the
-    /// boundary set of the last rebuild, kept so the render-path's lazy fog rebuild has a
-    /// source across frames without re-streaming a `VoxelGrid`. `Some` iff a chunkable
-    /// scene is resident; `None` on loaded-material and Part-only scenes.
-    #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
-    fog_brick_field: Option<FogBrickSource>,
     /// ADR 0011 G2: dedup for the "scene not brick-representable" fallback log — a
     /// chunkable procedural scene whose blocks mix materials / disagree on overlay
     /// keeps the mesh path, reported ONCE per fallback transition (not per drag edit).
@@ -165,21 +137,6 @@ struct WindowedState {
     /// the old finite tiled-line ground plane.
     infinite_grid_renderer: InfiniteGridRenderer,
     view_cube_renderer: ViewCubeRenderer,
-    /// Onion-skin volumetric fog (issue #12).
-    onion_fog_renderer: OnionFogRenderer,
-    /// ADR 0007 live call-site swap: the GPU view-resolve compute pipelines, built ONCE and
-    /// reused every edit (unlike `shot`, which rebuilds them per run). Drives the per-chunk
-    /// fog atlas for single-producer scenes on the GPU (no CPU densify); multi-producer
-    /// scenes fall back to `upload_fog_occupancy`. Only present under `--features gpu`.
-    #[cfg(feature = "gpu")]
-    gpu_resolver: GpuResolver,
-    /// Onion-fog occupancy mode (issue #28). `PerChunk` is the DEFAULT since S5b
-    /// (one apron'd volume per resident chunk packed into a small 3D atlas, so fog
-    /// still renders at scale where a single whole-grid 3D texture would exceed
-    /// `max_texture_dimension_3d` and disable itself). The legacy `WholeGrid` path is
-    /// retained as a fallback. Used by `upload_fog_occupancy` for both the initial
-    /// upload and every `rebuild_geometry` re-upload so the two stay in sync.
-    fog_mode: FogMode,
     /// Offscreen renderer for the 45° palette cube thumbnails (M6).
     thumbnail_renderer: ThumbnailRenderer,
     /// The palette of scanned VS blocks (tiles + status + click counter, M6).
@@ -204,8 +161,7 @@ struct WindowedState {
     face_resolver: FaceResolver,
     /// ADR 0011 G5: the last rebuild's region dimensions (voxels) + composite recentre
     /// (floating origin, ADR 0008). The dense `VoxelGrid` husk is GONE — the camera
-    /// auto-frame, layer scrubber, and fog frame read these scalars directly; fog occupancy
-    /// reconstructs from `fog_brick_field` (chunkable) or a transient Part-only resolve.
+    /// auto-frame and layer scrubber read these scalars directly.
     region_dimensions: [u32; 3],
     recentre_voxels: [i64; 3],
     /// The headless orchestrator (ADR 0003 keystone): owns the per-chunk resolve
@@ -274,23 +230,6 @@ struct WindowedState {
     /// when egui consumed the move. The cube body never highlights (we skip its
     /// raycast for hover), so a body hover is treated as `None`.
     hovered_cube_zone: Option<CubeChromeZone>,
-    /// Issue #58: the onion-fog occupancy is DEMAND-DRIVEN — built/uploaded only when
-    /// the fog will actually be drawn (`onion_active`), never on the common edit path
-    /// where onion-skin is off (its default). This flag records that the current fog
-    /// occupancy is STALE relative to the resolved geometry: set by `rebuild_geometry` (and at
-    /// startup) whenever it skips the fog build because onion is inactive, cleared the
-    /// moment the render path lazily builds the fog before drawing it. A pure band
-    /// scrub does NOT set it (the band clip is applied per-frame; occupancy is reused).
-    fog_occupancy_dirty: bool,
-    /// Issue #59: the inclusive chunk-Z covering range (Z-up) the fog occupancy was LAST
-    /// built for — the identity the band-aware rebuild compares. The fog now covers only
-    /// the band-slab `[band ± onion_depth]`, not the whole grid, so a band scrub that
-    /// shifts the needed covering chunk-Z rows must rebuild (the old rows aren't in the
-    /// atlas), while a scrub that stays within the same rows reuses it. Compared at CHUNK
-    /// granularity so a band move within one chunk-Z span does NOT rebuild (no per-voxel-
-    /// step atlas rebuilds during a scrub-drag). `None` = fog not built for any slab yet
-    /// (or last needed slab was full-range → no fog); the next onion frame builds.
-    fog_built_chunk_z_range: Option<[i32; 2]>,
 }
 
 #[derive(Default)]
@@ -403,7 +342,7 @@ impl WindowedState {
         };
         let shape = SdfShape::from_geometry(panel_state.geometry.clone());
         // ADR 0011 G5: the startup DOOR constructs NO `VoxelGrid` — it returns only the region
-        // dimensions + resolve recentre (the camera auto-frame, layer scrubber and fog frame
+        // dimensions + resolve recentre (the camera auto-frame and layer scrubber
         // consume these scalars), exactly what the per-edit `AppCore::rebuild` yields. This
         // closes the startup OOM on both binaries: the persisted 8000×800×800 scene once
         // resolved a dense ~5.1-billion-cell grid (~28.5 GB → OOM hang before the first print),
@@ -430,10 +369,9 @@ impl WindowedState {
         let measured_diameter = 0u32;
         let diameter_worker = DiameterWorker::spawn();
         let diameter_generation = GenerationTracker::new();
-        // ADR 0011 G5: no occupancy is ever resolved at startup (dims-only door) — fog sources
-        // from the brick sink on the first rebuild.
+        // ADR 0011 G5: no occupancy is ever resolved at startup (dims-only door).
         println!(
-            "resolved region {:?} for {:?} {:?}@{} (no dense occupancy — fog from brick sink)",
+            "resolved region {:?} for {:?} {:?}@{} (no dense occupancy)",
             region_dimensions,
             shape.kind,
             shape.size_voxels,
@@ -450,30 +388,6 @@ impl WindowedState {
             .build_covering_chunks(&panel_state.scene, startup_density, 0);
         let startup_recentre =
             panel_state.scene.recentre_voxels_for_resolve(startup_density);
-        // F-B (ADR 0011 G5): seed the onion-fog brick source at startup for ANY chunkable
-        // scene, on ANY build — feature-gpu or not, display-representable or not. The fog
-        // reconstructs its per-chunk occupancy from (surface records + covering chunks); the
-        // record set is SURFACE-ONLY (interior elision, ADR 0011 G5), so this startup build is
-        // cheap (∝surface, not ∝volume). Without it, a chunkable scene opened WITH onion-skin
-        // on rendered NO fog until the first edit: the startup `build_fog_occupancy` ran against
-        // a `None` source, hit the chunkable "no brick fog source → skip" guard, yet cleared
-        // `fog_occupancy_dirty`. Seeding here restores fog on the first frame (pre-session
-        // behavior). Reused by the gpu display block below so the field is built only once.
-        let startup_fog_brick_field: Option<FogBrickSource> =
-            if panel_state.scene.has_chunkable_extent(startup_density) {
-                let build =
-                    voxel_worker::build_brick_field(&startup_two_layer_chunks, startup_density);
-                if build.brick_records.is_empty() {
-                    None
-                } else {
-                    Some(FogBrickSource {
-                        build,
-                        two_layer_chunks: startup_two_layer_chunks.clone(),
-                    })
-                }
-            } else {
-                None
-            };
         // ADR 0011 G2: engage the brick raymarch from the FIRST frame when the startup
         // scene is brick-representable (`--features gpu`, a chunkable procedural scene
         // whose every rendered block is single-material — per-record ids carry per-block
@@ -489,38 +403,39 @@ impl WindowedState {
         #[cfg_attr(not(feature = "gpu"), allow(unused_mut))]
         let mut incremental_brick_field: Option<voxel_worker::IncrementalBrickField> = None;
         #[cfg(feature = "gpu")]
-        if let Some(fog_source) = startup_fog_brick_field.as_ref() {
-            // `Some` ⇒ chunkable AND a non-empty surface record set — reuse that build for the
-            // display raymarch (no second `build_brick_field`). Display still requires the scene
-            // be brick-REPRESENTABLE (single-material blocks + one overlay); a mixed-material
-            // scene keeps the mesh display but still fog-sources from `startup_fog_brick_field`.
+        if panel_state.scene.has_chunkable_extent(startup_density) {
+            // Display requires the scene be brick-REPRESENTABLE (single-material blocks + one
+            // overlay); a mixed-material scene keeps the mesh display.
             if let Some(overlay_active) =
                 voxel_worker::brick_representable_overlay(&startup_two_layer_chunks)
             {
-                let build = &fog_source.build;
-                let mut renderer =
-                    BrickRaymarchRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
-                let pyramid =
-                    voxel_worker::ClipmapPyramid::from_chunks(&startup_two_layer_chunks);
-                renderer.install_brick_field(
-                    &gpu.device,
-                    &gpu.queue,
-                    build,
-                    // The record set is surface-only by construction (ADR 0011 interior
-                    // elision fused into `build_brick_field`) — a plain 1:1 pack.
-                    &voxel_worker::pack_gpu_records(build, |_| false),
-                    &pyramid,
-                    startup_recentre,
-                    overlay_active,
-                );
-                println!(
-                    "brick raymarch: startup field installed ({} records, {} sculpted)",
-                    build.brick_records.len(),
-                    build.sculpted_brick_count(),
-                );
-                incremental_brick_field =
-                    Some(voxel_worker::IncrementalBrickField::from_wholesale(build));
-                brick_raymarch_renderer = Some(renderer);
+                let build =
+                    voxel_worker::build_brick_field(&startup_two_layer_chunks, startup_density);
+                if !build.brick_records.is_empty() {
+                    let mut renderer =
+                        BrickRaymarchRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
+                    let pyramid =
+                        voxel_worker::ClipmapPyramid::from_chunks(&startup_two_layer_chunks);
+                    renderer.install_brick_field(
+                        &gpu.device,
+                        &gpu.queue,
+                        &build,
+                        // The record set is surface-only by construction (ADR 0011 interior
+                        // elision fused into `build_brick_field`) — a plain 1:1 pack.
+                        &voxel_worker::pack_gpu_records(&build, |_| false),
+                        &pyramid,
+                        startup_recentre,
+                        overlay_active,
+                    );
+                    println!(
+                        "brick raymarch: startup field installed ({} records, {} sculpted)",
+                        build.brick_records.len(),
+                        build.sculpted_brick_count(),
+                    );
+                    incremental_brick_field =
+                        Some(voxel_worker::IncrementalBrickField::from_wholesale(&build));
+                    brick_raymarch_renderer = Some(renderer);
+                }
             }
         }
         // ADR 0010 E5: the cuboid mesh is the fallback voxel render path AND it meshes THROUGH
@@ -571,72 +486,6 @@ impl WindowedState {
         let infinite_grid_renderer = InfiniteGridRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
         let view_cube_renderer =
             ViewCubeRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
-        let mut onion_fog_renderer = OnionFogRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
-        // ADR 0007: build the GPU view-resolve pipelines once (reused every edit).
-        #[cfg(feature = "gpu")]
-        let gpu_resolver = GpuResolver::new(&gpu.device);
-        // Upload the resolved grid as the fog's occupancy field. Per-chunk is the
-        // DEFAULT (issue #28 S5b): one apron'd volume per resident chunk so fog still
-        // renders at scale where a single whole-grid 3D texture would disable itself.
-        // ADR 0007: a single-producer scene resolves its atlas on the GPU (no CPU densify)
-        // under `--features gpu`; otherwise the CPU densify path.
-        let fog_mode = FogMode::PerChunk;
-        // Issue #58: DEMAND-DRIVEN fog. Onion-skin defaults OFF, so at startup the fog is
-        // never drawn — skip the build entirely and mark the occupancy stale. The render
-        // path builds it lazily the first frame onion-skin is enabled. If a startup config
-        // ever opened WITH onion-skin on (and not in debug-face mode), build it now.
-        let onion_active_at_startup =
-            panel_state.layer_range.onion_skin && !panel_state.debug_face_orientation;
-        let mut fog_occupancy_dirty = true;
-        // Issue #59: the chunk-Z covering range the fog is built for (`None` until built,
-        // or when the needed slab is full-range → no fog).
-        let mut fog_built_chunk_z_range: Option<[i32; 2]> = None;
-        let startup_density = panel_state.geometry.voxels_per_block;
-        // Issue #59: the band-slab the onion fog needs at startup (`None` = full-range →
-        // nothing outside the band to ghost → skip the fog build even with onion on).
-        let startup_slab = if onion_active_at_startup {
-            Self::fog_z_slab_for(panel_state.layer_range, region_dimensions[2])
-        } else {
-            None
-        };
-        if onion_active_at_startup {
-            match startup_slab {
-                Some(slab) => {
-                    Self::build_fog_occupancy(
-                        #[cfg(feature = "gpu")]
-                        &gpu_resolver,
-                        &mut onion_fog_renderer,
-                        &gpu,
-                        &panel_state.scene,
-                        fog_mode,
-                        region_dimensions,
-                        startup_recentre,
-                        startup_density,
-                        Some(slab),
-                        // F-B: the startup fog source, seeded above for any chunkable scene, so
-                        // the fog fills on the FIRST frame (was `None` → the chunkable-skip guard
-                        // left the scene fog-less until the first edit). A non-chunkable
-                        // Part-only scene is `None` here and takes the transient densify /
-                        // single-producer GPU atlas paths inside `build_fog_occupancy`.
-                        startup_fog_brick_field.as_ref(),
-                    );
-                    fog_occupancy_dirty = false;
-                    fog_built_chunk_z_range = Self::fog_covering_chunk_z_range(
-                        panel_state.layer_range,
-                        region_dimensions[2],
-                        startup_density,
-                    );
-                    println!("fog: built at startup (onion-skin active, band-slab scoped)");
-                }
-                None => {
-                    // Full-range band with onion on: no layers outside to ghost → no fog.
-                    // Leave the occupancy stale; the render path skips the draw too.
-                    println!("fog: skipped at startup (onion active but band full-range)");
-                }
-            }
-        } else {
-            println!("fog: skipped at startup (onion inactive)");
-        }
         let thumbnail_renderer = ThumbnailRenderer::new(&gpu.device, &gpu.queue);
 
         // Kick off the VS auto-detect + scan on a background thread immediately;
@@ -698,9 +547,6 @@ impl WindowedState {
             brick_display_pending_clear: false,
             brick_raymarch_renderer,
             incremental_brick_field,
-            // F-B (ADR 0011 G5): seeded at startup for any chunkable scene (above), refreshed on
-            // every rebuild — the fog reconstructs from it from the first frame onward.
-            fog_brick_field: startup_fog_brick_field,
             brick_fallback_reported: false,
             geometry_worker,
             geometry_generation,
@@ -710,10 +556,6 @@ impl WindowedState {
             points_renderer,
             infinite_grid_renderer,
             view_cube_renderer,
-            onion_fog_renderer,
-            #[cfg(feature = "gpu")]
-            gpu_resolver,
-            fog_mode,
             thumbnail_renderer,
             palette,
             scan_handle,
@@ -740,8 +582,6 @@ impl WindowedState {
             press_position: None,
             press_in_view_cube: false,
             view_cube_drag_active: false,
-            fog_occupancy_dirty,
-            fog_built_chunk_z_range,
             // Default to the full target until the first frame fills it in.
             last_viewport_px: [0, 0, width, height],
             context_menu_open_at: None,
@@ -761,249 +601,6 @@ impl WindowedState {
         self.depth_view = create_depth_view(&self.gpu.device, width, height);
         self.msaa_color_view =
             create_msaa_color_view(&self.gpu.device, width, height, COLOR_TARGET_FORMAT);
-    }
-
-    /// Re-resolve the current panel geometry into a fresh grid and rebuild the
-    /// instance buffer. Honours the voxel cap (ARCHITECTURE.md §7): if the grid
-    /// is too large the 3D rebuild is skipped and the panel shows a warning.
-    /// Upload the resolved grid into the fog renderer's occupancy field, dispatching
-    /// on the active [`FogMode`] (issue #28). Per-chunk (the S5b default) builds one
-    /// apron'd volume per resident chunk packed into a small 3D atlas — so fog still
-    /// renders at scale where the legacy whole-grid single 3D texture would exceed
-    /// `max_texture_dimension_3d` and disable itself. Shared by the initial upload and
-    /// every `rebuild_geometry` re-upload so both code paths honour the same mode.
-    // The CPU fog densify (ADR 0007): now the FALLBACK for multi-producer scenes and
-    // default (no `--features gpu`) builds — single-producer scenes resolve on the GPU via
-    // `try_install_gpu_per_chunk_fog`. Still deprecated; DELETE this allow + the CPU densify
-    // when every producer the live app composes resolves on the GPU (P2+).
-    #[allow(deprecated)]
-    fn upload_fog_occupancy(
-        onion_fog_renderer: &mut OnionFogRenderer,
-        fog_mode: FogMode,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        grid: &VoxelGrid,
-        voxels_per_block: u32,
-        fog_z_slab: Option<FogZSlab>,
-    ) {
-        match fog_mode {
-            // WholeGrid is the legacy single-3D-texture path (issue #12): it densifies
-            // the whole grid and cannot be Z-slabbed without changing its texture layout,
-            // so it ignores the slab. Only the default PerChunk path is scoped (#59).
-            FogMode::WholeGrid => onion_fog_renderer.upload_grid(device, queue, grid),
-            FogMode::PerChunk => onion_fog_renderer.upload_grid_per_chunk(
-                device,
-                queue,
-                grid,
-                voxels_per_block,
-                fog_z_slab,
-            ),
-        }
-    }
-
-    /// ADR 0007 live call-site swap: try the GPU per-chunk fog atlas for a SINGLE ported
-    /// producer (`Scene::single_producer` — one SDF Tool, SketchTool, or `DebugClouds`
-    /// Part). On a hit the producer's covering-chunk fog atlas is GPU-resolved (option (C)
-    /// compaction drops empty-interior tiles) and installed directly — **no CPU densify, no
-    /// occupancy readback** (only a tiny per-chunk flags readback to size the atlas).
-    /// Returns `true` when the GPU path took over; `false` to keep the CPU densify
-    /// (multi-producer scene, a dispatch too large for this device, or a non-empty set that
-    /// still overflows the atlas budget). Mirrors `shot::try_install_gpu_per_chunk_fog`, but
-    /// reuses the App's persistent `resolver` instead of rebuilding the pipelines per call.
-    ///
-    /// Taken as an associated fn over explicit fields (not `&mut self`) so the caller's
-    /// disjoint borrows of `gpu_resolver` / `onion_fog_renderer` / `gpu` / `scene` don't
-    /// collide.
-    #[cfg(feature = "gpu")]
-    #[allow(clippy::too_many_arguments)]
-    fn try_install_gpu_per_chunk_fog(
-        resolver: &GpuResolver,
-        fog: &mut OnionFogRenderer,
-        gpu: &GpuContext,
-        scene: &Scene,
-        // ADR 0011 G5: the display frame (dimensions + recentre), passed as scalars — the
-        // dense `VoxelGrid` this used to read them from is retired.
-        region_dimensions: [u32; 3],
-        recentre_voxels: [i64; 3],
-        voxels_per_block: u32,
-        fog_z_slab: Option<FogZSlab>,
-    ) -> bool {
-        profiling::scope!("fog_gpu_resolve");
-        let Some(producer) = scene.single_producer() else {
-            return false;
-        };
-        let Some(atlas) = resolver.resolve_single_producer_fog_atlas(
-            &gpu.device,
-            &gpu.queue,
-            &producer,
-            region_dimensions,
-            recentre_voxels,
-            voxels_per_block,
-            fog_z_slab,
-        ) else {
-            return false;
-        };
-        fog.install_per_chunk_atlas(
-            &gpu.device,
-            &gpu.queue,
-            &atlas.texture,
-            &atlas.world_origins,
-            PerChunkAtlasGeometry {
-                chunk_extent: atlas.chunk_extent,
-                pad: atlas.pad,
-                tiles_per_axis: atlas.tiles_per_axis,
-                atlas_dim: atlas.atlas_dim,
-            },
-        );
-        // The compacted non-empty set can still exceed the atlas budget; if the install
-        // couldn't activate, fall back to the CPU densify rather than show no fog.
-        fog.per_chunk_active()
-    }
-
-    /// The onion-fog Z-slab (issue #59) the fog occupancy must cover for the current
-    /// `layer_range` over a grid of height `grid_z` (Z-up: layers are Z-slices). The band
-    /// is derived the SAME way `AppCore::onion_fog_params` derives its onion-Z span —
-    /// solid band `[lower, upper.min(grid_z−1)]`, widened by `onion_depth` (clamped 1..8
-    /// when onion is on) — so the slab bounds exactly the occupancy the raymarch samples.
-    /// `None` when the band is FULL-RANGE (nothing outside to ghost → skip the fog build).
-    ///
-    /// This assumes onion-skin is active (the only path that draws fog); the caller gates
-    /// on `onion_active` before building fog at all.
-    fn fog_z_slab_for(layer_range: LayerRange, grid_z: u32) -> Option<FogZSlab> {
-        let band = LayerBand {
-            band_min: layer_range.lower,
-            band_max: layer_range.upper.min(grid_z.saturating_sub(1)),
-            onion_depth: layer_range.onion_depth.clamp(1, 8),
-        };
-        FogZSlab::for_band(band, grid_z)
-    }
-
-    /// The inclusive chunk-Z covering range the fog would build for `layer_range` over a
-    /// grid of height `grid_z` at `density` (issue #59). This is the CHUNK-granular
-    /// identity the band-aware rebuild logic compares: a band scrub that stays within the
-    /// same covering chunk-Z rows reuses the built atlas; one that shifts the rows (or
-    /// crosses the full-range boundary, `None`) rebuilds. Rebuilding at chunk (not voxel)
-    /// granularity avoids a rebuild on every voxel step of a scrub-drag.
-    fn fog_covering_chunk_z_range(
-        layer_range: LayerRange,
-        grid_z: u32,
-        density: u32,
-    ) -> Option<[i32; 2]> {
-        let chunk_extent = CHUNK_BLOCKS * density.max(1);
-        Self::fog_z_slab_for(layer_range, grid_z)
-            .and_then(|slab| slab.covering_chunk_z_range(chunk_extent))
-    }
-
-    /// Build + upload the onion-fog occupancy field for the current display frame. ADR 0011
-    /// G5 — the dense-grid retirement: this takes the region dimensions + recentre as SCALARS
-    /// (the `VoxelGrid` argument is gone) and sources the occupancy from one of three places,
-    /// in order:
-    ///
-    ///   1. **The brick sink** (`fog_brick = Some`): ANY chunkable scene, on EVERY build. Fog
-    ///      is boolean occupancy, so `build_per_chunk_fog_occupancy_from_bricks` reconstructs
-    ///      the per-chunk tiles from the boundary set — mixed-material blocks and a loaded VS
-    ///      material included (their DISPLAY stays on the mesh). Byte-identical to the retired
-    ///      CPU densify (`brick_sourced_fog_matches_cpu_densify_byte_for_byte`), so the fog
-    ///      SHADER + the `onion-fog-perchunk` golden are unchanged. This is the common path.
-    ///   2. **The GPU single-producer atlas** (`--features gpu`): a lone ported producer
-    ///      resolves its per-chunk fog atlas on the GPU (no CPU densify — the ~592ms/edit
-    ///      bottleneck, ADR 0007).
-    ///   3. **A transient Part-only densify — the SOLE surviving dense resolve.** Reached only
-    ///      when there is no brick source AND no GPU atlas: a NON-chunkable (Part-only) scene,
-    ///      which resolves to a DEGENERATE, EMPTY region. It is resolved on demand
-    ///      (`AppCore::resolve_scene`), densified, uploaded, and the grid is DROPPED — never
-    ///      carried in a field. A **chunkable** scene can never legitimately land here (it
-    ///      always has a brick source); if one somehow does — an empty brick field — fog is
-    ///      SKIPPED rather than O(volume)-resolved, which is the retirement invariant.
-    ///
-    /// Issue #58: demand-driven — invoked only when the fog will be drawn. Taken as an
-    /// associated fn over explicit disjoint fields (not `&mut self`) so the caller's borrows
-    /// don't collide. Callers own clearing `fog_occupancy_dirty`.
-    #[allow(clippy::too_many_arguments)]
-    fn build_fog_occupancy(
-        #[cfg(feature = "gpu")] gpu_resolver: &GpuResolver,
-        onion_fog_renderer: &mut OnionFogRenderer,
-        gpu: &GpuContext,
-        // Drives the GPU single-producer atlas (path 2) AND the transient Part-only resolve
-        // (path 3) — used on every build now, so no longer `unused` on non-gpu.
-        scene: &Scene,
-        fog_mode: FogMode,
-        // ADR 0011 G5: the display frame as scalars (the dense grid is retired).
-        region_dimensions: [u32; 3],
-        recentre_voxels: [i64; 3],
-        density: u32,
-        // Issue #59: the onion-fog Z-slab (band ± onion_depth) to scope the covering
-        // chunk set to. `None` covers the whole grid (unused by the live onion path,
-        // which always passes a slab, but kept for a would-be whole-grid caller).
-        fog_z_slab: Option<FogZSlab>,
-        // ADR 0011 G5: the brick field + covering chunks the fog sources its per-chunk
-        // occupancy from, for any chunkable scene (path 1). Plain CPU
-        // (`build_per_chunk_fog_occupancy_from_bricks`), so the non-gpu binary takes it too
-        // (the universal brick-fog law).
-        fog_brick: Option<&FogBrickSource>,
-    ) {
-        profiling::scope!("fog_upload");
-        // (1) The primary path — reconstruct the per-chunk fog occupancy from the two-layer
-        // chunks (coarse/interior) + the brick field's sculpted records/atlas (boundary),
-        // with NO dense `VoxelGrid`. PerChunk only (WholeGrid is the legacy
-        // single-3D-texture debug mode, which never rides the brick path).
-        if let (Some(source), FogMode::PerChunk) = (fog_brick, fog_mode) {
-            profiling::scope!("fog_brick_fill");
-            let occupancy = voxel_worker::build_per_chunk_fog_occupancy_from_bricks(
-                &source.build,
-                &source.two_layer_chunks,
-                region_dimensions,
-                recentre_voxels,
-                fog_z_slab,
-            );
-            onion_fog_renderer.upload_per_chunk_occupancy(&gpu.device, &gpu.queue, &occupancy);
-            println!("fog: per-chunk mode (brick sink)");
-            return;
-        }
-        // (2) The GPU single-producer atlas (no CPU densify).
-        #[cfg(feature = "gpu")]
-        let gpu_fog_installed = Self::try_install_gpu_per_chunk_fog(
-            gpu_resolver,
-            onion_fog_renderer,
-            gpu,
-            scene,
-            region_dimensions,
-            recentre_voxels,
-            density,
-            fog_z_slab,
-        );
-        #[cfg(not(feature = "gpu"))]
-        let gpu_fog_installed = false;
-        if gpu_fog_installed {
-            println!("fog: per-chunk mode (GPU atlas)");
-            return;
-        }
-        // Neither a brick source nor a GPU atlas. A CHUNKABLE scene must never reach the dense
-        // resolve below (the retired O(volume) densify) — it always has a brick fog source, so
-        // landing here means an empty brick field; skip fog (honest degradation) rather than
-        // reintroduce the O(volume) resolve. THIS is the load-bearing retirement invariant.
-        if scene.has_chunkable_extent(density) {
-            println!(
-                "fog: skipped — chunkable scene had no brick fog source (never dense-resolve)"
-            );
-            return;
-        }
-        // (3) The SOLE tolerated transient dense resolve (ADR 0011 G5): a NON-chunkable
-        // Part-only scene — a degenerate, empty region (issue #58, demand-driven). Resolve it,
-        // densify + upload, and DROP the grid immediately; it is never carried in a field.
-        profiling::scope!("fog_transient_partonly_densify");
-        println!("fog: per-chunk mode (transient Part-only densify)");
-        let transient_grid = AppCore::resolve_scene(scene, density);
-        Self::upload_fog_occupancy(
-            onion_fog_renderer,
-            fog_mode,
-            &gpu.device,
-            &gpu.queue,
-            &transient_grid,
-            density,
-            fog_z_slab,
-        );
-        // `transient_grid` is dropped here — the retirement holds.
     }
 
     /// Is the ADR 0011 brick raymarch the live voxel display (so the fallback cuboid mesh is
@@ -1100,30 +697,20 @@ impl WindowedState {
 
         // Delegate the headless resolve (S2/S3 targeted invalidation + assemble) to
         // `AppCore::rebuild`, then consume its output here in the shell: build the
-        // GPU cuboid mesh and upload the fog (the camera is NOT touched). A density whose
+        // GPU cuboid mesh (the camera is NOT touched). A density whose
         // single-chunk voxel capacity exceeds the bound is rejected with the store
         // untouched, so we surface the cap warning and bail.
-        // ADR 0011 G5: fog is boolean occupancy, so it sources from the brick field for
-        // EVERY chunkable procedural scene — mixed-material-block scenes and loaded-VS-material
-        // scenes included (their DISPLAY stays on the mesh, but the fog brick occupancy is exact
-        // regardless of materials). `AppCore::rebuild` NO LONGER assembles a dense fog
-        // `VoxelGrid` at all — the last dense-shaped display consumer is retired. Only a
-        // NON-chunkable Part-only scene falls to the shell's transient (degenerate, empty)
-        // densify inside `build_fog_occupancy`.
         let chunkable = self.panel_state.scene.has_chunkable_extent(density);
         // Only the gpu brick DISPLAY gate reads this (a loaded material forces the mesh
-        // display); the fog mirror + stream decision no longer depend on it.
+        // display).
         #[cfg_attr(not(feature = "gpu"), allow(unused_variables))]
         let loaded_material = self.loaded_material.is_some();
-        // ADR 0011 G5 — the universal brick-fog gate. The FOG mirror (`fog_brick_field` /
-        // `incremental_brick_field`, both plain CPU) is maintained for ANY chunkable scene on
-        // ANY build: fog needs only boolean occupancy, so a loaded VS material (mesh-only
-        // shading) still fog-sources from bricks. The DISPLAY raymarch keeps its stricter
-        // conditions inside the block (`--features gpu` + `!loaded_material` + brick
-        // representability) — a mixed-material or textured scene meshes its display while the
-        // fog still comes from `build`. The dense fog `VoxelGrid` stream is retired entirely
-        // (no `stream_fog_grid` flag): `AppCore::rebuild` never assembles one.
-        let brick_fog_gate = chunkable;
+        // The brick mirror (`incremental_brick_field`, plain CPU) is maintained for ANY
+        // chunkable scene. The DISPLAY raymarch keeps its stricter conditions inside the block
+        // (`--features gpu` + `!loaded_material` + brick representability) — a mixed-material or
+        // textured scene meshes its display. ADR 0012 retired the onion fog occupancy, so a
+        // non-gpu build maintains the mirror without a consumer.
+        let brick_gate = chunkable;
         let RebuildOutput {
             region_dimensions,
             two_layer_chunks,
@@ -1204,17 +791,16 @@ impl WindowedState {
         // patches from a state the mesh path treats as stale. A non-chunkable / empty scene
         // clears the field to the mesh fallback.
         //
-        // The FOG MIRROR (`build`, `fog_brick_field`, `incremental_brick_field`) is plain CPU
-        // and runs for ANY chunkable scene on ANY build (`brick_fog_gate`) — the universal
-        // brick-fog law (ADR 0011 G5). The gpu DISPLAY raymarch (installed in section (B)
-        // below) keeps its stricter `--features gpu` + `!loaded_material` + representability
-        // conditions; a mixed-material or textured scene meshes its display while the fog still
-        // reconstructs from `build`. The block YIELDS whether the brick DISPLAY was installed
-        // this rebuild — the mesh-skip decision below reads it (always `false` on non-gpu).
+        // The CPU brick MIRROR (`build`, `incremental_brick_field`) runs for ANY chunkable scene
+        // on ANY build (`brick_gate`). The gpu DISPLAY raymarch (installed in section (B) below)
+        // keeps its stricter `--features gpu` + `!loaded_material` + representability conditions;
+        // a mixed-material or textured scene meshes its display. The block YIELDS whether the
+        // brick DISPLAY was installed this rebuild — the mesh-skip decision below reads it
+        // (always `false` on non-gpu).
         let brick_display_installed = {
             #[cfg_attr(not(feature = "gpu"), allow(unused_mut))]
             let mut brick_display_installed = false;
-            if brick_fog_gate {
+            if brick_gate {
                 profiling::scope!("brick_field_build");
                 // (A) Maintain the CPU brick MIRROR — the FOG occupancy source (ADR 0011 G5),
                 // built for any chunkable scene regardless of display representability. Patch
@@ -1257,16 +843,14 @@ impl WindowedState {
                 };
 
                 if build.brick_records.is_empty() {
-                    // The edit emptied the field — no fog source, no display brick.
+                    // The edit emptied the field — no display brick.
                     self.incremental_brick_field = None;
-                    self.fog_brick_field = None;
                 } else {
                     // (B) DISPLAY: install/patch the GPU raymarch renderer ONLY under
                     // `--features gpu`, with NO loaded VS material (a material needs the mesh's
                     // per-face shading — bricks carry only categorical block ids), and ONLY
                     // when the boundary set is brick-REPRESENTABLE (single-material blocks + one
-                    // overlay). A mixed-material or textured scene keeps the mesh display but
-                    // still fog-sources from `build` (fog is boolean occupancy — the G5 insight).
+                    // overlay). A mixed-material or textured scene keeps the mesh display.
                     #[cfg(feature = "gpu")]
                     if !loaded_material {
                     match voxel_worker::brick_representable_overlay(&two_layer_chunks) {
@@ -1278,8 +862,7 @@ impl WindowedState {
                             // into emission — a fully-occluded interior block never becomes a
                             // record, so nothing here needs a second mask pass). For a large
                             // solid the per-edit record upload is ∝surface, not ∝volume.
-                            // Interiors live in the two-layer chunks: the clip-map (above)
-                            // and the fog box-fill both derive from the chunks.
+                            // Interiors live in the two-layer chunks the clip-map derives from.
                             let gpu_records = voxel_worker::pack_gpu_records(&build, |_| false);
                             // Patch in place iff we produced an incremental update AND the
                             // renderer actually HOLDS A LIVE FIELD; otherwise (wholesale, or the
@@ -1343,35 +926,24 @@ impl WindowedState {
                             self.brick_fallback_reported = false;
                         }
                         None => {
-                            // Not display-representable: mesh display, fog still from bricks.
+                            // Not display-representable: mesh display.
                             if !self.brick_fallback_reported {
                                 println!(
                                     "brick: scene not representable (a block mixes materials \
-                                     or blocks disagree on the on-face grid) — mesh display, \
-                                     fog from bricks"
+                                     or blocks disagree on the on-face grid) — mesh display"
                                 );
                                 self.brick_fallback_reported = true;
                             }
                         }
                     }
                     } // end `#[cfg(feature = "gpu")] if !loaded_material` (the display gate)
-                    // Fog sources from THIS rebuild's boundary set regardless of the display
-                    // path — the last dense-shaped display consumer is gone (ADR 0011 G5). This
-                    // runs on EVERY build (non-gpu included) and for a loaded VS material, whose
-                    // display stays on the mesh above. The covering chunks ride along because
-                    // the record set is SURFACE-ONLY (interior fog occupancy is chunk-sourced);
-                    // the clone is O(chunks) Arc refcount bumps, never a deep chunk copy.
-                    self.fog_brick_field = Some(FogBrickSource {
-                        build,
-                        two_layer_chunks: two_layer_chunks.clone(),
-                    });
+                    // `build` (this rebuild's boundary set) is consumed only by the gpu display
+                    // install above; ADR 0012 retired the fog occupancy consumer, so on a non-gpu
+                    // build the mirror is maintained (`incremental_brick_field`) but not drawn.
                 }
             } else {
-                // Non-chunkable (a Part-only field): no brick mirror, no brick fog source — the
-                // pre-G5 fog path (single-producer GPU atlas, else the CPU densify on the
-                // transient/streamed grid) handles it. Runs on every build now.
+                // Non-chunkable (a Part-only field): no brick mirror, no display brick.
                 self.incremental_brick_field = None;
-                self.fog_brick_field = None;
             }
             // NOTE: the gpu raymarch display is NOT cleared here anymore. When it did not install
             // the display must hand back to the mesh, but clearing NOW (before the replacement
@@ -1548,8 +1120,7 @@ impl WindowedState {
             );
         }
         // Issue #12: clamp/rescale the layer band to the new grid_z (re-snapping to block
-        // multiples when snapping is on) BEFORE the fog build below, so the fog slab (#59)
-        // is computed against the SAME rescaled band the render path will draw this frame
+        // multiples when snapping is on) so the render path draws the rescaled band this frame
         // (the render path runs after this rebuild returns and reads the rescaled band).
         // Z-up: index 2. `previous_grid_z` was captured before `grid` was reassigned.
         self.panel_state.layer_range.rescale_to_grid_z(
@@ -1558,55 +1129,9 @@ impl WindowedState {
             density,
         );
 
-        // Re-upload the fog's occupancy field for the new grid — but ONLY when the fog
-        // is actually drawn (issue #58). Onion-skin defaults OFF, so the common edit path
-        // does ZERO fog work: mark the occupancy stale and let the render path build it
-        // lazily the first frame onion-skin is on. When onion IS active, build it now (the
-        // edit changed the geometry the fog visualises) so this frame renders correctly.
-        //
-        // Issue #59: scope the build to the band-slab (band ± onion_depth). A full-range
-        // band (`None` slab) has nothing outside to ghost → skip the build (and draw)
-        // entirely even with onion on. Record the covering chunk-Z range so the render
-        // path's band-aware reuse can tell a within-slab scrub (reuse) from one that
-        // shifts the slab (rebuild).
-        let onion_active =
-            self.panel_state.layer_range.onion_skin && !self.panel_state.debug_face_orientation;
-        let new_grid_z = region_dimensions[2];
-        if onion_active {
-            match Self::fog_z_slab_for(self.panel_state.layer_range, new_grid_z) {
-                Some(slab) => {
-                    Self::build_fog_occupancy(
-                        #[cfg(feature = "gpu")]
-                        &self.gpu_resolver,
-                        &mut self.onion_fog_renderer,
-                        &self.gpu,
-                        &self.panel_state.scene,
-                        self.fog_mode,
-                        region_dimensions,
-                        recentre_voxels,
-                        density,
-                        Some(slab),
-                        self.fog_brick_field.as_ref(),
-                    );
-                    self.fog_occupancy_dirty = false;
-                    self.fog_built_chunk_z_range = Self::fog_covering_chunk_z_range(
-                        self.panel_state.layer_range,
-                        new_grid_z,
-                        density,
-                    );
-                }
-                None => {
-                    // Full-range band with onion on: no ghost layers → no fog build/draw.
-                    self.fog_occupancy_dirty = true;
-                    self.fog_built_chunk_z_range = None;
-                    println!("fog: skipped on rebuild (band full-range)");
-                }
-            }
-        } else {
-            self.fog_occupancy_dirty = true;
-            self.fog_built_chunk_z_range = None;
-            println!("fog: skipped on rebuild (onion inactive)");
-        }
+        // ADR 0012: onion skin is now a per-frame ghost pass on the display paths (no
+        // occupancy build/upload here) — a band scrub is a pure uniform update.
+
         // The transform gizmo (issue #29 S2) is sized + positioned from the SELECTED
         // node in the per-frame render path (it must track selection changes, which
         // don't trigger a geometry rebuild), not here. The per-object block lattice +
@@ -2486,14 +2011,10 @@ impl WindowedState {
         self.view_cube_renderer
             .update_uniforms(&self.gpu.queue, self.app_core.camera.view_cube_view_projection());
 
-        // ADR 0012 (H1): the onion-skin VOLUMETRIC FOG is retired. Onion context now draws
-        // as the display paths' ghost pass (prepared above: the brick slabs in
-        // `update_ghost_uniforms`, the cuboid slabs in `update_uniforms` → `rebuild_for_band`;
-        // drawn in `render_frame` when `onion_ghost_active`). The live app no longer builds or
-        // uploads any fog occupancy — the `OnionFogRenderer` + `build_fog_occupancy` machinery
-        // stays compiling until H2 deletes it, but is never invoked here. `onion_active` is
-        // retained for the (soon-dead) fog fields' bookkeeping equivalence, but the ghost
-        // gate is `onion_ghost_active` (computed above).
+        // ADR 0012: the onion-skin VOLUMETRIC FOG is retired. Onion context draws as the
+        // display paths' ghost pass (prepared above: the brick slabs in `update_ghost_uniforms`,
+        // the cuboid slabs in `update_uniforms` → `rebuild_for_band`; drawn in `render_frame`
+        // when `onion_ghost_active`).
         let _ = layer_range;
 
         let overlays = FrameOverlays {
@@ -2520,9 +2041,7 @@ impl WindowedState {
             // Issue #29 Points fast-follow: the analytic infinite grid (Points' planes);
             // self-gates on no enabled plane.
             infinite_grid: Some(&self.infinite_grid_renderer),
-            // ADR 0012 (H1): the volumetric fog is retired — never populated by the live app.
-            onion_fog: None,
-            // ADR 0012 (H1): draw the onion GHOST pass this frame (the engaged display path
+            // ADR 0012: draw the onion GHOST pass this frame (the engaged display path
             // ghosts the onion slabs after its solid draw). Its uniforms/geometry were
             // prepared by the renderers' `update_uniforms` / `update_ghost_uniforms` above.
             onion_ghost_active,

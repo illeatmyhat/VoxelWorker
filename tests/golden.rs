@@ -522,9 +522,8 @@ fn two_layer_golden_matches_dense() {
 /// PIXEL-IDENTICAL to the SAME committed dense reference — the parity gate's clause (c). The
 /// finest-LOD raymarch is designed (per-sample MSAA rays + pixel-centre face evaluation) to
 /// reproduce the rasterized mesh, not merely approximate it, so this reuses the mesh path's
-/// own goldens with no new references. `onion-fog-perchunk` additionally proves depth
-/// compositing: its onion-fog haze + the view cube composite over the brick-drawn solid the
-/// same as over the mesh, so a byte-for-byte-equivalent render there IS the depth-compositing
+/// own goldens with no new references. The view cube composites over the brick-drawn solid
+/// the same as over the mesh, so a byte-for-byte-equivalent render is the depth-compositing
 /// evidence (grill Q5 / the one integration point the ADR 0009 benchmark never exercised).
 ///
 /// Run: `cargo test --features gpu --test golden`. On a mismatch, read the `-brick-actual.png`

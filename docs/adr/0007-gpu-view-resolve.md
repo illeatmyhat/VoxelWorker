@@ -1,6 +1,9 @@
 # ADR 0007 — GPU view-resolve: stream the compact tree, voxelize/mesh/fog on the GPU for display
 
-- **Status:** Proposed
+- **Status:** **Retired 2026-07-11 by [ADR 0012](0012-onion-ghost-clip-slabs.md)** — the `gpu_resolve` evaluator's
+  last live consumer was the volumetric onion-fog atlas; with the fog deleted, the whole producer-mirror evaluator
+  (`gpu_resolve.rs`/`.wgsl` + its A/B parity tier) was removed, leaving the brick pipeline as the sole GPU producer
+  surface. The A/B equivalence finding it proved (CPU↔GPU occupancy is byte-exact) stands as recorded history.
 - **Date:** 2026-06-29
 - **Extends:** [ADR 0006](0006-authoring-truth-and-gpu-boundary.md) — names the "GPU view-resolve
   (mesh/fog generated on the GPU for display)" as a legitimate, *gated* display derivation; this ADR

@@ -26,11 +26,11 @@ use voxel_worker::block_palette::{BlockPalette, LoadedMaterial, ThumbnailRendere
 use voxel_worker::scan_worker::{run_auto_scan_blocking, FaceResolver};
 use voxel_worker::{
     create_depth_view, create_msaa_color_view, procedural_material_average_color, render_frame,
-    run_egui_frame, AppCore, CubeFace, DefId, EguiPaintBridge, FogMode, FogZSlab, FrameOverlays,
+    run_egui_frame, AppCore, CubeFace, DefId, EguiPaintBridge, FrameOverlays,
     GeometryParams,
     GpuContext, InfiniteGridRenderer, LayerBand, LayerRange, MaterialChoice, MaterialSource,
     PointsRenderer, SceneGridRenderer,
-    Node, NodeBuilder, NodeContent, NodePath, OnionFogRenderer, OrbitCamera, PanelState, Part,
+    Node, NodeBuilder, NodeContent, NodePath, OrbitCamera, PanelState, Part,
     Point,
     PlaneAxis, ProjectionMode, RegionBlocks, RevolveAxis, Scene, SdfShape, ShapeKind, Sketch, SketchSolid,
     SketchPoint, TransformGizmoRenderer,
@@ -38,68 +38,6 @@ use voxel_worker::{
     ViewCubeRenderer, VoxelGrid, COLOR_TARGET_FORMAT,
 };
 use voxel_worker::CuboidMeshRenderer;
-
-/// Try the ADR 0007 GPU per-chunk fog atlas for a SINGLE ported producer: detect it,
-/// GPU-resolve its covering-chunk atlas (no CPU densify, no readback), and install it
-/// into the fog renderer. Returns `true` when the GPU path took over; `false` to keep
-/// the CPU densify (a multi-producer scene, or a dispatch too large for this device).
-#[cfg(feature = "gpu")]
-fn try_install_gpu_per_chunk_fog(
-    fog: &mut OnionFogRenderer,
-    gpu: &GpuContext,
-    scene: &Scene,
-    grid: &VoxelGrid,
-    voxels_per_block: u32,
-    fog_z_slab: Option<voxel_worker::FogZSlab>,
-) -> bool {
-    let Some(producer) = scene.single_producer() else {
-        return false;
-    };
-    let resolver = voxel_worker::gpu_resolve::GpuResolver::new(&gpu.device);
-    let Some(atlas) = resolver.resolve_single_producer_fog_atlas(
-        &gpu.device,
-        &gpu.queue,
-        &producer,
-        grid.dimensions,
-        grid.recentre_voxels,
-        voxels_per_block,
-        fog_z_slab,
-    ) else {
-        return false;
-    };
-    fog.install_per_chunk_atlas(
-        &gpu.device,
-        &gpu.queue,
-        &atlas.texture,
-        &atlas.world_origins,
-        voxel_worker::PerChunkAtlasGeometry {
-            chunk_extent: atlas.chunk_extent,
-            pad: atlas.pad,
-            tiles_per_axis: atlas.tiles_per_axis,
-            atlas_dim: atlas.atlas_dim,
-        },
-    );
-    // The resolver compacts the covering set down to the CPU non-empty set (ADR 0007
-    // option C drop-empty-tile), so a dense `DebugClouds` whose covering tiles overflow the
-    // atlas budget now fits. Should the NON-EMPTY count itself still exceed the budget,
-    // `install_per_chunk_atlas` disables the path — fall back to the CPU densify rather than
-    // regressing a renderable scene to no-fog.
-    fog.per_chunk_active()
-}
-
-/// Without the `gpu` feature there is no compute resolver, so the CPU fog path is the
-/// only one (the GPU view-resolve is a `--features gpu` accelerator — ADR 0006/0007).
-#[cfg(not(feature = "gpu"))]
-fn try_install_gpu_per_chunk_fog(
-    _fog: &mut OnionFogRenderer,
-    _gpu: &GpuContext,
-    _scene: &Scene,
-    _grid: &VoxelGrid,
-    _voxels_per_block: u32,
-    _fog_z_slab: Option<voxel_worker::FogZSlab>,
-) -> bool {
-    false
-}
 
 struct ShotOptions {
     output_path: PathBuf,
@@ -190,12 +128,6 @@ struct ShotOptions {
     /// Onion-skin depth (issue #12): 0 = off (hard band clip), N = ghost N layers
     /// on each side of the band with screen-door dither.
     onion_depth: u32,
-    /// Onion-fog occupancy mode (issue #28). `PerChunk` (DEFAULT since S5b — one apron'd
-    /// volume per resident chunk, packed into a small 3D atlas) or `WholeGrid` (the legacy
-    /// single whole-grid 3D texture, `--fog=wholegrid`, which disables itself past the
-    /// single-3D-texture limit). Per-chunk is A/B-identical on normal scenes and renders
-    /// fog at scale where whole-grid cannot.
-    fog_mode: FogMode,
     /// `--shape debug-clouds`: replace the parametric producer with the debug
     /// cloud field (several distinct billowy blobs in a mostly-empty volume) at
     /// the requested size/density. The grid dims still come from size×density.
@@ -350,11 +282,6 @@ impl Default for ShotOptions {
             layer_lower: None,
             layer_upper: None,
             onion_depth: 0,
-            // Issue #28 S5b: per-chunk fog is now the DEFAULT. It is visually identical
-            // to whole-grid on normal scenes (A/B 0.0000%) and strictly better at scale
-            // (whole-grid disables fog past `max_texture_dimension_3d`; per-chunk doesn't).
-            // `--fog=wholegrid` selects the legacy whole-grid path.
-            fog_mode: FogMode::PerChunk,
             debug_clouds: false,
             debug_chunks: false,
             demo_scene: false,
@@ -718,21 +645,6 @@ fn parse_options() -> ShotOptions {
                     .parse()
                     .expect("--onion must be a non-negative integer (0 = off)");
             }
-            // Issue #28: select the onion-fog occupancy source. Accepts both
-            // `--fog perchunk` and `--fog=perchunk`. Default is `perchunk` (S5b);
-            // `--fog=wholegrid` selects the legacy whole-grid path.
-            other_fog if other_fog == "--fog" || other_fog.starts_with("--fog=") => {
-                let value = if let Some(eq) = other_fog.strip_prefix("--fog=") {
-                    eq.to_string()
-                } else {
-                    args.next().expect("--fog requires a value (wholegrid|perchunk)")
-                };
-                options.fog_mode = match value.to_ascii_lowercase().as_str() {
-                    "wholegrid" | "whole-grid" | "whole" => FogMode::WholeGrid,
-                    "perchunk" | "per-chunk" | "chunk" => FogMode::PerChunk,
-                    other => panic!("--fog must be wholegrid|perchunk, got '{other}'"),
-                };
-            }
             "--export-vox" => {
                 options.export_vox_path = Some(PathBuf::from(
                     args.next().expect("--export-vox requires a path argument"),
@@ -809,7 +721,6 @@ fn parse_options() -> ShotOptions {
                      \x20            [--demo-sketch-extrude] [--demo-sketch-revolve]\n\
                      \x20            [--demo-far-offset] [--demo-far-offset-near]\n\
                      \x20            [--layer-lower <u32>] [--layer-upper <u32>] [--onion <u32>]\n\
-                     \x20            [--fog <wholegrid|perchunk>]\n\
                      \x20            [--export-vox <path.vox>]\n\
                      \x20            [--snap <face|edge|corner>  e.g. front, front-top, front-top-right]\n\
                      \x20            [--cube-hover <rotate-up|rotate-down|rotate-left|rotate-right|roll-cw|roll-ccw|home|fit|element:<face|edge|corner>>]\n\
@@ -1744,17 +1655,6 @@ async fn run_capture(options: ShotOptions) {
     // so a block mixing materials stays on the mesh), and none of the mesh-only modes
     // (debug-faces, `--scan-vs` loaded VS textures).
     let mut brick_raymarch_renderer: Option<voxel_worker::BrickRaymarchRenderer> = None;
-    // ADR 0011 G5: capture the built brick field AND its covering chunks so the onion fog
-    // can source its occupancy from the boundary set (no CPU densify), exercising the
-    // fog-from-bricks path the runtime uses — so `brick_golden_matches_dense` becomes the
-    // fog-from-bricks visual gate. The chunks ride along because the record set is
-    // SURFACE-ONLY (ADR 0011 interior elision): coarse/interior fog occupancy box-fills
-    // from the chunks, sculpted tiles from the build's atlas.
-    #[allow(clippy::type_complexity)]
-    let mut brick_fog_field: Option<(
-        voxel_worker::BrickFieldBuild,
-        Vec<([i32; 3], std::sync::Arc<voxel_worker::TwoLayerChunk>)>,
-    )> = None;
     if options.brick {
         if !cfg!(feature = "gpu") {
             println!("brick: --brick requires --features gpu — falling back to the mesh path");
@@ -1777,8 +1677,7 @@ async fn run_capture(options: ShotOptions) {
             // start a ray inside the solid where the surface-only set holds no record; the
             // raymarch's block-occupancy fallback (the pyramid rides the same chunks and
             // carries the block-granular interior mask) resolves those elided interiors to
-            // their coarse cubes, so the cross-section renders correctly. The fog fill below
-            // is unaffected (it ignores coarse records; the sculpted set is never elided).
+            // their coarse cubes, so the cross-section renders correctly.
             let build = voxel_worker::build_brick_field(&two_layer_chunks, density);
             match voxel_worker::brick_representable_overlay(&two_layer_chunks) {
                 Some(overlay_active) if !build.brick_records.is_empty() => {
@@ -1815,10 +1714,6 @@ async fn run_capture(options: ShotOptions) {
                         overlay_active,
                     );
                     brick_raymarch_renderer = Some(renderer);
-                    // The fog sources from the SAME boundary set (ADR 0011 G5): the build's
-                    // sculpted records/atlas + the covering chunks (interiors are
-                    // chunk-sourced under the surface-only record contract).
-                    brick_fog_field = Some((build, two_layer_chunks));
                 }
                 _ => {
                     println!(
@@ -1936,97 +1831,6 @@ async fn run_capture(options: ShotOptions) {
     // it. Built below from `scene.points` + the camera once the view matrix is known.
     let mut infinite_grid_renderer = InfiniteGridRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
     let view_cube_renderer = ViewCubeRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
-    let mut onion_fog_renderer = OnionFogRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
-    // Upload the resolved grid as the fog's occupancy field. PerChunk (DEFAULT since #28
-    // S5b) builds one apron'd volume per resident chunk so a scene too large for a single
-    // whole-grid 3D texture still renders fog; WholeGrid (`--fog=wholegrid`, legacy, issue
-    // #12) densifies one whole-grid 3D texture and disables itself past the 3D-texture limit.
-    // Issue #59: the onion-fog Z-slab (band ± onion_depth) to scope the eager fog build to.
-    // Three cases: (a) onion OFF → the fog is never drawn, so build the whole grid (`None`)
-    // unchanged (no golden touches this); (b) onion ON, band CLIPPED → the slab bounds the
-    // occupancy the raymarch samples, so the covering set (and atlas) shrinks to the slab
-    // while the drawn haze stays byte-identical; (c) onion ON, band FULL-RANGE → nothing
-    // outside to ghost, so SKIP the build entirely (zero fog chunks) — behaviour-identical
-    // to building the whole grid then drawing an invisible haze.
-    let (fog_z_slab, fog_full_range_skip) = if layer_range.onion_skin {
-        match FogZSlab::for_band(
-            LayerBand {
-                band_min: layer_range.lower,
-                band_max: layer_range.upper.min(grid_dimensions[2].saturating_sub(1)),
-                onion_depth: layer_range.onion_depth.clamp(1, 8),
-            },
-            grid_dimensions[2],
-        ) {
-            Some(slab) => (Some(slab), false),
-            None => (None, true), // full-range onion band → skip the fog build
-        }
-    } else {
-        (None, false) // onion off → whole grid, never drawn
-    };
-    if fog_full_range_skip {
-        println!("fog: skipped (onion active but band full-range — nothing to ghost)");
-    } else {
-        match options.fog_mode {
-            FogMode::WholeGrid => {
-                onion_fog_renderer.upload_grid(&gpu.device, &gpu.queue, &grid);
-            }
-            FogMode::PerChunk => {
-                let vpb = options.geometry.voxels_per_block;
-                // ADR 0011 G5: when `--brick` engaged, source the fog occupancy from the SAME
-                // brick boundary set the display raymarches (no CPU densify, no producer
-                // re-resolve) — the fog-from-bricks path the runtime uses. Byte-identical to
-                // the CPU densify, so the committed dense golden stays the reference.
-                let brick_fog_sourced = if let Some((build, chunks)) = brick_fog_field.as_ref() {
-                    let occupancy = voxel_worker::build_per_chunk_fog_occupancy_from_bricks(
-                        build,
-                        chunks,
-                        grid.dimensions,
-                        grid.recentre_voxels,
-                        fog_z_slab,
-                    );
-                    onion_fog_renderer.upload_per_chunk_occupancy(&gpu.device, &gpu.queue, &occupancy);
-                    true
-                } else {
-                    false
-                };
-                if brick_fog_sourced {
-                    println!(
-                        "fog: per-chunk mode (brick sink) — {}",
-                        if onion_fog_renderer.per_chunk_active() {
-                            "atlas active"
-                        } else {
-                            "atlas EMPTY/too-large — fog disabled"
-                        }
-                    );
-                } else {
-                    // ADR 0007 live call-site swap: a single ported producer GPU-resolves its
-                    // per-chunk fog atlas (no CPU densify, no readback); multi-producer scenes —
-                    // or a dispatch too large for this device — fall back to the CPU path.
-                    let via_gpu = try_install_gpu_per_chunk_fog(
-                        &mut onion_fog_renderer,
-                        &gpu,
-                        &panel_state.scene,
-                        &grid,
-                        vpb,
-                        fog_z_slab,
-                    );
-                    if !via_gpu {
-                        #[allow(deprecated)] // CPU fog densify — the fallback until the live GPU path.
-                        onion_fog_renderer.upload_grid_per_chunk(&gpu.device, &gpu.queue, &grid, vpb, fog_z_slab);
-                    }
-                    println!(
-                        "fog: per-chunk mode ({}) — {}",
-                        if via_gpu { "GPU atlas" } else { "CPU densify" },
-                        if onion_fog_renderer.per_chunk_active() {
-                            "atlas active"
-                        } else {
-                            "atlas EMPTY/too-large — fog disabled"
-                        }
-                    );
-                }
-            }
-        }
-    }
     // Z-up: the voxel-space grid_z of the ACTUALLY resolved grid (the composite for a
     // placed scene), used for the band clip + uniforms so a demo scene that grew
     // past the single-shape `grid_z` is not clipped or mis-sized. Layers are Z-slices.
@@ -2072,13 +1876,12 @@ async fn run_capture(options: ShotOptions) {
         roll: options.roll,
         projection_mode: options.projection_mode,
     };
-    // Issue #25: ALL uniform uploads (camera matrix → gizmo/lattice/view-cube/fog
+    // Issue #25: ALL uniform uploads (camera matrix → gizmo/lattice/view-cube
     // and the voxel pass) are deferred to AFTER `run_egui_frame`, because the
     // camera aspect must come from the CENTRAL 3D viewport rect (window minus the
     // side panel + bottom dock), which egui only reports once its panels are laid
     // out. The view-cube matrix is aspect-independent but uploaded alongside for
-    // simplicity. `onion_active` is needed earlier for the overlays struct.
-    let onion_active = layer_range.onion_skin && !options.debug_face_orientation;
+    // simplicity.
 
     // egui driven WITHOUT winit: build RawInput by hand.
     let mut egui_bridge = EguiPaintBridge::new(&gpu.device, COLOR_TARGET_FORMAT);
@@ -2290,12 +2093,6 @@ async fn run_capture(options: ShotOptions) {
         );
     }
     view_cube_renderer.update_uniforms(&gpu.queue, app_core.camera.view_cube_view_projection());
-    if onion_active {
-        onion_fog_renderer.update(
-            &gpu.queue,
-            AppCore::onion_fog_params(view_projection, grid_dimensions, layer_range),
-        );
-    }
 
     // Part of #20: upload the cuboid path's uniforms (camera + per-material base
     // colours + band clip) and frustum-cull its mesh chunks. A loaded VS block
@@ -2391,14 +2188,10 @@ async fn run_capture(options: ShotOptions) {
         // Issue #29 Points fast-follow: the analytic infinite grid (Points' planes),
         // suppressed with the rest of Points unless `--points`.
         infinite_grid: options.show_points.then_some(&infinite_grid_renderer),
-        // ADR 0012 (H1): the volumetric fog is retired — the display ghosts the onion
-        // slabs instead (prepared in the cuboid/brick `update_uniforms` above, drawn by
-        // `render_frame` when `onion_ghost_active`). Fog upload code stays compiling
-        // (H2 deletes it) but is no longer drawn. `fog_full_range_skip` is now only a
-        // bookkeeping flag for the dead fog path.
-        onion_fog: None,
-        // ADR 0012 (H1): draw the onion ghost pass when the band is a real onion slab
+        // ADR 0012: draw the onion ghost pass when the band is a real onion slab
         // (`band.onion_depth > 0` ⇔ onion skin on, non-full-range, not debug-faces).
+        // The display ghosts the onion slabs (prepared in the cuboid/brick
+        // `update_uniforms` above); the volumetric fog is retired.
         onion_ghost_active: band.onion_depth > 0,
         cuboid_mesh: &cuboid_mesh_renderer,
         // ADR 0011 G1: when engaged, the brick raymarch takes the voxel-model draw

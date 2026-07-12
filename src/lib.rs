@@ -41,10 +41,6 @@ pub mod geometry_worker;
 // O(total blocks) layer-band readout off the event-loop thread (stale-while-measuring).
 pub mod diameter_worker;
 pub mod gpu;
-// ADR 0007 P1 spike: the GPU view-resolve A/B equivalence net (the repo's first
-// compute pipeline). Display/test infra only — never authoritative (ADR 0006 §4).
-#[cfg(feature = "gpu")]
-pub mod gpu_resolve;
 // ADR 0003 Phase C: the single serializable mutation boundary (Intent → apply_intent).
 pub mod intent;
 pub mod panel;
@@ -117,18 +113,10 @@ pub use panel::{
     PanelState,
 };
 pub use assets::{CubeFaceSlot, FaceProvenance, FaceTextures};
-// The CPU fog densify is deprecated (ADR 0007) but still re-exported for the A/B net +
-// the CPU fallback; the re-export itself must allow the deprecation to keep CI green.
-#[allow(deprecated)]
-pub use renderer::build_per_chunk_fog_occupancy;
-pub use renderer::build_per_chunk_fog_occupancy_from_bricks;
 pub use renderer::{
-    create_depth_view, create_msaa_color_view, ChunkFogVolume, FogZSlab, PerChunkAtlasGeometry,
-    FogMode, InfiniteGridRenderer, LayerBand, MaterialSource, OnionFogParams, PointsRenderer,
-    SceneGridRenderer,
-    TransformGizmoRenderer,
-    OnionFogRenderer, PerChunkFogOccupancy, ViewCubeRenderer, DEPTH_FORMAT,
-    MSAA_SAMPLE_COUNT, VIEW_CUBE_VIEWPORT_PIXELS,
+    create_depth_view, create_msaa_color_view, InfiniteGridRenderer, LayerBand, MaterialSource,
+    OnionFogParams, PointsRenderer, SceneGridRenderer, TransformGizmoRenderer, ViewCubeRenderer,
+    DEPTH_FORMAT, MSAA_SAMPLE_COUNT, VIEW_CUBE_VIEWPORT_PIXELS,
 };
 pub use renderer::procedural_material_average_color;
 pub use scene::{
@@ -444,16 +432,7 @@ pub struct FrameOverlays<'a> {
     /// occlude the grid. Replaces the old finite tiled-line ground plane. Self-gating
     /// (no enabled plane → no draw); `None` skips it (the `shot` default).
     pub infinite_grid: Option<&'a renderer::InfiniteGridRenderer>,
-    /// Onion-skin volumetric fog (issue #12): when `Some`, a fullscreen SDF
-    /// raymarch composites a faint haze over the resolved scene for the layers
-    /// around the displayed band. `None` when onion skin is off. Its uniforms must
-    /// already be uploaded via `OnionFogRenderer::update`.
-    ///
-    /// **ADR 0012 (H1):** the live app no longer populates this — the volumetric fog
-    /// is superseded by the ghost pass (`onion_ghost_active` below). The field + the
-    /// `OnionFogRenderer` type stay compiling until H2 deletes the subsystem.
-    pub onion_fog: Option<&'a renderer::OnionFogRenderer>,
-    /// ADR 0012 (H1): draw the onion GHOST pass this frame. When `true`, immediately
+    /// ADR 0012: draw the onion GHOST pass this frame. When `true`, immediately
     /// after the solid voxel draw (inside the shared MSAA pass), the engaged display
     /// path (brick raymarch when present, else the cuboid mesh) draws its translucent
     /// ghost of the voxels in the onion slabs — recentred-Z in `[onion_z_min,
@@ -613,16 +592,6 @@ pub fn render_frame(
         if let Some(gizmo) = overlays.gizmo {
             gizmo.draw(&mut voxel_pass);
         }
-    }
-
-    // === Pass 1a: onion-skin volumetric fog (issue #12). A fullscreen raymarch of
-    // the resolved voxel grid (as a 3D cloud density) that composites a faint haze
-    // over the resolved scene for the layers around the displayed band. Runs after
-    // the 3D resolve and before the view cube/egui (so the corner cube and panel
-    // aren't fogged). Depth-tested against the 3D pass's MSAA depth so the displayed
-    // opaque slice occludes the onion layers behind it (like Minecraft's clouds).
-    if let Some(onion_fog) = overlays.onion_fog {
-        onion_fog.draw(device, &mut encoder, target_view, depth_view, prepared.viewport_px);
     }
 
     // === Pass 1b: view cube into a scissored top-left corner (its own depth).

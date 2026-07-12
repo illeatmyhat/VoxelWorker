@@ -70,11 +70,10 @@ pub struct AppCore {
 /// plus the region dimensions + recentre the display frame is sized from.
 ///
 /// **ADR 0011 G5 — the dense grid is gone.** A rebuild NO LONGER assembles a whole-region
-/// `VoxelGrid`. Fog reconstructs from the brick sink (`fog_brick_field`) for any chunkable
-/// scene, and the display meshes from `two_layer_chunks` — neither needs a dense occupancy
-/// array. The only surviving dense resolve is the transient, non-chunkable-only Part-only fog
-/// densify inside the shell's `build_fog_occupancy` (a degenerate empty region), and the
-/// export / query test oracles. So this output is purely sparse + scalar metadata.
+/// `VoxelGrid`. The display meshes from `two_layer_chunks` and the brick sink packs from the
+/// same set — neither needs a dense occupancy array. The only surviving dense resolve is the
+/// export / query test oracles (`resolve_scene`). So this output is purely sparse + scalar
+/// metadata.
 pub struct RebuildOutput {
     /// The region's voxel dimensions, read from the SCENE (see
     /// [`AppCore::region_dimensions_for`]) — what the camera auto-frame, gizmo,
@@ -96,8 +95,7 @@ pub struct RebuildOutput {
     /// makes it an O(chunks) refcount bump and composes with the brick readers directly.
     pub two_layer_chunks: Vec<([i32; 3], Arc<TwoLayerChunk>)>,
     /// The composite recentre (floating origin, voxels; ADR 0008) the two-layer mesh
-    /// lands its geometry in — the SAME frame the fog occupancy is reconstructed in (the
-    /// brick fill / GPU atlas / transient Part-only densify all recentre to this).
+    /// lands its geometry in — the SAME frame the brick sink packs its records in.
     pub recentre_voxels: [i64; 3],
     /// **The chunk-granular incremental GPU-buffer re-mesh hint (issue #55).** `Some(dirty)`
     /// when this rebuild LOCALISED — the edit's dirty world-AABB evicted exactly the `dirty`
@@ -838,18 +836,17 @@ impl AppCore {
     ///
     /// Returns the region dimensions + recentre + the per-chunk render accessor, which
     /// BORROWS the store. The returned [`RebuildOutcome`] therefore borrows `self`, so the
-    /// shell must consume it (build the cuboid mesh, refresh the brick fog field) BEFORE the
+    /// shell must consume it (build the cuboid mesh, refresh the brick field) BEFORE the
     /// next `&mut AppCore` call. A density whose single-chunk voxel capacity exceeds the bound
     /// is rejected WITHOUT touching the store, returning the offending count so the shell can
     /// surface the cap warning (AppCore never writes panel state).
     ///
     /// **ADR 0011 G5 — no dense grid is ever assembled.** A rebuild produces ONLY the sparse
     /// two-layer covering chunks + scalar metadata; the whole-region `VoxelGrid` expansion
-    /// (ADR 0010's flagged per-edit densify debt) is GONE. Fog reconstructs from the brick
-    /// sink (which the shell packs from the same `two_layer_chunks`), the display meshes from
-    /// them, and the camera / scrubber read `region_dimensions` — nothing reads a dense
-    /// occupancy array. The only surviving dense resolve is the transient, non-chunkable-only
-    /// Part-only fog densify in the shell (a degenerate empty region) + the test oracles.
+    /// (ADR 0010's flagged per-edit densify debt) is GONE. The brick sink packs from the same
+    /// `two_layer_chunks` the display meshes from, and the camera / scrubber read
+    /// `region_dimensions` — nothing reads a dense occupancy array. The only surviving dense
+    /// resolve is the test oracles.
     pub fn rebuild(&mut self, scene: &Scene, density: u32) -> RebuildOutcome {
         profiling::scope!("app_core_rebuild");
         // Issue #27 S2: the resolve is chunked + lazy, so the voxel bound is a
@@ -934,13 +931,13 @@ impl AppCore {
         self.previous_density = Some(density);
 
         // Ensure every covering chunk is resident (re-classifying only the dirty /
-        // missing ones); the SAME `Arc`-shared set feeds both the mesher and the brick fog
+        // missing ones); the SAME `Arc`-shared set feeds both the mesher and the brick
         // sink in the shell (classified once). The two-layer mesher re-meshes wholesale from
         // this set each rebuild (the resident cache is the incremental seam).
         //
         // ADR 0011 G5: NO whole-region `VoxelGrid` is expanded here anymore — the last
         // per-edit densify (ADR 0010's flagged debt) is retired. The resident set is the sole
-        // display truth; fog reconstructs from it via the brick sink in the shell.
+        // display truth.
         let two_layer_chunks: Vec<([i32; 3], Arc<TwoLayerChunk>)> = {
             profiling::scope!("resident_two_layer_chunks");
             // The resident cache hands out an OWNED, `Arc`-shared covering set (an O(1)
@@ -969,12 +966,10 @@ impl AppCore {
     /// `Scene::resolve_region` — bit-identical (the E2 round-trip parity gate). A Part-only
     /// scene (no covering range) resolves to an empty grid, exactly as the dense store did.
     ///
-    /// **ADR 0011 G5 — this is now a TEST/TRANSIENT-ONLY dense resolve.** No runtime display
-    /// path calls it on a chunkable scene (that would be the retired O(volume) densify). Its
-    /// two remaining callers are (1) the parity test oracles, and (2) the shell's transient
-    /// Part-only fog densify (`build_fog_occupancy`), which resolves a NON-chunkable scene —
-    /// a degenerate empty region — then immediately drops the grid. A chunkable scene must
-    /// never reach it at runtime.
+    /// **ADR 0011 G5 — this is now a TEST-ONLY dense resolve.** No runtime display path calls
+    /// it on a chunkable scene (that would be the retired O(volume) densify); its only callers
+    /// are the parity test oracles. A chunkable scene must never reach it at runtime.
+    /// (ADR 0012 retired the onion fog, which was the last transient runtime caller.)
     pub fn resolve_scene(scene: &Scene, voxels_per_block: u32) -> VoxelGrid {
         let store = crate::two_layer_store::TwoLayerStore::enabled();
         resolve_region_two_layer(&store, scene, voxels_per_block, 0).unwrap_or_default()
@@ -1052,8 +1047,10 @@ impl AppCore {
         scene.gizmo_placement_for_id(node_id, density)
     }
 
-    /// Build the onion-skin fog parameters (issue #12) from the camera-derived
-    /// view-projection, grid, and layer-range scrubber. Z-up: layers are Z-slices, so
+    /// Build the onion-skin frame parameters (issue #12) from the camera-derived
+    /// view-projection, grid, and layer-range scrubber — the recentred-Z spans the display
+    /// paths' ghost pass derives its onion slabs from (ADR 0012; the volumetric fog that once
+    /// consumed these is retired). Z-up: layers are Z-slices, so
     /// the band is a Z-range. Corner-anchoring: the grid's low corner in the recentred
     /// frame is `−floor(dim/2)`, so layer `k` has its voxel centre at
     /// `k + 0.5 − floor(grid_z/2)` and spans world-Z `[k − floor(grid_z/2),
@@ -2189,7 +2186,7 @@ mod undo_tests {
         assert_eq!(
             recentre,
             scene.recentre_voxels_for_resolve(density),
-            "startup recentre must match the resolve frame (fog + camera consume it)"
+            "startup recentre must match the resolve frame (the camera consumes it)"
         );
     }
 
@@ -2197,14 +2194,13 @@ mod undo_tests {
     /// two-layer covering chunks + scalar metadata — there is NO dense `VoxelGrid` in the
     /// output type at all (the field is gone, compile-enforced). This pins the retirement at
     /// runtime: even the multi-producer scene that streamed a whole-region grid before G5 now
-    /// produces the sparse set the mesher + brick fog sink consume, and the region dimensions
+    /// produces the sparse set the mesher + brick sink consume, and the region dimensions
     /// still match the scene's placed region (the camera / scrubber consumer contract).
     #[test]
     fn rebuild_yields_sparse_two_layer_output_no_dense_grid() {
         let density = 16u32;
         let scene = two_tool_scene();
         assert!(scene.has_chunkable_extent(density), "the two-tool fixture is chunkable");
-        assert!(scene.single_producer().is_none(), "two tools is a MULTI-producer scene");
         let mut core = test_core();
         let RebuildOutcome::Built(output) = core.rebuild(&scene, density) else {
             panic!("density {density} unexpectedly rejected");
