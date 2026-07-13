@@ -986,9 +986,8 @@ mod tests {
     fn streamed_vox_export(scene: &Scene, vpb: u32, rgba: BlockPaletteColors) -> VoxExport {
         let store = TwoLayerStore::enabled();
         let mut chunks: Vec<Vec<crate::voxel::Voxel>> = Vec::new();
-        let (dims, _recentre) =
-            stream_vox_occupancy(&store, scene, vpb, |chunk| chunks.push(chunk))
-                .expect("the two-layer capability is enabled");
+        let dims = stream_vox_occupancy(&store, scene, vpb, |chunk| chunks.push(chunk))
+            .expect("the two-layer capability is enabled");
         VoxExport::from_region_voxel_chunks(dims, chunks, rgba)
     }
 
@@ -1058,7 +1057,7 @@ mod tests {
         // only one chunk's voxels are ever resident.
         let region_dimensions = scene.placed_region_dimensions(vpb);
         let mut builder = VoxExportBuilder::new(region_dimensions, rgba);
-        let (dims_stream, _recentre) =
+        let dims_stream =
             stream_vox_occupancy(&store, scene, vpb, |chunk| builder.ingest_chunk(&chunk))
                 .expect("the two-layer capability is enabled");
         assert_eq!(

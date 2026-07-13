@@ -279,12 +279,11 @@ impl Scene {
         voxels_per_block: u32,
     ) -> Option<([f32; 3], [f32; 3])> {
         let (min_corner, max_corner) = self.node_subtree_extent_blocks(path, voxels_per_block)?;
-        let recentre = self.recentre_voxels_for_resolve(voxels_per_block);
         let density = voxels_per_block.max(1) as i64;
         let mut min_box = [0.0f32; 3];
         let mut max_box = [0.0f32; 3];
         // Unwrap the carried frame at the recentred block-corner arithmetic.
-        let recentre = recentre.voxels();
+        let recentre = self.recentre_voxels_for_resolve(voxels_per_block).voxels();
         for axis in 0..3 {
             // Whole-block corners → voxels (exact), then into the recentred frame.
             min_box[axis] = (min_corner[axis] * density - recentre[axis]) as f32;

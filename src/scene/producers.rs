@@ -262,8 +262,8 @@ impl Scene {
         // `mixed_tool_and_cloud_resolve_in_one_frame`). ADR 0008: the recentre is CARRIED on
         // the grid (below), so every consumer decodes correctly without re-deriving the
         // frame as `floor(dim/2)` (the assumption that dropped the corner-anchored cloud fog).
-        let recentre = self.recentre_voxels_for_resolve(voxels_per_block);
-        output.recentre_voxels = recentre.voxels();
+        let recentre_voxels = self.recentre_voxels_for_resolve(voxels_per_block).voxels();
+        output.recentre_voxels = recentre_voxels;
 
         // Walk the whole tree (groups + instances recurse, composing world
         // translation down — ADR 0001 step 4). Each visited leaf is stamped under
@@ -278,8 +278,6 @@ impl Scene {
             // corner); the recentre (from the producer-true voxel frame) symmetrises the
             // composite about the origin for ALL size·d parities, so no per-leaf lattice
             // shift is needed — a leaf simply sits at its world voxel offset.
-            // Unwrap the carried frame at this positional stamp.
-            let recentre_voxels = recentre.voxels();
             let translation_voxels = [
                 world_offset_voxels[0] - recentre_voxels[0],
                 world_offset_voxels[1] - recentre_voxels[1],

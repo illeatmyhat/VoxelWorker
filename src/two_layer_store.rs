@@ -1435,24 +1435,24 @@ fn stream_chunk_recentred(
 ///
 /// Returns the region's voxel `dimensions` (the SAME value
 /// [`Scene::placed_region_dimensions`](crate::scene::Scene::placed_region_dimensions)
-/// produces — the `.vox` tiling/decode frame) and the carried `recentre`. Returns
-/// `None` when the capability is OFF (the caller falls back to the dense path).
+/// produces — the `.vox` tiling/decode frame). Returns `None` when the capability is
+/// OFF (the caller falls back to the dense path).
 pub fn stream_vox_occupancy<Sink: FnMut(Vec<Voxel>)>(
     store: &TwoLayerStore,
     scene: &Scene,
     voxels_per_block: u32,
     mut sink: Sink,
-) -> Option<([u32; 3], [i64; 3])> {
+) -> Option<[u32; 3]> {
     if !store.is_enabled() {
         return None;
     }
     let region_dimensions = scene.placed_region_dimensions(voxels_per_block);
-    // Carry the frame newtype through the per-chunk stream; unwrap only at the raw
-    // `([u32; 3], [i64; 3])` return contract the `.vox` decode frame consumes.
+    // Carry the frame newtype through the per-chunk stream; it is unwrapped inside
+    // `stream_chunk_recentred`'s per-chunk rebase, never at this return.
     let recentre = scene.recentre_voxels_for_resolve(voxels_per_block);
     let Some((min_chunk, max_chunk)) = scene.covering_chunk_range(voxels_per_block) else {
         // No composite extent (Part-only): an empty occupancy is still a valid export.
-        return Some((region_dimensions, recentre.voxels()));
+        return Some(region_dimensions);
     };
     for chunk_z in min_chunk[2]..=max_chunk[2] {
         for chunk_y in min_chunk[1]..=max_chunk[1] {
@@ -1469,7 +1469,7 @@ pub fn stream_vox_occupancy<Sink: FnMut(Vec<Voxel>)>(
             }
         }
     }
-    Some((region_dimensions, recentre.voxels()))
+    Some(region_dimensions)
 }
 
 /// Insert the half-open run `[lo, hi)` into a row's sorted, disjoint, **non-touching**
