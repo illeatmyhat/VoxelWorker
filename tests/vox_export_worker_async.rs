@@ -32,11 +32,17 @@ mod common;
 /// acceptable unbounded wait. Generous so a slow machine doesn't flake.
 const WORKER_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// The `.vox` palette the tests export with — a distinct colour per procedural material so
-/// the bytes are non-trivial. Any fixed value works; parity only needs both paths to use
-/// the SAME palette.
+/// The `.vox` palette the tests export with — a genuinely DISTINCT colour per procedural
+/// material (the red channel is index-derived) so a multi-material export exercises the
+/// per-`block_id` palette mapping rather than collapsing every slot to one colour. Any fixed
+/// scheme works; parity only needs both paths to use the SAME palette.
 fn test_palette() -> voxel_worker::vox_export::BlockPaletteColors {
-    [[0x40, 0x50, 0x60, 0xff]; MaterialChoice::MATERIAL_COUNT]
+    let mut palette = [[0x40, 0x50, 0x60, 0xff]; MaterialChoice::MATERIAL_COUNT];
+    for (index, slot) in palette.iter_mut().enumerate() {
+        // Vary one channel per slot so no two materials share a colour.
+        slot[0] = 0x40u8.wrapping_add((index as u8).wrapping_mul(0x30));
+    }
+    palette
 }
 
 /// The canonical small export fixture: a solid box, resolved the SAME way the shell

@@ -258,6 +258,14 @@ impl VoxExport {
     }
 
     /// Serialise and write the `.vox` to `path`, creating parent dirs.
+    ///
+    /// **Atomic write (data-loss guard).** The bytes are written to a sibling temp file
+    /// (`<final-name>.tmp`, same directory ⇒ same filesystem ⇒ the rename is atomic) and
+    /// only then `rename`d onto the final path. A process killed mid-write — e.g. the
+    /// window closed during a multi-second background export, which detaches and kills the
+    /// export worker thread — therefore leaves at WORST a stray `.tmp`, never a truncated
+    /// `.vox` the Vintage Story mod would ingest as a corrupt model. The temp file is
+    /// cleaned up on either error path.
     pub fn write(&self, path: &std::path::Path) -> std::io::Result<usize> {
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
@@ -265,7 +273,21 @@ impl VoxExport {
             }
         }
         let bytes = self.to_bytes();
-        std::fs::write(path, &bytes)?;
+        // Sibling temp path: append `.tmp` to the full final name (keeps it in the same
+        // directory, hence the same filesystem the atomic rename requires).
+        let temp_path = {
+            let mut name = path.as_os_str().to_owned();
+            name.push(".tmp");
+            std::path::PathBuf::from(name)
+        };
+        if let Err(error) = std::fs::write(&temp_path, &bytes) {
+            let _ = std::fs::remove_file(&temp_path);
+            return Err(error);
+        }
+        if let Err(error) = std::fs::rename(&temp_path, path) {
+            let _ = std::fs::remove_file(&temp_path);
+            return Err(error);
+        }
         Ok(bytes.len())
     }
 }

@@ -596,17 +596,13 @@ pub struct BrickFieldBuild {
 /// the bytes so the install seam sets its frame scalars without a `BrickFieldBuild`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SculptedAtlasPayload {
-    /// `atlas_dim_voxels³` occupancy bytes (0 empty / 255 occupied), slot-packed — the
-    /// bytes [`upload_brick_atlas`] lands in the R8 3D texture.
+    /// `geometry.atlas_dim_voxels³` occupancy bytes (0 empty / 255 occupied), slot-packed —
+    /// the bytes [`upload_brick_atlas`] lands in the R8 3D texture.
     pub bytes: Vec<u8>,
-    /// The atlas texture dimension per axis (`bricks_per_axis * brick_edge_voxels`; 0 when
-    /// the build has no sculpted brick).
-    pub atlas_dim_voxels: u32,
-    /// Sculpted-brick tile slots per atlas axis (`ceil(cbrt(slot_count))`) — the tile-grid
-    /// edge the frame scalars carry.
-    pub bricks_per_axis: u32,
-    /// The brick edge in voxels (`voxels_per_block`, the ONE-BLOCK granule).
-    pub brick_edge_voxels: u32,
+    /// The atlas tile geometry (tile-grid edge, texture dimension, brick edge) — shared with
+    /// the incremental owner's [`IncrementalBrickField::atlas_geometry`] so the two never
+    /// drift on the tile-cube math.
+    pub geometry: SculptedAtlasGeometry,
     /// Live sculpted-brick count (the wholesale install's `last_atlas_slots_written`).
     pub sculpted_slot_count: u32,
 }
@@ -627,6 +623,24 @@ pub struct SculptedAtlasGeometry {
 /// The occupancy byte a solid voxel packs to — the fog atlas's 0/255 R8 convention.
 const SCULPTED_BRICK_OCCUPIED: u8 = 255;
 
+/// Expand one bit-packed X-row `word` (x-fastest, one voxel per bit) into `out_row`, the
+/// `edge`-long destination slice of R8 occupancy bytes: every set bit becomes
+/// [`SCULPTED_BRICK_OCCUPIED`], clear bits are left untouched (`out_row` starts zeroed). The
+/// single word→bytes expansion, shared by [`BrickOccupancyTile::unpack_to_bytes`] (block-local
+/// destination) and [`pack_sculpted_atlas`] (atlas-cube destination) so the skip-zero-word
+/// guard + per-bit test live in ONE place; the callers differ only in how they slice `out_row`
+/// (whose length fixes the edge) out of their buffer.
+fn expand_row_word_into(word: u64, out_row: &mut [u8]) {
+    if word == 0 {
+        return;
+    }
+    for (local_x, out) in out_row.iter_mut().enumerate() {
+        if (word >> local_x) & 1 == 1 {
+            *out = SCULPTED_BRICK_OCCUPIED;
+        }
+    }
+}
+
 impl BrickFieldBuild {
     /// Materialise this build's sculpted atlas as an upload [`SculptedAtlasPayload`] — the
     /// wholesale-build → install adapter for the callers that keep the `BrickFieldBuild`
@@ -636,9 +650,11 @@ impl BrickFieldBuild {
     pub fn atlas_payload(&self) -> SculptedAtlasPayload {
         SculptedAtlasPayload {
             bytes: self.sculpted_atlas_bytes.clone(),
-            atlas_dim_voxels: self.atlas_dim_voxels,
-            bricks_per_axis: self.bricks_per_axis,
-            brick_edge_voxels: self.brick_edge_voxels,
+            geometry: SculptedAtlasGeometry {
+                bricks_per_axis: self.bricks_per_axis,
+                atlas_dim_voxels: self.atlas_dim_voxels,
+                brick_edge_voxels: self.brick_edge_voxels,
+            },
             sculpted_slot_count: self.sculpted_brick_count() as u32,
         }
     }
@@ -734,6 +750,24 @@ pub fn build_brick_field(
     two_layer_chunks: &[([i32; 3], Arc<TwoLayerChunk>)],
     voxels_per_block: u32,
 ) -> BrickFieldBuild {
+    // The build-only entry (lib re-export; the golden `shot` tool, parity/perf tests, the
+    // non-tile-carrying orchestrator/startup paths). Drops the rasterised tiles; the live
+    // worker/orchestrator wholesale path calls `build_brick_field_with_tiles` to keep and
+    // MOVE them into the mirror (skipping the from-atlas-bytes re-derive).
+    build_brick_field_with_tiles(two_layer_chunks, voxels_per_block).0
+}
+
+/// Like [`build_brick_field`] but ALSO returns the per-sculpted-slot occupancy tiles it
+/// rasterised (dense slot order — the `atlas_slot` numbering baked into the records), so a
+/// wholesale reset can MOVE them straight into the incremental mirror
+/// ([`IncrementalBrickField::from_wholesale_with_tiles`]) instead of re-gathering + re-bit-
+/// packing them out of the flat atlas bytes the packer just produced. The `BrickFieldBuild`
+/// is byte-identical to [`build_brick_field`]'s (same records, same packed atlas bytes) —
+/// this only hands back the intermediate the plain entry discards.
+pub fn build_brick_field_with_tiles(
+    two_layer_chunks: &[([i32; 3], Arc<TwoLayerChunk>)],
+    voxels_per_block: u32,
+) -> (BrickFieldBuild, Vec<BrickOccupancyTile>) {
     let brick_edge_voxels = voxels_per_block.max(1);
     let oracle = BrickOcclusionOracle::new(two_layer_chunks);
     let mut brick_records: Vec<BrickRecord> = Vec::new();
@@ -816,13 +850,14 @@ pub fn build_brick_field(
     let (bricks_per_axis, atlas_dim_voxels, sculpted_atlas_bytes) =
         pack_sculpted_atlas(&sculpted_brick_tiles, brick_edge_voxels);
 
-    BrickFieldBuild {
+    let build = BrickFieldBuild {
         brick_records,
         sculpted_atlas_bytes,
         brick_edge_voxels,
         bricks_per_axis,
         atlas_dim_voxels,
-    }
+    };
+    (build, sculpted_brick_tiles)
 }
 
 /// The interior-INCLUSIVE brick-field build: one record per NON-AIR block (coarse-solid or
@@ -1130,15 +1165,8 @@ impl BrickOccupancyTile {
         for local_z in 0..edge {
             for local_y in 0..edge {
                 let word = self.row_words[local_z * edge + local_y];
-                if word == 0 {
-                    continue;
-                }
                 let row = (local_z * edge + local_y) * edge;
-                for local_x in 0..edge {
-                    if (word >> local_x) & 1 == 1 {
-                        brick_bytes[row + local_x] = SCULPTED_BRICK_OCCUPIED;
-                    }
-                }
+                expand_row_word_into(word, &mut brick_bytes[row..row + edge]);
             }
         }
         brick_bytes
@@ -1295,17 +1323,10 @@ fn pack_sculpted_atlas(
         for local_z in 0..edge {
             for local_y in 0..edge {
                 let word = tile.row_words[local_z * edge + local_y];
-                if word == 0 {
-                    continue;
-                }
                 let atlas_row = ((origin[2] + local_z) * atlas_dim + origin[1] + local_y)
                     * atlas_dim
                     + origin[0];
-                for local_x in 0..edge {
-                    if (word >> local_x) & 1 == 1 {
-                        bytes[atlas_row + local_x] = SCULPTED_BRICK_OCCUPIED;
-                    }
-                }
+                expand_row_word_into(word, &mut bytes[atlas_row..atlas_row + edge]);
             }
         }
     }
@@ -1382,9 +1403,12 @@ impl IncrementalBrickField {
     /// a build plus a mirror seeded from it. Slots are the build's dense `0..sculpted_count`;
     /// the free-list starts empty.
     pub fn from_wholesale(build: BrickFieldBuild) -> (Self, SculptedAtlasPayload) {
+        // Re-derive the bit tiles from the build's flat atlas bytes (the one O(sculpted)
+        // seeding cost) — the entry for callers that hold ONLY a `BrickFieldBuild` (the
+        // golden `shot` tool, the parity/perf tests). The live worker/orchestrator wholesale
+        // path instead calls [`from_wholesale_with_tiles`], MOVING the tiles the build just
+        // rasterised straight in (no re-gather, no re-bit-pack).
         let sculpted_count = build.sculpted_brick_count();
-        // Unpack the flat atlas bytes into the mirror's bit tiles BEFORE moving the blob into
-        // the payload (the one O(sculpted) seeding cost, unchanged from before).
         let slot_tiles: Vec<BrickOccupancyTile> = (0..sculpted_count as u32)
             .map(|slot| {
                 BrickOccupancyTile::from_bytes(
@@ -1393,6 +1417,26 @@ impl IncrementalBrickField {
                 )
             })
             .collect();
+        Self::from_wholesale_with_tiles(build, slot_tiles)
+    }
+
+    /// Seed the incremental field from a wholesale build AND its already-rasterised per-slot
+    /// occupancy tiles (dense slot order), MOVING both in — the zero-re-derive path for the
+    /// live worker/orchestrator wholesale build. [`build_brick_field_with_tiles`] returns the
+    /// build alongside the very tiles it rasterised; handing them here skips the
+    /// [`from_wholesale`] re-gather (`sculpted_brick_occupancy` per slot) + re-bit-pack of
+    /// bytes the packer just produced. The tiles MUST be the build's own sculpted tiles (one
+    /// per sculpted record, slot order); a debug assert pins the count.
+    pub fn from_wholesale_with_tiles(
+        build: BrickFieldBuild,
+        slot_tiles: Vec<BrickOccupancyTile>,
+    ) -> (Self, SculptedAtlasPayload) {
+        let sculpted_count = build.sculpted_brick_count();
+        debug_assert_eq!(
+            slot_tiles.len(),
+            sculpted_count,
+            "the carried tiles must be exactly the build's sculpted slots (dense 0..count)"
+        );
         let BrickFieldBuild {
             brick_records,
             sculpted_atlas_bytes,
@@ -1402,9 +1446,11 @@ impl IncrementalBrickField {
         } = build;
         let payload = SculptedAtlasPayload {
             bytes: sculpted_atlas_bytes,
-            atlas_dim_voxels,
-            bricks_per_axis,
-            brick_edge_voxels,
+            geometry: SculptedAtlasGeometry {
+                bricks_per_axis,
+                atlas_dim_voxels,
+                brick_edge_voxels,
+            },
             sculpted_slot_count: sculpted_count as u32,
         };
         let mirror = Self {
@@ -1460,9 +1506,11 @@ impl IncrementalBrickField {
             pack_sculpted_atlas(&self.slot_tiles, self.brick_edge_voxels);
         SculptedAtlasPayload {
             bytes,
-            atlas_dim_voxels,
-            bricks_per_axis,
-            brick_edge_voxels: self.brick_edge_voxels,
+            geometry: SculptedAtlasGeometry {
+                bricks_per_axis,
+                atlas_dim_voxels,
+                brick_edge_voxels: self.brick_edge_voxels,
+            },
             sculpted_slot_count: self.sculpted_brick_count() as u32,
         }
     }
@@ -1706,7 +1754,7 @@ pub fn upload_brick_atlas(
     queue: &wgpu::Queue,
     atlas: &SculptedAtlasPayload,
 ) -> wgpu::Texture {
-    let atlas_dim = atlas.atlas_dim_voxels.max(1);
+    let atlas_dim = atlas.geometry.atlas_dim_voxels.max(1);
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("brick-field sculpted atlas"),
         size: wgpu::Extent3d {
@@ -1723,7 +1771,7 @@ pub fn upload_brick_atlas(
             | wgpu::TextureUsages::COPY_SRC,
         view_formats: &[],
     });
-    if atlas.atlas_dim_voxels > 0 {
+    if atlas.geometry.atlas_dim_voxels > 0 {
         queue.write_texture(
             wgpu::TexelCopyTextureInfo {
                 texture: &texture,

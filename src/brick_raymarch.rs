@@ -469,13 +469,15 @@ impl BrickRaymarchRenderer {
         });
         let empty_atlas = SculptedAtlasPayload {
             bytes: Vec::new(),
-            atlas_dim_voxels: 0,
-            bricks_per_axis: 0,
-            brick_edge_voxels: 1,
+            geometry: crate::brick_field::SculptedAtlasGeometry {
+                bricks_per_axis: 0,
+                atlas_dim_voxels: 0,
+                brick_edge_voxels: 1,
+            },
             sculpted_slot_count: 0,
         };
         let atlas_texture = upload_brick_atlas(device, queue, &empty_atlas);
-        let atlas_texture_dim = empty_atlas.atlas_dim_voxels.max(1);
+        let atlas_texture_dim = empty_atlas.geometry.atlas_dim_voxels.max(1);
         let atlas_view = atlas_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         // Placeholder clip-map key buffers (count 0 ⇒ the shader never reads them).
@@ -946,7 +948,7 @@ impl BrickRaymarchRenderer {
         // every sculpted slot — the from-scratch / scene-load / gate-re-engage path.
         let atlas_texture = upload_brick_atlas(device, queue, atlas);
         self.atlas_texture = atlas_texture;
-        self.atlas_texture_dim = atlas.atlas_dim_voxels.max(1);
+        self.atlas_texture_dim = atlas.geometry.atlas_dim_voxels.max(1);
         self.last_atlas_slots_written = atlas.sculpted_slot_count;
         let atlas_view = self
             .atlas_texture
@@ -955,8 +957,8 @@ impl BrickRaymarchRenderer {
             device,
             &atlas_view,
             records,
-            atlas.brick_edge_voxels,
-            atlas.bricks_per_axis,
+            atlas.geometry.brick_edge_voxels,
+            atlas.geometry.bricks_per_axis,
             gpu_records,
             pyramid,
             recentre_voxels,

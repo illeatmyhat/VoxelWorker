@@ -17,7 +17,7 @@
 use std::sync::Arc;
 
 use crate::{
-    build_brick_field, route_brick_rebuild, route_mesh_build, spawn_brick_worker,
+    build_brick_field_with_tiles, route_brick_rebuild, route_mesh_build, spawn_brick_worker,
     spawn_geometry_worker, BrickFieldUpdate, BrickRaymarchRenderer,
     BrickRebuildAction, BrickRebuildOutcome, BrickRebuildRequest, BrickWorker, CuboidMeshRenderer,
     EditShape, GenerationTracker, GeometryRebuildRequest, GeometryWorker, IncrementalBrickField,
@@ -230,14 +230,16 @@ impl DisplayOrchestrator {
                 // a mixed-material scene keeps the mesh display.
                 brick_representable_overlay(two_layer_chunks)
             {
-                let build = build_brick_field(two_layer_chunks, density);
+                let (build, slot_tiles) = build_brick_field_with_tiles(two_layer_chunks, density);
                 if !build.brick_records.is_empty() {
                     let mut renderer =
                         BrickRaymarchRenderer::new(&device, &queue, color_format);
                     let pyramid = ClipmapPyramid::from_chunks(two_layer_chunks);
                     // Seed the mirror (single owner) BY MOVE and install from its records +
-                    // upload payload — one copy of the field (item 9).
-                    let (mirror, atlas) = IncrementalBrickField::from_wholesale(build);
+                    // upload payload — one copy of the field (item 9). The build's rasterised
+                    // tiles move straight into the mirror's slots (no from-atlas re-derive).
+                    let (mirror, atlas) =
+                        IncrementalBrickField::from_wholesale_with_tiles(build, slot_tiles);
                     // The record set is surface-only by construction (ADR 0011 interior
                     // elision fused into `build_brick_field`) — a plain 1:1 pack.
                     let gpu_records = pack_gpu_records(mirror.records(), |_| false);
@@ -612,12 +614,14 @@ impl DisplayOrchestrator {
                     // Wholesale (re)build; RESET the mirror BY MOVE (records move into the
                     // mirror, atlas bytes into the upload payload) so the next incremental edit
                     // patches from a known-good full field.
-                    let build = build_brick_field(&two_layer_chunks, density);
+                    let (build, slot_tiles) =
+                        build_brick_field_with_tiles(&two_layer_chunks, density);
                     if build.brick_records.is_empty() {
                         self.incremental_brick_field = None;
                         (None, None)
                     } else {
-                        let (mirror, atlas) = IncrementalBrickField::from_wholesale(build);
+                        let (mirror, atlas) =
+                            IncrementalBrickField::from_wholesale_with_tiles(build, slot_tiles);
                         self.incremental_brick_field = Some(mirror);
                         (None, Some(atlas))
                     }
@@ -1030,11 +1034,7 @@ impl DisplayOrchestrator {
                     } = *install;
                     // The mirror is the single owner; install reads its records + the upload
                     // payload the worker moved out of the build alongside it (item 9).
-                    self.incremental_brick_field = Some(mirror);
-                    let mirror = self
-                        .incremental_brick_field
-                        .as_ref()
-                        .expect("just stored the mirror");
+                    let mirror = self.incremental_brick_field.insert(mirror);
                     // Wholesale semantics: always a fresh INSTALL (never a patch) — the
                     // worker built the complete field, and a cleared/stale resident field
                     // must not be patched (the F2 gate's lesson).

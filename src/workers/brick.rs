@@ -37,8 +37,10 @@
 
 use std::sync::Arc;
 
+#[cfg(test)]
+use crate::brick_field::build_brick_field;
 use crate::brick_field::{
-    build_brick_field, ClipmapPyramid, IncrementalBrickField, SculptedAtlasPayload,
+    build_brick_field_with_tiles, ClipmapPyramid, IncrementalBrickField, SculptedAtlasPayload,
 };
 use crate::brick_raymarch::{brick_representable_overlay, pack_gpu_records, BrickGpuRecord};
 use crate::two_layer_store::TwoLayerChunk;
@@ -133,16 +135,19 @@ pub struct BrickRebuildResult {
 /// build-equivalence test). Factored out so the worker loop and the equivalence test
 /// share one entry, like [`build_geometry`](crate::workers::geometry::build_geometry).
 pub fn build_brick_rebuild(request: &BrickRebuildRequest) -> BrickRebuildOutcome {
-    let build = build_brick_field(&request.two_layer_chunks, request.density);
+    let (build, slot_tiles) =
+        build_brick_field_with_tiles(&request.two_layer_chunks, request.density);
     // Check emptiness BEFORE constructing the mirror (as before) — an empty scene ships no field.
     if build.brick_records.is_empty() {
         return BrickRebuildOutcome::Empty;
     }
     // Seed the fresh mirror from the wholesale build BY MOVE (item 9: the records move in, the
     // atlas bytes move into the upload payload — one copy of the field, not a build plus a
-    // mirror seeded from it). The mirror is the single owner; the payload is only used when
-    // display artifacts are wanted (a non-gpu MirrorOnly build simply drops it).
-    let (mirror, atlas) = IncrementalBrickField::from_wholesale(build);
+    // mirror seeded from it). The build's freshly-rasterised occupancy tiles move straight into
+    // the mirror's slots too, skipping the from-atlas-bytes re-derive. The mirror is the single
+    // owner; the payload is only used when display artifacts are wanted (a non-gpu MirrorOnly
+    // build simply drops it).
+    let (mirror, atlas) = IncrementalBrickField::from_wholesale_with_tiles(build, slot_tiles);
     if !request.build_display_artifacts {
         return BrickRebuildOutcome::MirrorOnly { mirror };
     }
@@ -240,12 +245,10 @@ mod tests {
         } = *install;
         let sync_build = build_brick_field(&chunks, vpb);
         assert_eq!(
-            atlas.bytes, sync_build.sculpted_atlas_bytes,
-            "shipped atlas payload bytes match the synchronous build"
-        );
-        assert_eq!(
-            atlas.atlas_dim_voxels, sync_build.atlas_dim_voxels,
-            "shipped atlas dimension matches the synchronous build"
+            atlas,
+            sync_build.atlas_payload(),
+            "shipped atlas payload matches the synchronous build by FULL struct equality \
+             (bytes + tile geometry: bricks_per_axis / atlas_dim / brick edge + slot count)"
         );
         assert_eq!(
             pyramid,

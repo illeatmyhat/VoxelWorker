@@ -99,8 +99,14 @@ pub fn spawn_vox_export_worker() -> VoxExportWorker {
         } = request;
         // `build_catching`'s generation is a fixed 0: this worker has no supersede
         // generation (the shell serialises — see the module doc). The catch still earns
-        // its keep — a build panic becomes an Err the shell shows, not a dead thread.
-        let built = build_catching(0, move || {
+        // its keep — a panic anywhere below becomes an Err the shell shows, not a dead
+        // thread that would wedge `export_outstanding` forever.
+        //
+        // The ENTIRE job — stream + build + write — runs inside the ONE catch, so even a
+        // serialisation/IO panic in `write` (not just an `io::Error`) still delivers a
+        // `VoxExportResult` and re-enables the Export button. `build_catching` maps the
+        // panic case to `None`, which becomes the "panicked" Err below.
+        let built: Option<Result<VoxExportSummary, String>> = build_catching(0, move || {
             let two_layer = TwoLayerStore::enabled();
             let region_dimensions = scene.placed_region_dimensions(density);
             let mut builder = VoxExportBuilder::new(region_dimensions, palette_colors);
@@ -109,11 +115,8 @@ pub fn spawn_vox_export_worker() -> VoxExportWorker {
                 progress_chunks.fetch_add(1, Ordering::Relaxed);
             })
             .expect("the two-layer capability is enabled");
-            builder.finish()
-        });
-        let outcome = match built {
-            None => Err("export panicked — see stderr".to_string()),
-            Some(export) => match export.write(&path) {
+            let export = builder.finish();
+            match export.write(&path) {
                 Ok(bytes) => Ok(VoxExportSummary {
                     path,
                     voxel_count: export.voxel_count(),
@@ -121,8 +124,10 @@ pub fn spawn_vox_export_worker() -> VoxExportWorker {
                     bytes,
                 }),
                 Err(error) => Err(error.to_string()),
-            },
-        };
+            }
+        });
+        // A build panic (`None`) still ships a result — never a silently wedged export.
+        let outcome = built.unwrap_or_else(|| Err("export panicked — see stderr".to_string()));
         VoxExportResult { outcome }
     })
 }

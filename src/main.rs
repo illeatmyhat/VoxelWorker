@@ -149,6 +149,14 @@ struct WindowedState {
     /// `eprintln!`), plus the large-export warning. Shown as small weak text under the
     /// export button once no export is in flight.
     export_status: Option<String>,
+    /// Data-loss guard: set when the user requested a window close WHILE an export was in
+    /// flight. The background export worker is detached, so exiting immediately would kill
+    /// it mid-build/mid-write; instead we DEFER the close and exit once the result lands
+    /// (see `poll_vox_export_worker` / the `RedrawRequested` seam). Escape hatch: a SECOND
+    /// close request while already deferring means the user is insisting — the shell exits
+    /// immediately, and the atomic `.vox` write bounds the damage to "no file", never a
+    /// truncated one.
+    close_requested_while_exporting: bool,
     depth_view: wgpu::TextureView,
     /// 4× MSAA colour target for the 3D pass; resolved into the surface texture.
     msaa_color_view: wgpu::TextureView,
@@ -461,6 +469,7 @@ impl WindowedState {
             export_outstanding: false,
             export_progress: None,
             export_status: None,
+            close_requested_while_exporting: false,
             depth_view,
             msaa_color_view,
             home_view,
@@ -763,6 +772,14 @@ impl WindowedState {
     /// export is a user-chosen file — so the shell serialises instead; see
     /// `workers::export`). The completion/failure readout lands in `poll_vox_export_worker`.
     fn export_vox(&mut self) {
+        // Single-flight invariant (depth-correct guard): only ONE export may be in flight.
+        // The export button is disabled while `export_outstanding`, but guard the dispatch
+        // seam too — a second queued export would be silently drain-to-latest-dropped by
+        // the worker (an export is a user-chosen file, never superseded; see
+        // `workers::export`). Bail before even opening the save dialog.
+        if self.export_outstanding {
+            return;
+        }
         let density = self.panel_state.geometry.voxels_per_block;
         let shape = SdfShape::from_geometry(self.panel_state.geometry.clone());
         // ADR 0010 E4: the old `exceeds_voxel_cap` guard (the dense whole-region 6M
@@ -1593,9 +1610,23 @@ impl ApplicationHandler for App {
 
         match event {
             WindowEvent::CloseRequested => {
-                // M8: persist UI + camera + window size before exiting.
-                state.save_config();
-                event_loop.exit();
+                if state.export_outstanding && !state.close_requested_while_exporting {
+                    // Data-loss guard: a `.vox` export is in flight on the detached worker.
+                    // Exiting now would kill it mid-build/mid-write, so DEFER the close — the
+                    // `RedrawRequested` seam exits once the result lands (poll clears
+                    // `export_outstanding`). Frames keep pumping meanwhile because
+                    // `poll_vox_export_worker` requests a redraw while an export is in flight.
+                    state.close_requested_while_exporting = true;
+                    state.export_status = Some("Finishing export before closing…".to_string());
+                    state.window.request_redraw();
+                } else {
+                    // No export outstanding, OR a SECOND close request while already deferring
+                    // (the user insisting) — exit immediately. The atomic `.vox` write bounds
+                    // the worst case to "no file", never a truncated one.
+                    // M8: persist UI + camera + window size before exiting.
+                    state.save_config();
+                    event_loop.exit();
+                }
             }
             WindowEvent::Resized(new_size) => {
                 state.resize(new_size.width, new_size.height);
@@ -1816,6 +1847,13 @@ impl ApplicationHandler for App {
             }
             WindowEvent::RedrawRequested => {
                 state.render();
+                // Deferred close (data-loss guard): once the export we were waiting on has
+                // landed (`render` → `poll_vox_export_worker` cleared `export_outstanding`),
+                // honour the pending close.
+                if state.close_requested_while_exporting && !state.export_outstanding {
+                    state.save_config();
+                    event_loop.exit();
+                }
             }
             _ => {}
         }
