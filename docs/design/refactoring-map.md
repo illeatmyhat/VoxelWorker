@@ -1,216 +1,147 @@
 # Refactoring map — where the code should be simplified, and why it matters later
 
-**Provenance:** an opinionated survey of the current codebase against the architecture
-described in `docs/architecture/`. Unlike that set, this document is deliberately
-*dated*: it names files, line counts, and duplications as they stand today, and ties
-each proposed action to the work the project is heading into — the sculpt epic, the
-per-voxel material atlas, cheap background workers for export-class jobs, 10k+ scenes,
-and versioned shared documents. Items are ordered by leverage, not effort.
+**Provenance:** an opinionated survey of the codebase against the architecture described
+in `docs/architecture/`. Unlike that set, this document is deliberately *dated*: it names
+files and duplications as they stand, and ties each proposed action to the work the
+project is heading into — the sculpt epic, the per-voxel material atlas, cheap background
+workers for export-class jobs, 10k+ scenes, and versioned shared documents. Items are
+ordered by leverage, not effort.
+
+**Status (2026-07-13):** the structural tier (items 1–4, 6, 7, 11) and the deferred tier
+(5a-tiles, 9, 10a first increment, 12) have been executed; each item below carries its
+outcome. Still open: 5a-measurement (rejected with reasons — see *What not to refactor*),
+5b (waits on measured atlas pressure), 8 (sculpt-design-time), 10a further increments,
+10b.
 
 ---
 
-## 1. One generic worker, three deletions
+## 1. One generic worker, three deletions — **DONE** (`6f895d8`)
 
-`geometry_worker.rs`, `diameter_worker.rs`, and `brick_worker.rs` are three verbatim
+`geometry_worker.rs`, `diameter_worker.rs`, and `brick_worker.rs` were three verbatim
 copies of the same machine: spawn a named thread, channel requests in, drain-to-latest,
-build under panic containment, channel results out, poll without blocking. Only the
-build function and the request/result types differ.
+build under panic containment, channel results out, poll without blocking.
 
-**Action.** Extract `Worker<Request, Result>` (generic over a build closure), keeping
-the three domain modules for their request/result types and pure routing functions.
-Drain-to-latest, panic containment, and thread lifetime become one implementation with
-one set of tests.
+**Outcome.** `Worker<Request, Response>` lives in `src/workers/mod.rs` (generic over a
+build closure); the domain workers are its submodules (`src/workers/{geometry, diameter,
+brick, scan}.rs`). Drain-to-latest, panic containment, and thread lifetime are one
+implementation with one set of tests. The prediction held immediately: the `.vox`
+exporter (`src/workers/export.rs`, `67bd305`) cost exactly a request type and a build
+closure — plus one deliberate divergence worth knowing: an export is a *user-chosen
+file*, so it opts OUT of supersede semantics (the shell serialises with a single-flight
+flag instead; a drain-to-latest drop would silently discard a file the user asked for).
 
-**Why it ties into the plan.** The architecture's answer to "this blocks the UI" is
-always "make it a worker" — the `.vox` exporter is already queued for exactly this
-treatment, and the sculpt epic will want bake/compress workers. Each future worker
-should cost a request type and a build function, not another copy of channel plumbing
-that can drift (the drain and panic policies have already needed fixes; today those
-fixes must be applied three times).
+## 2. Extract the display orchestrator out of `main.rs` — **DONE** (`6ffc553`)
 
-## 2. Extract the display orchestrator out of `main.rs`
+**Outcome.** `DisplayOrchestrator` (`src/display/orchestrator.rs`) owns both renderers
+and every display-state field; the winit shell keeps input, surface, egui, and camera.
+The orchestrator is constructible without a window, and the state machine has its own
+tests (`tests/display_orchestrator.rs`). The review history that motivated this item
+remains the operating rule: every slice touching the orchestrator gets a high-effort
+multi-agent review afterwards — both post-extraction review rounds (2026-07-12/13) still
+found real defects in freshly written shell/export code, so the rule has not aged out.
 
-`main.rs` (~2,700 lines) is a winit shell that has quietly become the owner of the
-display-state machine: two renderers, `mesh_stale`, `brick_display_pending_clear`,
-`brick_fallback_reported`, two generation trackers, two outstanding flags, two install
-seams, engagement predicates, and the startup replica of all of the above built from
-locals before `Self` exists. The pure *decisions* are already extracted and tested
-(`route_mesh_build`, `route_brick_rebuild`, `brick_display_handover`,
-`brick_patch_in_place`) — but the *state they act on* is a constellation of fields on
-the window struct, and every seam that mutates it is hand-wired.
+## 3. One routing policy for all derived artifacts — **DONE** (`c13ace7`)
 
-**Action.** Introduce a `DisplayOrchestrator` owning both renderers and all
-display-state fields, with the install seams, poll handlers, and the
-startup-first-build as methods. The winit shell keeps input, surface, egui, and camera,
-and calls the orchestrator at its (few) integration points. The orchestrator is
-constructible without a window, which makes the state machine — not just its pure
-fragments — unit-testable.
+**Outcome.** One `route_derived_artifact` policy + a per-artifact `DerivedArtifactState`;
+the three former dialects are thin named wrappers. The one real divergence — bricks may
+install a small wholesale rebuild inline mid-flight — survives explicitly as the
+`inline_install_supersedes_in_flight` capability flag rather than as a dialect. The
+decision table is tested once, exhaustively.
 
-**Why it ties into the plan.** The recent review history is the evidence: the last
-change to this state machine shipped with three real transition bugs that only a
-multi-agent review caught, because the state lives too diffusely to reason about
-locally. The per-voxel material atlas will *add* display states (a third representable
-regime), and sculpt will add patch sources. The constellation is at the edge of
-hand-verifiability now; it should become a type before it grows again.
+## 4. Give the display decisions their own module — **DONE** (`aa3e1af`)
 
-## 3. One routing policy for all derived artifacts
+**Outcome.** `src/display/routing.rs` owns every pure display decision and its tests
+(`route_*`, `brick_display_handover`, `brick_patch_in_place`, `GenerationTracker`);
+`src/workers/geometry.rs` is the worker itself.
 
-`route_geometry_rebuild`, `route_mesh_build`, and `route_brick_rebuild` are three
-dialects of a single rule: *patch inline iff the resident artifact is current and the
-edit is localised; otherwise rebuild wholesale, inline below a chunk threshold, async
-above it; while a rebuild is outstanding, never patch.* The dialects differ only in
-which staleness inputs they fold in (mesh staleness, mirror residency, engagement).
+## 5. Bit-per-voxel occupancy under the density bound — **(a-tiles) DONE, (a-measurement) REJECTED, (b) DEFERRED**
 
-**Action.** One `route_derived_artifact(artifact_state, edit_shape, threshold)` policy
-plus a small per-artifact state struct (`current`, `outstanding`, `patchable`). The
-three existing functions become thin, named wrappers or disappear into the
-orchestrator of item 2. The decision table is then tested once, exhaustively.
+The document guarantees density ∈ 1..=64, which entitles occupancy storage to
+word-aligned row bitmasks (one X-row = one `u64`; X is the fastest-varying axis in every
+occupancy layout the codebase has).
 
-**Why it ties into the plan.** Every future derived artifact — the material atlas, an
-export snapshot, a nav/occupancy summary for agents — needs exactly this routing. The
-cost of a fourth hand-written dialect is not writing it; it is that four dialects can
-disagree about the interlock, which is the one rule that must never be dialectal.
+**Outcome (a-tiles, `d3c6bb3`).** The incremental brick mirror's tiles are
+`BrickOccupancyTile` — `edge²` u64 X-row words (8× at density 64, 2× at 16, break-even
+at 8). The GPU atlas stays byte R8; the ONE unpack seam is `pack_sculpted_atlas` /
+`SculptedAtlasPayload`. A byte↔bit parity oracle pins the packing.
 
-## 4. Give the display decisions their own module
+**Outcome (a-measurement): rejected after reading the code** — see *What not to
+refactor* below. The survey's "widest-run becomes shifts, masks, and popcounts" was
+written against an imagined per-voxel path that no longer exists.
 
-The pure display-state functions (`brick_display_handover`, `brick_patch_in_place`,
-`route_mesh_build`, and friends) live in `geometry_worker.rs` for historical reasons.
-That file's name says "background mesh builder"; its contents say "display policy".
+**(b) GPU side — deferred, unchanged:** the atlas becomes row words only when atlas
+pressure is first *measured*; only then decide whether eviction rings are still worth
+building. This is the sculpt epic's VRAM story (bit-packing is an 8× ceiling move before
+any cache policy).
 
-**Action.** A `display_routing.rs` (or the orchestrator module of item 2) owning every
-pure display decision and its tests; `geometry_worker.rs` shrinks to the worker itself
-(or dissolves into item 1's generic worker plus a build function).
+## 6. Split `scene.rs` — **DONE** (`c767f35`)
 
-**Why it ties into the plan.** Pure decision functions are this codebase's best habit —
-they are where the review effort concentrates and where regressions get caught cheaply.
-They deserve an address that tells contributors (and future reviews) where policy
-lives.
+**Outcome.** `scene/` holds `mod` (facade), `graph`, `extent`, `producers`, `spatial`,
+`tests`; the facade re-exports kept all consumers at zero edits. Sculpt's producer arm
+and agent authoring land in the `producers` seam as planned.
 
-## 5. Bit-per-voxel occupancy under the density bound
+## 7. Quarantine the dense oracles by visibility — **DONE** (`72d155c`)
 
-The document now guarantees density ∈ 1..=64, which entitles occupancy storage to
-word-aligned row bitmasks (one row = one `u64`; one row = one native `u32` at density
-≤ 32). Today the sculpted-brick atlas stores one *byte* per voxel (R8), and CPU-side
-occupancy work touches voxels individually.
+**Outcome.** Dense entry points sit behind `#[cfg(any(test, feature = "oracle"))]`; the
+`shot` binary opts in via `required-features = ["oracle"]`; a production call to a dense
+path is a compile error. Dead `app_core::resolve_scene` deleted in the same slice.
 
-**Action.** Migrate carved-block occupancy to bit-per-voxel with word rows, in two
-independent steps: (a) the CPU side — the incremental brick mirror's tiles and the
-occupancy consumed by measurement queries (widest-run becomes shifts, masks, and
-popcounts); (b) the GPU side — the atlas becomes a storage buffer of row words (or a
-packed R32Uint texture), and the in-brick ray step tests bits. Each step carries its
-parity oracle: byte-atlas vs bit-atlas must be hit-identical.
+## 8. Decide the fate of the display-less brick mirror — **OPEN (by design)**
 
-**Why it ties into the plan.** This is the sculpt epic's memory story. At density 16 a
-carved block costs 4 KB in R8; a million chiseled blocks — a realistic sculpted build —
-is ~4 GB of VRAM, which is at or past the ceiling of the target hardware. Bit-packing
-is an 8× cut (~512 MB) *before* any eviction scheme is needed, and it makes the
-measurement path faster on exactly the anisotropic 10k+ scenes the project aims at.
-Do (a) before sculpt ships; do (b) when atlas pressure is first measured, and only
-then decide whether eviction rings are still worth building.
+On builds without the GPU feature, the incremental brick mirror is still maintained and
+nothing consumes it. **Decide at sculpt-design time, not before:** if sculpt consumes the
+mirror on all builds, keep it and document the consumer; if not, gate it to the GPU
+feature. Do not leave it consumer-less past that decision (the no-husk rule).
 
-## 6. Split `scene.rs`
+## 9. Ship one copy of the field across the worker channel — **DONE, WIDENED** (`d2a0c37`)
 
-At ~6,200 lines, `scene.rs` holds four separable concerns: the node graph and
-selection; the leaf producers and their interval bounds; units/measurement; and the
-spatial-index / covering-range queries.
+**Outcome.** The mirror (`IncrementalBrickField`) is the single CPU owner of records +
+tiles. `from_wholesale` consumes the wholesale build **by move** (tiles carried by move
+too — no byte round-trip); `BrickDisplayInstall` ships `{atlas payload, gpu_records,
+pyramid, overlay, mirror}` with no duplicate `build`; the renderer seams take
+`&[BrickRecord]` + `SculptedAtlasPayload` instead of a materialised `BrickFieldBuild`.
+The widening: executing the item exposed that every INLINE incremental edit was paying a
+full `to_build()` — all records cloned + the whole atlas re-packed on the event-loop
+thread, per edit — which the map had not seen. That call is deleted; `to_build()`
+survives only as the parity-oracle materialisation (every remaining caller is a test).
 
-**Action.** Four modules under a `scene/` directory along exactly those seams. No
-behaviour change; the seams already exist as comment banners.
+## 10. Type-enforce the frame law, then machine-check the pure kernel — **(a) BEGUN, (b) FUTURE**
 
-**Why it ties into the plan.** Sculpt adds a producer arm (the sparse voxel delta) and
-agent authoring adds intent surface; both land in the producer seam. A file this size
-taxes every future change with navigation and merge friction — and it is the file the
-versioned-document format work will live in, which is reason enough to make its
-structure legible first.
+**(a) Frame newtypes — first increment done (`26cfd81`, `de3da33`).** `RecentreVoxels`
+(spatial-primitive layer, `src/voxel.rs`; no arithmetic, `new()` in / `voxels()` out) is
+minted at the ONE origin — `Scene::recentre_voxels_for_resolve` — and carried through
+the orchestrator, both worker channels, and the renderer install seams; it unwraps once
+at uniform packing. Deliberately still raw: `recentre_shift_voxels` (a frame *delta*)
+and `previous_recentre_voxels` (a comparison cache) — positional arithmetic, not
+transport — and the dense-oracle grid. **Next increments:** `cuboid_mesh.rs` and
+`two_layer_store.rs` consume the newtype instead of unwrapping at their boundaries; then
+`scene/` internals; then the next frame-bearing value (the sculpt-delta Intent's
+addresses, per ADR 0008, when sculpt lands).
 
-## 7. Quarantine the dense oracles by visibility
+**(b) Verify the kernel — future, unchanged in shape:** Kani for the packed world-key
+round-trip and the row-bitmask operations (now real code, from 5a); Creusot/Verus for
+the generation-tracker supersede protocol and the routing table (now ONE table, from
+item 3); a small Lean model for interval-bound conservatism. Still deliberately not
+attempted: proving the GPU side. That stance got fresh evidence this cycle — the
+long-standing nondeterministic shader-compile flake was diagnosed as legacy FXC
+nondeterministically rejecting byte-identical HLSL (fixed at the WGSL layer, `d3ea9cf`);
+no source-level theorem would have touched it, which is why the oracle gates remain
+permanent regardless of how far verification goes.
 
-The dense-grid code (`store.rs` and friends) survives correctly as test oracles and in
-the headless `shot` binary. Nothing *structurally* prevents a production path from
-reaching for a dense resolve again; the law "memory follows the surface" is enforced
-by review.
+## 11. A common fixture crate for integration tests — **DONE** (`6f895d8`, with item 1)
 
-**Action.** Move oracle-only entry points behind `#[cfg(any(test, feature = "oracle"))]`
-(the `shot` binary opting into the feature), so a production call to a dense path is a
-compile error, not a review catch.
+**Outcome.** `tests/common/` owns the scene-fixture builders and the bounded
+`poll_until`; the async worker suites and the orchestrator tests share it.
 
-**Why it ties into the plan.** The law has been re-broken before by well-meaning
-features (fog, startup, measurement all grew dense paths at some point and each cost a
-session to retire). Scale (10k+ anisotropic scenes) makes any regression here an OOM,
-not a slowdown. Compile-time enforcement is cheap and permanent.
+## 12. Keep the documentation contract honest — **DONE / STANDING**
 
-## 8. Decide the fate of the display-less brick mirror
-
-On builds without the GPU feature, the incremental brick mirror is still maintained —
-built wholesale on a worker, patched per edit — and *nothing consumes it*. It is kept
-warm on the expectation that sculpt's delta pipeline will read it.
-
-**Action.** Decide at sculpt-design time, not before: if sculpt consumes the mirror on
-all builds, keep it and document the consumer; if not, gate the mirror to the GPU
-feature and let non-GPU builds skip the work entirely. Do not leave it consumer-less
-past that decision — the project's no-husk rule exists because unused-but-maintained
-machinery is where staleness bugs breed.
-
-## 9. Ship one copy of the field across the worker channel
-
-A finished wholesale brick build sends both the field (`BrickFieldBuild`) and the
-incremental mirror seeded from it — two deep copies of the same records and tiles
-crossing the channel and coexisting until install.
-
-**Action.** Make the mirror the single owner and let the install borrow what it needs
-from it (or construct the mirror from the field by move). Transient peak memory halves;
-one equality invariant ("mirror round-trips the field") stops needing maintenance.
-
-**Why it ties into the plan.** Minor today (~tens of MB transient at the largest
-scenes); it becomes real when sculpted tiles dominate the payload, which is exactly
-what sculpt does.
-
-## 10. Type-enforce the frame law, then machine-check the pure kernel
-
-Two escalations of the proof doctrine (`docs/architecture/05-proof.md`), in order of
-return on effort:
-
-**(a) Frame newtypes.** The frame law — a spatial value carries the frame it was
-authored in — is today enforced by doc-comments and review. Rust can enforce it:
-wrap lattice coordinates in newtypes tagged by frame (`WorldVoxel`, `ChunkLocal`,
-`Recentred`), with explicit, named conversions that require the recentre value. The
-half-voxel-drift class of bug becomes a compile error. This is mechanical, incremental
-(one seam at a time, starting with the recentre-bearing worker requests), and pays for
-itself the first time a new producer or intent carries a coordinate.
-
-**(b) Verify the kernel.** The pure kernel is small and stable enough to
-machine-check with Rust-native tools — Kani (bounded model checking) for the packed
-world-key encode/decode round-trip and the row-bitmask operations of item 5; Creusot
-or Verus (deductive verification) for the generation-tracker supersede protocol and
-the routing decision tables. The interval-bound *conservatism* theorem and the
-patch-equals-rebuild algebra are better suited to a small Lean (or similar) model of
-the evaluator, proven once and kept as the mathematical spec the Rust implementation
-mirrors — with the existing parity gates serving as the bridge between model and
-implementation. What this deliberately does **not** attempt: proving the GPU side.
-Shader compilers and drivers sit below any source-level proof (the observed
-nondeterministic shader-compile flake is a *driver-toolchain* defect no theorem would
-have touched), which is why the oracle gates remain permanent regardless of how far
-verification goes.
-
-## 11. A common fixture crate for integration tests
-
-The box-scene builders, threshold-sized fixtures, and bounded poll loops are duplicated
-across `tests/geometry_worker_async.rs`, `tests/brick_worker_async.rs`, and unit tests.
-
-**Action.** A `tests/common/` module (or a `testsupport` crate feature) with the
-scene-fixture builders and a generic `poll_until_result`. Worth doing opportunistically
-with item 1, whose generic worker will want a generic test harness anyway.
-
-## 12. Keep the documentation contract honest
-
-With `docs/architecture/` as the living description, the documentation roles are:
-`CONTEXT.md` defines terms; `docs/adr/` records *decisions and their reasoning* at the
-moment they were made (append-only, never retconned); `docs/architecture/` describes
-the *current shape* and is edited freely; `docs/design/` holds analysis inputs like
-this one. Two immediate alignments: `CONTEXT.md` still opens with a glossary section
-for a subsystem that no longer exists (the per-chunk volumetric fog terms — apron,
-sliver, fog residency), which should be pruned to the terms the system still uses; and
-new ADRs should describe deltas against the architecture set rather than restating it.
+The roles stand: `CONTEXT.md` defines terms; `docs/adr/` records decisions append-only;
+`docs/architecture/` describes the current shape and is edited freely; `docs/design/`
+holds dated analysis inputs like this one. The specific alignment this item named —
+pruning the dead volumetric-fog glossary from `CONTEXT.md` — was already done when
+checked (one legitimate historical mention remains inside an ADR reference). The
+standing rules: new ADRs describe deltas against the architecture set; new doc comments
+reference architecture chapters, not ADR numbers.
 
 ---
 
@@ -218,15 +149,26 @@ new ADRs should describe deltas against the architecture set rather than restati
 
 Restraint is part of the map:
 
+- **Do not bit-pack the measurement path** (the rejected half of item 5a). The streamed
+  widest-run is rayon-parallel across bands; coarse blocks contribute one *analytic*
+  X-span per block-row (no per-voxel work at all); boundary cuboids expand to X-spans
+  per row into sorted, coalescing interval lists. X-runs cross block and chunk
+  boundaries, which interval lists merge naturally and per-block u64 rows cannot —
+  word rows would ADD cross-word run-merging machinery for no measured win. The
+  representation to beat is intervals, not bytes.
 - **Do not merge the edit and render broadphases.** They answer different questions at
   different tempos; a unified spatial index would couple per-edit statelessness to
   per-frame residency and inherit both invalidation problems.
-- **Do not sunset the cuboid mesh.** It is the understudy display and the pixel
-  oracle; both roles are permanent, and "one display path" is a false economy that
-  costs the proof doctrine its independent witness.
-- **Do not build atlas eviction (residency rings) ahead of measured pressure.**
-  Item 5's bit-packing moves the ceiling 8× for a fraction of the complexity; measure
-  again on the far side before adding cache policy.
+- **Do not sunset the cuboid mesh.** It is the understudy display and the pixel oracle;
+  both roles are permanent, and "one display path" is a false economy that costs the
+  proof doctrine its independent witness.
+- **Do not build atlas eviction (residency rings) ahead of measured pressure.** Item 5's
+  bit-packing moved the CPU ceiling 8×; measure the GPU side before adding cache policy.
 - **Do not generalize the intent system for collaboration.** Shared documents need
   versioning at the *file* level; the single-writer intent door is a feature, not a
   bottleneck.
+- **Do not write through dynamically indexed vector/array components in WGSL.** Learned
+  from the X3500 diagnosis (`d3ea9cf`): naga lowers such stores to HLSL l-values that
+  legacy FXC nondeterministically rejects. Dynamic reads are fine; stores use masked
+  `select`. This is a shader-authoring rule, not a refactor target — new shader code
+  must be born conforming.
