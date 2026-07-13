@@ -20,7 +20,7 @@ use voxel_worker::{
     chrome_zone_left_click_action, classify_cube_point, create_depth_view, create_msaa_color_view,
     procedural_material_average_color, render_frame,
     run_egui_frame, AppConfig, AppCore, ChromeClickAction, CubeChromeZone, CubeFace, CubeRect,
-    RebuildOutcome, RebuildOutput,
+    RebuildOutcome, RebuildOutput, RecentreVoxels,
     EguiPaintBridge,
     FrameOverlays,
     TransformGizmoRenderer,
@@ -105,7 +105,7 @@ struct WindowedState {
     /// (floating origin, ADR 0008). The dense `VoxelGrid` husk is GONE — the camera
     /// auto-frame and layer scrubber read these scalars directly.
     region_dimensions: [u32; 3],
-    recentre_voxels: [i64; 3],
+    recentre_voxels: RecentreVoxels,
     /// The headless orchestrator (ADR 0003 keystone): owns the per-chunk resolve
     /// store (issue #27 S2 — the resolve mechanism behind `rebuild_geometry`, with
     /// issue #27 S3's TARGETED invalidation that diffs the scene's leaf spatial
@@ -366,8 +366,9 @@ impl WindowedState {
             startup_density,
             0,
         );
-        let startup_recentre =
-            panel_state.scene.recentre_voxels_for_resolve(startup_density);
+        let startup_recentre = RecentreVoxels::new(
+            panel_state.scene.recentre_voxels_for_resolve(startup_density),
+        );
         // Map item 2: the display-state machine builds itself from the startup covering set —
         // the brick engagement decision, both worker spawns, the (possibly skipped-empty)
         // cuboid mesh, and all display bookkeeping. Cloned wgpu handles keep the shell's
@@ -511,7 +512,7 @@ impl WindowedState {
         panel_state: &'a PanelState,
         two_layer_cache: &'a mut voxel_worker::TwoLayerResidentCache,
         region_dimensions: [u32; 3],
-        recentre_voxels: [i64; 3],
+        recentre_voxels: RecentreVoxels,
         band: LayerBand,
     ) -> DisplayRefreshContext<'a> {
         DisplayRefreshContext {

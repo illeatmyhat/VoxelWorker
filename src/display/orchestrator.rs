@@ -21,8 +21,8 @@ use crate::{
     spawn_geometry_worker, BrickFieldUpdate, BrickRaymarchRenderer,
     BrickRebuildAction, BrickRebuildOutcome, BrickRebuildRequest, BrickWorker, CuboidMeshRenderer,
     EditShape, GenerationTracker, GeometryRebuildRequest, GeometryWorker, IncrementalBrickField,
-    LayerBand, MeshBuildRoute, RebuildRoute, Scene, SculptedAtlasPayload, TwoLayerChunk,
-    TwoLayerResidentCache, ASYNC_REBUILD_CHUNK_THRESHOLD,
+    LayerBand, MeshBuildRoute, RebuildRoute, RecentreVoxels, Scene, SculptedAtlasPayload,
+    TwoLayerChunk, TwoLayerResidentCache, ASYNC_REBUILD_CHUNK_THRESHOLD,
 };
 // Consumed only by the GPU display-install paths (compiled out of a non-gpu build, where the
 // orchestrator maintains just the CPU brick mirror).
@@ -49,8 +49,9 @@ pub struct DisplayRefreshContext<'a> {
     pub density: u32,
     /// The last rebuild's region dimensions (voxels) — the mesh's frame parameters.
     pub region_dimensions: [u32; 3],
-    /// The last rebuild's composite recentre (floating origin, voxels).
-    pub recentre_voxels: [i64; 3],
+    /// The last rebuild's composite recentre (floating origin, voxels), carried as the
+    /// frame value [`RecentreVoxels`].
+    pub recentre_voxels: RecentreVoxels,
     /// The effective layer-clip band the render path will apply this frame (so a stale-mesh
     /// rebuild builds already clipped to it — no swap-frame re-mesh).
     pub band: LayerBand,
@@ -176,7 +177,7 @@ impl DisplayOrchestrator {
         color_format: wgpu::TextureFormat,
         two_layer_chunks: &[([i32; 3], Arc<TwoLayerChunk>)],
         region_dimensions: [u32; 3],
-        recentre_voxels: [i64; 3],
+        recentre_voxels: RecentreVoxels,
         density: u32,
         debug_face_orientation: bool,
     ) -> Self {
@@ -296,7 +297,7 @@ impl DisplayOrchestrator {
                 two_layer_chunks
             },
             region_dimensions,
-            recentre_voxels,
+            recentre_voxels.voxels(),
             density,
         );
 
@@ -432,7 +433,7 @@ impl DisplayOrchestrator {
         brick_async_outstanding: &mut bool,
         two_layer_chunks: Vec<([i32; 3], Arc<TwoLayerChunk>)>,
         density: u32,
-        recentre_voxels: [i64; 3],
+        recentre_voxels: RecentreVoxels,
     ) {
         let generation = brick_generation.next_generation();
         *brick_async_outstanding = true;
@@ -459,7 +460,7 @@ impl DisplayOrchestrator {
         &mut self,
         two_layer_chunks: Vec<([i32; 3], Arc<TwoLayerChunk>)>,
         grid_dimensions: [u32; 3],
-        recentre_voxels: [i64; 3],
+        recentre_voxels: RecentreVoxels,
         density: u32,
         band: LayerBand,
     ) {
@@ -488,7 +489,7 @@ impl DisplayOrchestrator {
         incremental_dirty_chunks: Option<Vec<[i32; 3]>>,
         chunkable: bool,
         grid_dimensions: [u32; 3],
-        recentre_voxels: [i64; 3],
+        recentre_voxels: RecentreVoxels,
         density: u32,
         band: LayerBand,
         debug_face_orientation: bool,
@@ -820,7 +821,7 @@ impl DisplayOrchestrator {
                     &self.device,
                     &two_layer_chunks,
                     grid_dimensions,
-                    recentre_voxels,
+                    recentre_voxels.voxels(),
                     density,
                     &dirty,
                 );
@@ -866,7 +867,7 @@ impl DisplayOrchestrator {
                     self.color_format,
                     &two_layer_chunks,
                     grid_dimensions,
-                    recentre_voxels,
+                    recentre_voxels.voxels(),
                     density,
                     band,
                 );
@@ -1156,7 +1157,7 @@ impl DisplayOrchestrator {
                 self.color_format,
                 &chunks,
                 grid_dimensions,
-                recentre,
+                recentre.voxels(),
                 density,
                 band,
             );

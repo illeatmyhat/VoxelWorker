@@ -72,6 +72,7 @@ mod cell_interval_parity_tests;
 
 pub use app_core::{
     default_replay_seed_scene, replay_intent_script, AppCore, RebuildOutcome, RebuildOutput,
+    RecentreVoxels,
 };
 pub use store::{ChunkCacheKey, ChunkResolveCache, Store};
 pub use brick_field::{

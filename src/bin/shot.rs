@@ -1712,7 +1712,7 @@ async fn run_capture(options: ShotOptions) {
                         &atlas,
                         &gpu_records,
                         &pyramid,
-                        grid.recentre_voxels,
+                        voxel_worker::RecentreVoxels::new(grid.recentre_voxels),
                         overlay_active,
                     );
                     brick_raymarch_renderer = Some(renderer);

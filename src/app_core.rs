@@ -63,6 +63,39 @@ pub struct AppCore {
     command_stack: CommandStack,
 }
 
+/// The composite floating-origin recentre, in voxels — the frame value every display
+/// artifact of one rebuild is resolved in.
+///
+/// **The frame law (docs/architecture, the voxel-frame invariant).** A spatial value
+/// CARRIES the frame it was authored in; consumers decode with it and never re-derive it.
+/// A build's install must use the recentre THAT build was resolved at — so the recentre
+/// travels end-to-end (resolve → orchestrator → the async worker channels → the GPU
+/// install) as this newtype, and the compiler enforces that the install uses the request's
+/// recentre rather than a same-shaped `[i64; 3]` from somewhere else.
+///
+/// Transport only this increment: it is `Copy`, has no arithmetic, and [`voxels`] is the
+/// ONE way back to the raw triple — unwrapped explicitly at the mesh / two-layer / scene
+/// boundaries that still speak `[i64; 3]`.
+///
+/// [`voxels`]: RecentreVoxels::voxels
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct RecentreVoxels([i64; 3]);
+
+impl RecentreVoxels {
+    /// Carry a resolve's composite recentre as its frame value. The one constructor —
+    /// at the resolve origin (and, mechanically, at the test/boundary sites that mint a
+    /// known recentre).
+    pub fn new(voxels: [i64; 3]) -> Self {
+        Self(voxels)
+    }
+
+    /// The raw voxel triple — the single consumption door, called exactly at the mesh /
+    /// two-layer / scene boundaries that still take `[i64; 3]` and at the uniform packing.
+    pub fn voxels(&self) -> [i64; 3] {
+        self.0
+    }
+}
+
 /// The headless resolve output of a geometry [`rebuild`](AppCore::rebuild) (A2e;
 /// ADR 0010 E5). Holds ONLY the **two-layer** covering chunks (owned) the shell meshes
 /// through
@@ -96,8 +129,10 @@ pub struct RebuildOutput {
     /// makes it an O(chunks) refcount bump and composes with the brick readers directly.
     pub two_layer_chunks: Vec<([i32; 3], Arc<TwoLayerChunk>)>,
     /// The composite recentre (floating origin, voxels; ADR 0008) the two-layer mesh
-    /// lands its geometry in — the SAME frame the brick sink packs its records in.
-    pub recentre_voxels: [i64; 3],
+    /// lands its geometry in — the SAME frame the brick sink packs its records in. Carried
+    /// as [`RecentreVoxels`] so the frame value travels compile-checked through the async
+    /// display flow (the mesh / two-layer boundaries unwrap it with `.voxels()`).
+    pub recentre_voxels: RecentreVoxels,
     /// **The chunk-granular incremental GPU-buffer re-mesh hint (issue #55).** `Some(dirty)`
     /// when this rebuild LOCALISED — the edit's dirty world-AABB evicted exactly the `dirty`
     /// chunks (from [`TwoLayerResidentCache::invalidate_aabb`]) and the density did NOT change
@@ -970,7 +1005,7 @@ impl AppCore {
         RebuildOutcome::Built(RebuildOutput {
             region_dimensions,
             two_layer_chunks,
-            recentre_voxels: new_recentre,
+            recentre_voxels: RecentreVoxels::new(new_recentre),
             recentre_shift_voxels,
             incremental_dirty_chunks,
         })
@@ -1159,6 +1194,18 @@ mod replay_tests {
     use crate::intent::{Intent, NodeSpec};
     use crate::scene::NodeContent;
     use crate::voxel::{SdfShape, ShapeKind};
+
+    /// The `RecentreVoxels` frame newtype round-trips through its one door: whatever
+    /// triple it carries is exactly what `voxels()` hands back (the accessor contract the
+    /// mesh / two-layer / uniform boundaries unwrap with), and equal triples compare equal.
+    #[test]
+    fn recentre_voxels_round_trips_through_voxels() {
+        for triple in [[0, 0, 0], [7, -3, 11], [i64::MIN, 0, i64::MAX]] {
+            assert_eq!(RecentreVoxels::new(triple).voxels(), triple);
+        }
+        assert_eq!(RecentreVoxels::new([1, 2, 3]), RecentreVoxels::new([1, 2, 3]));
+        assert_ne!(RecentreVoxels::new([1, 2, 3]), RecentreVoxels::new([1, 2, 4]));
+    }
 
     /// A small box Tool shape for the script fixtures (3 blocks at the default
     /// density 16 → 48 voxels per axis).
@@ -2114,7 +2161,7 @@ mod undo_tests {
                 let grid = crate::two_layer_store::expand_resident_chunks_into_grid(
                     &output.two_layer_chunks,
                     output.region_dimensions,
-                    output.recentre_voxels,
+                    output.recentre_voxels.voxels(),
                     density,
                 );
                 grid.occupied.iter().filter(|voxel| voxel.grid_overlay).count()
@@ -2255,7 +2302,7 @@ mod undo_tests {
         let grid = crate::two_layer_store::expand_resident_chunks_into_grid(
             &output.two_layer_chunks,
             output.region_dimensions,
-            output.recentre_voxels,
+            output.recentre_voxels.voxels(),
             density,
         );
         assert!(!grid.occupied.is_empty(), "shape resolved empty");

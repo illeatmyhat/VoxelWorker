@@ -30,6 +30,7 @@
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
+use crate::app_core::RecentreVoxels;
 use crate::brick_field::{
     pack_clipmap_level_keys, pack_world_block_key, unpack_world_block_key, upload_brick_atlas,
     BlockOccupancyMasks, BrickFieldBuild, BrickFieldUpdate, BrickPayload, BrickRecord,
@@ -412,8 +413,9 @@ pub struct BrickRaymarchRenderer {
     /// install (`brick_representable_overlay`). Material is per-record (ADR 0011 G2).
     overlay_active: bool,
     /// The composite recentre the boundary set was resolved under (ADR 0008 —
-    /// carried from the install, the same value the two-layer mesher bakes).
-    recentre_voxels: [i64; 3],
+    /// carried from the install as [`RecentreVoxels`], the same value the two-layer mesher
+    /// bakes; unwrapped with `.voxels()` only where `march_frame` packs the uniform).
+    recentre_voxels: RecentreVoxels,
     brick_edge_voxels: u32,
     bricks_per_axis: u32,
     /// Inclusive absolute world-block bounds of the resident record set (the
@@ -911,7 +913,7 @@ impl BrickRaymarchRenderer {
             last_atlas_slots_written: 0,
             record_count: 0,
             overlay_active: false,
-            recentre_voxels: [0, 0, 0],
+            recentre_voxels: RecentreVoxels::new([0, 0, 0]),
             brick_edge_voxels: 1,
             bricks_per_axis: 0,
             absolute_block_bounds: None,
@@ -941,7 +943,7 @@ impl BrickRaymarchRenderer {
         atlas: &SculptedAtlasPayload,
         gpu_records: &[BrickGpuRecord],
         pyramid: &ClipmapPyramid,
-        recentre_voxels: [i64; 3],
+        recentre_voxels: RecentreVoxels,
         overlay_active: bool,
     ) {
         // A wholesale install (re)creates the atlas texture from scratch and uploads
@@ -989,7 +991,7 @@ impl BrickRaymarchRenderer {
         update: &BrickFieldUpdate,
         gpu_records: &[BrickGpuRecord],
         pyramid: &ClipmapPyramid,
-        recentre_voxels: [i64; 3],
+        recentre_voxels: RecentreVoxels,
         overlay_active: bool,
     ) {
         // Read the atlas geometry + dirty-slot bytes straight from the single-owner mirror —
@@ -1059,7 +1061,7 @@ impl BrickRaymarchRenderer {
         bricks_per_axis: u32,
         gpu_records: &[BrickGpuRecord],
         pyramid: &ClipmapPyramid,
-        recentre_voxels: [i64; 3],
+        recentre_voxels: RecentreVoxels,
         overlay_active: bool,
     ) {
         // Inclusive absolute block bounds over the record set (the sort is z-major,
@@ -1237,11 +1239,13 @@ impl BrickRaymarchRenderer {
             (grid_dimensions[1] / 2) as i64,
             (grid_dimensions[2] / 2) as i64,
         ];
-        // absolute voxel = shading-absolute p + S, with S = recentre − half.
+        // absolute voxel = shading-absolute p + S, with S = recentre − half. Unwrap the
+        // carried frame to its raw triple exactly here — the one uniform-packing consumption.
+        let recentre = self.recentre_voxels.voxels();
         let shading_to_absolute = [
-            self.recentre_voxels[0] - half[0],
-            self.recentre_voxels[1] - half[1],
-            self.recentre_voxels[2] - half[2],
+            recentre[0] - half[0],
+            recentre[1] - half[1],
+            recentre[2] - half[2],
         ];
         let mut lattice_shift = [0i32; 3];
         let mut voxel_bias = [0i32; 3];

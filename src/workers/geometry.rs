@@ -36,6 +36,7 @@
 
 use std::sync::Arc;
 
+use crate::app_core::RecentreVoxels;
 use crate::cuboid_mesh::CuboidMeshRenderer;
 use crate::renderer::LayerBand;
 use crate::two_layer_store::TwoLayerChunk;
@@ -57,7 +58,9 @@ pub struct GeometryRebuildRequest {
     /// The whole composite grid's voxel dims (the band-clip layer mapping).
     pub grid_dimensions: [u32; 3],
     /// The composite recentre (floating origin, voxels; ADR 0008) the mesh lands in.
-    pub recentre_voxels: [i64; 3],
+    /// Carried as [`RecentreVoxels`] (the frame law): the worker unwraps it with `.voxels()`
+    /// only at the `CuboidMeshRenderer` boundary that still speaks `[i64; 3]`.
+    pub recentre_voxels: RecentreVoxels,
     /// The document density (voxels per block) the chunks were resolved at.
     pub density: u32,
     /// The CURRENT layer-clip band at dispatch (issue #60 M2). The worker builds the
@@ -136,7 +139,7 @@ pub fn build_geometry(
         color_format,
         &request.two_layer_chunks,
         request.grid_dimensions,
-        request.recentre_voxels,
+        request.recentre_voxels.voxels(),
         request.density,
         request.band,
     )

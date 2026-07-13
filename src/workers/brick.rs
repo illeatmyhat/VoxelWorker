@@ -42,6 +42,7 @@ use crate::brick_field::build_brick_field;
 use crate::brick_field::{
     build_brick_field_with_tiles, ClipmapPyramid, IncrementalBrickField, SculptedAtlasPayload,
 };
+use crate::app_core::RecentreVoxels;
 use crate::brick_raymarch::{brick_representable_overlay, pack_gpu_records, BrickGpuRecord};
 use crate::two_layer_store::TwoLayerChunk;
 use crate::workers::{build_catching, Worker};
@@ -59,9 +60,9 @@ pub struct BrickRebuildRequest {
     /// The document density (voxels per block) the chunks were resolved at.
     pub density: u32,
     /// The composite recentre (floating origin, voxels; ADR 0008) the field lands in.
-    /// Carried through to the result so the install uses the recentre THIS build was
-    /// resolved at, never a re-derived one (the ADR 0008 frame law).
-    pub recentre_voxels: [i64; 3],
+    /// Carried as [`RecentreVoxels`] through to the result so the install uses the recentre
+    /// THIS build was resolved at, never a re-derived one (the frame law).
+    pub recentre_voxels: RecentreVoxels,
     /// Whether to build the DISPLAY artifacts (classify + pyramid + GPU record pack) on
     /// top of the mirror. `true` on `--features gpu` (the raymarch consumes them);
     /// `false` on a non-gpu build, which maintains only the CPU mirror — matching the
@@ -121,8 +122,9 @@ pub struct BrickRebuildResult {
     /// The generation of the [`BrickRebuildRequest`] this result was built for.
     pub generation: u64,
     /// The recentre the request carried — the frame the install lands the field in
-    /// (ADR 0008: the value travels with the build, never re-derived at install time).
-    pub recentre_voxels: [i64; 3],
+    /// (the value travels with the build as [`RecentreVoxels`], never re-derived at install
+    /// time).
+    pub recentre_voxels: RecentreVoxels,
     /// The built artifacts, or `None` if the build PANICKED on the worker (caught via
     /// [`build_catching`] — the worker stays alive, the shell keeps its stale field and
     /// leaves the outstanding flag set so the next edit re-dispatches).
@@ -230,7 +232,7 @@ mod tests {
             generation: 1,
             two_layer_chunks: chunks.clone(),
             density: vpb,
-            recentre_voxels: [0; 3],
+            recentre_voxels: RecentreVoxels::new([0; 3]),
             build_display_artifacts: true,
         };
         let BrickRebuildOutcome::Display(install) = build_brick_rebuild(&request) else {
@@ -283,7 +285,7 @@ mod tests {
             generation: 1,
             two_layer_chunks: chunks.clone(),
             density: vpb,
-            recentre_voxels: [0; 3],
+            recentre_voxels: RecentreVoxels::new([0; 3]),
             build_display_artifacts: false,
         };
         let BrickRebuildOutcome::MirrorOnly { mirror } = build_brick_rebuild(&request) else {
@@ -300,7 +302,7 @@ mod tests {
             generation: 1,
             two_layer_chunks: Vec::new(),
             density: 4,
-            recentre_voxels: [0; 3],
+            recentre_voxels: RecentreVoxels::new([0; 3]),
             build_display_artifacts: true,
         };
         assert!(matches!(

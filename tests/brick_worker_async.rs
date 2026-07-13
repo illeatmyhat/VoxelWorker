@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 
 use voxel_worker::{
     build_brick_field, spawn_brick_worker, BrickRebuildOutcome, BrickRebuildRequest,
-    GenerationTracker, MaterialChoice, ASYNC_REBUILD_CHUNK_THRESHOLD,
+    GenerationTracker, MaterialChoice, RecentreVoxels, ASYNC_REBUILD_CHUNK_THRESHOLD,
 };
 
 mod common;
@@ -42,7 +42,7 @@ fn build_request(generation: u64, blocks: u32, vpb: u32) -> BrickRebuildRequest 
         generation,
         two_layer_chunks,
         density: vpb,
-        recentre_voxels: [7, -3, 11],
+        recentre_voxels: RecentreVoxels::new([7, -3, 11]),
         build_display_artifacts: true,
     }
 }
@@ -199,7 +199,7 @@ fn empty_request_does_not_hang_worker_and_it_survives_for_the_next() {
         generation: 1,
         two_layer_chunks: Vec::new(),
         density: 16,
-        recentre_voxels: [0; 3],
+        recentre_voxels: RecentreVoxels::new([0; 3]),
         build_display_artifacts: true,
     });
     let result = common::poll_until_result(&worker, WORKER_TIMEOUT, "empty request");

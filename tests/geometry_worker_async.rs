@@ -34,7 +34,7 @@ use std::time::{Duration, Instant};
 use voxel_worker::{
     build_brick_field, route_geometry_rebuild, spawn_geometry_worker, BrickFieldBuild,
     CuboidMeshRenderer, EditShape, GenerationTracker, GeometryRebuildRequest, GpuContext,
-    IncrementalBrickField, LayerBand, MaterialChoice, RebuildRoute, TwoLayerStore,
+    IncrementalBrickField, LayerBand, MaterialChoice, RebuildRoute, RecentreVoxels, TwoLayerStore,
     ASYNC_REBUILD_CHUNK_THRESHOLD, COLOR_TARGET_FORMAT,
 };
 
@@ -53,7 +53,7 @@ const WORKER_TIMEOUT: Duration = Duration::from_secs(30);
 fn build_request(generation: u64, blocks_per_axis: u32, vpb: u32) -> GeometryRebuildRequest {
     let scene = common::box_scene(blocks_per_axis, vpb, MaterialChoice::default());
     let two_layer_chunks = TwoLayerStore::enabled().build_covering_chunks(&scene, vpb, 0);
-    let recentre_voxels = scene.recentre_voxels_for_resolve(vpb);
+    let recentre_voxels = RecentreVoxels::new(scene.recentre_voxels_for_resolve(vpb));
     let grid_dimensions = scene.placed_region_dimensions(vpb);
     GeometryRebuildRequest {
         generation,
@@ -251,7 +251,7 @@ fn empty_request_does_not_hang_worker_and_it_survives_for_the_next() {
         generation: 1,
         two_layer_chunks: Vec::new(),
         grid_dimensions: [0, 0, 0],
-        recentre_voxels: [0, 0, 0],
+        recentre_voxels: RecentreVoxels::new([0, 0, 0]),
         density: 16,
         band: LayerBand::FULL,
     };
@@ -298,7 +298,7 @@ fn sync_full_build(gpu: &GpuContext, request: &GeometryRebuildRequest) -> Cuboid
         COLOR_TARGET_FORMAT,
         &request.two_layer_chunks,
         request.grid_dimensions,
-        request.recentre_voxels,
+        request.recentre_voxels.voxels(),
         request.density,
     )
 }
