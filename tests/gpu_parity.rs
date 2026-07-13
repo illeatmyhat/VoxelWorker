@@ -425,7 +425,7 @@ fn worker_build_matches_sync_build_for_large_scene() {
 
     // Resolve the covering two-layer chunks exactly as the live rebuild does.
     let two_layer_chunks = TwoLayerStore::enabled().build_covering_chunks(&scene, vpb, 0);
-    let recentre_voxels = scene.recentre_voxels_for_resolve(vpb).voxels();
+    let recentre_voxels = scene.recentre_voxels_for_resolve(vpb);
     // Use the placed region dims (what the live shell passes for `grid.dimensions`).
     let grid_dimensions = scene.placed_region_dimensions(vpb);
 
@@ -452,7 +452,7 @@ fn worker_build_matches_sync_build_for_large_scene() {
         generation: 1,
         two_layer_chunks,
         grid_dimensions,
-        recentre_voxels: voxel_worker::RecentreVoxels::new(recentre_voxels),
+        recentre_voxels,
         density: vpb,
         // FULL band — the worker's banded build at FULL is byte-identical to the sync build.
         band: LayerBand::FULL,

@@ -310,7 +310,7 @@ impl DisplayOrchestrator {
                 two_layer_chunks
             },
             region_dimensions,
-            recentre_voxels.voxels(),
+            recentre_voxels,
             density,
         );
 
@@ -834,7 +834,7 @@ impl DisplayOrchestrator {
                     &self.device,
                     &two_layer_chunks,
                     grid_dimensions,
-                    recentre_voxels.voxels(),
+                    recentre_voxels,
                     density,
                     &dirty,
                 );
@@ -880,7 +880,7 @@ impl DisplayOrchestrator {
                     self.color_format,
                     &two_layer_chunks,
                     grid_dimensions,
-                    recentre_voxels.voxels(),
+                    recentre_voxels,
                     density,
                     band,
                 );
@@ -1170,7 +1170,7 @@ impl DisplayOrchestrator {
                 self.color_format,
                 &chunks,
                 grid_dimensions,
-                recentre.voxels(),
+                recentre,
                 density,
                 band,
             );

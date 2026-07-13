@@ -98,7 +98,8 @@ pub struct RebuildOutput {
     /// The composite recentre (floating origin, voxels; ADR 0008) the two-layer mesh
     /// lands its geometry in — the SAME frame the brick sink packs its records in. Carried
     /// as [`RecentreVoxels`] so the frame value travels compile-checked through the async
-    /// display flow (the mesh / two-layer boundaries unwrap it with `.voxels()`).
+    /// display flow, unwrapped only at the point of positional arithmetic (a chunk rebase,
+    /// a leaf stamp) and the GPU uniform packing.
     pub recentre_voxels: RecentreVoxels,
     /// **The chunk-granular incremental GPU-buffer re-mesh hint (issue #55).** `Some(dirty)`
     /// when this rebuild LOCALISED — the edit's dirty world-AABB evicted exactly the `dirty`
@@ -2132,7 +2133,7 @@ mod undo_tests {
                 let grid = crate::two_layer_store::expand_resident_chunks_into_grid(
                     &output.two_layer_chunks,
                     output.region_dimensions,
-                    output.recentre_voxels.voxels(),
+                    output.recentre_voxels,
                     density,
                 );
                 grid.occupied.iter().filter(|voxel| voxel.grid_overlay).count()
@@ -2273,7 +2274,7 @@ mod undo_tests {
         let grid = crate::two_layer_store::expand_resident_chunks_into_grid(
             &output.two_layer_chunks,
             output.region_dimensions,
-            output.recentre_voxels.voxels(),
+            output.recentre_voxels,
             density,
         );
         assert!(!grid.occupied.is_empty(), "shape resolved empty");

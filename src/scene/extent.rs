@@ -279,10 +279,12 @@ impl Scene {
         voxels_per_block: u32,
     ) -> Option<([f32; 3], [f32; 3])> {
         let (min_corner, max_corner) = self.node_subtree_extent_blocks(path, voxels_per_block)?;
-        let recentre = self.recentre_voxels_for_resolve(voxels_per_block).voxels();
+        let recentre = self.recentre_voxels_for_resolve(voxels_per_block);
         let density = voxels_per_block.max(1) as i64;
         let mut min_box = [0.0f32; 3];
         let mut max_box = [0.0f32; 3];
+        // Unwrap the carried frame at the recentred block-corner arithmetic.
+        let recentre = recentre.voxels();
         for axis in 0..3 {
             // Whole-block corners → voxels (exact), then into the recentred frame.
             min_box[axis] = (min_corner[axis] * density - recentre[axis]) as f32;
@@ -494,6 +496,10 @@ impl Scene {
     /// `resolve_region.world_position == chunk_path.world_position − recentre_voxels`.
     /// Exposed (crate-internal) so the S0 equivalence tests can normalise one frame
     /// to the other. `[0, 0, 0]` for a scene with no intrinsic-size leaf.
+    ///
+    /// Returns the RAW triple by rule: its only callers feed it straight into
+    /// `occupied_multiset`'s per-voxel rebase arithmetic (a comparison oracle), so the
+    /// unwrap belongs here at the arithmetic's edge rather than being pushed into the test.
     #[cfg(test)]
     pub(crate) fn recentre_voxels(&self, voxels_per_block: u32) -> [i64; 3] {
         self.recentre_voxels_for_resolve(voxels_per_block).voxels()

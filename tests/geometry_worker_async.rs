@@ -298,7 +298,7 @@ fn sync_full_build(gpu: &GpuContext, request: &GeometryRebuildRequest) -> Cuboid
         COLOR_TARGET_FORMAT,
         &request.two_layer_chunks,
         request.grid_dimensions,
-        request.recentre_voxels.voxels(),
+        request.recentre_voxels,
         request.density,
     )
 }

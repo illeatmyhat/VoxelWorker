@@ -93,8 +93,11 @@ pub use crate::core_geom::{BlockAttrs, BlockId};
 /// **The one mint point** is [`Scene::recentre_voxels_for_resolve`](crate::scene::Scene::recentre_voxels_for_resolve),
 /// which returns this newtype directly — so a build's recentre is born already carrying its
 /// frame. Transport only this increment: it is `Copy`, has no arithmetic, and [`voxels`] is
-/// the ONE way back to the raw triple — unwrapped explicitly at the mesh / two-layer / scene
-/// boundaries that still speak `[i64; 3]`. It lives in the spatial-primitive layer (this
+/// the ONE way back to the raw triple — unwrapped only at the point of actual positional
+/// ARITHMETIC (a leaf stamp's recentre subtraction, a chunk rebase's index offset), at the
+/// GPU uniform packing, and at the raw-BY-RULE values (the dense-oracle grid's carried
+/// field, a recentre-shift delta, a comparison/cache key). The mesh / two-layer / scene
+/// transport signatures now speak this newtype. It lives in the spatial-primitive layer (this
 /// module) alongside the other frame-bearing primitives; [`new`](RecentreVoxels::new)
 /// remains for the boundary/test sites that mint a KNOWN recentre from a raw triple (e.g.
 /// the `shot` oracle grid's carried field).
@@ -113,8 +116,9 @@ impl RecentreVoxels {
         Self(voxels)
     }
 
-    /// The raw voxel triple — the single consumption door, called exactly at the mesh /
-    /// two-layer / scene boundaries that still take `[i64; 3]` and at the uniform packing.
+    /// The raw voxel triple — the single consumption door, called only at the point of
+    /// positional arithmetic, at the GPU uniform packing, and at the raw-by-rule oracle /
+    /// cache / delta values.
     pub fn voxels(&self) -> [i64; 3] {
         self.0
     }

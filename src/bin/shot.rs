@@ -1773,7 +1773,9 @@ async fn run_capture(options: ShotOptions) {
             COLOR_TARGET_FORMAT,
             &two_layer_chunks,
             grid_dimensions,
-            grid.recentre_voxels,
+            // The dense-oracle grid carries its recentre as a raw triple; mint the frame
+            // newtype at this `shot` boundary (the builder now speaks `RecentreVoxels`).
+            voxel_worker::RecentreVoxels::new(grid.recentre_voxels),
             density,
         )
     } else if let Some(render_chunks) = render_chunks_for_mesh.take() {

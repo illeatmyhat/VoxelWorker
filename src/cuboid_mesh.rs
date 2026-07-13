@@ -41,7 +41,7 @@ use crate::frustum::{Aabb, Frustum};
 use crate::renderer::{LayerBand, DEPTH_FORMAT, MSAA_SAMPLE_COUNT};
 use crate::texture_atlas::MaterialAtlas;
 use crate::two_layer_store::{MicroblockGeometry, SeamSolidity, TwoLayerChunk};
-use crate::voxel::VoxelGrid;
+use crate::voxel::{RecentreVoxels, VoxelGrid};
 
 /// The transient on-face-grid bit the **cuboid mesher** folds into its region-cell key
 /// (ADR 0003 §3c). It is NOT the retired `crate::voxel::GRID_OVERLAY_BIT` — that flag is
@@ -881,7 +881,7 @@ fn in_plane_axes(axis: usize) -> (usize, usize) {
 fn build_two_layer_chunk_meshes(
     chunks: &[([i32; 3], Arc<TwoLayerChunk>)],
     grid_dimensions: [u32; 3],
-    recentre_voxels: [i64; 3],
+    recentre: RecentreVoxels,
     voxels_per_block: u32,
     band: LayerBand,
 ) -> Vec<CuboidChunkMesh> {
@@ -889,7 +889,7 @@ fn build_two_layer_chunk_meshes(
         chunks,
         None,
         grid_dimensions,
-        recentre_voxels,
+        recentre,
         voxels_per_block,
         band,
     )
@@ -908,10 +908,12 @@ fn build_two_layer_chunk_meshes_filtered(
     chunks: &[([i32; 3], Arc<TwoLayerChunk>)],
     only: Option<&std::collections::HashSet<[i32; 3]>>,
     grid_dimensions: [u32; 3],
-    recentre_voxels: [i64; 3],
+    recentre: RecentreVoxels,
     voxels_per_block: u32,
     band: LayerBand,
 ) -> Vec<CuboidChunkMesh> {
+    // Unwrap the carried frame at the per-chunk rebase arithmetic below (`chunk_min_recentred`).
+    let recentre_voxels = recentre.voxels();
     let density = voxels_per_block.max(1);
     let block_extent = density as i64;
 
@@ -1901,7 +1903,7 @@ pub struct CuboidMeshRenderer {
     /// `recentre`/`density` are the frame + density the two-layer mesher needs to re-emit in
     /// the SAME world frame on every band change.
     source_two_layer_chunks: Vec<([i32; 3], Arc<crate::two_layer_store::TwoLayerChunk>)>,
-    source_two_layer_recentre: [i64; 3],
+    source_two_layer_recentre: RecentreVoxels,
     source_two_layer_density: u32,
     /// The whole composite grid's voxel dims (the band clip maps an absolute layer to
     /// the global region-local Z; only the Z half is used).
@@ -2018,7 +2020,7 @@ impl CuboidMeshRenderer {
         color_format: wgpu::TextureFormat,
         chunks: &[([i32; 3], Arc<crate::two_layer_store::TwoLayerChunk>)],
         grid_dimensions: [u32; 3],
-        recentre_voxels: [i64; 3],
+        recentre_voxels: RecentreVoxels,
         voxels_per_block: u32,
     ) -> Self {
         // The synchronous path builds the FULL model (no band clip). Delegates to the banded
@@ -2050,7 +2052,7 @@ impl CuboidMeshRenderer {
         color_format: wgpu::TextureFormat,
         chunks: &[([i32; 3], Arc<crate::two_layer_store::TwoLayerChunk>)],
         grid_dimensions: [u32; 3],
-        recentre_voxels: [i64; 3],
+        recentre_voxels: RecentreVoxels,
         voxels_per_block: u32,
         band: LayerBand,
     ) -> Self {
@@ -2451,7 +2453,7 @@ impl CuboidMeshRenderer {
             // The dense builders retain no two-layer chunks; `new_from_two_layer_chunks`
             // overrides these after `assemble` so its band reclip re-meshes from the store.
             source_two_layer_chunks: Vec::new(),
-            source_two_layer_recentre: [0; 3],
+            source_two_layer_recentre: RecentreVoxels::new([0; 3]),
             source_two_layer_density: 1,
             source_grid_dimensions: grid_dimensions,
             total_box_count,
@@ -2584,7 +2586,7 @@ impl CuboidMeshRenderer {
         device: &wgpu::Device,
         chunks: &[([i32; 3], Arc<crate::two_layer_store::TwoLayerChunk>)],
         grid_dimensions: [u32; 3],
-        recentre_voxels: [i64; 3],
+        recentre_voxels: RecentreVoxels,
         voxels_per_block: u32,
         evicted_dirty: &[[i32; 3]],
     ) {
@@ -3154,7 +3156,7 @@ mod tests {
                     &scene, density, 0,
                 );
             let dims = scene.placed_region_dimensions(density);
-            let recentre = scene.recentre_voxels_for_resolve(density).voxels();
+            let recentre = scene.recentre_voxels_for_resolve(density);
             let start = std::time::Instant::now();
             let meshes =
                 build_two_layer_chunk_meshes(&chunks, dims, recentre, density, LayerBand::FULL);
@@ -4280,7 +4282,7 @@ mod tests {
         scene: &Scene,
         density: u32,
         world_offset: [f32; 3],
-        recentre: [i64; 3],
+        recentre: RecentreVoxels,
         grid_dimensions: [u32; 3],
         occupied: &std::collections::HashSet<[i64; 3]>,
     ) -> std::collections::HashSet<UnitFace> {
@@ -4343,7 +4345,9 @@ mod tests {
             scene,
             density,
             world_offset,
-            dense.recentre_voxels,
+            // The dense-oracle grid carries its recentre as a raw triple (raw by rule); mint
+            // the frame newtype at this test boundary.
+            RecentreVoxels::new(dense.recentre_voxels),
             dense.dimensions,
             &occupancy,
         );
@@ -4487,7 +4491,7 @@ mod tests {
         chunks: &[([i32; 3], Arc<crate::two_layer_store::TwoLayerChunk>)],
         density: u32,
         world_offset: [f32; 3],
-        recentre: [i64; 3],
+        recentre: RecentreVoxels,
         grid_dimensions: [u32; 3],
         occupied: &std::collections::HashSet<[i64; 3]>,
     ) -> std::collections::HashSet<UnitFace> {
@@ -4602,7 +4606,7 @@ mod tests {
                 &incremental_chunks,
                 density,
                 world_offset,
-                dense.recentre_voxels,
+                RecentreVoxels::new(dense.recentre_voxels),
                 dense.dimensions,
                 &occupancy,
             );
@@ -4617,7 +4621,7 @@ mod tests {
                 &scene_b,
                 density,
                 world_offset,
-                dense.recentre_voxels,
+                RecentreVoxels::new(dense.recentre_voxels),
                 dense.dimensions,
                 &occupancy,
             );
@@ -4731,7 +4735,7 @@ mod tests {
             let chunks_a: Vec<([i32; 3], Arc<TwoLayerChunk>)> =
                 cache.resident_two_layer_chunks(&scene_a, density, 0);
             let dims = scene_a.placed_region_dimensions(density);
-            let recentre = scene_a.recentre_voxels_for_resolve(density).voxels();
+            let recentre = scene_a.recentre_voxels_for_resolve(density);
             // The renderer's initial (wholesale) buffer set for A.
             let wholesale_a = build_two_layer_chunk_meshes(
                 &chunks_a,
@@ -4758,7 +4762,7 @@ mod tests {
                 "[{label}] expected a localisable edit (non-empty evicted-dirty set)"
             );
             let dims_b = scene_b.placed_region_dimensions(density);
-            let recentre_b = scene_b.recentre_voxels_for_resolve(density).voxels();
+            let recentre_b = scene_b.recentre_voxels_for_resolve(density);
             // The anchors pin the bounds, so the recentre must NOT shift — the precondition
             // under which the GPU-buffer incremental keeps untouched chunks' baked vertices.
             assert_eq!(
@@ -4916,7 +4920,7 @@ mod tests {
         let meshes = build_two_layer_chunk_meshes(
             &chunks,
             dense.dimensions,
-            dense.recentre_voxels,
+            RecentreVoxels::new(dense.recentre_voxels),
             density,
             band,
         );

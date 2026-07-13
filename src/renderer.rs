@@ -20,6 +20,7 @@ use wgpu::util::DeviceExt;
 
 use crate::core_geom::MaterialChoice;
 use crate::scene::{Point, Scene};
+use crate::voxel::RecentreVoxels;
 
 /// Depth format used by the voxel pass and the depth texture.
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -2516,7 +2517,9 @@ fn point_axes_into(
 /// The recentred render-frame position (voxels) of a Point's origin (issue #29 S5):
 /// `position_blocks·density − recentre`, the SAME frame the resolved voxels and the
 /// per-object grids live in.
-fn point_origin_voxels(point: &Point, recentre: [i64; 3], density: i64) -> [f32; 3] {
+fn point_origin_voxels(point: &Point, recentre: RecentreVoxels, density: i64) -> [f32; 3] {
+    // Unwrap the carried frame at this positional arithmetic (the recentre subtraction).
+    let recentre = recentre.voxels();
     let mut origin = [0.0f32; 3];
     for axis in 0..3 {
         origin[axis] = (point.position_blocks[axis] * density - recentre[axis]) as f32;
@@ -2538,7 +2541,7 @@ fn points_line_batch(scene: &Scene, voxels_per_block: u32) -> Vec<LineVertex> {
     let mut vertices = Vec::new();
     let step = voxels_per_block.max(1);
     let density = step as i64;
-    let recentre = scene.recentre_voxels_for_resolve(voxels_per_block).voxels();
+    let recentre = scene.recentre_voxels_for_resolve(voxels_per_block);
     for point in &scene.points {
         if point.hidden {
             continue;
@@ -2592,7 +2595,7 @@ fn reference_plane_basis(plane: ReferencePlane) -> ([f32; 3], [f32; 3], [f32; 3]
 pub fn enabled_grid_planes(scene: &Scene, voxels_per_block: u32) -> Vec<GridPlaneInstance> {
     let step = voxels_per_block.max(1);
     let density = step as i64;
-    let recentre = scene.recentre_voxels_for_resolve(voxels_per_block).voxels();
+    let recentre = scene.recentre_voxels_for_resolve(voxels_per_block);
     let mut planes = Vec::new();
     for point in &scene.points {
         if point.hidden {

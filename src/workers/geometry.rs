@@ -58,8 +58,9 @@ pub struct GeometryRebuildRequest {
     /// The whole composite grid's voxel dims (the band-clip layer mapping).
     pub grid_dimensions: [u32; 3],
     /// The composite recentre (floating origin, voxels; ADR 0008) the mesh lands in.
-    /// Carried as [`RecentreVoxels`] (the frame law): the worker unwraps it with `.voxels()`
-    /// only at the `CuboidMeshRenderer` boundary that still speaks `[i64; 3]`.
+    /// Carried as [`RecentreVoxels`] (the frame law): the `CuboidMeshRenderer` builder now
+    /// takes the newtype, so the worker hands the frame value straight through — the unwrap
+    /// happens only at the mesher's positional rebase arithmetic.
     pub recentre_voxels: RecentreVoxels,
     /// The document density (voxels per block) the chunks were resolved at.
     pub density: u32,
@@ -139,7 +140,7 @@ pub fn build_geometry(
         color_format,
         &request.two_layer_chunks,
         request.grid_dimensions,
-        request.recentre_voxels.voxels(),
+        request.recentre_voxels,
         request.density,
         request.band,
     )
