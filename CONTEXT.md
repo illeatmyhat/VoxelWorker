@@ -16,10 +16,16 @@ no decisions (those live in `docs/adr/`). Define a term here the first time an a
 
 ## Block vs voxel
 
-- **Block** — the coarse placement + **material/texture unit**: one block-texture per face (e.g. the
-  Vintage Story andesite-ashlar brick). A block stays coarse until chiseled; only then is it
-  subdivided into voxels. Texture/material is addressed per **block**, so a brick spans a whole
-  block face (`voxels_per_block` voxels across), not a single voxel.
+- **Block** — the coarse placement + **texture-addressing granule**: one block-texture spans a
+  whole block face (`voxels_per_block` voxels across, e.g. the Vintage Story andesite-ashlar
+  brick), never a single voxel. A block stays coarse until chiseled; only then is it subdivided
+  into voxels. Texture *addressing* is per block, but material *identity* is per voxel cell once
+  chiseled — see **mixed-material block**.
+
+- **Mixed-material block** — a chiseled block whose microblocks carry more than one material.
+  **First-class**, not an authoring accident: Vintage Story chiseling mixes materials within one
+  block, and sculpt painting will create them deliberately. Every display sink must render them
+  faithfully; no authoring rule may resolve the mix away.
 
 - **Voxel** — the **chisel granularity**: `voxels_per_block` per axis within a block (document-level
   density, `docs/adr/0003`; VS = 16³). Geometry/occupancy is addressed per voxel; a chiseled block's
@@ -59,13 +65,22 @@ separate microblock entities). A solid interior is never voxelized.
 The GPU display derivation that raymarches a **cached** copy of the boundary set instead of the
 op-stack field (see `docs/adr/0011`; generalizes the ADR 0007 fog atlas).
 
-- **Brick** — **one block's** cube of voxels cached in one **atlas slot** (a slice of an R8 3D
+- **Brick** — **one block's** cube of voxels cached in one **atlas slot** (a slice of a 3D
   texture pool). The granule is denominated in **blocks**, never a fixed voxel count: brick edge =
   `voxels_per_block`, whatever the document's density is (the units law — density is fineness
   only). A boundary block's voxels are packed into a **sculpted brick**; a coarse-solid block is a
   **coarse brick** (a solid-block marker record, no atlas slot, no per-voxel data). Empty space
   gets no brick. "Raymarch the cache, not the field": per-frame cost is independent of op-stack
   complexity because rays sample cached bricks, never the analytic SDF.
+
+- **Mixed brick** — the sculpted brick of a **mixed-material block**. Besides its occupancy slot
+  it holds a slot in a second, **sparse material atlas** carrying one **cell key** per voxel;
+  a uniform sculpted brick carries its single cell identity on its record alone and pays no
+  per-voxel material storage. Per-voxel cost is paid only where mixing exists (`docs/adr/0013`).
+
+- **Cell key** — the per-voxel-cell display identity: the block-palette id together with the
+  on-face-grid overlay flag, packed as one value. Carried per microblock cuboid in the boundary
+  set, and per voxel in a mixed brick's material-atlas slot.
 
 - **Clip-map occupancy pyramid** — coarser "any-brick-inside" occupancy levels above the fine brick
   set (e.g. cells of 8 blocks, then 64 blocks). A ray's **hierarchical DDA** jumps straight to the

@@ -16,8 +16,11 @@
   build survives as the parity oracle), and the wholesale pipeline (record build +
   pyramid + classify) runs **asynchronously** on a dedicated worker with generation
   supersede (stale-while-rebuilding). The fog-from-bricks consumer named above was
-  retired with the volumetric fog subsystem by ADR 0012. Living shape:
-  `docs/architecture/03-display.md` / `04-work.md`.
+  retired with the volumetric fog subsystem by ADR 0012. **Amended-by
+  [ADR 0013](0013-per-voxel-material-side-atlas.md) (2026-07-13):** the G2 limit "the atlas is
+  occupancy-only, material is per-record, mixed-material scenes fall back to the mesh path" is
+  superseded — mixed bricks gain a sparse R16 cell-key side atlas and the representability gate is
+  deleted. Living shape: `docs/architecture/03-display.md` / `04-work.md`.
 - **Date:** 2026-07-01
 - **Layer:** PRODUCTION PORT of the **GPU display sink** — the next port after [ADR 0010](0010-boundary-residency-two-layer-store.md).
   **Generalizes [ADR 0007](0007-gpu-view-resolve.md)** (the shipped per-chunk R8 fog atlas is already a brick map;
