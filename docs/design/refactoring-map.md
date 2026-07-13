@@ -107,16 +107,18 @@ survives only as the parity-oracle materialisation (every remaining caller is a 
 
 ## 10. Type-enforce the frame law, then machine-check the pure kernel — **(a) BEGUN, (b) FUTURE**
 
-**(a) Frame newtypes — first increment done (`26cfd81`, `de3da33`).** `RecentreVoxels`
-(spatial-primitive layer, `src/voxel.rs`; no arithmetic, `new()` in / `voxels()` out) is
-minted at the ONE origin — `Scene::recentre_voxels_for_resolve` — and carried through
-the orchestrator, both worker channels, and the renderer install seams; it unwraps once
-at uniform packing. Deliberately still raw: `recentre_shift_voxels` (a frame *delta*)
-and `previous_recentre_voxels` (a comparison cache) — positional arithmetic, not
-transport — and the dense-oracle grid. **Next increments:** `cuboid_mesh.rs` and
-`two_layer_store.rs` consume the newtype instead of unwrapping at their boundaries; then
-`scene/` internals; then the next frame-bearing value (the sculpt-delta Intent's
-addresses, per ADR 0008, when sculpt lands).
+**(a) Frame newtypes — first two increments done (`26cfd81`, `de3da33`; `294029b`,
+`55311c7`).** `RecentreVoxels` (spatial-primitive layer, `src/voxel.rs`; no arithmetic,
+`new()` in / `voxels()` out) is minted at the ONE origin —
+`Scene::recentre_voxels_for_resolve` — and now travels through the orchestrator, both
+worker channels, the renderer install seams, AND the `cuboid_mesh` / `two_layer_store` /
+`scene/` internals, unwrapping only at the point of positional arithmetic and at uniform
+packing (a high-effort review of the second increment found no frame bugs; its three
+cleanup findings — a dead raw recentre return leg in `stream_vox_occupancy`, doubled
+unwrap doors — are applied). Deliberately still raw: `recentre_shift_voxels` (a frame
+*delta*) and `previous_recentre_voxels` (a comparison cache) — positional arithmetic,
+not transport — and the dense-oracle grid. **Next increment:** the next frame-bearing
+value (the sculpt-delta Intent's addresses, per ADR 0008, when sculpt lands).
 
 **(b) Verify the kernel — future, unchanged in shape:** Kani for the packed world-key
 round-trip and the row-bitmask operations (now real code, from 5a); Creusot/Verus for
