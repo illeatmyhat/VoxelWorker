@@ -821,6 +821,21 @@ fn coord_component(a: f32, sign_value: f32) -> f32 {
     return base + select(1.0 - frac, frac, sign_value > 0.0);
 }
 
+// FXC l-value hazard (the X3500 flake): a dynamic vector-component STORE
+// (`some_vec[axis] = value`) reaches D3D's legacy FXC compiler as a dynamically
+// indexed l-value (`some_vec[min(uint(axis), 2u)] = value` in naga's HLSL), which
+// FXC — fed byte-identical HLSL — NONDETERMINISTICALLY rejects with a spurious
+// `X3500: array reference cannot be used as an l-value; not natively addressable`
+// (~20% of parallel-suite runs; debug builds compile under
+// D3DCOMPILE_SKIP_OPTIMIZATION, where FXC's indexable-temp lowering is flakiest).
+// Dynamic component READS are r-values and are fine; only STORES must avoid the
+// construct. Writers build this mask and `select` instead — bit-identical result
+// (the chosen lane replaced, the others kept), and every naga codegen variant of
+// `select` is plain vector arithmetic FXC always accepts.
+fn axis_component_mask(axis: i32) -> vec3<bool> {
+    return vec3<bool>(axis == 0, axis == 1, axis == 2);
+}
+
 fn material_base_colors_lookup(material_id: u32) -> vec3<f32> {
     let index = min(material_id, 2u);
     return uniforms.material_base_colors[index].rgb;
@@ -943,15 +958,19 @@ fn fragment_render(
     let centre_ray = camera_ray(pixel_centre);
     let plane_distance = hit.plane_sv - centre_ray.origin[hit.entry_axis];
     let t_centre = plane_distance / centre_ray.safe_direction[hit.entry_axis];
-    var evaluation_sv = centre_ray.origin + centre_ray.direction * t_centre;
-    // The normal-axis coordinate is exactly on the plane by construction.
-    evaluation_sv[hit.entry_axis] = hit.plane_sv;
+    // The normal-axis coordinate is exactly on the plane by construction. Masked
+    // `select`, NOT a dynamic component store — see `axis_component_mask`.
+    let entry_axis_mask = axis_component_mask(hit.entry_axis);
+    let evaluation_sv = select(
+        centre_ray.origin + centre_ray.direction * t_centre,
+        vec3<f32>(hit.plane_sv),
+        entry_axis_mask,
+    );
 
     let shift = vec3<f32>(uniforms.lattice_shift_and_edge.xyz);
     let absolute = evaluation_sv - shift;
 
-    var world_normal = vec3<f32>(0.0);
-    world_normal[hit.entry_axis] = hit.normal_sign;
+    let world_normal = select(vec3<f32>(0.0), vec3<f32>(hit.normal_sign), entry_axis_mask);
 
     // Per-sample depth from the SAMPLE ray's own hit point (the rasterizer
     // interpolates depth per sample).
@@ -1297,14 +1316,19 @@ fn fragment_color_identity(@builtin(position) position: vec4<f32>) -> @location(
     if (!hit.hit) {
         discard;
     }
-    // Centre-ray evaluation on the hit face's plane (mirrors `fragment_render`).
+    // Centre-ray evaluation on the hit face's plane (mirrors `fragment_render`,
+    // including the masked `select` in place of a dynamic component store — see
+    // `axis_component_mask`).
     let plane_distance = hit.plane_sv - ray.origin[hit.entry_axis];
     let t_centre = plane_distance / ray.safe_direction[hit.entry_axis];
-    var evaluation_sv = ray.origin + ray.direction * t_centre;
-    evaluation_sv[hit.entry_axis] = hit.plane_sv;
+    let entry_axis_mask = axis_component_mask(hit.entry_axis);
+    let evaluation_sv = select(
+        ray.origin + ray.direction * t_centre,
+        vec3<f32>(hit.plane_sv),
+        entry_axis_mask,
+    );
     let shift = vec3<f32>(uniforms.lattice_shift_and_edge.xyz);
     let absolute = evaluation_sv - shift;
-    var world_normal = vec3<f32>(0.0);
-    world_normal[hit.entry_axis] = hit.normal_sign;
+    let world_normal = select(vec3<f32>(0.0), vec3<f32>(hit.normal_sign), entry_axis_mask);
     return shade_cuboid_surface(absolute, world_normal, hit.material_id);
 }
