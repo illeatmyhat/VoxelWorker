@@ -262,7 +262,7 @@ impl Scene {
         // `mixed_tool_and_cloud_resolve_in_one_frame`). ADR 0008: the recentre is CARRIED on
         // the grid (below), so every consumer decodes correctly without re-deriving the
         // frame as `floor(dim/2)` (the assumption that dropped the corner-anchored cloud fog).
-        let recentre_voxels = self.recentre_voxels_for_resolve(voxels_per_block);
+        let recentre_voxels = self.recentre_voxels_for_resolve(voxels_per_block).voxels();
         output.recentre_voxels = recentre_voxels;
 
         // Walk the whole tree (groups + instances recurse, composing world

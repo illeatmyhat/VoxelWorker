@@ -3154,7 +3154,7 @@ mod tests {
                     &scene, density, 0,
                 );
             let dims = scene.placed_region_dimensions(density);
-            let recentre = scene.recentre_voxels_for_resolve(density);
+            let recentre = scene.recentre_voxels_for_resolve(density).voxels();
             let start = std::time::Instant::now();
             let meshes =
                 build_two_layer_chunk_meshes(&chunks, dims, recentre, density, LayerBand::FULL);
@@ -4731,7 +4731,7 @@ mod tests {
             let chunks_a: Vec<([i32; 3], Arc<TwoLayerChunk>)> =
                 cache.resident_two_layer_chunks(&scene_a, density, 0);
             let dims = scene_a.placed_region_dimensions(density);
-            let recentre = scene_a.recentre_voxels_for_resolve(density);
+            let recentre = scene_a.recentre_voxels_for_resolve(density).voxels();
             // The renderer's initial (wholesale) buffer set for A.
             let wholesale_a = build_two_layer_chunk_meshes(
                 &chunks_a,
@@ -4758,7 +4758,7 @@ mod tests {
                 "[{label}] expected a localisable edit (non-empty evicted-dirty set)"
             );
             let dims_b = scene_b.placed_region_dimensions(density);
-            let recentre_b = scene_b.recentre_voxels_for_resolve(density);
+            let recentre_b = scene_b.recentre_voxels_for_resolve(density).voxels();
             // The anchors pin the bounds, so the recentre must NOT shift — the precondition
             // under which the GPU-buffer incremental keeps untouched chunks' baked vertices.
             assert_eq!(

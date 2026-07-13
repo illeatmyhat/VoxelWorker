@@ -72,7 +72,6 @@ mod cell_interval_parity_tests;
 
 pub use app_core::{
     default_replay_seed_scene, replay_intent_script, AppCore, RebuildOutcome, RebuildOutput,
-    RecentreVoxels,
 };
 pub use store::{ChunkCacheKey, ChunkResolveCache, Store};
 pub use brick_field::{
@@ -153,8 +152,8 @@ pub use sketch::{Operation, PlaneAxis, RevolveAxis, Sketch, SketchPoint, SketchS
 pub use spatial_index::{LeafEntry, LeafFingerprint, LeafSpatialIndex, VoxelAabb};
 pub use vox_export::{VoxExport, VoxExportBuilder};
 pub use voxel::{
-    widest_run_in_band_over_chunks, GeometryParams, SdfShape, ShapeKind, Voxel, VoxelGrid,
-    VoxelProducer,
+    widest_run_in_band_over_chunks, GeometryParams, RecentreVoxels, SdfShape, ShapeKind, Voxel,
+    VoxelGrid, VoxelProducer,
 };
 
 /// Surface / offscreen colour format used everywhere in the project.

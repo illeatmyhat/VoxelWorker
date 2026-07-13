@@ -259,13 +259,22 @@ impl VoxExport {
 
     /// Serialise and write the `.vox` to `path`, creating parent dirs.
     ///
-    /// **Atomic write (data-loss guard).** The bytes are written to a sibling temp file
-    /// (`<final-name>.tmp`, same directory ⇒ same filesystem ⇒ the rename is atomic) and
-    /// only then `rename`d onto the final path. A process killed mid-write — e.g. the
-    /// window closed during a multi-second background export, which detaches and kills the
-    /// export worker thread — therefore leaves at WORST a stray `.tmp`, never a truncated
-    /// `.vox` the Vintage Story mod would ingest as a corrupt model. The temp file is
-    /// cleaned up on either error path.
+    /// **Atomic write (data-loss guard).** The bytes go to a UNIQUE sibling temp file in
+    /// the same directory (same filesystem ⇒ the rename is atomic), then the temp is moved
+    /// onto the final path. The final path therefore only ever holds a COMPLETE export: a
+    /// process killed mid-write — e.g. the window closed during a multi-second background
+    /// export, which detaches and kills the export worker thread — leaves at WORST a stray
+    /// temp, never a truncated `.vox` the Vintage Story mod would ingest as a corrupt model.
+    ///
+    /// - **Unique temp name** `.<final-name>.<pid>-<nanos>.tmp` (leading dot keeps it out of
+    ///   the way; `pid` + wall-clock nanos avoid clobbering a real user file OR a concurrent
+    ///   export's temp — no extra dependency).
+    /// - **Move via `rename`, with a `copy` fallback.** `rename` is the atomic fast path.
+    ///   On Windows it fails when the destination is open WITHOUT delete sharing; the old
+    ///   in-place `std::fs::write` overwrote such a file fine (it needs only write sharing),
+    ///   so we fall back to `fs::copy` (an in-place overwrite) to preserve that behaviour.
+    /// - **On total failure the complete temp is KEPT**, and its path is named in the error
+    ///   so the user can recover the export by hand rather than silently losing it.
     pub fn write(&self, path: &std::path::Path) -> std::io::Result<usize> {
         if let Some(parent) = path.parent() {
             if !parent.as_os_str().is_empty() {
@@ -273,22 +282,59 @@ impl VoxExport {
             }
         }
         let bytes = self.to_bytes();
-        // Sibling temp path: append `.tmp` to the full final name (keeps it in the same
-        // directory, hence the same filesystem the atomic rename requires).
-        let temp_path = {
-            let mut name = path.as_os_str().to_owned();
-            name.push(".tmp");
-            std::path::PathBuf::from(name)
-        };
+        let temp_path = Self::unique_temp_path(path);
         if let Err(error) = std::fs::write(&temp_path, &bytes) {
+            // The temp is incomplete — remove it and surface the write error.
             let _ = std::fs::remove_file(&temp_path);
             return Err(error);
         }
-        if let Err(error) = std::fs::rename(&temp_path, path) {
-            let _ = std::fs::remove_file(&temp_path);
-            return Err(error);
+        // Fast path: atomic rename onto the final name.
+        if std::fs::rename(&temp_path, path).is_ok() {
+            return Ok(bytes.len());
         }
-        Ok(bytes.len())
+        // Rename failed (typical Windows cause: the destination is open without delete
+        // sharing). Fall back to an in-place copy, which needs only the write sharing the
+        // old direct write needed — restoring the old overwrite semantics.
+        match std::fs::copy(&temp_path, path) {
+            Ok(_) => {
+                let _ = std::fs::remove_file(&temp_path);
+                Ok(bytes.len())
+            }
+            Err(error) => {
+                // Both moves failed. KEEP the temp (it is the complete export) and name it
+                // in the error so the user can recover it rather than lose the work.
+                Err(std::io::Error::new(
+                    error.kind(),
+                    format!(
+                        "could not place export at {} ({error}); complete export preserved at {}",
+                        path.display(),
+                        temp_path.display()
+                    ),
+                ))
+            }
+        }
+    }
+
+    /// A unique sibling temp path for `path` (`.<final-name>.<pid>-<nanos>.tmp`), in the
+    /// SAME directory so the rename in [`write`](Self::write) stays on one filesystem. The
+    /// pid + wall-clock nanos make the name collision-proof against both a real user file
+    /// and a concurrent export, with no extra dependency.
+    fn unique_temp_path(path: &std::path::Path) -> std::path::PathBuf {
+        let final_name = path
+            .file_name()
+            .map(|name| name.to_os_string())
+            .unwrap_or_default();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_nanos())
+            .unwrap_or(0);
+        let mut temp_name = std::ffi::OsString::from(".");
+        temp_name.push(&final_name);
+        temp_name.push(format!(".{}-{nanos}.tmp", std::process::id()));
+        match path.parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => parent.join(temp_name),
+            _ => std::path::PathBuf::from(temp_name),
+        }
     }
 }
 
@@ -536,6 +582,67 @@ mod tests {
             assert!((voxel.y as u32) < model.size.y);
             assert!((voxel.z as u32) < model.size.z);
         }
+    }
+
+    /// The atomic write's post-conditions (findings 2/3/4): a successful `write` leaves
+    /// the final file present and NO stray temp behind, and the unique temp name it picks
+    /// is a dot-prefixed sibling in the SAME directory (so the rename stays on one
+    /// filesystem). The Windows rename→copy fallback on a share-violating destination is
+    /// not portably simulatable, so it is reasoned in `write`'s doc comment rather than
+    /// exercised here.
+    #[test]
+    fn atomic_write_leaves_no_temp_and_temp_is_a_dir_sibling() {
+        let scene = crate::scene::Scene::from_geometry(
+            GeometryParams {
+                shape: ShapeKind::Cylinder,
+                size_voxels: [16, 16, 16],
+                size_measurements: None,
+                voxels_per_block: 8,
+                wall_blocks: 1,
+            },
+            crate::core_geom::MaterialChoice::Stone,
+        );
+        let grid = scene.resolve_region(scene.full_extent_blocks(8), 8, 0);
+        let export = VoxExport::from_grid(
+            &grid,
+            VoxExport::block_palette_from_active(MaterialChoice::Stone, [132, 126, 118, 255]),
+        );
+
+        let dir = std::env::temp_dir()
+            .join(format!("voxel_worker_write_test_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("create the test dir");
+        let final_path = dir.join("model.vox");
+
+        // The unique temp name is a dot-prefixed sibling in the same directory.
+        let temp = VoxExport::unique_temp_path(&final_path);
+        assert_eq!(temp.parent(), Some(dir.as_path()), "temp is a sibling of the final file");
+        assert!(
+            temp.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with('.') && n.ends_with(".tmp")),
+            "temp name is dot-prefixed and .tmp-suffixed: {temp:?}"
+        );
+
+        // A successful write leaves the final file and NO temp behind.
+        let bytes = export.write(&final_path).expect("write succeeds");
+        assert!(bytes > 0, "wrote a non-empty file");
+        assert!(final_path.exists(), "the final file is present");
+        let leftover_temps: Vec<_> = std::fs::read_dir(&dir)
+            .expect("read the test dir")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_str()
+                    .is_some_and(|name| name.ends_with(".tmp"))
+            })
+            .collect();
+        assert!(
+            leftover_temps.is_empty(),
+            "a successful write leaves no temp file behind, found: {leftover_temps:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Z-up convention pin: an ASYMMETRIC shape (tall in Z) puts its vertical extent

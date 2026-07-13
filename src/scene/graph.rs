@@ -780,7 +780,7 @@ impl Scene {
         // The gizmo SIZE is the node's enclosing-whole-block extent (the visible box
         // snaps to whole blocks), taken from the block-AABB.
         let (min_blocks, max_blocks) = self.node_subtree_extent_blocks(path, voxels_per_block)?;
-        let recentre = self.recentre_voxels_for_resolve(voxels_per_block);
+        let recentre = self.recentre_voxels_for_resolve(voxels_per_block).voxels();
         let density = voxels_per_block.max(1) as i64;
         let mut pivot = [0.0f32; 3];
         let mut extent = [0.0f32; 3];

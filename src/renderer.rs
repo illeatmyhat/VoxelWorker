@@ -2538,7 +2538,7 @@ fn points_line_batch(scene: &Scene, voxels_per_block: u32) -> Vec<LineVertex> {
     let mut vertices = Vec::new();
     let step = voxels_per_block.max(1);
     let density = step as i64;
-    let recentre = scene.recentre_voxels_for_resolve(voxels_per_block);
+    let recentre = scene.recentre_voxels_for_resolve(voxels_per_block).voxels();
     for point in &scene.points {
         if point.hidden {
             continue;
@@ -2592,7 +2592,7 @@ fn reference_plane_basis(plane: ReferencePlane) -> ([f32; 3], [f32; 3], [f32; 3]
 pub fn enabled_grid_planes(scene: &Scene, voxels_per_block: u32) -> Vec<GridPlaneInstance> {
     let step = voxels_per_block.max(1);
     let density = step as i64;
-    let recentre = scene.recentre_voxels_for_resolve(voxels_per_block);
+    let recentre = scene.recentre_voxels_for_resolve(voxels_per_block).voxels();
     let mut planes = Vec::new();
     for point in &scene.points {
         if point.hidden {

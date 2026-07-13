@@ -366,9 +366,7 @@ impl WindowedState {
             startup_density,
             0,
         );
-        let startup_recentre = RecentreVoxels::new(
-            panel_state.scene.recentre_voxels_for_resolve(startup_density),
-        );
+        let startup_recentre = panel_state.scene.recentre_voxels_for_resolve(startup_density);
         // Map item 2: the display-state machine builds itself from the startup covering set —
         // the brick engagement decision, both worker spawns, the (possibly skipped-empty)
         // cuboid mesh, and all display bookkeeping. Cloned wgpu handles keep the shell's
@@ -852,16 +850,34 @@ impl WindowedState {
         if let Some(result) = self.vox_export_worker.try_recv_result() {
             self.export_outstanding = false;
             self.export_progress = None;
-            self.export_status = Some(match result.outcome {
-                Ok(summary) => format!(
-                    "wrote {} ({} voxels, {} model(s), {} bytes)",
-                    summary.path.display(),
-                    summary.voxel_count,
-                    summary.model_count,
-                    summary.bytes
-                ),
-                Err(error) => format!("export .vox failed: {error}"),
-            });
+            match result.outcome {
+                Ok(summary) => {
+                    self.export_status = Some(format!(
+                        "wrote {} ({} voxels, {} model(s), {} bytes)",
+                        summary.path.display(),
+                        summary.voxel_count,
+                        summary.model_count,
+                        summary.bytes
+                    ));
+                }
+                Err(error) => {
+                    // Finding #1: if the user asked to close while this export was in
+                    // flight, a FAILURE must CANCEL the deferred close. The guard's whole
+                    // promise is "you won't silently lose the file"; exiting on a failed
+                    // write breaks exactly that. Clear the deferral so the exit check below
+                    // (top of `RedrawRequested`) doesn't fire, and tell the user the close
+                    // was cancelled so they can react. A success still exits as before.
+                    if self.close_requested_while_exporting {
+                        self.close_requested_while_exporting = false;
+                        self.export_status = Some(format!(
+                            "export .vox FAILED: {error} — close cancelled so you can see \
+                             this; close again to exit"
+                        ));
+                    } else {
+                        self.export_status = Some(format!("export .vox failed: {error}"));
+                    }
+                }
+            }
             self.window.request_redraw();
         } else if self.export_outstanding {
             // Keep frames coming so the progress readout refreshes while we wait.
@@ -897,6 +913,14 @@ impl WindowedState {
         let config =
             AppConfig::capture(&self.panel_state, &self.app_core.camera, self.home_view, window_size);
         config.save();
+    }
+
+    /// The shared shutdown sequence: persist config, then exit the loop. Called from both
+    /// the immediate `CloseRequested` path and the deferred-close honour seam so the two
+    /// never drift (finding #9).
+    fn shutdown(&self, event_loop: &ActiveEventLoop) {
+        self.save_config();
+        event_loop.exit();
     }
 
     /// #13: save the live camera orbit as the new Home view (the right-click
@@ -1129,10 +1153,6 @@ impl WindowedState {
         // ADR 0010 E5 follow-up: accept a finished (non-stale) diameter measurement.
         self.poll_diameter_worker();
 
-        // Slow-paths item 2: accept a finished `.vox` export (or keep frames coming so its
-        // progress readout advances while it runs).
-        self.poll_vox_export_worker();
-
         // M6: drain the background scan channel and turn any new groups into
         // palette tiles (GPU thumbnail + egui texture registration on this thread).
         self.poll_scan();
@@ -1179,7 +1199,8 @@ impl WindowedState {
             let recentre = self
                 .panel_state
                 .scene
-                .recentre_voxels_for_resolve(self.panel_state.geometry.voxels_per_block);
+                .recentre_voxels_for_resolve(self.panel_state.geometry.voxels_per_block)
+                .voxels();
             let target = self.app_core.camera.target;
             self.panel_state.point_add_position_blocks = [
                 ((target.x.round() as i64) + recentre[0]).div_euclid(density),
@@ -1625,8 +1646,7 @@ impl ApplicationHandler for App {
                     // (the user insisting) — exit immediately. The atomic `.vox` write bounds
                     // the worst case to "no file", never a truncated one.
                     // M8: persist UI + camera + window size before exiting.
-                    state.save_config();
-                    event_loop.exit();
+                    state.shutdown(event_loop);
                 }
             }
             WindowEvent::Resized(new_size) => {
@@ -1847,13 +1867,19 @@ impl ApplicationHandler for App {
                 state.app_core.camera.zoom_by_wheel(scroll_lines);
             }
             WindowEvent::RedrawRequested => {
-                state.render();
-                // Deferred close (data-loss guard): once the export we were waiting on has
-                // landed (`render` → `poll_vox_export_worker` cleared `export_outstanding`),
-                // honour the pending close.
+                // Finding #0 (data-loss guard): poll the export worker and honour a pending
+                // deferred close BEFORE `render()`. `render()` early-returns before it can
+                // poll anything when the surface isn't presentable (window minimized /
+                // occluded), which would otherwise hang the deferred close FOREVER — the
+                // export result would never be observed and the app would never exit. This
+                // poll and the exit check need no presentable surface, so they run here.
+                state.poll_vox_export_worker();
                 if state.close_requested_while_exporting && !state.export_outstanding {
-                    state.save_config();
-                    event_loop.exit();
+                    // The export we were waiting on landed successfully (a failure clears
+                    // the deferral in the poll above), so honour the pending close.
+                    state.shutdown(event_loop);
+                } else {
+                    state.render();
                 }
             }
             _ => {}

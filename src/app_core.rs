@@ -27,7 +27,7 @@ use crate::renderer::OnionFogParams;
 use crate::scene::{NodeContent, NodeId, NodeTransform, Part, Scene};
 use crate::spatial_index::LeafSpatialIndex;
 use crate::two_layer_store::{TwoLayerChunk, TwoLayerResidentCache};
-use crate::voxel::{chunk_extent_exceeds_bound, SdfShape};
+use crate::voxel::{chunk_extent_exceeds_bound, RecentreVoxels, SdfShape};
 
 /// The headless orchestrator: owns the per-chunk resolve [`Store`] and the
 /// [`OrbitCamera`], and answers the headless scene queries the shell renders from.
@@ -61,39 +61,6 @@ pub struct AppCore {
     /// non-selection-only `apply_intent` pushes a [`Command`] here; `undo`/`redo`
     /// shuttle commands between its two Vecs. Empty until the first undoable edit.
     command_stack: CommandStack,
-}
-
-/// The composite floating-origin recentre, in voxels — the frame value every display
-/// artifact of one rebuild is resolved in.
-///
-/// **The frame law (docs/architecture, the voxel-frame invariant).** A spatial value
-/// CARRIES the frame it was authored in; consumers decode with it and never re-derive it.
-/// A build's install must use the recentre THAT build was resolved at — so the recentre
-/// travels end-to-end (resolve → orchestrator → the async worker channels → the GPU
-/// install) as this newtype, and the compiler enforces that the install uses the request's
-/// recentre rather than a same-shaped `[i64; 3]` from somewhere else.
-///
-/// Transport only this increment: it is `Copy`, has no arithmetic, and [`voxels`] is the
-/// ONE way back to the raw triple — unwrapped explicitly at the mesh / two-layer / scene
-/// boundaries that still speak `[i64; 3]`.
-///
-/// [`voxels`]: RecentreVoxels::voxels
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct RecentreVoxels([i64; 3]);
-
-impl RecentreVoxels {
-    /// Carry a resolve's composite recentre as its frame value. The one constructor —
-    /// at the resolve origin (and, mechanically, at the test/boundary sites that mint a
-    /// known recentre).
-    pub fn new(voxels: [i64; 3]) -> Self {
-        Self(voxels)
-    }
-
-    /// The raw voxel triple — the single consumption door, called exactly at the mesh /
-    /// two-layer / scene boundaries that still take `[i64; 3]` and at the uniform packing.
-    pub fn voxels(&self) -> [i64; 3] {
-        self.0
-    }
 }
 
 /// The headless resolve output of a geometry [`rebuild`](AppCore::rebuild) (A2e;
@@ -923,16 +890,20 @@ impl AppCore {
         // unlike the retired dense store — a floating-origin SHIFT does NOT invalidate
         // the cache (the recentre is a pure index offset applied at expand/mesh time).
         let new_leaf_index = scene.build_leaf_spatial_index(density);
+        // The ONE mint point returns the recentre already carrying its frame (finding #7);
+        // unwrap to the raw triple only for the shift arithmetic + the `[i64; 3]` previous
+        // recentre state below. The `RecentreVoxels` itself flows straight into the output.
         let new_recentre = scene.recentre_voxels_for_resolve(density);
+        let new_recentre_voxels = new_recentre.voxels();
         // The floating-origin shift since the last rebuild (render-frame voxels). The
         // first rebuild has no previous recentre, so it shifts nothing (the camera is
         // framed explicitly at startup, not compensated). The shell subtracts this
         // from `camera.target` so the view stays put as the origin floats.
-        let previous_recentre = self.previous_recentre_voxels.unwrap_or(new_recentre);
+        let previous_recentre = self.previous_recentre_voxels.unwrap_or(new_recentre_voxels);
         let recentre_shift_voxels = [
-            new_recentre[0] - previous_recentre[0],
-            new_recentre[1] - previous_recentre[1],
-            new_recentre[2] - previous_recentre[2],
+            new_recentre_voxels[0] - previous_recentre[0],
+            new_recentre_voxels[1] - previous_recentre[1],
+            new_recentre_voxels[2] - previous_recentre[2],
         ];
         // The chunk-granular GPU-buffer incremental (#55) reuses UNTOUCHED chunks' baked
         // buffers verbatim, so it is only valid when those buffers are still in the right
@@ -981,7 +952,7 @@ impl AppCore {
                 None
             }
         };
-        self.previous_recentre_voxels = Some(new_recentre);
+        self.previous_recentre_voxels = Some(new_recentre_voxels);
         self.previous_leaf_index = Some(new_leaf_index);
         self.previous_density = Some(density);
 
@@ -1005,7 +976,7 @@ impl AppCore {
         RebuildOutcome::Built(RebuildOutput {
             region_dimensions,
             two_layer_chunks,
-            recentre_voxels: RecentreVoxels::new(new_recentre),
+            recentre_voxels: new_recentre,
             recentre_shift_voxels,
             incremental_dirty_chunks,
         })
@@ -1032,7 +1003,7 @@ impl AppCore {
     pub fn startup_region(scene: &Scene, density: u32) -> ([u32; 3], [i64; 3]) {
         (
             scene.placed_region_dimensions(density),
-            scene.recentre_voxels_for_resolve(density),
+            scene.recentre_voxels_for_resolve(density).voxels(),
         )
     }
 
@@ -2199,13 +2170,13 @@ mod undo_tests {
         assert_eq!(first_shift, [0; 3], "the first rebuild must not move the camera");
 
         // Move a node so the composite extent (hence its recentre) shifts.
-        let recentre_before = scene.recentre_voxels_for_resolve(density);
+        let recentre_before = scene.recentre_voxels_for_resolve(density).voxels();
         let target = scene.roots[0];
         core.apply_intent(
             &mut scene,
             Intent::SetOffset { target, offset_measurements: whole_block_offset([10, -4, 6]) },
         );
-        let recentre_after = scene.recentre_voxels_for_resolve(density);
+        let recentre_after = scene.recentre_voxels_for_resolve(density).voxels();
         let expected_shift = [
             recentre_after[0] - recentre_before[0],
             recentre_after[1] - recentre_before[1],
@@ -2243,7 +2214,7 @@ mod undo_tests {
         );
         assert_eq!(
             recentre,
-            scene.recentre_voxels_for_resolve(density),
+            scene.recentre_voxels_for_resolve(density).voxels(),
             "startup recentre must match the resolve frame (the camera consumes it)"
         );
     }

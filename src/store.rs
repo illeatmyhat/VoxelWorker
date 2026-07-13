@@ -402,7 +402,7 @@ impl Store {
         // ADR 0008: carry the recentre the chunks were rebased by, so the fog (and any
         // other consumer) decodes `world → index` without re-deriving `floor(dim/2)`. This
         // matches `Scene::resolve_region`'s output exactly (the S2 identical-output net).
-        output.recentre_voxels = scene.recentre_voxels_for_resolve(voxels_per_block);
+        output.recentre_voxels = scene.recentre_voxels_for_resolve(voxels_per_block).voxels();
         for grid in self.covering_chunk_grids(scene, voxels_per_block, lod) {
             // The cached chunk is already rebased to the floating origin
             // (= recentre), so its voxels drop straight into the output.
@@ -542,7 +542,7 @@ impl Store {
         lod: u32,
     ) -> [u32; 3] {
         debug_assert_eq!(lod, 0, "S6d only operates at full resolution (lod 0)");
-        let recentre_voxels = scene.recentre_voxels_for_resolve(voxels_per_block);
+        let recentre_voxels = scene.recentre_voxels_for_resolve(voxels_per_block).voxels();
         self.rebind_if_changed(voxels_per_block, recentre_voxels);
 
         if let Some((min_chunk, max_chunk)) = scene.covering_chunk_range(voxels_per_block) {
@@ -1311,7 +1311,7 @@ mod tests {
         // owns its grid's voxels. The accessor binds to the recentre, so a chunk
         // coord `c` owns rebased voxels in `[c·E - recentre, (c+1)·E - recentre)`.
         let chunk_extent = (crate::core_geom::CHUNK_BLOCKS * voxels_per_block) as i64;
-        let recentre = scene.recentre_voxels_for_resolve(voxels_per_block);
+        let recentre = scene.recentre_voxels_for_resolve(voxels_per_block).voxels();
         for (coord, grid) in &chunks {
             for voxel in &grid.occupied {
                 let position = voxel.world_position();

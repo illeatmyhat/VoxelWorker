@@ -48,7 +48,7 @@ impl Fixture {
         let scene = common::box_scene(blocks, VPB, MaterialChoice::Stone);
         let chunks = common::box_covering_chunks(blocks, VPB, MaterialChoice::Stone);
         let region_dimensions = scene.placed_region_dimensions(VPB);
-        let recentre_voxels = RecentreVoxels::new(scene.recentre_voxels_for_resolve(VPB));
+        let recentre_voxels = scene.recentre_voxels_for_resolve(VPB);
         Self { scene, chunks, region_dimensions, recentre_voxels }
     }
 

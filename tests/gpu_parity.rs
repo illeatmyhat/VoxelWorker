@@ -425,7 +425,7 @@ fn worker_build_matches_sync_build_for_large_scene() {
 
     // Resolve the covering two-layer chunks exactly as the live rebuild does.
     let two_layer_chunks = TwoLayerStore::enabled().build_covering_chunks(&scene, vpb, 0);
-    let recentre_voxels = scene.recentre_voxels_for_resolve(vpb);
+    let recentre_voxels = scene.recentre_voxels_for_resolve(vpb).voxels();
     // Use the placed region dims (what the live shell passes for `grid.dimensions`).
     let grid_dimensions = scene.placed_region_dimensions(vpb);
 
@@ -672,7 +672,7 @@ fn brick_raymarch_hit_set_matches_exact_evaluator() {
         // a distinct-material union is brick-representable at G2 (each block single-material)
         // and still exercises the traversal. `unwrap_or(false)` keeps the overlay off.
         let overlay_active = brick_representable_overlay(&two_layer_chunks).unwrap_or(false);
-        let recentre = voxel_worker::RecentreVoxels::new(case.scene.recentre_voxels_for_resolve(vpb));
+        let recentre = case.scene.recentre_voxels_for_resolve(vpb);
         let grid_dimensions = case.scene.placed_region_dimensions(vpb);
 
         // The exact-evaluator oracle (the truth the raymarch is checked against).
@@ -850,7 +850,7 @@ fn brick_loaded_material_hit_samples_mesh_rule_texel() {
     let build = build_brick_field(&two_layer_chunks, vpb);
     assert!(!build.brick_records.is_empty(), "empty brick field");
     let overlay_active = brick_representable_overlay(&two_layer_chunks).unwrap_or(false);
-    let recentre = voxel_worker::RecentreVoxels::new(case.scene.recentre_voxels_for_resolve(vpb));
+    let recentre = case.scene.recentre_voxels_for_resolve(vpb);
     let grid_dimensions = case.scene.placed_region_dimensions(vpb);
 
     let mut app_core = AppCore::new(OrbitCamera::default());
@@ -1027,7 +1027,7 @@ fn brick_surface_elision_hit_set_unchanged() {
             case.name
         );
         let overlay_active = brick_representable_overlay(&two_layer_chunks).unwrap_or(false);
-        let recentre = voxel_worker::RecentreVoxels::new(case.scene.recentre_voxels_for_resolve(vpb));
+        let recentre = case.scene.recentre_voxels_for_resolve(vpb);
         let grid_dimensions = case.scene.placed_region_dimensions(vpb);
 
         let full_records = pack_gpu_records(&full_build.brick_records, |_| false);
@@ -1140,7 +1140,7 @@ fn brick_surface_elision_band_clip_renders_interior() {
             continue;
         }
         let overlay_active = brick_representable_overlay(&two_layer_chunks).unwrap_or(false);
-        let recentre = voxel_worker::RecentreVoxels::new(case.scene.recentre_voxels_for_resolve(vpb));
+        let recentre = case.scene.recentre_voxels_for_resolve(vpb);
         let grid_dimensions = case.scene.placed_region_dimensions(vpb);
         let grid_z = grid_dimensions[2];
         if grid_z < 3 {
@@ -1312,7 +1312,7 @@ fn brick_raymarch_incremental_patch_matches_wholesale_install() {
     );
 
     let overlay_b = brick_representable_overlay(&fresh_b).unwrap_or(false);
-    let recentre_b = voxel_worker::RecentreVoxels::new(scene_b.recentre_voxels_for_resolve(vpb));
+    let recentre_b = scene_b.recentre_voxels_for_resolve(vpb);
     let grid_dimensions = scene_b.placed_region_dimensions(vpb);
 
     // The headless camera framing B at the origin (the same rig the other brick tests use).
@@ -1334,7 +1334,7 @@ fn brick_raymarch_incremental_patch_matches_wholesale_install() {
         &build_a.atlas_payload(),
         &pack_gpu_records(&build_a.brick_records, |_| false),
         &ClipmapPyramid::from_chunks(&fresh_a),
-        voxel_worker::RecentreVoxels::new(scene_a.recentre_voxels_for_resolve(vpb)),
+        scene_a.recentre_voxels_for_resolve(vpb),
         overlay_a,
     );
     incremental_renderer.patch_brick_field(
@@ -1525,7 +1525,7 @@ fn brick_raymarch_incremental_carve_exposes_interior_across_chunk_boundary() {
 
     let overlay_carved = brick_representable_overlay(&fresh_carved).unwrap_or(false);
     let recentre_carved =
-        voxel_worker::RecentreVoxels::new(scene_carved.recentre_voxels_for_resolve(vpb));
+        scene_carved.recentre_voxels_for_resolve(vpb);
     let grid_dimensions = scene_carved.placed_region_dimensions(vpb);
 
     let mut app_core = AppCore::new(OrbitCamera::default());
@@ -1559,7 +1559,7 @@ fn brick_raymarch_incremental_carve_exposes_interior_across_chunk_boundary() {
         &build_with_b.atlas_payload(),
         &pack_gpu_records(&build_with_b.brick_records, |_| false),
         &ClipmapPyramid::from_chunks(&fresh_with_b),
-        voxel_worker::RecentreVoxels::new(scene_with_b.recentre_voxels_for_resolve(vpb)),
+        scene_with_b.recentre_voxels_for_resolve(vpb),
         overlay_with_b,
     );
     incremental_renderer.patch_brick_field(
@@ -1638,7 +1638,7 @@ fn brick_raymarch_residency_miss_renders_coarse_form() {
         );
         let overlay_active =
             brick_representable_overlay(&two_layer_chunks).unwrap_or(false);
-        let recentre = voxel_worker::RecentreVoxels::new(case.scene.recentre_voxels_for_resolve(vpb));
+        let recentre = case.scene.recentre_voxels_for_resolve(vpb);
         let grid_dimensions = case.scene.placed_region_dimensions(vpb);
 
         let mut app_core = AppCore::new(OrbitCamera::default());
@@ -1783,7 +1783,7 @@ fn brick_raymarch_pyramid_on_equals_off() {
         );
         let overlay_active =
             brick_representable_overlay(&two_layer_chunks).unwrap_or(false);
-        let recentre = voxel_worker::RecentreVoxels::new(case.scene.recentre_voxels_for_resolve(vpb));
+        let recentre = case.scene.recentre_voxels_for_resolve(vpb);
         let grid_dimensions = case.scene.placed_region_dimensions(vpb);
 
         let mut app_core = AppCore::new(OrbitCamera::default());
@@ -1940,7 +1940,7 @@ fn clipmap_scattered_scene_skips_empty_space() {
     let pyramid_on = ClipmapPyramid::from_records(&build.brick_records);
     let gpu_records = pack_gpu_records(&build.brick_records, |_| false);
     let overlay_active = brick_representable_overlay(&two_layer_chunks).unwrap_or(false);
-    let recentre = voxel_worker::RecentreVoxels::new(scene.recentre_voxels_for_resolve(vpb));
+    let recentre = scene.recentre_voxels_for_resolve(vpb);
     let grid_dimensions = scene.placed_region_dimensions(vpb);
 
     // The four clip-map configs, each a slice of levels COARSEST→FINEST (the descent
@@ -2085,7 +2085,7 @@ fn onion_ghost_marches_only_the_onion_slabs() {
     let records = pack_gpu_records(&build.brick_records, |_| false);
     let overlay_active = brick_representable_overlay(&two_layer_chunks).unwrap_or(false);
     let pyramid = ClipmapPyramid::from_chunks(&two_layer_chunks);
-    let recentre = voxel_worker::RecentreVoxels::new(case.scene.recentre_voxels_for_resolve(vpb));
+    let recentre = case.scene.recentre_voxels_for_resolve(vpb);
     let grid_dimensions = case.scene.placed_region_dimensions(vpb);
     let grid_z = grid_dimensions[2];
 

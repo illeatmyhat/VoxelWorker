@@ -9,6 +9,7 @@ use crate::units::{ExactRational, Measurement};
 
 use super::producers::leaf_producer_grid_voxels;
 use super::*;
+use crate::voxel::RecentreVoxels;
 
 /// The working volume the scene resolves into, expressed in **whole blocks**
 /// (ADR 0001 "Scale": the canvas is the user-set stock / build volume). Step 1
@@ -278,7 +279,7 @@ impl Scene {
         voxels_per_block: u32,
     ) -> Option<([f32; 3], [f32; 3])> {
         let (min_corner, max_corner) = self.node_subtree_extent_blocks(path, voxels_per_block)?;
-        let recentre = self.recentre_voxels_for_resolve(voxels_per_block);
+        let recentre = self.recentre_voxels_for_resolve(voxels_per_block).voxels();
         let density = voxels_per_block.max(1) as i64;
         let mut min_box = [0.0f32; 3];
         let mut max_box = [0.0f32; 3];
@@ -495,7 +496,7 @@ impl Scene {
     /// to the other. `[0, 0, 0]` for a scene with no intrinsic-size leaf.
     #[cfg(test)]
     pub(crate) fn recentre_voxels(&self, voxels_per_block: u32) -> [i64; 3] {
-        self.recentre_voxels_for_resolve(voxels_per_block)
+        self.recentre_voxels_for_resolve(voxels_per_block).voxels()
     }
 
     /// The recentre offset (in voxels) that [`resolve_region`] subtracts from every
@@ -513,8 +514,13 @@ impl Scene {
     /// shift is needed.
     ///
     /// [`placed_extent_voxels`]: Self::placed_extent_voxels
-    pub fn recentre_voxels_for_resolve(&self, voxels_per_block: u32) -> [i64; 3] {
-        match self.placed_extent_voxels(voxels_per_block) {
+    ///
+    /// **The one mint point (ADR 0008 / the frame law).** Returns the recentre already
+    /// wrapped as [`RecentreVoxels`] — a build's frame value is born here carrying its
+    /// frame, so downstream never re-wraps a raw triple. Consumers that still speak
+    /// `[i64; 3]` unwrap with [`RecentreVoxels::voxels`] at their boundary.
+    pub fn recentre_voxels_for_resolve(&self, voxels_per_block: u32) -> RecentreVoxels {
+        let voxels = match self.placed_extent_voxels(voxels_per_block) {
             // FLOOR division (`div_euclid`), NOT truncation: for an odd composite span
             // `(min + max)` is odd, and `/` rounds toward zero — which biases a
             // negative-X composite the OPPOSITE way from a positive-X one, breaking
@@ -526,7 +532,8 @@ impl Scene {
                 (min_corner[2] + max_corner[2]).div_euclid(2),
             ],
             None => [0i64; 3],
-        }
+        };
+        RecentreVoxels::new(voxels)
     }
 
     /// The full composite extent in voxels — the size the whole-region grids

@@ -53,7 +53,7 @@ const WORKER_TIMEOUT: Duration = Duration::from_secs(30);
 fn build_request(generation: u64, blocks_per_axis: u32, vpb: u32) -> GeometryRebuildRequest {
     let scene = common::box_scene(blocks_per_axis, vpb, MaterialChoice::default());
     let two_layer_chunks = TwoLayerStore::enabled().build_covering_chunks(&scene, vpb, 0);
-    let recentre_voxels = RecentreVoxels::new(scene.recentre_voxels_for_resolve(vpb));
+    let recentre_voxels = scene.recentre_voxels_for_resolve(vpb);
     let grid_dimensions = scene.placed_region_dimensions(vpb);
     GeometryRebuildRequest {
         generation,

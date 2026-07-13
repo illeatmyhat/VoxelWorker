@@ -42,7 +42,7 @@ use crate::brick_field::build_brick_field;
 use crate::brick_field::{
     build_brick_field_with_tiles, ClipmapPyramid, IncrementalBrickField, SculptedAtlasPayload,
 };
-use crate::app_core::RecentreVoxels;
+use crate::voxel::RecentreVoxels;
 use crate::brick_raymarch::{brick_representable_overlay, pack_gpu_records, BrickGpuRecord};
 use crate::two_layer_store::TwoLayerChunk;
 use crate::workers::{build_catching, Worker};

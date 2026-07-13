@@ -542,7 +542,7 @@
         // whether from the Tool or the Cloud — must decode to an index in [0, dim) with
         // a half-integer centre. If the cloud were still center-emitting it would be
         // offset by ~region_dim/2 and a slab would decode out of range.
-        let recentre = scene.recentre_voxels_for_resolve(vpb);
+        let recentre = scene.recentre_voxels_for_resolve(vpb).voxels();
         for voxel in &grid.occupied {
             let position = voxel.world_position();
             for (axis, &dim) in dims.iter().enumerate() {
@@ -2575,7 +2575,7 @@
                     Node::new("Box", NodeContent::Tool { shape, material: MaterialChoice::Stone });
                 node.transform = NodeTransform::from_blocks(offset, density);
                 let scene = scene_with_top_level_selected(Scene::from_nodes(vec![node]), 0);
-                scene.recentre_voxels_for_resolve(density)
+                scene.recentre_voxels_for_resolve(density).voxels()
             };
             // Pivot in the recentred frame = offset·d − recentre.
             let recentred_pivot = |offset: [i64; 3]| {
@@ -3135,7 +3135,7 @@
                 "no selection hides the gizmo (vpb={vpb})"
             );
 
-            let recentre = scene.recentre_voxels_for_resolve(vpb);
+            let recentre = scene.recentre_voxels_for_resolve(vpb).voxels();
             let density = vpb as i64;
 
             // Expected pivot for a 4-block box at block OFFSET `off`: its geometric

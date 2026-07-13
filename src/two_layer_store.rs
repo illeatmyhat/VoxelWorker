@@ -1295,7 +1295,7 @@ pub fn resolve_region_two_layer(
     let mut output = VoxelGrid::new(region_dimensions);
     // ADR 0008: carry the recentre so consumers decode world→index without re-deriving it
     // — the same value the dense `resolve_region` stamps (the parity gate compares it).
-    let recentre_voxels = scene.recentre_voxels_for_resolve(voxels_per_block);
+    let recentre_voxels = scene.recentre_voxels_for_resolve(voxels_per_block).voxels();
     output.recentre_voxels = recentre_voxels;
 
     let Some((min_chunk, max_chunk)) = scene.covering_chunk_range(voxels_per_block) else {
@@ -1440,7 +1440,7 @@ pub fn stream_vox_occupancy<Sink: FnMut(Vec<Voxel>)>(
         return None;
     }
     let region_dimensions = scene.placed_region_dimensions(voxels_per_block);
-    let recentre_voxels = scene.recentre_voxels_for_resolve(voxels_per_block);
+    let recentre_voxels = scene.recentre_voxels_for_resolve(voxels_per_block).voxels();
     let Some((min_chunk, max_chunk)) = scene.covering_chunk_range(voxels_per_block) else {
         // No composite extent (Part-only): an empty occupancy is still a valid export.
         return Some((region_dimensions, recentre_voxels));
@@ -1543,7 +1543,7 @@ pub fn streamed_widest_run_in_band(
     if grid_x == 0 || grid_y == 0 || grid_z == 0 {
         return Some(0);
     }
-    let recentre_voxels = scene.recentre_voxels_for_resolve(voxels_per_block);
+    let recentre_voxels = scene.recentre_voxels_for_resolve(voxels_per_block).voxels();
     let Some((min_chunk, max_chunk)) = scene.covering_chunk_range(voxels_per_block) else {
         return Some(0);
     };

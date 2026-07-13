@@ -225,25 +225,38 @@ impl DisplayOrchestrator {
                     "brick raymarch: startup field building async ({} covering chunks)",
                     two_layer_chunks.len()
                 );
-            } else if let Some(overlay_active) =
-                // Small startup scene: build + install inline (no pop-in). Display requires
-                // the scene be brick-REPRESENTABLE (single-material blocks + one overlay);
-                // a mixed-material scene keeps the mesh display.
-                brick_representable_overlay(two_layer_chunks)
-            {
-                let (build, slot_tiles) = build_brick_field_with_tiles(two_layer_chunks, density);
-                if !build.brick_records.is_empty() {
-                    let mut renderer =
-                        BrickRaymarchRenderer::new(&device, &queue, color_format);
-                    let pyramid = ClipmapPyramid::from_chunks(two_layer_chunks);
-                    // Seed the mirror (single owner) BY MOVE and install from its records +
-                    // upload payload — one copy of the field (item 9). The build's rasterised
-                    // tiles move straight into the mirror's slots (no from-atlas re-derive).
-                    let (mirror, atlas) =
-                        IncrementalBrickField::from_wholesale_with_tiles(build, slot_tiles);
-                    // The record set is surface-only by construction (ADR 0011 interior
-                    // elision fused into `build_brick_field`) — a plain 1:1 pack.
-                    let gpu_records = pack_gpu_records(mirror.records(), |_| false);
+            } else {
+                // Small startup scene: build + install inline (no pop-in), routed through the
+                // SAME shared entry the async worker uses (finding #6) — `build_brick_rebuild`
+                // does the record build → representability classify → pyramid + GPU record pack
+                // in one place, so the startup and worker paths can never drift step-for-step.
+                // Only the GPU upload (`install_brick_field`, which the off-thread worker can't
+                // do) stays here. An empty or non-representable small scene installs nothing and
+                // lets the cuboid mesh take over, exactly as the old inline guard did.
+                let startup_request = BrickRebuildRequest {
+                    // Not dispatched to the worker and never superseded, so the generation and
+                    // recentre the request carries are unread by `build_brick_rebuild` (the
+                    // install below uses the local `recentre_voxels`). A zero generation keeps
+                    // `brick_generation` untouched — the inline path never consumed one.
+                    generation: 0,
+                    two_layer_chunks: two_layer_chunks.to_vec(),
+                    density,
+                    recentre_voxels,
+                    build_display_artifacts: true,
+                };
+                if let BrickRebuildOutcome::Display(install) =
+                    crate::build_brick_rebuild(&startup_request)
+                {
+                    let crate::BrickDisplayInstall {
+                        atlas,
+                        gpu_records,
+                        pyramid,
+                        overlay_active,
+                        mirror,
+                    } = *install;
+                    let mut renderer = BrickRaymarchRenderer::new(&device, &queue, color_format);
+                    // The mirror is the single owner (item 9): install reads its records + the
+                    // upload payload the build moved out alongside it.
                     renderer.install_brick_field(
                         &device,
                         &queue,

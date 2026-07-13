@@ -1432,10 +1432,27 @@ impl IncrementalBrickField {
         slot_tiles: Vec<BrickOccupancyTile>,
     ) -> (Self, SculptedAtlasPayload) {
         let sculpted_count = build.sculpted_brick_count();
-        debug_assert_eq!(
+        // Finding #5: a misordered / wrong-length tile vec would silently desync the mirror
+        // from the build. The slot count + a representative brick-edge match are O(1) and
+        // catch the structural mistakes, so they earn a RELEASE-mode assert. The exhaustive
+        // per-slot byte-equality (O(sculpted·brick)) stays a debug-only check.
+        assert_eq!(
             slot_tiles.len(),
             sculpted_count,
             "the carried tiles must be exactly the build's sculpted slots (dense 0..count)"
+        );
+        assert!(
+            slot_tiles
+                .first()
+                .is_none_or(|tile| tile.edge == build.brick_edge_voxels),
+            "the carried tiles must share the build's brick edge"
+        );
+        debug_assert!(
+            slot_tiles.iter().enumerate().all(|(slot, tile)| {
+                tile.edge == build.brick_edge_voxels
+                    && tile.unpack_to_bytes() == build.sculpted_brick_occupancy(slot as u32)
+            }),
+            "each carried tile must byte-match the build's own sculpted slot in dense order"
         );
         let BrickFieldBuild {
             brick_records,

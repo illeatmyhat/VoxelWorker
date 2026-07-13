@@ -30,7 +30,7 @@
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
-use crate::app_core::RecentreVoxels;
+use crate::voxel::RecentreVoxels;
 use crate::brick_field::{
     pack_clipmap_level_keys, pack_world_block_key, unpack_world_block_key, upload_brick_atlas,
     BlockOccupancyMasks, BrickFieldBuild, BrickFieldUpdate, BrickPayload, BrickRecord,
