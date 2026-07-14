@@ -4,13 +4,14 @@ version = "0.1.0"
 edition = "2021"
 
 # Root-package workspace: the app crate stays here at `src/`; the other members are
-# the wgpu-free libraries the app depends on — `crates/substrate` (pure CS/math) and
-# `crates/camera` (viewing + projective geometry). The dependency direction
-# (app -> substrate/camera, never the reverse; camera -> substrate) is
-# compile-enforced by the crate split. See docs/architecture/data-structures.md
+# the wgpu-free libraries the app depends on — `crates/substrate` (pure CS/math),
+# `crates/camera` (viewing + projective geometry), and `crates/raycast` (ray–volume
+# traversal). The dependency direction (app -> substrate/camera/raycast, never the
+# reverse; camera -> substrate, raycast -> substrate; camera and raycast never each
+# other) is compile-enforced by the crate split. See docs/architecture/data-structures.md
 # (the "Substrate" section) for the boundary law.
 [workspace]
-members = [".", "crates/substrate", "crates/camera"]
+members = [".", "crates/substrate", "crates/camera", "crates/raycast"]
 
 [lib]
 name = "voxel_worker"
@@ -55,6 +56,11 @@ substrate = { path = "crates/substrate" }
 # screen→ray unprojection, frustum culling). wgpu-free graphics mathematics;
 # depends only on glam + substrate.
 camera = { path = "crates/camera" }
+# The ray–volume traversal library (Amanatides–Woo DDA at block and voxel scale,
+# hierarchical empty-space skip, slab entry, ViewCube element picking). wgpu-free
+# graphics mathematics; depends only on glam + substrate. The CPU brick march and the
+# WGSL raymarch shader are its domain adapter and GPU mirror respectively.
+raycast = { path = "crates/raycast" }
 winit = "0.30.13"
 wgpu = "29.0.3"
 egui = "0.34.3"

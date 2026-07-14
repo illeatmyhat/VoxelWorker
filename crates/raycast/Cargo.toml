@@ -1,0 +1,24 @@
+[package]
+name = "raycast"
+version = "0.1.0"
+edition = "2021"
+
+# Ray–volume traversal library: the wgpu-free graphics mathematics of marching a
+# ray through a sparse voxel/brick volume. Like `substrate` and its sibling
+# `camera`, this is a read-first library of well-known concepts under their
+# literature names (Amanatides & Woo voxel DDA, the slab test, a hierarchical
+# empty-space skip over a min-mip occupancy pyramid); unlike `substrate` it is
+# graphics-specific, and unlike `camera` it CONSUMES the rays a camera produces.
+# It depends on `glam` (the vector algebra all of this is expressed in) and on
+# `substrate` for the shared `Ray`/`RealAabb` primitives and the sorted-cell-key
+# search the hierarchical skip folds against — nothing else. Never wgpu, never the
+# domain (records, atlas bytes, occupancy policies stay in the app as the injected
+# closures). It never depends on the sibling `camera` crate. See the graphics-crate
+# law in docs/adr/0015 and docs/design/graphics-crates-extraction-map.md (Crate 2).
+
+[dependencies]
+glam = "0.33.1"
+# The shared ray/box vocabulary and the min-mip cell-key search live in substrate;
+# matched to the workspace glam version so a `Ray` crosses the boundary without a
+# conversion.
+substrate = { path = "../substrate" }

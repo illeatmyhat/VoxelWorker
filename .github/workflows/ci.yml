@@ -63,6 +63,17 @@ jobs:
       - name: Test camera
         run: cargo test -p camera
 
+      # The raycast library is the wgpu-free ray–volume traversal member (Amanatides–Woo
+      # DDA at block and voxel scale, hierarchical empty-space skip, slab entry, ViewCube
+      # element picking); it depends only on glam + substrate and carries its own gates so
+      # a regression in the traversal math fails independently of the app crate. The WGSL
+      # raymarch shader is its GPU mirror; the app's gpu_parity suite pins the two.
+      - name: Clippy raycast (deny warnings)
+        run: cargo clippy -p raycast --all-targets -- -D warnings
+
+      - name: Test raycast
+        run: cargo test -p raycast
+
   windows-build:
     name: Build (Windows)
     runs-on: windows-latest

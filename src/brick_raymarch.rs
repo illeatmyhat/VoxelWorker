@@ -1860,24 +1860,6 @@ fn cpu_camera_ray(frame: &BrickMarchFrame, pixel: glam::Vec2) -> (glam::Vec3, gl
     (near_world + frame.grid_half_extent + shift, direction)
 }
 
-/// The outward face normal (an exact ±1 axis vector) for a march that ENTERED a box
-/// through face `axis`: the normal opposes the ray's motion on that axis (mirrors the
-/// shader's `hit.normal_sign = -sign(ray.direction[axis])`). Feeds `face_layer` for the
-/// loaded-material colour-parity check (ADR 0011 G2).
-fn axis_normal(axis: usize, direction: glam::Vec3) -> [i32; 3] {
-    let mut normal = [0i32; 3];
-    normal[axis] = if direction[axis] > 0.0 { -1 } else { 1 };
-    normal
-}
-
-fn safe_direction(direction: glam::Vec3) -> glam::Vec3 {
-    glam::Vec3::new(
-        if direction.x.abs() < 1e-20 { 1e-20 } else { direction.x },
-        if direction.y.abs() < 1e-20 { 1e-20 } else { direction.y },
-        if direction.z.abs() < 1e-20 { 1e-20 } else { direction.z },
-    )
-}
-
 /// Is a sculpted brick's block-local voxel occupied in the build's atlas bytes?
 fn cpu_sculpted_voxel_occupied(
     build: &BrickFieldBuild,
@@ -1921,17 +1903,6 @@ fn cpu_pack_key_split(absolute_block: [i32; 3]) -> (u32, u32) {
         ((biased_y & 0x7ff) << 21) | biased_x,
     )
 }
-
-/// The hair the hierarchical DDA steps PAST a coarse-cell exit face before
-/// re-deriving the block cell — larger than the per-block `1e-4` so the jump
-/// reliably lands in the next cell. MUST match `CLIPMAP_JUMP_EPSILON` in the WGSL.
-const CLIPMAP_JUMP_EPSILON: f32 = 1e-3;
-
-/// Block-DDA step budget — the CPU mirror of the shader's `MAX_BLOCK_STEPS`. The
-/// pyramid collapses empty space to a handful of strides; this ceiling only bounds
-/// the flat fallback (pyramid off) crossing a wide traversal AABB. MUST match the
-/// WGSL constant so the two marches cap identically.
-const MAX_BLOCK_STEPS: u32 = 4096;
 
 /// Is the clip-map cell containing `absolute_block` occupied — or the level OFF
 /// (empty ⇒ no hierarchical skip, the flat G1 DDA)? Mirrors the shader's
@@ -2003,244 +1974,62 @@ pub fn cpu_march_levels_counted(
     levels_coarse_to_fine: &[&ClipmapLevel],
     pixel: glam::Vec2,
 ) -> (Option<CpuMarchHit>, u32) {
+    // The pure hierarchical march lives in `raycast::march_brick_hierarchy` (the WGSL's
+    // GPU-mirror specification). This function is the domain ADAPTER (ADR 0008 carried
+    // frame, docs/architecture/03-display.md): it derives the ray from the shifted frame,
+    // packs the frame's plain numerics into the kernel's params, and builds the three
+    // injected occupancy closures from the records/atlas/clip-map. The kernel's `MarchHit`
+    // maps 1:1 onto `CpuMarchHit`.
     let (origin, direction) = cpu_camera_ray(frame, pixel);
-    let safe = safe_direction(direction);
-    let edge = frame.brick_edge_voxels as f32;
-    let edge_i = frame.brick_edge_voxels;
-    let bounds_lo = frame.traversal_lo;
-    let bounds_hi = frame.traversal_hi;
-    let block_bias = glam::IVec3::from_array(frame.block_bias);
-
-    let inverse = 1.0 / safe;
-    let t_a = (bounds_lo - origin) * inverse;
-    let t_b = (bounds_hi - origin) * inverse;
-    let t_near = t_a.min(t_b);
-    let t_far = t_a.max(t_b);
-    let t_enter = t_near.x.max(t_near.y).max(t_near.z).max(0.0);
-    let t_exit = t_far.x.min(t_far.y).min(t_far.z);
-    if t_exit < t_enter {
-        return (None, 0);
-    }
-
-    let entry_position = origin + direction * (t_enter + 1e-4);
-    let mut block_cell = (entry_position / edge).floor().as_ivec3();
-    let block_step = glam::IVec3::new(
-        direction.x.signum() as i32,
-        direction.y.signum() as i32,
-        direction.z.signum() as i32,
-    );
-    let t_delta = (glam::Vec3::splat(edge) / safe).abs();
-    let seed_axis = |cell: i32, step: i32, entry: f32, safe_axis: f32| -> f32 {
-        if step > 0 {
-            ((cell + 1) as f32 * edge - entry) / safe_axis
-        } else {
-            (cell as f32 * edge - entry) / safe_axis
-        }
+    let params = raycast::HierarchicalMarchParams {
+        traversal_lo: frame.traversal_lo,
+        traversal_hi: frame.traversal_hi,
+        brick_edge_voxels: frame.brick_edge_voxels,
+        block_bias: glam::IVec3::from_array(frame.block_bias),
+        voxel_bias: frame.voxel_bias,
+        band_voxel_sv: frame.band_voxel_sv,
+        level_blocks_per_cell: levels_coarse_to_fine
+            .iter()
+            .map(|level| level.blocks_per_cell as i32)
+            .collect(),
     };
-    let mut t_max = glam::Vec3::new(
-        seed_axis(block_cell.x, block_step.x, entry_position.x, safe.x) + t_enter,
-        seed_axis(block_cell.y, block_step.y, entry_position.y, safe.y) + t_enter,
-        seed_axis(block_cell.z, block_step.z, entry_position.z, safe.z) + t_enter,
-    );
-    let mut t_block_enter = t_enter;
-
-    // Re-seed the block DDA at the exit of the clip-map cell of `absolute_block`
-    // (cells `blocks` blocks/axis) — the CPU mirror of the shader `clipmap_try_skip`.
-    // Returns `(new_block_cell, new_t_max, jump_t)`; the caller compares `new_block`
-    // to the current cell to decide advancement (no capture of the mutated cell).
-    let cell_exit_and_reseed =
-        |absolute_block: glam::IVec3, blocks: i32| -> (glam::IVec3, glam::Vec3, f32) {
-            let cell = glam::IVec3::new(
-                absolute_block.x.div_euclid(blocks),
-                absolute_block.y.div_euclid(blocks),
-                absolute_block.z.div_euclid(blocks),
-            );
-            let sv_block_lo = cell * blocks - block_bias;
-            let cell_lo = sv_block_lo.as_vec3() * edge;
-            let cell_hi = (sv_block_lo + glam::IVec3::splat(blocks)).as_vec3() * edge;
-            let ta = (cell_lo - origin) * inverse;
-            let tb = (cell_hi - origin) * inverse;
-            let tfar = ta.max(tb);
-            let cell_exit = tfar.x.min(tfar.y).min(tfar.z);
-            let jump_t = cell_exit + CLIPMAP_JUMP_EPSILON;
-            let jump_pos = origin + direction * jump_t;
-            let new_block = (jump_pos / edge).floor().as_ivec3();
-            let new_t_max = glam::Vec3::new(
-                seed_axis(new_block.x, block_step.x, jump_pos.x, safe.x) + jump_t,
-                seed_axis(new_block.y, block_step.y, jump_pos.y, safe.y) + jump_t,
-                seed_axis(new_block.z, block_step.z, jump_pos.z, safe.z) + jump_t,
-            );
-            (new_block, new_t_max, jump_t)
-        };
-
-    let mut steps = 0u32;
-    'march: for _ in 0..MAX_BLOCK_STEPS {
-        steps += 1;
-        let absolute_block_v = block_cell + block_bias;
-        // G2/G4 hierarchical DDA: descend the levels coarsest→finest and skip by
-        // the coarsest level whose cell is EMPTY — an empty cell jumps the ray to
-        // that cell's exit in ONE stride (L3 → L2 → L1 → per-block). A jump that
-        // wouldn't advance the block cell falls through to a per-block step
-        // (guaranteed progress). A step-for-step mirror of the shader's else-if
-        // chain: only the coarsest empty level is attempted each step.
-        let mut jumped = false;
-        for level in levels_coarse_to_fine {
-            if cpu_clipmap_cell_occupied(level, absolute_block_v) {
-                continue; // occupied (or level off) — try the next finer level
-            }
-            let (new_block, new_t_max, jump_t) =
-                cell_exit_and_reseed(absolute_block_v, level.blocks_per_cell.max(1) as i32);
-            if new_block != block_cell {
-                if jump_t > t_exit {
-                    break 'march;
-                }
-                block_cell = new_block;
-                t_max = new_t_max;
-                t_block_enter = jump_t;
-                jumped = true;
-            }
-            break; // only the coarsest empty level is attempted this step
-        }
-        if jumped {
-            continue 'march;
-        }
-        let absolute_block = [absolute_block_v.x, absolute_block_v.y, absolute_block_v.z];
-        let (key_hi, key_lo) = cpu_pack_key_split(absolute_block);
-        if let Some(record_index) = cpu_find_brick_record(records, key_hi, key_lo) {
-            let record = records[record_index];
-            let block_lo = block_cell.as_vec3() * edge;
-            let block_hi = block_lo + glam::Vec3::splat(edge);
-            let clamped_lo = block_lo.max(bounds_lo);
-            let clamped_hi = block_hi.min(bounds_hi);
-            if clamped_lo.x < clamped_hi.x && clamped_lo.y < clamped_hi.y && clamped_lo.z < clamped_hi.z
-            {
-                // Clamped-box entry — mirrors `clamped_box_entry` (x → y → z ties).
-                let box_t_a = (clamped_lo - origin) * inverse;
-                let box_t_b = (clamped_hi - origin) * inverse;
-                let box_near = box_t_a.min(box_t_b);
-                let box_far = box_t_a.max(box_t_b);
-                let box_exit = box_far.x.min(box_far.y).min(box_far.z);
-                let (entry_axis, mut box_enter) =
-                    if box_near.x >= box_near.y && box_near.x >= box_near.z {
-                        (0usize, box_near.x)
-                    } else if box_near.y >= box_near.z {
-                        (1usize, box_near.y)
-                    } else {
-                        (2usize, box_near.z)
-                    };
-                box_enter = box_enter.max(0.0);
-                if box_exit >= box_enter {
-                    // Mirror the WGSL kind decode: the discriminant is the low bits of
-                    // `kind` (the material id rides above it, ADR 0011 G2).
+    let (hit, steps) = raycast::march_brick_hierarchy(
+        substrate::Ray::new(origin, direction),
+        &params,
+        // Level-occupancy: the domain's "empty level ⇒ occupied (skip disabled)" policy
+        // over substrate's sorted cell-key search.
+        |level_index, absolute_block| {
+            cpu_clipmap_cell_occupied(levels_coarse_to_fine[level_index], absolute_block)
+        },
+        // Per-block classification: the record binary search + the WGSL kind decode. A
+        // sculpted block carries a closure over its atlas slot for the inner voxel DDA.
+        |absolute_block| {
+            let (key_hi, key_lo) = cpu_pack_key_split(absolute_block);
+            match cpu_find_brick_record(records, key_hi, key_lo) {
+                None => raycast::BlockContents::Empty,
+                Some(record_index) => {
+                    let record = records[record_index];
                     let coarse_form = record_kind_discriminant(record.kind) == 0
                         || record.atlas_slot == NON_RESIDENT_ATLAS_SLOT;
                     if coarse_form {
-                        let hit_position = origin + direction * (box_enter + 1e-4);
-                        let block_min_voxel = block_cell * edge_i;
-                        let voxel_cell = hit_position
-                            .floor()
-                            .as_ivec3()
-                            .clamp(block_min_voxel, block_min_voxel + glam::IVec3::splat(edge_i - 1));
-                        return (
-                            Some(CpuMarchHit {
-                                absolute_voxel: [
-                                    voxel_cell.x + frame.voxel_bias[0],
-                                    voxel_cell.y + frame.voxel_bias[1],
-                                    voxel_cell.z + frame.voxel_bias[2],
-                                ],
-                                face_normal: axis_normal(entry_axis, direction),
-                            }),
-                            steps,
-                        );
-                    }
-                    // Sculpted brick voxel DDA — mirrors the shader loop (tracking the
-                    // per-voxel entry axis for the hit face's normal).
-                    let mut voxel_entry_axis = entry_axis;
-                    let voxel_entry = origin + direction * (box_enter + 1e-4);
-                    let mut voxel_cell = voxel_entry.floor().as_ivec3();
-                    let voxel_step = block_step;
-                    let voxel_t_delta = (1.0 / safe).abs();
-                    let seed_voxel = |cell: i32, step: i32, entry: f32, safe_axis: f32| -> f32 {
-                        if step > 0 {
-                            ((cell + 1) as f32 - entry) / safe_axis
-                        } else {
-                            (cell as f32 - entry) / safe_axis
-                        }
-                    };
-                    let mut voxel_t_max = glam::Vec3::new(
-                        seed_voxel(voxel_cell.x, voxel_step.x, voxel_entry.x, safe.x) + box_enter,
-                        seed_voxel(voxel_cell.y, voxel_step.y, voxel_entry.y, safe.y) + box_enter,
-                        seed_voxel(voxel_cell.z, voxel_step.z, voxel_entry.z, safe.z) + box_enter,
-                    );
-                    let block_min_voxel = block_cell * edge_i;
-                    let block_max_voxel = block_min_voxel + glam::IVec3::splat(edge_i);
-                    let band_z_lo = block_min_voxel.z.max(frame.band_voxel_sv[0]);
-                    let band_z_hi = block_max_voxel.z.min(frame.band_voxel_sv[1]);
-                    for _ in 0..256 {
-                        if voxel_cell.x < block_min_voxel.x
-                            || voxel_cell.y < block_min_voxel.y
-                            || voxel_cell.z < band_z_lo
-                            || voxel_cell.x >= block_max_voxel.x
-                            || voxel_cell.y >= block_max_voxel.y
-                            || voxel_cell.z >= band_z_hi
-                        {
-                            break;
-                        }
-                        let brick_local = voxel_cell - block_min_voxel;
-                        if cpu_sculpted_voxel_occupied(
-                            build,
-                            record.atlas_slot,
-                            [brick_local.x, brick_local.y, brick_local.z],
-                        ) {
-                            return (
-                                Some(CpuMarchHit {
-                                    absolute_voxel: [
-                                        voxel_cell.x + frame.voxel_bias[0],
-                                        voxel_cell.y + frame.voxel_bias[1],
-                                        voxel_cell.z + frame.voxel_bias[2],
-                                    ],
-                                    face_normal: axis_normal(voxel_entry_axis, direction),
-                                }),
-                                steps,
-                            );
-                        }
-                        if voxel_t_max.x <= voxel_t_max.y && voxel_t_max.x <= voxel_t_max.z {
-                            voxel_cell.x += voxel_step.x;
-                            voxel_t_max.x += voxel_t_delta.x;
-                            voxel_entry_axis = 0;
-                        } else if voxel_t_max.y <= voxel_t_max.z {
-                            voxel_cell.y += voxel_step.y;
-                            voxel_t_max.y += voxel_t_delta.y;
-                            voxel_entry_axis = 1;
-                        } else {
-                            voxel_cell.z += voxel_step.z;
-                            voxel_t_max.z += voxel_t_delta.z;
-                            voxel_entry_axis = 2;
-                        }
+                        raycast::BlockContents::CoarseSolid
+                    } else {
+                        let atlas_slot = record.atlas_slot;
+                        raycast::BlockContents::Sculpted(move |brick_local| {
+                            cpu_sculpted_voxel_occupied(build, atlas_slot, brick_local)
+                        })
                     }
                 }
             }
-        }
-
-        if t_block_enter > t_exit {
-            break;
-        }
-        if t_max.x <= t_max.y && t_max.x <= t_max.z {
-            block_cell.x += block_step.x;
-            t_block_enter = t_max.x;
-            t_max.x += t_delta.x;
-        } else if t_max.y <= t_max.z {
-            block_cell.y += block_step.y;
-            t_block_enter = t_max.y;
-            t_max.y += t_delta.y;
-        } else {
-            block_cell.z += block_step.z;
-            t_block_enter = t_max.z;
-            t_max.z += t_delta.z;
-        }
-    }
-
-    (None, steps)
+        },
+    );
+    (
+        hit.map(|hit| CpuMarchHit {
+            absolute_voxel: hit.absolute_voxel,
+            face_normal: hit.face_normal,
+        }),
+        steps,
+    )
 }
 
 /// March one pixel-centre ray over the EXACT evaluator's occupancy — a plain
@@ -2253,95 +2042,23 @@ pub fn cpu_march_exact_occupancy(
     occupied: &dyn Fn([i64; 3]) -> bool,
     pixel: glam::Vec2,
 ) -> Option<CpuMarchHit> {
+    // Domain adapter over `raycast::march_exact_occupancy` (the flat reference kernel):
+    // derive the ray from the shifted frame, pass the band + biases, and forward the
+    // absolute-voxel occupancy predicate unchanged. See docs/architecture/03-display.md.
     let (origin, direction) = cpu_camera_ray(frame, pixel);
-    let safe = safe_direction(direction);
-    let bounds_lo = frame.traversal_lo;
-    let bounds_hi = frame.traversal_hi;
-
-    let inverse = 1.0 / safe;
-    let t_a = (bounds_lo - origin) * inverse;
-    let t_b = (bounds_hi - origin) * inverse;
-    let t_near = t_a.min(t_b);
-    let t_far = t_a.max(t_b);
-    let t_enter = t_near.x.max(t_near.y).max(t_near.z).max(0.0);
-    let t_exit = t_far.x.min(t_far.y).min(t_far.z);
-    if t_exit < t_enter {
-        return None;
-    }
-
-    let entry_position = origin + direction * (t_enter + 1e-4);
-    let mut voxel_cell = entry_position.floor().as_ivec3();
-    let step = glam::IVec3::new(
-        direction.x.signum() as i32,
-        direction.y.signum() as i32,
-        direction.z.signum() as i32,
-    );
-    let t_delta = (1.0 / safe).abs();
-    let seed_voxel = |cell: i32, step: i32, entry: f32, safe_axis: f32| -> f32 {
-        if step > 0 {
-            ((cell + 1) as f32 - entry) / safe_axis
-        } else {
-            (cell as f32 - entry) / safe_axis
-        }
+    let params = raycast::ExactMarchParams {
+        traversal_lo: frame.traversal_lo,
+        traversal_hi: frame.traversal_hi,
+        band_voxel_sv: frame.band_voxel_sv,
+        voxel_bias: frame.voxel_bias,
     };
-    let mut t_max = glam::Vec3::new(
-        seed_voxel(voxel_cell.x, step.x, entry_position.x, safe.x) + t_enter,
-        seed_voxel(voxel_cell.y, step.y, entry_position.y, safe.y) + t_enter,
-        seed_voxel(voxel_cell.z, step.z, entry_position.z, safe.z) + t_enter,
-    );
-    let mut t_voxel_enter = t_enter;
-    // The entered face's axis — the AABB entry (x→y→z ties), updated each DDA step.
-    let mut entry_axis = if t_near.x >= t_near.y && t_near.x >= t_near.z {
-        0usize
-    } else if t_near.y >= t_near.z {
-        1
-    } else {
-        2
-    };
-
-    // Generous budget: the traversal AABB's voxel diagonal for every gated scene.
-    for _ in 0..4096 {
-        // Band clip per voxel (the traversal AABB already bounds Z; the integer
-        // check keeps float-edge voxels honest, mirroring the brick march's bound).
-        if voxel_cell.z >= frame.band_voxel_sv[0] && voxel_cell.z < frame.band_voxel_sv[1] {
-            let absolute = [
-                (voxel_cell.x + frame.voxel_bias[0]) as i64,
-                (voxel_cell.y + frame.voxel_bias[1]) as i64,
-                (voxel_cell.z + frame.voxel_bias[2]) as i64,
-            ];
-            if occupied(absolute) {
-                return Some(CpuMarchHit {
-                    absolute_voxel: [
-                        voxel_cell.x + frame.voxel_bias[0],
-                        voxel_cell.y + frame.voxel_bias[1],
-                        voxel_cell.z + frame.voxel_bias[2],
-                    ],
-                    face_normal: axis_normal(entry_axis, direction),
-                });
-            }
-        }
-        if t_voxel_enter > t_exit {
-            break;
-        }
-        if t_max.x <= t_max.y && t_max.x <= t_max.z {
-            voxel_cell.x += step.x;
-            t_voxel_enter = t_max.x;
-            t_max.x += t_delta.x;
-            entry_axis = 0;
-        } else if t_max.y <= t_max.z {
-            voxel_cell.y += step.y;
-            t_voxel_enter = t_max.y;
-            t_max.y += t_delta.y;
-            entry_axis = 1;
-        } else {
-            voxel_cell.z += step.z;
-            t_voxel_enter = t_max.z;
-            t_max.z += t_delta.z;
-            entry_axis = 2;
-        }
-    }
-
-    None
+    raycast::march_exact_occupancy(substrate::Ray::new(origin, direction), &params, |absolute| {
+        occupied(absolute)
+    })
+    .map(|hit| CpuMarchHit {
+        absolute_voxel: hit.absolute_voxel,
+        face_normal: hit.face_normal,
+    })
 }
 
 #[cfg(test)]

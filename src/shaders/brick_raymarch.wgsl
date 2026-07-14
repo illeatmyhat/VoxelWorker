@@ -1,5 +1,14 @@
 // Brick-field raymarch (ADR 0011 G1) — the minimal GPU display sink.
 //
+// **GPU mirror of `crates/raycast`.** The ray–volume traversal this shader performs —
+// the slab entry, the Amanatides & Woo block/voxel DDA (with its x→y→z tie order), and
+// the hierarchical empty-space skip — is the maintained mirror of the CPU kernel in the
+// `raycast` crate (`raycast::march_brick_hierarchy` / `march_exact_occupancy`). That
+// crate is the readable specification of this shader; the app's `gpu_parity` suite is the
+// mechanical link that keeps the two byte-identical (`MAX_BLOCK_STEPS`,
+// `CLIPMAP_JUMP_EPSILON`, the `1e-4`/guard constants, and the tie order are shared and
+// load-bearing). Change the traversal here only in lockstep with the crate.
+//
 // A fullscreen pass whose fragment walks a block-space DDA along the pixel's view
 // ray (no clip-map yet — that is G2). At each block it binary-searches the sorted
 // resident BrickRecord array (the G0 build, packed world-block key as a (hi, lo)

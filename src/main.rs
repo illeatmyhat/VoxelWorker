@@ -1025,71 +1025,27 @@ impl WindowedState {
 
         // Unproject the NDC point through the view-cube matrix into a world ray
         // (inverse-VP through the near/far clip planes; the generic form lives in the
-        // camera crate). The slab test below then resolves the hit face + hot zone.
+        // camera crate), then resolve the hit face + hot zone with the pure ViewCube
+        // slab picker in the `raycast` crate. This function is the thin adapter: it reads
+        // the viewport/camera state and maps the picker's axes+signs to CubeFace.
         let view_projection = self.app_core.camera.view_cube_view_projection();
         let ray = camera::unproject_screen_point_to_ray(view_projection, ndc_x, ndc_y)?;
-        let origin = ray.origin;
-        let direction = ray.direction;
 
-        // Slab intersection against the cube [-HALF, HALF]^3; the entry face's
-        // dominant axis gives the material index / CubeFace.
-        const HALF: f32 = 0.7;
-        let mut t_entry = f32::NEG_INFINITY;
-        let mut entry_axis = 0usize;
-        let mut entry_sign = 1.0f32;
-        let mut t_exit = f32::INFINITY;
-        for axis in 0..3 {
-            let o = origin[axis];
-            let d = direction[axis];
-            if d.abs() < 1e-6 {
-                if !(-HALF..=HALF).contains(&o) {
-                    return None; // parallel and outside the slab
-                }
-                continue;
-            }
-            let mut t0 = (-HALF - o) / d;
-            let mut t1 = (HALF - o) / d;
-            let mut sign = -1.0; // entering the -HALF face
-            if t0 > t1 {
-                std::mem::swap(&mut t0, &mut t1);
-                sign = 1.0; // entering the +HALF face
-            }
-            if t0 > t_entry {
-                t_entry = t0;
-                entry_axis = axis;
-                entry_sign = sign;
-            }
-            t_exit = t_exit.min(t1);
-        }
-        if t_entry > t_exit || t_exit < 0.0 {
-            return None;
-        }
-
+        // Slab intersection against the cube [-HALF, HALF]^3; the entry face's dominant
+        // axis + sign give the material index / CubeFace.
+        let hit = raycast::pick_view_cube_slab(ray, raycast::VIEW_CUBE_HALF_EXTENT)?;
         // Map (axis, sign) → material index (+X,-X,+Y,-Y,+Z,-Z) → CubeFace.
-        let material_index = entry_axis * 2 + if entry_sign > 0.0 { 0 } else { 1 };
+        let material_index = hit.entry_axis * 2 + if hit.entry_sign > 0.0 { 0 } else { 1 };
         let face = CubeFace::from_material_index(material_index)?;
 
-        // 3D hit point on the entry face, in cube space.
-        let hit = origin + direction * t_entry;
-
-        // The two axes NOT equal to `entry_axis` are the face's in-plane axes.
-        // For each, the signed coordinate selects a 3×3 zone column/row: outside
-        // ±HALF/3 the zone points toward the neighbouring face whose normal is
-        // ±that axis. The combined set of faces resolves the element.
-        const ZONE_THRESHOLD: f32 = HALF / 3.0; // 1/3 of the half-extent.
-        let mut neighbours: Vec<CubeFace> = Vec::with_capacity(2);
-        for axis in 0..3 {
-            if axis == entry_axis {
-                continue;
-            }
-            let coordinate = hit[axis];
-            if coordinate > ZONE_THRESHOLD {
-                // Positive face along this axis (Z-up: +X→Right, +Y→Back, +Z→Top).
-                neighbours.push(face_for_axis_sign(axis, true));
-            } else if coordinate < -ZONE_THRESHOLD {
-                neighbours.push(face_for_axis_sign(axis, false));
-            }
-        }
+        // The two in-plane axes' 3×3 hot zones (split at ±HALF/3) point toward the
+        // neighbouring faces; the combined set of faces resolves the element (Z-up:
+        // +X→Right, +Y→Back, +Z→Top).
+        let neighbours: Vec<CubeFace> =
+            raycast::view_cube_hot_zone_neighbours(&hit, raycast::VIEW_CUBE_ZONE_THRESHOLD)
+                .into_iter()
+                .map(|(axis, positive)| face_for_axis_sign(axis, positive))
+                .collect();
 
         Some(match neighbours.as_slice() {
             [] => ViewCubeElement::from_face(face),

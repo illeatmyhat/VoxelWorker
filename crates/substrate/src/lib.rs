@@ -84,7 +84,7 @@ pub use field_interval::{union_field_intervals, FieldClassification, FieldInterv
 pub use free_list::SlotFreeList;
 pub use greedy_cuboid_decomposition::{CellGrid, Cuboid, GreedyCuboidDecomposition};
 pub use min_mip_pyramid::{MinMipLevel, SparseMinMipPyramid};
-pub use ray::{Ray, RayBoxIntersection};
+pub use ray::{Ray, RayBoxIntersection, SLAB_ZERO_DIRECTION_GUARD};
 pub use rational::Rational;
 pub use shelf_bin_pack::{
     NormalizedTileRect, PackedTilePlacement, ShelfBinPack, TileImage, TileSize,
