@@ -32,7 +32,7 @@ use wgpu::util::DeviceExt;
 
 use crate::voxel::RecentreVoxels;
 use crate::brick_field::{
-    pack_clipmap_level_keys, pack_world_block_key, unpack_world_block_key, upload_brick_atlas,
+    pack_clipmap_level_keys, unpack_world_block_key, upload_brick_atlas,
     BlockOccupancyMasks, BrickFieldBuild, BrickFieldUpdate, BrickPayload, BrickRecord,
     ClipmapLevel, ClipmapPyramid, IncrementalBrickField, SculptedAtlasPayload,
     BLOCK_OCCUPANCY_MASK_WORDS,
@@ -1937,17 +1937,21 @@ const MAX_BLOCK_STEPS: u32 = 4096;
 /// `clipmap_cell_occupied`: floor-div the absolute block into the cell lattice,
 /// pack the cell key, binary-search the sorted level.
 fn cpu_clipmap_cell_occupied(level: &ClipmapLevel, absolute_block: glam::IVec3) -> bool {
+    // Domain policy: a level with NO keys is "off" — never skip, so report every cell occupied
+    // (the flat G1 DDA). This "empty ⇒ occupied" reading is the domain's, not the kernel's; the
+    // pure fold+binary-search below is substrate's `sorted_cell_keys_contain`.
     if level.cell_keys.is_empty() {
         return true;
     }
-    let blocks = level.blocks_per_cell.max(1) as i32;
-    let cell = [
-        absolute_block.x.div_euclid(blocks) as i64,
-        absolute_block.y.div_euclid(blocks) as i64,
-        absolute_block.z.div_euclid(blocks) as i64,
-    ];
-    let key = pack_world_block_key(cell);
-    level.cell_keys.binary_search(&key).is_ok()
+    substrate::min_mip_pyramid::sorted_cell_keys_contain(
+        &level.cell_keys,
+        [
+            absolute_block.x as i64,
+            absolute_block.y as i64,
+            absolute_block.z as i64,
+        ],
+        level.blocks_per_cell,
+    )
 }
 
 /// March one pixel-centre ray through the brick field on the CPU — a step-for-step

@@ -46,7 +46,9 @@
 //! (decomposition) — [`GreedyCuboidDecomposition`] over a [`CellGrid`] into [`Cuboid`]s;
 //! slice S4 (concurrency) — the [`supersede`] protocol: [`CoalescingWorker`],
 //! [`GenerationTracker`], and their [`drain_to_latest`] / [`catch_unwind_or_log`] helpers;
-//! slice S5 (bit/atlas kit) — [`BitCube`], [`SlotFreeList`], and [`CubeTilePacking`].
+//! slice S5 (bit/atlas kit) — [`BitCube`], [`SlotFreeList`], and [`CubeTilePacking`]; slice S7
+//! (first kernel-only tier-3 extraction) — the [`SparseMinMipPyramid`] fold (the pure core of the
+//! domain's clip-map builders, whose chunk traversal stays in the app crate).
 
 pub mod aabb;
 pub mod bit_cube;
@@ -57,6 +59,7 @@ pub mod field_interval;
 pub mod free_list;
 pub mod greedy_cuboid_decomposition;
 pub mod lattice_key;
+pub mod min_mip_pyramid;
 pub mod rational;
 pub mod supersede;
 
@@ -68,5 +71,6 @@ pub use disjoint_interval_set::DisjointIntervalSet;
 pub use field_interval::{union_field_intervals, FieldClassification, FieldInterval};
 pub use free_list::SlotFreeList;
 pub use greedy_cuboid_decomposition::{CellGrid, Cuboid, GreedyCuboidDecomposition};
+pub use min_mip_pyramid::{MinMipLevel, SparseMinMipPyramid};
 pub use rational::Rational;
 pub use supersede::{catch_unwind_or_log, drain_to_latest, CoalescingWorker, GenerationTracker};

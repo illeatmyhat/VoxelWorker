@@ -73,6 +73,16 @@ pub use substrate::lattice_key::{
 use substrate::{CubeTilePacking, SlotFreeList};
 pub use substrate::BitCube as BrickOccupancyTile;
 
+// The clip-map occupancy levels ARE substrate's `SparseMinMipPyramid`: a sparse min-mip that folds
+// a set of packed lattice keys to coarser cells (edge 8, then 64, then 512 blocks), keeping the
+// folded cell keys sorted + deduplicated as a conservative-superset occupancy the raymarch's
+// hierarchical DDA skips against. The domain keeps the "clip-map" name and the CHUNK traversal
+// (`ClipmapLevel::from_chunks`, with its solid-chunk bulk fast path) at this seam; the pure fold,
+// the multi-level assembly, and the binary-search lookup live in the substrate module. The
+// three-level edge progression (8/64/512) is domain configuration, passed to the fold. See
+// docs/architecture/03-display.md (the brick-field clip-map) for how the levels drive the march.
+use substrate::min_mip_pyramid::{fold_coordinate_to_cell, MinMipLevel};
+
 // ============================================================================
 // Clip-map occupancy pyramid (ADR 0011 Decision 4a / slice G2+G4) — THREE
 // WORLD-FIXED coarse "any-brick-inside" levels above the brick set, a min-mip of
@@ -117,41 +127,33 @@ pub struct ClipmapLevel {
     pub cell_keys: Vec<u64>,
 }
 
+/// Wrap a substrate [`MinMipLevel`] as a domain [`ClipmapLevel`] (the kernel's `cell_edge` IS this
+/// level's `blocks_per_cell`; the sorted-deduplicated `cell_keys` carry across byte-identically).
+fn clipmap_level_from_kernel(level: MinMipLevel) -> ClipmapLevel {
+    ClipmapLevel {
+        blocks_per_cell: level.cell_edge,
+        cell_keys: level.cell_keys,
+    }
+}
+
 impl ClipmapLevel {
     /// An empty level (no occupied cells) — the "pyramid off" form the renderer
     /// installs to A/B the hierarchical skip (`record_count == 0` ⇒ the shader
     /// never skips, so the march is the flat G1 block-DDA).
     pub fn empty(blocks_per_cell: u32) -> Self {
-        ClipmapLevel {
-            blocks_per_cell: blocks_per_cell.max(1),
-            cell_keys: Vec::new(),
-        }
+        clipmap_level_from_kernel(MinMipLevel::empty(blocks_per_cell))
     }
 
     /// Fold a record set's block keys into this level's occupied-cell set: every
     /// record's block maps to exactly one cell; the deduplicated, sorted set is
-    /// the min-mip. Pure function of the record keys (ADR 0011 4a).
+    /// the min-mip. A thin adapter over the substrate fold ([`MinMipLevel::from_keys`]) —
+    /// extract the packed block keys, hand them to the kernel (ADR 0011 4a).
     pub fn from_records(records: &[BrickRecord], blocks_per_cell: u32) -> Self {
-        let blocks_per_cell = blocks_per_cell.max(1);
-        let cell_size = blocks_per_cell as i64;
-        let mut cell_keys: Vec<u64> = records
+        let block_keys: Vec<u64> = records
             .iter()
-            .map(|record| {
-                let block = unpack_world_block_key(record.packed_world_block_key);
-                let cell = [
-                    block[0].div_euclid(cell_size),
-                    block[1].div_euclid(cell_size),
-                    block[2].div_euclid(cell_size),
-                ];
-                pack_world_block_key(cell)
-            })
+            .map(|record| record.packed_world_block_key)
             .collect();
-        cell_keys.sort_unstable();
-        cell_keys.dedup();
-        ClipmapLevel {
-            blocks_per_cell,
-            cell_keys,
-        }
+        clipmap_level_from_kernel(MinMipLevel::from_keys(&block_keys, blocks_per_cell))
     }
 
     /// Fold every non-air block of the two-layer chunk set into this level's occupied-cell
@@ -160,6 +162,11 @@ impl ClipmapLevel {
     /// pyramid must stay a conservative superset over EVERY occupied block (interior included,
     /// so the DDA never strides past an occupied cell), which the surface record set no longer
     /// enumerates — but the chunks do (their coarse layer holds the interior).
+    ///
+    /// This is the DOMAIN traversal half of the extraction: it walks the chunks and emits the
+    /// per-cell keys, then hands the raw key list to the substrate sort+dedup sink
+    /// ([`MinMipLevel::from_folded_cell_keys`]) — the pure fold lives in the kernel, the chunk
+    /// walk and its fast path stay here.
     ///
     /// **Solid-chunk bulk fast path (the interior-elision win carried to the pyramid):** a
     /// fully-solid chunk (all `CHUNK_BLOCKS³` coarse-solid, no microblocks) covers one aligned
@@ -170,8 +177,7 @@ impl ClipmapLevel {
     /// `clipmap_from_chunks_equals_from_full_records`): every occupied block's cell is present,
     /// no others.
     pub fn from_chunks(chunks: &[([i32; 3], Arc<TwoLayerChunk>)], blocks_per_cell: u32) -> Self {
-        let blocks_per_cell = blocks_per_cell.max(1);
-        let cell_size = blocks_per_cell as i64;
+        let cell_edge = blocks_per_cell.max(1);
         let chunk_blocks = CHUNK_BLOCKS as i64;
         let mut cell_keys: Vec<u64> = Vec::new();
         for (chunk_coord, chunk) in chunks {
@@ -185,16 +191,15 @@ impl ClipmapLevel {
             if fully_solid {
                 // The chunk's whole block box [low, low + CHUNK_BLOCKS) maps to this aligned
                 // cell range — add each cell once, no per-block visit (the bulk fast path).
-                let cell_lo = [
-                    chunk_block_low[0].div_euclid(cell_size),
-                    chunk_block_low[1].div_euclid(cell_size),
-                    chunk_block_low[2].div_euclid(cell_size),
-                ];
-                let cell_hi = [
-                    (chunk_block_low[0] + chunk_blocks - 1).div_euclid(cell_size),
-                    (chunk_block_low[1] + chunk_blocks - 1).div_euclid(cell_size),
-                    (chunk_block_low[2] + chunk_blocks - 1).div_euclid(cell_size),
-                ];
+                let cell_lo = fold_coordinate_to_cell(chunk_block_low, cell_edge);
+                let cell_hi = fold_coordinate_to_cell(
+                    [
+                        chunk_block_low[0] + chunk_blocks - 1,
+                        chunk_block_low[1] + chunk_blocks - 1,
+                        chunk_block_low[2] + chunk_blocks - 1,
+                    ],
+                    cell_edge,
+                );
                 for cell_z in cell_lo[2]..=cell_hi[2] {
                     for cell_y in cell_lo[1]..=cell_hi[1] {
                         for cell_x in cell_lo[0]..=cell_hi[0] {
@@ -212,23 +217,21 @@ impl ClipmapLevel {
                             if !occupied {
                                 continue;
                             }
-                            let cell = [
-                                (chunk_block_low[0] + block_x as i64).div_euclid(cell_size),
-                                (chunk_block_low[1] + block_y as i64).div_euclid(cell_size),
-                                (chunk_block_low[2] + block_z as i64).div_euclid(cell_size),
-                            ];
+                            let cell = fold_coordinate_to_cell(
+                                [
+                                    chunk_block_low[0] + block_x as i64,
+                                    chunk_block_low[1] + block_y as i64,
+                                    chunk_block_low[2] + block_z as i64,
+                                ],
+                                cell_edge,
+                            );
                             cell_keys.push(pack_world_block_key(cell));
                         }
                     }
                 }
             }
         }
-        cell_keys.par_sort_unstable();
-        cell_keys.dedup();
-        ClipmapLevel {
-            blocks_per_cell,
-            cell_keys,
-        }
+        clipmap_level_from_kernel(MinMipLevel::from_folded_cell_keys(cell_keys, cell_edge))
     }
 }
 
@@ -259,10 +262,29 @@ impl ClipmapPyramid {
     /// CHUNKS via [`from_chunks`](Self::from_chunks); this constructor stays as the parity
     /// oracle (fed a full, interior-inclusive record set) and for the pyramid-shape unit tests.
     pub fn from_records(records: &[BrickRecord]) -> Self {
+        // The record path folds the SAME block-key set at all three edges — exactly the substrate
+        // multi-level assembly ([`SparseMinMipPyramid::from_keys`]). Extract the keys once, hand the
+        // three-edge progression (domain configuration) to the kernel, then wrap each level.
+        let block_keys: Vec<u64> = records
+            .iter()
+            .map(|record| record.packed_world_block_key)
+            .collect();
+        let assembled = substrate::SparseMinMipPyramid::from_keys(
+            &block_keys,
+            &[
+                CLIPMAP_LEVEL_1_BLOCKS_PER_CELL,
+                CLIPMAP_LEVEL_2_BLOCKS_PER_CELL,
+                CLIPMAP_LEVEL_3_BLOCKS_PER_CELL,
+            ],
+        );
+        let [level_1, level_2, level_3] = assembled
+            .levels
+            .try_into()
+            .expect("three edges yield three levels");
         ClipmapPyramid {
-            level_1: ClipmapLevel::from_records(records, CLIPMAP_LEVEL_1_BLOCKS_PER_CELL),
-            level_2: ClipmapLevel::from_records(records, CLIPMAP_LEVEL_2_BLOCKS_PER_CELL),
-            level_3: ClipmapLevel::from_records(records, CLIPMAP_LEVEL_3_BLOCKS_PER_CELL),
+            level_1: clipmap_level_from_kernel(level_1),
+            level_2: clipmap_level_from_kernel(level_2),
+            level_3: clipmap_level_from_kernel(level_3),
             // The oracle pyramid is a SKIP min-mip only (its record set is interior-inclusive,
             // so no band-clip miss-fallback signal is needed); the live from_chunks path carries it.
             interior_masks: BlockOccupancyMasks::empty(),

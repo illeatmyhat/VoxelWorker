@@ -3,12 +3,15 @@ name = "substrate"
 version = "0.1.0"
 edition = "2021"
 
-# Pure computer-science / mathematics library. No features (no gpu/oracle/tracy),
-# no dependencies — std only. Not intended for release; intended for reading,
-# naming, and isolated performance reasoning. See the "Substrate" section of
-# docs/architecture/data-structures.md for the boundary law and naming rule.
+# Pure computer-science / mathematics library. No features (no gpu/oracle/tracy).
+# Its ONE dependency is rayon: the `SparseMinMipPyramid` fold (slice S7) sorts its
+# folded cell keys in parallel (`par_sort_unstable`), inheriting the data-parallelism
+# the domain builder it was extracted from already used. Not intended for release;
+# intended for reading, naming, and isolated performance reasoning. See the
+# "Substrate" section of docs/architecture/data-structures.md for the boundary law.
 
 [dependencies]
+rayon = "1"
 
 # criterion is a DEV-only dependency: it backs the on-demand microbenches in
 # `benches/` and never enters the crate's normal dependency set. The benches are
@@ -39,4 +42,8 @@ harness = false
 
 [[bench]]
 name = "lattice_key"
+harness = false
+
+[[bench]]
+name = "min_mip_pyramid"
 harness = false
