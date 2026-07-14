@@ -42,12 +42,14 @@
 //! Components arrive one extraction slice at a time, each carrying its own oracles,
 //! per the extraction map referenced above. Extracted so far: slice S1 (spatial) —
 //! [`Aabb`], [`Bvh`], and the [`lattice_key`] packing codec; slice S2 (intervals +
-//! rational) — [`FieldInterval`], [`DisjointIntervalSet`], and [`Rational`].
+//! rational) — [`FieldInterval`], [`DisjointIntervalSet`], and [`Rational`]; slice S3
+//! (decomposition) — [`GreedyCuboidDecomposition`] over a [`CellGrid`] into [`Cuboid`]s.
 
 pub mod aabb;
 pub mod bvh;
 pub mod disjoint_interval_set;
 pub mod field_interval;
+pub mod greedy_cuboid_decomposition;
 pub mod lattice_key;
 pub mod rational;
 
@@ -55,4 +57,5 @@ pub use aabb::Aabb;
 pub use bvh::Bvh;
 pub use disjoint_interval_set::DisjointIntervalSet;
 pub use field_interval::{union_field_intervals, FieldClassification, FieldInterval};
+pub use greedy_cuboid_decomposition::{CellGrid, Cuboid, GreedyCuboidDecomposition};
 pub use rational::Rational;

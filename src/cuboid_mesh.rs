@@ -1247,7 +1247,7 @@ fn emit_boundary_block_cuboids(
         for vz in cuboid.min[2]..=cuboid.max[2] {
             for vy in cuboid.min[1]..=cuboid.max[1] {
                 for vx in cuboid.min[0]..=cuboid.max[0] {
-                    apron.set(vx + 1, vy + 1, vz + 1, Some(cuboid.material_id));
+                    apron.set(vx + 1, vy + 1, vz + 1, Some(cuboid.label));
                 }
             }
         }
@@ -1311,7 +1311,7 @@ fn emit_boundary_block_cuboids(
         let shifted = VoxelBox {
             min: [cuboid.min[0] + 1, cuboid.min[1] + 1, cuboid.min[2] + 1],
             max: [cuboid.max[0] + 1, cuboid.max[1] + 1, cuboid.max[2] + 1],
-            material_id: cuboid.material_id,
+            label: cuboid.label,
         };
         let sink = if box_has_overlay(&shifted) {
             &mut *indices_overlay
@@ -1389,7 +1389,7 @@ fn stamp_block_into_region_banded(
             for vz in cuboid.min[2]..=cuboid.max[2] {
                 for vy in cuboid.min[1]..=cuboid.max[1] {
                     for vx in cuboid.min[0]..=cuboid.max[0] {
-                        stamp(vx, vy, vz, cuboid.material_id, region);
+                        stamp(vx, vy, vz, cuboid.label, region);
                     }
                 }
             }
@@ -1536,7 +1536,7 @@ fn emit_box_faces(
     // attribute — the caller routed this box to the overlay-on or overlay-off index run by
     // its key bit, and the draw sets the per-draw overlay-active uniform per run. So strip
     // the overlay bit here and write only the categorical id into the vertex.
-    let material_id = clean_block_id(voxel_box.material_id) as u32;
+    let material_id = clean_block_id(voxel_box.label) as u32;
 
     for face in &FACE_TEMPLATES {
         if !face_is_exposed(voxel_box, region, face.neighbor_delta) {
@@ -1565,7 +1565,7 @@ fn emit_box_faces(
 /// key (ADR 0003 §3c). Routes the box to the overlay-on index run.
 #[inline]
 fn box_has_overlay(voxel_box: &VoxelBox) -> bool {
-    voxel_box.material_id & MESH_GRID_OVERLAY_BIT != 0
+    voxel_box.label & MESH_GRID_OVERLAY_BIT != 0
 }
 
 /// Is the given face of the box exposed? The face is exposed when ANY voxel cell
@@ -1621,7 +1621,7 @@ fn face_is_exposed(voxel_box: &VoxelBox, region: &VoxelRegion, delta: [i32; 3]) 
                     return true; // outside grid → air → exposed
                 }
                 if region
-                    .material_at(nx as u32, ny as u32, nz as u32)
+                    .cell_at(nx as u32, ny as u32, nz as u32)
                     .is_none()
                 {
                     return true; // an air neighbour → this face is exposed
@@ -3393,7 +3393,7 @@ mod tests {
                     let region_solid =
                         region.cells.iter().filter(|c| c.is_some()).count();
                     let boxes = decompose_into_boxes(&region);
-                    let covered: u64 = boxes.iter().map(|b| b.voxel_count()).sum();
+                    let covered: u64 = boxes.iter().map(|b| b.cell_count()).sum();
 
                     assert_eq!(
                         region_solid,

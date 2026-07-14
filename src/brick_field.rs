@@ -447,7 +447,7 @@ impl BlockOccupancyMasks {
                                 geometry
                                     .cuboids
                                     .first()
-                                    .map(|cuboid| clean_block_id(cuboid.material_id) as u32)
+                                    .map(|cuboid| clean_block_id(cuboid.label) as u32)
                                     .unwrap_or(0)
                             } else {
                                 continue;
@@ -1244,7 +1244,7 @@ fn classify_block_brick(
         let material_id = geometry
             .cuboids
             .first()
-            .map(|cuboid| clean_block_id(cuboid.material_id))
+            .map(|cuboid| clean_block_id(cuboid.label))
             .unwrap_or(0);
         BlockBrick::Sculpted {
             material_id,

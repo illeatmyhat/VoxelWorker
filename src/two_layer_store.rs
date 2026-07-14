@@ -206,7 +206,7 @@ impl TwoLayerChunk {
         self.microblocks
             .values()
             .flat_map(|geometry| geometry.cuboids.iter())
-            .map(VoxelBox::voxel_count)
+            .map(VoxelBox::cell_count)
             .sum()
     }
 
@@ -305,8 +305,8 @@ impl TwoLayerChunk {
             // 0003 §3c — the overlay never enters the occupancy / categorical cell) but
             // carry it onto the expanded voxel's `grid_overlay` render marker (E5 — so
             // the grid matches the dense resolve's per-voxel overlay bit).
-            let block_id = BlockId(crate::cuboid_mesh::clean_block_id(cuboid.material_id));
-            let grid_overlay = crate::cuboid_mesh::cell_key_has_overlay(cuboid.material_id);
+            let block_id = BlockId(crate::cuboid_mesh::clean_block_id(cuboid.label));
+            let grid_overlay = crate::cuboid_mesh::cell_key_has_overlay(cuboid.label);
             for voxel_z in cuboid.min[2]..=cuboid.max[2] {
                 for voxel_y in cuboid.min[1]..=cuboid.max[1] {
                     for voxel_x in cuboid.min[0]..=cuboid.max[0] {
@@ -1226,7 +1226,7 @@ fn compute_seam_solidity(region: &VoxelRegion) -> SeamSolidity {
         let mut face_solid = true;
         'scan: for z in 0..depth {
             for y in 0..height {
-                if region.material_at(x, y, z).is_none() {
+                if region.cell_at(x, y, z).is_none() {
                     face_solid = false;
                     break 'scan;
                 }
@@ -1239,7 +1239,7 @@ fn compute_seam_solidity(region: &VoxelRegion) -> SeamSolidity {
         let mut face_solid = true;
         'scan: for z in 0..depth {
             for x in 0..width {
-                if region.material_at(x, y, z).is_none() {
+                if region.cell_at(x, y, z).is_none() {
                     face_solid = false;
                     break 'scan;
                 }
@@ -1252,7 +1252,7 @@ fn compute_seam_solidity(region: &VoxelRegion) -> SeamSolidity {
         let mut face_solid = true;
         'scan: for y in 0..height {
             for x in 0..width {
-                if region.material_at(x, y, z).is_none() {
+                if region.cell_at(x, y, z).is_none() {
                     face_solid = false;
                     break 'scan;
                 }
