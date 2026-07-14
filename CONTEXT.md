@@ -3,6 +3,18 @@
 Canonical terms for VoxelWorker. This file is a **glossary only** — no implementation detail,
 no decisions (those live in `docs/adr/`). Define a term here the first time an ambiguity bites.
 
+## Substrate vs domain
+
+- **Substrate** — the objects of computer science and pure math: components describable
+  entirely in textbook CS/math vocabulary (BVH, AABB, bit cube, interval list, min-mip pyramid,
+  rational, free-list, key codec, supersede protocol), parameterized by plain numbers/generics,
+  never by domain types. They live apart from the domain (`docs/adr/0014`) so they can be
+  identified, read, and performance-reasoned in isolation.
+
+- **Domain** — the objects of VoxelWorker's subject matter (scene, producer, chunk, brick,
+  chisel, resolve). Domain code *uses* substrate components through adapter seams; substrate
+  never names a domain concept.
+
 ## Chunks
 
 - **Chunk** — a fixed cube tile of voxel space (`CHUNK_BLOCKS` blocks per axis). Space is sliced
