@@ -21,6 +21,10 @@ use wgpu::util::DeviceExt;
 use crate::core_geom::MaterialChoice;
 use crate::scene::{Point, Scene};
 use crate::voxel::RecentreVoxels;
+// The sRGB↔linear transfer function is textbook math with no domain content, so it
+// lives in substrate (see the material/colour handling in docs/architecture); the
+// call sites below keep their names via this import.
+use substrate::srgb::{srgb_component_to_linear, srgb_hex_to_linear};
 
 /// Depth format used by the voxel pass and the depth texture.
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -120,27 +124,6 @@ const BLOCK_LINE_ALPHA: f32 = 0.92;
 const VOXEL_LINE_COLOR_HEX: u32 = 0x17_12_0b;
 /// Block grid line colour `#080605` (sRGB hex → linear, darker/bolder).
 const BLOCK_LINE_COLOR_HEX: u32 = 0x08_06_05;
-
-/// Convert one sRGB 8-bit component to a linear float (matches the sRGB texture
-/// decode the GPU applies to material samples, so the grid line colours mix in
-/// the same colour space as the textured surface).
-fn srgb_component_to_linear(byte: u8) -> f32 {
-    let value = byte as f32 / 255.0;
-    if value <= 0.04045 {
-        value / 12.92
-    } else {
-        ((value + 0.055) / 1.055).powf(2.4)
-    }
-}
-
-/// Convert a packed `0xRRGGBB` sRGB hex colour to a linear `[f32; 3]`.
-fn srgb_hex_to_linear(hex: u32) -> [f32; 3] {
-    [
-        srgb_component_to_linear(((hex >> 16) & 0xff) as u8),
-        srgb_component_to_linear(((hex >> 8) & 0xff) as u8),
-        srgb_component_to_linear((hex & 0xff) as u8),
-    ]
-}
 
 /// Append an alpha channel to a linear RGB colour, producing the `[f32; 4]` the
 /// line pipeline's vertices carry (M8: lattice/floor draw at low opacity).

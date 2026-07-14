@@ -45,11 +45,12 @@
 //! [`GreedyCuboidDecomposition`] over a [`CellGrid`] into [`Cuboid`]s (box decomposition);
 //! the [`supersede`] protocol — [`CoalescingWorker`], [`GenerationTracker`], and their
 //! [`drain_to_latest`] / [`catch_unwind_or_log`] helpers (concurrency); [`BitCube`],
-//! [`SlotFreeList`], and [`CubeTilePacking`] (bit/atlas kit); the [`SparseMinMipPyramid`]
-//! occupancy fold; the [`SortedKeyBitmaskMap`] sorted parallel-array map; the
-//! [`CellClassification`] black/white/grey CSG cell classifier; and the [`CulledBoxMeshing`]
-//! exposed-face determination. See the extraction map referenced above for each component's
-//! provenance and the domain adapter that wraps it.
+//! [`SlotFreeList`], [`CubeTilePacking`], and the [`ShelfBinPack`] rectangle packer (bit/atlas
+//! kit); the [`SparseMinMipPyramid`] occupancy fold; the [`SortedKeyBitmaskMap`] sorted
+//! parallel-array map; the [`CellClassification`] black/white/grey CSG cell classifier; the
+//! [`CulledBoxMeshing`] exposed-face determination; the [`Ray`] primitive with its slab-method
+//! ray–box test; and the [`srgb`] transfer-function codec. See the extraction map referenced
+//! above for each component's provenance and the domain adapter that wraps it.
 
 pub mod aabb;
 pub mod bit_cube;
@@ -64,7 +65,10 @@ pub mod free_list;
 pub mod greedy_cuboid_decomposition;
 pub mod lattice_key;
 pub mod min_mip_pyramid;
+pub mod ray;
 pub mod rational;
+pub mod shelf_bin_pack;
+pub mod srgb;
 pub mod supersede;
 
 pub use aabb::Aabb;
@@ -79,5 +83,10 @@ pub use field_interval::{union_field_intervals, FieldClassification, FieldInterv
 pub use free_list::SlotFreeList;
 pub use greedy_cuboid_decomposition::{CellGrid, Cuboid, GreedyCuboidDecomposition};
 pub use min_mip_pyramid::{MinMipLevel, SparseMinMipPyramid};
+pub use ray::{Ray, RayBoxIntersection};
 pub use rational::Rational;
+pub use shelf_bin_pack::{
+    NormalizedTileRect, PackedTilePlacement, ShelfBinPack, TileImage, TileSize,
+};
+pub use srgb::{srgb_component_to_linear, srgb_hex_to_linear};
 pub use supersede::{catch_unwind_or_log, drain_to_latest, CoalescingWorker, GenerationTracker};
