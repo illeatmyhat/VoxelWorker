@@ -37,6 +37,7 @@ use wgpu::util::DeviceExt;
 
 use crate::core_geom::{MaterialChoice, CHUNK_BLOCKS};
 use crate::cuboid::{decompose_into_boxes, VoxelBox, VoxelRegion};
+use substrate::CulledBoxMeshing;
 use crate::frustum::{Aabb, Frustum};
 use crate::renderer::{LayerBand, DEPTH_FORMAT, MSAA_SAMPLE_COUNT};
 use crate::texture_atlas::MaterialAtlas;
@@ -1568,68 +1569,22 @@ fn box_has_overlay(voxel_box: &VoxelBox) -> bool {
     voxel_box.label & MESH_GRID_OVERLAY_BIT != 0
 }
 
-/// Is the given face of the box exposed? The face is exposed when ANY voxel cell
-/// immediately beyond it is air — i.e. the face is part of the solid's outer
-/// surface. Because a box is solid, a face fully backed by solid neighbours is
-/// occluded and culled; a box-internal direction (impossible for a single box,
-/// but defended) is likewise covered. We scan the slab of neighbour cells across
-/// the face's two in-plane axes and expose the whole quad if any neighbour is air.
+/// Is the given face of the box exposed against the dense apron `region`? Thin domain
+/// adapter over the substrate [`CulledBoxMeshing`] culling kernel (slice S10): it supplies
+/// the neighbour-solidity oracle by reading this mesher's [`VoxelRegion`] occupancy — a cell
+/// is solid iff it is in bounds and carries a render key. Negative or out-of-extent cells
+/// answer air (exposed), reproducing the dense apron's border-is-air convention exactly.
 ///
-/// This keeps ONE quad per box face (not per voxel), so a merged box stays cheap
-/// while the silhouette is correct: if a face is partially exposed, the whole
-/// merged quad is emitted (an over-draw of at most the box's own face, never a
-/// hole), which is acceptable for shape parity.
+/// The kernel keeps ONE quad per box face (not per voxel): if a merged face is partially
+/// exposed, the whole quad is emitted (over-draw of at most the box's own face, never a
+/// hole). See [`CulledBoxMeshing::face_is_exposed`] and `docs/architecture/03-display.md`.
 fn face_is_exposed(voxel_box: &VoxelBox, region: &VoxelRegion, delta: [i32; 3]) -> bool {
-    let [min_x, min_y, min_z] = voxel_box.min;
-    let [max_x, max_y, max_z] = voxel_box.max;
-
-    // The neighbour slab is the box's face shifted one cell along `delta`.
-    let span = |axis: usize| -> (i64, i64) {
-        match axis {
-            0 => (min_x as i64, max_x as i64),
-            1 => (min_y as i64, max_y as i64),
-            _ => (min_z as i64, max_z as i64),
-        }
-    };
-    let (sx0, sx1) = span(0);
-    let (sy0, sy1) = span(1);
-    let (sz0, sz1) = span(2);
-
-    // For the axis the face faces along, the neighbour plane is a single layer at
-    // the box edge + delta; the other two axes scan the box's full extent.
-    let scan_axis = |axis: usize, edge_min: i64, edge_max: i64| -> (i64, i64) {
-        if delta[axis] != 0 {
-            // The single neighbour layer just outside the box on this axis.
-            let plane = if delta[axis] > 0 {
-                edge_max + 1
-            } else {
-                edge_min - 1
-            };
-            (plane, plane)
-        } else {
-            (edge_min, edge_max)
-        }
-    };
-    let (nx0, nx1) = scan_axis(0, sx0, sx1);
-    let (ny0, ny1) = scan_axis(1, sy0, sy1);
-    let (nz0, nz1) = scan_axis(2, sz0, sz1);
-
-    for nz in nz0..=nz1 {
-        for ny in ny0..=ny1 {
-            for nx in nx0..=nx1 {
-                if nx < 0 || ny < 0 || nz < 0 {
-                    return true; // outside grid → air → exposed
-                }
-                if region
-                    .cell_at(nx as u32, ny as u32, nz as u32)
-                    .is_none()
-                {
-                    return true; // an air neighbour → this face is exposed
-                }
-            }
-        }
-    }
-    false
+    CulledBoxMeshing::face_is_exposed(voxel_box, delta, |[nx, ny, nz]| {
+        nx >= 0
+            && ny >= 0
+            && nz >= 0
+            && region.cell_at(nx as u32, ny as u32, nz as u32).is_some()
+    })
 }
 
 /// std140-safe uniform block for the cuboid pass (ADR 0002 E3b-2). Carries the
