@@ -159,6 +159,11 @@ slices (extend as verification work surfaces more):
 - `CulledBoxMeshing` — Lysenko 2012 (culled vs greedy voxel meshing); hidden-surface face
   culling folklore.
 - `Rational` — Knuth TAOCP vol. 2 §4.5 (rational arithmetic, Euclid's gcd).
+- generation-supersede (`CoalescingWorker` + `GenerationTracker`) — no single canonical
+  name; the confluence of work coalescing / conflation, stale-while-revalidate, and a
+  monotonic version counter as a lost-update guard. Cite Herlihy & Shavit, *The Art of
+  Multiprocessor Programming* (2nd ed. 2021) for the monotonic-counter reasoning; note our
+  variant is std mpsc + `catch_unwind` panic containment, no external primitive.
 - `BitCube` — Warren, *Hacker's Delight* 2003; Knuth TAOCP vol. 4A (bitwise techniques).
 - `SlotFreeList` — Wilson et al. 1995 (dynamic storage allocation survey); Knuth vol. 1.
 - `SparseMinMipPyramid` — Tanner et al. 1998 (clipmap); Losasso & Hoppe 2004 (geometry

@@ -315,49 +315,11 @@ pub fn brick_patch_in_place(
     has_incremental_update && renderer_holds_live_field && !field_pending_replacement
 }
 
-/// The monotonic generation bookkeeping behind supersede (issue #60) — factored out of
-/// the live shell so the accept/discard decision is unit-testable without a window.
-///
-/// The shell holds one of these. On each WHOLESALE async dispatch it calls
-/// [`next_generation`](Self::next_generation) to stamp the request; when a result arrives
-/// it calls [`accepts`](Self::accepts) to decide whether to swap it in. A result is
-/// accepted only when its generation is the NEWEST dispatched — an older generation (a
-/// build that a later edit superseded) is discarded, so the stale mesh is never swapped
-/// in over a fresher scene.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct GenerationTracker {
-    /// The generation of the most recent request dispatched to the worker. `0` before any
-    /// dispatch (no async build is outstanding, so nothing is accepted).
-    latest_dispatched: u64,
-}
-
-impl GenerationTracker {
-    /// A fresh tracker (no async rebuild dispatched yet).
-    pub fn new() -> Self {
-        Self { latest_dispatched: 0 }
-    }
-
-    /// Mint the next generation for a wholesale async dispatch and record it as the newest
-    /// outstanding (issue #60). Generations are strictly increasing from 1, so a later
-    /// edit's request always outranks an earlier one still in flight.
-    pub fn next_generation(&mut self) -> u64 {
-        self.latest_dispatched += 1;
-        self.latest_dispatched
-    }
-
-    /// Whether a result of `generation` should be accepted (swapped in) or discarded as
-    /// stale (issue #60). Accepted iff it matches the newest dispatched generation — a
-    /// result from a superseded (older) request is discarded. A result arriving before any
-    /// dispatch (or after the counter moved past it) is never accepted.
-    pub fn accepts(&self, generation: u64) -> bool {
-        generation != 0 && generation == self.latest_dispatched
-    }
-
-    /// The newest dispatched generation (diagnostic / test support).
-    pub fn latest_dispatched(&self) -> u64 {
-        self.latest_dispatched
-    }
-}
+// The monotonic-generation accept/discard bookkeeping behind supersede is the substrate
+// `supersede` protocol; the display keeps its `GenerationTracker` vocabulary at this seam so
+// the orchestrator/shell call sites stay put. See docs/architecture/04-work.md (the work
+// chapter) for how routing pairs a `GenerationTracker` with each async worker.
+pub use substrate::GenerationTracker;
 
 /// Where a brick rebuild is routed. The brick analogue of [`RebuildRoute`], with the patch
 /// precondition (a resident mirror) folded in so the shell reads ONE decision.
@@ -436,52 +398,6 @@ mod tests {
     use super::*;
 
     const THRESHOLD: usize = ASYNC_REBUILD_CHUNK_THRESHOLD;
-
-    /// A fresh tracker accepts nothing — no async rebuild is outstanding, so any result
-    /// (which could only be a phantom) is discarded.
-    #[test]
-    fn fresh_tracker_accepts_nothing() {
-        let tracker = GenerationTracker::new();
-        assert!(!tracker.accepts(0), "generation 0 is never a valid result");
-        assert!(!tracker.accepts(1), "no dispatch yet → accept nothing");
-    }
-
-    /// The newest dispatched generation is accepted; every earlier one is discarded as
-    /// stale. This is the supersede invariant: a mid-build edit dispatches a newer
-    /// generation, so the older in-flight result must NOT swap in over the fresher scene.
-    #[test]
-    fn newest_wins_stale_discarded() {
-        let mut tracker = GenerationTracker::new();
-        let first = tracker.next_generation();
-        assert_eq!(first, 1);
-        // A result for the first request is accepted while it is the newest.
-        assert!(tracker.accepts(first));
-
-        // The user edits again mid-build → a newer request is dispatched.
-        let second = tracker.next_generation();
-        assert_eq!(second, 2, "generations strictly increase");
-        // Now the FIRST (in-flight) result is stale and must be discarded…
-        assert!(!tracker.accepts(first), "superseded generation is discarded");
-        // …and only the newest is accepted.
-        assert!(tracker.accepts(second));
-    }
-
-    /// Several supersedes in a row: only the final generation is accepted; every
-    /// intermediate one is stale (the drain-to-latest + newest-wins contract).
-    #[test]
-    fn only_final_generation_accepted_after_burst() {
-        let mut tracker = GenerationTracker::new();
-        let mut last = 0;
-        for _ in 0..5 {
-            last = tracker.next_generation();
-        }
-        assert_eq!(last, 5);
-        for stale in 1..last {
-            assert!(!tracker.accepts(stale), "generation {stale} is superseded");
-        }
-        assert!(tracker.accepts(last), "only the newest generation wins");
-        assert_eq!(tracker.latest_dispatched(), 5);
-    }
 
     /// C1 interlock — the core fix. With an async wholesale build OUTSTANDING, an
     /// incremental edit must NOT inline-patch the stale (S0) renderer (that strands every
