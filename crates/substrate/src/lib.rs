@@ -50,12 +50,16 @@
 //! (first kernel-only tier-3 extraction) — the [`SparseMinMipPyramid`] fold (the pure core of the
 //! domain's clip-map builders, whose chunk traversal stays in the app crate); slice S8 (second
 //! kernel-only tier-3 extraction) — the [`SortedKeyBitmaskMap`] sorted parallel-array map (the
-//! storage shape of the domain's block-occupancy masks, whose `from_chunks` builder stays domain).
+//! storage shape of the domain's block-occupancy masks, whose `from_chunks` builder stays domain);
+//! slice S9 (third kernel-only tier-3 extraction) — the [`CellClassification`] black/white/grey CSG
+//! cell classifier (the fold-per-op-interval + 3-way verdict core of the domain's block classifier,
+//! whose leaf iteration, world offsets, and per-voxel fallback stay in the app crate).
 
 pub mod aabb;
 pub mod bit_cube;
 pub mod bitmask_map;
 pub mod bvh;
+pub mod cell_classification;
 pub mod cube_packing;
 pub mod disjoint_interval_set;
 pub mod field_interval;
@@ -70,6 +74,7 @@ pub use aabb::Aabb;
 pub use bit_cube::BitCube;
 pub use bitmask_map::{mask_bit_is_set, set_mask_bit, SortedKeyBitmaskMap};
 pub use bvh::Bvh;
+pub use cell_classification::{CellClassification, CellCombineOp, CellContribution};
 pub use cube_packing::CubeTilePacking;
 pub use disjoint_interval_set::DisjointIntervalSet;
 pub use field_interval::{union_field_intervals, FieldClassification, FieldInterval};

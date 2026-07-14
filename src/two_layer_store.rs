@@ -12,9 +12,10 @@
 //!
 //! * [`BlockClassification`] / [`classify_chunk_block`] — the conservative classifier:
 //!   compose every leaf's field interval over a block cell by CSG interval arithmetic
-//!   (v1 only has [`crate::scene::CombineOp::Union`], so the composition is
-//!   [`crate::voxel::union_field_intervals`]), then [`FieldInterval::classify`]. An
-//!   unboundable producer (`cell_field_interval == None`) forces the block BOUNDARY.
+//!   (v1 only has [`crate::scene::CombineOp::Union`]) and take the 3-way verdict through the
+//!   substrate black/white/grey [`substrate::CellClassification`] kernel. An unboundable
+//!   producer (`cell_field_interval == None`) surfaces as "cannot classify" and forces the
+//!   block BOUNDARY. Leaf iteration + local-frame mapping + the per-voxel fallback stay here.
 //! * [`TwoLayerChunk`] — the per-chunk store: a coarse per-block [`BlockId`] grid
 //!   (coarse-solid blocks carry their id, no voxels) + a SPARSE map of boundary blocks
 //!   to their decomposed [`VoxelBox`] geometry + per-face [`SeamSolidity`] flags.
@@ -50,14 +51,14 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use rayon::prelude::*;
-use substrate::DisjointIntervalSet;
+use substrate::{CellClassification, CellContribution, DisjointIntervalSet};
 
 use crate::core_geom::{BlockAttrs, BlockId, CHUNK_BLOCKS};
 use crate::cuboid::{decompose_into_boxes, VoxelBox, VoxelRegion};
 use crate::scene::{LeafProducer, Scene};
 use crate::spatial_index::{ChunkCoverage, EditBroadphaseBvh, VoxelAabb};
 use crate::voxel::{
-    union_field_intervals, FieldClassification, RecentreVoxels, Voxel, VoxelGrid, SURFACE_ISOLEVEL,
+    FieldClassification, RecentreVoxels, Voxel, VoxelGrid, SURFACE_ISOLEVEL,
 };
 
 /// The coarse verdict for a single BLOCK of a chunk (ADR 0010 Decision 2). Distinct from
@@ -405,34 +406,38 @@ pub(crate) fn classify_chunk_block(
         return BlockClassification::Air;
     }
 
-    // v1 composes leaves by Union (CombineOp::Union, later-wins material on overlap).
-    // Compose the conservative field intervals by `union_field_intervals` (min-of-fields):
-    // any unboundable operand collapses the union to `None` ⇒ BOUNDARY.
-    let composed = union_field_intervals(overlapping.iter().map(|leaf| {
-        // Map the absolute block box into THIS leaf's local voxel-index frame `[0, full)`
-        // by subtracting its world offset — the exact frame `cell_field_interval` expects
-        // (ADR 0008: the frame is carried, never re-derived).
-        let cell_local = VoxelAabb::new(
-            [
-                block_abs_voxels.min[0] - leaf.world_offset_voxels[0],
-                block_abs_voxels.min[1] - leaf.world_offset_voxels[1],
-                block_abs_voxels.min[2] - leaf.world_offset_voxels[2],
-            ],
-            [
-                block_abs_voxels.max[0] - leaf.world_offset_voxels[0],
-                block_abs_voxels.max[1] - leaf.world_offset_voxels[1],
-                block_abs_voxels.max[2] - leaf.world_offset_voxels[2],
-            ],
-        );
-        leaf.producer.cell_field_interval(cell_local, voxels_per_block)
-    }));
+    // v1 composes leaves by Union (CombineOp::Union, later-wins material on overlap). Fold the
+    // per-leaf conservative field intervals through the substrate black/white/grey classifier
+    // (`CellClassification`): union of intervals + 3-way verdict, `None` iff any leaf is
+    // unboundable ⇒ BOUNDARY. Leaf iteration + the local-frame map stay HERE (domain).
+    let verdict = CellClassification::classify(
+        overlapping.iter().map(|leaf| {
+            // Map the absolute block box into THIS leaf's local voxel-index frame `[0, full)`
+            // by subtracting its world offset — the exact frame `cell_field_interval` expects
+            // (ADR 0008: the frame is carried, never re-derived).
+            let cell_local = VoxelAabb::new(
+                [
+                    block_abs_voxels.min[0] - leaf.world_offset_voxels[0],
+                    block_abs_voxels.min[1] - leaf.world_offset_voxels[1],
+                    block_abs_voxels.min[2] - leaf.world_offset_voxels[2],
+                ],
+                [
+                    block_abs_voxels.max[0] - leaf.world_offset_voxels[0],
+                    block_abs_voxels.max[1] - leaf.world_offset_voxels[1],
+                    block_abs_voxels.max[2] - leaf.world_offset_voxels[2],
+                ],
+            );
+            CellContribution::union(leaf.producer.cell_field_interval(cell_local, voxels_per_block))
+        }),
+        SURFACE_ISOLEVEL,
+    );
 
-    let Some(interval) = composed else {
-        // An unboundable leaf in the union ⇒ resolve the block per-voxel (BOUNDARY).
+    let Some(classification) = verdict else {
+        // An unboundable leaf in the union (cannot classify) ⇒ resolve the block per-voxel.
         return BlockClassification::Boundary;
     };
 
-    match interval.classify(SURFACE_ISOLEVEL) {
+    match classification {
         FieldClassification::Air => BlockClassification::Air,
         FieldClassification::Boundary => BlockClassification::Boundary,
         FieldClassification::CoarseSolid => {
