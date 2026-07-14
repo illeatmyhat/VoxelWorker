@@ -6,6 +6,15 @@ and objects of domain." A very-thorough survey of `src/` produced the inventory 
 analysis input; the decision record is `docs/adr/0014`; the boundary law is in `CONTEXT.md`
 (**substrate**).
 
+**Status (2026-07-13, end of day): EXECUTED IN FULL — S0–S10 all landed** (`72bf07b` workspace →
+`248f171` S1 → `c8af77d` S2 → `f0a0099` S3 → `84fac30` S4 → `251f414` S5 → `2f91a92` S6 benches →
+`c4541c0` S7 → `d76cb27` S8 → `7f2d6e1` S9 → `d9dbc2c` S10). All 15 components live in
+`crates/substrate` under their literature names with citations; every slice's parity oracles and
+goldens passed unmodified; app lib 478/6 + substrate 72 tests (total grew from 510 to 550+ across
+the extraction). Remaining from this document: the deferred cold items (palette codec kernel,
+LRU spill cache — trigger: disk path goes live), the future crates section below, and the
+machine-checked construction plan (10b), which starts now that tiers 1–2 exist.
+
 **The law (short form):** a component belongs in `crates/substrate` iff it is describable
 entirely in textbook CS/math vocabulary, parameterized by plain numbers/generics — never by
 domain types. Domain adapters stay in the app crate at their own seams. Not for release;

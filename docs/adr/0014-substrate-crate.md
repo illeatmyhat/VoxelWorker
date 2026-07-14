@@ -1,7 +1,10 @@
 # ADR 0014 — The substrate crate: pure CS/math components split out of the domain, compile-enforced
 
-- **Status:** **Accepted (2026-07-13), extraction in progress** — see
-  `docs/design/substrate-extraction-map.md` for the dated inventory and slice order.
+- **Status:** **Accepted & shipped (2026-07-13)** — the extraction map was executed in full the
+  same day (S0–S10, 15 components, `72bf07b`..`d9dbc2c`); see
+  `docs/design/substrate-extraction-map.md` for the dated inventory and per-slice commits.
+  Open threads live there: two cold deferred items, the trigger-gated future crates, and the
+  machine-checked-construction plan (decision 6), which is now unblocked.
 - **Date:** 2026-07-13
 - **Layer:** repo shape / code organisation. No behaviour change; every slice is gated on the
   full baseline and moves the component's own oracles with it.
