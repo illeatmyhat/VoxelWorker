@@ -9,3 +9,34 @@ edition = "2021"
 # docs/architecture/data-structures.md for the boundary law and naming rule.
 
 [dependencies]
+
+# criterion is a DEV-only dependency: it backs the on-demand microbenches in
+# `benches/` and never enters the crate's normal dependency set. The benches are
+# run by hand (`cargo bench -p substrate`); they are deliberately NOT wired into
+# the commit gates or CI. Current stable criterion major is 0.8.
+[dev-dependencies]
+criterion = "0.8"
+
+# Each bench target uses criterion's own harness, so the default libtest harness
+# is disabled (`harness = false`, as criterion requires). Benches cover only the
+# HOT substrate components — the ones whose cost the domain actually pays per edit
+# or per frame.
+[[bench]]
+name = "bit_cube"
+harness = false
+
+[[bench]]
+name = "bvh"
+harness = false
+
+[[bench]]
+name = "disjoint_interval_set"
+harness = false
+
+[[bench]]
+name = "greedy_cuboid_decomposition"
+harness = false
+
+[[bench]]
+name = "lattice_key"
+harness = false
