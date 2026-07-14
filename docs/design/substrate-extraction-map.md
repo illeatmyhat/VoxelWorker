@@ -108,6 +108,31 @@ Standing limit (reaffirmed by the FXC X3500 episode): the GPU side is not a proo
 source-level theorem catches a shader-compiler bug. Verification hardens substrate kernels; the
 oracle gates remain permanent regardless.
 
+## Future crates (owner-approved 2026-07-13 — trigger-gated, do NOT split early)
+
+The crate test is the one that justified substrate: **a dependency law worth compile-enforcing**.
+Two more pass it; each waits for its trigger:
+
+- **`document`** — the authoring truth: operation stack, producers, sketch, intents, command,
+  units/`Measurement`, document schema+serialization. Law enforced: the authoring-truth boundary
+  (`docs/architecture/01-document.md` / ADR 0006) — truth physically cannot import display/wgpu.
+  Also the natural home for shared-document versioning and the headless crate the agent-authoring
+  stack links. **Trigger:** the versioned-shared-documents work, or sculpt's new Intents —
+  whichever comes first.
+- **`evaluation`** — the two-layer store + the interval-bound evaluator producing boundary sets.
+  Law enforced: sinks consume boundary sets, never reach into evaluator internals
+  (`docs/architecture/02-evaluation.md`). **Trigger:** heavy sink-side churn (the material-atlas
+  epic or sculpt).
+
+End-state dependency chain: `substrate` ← `document` ← `evaluation` ← `voxel_worker`
+(display + shell + workers), each boundary carrying a named law.
+
+Deliberately NOT crates (taxonomy ahead of need, per ADR 0014's rejection): display/shell split
+(the GPU-never-truth law is already proven once document+evaluation compile without wgpu),
+.vox/interchange codecs (one file today; graduates near `document` when export goes plural),
+shot/oracles (already isolated by `--features oracle`), UI/workers/orchestrator (connective
+tissue).
+
 ## Literature anchors (owner ruling: cite the science)
 
 Part of each component's definition of done: the substrate module doc names the textbook
