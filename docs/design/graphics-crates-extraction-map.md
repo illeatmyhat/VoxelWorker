@@ -9,6 +9,13 @@ mathematics; wgpu plumbing stays app**. The binding discipline: the WGSL shaders
 of these crates' CPU implementations — **the crate is the readable specification of the
 shader, and gpu_parity is the law that holds them together.**
 
+**Status (2026-07-14): EXECUTED IN FULL — G0–G2 all landed** (`b5cb208` G0 substrate additions →
+`b50c03f` G1 crates/camera + the AABB co-location ruling → `1dcce29` G2 crates/raycast). Every
+parity/golden suite passed unmodified throughout; the raymarch WGSL now carries the GPU-mirror
+header naming `crates/raycast` as its readable specification. Baselines after G2: app lib 423/6,
+substrate 87, camera 54, raycast 9. Next per ADR 0015's consequences: the ADR 0013
+material-atlas epic builds its per-voxel sampling inside `raycast`.
+
 **Survey verdicts that shaped this map:** `camera.rs` (1922 lines) already imports ONLY glam —
 zero winit/egui/wgpu/domain types; it is a pure-math island with 48 movable tests. The CPU
 reference march's DDA kernel is provably separable (`cpu_march_exact_occupancy` already takes

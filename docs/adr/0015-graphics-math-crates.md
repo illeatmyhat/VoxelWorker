@@ -1,7 +1,11 @@
 # ADR 0015 — Graphics-math crates (`camera`, `raycast`): wgpu-free implementations of the well-known concepts; the crate is the shader's readable specification
 
-- **Status:** **Accepted (2026-07-13)** — extraction map in
-  `docs/design/graphics-crates-extraction-map.md` (slices G0–G2). **Supersedes, in part, the
+- **Status:** **Accepted & shipped (2026-07-14)** — slices G0–G2 all landed
+  (`b5cb208`..`1dcce29`); extraction map in `docs/design/graphics-crates-extraction-map.md`.
+  **Amended during execution:** the owner unified the two AABB types by co-location in
+  substrate (`LatticeAabb` half-open integer / `RealAabb` closed f32, side-by-side docs) —
+  generics and traits were considered and rejected (a bound-policy parameter hurts the
+  accessibility goal; a `BoundingVolume` trait waits for a second BVH consumer). **Supersedes, in part, the
   future-crates ruling recorded in the substrate extraction map** (2026-07-13, same day),
   which listed "display/shell" as deliberately-not-a-crate: that stands for wgpu *plumbing*,
   but the owner's follow-on direction — graphics crates in the substrate vein — is satisfied
