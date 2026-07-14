@@ -103,6 +103,13 @@ fn record_kind_discriminant(kind: u32) -> u32 {
     kind & BRICK_RECORD_KIND_MASK
 }
 
+/// The block MATERIAL colour index packed above the kind discriminant — the mirror of the WGSL
+/// `record_material_id(kind)` (masked to the material field; the overlay bit rides above it). The
+/// per-record shade of a coarse or sculpted-UNIFORM hit.
+fn record_material_id(kind: u32) -> u32 {
+    (kind >> BRICK_RECORD_MATERIAL_ID_SHIFT) & ((1 << BRICK_RECORD_MATERIAL_ID_BITS) - 1)
+}
+
 /// Does this packed record render as a solid block-cube — i.e. is it COARSE, or a sculpted
 /// brick whose occupancy tile is not resident (the residency-miss contract)? The ONE reader of
 /// "no voxel DDA for this block", mirroring the WGSL's `is_coarse` test; a MIXED record is a
@@ -468,6 +475,12 @@ pub struct BrickRaymarchRenderer {
     /// centre-ray evaluation would, into a plain `Rgba8Unorm` target. Same pipeline
     /// layout (group 2 = loaded material) as the render pipeline.
     color_identity_pipeline: wgpu::RenderPipeline,
+    /// ADR 0013 — the single-sample MATERIAL-identity entry (`fragment_material_identity`)
+    /// the mixed-brick parity test reads back: reports each hit's RESOLVED per-voxel material
+    /// id (the clean cell-key id for a mixed brick, else the per-record material) into an
+    /// `Rgba32Uint` target. The direct "shader material == CPU-march reference" gate, with no
+    /// shading to reproduce. Same pipeline layout as `hit_identity_pipeline`.
+    material_identity_pipeline: wgpu::RenderPipeline,
     /// The uniform buffer: [`BRICK_UNIFORM_SLOT_COUNT`] `BrickUniformsPod` slots
     /// (solid + two ghost slabs), each `uniform_slot_stride` bytes, indexed by dynamic
     /// offset (ADR 0012 H1).
@@ -1029,11 +1042,54 @@ impl BrickRaymarchRenderer {
                 cache: None,
             });
 
+        // ADR 0013 — the material-identity pass: single sample, no depth, the resolved
+        // per-voxel material id per hit into an `Rgba32Uint` target (read back by
+        // tests/gpu_parity.rs). Same layout as the hit-identity pass.
+        let material_identity_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("brick raymarch material-identity pipeline"),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vertex_main"),
+                    buffers: &[],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fragment_material_identity"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: wgpu::TextureFormat::Rgba32Uint,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    strip_index_format: None,
+                    front_face: wgpu::FrontFace::Ccw,
+                    cull_mode: None,
+                    unclipped_depth: false,
+                    polygon_mode: wgpu::PolygonMode::Fill,
+                    conservative: false,
+                },
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState {
+                    count: 1,
+                    mask: !0,
+                    alpha_to_coverage_enabled: false,
+                },
+                multiview_mask: None,
+                cache: None,
+            });
+
         Self {
             render_pipeline,
             ghost_render_pipeline,
             hit_identity_pipeline,
             color_identity_pipeline,
+            material_identity_pipeline,
             uniform_buffer,
             uniform_slot_stride,
             ghost_lower_active: false,
@@ -1632,7 +1688,16 @@ impl BrickRaymarchRenderer {
                 // circuits before `shade_cuboid_surface`), so it is inert for them.
                 i32::from(self.loaded_material_active),
             ],
-            band_voxel_sv: [frame.band_voxel_sv[0], frame.band_voxel_sv[1], 0, 0],
+            band_voxel_sv: [
+                frame.band_voxel_sv[0],
+                frame.band_voxel_sv[1],
+                // ADR 0013: the MATERIAL SIDE ATLAS's tiles-per-axis (its own pool sizes from
+                // its mixed-brick slot count = dim / edge), so `mixed_voxel_material` addresses
+                // the cell-key cube — never the occupancy atlas's `block_bias_and_tiles.w`. 1 for
+                // the placeholder / a no-mixed-brick field (its cell-key sample never fires).
+                (self.cell_key_texture_dim / self.brick_edge_voxels.max(1)).max(1) as i32,
+                0,
+            ],
             clipmap_blocks_and_counts: [
                 self.clipmap_level_1_blocks.max(1),
                 self.clipmap_level_1_count,
@@ -1860,6 +1925,127 @@ impl BrickRaymarchRenderer {
             );
             pass.set_bind_group(1, &self.material_bind_group, &[]);
             // Hit-identity never samples a material; the dummy satisfies group(2).
+            pass.set_bind_group(2, &self.dummy_loaded_material_bind_group, &[]);
+            pass.draw(0..3, 0..1);
+        }
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &target,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded_row),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        queue.submit(Some(encoder.finish()));
+
+        let slice = readback.slice(..);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = sender.send(result);
+        });
+        device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .expect("device poll failed");
+        receiver
+            .recv()
+            .expect("map_async channel dropped")
+            .expect("buffer map failed");
+
+        let mapped = slice.get_mapped_range();
+        let mut pixels = Vec::with_capacity((width * height) as usize);
+        for row in 0..height {
+            let row_start = (row * padded_row) as usize;
+            let row_words: &[u32] =
+                bytemuck::cast_slice(&mapped[row_start..row_start + unpadded_row as usize]);
+            for pixel in row_words.chunks_exact(4) {
+                pixels.push([pixel[0], pixel[1], pixel[2], pixel[3]]);
+            }
+        }
+        drop(mapped);
+        readback.unmap();
+        pixels
+    }
+
+    /// ADR 0013 — render the MATERIAL-identity image (the mixed-brick parity harness): one
+    /// `[hit, material_id, 0, 0]` u32 quad per pixel, where `material_id` is the RESOLVED
+    /// per-voxel material (a mixed brick's clean cell-key id, else the per-record material).
+    /// Uses the CURRENT uniforms — call [`update_uniforms`](Self::update_uniforms) with
+    /// `viewport_px = [0, 0, width, height]` first. The direct "shader == CPU-march reference"
+    /// material gate (ADR 0013): no shading is reproduced, only the resolved id compared.
+    pub fn render_material_identity_image(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        width: u32,
+        height: u32,
+    ) -> Vec<[u32; 4]> {
+        let target = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("brick material-identity target"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba32Uint,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let target_view = target.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let bytes_per_pixel = 16u32;
+        let unpadded_row = width * bytes_per_pixel;
+        let padded_row = unpadded_row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+            * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("brick material-identity readback"),
+            size: padded_row as u64 * height as u64,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let mut encoder =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("brick material-identity pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &target_view,
+                    resolve_target: None,
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            pass.set_pipeline(&self.material_identity_pipeline);
+            pass.set_bind_group(
+                0,
+                &self.field_bind_group,
+                &[self.slot_offset(BRICK_UNIFORM_SLOT_SOLID) as u32],
+            );
+            pass.set_bind_group(1, &self.material_bind_group, &[]);
+            // Material-identity never samples a material texture; the dummy satisfies group(2).
             pass.set_bind_group(2, &self.dummy_loaded_material_bind_group, &[]);
             pass.draw(0..3, 0..1);
         }
@@ -2270,6 +2456,59 @@ pub fn cpu_march_exact_occupancy(
     })
 }
 
+/// The MATERIAL a brick hit shades from — the CPU-march reference for ADR 0013's per-voxel
+/// mixed shading (`docs/architecture/03-display.md`, the brick-field atlas). For a MIXED brick
+/// (kind 2 with a resident cell-key slot) it samples the SAME cell-key tile at the SAME hit
+/// voxel the shader's `mixed_voxel_material` reads and returns its clean block id; for a coarse
+/// or sculpted-UNIFORM block it returns the per-record material. `tests/gpu_parity.rs` asserts
+/// [`BrickRaymarchRenderer::render_material_identity_image`] equals this at every agreeing pixel.
+///
+/// The material is a DOMAIN fact (a cell key, a palette id, an overlay bit); the `raycast` kernel
+/// stays material-free, so this resolves off the returned [`CpuMarchHit::absolute_voxel`] — the
+/// hit voxel and the carried march frame's `brick_edge_voxels` recover the block and the
+/// brick-local voxel exactly (`voxel_bias` is a multiple of the brick edge, so absolute-voxel
+/// `div`/`rem` edge give the absolute block and brick-local coordinate the record search + tile
+/// sample need).
+pub fn cpu_brick_hit_material(
+    records: &[BrickGpuRecord],
+    build: &BrickFieldBuild,
+    brick_edge_voxels: i32,
+    hit: CpuMarchHit,
+) -> u32 {
+    let edge = brick_edge_voxels.max(1);
+    let absolute_block = [
+        hit.absolute_voxel[0].div_euclid(edge),
+        hit.absolute_voxel[1].div_euclid(edge),
+        hit.absolute_voxel[2].div_euclid(edge),
+    ];
+    let brick_local = [
+        hit.absolute_voxel[0].rem_euclid(edge) as u32,
+        hit.absolute_voxel[1].rem_euclid(edge) as u32,
+        hit.absolute_voxel[2].rem_euclid(edge) as u32,
+    ];
+    let (key_hi, key_lo) = cpu_pack_key_split(absolute_block);
+    match cpu_find_brick_record(records, key_hi, key_lo) {
+        None => 0,
+        Some(index) => {
+            let record = records[index];
+            if record_kind_discriminant(record.kind) == 2
+                && record.cell_key_slot != NON_RESIDENT_ATLAS_SLOT
+            {
+                // The mixed brick's per-voxel cell key, masked to its clean block id — the CPU
+                // twin of the shader's `mixed_voxel_material` (same tile, same voxel, same mask).
+                let cell_key = build.cell_key_tiles[record.cell_key_slot as usize].get(
+                    brick_local[0],
+                    brick_local[1],
+                    brick_local[2],
+                );
+                clean_block_id(cell_key) as u32
+            } else {
+                record_material_id(record.kind)
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod representability_tests {
     //! ADR 0011 G2 — `brick_representable_overlay` decides the widened live gate. The
@@ -2435,5 +2674,97 @@ mod record_packing_tests {
     fn the_gpu_record_is_five_tightly_packed_words() {
         assert_eq!(std::mem::size_of::<BrickGpuRecord>(), 5 * 4);
         assert_eq!(std::mem::align_of::<BrickGpuRecord>(), 4);
+    }
+}
+
+#[cfg(test)]
+mod mixed_material_reference_tests {
+    //! ADR 0013 — the CPU-march material reference ([`cpu_brick_hit_material`]) resolves a MIXED
+    //! brick's per-voxel materials from its cell-key tile (the same tile + voxel the shader's
+    //! `mixed_voxel_material` samples), masking the overlay bit off to the clean id; a UNIFORM hit
+    //! resolves the per-record material. This is the CPU half of the shader == reference bar; the
+    //! GPU half is `tests/gpu_parity.rs::brick_mixed_material_matches_cpu_reference`.
+    use super::*;
+    use crate::brick_field::build_brick_field;
+    use crate::core_geom::CHUNK_BLOCKS;
+    use crate::cuboid::VoxelBox;
+    use crate::cuboid_mesh::compose_cell_key;
+    use crate::two_layer_store::{MicroblockGeometry, SeamSolidity, TwoLayerChunk};
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    const EDGE: u32 = 4;
+
+    /// A chunk holding ONE fully-solid boundary block at chunk-local `[0,0,0]` (world-block
+    /// `[0,0,0]`, so absolute voxel == brick-local voxel): its left X-half carries cell key
+    /// `left`, its right X-half `right`. Distinct keys ⇒ `classify_block_brick` sees disagreeing
+    /// cuboids and emits a MIXED brick; equal keys ⇒ a uniform brick.
+    fn one_block_chunk(left: u16, right: u16) -> Vec<([i32; 3], Arc<TwoLayerChunk>)> {
+        let half = EDGE / 2;
+        let mut microblocks = BTreeMap::new();
+        microblocks.insert(
+            [0, 0, 0],
+            MicroblockGeometry {
+                cuboids: vec![
+                    VoxelBox { min: [0, 0, 0], max: [half - 1, EDGE - 1, EDGE - 1], label: left },
+                    VoxelBox { min: [half, 0, 0], max: [EDGE - 1, EDGE - 1, EDGE - 1], label: right },
+                ],
+                seam_solidity: SeamSolidity { solid: [[true; 2]; 3] },
+            },
+        );
+        let block_count = (CHUNK_BLOCKS * CHUNK_BLOCKS * CHUNK_BLOCKS) as usize;
+        vec![(
+            [0, 0, 0],
+            Arc::new(TwoLayerChunk {
+                voxels_per_block: EDGE,
+                coarse: vec![None; block_count],
+                coarse_overlay: vec![false; block_count],
+                microblocks,
+            }),
+        )]
+    }
+
+    #[test]
+    fn reference_resolves_per_voxel_mixed_material() {
+        let left = compose_cell_key(0, false); // clean id 0
+        let right = compose_cell_key(1, true); // clean id 1, overlay bit set — must be masked off
+        let build = build_brick_field(&one_block_chunk(left, right), EDGE);
+        assert_eq!(build.mixed_brick_count(), 1, "the fixture must produce exactly one mixed brick");
+        let records = pack_gpu_records(&build.brick_records, |_| false);
+
+        for z in 0..EDGE as i32 {
+            for y in 0..EDGE as i32 {
+                for x in 0..EDGE as i32 {
+                    let material = cpu_brick_hit_material(
+                        &records,
+                        &build,
+                        EDGE as i32,
+                        CpuMarchHit { absolute_voxel: [x, y, z], face_normal: [-1, 0, 0] },
+                    );
+                    let expected = if (x as u32) < EDGE / 2 { 0 } else { 1 };
+                    assert_eq!(
+                        material, expected,
+                        "voxel ({x},{y},{z}) must resolve its authored clean material id \
+                         (overlay bit masked)"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn reference_uniform_block_uses_record_material() {
+        // Both halves share one key ⇒ a UNIFORM brick: no cell-key tile, material on the record.
+        let key = compose_cell_key(2, false);
+        let build = build_brick_field(&one_block_chunk(key, key), EDGE);
+        assert_eq!(build.mixed_brick_count(), 0, "a single-material block is not mixed");
+        let records = pack_gpu_records(&build.brick_records, |_| false);
+        let material = cpu_brick_hit_material(
+            &records,
+            &build,
+            EDGE as i32,
+            CpuMarchHit { absolute_voxel: [1, 1, 1], face_normal: [-1, 0, 0] },
+        );
+        assert_eq!(material, 2, "a uniform hit resolves the per-record material id");
     }
 }

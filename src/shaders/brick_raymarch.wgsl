@@ -91,7 +91,10 @@ struct BrickUniforms {
     voxel_bias: vec4<i32>,
     // x: first in-band voxel Z (sv frame); y: one-past-last in-band voxel Z (sv
     // frame) — the layer-range band clip, applied at traverse time (the mesh path
-    // applies it at build time). zw unused.
+    // applies it at build time). z: the MATERIAL SIDE ATLAS's tiles-per-axis (the
+    // cell-key pool sizes from its OWN mixed-brick slot count, unrelated to the
+    // occupancy atlas's `block_bias_and_tiles.w`) — read only by `mixed_voxel_material`.
+    // w unused.
     band_voxel_sv: vec4<i32>,
     // ADR 0011 G2 clip-map pyramid: x = L1 blocks/cell, y = L1 cell count, z = L2
     // blocks/cell, w = L2 cell count. A zero count disables that level's skip (the
@@ -520,6 +523,29 @@ fn sculpted_voxel_occupied(atlas_slot: u32, brick_local_voxel: vec3<i32>) -> boo
     return texel > 0.5;
 }
 
+// The transient on-face-grid overlay bit of a render-cell key — MUST match
+// `MESH_GRID_OVERLAY_BIT` (1 << 15) in cuboid_mesh.rs. Masking it off yields the clean
+// categorical block id (`clean_block_id`); testing it yields the overlay (`cell_key_has_overlay`).
+const MESH_GRID_OVERLAY_BIT: u32 = 0x8000u;
+
+// A MIXED brick's per-voxel MATERIAL: the clean block id of the cell-key texel at the hit
+// voxel of the material side atlas. The texel is the u16 render-cell key VERBATIM (clean id +
+// overlay bit); the shade uses only the clean id, so this masks the overlay off exactly as the
+// CPU `clean_block_id` does. Exact `textureLoad` of the R16Uint atlas at the cell-key pool's own
+// tile origin (`band_voxel_sv.z` tiles-per-axis — NOT the occupancy atlas's). Called ONLY for a
+// kind-2 record with a resident cell-key slot, so a kind-0/1 record never reaches this texture.
+fn mixed_voxel_material(cell_key_slot: u32, brick_local_voxel: vec3<i32>) -> u32 {
+    let tiles = u32(uniforms.band_voxel_sv.z);
+    let edge = uniforms.lattice_shift_and_edge.w;
+    let tile = vec3<i32>(
+        i32(cell_key_slot % tiles),
+        i32((cell_key_slot / tiles) % tiles),
+        i32(cell_key_slot / (tiles * tiles)),
+    );
+    let cell_key = textureLoad(cell_key_atlas, tile * edge + brick_local_voxel, 0).r;
+    return cell_key & (MESH_GRID_OVERLAY_BIT - 1u);
+}
+
 // A ray-march hit: the entry face (axis + facing sign), the plane's sv-frame
 // coordinate on that axis (for the centre-ray shading evaluation), the sample
 // ray's hit parameter (for per-sample depth), and the hit voxel cell (sv frame).
@@ -682,6 +708,12 @@ fn march_brick_field(ray: Ray) -> MarchHit {
         var is_coarse = false;
         var block_material = 0u;
         var resolved_atlas_slot = 0u;
+        // A MIXED brick (kind 2) shades each voxel from its per-voxel cell-key texel, not the
+        // per-record material; these carry the record's cell-key slot into the voxel DDA so the
+        // per-voxel lookup fires ONLY there. A kind-0/1 record leaves `is_mixed` false and never
+        // touches the cell-key atlas — its shading is byte-identical to before this slice.
+        var is_mixed = false;
+        var resolved_cell_key_slot = NON_RESIDENT_ATLAS_SLOT;
         if (record_index >= 0) {
             let record = brick_records[record_index];
             block_material = record_material_id(record.kind);
@@ -690,6 +722,8 @@ fn march_brick_field(ray: Ray) -> MarchHit {
             is_coarse = record_kind(record.kind) == 0u
                 || record.atlas_slot == NON_RESIDENT_ATLAS_SLOT;
             resolved_atlas_slot = record.atlas_slot;
+            is_mixed = record_kind(record.kind) == 2u;
+            resolved_cell_key_slot = record.cell_key_slot;
         } else if (uniforms.band_clip_active != 0u && uniforms.occupancy_cell_count > 0u) {
             let occupancy_cell = clipmap_cell_of(absolute_block, 8);
             let occupancy_key = pack_world_block_key_split(occupancy_cell);
@@ -780,7 +814,15 @@ fn march_brick_field(ray: Ray) -> MarchHit {
                         if (sculpted_voxel_occupied(resolved_atlas_slot, brick_local)) {
                             var hit: MarchHit;
                             hit.hit = true;
-                            hit.material_id = block_material;
+                            // MIXED brick: the hit voxel's own material from the cell-key side
+                            // atlas; otherwise the per-record material. Guarded by kind == 2 (and
+                            // a resident slot) so non-mixed shading is untouched.
+                            if (is_mixed && resolved_cell_key_slot != NON_RESIDENT_ATLAS_SLOT) {
+                                hit.material_id =
+                                    mixed_voxel_material(resolved_cell_key_slot, brick_local);
+                            } else {
+                                hit.material_id = block_material;
+                            }
                             hit.entry_axis = voxel_entry_axis;
                             hit.normal_sign = -sign(ray.direction[voxel_entry_axis]);
                             // The entered voxel face's exact plane coordinate.
@@ -1368,4 +1410,21 @@ fn fragment_color_identity(@builtin(position) position: vec4<f32>) -> @location(
     let absolute = evaluation_sv - shift;
     let world_normal = select(vec3<f32>(0.0), vec3<f32>(hit.normal_sign), entry_axis_mask);
     return shade_cuboid_surface(absolute, world_normal, hit.material_id);
+}
+
+// The MATERIAL-parity harness entry (tests/gpu_parity.rs, ADR 0013): a single-sample pass
+// that reports the RESOLVED per-voxel material id of each hit — for a MIXED brick the clean
+// block id of its cell-key texel, else the per-record material — instead of a colour. This
+// is the direct "shader == CPU-march reference" gate the ADR sets: the CPU reference resolves
+// the same cell-key tile at the same hit voxel, and this pass surfaces exactly what the shader
+// resolved, so the two are compared without reproducing any shading. `(hit flag, material_id)`.
+@fragment
+fn fragment_material_identity(@builtin(position) position: vec4<f32>) -> @location(0) vec4<u32> {
+    let pixel_centre = floor(position.xy) + vec2<f32>(0.5);
+    let ray = camera_ray(pixel_centre);
+    let hit = march_brick_field(ray);
+    if (!hit.hit) {
+        return vec4<u32>(0u, 0u, 0u, 0u);
+    }
+    return vec4<u32>(1u, hit.material_id, 0u, 0u);
 }

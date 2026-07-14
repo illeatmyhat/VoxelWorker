@@ -2194,3 +2194,189 @@ fn onion_ghost_marches_only_the_onion_slabs() {
         "the installed field stays live across ghost band scrubs"
     );
 }
+
+// ===========================================================================
+// ADR 0013 — per-voxel MIXED-brick material parity (shader == CPU-march reference)
+// ===========================================================================
+
+/// **ADR 0013 correctness bar — a MIXED brick shades each voxel from its cell-key side atlas,
+/// and the shader's resolved material equals the CPU-march reference's.** The runtime
+/// representability gate still routes any mixed scene to the mesh path, so this drives the
+/// install seam directly (the gate governs ROUTING, not the install API): it hand-authors a
+/// solid 3×3×3-block field whose every block is MIXED (its left X-half is one cell key, its
+/// right X-half another — distinct overlay bits, to prove the clean-id mask), uploads BOTH the
+/// occupancy atlas and the cell-key side atlas via `install_brick_field_with_cell_keys`, and
+/// renders the material-identity image (the shader's resolved per-voxel material id per pixel).
+/// For every interior pixel where the GPU and the CPU brick march agree on the hit voxel, the
+/// GPU material must equal `cpu_brick_hit_material` at that voxel — the ADR's shader == reference
+/// bar. A face that straddles the X-split shows BOTH materials, so a per-RECORD (single-material)
+/// shade would mismatch: the test proves the shade is genuinely per-voxel.
+#[test]
+fn brick_mixed_material_matches_cpu_reference() {
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+    use voxel_worker::core_geom::CHUNK_BLOCKS;
+    use voxel_worker::cuboid::VoxelBox;
+    use voxel_worker::cuboid_mesh::compose_cell_key;
+    use voxel_worker::{
+        build_brick_field, cpu_brick_hit_material, cpu_march_brick_field, pack_gpu_records, AppCore,
+        BrickRaymarchRenderer, ClipmapPyramid, LayerBand, MicroblockGeometry, OrbitCamera,
+        RecentreVoxels, SeamSolidity, TwoLayerChunk, COLOR_TARGET_FORMAT,
+    };
+
+    let gpu = pollster::block_on(GpuContext::new(None));
+    let width = 128u32;
+    let height = 128u32;
+    let edge = 16u32; // voxels per block
+    let span_blocks = 3i32; // a 3×3×3-block solid, every block mixed
+
+    // Distinct clean ids (0 and 1) with DIFFERENT overlay bits, so the clean-id mask is exercised
+    // (a leaked overlay bit would make the resolved id 0x8001 ≠ 1).
+    let left_key = compose_cell_key(0, false);
+    let right_key = compose_cell_key(1, true);
+    let half = edge / 2;
+    let mixed_geometry = MicroblockGeometry {
+        cuboids: vec![
+            VoxelBox { min: [0, 0, 0], max: [half - 1, edge - 1, edge - 1], label: left_key },
+            VoxelBox { min: [half, 0, 0], max: [edge - 1, edge - 1, edge - 1], label: right_key },
+        ],
+        seam_solidity: SeamSolidity { solid: [[true; 2]; 3] },
+    };
+    let block_count = (CHUNK_BLOCKS * CHUNK_BLOCKS * CHUNK_BLOCKS) as usize;
+    let mut microblocks: BTreeMap<[u32; 3], MicroblockGeometry> = BTreeMap::new();
+    for bz in 0..span_blocks as u32 {
+        for by in 0..span_blocks as u32 {
+            for bx in 0..span_blocks as u32 {
+                microblocks.insert([bx, by, bz], mixed_geometry.clone());
+            }
+        }
+    }
+    let two_layer_chunks = vec![(
+        [0i32, 0, 0],
+        Arc::new(TwoLayerChunk {
+            voxels_per_block: edge,
+            coarse: vec![None; block_count],
+            coarse_overlay: vec![false; block_count],
+            microblocks,
+        }),
+    )];
+
+    let build = build_brick_field(&two_layer_chunks, edge);
+    assert_eq!(
+        build.mixed_brick_count(),
+        (span_blocks * span_blocks * span_blocks) as usize,
+        "every authored block must be a mixed brick"
+    );
+    let gpu_records = pack_gpu_records(&build.brick_records, |_| false);
+
+    // recentre [0,0,0] makes the residency-absolute frame coincide with the world-block frame,
+    // so the region occupies world voxels [0, span·edge); frame the camera at its centre.
+    let recentre = RecentreVoxels::new([0, 0, 0]);
+    let region = (span_blocks * edge as i32) as u32;
+    let grid_dimensions = [region, region, region];
+    let centre = (span_blocks * edge as i32) as f32 / 2.0;
+
+    let mut app_core = AppCore::new(OrbitCamera::default());
+    app_core.camera.target = glam::Vec3::splat(centre);
+    app_core.camera.orbit_distance = OrbitCamera::auto_framed_distance(grid_dimensions);
+    let view_projection = app_core.view_projection(width as f32 / height as f32, grid_dimensions);
+    let viewport_px = [0u32, 0, width, height];
+    let band = LayerBand::FULL;
+
+    // The flat block-DDA (empty pyramid) — the material resolution is independent of the
+    // clip-map skip, and a hand field has no chunk-derived pyramid to build.
+    let pyramid = ClipmapPyramid::empty();
+    let mut renderer = BrickRaymarchRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
+    renderer.install_brick_field_with_cell_keys(
+        &gpu.device,
+        &gpu.queue,
+        &build.brick_records,
+        &build.atlas_payload(),
+        &build.cell_key_atlas_payload(),
+        &gpu_records,
+        &pyramid,
+        recentre,
+        false,
+    );
+    let frame = renderer.update_uniforms(
+        &gpu.queue,
+        view_projection,
+        viewport_px,
+        grid_dimensions,
+        band,
+        false,
+        Some(MaterialChoice::default()),
+    );
+    let hit_image = renderer.render_hit_identity_image(&gpu.device, &gpu.queue, width, height);
+    let material_image =
+        renderer.render_material_identity_image(&gpu.device, &gpu.queue, width, height);
+
+    let mut compared = 0usize;
+    let mut mismatches = 0usize;
+    let mut hit_disagreements = 0usize;
+    let mut distinct_materials = std::collections::HashSet::new();
+    let mut first_report: Option<String> = None;
+    for y in 0..height {
+        for x in 0..width {
+            let index = (y * width + x) as usize;
+            let gpu_hit = hit_image[index][0] == 1;
+            let gpu_voxel = [
+                hit_image[index][1] as i32,
+                hit_image[index][2] as i32,
+                hit_image[index][3] as i32,
+            ];
+            let gpu_material = material_image[index][1];
+            let pixel = glam::Vec2::new(x as f32 + 0.5, y as f32 + 0.5);
+            let cpu = cpu_march_brick_field(&frame, &gpu_records, &build, &pyramid, pixel);
+            if let Some(hit) = cpu {
+                if gpu_hit && hit.absolute_voxel == gpu_voxel {
+                    // Interior agreement: the shader's resolved material must equal the reference's
+                    // at the SAME hit voxel.
+                    compared += 1;
+                    let expected = cpu_brick_hit_material(&gpu_records, &build, edge as i32, hit);
+                    distinct_materials.insert(expected);
+                    if gpu_material != expected {
+                        mismatches += 1;
+                        if first_report.is_none() {
+                            first_report = Some(format!(
+                                "    px=({x},{y}) voxel={:?} gpu_material={gpu_material} \
+                                 expected={expected}",
+                                hit.absolute_voxel
+                            ));
+                        }
+                    }
+                } else {
+                    // Silhouette f32 grazing (gpu missed, or the two picked adjacent voxels).
+                    hit_disagreements += 1;
+                }
+            } else if gpu_hit {
+                hit_disagreements += 1;
+            }
+        }
+    }
+
+    assert!(compared > 300, "too few interior hit pixels compared ({compared})");
+    assert!(
+        distinct_materials.len() >= 2,
+        "the compared pixels must show BOTH mixed materials ({} distinct) — else per-voxel \
+         resolution is untested",
+        distinct_materials.len()
+    );
+    assert_eq!(
+        mismatches, 0,
+        "shader per-voxel material != CPU-march reference for {mismatches}/{compared} interior \
+         pixels (ADR 0013 shader == reference):\n{}",
+        first_report.unwrap_or_default()
+    );
+    let outline_budget = (width + height) as usize * 4;
+    assert!(
+        hit_disagreements <= outline_budget,
+        "too many hit disagreements ({hit_disagreements} > {outline_budget}) — not a silhouette \
+         effect"
+    );
+    eprintln!(
+        "mixed-material parity clean: {compared} interior pixels, {} distinct materials, \
+         {hit_disagreements} silhouette disagreements",
+        distinct_materials.len()
+    );
+}
