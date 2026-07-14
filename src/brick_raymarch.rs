@@ -33,7 +33,7 @@ use wgpu::util::DeviceExt;
 use crate::voxel::RecentreVoxels;
 use crate::brick_field::{
     pack_clipmap_level_keys, unpack_world_block_key, upload_brick_atlas,
-    BlockOccupancyMasks, BrickFieldBuild, BrickFieldUpdate, BrickPayload, BrickRecord,
+    BlockOccupancyMasks, BrickFieldBuild, BrickFieldUpdate, BrickRecord,
     ClipmapLevel, ClipmapPyramid, IncrementalBrickField, SculptedAtlasPayload,
     BLOCK_OCCUPANCY_MASK_WORDS,
 };
@@ -116,9 +116,14 @@ fn gpu_record_of(
     non_resident: &mut impl FnMut(u32) -> bool,
 ) -> BrickGpuRecord {
     let key = record.packed_world_block_key;
-    let (kind_discriminant, atlas_slot) = match record.payload {
-        BrickPayload::CoarseSolid { .. } => (0u32, 0u32),
-        BrickPayload::Sculpted { atlas_slot } => (
+    // A MIXED sculpted brick packs EXACTLY like a uniform one here: the GPU form carries the
+    // occupancy slot + the record material, and the per-voxel cell-key tile it also owns is a
+    // CPU-mirror-only payload for now (the material side atlas has no GPU pool yet, and no
+    // scene containing a mixed brick reaches this path — `brick_representable_overlay` routes
+    // it to the mesh). So this packing is byte-identical for every scene that engages today.
+    let (kind_discriminant, atlas_slot) = match record.payload.occupancy_atlas_slot() {
+        None => (0u32, 0u32),
+        Some(atlas_slot) => (
             1u32,
             if non_resident(atlas_slot) {
                 NON_RESIDENT_ATLAS_SLOT

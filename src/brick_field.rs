@@ -50,7 +50,7 @@ use rayon::prelude::*;
 
 use crate::core_geom::{BlockId, CHUNK_BLOCKS};
 use crate::cuboid::VoxelBoxMaterial;
-use crate::cuboid_mesh::clean_block_id;
+use crate::cuboid_mesh::{cell_key_has_overlay, clean_block_id};
 use crate::two_layer_store::{SeamSolidity, TwoLayerChunk};
 
 // The brick-record key codec IS substrate's `lattice_key`: an absolute world-block
@@ -73,6 +73,28 @@ pub use substrate::lattice_key::{
 // brick-field atlas) for how these pack into the R8 atlas the raymarch samples.
 use substrate::{CubeTilePacking, SlotFreeList};
 pub use substrate::BitCube as BrickOccupancyTile;
+
+// A MIXED block's per-voxel cell-key tile IS substrate's `ValueCube<u16>`: the payload sibling
+// of the occupancy `BitCube` — the same cube edge, the same X-row layout (row = z*edge + y),
+// one `u16` per voxel instead of one bit, so the occupancy tile gates the cell-key tile
+// cell-for-cell and ONE rasterizing walk fills both. The domain keeps the "cell-key tile" name
+// at this seam; the dense row-major cube, its row seam, and why it is not a `CellGrid` live in
+// the substrate module. A cell key is the render-cell key of `cuboid_mesh` (clean block-palette
+// id + the on-face-grid overlay bit), stored verbatim. See docs/architecture/03-display.md (the
+// brick-field atlas) for the per-voxel material side atlas these tiles feed.
+pub use substrate::ValueCube as ValueTile;
+
+/// One mixed block's per-voxel cell-key tile: `edge³` render-cell keys (clean block id +
+/// overlay bit), block-local x-fastest — the sibling of [`BrickOccupancyTile`]. Only a block
+/// whose microblocks disagree on their cell key carries one; a uniform block's single key
+/// lives on its record.
+pub type BrickCellKeyTile = ValueTile<u16>;
+
+/// The cell key an AIR voxel of a mixed block's cell-key tile holds — a documented
+/// **don't-care**: occupancy gates every read of the tile (a cleared occupancy bit means the
+/// voxel is not there at all), so no consumer may attribute meaning to it. `0` is chosen only
+/// because it is the cheapest fill.
+const AIR_CELL_KEY_DONT_CARE: u16 = 0;
 
 // The clip-map occupancy levels ARE substrate's `SparseMinMipPyramid`: a sparse min-mip that folds
 // a set of packed lattice keys to coarser cells (edge 8, then 64, then 512 blocks), keeping the
@@ -564,27 +586,71 @@ impl BlockOccupancyMasks {
     }
 }
 
-/// What a brick holds — ADR 0011 Decision 2's two record kinds. The enum makes
-/// "a coarse record consumes no atlas slot" structural, not a convention.
+/// What a brick holds — the record kinds of the brick partition. The enum makes "a coarse
+/// record consumes no atlas slot" and "only a MIXED block owns a cell-key tile" structural,
+/// not conventions.
+///
+/// A sculpted block is **uniform** when every one of its microblock cuboids carries the same
+/// cell key (block-palette id + on-face-grid overlay bit) — then the key lives once, on the
+/// record ([`BrickRecord::material_id`] + [`BrickRecord::overlay`]). It is **mixed** when the
+/// cuboids disagree; then its per-voxel keys live in a cell-key tile of the separately-pooled
+/// material side atlas, and the record's own material/overlay are don't-care. See
+/// docs/architecture/03-display.md (the brick-field atlas).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BrickPayload {
     /// **Kind 0** — an analytic coarse brick: the whole block is solid at `block_id`,
     /// stored as this one record with no per-voxel data (interior elision on the GPU;
     /// also the residency-miss fallback form the G1 contract renders).
     CoarseSolid { block_id: BlockId },
-    /// **Kind 1** — a sculpted brick: the block's voxel occupancy lives in atlas slot
-    /// `atlas_slot` (an `edge³` R8 tile, edge = `voxels_per_block`).
+    /// **Kind 1** — a sculpted brick whose voxels all share ONE cell key: the block's voxel
+    /// occupancy lives in atlas slot `atlas_slot` (an `edge³` R8 tile, edge =
+    /// `voxels_per_block`); its material + overlay live on the record.
     Sculpted { atlas_slot: u32 },
+    /// **Kind 1, mixed** — a sculpted brick whose microblocks disagree on their cell key:
+    /// occupancy in `atlas_slot` exactly as [`Sculpted`](Self::Sculpted), PLUS a per-voxel
+    /// cell-key tile in `cell_key_slot` of the material side atlas (an independent pool with
+    /// its own free-list — a cell-key slot number is unrelated to an occupancy slot number).
+    SculptedMixed {
+        atlas_slot: u32,
+        cell_key_slot: u32,
+    },
 }
 
 impl BrickPayload {
     /// The GPU-side record-kind discriminant (0 = coarse, 1 = sculpted). Pinned here —
     /// like `shape_kind_discriminant` — so a future enum reorder can't silently desync
     /// the G1 shader.
+    ///
+    /// A MIXED sculpted brick is a kind-1 sculpted brick to the GPU **today**: its extra
+    /// per-voxel material payload is a CPU-side mirror only (the material side atlas has no
+    /// GPU pool yet), and no scene containing one currently reaches the brick path at all
+    /// (`brick_representable_overlay` routes it to the mesh). The shader-visible mixed form
+    /// arrives with that pool.
     pub fn kind_discriminant(&self) -> u32 {
         match self {
             BrickPayload::CoarseSolid { .. } => 0,
-            BrickPayload::Sculpted { .. } => 1,
+            BrickPayload::Sculpted { .. } | BrickPayload::SculptedMixed { .. } => 1,
+        }
+    }
+
+    /// The occupancy atlas slot of a sculpted brick (uniform or mixed); `None` for a coarse
+    /// record (which consumes no slot). The ONE reader of "does this record own an occupancy
+    /// tile", so a new sculpted arm can never be missed by a slot-bookkeeping site.
+    pub fn occupancy_atlas_slot(&self) -> Option<u32> {
+        match *self {
+            BrickPayload::CoarseSolid { .. } => None,
+            BrickPayload::Sculpted { atlas_slot }
+            | BrickPayload::SculptedMixed { atlas_slot, .. } => Some(atlas_slot),
+        }
+    }
+
+    /// The material side-atlas slot holding this brick's per-voxel cell-key tile — `Some`
+    /// only for a MIXED sculpted brick (a uniform or coarse block carries its one cell key on
+    /// the record and owns no tile).
+    pub fn cell_key_slot(&self) -> Option<u32> {
+        match *self {
+            BrickPayload::SculptedMixed { cell_key_slot, .. } => Some(cell_key_slot),
+            _ => None,
         }
     }
 }
@@ -596,14 +662,21 @@ pub struct BrickRecord {
     /// [`pack_world_block_key`] of the block's absolute world-block coordinate.
     pub packed_world_block_key: u64,
     /// The block's clean render-cell material colour index (`0..MATERIAL_COUNT`) — the
-    /// `block_id`'s colour index for a coarse block, the (single) microblock material for
-    /// a boundary block. The R8 atlas is occupancy-only (ADR 0011 G2), so this is the
+    /// `block_id`'s colour index for a coarse block, the single microblock material for a
+    /// UNIFORM boundary block. The occupancy atlas is occupancy-only, so this is the
     /// per-BLOCK material the raymarch shades with, packed into the GPU record's `kind`
-    /// high bits by [`pack_gpu_records`]. A block that MIXES materials across its
-    /// microblocks is not brick-representable (it never engages the sink), so this holds
-    /// the first microblock's material there — unused, never shaded.
+    /// high bits by [`pack_gpu_records`]. **Don't-care for a
+    /// [`SculptedMixed`](BrickPayload::SculptedMixed) block** — its per-voxel keys are the
+    /// truth (this holds the first cuboid's clean id there, never read as the block's).
     pub material_id: u16,
-    /// Coarse (kind 0) or sculpted (kind 1) — see [`BrickPayload`].
+    /// The block's on-face-grid overlay bit — the other half of its cell key (the render-cell
+    /// key is `material_id | overlay`, see `cuboid_mesh::compose_cell_key`). Carried
+    /// per-RECORD so a scene whose blocks disagree on the overlay is still one brick field.
+    /// Meaningful for coarse + UNIFORM sculpted blocks; don't-care for a
+    /// [`SculptedMixed`](BrickPayload::SculptedMixed) block (its tile's per-voxel keys carry
+    /// the overlay bit themselves).
+    pub overlay: bool,
+    /// Coarse (kind 0), sculpted-uniform or sculpted-mixed (kind 1) — see [`BrickPayload`].
     pub payload: BrickPayload,
     /// Per-face seam-solidity flags, carried UNCHANGED from the boundary set for a
     /// sculpted brick. A coarse-solid block is solid through, so every face flag is
@@ -623,6 +696,16 @@ pub struct BrickFieldBuild {
     /// `atlas_dim_voxels³` occupancy bytes (0 empty / 255 occupied), slot-packed;
     /// tile slots past the last sculpted brick stay all-zero.
     pub sculpted_atlas_bytes: Vec<u8>,
+    /// The MIXED bricks' per-voxel cell-key tiles, indexed by the `cell_key_slot` their
+    /// records carry (dense `0..mixed_count` in this build's traversal order). EMPTY for a
+    /// scene whose every sculpted block is uniform — the sparse-side-atlas contract: only a
+    /// block that mixes cell keys pays per-voxel material cost.
+    ///
+    /// Unlike the occupancy atlas, these are **not** packed to a byte blob here: the material
+    /// side atlas has no GPU pool yet, so the CPU mirror is the only consumer and the tiles
+    /// travel as tiles (the single-owner tile law — moved into
+    /// [`IncrementalBrickField`], never cloned per edit).
+    pub cell_key_tiles: Vec<BrickCellKeyTile>,
     /// The brick edge in voxels — `voxels_per_block`, the ONE-BLOCK granule
     /// (ADR 0011 Decision 1). Block-denominated: never a hard-coded voxel count.
     pub brick_edge_voxels: u32,
@@ -701,12 +784,21 @@ impl BrickFieldBuild {
             .map(|index| &self.brick_records[index])
     }
 
-    /// How many records are sculpted bricks (== atlas slots in use; slots are assigned
-    /// densely `0..count`).
+    /// How many records are sculpted bricks — uniform AND mixed (== occupancy atlas slots in
+    /// use; slots are assigned densely `0..count`).
     pub fn sculpted_brick_count(&self) -> usize {
         self.brick_records
             .iter()
-            .filter(|record| matches!(record.payload, BrickPayload::Sculpted { .. }))
+            .filter(|record| record.payload.occupancy_atlas_slot().is_some())
+            .count()
+    }
+
+    /// How many records are MIXED sculpted bricks (== cell-key tiles, i.e. material
+    /// side-atlas slots in use; densely `0..count` in a wholesale build).
+    pub fn mixed_brick_count(&self) -> usize {
+        self.brick_records
+            .iter()
+            .filter(|record| record.payload.cell_key_slot().is_some())
             .count()
     }
 
@@ -805,6 +897,9 @@ pub fn build_brick_field_with_tiles(
     // One bit-packed `edge²`-word tile per sculpted brick, in slot order; unpacked into
     // the atlas cube once the final count fixes the tile geometry.
     let mut sculpted_brick_tiles: Vec<BrickOccupancyTile> = Vec::new();
+    // One `edge³` cell-key tile per MIXED sculpted brick, in cell-key-slot order — an
+    // INDEPENDENT dense numbering (a mixed brick's two slots are unrelated numbers).
+    let mut cell_key_tiles: Vec<BrickCellKeyTile> = Vec::new();
 
     for (chunk_coord, chunk) in two_layer_chunks {
         debug_assert_eq!(
@@ -847,15 +942,22 @@ pub fn build_brick_field_with_tiles(
                         // oracle build tile-for-tile.
                         BlockBrick::Sculpted {
                             material_id,
+                            overlay,
                             seam_solidity,
                             tile,
+                            cell_keys,
                         } => {
                             let atlas_slot = sculpted_brick_tiles.len() as u32;
                             sculpted_brick_tiles.push(tile);
                             brick_records.push(BrickRecord {
                                 packed_world_block_key: pack_world_block_key(world_block),
                                 material_id,
-                                payload: BrickPayload::Sculpted { atlas_slot },
+                                overlay,
+                                payload: sculpted_payload_dense(
+                                    atlas_slot,
+                                    cell_keys,
+                                    &mut cell_key_tiles,
+                                ),
                                 seam_solidity,
                             });
                         }
@@ -884,11 +986,35 @@ pub fn build_brick_field_with_tiles(
     let build = BrickFieldBuild {
         brick_records,
         sculpted_atlas_bytes,
+        cell_key_tiles,
         brick_edge_voxels,
         bricks_per_axis,
         atlas_dim_voxels,
     };
     (build, sculpted_brick_tiles)
+}
+
+/// Assign a sculpted block's payload in a WHOLESALE build's dense numbering: the occupancy
+/// slot is the caller's (already pushed), and a MIXED block's cell-key tile appends to
+/// `cell_key_tiles` at the next dense material slot. The two pools are independent — a mixed
+/// brick's `atlas_slot` and `cell_key_slot` are unrelated numbers. Shared by the surface-only
+/// build and the interior-inclusive oracle build so both number the pools identically.
+fn sculpted_payload_dense(
+    atlas_slot: u32,
+    cell_keys: Option<BrickCellKeyTile>,
+    cell_key_tiles: &mut Vec<BrickCellKeyTile>,
+) -> BrickPayload {
+    match cell_keys {
+        None => BrickPayload::Sculpted { atlas_slot },
+        Some(tile) => {
+            let cell_key_slot = cell_key_tiles.len() as u32;
+            cell_key_tiles.push(tile);
+            BrickPayload::SculptedMixed {
+                atlas_slot,
+                cell_key_slot,
+            }
+        }
+    }
 }
 
 /// The interior-INCLUSIVE brick-field build: one record per NON-AIR block (coarse-solid or
@@ -905,6 +1031,8 @@ pub fn build_brick_field_all_blocks(
     // One bit-packed `edge²`-word tile per sculpted brick, in slot order; unpacked into
     // the atlas cube once the final count fixes the tile geometry.
     let mut sculpted_brick_tiles: Vec<BrickOccupancyTile> = Vec::new();
+    // One `edge³` cell-key tile per MIXED sculpted brick, in cell-key-slot order.
+    let mut cell_key_tiles: Vec<BrickCellKeyTile> = Vec::new();
 
     for (chunk_coord, chunk) in two_layer_chunks {
         debug_assert_eq!(
@@ -928,15 +1056,22 @@ pub fn build_brick_field_all_blocks(
                         BlockBrick::Coarse(record) => brick_records.push(record),
                         BlockBrick::Sculpted {
                             material_id,
+                            overlay,
                             seam_solidity,
                             tile,
+                            cell_keys,
                         } => {
                             let atlas_slot = sculpted_brick_tiles.len() as u32;
                             sculpted_brick_tiles.push(tile);
                             brick_records.push(BrickRecord {
                                 packed_world_block_key: pack_world_block_key(world_block),
                                 material_id,
-                                payload: BrickPayload::Sculpted { atlas_slot },
+                                overlay,
+                                payload: sculpted_payload_dense(
+                                    atlas_slot,
+                                    cell_keys,
+                                    &mut cell_key_tiles,
+                                ),
                                 seam_solidity,
                             });
                         }
@@ -965,6 +1100,7 @@ pub fn build_brick_field_all_blocks(
     BrickFieldBuild {
         brick_records,
         sculpted_atlas_bytes,
+        cell_key_tiles,
         brick_edge_voxels,
         bricks_per_axis,
         atlas_dim_voxels,
@@ -1132,24 +1268,51 @@ impl ChunkOcclusionContext<'_> {
 // `expand_to_bytes(byte)`, `from_bytes`, `is_set`, `popcount`, `edge()` live there. The atlas
 // seam injects `SCULPTED_BRICK_OCCUPIED` as the "set-bit byte"; substrate names no such byte.
 
-/// Rasterize one boundary block's cuboids into an `edge²`-word occupancy tile (block-local
-/// x-fastest). Occupancy only: the cuboid `material_id` render-cell key (id + overlay bit)
-/// never enters the R8 payload — any voxel a cuboid covers is occupied. Each cuboid row is
-/// a contiguous X-run, so the former `.fill(255)` becomes a [`BrickOccupancyTile::set_x_run`]
-/// mask-OR.
-fn rasterize_brick_occupancy(
+/// The single cell key shared by every cuboid of a boundary block, or `None` when they
+/// disagree — the **uniform vs MIXED** classification, made at emission (the one place that
+/// decides whether a block owns a cell-key tile). An empty block (no cuboids) is trivially
+/// uniform at the fallback key `0`.
+fn uniform_cell_key(geometry: &crate::two_layer_store::MicroblockGeometry) -> Option<u16> {
+    let mut cuboids = geometry.cuboids.iter();
+    let first = match cuboids.next() {
+        Some(cuboid) => cuboid.material_id(),
+        None => return Some(AIR_CELL_KEY_DONT_CARE),
+    };
+    cuboids
+        .all(|cuboid| cuboid.material_id() == first)
+        .then_some(first)
+}
+
+/// Rasterize one boundary block's cuboids into its `edge³` occupancy tile (block-local
+/// x-fastest) and — for a MIXED block only — its per-voxel cell-key tile, in ONE walk over
+/// the cuboids (the occupancy bit and the cell key of a voxel are written by the same X-run;
+/// the tiles share their row layout, so a second pass would re-derive the same indices).
+///
+/// A cuboid's `material_id` IS its render-cell key (clean block id + overlay bit); the
+/// occupancy tile never sees it (any voxel a cuboid covers is occupied), the cell-key tile
+/// stores it verbatim. Air voxels of the cell-key tile keep [`AIR_CELL_KEY_DONT_CARE`] —
+/// occupancy gates every read. `mixed` is the [`uniform_cell_key`] verdict: a uniform block
+/// gets no tile (its one key rides on the record).
+fn rasterize_brick_tiles(
     geometry: &crate::two_layer_store::MicroblockGeometry,
     brick_edge_voxels: u32,
-) -> BrickOccupancyTile {
-    let mut tile = BrickOccupancyTile::empty(brick_edge_voxels);
+    mixed: bool,
+) -> (BrickOccupancyTile, Option<BrickCellKeyTile>) {
+    let mut occupancy = BrickOccupancyTile::empty(brick_edge_voxels);
+    let mut cell_keys = mixed
+        .then(|| BrickCellKeyTile::new_filled(brick_edge_voxels, AIR_CELL_KEY_DONT_CARE));
     for cuboid in &geometry.cuboids {
+        let cell_key = cuboid.material_id();
         for voxel_z in cuboid.min[2]..=cuboid.max[2] {
             for voxel_y in cuboid.min[1]..=cuboid.max[1] {
-                tile.set_x_run(voxel_y, voxel_z, cuboid.min[0], cuboid.max[0]);
+                occupancy.set_x_run(voxel_y, voxel_z, cuboid.min[0], cuboid.max[0]);
+                if let Some(tile) = cell_keys.as_mut() {
+                    tile.fill_x_run(voxel_y, voxel_z, cuboid.min[0], cuboid.max[0], cell_key);
+                }
             }
         }
     }
-    tile
+    (occupancy, cell_keys)
 }
 
 /// One block's brick contribution, INDEPENDENT of atlas-slot assignment — the shared
@@ -1164,12 +1327,16 @@ enum BlockBrick {
     Air,
     /// A coarse-solid block: the whole record (no atlas slot).
     Coarse(BrickRecord),
-    /// A boundary block: the record MINUS its atlas slot (the caller's allocator assigns
-    /// it) plus the occupancy tile to land in that slot.
+    /// A boundary block: the record MINUS its slots (the caller's allocators assign them),
+    /// the occupancy tile to land in its atlas slot, and — iff the block is MIXED — the
+    /// per-voxel cell-key tile to land in its (independently pooled) material slot. A uniform
+    /// block yields `cell_keys: None` and its one cell key as `material_id` + `overlay`.
     Sculpted {
         material_id: u16,
+        overlay: bool,
         seam_solidity: SeamSolidity,
         tile: BrickOccupancyTile,
+        cell_keys: Option<BrickCellKeyTile>,
     },
 }
 
@@ -1192,6 +1359,8 @@ fn classify_block_brick(
         BlockBrick::Coarse(BrickRecord {
             packed_world_block_key: pack_world_block_key(world_block),
             material_id: block_id.color_index(),
+            // A coarse block's cell key is its id + the chunk's per-block overlay marker.
+            overlay: chunk.coarse_block_overlay(block),
             payload: BrickPayload::CoarseSolid { block_id },
             // Fully solid through ⇒ every face is solid.
             seam_solidity: SeamSolidity {
@@ -1199,18 +1368,27 @@ fn classify_block_brick(
             },
         })
     } else if let Some(geometry) = chunk.microblocks.get(&block) {
-        // The block's material is the clean render-cell id of its microblocks; a
-        // representable block is single-material, so the first cuboid's id is the
-        // block's (a mixed block never engages the sink).
-        let material_id = geometry
-            .cuboids
-            .first()
-            .map(|cuboid| clean_block_id(cuboid.material_id()))
-            .unwrap_or(0);
+        // Uniform vs MIXED, decided here and nowhere else: all cuboids sharing ONE cell key
+        // ⇒ that key rides on the record (no cell-key tile); disagreeing cuboids ⇒ a
+        // per-voxel cell-key tile, and the record's material/overlay become don't-care (kept
+        // as the first cuboid's, exactly as before, so a uniform scene's records are
+        // byte-identical to the pre-material-atlas ones).
+        let uniform = uniform_cell_key(geometry);
+        let record_cell_key = uniform.unwrap_or_else(|| {
+            geometry
+                .cuboids
+                .first()
+                .map(|cuboid| cuboid.material_id())
+                .unwrap_or(AIR_CELL_KEY_DONT_CARE)
+        });
+        let (tile, cell_keys) =
+            rasterize_brick_tiles(geometry, brick_edge_voxels, uniform.is_none());
         BlockBrick::Sculpted {
-            material_id,
+            material_id: clean_block_id(record_cell_key),
+            overlay: cell_key_has_overlay(record_cell_key),
             seam_solidity: geometry.seam_solidity,
-            tile: rasterize_brick_occupancy(geometry, brick_edge_voxels),
+            tile,
+            cell_keys,
         }
     } else {
         BlockBrick::Air
@@ -1294,6 +1472,15 @@ pub struct IncrementalBrickField {
     /// index first) before growing; the reuse order is a test-readability nicety, not a
     /// correctness contract (parity tolerates slot renumbering — see the `records` doc above).
     slot_tiles: SlotFreeList<BrickOccupancyTile>,
+    /// Per-cell-key-slot tiles of the MIXED bricks, in a **separate pool with its own
+    /// free-list** — a mixed brick's `cell_key_slot` is not its `atlas_slot` and the two
+    /// numberings never coincide (the material side atlas is sparse: only mixed bricks hold a
+    /// slot, so tying it to the occupancy numbering would waste a tile per uniform brick).
+    /// Same single-owner tile law as `slot_tiles`: tiles are MOVED in at emission, a freed
+    /// slot's tile is dead until reallocated. A block flipping uniform↔mixed under an edit
+    /// frees or allocates here exactly like any slot churn — the occupancy pool is untouched
+    /// by that flip (its slot stays a sculpted slot either way).
+    cell_key_tiles: SlotFreeList<BrickCellKeyTile>,
 }
 
 impl IncrementalBrickField {
@@ -1361,10 +1548,21 @@ impl IncrementalBrickField {
         let BrickFieldBuild {
             brick_records,
             sculpted_atlas_bytes,
+            cell_key_tiles,
             brick_edge_voxels,
             bricks_per_axis,
             atlas_dim_voxels,
         } = build;
+        // The cell-key tiles ride in the build (the material side atlas has no byte-packed
+        // GPU form yet), so they MOVE straight into the mirror's pool — one owner, no clone.
+        debug_assert_eq!(
+            cell_key_tiles.len(),
+            brick_records
+                .iter()
+                .filter(|record| record.payload.cell_key_slot().is_some())
+                .count(),
+            "a wholesale build carries exactly one cell-key tile per MIXED record"
+        );
         let payload = SculptedAtlasPayload {
             bytes: sculpted_atlas_bytes,
             geometry: SculptedAtlasGeometry {
@@ -1377,10 +1575,32 @@ impl IncrementalBrickField {
         let mirror = Self {
             brick_edge_voxels,
             records: brick_records,
-            // Dense-seed the free-list: every carried tile is a live slot `0..count`, no holes.
+            // Dense-seed the free-lists: every carried tile is a live slot `0..count`, no holes.
             slot_tiles: SlotFreeList::from_slots(slot_tiles),
+            cell_key_tiles: SlotFreeList::from_slots(cell_key_tiles),
         };
         (mirror, payload)
+    }
+
+    /// One MIXED brick's per-voxel cell-key tile by its record's `cell_key_slot` — the CPU
+    /// read of the material side atlas (the sink that samples it on the GPU is a later slice).
+    /// A freed/dead slot yields its stale tile (unreachable from any live record).
+    pub fn cell_key_tile(&self, cell_key_slot: u32) -> &BrickCellKeyTile {
+        &self.cell_key_tiles[cell_key_slot]
+    }
+
+    /// The material side atlas's slot high-water mark (live + freed cell-key slots) — the
+    /// pool's own growth signal, independent of the occupancy atlas's.
+    pub fn cell_key_slot_high_water(&self) -> usize {
+        self.cell_key_tiles.len()
+    }
+
+    /// How many LIVE records are MIXED sculpted bricks (== live cell-key tiles).
+    pub fn mixed_brick_count(&self) -> usize {
+        self.records
+            .iter()
+            .filter(|record| record.payload.cell_key_slot().is_some())
+            .count()
     }
 
     /// The live records — the sorted [`BrickRecord`] array the GPU record pack + the
@@ -1390,12 +1610,12 @@ impl IncrementalBrickField {
         &self.records
     }
 
-    /// How many live records are sculpted bricks (mirror of
+    /// How many live records are sculpted bricks — uniform AND mixed (mirror of
     /// [`BrickFieldBuild::sculpted_brick_count`]) — the wholesale install's slot count.
     pub fn sculpted_brick_count(&self) -> usize {
         self.records
             .iter()
-            .filter(|record| matches!(record.payload, BrickPayload::Sculpted { .. }))
+            .filter(|record| record.payload.occupancy_atlas_slot().is_some())
             .count()
     }
 
@@ -1517,16 +1737,25 @@ impl IncrementalBrickField {
         //    ring SCULPTED records are kept — their chunk's data is unchanged, so record and
         //    slot are still exact, and the atlas is never touched for the ring).
         let mut freed_slots = Vec::new();
+        // The MIXED bricks' cell-key slots freed alongside — the second, independent pool
+        // (a block that stops being mixed — or stops existing — releases its material tile;
+        // a block that BECOMES mixed allocates one below).
+        let mut freed_cell_key_slots = Vec::new();
         self.records.retain(|record| {
             let chunk =
                 chunk_coord_of_world_block(unpack_world_block_key(record.packed_world_block_key));
             if dirty.contains(&chunk) {
-                if let BrickPayload::Sculpted { atlas_slot } = record.payload {
+                if let Some(atlas_slot) = record.payload.occupancy_atlas_slot() {
                     freed_slots.push(atlas_slot);
+                }
+                if let Some(cell_key_slot) = record.payload.cell_key_slot() {
+                    freed_cell_key_slots.push(cell_key_slot);
                 }
                 false
             } else if ring.contains(&chunk) {
-                matches!(record.payload, BrickPayload::Sculpted { .. })
+                // Ring SCULPTED records (uniform or mixed) are kept verbatim — their chunk's
+                // data is unchanged, so both their slots stay exact and neither pool is touched.
+                record.payload.occupancy_atlas_slot().is_some()
             } else {
                 true
             }
@@ -1537,6 +1766,7 @@ impl IncrementalBrickField {
         // oracle compares atlas BYTES, not slot numbers — see `IncrementalBrickField`'s records
         // doc and `incremental_matches_wholesale`), so the reuse order never affects byte parity.
         self.slot_tiles.free(freed_slots.iter().copied());
+        self.cell_key_tiles.free(freed_cell_key_slots.iter().copied());
 
         // 2. Rebuild the dirty chunks' records fully — and the ring chunks' COARSE records —
         //    from the FRESH data, with occlusion verdicts from the fresh oracle (the same
@@ -1573,8 +1803,10 @@ impl IncrementalBrickField {
                             }
                             BlockBrick::Sculpted {
                                 material_id,
+                                overlay,
                                 seam_solidity,
                                 tile,
+                                cell_keys,
                             } => {
                                 // Ring chunks keep their existing sculpted records (data
                                 // unchanged); only a DIRTY chunk re-allocates and rewrites.
@@ -1583,10 +1815,21 @@ impl IncrementalBrickField {
                                 }
                                 let slot = self.slot_tiles.allocate(tile);
                                 written_slots.push(slot);
+                                // A MIXED block allocates from the SEPARATE cell-key pool
+                                // (its own free-list, its own high-water mark); a uniform
+                                // block takes no material slot at all.
+                                let payload = match cell_keys {
+                                    None => BrickPayload::Sculpted { atlas_slot: slot },
+                                    Some(cell_key_tile) => BrickPayload::SculptedMixed {
+                                        atlas_slot: slot,
+                                        cell_key_slot: self.cell_key_tiles.allocate(cell_key_tile),
+                                    },
+                                };
                                 self.records.push(BrickRecord {
                                     packed_world_block_key: pack_world_block_key(world_block),
                                     material_id,
-                                    payload: BrickPayload::Sculpted { atlas_slot: slot },
+                                    overlay,
+                                    payload,
                                     seam_solidity,
                                 });
                             }
@@ -1632,6 +1875,10 @@ impl IncrementalBrickField {
         BrickFieldBuild {
             brick_records: self.records.clone(),
             sculpted_atlas_bytes,
+            // Cell-key tiles in SLOT order (freed holes included, exactly as the occupancy
+            // atlas is packed over its high-water mark): a live record's `cell_key_slot`
+            // indexes this vec, and a dead slot's tile is unreachable garbage.
+            cell_key_tiles: self.cell_key_tiles.as_slice().to_vec(),
             brick_edge_voxels: self.brick_edge_voxels,
             bricks_per_axis,
             atlas_dim_voxels,
@@ -2278,9 +2525,13 @@ mod tests {
 mod incremental_tests {
     use super::*;
     use crate::core_geom::MaterialChoice;
+    use crate::cuboid::VoxelBox;
+    use crate::cuboid_mesh::compose_cell_key;
     use crate::scene::{Node, NodeContent, NodeTransform, Scene};
-    use crate::two_layer_store::{TwoLayerChunk, TwoLayerResidentCache};
-    use crate::voxel::{ShapeKind, SdfShape};
+    use crate::two_layer_store::{
+        MicroblockGeometry, TwoLayerChunk, TwoLayerResidentCache, TwoLayerStore,
+    };
+    use crate::voxel::{GeometryParams, SdfShape, ShapeKind};
 
     /// The owned covering set the shell feeds `apply_dirty_update` / `build_brick_field`
     /// (the resident cache borrows, so clone out — exactly as `AppCore::rebuild` does).
@@ -2801,5 +3052,391 @@ mod incremental_tests {
             wholesale.as_secs_f64() / incremental.as_secs_f64().max(1e-9),
         );
         assert!(update.written_slots.len() < build_a.sculpted_brick_count());
+    }
+
+    // ========================================================================
+    // The per-voxel cell-key side atlas (the CPU half): emission classifies a
+    // sculpted block uniform vs MIXED, and only a mixed block owns a cell-key tile.
+    //
+    // These fixtures drive the emission builder DIRECTLY with hand-built two-layer
+    // chunks, because a mixed-material scene cannot reach the brick path through the
+    // renderer yet: `brick_representable_overlay` still routes it to the mesh (the gate
+    // dies with the GPU pool). Everything below is therefore the CPU mirror's contract,
+    // not a rendering claim.
+    // ========================================================================
+
+    /// The density the hand-built fixtures use — small enough to state a block's cuboids
+    /// by hand, and deliberately NOT 16 (the brick edge follows the density).
+    const HAND_DENSITY: u32 = 4;
+
+    /// A hand-built covering set of ONE chunk at `[0, 0, 0]`: `coarse_blocks` are
+    /// `(block, block_id, overlay)`, `sculpted_blocks` are `(block, cuboids)` whose cuboid
+    /// labels are render-cell keys ([`compose_cell_key`]).
+    fn hand_built_chunk(
+        coarse_blocks: &[([u32; 3], u16, bool)],
+        sculpted_blocks: &[([u32; 3], Vec<VoxelBox>)],
+    ) -> Vec<([i32; 3], Arc<TwoLayerChunk>)> {
+        let block_count = (CHUNK_BLOCKS as usize).pow(3);
+        let mut chunk = TwoLayerChunk {
+            voxels_per_block: HAND_DENSITY,
+            coarse: vec![None; block_count],
+            coarse_overlay: vec![false; block_count],
+            microblocks: std::collections::BTreeMap::new(),
+        };
+        for (block, block_id, overlay) in coarse_blocks {
+            let flat = (block[2] as usize * CHUNK_BLOCKS as usize + block[1] as usize)
+                * CHUNK_BLOCKS as usize
+                + block[0] as usize;
+            chunk.coarse[flat] = Some(BlockId(*block_id));
+            chunk.coarse_overlay[flat] = *overlay;
+        }
+        for (block, cuboids) in sculpted_blocks {
+            chunk.microblocks.insert(
+                *block,
+                MicroblockGeometry {
+                    cuboids: cuboids.clone(),
+                    seam_solidity: SeamSolidity::default(),
+                },
+            );
+        }
+        vec![([0, 0, 0], Arc::new(chunk))]
+    }
+
+    /// A block-local cuboid carrying the render-cell key `(block_id, overlay)`.
+    fn cell_box(min: [u32; 3], max: [u32; 3], block_id: u16, overlay: bool) -> VoxelBox {
+        VoxelBox {
+            min,
+            max,
+            label: compose_cell_key(block_id, overlay),
+        }
+    }
+
+    /// The independent oracle for one block's per-voxel cell keys: paint each cuboid's key
+    /// into a dense `edge³` array in cuboid order (air stays [`AIR_CELL_KEY_DONT_CARE`]).
+    fn expected_cell_keys(cuboids: &[VoxelBox]) -> Vec<u16> {
+        let edge = HAND_DENSITY as usize;
+        let mut keys = vec![AIR_CELL_KEY_DONT_CARE; edge.pow(3)];
+        for cuboid in cuboids {
+            for z in cuboid.min[2]..=cuboid.max[2] {
+                for y in cuboid.min[1]..=cuboid.max[1] {
+                    for x in cuboid.min[0]..=cuboid.max[0] {
+                        keys[(z as usize * edge + y as usize) * edge + x as usize] = cuboid.label;
+                    }
+                }
+            }
+        }
+        keys
+    }
+
+    /// The independent oracle for one block's occupancy bytes (the same walk, occupancy only).
+    fn expected_occupancy_bytes(cuboids: &[VoxelBox]) -> Vec<u8> {
+        let edge = HAND_DENSITY as usize;
+        let mut bytes = vec![0u8; edge.pow(3)];
+        for cuboid in cuboids {
+            for z in cuboid.min[2]..=cuboid.max[2] {
+                for y in cuboid.min[1]..=cuboid.max[1] {
+                    for x in cuboid.min[0]..=cuboid.max[0] {
+                        bytes[(z as usize * edge + y as usize) * edge + x as usize] =
+                            SCULPTED_BRICK_OCCUPIED;
+                    }
+                }
+            }
+        }
+        bytes
+    }
+
+    /// **Emission classifies uniform vs MIXED (the slice's core claim).** A block whose
+    /// microblock cuboids all share one cell key is UNIFORM: its material + overlay ride on
+    /// the record and it owns NO cell-key tile. A block whose cuboids disagree — on the
+    /// material OR on the overlay bit alone — is MIXED: it additionally carries a per-voxel
+    /// cell-key tile whose keys match its cuboids exactly, while its occupancy tile is
+    /// unchanged (byte-identical to the occupancy-only rasterization). A coarse block carries
+    /// its id + its chunk overlay marker and owns neither tile.
+    #[test]
+    fn emission_classifies_uniform_and_mixed_sculpted_blocks() {
+        let uniform_block = [0u32, 0, 0];
+        let uniform_cuboids = vec![
+            cell_box([0, 0, 0], [1, 3, 3], 1, true),
+            cell_box([2, 0, 0], [3, 1, 3], 1, true), // same cell key ⇒ still uniform
+        ];
+        let mixed_material_block = [1u32, 0, 0];
+        let mixed_material_cuboids = vec![
+            cell_box([0, 0, 0], [1, 3, 3], 1, false),
+            cell_box([2, 0, 0], [3, 3, 3], 2, false), // different block id ⇒ MIXED
+        ];
+        let mixed_overlay_block = [2u32, 0, 0];
+        let mixed_overlay_cuboids = vec![
+            cell_box([0, 0, 0], [3, 3, 1], 1, false),
+            cell_box([0, 0, 2], [3, 3, 3], 1, true), // same id, overlay differs ⇒ MIXED
+        ];
+        let coarse_block = [3u32, 0, 0];
+        let chunks = hand_built_chunk(
+            &[(coarse_block, 2, true)],
+            &[
+                (uniform_block, uniform_cuboids.clone()),
+                (mixed_material_block, mixed_material_cuboids.clone()),
+                (mixed_overlay_block, mixed_overlay_cuboids.clone()),
+            ],
+        );
+        let build = build_brick_field(&chunks, HAND_DENSITY);
+
+        // Exactly the two mixed blocks own a cell-key tile.
+        assert_eq!(build.mixed_brick_count(), 2);
+        assert_eq!(build.cell_key_tiles.len(), 2);
+        assert_eq!(build.sculpted_brick_count(), 3, "all three boundary blocks are sculpted");
+
+        // (a) The uniform block: one cell key on the record, NO cell-key tile.
+        let record = build
+            .find_record([uniform_block[0] as i64, uniform_block[1] as i64, uniform_block[2] as i64])
+            .expect("uniform boundary block must have a record");
+        assert_eq!(record.material_id, 1);
+        assert!(record.overlay, "the uniform block's single cell key sets the overlay bit");
+        assert_eq!(record.payload.cell_key_slot(), None, "a uniform brick owns no cell-key tile");
+        assert!(matches!(record.payload, BrickPayload::Sculpted { .. }));
+        assert_eq!(record.payload.kind_discriminant(), 1);
+
+        // (b) + (c) The mixed blocks: a cell-key tile whose per-voxel keys are exactly the
+        // cuboids', an occupancy tile unchanged by the classification.
+        for (block, cuboids) in [
+            (mixed_material_block, &mixed_material_cuboids),
+            (mixed_overlay_block, &mixed_overlay_cuboids),
+        ] {
+            let record = build
+                .find_record([block[0] as i64, block[1] as i64, block[2] as i64])
+                .expect("mixed boundary block must have a record");
+            let BrickPayload::SculptedMixed {
+                atlas_slot,
+                cell_key_slot,
+            } = record.payload
+            else {
+                panic!("a block whose cuboids disagree on their cell key must emit MIXED");
+            };
+            assert_eq!(record.payload.kind_discriminant(), 1, "mixed is a sculpted kind");
+            assert_eq!(
+                build.cell_key_tiles[cell_key_slot as usize].as_slice(),
+                expected_cell_keys(cuboids).as_slice(),
+                "the cell-key tile must carry each voxel's own cuboid key at {block:?}"
+            );
+            assert_eq!(
+                build.sculpted_brick_occupancy(atlas_slot),
+                expected_occupancy_bytes(cuboids),
+                "the occupancy tile is unchanged by the material classification at {block:?}"
+            );
+        }
+
+        // (d) The coarse block: id + the chunk's overlay marker, no slot of either pool.
+        let record = build
+            .find_record([coarse_block[0] as i64, coarse_block[1] as i64, coarse_block[2] as i64])
+            .expect("coarse block must have a record");
+        assert_eq!(record.material_id, 2);
+        assert!(record.overlay, "a coarse block carries its chunk's per-block overlay marker");
+        assert_eq!(record.payload.occupancy_atlas_slot(), None);
+        assert_eq!(record.payload.cell_key_slot(), None);
+
+        // The two mixed bricks' cell-key slots are DISTINCT and dense in the wholesale build.
+        let mut cell_key_slots: Vec<u32> = build
+            .brick_records
+            .iter()
+            .filter_map(|record| record.payload.cell_key_slot())
+            .collect();
+        cell_key_slots.sort_unstable();
+        assert_eq!(cell_key_slots, vec![0, 1]);
+    }
+
+    /// Resolve every live record's cell-key tile through the mirror's own slot numbering and
+    /// compare it against a from-scratch wholesale build of the same chunks (whose numbering
+    /// is dense and unrelated) — the cell-key half of the incremental-vs-wholesale parity
+    /// oracle: same kind, same material/overlay, same occupancy bytes, same per-voxel keys.
+    fn assert_cell_key_parity(
+        mirror: &IncrementalBrickField,
+        chunks: &[([i32; 3], Arc<TwoLayerChunk>)],
+        label: &str,
+    ) {
+        let wholesale = build_brick_field(chunks, HAND_DENSITY);
+        let incremental = mirror.to_build();
+        assert_eq!(
+            incremental.brick_records.len(),
+            wholesale.brick_records.len(),
+            "[{label}] record count must match wholesale"
+        );
+        assert_eq!(
+            mirror.mixed_brick_count(),
+            wholesale.mixed_brick_count(),
+            "[{label}] live mixed-brick count must match wholesale"
+        );
+        for (mirrored, whole) in incremental
+            .brick_records
+            .iter()
+            .zip(wholesale.brick_records.iter())
+        {
+            let block = unpack_world_block_key(whole.packed_world_block_key);
+            assert_eq!(
+                mirrored.packed_world_block_key, whole.packed_world_block_key,
+                "[{label}] record order must match wholesale"
+            );
+            assert_eq!(
+                (mirrored.material_id, mirrored.overlay),
+                (whole.material_id, whole.overlay),
+                "[{label}] record cell key at {block:?}"
+            );
+            assert_eq!(
+                mirrored.payload.cell_key_slot().is_some(),
+                whole.payload.cell_key_slot().is_some(),
+                "[{label}] uniform/mixed verdict at {block:?}"
+            );
+            match (
+                mirrored.payload.occupancy_atlas_slot(),
+                whole.payload.occupancy_atlas_slot(),
+            ) {
+                (Some(mirror_slot), Some(whole_slot)) => assert_eq!(
+                    incremental.sculpted_brick_occupancy(mirror_slot),
+                    wholesale.sculpted_brick_occupancy(whole_slot),
+                    "[{label}] occupancy bytes at {block:?} (slots renumber, bytes do not)"
+                ),
+                (None, None) => {}
+                _ => panic!("[{label}] payload kind disagreement at {block:?}"),
+            }
+            if let (Some(mirror_slot), Some(whole_slot)) = (
+                mirrored.payload.cell_key_slot(),
+                whole.payload.cell_key_slot(),
+            ) {
+                assert_eq!(
+                    mirror.cell_key_tile(mirror_slot).as_slice(),
+                    wholesale.cell_key_tiles[whole_slot as usize].as_slice(),
+                    "[{label}] cell-key tile at {block:?} (slots renumber, keys do not)"
+                );
+            }
+        }
+    }
+
+    /// **A block flipping uniform↔mixed under an incremental edit allocates/frees its
+    /// cell-key slot** — in the SEPARATE material pool, leaving the occupancy pool alone (the
+    /// block stays a sculpted brick either way, so its occupancy slot is merely rewritten).
+    /// After every step the mirror agrees with a from-scratch wholesale build, cell-key tiles
+    /// included.
+    #[test]
+    fn incremental_uniform_mixed_flip_churns_only_the_cell_key_pool() {
+        let block_a = [0u32, 0, 0];
+        let block_b = [1u32, 0, 0];
+        let uniform_a = vec![cell_box([0, 0, 0], [3, 3, 3], 1, false)];
+        let mixed_a = vec![
+            cell_box([0, 0, 0], [3, 3, 1], 1, false),
+            cell_box([0, 0, 2], [3, 3, 3], 2, false),
+        ];
+        let mixed_b = vec![
+            cell_box([0, 0, 0], [1, 3, 3], 2, false),
+            cell_box([2, 0, 0], [3, 3, 3], 2, true), // overlay-only mix
+        ];
+        let uniform_b = vec![cell_box([0, 0, 0], [3, 3, 3], 2, true)];
+
+        // Step 0 (wholesale seed): A uniform, B mixed — one cell-key slot in use.
+        let step_0 = hand_built_chunk(
+            &[],
+            &[(block_a, uniform_a.clone()), (block_b, mixed_b.clone())],
+        );
+        let build = build_brick_field(&step_0, HAND_DENSITY);
+        let (mut mirror, _atlas) = IncrementalBrickField::from_wholesale(build);
+        assert_eq!(mirror.mixed_brick_count(), 1);
+        assert_eq!(mirror.cell_key_slot_high_water(), 1);
+        let occupancy_high_water = mirror.slot_high_water();
+        assert_eq!(occupancy_high_water, 2, "both blocks are sculpted bricks");
+        assert_cell_key_parity(&mirror, &step_0, "step 0 (wholesale seed)");
+
+        // Step 1 (the FLIP): A becomes mixed, B becomes uniform. B's cell-key slot is freed
+        // and A's allocation reuses it — the material pool churns, its high-water mark does
+        // not grow, and the occupancy pool's does not move at all.
+        let step_1 = hand_built_chunk(
+            &[],
+            &[(block_a, mixed_a.clone()), (block_b, uniform_b.clone())],
+        );
+        let update = mirror.apply_dirty_update(&step_1, &[[0, 0, 0]]);
+        assert!(!update.atlas_grew, "the occupancy atlas must not grow on a material flip");
+        assert_eq!(mirror.slot_high_water(), occupancy_high_water);
+        assert_eq!(mirror.mixed_brick_count(), 1, "exactly one block is mixed after the flip");
+        assert_eq!(
+            mirror.cell_key_slot_high_water(),
+            1,
+            "the freed cell-key slot must be reused, not appended to"
+        );
+        let record_a = mirror
+            .records()
+            .iter()
+            .find(|record| unpack_world_block_key(record.packed_world_block_key) == [0, 0, 0])
+            .expect("block A must still have a record");
+        let cell_key_slot = record_a
+            .payload
+            .cell_key_slot()
+            .expect("block A is MIXED after the flip");
+        assert_eq!(
+            mirror.cell_key_tile(cell_key_slot).as_slice(),
+            expected_cell_keys(&mixed_a).as_slice()
+        );
+        let record_b = mirror
+            .records()
+            .iter()
+            .find(|record| unpack_world_block_key(record.packed_world_block_key) == [1, 0, 0])
+            .expect("block B must still have a record");
+        assert_eq!(record_b.payload.cell_key_slot(), None, "block B is UNIFORM after the flip");
+        assert_eq!((record_b.material_id, record_b.overlay), (2, true));
+        assert_cell_key_parity(&mirror, &step_1, "step 1 (uniform↔mixed flip)");
+
+        // Step 2 (GROW): both blocks mixed — the second mixed brick appends a new cell-key
+        // slot (the pool grows independently of the occupancy pool, which stays put).
+        let step_2 = hand_built_chunk(&[], &[(block_a, mixed_a), (block_b, mixed_b)]);
+        mirror.apply_dirty_update(&step_2, &[[0, 0, 0]]);
+        assert_eq!(mirror.mixed_brick_count(), 2);
+        assert_eq!(mirror.cell_key_slot_high_water(), 2);
+        assert_eq!(mirror.slot_high_water(), occupancy_high_water);
+        assert_cell_key_parity(&mirror, &step_2, "step 2 (both mixed)");
+
+        // Step 3 (FREE): both blocks uniform — every cell-key slot is freed (the mixed count
+        // drops to zero; the high-water mark keeps the freed holes, as the occupancy pool does).
+        let step_3 = hand_built_chunk(&[], &[(block_a, uniform_a), (block_b, uniform_b)]);
+        mirror.apply_dirty_update(&step_3, &[[0, 0, 0]]);
+        assert_eq!(mirror.mixed_brick_count(), 0, "no block is mixed any more");
+        assert_eq!(
+            mirror.cell_key_slot_high_water(),
+            2,
+            "freed slots keep their (dead) tiles until reallocated"
+        );
+        assert!(mirror
+            .records()
+            .iter()
+            .all(|record| record.payload.cell_key_slot().is_none()));
+        assert_cell_key_parity(&mirror, &step_3, "step 3 (both uniform again)");
+    }
+
+    /// A scene whose sculpted blocks are all UNIFORM (every scene the brick path renders
+    /// today) emits NO cell-key tile at all — the sparse-side-atlas contract, and the reason
+    /// the GPU bytes cannot move in this slice: `pack_gpu_records` reads the occupancy slot +
+    /// the record material, both untouched.
+    #[test]
+    fn a_uniform_scene_emits_no_cell_key_tiles() {
+        let voxels_per_block = 4;
+        let scene = Scene::from_geometry(
+            GeometryParams {
+                shape: ShapeKind::Sphere,
+                size_voxels: [33, 33, 33],
+                size_measurements: None,
+                voxels_per_block,
+                wall_blocks: 1,
+            },
+            MaterialChoice::Stone,
+        );
+        let chunks = TwoLayerStore::enabled().build_covering_chunks(&scene, voxels_per_block, 0);
+        let build = build_brick_field(&chunks, voxels_per_block);
+        assert!(build.sculpted_brick_count() > 0, "the fixture must have sculpted bricks");
+        assert!(
+            build.cell_key_tiles.is_empty(),
+            "a single-material scene must pay no per-voxel material cost"
+        );
+        assert_eq!(build.mixed_brick_count(), 0);
+        assert!(
+            build
+                .brick_records
+                .iter()
+                .all(|record| !matches!(record.payload, BrickPayload::SculptedMixed { .. })),
+            "no record may be mixed in a single-material scene"
+        );
     }
 }

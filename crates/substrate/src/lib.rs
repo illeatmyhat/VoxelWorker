@@ -45,7 +45,8 @@
 //! [`DisjointIntervalSet`], and [`Rational`] (interval + rational arithmetic);
 //! [`GreedyCuboidDecomposition`] over a [`CellGrid`] into [`Cuboid`]s (box decomposition);
 //! the [`supersede`] protocol — [`CoalescingWorker`], [`GenerationTracker`], and their
-//! [`drain_to_latest`] / [`catch_unwind_or_log`] helpers (concurrency); [`BitCube`],
+//! [`drain_to_latest`] / [`catch_unwind_or_log`] helpers (concurrency); [`BitCube`], its
+//! payload sibling [`ValueCube`],
 //! [`SlotFreeList`], [`CubeTilePacking`], and the [`ShelfBinPack`] rectangle packer (bit/atlas
 //! kit); the [`SparseMinMipPyramid`] occupancy fold; the [`SortedKeyBitmaskMap`] sorted
 //! parallel-array map; the [`CellClassification`] black/white/grey CSG cell classifier; the
@@ -71,6 +72,7 @@ pub mod rational;
 pub mod shelf_bin_pack;
 pub mod srgb;
 pub mod supersede;
+pub mod value_cube;
 
 pub use aabb::{LatticeAabb, RealAabb};
 pub use bit_cube::BitCube;
@@ -91,3 +93,4 @@ pub use shelf_bin_pack::{
 };
 pub use srgb::{srgb_component_to_linear, srgb_hex_to_linear};
 pub use supersede::{catch_unwind_or_log, drain_to_latest, CoalescingWorker, GenerationTracker};
+pub use value_cube::ValueCube;
