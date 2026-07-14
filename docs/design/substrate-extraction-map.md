@@ -140,7 +140,9 @@ Deliberately NOT crates (taxonomy ahead of need, per ADR 0014's rejection): disp
 (the GPU-never-truth law is already proven once document+evaluation compile without wgpu),
 .vox/interchange codecs (one file today; graduates near `document` when export goes plural),
 shot/oracles (already isolated by `--features oracle`), UI/workers/orchestrator (connective
-tissue).
+tissue). **Amended same day by ADR 0015:** the "display/shell" line stands for wgpu *plumbing*
+only — graphics *mathematics* got its own crates (`camera`, `raycast`); see
+docs/design/graphics-crates-extraction-map.md.
 
 ## Literature anchors (owner ruling: cite the science)
 
