@@ -402,138 +402,18 @@ pub fn widest_run_in_band_over_chunks<'grid>(
     widest
 }
 
-/// A CONSERVATIVE interval `[minimum, maximum]` of a producer's SIGNED field over a
-/// whole block-sized cell, the classification primitive of ADR 0010 Decision 2 (the
-/// E1 slice).
-///
-/// **Convention (mirrors the resolve seam):** occupancy is `field <= SURFACE_ISOLEVEL`
-/// (inside). So an interval whose `minimum` already exceeds the isolevel proves the
-/// cell is entirely AIR; an interval whose `maximum` is at-or-below the isolevel
-/// proves the cell is entirely SOLID; an interval straddling the isolevel cannot be
-/// decided coarsely and the cell is BOUNDARY (per-voxel field evaluation).
-///
-/// The bound is *conservative*: it may be WIDER than the true field range over the
-/// cell (it never claims a tighter range than the truth), so a coarse AIR/SOLID
-/// verdict can never disagree with a brute-force per-voxel evaluation — only the
-/// (always-safe) BOUNDARY fallback can be reported where brute force would have
-/// elided. This exact-on-the-data-seam property is the whole point of the E1 parity
-/// gate.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct FieldInterval {
-    /// Conservative LOWER bound on the signed field over the cell (`<=` the true
-    /// minimum the producer would evaluate at any sample inside the cell).
-    pub minimum: f32,
-    /// Conservative UPPER bound on the signed field over the cell (`>=` the true
-    /// maximum).
-    pub maximum: f32,
-}
-
-impl FieldInterval {
-    /// An interval `[minimum, maximum]` (callers pass already-conservative bounds).
-    pub fn new(minimum: f32, maximum: f32) -> Self {
-        Self { minimum, maximum }
-    }
-
-    /// The interval of a 1-Lipschitz signed field over a cell whose centre sample is
-    /// `field_at_center` and whose circumradius (half the space-diagonal) is
-    /// `cell_circumradius`: `[field_at_center − r, field_at_center + r]`. A true
-    /// distance field changes by at most `r` between the centre and any cell corner,
-    /// so this brackets every in-cell sample. If a given field is only *approximately*
-    /// 1-Lipschitz the caller must WIDEN `cell_circumradius`, never narrow it.
-    pub fn from_lipschitz_center(field_at_center: f32, cell_circumradius: f32) -> Self {
-        let radius = cell_circumradius.abs();
-        Self {
-            minimum: field_at_center - radius,
-            maximum: field_at_center + radius,
-        }
-    }
-
-    /// Classify a block cell from this conservative interval (ADR 0010 Decision 2).
-    /// `isolevel` is the occupancy threshold (`SURFACE_ISOLEVEL`): a cell is solid
-    /// where `field <= isolevel`.
-    pub fn classify(&self, isolevel: f32) -> FieldClassification {
-        if self.minimum > isolevel {
-            // Every sample is strictly outside ⇒ no voxel can be occupied.
-            FieldClassification::Air
-        } else if self.maximum <= isolevel {
-            // Every sample is at-or-below the isolevel ⇒ every voxel is occupied.
-            FieldClassification::CoarseSolid
-        } else {
-            // The interval straddles the isolevel ⇒ resolve the cell per-voxel.
-            FieldClassification::Boundary
-        }
-    }
-
-    /// CSG UNION of two field intervals (`min(field_a, field_b)`, the nearer surface
-    /// wins): the bound on `min(a, b)` is `[min(aMin,bMin), min(aMax,bMax)]`.
-    pub fn union(self, other: FieldInterval) -> FieldInterval {
-        FieldInterval {
-            minimum: self.minimum.min(other.minimum),
-            maximum: self.maximum.min(other.maximum),
-        }
-    }
-
-    /// CSG INTERSECTION of two field intervals (`max(field_a, field_b)`): the bound on
-    /// `max(a, b)` is `[max(aMin,bMin), max(aMax,bMax)]`.
-    pub fn intersect(self, other: FieldInterval) -> FieldInterval {
-        FieldInterval {
-            minimum: self.minimum.max(other.minimum),
-            maximum: self.maximum.max(other.maximum),
-        }
-    }
-
-    /// The NEGATED field interval (`−field`): `[−maximum, −minimum]`. Used to compose
-    /// a subtraction, whose field is `max(field_a, −field_b)`.
-    pub fn negate(self) -> FieldInterval {
-        FieldInterval {
-            minimum: -self.maximum,
-            maximum: -self.minimum,
-        }
-    }
-
-    /// CSG SUBTRACTION `A − B` of two field intervals (`max(field_a, −field_b)`): the
-    /// region inside `A` and outside `B`. Composed as `self.intersect(other.negate())`.
-    pub fn subtract(self, other: FieldInterval) -> FieldInterval {
-        self.intersect(other.negate())
-    }
-}
-
-/// The coarse verdict a [`FieldInterval`] yields for a block cell (ADR 0010
-/// Decision 2): the cell is wholly outside, wholly inside, or straddles the surface.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FieldClassification {
-    /// Every voxel in the cell is EMPTY (the conservative interval is all-positive).
-    Air,
-    /// Every voxel in the cell is OCCUPIED (the interval is all-at-or-below the
-    /// isolevel) — the cell is a coarse solid, no per-voxel data needed.
-    CoarseSolid,
-    /// The interval straddles the isolevel (or the producer could not bound the cell):
-    /// the cell must be resolved per-voxel. Always the SAFE verdict.
-    Boundary,
-}
-
-/// The conservative field interval of a CSG UNION over a list of operands — `None`
-/// (unboundable ⇒ BOUNDARY) the moment any operand is `None`, since a union with an
-/// unbounded field cannot be coarsely decided. An empty list yields `None`.
-pub fn union_field_intervals(
-    intervals: impl IntoIterator<Item = Option<FieldInterval>>,
-) -> Option<FieldInterval> {
-    let mut accumulated: Option<FieldInterval> = None;
-    let mut any = false;
-    for interval in intervals {
-        any = true;
-        let interval = interval?;
-        accumulated = Some(match accumulated {
-            Some(existing) => existing.union(interval),
-            None => interval,
-        });
-    }
-    if any {
-        accumulated
-    } else {
-        None
-    }
-}
+// The conservative cell-interval bound and its coarse classification are pure interval
+// arithmetic under CSG lattice ops — substrate's [`substrate::FieldInterval`]. The
+// domain reads it with the occupancy convention "inside where `field <= SURFACE_ISOLEVEL`":
+// `FieldInterval::classify(SURFACE_ISOLEVEL)` yields AIR / COARSE-SOLID / BOUNDARY for a
+// whole block-sized cell, and `union_field_intervals` composes a Union of producers
+// (min-of-fields). The conservative-never-narrow property is why a coarse verdict can
+// never disagree with a brute-force per-voxel evaluation — the boundary-residency
+// classifier's soundness (see the Boundary-residency material in
+// `docs/architecture/02-evaluation.md`, proven by the E1 parity gate in
+// `cell_interval_parity_tests`). The interval algebra, the Lipschitz-centre bound, and
+// the classify threshold-parameter live in the substrate module doc.
+pub use substrate::{union_field_intervals, FieldClassification, FieldInterval};
 
 /// Anything that can resolve itself into the shared [`VoxelGrid`].
 ///

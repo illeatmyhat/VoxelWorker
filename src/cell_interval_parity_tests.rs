@@ -16,12 +16,13 @@
 //! cells fuzzed per producer include ones fully inside, fully outside, straddling the
 //! surface, and tiny single-voxel features.
 //!
-//! Also unit-tests the CSG interval composition (union / subtract / intersect).
+//! The CSG interval algebra itself (union / intersect / subtract / classify) is unit-
+//! tested where it now lives, in `substrate::field_interval`; this file keeps only the
+//! producer-vs-brute-force exactness gate.
 
 use crate::spatial_index::VoxelAabb;
 use crate::voxel::{
-    union_field_intervals, FieldClassification, FieldInterval, SdfShape, ShapeKind, VoxelGrid,
-    VoxelProducer, SURFACE_ISOLEVEL,
+    FieldClassification, SdfShape, ShapeKind, VoxelGrid, VoxelProducer, SURFACE_ISOLEVEL,
 };
 
 /// Count the voxels brute force actually fills inside `cell` (in the producer's local
@@ -373,81 +374,4 @@ fn debug_cloud_field_is_unboundable() {
         cases += 1;
     }
     eprintln!("DebugCloudField parity: {cases} cells (all unboundable None)");
-}
-
-#[test]
-fn csg_interval_union_is_min_of_fields() {
-    let a = FieldInterval::new(-2.0, 3.0);
-    let b = FieldInterval::new(-5.0, 1.0);
-    // union = min(a, b) ⇒ [min(min), min(max)].
-    assert_eq!(a.union(b), FieldInterval::new(-5.0, 1.0));
-    assert_eq!(a.union(b), b.union(a), "union is commutative");
-}
-
-#[test]
-fn csg_interval_intersect_is_max_of_fields() {
-    let a = FieldInterval::new(-2.0, 3.0);
-    let b = FieldInterval::new(-5.0, 1.0);
-    // intersect = max(a, b) ⇒ [max(min), max(max)].
-    assert_eq!(a.intersect(b), FieldInterval::new(-2.0, 3.0));
-    assert_eq!(a.intersect(b), b.intersect(a), "intersect is commutative");
-}
-
-#[test]
-fn csg_interval_subtract_is_intersect_with_negated() {
-    let a = FieldInterval::new(-2.0, 3.0);
-    let b = FieldInterval::new(-5.0, 1.0);
-    // A − B = max(dA, −dB); −b = [−1, 5]; max ⇒ [max(-2,-1), max(3,5)] = [-1, 5].
-    assert_eq!(b.negate(), FieldInterval::new(-1.0, 5.0));
-    assert_eq!(a.subtract(b), FieldInterval::new(-1.0, 5.0));
-}
-
-/// The interval-arithmetic composition must AGREE with the brute-force field over a
-/// sampled field range: for any pair of sample fields drawn from `[aMin,aMax]` and
-/// `[bMin,bMax]`, the composed value lies inside the composed interval. This is the
-/// soundness property the classifier relies on.
-#[test]
-fn csg_composition_brackets_every_sample() {
-    let a = FieldInterval::new(-2.0, 3.0);
-    let b = FieldInterval::new(-5.0, 1.0);
-    let union = a.union(b);
-    let intersect = a.intersect(b);
-    let subtract = a.subtract(b);
-    let mut rng = Lcg::new(0xC56_u64);
-    for _ in 0..5000 {
-        let sample_a = a.minimum + (a.maximum - a.minimum) * (rng.next_u64() as f32 / u64::MAX as f32);
-        let sample_b = b.minimum + (b.maximum - b.minimum) * (rng.next_u64() as f32 / u64::MAX as f32);
-        let union_value = sample_a.min(sample_b);
-        let intersect_value = sample_a.max(sample_b);
-        let subtract_value = sample_a.max(-sample_b);
-        assert!(
-            (union.minimum..=union.maximum).contains(&union_value),
-            "union {union:?} fails to bracket {union_value}"
-        );
-        assert!(
-            (intersect.minimum..=intersect.maximum).contains(&intersect_value),
-            "intersect {intersect:?} fails to bracket {intersect_value}"
-        );
-        assert!(
-            (subtract.minimum..=subtract.maximum).contains(&subtract_value),
-            "subtract {subtract:?} fails to bracket {subtract_value}"
-        );
-    }
-}
-
-#[test]
-fn union_field_intervals_is_none_when_any_operand_unboundable() {
-    let bounded = FieldInterval::new(-1.0, 1.0);
-    assert_eq!(
-        union_field_intervals([Some(bounded), Some(FieldInterval::new(-3.0, 0.5))]),
-        Some(FieldInterval::new(-3.0, 0.5))
-    );
-    // Any None operand collapses the union to None (the unbounded operand could be
-    // occupied anywhere ⇒ the whole union must be treated as boundary).
-    assert_eq!(
-        union_field_intervals([Some(bounded), None, Some(bounded)]),
-        None
-    );
-    // Empty list ⇒ None.
-    assert_eq!(union_field_intervals(std::iter::empty()), None);
 }

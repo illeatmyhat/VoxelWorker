@@ -50,6 +50,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use rayon::prelude::*;
+use substrate::DisjointIntervalSet;
 
 use crate::core_geom::{BlockAttrs, BlockId, CHUNK_BLOCKS};
 use crate::cuboid::{decompose_into_boxes, VoxelBox, VoxelRegion};
@@ -1472,48 +1473,6 @@ pub fn stream_vox_occupancy<Sink: FnMut(Vec<Voxel>)>(
     Some(region_dimensions)
 }
 
-/// Insert the half-open run `[lo, hi)` into a row's sorted, disjoint, **non-touching**
-/// interval list, coalescing with every interval it overlaps OR abuts (`end == lo` /
-/// `start == hi` are adjacent — the corresponding dense bitset cells would be contiguous,
-/// so they must fuse into one run). Keeps the list minimal, so the widest contiguous run
-/// in the row is exactly `max(hi − lo)` over its intervals. In place; the dominant
-/// ascending-arrival case (spans stream in increasing X within a row) hits the fast path
-/// in O(1) and a solid row stays length 1.
-fn insert_run(row: &mut Vec<(i64, i64)>, lo: i64, hi: i64) {
-    // Fast path: append after, or extend, the last interval. Spans arrive in ascending X
-    // within a row (chunk_x, block_x and the local indices all increase), so the coarse
-    // solid sweep coalesces here with no shifting.
-    if let Some(&mut (last_lo, ref mut last_hi)) = row.last_mut() {
-        if lo > *last_hi {
-            row.push((lo, hi)); // strictly right of the last, with a gap
-            return;
-        }
-        if lo >= last_lo {
-            if hi > *last_hi {
-                *last_hi = hi; // overlaps / abuts the last, extends it right
-            }
-            return;
-        }
-    } else {
-        row.push((lo, hi));
-        return;
-    }
-    // General merge (rare: an out-of-order boundary cuboid starting left of the last run).
-    let mut start = 0;
-    while start < row.len() && row[start].1 < lo {
-        start += 1; // skip intervals strictly left of the run (a real gap)
-    }
-    let mut merged_lo = lo;
-    let mut merged_hi = hi;
-    let mut end = start;
-    while end < row.len() && row[end].0 <= merged_hi {
-        merged_lo = merged_lo.min(row[end].0);
-        merged_hi = merged_hi.max(row[end].1);
-        end += 1;
-    }
-    row.splice(start..end, std::iter::once((merged_lo, merged_hi)));
-}
-
 /// **Cacheless diameter / widest-run query (ADR 0010 E4).** Compute the widest
 /// occupied run in the layer band `[band_min, band_max]` (Z-slices, Z-up) by
 /// streaming the classifier block-by-block — accounting a **coarse-solid block
@@ -1621,9 +1580,9 @@ pub fn streamed_widest_run_in_band(
         // span set shared by every voxel row the block-row covers. Boundary cuboid spans are
         // expanded per voxel row, keyed by their global `(z, y)` (sparse — surface rows only),
         // and merged with the block-row's coarse spans at fold time.
-        let mut coarse_block_runs: [Vec<(i64, i64)>; BLOCK_ROWS] =
-            std::array::from_fn(|_| Vec::new());
-        let mut boundary_rows: std::collections::HashMap<(i64, i64), Vec<(i64, i64)>> =
+        let mut coarse_block_runs: [DisjointIntervalSet; BLOCK_ROWS] =
+            std::array::from_fn(|_| DisjointIntervalSet::new());
+        let mut boundary_rows: std::collections::HashMap<(i64, i64), DisjointIntervalSet> =
             std::collections::HashMap::new();
 
         for chunk_x in min_chunk[0]..=max_chunk[0] {
@@ -1633,7 +1592,8 @@ pub fn streamed_widest_run_in_band(
             };
             // The recentred→global X origin: global_x = chunk_min_x + block_low_x + local
             // − recentre + half. Spans arrive in ascending X (chunk_x, block_x, local all
-            // increase), so `insert_run`'s append fast path coalesces a solid row in O(1).
+            // increase), so `DisjointIntervalSet::insert`'s append fast path coalesces a
+            // solid row in O(1).
             let to_global_x = chunk_x as i64 * chunk_extent_voxels - recentre_voxels[0] + half[0];
             for block_z in 0..CHUNK_BLOCKS {
                 for block_y in 0..CHUNK_BLOCKS {
@@ -1650,7 +1610,7 @@ pub fn streamed_widest_run_in_band(
                             let lo = x0.max(0);
                             let hi = (x0 + density).min(width as i64);
                             if lo < hi {
-                                insert_run(&mut coarse_block_runs[block_row], lo, hi);
+                                coarse_block_runs[block_row].insert(lo, hi);
                             }
                         } else if let Some(geometry) = chunk.microblocks.get(&block) {
                             // BOUNDARY: per-cuboid spans expanded into every voxel row they
@@ -1678,11 +1638,10 @@ pub fn streamed_widest_run_in_band(
                                         if x_lo >= x_hi {
                                             continue;
                                         }
-                                        insert_run(
-                                            boundary_rows.entry((gz, gy)).or_default(),
-                                            x_lo,
-                                            x_hi,
-                                        );
+                                        boundary_rows
+                                            .entry((gz, gy))
+                                            .or_default()
+                                            .insert(x_lo, x_hi);
                                     }
                                 }
                             }
@@ -1711,9 +1670,7 @@ pub fn streamed_widest_run_in_band(
                 if y_lo + density - 1 < 0 || y_lo >= grid_y_i {
                     continue;
                 }
-                for &(lo, hi) in runs {
-                    widest = widest.max((hi - lo) as u32);
-                }
+                widest = widest.max(runs.widest_span() as u32);
             }
         }
         // (2) Boundary rows: merge each with its block-row's coarse spans, fold the widest —
@@ -1724,12 +1681,10 @@ pub fn streamed_widest_run_in_band(
             let block_y = (gy - y_base) / density;
             let block_row = block_z as usize * CHUNK_BLOCKS as usize + block_y as usize;
             let mut merged = coarse_block_runs[block_row].clone();
-            for &(lo, hi) in spans {
-                insert_run(&mut merged, lo, hi);
+            for &(lo, hi) in spans.intervals() {
+                merged.insert(lo, hi);
             }
-            for &(lo, hi) in &merged {
-                widest = widest.max((hi - lo) as u32);
-            }
+            widest = widest.max(merged.widest_span() as u32);
         }
         widest
     };

@@ -27,130 +27,16 @@
 
 use std::fmt;
 
-/// An exact, always-reduced rational number backed by `i128`.
+/// The units layer's exact rational — substrate's [`substrate::Rational`], the
+/// sign-normalized, gcd-reduced `i128` ratio.
 ///
-/// The units layer must not touch `f64` — parsing `"3.5"` as `7/2` and never an
-/// `f64` is what makes `"3.5 blocks"` land on exactly 56 voxels at d16 with no
-/// float drift. `num-rational` is not a project dependency and the policy is "no
-/// new external dependency", so this is a minimal in-house rational: numerator +
-/// denominator reduced by their gcd, denominator kept positive.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ExactRational {
-    numerator: i128,
-    denominator: i128,
-}
-
-impl ExactRational {
-    /// A reduced rational from a raw numerator/denominator. Returns `None` on a
-    /// zero denominator (the only un-representable case). The sign is normalised
-    /// onto the numerator so the denominator is always positive, and both are
-    /// divided through by their greatest common divisor.
-    pub fn new(numerator: i128, denominator: i128) -> Option<Self> {
-        if denominator == 0 {
-            return None;
-        }
-        let sign = if denominator < 0 { -1 } else { 1 };
-        let mut numerator = numerator * sign;
-        let mut denominator = denominator * sign;
-        let divisor = greatest_common_divisor(numerator.unsigned_abs(), denominator.unsigned_abs())
-            as i128;
-        if divisor > 1 {
-            numerator /= divisor;
-            denominator /= divisor;
-        }
-        Some(Self {
-            numerator,
-            denominator,
-        })
-    }
-
-    /// A whole-number rational (`value / 1`).
-    pub fn from_integer(value: i128) -> Self {
-        Self {
-            numerator: value,
-            denominator: 1,
-        }
-    }
-
-    /// The reduced numerator (sign lives here; denominator is always positive).
-    pub fn numerator(self) -> i128 {
-        self.numerator
-    }
-
-    /// The reduced denominator (always `>= 1`).
-    pub fn denominator(self) -> i128 {
-        self.denominator
-    }
-
-    /// `self * other`, reduced.
-    pub fn times(self, other: ExactRational) -> ExactRational {
-        // Operands are already reduced; reducing again after the cross-multiply
-        // keeps the magnitudes small and the result canonical.
-        ExactRational::new(
-            self.numerator * other.numerator,
-            self.denominator * other.denominator,
-        )
-        .expect("non-zero denominators multiply to a non-zero denominator")
-    }
-
-    /// `self + other`, reduced.
-    pub fn plus(self, other: ExactRational) -> ExactRational {
-        ExactRational::new(
-            self.numerator * other.denominator + other.numerator * self.denominator,
-            self.denominator * other.denominator,
-        )
-        .expect("non-zero denominators add to a non-zero denominator")
-    }
-
-    /// `true` when this rational is a whole number (denominator reduced to 1).
-    pub fn is_integer(self) -> bool {
-        self.denominator == 1
-    }
-
-    /// The whole-number value when [`is_integer`](Self::is_integer); otherwise
-    /// `None`. Used by the evaluator to demand a clean voxel landing.
-    pub fn to_integer(self) -> Option<i128> {
-        if self.is_integer() {
-            Some(self.numerator)
-        } else {
-            None
-        }
-    }
-
-    /// The largest integer `<= self` (toward negative infinity).
-    pub fn floor(self) -> i128 {
-        // Truncating division rounds toward zero; for a negative non-integer that
-        // is one too large, so step down.
-        let truncated = self.numerator / self.denominator;
-        if self.numerator % self.denominator != 0 && self.numerator < 0 {
-            truncated - 1
-        } else {
-            truncated
-        }
-    }
-
-    /// The smallest integer `>= self` (toward positive infinity).
-    pub fn ceil(self) -> i128 {
-        let truncated = self.numerator / self.denominator;
-        if self.numerator % self.denominator != 0 && self.numerator > 0 {
-            truncated + 1
-        } else {
-            truncated
-        }
-    }
-}
-
-/// Euclid's algorithm on unsigned magnitudes. `gcd(x, 0) == x`, so a `0`
-/// numerator reduces against any denominator to leave the denominator as the
-/// divisor (giving the canonical `0/1`).
-fn greatest_common_divisor(mut first: u128, mut second: u128) -> u128 {
-    while second != 0 {
-        let remainder = first % second;
-        first = second;
-        second = remainder;
-    }
-    first.max(1)
-}
+/// The units layer must not touch `f64`: parsing `"3.5"` as `7/2` and never an `f64`
+/// is what makes `"3.5 blocks"` land on exactly 56 voxels at d16 with no float drift.
+/// The rational arithmetic itself (reduction, floor/ceil, the Euclidean gcd) is a pure
+/// CS primitive and lives in substrate; the domain keeps the name `ExactRational` at
+/// this seam because it is the public measurement vocabulary used across the scene and
+/// intent layers. See `docs/architecture/01-document.md` (the units/measurement core).
+pub use substrate::Rational as ExactRational;
 
 /// A parametric blocks + voxels measurement (ADR 0003 §3f(0)).
 ///
@@ -931,36 +817,10 @@ mod tests {
     }
 
     #[test]
-    fn exact_rationals_do_not_drift_like_floats() {
-        // 0.1 + 0.2 is the canonical f64 trap (== 0.30000000000000004). As exact
-        // rationals it is precisely 3/10.
-        let tenth = parse("0.1 blocks").expect("parses").block_term();
-        let fifth = parse("0.2 blocks").expect("parses").block_term();
-        let sum = tenth.plus(fifth);
-        assert_eq!(sum, ExactRational::new(3, 10).unwrap());
-        // And "0.1 blocks" + "0.2 blocks" at d=10 lands on exactly 3 voxels.
-        let combined = Measurement::new(sum, 0);
-        assert_eq!(combined.to_voxels(10).unwrap(), 3);
-    }
-
-    #[test]
     fn exact_decimal_parses_without_float_loss() {
         // "3.5" is 7/2, never an f64. Verify the stored rational is exactly 7/2.
         let block_term = parse("3.5 blocks").expect("parses").block_term();
         assert_eq!(block_term, ExactRational::new(7, 2).unwrap());
-    }
-
-    #[test]
-    fn rational_floor_and_ceil_handle_signs() {
-        let half = ExactRational::new(1, 2).unwrap();
-        assert_eq!(half.floor(), 0);
-        assert_eq!(half.ceil(), 1);
-        let negative_half = ExactRational::new(-1, 2).unwrap();
-        assert_eq!(negative_half.floor(), -1);
-        assert_eq!(negative_half.ceil(), 0);
-        let whole = ExactRational::from_integer(5);
-        assert_eq!(whole.floor(), 5);
-        assert_eq!(whole.ceil(), 5);
     }
 
     #[test]
