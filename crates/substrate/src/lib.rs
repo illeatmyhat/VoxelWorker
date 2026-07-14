@@ -48,10 +48,13 @@
 //! [`GenerationTracker`], and their [`drain_to_latest`] / [`catch_unwind_or_log`] helpers;
 //! slice S5 (bit/atlas kit) — [`BitCube`], [`SlotFreeList`], and [`CubeTilePacking`]; slice S7
 //! (first kernel-only tier-3 extraction) — the [`SparseMinMipPyramid`] fold (the pure core of the
-//! domain's clip-map builders, whose chunk traversal stays in the app crate).
+//! domain's clip-map builders, whose chunk traversal stays in the app crate); slice S8 (second
+//! kernel-only tier-3 extraction) — the [`SortedKeyBitmaskMap`] sorted parallel-array map (the
+//! storage shape of the domain's block-occupancy masks, whose `from_chunks` builder stays domain).
 
 pub mod aabb;
 pub mod bit_cube;
+pub mod bitmask_map;
 pub mod bvh;
 pub mod cube_packing;
 pub mod disjoint_interval_set;
@@ -65,6 +68,7 @@ pub mod supersede;
 
 pub use aabb::Aabb;
 pub use bit_cube::BitCube;
+pub use bitmask_map::{mask_bit_is_set, set_mask_bit, SortedKeyBitmaskMap};
 pub use bvh::Bvh;
 pub use cube_packing::CubeTilePacking;
 pub use disjoint_interval_set::DisjointIntervalSet;

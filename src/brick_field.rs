@@ -83,6 +83,16 @@ pub use substrate::BitCube as BrickOccupancyTile;
 // docs/architecture/03-display.md (the brick-field clip-map) for how the levels drive the march.
 use substrate::min_mip_pyramid::{fold_coordinate_to_cell, MinMipLevel};
 
+// The block-occupancy masks' STORAGE is substrate's `SortedKeyBitmaskMap`: a sorted parallel-array
+// map (keys ∥ fixed-width bitmasks ∥ per-key fallback scalar), binary-searchable, with the textbook
+// word/bit indexing. The domain keeps the "occupancy masks" name and the CHUNK traversal
+// (`BlockOccupancyMasks::from_chunks`, its solid-chunk bulk fast path, and its first-writer-wins
+// fallback-material policy) at this seam; the parallel-array shape, the sort-by-key construction,
+// the binary search, and the bit set/test live in the substrate module (fallback = a caller-defined
+// `u32`, here the render-cell material colour index). See docs/architecture/03-display.md (the
+// band-clip interior fallback) for how the packed cells feed the raymarch.
+use substrate::bitmask_map::{set_mask_bit, SortedKeyBitmaskMap};
+
 // ============================================================================
 // Clip-map occupancy pyramid (ADR 0011 Decision 4a / slice G2+G4) — THREE
 // WORLD-FIXED coarse "any-brick-inside" levels above the brick set, a min-mip of
@@ -374,20 +384,22 @@ pub const BLOCK_OCCUPANCY_MASK_WORDS: usize = BLOCK_OCCUPANCY_BITS_PER_CELL / 32
 ///
 /// The cell keys are the 8-block clip-map cell keys ([`pack_world_block_key`] of
 /// `floor_div(block, 8)`), sorted ascending — the same order the shader binary-searches.
+///
+/// **Storage:** the sorted-key / bitmask / fallback shape is substrate's
+/// [`SortedKeyBitmaskMap`] (see the seam comment above); this domain type wraps it, keeping the
+/// occupancy vocabulary at the GPU seam ([`cell_keys`](Self::cell_keys) ∥
+/// [`cell_masks`](Self::cell_masks) ∥ [`cell_materials`](Self::cell_materials) — the fallback
+/// scalar IS the render-cell material colour index) and owning the domain [`from_chunks`] builder.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct BlockOccupancyMasks {
-    /// Present 8-block cells' packed keys, sorted strictly ascending + deduplicated.
-    pub cell_keys: Vec<u64>,
-    /// Per-cell `512`-bit occupancy bitmask (`bit = (local_z*8 + local_y)*8 + local_x`,
-    /// `local = block.rem_euclid(8)`), one `[u32; 16]` per key. Parallel to `cell_keys`.
-    pub cell_masks: Vec<[u32; BLOCK_OCCUPANCY_MASK_WORDS]>,
-    /// Per-cell fallback material colour index (the first occupied block's, in build order) —
-    /// the coarse-cube's shade when the record-miss fallback fires. Exact for a uniform-material
-    /// interior cell (every current band golden); best-effort where a cell mixes materials
-    /// (the documented tolerance edge — the R8 atlas is occupancy-only, so per-interior-block
-    /// material would re-introduce the O(volume) record set this contract deleted). Parallel to
-    /// `cell_keys`.
-    pub cell_materials: Vec<u32>,
+    /// The substrate storage: present 8-block cell keys (sorted ascending) ∥ per-cell `512`-bit
+    /// occupancy bitmask (`bit = (local_z*8 + local_y)*8 + local_x`, `local = block.rem_euclid(8)`)
+    /// ∥ per-cell fallback material colour index (the first occupied block's, in build order — the
+    /// coarse-cube's shade when the record-miss fallback fires). Exact for a uniform-material
+    /// interior cell (every current band golden); best-effort where a cell mixes materials (the
+    /// documented tolerance edge — the R8 atlas is occupancy-only, so per-interior-block material
+    /// would re-introduce the O(volume) record set this contract deleted).
+    pub map: SortedKeyBitmaskMap<BLOCK_OCCUPANCY_MASK_WORDS>,
 }
 
 impl BlockOccupancyMasks {
@@ -397,7 +409,27 @@ impl BlockOccupancyMasks {
         BlockOccupancyMasks::default()
     }
 
-    /// Set one block's bit (and, first-writer-wins, its cell material) in the cell map.
+    /// Present 8-block cells' packed keys, sorted strictly ascending (the shader's binary-search
+    /// order). Parallel to [`cell_masks`](Self::cell_masks) / [`cell_materials`](Self::cell_materials).
+    pub fn cell_keys(&self) -> &[u64] {
+        &self.map.keys
+    }
+
+    /// Per-cell `512`-bit occupancy bitmasks, one `[u32; 16]` per key, parallel to
+    /// [`cell_keys`](Self::cell_keys).
+    pub fn cell_masks(&self) -> &[[u32; BLOCK_OCCUPANCY_MASK_WORDS]] {
+        &self.map.masks
+    }
+
+    /// Per-cell fallback material colour index, parallel to [`cell_keys`](Self::cell_keys).
+    pub fn cell_materials(&self) -> &[u32] {
+        &self.map.fallbacks
+    }
+
+    /// Set one block's bit (and, first-writer-wins, its cell material) in the accumulation map.
+    /// The cell fold (`floor_div` by the 8-block cell edge) and the cell-local z-major linear bit
+    /// index are domain cell geometry; the bit-set on the fixed-width mask is substrate's
+    /// [`set_mask_bit`].
     fn insert_block(
         cells: &mut std::collections::BTreeMap<u64, ([u32; BLOCK_OCCUPANCY_MASK_WORDS], u32)>,
         world_block: [i64; 3],
@@ -420,7 +452,7 @@ impl BlockOccupancyMasks {
         let entry = cells
             .entry(pack_world_block_key(cell))
             .or_insert(([0u32; BLOCK_OCCUPANCY_MASK_WORDS], material));
-        entry.0[bit / 32] |= 1u32 << (bit % 32);
+        set_mask_bit(&mut entry.0, bit);
     }
 
     /// Build the block-granular occupancy map from the two-layer chunks — the interior-elision
@@ -498,25 +530,23 @@ impl BlockOccupancyMasks {
                 }
             }
         }
-        let mut cell_keys = Vec::with_capacity(cells.len());
-        let mut cell_masks = Vec::with_capacity(cells.len());
-        let mut cell_materials = Vec::with_capacity(cells.len());
-        for (key, (mask, material)) in cells {
-            cell_keys.push(key);
-            cell_masks.push(mask);
-            cell_materials.push(material);
-        }
+        // The accumulation is done: hand the (already unique, BTreeMap-sorted) cells to the
+        // substrate constructor as `(key, mask, fallback)` triples. `from_triples` sorts by key —
+        // a stable no-op on the BTreeMap's ascending, unique order — and splits into the parallel
+        // arrays, so the stored shape is byte-identical to a direct push in map order.
+        let triples: Vec<(u64, [u32; BLOCK_OCCUPANCY_MASK_WORDS], u32)> = cells
+            .into_iter()
+            .map(|(key, (mask, material))| (key, mask, material))
+            .collect();
         BlockOccupancyMasks {
-            cell_keys,
-            cell_masks,
-            cell_materials,
+            map: SortedKeyBitmaskMap::from_triples(triples),
         }
     }
 
     /// The present-cell count (== the shader's occupancy binary-search span; 0 ⇒ the
     /// band-clip interior fallback never fires).
     pub fn cell_count(&self) -> u32 {
-        self.cell_keys.len() as u32
+        self.map.len() as u32
     }
 }
 
@@ -2104,7 +2134,7 @@ mod tests {
                     TwoLayerStore::enabled().build_covering_chunks(&scene, voxels_per_block, 0);
                 let full_build = build_brick_field_all_blocks(&chunks, voxels_per_block);
                 let masks = BlockOccupancyMasks::from_chunks(&chunks);
-                assert!(!masks.cell_keys.is_empty(), "the scene must occupy blocks");
+                assert!(!masks.map.is_empty(), "the scene must occupy blocks");
 
                 // Every full-record block reads as an occupied bit.
                 let cell_size = BLOCK_OCCUPANCY_CELL_BLOCKS as i64;
@@ -2114,9 +2144,6 @@ mod tests {
                         world_block[1].div_euclid(cell_size),
                         world_block[2].div_euclid(cell_size),
                     ];
-                    let Ok(index) = masks.cell_keys.binary_search(&pack_world_block_key(cell)) else {
-                        return false;
-                    };
                     let local = [
                         world_block[0].rem_euclid(cell_size) as usize,
                         world_block[1].rem_euclid(cell_size) as usize,
@@ -2124,7 +2151,7 @@ mod tests {
                     ];
                     let bit = (local[2] * cell_size as usize + local[1]) * cell_size as usize
                         + local[0];
-                    masks.cell_masks[index][bit / 32] & (1u32 << (bit % 32)) != 0
+                    masks.map.contains_bit(pack_world_block_key(cell), bit)
                 };
                 let mut expected_set: std::collections::BTreeSet<[i64; 3]> =
                     std::collections::BTreeSet::new();
@@ -2135,7 +2162,7 @@ mod tests {
                 }
                 // And no bit is set beyond the full-record set (the mask is not a superset).
                 let mut mask_bits = 0u64;
-                for mask in &masks.cell_masks {
+                for mask in masks.cell_masks() {
                     for word in mask {
                         mask_bits += word.count_ones() as u64;
                     }

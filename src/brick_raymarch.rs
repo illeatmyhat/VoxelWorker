@@ -289,10 +289,10 @@ struct OccupancyCellPod {
 /// count is 0, so the shader never binary-searches it).
 fn pack_occupancy_cells(masks: &BlockOccupancyMasks) -> Vec<OccupancyCellPod> {
     masks
-        .cell_keys
+        .cell_keys()
         .iter()
-        .zip(&masks.cell_masks)
-        .zip(&masks.cell_materials)
+        .zip(masks.cell_masks())
+        .zip(masks.cell_materials())
         .map(|((&key, &mask), &material)| {
             let [key_hi, key_lo] = substrate::lattice_key::split_key_hi_lo(key);
             OccupancyCellPod {
