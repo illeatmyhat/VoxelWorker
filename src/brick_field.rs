@@ -63,6 +63,16 @@ pub use substrate::lattice_key::{
     pack_lattice_key as pack_world_block_key, unpack_lattice_key as unpack_world_block_key,
 };
 
+// A boundary block's occupancy tile IS substrate's `BitCube`: an edge-≤64 (density-bounded)
+// 3D bitset stored one `u64` per X-row (one voxel per bit, x-fastest). The domain keeps the
+// "occupancy tile" name at this seam; the word-packed-bitset definition, the run-set mask
+// math, and its citations live in the substrate module. The sculpted-atlas scatter reuses
+// substrate's `CubeTilePacking` (linear slot → cubic tile grid) and the per-slot store is a
+// `SlotFreeList` (stable-index free-list). See docs/architecture/03-display.md (the
+// brick-field atlas) for how these pack into the R8 atlas the raymarch samples.
+use substrate::{CubeTilePacking, SlotFreeList};
+pub use substrate::BitCube as BrickOccupancyTile;
+
 // ============================================================================
 // Clip-map occupancy pyramid (ADR 0011 Decision 4a / slice G2+G4) — THREE
 // WORLD-FIXED coarse "any-brick-inside" levels above the brick set, a min-mip of
@@ -591,26 +601,10 @@ pub struct SculptedAtlasGeometry {
     pub brick_edge_voxels: u32,
 }
 
-/// The occupancy byte a solid voxel packs to — the fog atlas's 0/255 R8 convention.
+/// The occupancy byte a solid voxel packs to — the fog atlas's 0/255 R8 convention. Injected
+/// into [`BrickOccupancyTile::expand_to_bytes`] / [`CubeTilePacking::pack_bit_cubes`] at the
+/// atlas seam (substrate names no such byte — a set bit reads as whatever the caller passes).
 const SCULPTED_BRICK_OCCUPIED: u8 = 255;
-
-/// Expand one bit-packed X-row `word` (x-fastest, one voxel per bit) into `out_row`, the
-/// `edge`-long destination slice of R8 occupancy bytes: every set bit becomes
-/// [`SCULPTED_BRICK_OCCUPIED`], clear bits are left untouched (`out_row` starts zeroed). The
-/// single word→bytes expansion, shared by [`BrickOccupancyTile::unpack_to_bytes`] (block-local
-/// destination) and [`pack_sculpted_atlas`] (atlas-cube destination) so the skip-zero-word
-/// guard + per-bit test live in ONE place; the callers differ only in how they slice `out_row`
-/// (whose length fixes the edge) out of their buffer.
-fn expand_row_word_into(word: u64, out_row: &mut [u8]) {
-    if word == 0 {
-        return;
-    }
-    for (local_x, out) in out_row.iter_mut().enumerate() {
-        if (word >> local_x) & 1 == 1 {
-            *out = SCULPTED_BRICK_OCCUPIED;
-        }
-    }
-}
 
 impl BrickFieldBuild {
     /// Materialise this build's sculpted atlas as an upload [`SculptedAtlasPayload`] — the
@@ -1067,109 +1061,10 @@ impl ChunkOcclusionContext<'_> {
     }
 }
 
-/// A boundary block's occupancy tile, **bit-packed one voxel per bit**. Under the
-/// document's density bound (1..=64 — see `docs/architecture/`, the "one voxel row = one
-/// machine word" ruling) a whole X-row of a brick fits in a single `u64`, so a tile is
-/// `edge²` X-row words (row index `local_z * edge + local_y`, bit `x = 1 << local_x` — the
-/// same x-fastest bit order [`BlockOccupancyMasks`] uses one granule coarser). This is the
-/// sculpt memory story: 8× smaller than the former `edge³` byte tile at density 64. The
-/// GPU R8 atlas stays byte-per-voxel; the bits are unpacked to bytes at exactly one seam
-/// ([`pack_sculpted_atlas`], the `BrickFieldBuild::sculpted_atlas_bytes` boundary), never
-/// on the O(volume) path.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct BrickOccupancyTile {
-    /// The brick edge in voxels (`= density`, guaranteed 1..=64 so an X-row fits one word).
-    edge: u32,
-    /// `edge²` X-row occupancy words; row index `local_z * edge + local_y`, bit `local_x`.
-    /// Bits at or above `edge` in every word are always clear (writers never set them), so
-    /// `count_ones` over the words is an exact voxel popcount.
-    row_words: Vec<u64>,
-}
-
-impl BrickOccupancyTile {
-    /// An all-air tile of the given brick edge (1..=64).
-    pub fn empty(edge: u32) -> Self {
-        debug_assert!(
-            (1..=64).contains(&edge),
-            "brick edge (density) must be 1..=64 so an X-row fits one u64"
-        );
-        Self {
-            edge,
-            row_words: vec![0u64; (edge * edge) as usize],
-        }
-    }
-
-    /// Mark the contiguous X-run `min_x..=max_x` of one row occupied (a mask-OR — the
-    /// bit-packed form of the cuboid row `.fill(255)`). Overflow-safe for the full word:
-    /// both bounds are `< edge <= 64` hence `<= 63`, so `63 - max_x` and the shifts never
-    /// wrap even when `max_x == 63` (`u64::MAX >> 0`) or `min_x == 63`.
-    pub fn set_x_run(&mut self, local_y: u32, local_z: u32, min_x: u32, max_x: u32) {
-        debug_assert!(min_x <= max_x, "an X-run's min must not exceed its max");
-        debug_assert!(max_x < self.edge, "an X-run must stay inside the brick edge");
-        let low_bits_cleared = u64::MAX << min_x;
-        let high_bits_cleared = u64::MAX >> (63 - max_x);
-        let run_mask = low_bits_cleared & high_bits_cleared;
-        let row = (local_z * self.edge + local_y) as usize;
-        self.row_words[row] |= run_mask;
-    }
-
-    /// Whether the voxel `(local_x, local_y, local_z)` is occupied.
-    pub fn is_occupied(&self, local_x: u32, local_y: u32, local_z: u32) -> bool {
-        let row = (local_z * self.edge + local_y) as usize;
-        (self.row_words[row] >> local_x) & 1 == 1
-    }
-
-    /// The occupied voxel count (a popcount sum over the row words).
-    pub fn occupied_voxel_count(&self) -> u32 {
-        self.row_words
-            .iter()
-            .map(|word| word.count_ones())
-            .sum()
-    }
-
-    /// Expand back to `edge³` occupancy bytes (`0` / [`SCULPTED_BRICK_OCCUPIED`],
-    /// block-local x-fastest — the exact layout of the former byte tile). The lone unpack
-    /// used at the atlas seam; O(brick), never O(volume).
-    pub fn unpack_to_bytes(&self) -> Vec<u8> {
-        let edge = self.edge as usize;
-        let mut brick_bytes = vec![0u8; edge * edge * edge];
-        for local_z in 0..edge {
-            for local_y in 0..edge {
-                let word = self.row_words[local_z * edge + local_y];
-                let row = (local_z * edge + local_y) * edge;
-                expand_row_word_into(word, &mut brick_bytes[row..row + edge]);
-            }
-        }
-        brick_bytes
-    }
-
-    /// Pack `edge³` occupancy bytes into the bit tile (the inverse of
-    /// [`unpack_to_bytes`](Self::unpack_to_bytes)) — any nonzero byte is occupied (today's
-    /// bytes are only ever `0`/`SCULPTED_BRICK_OCCUPIED`). Used to seed a mirror tile from
-    /// a wholesale build's per-slot atlas bytes.
-    pub fn from_bytes(edge: u32, brick_bytes: &[u8]) -> Self {
-        let edge_usize = edge as usize;
-        debug_assert_eq!(
-            brick_bytes.len(),
-            edge_usize * edge_usize * edge_usize,
-            "occupancy bytes must be edge³"
-        );
-        let mut tile = Self::empty(edge);
-        for local_z in 0..edge_usize {
-            for local_y in 0..edge_usize {
-                let row = (local_z * edge_usize + local_y) * edge_usize;
-                let mut word = 0u64;
-                for local_x in 0..edge_usize {
-                    if brick_bytes[row + local_x] != 0 {
-                        word |= 1u64 << local_x;
-                    }
-                }
-                tile.row_words[local_z * edge_usize + local_y] = word;
-            }
-        }
-        tile
-    }
-}
+// The occupancy tile itself is substrate's `BitCube` (aliased to `BrickOccupancyTile` at the
+// top-of-module seam): edge-≤64 word-packed 3D bitset, one voxel per bit. `empty`, `set_x_run`,
+// `expand_to_bytes(byte)`, `from_bytes`, `is_set`, `popcount`, `edge()` live there. The atlas
+// seam injects `SCULPTED_BRICK_OCCUPIED` as the "set-bit byte"; substrate names no such byte.
 
 /// Rasterize one boundary block's cuboids into an `edge²`-word occupancy tile (block-local
 /// x-fastest). Occupancy only: the cuboid `material_id` render-cell key (id + overlay bit)
@@ -1263,45 +1158,16 @@ fn classify_block_brick(
 /// two produce byte-identical layouts for the same tile vector. A slot with a FREED
 /// (dead) tile is scattered as-is — its bytes are unreachable from any live record, so
 /// they may be garbage (the free-slot discipline).
+///
+/// The tile-cube geometry + the per-row expand ARE substrate's [`CubeTilePacking`]; this seam
+/// only injects [`SCULPTED_BRICK_OCCUPIED`] as the "set-bit byte" so everything GPU-facing keeps
+/// consuming `sculpted_atlas_bytes` unchanged. Returns `(bricks_per_axis, atlas_dim_voxels,
+/// bytes)`.
 fn pack_sculpted_atlas(
     slot_tiles: &[BrickOccupancyTile],
     brick_edge_voxels: u32,
 ) -> (u32, u32, Vec<u8>) {
-    let edge = brick_edge_voxels as usize;
-    let slot_count = slot_tiles.len();
-    let (bricks_per_axis, atlas_dim_voxels) = if slot_count == 0 {
-        (0, 0)
-    } else {
-        let tiles = ((slot_count as f64).cbrt().ceil() as u32).max(1);
-        (tiles, tiles * brick_edge_voxels)
-    };
-    let atlas_dim = atlas_dim_voxels as usize;
-    let mut bytes = vec![0u8; atlas_dim * atlas_dim * atlas_dim];
-    // The one unpack seam: the bit tiles expand to R8 bytes here (O(brick) per slot), so
-    // everything GPU-facing keeps consuming `sculpted_atlas_bytes` unchanged.
-    for (slot, tile) in slot_tiles.iter().enumerate() {
-        debug_assert_eq!(
-            tile.edge, brick_edge_voxels,
-            "every slot tile shares the build's brick edge"
-        );
-        let tiles = bricks_per_axis;
-        let s = slot as u32;
-        let origin = [
-            (s % tiles) as usize * edge,
-            ((s / tiles) % tiles) as usize * edge,
-            (s / (tiles * tiles)) as usize * edge,
-        ];
-        for local_z in 0..edge {
-            for local_y in 0..edge {
-                let word = tile.row_words[local_z * edge + local_y];
-                let atlas_row = ((origin[2] + local_z) * atlas_dim + origin[1] + local_y)
-                    * atlas_dim
-                    + origin[0];
-                expand_row_word_into(word, &mut bytes[atlas_row..atlas_row + edge]);
-            }
-        }
-    }
-    (bricks_per_axis, atlas_dim_voxels, bytes)
+    CubeTilePacking::pack_bit_cubes(slot_tiles, brick_edge_voxels, SCULPTED_BRICK_OCCUPIED)
 }
 
 /// The absolute CHUNK coordinate that owns an absolute world block (`floor_div` by
@@ -1355,13 +1221,12 @@ pub struct IncrementalBrickField {
     /// content [`build_brick_field`] emits, only the sculpted records' slot NUMBERS differ.
     records: Vec<BrickRecord>,
     /// Per-slot occupancy tiles (bit-packed `edge²` X-row words each — see
-    /// [`BrickOccupancyTile`]), indexed by atlas slot. A FREED slot's entry is retained
-    /// (kept `edge²` words so the atlas packer never trips) but is unreferenced — dead
-    /// bits until the slot is reallocated.
-    slot_tiles: Vec<BrickOccupancyTile>,
-    /// Reusable slot indices freed by removed / transitioned sculpted bricks — the
-    /// free-list. A new sculpted brick pops from here before growing `slot_tiles`.
-    free_slots: Vec<u32>,
+    /// [`BrickOccupancyTile`]) indexed by atlas slot, WITH their free-list, delegated to
+    /// substrate's [`SlotFreeList`]: a FREED slot's tile is retained (kept `edge²` words so
+    /// the atlas packer never trips) but unreferenced — dead bits until the slot is
+    /// reallocated. A new sculpted brick pops a freed slot (deterministic ascending reuse —
+    /// the load-bearing policy behind incremental==wholesale byte parity) before growing.
+    slot_tiles: SlotFreeList<BrickOccupancyTile>,
 }
 
 impl IncrementalBrickField {
@@ -1415,13 +1280,14 @@ impl IncrementalBrickField {
         assert!(
             slot_tiles
                 .first()
-                .is_none_or(|tile| tile.edge == build.brick_edge_voxels),
+                .is_none_or(|tile| tile.edge() == build.brick_edge_voxels),
             "the carried tiles must share the build's brick edge"
         );
         debug_assert!(
             slot_tiles.iter().enumerate().all(|(slot, tile)| {
-                tile.edge == build.brick_edge_voxels
-                    && tile.unpack_to_bytes() == build.sculpted_brick_occupancy(slot as u32)
+                tile.edge() == build.brick_edge_voxels
+                    && tile.expand_to_bytes(SCULPTED_BRICK_OCCUPIED)
+                        == build.sculpted_brick_occupancy(slot as u32)
             }),
             "each carried tile must byte-match the build's own sculpted slot in dense order"
         );
@@ -1444,8 +1310,8 @@ impl IncrementalBrickField {
         let mirror = Self {
             brick_edge_voxels,
             records: brick_records,
-            slot_tiles,
-            free_slots: Vec::new(),
+            // Dense-seed the free-list: every carried tile is a live slot `0..count`, no holes.
+            slot_tiles: SlotFreeList::from_slots(slot_tiles),
         };
         (mirror, payload)
     }
@@ -1482,7 +1348,7 @@ impl IncrementalBrickField {
     /// upload the incremental patch writes, straight from the owning tile (no whole-atlas
     /// re-pack). A freed/dead slot yields its stale bytes (unreachable, never uploaded).
     pub fn sculpted_slot_bytes(&self, slot: u32) -> Vec<u8> {
-        self.slot_tiles[slot as usize].unpack_to_bytes()
+        self.slot_tiles[slot].expand_to_bytes(SCULPTED_BRICK_OCCUPIED)
     }
 
     /// Materialise the full atlas as a [`SculptedAtlasPayload`] — the ONE legitimate
@@ -1491,7 +1357,7 @@ impl IncrementalBrickField {
     /// byte-identical to [`to_build`](Self::to_build)'s atlas.
     pub fn pack_atlas_payload(&self) -> SculptedAtlasPayload {
         let (bricks_per_axis, atlas_dim_voxels, bytes) =
-            pack_sculpted_atlas(&self.slot_tiles, self.brick_edge_voxels);
+            pack_sculpted_atlas(self.slot_tiles.as_slice(), self.brick_edge_voxels);
         SculptedAtlasPayload {
             bytes,
             geometry: SculptedAtlasGeometry {
@@ -1598,11 +1464,9 @@ impl IncrementalBrickField {
                 true
             }
         });
-        // Freed slots return to the pool (ascending pop order keeps allocation
-        // deterministic — a nicety for test readability, not correctness).
-        self.free_slots.extend(freed_slots.iter().copied());
-        self.free_slots.sort_unstable();
-        self.free_slots.dedup();
+        // Freed slots return to the pool; the free-list keeps them sorted/deduped so reuse
+        // is deterministic ascending (load-bearing for incremental==wholesale byte parity).
+        self.slot_tiles.free(freed_slots.iter().copied());
 
         // 2. Rebuild the dirty chunks' records fully — and the ring chunks' COARSE records —
         //    from the FRESH data, with occlusion verdicts from the fresh oracle (the same
@@ -1647,7 +1511,7 @@ impl IncrementalBrickField {
                                 if !chunk_is_dirty {
                                     continue;
                                 }
-                                let slot = self.allocate_slot(tile);
+                                let slot = self.slot_tiles.allocate(tile);
                                 written_slots.push(slot);
                                 self.records.push(BrickRecord {
                                     packed_world_block_key: pack_world_block_key(world_block),
@@ -1681,23 +1545,6 @@ impl IncrementalBrickField {
         }
     }
 
-    /// Allocate a slot for a fresh sculpted tile: reuse a freed slot if one is available
-    /// (keeping the high-water mark — and thus the atlas — from growing needlessly),
-    /// else append a new slot.
-    fn allocate_slot(&mut self, tile: BrickOccupancyTile) -> u32 {
-        match self.free_slots.pop() {
-            Some(slot) => {
-                self.slot_tiles[slot as usize] = tile;
-                slot
-            }
-            None => {
-                let slot = self.slot_tiles.len() as u32;
-                self.slot_tiles.push(tile);
-                slot
-            }
-        }
-    }
-
     /// Materialise the current field as a [`BrickFieldBuild`] (records + packed atlas).
     ///
     /// **Parity-oracle materialisation ONLY (item 9).** No production / per-frame path may
@@ -1711,7 +1558,7 @@ impl IncrementalBrickField {
     /// mark (live + freed holes), so a live record's slot bytes are always in range.
     pub fn to_build(&self) -> BrickFieldBuild {
         let (bricks_per_axis, atlas_dim_voxels, sculpted_atlas_bytes) =
-            pack_sculpted_atlas(&self.slot_tiles, self.brick_edge_voxels);
+            pack_sculpted_atlas(self.slot_tiles.as_slice(), self.brick_edge_voxels);
         BrickFieldBuild {
             brick_records: self.records.clone(),
             sculpted_atlas_bytes,
@@ -1723,13 +1570,10 @@ impl IncrementalBrickField {
 }
 
 /// The `bricks_per_axis` a slot-tile count packs to (`ceil(cbrt(count))`, 0 for empty) —
-/// the atlas tile-grid edge, shared by the packer and the grow test.
+/// the atlas tile-grid edge, shared by the packer and the grow test. This IS substrate's
+/// [`CubeTilePacking::tiles_per_axis`]; the wrapper keeps the domain name at the seam.
 fn sculpted_atlas_bricks_per_axis(slot_count: usize) -> u32 {
-    if slot_count == 0 {
-        0
-    } else {
-        ((slot_count as f64).cbrt().ceil() as u32).max(1)
-    }
+    CubeTilePacking::tiles_per_axis(slot_count)
 }
 
 /// Land the sculpted-brick atlas bytes in an R8Unorm 3D texture — the shipped fog-atlas
@@ -1867,107 +1711,10 @@ mod tests {
     use crate::two_layer_store::TwoLayerStore;
     use crate::voxel::{GeometryParams, ShapeKind, Voxel};
 
-    /// Byte↔bit parity gate (the density≤64 X-row packing oracle, `docs/architecture/`):
-    /// for a spread of cuboid fixtures a bit-packed [`BrickOccupancyTile`] unpacks to
-    /// EXACTLY the bytes a naive per-voxel dense rasterize produces, `is_occupied` agrees
-    /// per voxel, `from_bytes` is the inverse, and the popcount matches. The edge cases
-    /// (density 1, 32, 33 — spanning bit 32 — and 64 — the full word) exercise the
-    /// mask math the GPU-atlas seam depends on.
-    #[test]
-    fn bit_tile_unpacks_byte_identical_to_dense_rasterize() {
-        type Cuboid = ([u32; 3], [u32; 3]);
-        let fixtures: &[(u32, &[Cuboid])] = &[
-            (1, &[([0, 0, 0], [0, 0, 0])]),                 // density 1, single voxel
-            (4, &[([1, 1, 1], [1, 1, 1])]),                 // single interior voxel
-            (4, &[([0, 0, 0], [3, 3, 3])]),                 // full block
-            (8, &[([0, 3, 2], [7, 3, 2])]),                 // full X-row slab
-            (8, &[([0, 0, 0], [7, 2, 0]), ([0, 3, 3], [2, 7, 7])]), // L-shaped two cuboids
-            (16, &[([2, 5, 9], [13, 10, 12])]),             // arbitrary interior box
-            (32, &[([0, 0, 0], [31, 31, 31])]),             // full density-32 block
-            (33, &[([0, 0, 0], [32, 0, 0]), ([32, 32, 32], [32, 32, 32])]), // spans bit 32
-            (64, &[([0, 0, 0], [63, 0, 0])]),               // full 64-bit X-row
-            (64, &[([0, 0, 0], [63, 63, 63])]),             // full density-64 block
-        ];
-        for (edge, cuboids) in fixtures {
-            let edge = *edge;
-            let e = edge as usize;
-            // Reference: naive per-voxel dense byte fill (the pre-packing rasterize).
-            let mut reference = vec![0u8; e * e * e];
-            for (min, max) in cuboids.iter() {
-                for z in min[2]..=max[2] {
-                    for y in min[1]..=max[1] {
-                        for x in min[0]..=max[0] {
-                            reference[(z as usize * e + y as usize) * e + x as usize] =
-                                SCULPTED_BRICK_OCCUPIED;
-                        }
-                    }
-                }
-            }
-            // Bit path via `set_x_run` (the op `rasterize_brick_occupancy` now performs).
-            let mut tile = BrickOccupancyTile::empty(edge);
-            for (min, max) in cuboids.iter() {
-                for z in min[2]..=max[2] {
-                    for y in min[1]..=max[1] {
-                        tile.set_x_run(y, z, min[0], max[0]);
-                    }
-                }
-            }
-            assert_eq!(tile.unpack_to_bytes(), reference, "edge {edge} unpack mismatch");
-            for z in 0..edge {
-                for y in 0..edge {
-                    for x in 0..edge {
-                        let expected = reference[(z as usize * e + y as usize) * e + x as usize] != 0;
-                        assert_eq!(
-                            tile.is_occupied(x, y, z),
-                            expected,
-                            "edge {edge} is_occupied mismatch at ({x},{y},{z})"
-                        );
-                    }
-                }
-            }
-            assert_eq!(
-                BrickOccupancyTile::from_bytes(edge, &reference),
-                tile,
-                "edge {edge} from_bytes is not the inverse of unpack"
-            );
-            let occupied = reference.iter().filter(|byte| **byte != 0).count() as u32;
-            assert_eq!(
-                tile.occupied_voxel_count(),
-                occupied,
-                "edge {edge} popcount mismatch"
-            );
-        }
-    }
-
-    /// `set_x_run`'s mask math stays overflow-safe at the full 64-bit word (the case that
-    /// would wrap a naive `(1 << (max+1)) - 1`): full-word, high-only, low-only, an
-    /// interior run, and the density-1 degenerate all set exactly the intended bits.
-    #[test]
-    fn set_x_run_masks_are_overflow_safe_at_full_word() {
-        let mut full = BrickOccupancyTile::empty(64);
-        full.set_x_run(0, 0, 0, 63);
-        assert_eq!(full.row_words[0], u64::MAX);
-        assert_eq!(full.occupied_voxel_count(), 64);
-
-        let mut high = BrickOccupancyTile::empty(64);
-        high.set_x_run(0, 0, 63, 63);
-        assert_eq!(high.row_words[0], 1u64 << 63);
-
-        let mut low = BrickOccupancyTile::empty(64);
-        low.set_x_run(0, 0, 0, 0);
-        assert_eq!(low.row_words[0], 1u64);
-
-        let mut interior = BrickOccupancyTile::empty(64);
-        interior.set_x_run(0, 0, 5, 40);
-        let expected_interior = (u64::MAX >> (63 - 40)) & (u64::MAX << 5);
-        assert_eq!(interior.row_words[0], expected_interior);
-        assert_eq!(interior.occupied_voxel_count(), 40 - 5 + 1);
-
-        let mut degenerate = BrickOccupancyTile::empty(1);
-        degenerate.set_x_run(0, 0, 0, 0);
-        assert!(degenerate.is_occupied(0, 0, 0));
-        assert_eq!(degenerate.occupied_voxel_count(), 1);
-    }
+    // The bit-packed occupancy tile IS substrate's `BitCube`; its expand↔pack byte-parity and
+    // full-word run-set-mask oracles moved with it (see `crates/substrate/src/bit_cube.rs`,
+    // renamed to substrate vocabulary). The tests below exercise the DOMAIN mapping that
+    // consumes it (record partition, atlas packing, incremental==wholesale parity).
 
     /// The interior-INCLUSIVE oracle build ([`build_brick_field_all_blocks`]) maps the
     /// two-layer partition one-to-one: coarse-solid → one kind-0 record (id carried, no
