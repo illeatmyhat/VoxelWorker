@@ -406,14 +406,14 @@ pub fn widest_run_in_band_over_chunks<'grid>(
 // arithmetic under CSG lattice ops — substrate's [`substrate::FieldInterval`]. The
 // domain reads it with the occupancy convention "inside where `field <= SURFACE_ISOLEVEL`":
 // `FieldInterval::classify(SURFACE_ISOLEVEL)` yields AIR / COARSE-SOLID / BOUNDARY for a
-// whole block-sized cell, and `union_field_intervals` composes a Union of producers
+// whole block-sized cell, and `substrate::union_field_intervals` composes a Union of producers
 // (min-of-fields). The conservative-never-narrow property is why a coarse verdict can
 // never disagree with a brute-force per-voxel evaluation — the boundary-residency
 // classifier's soundness (see the Boundary-residency material in
 // `docs/architecture/02-evaluation.md`, proven by the E1 parity gate in
 // `cell_interval_parity_tests`). The interval algebra, the Lipschitz-centre bound, and
 // the classify threshold-parameter live in the substrate module doc.
-pub use substrate::{union_field_intervals, FieldClassification, FieldInterval};
+pub use substrate::{FieldClassification, FieldInterval};
 
 /// Anything that can resolve itself into the shared [`VoxelGrid`].
 ///

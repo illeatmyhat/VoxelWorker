@@ -33,8 +33,10 @@
 //! *The Art of Multiprocessor Programming* (2nd ed., 2021), on monotonic counters and
 //! sequence/version numbers for coordinating concurrent readers and writers.
 //!
-//! Everything here is `std`-only (`std::thread`, `std::sync::mpsc`,
-//! `std::panic::catch_unwind`) — substrate stays dependency-free and feature-free. The
+//! Everything in THIS module is `std`-only (`std::thread`, `std::sync::mpsc`,
+//! `std::panic::catch_unwind`) — no third-party crate. (The substrate crate as a whole has one
+//! dependency, `rayon`, used by [`crate::min_mip_pyramid`]'s parallel sort; the supersede
+//! primitive itself pulls in none of it.) The
 //! worker body's panic containment ([`catch_unwind_or_log`]) is the loop's liveness escape
 //! hatch, kept here because it is part of the same protocol: a build that panics must not
 //! silently kill the worker thread and wedge every future request.

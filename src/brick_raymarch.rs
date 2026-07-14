@@ -38,6 +38,7 @@ use crate::brick_field::{
     BLOCK_OCCUPANCY_MASK_WORDS,
 };
 use crate::core_geom::MaterialChoice;
+use crate::cuboid::VoxelBoxMaterial;
 use crate::cuboid_mesh::{cell_key_has_overlay, clean_block_id};
 use crate::renderer::{LayerBand, DEPTH_FORMAT, MSAA_SAMPLE_COUNT};
 use crate::two_layer_store::TwoLayerChunk;
@@ -220,7 +221,7 @@ pub fn brick_representable_overlay(
         for geometry in chunk.microblocks.values() {
             let mut block_cell: Option<(u16, bool)> = None;
             for cuboid in &geometry.cuboids {
-                let key = cuboid.label;
+                let key = cuboid.material_id();
                 let cell = (clean_block_id(key), cell_key_has_overlay(key));
                 match block_cell {
                     None => block_cell = Some(cell),

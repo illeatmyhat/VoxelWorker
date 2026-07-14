@@ -35,6 +35,25 @@ pub type VoxelRegion = CellGrid<u16>;
 
 pub use substrate::{CellGrid, Cuboid, GreedyCuboidDecomposition};
 
+/// Reads a [`VoxelBox`]'s label back in the domain's word. Substrate names the generic
+/// payload `label` (it assigns cuboid labels no meaning); at this seam a `VoxelBox`'s label
+/// IS the render-cell material key — the `u16` categorical block id with its overlay bit,
+/// consumed by the cuboid mesher and the two-layer store. The extension trait restores that
+/// vocabulary at every READ site without renaming the substrate field (impossible on a
+/// generic). Construction still sets `label` directly (a struct-literal field name cannot be
+/// aliased).
+pub trait VoxelBoxMaterial {
+    /// This box's render-cell material key (substrate's `label`).
+    fn material_id(&self) -> u16;
+}
+
+impl VoxelBoxMaterial for VoxelBox {
+    #[inline]
+    fn material_id(&self) -> u16 {
+        self.label
+    }
+}
+
 /// Greedy box decomposition of a region into single-material [`VoxelBox`]es — the
 /// domain entry point onto substrate's [`GreedyCuboidDecomposition`].
 ///

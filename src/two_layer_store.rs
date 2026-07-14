@@ -54,7 +54,7 @@ use rayon::prelude::*;
 use substrate::{CellClassification, CellContribution, DisjointIntervalSet};
 
 use crate::core_geom::{BlockAttrs, BlockId, CHUNK_BLOCKS};
-use crate::cuboid::{decompose_into_boxes, VoxelBox, VoxelRegion};
+use crate::cuboid::{decompose_into_boxes, VoxelBox, VoxelBoxMaterial, VoxelRegion};
 use crate::scene::{LeafProducer, Scene};
 use crate::spatial_index::{ChunkCoverage, EditBroadphaseBvh, VoxelAabb};
 use crate::voxel::{
@@ -306,8 +306,8 @@ impl TwoLayerChunk {
             // 0003 §3c — the overlay never enters the occupancy / categorical cell) but
             // carry it onto the expanded voxel's `grid_overlay` render marker (E5 — so
             // the grid matches the dense resolve's per-voxel overlay bit).
-            let block_id = BlockId(crate::cuboid_mesh::clean_block_id(cuboid.label));
-            let grid_overlay = crate::cuboid_mesh::cell_key_has_overlay(cuboid.label);
+            let block_id = BlockId(crate::cuboid_mesh::clean_block_id(cuboid.material_id()));
+            let grid_overlay = crate::cuboid_mesh::cell_key_has_overlay(cuboid.material_id());
             for voxel_z in cuboid.min[2]..=cuboid.max[2] {
                 for voxel_y in cuboid.min[1]..=cuboid.max[1] {
                     for voxel_x in cuboid.min[0]..=cuboid.max[0] {

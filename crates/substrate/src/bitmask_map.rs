@@ -106,6 +106,34 @@ impl<const MASK_WORDS: usize> SortedKeyBitmaskMap<MASK_WORDS> {
         }
     }
 
+    /// Assemble a map from `(key, mask, fallback)` triples the caller has **already** produced
+    /// **sorted strictly ascending by key and deduplicated** — split into the parallel arrays
+    /// with NO sort (unlike [`from_triples`](Self::from_triples)). The entry point for a producer
+    /// that already accumulates in key order (e.g. drains an ordered-map / `BTreeMap`), so re-sorting
+    /// would be redundant work. In debug builds the strict-ascending-unique precondition is checked
+    /// with a [`debug_assert!`]; in release it is trusted, exactly as the binary search trusts the
+    /// key order. Output is byte-identical to [`from_triples`](Self::from_triples) on the same
+    /// already-sorted input.
+    pub fn from_sorted_unique_triples(triples: Vec<(u64, [u32; MASK_WORDS], u32)>) -> Self {
+        debug_assert!(
+            triples.windows(2).all(|pair| pair[0].0 < pair[1].0),
+            "from_sorted_unique_triples requires keys strictly ascending and unique"
+        );
+        let mut keys = Vec::with_capacity(triples.len());
+        let mut masks = Vec::with_capacity(triples.len());
+        let mut fallbacks = Vec::with_capacity(triples.len());
+        for (key, mask, fallback) in triples {
+            keys.push(key);
+            masks.push(mask);
+            fallbacks.push(fallback);
+        }
+        SortedKeyBitmaskMap {
+            keys,
+            masks,
+            fallbacks,
+        }
+    }
+
     /// The number of keys in the map (== the length of each parallel array).
     pub fn len(&self) -> usize {
         self.keys.len()

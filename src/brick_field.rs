@@ -49,6 +49,7 @@ use std::sync::Arc;
 use rayon::prelude::*;
 
 use crate::core_geom::{BlockId, CHUNK_BLOCKS};
+use crate::cuboid::VoxelBoxMaterial;
 use crate::cuboid_mesh::clean_block_id;
 use crate::two_layer_store::{SeamSolidity, TwoLayerChunk};
 
@@ -159,11 +160,12 @@ impl ClipmapLevel {
     /// the min-mip. A thin adapter over the substrate fold ([`MinMipLevel::from_keys`]) —
     /// extract the packed block keys, hand them to the kernel (ADR 0011 4a).
     pub fn from_records(records: &[BrickRecord], blocks_per_cell: u32) -> Self {
-        let block_keys: Vec<u64> = records
-            .iter()
-            .map(|record| record.packed_world_block_key)
-            .collect();
-        clipmap_level_from_kernel(MinMipLevel::from_keys(&block_keys, blocks_per_cell))
+        // Fold the record block keys straight through the kernel's single-pass entry — no
+        // intermediate `Vec<u64>` (only the folded cell-key output is allocated).
+        clipmap_level_from_kernel(MinMipLevel::from_key_iter(
+            records.iter().map(|record| record.packed_world_block_key),
+            blocks_per_cell,
+        ))
     }
 
     /// Fold every non-air block of the two-layer chunk set into this level's occupied-cell
@@ -273,14 +275,11 @@ impl ClipmapPyramid {
     /// oracle (fed a full, interior-inclusive record set) and for the pyramid-shape unit tests.
     pub fn from_records(records: &[BrickRecord]) -> Self {
         // The record path folds the SAME block-key set at all three edges — exactly the substrate
-        // multi-level assembly ([`SparseMinMipPyramid::from_keys`]). Extract the keys once, hand the
-        // three-edge progression (domain configuration) to the kernel, then wrap each level.
-        let block_keys: Vec<u64> = records
-            .iter()
-            .map(|record| record.packed_world_block_key)
-            .collect();
-        let assembled = substrate::SparseMinMipPyramid::from_keys(
-            &block_keys,
+        // multi-level assembly ([`SparseMinMipPyramid::from_key_iter`]). Stream the record keys to
+        // the kernel (it buffers them ONCE internally for the three folds — the domain builds no
+        // intermediate `Vec<u64>`), then wrap each level.
+        let assembled = substrate::SparseMinMipPyramid::from_key_iter(
+            records.iter().map(|record| record.packed_world_block_key),
             &[
                 CLIPMAP_LEVEL_1_BLOCKS_PER_CELL,
                 CLIPMAP_LEVEL_2_BLOCKS_PER_CELL,
@@ -399,7 +398,7 @@ pub struct BlockOccupancyMasks {
     /// interior cell (every current band golden); best-effort where a cell mixes materials (the
     /// documented tolerance edge — the R8 atlas is occupancy-only, so per-interior-block material
     /// would re-introduce the O(volume) record set this contract deleted).
-    pub map: SortedKeyBitmaskMap<BLOCK_OCCUPANCY_MASK_WORDS>,
+    map: SortedKeyBitmaskMap<BLOCK_OCCUPANCY_MASK_WORDS>,
 }
 
 impl BlockOccupancyMasks {
@@ -511,7 +510,7 @@ impl BlockOccupancyMasks {
                                 geometry
                                     .cuboids
                                     .first()
-                                    .map(|cuboid| clean_block_id(cuboid.label) as u32)
+                                    .map(|cuboid| clean_block_id(cuboid.material_id()) as u32)
                                     .unwrap_or(0)
                             } else {
                                 continue;
@@ -530,16 +529,16 @@ impl BlockOccupancyMasks {
                 }
             }
         }
-        // The accumulation is done: hand the (already unique, BTreeMap-sorted) cells to the
-        // substrate constructor as `(key, mask, fallback)` triples. `from_triples` sorts by key —
-        // a stable no-op on the BTreeMap's ascending, unique order — and splits into the parallel
-        // arrays, so the stored shape is byte-identical to a direct push in map order.
+        // The accumulation is done: hand the cells to the substrate constructor as
+        // `(key, mask, fallback)` triples. The `BTreeMap` already drained them strictly
+        // ascending by key and unique, so use the no-re-sort constructor — the stored shape
+        // is byte-identical to a `from_triples` sort of the same already-ordered input.
         let triples: Vec<(u64, [u32; BLOCK_OCCUPANCY_MASK_WORDS], u32)> = cells
             .into_iter()
             .map(|(key, (mask, material))| (key, mask, material))
             .collect();
         BlockOccupancyMasks {
-            map: SortedKeyBitmaskMap::from_triples(triples),
+            map: SortedKeyBitmaskMap::from_sorted_unique_triples(triples),
         }
     }
 
@@ -547,6 +546,21 @@ impl BlockOccupancyMasks {
     /// band-clip interior fallback never fires).
     pub fn cell_count(&self) -> u32 {
         self.map.len() as u32
+    }
+
+    /// Whether the map holds no occupied cell — the "off" form (the band-clip interior fallback
+    /// never fires). A thin delegate over the substrate map so consumers use the accessor surface,
+    /// not the private storage.
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+
+    /// Whether the block at cell-local `linear_index` is occupied in the cell `cell_key` — a
+    /// delegate over the substrate map's [`SortedKeyBitmaskMap::contains_bit`] (binary-search the
+    /// key, then test the bit). `false` for an absent cell. The occupancy read the raymarch mirror
+    /// resolves a record-miss fallback with.
+    pub fn contains_bit(&self, cell_key: u64, linear_index: usize) -> bool {
+        self.map.contains_bit(cell_key, linear_index)
     }
 }
 
@@ -1191,7 +1205,7 @@ fn classify_block_brick(
         let material_id = geometry
             .cuboids
             .first()
-            .map(|cuboid| clean_block_id(cuboid.label))
+            .map(|cuboid| clean_block_id(cuboid.material_id()))
             .unwrap_or(0);
         BlockBrick::Sculpted {
             material_id,
@@ -1276,8 +1290,9 @@ pub struct IncrementalBrickField {
     /// [`BrickOccupancyTile`]) indexed by atlas slot, WITH their free-list, delegated to
     /// substrate's [`SlotFreeList`]: a FREED slot's tile is retained (kept `edge²` words so
     /// the atlas packer never trips) but unreferenced — dead bits until the slot is
-    /// reallocated. A new sculpted brick pops a freed slot (deterministic ascending reuse —
-    /// the load-bearing policy behind incremental==wholesale byte parity) before growing.
+    /// reallocated. A new sculpted brick pops a freed slot (deterministic reuse — largest free
+    /// index first) before growing; the reuse order is a test-readability nicety, not a
+    /// correctness contract (parity tolerates slot renumbering — see the `records` doc above).
     slot_tiles: SlotFreeList<BrickOccupancyTile>,
 }
 
@@ -1516,8 +1531,11 @@ impl IncrementalBrickField {
                 true
             }
         });
-        // Freed slots return to the pool; the free-list keeps them sorted/deduped so reuse
-        // is deterministic ascending (load-bearing for incremental==wholesale byte parity).
+        // Freed slots return to the pool; the free-list keeps them sorted/deduped so reuse is
+        // deterministic (largest free index first). This is a nicety for test readability, not
+        // correctness: incremental and wholesale agree only up to slot RENUMBERING (the parity
+        // oracle compares atlas BYTES, not slot numbers — see `IncrementalBrickField`'s records
+        // doc and `incremental_matches_wholesale`), so the reuse order never affects byte parity.
         self.slot_tiles.free(freed_slots.iter().copied());
 
         // 2. Rebuild the dirty chunks' records fully — and the ring chunks' COARSE records —
@@ -2134,7 +2152,7 @@ mod tests {
                     TwoLayerStore::enabled().build_covering_chunks(&scene, voxels_per_block, 0);
                 let full_build = build_brick_field_all_blocks(&chunks, voxels_per_block);
                 let masks = BlockOccupancyMasks::from_chunks(&chunks);
-                assert!(!masks.map.is_empty(), "the scene must occupy blocks");
+                assert!(!masks.is_empty(), "the scene must occupy blocks");
 
                 // Every full-record block reads as an occupied bit.
                 let cell_size = BLOCK_OCCUPANCY_CELL_BLOCKS as i64;
@@ -2151,7 +2169,7 @@ mod tests {
                     ];
                     let bit = (local[2] * cell_size as usize + local[1]) * cell_size as usize
                         + local[0];
-                    masks.map.contains_bit(pack_world_block_key(cell), bit)
+                    masks.contains_bit(pack_world_block_key(cell), bit)
                 };
                 let mut expected_set: std::collections::BTreeSet<[i64; 3]> =
                     std::collections::BTreeSet::new();

@@ -37,26 +37,19 @@
 //! Criterion microbenches (`crates/substrate/benches/`) exist for the *hot*
 //! components only, and are run on demand — never part of the commit gates.
 //!
-//! ---
+//! ## Components
 //!
-//! Components arrive one extraction slice at a time, each carrying its own oracles,
-//! per the extraction map referenced above. Extracted so far: slice S1 (spatial) —
-//! [`Aabb`], [`Bvh`], and the [`lattice_key`] packing codec; slice S2 (intervals +
-//! rational) — [`FieldInterval`], [`DisjointIntervalSet`], and [`Rational`]; slice S3
-//! (decomposition) — [`GreedyCuboidDecomposition`] over a [`CellGrid`] into [`Cuboid`]s;
-//! slice S4 (concurrency) — the [`supersede`] protocol: [`CoalescingWorker`],
-//! [`GenerationTracker`], and their [`drain_to_latest`] / [`catch_unwind_or_log`] helpers;
-//! slice S5 (bit/atlas kit) — [`BitCube`], [`SlotFreeList`], and [`CubeTilePacking`]; slice S7
-//! (first kernel-only tier-3 extraction) — the [`SparseMinMipPyramid`] fold (the pure core of the
-//! domain's clip-map builders, whose chunk traversal stays in the app crate); slice S8 (second
-//! kernel-only tier-3 extraction) — the [`SortedKeyBitmaskMap`] sorted parallel-array map (the
-//! storage shape of the domain's block-occupancy masks, whose `from_chunks` builder stays domain);
-//! slice S9 (third kernel-only tier-3 extraction) — the [`CellClassification`] black/white/grey CSG
-//! cell classifier (the fold-per-op-interval + 3-way verdict core of the domain's block classifier,
-//! whose leaf iteration, world offsets, and per-voxel fallback stay in the app crate); slice S10
-//! (fourth and final kernel-only tier-3 extraction) — the [`CulledBoxMeshing`] exposed-face
-//! determination (the neighbour-solidity face-culling core of the domain's cuboid mesher, whose
-//! wgpu vertex/UV/atlas/overlay assembly and `SeamSolidity`-to-oracle adaptation stay in the app crate).
+//! Each is a self-contained module with its own literature citations and oracles:
+//! [`Aabb`], [`Bvh`], and the [`lattice_key`] packing codec (spatial); [`FieldInterval`],
+//! [`DisjointIntervalSet`], and [`Rational`] (interval + rational arithmetic);
+//! [`GreedyCuboidDecomposition`] over a [`CellGrid`] into [`Cuboid`]s (box decomposition);
+//! the [`supersede`] protocol — [`CoalescingWorker`], [`GenerationTracker`], and their
+//! [`drain_to_latest`] / [`catch_unwind_or_log`] helpers (concurrency); [`BitCube`],
+//! [`SlotFreeList`], and [`CubeTilePacking`] (bit/atlas kit); the [`SparseMinMipPyramid`]
+//! occupancy fold; the [`SortedKeyBitmaskMap`] sorted parallel-array map; the
+//! [`CellClassification`] black/white/grey CSG cell classifier; and the [`CulledBoxMeshing`]
+//! exposed-face determination. See the extraction map referenced above for each component's
+//! provenance and the domain adapter that wraps it.
 
 pub mod aabb;
 pub mod bit_cube;

@@ -10,15 +10,17 @@
 //! is a plain list of reusable indices, allocation is O(1) amortised, and the payloads live
 //! in one contiguous vector addressable by slot.
 //!
-//! ## Reuse order is deterministic ascending (load-bearing)
+//! ## Reuse order is deterministic: largest free index first (load-bearing)
 //!
 //! The free set is kept **sorted ascending and deduplicated** after every free, and
-//! allocation pops from its end. This makes the sequence of indices a given series of
-//! allocate/free operations produces a deterministic function of that series alone — two
-//! runs that free the same slots reuse them in the same order. A consumer whose output must
-//! be reproducible across an incremental path and a rebuilt-from-scratch path (the two
-//! agreeing only up to slot RENUMBERING) relies on this determinism, so the sort+dedup is a
-//! contract, not an incidental tidiness.
+//! allocation [`Vec::pop`]s from its end — so it hands back the **largest** free index first
+//! and descends toward the smallest as reuse continues. What is deterministic is the *order*,
+//! not its direction: the sequence of indices a given series of allocate/free operations
+//! produces is a function of that series alone, so two runs that free the same slots reuse
+//! them in the same (descending) order. A consumer whose output must be reproducible across
+//! an incremental path and a rebuilt-from-scratch path (the two agreeing only up to slot
+//! RENUMBERING) relies on this determinism, so the sort+dedup is a contract, not an
+//! incidental tidiness.
 //!
 //! Cite: Wilson, Johnstone, Neely & Boles, *Dynamic Storage Allocation: A Survey and
 //! Critical Review* (1995) — the free-list family and reuse policies; Knuth, TAOCP vol. 1
@@ -29,8 +31,8 @@
 use std::ops::Index;
 
 /// A stable-index slot allocator over payloads of type `T`. Slot indices are `u32`; the
-/// backing store grows monotonically and freed indices are recycled in deterministic
-/// ascending order.
+/// backing store grows monotonically and freed indices are recycled in deterministic order
+/// (the free set is kept sorted ascending; reuse pops the largest free index first).
 #[derive(Debug, Clone)]
 pub struct SlotFreeList<T> {
     /// Payloads indexed by slot. A freed slot's entry is retained (dead) until the slot is
@@ -101,8 +103,9 @@ impl<T> SlotFreeList<T> {
         }
     }
 
-    /// Return `indices` to the free set, then re-sort+dedup the WHOLE set so reuse stays in
-    /// deterministic ascending order (and a doubly-freed index cannot appear twice). The
+    /// Return `indices` to the free set, then re-sort+dedup the WHOLE set so reuse stays
+    /// deterministic — the largest free index popped first (and a doubly-freed index cannot
+    /// appear twice). The
     /// freed slots' payloads are left in place (dead until reallocated); freeing only marks
     /// the indices reusable.
     pub fn free<I: IntoIterator<Item = u32>>(&mut self, indices: I) {
@@ -136,8 +139,8 @@ mod tests {
         assert_eq!(list.as_slice(), &['a', 'b', 'c', 'd']);
     }
 
-    /// Freed indices are reused in deterministic ascending order (largest-first pop of the
-    /// sorted set), the high-water mark does not grow while free indices remain, and a
+    /// Freed indices are reused in deterministic order — largest-first pop of the
+    /// ascending-sorted set — the high-water mark does not grow while free indices remain, and a
     /// double-free is deduplicated (never handed out twice).
     #[test]
     fn frees_reuse_in_deterministic_order_and_dedup() {

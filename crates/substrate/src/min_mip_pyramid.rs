@@ -84,10 +84,19 @@ impl MinMipLevel {
     /// the same cell dedup to one entry. Pure function of the keys and the edge; the input need not
     /// be sorted.
     pub fn from_keys(keys: &[u64], cell_edge: u32) -> Self {
+        Self::from_key_iter(keys.iter().copied(), cell_edge)
+    }
+
+    /// Fold packed lattice keys drawn from any iterator to their cells of edge `cell_edge`, then
+    /// sort + deduplicate — the single-pass form of [`from_keys`](Self::from_keys). A producer that
+    /// already streams keys (e.g. a domain that maps over its records) folds straight into the level
+    /// without first materialising an intermediate `Vec<u64>`; only the folded cell-key output is
+    /// allocated. Byte-identical to [`from_keys`](Self::from_keys) over the same key sequence.
+    pub fn from_key_iter(keys: impl IntoIterator<Item = u64>, cell_edge: u32) -> Self {
         let cell_edge = cell_edge.max(1);
         let cell_keys = keys
-            .iter()
-            .map(|&key| pack_lattice_key(fold_coordinate_to_cell(unpack_lattice_key(key), cell_edge)))
+            .into_iter()
+            .map(|key| pack_lattice_key(fold_coordinate_to_cell(unpack_lattice_key(key), cell_edge)))
             .collect();
         Self::from_folded_cell_keys(cell_keys, cell_edge)
     }
@@ -139,6 +148,17 @@ impl SparseMinMipPyramid {
                 .map(|&edge| MinMipLevel::from_keys(keys, edge))
                 .collect(),
         }
+    }
+
+    /// Build the pyramid from packed lattice keys drawn from any iterator — the single-pass form
+    /// of [`from_keys`](Self::from_keys) for a producer that streams keys (e.g. maps over its
+    /// records). Every level folds the SAME key set, so the keys are collected into ONE buffer
+    /// here (a multi-pass fold cannot replay a single-pass iterator) and each edge folds that
+    /// buffer; the caller is spared building its own intermediate `Vec<u64>`. Byte-identical to
+    /// [`from_keys`](Self::from_keys) over the same key sequence.
+    pub fn from_key_iter(keys: impl IntoIterator<Item = u64>, cell_edges: &[u32]) -> Self {
+        let keys: Vec<u64> = keys.into_iter().collect();
+        Self::from_keys(&keys, cell_edges)
     }
 
     /// An all-empty pyramid — one empty level per edge.
