@@ -77,10 +77,12 @@ pub use store::{ChunkCacheKey, ChunkResolveCache, Store};
 pub use brick_field::{
     build_brick_field, build_brick_field_all_blocks, build_brick_field_with_tiles,
     pack_clipmap_level_keys, pack_world_block_key,
-    read_back_brick_atlas, unpack_world_block_key, upload_brick_atlas, BrickFieldBuild,
+    read_back_brick_atlas, unpack_world_block_key, upload_brick_atlas,
+    upload_brick_cell_key_atlas, BrickCellKeyTile, BrickFieldBuild,
     BrickFieldUpdate, BrickPayload, BrickRecord, ClipmapLevel, ClipmapPyramid,
     IncrementalBrickField, SculptedAtlasGeometry, SculptedAtlasPayload,
-    CLIPMAP_LEVEL_1_BLOCKS_PER_CELL, CLIPMAP_LEVEL_2_BLOCKS_PER_CELL,
+    SculptedCellKeyAtlasGeometry, SculptedCellKeyAtlasPayload,
+    CELL_KEY_TEXEL_BYTES, CLIPMAP_LEVEL_1_BLOCKS_PER_CELL, CLIPMAP_LEVEL_2_BLOCKS_PER_CELL,
     CLIPMAP_LEVEL_3_BLOCKS_PER_CELL,
 };
 pub use brick_raymarch::{

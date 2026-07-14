@@ -140,6 +140,23 @@ impl<T: Copy> ValueCube<T> {
     }
 }
 
+impl ValueCube<u16> {
+    /// The whole cube as `2 · edge³` **little-endian** bytes in row layout — the byte string a
+    /// 16-bit-per-texel consumer (a 16-bit image, a `u16` texture upload) reads, one value's low
+    /// byte first. The LE choice is not free: it is the byte order every mainstream 16-bit texel
+    /// format is defined in, and the same order
+    /// [`CubeTilePacking::pack_u16_value_cubes`](crate::cube_packing::CubeTilePacking::pack_u16_value_cubes)
+    /// scatters a set of these cubes in, so one cube's bytes and a packed cube-of-cubes'
+    /// bytes agree value-for-value.
+    pub fn to_le_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(self.values.len() * 2);
+        for value in &self.values {
+            bytes.extend_from_slice(&value.to_le_bytes());
+        }
+        bytes
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -204,6 +221,24 @@ mod tests {
                 "edge {edge}: from_values must invert as_slice"
             );
             assert_eq!(cube.edge(), edge);
+        }
+    }
+
+    /// `to_le_bytes` emits each value low-byte-first, in the cube's row order — so byte pair
+    /// `2i` of the output IS the value at flat index `i`, and the length is `2 · edge³`.
+    #[test]
+    fn to_le_bytes_is_row_order_low_byte_first() {
+        let edge = 3u32;
+        let values: Vec<u16> = (0..edge * edge * edge).map(|i| 0x0100 * i as u16 + 7).collect();
+        let cube = ValueCube::from_values(edge, values.clone());
+        let bytes = cube.to_le_bytes();
+        assert_eq!(bytes.len(), 2 * (edge * edge * edge) as usize);
+        for (index, value) in values.iter().enumerate() {
+            assert_eq!(
+                [bytes[index * 2], bytes[index * 2 + 1]],
+                value.to_le_bytes(),
+                "value {index} must land low byte first"
+            );
         }
     }
 

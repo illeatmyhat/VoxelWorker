@@ -117,24 +117,39 @@ var<uniform> uniforms: BrickUniforms;
 
 // One resident brick, sorted ascending by (key_hi, key_lo) — the G0 packed
 // world-block key split for WGSL (no u64). `atlas_slot` == NON_RESIDENT marks a
-// sculpted brick whose payload is not resident (the residency-miss contract).
-// `kind` packs the block MATERIAL id above the kind discriminant (ADR 0011 G2):
-// bits [0, MATERIAL_ID_SHIFT) = kind (0 coarse / 1 sculpted), bits above = material.
+// sculpted brick whose occupancy payload is not resident (the residency-miss contract).
+// `cell_key_slot` is the MATERIAL SIDE ATLAS slot holding this block's per-voxel cell-key
+// tile — NON_RESIDENT for every non-MIXED record (a coarse or sculpted-UNIFORM block owns no
+// tile: its one cell key is the material + overlay packed into `kind`).
+//
+// `kind` packs, low to high: the kind discriminant (0 coarse / 1 sculpted-uniform / 2
+// sculpted-MIXED), then the block MATERIAL id, then the block's OVERLAY bit. A mixed record's
+// material/overlay are don't-care (its texels carry both, per voxel).
+//
+// MUST match `BrickGpuRecord` in brick_raymarch.rs — same field order, same std430 stride (5
+// u32s, tightly packed).
 struct BrickGpuRecord {
     key_hi: u32,
     key_lo: u32,
     kind: u32,
     atlas_slot: u32,
+    cell_key_slot: u32,
 };
 
-// The kind/material split of `BrickGpuRecord.kind` — MUST match
-// `BRICK_RECORD_MATERIAL_ID_SHIFT` in brick_raymarch.rs.
+// The kind / material / overlay split of `BrickGpuRecord.kind` — MUST match
+// `BRICK_RECORD_MATERIAL_ID_SHIFT` / `_BITS` / `BRICK_RECORD_OVERLAY_SHIFT` in
+// brick_raymarch.rs.
 const BRICK_RECORD_MATERIAL_ID_SHIFT: u32 = 8u;
+const BRICK_RECORD_MATERIAL_ID_BITS: u32 = 16u;
+const BRICK_RECORD_OVERLAY_SHIFT: u32 =
+    BRICK_RECORD_MATERIAL_ID_SHIFT + BRICK_RECORD_MATERIAL_ID_BITS;
 fn record_kind(kind: u32) -> u32 {
     return kind & ((1u << BRICK_RECORD_MATERIAL_ID_SHIFT) - 1u);
 }
 fn record_material_id(kind: u32) -> u32 {
-    return kind >> BRICK_RECORD_MATERIAL_ID_SHIFT;
+    // Masked to the material field: the overlay bit rides ABOVE it.
+    return (kind >> BRICK_RECORD_MATERIAL_ID_SHIFT)
+        & ((1u << BRICK_RECORD_MATERIAL_ID_BITS) - 1u);
 }
 
 @group(0) @binding(1)
@@ -172,6 +187,19 @@ struct OccupancyCell {
 };
 @group(0) @binding(6)
 var<storage, read> occupancy_cells: array<OccupancyCell>;
+
+// The MATERIAL SIDE ATLAS: one `edge³` cell-key tile per MIXED brick, at the brick's
+// `cell_key_slot` in a SECOND, independently-pooled cube (its own tile grid, sized from its own
+// slot count — a cell-key slot number is unrelated to an occupancy slot number). The texel is
+// the u16 render-cell key VERBATIM (clean block-palette id + on-face-grid overlay bit), so this
+// is a `texture_3d<u32>` read with `textureLoad`: exact, never filtered, never normalised.
+// Air texels are don't-care (occupancy gates the sample).
+//
+// Bound but NOT yet sampled: mixed blocks cannot reach this path while the representability
+// gate stands, and the per-voxel shade that reads this tile is the next slice. The binding
+// exists so the record format, the pool, and the layout land together.
+@group(0) @binding(7)
+var cell_key_atlas: texture_3d<u32>;
 
 // The SAME procedural material atlas + nearest/clamp sampler the cuboid mesh
 // binds, so a brick-path pixel samples the identical texel.

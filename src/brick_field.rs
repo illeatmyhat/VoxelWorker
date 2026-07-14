@@ -617,19 +617,19 @@ pub enum BrickPayload {
 }
 
 impl BrickPayload {
-    /// The GPU-side record-kind discriminant (0 = coarse, 1 = sculpted). Pinned here —
-    /// like `shape_kind_discriminant` — so a future enum reorder can't silently desync
-    /// the G1 shader.
+    /// The GPU-side record-kind discriminant: **0** = coarse, **1** = sculpted-uniform,
+    /// **2** = sculpted-MIXED. Pinned here — like `shape_kind_discriminant` — so a future enum
+    /// reorder can't silently desync the shader: `pack_gpu_records` packs THIS value into the
+    /// GPU record's `kind` bits and the WGSL decodes it there.
     ///
-    /// A MIXED sculpted brick is a kind-1 sculpted brick to the GPU **today**: its extra
-    /// per-voxel material payload is a CPU-side mirror only (the material side atlas has no
-    /// GPU pool yet), and no scene containing one currently reaches the brick path at all
-    /// (`brick_representable_overlay` routes it to the mesh). The shader-visible mixed form
-    /// arrives with that pool.
+    /// Kinds 1 and 2 TRAVERSE identically (both descend into an occupancy atlas slot); they
+    /// differ only in where the hit's SHADE comes from — the record's own material + overlay
+    /// (1), or the per-voxel cell-key texel of the material side atlas (2).
     pub fn kind_discriminant(&self) -> u32 {
         match self {
             BrickPayload::CoarseSolid { .. } => 0,
-            BrickPayload::Sculpted { .. } | BrickPayload::SculptedMixed { .. } => 1,
+            BrickPayload::Sculpted { .. } => 1,
+            BrickPayload::SculptedMixed { .. } => 2,
         }
     }
 
@@ -750,6 +750,71 @@ pub struct SculptedAtlasGeometry {
     pub brick_edge_voxels: u32,
 }
 
+/// The GPU upload payload for the **material side atlas**: the MIXED bricks' per-voxel
+/// cell-key tiles packed into one 16-bit-texel cube, landed by
+/// [`upload_brick_cell_key_atlas`] in an R16Uint 3D texture. The sibling of
+/// [`SculptedAtlasPayload`] — a SECOND, independently pooled atlas (its own slot numbering,
+/// its own free-list, its own tile-grid edge), sparse by construction: only a block whose
+/// microblocks disagree on their cell key owns a slot here, so a scene of uniform blocks packs
+/// ZERO bytes. See docs/architecture/03-display.md (the brick-field atlas).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SculptedCellKeyAtlasPayload {
+    /// `2 · geometry.atlas_dim_voxels³` bytes: one **little-endian u16 cell key per voxel**
+    /// (clean block-palette id + the on-face-grid overlay bit, verbatim — no indirection, no
+    /// per-brick palette). An air voxel's texel is a documented don't-care (occupancy gates
+    /// every read). EMPTY when no brick is mixed.
+    pub bytes: Vec<u8>,
+    /// The side atlas's OWN tile geometry — derived from the cell-key slot count, never from
+    /// the occupancy pool's.
+    pub geometry: SculptedCellKeyAtlasGeometry,
+    /// Live cell-key slot count (== the mixed-brick count of a wholesale build).
+    pub cell_key_slot_count: u32,
+}
+
+/// The material side atlas's tile geometry — the twin of [`SculptedAtlasGeometry`] computed
+/// from the CELL-KEY slot count (the pools size independently: a scene of 10k sculpted bricks
+/// with 3 mixed ones has a 22-tile occupancy grid and a 2-tile material grid).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SculptedCellKeyAtlasGeometry {
+    /// Cell-key tile slots per atlas axis (`ceil(cbrt(cell_key_slot_high_water))`).
+    pub bricks_per_axis: u32,
+    /// The side atlas's texture dimension per axis in voxels (`bricks_per_axis *
+    /// brick_edge_voxels`); 0 when no brick is mixed.
+    pub atlas_dim_voxels: u32,
+    /// The brick edge in voxels (`voxels_per_block`) — the same granule the occupancy atlas
+    /// tiles at (one cell-key texel per occupancy voxel, cell-for-cell).
+    pub brick_edge_voxels: u32,
+}
+
+impl SculptedCellKeyAtlasPayload {
+    /// The side atlas of a field with NO mixed brick: zero bytes, zero slots, zero dimension —
+    /// what every scene the representability gate admits today packs to.
+    pub fn empty(brick_edge_voxels: u32) -> Self {
+        Self {
+            bytes: Vec::new(),
+            geometry: SculptedCellKeyAtlasGeometry {
+                bricks_per_axis: 0,
+                atlas_dim_voxels: 0,
+                brick_edge_voxels: brick_edge_voxels.max(1),
+            },
+            cell_key_slot_count: 0,
+        }
+    }
+}
+
+/// Pack a slot-indexed set of cell-key tiles into the side atlas's little-endian u16 texel cube
+/// — substrate's [`CubeTilePacking::pack_u16_value_cubes`], the payload sibling of the
+/// occupancy scatter, at its own (cell-key) slot count. Shared by the wholesale build and
+/// [`IncrementalBrickField::pack_cell_key_atlas_payload`] so the two are byte-identical for the
+/// same tile vector. A FREED (dead) slot's tile is scattered as-is: unreachable from any live
+/// record, so its texels may be garbage.
+fn pack_cell_key_atlas(
+    slot_tiles: &[BrickCellKeyTile],
+    brick_edge_voxels: u32,
+) -> (u32, u32, Vec<u8>) {
+    CubeTilePacking::pack_u16_value_cubes(slot_tiles, brick_edge_voxels)
+}
+
 /// The occupancy byte a solid voxel packs to — the fog atlas's 0/255 R8 convention. Injected
 /// into [`BrickOccupancyTile::expand_to_bytes`] / [`CubeTilePacking::pack_bit_cubes`] at the
 /// atlas seam (substrate names no such byte — a set bit reads as whatever the caller passes).
@@ -770,6 +835,24 @@ impl BrickFieldBuild {
                 brick_edge_voxels: self.brick_edge_voxels,
             },
             sculpted_slot_count: self.sculpted_brick_count() as u32,
+        }
+    }
+
+    /// Materialise this build's MATERIAL SIDE ATLAS as an upload
+    /// [`SculptedCellKeyAtlasPayload`] — the second pool's install adapter, packed from the
+    /// mixed bricks' cell-key tiles at their own dense slot numbering. A build with no mixed
+    /// brick yields the empty payload (zero bytes: the sparse-side-atlas contract).
+    pub fn cell_key_atlas_payload(&self) -> SculptedCellKeyAtlasPayload {
+        let (bricks_per_axis, atlas_dim_voxels, bytes) =
+            pack_cell_key_atlas(&self.cell_key_tiles, self.brick_edge_voxels);
+        SculptedCellKeyAtlasPayload {
+            bytes,
+            geometry: SculptedCellKeyAtlasGeometry {
+                bricks_per_axis,
+                atlas_dim_voxels,
+                brick_edge_voxels: self.brick_edge_voxels,
+            },
+            cell_key_slot_count: self.mixed_brick_count() as u32,
         }
     }
 
@@ -1442,6 +1525,18 @@ pub struct BrickFieldUpdate {
     /// (the one legitimate wholesale re-pack, ADR 0011 pitfalls / ADR 0007 resize
     /// precedent). False ⇒ untouched slots keep their texels.
     pub atlas_grew: bool,
+    /// MATERIAL SIDE ATLAS slots (re)written this edit — the cell-key tiles of the MIXED
+    /// bricks the edit (re)emitted, in the second pool's OWN numbering. Empty for an edit that
+    /// touched no mixed block (the common case: the pool is sparse). The GPU patch's cell-key
+    /// work-list, exactly as `written_slots` is the occupancy atlas's.
+    pub written_cell_key_slots: Vec<u32>,
+    /// Cell-key slots FREED this edit: a block that stopped being mixed (or stopped existing)
+    /// releases its material tile. Dead until reallocated; never uploaded.
+    pub freed_cell_key_slots: Vec<u32>,
+    /// Whether the MATERIAL SIDE ATLAS's tile geometry grew — its OWN signal, independent of
+    /// [`atlas_grew`](Self::atlas_grew) (the pools size from their own slot counts, so either
+    /// may grow without the other). True ⇒ the sink re-packs + re-uploads the whole side atlas.
+    pub cell_key_atlas_grew: bool,
 }
 
 /// The PERSISTENT incremental brick field (ADR 0011 slice G3). Maintains the sorted
@@ -1595,6 +1690,46 @@ impl IncrementalBrickField {
         self.cell_key_tiles.len()
     }
 
+    /// The MATERIAL SIDE ATLAS's tile geometry, derived from ITS OWN slot high-water mark
+    /// exactly as [`pack_cell_key_atlas`] would — the twin of
+    /// [`atlas_geometry`](Self::atlas_geometry) for the second pool (the patch seam's
+    /// slot-origin inputs, without materialising a build).
+    pub fn cell_key_atlas_geometry(&self) -> SculptedCellKeyAtlasGeometry {
+        let bricks_per_axis = CubeTilePacking::tiles_per_axis(self.cell_key_tiles.len());
+        SculptedCellKeyAtlasGeometry {
+            bricks_per_axis,
+            atlas_dim_voxels: bricks_per_axis * self.brick_edge_voxels,
+            brick_edge_voxels: self.brick_edge_voxels,
+        }
+    }
+
+    /// One cell-key slot's `2 · edge³` little-endian u16 texel bytes — the DIRTY-SLOT upload
+    /// the incremental patch writes into the side atlas, straight from the owning tile (no
+    /// whole-atlas re-pack). A freed/dead slot yields its stale bytes (unreachable, never
+    /// uploaded).
+    pub fn cell_key_slot_bytes(&self, cell_key_slot: u32) -> Vec<u8> {
+        self.cell_key_tiles[cell_key_slot].to_le_bytes()
+    }
+
+    /// Materialise the full MATERIAL SIDE ATLAS as a [`SculptedCellKeyAtlasPayload`] — the
+    /// second pool's wholesale re-pack, done only on a side-atlas GROW
+    /// ([`BrickFieldUpdate::cell_key_atlas_grew`]) where every cell-key slot's 3D position
+    /// moved. Reuses [`pack_cell_key_atlas`], so it stays byte-identical to
+    /// [`to_build`](Self::to_build)'s + [`BrickFieldBuild::cell_key_atlas_payload`]'s.
+    pub fn pack_cell_key_atlas_payload(&self) -> SculptedCellKeyAtlasPayload {
+        let (bricks_per_axis, atlas_dim_voxels, bytes) =
+            pack_cell_key_atlas(self.cell_key_tiles.as_slice(), self.brick_edge_voxels);
+        SculptedCellKeyAtlasPayload {
+            bytes,
+            geometry: SculptedCellKeyAtlasGeometry {
+                bricks_per_axis,
+                atlas_dim_voxels,
+                brick_edge_voxels: self.brick_edge_voxels,
+            },
+            cell_key_slot_count: self.mixed_brick_count() as u32,
+        }
+    }
+
     /// How many LIVE records are MIXED sculpted bricks (== live cell-key tiles).
     pub fn mixed_brick_count(&self) -> usize {
         self.records
@@ -1731,6 +1866,8 @@ impl IncrementalBrickField {
             }
         }
         let previous_bricks_per_axis = sculpted_atlas_bricks_per_axis(self.slot_tiles.len());
+        let previous_cell_key_bricks_per_axis =
+            CubeTilePacking::tiles_per_axis(self.cell_key_tiles.len());
 
         // 1. Drop every previous record whose block is in a dirty chunk (freeing its slot),
         //    and every COARSE record of a ring chunk (its occlusion verdict may have flipped;
@@ -1774,6 +1911,8 @@ impl IncrementalBrickField {
         //    structural).
         let oracle = BrickOcclusionOracle::new(fresh_chunks);
         let mut written_slots = Vec::new();
+        // The side atlas's own write-list: the cell-key slots the (re)emitted MIXED bricks took.
+        let mut written_cell_key_slots = Vec::new();
         for (chunk_coord, chunk) in fresh_chunks {
             let chunk_is_dirty = dirty.contains(chunk_coord);
             if !chunk_is_dirty && !ring.contains(chunk_coord) {
@@ -1820,10 +1959,15 @@ impl IncrementalBrickField {
                                 // block takes no material slot at all.
                                 let payload = match cell_keys {
                                     None => BrickPayload::Sculpted { atlas_slot: slot },
-                                    Some(cell_key_tile) => BrickPayload::SculptedMixed {
-                                        atlas_slot: slot,
-                                        cell_key_slot: self.cell_key_tiles.allocate(cell_key_tile),
-                                    },
+                                    Some(cell_key_tile) => {
+                                        let cell_key_slot =
+                                            self.cell_key_tiles.allocate(cell_key_tile);
+                                        written_cell_key_slots.push(cell_key_slot);
+                                        BrickPayload::SculptedMixed {
+                                            atlas_slot: slot,
+                                            cell_key_slot,
+                                        }
+                                    }
                                 };
                                 self.records.push(BrickRecord {
                                     packed_world_block_key: pack_world_block_key(world_block),
@@ -1851,10 +1995,17 @@ impl IncrementalBrickField {
 
         let atlas_grew =
             sculpted_atlas_bricks_per_axis(self.slot_tiles.len()) != previous_bricks_per_axis;
+        // The side atlas grows on ITS OWN slot count — a mixed brick appearing can move every
+        // cell-key tile without the occupancy grid moving at all (and vice versa).
+        let cell_key_atlas_grew = CubeTilePacking::tiles_per_axis(self.cell_key_tiles.len())
+            != previous_cell_key_bricks_per_axis;
         BrickFieldUpdate {
             written_slots,
             freed_slots,
             atlas_grew,
+            written_cell_key_slots,
+            freed_cell_key_slots,
+            cell_key_atlas_grew,
         }
     }
 
@@ -1943,6 +2094,69 @@ pub fn upload_brick_atlas(
     }
     texture
 }
+
+/// Land the MATERIAL SIDE ATLAS's cell-key bytes in an **R16Uint** 3D texture — the second,
+/// independently pooled atlas beside [`upload_brick_atlas`]'s R8 occupancy one. `R16Uint`
+/// because the texel IS the `u16` cell key verbatim (palette id + overlay bit): an integer
+/// sampled with `textureLoad` and compared exactly, never filtered or normalised — a float
+/// format would round the id. Two bytes per texel (little-endian, the packer's order), so a
+/// row is `2 · edge` bytes. `COPY_SRC` is set for the parity net's readback; a field with no
+/// MIXED brick returns a 1³ placeholder (nothing samples it — every record carries its one
+/// cell key).
+///
+/// Known limit (inherited from the occupancy atlas, not introduced here): the app requests
+/// `Limits::default()`, so `max_texture_dimension_3d` is 2048 and there is no pre-allocation
+/// VRAM budget guard — see docs/design/vram-ceiling-probe.md. The side atlas is sparse (only
+/// mixed bricks), so it reaches that ceiling far later than the occupancy pool does.
+pub fn upload_brick_cell_key_atlas(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    atlas: &SculptedCellKeyAtlasPayload,
+) -> wgpu::Texture {
+    let atlas_dim = atlas.geometry.atlas_dim_voxels.max(1);
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("brick-field cell-key side atlas"),
+        size: wgpu::Extent3d {
+            width: atlas_dim,
+            height: atlas_dim,
+            depth_or_array_layers: atlas_dim,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D3,
+        format: wgpu::TextureFormat::R16Uint,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_DST
+            | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    if atlas.geometry.atlas_dim_voxels > 0 {
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &atlas.bytes,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(atlas_dim * CELL_KEY_TEXEL_BYTES),
+                rows_per_image: Some(atlas_dim),
+            },
+            wgpu::Extent3d {
+                width: atlas_dim,
+                height: atlas_dim,
+                depth_or_array_layers: atlas_dim,
+            },
+        );
+    }
+    texture
+}
+
+/// Bytes per cell-key texel — the R16Uint stride (one little-endian `u16` per voxel). The ONE
+/// name for the "2" every side-atlas row/extent arithmetic multiplies by.
+pub const CELL_KEY_TEXEL_BYTES: u32 = 2;
 
 /// Read an `atlas_dim³` R8 atlas texture back to row-unpadded bytes — the parity net's
 /// A/B readback ONLY (mirrors `dispatch_atlas`; per ADR 0006 §4 nothing ever reads a
@@ -3211,7 +3425,12 @@ mod incremental_tests {
             else {
                 panic!("a block whose cuboids disagree on their cell key must emit MIXED");
             };
-            assert_eq!(record.payload.kind_discriminant(), 1, "mixed is a sculpted kind");
+            assert_eq!(
+                record.payload.kind_discriminant(),
+                2,
+                "a MIXED brick is its own GPU record kind (it traverses like a sculpted one, \
+                 but shades from its cell-key tile)"
+            );
             assert_eq!(
                 build.cell_key_tiles[cell_key_slot as usize].as_slice(),
                 expected_cell_keys(cuboids).as_slice(),
@@ -3438,5 +3657,224 @@ mod incremental_tests {
                 .all(|record| !matches!(record.payload, BrickPayload::SculptedMixed { .. })),
             "no record may be mixed in a single-material scene"
         );
+
+        // …and therefore packs a ZERO-LENGTH side atlas: the second pool costs such a scene
+        // nothing at all (not even a tile grid).
+        let side_atlas = build.cell_key_atlas_payload();
+        assert!(side_atlas.bytes.is_empty(), "no mixed brick ⇒ no side-atlas bytes");
+        assert_eq!(side_atlas.cell_key_slot_count, 0);
+        assert_eq!(side_atlas.geometry.bricks_per_axis, 0);
+        assert_eq!(side_atlas.geometry.atlas_dim_voxels, 0);
+    }
+
+    /// Read one cell-key slot's `edge³` keys back out of a PACKED side atlas — an INDEPENDENT
+    /// re-derivation of the GPU's addressing (linear slot → 3D tile origin, x-fastest; texels
+    /// little-endian u16, two bytes each), so a bug in the packer cannot hide behind the
+    /// packer's own arithmetic.
+    fn packed_cell_keys_at_slot(bytes: &[u8], bricks_per_axis: u32, slot: u32) -> Vec<u16> {
+        let edge = HAND_DENSITY as usize;
+        let tiles = bricks_per_axis.max(1) as usize;
+        let atlas_dim = tiles * edge;
+        let slot = slot as usize;
+        let origin = [
+            (slot % tiles) * edge,
+            ((slot / tiles) % tiles) * edge,
+            (slot / (tiles * tiles)) * edge,
+        ];
+        let mut keys = Vec::with_capacity(edge.pow(3));
+        for local_z in 0..edge {
+            for local_y in 0..edge {
+                for local_x in 0..edge {
+                    let texel = ((origin[2] + local_z) * atlas_dim + origin[1] + local_y)
+                        * atlas_dim
+                        + origin[0]
+                        + local_x;
+                    keys.push(u16::from_le_bytes([bytes[texel * 2], bytes[texel * 2 + 1]]));
+                }
+            }
+        }
+        keys
+    }
+
+    /// **The R16 side atlas packs each mixed brick's cell-key tile at its own slot origin.**
+    /// The pool is sized from ITS OWN slot count (two mixed bricks ⇒ a 2-tile grid), holds two
+    /// little-endian bytes per voxel, and every live slot reads back — through an independent
+    /// addressing oracle — as exactly that block's per-voxel cuboid keys. Bricks that are
+    /// uniform or coarse consume no texel here, whatever their occupancy slot.
+    #[test]
+    fn mixed_bricks_pack_the_r16_side_atlas_at_their_own_slot_origins() {
+        let uniform_block = [0u32, 0, 0];
+        let uniform_cuboids = vec![cell_box([0, 0, 0], [3, 3, 3], 1, true)];
+        let mixed_material_block = [1u32, 0, 0];
+        let mixed_material_cuboids = vec![
+            cell_box([0, 0, 0], [1, 3, 3], 1, false),
+            cell_box([2, 0, 0], [3, 3, 3], 2, false),
+        ];
+        let mixed_overlay_block = [2u32, 0, 0];
+        let mixed_overlay_cuboids = vec![
+            cell_box([0, 0, 0], [3, 3, 1], 1, false),
+            cell_box([0, 0, 2], [3, 3, 3], 1, true),
+        ];
+        let chunks = hand_built_chunk(
+            &[([3, 0, 0], 2, true)],
+            &[
+                (uniform_block, uniform_cuboids),
+                (mixed_material_block, mixed_material_cuboids.clone()),
+                (mixed_overlay_block, mixed_overlay_cuboids.clone()),
+            ],
+        );
+        let build = build_brick_field(&chunks, HAND_DENSITY);
+        let side_atlas = build.cell_key_atlas_payload();
+
+        // The pool's OWN geometry: two mixed bricks ⇒ ceil(cbrt 2) = 2 tiles/axis, 8 voxels/axis
+        // — while the occupancy pool holds THREE sculpted bricks (its own, larger, tile grid).
+        assert_eq!(side_atlas.cell_key_slot_count, 2);
+        assert_eq!(side_atlas.geometry.bricks_per_axis, 2);
+        assert_eq!(side_atlas.geometry.atlas_dim_voxels, 2 * HAND_DENSITY);
+        assert_eq!(side_atlas.geometry.brick_edge_voxels, HAND_DENSITY);
+        assert_eq!(
+            side_atlas.bytes.len(),
+            2 * (2 * HAND_DENSITY as usize).pow(3),
+            "two bytes per texel — the R16Uint stride"
+        );
+        assert_eq!(build.sculpted_brick_count(), 3);
+
+        // Every live slot reads back as that block's own per-voxel keys.
+        for (block, cuboids) in [
+            (mixed_material_block, &mixed_material_cuboids),
+            (mixed_overlay_block, &mixed_overlay_cuboids),
+        ] {
+            let record = build
+                .find_record([block[0] as i64, block[1] as i64, block[2] as i64])
+                .expect("a mixed block must have a record");
+            let slot = record
+                .payload
+                .cell_key_slot()
+                .expect("a mixed block must own a cell-key slot");
+            assert_eq!(
+                packed_cell_keys_at_slot(
+                    &side_atlas.bytes,
+                    side_atlas.geometry.bricks_per_axis,
+                    slot
+                ),
+                expected_cell_keys(cuboids),
+                "the packed side atlas must carry {block:?}'s keys at its slot origin"
+            );
+        }
+
+        // The two mixed slots occupy DISJOINT texel spans (the slot → origin map is injective):
+        // exactly the two tiles' worth of texels are non-zero-keyed, the rest of the cube is
+        // untouched fill.
+        let occupied_texels = side_atlas
+            .bytes
+            .chunks_exact(2)
+            .filter(|texel| u16::from_le_bytes([texel[0], texel[1]]) != AIR_CELL_KEY_DONT_CARE)
+            .count();
+        let expected_keyed: usize = [&mixed_material_cuboids, &mixed_overlay_cuboids]
+            .iter()
+            .map(|cuboids| {
+                expected_cell_keys(cuboids)
+                    .iter()
+                    .filter(|key| **key != AIR_CELL_KEY_DONT_CARE)
+                    .count()
+            })
+            .sum();
+        assert_eq!(
+            occupied_texels, expected_keyed,
+            "no key may land outside its own slot's tile"
+        );
+    }
+
+    /// **The incremental pool's GPU work-list.** A uniform↔mixed flip reports exactly the
+    /// cell-key slots the sink must free and rewrite (the second pool's own lists, independent
+    /// of the occupancy atlas's), and the bytes it packs are the bytes a from-scratch build
+    /// packs — tile-for-tile at each live record's slot (the pools renumber across the two
+    /// paths; the texels do not). The `to_build()` parity-oracle style, for the side atlas.
+    #[test]
+    fn incremental_cell_key_pool_reports_its_work_list_and_packs_like_wholesale() {
+        let block_a = [0u32, 0, 0];
+        let block_b = [1u32, 0, 0];
+        let uniform_a = vec![cell_box([0, 0, 0], [3, 3, 3], 1, false)];
+        let mixed_a = vec![
+            cell_box([0, 0, 0], [3, 3, 1], 1, false),
+            cell_box([0, 0, 2], [3, 3, 3], 2, false),
+        ];
+        let mixed_b = vec![
+            cell_box([0, 0, 0], [1, 3, 3], 2, false),
+            cell_box([2, 0, 0], [3, 3, 3], 2, true),
+        ];
+        let uniform_b = vec![cell_box([0, 0, 0], [3, 3, 3], 2, true)];
+
+        // Seed: A uniform, B mixed — one cell-key slot, a 1-tile side atlas.
+        let step_0 = hand_built_chunk(
+            &[],
+            &[(block_a, uniform_a.clone()), (block_b, mixed_b.clone())],
+        );
+        let (mut mirror, _atlas) =
+            IncrementalBrickField::from_wholesale(build_brick_field(&step_0, HAND_DENSITY));
+        assert_eq!(mirror.cell_key_atlas_geometry().bricks_per_axis, 1);
+
+        // The FLIP: A becomes mixed, B becomes uniform. B's slot is freed and A's allocation
+        // reuses it — so the sink frees slot 0 and rewrites slot 0, and neither tile grid grows.
+        let step_1 = hand_built_chunk(&[], &[(block_a, mixed_a.clone()), (block_b, uniform_b)]);
+        let update = mirror.apply_dirty_update(&step_1, &[[0, 0, 0]]);
+        assert_eq!(update.freed_cell_key_slots, vec![0]);
+        assert_eq!(update.written_cell_key_slots, vec![0]);
+        assert!(!update.cell_key_atlas_grew, "a reused slot cannot grow the side atlas");
+        assert!(!update.atlas_grew, "the occupancy pool is untouched by a material flip");
+
+        // The dirty-slot bytes the sink uploads ARE the tile's little-endian texels.
+        let mut expected_bytes = Vec::new();
+        for key in expected_cell_keys(&mixed_a) {
+            expected_bytes.extend_from_slice(&key.to_le_bytes());
+        }
+        assert_eq!(mirror.cell_key_slot_bytes(0), expected_bytes);
+
+        // GROW: B becomes mixed too — the side atlas's OWN grow signal fires (2 slots ⇒ a
+        // 2-tile grid), while the occupancy pool's does not.
+        let step_2 = hand_built_chunk(&[], &[(block_a, mixed_a), (block_b, mixed_b)]);
+        let update = mirror.apply_dirty_update(&step_2, &[[0, 0, 0]]);
+        assert!(
+            update.cell_key_atlas_grew,
+            "the second mixed brick must grow the side atlas's tile grid"
+        );
+        assert!(!update.atlas_grew, "the occupancy pool's grid is unchanged");
+        assert_eq!(update.written_cell_key_slots.len(), 2);
+        assert_eq!(mirror.cell_key_atlas_geometry().bricks_per_axis, 2);
+
+        // The wholesale-parity bar: the mirror's packed side atlas carries, at every live mixed
+        // record's slot, exactly the tile a from-scratch build packs at ITS slot.
+        let packed = mirror.pack_cell_key_atlas_payload();
+        assert_eq!(
+            packed, mirror.to_build().cell_key_atlas_payload(),
+            "the two materialisations of one mirror must be byte-identical"
+        );
+        let wholesale = build_brick_field(&step_2, HAND_DENSITY);
+        let wholesale_atlas = wholesale.cell_key_atlas_payload();
+        assert_eq!(packed.geometry, wholesale_atlas.geometry);
+        assert_eq!(packed.cell_key_slot_count, wholesale_atlas.cell_key_slot_count);
+        for record in mirror.records() {
+            let Some(mirror_slot) = record.payload.cell_key_slot() else {
+                continue;
+            };
+            let block = unpack_world_block_key(record.packed_world_block_key);
+            let whole_slot = wholesale
+                .find_record(block)
+                .and_then(|whole| whole.payload.cell_key_slot())
+                .expect("the wholesale build must call the same block mixed");
+            assert_eq!(
+                packed_cell_keys_at_slot(
+                    &packed.bytes,
+                    packed.geometry.bricks_per_axis,
+                    mirror_slot
+                ),
+                packed_cell_keys_at_slot(
+                    &wholesale_atlas.bytes,
+                    wholesale_atlas.geometry.bricks_per_axis,
+                    whole_slot
+                ),
+                "packed cell keys at {block:?} (slots renumber, texels do not)"
+            );
+        }
     }
 }

@@ -33,9 +33,9 @@ use wgpu::util::DeviceExt;
 use crate::voxel::RecentreVoxels;
 use crate::brick_field::{
     pack_clipmap_level_keys, unpack_world_block_key, upload_brick_atlas,
-    BlockOccupancyMasks, BrickFieldBuild, BrickFieldUpdate, BrickRecord,
-    ClipmapLevel, ClipmapPyramid, IncrementalBrickField, SculptedAtlasPayload,
-    BLOCK_OCCUPANCY_MASK_WORDS,
+    upload_brick_cell_key_atlas, BlockOccupancyMasks, BrickFieldBuild, BrickFieldUpdate,
+    BrickRecord, ClipmapLevel, ClipmapPyramid, IncrementalBrickField, SculptedAtlasPayload,
+    SculptedCellKeyAtlasPayload, BLOCK_OCCUPANCY_MASK_WORDS, CELL_KEY_TEXEL_BYTES,
 };
 use crate::core_geom::MaterialChoice;
 use crate::cuboid::VoxelBoxMaterial;
@@ -47,16 +47,44 @@ use crate::two_layer_store::TwoLayerChunk;
 /// residency-miss contract). Must match `NON_RESIDENT_ATLAS_SLOT` in the WGSL.
 pub const NON_RESIDENT_ATLAS_SLOT: u32 = u32::MAX;
 
-/// `BrickGpuRecord.kind` packs the record's block material-colour index in the bits
-/// ABOVE the kind discriminant (ADR 0011 G2 per-record shading): bits `[0, SHIFT)`
-/// hold the kind (0 coarse / 1 sculpted), bits `[SHIFT, 32)` the material id. One
-/// `u32`, no struct-layout change — a multi-producer scene of distinct per-block
-/// materials shades each hit from its own record. MUST match the decode in
-/// `shaders/brick_raymarch.wgsl`.
+/// `BrickGpuRecord.kind` is a bit-packed field, LOW to HIGH — MUST match the decode in
+/// `shaders/brick_raymarch.wgsl`:
+///
+/// * bits `[0, BRICK_RECORD_MATERIAL_ID_SHIFT)` — the **kind discriminant**:
+///   `0` coarse, `1` sculpted-uniform, `2` sculpted-**mixed** (a block whose microblocks
+///   disagree on their cell key: its per-voxel keys live in the material side atlas at
+///   `BrickGpuRecord.cell_key_slot`, and the record's own material/overlay are don't-care).
+///   Kinds 1 and 2 traverse identically — both descend into the occupancy atlas slot; only
+///   the SHADE source differs.
+/// * bits `[SHIFT, SHIFT + BRICK_RECORD_MATERIAL_ID_BITS)` — the block's **material-colour
+///   index** (per-record shading: a multi-producer scene of distinct per-block materials
+///   shades each hit from its own record).
+/// * bit `BRICK_RECORD_OVERLAY_SHIFT` — the block's **on-face-grid overlay bit**, the other
+///   half of its cell key. Per-RECORD (not a scene-wide uniform), so blocks that disagree on
+///   the overlay are still one brick field. Meaningful for coarse + uniform records; a MIXED
+///   record's overlay rides per-voxel in its cell-key texel instead.
+///
+/// One `u32`; the record struct grows only by the cell-key slot.
 pub const BRICK_RECORD_MATERIAL_ID_SHIFT: u32 = 8;
+
+/// Width of the material-id field in `BrickGpuRecord.kind` — the full `u16` a
+/// [`BrickRecord::material_id`](crate::brick_field::BrickRecord::material_id) can hold, so the
+/// packing caps nothing.
+pub const BRICK_RECORD_MATERIAL_ID_BITS: u32 = 16;
+
+/// The bit of `BrickGpuRecord.kind` carrying the record's overlay flag (immediately above the
+/// material-id field).
+pub const BRICK_RECORD_OVERLAY_SHIFT: u32 =
+    BRICK_RECORD_MATERIAL_ID_SHIFT + BRICK_RECORD_MATERIAL_ID_BITS;
 
 /// Mask isolating the kind discriminant below [`BRICK_RECORD_MATERIAL_ID_SHIFT`].
 const BRICK_RECORD_KIND_MASK: u32 = (1 << BRICK_RECORD_MATERIAL_ID_SHIFT) - 1;
+
+/// The `kind` discriminant of a COARSE record (a solid block-cube, no atlas slot) — the ONE
+/// value this side decodes against; the discriminants themselves are pinned by
+/// [`BrickPayload::kind_discriminant`](crate::brick_field::BrickPayload::kind_discriminant),
+/// which [`gpu_record_of`] packs verbatim.
+const BRICK_KIND_COARSE: u32 = 0;
 
 /// ADR 0012 (H1) — the dynamic-offset uniform slots the field bind group indexes. The
 /// SINGLE uniform buffer holds three `BrickUniformsPod` slots (each aligned up to the
@@ -68,16 +96,35 @@ const BRICK_UNIFORM_SLOT_GHOST_LOWER: u32 = 1;
 const BRICK_UNIFORM_SLOT_GHOST_UPPER: u32 = 2;
 const BRICK_UNIFORM_SLOT_COUNT: u64 = 3;
 
-/// The kind discriminant (0 coarse / 1 sculpted) of a packed `BrickGpuRecord.kind` —
-/// the mirror of the WGSL `record_kind(kind)`. The material id lives above it.
+/// The kind discriminant (0 coarse / 1 sculpted-uniform / 2 sculpted-mixed) of a packed
+/// `BrickGpuRecord.kind` — the mirror of the WGSL `record_kind(kind)`. The material id and the
+/// overlay bit live above it.
 fn record_kind_discriminant(kind: u32) -> u32 {
     kind & BRICK_RECORD_KIND_MASK
 }
 
+/// Does this packed record render as a solid block-cube — i.e. is it COARSE, or a sculpted
+/// brick whose occupancy tile is not resident (the residency-miss contract)? The ONE reader of
+/// "no voxel DDA for this block", mirroring the WGSL's `is_coarse` test; a MIXED record is a
+/// sculpted one here (kinds 1 and 2 traverse identically — only the shade source differs).
+fn record_is_coarse_form(record: &BrickGpuRecord) -> bool {
+    record_kind_discriminant(record.kind) == BRICK_KIND_COARSE
+        || record.atlas_slot == NON_RESIDENT_ATLAS_SLOT
+}
+
 /// One resident brick as the shader consumes it: the packed world-block key split
 /// into a `(hi, lo)` u32 pair (sorted ascending — the in-shader binary search's
-/// order), the record kind (0 coarse / 1 sculpted) and the atlas slot (or
-/// [`NON_RESIDENT_ATLAS_SLOT`]).
+/// order), the packed `kind` field (kind discriminant + material id + overlay bit — see
+/// [`BRICK_RECORD_MATERIAL_ID_SHIFT`]), the occupancy atlas slot (or
+/// [`NON_RESIDENT_ATLAS_SLOT`]), and the MATERIAL SIDE ATLAS slot holding the block's
+/// per-voxel cell-key tile.
+///
+/// `cell_key_slot` is [`NON_RESIDENT_ATLAS_SLOT`] for every non-MIXED record (coarse or
+/// sculpted-uniform: they own no cell-key tile — their one cell key rides in `kind`), and it
+/// carries the same sentinel meaning for a mixed record whose side-atlas tile is not resident:
+/// shade from the record, degraded but correct.
+///
+/// Five `u32`s, tightly packed (std430 stride 20 — no padding on either side of the seam).
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Pod, Zeroable)]
 pub struct BrickGpuRecord {
@@ -85,6 +132,7 @@ pub struct BrickGpuRecord {
     pub key_lo: u32,
     pub kind: u32,
     pub atlas_slot: u32,
+    pub cell_key_slot: u32,
 }
 
 /// Pack the build's records for the GPU. The record set is already **surface-only** (ADR
@@ -116,31 +164,33 @@ fn gpu_record_of(
     non_resident: &mut impl FnMut(u32) -> bool,
 ) -> BrickGpuRecord {
     let key = record.packed_world_block_key;
-    // A MIXED sculpted brick packs EXACTLY like a uniform one here: the GPU form carries the
-    // occupancy slot + the record material, and the per-voxel cell-key tile it also owns is a
-    // CPU-mirror-only payload for now (the material side atlas has no GPU pool yet, and no
-    // scene containing a mixed brick reaches this path — `brick_representable_overlay` routes
-    // it to the mesh). So this packing is byte-identical for every scene that engages today.
-    let (kind_discriminant, atlas_slot) = match record.payload.occupancy_atlas_slot() {
-        None => (0u32, 0u32),
-        Some(atlas_slot) => (
-            1u32,
-            if non_resident(atlas_slot) {
-                NON_RESIDENT_ATLAS_SLOT
-            } else {
-                atlas_slot
-            },
-        ),
+    // A MIXED brick is its OWN kind (2) and carries a second slot — its per-voxel cell-key
+    // tile in the material side atlas. A coarse/uniform record's `cell_key_slot` is the
+    // non-resident sentinel (it owns no tile: its one cell key is the material + overlay
+    // packed into `kind` below). The discriminant is the payload's own — one source, no
+    // parallel match to drift.
+    let kind_discriminant = record.payload.kind_discriminant();
+    let atlas_slot = match record.payload.occupancy_atlas_slot() {
+        None => 0u32,
+        Some(atlas_slot) if non_resident(atlas_slot) => NON_RESIDENT_ATLAS_SLOT,
+        Some(atlas_slot) => atlas_slot,
     };
-    // Pack the block material above the kind discriminant (ADR 0011 G2): the
-    // shader shades the hit from its own record, not a scene-wide uniform.
-    let kind = kind_discriminant | ((record.material_id as u32) << BRICK_RECORD_MATERIAL_ID_SHIFT);
+    let cell_key_slot = record
+        .payload
+        .cell_key_slot()
+        .unwrap_or(NON_RESIDENT_ATLAS_SLOT);
+    // Pack the block material above the kind discriminant, and the block's overlay bit above
+    // that: the shader shades the hit from its OWN record, not a scene-wide uniform.
+    let kind = kind_discriminant
+        | ((record.material_id as u32) << BRICK_RECORD_MATERIAL_ID_SHIFT)
+        | ((record.overlay as u32) << BRICK_RECORD_OVERLAY_SHIFT);
     let [key_hi, key_lo] = substrate::lattice_key::split_key_hi_lo(key);
     BrickGpuRecord {
         key_hi,
         key_lo,
         kind,
         atlas_slot,
+        cell_key_slot,
     }
 }
 
@@ -174,6 +224,46 @@ fn write_atlas_slot(
         wgpu::TexelCopyBufferLayout {
             offset: 0,
             bytes_per_row: Some(edge),
+            rows_per_image: Some(edge),
+        },
+        wgpu::Extent3d {
+            width: edge,
+            height: edge,
+            depth_or_array_layers: edge,
+        },
+    );
+}
+
+/// Write ONE mixed brick's `edge³` cell-key tile into the persistent MATERIAL SIDE ATLAS at
+/// its slot's tile origin — the twin of [`write_atlas_slot`] for the second pool, differing
+/// only in the texel stride (2 bytes per R16Uint texel) and in `bricks_per_axis` (the side
+/// atlas sizes from its OWN slot count).
+fn write_cell_key_atlas_slot(
+    queue: &wgpu::Queue,
+    cell_key_texture: &wgpu::Texture,
+    tile_bytes: &[u8],
+    brick_edge_voxels: u32,
+    bricks_per_axis: u32,
+    slot: u32,
+) {
+    let edge = brick_edge_voxels.max(1);
+    let tiles = bricks_per_axis.max(1);
+    let origin = wgpu::Origin3d {
+        x: (slot % tiles) * edge,
+        y: ((slot / tiles) % tiles) * edge,
+        z: (slot / (tiles * tiles)) * edge,
+    };
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture: cell_key_texture,
+            mip_level: 0,
+            origin,
+            aspect: wgpu::TextureAspect::All,
+        },
+        tile_bytes,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(edge * CELL_KEY_TEXEL_BYTES),
             rows_per_image: Some(edge),
         },
         wgpu::Extent3d {
@@ -414,6 +504,16 @@ pub struct BrickRaymarchRenderer {
     /// placeholder when no field is installed). A patch whose build dim differs must
     /// recreate the texture (grow/shrink), not `write_texture` into a stale-sized one.
     atlas_texture_dim: u32,
+    /// The PERSISTENT **material side atlas** (R16Uint): the MIXED bricks' per-voxel cell-key
+    /// tiles, a SECOND independently-pooled texture beside `atlas_texture`. Patched per dirty
+    /// cell-key slot exactly as the occupancy atlas is; a 1³ placeholder while no brick is
+    /// mixed (which, while the representability gate stands, is every scene that reaches this
+    /// renderer — the pool is built and bound, and the shader's sampling of it is the next
+    /// slice).
+    cell_key_texture: wgpu::Texture,
+    /// The side atlas's per-axis dimension in voxels (`>= 1`; 1 for the placeholder) — the
+    /// grow/shrink test of the second pool, independent of `atlas_texture_dim`.
+    cell_key_texture_dim: u32,
     /// The number of atlas slots the LAST update wrote (ADR 0011 G3 "per-edit cost ∝ dirty
     /// region" instrument): a wholesale install writes every sculpted slot; an incremental
     /// patch writes only the dirty chunks' slots (unless the atlas grew — then every slot).
@@ -491,6 +591,13 @@ impl BrickRaymarchRenderer {
         let atlas_texture = upload_brick_atlas(device, queue, &empty_atlas);
         let atlas_texture_dim = empty_atlas.geometry.atlas_dim_voxels.max(1);
         let atlas_view = atlas_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        // The material side atlas starts EMPTY (a 1³ R16Uint placeholder): no mixed brick, no
+        // cell-key tile. An install/patch that carries mixed bricks replaces/patches it.
+        let empty_cell_key_atlas = SculptedCellKeyAtlasPayload::empty(1);
+        let cell_key_texture = upload_brick_cell_key_atlas(device, queue, &empty_cell_key_atlas);
+        let cell_key_texture_dim = empty_cell_key_atlas.geometry.atlas_dim_voxels.max(1);
+        let cell_key_view = cell_key_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         // Placeholder clip-map key buffers (count 0 ⇒ the shader never reads them).
         let placeholder_keys = [[0u32, 0u32]];
@@ -598,6 +705,20 @@ impl BrickRaymarchRenderer {
                         },
                         count: None,
                     },
+                    // The MATERIAL SIDE ATLAS (the mixed bricks' per-voxel cell keys). Its
+                    // sample type is UINT, not float: the texel IS the u16 cell key, read
+                    // exactly with `textureLoad` (a filterable-float binding would both
+                    // validation-error against an R16Uint view and round the id).
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 7,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Uint,
+                            view_dimension: wgpu::TextureViewDimension::D3,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
                 ],
             });
         let field_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -637,6 +758,10 @@ impl BrickRaymarchRenderer {
                 wgpu::BindGroupEntry {
                     binding: 6,
                     resource: occupancy_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: wgpu::BindingResource::TextureView(&cell_key_view),
                 },
             ],
         });
@@ -920,6 +1045,8 @@ impl BrickRaymarchRenderer {
             loaded_material_active: false,
             atlas_texture,
             atlas_texture_dim,
+            cell_key_texture,
+            cell_key_texture_dim,
             last_atlas_slots_written: 0,
             record_count: 0,
             overlay_active: false,
@@ -956,12 +1083,59 @@ impl BrickRaymarchRenderer {
         recentre_voxels: RecentreVoxels,
         overlay_active: bool,
     ) {
+        // The occupancy-only install: the MATERIAL SIDE ATLAS installs EMPTY. Sound while the
+        // representability gate stands — a field carrying a MIXED brick never reaches the brick
+        // path — and the honest default for a caller that holds no cell-key payload. A field
+        // WITH mixed bricks installs through
+        // [`install_brick_field_with_cell_keys`](Self::install_brick_field_with_cell_keys).
+        let empty_cell_keys =
+            SculptedCellKeyAtlasPayload::empty(atlas.geometry.brick_edge_voxels);
+        debug_assert!(
+            gpu_records
+                .iter()
+                .all(|record| record.cell_key_slot == NON_RESIDENT_ATLAS_SLOT),
+            "a field with MIXED bricks must install its cell-key side atlas \
+             (install_brick_field_with_cell_keys), not the empty one"
+        );
+        self.install_brick_field_with_cell_keys(
+            device,
+            queue,
+            records,
+            atlas,
+            &empty_cell_keys,
+            gpu_records,
+            pyramid,
+            recentre_voxels,
+            overlay_active,
+        );
+    }
+
+    /// Install (or replace) the brick field INCLUDING its material side atlas — the full
+    /// wholesale seam: both pools' textures are (re)created from scratch and every slot of each
+    /// uploaded. The pools are independent (own slot numbering, own tile grid), so a field with
+    /// 10k sculpted bricks and 3 mixed ones uploads a 22-tile occupancy cube and a 2-tile
+    /// cell-key cube.
+    #[allow(clippy::too_many_arguments)]
+    pub fn install_brick_field_with_cell_keys(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        records: &[BrickRecord],
+        atlas: &SculptedAtlasPayload,
+        cell_key_atlas: &SculptedCellKeyAtlasPayload,
+        gpu_records: &[BrickGpuRecord],
+        pyramid: &ClipmapPyramid,
+        recentre_voxels: RecentreVoxels,
+        overlay_active: bool,
+    ) {
         // A wholesale install (re)creates the atlas texture from scratch and uploads
         // every sculpted slot — the from-scratch / scene-load / gate-re-engage path.
         let atlas_texture = upload_brick_atlas(device, queue, atlas);
         self.atlas_texture = atlas_texture;
         self.atlas_texture_dim = atlas.geometry.atlas_dim_voxels.max(1);
         self.last_atlas_slots_written = atlas.sculpted_slot_count;
+        self.cell_key_texture = upload_brick_cell_key_atlas(device, queue, cell_key_atlas);
+        self.cell_key_texture_dim = cell_key_atlas.geometry.atlas_dim_voxels.max(1);
         let atlas_view = self
             .atlas_texture
             .create_view(&wgpu::TextureViewDescriptor::default());
@@ -1031,6 +1205,28 @@ impl BrickRaymarchRenderer {
                 );
             }
             self.last_atlas_slots_written = update.written_slots.len() as u32;
+        }
+        // The MATERIAL SIDE ATLAS patches by the SAME discipline over its OWN pool: its own
+        // grow test (its tile grid sizes from its own slot count), its own dirty-slot list.
+        // A no-mixed-brick field leaves both empty, so this is a no-op there.
+        let cell_key_geometry = mirror.cell_key_atlas_geometry();
+        let cell_key_target_dim = cell_key_geometry.atlas_dim_voxels.max(1);
+        if update.cell_key_atlas_grew || cell_key_target_dim != self.cell_key_texture_dim {
+            let cell_key_atlas = mirror.pack_cell_key_atlas_payload();
+            self.cell_key_texture = upload_brick_cell_key_atlas(device, queue, &cell_key_atlas);
+            self.cell_key_texture_dim = cell_key_target_dim;
+        } else {
+            for &slot in &update.written_cell_key_slots {
+                let tile_bytes = mirror.cell_key_slot_bytes(slot);
+                write_cell_key_atlas_slot(
+                    queue,
+                    &self.cell_key_texture,
+                    &tile_bytes,
+                    cell_key_geometry.brick_edge_voxels,
+                    cell_key_geometry.bricks_per_axis,
+                    slot,
+                );
+            }
         }
         let atlas_view = self
             .atlas_texture
@@ -1153,6 +1349,12 @@ impl BrickRaymarchRenderer {
             usage: wgpu::BufferUsages::STORAGE,
         });
 
+        // The side atlas's view: its texture is managed by the caller (wholesale re-create vs
+        // per-slot patch), exactly as the occupancy atlas's is — this only re-views it so the
+        // rebuilt bind group points at the current texture.
+        let cell_key_view = self
+            .cell_key_texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
         self.field_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("brick raymarch field bind group"),
             layout: &self.field_bind_group_layout,
@@ -1192,6 +1394,10 @@ impl BrickRaymarchRenderer {
                 wgpu::BindGroupEntry {
                     binding: 6,
                     resource: occupancy_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: wgpu::BindingResource::TextureView(&cell_key_view),
                 },
             ],
         });
@@ -2014,9 +2220,7 @@ pub fn cpu_march_levels_counted(
                 None => raycast::BlockContents::Empty,
                 Some(record_index) => {
                     let record = records[record_index];
-                    let coarse_form = record_kind_discriminant(record.kind) == 0
-                        || record.atlas_slot == NON_RESIDENT_ATLAS_SLOT;
-                    if coarse_form {
+                    if record_is_coarse_form(&record) {
                         raycast::BlockContents::CoarseSolid
                     } else {
                         let atlas_slot = record.atlas_slot;
@@ -2149,5 +2353,87 @@ mod representability_tests {
             ([1, 0, 0], geom(&[compose_cell_key(0, true)])),
         ]);
         assert_eq!(brick_representable_overlay(&chunks), None);
+    }
+}
+
+#[cfg(test)]
+mod record_packing_tests {
+    //! The GPU record format — the byte-level contract `shaders/brick_raymarch.wgsl` decodes.
+    //! Pinned here because the shader cannot assert: a silent desync (a kind discriminant, the
+    //! material mask, the overlay bit, the field order) shows up only as wrong pixels.
+    use super::*;
+    use crate::brick_field::{pack_world_block_key, BrickPayload, BrickRecord};
+    use crate::core_geom::BlockId;
+    use crate::two_layer_store::SeamSolidity;
+
+    fn record(material_id: u16, overlay: bool, payload: BrickPayload) -> BrickRecord {
+        BrickRecord {
+            packed_world_block_key: pack_world_block_key([1, 2, 3]),
+            material_id,
+            overlay,
+            payload,
+            seam_solidity: SeamSolidity {
+                solid: [[true; 2]; 3],
+            },
+        }
+    }
+
+    /// The `kind` word packs three independent facts — discriminant, material id, overlay bit —
+    /// in disjoint bit ranges, and the widened record carries the cell-key slot beside the
+    /// occupancy one. A coarse or UNIFORM record's cell-key slot is the non-resident sentinel
+    /// (it owns no tile); only a MIXED record names a slot of the material side atlas.
+    #[test]
+    fn the_packed_kind_word_splits_into_discriminant_material_and_overlay() {
+        let records = [
+            record(3, false, BrickPayload::CoarseSolid { block_id: BlockId(3) }),
+            record(5, true, BrickPayload::Sculpted { atlas_slot: 7 }),
+            record(
+                9,
+                true,
+                BrickPayload::SculptedMixed {
+                    atlas_slot: 7,
+                    cell_key_slot: 2,
+                },
+            ),
+        ];
+        let packed = pack_gpu_records(&records, |_| false);
+
+        // Coarse: kind 0, no occupancy tile, no cell-key tile — overlay + material still ride
+        // on the record (a coarse block-cube shades from them).
+        assert_eq!(record_kind_discriminant(packed[0].kind), 0);
+        assert_eq!(packed[0].kind >> BRICK_RECORD_MATERIAL_ID_SHIFT & 0xffff, 3);
+        assert_eq!(packed[0].kind >> BRICK_RECORD_OVERLAY_SHIFT, 0);
+        assert_eq!(packed[0].cell_key_slot, NON_RESIDENT_ATLAS_SLOT);
+        assert!(record_is_coarse_form(&packed[0]));
+
+        // Sculpted-uniform: kind 1, the occupancy slot, the overlay bit set, still no tile.
+        assert_eq!(record_kind_discriminant(packed[1].kind), 1);
+        assert_eq!(packed[1].kind >> BRICK_RECORD_MATERIAL_ID_SHIFT & 0xffff, 5);
+        assert_eq!(packed[1].kind >> BRICK_RECORD_OVERLAY_SHIFT, 1);
+        assert_eq!(packed[1].atlas_slot, 7);
+        assert_eq!(packed[1].cell_key_slot, NON_RESIDENT_ATLAS_SLOT);
+        assert!(!record_is_coarse_form(&packed[1]));
+
+        // Sculpted-MIXED: its own kind, the SAME occupancy slot discipline, plus a slot in the
+        // (independently numbered) material side atlas. It traverses as a sculpted brick.
+        assert_eq!(record_kind_discriminant(packed[2].kind), 2);
+        assert_eq!(packed[2].atlas_slot, 7);
+        assert_eq!(packed[2].cell_key_slot, 2);
+        assert!(!record_is_coarse_form(&packed[2]));
+
+        // The overlay bit must not bleed into the material id (the mask the WGSL applies).
+        assert_eq!(packed[1].kind >> BRICK_RECORD_MATERIAL_ID_SHIFT & 0xffff, 5);
+        // A non-resident OCCUPANCY slot still renders the coarse form, mixed or not.
+        let forced = pack_gpu_records(&records, |_| true);
+        assert!(forced.iter().all(record_is_coarse_form));
+        assert_eq!(forced[2].cell_key_slot, 2, "residency is per-pool");
+    }
+
+    /// The record is five tightly-packed `u32`s — the std430 array stride the WGSL struct must
+    /// agree on (any padding here would shift every record the shader binary-searches).
+    #[test]
+    fn the_gpu_record_is_five_tightly_packed_words() {
+        assert_eq!(std::mem::size_of::<BrickGpuRecord>(), 5 * 4);
+        assert_eq!(std::mem::align_of::<BrickGpuRecord>(), 4);
     }
 }
