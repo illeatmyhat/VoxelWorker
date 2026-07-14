@@ -57,8 +57,16 @@ move; `cpu_march_exact_occupancy` moves as the kernel's own oracle.
 ## Substrate additions (not graphics crates — pure CS/math)
 
 - **`Ray { origin, direction }`** — no Rust ray type exists today (three ad-hoc tuple sites).
-  Lives in substrate beside `Aabb` so `camera` (produces) and `raycast` (consumes) stay
+  Lives in substrate beside the boxes so `camera` (produces) and `raycast` (consumes) stay
   independent of each other.
+- **AABB co-location (owner ruling 2026-07-14, landed with G1):** the two box types unify by
+  CO-LOCATION with distinct names, NOT generics/traits — `LatticeAabb` (integer, half-open,
+  touching boxes are DISJOINT: edit-broadphase semantics; the former `substrate::Aabb`) and
+  `RealAabb` (f32, closed, ±inf-sentinel empty, touching boxes INTERSECT: culling must be
+  conservative; the former `frustum::Aabb`), documented side-by-side. A policy-parameterized
+  generic was rejected as ceremony that hurts the accessibility goal; a `BoundingVolume` trait
+  waits for a second BVH consumer (e.g. an f32 render-culling BVH). `Frustum::intersects_aabb`
+  and `Ray`'s slab test both consume `&RealAabb`.
 - **`ShelfBinPack`** — texture_atlas.rs's gutter-padded shelf rect packer + half-texel-inset
   UV layout + replicated-edge blit (~132–283): textbook shelf/next-fit rectangle packing, the
   2D sibling of `CubeTilePacking`. Its 5 tests move. `from_procedural_materials` stays as the
