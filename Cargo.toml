@@ -3,13 +3,14 @@ name = "voxel_worker"
 version = "0.1.0"
 edition = "2021"
 
-# Root-package workspace: the app crate stays here at `src/`; the only other
-# member is `crates/substrate`, the pure CS/math library the app depends on.
-# The dependency direction (app -> substrate, never the reverse) is
+# Root-package workspace: the app crate stays here at `src/`; the other members are
+# the wgpu-free libraries the app depends on — `crates/substrate` (pure CS/math) and
+# `crates/camera` (viewing + projective geometry). The dependency direction
+# (app -> substrate/camera, never the reverse; camera -> substrate) is
 # compile-enforced by the crate split. See docs/architecture/data-structures.md
 # (the "Substrate" section) for the boundary law.
 [workspace]
-members = [".", "crates/substrate"]
+members = [".", "crates/substrate", "crates/camera"]
 
 [lib]
 name = "voxel_worker"
@@ -50,6 +51,10 @@ tracy = ["profiling/profile-with-tracy", "dep:tracy-client"]
 # The pure CS/math substrate library (this workspace's other member). Carries no
 # domain types; see docs/architecture/data-structures.md ("Substrate").
 substrate = { path = "crates/substrate" }
+# The viewing + projective-geometry library (orbit rig, projection, ViewCube,
+# screen→ray unprojection, frustum culling). wgpu-free graphics mathematics;
+# depends only on glam + substrate.
+camera = { path = "crates/camera" }
 winit = "0.30.13"
 wgpu = "29.0.3"
 egui = "0.34.3"

@@ -53,6 +53,16 @@ jobs:
       - name: Test substrate
         run: cargo test -p substrate
 
+      # The camera library is the wgpu-free viewing + projective-geometry member
+      # (orbit rig, projection, ViewCube, screen→ray unprojection, frustum culling);
+      # it depends only on glam + substrate and carries its own gates so a regression
+      # in the graphics math fails independently of the app crate.
+      - name: Clippy camera (deny warnings)
+        run: cargo clippy -p camera --all-targets -- -D warnings
+
+      - name: Test camera
+        run: cargo test -p camera
+
   windows-build:
     name: Build (Windows)
     runs-on: windows-latest

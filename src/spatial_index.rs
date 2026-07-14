@@ -37,18 +37,19 @@
 
 use crate::core_geom::CHUNK_BLOCKS;
 
-/// The domain name for the substrate half-open integer box [`substrate::Aabb`], read
-/// as an **absolute-voxel** box `[min, max)` — the frame the chunk decomposition owns
-/// (a voxel at absolute position `p` belongs to chunk `floor(p / chunk_extent)`).
+/// The domain name for the substrate half-open integer box [`substrate::LatticeAabb`],
+/// read as an **absolute-voxel** box `[min, max)` — the frame the chunk decomposition
+/// owns (a voxel at absolute position `p` belongs to chunk `floor(p / chunk_extent)`).
 ///
-/// Kept as a domain alias rather than renamed to the bare `Aabb` deliberately: the
-/// codebase already has a *floating-point* [`crate::frustum::Aabb`] for frustum
-/// culling, and `VoxelAabb` keeps the integer-voxel box unambiguous at every call site.
+/// Kept as a domain alias deliberately: substrate also carries the *floating-point*
+/// closed twin [`substrate::RealAabb`] (frustum culling consumes it via
+/// `crate::frustum::Aabb`), and `VoxelAabb` keeps the integer-voxel box unambiguous
+/// at every call site.
 /// The corners are `i64` (64-bit world addressing): absolute voxels = block offset ×
 /// density, so a far-placed leaf (±10⁹ blocks × density) overflows i32; the derived
 /// CHUNK coordinate stays i32 (see [`ChunkCoverage::covering_chunk_range`]). See
 /// `docs/architecture/data-structures.md` (the Substrate section) for the box itself.
-pub use substrate::Aabb as VoxelAabb;
+pub use substrate::LatticeAabb as VoxelAabb;
 
 /// The domain name for the substrate [`substrate::Bvh`] used as **THE edit broadphase**
 /// (ADR 0011 Decision 4b, #66): a bounding-volume hierarchy over producer world-AABBs

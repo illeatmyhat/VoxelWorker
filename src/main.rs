@@ -1023,17 +1023,13 @@ impl WindowedState {
         let ndc_x = ((x as f32 - corner_x) / size) * 2.0 - 1.0;
         let ndc_y = -(((y as f32 - corner_y) / size) * 2.0 - 1.0);
 
+        // Unproject the NDC point through the view-cube matrix into a world ray
+        // (inverse-VP through the near/far clip planes; the generic form lives in the
+        // camera crate). The slab test below then resolves the hit face + hot zone.
         let view_projection = self.app_core.camera.view_cube_view_projection();
-        let inverse = view_projection.inverse();
-        let near = inverse * glam::Vec4::new(ndc_x, ndc_y, 0.0, 1.0);
-        let far = inverse * glam::Vec4::new(ndc_x, ndc_y, 1.0, 1.0);
-        let near = near.truncate() / near.w;
-        let far = far.truncate() / far.w;
-        let origin = near;
-        let direction = (far - near).normalize_or_zero();
-        if direction == glam::Vec3::ZERO {
-            return None;
-        }
+        let ray = camera::unproject_screen_point_to_ray(view_projection, ndc_x, ndc_y)?;
+        let origin = ray.origin;
+        let direction = ray.direction;
 
         // Slab intersection against the cube [-HALF, HALF]^3; the entry face's
         // dominant axis gives the material index / CubeFace.

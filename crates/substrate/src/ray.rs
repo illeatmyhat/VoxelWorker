@@ -7,8 +7,8 @@
 //!
 //! ## Ray–box intersection: the slab method
 //!
-//! [`Ray::intersect_box_slab`] tests the ray against an axis-aligned box given by
-//! its two float corners and returns the entry/exit parameters `(t_enter, t_exit)`
+//! [`Ray::intersect_box_slab`] tests the ray against a closed continuous box (a
+//! [`RealAabb`]) and returns the entry/exit parameters `(t_enter, t_exit)`
 //! of the overlapped segment. It is the **slab method** (Kay & Kajiya, "Ray Tracing
 //! Complex Scenes", SIGGRAPH 1986; Ericson, *Real-Time Collision Detection* 2005
 //! §5.3.3): an AABB is the intersection of three axis-aligned slabs, so the ray's
@@ -46,6 +46,8 @@
 //! suite.
 
 use glam::Vec3;
+
+use crate::aabb::RealAabb;
 
 /// The magnitude any near-zero ray-direction component is nudged to before the
 /// slab test takes its reciprocal, so a component of exactly `0` becomes a large
@@ -104,15 +106,16 @@ impl Ray {
         .recip()
     }
 
-    /// Intersect the ray with the axis-aligned box `[box_min, box_max]` by the slab
-    /// method, returning the entry/exit parameters of the overlapped segment, or
-    /// `None` if the ray misses the box. `t_enter` is clamped to `0`, so a ray
-    /// starting inside the box enters at `t = 0`. Zero direction components are
-    /// handled by the guard described in the module docs (no `NaN`).
-    pub fn intersect_box_slab(&self, box_min: Vec3, box_max: Vec3) -> Option<RayBoxIntersection> {
+    /// Intersect the ray with the closed axis-aligned box `[aabb.min, aabb.max]`
+    /// (a [`RealAabb`]) by the slab method, returning the entry/exit parameters of
+    /// the overlapped segment, or `None` if the ray misses the box. `t_enter` is
+    /// clamped to `0`, so a ray starting inside the box enters at `t = 0`. Zero
+    /// direction components are handled by the guard described in the module docs
+    /// (no `NaN`).
+    pub fn intersect_box_slab(&self, aabb: &RealAabb) -> Option<RayBoxIntersection> {
         let inverse = self.slab_inverse_direction();
-        let t_a = (box_min - self.origin) * inverse;
-        let t_b = (box_max - self.origin) * inverse;
+        let t_a = (aabb.min - self.origin) * inverse;
+        let t_b = (aabb.max - self.origin) * inverse;
         let t_near = t_a.min(t_b);
         let t_far = t_a.max(t_b);
         let t_enter = t_near.x.max(t_near.y).max(t_near.z).max(0.0);
@@ -129,15 +132,17 @@ impl Ray {
 mod tests {
     use super::*;
 
-    const UNIT_BOX_MIN: Vec3 = Vec3::ZERO;
-    const UNIT_BOX_MAX: Vec3 = Vec3::ONE;
+    const UNIT_BOX: RealAabb = RealAabb {
+        min: Vec3::ZERO,
+        max: Vec3::ONE,
+    };
 
     /// A ray fired straight through the middle of the unit box enters at the near
     /// face and exits at the far face, both parameters finite and ordered.
     #[test]
     fn hits_through_the_middle() {
         let ray = Ray::new(Vec3::new(-5.0, 0.5, 0.5), Vec3::new(1.0, 0.0, 0.0));
-        let hit = ray.intersect_box_slab(UNIT_BOX_MIN, UNIT_BOX_MAX).unwrap();
+        let hit = ray.intersect_box_slab(&UNIT_BOX).unwrap();
         assert_eq!(hit.t_enter, 5.0);
         assert_eq!(hit.t_exit, 6.0);
     }
@@ -147,7 +152,7 @@ mod tests {
     #[test]
     fn misses_when_parallel_and_outside() {
         let ray = Ray::new(Vec3::new(-5.0, 5.0, 0.5), Vec3::new(1.0, 0.0, 0.0));
-        assert!(ray.intersect_box_slab(UNIT_BOX_MIN, UNIT_BOX_MAX).is_none());
+        assert!(ray.intersect_box_slab(&UNIT_BOX).is_none());
     }
 
     /// A ray grazing along the box's lower edge (origin on the Y=0 and Z=0 slab
@@ -157,7 +162,7 @@ mod tests {
     #[test]
     fn edge_parallel_ray_grazes_without_nan() {
         let ray = Ray::new(Vec3::new(-5.0, 0.0, 0.0), Vec3::new(1.0, 0.0, 0.0));
-        let hit = ray.intersect_box_slab(UNIT_BOX_MIN, UNIT_BOX_MAX).unwrap();
+        let hit = ray.intersect_box_slab(&UNIT_BOX).unwrap();
         assert_eq!(hit.t_enter, 5.0);
         assert_eq!(hit.t_exit, 6.0);
     }
@@ -167,7 +172,7 @@ mod tests {
     #[test]
     fn ray_starting_inside_enters_at_zero() {
         let ray = Ray::new(Vec3::new(0.5, 0.5, 0.5), Vec3::new(1.0, 0.0, 0.0));
-        let hit = ray.intersect_box_slab(UNIT_BOX_MIN, UNIT_BOX_MAX).unwrap();
+        let hit = ray.intersect_box_slab(&UNIT_BOX).unwrap();
         assert_eq!(hit.t_enter, 0.0);
         assert_eq!(hit.t_exit, 0.5);
     }
@@ -178,7 +183,7 @@ mod tests {
     #[test]
     fn degenerate_zero_direction_never_nans() {
         let ray = Ray::new(Vec3::new(0.5, 0.5, 0.5), Vec3::ZERO);
-        let hit = ray.intersect_box_slab(UNIT_BOX_MIN, UNIT_BOX_MAX).unwrap();
+        let hit = ray.intersect_box_slab(&UNIT_BOX).unwrap();
         assert!(hit.t_enter.is_finite() && hit.t_exit.is_finite());
         assert_eq!(hit.t_enter, 0.0);
         assert!(hit.t_exit >= hit.t_enter);

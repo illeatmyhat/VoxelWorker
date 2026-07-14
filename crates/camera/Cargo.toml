@@ -1,0 +1,22 @@
+[package]
+name = "camera"
+version = "0.1.0"
+edition = "2021"
+
+# Viewing + projective-geometry library: the wgpu-free graphics mathematics of the
+# orbit camera rig, projection matrices, the Autodesk ViewCube model, screen→ray
+# unprojection, and Gribb–Hartmann frustum culling. Like `substrate`, this is a
+# read-first library of well-known concepts under their literature names; unlike
+# `substrate` it is graphics-specific. It depends on `glam` (the vector/matrix
+# algebra all of this is expressed in) and on `substrate` for the shared `Ray`
+# primitive its unprojection produces — nothing else. Never wgpu, never winit,
+# never egui, never the domain. See the "Camera" boundary in the graphics-crate
+# law and docs/design/graphics-crates-extraction-map.md for the provenance.
+
+[dependencies]
+glam = "0.33.1"
+# The shared ray vocabulary lives in substrate beside its `Aabb` so the producing
+# side (this crate's unprojection) and the consuming side (ray–volume traversal)
+# stay independent of each other; matched to the workspace glam version so a `Ray`
+# crosses the boundary without a conversion.
+substrate = { path = "../substrate" }

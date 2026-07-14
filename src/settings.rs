@@ -27,6 +27,18 @@ use crate::panel::{LayerRange, PanelState};
 use crate::scene::Scene;
 use crate::voxel::GeometryParams;
 
+/// serde remote-derive shim for the `camera` crate's [`ProjectionMode`], which
+/// carries no serde dependency of its own (the graphics-crate boundary law keeps it
+/// to glam + substrate). It mirrors the enum's two unit variants so [`AppConfig`]
+/// can persist the projection choice via `#[serde(with = "ProjectionModeConfig")]`.
+/// The on-disk representation ("Perspective" / "Orthographic") is unchanged.
+#[derive(Serialize, Deserialize)]
+#[serde(remote = "ProjectionMode")]
+enum ProjectionModeConfig {
+    Perspective,
+    Orthographic,
+}
+
 /// The whole persisted configuration. Every field is `#[serde(default)]` so a
 /// partial or older config still loads.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -63,7 +75,10 @@ pub struct AppConfig {
     pub voxels_per_block: u32,
 
     // --- display / material ---
-    #[serde(default)]
+    // `ProjectionMode` lives in the wgpu-free `camera` crate, which carries no serde
+    // dependency (its boundary law keeps it to glam + substrate), so it is persisted
+    // through the `ProjectionModeConfig` remote-derive shim below.
+    #[serde(default, with = "ProjectionModeConfig")]
     pub projection_mode: ProjectionMode,
     #[serde(default)]
     pub material: MaterialChoice,

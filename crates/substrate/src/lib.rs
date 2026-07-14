@@ -25,7 +25,7 @@
 //! ## Naming rule
 //!
 //! Each component lives in its own module, and the well-known name from the
-//! scientific literature *is* the type's name (`MedianSplitBvh`, `IntegerAabb`,
+//! scientific literature *is* the type's name (`MedianSplitBvh`, `LatticeAabb`,
 //! `BitCube`, `DisjointIntervalSet`, `ExactRational`, …). The explanation of the
 //! structure and the citations to the canonical literature — together with a note
 //! on how this implementation's variant deviates — live in the component's own
@@ -40,7 +40,8 @@
 //! ## Components
 //!
 //! Each is a self-contained module with its own literature citations and oracles:
-//! [`Aabb`], [`Bvh`], and the [`lattice_key`] packing codec (spatial); [`FieldInterval`],
+//! [`LatticeAabb`] and its closed f32 twin [`RealAabb`], [`Bvh`], and the [`lattice_key`]
+//! packing codec (spatial); [`FieldInterval`],
 //! [`DisjointIntervalSet`], and [`Rational`] (interval + rational arithmetic);
 //! [`GreedyCuboidDecomposition`] over a [`CellGrid`] into [`Cuboid`]s (box decomposition);
 //! the [`supersede`] protocol — [`CoalescingWorker`], [`GenerationTracker`], and their
@@ -71,7 +72,7 @@ pub mod shelf_bin_pack;
 pub mod srgb;
 pub mod supersede;
 
-pub use aabb::Aabb;
+pub use aabb::{LatticeAabb, RealAabb};
 pub use bit_cube::BitCube;
 pub use bitmask_map::{mask_bit_is_set, set_mask_bit, SortedKeyBitmaskMap};
 pub use bvh::Bvh;

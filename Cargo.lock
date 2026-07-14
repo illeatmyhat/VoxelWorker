@@ -424,6 +424,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "camera"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "substrate",
+]
+
+[[package]]
 name = "cast"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3422,6 +3430,7 @@ name = "voxel_worker"
 version = "0.1.0"
 dependencies = [
  "bytemuck",
+ "camera",
  "dot_vox",
  "egui",
  "egui-wgpu",

@@ -10,7 +10,7 @@
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use std::hint::black_box;
-use substrate::{Aabb, Bvh};
+use substrate::{LatticeAabb, Bvh};
 
 /// A deterministic LCG (Numerical Recipes constants) — the same generator the
 /// substrate tests use, so bench populations are reproducible with no `rand` dep.
@@ -27,7 +27,7 @@ impl Lcg {
 
 /// `count` pseudo-random non-empty boxes scattered across a ±`span` cube, each
 /// with a small positive extent (so none is empty and the broadphase keeps them).
-fn scatter_boxes(count: usize, span: i64) -> Vec<Aabb> {
+fn scatter_boxes(count: usize, span: i64) -> Vec<LatticeAabb> {
     let mut lcg = Lcg(0x1234_5678_9abc_def0);
     let mut boxes = Vec::with_capacity(count);
     for _ in 0..count {
@@ -41,7 +41,7 @@ fn scatter_boxes(count: usize, span: i64) -> Vec<Aabb> {
             1 + lcg.next_in(32),
             1 + lcg.next_in(32),
         ];
-        boxes.push(Aabb::new(
+        boxes.push(LatticeAabb::new(
             min,
             [min[0] + extent[0], min[1] + extent[1], min[2] + extent[2]],
         ));
@@ -66,9 +66,9 @@ fn bench_query(c: &mut Criterion) {
     let boxes = scatter_boxes(10_000, 4_000);
     let bvh = Bvh::build(&boxes);
     // A small local edit box near the origin — the common case, prunes almost all.
-    let small = Aabb::new([-64, -64, -64], [64, 64, 64]);
+    let small = LatticeAabb::new([-64, -64, -64], [64, 64, 64]);
     // The whole scene — the worst case, visits every node.
-    let spanning = Aabb::new([-4_100, -4_100, -4_100], [4_100, 4_100, 4_100]);
+    let spanning = LatticeAabb::new([-4_100, -4_100, -4_100], [4_100, 4_100, 4_100]);
     group.bench_function("small_box", |b| {
         b.iter(|| black_box(bvh.overlapping_input_indices(black_box(&small))));
     });

@@ -29,16 +29,16 @@
 //! centroid of the longest axis, fixed leaf cap 8, no SAH — the build-speed-over-query
 //! trade for a hierarchy rebuilt per use.
 
-use crate::aabb::Aabb;
+use crate::aabb::LatticeAabb;
 
 /// Entries per leaf node before a subtree stops splitting. Small enough that the
 /// per-leaf linear overlap test stays trivial, large enough to keep the node count
 /// (and construction cost) down.
 pub const BVH_LEAF_CAPACITY: usize = 8;
 
-/// A bounding-volume hierarchy over a slice of [`Aabb`]s, built by spatial-median
+/// A bounding-volume hierarchy over a slice of [`LatticeAabb`]s, built by spatial-median
 /// split and queried by box overlap. Empty input boxes overlap nothing and are
-/// excluded at construction, following the half-open [`Aabb::intersects`] convention.
+/// excluded at construction, following the half-open [`LatticeAabb::intersects`] convention.
 #[derive(Debug, Clone, Default)]
 pub struct Bvh {
     /// Depth-first flattened nodes: a node's LEFT child is `node_index + 1`; the RIGHT
@@ -49,14 +49,14 @@ pub struct Bvh {
     entry_input_indices: Vec<u32>,
     /// The boxes parallel to `entry_input_indices` (so the per-entry overlap test reads
     /// the reordered slice, never the caller's).
-    entry_aabbs: Vec<Aabb>,
+    entry_aabbs: Vec<LatticeAabb>,
 }
 
 /// One BVH node: the bounds of every entry under it, plus its internal/leaf payload.
 #[derive(Debug, Clone, Copy)]
 struct BvhNode {
     /// The union of every entry box in this subtree.
-    aabb: Aabb,
+    aabb: LatticeAabb,
     kind: BvhNodeKind,
 }
 
@@ -71,8 +71,8 @@ enum BvhNodeKind {
 impl Bvh {
     /// Build the BVH over `input_aabbs`; index `i` of the slice is the index a query
     /// reports. Empty boxes are excluded (they overlap nothing).
-    pub fn build(input_aabbs: &[Aabb]) -> Self {
-        let mut entries: Vec<(u32, Aabb)> = input_aabbs
+    pub fn build(input_aabbs: &[LatticeAabb]) -> Self {
+        let mut entries: Vec<(u32, LatticeAabb)> = input_aabbs
             .iter()
             .enumerate()
             .filter(|(_, aabb)| !aabb.is_empty())
@@ -92,7 +92,7 @@ impl Bvh {
     /// Every input index whose box overlaps `query`, **sorted ascending** (= input order:
     /// an ordered caller gets an ordered subsequence). Exactly the set a naive linear
     /// `intersects` filter over the input slice returns.
-    pub fn overlapping_input_indices(&self, query: &Aabb) -> Vec<usize> {
+    pub fn overlapping_input_indices(&self, query: &LatticeAabb) -> Vec<usize> {
         let mut overlapping = Vec::new();
         if self.nodes.is_empty() || query.is_empty() {
             return overlapping;
@@ -132,7 +132,7 @@ impl Bvh {
 /// balanced tree of depth `log2(N / capacity)`, so recursion stays shallow (~10 at 10k).
 fn build_bvh_subtree(
     nodes: &mut Vec<BvhNode>,
-    entries: &mut [(u32, Aabb)],
+    entries: &mut [(u32, LatticeAabb)],
     entry_offset: usize,
 ) -> u32 {
     let node_index = nodes.len() as u32;
@@ -155,7 +155,7 @@ fn build_bvh_subtree(
     // Split axis = the widest spread of the DOUBLED centroids (min + max; halving would
     // only lose parity information). Coincident centroids on every axis still split fine:
     // the median partition then just halves the run arbitrarily.
-    let doubled_centroid = |aabb: &Aabb, axis: usize| aabb.min[axis] + aabb.max[axis];
+    let doubled_centroid = |aabb: &LatticeAabb, axis: usize| aabb.min[axis] + aabb.max[axis];
     let split_axis = (0..3)
         .max_by_key(|&axis| {
             let low = entries
@@ -210,26 +210,26 @@ mod tests {
         for _ in 0..300 {
             let min = [next_in(400) - 200, next_in(400) - 200, next_in(400) - 200];
             let extent = [next_in(60), next_in(60), next_in(60)]; // 0 ⇒ empty box
-            boxes.push(Aabb::new(
+            boxes.push(LatticeAabb::new(
                 min,
                 [min[0] + extent[0], min[1] + extent[1], min[2] + extent[2]],
             ));
         }
         // Duplicates, a nested pair, an everything-box, and far-flung outliers (i64 range).
         boxes.push(boxes[0]);
-        boxes.push(Aabb::new([-500, -500, -500], [500, 500, 500]));
-        boxes.push(Aabb::new([-10, -10, -10], [-5, -5, -5]));
-        boxes.push(Aabb::new([-9, -9, -9], [-6, -6, -6]));
-        boxes.push(Aabb::new([16_000_000_000, 0, 0], [16_000_000_064, 64, 64]));
+        boxes.push(LatticeAabb::new([-500, -500, -500], [500, 500, 500]));
+        boxes.push(LatticeAabb::new([-10, -10, -10], [-5, -5, -5]));
+        boxes.push(LatticeAabb::new([-9, -9, -9], [-6, -6, -6]));
+        boxes.push(LatticeAabb::new([16_000_000_000, 0, 0], [16_000_000_064, 64, 64]));
 
         let bvh = Bvh::build(&boxes);
         let queries = [
-            Aabb::new([0, 0, 0], [64, 64, 64]),
-            Aabb::new([-200, -200, -200], [200, 200, 200]),
-            Aabb::new([7, 7, 7], [8, 8, 8]),
-            Aabb::new([10_000, 10_000, 10_000], [10_064, 10_064, 10_064]), // miss
-            Aabb::new([15_999_999_999, 0, 0], [16_000_000_001, 1, 1]),     // outlier hit
-            Aabb::new([0, 0, 0], [0, 0, 0]),                               // empty query
+            LatticeAabb::new([0, 0, 0], [64, 64, 64]),
+            LatticeAabb::new([-200, -200, -200], [200, 200, 200]),
+            LatticeAabb::new([7, 7, 7], [8, 8, 8]),
+            LatticeAabb::new([10_000, 10_000, 10_000], [10_064, 10_064, 10_064]), // miss
+            LatticeAabb::new([15_999_999_999, 0, 0], [16_000_000_001, 1, 1]),     // outlier hit
+            LatticeAabb::new([0, 0, 0], [0, 0, 0]),                               // empty query
         ];
         for query in &queries {
             let naive: Vec<usize> = boxes
@@ -250,13 +250,13 @@ mod tests {
     /// that answers every query with nothing (and never panics).
     #[test]
     fn bvh_handles_empty_populations() {
-        let query = Aabb::new([-100, -100, -100], [100, 100, 100]);
+        let query = LatticeAabb::new([-100, -100, -100], [100, 100, 100]);
         assert!(Bvh::build(&[])
             .overlapping_input_indices(&query)
             .is_empty());
         let all_empty = [
-            Aabb::new([0, 0, 0], [0, 0, 0]),
-            Aabb::new([5, 5, 5], [5, 9, 9]),
+            LatticeAabb::new([0, 0, 0], [0, 0, 0]),
+            LatticeAabb::new([5, 5, 5], [5, 9, 9]),
         ];
         assert!(Bvh::build(&all_empty)
             .overlapping_input_indices(&query)
