@@ -3,6 +3,14 @@ name = "voxel_worker"
 version = "0.1.0"
 edition = "2021"
 
+# Root-package workspace: the app crate stays here at `src/`; the only other
+# member is `crates/substrate`, the pure CS/math library the app depends on.
+# The dependency direction (app -> substrate, never the reverse) is
+# compile-enforced by the crate split. See docs/architecture/data-structures.md
+# (the "Substrate" section) for the boundary law.
+[workspace]
+members = [".", "crates/substrate"]
+
 [lib]
 name = "voxel_worker"
 path = "src/lib.rs"
@@ -39,6 +47,9 @@ oracle = []
 tracy = ["profiling/profile-with-tracy", "dep:tracy-client"]
 
 [dependencies]
+# The pure CS/math substrate library (this workspace's other member). Carries no
+# domain types; see docs/architecture/data-structures.md ("Substrate").
+substrate = { path = "crates/substrate" }
 winit = "0.30.13"
 wgpu = "29.0.3"
 egui = "0.34.3"

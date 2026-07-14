@@ -255,6 +255,40 @@ the system can never disagree about where "here" is: the value says so itself.
 
 ---
 
+## Substrate — the structures as pure computer science
+
+Several of the structures above have two identities. To the system they are a
+producer-bounds tree, a carved-block atlas, an occupancy pyramid; to computer
+science they are a bounding-volume hierarchy, a slot allocator over a packed
+cube, a sparse min-mip pyramid. The second identity is the durable one — it can
+be read, tested, and reasoned about (including its performance) without knowing a
+single thing about voxels — and it lives in its own library: the **substrate**
+crate.
+
+**What it is.** A separate library crate holding the load-bearing structures
+whose identity is purely algorithmic. The application depends on it; it depends
+on no application code, and that direction is enforced by the compiler rather
+than by convention — the reason it is a crate and not a folder.
+
+**The boundary law.** A structure belongs in substrate exactly when it is
+describable entirely in textbook computer-science / mathematics vocabulary and is
+parameterized only by plain numbers and generics — never by a scene, a producer,
+a chunk, or any other domain type. The moment a structure must name something
+from the domain it is an *adapter*, and adapters stay in the application at their
+own seams. This keeps the library free of the vocabulary that dates fastest.
+
+**The naming rule.** Inside substrate the well-known name from the literature *is*
+the type's name — a median-split bounding-volume hierarchy is `MedianSplitBvh`, a
+bit-packed occupancy cube is `BitCube`, an exact rational is `ExactRational`. Each
+component's own definition carries the explanation of the structure and the
+citations to the canonical literature, noting where the local variant deviates.
+The domain's own words survive only at the adapter seams.
+
+**Where the inventory lives.** Which structures move, in what order, and with
+which oracles is a dated engineering input, not a timeless fact, so it lives apart
+from this chapter in `docs/design/substrate-extraction-map.md`. This section
+states the shape; that map tracks the migration.
+
 ## The shape of the whole
 
 Read together, the thirteen structures implement four promises:

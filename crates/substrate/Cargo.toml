@@ -1,0 +1,11 @@
+[package]
+name = "substrate"
+version = "0.1.0"
+edition = "2021"
+
+# Pure computer-science / mathematics library. No features (no gpu/oracle/tracy),
+# no dependencies — std only. Not intended for release; intended for reading,
+# naming, and isolated performance reasoning. See the "Substrate" section of
+# docs/architecture/data-structures.md for the boundary law and naming rule.
+
+[dependencies]

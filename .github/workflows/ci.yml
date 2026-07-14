@@ -44,6 +44,15 @@ jobs:
       - name: Test (GPU-free; `gpu` feature off)
         run: cargo test
 
+      # The substrate library is a separate workspace member with no features
+      # and no domain dependencies; it carries its own gates so a regression in
+      # the pure CS/math layer fails independently of the app crate.
+      - name: Clippy substrate (deny warnings)
+        run: cargo clippy -p substrate --all-targets -- -D warnings
+
+      - name: Test substrate
+        run: cargo test -p substrate
+
   windows-build:
     name: Build (Windows)
     runs-on: windows-latest
