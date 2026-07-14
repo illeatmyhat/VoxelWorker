@@ -52,45 +52,16 @@ use crate::core_geom::{BlockId, CHUNK_BLOCKS};
 use crate::cuboid_mesh::clean_block_id;
 use crate::two_layer_store::{SeamSolidity, TwoLayerChunk};
 
-/// Signed world-block coordinates are biased into this many bits per axis inside the
-/// packed key: ±2^20 (~1M) blocks per axis, far beyond the anisotropic 10k+-block
-/// target. Three 21-bit lanes fill bits 0..63 (z high), so the packed key's integer
-/// order IS lexicographic (z, y, x) block order — sortable on the CPU and binary-
-/// searchable as a `(hi, lo)` u32 pair in WGSL (no u64 there).
-const WORLD_BLOCK_KEY_BITS_PER_AXIS: u32 = 21;
-const WORLD_BLOCK_KEY_BIAS: i64 = 1 << (WORLD_BLOCK_KEY_BITS_PER_AXIS - 1);
-
-/// Pack an absolute world-block coordinate into the sorted-record key (z-major
-/// lexicographic order). Panics if a coordinate falls outside the ±2^20 biased lane —
-/// a scene that large is out of every current target's range, and a silent wrap would
-/// alias two blocks onto one brick.
-pub fn pack_world_block_key(world_block: [i64; 3]) -> u64 {
-    let mut packed = 0u64;
-    // z fills the highest lane so integer order == (z, y, x) lexicographic order.
-    for (lane, &coordinate) in [world_block[2], world_block[1], world_block[0]]
-        .iter()
-        .enumerate()
-    {
-        let biased = coordinate + WORLD_BLOCK_KEY_BIAS;
-        assert!(
-            (0..(1i64 << WORLD_BLOCK_KEY_BITS_PER_AXIS)).contains(&biased),
-            "world-block coordinate {coordinate} exceeds the packed-key lane (±2^20 blocks)"
-        );
-        packed |= (biased as u64) << ((2 - lane) as u32 * WORLD_BLOCK_KEY_BITS_PER_AXIS);
-    }
-    packed
-}
-
-/// Unpack a [`pack_world_block_key`] key back to its world-block coordinate (the
-/// parity harness's mismatch-location readout; the shader never needs it).
-pub fn unpack_world_block_key(key: u64) -> [i64; 3] {
-    let lane_mask = (1u64 << WORLD_BLOCK_KEY_BITS_PER_AXIS) - 1;
-    let unpack_lane = |lane: u32| -> i64 {
-        ((key >> (lane * WORLD_BLOCK_KEY_BITS_PER_AXIS)) & lane_mask) as i64
-            - WORLD_BLOCK_KEY_BIAS
-    };
-    [unpack_lane(0), unpack_lane(1), unpack_lane(2)]
-}
+// The brick-record key codec IS substrate's `lattice_key`: an absolute world-block
+// coordinate packed into one sortable `u64` in z-major lexicographic (z, y, x) order,
+// 21 bits/axis (±2^20 blocks — far beyond the anisotropic 10k+-block target), so the
+// record array's integer order IS block order (sortable on the CPU, binary-searchable
+// as a `(hi, lo)` u32 pair on the GPU). The domain keeps the "world-block key" name at
+// this seam; the space-filling-curve definition and citations live in the substrate
+// module. See docs/architecture/data-structures.md (Substrate) for the codec itself.
+pub use substrate::lattice_key::{
+    pack_lattice_key as pack_world_block_key, unpack_lattice_key as unpack_world_block_key,
+};
 
 // ============================================================================
 // Clip-map occupancy pyramid (ADR 0011 Decision 4a / slice G2+G4) — THREE
@@ -333,7 +304,7 @@ pub fn pack_clipmap_level_keys(level: &ClipmapLevel) -> Vec<[u32; 2]> {
     level
         .cell_keys
         .iter()
-        .map(|&key| [(key >> 32) as u32, key as u32])
+        .map(|&key| substrate::lattice_key::split_key_hi_lo(key))
         .collect()
 }
 
@@ -1996,27 +1967,6 @@ mod tests {
         degenerate.set_x_run(0, 0, 0, 0);
         assert!(degenerate.is_occupied(0, 0, 0));
         assert_eq!(degenerate.occupied_voxel_count(), 1);
-    }
-
-    #[test]
-    fn world_block_key_round_trips_and_orders_z_major() {
-        let coordinates = [
-            [0i64, 0, 0],
-            [-1, -2, -3],
-            [17, -300, 4096],
-            [-(1 << 19), (1 << 19), 0],
-        ];
-        for &world_block in &coordinates {
-            assert_eq!(
-                unpack_world_block_key(pack_world_block_key(world_block)),
-                world_block
-            );
-        }
-        // Integer key order is (z, y, x) lexicographic — the sort the shader's
-        // binary search relies on.
-        assert!(pack_world_block_key([5, 0, 0]) < pack_world_block_key([0, 1, 0]));
-        assert!(pack_world_block_key([0, 5, 0]) < pack_world_block_key([0, 0, 1]));
-        assert!(pack_world_block_key([-1, 0, 0]) < pack_world_block_key([0, 0, 0]));
     }
 
     /// The interior-INCLUSIVE oracle build ([`build_brick_field_all_blocks`]) maps the

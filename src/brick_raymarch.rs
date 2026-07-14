@@ -129,9 +129,10 @@ fn gpu_record_of(
     // Pack the block material above the kind discriminant (ADR 0011 G2): the
     // shader shades the hit from its own record, not a scene-wide uniform.
     let kind = kind_discriminant | ((record.material_id as u32) << BRICK_RECORD_MATERIAL_ID_SHIFT);
+    let [key_hi, key_lo] = substrate::lattice_key::split_key_hi_lo(key);
     BrickGpuRecord {
-        key_hi: (key >> 32) as u32,
-        key_lo: key as u32,
+        key_hi,
+        key_lo,
         kind,
         atlas_slot,
     }
@@ -292,12 +293,15 @@ fn pack_occupancy_cells(masks: &BlockOccupancyMasks) -> Vec<OccupancyCellPod> {
         .iter()
         .zip(&masks.cell_masks)
         .zip(&masks.cell_materials)
-        .map(|((&key, &mask), &material)| OccupancyCellPod {
-            key_hi: (key >> 32) as u32,
-            key_lo: key as u32,
-            material,
-            _pad: 0,
-            mask,
+        .map(|((&key, &mask), &material)| {
+            let [key_hi, key_lo] = substrate::lattice_key::split_key_hi_lo(key);
+            OccupancyCellPod {
+                key_hi,
+                key_lo,
+                material,
+                _pad: 0,
+                mask,
+            }
         })
         .collect()
 }

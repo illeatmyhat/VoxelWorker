@@ -39,24 +39,13 @@
 //!
 //! ---
 //!
-//! No components have moved into this crate yet: this is the workspace scaffold.
-//! Components arrive one extraction slice at a time, each carrying its own
-//! oracles, per the extraction map referenced above.
+//! Components arrive one extraction slice at a time, each carrying its own oracles,
+//! per the extraction map referenced above. Extracted so far (slice S1, spatial):
+//! [`Aabb`], [`Bvh`], and the [`lattice_key`] packing codec.
 
-#[cfg(test)]
-mod tests {
-    /// The crate compiles and links standalone, with no dependencies and no
-    /// features. This is deliberately the *only* claim the scaffold makes — there
-    /// are no placeholder component types pretending to be structures that have
-    /// not yet been extracted.
-    #[test]
-    fn crate_compiles_standalone() {
-        // Reaching this line means the feature-free, dependency-free crate built
-        // and the test harness linked against it. The assertion is a real (if
-        // trivial) computation rather than `assert!(true)` — the latter is
-        // rejected by clippy as a constant assertion, and this crate's gate
-        // denies warnings.
-        let linked = usize::from(u8::MAX).count_ones();
-        assert_eq!(linked, 8, "substrate builds and links on its own");
-    }
-}
+pub mod aabb;
+pub mod bvh;
+pub mod lattice_key;
+
+pub use aabb::Aabb;
+pub use bvh::Bvh;

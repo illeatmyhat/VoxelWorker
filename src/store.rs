@@ -47,7 +47,7 @@ use std::collections::HashMap;
 use crate::chunk_storage::{compress, decompress};
 use crate::disk_chunk_store::DiskChunkStore;
 use crate::scene::Scene;
-use crate::spatial_index::VoxelAabb;
+use crate::spatial_index::{ChunkCoverage, VoxelAabb};
 use crate::voxel::{Voxel, VoxelGrid};
 
 /// Back-compat alias for the pre-A2b name. Existing call sites refer to the

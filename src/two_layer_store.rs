@@ -54,7 +54,7 @@ use rayon::prelude::*;
 use crate::core_geom::{BlockAttrs, BlockId, CHUNK_BLOCKS};
 use crate::cuboid::{decompose_into_boxes, VoxelBox, VoxelRegion};
 use crate::scene::{LeafProducer, Scene};
-use crate::spatial_index::{EditBroadphaseBvh, VoxelAabb};
+use crate::spatial_index::{ChunkCoverage, EditBroadphaseBvh, VoxelAabb};
 use crate::voxel::{
     union_field_intervals, FieldClassification, RecentreVoxels, Voxel, VoxelGrid, SURFACE_ISOLEVEL,
 };
