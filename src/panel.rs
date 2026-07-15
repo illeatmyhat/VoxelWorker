@@ -18,7 +18,7 @@
 //! density only sets [`GeometryParams::voxels_per_block`] (never the block size).
 
 use crate::block_palette::BlockPalette;
-use crate::camera::ProjectionMode;
+use camera::ProjectionMode;
 use crate::core_geom::MaterialChoice;
 use crate::intent::{Intent, NodeSpec};
 use crate::scene::{DefId, Node, NodeContent, NodeId, Part, Scene};

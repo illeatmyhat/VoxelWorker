@@ -43,7 +43,7 @@ use crate::core_geom::CHUNK_BLOCKS;
 ///
 /// Kept as a domain alias deliberately: substrate also carries the *floating-point*
 /// closed twin [`substrate::RealAabb`] (frustum culling consumes it via
-/// `crate::frustum::Aabb`), and `VoxelAabb` keeps the integer-voxel box unambiguous
+/// `substrate::RealAabb`), and `VoxelAabb` keeps the integer-voxel box unambiguous
 /// at every call site.
 /// The corners are `i64` (64-bit world addressing): absolute voxels = block offset ×
 /// density, so a far-placed leaf (±10⁹ blocks × density) overflows i32; the derived

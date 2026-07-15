@@ -22,7 +22,6 @@ pub mod brick_field;
 // ADR 0011 G1: the minimal brick raymarch display sink (block DDA + record binary
 // search + sculpted voxel DDA, residency-miss contract, per-sample MSAA depth).
 pub mod brick_raymarch;
-pub mod camera;
 pub mod chunk_cache;
 // The display subsystem: the pure per-edit routing policy for the two display pipelines
 // (cuboid mesh + brick raymarch). The DisplayOrchestrator state machine joins it later.
@@ -36,7 +35,6 @@ pub mod cuboid;
 pub mod cuboid_mesh;
 pub mod debug_clouds;
 pub mod disk_chunk_store;
-pub mod frustum;
 pub mod gpu;
 // ADR 0003 Phase C: the single serializable mutation boundary (Intent → apply_intent).
 pub mod intent;

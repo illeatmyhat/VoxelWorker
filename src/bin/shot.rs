@@ -92,7 +92,7 @@ struct ShotOptions {
     /// `--cube-hover <zone>` (#13 Step 2): force a ViewCube chrome zone to read as
     /// hovered so a golden can show a highlighted rotate/roll arrow. `None` = the
     /// normal render (Home/Fit only, no arrows).
-    cube_hover: Option<voxel_worker::camera::CubeChromeZone>,
+    cube_hover: Option<camera::CubeChromeZone>,
     /// Orbit azimuth (radians). Default 0.7.
     theta: f32,
     /// Orbit polar angle from +Y (radians). Default 1.05.
@@ -378,8 +378,8 @@ fn parse_snap_element(value: &str) -> ViewCubeElement {
 /// Parse a `--cube-hover` value (#13 Step 2) into the forced hovered chrome zone.
 /// Accepts the rotate/roll arrows and the Home/Fit badges so a golden can show
 /// any highlighted chrome element.
-fn parse_cube_hover(value: &str) -> voxel_worker::camera::CubeChromeZone {
-    use voxel_worker::camera::{ArrowDir, CubeChromeZone, RollDir};
+fn parse_cube_hover(value: &str) -> camera::CubeChromeZone {
+    use camera::{ArrowDir, CubeChromeZone, RollDir};
     match value.to_ascii_lowercase().as_str() {
         "rotate-up" | "up" => CubeChromeZone::RotateArrow(ArrowDir::Up),
         "rotate-down" | "down" => CubeChromeZone::RotateArrow(ArrowDir::Down),
@@ -2229,7 +2229,7 @@ async fn run_capture(options: ShotOptions) {
         cube_rotate_arrows_visible: app_core.camera.is_face_constrained()
             || matches!(
                 options.cube_hover,
-                Some(voxel_worker::camera::CubeChromeZone::RotateArrow(_))
+                Some(camera::CubeChromeZone::RotateArrow(_))
             ),
         scene_grid: Some(&scene_grid_renderer),
         // Issue #29 S5: Points SUPPRESSED unless `--points` (keeps the 6 goldens

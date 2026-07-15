@@ -805,7 +805,7 @@ impl ViewCubeRenderer {
         target_width: u32,
         target_height: u32,
         viewport: [u32; 4],
-        hovered_zone: Option<crate::camera::CubeChromeZone>,
+        hovered_zone: Option<camera::CubeChromeZone>,
         rotate_arrows_visible: bool,
     ) {
         // #13 Step 6.2: when a face/edge/corner ELEMENT is hovered, pack a 6-bit
@@ -813,7 +813,7 @@ impl ViewCubeRenderer {
         // uniform's `depth_bias.x` slot (byte offset 64) so the cube shader brightens
         // the hovered element. Any non-Element hover (arrow/badge) clears the mask.
         let highlight_mask = match hovered_zone {
-            Some(crate::camera::CubeChromeZone::Element(element)) => {
+            Some(camera::CubeChromeZone::Element(element)) => {
                 let mut mask = 0u32;
                 for face in element.faces() {
                     mask |= 1 << cube_face_material_index(*face);
@@ -901,10 +901,10 @@ impl ViewCubeRenderer {
     }
 }
 
-/// The material-index (`+X,-X,+Y,-Y,+Z,-Z`) of a [`crate::camera::CubeFace`], i.e.
+/// The material-index (`+X,-X,+Y,-Y,+Z,-Z`) of a [`camera::CubeFace`], i.e.
 /// its layer in the cube's face-label texture array and its bit in the hover mask.
-fn cube_face_material_index(face: crate::camera::CubeFace) -> u32 {
-    use crate::camera::CubeFace;
+fn cube_face_material_index(face: camera::CubeFace) -> u32 {
+    use camera::CubeFace;
     // GEOMETRIC material-index order (+X,-X,+Y,-Y,+Z,-Z) under Z-up: the inverse of
     // `CubeFace::from_material_index` (Right,Left,Back,Front,Top,Bottom).
     match face {
@@ -1536,8 +1536,8 @@ fn build_chrome_overlay(
 /// rolls under the 90° step (OPPOSITE the edge it sits on), so it matches the
 /// action. Shared by the persistent draw and the hovered-highlight draw so the
 /// dim and bright states sit in identical pixels.
-fn rotate_arrow_layout(dir: crate::camera::ArrowDir) -> (ChromeGlyph, f32, f32) {
-    use crate::camera::ArrowDir;
+fn rotate_arrow_layout(dir: camera::ArrowDir) -> (ChromeGlyph, f32, f32) {
+    use camera::ArrowDir;
     match dir {
         // TOP edge gutter v∈[0,.13]; the step pulls the top face down → ArrowDown.
         ArrowDir::Up => (ChromeGlyph::ArrowDown, 0.5, 0.065),
@@ -1557,10 +1557,10 @@ fn rotate_arrow_layout(dir: crate::camera::ArrowDir) -> (ChromeGlyph, f32, f32) 
 /// hovered one brightens. When `false` (off-face view) no rotate arrows draw at
 /// all. The layout fractions MUST match `classify_cube_point`.
 fn build_chrome_vertices(
-    hovered_zone: Option<crate::camera::CubeChromeZone>,
+    hovered_zone: Option<camera::CubeChromeZone>,
     rotate_arrows_visible: bool,
 ) -> Vec<ChromeVertex> {
-    use crate::camera::{ArrowDir, CubeChromeZone, RollDir};
+    use camera::{ArrowDir, CubeChromeZone, RollDir};
 
     let mut verts = Vec::new();
 

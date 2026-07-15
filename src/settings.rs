@@ -21,7 +21,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::camera::{HomeView, OrbitCamera, ProjectionMode};
+use camera::{HomeView, OrbitCamera, ProjectionMode};
 use crate::core_geom::MaterialChoice;
 use crate::panel::{LayerRange, PanelState};
 use crate::scene::Scene;

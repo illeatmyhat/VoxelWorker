@@ -398,7 +398,7 @@ pub(crate) fn whole_block_offset(blocks: [i64; 3]) -> [Measurement; 3] {
 mod tests {
     use super::*;
     use crate::app_core::AppCore;
-    use crate::camera::OrbitCamera;
+    use camera::OrbitCamera;
     use crate::scene::{Node, NodeBuilder, NodeTransform, Point, Scene};
     use crate::sketch::{PlaneAxis, Sketch, SketchSolid};
     use crate::voxel::{ShapeKind, SdfShape};

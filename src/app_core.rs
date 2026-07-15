@@ -18,7 +18,7 @@
 
 use std::sync::Arc;
 
-use crate::camera::OrbitCamera;
+use camera::OrbitCamera;
 use crate::command::{Command, CommandStack, Inverse};
 use crate::core_geom::CHUNK_BLOCKS;
 use crate::intent::{Intent, IntentEffect};
@@ -1283,7 +1283,7 @@ mod replay_tests {
 #[cfg(test)]
 mod undo_tests {
     use super::*;
-    use crate::camera::OrbitCamera;
+    use camera::OrbitCamera;
     use crate::core_geom::MaterialChoice;
     use crate::intent::{whole_block_offset, Intent, NodeSpec};
     use crate::scene::{Node, NodeBuilder, NodeContent, NodeGrids, NodeTransform, Point, Scene};
