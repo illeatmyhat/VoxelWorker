@@ -7,7 +7,7 @@
 //!
 //! Only CPU-side work happens here (`image` decode + `walkdir`). All GPU work
 //! (texture upload, the 45° thumbnail render, egui registration) stays on the
-//! main thread — see `block_palette.rs`.
+//! main thread — see the shell's `block_palette` module + `block_texture` (display).
 //!
 //! Two message kinds flow over the channel:
 //!   * [`ScanMessage::Group`] — one scanned [`BlockGroup`] with its first

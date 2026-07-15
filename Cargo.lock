@@ -723,8 +723,6 @@ dependencies = [
  "bytemuck",
  "camera",
  "document",
- "egui",
- "egui-wgpu",
  "evaluation",
  "glam",
  "image",

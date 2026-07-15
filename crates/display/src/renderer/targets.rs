@@ -5,8 +5,8 @@
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 /// Sample count for the 3D voxel pass (4× MSAA). The depth texture, the
-/// multisampled colour texture and the pipeline all share this count; egui still
-/// renders at 1 sample onto the resolved target.
+/// multisampled colour texture and the pipeline all share this count; the shell's
+/// UI pass still renders at 1 sample onto the resolved target.
 pub const MSAA_SAMPLE_COUNT: u32 = 4;
 
 /// Create a single-sample depth texture view (used by the view-cube pass).

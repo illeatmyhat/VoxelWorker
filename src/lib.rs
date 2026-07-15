@@ -19,6 +19,10 @@
 
 // ADR 0003 keystone: headless orchestrator (scene + store + camera). See app_core.rs.
 pub mod app_core;
+// The egui-facing block palette STATE (tiles + click counter). The GPU backing (thumbnail
+// renderer + loaded material) lives in `display::block_texture`; this shell module drives it
+// and bridges the rendered thumbnails into egui (ADR 0016 Phase 8a — display drops egui).
+pub mod block_palette;
 pub mod gpu;
 pub mod panel;
 pub mod settings;
@@ -234,7 +238,7 @@ pub fn run_egui_frame(
     grid_z: u32,
     measured_diameter: u32,
     export: panel::ExportPanelState,
-    palette: &display::block_palette::BlockPalette,
+    palette: &crate::block_palette::BlockPalette,
     raw_input: egui::RawInput,
     size_in_pixels: [u32; 2],
     pixels_per_point: f32,

@@ -22,7 +22,8 @@
 
 use std::path::PathBuf;
 
-use display::block_palette::{BlockPalette, LoadedMaterial, ThumbnailRenderer};
+use display::block_texture::{LoadedMaterial, ThumbnailRenderer};
+use voxel_worker::block_palette::BlockPalette;
 use work::workers::scan::{run_auto_scan_blocking, FaceResolver};
 use voxel_worker::{
     create_depth_view, create_msaa_color_view, procedural_material_average_color, render_frame,

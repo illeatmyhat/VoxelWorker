@@ -178,7 +178,7 @@ impl ViewCubeRenderer {
             ],
         };
         // The view cube renders at 1 sample into the resolved target (after the
-        // 3D MSAA resolve, before egui), so its pipelines use sample_count 1.
+        // 3D MSAA resolve, before the shell's UI pass), so its pipelines use sample_count 1.
         let face_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("view cube face pipeline"),
             layout: Some(&face_pipeline_layout),

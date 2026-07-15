@@ -36,7 +36,7 @@ mod state;
 
 pub use state::{ExportPanelState, LayerRange, PanelResponse, PanelState};
 
-use display::block_palette::BlockPalette;
+use crate::block_palette::BlockPalette;
 
 /// Build the right-hand side panel into the root [`egui::Ui`] of the frame.
 ///

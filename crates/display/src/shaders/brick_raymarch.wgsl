@@ -23,7 +23,7 @@
 // **Depth compositing (grill Q5):** the pass runs INSIDE the existing 4× MSAA voxel
 // pass and writes ray-hit depth via `frag_depth`, so the depth-tested overlays
 // (scene grid, infinite grid, points, onion fog's depth-stop) and the later passes
-// (view cube, egui) composite exactly as they do over the rasterized mesh.
+// (view cube, the shell's UI pass) composite exactly as they do over the rasterized mesh.
 //
 // **MSAA parity with the mesh (parity gate clause c):** the fragment runs PER SAMPLE
 // (forced by `@builtin(sample_index)`). Each sample casts its own ray — reproducing

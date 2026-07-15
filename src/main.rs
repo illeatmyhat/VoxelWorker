@@ -12,7 +12,8 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowId};
 
-use display::block_palette::{BlockPalette, LoadedMaterial, ThumbnailRenderer};
+use display::block_texture::{LoadedMaterial, ThumbnailRenderer};
+use voxel_worker::block_palette::BlockPalette;
 use work::workers::scan::{
     spawn_auto_scan, spawn_custom_folder_scan, FaceResolver, ScanHandle, ScanMessage,
 };

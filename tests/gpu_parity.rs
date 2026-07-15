@@ -897,7 +897,7 @@ fn brick_loaded_material_hit_samples_mesh_rule_texel() {
         mipmap_filter: wgpu::MipmapFilterMode::Nearest,
         ..Default::default()
     });
-    let loaded = display::block_palette::LoadedMaterial::from_face_layers(
+    let loaded = display::block_texture::LoadedMaterial::from_face_layers(
         &gpu.device,
         &gpu.queue,
         &material_layout,

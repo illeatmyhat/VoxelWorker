@@ -6,13 +6,14 @@ edition = "2021"
 # The DISPLAY crate: the ONE crate in the workspace that links wgpu. Every GPU sink lives
 # here — the cuboid fallback mesher (`cuboid_mesh`), the brick field build + its GPU record
 # pack (`brick_field`), the brick raymarch display pipeline (`brick_raymarch`), the material
-# texture atlas (`texture_atlas`), the block palette + thumbnail renderer (`block_palette`),
-# the asset pack decode/registry (`assets`), and the render pipelines + view cube + grids
-# (`renderer`). A component belongs here iff it CONSUMES the classified boundary set (the
-# evaluation layer's two-layer chunks) and PRODUCES pixels — it names a wgpu device, queue,
-# pipeline, buffer, or shader. The GPU device/queue are handed IN from the shell as
-# parameters; this crate NEVER creates a device, opens a surface, or touches a window
-# (no winit, no egui-winit) — windowing and event handling are the shell's. It sits ABOVE
+# texture atlas (`texture_atlas`), the block thumbnail renderer + loaded material
+# (`block_texture`), the asset pack decode/registry (`assets`), and the render pipelines +
+# view cube + grids (`renderer`). A component belongs here iff it CONSUMES the classified
+# boundary set (the evaluation layer's two-layer chunks) and PRODUCES pixels — it names a wgpu
+# device, queue, pipeline, buffer, or shader. The GPU device/queue are handed IN from the shell
+# as parameters; this crate NEVER creates a device, opens a surface, or touches a window
+# (no winit, no egui) — windowing, event handling, and the egui-facing palette state are the
+# shell's. It sits ABOVE
 # `evaluation` (whose two-layer chunks it meshes/raymarches) and BELOW the work + shell
 # layers; the dependency edge is one-way (`evaluation <- display <- {work, shell}`),
 # compile-enforced — an upward `use` (orchestrator, routing, workers, app_core, panel,
@@ -42,10 +43,6 @@ camera = { path = "../camera" }
 raycast = { path = "../raycast" }
 # The GPU API. This is the ONE crate that links it — the workspace's wgpu boundary.
 wgpu = "29.0.3"
-# The immediate-mode UI toolkit: the block-palette thumbnail exposes an `egui::TextureId`.
-egui = "0.34.3"
-# The egui↔wgpu bridge: the block palette registers thumbnails with the egui-wgpu Renderer.
-egui-wgpu = "0.34.3"
 # Vector/matrix mathematics for the vertex/uniform layouts and the CPU-side geometry.
 glam = "0.33.1"
 # Zero-copy POD casts for the vertex/instance/uniform buffers uploaded to the GPU.

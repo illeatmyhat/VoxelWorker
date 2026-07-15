@@ -1,30 +1,27 @@
-//! The block palette: thumbnails + the applied (loaded) material (Milestone 6).
+//! Block-texture GPU work: thumbnail rendering + the applied (loaded) material.
 //!
-//! This is the main-thread half of M6 (all GPU work). It owns:
+//! This is the pure-wgpu half of the block palette (all GPU work, no UI toolkit). It owns:
 //!
 //!   * [`ThumbnailRenderer`] — a tiny offscreen pipeline that draws a textured
 //!     unit cube at a fixed 45° orthographic view (prototype `thumbCam`:
-//!     azimuth π/4, elevation 0.62) into a ~96×96 `Rgba8Unorm` texture, which is
-//!     then registered with egui via `register_native_texture` → `TextureId`.
+//!     azimuth π/4, elevation 0.62) into a ~96×96 `Rgba8Unorm` texture. The
+//!     rendered texture is returned to the caller, which registers it with the UI layer.
 //!   * [`LoadedMaterial`] — a runtime-loaded RGBA block texture uploaded as a
 //!     bind group laid out exactly like the procedural Stone/Wood/Plain ones, so
 //!     the per-voxel slice shader textures the model with a real VS block.
-//!   * [`BlockPalette`] — the list of palette tiles (label, variant count,
-//!     thumbnail `TextureId`, variant paths) plus the click counter that picks a
-//!     deterministic pseudo-random variant.
 //!
-//! The egui-facing tile widgets live in `panel.rs`; this module is the GPU/state
-//! backing them.
+//! The UI-facing palette state (`BlockPalette` / `PaletteTile`) lives in the shell
+//! crate's `block_palette` module; this module is the GPU backing behind it.
 
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
-use crate::assets::{BlockGroup, DecodedRgba};
+use crate::assets::DecodedRgba;
 
 /// Edge length (pixels) of each square thumbnail texture (prototype 96×96).
 pub const THUMBNAIL_SIZE: u32 = 96;
 
-/// Thumbnail offscreen format. MUST be `Rgba8Unorm` (NOT sRGB): egui's
+/// Thumbnail offscreen format. MUST be `Rgba8Unorm` (NOT sRGB): the UI layer's
 /// `register_native_texture` requires it. We therefore sample the block texture
 /// as raw bytes (also `Rgba8Unorm`) and apply lighting in that same space, so the
 /// thumbnail reads like the prototype's preview without a double sRGB encode.
@@ -181,7 +178,7 @@ impl ThumbnailRenderer {
     }
 
     /// Render one decoded block texture into a fresh offscreen thumbnail texture
-    /// and return it (caller registers it with egui). The texture stays alive as
+    /// and return it (caller registers it with the UI layer). The texture stays alive as
     /// long as the returned handle does.
     pub fn render_thumbnail(
         &self,
@@ -234,7 +231,7 @@ impl ThumbnailRenderer {
                     depth_slice: None,
                     ops: wgpu::Operations {
                         // Transparent clear so the tile shows the cube on the panel
-                        // background (egui composites the alpha).
+                        // background (the UI layer composites the alpha).
                         load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                         store: wgpu::StoreOp::Store,
                     },
@@ -474,86 +471,6 @@ fn resize_rgba_nearest(decoded: &DecodedRgba, target_width: u32, target_height: 
         }
     }
     out
-}
-
-/// One ready palette tile: its label, variant count, the egui texture id of its
-/// thumbnail, and the absolute paths of its variants (for `apply`).
-pub struct PaletteTile {
-    pub label: String,
-    pub variant_count: usize,
-    pub thumbnail_id: egui::TextureId,
-    pub variants: Vec<std::path::PathBuf>,
-    /// The scanned group (kept so M7 per-face resolution can re-key on apply).
-    pub group: BlockGroup,
-    /// Keep the thumbnail texture alive for as long as the tile (egui only holds
-    /// a view/bind-group internally; dropping the texture would invalidate it).
-    pub _thumbnail_texture: wgpu::Texture,
-}
-
-/// The palette state shared by the windowed app + the headless shot path.
-#[derive(Default)]
-pub struct BlockPalette {
-    pub tiles: Vec<PaletteTile>,
-    /// Status line text ("Scanning…", "N blocks loaded", "No VS install found…").
-    pub status: String,
-    /// Incrementing click counter → deterministic pseudo-random variant pick
-    /// (`variants[counter % len]`), since `Math.random` isn't desired for
-    /// reproducible screenshots.
-    pub click_counter: usize,
-}
-
-impl BlockPalette {
-    /// Append a scanned group: render its thumbnail, register it with egui, push a tile.
-    #[allow(clippy::too_many_arguments)]
-    pub fn add_group(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        thumbnail_renderer: &ThumbnailRenderer,
-        egui_renderer: &mut egui_wgpu::Renderer,
-        group: BlockGroup,
-        thumbnail_rgba: &DecodedRgba,
-    ) {
-        let texture = thumbnail_renderer.render_thumbnail(device, queue, thumbnail_rgba);
-        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let thumbnail_id =
-            egui_renderer.register_native_texture(device, &view, wgpu::FilterMode::Nearest);
-        self.tiles.push(PaletteTile {
-            label: group.label.clone(),
-            variant_count: group.variants.len(),
-            thumbnail_id,
-            variants: group.variants.clone(),
-            group,
-            _thumbnail_texture: texture,
-        });
-    }
-
-    /// Map a categorical [`BlockId`](voxel_core::core_geom::BlockId) (ADR 0003 §3a) to the
-    /// procedural [`MaterialChoice`](voxel_core::core_geom::MaterialChoice) it renders as.
-    ///
-    /// This is the categorical block-palette resolution the per-voxel cell now routes
-    /// through: the three procedural materials ARE the palette today (`block_id` ⇒
-    /// Stone/Wood/Plain), so the mapping is `MaterialChoice::from_material_id`. The rich
-    /// VS palette CONTENT (a real `block_id` → texture table) is the deferred part; this
-    /// is the seam it will replace, so the renderer + `.vox` export call one resolver
-    /// rather than reading the id directly. `&self` is taken so a future palette with
-    /// real content resolves against THIS palette's loaded tiles, not a global table.
-    pub fn material_for_block(&self, block_id: voxel_core::core_geom::BlockId) -> voxel_core::core_geom::MaterialChoice {
-        voxel_core::core_geom::MaterialChoice::from_material_id(block_id.color_index())
-    }
-
-    /// Pick the next pseudo-random variant path of `tile_index` and bump the
-    /// counter. Returns the chosen variant's absolute path (caller decodes +
-    /// uploads it as the active material).
-    pub fn pick_variant(&mut self, tile_index: usize) -> Option<std::path::PathBuf> {
-        let tile = self.tiles.get(tile_index)?;
-        if tile.variants.is_empty() {
-            return None;
-        }
-        let index = self.click_counter % tile.variants.len();
-        self.click_counter = self.click_counter.wrapping_add(1);
-        Some(tile.variants[index].clone())
-    }
 }
 
 /// Build the standard block-texture bind group layout (binding 0 = texture,

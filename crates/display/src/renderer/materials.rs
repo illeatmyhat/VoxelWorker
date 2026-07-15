@@ -76,7 +76,7 @@ pub fn build_face_material_layout(device: &wgpu::Device) -> wgpu::BindGroupLayou
 /// Upload six RGBA8 sRGB layers (one per cube face) as a single `D2Array`
 /// texture (nearest filter, clamp-to-edge, no mipmaps). Every layer must be the
 /// same `width`×`height`; callers that have per-face PNGs of differing sizes
-/// rescale to a common size first (see `block_palette::upload_face_layers`).
+/// rescale to a common size first (see `block_texture::LoadedMaterial::from_faces`).
 pub fn upload_face_material_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
