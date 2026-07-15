@@ -27,10 +27,12 @@
 use std::path::PathBuf;
 
 pub mod custom_pack;
+pub mod decode;
 pub mod faces;
 pub mod registry;
 pub mod vintage_story;
 
+pub use decode::{decode_rgba, DecodedRgba};
 pub use faces::{CubeFaceSlot, FaceProvenance, FaceTextures};
 
 /// Safety cap on the number of PNGs walked per source (prototype `n>8000`).

@@ -19,10 +19,10 @@
 use std::sync::mpsc::{Receiver, Sender};
 use std::thread::JoinHandle;
 
-use crate::assets::{custom_pack::CustomFolderSource, registry::detect_all_sources, BlockGroup, BlockSource};
-
-/// A decoded RGBA image: `(width, height, rgba_bytes)`.
-pub type DecodedRgba = (u32, u32, Vec<u8>);
+use crate::assets::{
+    custom_pack::CustomFolderSource, decode_rgba, registry::detect_all_sources, BlockGroup,
+    BlockSource, DecodedRgba,
+};
 
 /// One message streamed from the scan worker to the main thread.
 pub enum ScanMessage {
@@ -179,14 +179,4 @@ impl FaceResolver {
         }
         fallback.unwrap_or_else(|| crate::assets::FaceTextures::uniform(chosen_variant.to_path_buf()))
     }
-}
-
-/// Decode a PNG file to a tightly-packed RGBA8 buffer (CPU work). Returns `None`
-/// on any decode error (the group is skipped, matching the prototype's
-/// try/catch-continue in `buildPalette`).
-pub fn decode_rgba(path: &std::path::Path) -> Option<DecodedRgba> {
-    let image = image::open(path).ok()?;
-    let rgba = image.to_rgba8();
-    let (width, height) = rgba.dimensions();
-    Some((width, height, rgba.into_raw()))
 }

@@ -19,8 +19,7 @@
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
-use crate::assets::BlockGroup;
-use crate::workers::scan::DecodedRgba;
+use crate::assets::{BlockGroup, DecodedRgba};
 
 /// Edge length (pixels) of each square thumbnail texture (prototype 96×96).
 pub const THUMBNAIL_SIZE: u32 = 96;
@@ -361,7 +360,7 @@ impl LoadedMaterial {
         let decoded_faces: Vec<Option<DecodedRgba>> = faces
             .paths
             .iter()
-            .map(|path| crate::workers::scan::decode_rgba(path))
+            .map(|path| crate::assets::decode_rgba(path))
             .collect();
 
         // Pick a representative decoded face to size the array + fill gaps.

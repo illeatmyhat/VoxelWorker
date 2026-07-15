@@ -88,7 +88,7 @@ struct WindowedState {
     scan_handle: Option<ScanHandle>,
     /// Groups received from the scan worker but not yet turned into tiles; drained
     /// a few per frame so a few-hundred-block scan doesn't hitch a single frame.
-    pending_groups: std::collections::VecDeque<(voxel_worker::assets::BlockGroup, voxel_worker::workers::scan::DecodedRgba)>,
+    pending_groups: std::collections::VecDeque<(voxel_worker::assets::BlockGroup, voxel_worker::assets::DecodedRgba)>,
     /// Final group count from the worker's `Done`, applied to the status line once
     /// the pending queue is fully drained.
     scan_total: Option<usize>,
