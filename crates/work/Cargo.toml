@@ -1,0 +1,47 @@
+[package]
+name = "work"
+version = "0.1.0"
+edition = "2021"
+
+# The WORK crate: the async worker pool + the engagement state machine that COORDINATES the
+# pipeline — evaluation -> display -> pixels — via async workers (tempos, generations, staleness
+# discipline) and the engagement orchestrator (which owns both display renderers + both workers
+# and decides which display path draws each edit). It sits ABOVE the display + interchange sinks
+# and BELOW the shell: the dependency edge is one-way (`{display, interchange} <- work <- shell`),
+# compile-enforced — this crate imports NO shell (app_core, panel, settings, gpu, main); an upward
+# `use` fails to build. It DELIBERATELY links wgpu: the geometry/brick workers build GPU meshes +
+# brick fields off-thread and the orchestrator owns the device + drives the display renderers. So
+# `display` is the only crate that links wgpu FOR RENDERING, while `work` links it to BUILD/DRIVE
+# GPU resources, and the shell owns the device (handed in as a parameter). See
+# docs/architecture/04-work.md for the layer this crate realises and
+# docs/design/per-layer-crates-extraction-map.md (the work row) for provenance.
+
+[features]
+default = []
+# Gates the orchestrator's GPU display-install paths (the device-dependent brick/mesh upload +
+# handover blocks). OFF by default so `cargo test -p work` is green on GPU-less CI runners; the
+# app's `gpu` feature forwards to this. Display itself links wgpu unconditionally — this feature
+# only toggles the work-layer code that drives a live device.
+gpu = []
+
+[dependencies]
+# The GPU display sinks this crate OWNS + drives off-thread: the cuboid mesher, the brick field
+# build + raymarch renderer, the packed GPU records, the clip-map pyramid, the layer band.
+display = { path = "../display" }
+# The headless `.vox` export sink the export worker serialises to off-thread.
+interchange = { path = "../interchange" }
+# The classified boundary set the workers consume: the two-layer chunk + resident cache the
+# geometry/brick/diameter rebuilds read their covering chunks from.
+evaluation = { path = "../evaluation" }
+# The authored-TRUTH layer: the Scene the rebuild requests carry.
+document = { path = "../document" }
+# The foundational value vocabulary: the recentre frame (RecentreVoxels) the builds land in.
+voxel_core = { path = "../voxel_core" }
+# The pure CS/math substrate: the generic drain-to-latest/supersede worker (CoalescingWorker) and
+# the panic-catch (catch_unwind_or_log) the domain workers are built on.
+substrate = { path = "../substrate" }
+# The GPU API. Linked deliberately (see the header law): the workers build GPU resources and the
+# orchestrator owns the device handed in from the shell.
+wgpu = "29.0.3"
+# Profiling facade (no-op unless a backend feature is enabled upstream by the shell): worker zones.
+profiling = "1"

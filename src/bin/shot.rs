@@ -23,7 +23,7 @@
 use std::path::PathBuf;
 
 use display::block_palette::{BlockPalette, LoadedMaterial, ThumbnailRenderer};
-use voxel_worker::workers::scan::{run_auto_scan_blocking, FaceResolver};
+use work::workers::scan::{run_auto_scan_blocking, FaceResolver};
 use voxel_worker::{
     create_depth_view, create_msaa_color_view, procedural_material_average_color, render_frame,
     run_egui_frame, AppCore, CubeFace, DefId, EguiPaintBridge, FrameOverlays,

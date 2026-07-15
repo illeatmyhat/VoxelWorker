@@ -13,7 +13,7 @@ use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowId};
 
 use display::block_palette::{BlockPalette, LoadedMaterial, ThumbnailRenderer};
-use voxel_worker::workers::scan::{
+use work::workers::scan::{
     spawn_auto_scan, spawn_custom_folder_scan, FaceResolver, ScanHandle, ScanMessage,
 };
 use voxel_worker::{

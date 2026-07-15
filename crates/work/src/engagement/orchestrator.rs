@@ -16,21 +16,34 @@
 
 use std::sync::Arc;
 
-use crate::{
-    build_brick_field_with_tiles, route_brick_rebuild, route_mesh_build, spawn_brick_worker,
-    spawn_geometry_worker, BrickFieldUpdate, BrickRaymarchRenderer,
-    BrickRebuildAction, BrickRebuildOutcome, BrickRebuildRequest, BrickWorker, CuboidMeshRenderer,
-    EditShape, GenerationTracker, GeometryRebuildRequest, GeometryWorker, IncrementalBrickField,
-    LayerBand, MeshBuildRoute, RebuildRoute, RecentreVoxels, Scene, SculptedAtlasPayload,
-    TwoLayerChunk, TwoLayerResidentCache, ASYNC_REBUILD_CHUNK_THRESHOLD,
+// Intra-crate: the pure per-edit routing policy and the async workers this state machine drives.
+use crate::engagement::routing::{
+    route_brick_rebuild, route_mesh_build, BrickRebuildAction, EditShape, GenerationTracker,
+    MeshBuildRoute, RebuildRoute, ASYNC_REBUILD_CHUNK_THRESHOLD,
 };
+use crate::workers::brick::{
+    spawn_brick_worker, BrickRebuildOutcome, BrickRebuildRequest, BrickWorker,
+};
+use crate::workers::geometry::{spawn_geometry_worker, GeometryRebuildRequest, GeometryWorker};
+// Down-crate: the display GPU sinks this orchestrator owns + drives, and the evaluation /
+// document / voxel_core values that cross the worker channels.
+use display::brick::{
+    build_brick_field_with_tiles, BrickFieldUpdate, BrickRaymarchRenderer, IncrementalBrickField,
+    SculptedAtlasPayload,
+};
+use display::mesh::CuboidMeshRenderer;
+use display::renderer::LayerBand;
+use document::scene::Scene;
+use evaluation::two_layer_store::{TwoLayerChunk, TwoLayerResidentCache};
+use voxel_core::voxel::RecentreVoxels;
 // Consumed only by the GPU display-install paths (compiled out of a non-gpu build, where the
 // orchestrator maintains just the CPU brick mirror).
 #[cfg(feature = "gpu")]
-use crate::{
-    brick_display_handover, brick_patch_in_place, pack_gpu_records,
-    BrickDisplayHandover, ClipmapPyramid,
+use crate::engagement::routing::{
+    brick_display_handover, brick_patch_in_place, BrickDisplayHandover,
 };
+#[cfg(feature = "gpu")]
+use display::brick::{pack_gpu_records, ClipmapPyramid};
 
 /// The per-refresh context the shell hands the orchestrator whenever a display-mesh
 /// rebuild might be needed off the main edit path (the per-frame polls and the
@@ -239,9 +252,9 @@ impl DisplayOrchestrator {
                     build_display_artifacts: true,
                 };
                 if let BrickRebuildOutcome::Display(install) =
-                    crate::build_brick_rebuild(&startup_request)
+                    crate::workers::brick::build_brick_rebuild(&startup_request)
                 {
-                    let crate::BrickDisplayInstall {
+                    let crate::workers::brick::BrickDisplayInstall {
                         atlas,
                         cell_key_atlas,
                         gpu_records,
@@ -985,7 +998,7 @@ impl DisplayOrchestrator {
             BrickRebuildOutcome::Display(install) => {
                 #[cfg(feature = "gpu")]
                 {
-                    let crate::BrickDisplayInstall {
+                    let crate::workers::brick::BrickDisplayInstall {
                         atlas,
                         cell_key_atlas,
                         gpu_records,

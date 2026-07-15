@@ -124,6 +124,20 @@ jobs:
       - name: Test interchange
         run: cargo test -p interchange
 
+      # The work library is the ASYNC WORKER POOL + engagement state machine (one layer above
+      # display + interchange): it coordinates evaluation -> display -> pixels via async workers
+      # (tempos, generations, staleness) and the device-driving orchestrator. It links wgpu
+      # deliberately (builds/drives GPU resources off-thread) but imports no shell, and carries its
+      # own gates so a regression in the tempo/routing/orchestration fails independently of the app
+      # crate. Its tests are pure-CPU (the brick build-equivalence + the routing interlock table),
+      # so they run GPU-less here; the orchestrator's device-dependent blocks are covered by the
+      # workspace `--features gpu` clippy pass below and the app's `--features gpu` integration tests.
+      - name: Clippy work (deny warnings)
+        run: cargo clippy -p work --all-targets -- -D warnings
+
+      - name: Test work
+        run: cargo test -p work
+
       # The camera library is the wgpu-free viewing + projective-geometry member
       # (orbit rig, projection, ViewCube, screen→ray unprojection, frustum culling);
       # it depends only on glam + substrate and carries its own gates so a regression

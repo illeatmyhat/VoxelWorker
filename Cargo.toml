@@ -13,7 +13,7 @@ edition = "2021"
 # (the "Substrate" section) and docs/design/per-layer-crates-extraction-map.md for the
 # boundary law.
 [workspace]
-members = [".", "crates/substrate", "crates/camera", "crates/raycast", "crates/voxel_core", "crates/document", "crates/evaluation", "crates/display", "crates/interchange"]
+members = [".", "crates/substrate", "crates/camera", "crates/raycast", "crates/voxel_core", "crates/document", "crates/evaluation", "crates/display", "crates/interchange", "crates/work"]
 
 [lib]
 name = "voxel_worker"
@@ -37,7 +37,9 @@ required-features = ["oracle"]
 # Enable locally with `cargo test --features gpu` to run the windowed
 # (GPU-device-dependent) integration tests.
 default = []
-gpu = []
+# Forwards to `work/gpu` — the engagement orchestrator (now in the work crate) gates its GPU
+# display-install paths behind it, so the app's `--features gpu` must turn on work's too.
+gpu = ["work/gpu"]
 # Enables the dense whole-region resolve oracles (the O(volume) reference
 # resolvers the parity tests and the `shot` golden tool cross-check the sparse
 # runtime path against). Never on in production builds: `cargo test` sees them
@@ -86,6 +88,12 @@ display = { path = "crates/display" }
 # same bytes). That no-wgpu law is what earns it its own crate over a `display` module. It imports
 # no display/work/shell. See docs/architecture/README.md (laws 4 + 6, the Derivations layer).
 interchange = { path = "crates/interchange" }
+# The WORK library (one layer above display + interchange): the async worker pool + the engagement
+# state machine that coordinates evaluation -> display -> pixels (tempos, generations, staleness) and
+# owns the device-driving orchestrator. Links wgpu deliberately (builds/drives GPU resources
+# off-thread); imports no shell. The app's `gpu` feature forwards to `work/gpu`. See
+# docs/architecture/04-work.md.
+work = { path = "crates/work" }
 # The viewing + projective-geometry library (orbit rig, projection, ViewCube,
 # screen→ray unprojection, frustum culling). wgpu-free graphics mathematics;
 # depends only on glam + substrate.

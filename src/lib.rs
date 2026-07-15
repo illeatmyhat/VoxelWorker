@@ -19,21 +19,12 @@
 
 // ADR 0003 keystone: headless orchestrator (scene + store + camera). See app_core.rs.
 pub mod app_core;
-// The engagement subsystem: the WORK-LAYER state machine that owns both async workers
-// (GeometryWorker + BrickWorker) and the pure per-edit routing policy for the two display
-// pipelines (cuboid mesh + brick raymarch). It sits ABOVE the `display` crate — it DRIVES
-// the GPU sinks and owns the workers, so it was reclassified out of `display` at the ADR 0016
-// Phase 4a cut and stays in this app crate until the work-crate cut places it. The wgpu-
-// linking GPU sinks themselves (renderer, mesh, brick,
-// texture_atlas, block_palette, assets) now live in the `display` crate.
-pub mod engagement;
 pub mod gpu;
 pub mod panel;
 pub mod settings;
-// The background workers, grouped: the generic drain-to-latest/supersede/panic-catch
-// Worker in `workers::mod`, with the geometry / diameter / brick / scan domain workers
-// as its submodules.
-pub mod workers;
+// The engagement state machine + the async worker pool moved to the `work` crate at the ADR 0016
+// Phase 6 cut (`{display, interchange} <- work <- shell`); their types are re-exported flat below
+// so the shell's `voxel_worker::<Name>` uses keep resolving.
 
 #[cfg(test)]
 mod windowed_resolve_tests;
@@ -64,12 +55,12 @@ pub use display::brick::{
     pack_gpu_records, BrickGpuRecord,
     BrickMarchFrame, BrickRaymarchRenderer, CpuMarchHit, NON_RESIDENT_ATLAS_SLOT,
 };
-pub use workers::brick::{
+pub use work::workers::brick::{
     build_brick_rebuild, spawn_brick_worker, BrickDisplayInstall, BrickRebuildOutcome,
     BrickRebuildRequest, BrickRebuildResult, BrickWorker,
 };
-pub use engagement::orchestrator::{DisplayOrchestrator, DisplayRefreshContext};
-pub use engagement::routing::{
+pub use work::engagement::orchestrator::{DisplayOrchestrator, DisplayRefreshContext};
+pub use work::engagement::routing::{
     brick_display_handover, brick_patch_in_place, route_brick_rebuild, route_geometry_rebuild,
     route_mesh_build, BrickDisplayHandover, BrickRebuildAction, EditShape, GenerationTracker,
     MeshBuildRoute, RebuildRoute, ASYNC_REBUILD_CHUNK_THRESHOLD,
@@ -77,17 +68,17 @@ pub use engagement::routing::{
 pub use evaluation::chunk_storage::{compress, decompress, CompressedChunk, Occupancy, SparseCell};
 pub use evaluation::disk_chunk_store::{DiskChunkStore, DiskChunkStoreStats};
 pub use display::mesh::{build_cuboid_mesh, CuboidMesh, CuboidMeshRenderer};
-pub use workers::geometry::{
+pub use work::workers::geometry::{
     build_geometry, spawn_geometry_worker, GeometryRebuildRequest, GeometryRebuildResult,
     GeometryWorker,
 };
-pub use workers::diameter::{
+pub use work::workers::diameter::{
     spawn_diameter_worker, DiameterRequest, DiameterResult, DiameterWorker,
 };
-pub use workers::export::{
+pub use work::workers::export::{
     spawn_vox_export_worker, VoxExportRequest, VoxExportResult, VoxExportSummary, VoxExportWorker,
 };
-pub use workers::Worker;
+pub use work::workers::Worker;
 pub use display::texture_atlas::{AtlasSubRect, MaterialAtlas};
 pub use document::debug_clouds::DebugCloudField;
 pub use camera::{
