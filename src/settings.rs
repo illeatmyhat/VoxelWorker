@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 
 use camera::{HomeView, OrbitCamera, ProjectionMode};
 use voxel_core::core_geom::MaterialChoice;
-use crate::panel::{LayerRange, PanelState};
+use ui::panel::{LayerRange, PanelState};
 use document::scene::Scene;
 use document::voxel::GeometryParams;
 

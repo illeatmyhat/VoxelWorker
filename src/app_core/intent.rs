@@ -16,7 +16,7 @@ impl AppCore {
     /// **The single serializable mutation boundary (ADR 0003 Phase C, slice C1).**
     /// Apply one [`Intent`] to `scene` by dispatching to the SAME edit op / field
     /// write the panel performs today, returning the [`IntentEffect`] (the typed
-    /// successor of [`PanelResponse`](crate::panel::PanelResponse)'s effect booleans)
+    /// successor of [`PanelResponse`](ui::panel::PanelResponse)'s effect booleans)
     /// the caller reacts to.
     ///
     /// `apply_intent` borrows the scene (`&mut Scene`) rather than owning it — the

@@ -1,0 +1,37 @@
+[package]
+name = "ui"
+version = "0.1.0"
+edition = "2021"
+
+# The UI crate: the egui CONTROL SURFACE (the panel slice of the Shell layer). It holds the
+# right-hand inspector panel (`panel`) that reads the authored document and emits Intents, plus
+# the UI-facing block-palette state (`palette`) those widgets read. THE LAW: ui links `egui` and
+# the domain crates it reads — NEVER wgpu / egui-wgpu / display / evaluation / work / interchange.
+# The panel describes every edit as an Intent through the single intent boundary ("one door for
+# change" — architecture law 3) and never draws the 3D scene or names a GPU resource ("the CPU
+# owns truth; the GPU owns the frame" — law 4): rendering is `display`'s job, and the palette
+# thumbnails arrive as already-registered `egui::TextureId`s the shell hands in. That no-wgpu law
+# is what earns it its own crate over a `display` module — a widget here CANNOT reach a render
+# pipeline, because the crate cannot name one. The GPU/asset half of the palette (thumbnail
+# renderer, texture keep-alives, block groups) stays in the shell's `PaletteHost`. The dependency
+# edge is one-way (`{document, voxel_core, camera} <- ui <- shell`), compile-enforced. See
+# docs/architecture/README.md (laws 3 + 4, the Shell layer) and
+# docs/design/per-layer-crates-extraction-map.md (the ui row).
+
+[lib]
+name = "ui"
+path = "src/lib.rs"
+
+[dependencies]
+# The immediate-mode GUI toolkit this crate's widgets are written against. Matched to the
+# workspace version so an `egui::Ui` / `egui::TextureId` crosses the shell boundary without a
+# conversion. NO egui-wgpu here — the tiles reference thumbnails only as registered TextureIds.
+egui = "0.34.3"
+# The authored-TRUTH layer the panel reads + mutates through Intents: the scene graph, the
+# producers (SdfShape / sketch solid), the 2D sketch, the Intent boundary, the units core.
+document = { path = "../document" }
+# The foundational value vocabulary: MaterialChoice / BlockId (the palette resolver + material
+# selector) and the ShapeKind / units the inspector edits.
+voxel_core = { path = "../voxel_core" }
+# The viewing library: the ProjectionMode the camera-section toggle drives.
+camera = { path = "../camera" }

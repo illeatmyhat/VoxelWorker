@@ -3398,6 +3398,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ui"
+version = "0.1.0"
+dependencies = [
+ "camera",
+ "document",
+ "egui",
+ "voxel_core",
+]
+
+[[package]]
 name = "unicode-ident"
 version = "1.0.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3523,6 +3533,7 @@ dependencies = [
  "serde_json",
  "substrate",
  "tracy-client",
+ "ui",
  "voxel_core",
  "walkdir",
  "wgpu",

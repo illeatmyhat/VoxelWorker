@@ -19,12 +19,13 @@
 
 // ADR 0003 keystone: headless orchestrator (scene + store + camera). See app_core.rs.
 pub mod app_core;
-// The egui-facing block palette STATE (tiles + click counter). The GPU backing (thumbnail
-// renderer + loaded material) lives in `display::block_texture`; this shell module drives it
-// and bridges the rendered thumbnails into egui (ADR 0016 Phase 8a — display drops egui).
+// The shell's palette GPU host (`PaletteHost`): it owns the wgpu backing the UI-facing
+// palette cannot name (the `display::block_texture::ThumbnailRenderer`, the texture
+// keep-alives, the scanned `BlockGroup`s) and keeps them index-aligned with the
+// `ui::palette::BlockPalette` tiles it renders + registers into egui (ADR 0016 Phase 8b
+// — the egui-facing palette state + the inspector panel moved to the `ui` crate).
 pub mod block_palette;
 pub mod gpu;
-pub mod panel;
 pub mod settings;
 // The engagement state machine + the async worker pool moved to the `work` crate at the ADR 0016
 // Phase 6 cut (`{display, interchange} <- work <- shell`); their types are re-exported flat below
@@ -94,7 +95,7 @@ pub use camera::{
 pub use gpu::GpuContext;
 pub use document::intent::{Intent, IntentEffect, NodeSpec};
 pub use voxel_core::core_geom::MaterialChoice;
-pub use panel::{
+pub use ui::panel::{
     build_panel, ExportPanelState, LayerRange, PanelResponse,
     PanelState,
 };
@@ -237,7 +238,7 @@ pub fn run_egui_frame(
     panel_state: &mut PanelState,
     grid_z: u32,
     measured_diameter: u32,
-    export: panel::ExportPanelState,
+    export: ui::panel::ExportPanelState,
     palette: &crate::block_palette::BlockPalette,
     raw_input: egui::RawInput,
     size_in_pixels: [u32; 2],

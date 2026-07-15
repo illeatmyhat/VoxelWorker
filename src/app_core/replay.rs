@@ -15,7 +15,7 @@ use super::AppCore;
 /// `ensure_node_ids`). Kept here so both `bin/shot` and the lib tests build the
 /// replay base the same way.
 pub fn default_replay_seed_scene() -> Scene {
-    crate::panel::PanelState::with_view_cube_default().scene
+    ui::panel::PanelState::with_view_cube_default().scene
 }
 
 /// Replay a **newline-delimited-JSON Intent script** into a [`Scene`] (ADR 0003

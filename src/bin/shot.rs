@@ -22,8 +22,8 @@
 
 use std::path::PathBuf;
 
-use display::block_texture::{LoadedMaterial, ThumbnailRenderer};
-use voxel_worker::block_palette::BlockPalette;
+use display::block_texture::LoadedMaterial;
+use voxel_worker::block_palette::PaletteHost;
 use work::workers::scan::{run_auto_scan_blocking, FaceResolver};
 use voxel_worker::{
     create_depth_view, create_msaa_color_view, procedural_material_average_color, render_frame,
@@ -1945,8 +1945,7 @@ async fn run_capture(options: ShotOptions) {
 
     // M6: synchronously scan the VS install and populate the palette so the
     // screenshot shows real block thumbnails. Optionally apply the first block.
-    let thumbnail_renderer = ThumbnailRenderer::new(&gpu.device, &gpu.queue);
-    let mut palette = BlockPalette::default();
+    let mut palette = PaletteHost::new(&gpu.device, &gpu.queue, String::new());
     let mut loaded_material: Option<LoadedMaterial> = None;
     if options.scan_vs {
         let (groups, source_name) = run_auto_scan_blocking();
@@ -1955,7 +1954,7 @@ async fn run_capture(options: ShotOptions) {
             groups.len(),
             source_name.as_deref().unwrap_or("(no install found)")
         );
-        palette.status = match source_name {
+        palette.ui.status = match source_name {
             Some(name) => format!("{} blocks loaded — {}", groups.len(), name),
             None => "No VS install found — use Connect folder".to_string(),
         };
@@ -2038,7 +2037,6 @@ async fn run_capture(options: ShotOptions) {
             palette.add_group(
                 &gpu.device,
                 &gpu.queue,
-                &thumbnail_renderer,
                 &mut egui_bridge.renderer,
                 group,
                 &decoded,
@@ -2093,7 +2091,7 @@ async fn run_capture(options: ShotOptions) {
         measured_diameter,
         // The headless capture never runs an export; the section renders idle.
         voxel_worker::ExportPanelState::default(),
-        &palette,
+        &palette.ui,
         raw_input,
         [options.width, options.height],
         pixels_per_point,

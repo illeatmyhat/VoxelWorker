@@ -1,7 +1,7 @@
 //! Headless render-data queries — region dims, view-projection, gizmo placement and
 //! onion-skin params: the data the windowed shell + `shot` render from ([`AppCore`]).
 
-use crate::panel::LayerRange;
+use ui::panel::LayerRange;
 use display::renderer::OnionFogParams;
 use document::scene::{NodeId, Scene};
 

@@ -24,7 +24,7 @@
 //! builders live in [`nodes`], [`points`], [`inspector`], [`controls`],
 //! [`layers`], and [`palette`]; [`build_panel`] (here) is the top-level
 //! assembler that lays them out. Every previously-public item is re-exported
-//! here so `crate::panel::…` paths resolve unchanged.
+//! here so `ui::panel::…` paths resolve unchanged.
 
 mod controls;
 mod inspector;
@@ -36,7 +36,7 @@ mod state;
 
 pub use state::{ExportPanelState, LayerRange, PanelResponse, PanelState};
 
-use crate::block_palette::BlockPalette;
+use crate::palette::BlockPalette;
 
 /// Build the right-hand side panel into the root [`egui::Ui`] of the frame.
 ///

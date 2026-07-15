@@ -1,7 +1,7 @@
 //! The bottom palette dock (M6) and the shared shape-chip table.
 
 use super::PanelResponse;
-use crate::block_palette::BlockPalette;
+use crate::palette::BlockPalette;
 use voxel_core::voxel::ShapeKind;
 
 /// The palette dock (M6): a status line, a "Connect folder…" button, and a

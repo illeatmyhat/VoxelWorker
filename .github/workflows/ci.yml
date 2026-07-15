@@ -159,6 +159,20 @@ jobs:
       - name: Test raycast
         run: cargo test -p raycast
 
+      # The ui library is the egui CONTROL SURFACE (the panel slice of the Shell layer):
+      # the right-hand inspector panel that reads the authored document and emits Intents,
+      # plus the UI-facing block-palette state. THE LAW: ui links egui + the domain crates
+      # it reads (document, voxel_core, camera) — NEVER wgpu/egui-wgpu/display: rendering
+      # the 3D scene is display's job, and the palette thumbnails arrive as already-registered
+      # egui::TextureIds the shell hands in (the GPU/asset half of the palette stays in the
+      # shell's PaletteHost). It carries its own gates so a regression in the control surface
+      # fails independently of the app crate.
+      - name: Clippy ui (deny warnings)
+        run: cargo clippy -p ui --all-targets -- -D warnings
+
+      - name: Test ui
+        run: cargo test -p ui
+
   windows-build:
     name: Build (Windows)
     runs-on: windows-latest

@@ -12,8 +12,8 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowId};
 
-use display::block_texture::{LoadedMaterial, ThumbnailRenderer};
-use voxel_worker::block_palette::BlockPalette;
+use display::block_texture::LoadedMaterial;
+use voxel_worker::block_palette::PaletteHost;
 use work::workers::scan::{
     spawn_auto_scan, spawn_custom_folder_scan, FaceResolver, ScanHandle, ScanMessage,
 };
@@ -80,10 +80,10 @@ struct WindowedState {
     /// the old finite tiled-line ground plane.
     infinite_grid_renderer: InfiniteGridRenderer,
     view_cube_renderer: ViewCubeRenderer,
-    /// Offscreen renderer for the 45° palette cube thumbnails (M6).
-    thumbnail_renderer: ThumbnailRenderer,
-    /// The palette of scanned VS blocks (tiles + status + click counter, M6).
-    palette: BlockPalette,
+    /// The palette of scanned VS blocks: the UI-facing tiles/status/click counter plus
+    /// the shell-side GPU host (thumbnail renderer + texture keep-alives + block groups),
+    /// kept index-aligned (M6).
+    palette: PaletteHost,
     /// The in-flight background scan (auto-detect on startup, or a custom folder
     /// scan triggered by "Connect folder…"). `None` once finished/idle.
     scan_handle: Option<ScanHandle>,
@@ -395,14 +395,10 @@ impl WindowedState {
         let infinite_grid_renderer = InfiniteGridRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
         let view_cube_renderer =
             ViewCubeRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
-        let thumbnail_renderer = ThumbnailRenderer::new(&gpu.device, &gpu.queue);
 
         // Kick off the VS auto-detect + scan on a background thread immediately;
         // results stream in over the next frames (no startup block).
-        let palette = BlockPalette {
-            status: "Scanning…".to_string(),
-            ..BlockPalette::default()
-        };
+        let palette = PaletteHost::new(&gpu.device, &gpu.queue, "Scanning…".to_string());
         let scan_handle = Some(spawn_auto_scan());
 
         let mut camera = OrbitCamera {
@@ -448,7 +444,6 @@ impl WindowedState {
             points_renderer,
             infinite_grid_renderer,
             view_cube_renderer,
-            thumbnail_renderer,
             palette,
             scan_handle,
             pending_groups: std::collections::VecDeque::new(),
@@ -704,7 +699,6 @@ impl WindowedState {
             self.palette.add_group(
                 &self.gpu.device,
                 &self.gpu.queue,
-                &self.thumbnail_renderer,
                 &mut self.egui_bridge.renderer,
                 group,
                 &thumbnail_rgba,
@@ -715,13 +709,13 @@ impl WindowedState {
         // to the final count once the worker is done AND the queue is drained.
         if self.scan_handle.is_none() && self.pending_groups.is_empty() {
             if let Some(total) = self.scan_total.take() {
-                self.palette.status = match self.scan_source_name.take() {
+                self.palette.ui.status = match self.scan_source_name.take() {
                     Some(name) => format!("{total} blocks loaded — {name}"),
                     None => "No VS install found — use Connect folder".to_string(),
                 };
             }
         } else {
-            self.palette.status = format!("{} blocks loaded…", self.palette.tiles.len());
+            self.palette.ui.status = format!("{} blocks loaded…", self.palette.ui.tiles.len());
         }
     }
 
@@ -743,11 +737,11 @@ impl WindowedState {
             if let Some(folder) = rfd::FileDialog::new().pick_folder() {
                 // Reset the palette + any in-flight scan state, then start a fresh
                 // scan of the picked folder.
-                self.palette.tiles.clear();
+                self.palette.clear();
                 self.pending_groups.clear();
                 self.scan_total = None;
                 self.scan_source_name = None;
-                self.palette.status = "Scanning folder…".to_string();
+                self.palette.ui.status = "Scanning folder…".to_string();
                 // Re-point the M7 face resolver at the same folder.
                 self.face_resolver = FaceResolver::custom_folder(folder.clone());
                 self.scan_handle = Some(spawn_custom_folder_scan(folder));
@@ -891,11 +885,14 @@ impl WindowedState {
     /// path); per-face blocks (e.g. a log: end-grain top, bark sides) bind each
     /// face's own PNG.
     fn apply_block_variant(&mut self, variant_path: &std::path::Path, tile_index: usize) {
-        let Some(tile) = self.palette.tiles.get(tile_index) else {
+        let Some(tile) = self.palette.ui.tiles.get(tile_index) else {
             return;
         };
         let label = tile.label.clone();
-        let faces = self.face_resolver.resolve(&tile.group, variant_path);
+        let Some(group) = self.palette.group(tile_index) else {
+            return;
+        };
+        let faces = self.face_resolver.resolve(group, variant_path);
         self.loaded_material = Some(LoadedMaterial::from_faces(
             &self.gpu.device,
             &self.gpu.queue,
@@ -1198,7 +1195,7 @@ impl WindowedState {
             grid_z,
             self.measured_diameter,
             export_panel,
-            &self.palette,
+            &self.palette.ui,
             raw_input,
             [self.surface_config.width, self.surface_config.height],
                 pixels_per_point,

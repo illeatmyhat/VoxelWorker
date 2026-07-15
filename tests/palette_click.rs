@@ -21,8 +21,7 @@
 use egui::{pos2, vec2, Event, PointerButton, Pos2, RawInput, Rect};
 
 use display::assets::BlockGroup;
-use display::block_texture::ThumbnailRenderer;
-use voxel_worker::block_palette::BlockPalette;
+use voxel_worker::block_palette::PaletteHost;
 use voxel_worker::{build_panel, EguiPaintBridge, GpuContext, PanelState, VoxelGrid};
 
 /// A tiny solid-colour decoded RGBA image to stand in for a block texture.
@@ -35,14 +34,9 @@ fn dummy_decoded() -> (u32, u32, Vec<u8>) {
     (size, size, pixels)
 }
 
-/// Build a `BlockPalette` holding `count` real GPU-backed tiles.
-fn build_palette(
-    gpu: &GpuContext,
-    bridge: &mut EguiPaintBridge,
-    thumbnail_renderer: &ThumbnailRenderer,
-    count: usize,
-) -> BlockPalette {
-    let mut palette = BlockPalette::default();
+/// Build a `PaletteHost` holding `count` real GPU-backed tiles.
+fn build_palette(gpu: &GpuContext, bridge: &mut EguiPaintBridge, count: usize) -> PaletteHost {
+    let mut palette = PaletteHost::new(&gpu.device, &gpu.queue, String::new());
     let decoded = dummy_decoded();
     for index in 0..count {
         let group = BlockGroup {
@@ -50,14 +44,7 @@ fn build_palette(
             key: format!("test/tile{index}"),
             variants: vec![std::path::PathBuf::from(format!("tile{index}.png"))],
         };
-        palette.add_group(
-            &gpu.device,
-            &gpu.queue,
-            thumbnail_renderer,
-            &mut bridge.renderer,
-            group,
-            &decoded,
-        );
+        palette.add_group(&gpu.device, &gpu.queue, &mut bridge.renderer, group, &decoded);
     }
     palette
 }
@@ -66,10 +53,9 @@ fn build_palette(
 fn windowed_palette_tile_click_reaches_apply_path() {
     let gpu = pollster::block_on(GpuContext::new(None));
     let mut bridge = EguiPaintBridge::new(&gpu.device, voxel_worker::COLOR_TARGET_FORMAT);
-    let thumbnail_renderer = ThumbnailRenderer::new(&gpu.device, &gpu.queue);
 
-    let palette = build_palette(&gpu, &mut bridge, &thumbnail_renderer, 3);
-    assert_eq!(palette.tiles.len(), 3, "three GPU tiles should be registered");
+    let palette = build_palette(&gpu, &mut bridge, 3);
+    assert_eq!(palette.ui.tiles.len(), 3, "three GPU tiles should be registered");
 
     let mut panel_state = PanelState::with_view_cube_default();
     let grid = VoxelGrid::new([8, 8, 8]);
@@ -77,7 +63,7 @@ fn windowed_palette_tile_click_reaches_apply_path() {
     let measured_diameter = grid.widest_run_in_band(0, grid_y);
     let screen = Rect::from_min_size(pos2(0.0, 0.0), vec2(1280.0, 800.0));
 
-    let mut run = |raw_input: RawInput, palette: &BlockPalette, state: &mut PanelState| {
+    let mut run = |raw_input: RawInput, palette: &PaletteHost, state: &mut PanelState| {
         let mut response = None;
         let _ = bridge.context.run_ui(raw_input, |ui| {
             response = Some(build_panel(
@@ -86,15 +72,15 @@ fn windowed_palette_tile_click_reaches_apply_path() {
                 grid_y,
                 measured_diameter,
                 voxel_worker::ExportPanelState::default(),
-                palette,
+                &palette.ui,
             ));
         });
         response.unwrap()
     };
 
-    let click_at = |run: &mut dyn FnMut(RawInput, &BlockPalette, &mut PanelState) -> _,
+    let click_at = |run: &mut dyn FnMut(RawInput, &PaletteHost, &mut PanelState) -> _,
                     target: Pos2,
-                    palette: &BlockPalette,
+                    palette: &PaletteHost,
                     state: &mut PanelState| {
         run(
             RawInput {

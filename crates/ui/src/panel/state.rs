@@ -205,8 +205,8 @@ impl PanelState {
 /// **ADR 0003 Phase C, slice C4a.** The panel no longer mutates `state.scene`
 /// directly; instead every document mutation this frame is DESCRIBED as an
 /// [`Intent`] pushed onto [`intents`](Self::intents), which the loop applies through
-/// [`AppCore::apply_intent`](crate::AppCore::apply_intent) and folds the returned
-/// [`IntentEffect`](crate::IntentEffect)s into its rebuild / points / selection
+/// the shell's `AppCore::apply_intent` and folds the returned `IntentEffect`s into its
+/// rebuild / points / selection
 /// decisions. The remaining fields are NON-scene side effects (palette / export /
 /// folder picker) the panel still only flags, plus the
 /// [`frame_after_apply`](Self::frame_after_apply) auto-frame hint (which is a panel

@@ -13,7 +13,7 @@ edition = "2021"
 # (the "Substrate" section) and docs/design/per-layer-crates-extraction-map.md for the
 # boundary law.
 [workspace]
-members = [".", "crates/substrate", "crates/camera", "crates/raycast", "crates/voxel_core", "crates/document", "crates/evaluation", "crates/display", "crates/interchange", "crates/work"]
+members = [".", "crates/substrate", "crates/camera", "crates/raycast", "crates/voxel_core", "crates/document", "crates/evaluation", "crates/display", "crates/interchange", "crates/work", "crates/ui"]
 
 [lib]
 name = "voxel_worker"
@@ -103,6 +103,13 @@ camera = { path = "crates/camera" }
 # graphics mathematics; depends only on glam + substrate. The CPU brick march and the
 # WGSL raymarch shader are its domain adapter and GPU mirror respectively.
 raycast = { path = "crates/raycast" }
+# The UI library (the panel slice of the Shell layer): the egui inspector panel that reads the
+# authored document and emits Intents, plus the UI-facing block-palette state. Links egui + the
+# domain crates (document, voxel_core, camera) it reads — NEVER wgpu/egui-wgpu/display: rendering
+# the scene is display's job, and palette thumbnails arrive as already-registered egui::TextureIds
+# the shell hands in. The GPU/asset half of the palette stays in the shell's PaletteHost. See
+# docs/architecture/README.md (the Shell layer, laws 3 + 4).
+ui = { path = "crates/ui" }
 winit = "0.30.13"
 wgpu = "29.0.3"
 egui = "0.34.3"
