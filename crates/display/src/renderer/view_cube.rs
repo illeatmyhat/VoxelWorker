@@ -1,0 +1,615 @@
+//! View cube (Milestone 5) — ARCHITECTURE.md §4.
+
+use super::*;
+
+/// Edge length (pixels) of the corner view-cube viewport (top-left).
+pub const VIEW_CUBE_VIEWPORT_PIXELS: u32 = 128;
+/// Margin (pixels) from the top-left corner to the viewport.
+pub const VIEW_CUBE_VIEWPORT_MARGIN: u32 = 16;
+/// Edge length of each square face-label texture.
+const FACE_LABEL_TEXTURE_SIZE: u32 = 128;
+
+/// One view-cube vertex: position, face normal, face UV, and the texture-array
+/// layer (face index in +X,-X,+Y,-Y,+Z,-Z order).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+pub(crate) struct CubeLabelVertex {
+    pub(crate) position: [f32; 3],
+    pub(crate) normal: [f32; 3],
+    uv: [f32; 2],
+    layer: u32,
+}
+
+/// The corner view cube: a labelled cube mirroring the main camera, plus a teal
+/// edge wireframe (ARCHITECTURE.md §4). Rendered into a scissored top-left
+/// viewport in its own pass (depth cleared there first).
+pub struct ViewCubeRenderer {
+    face_pipeline: wgpu::RenderPipeline,
+    edge_pipeline: wgpu::RenderPipeline,
+    vertex_buffer: wgpu::Buffer,
+    index_buffer: wgpu::Buffer,
+    index_count: u32,
+    edge_buffer: wgpu::Buffer,
+    edge_vertex_count: u32,
+    uniform_buffer: wgpu::Buffer,
+    uniform_bind_group: wgpu::BindGroup,
+    label_bind_group: wgpu::BindGroup,
+    // --- #13 Step 2: screen-space chrome overlay (Home/Fit + hover arrows) ---
+    chrome_pipeline: wgpu::RenderPipeline,
+    chrome_bind_group: wgpu::BindGroup,
+    chrome_vertex_buffer: wgpu::Buffer,
+    /// Capacity (in vertices) of `chrome_vertex_buffer`; the per-frame glyph quads
+    /// fit within this fixed cap (4 glyphs × 6 verts, generous).
+    chrome_vertex_capacity: u32,
+}
+
+impl ViewCubeRenderer {
+    /// Create the view-cube renderer for a colour target format.
+    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, color_format: wgpu::TextureFormat) -> Self {
+        let (vertices, indices) = view_cube_geometry();
+        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("view cube vertices"),
+            contents: bytemuck::cast_slice(&vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("view cube indices"),
+            contents: bytemuck::cast_slice(&indices),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+
+        let edges = view_cube_edges();
+        let edge_vertex_count = edges.len() as u32;
+        let edge_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("view cube edges"),
+            contents: bytemuck::cast_slice(&edges),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+
+        let uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("view cube uniforms"),
+            size: std::mem::size_of::<LineUniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let (uniform_bind_group_layout, uniform_bind_group) =
+            cube_uniform_bind_group(device, &uniform_buffer);
+
+        // --- 6-layer face-label texture array ---
+        let label_pixels = generate_face_label_textures();
+        let label_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("view cube label textures"),
+            size: wgpu::Extent3d {
+                width: FACE_LABEL_TEXTURE_SIZE,
+                height: FACE_LABEL_TEXTURE_SIZE,
+                depth_or_array_layers: 6,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: &label_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &label_pixels,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * FACE_LABEL_TEXTURE_SIZE),
+                rows_per_image: Some(FACE_LABEL_TEXTURE_SIZE),
+            },
+            wgpu::Extent3d {
+                width: FACE_LABEL_TEXTURE_SIZE,
+                height: FACE_LABEL_TEXTURE_SIZE,
+                depth_or_array_layers: 6,
+            },
+        );
+        let label_view = label_texture.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        });
+        let label_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("view cube label sampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let label_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("view cube label layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2Array,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
+        let label_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("view cube label bind group"),
+            layout: &label_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&label_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&label_sampler),
+                },
+            ],
+        });
+
+        // --- Face pipeline (textured cube) ---
+        let cube_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("view cube shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/viewcube.wgsl").into()),
+        });
+        let face_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("view cube face pipeline layout"),
+            bind_group_layouts: &[Some(&uniform_bind_group_layout), Some(&label_bind_group_layout)],
+            immediate_size: 0,
+        });
+        let cube_vertex_layout = wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<CubeLabelVertex>() as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &[
+                wgpu::VertexAttribute { offset: 0, shader_location: 0, format: wgpu::VertexFormat::Float32x3 },
+                wgpu::VertexAttribute { offset: 12, shader_location: 1, format: wgpu::VertexFormat::Float32x3 },
+                wgpu::VertexAttribute { offset: 24, shader_location: 2, format: wgpu::VertexFormat::Float32x2 },
+                wgpu::VertexAttribute { offset: 32, shader_location: 3, format: wgpu::VertexFormat::Uint32 },
+            ],
+        };
+        // The view cube renders at 1 sample into the resolved target (after the
+        // 3D MSAA resolve, before egui), so its pipelines use sample_count 1.
+        let face_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("view cube face pipeline"),
+            layout: Some(&face_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &cube_shader,
+                entry_point: Some("vertex_main"),
+                buffers: &[cube_vertex_layout],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &cube_shader,
+                entry_point: Some("fragment_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: color_format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: Some(wgpu::Face::Back),
+                unclipped_depth: false,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                conservative: false,
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Less),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState { count: 1, mask: !0, alpha_to_coverage_enabled: false },
+            multiview_mask: None,
+            cache: None,
+        });
+
+        // --- Edge pipeline (teal wireframe, 1 sample, depth-tested) ---
+        let edge_pipeline = build_line_pipeline(
+            device,
+            color_format,
+            &uniform_bind_group_layout,
+            "view cube edge",
+            true,
+            1,
+        );
+
+        // --- #13 Step 2: screen-space chrome overlay pipeline + glyph textures ---
+        let (chrome_pipeline, chrome_bind_group) =
+            build_chrome_overlay(device, queue, color_format);
+        // Cap: at most Home + Fit + one hovered arrow on screen at once; size
+        // generously for all glyph quads (6 verts each).
+        let chrome_vertex_capacity = 12 * 6;
+        let chrome_vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("view cube chrome vertices"),
+            size: (chrome_vertex_capacity as usize * std::mem::size_of::<ChromeVertex>()) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        Self {
+            face_pipeline,
+            edge_pipeline,
+            vertex_buffer,
+            index_buffer,
+            index_count: indices.len() as u32,
+            edge_buffer,
+            edge_vertex_count,
+            uniform_buffer,
+            uniform_bind_group,
+            label_bind_group,
+            chrome_pipeline,
+            chrome_bind_group,
+            chrome_vertex_buffer,
+            chrome_vertex_capacity: chrome_vertex_capacity as u32,
+        }
+    }
+
+    /// Upload the view-cube camera matrix (`OrbitCamera::view_cube_view_projection`).
+    pub fn update_uniforms(&self, queue: &wgpu::Queue, view_projection: glam::Mat4) {
+        let uniforms = LineUniforms {
+            view_projection: view_projection.to_cols_array_2d(),
+            depth_bias: [0.0; 4],
+        };
+        queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
+    }
+
+    /// Draw the cube into a scissored corner of `target_view` (its own render pass,
+    /// with a freshly-cleared private depth texture). The colour attachment loads
+    /// the already-resolved scene so only the corner is touched.
+    ///
+    /// Issue #25: the corner is the top-left of the CENTRAL 3D viewport rect
+    /// (`viewport_x/y/w/h`, physical pixels), NOT the whole window — so the cube
+    /// lines up with the visible 3D area instead of hiding behind the side panel.
+    /// `target_width/height` are the full target dims (the colour + depth
+    /// attachments span the whole target; the scissor confines the draw).
+    ///
+    /// #13 Step 2: `hovered_zone` is the chrome zone currently under the cursor
+    /// (from `classify_cube_point`). The Home/Fit badges are drawn ALWAYS; the
+    /// roll arrows are drawn ONLY when their zone is hovered. #13 Step 6 follow-up:
+    /// the four rotate arrows are drawn PERSISTENTLY whenever `rotate_arrows_visible`
+    /// (the view is face-constrained), with the hovered one brightened. The chrome
+    /// is a
+    /// screen-space overlay FIXED to the cube rect (it does NOT rotate with the
+    /// cube), laid out in the same `rect.size` fractions Step 1 hit-tests against.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        target_view: &wgpu::TextureView,
+        target_width: u32,
+        target_height: u32,
+        viewport: [u32; 4],
+        hovered_zone: Option<camera::CubeChromeZone>,
+        rotate_arrows_visible: bool,
+    ) {
+        // #13 Step 6.2: when a face/edge/corner ELEMENT is hovered, pack a 6-bit
+        // face mask (bit = material index in +X,-X,+Y,-Y,+Z,-Z order) into the cube
+        // uniform's `depth_bias.x` slot (byte offset 64) so the cube shader brightens
+        // the hovered element. Any non-Element hover (arrow/badge) clears the mask.
+        let highlight_mask = match hovered_zone {
+            Some(camera::CubeChromeZone::Element(element)) => {
+                let mut mask = 0u32;
+                for face in element.faces() {
+                    mask |= 1 << cube_face_material_index(*face);
+                }
+                mask as f32
+            }
+            _ => 0.0,
+        };
+        queue.write_buffer(&self.uniform_buffer, 64, bytemuck::bytes_of(&highlight_mask));
+
+        let [viewport_x, viewport_y, viewport_width, viewport_height] = viewport;
+        let margin = VIEW_CUBE_VIEWPORT_MARGIN;
+        let size = VIEW_CUBE_VIEWPORT_PIXELS;
+        // Bail if the central viewport is too small to host the corner cube.
+        if viewport_width < margin + size || viewport_height < margin + size {
+            return;
+        }
+        // The cube's top-left corner, offset into the central viewport.
+        let corner_x = viewport_x + margin;
+        let corner_y = viewport_y + margin;
+        // Bail if the cube would fall outside the actual target (defensive).
+        if corner_x + size > target_width || corner_y + size > target_height {
+            return;
+        }
+        // The depth attachment must match the colour attachment's size, so this
+        // transient single-sample depth texture spans the whole target; the
+        // scissor/viewport still confine the cube to the top-left corner.
+        let depth_texture =
+            create_single_sample_depth_view(device, target_width, target_height);
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("view cube pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target_view,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    // Load the resolved scene; the scissor confines our writes to
+                    // the corner so the rest of the frame is untouched.
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &depth_texture,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Discard,
+                }),
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+
+        pass.set_viewport(corner_x as f32, corner_y as f32, size as f32, size as f32, 0.0, 1.0);
+        pass.set_scissor_rect(corner_x, corner_y, size, size);
+
+        pass.set_pipeline(&self.face_pipeline);
+        pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+        pass.set_bind_group(1, &self.label_bind_group, &[]);
+        pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+        pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+        pass.draw_indexed(0..self.index_count, 0, 0..1);
+
+        pass.set_pipeline(&self.edge_pipeline);
+        pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+        pass.set_vertex_buffer(0, self.edge_buffer.slice(..));
+        pass.draw(0..self.edge_vertex_count, 0..1);
+
+        // --- #13 Step 2: screen-space chrome overlay, fixed to the cube rect. ---
+        let chrome = build_chrome_vertices(hovered_zone, rotate_arrows_visible);
+        if !chrome.is_empty() {
+            let count = chrome.len().min(self.chrome_vertex_capacity as usize);
+            queue.write_buffer(
+                &self.chrome_vertex_buffer,
+                0,
+                bytemuck::cast_slice(&chrome[..count]),
+            );
+            pass.set_pipeline(&self.chrome_pipeline);
+            pass.set_bind_group(0, &self.chrome_bind_group, &[]);
+            pass.set_vertex_buffer(0, self.chrome_vertex_buffer.slice(..));
+            pass.draw(0..count as u32, 0..1);
+        }
+    }
+}
+
+/// The material-index (`+X,-X,+Y,-Y,+Z,-Z`) of a [`camera::CubeFace`], i.e.
+/// its layer in the cube's face-label texture array and its bit in the hover mask.
+fn cube_face_material_index(face: camera::CubeFace) -> u32 {
+    use camera::CubeFace;
+    // GEOMETRIC material-index order (+X,-X,+Y,-Y,+Z,-Z) under Z-up: the inverse of
+    // `CubeFace::from_material_index` (Right,Left,Back,Front,Top,Bottom).
+    match face {
+        CubeFace::Right => 0,
+        CubeFace::Left => 1,
+        CubeFace::Back => 2,
+        CubeFace::Front => 3,
+        CubeFace::Top => 4,
+        CubeFace::Bottom => 5,
+    }
+}
+
+/// Uniform bind group for the view cube (binding 0 = view-projection).
+fn cube_uniform_bind_group(
+    device: &wgpu::Device,
+    uniform_buffer: &wgpu::Buffer,
+) -> (wgpu::BindGroupLayout, wgpu::BindGroup) {
+    let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("view cube uniform layout"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            // #13 Step 6.2: the cube fragment shader now reads `highlight` from this
+            // uniform too, so it must be visible to BOTH stages.
+            visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        }],
+    });
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("view cube uniform bind group"),
+        layout: &layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: uniform_buffer.as_entire_binding(),
+        }],
+    });
+    (layout, bind_group)
+}
+
+/// Build the labelled-cube geometry (side 1.4, centred on origin). Face order +X,
+/// -X, +Y, -Y, +Z, -Z (matches `materialIndex` / `CubeFace`).
+pub(crate) fn view_cube_geometry() -> (Vec<CubeLabelVertex>, Vec<u16>) {
+    const HALF: f32 = 0.7; // side 1.4
+    const UVS: [[f32; 2]; 4] = [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]];
+    let faces: [([f32; 3], [[f32; 3]; 4]); 6] = [
+        ([1.0, 0.0, 0.0], [[HALF, -HALF, HALF], [HALF, -HALF, -HALF], [HALF, HALF, -HALF], [HALF, HALF, HALF]]),
+        ([-1.0, 0.0, 0.0], [[-HALF, -HALF, -HALF], [-HALF, -HALF, HALF], [-HALF, HALF, HALF], [-HALF, HALF, -HALF]]),
+        ([0.0, 1.0, 0.0], [[-HALF, HALF, HALF], [HALF, HALF, HALF], [HALF, HALF, -HALF], [-HALF, HALF, -HALF]]),
+        ([0.0, -1.0, 0.0], [[-HALF, -HALF, -HALF], [HALF, -HALF, -HALF], [HALF, -HALF, HALF], [-HALF, -HALF, HALF]]),
+        ([0.0, 0.0, 1.0], [[-HALF, -HALF, HALF], [HALF, -HALF, HALF], [HALF, HALF, HALF], [-HALF, HALF, HALF]]),
+        ([0.0, 0.0, -1.0], [[HALF, -HALF, -HALF], [-HALF, -HALF, -HALF], [-HALF, HALF, -HALF], [HALF, HALF, -HALF]]),
+    ];
+    let mut vertices = Vec::with_capacity(24);
+    let mut indices = Vec::with_capacity(36);
+    for (layer, (normal, corners)) in faces.iter().enumerate() {
+        let base = vertices.len() as u16;
+        // Z-up: the BACK (+Y, layer 2) and BOTTOM (−Z, layer 5) faces wind such that
+        // the shared UV table maps their label upside-down. Rotate just those two
+        // faces' UVs 180° (corner_index + 2) so every label reads upright — the fix
+        // lives in the unwrap, keeping the label textures themselves canonical.
+        let uv_rotated = layer == 2 || layer == 5;
+        for (corner_index, corner) in corners.iter().enumerate() {
+            let uv_index = if uv_rotated { (corner_index + 2) % 4 } else { corner_index };
+            vertices.push(CubeLabelVertex {
+                position: *corner,
+                normal: *normal,
+                uv: UVS[uv_index],
+                layer: layer as u32,
+            });
+        }
+        indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+    }
+    (vertices, indices)
+}
+
+/// Teal wireframe edges (12 cube edges) for the view cube.
+fn view_cube_edges() -> Vec<LineVertex> {
+    const HALF: f32 = 0.705; // a hair outside the faces so the edges read crisply
+    let color = with_alpha(srgb_hex_to_linear(0x5f_b8_a4), 1.0);
+    let corners = [
+        [-HALF, -HALF, -HALF], [HALF, -HALF, -HALF], [HALF, HALF, -HALF], [-HALF, HALF, -HALF],
+        [-HALF, -HALF, HALF], [HALF, -HALF, HALF], [HALF, HALF, HALF], [-HALF, HALF, HALF],
+    ];
+    let edges = [
+        (0, 1), (1, 2), (2, 3), (3, 0), // back face
+        (4, 5), (5, 6), (6, 7), (7, 4), // front face
+        (0, 4), (1, 5), (2, 6), (3, 7), // connecting
+    ];
+    let mut vertices = Vec::with_capacity(edges.len() * 2);
+    for (a, b) in edges {
+        vertices.push(LineVertex { position: corners[a], color });
+        vertices.push(LineVertex { position: corners[b], color });
+    }
+    vertices
+}
+
+/// Render the six face-label textures into one stacked RGBA8 buffer (6 layers, in
+/// GEOMETRIC `materialIndex` order +X,-X,+Y,-Y,+Z,-Z). Z-up labels each geometric
+/// face: +Y = BACK, −Y = FRONT, +Z = TOP, −Z = BOTTOM. Each is a dark warm panel
+/// `#241d15` with a teal `#5fb8a4` border and parchment `#e9e1d1` text.
+fn generate_face_label_textures() -> Vec<u8> {
+    const LABELS: [&str; 6] = ["RIGHT", "LEFT", "BACK", "FRONT", "TOP", "BOTTOM"];
+    let size = FACE_LABEL_TEXTURE_SIZE as usize;
+    let mut all = Vec::with_capacity(size * size * 4 * 6);
+    for label in LABELS {
+        all.extend_from_slice(&render_face_label(label));
+    }
+    all
+}
+
+/// Render one face-label texture (RGBA8, `FACE_LABEL_TEXTURE_SIZE` square).
+fn render_face_label(label: &str) -> Vec<u8> {
+    let size = FACE_LABEL_TEXTURE_SIZE as usize;
+    const BACKGROUND: [u8; 4] = [0x24, 0x1d, 0x15, 0xff];
+    const BORDER: [u8; 4] = [0x5f, 0xb8, 0xa4, 0xff];
+    const TEXT: [u8; 4] = [0xe9, 0xe1, 0xd1, 0xff];
+
+    let mut pixels = vec![0u8; size * size * 4];
+    for pixel in pixels.chunks_exact_mut(4) {
+        pixel.copy_from_slice(&BACKGROUND);
+    }
+    // Teal border (7px, inset 4px) like the prototype `strokeRect(4,4,120,120)`.
+    let border_inset = 4usize;
+    let border_thickness = 7usize;
+    let put = |pixels: &mut [u8], x: usize, y: usize, color: [u8; 4]| {
+        if x < size && y < size {
+            let index = (y * size + x) * 4;
+            pixels[index..index + 4].copy_from_slice(&color);
+        }
+    };
+    for offset in 0..border_thickness {
+        let lo = border_inset + offset;
+        let hi = size - 1 - border_inset - offset;
+        for c in border_inset..(size - border_inset) {
+            put(&mut pixels, c, lo, BORDER);
+            put(&mut pixels, c, hi, BORDER);
+            put(&mut pixels, lo, c, BORDER);
+            put(&mut pixels, hi, c, BORDER);
+        }
+    }
+
+    // Centred bitmap text.
+    draw_centered_label(&mut pixels, size, label, TEXT);
+    pixels
+}
+
+/// Draw `label` centred using the built-in 5×7 bitmap font, scaled to fill the
+/// face, into the RGBA8 `pixels` buffer.
+fn draw_centered_label(pixels: &mut [u8], size: usize, label: &str, color: [u8; 4]) {
+    let glyph_width = 5usize;
+    let glyph_height = 7usize;
+    let spacing = 1usize;
+    let count = label.chars().count().max(1);
+    let text_cells_wide = count * glyph_width + (count - 1) * spacing;
+    // Choose an integer scale that fits within ~80% of the face width/height.
+    let max_scale_w = (size * 8 / 10) / text_cells_wide.max(1);
+    let max_scale_h = (size * 5 / 10) / glyph_height;
+    let scale = max_scale_w.min(max_scale_h).max(1);
+
+    let text_pixel_width = text_cells_wide * scale;
+    let text_pixel_height = glyph_height * scale;
+    let origin_x = (size.saturating_sub(text_pixel_width)) / 2;
+    let origin_y = (size.saturating_sub(text_pixel_height)) / 2;
+
+    let mut cursor_x = origin_x;
+    for ch in label.chars() {
+        let glyph = glyph_bitmap(ch);
+        for (row, bits) in glyph.iter().enumerate() {
+            for col in 0..glyph_width {
+                if (bits >> (glyph_width - 1 - col)) & 1 == 1 {
+                    // Filled cell → scale×scale block.
+                    for dy in 0..scale {
+                        for dx in 0..scale {
+                            let x = cursor_x + col * scale + dx;
+                            let y = origin_y + row * scale + dy;
+                            if x < size && y < size {
+                                let index = (y * size + x) * 4;
+                                pixels[index..index + 4].copy_from_slice(&color);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        cursor_x += (glyph_width + spacing) * scale;
+    }
+}
+
+/// A 5×7 bitmap (7 rows of 5-bit masks) for the uppercase letters used by the
+/// face labels. Unknown characters render blank.
+fn glyph_bitmap(ch: char) -> [u8; 7] {
+    match ch {
+        'A' => [0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
+        'B' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110],
+        'C' => [0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110],
+        'D' => [0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110],
+        'E' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111],
+        'F' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000],
+        'G' => [0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b10001, 0b01110],
+        'H' => [0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
+        'I' => [0b01110, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
+        'K' => [0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001],
+        'L' => [0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111],
+        'M' => [0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001],
+        'N' => [0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001],
+        'O' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
+        'P' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000],
+        'R' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001],
+        'T' => [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100],
+        _ => [0; 7],
+    }
+}
