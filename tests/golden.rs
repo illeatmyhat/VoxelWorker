@@ -598,11 +598,11 @@ fn brick_golden_matches_dense() {
 /// `--brick` stdout must show the sink engaged (`display=bricks`), so the comparison can't
 /// pass vacuously (mesh vs mesh).
 ///
-/// (Note: `--demo-overlap`, though multi-material, offsets its boxes in WHOLE blocks, so
-/// every block is still single-material — it is representable and engages the brick path
-/// too. The genuinely-non-representable case, a block whose microblocks MIX materials, is
-/// gated by `brick_representable_overlay_rejects_mixed_block` in the lib tests, which
-/// builds that boundary set directly without needing a sub-block-offset demo scene.)
+/// (Note: `--demo-overlap`, though multi-material, offsets its boxes in WHOLE blocks, so every
+/// block is still single-material. The genuinely-mixed case — a block whose microblocks MIX
+/// materials — is `--demo-mixed-material` (a sub-block voxel offset), locked by
+/// `brick_golden_mixed_material_matches_mesh` below now that the representability gate is deleted
+/// and mixed scenes engage the brick path.)
 #[test]
 fn brick_golden_multi_material_matches_mesh() {
     if std::env::var("UPDATE_GOLDENS").is_ok_and(|v| v == "1") {
@@ -637,6 +637,57 @@ fn brick_golden_multi_material_matches_mesh() {
     assert!(
         mismatch <= MAX_MISMATCH_FRACTION,
         "brick != mesh on the multi-producer distinct-material scene: {:.5}% > {:.3}% — \
+         brick: {}  mesh: {}  diff: {}",
+        mismatch * 100.0,
+        MAX_MISMATCH_FRACTION * 100.0,
+        brick_path.display(),
+        mesh_path.display(),
+        diff_path.display()
+    );
+}
+
+/// Material atlas / ADR 0013 — the MIXED-material golden: the proof the mesh cliff is dead.
+/// `--demo-mixed-material` offsets its second (Wood) box by a SUB-BLOCK voxel amount, so a block
+/// STRADDLES the boundary and its microblocks MIX Stone + Wood. This is the case the deleted
+/// representability gate routed to the mesh; now it engages the brick sink and shades each voxel
+/// from its cell-key side atlas. Rendered fresh mesh-vs-brick under the SAME MSAA tolerance band
+/// as the dense goldens (no historical committed reference), and the `--brick` stdout must show
+/// `display=bricks` so the comparison can't pass vacuously (mesh vs mesh). A per-record-uniform
+/// scene would render identically either way; here the block is genuinely mixed, so a byte-equal
+/// render proves the per-voxel cell-key shade reproduces the mesh's per-voxel materials.
+#[test]
+fn brick_golden_mixed_material_matches_mesh() {
+    if std::env::var("UPDATE_GOLDENS").is_ok_and(|v| v == "1") {
+        return;
+    }
+    let out_dir = output_dir();
+
+    let case = GoldenCase {
+        name: "demo-mixed-material",
+        args: &["--demo-mixed-material"],
+    };
+    let mesh_path = out_dir.join("demo-mixed-material-mesh.png");
+    render_case_with(&case, &mesh_path, &[]);
+    let brick_path = out_dir.join("demo-mixed-material-brick-actual.png");
+    let brick_stdout = render_case_capturing(&case, &brick_path, &["--brick"]);
+    assert!(
+        brick_stdout.contains("display=bricks"),
+        "the mixed-material scene must ENGAGE the brick sink (else brick==mesh is vacuous); \
+         shot stdout was:\n{brick_stdout}"
+    );
+
+    let mesh = load_rgba(&mesh_path);
+    let brick = load_rgba(&brick_path);
+    let diff_path = out_dir.join("demo-mixed-material-brick-diff.png");
+    let mismatch = compare_images(&brick, &mesh, &diff_path);
+    println!(
+        "[demo-mixed-material brick] mismatch fraction = {:.5}% (threshold {:.3}%)",
+        mismatch * 100.0,
+        MAX_MISMATCH_FRACTION * 100.0
+    );
+    assert!(
+        mismatch <= MAX_MISMATCH_FRACTION,
+        "brick != mesh on the MIXED-material scene (the cliff proof): {:.5}% > {:.3}% — \
          brick: {}  mesh: {}  diff: {}",
         mismatch * 100.0,
         MAX_MISMATCH_FRACTION * 100.0,

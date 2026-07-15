@@ -358,7 +358,7 @@ impl WindowedState {
         // chunks (same `build_two_layer_chunk_from_leaves` over the same coords as the
         // stateless `build_covering_chunks`), but the cache is WARM from frame one — a
         // pre-first-edit display seam (`rebuild_stale_display_mesh` after an async brick
-        // build lands `NotRepresentable`) hands out these residents as O(chunks) `Arc`
+        // build lands `Empty`) hands out these residents as O(chunks) `Arc`
         // bumps instead of synchronously re-resolving the whole set on the main thread.
         let mut startup_two_layer_cache = voxel_worker::TwoLayerResidentCache::enabled();
         let startup_two_layer_chunks = startup_two_layer_cache.resident_two_layer_chunks(

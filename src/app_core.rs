@@ -158,7 +158,7 @@ impl AppCore {
     /// An `AppCore` whose two-layer resolve cache is PRE-WARMED with the startup covering
     /// set (async-brick startup follow-up to epic #64). The windowed shell builds its
     /// startup chunks THROUGH this cache so a pre-first-edit display seam — the fallback
-    /// mesh rebuild after an async brick build lands `NotRepresentable` — hands out the
+    /// mesh rebuild after an async brick build lands `Empty` — hands out the
     /// RESIDENT chunks as O(chunks) `Arc` bumps instead of synchronously re-resolving the
     /// whole covering set on the main thread (the multi-second frame-one freeze). Edit-time
     /// semantics are identical to [`Self::new`]: the first [`rebuild`](Self::rebuild) still

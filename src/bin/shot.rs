@@ -216,6 +216,11 @@ struct ShotOptions {
     /// correctly stays on the mesh path), this engages the brick sink. Overrides
     /// --shape/--size/--density.
     demo_two_material: bool,
+    /// `--demo-mixed-material` (material atlas / ADR 0013): two DISTINCT-material boxes whose
+    /// second is offset a SUB-BLOCK voxel amount, so a straddling block MIXES both materials —
+    /// the case the deleted representability gate routed to the mesh. Now engages the brick sink
+    /// (per-voxel cell-key shading). Overrides --shape/--size/--density.
+    demo_mixed_material: bool,
     /// `--two-layer` (ADR 0010 E3 / #50): render the voxel mesh THROUGH the two-layer
     /// path — build each covering chunk's [`voxel_worker::two_layer_store::TwoLayerChunk`]
     /// (coarse one-box + microblock cuboids + seam-solidity flags) and mesh from it via
@@ -296,6 +301,7 @@ impl Default for ShotOptions {
             synthetic_block: false,
             demo_overlap: false,
             demo_two_material: false,
+            demo_mixed_material: false,
             two_layer: false,
             brick: false,
             brick_force_miss: false,
@@ -610,6 +616,9 @@ fn parse_options() -> ShotOptions {
             }
             "--demo-two-material" => {
                 options.demo_two_material = true;
+            }
+            "--demo-mixed-material" => {
+                options.demo_mixed_material = true;
             }
             "--replay" => {
                 options.replay_path = Some(PathBuf::from(
@@ -935,6 +944,41 @@ fn build_demo_two_material(voxels_per_block: u32) -> Scene {
         make([0, 0, 0], MaterialChoice::Stone),
         make([8, 0, 0], MaterialChoice::Wood),
     ]));
+    scene.voxels_per_block = voxels_per_block;
+    scene
+}
+
+/// Build the `--demo-mixed-material` (material atlas / ADR 0013): two solid boxes of DISTINCT
+/// materials whose second box is offset by a SUB-BLOCK voxel amount, so a block STRADDLES the
+/// boundary and its microblocks MIX both materials — the genuinely-non-representable case that
+/// the deleted representability gate used to route to the mesh. With the gate gone this engages
+/// the brick sink and shades each voxel from its cell-key side atlas (last-writer-wins gives the
+/// Wood box the overlap voxels; the Stone voxels the offset leaves uncovered stay Stone in the
+/// same block). The golden pins its brick render == its mesh render — the proof the mixed-material
+/// mesh cliff is closed. The 2-voxel X offset lands mid-block for any `voxels_per_block >= 3`.
+fn build_demo_mixed_material(voxels_per_block: u32) -> Scene {
+    use voxel_worker::units::Measurement;
+    let stone = {
+        let shape = SdfShape::from_blocks(ShapeKind::Box, [4, 4, 4], 1, voxels_per_block);
+        Node::new("Stone", NodeContent::Tool { shape, material: MaterialChoice::Stone })
+    };
+    let wood = {
+        let shape = SdfShape::from_blocks(ShapeKind::Box, [4, 4, 4], 1, voxels_per_block);
+        let mut node =
+            Node::new("Wood", NodeContent::Tool { shape, material: MaterialChoice::Wood });
+        // A 2-VOXEL X offset (not a whole block), so the boundary cuts THROUGH a block —
+        // that block's voxels are part Stone, part Wood: a mixed brick.
+        node.transform = voxel_worker::scene::NodeTransform::from_measurements(
+            [
+                Measurement::from_voxels(2),
+                Measurement::from_voxels(0),
+                Measurement::from_voxels(0),
+            ],
+            voxels_per_block,
+        );
+        node
+    };
+    let mut scene = selecting_first_node(Scene::from_nodes(vec![stone, wood]));
     scene.voxels_per_block = voxels_per_block;
     scene
 }
@@ -1331,6 +1375,8 @@ async fn run_capture(options: ShotOptions) {
         build_demo_overlap(options.geometry.voxels_per_block)
     } else if options.demo_two_material {
         build_demo_two_material(options.geometry.voxels_per_block)
+    } else if options.demo_mixed_material {
+        build_demo_mixed_material(options.geometry.voxels_per_block)
     } else if options.demo_scene {
         build_demo_scene(options.geometry.voxels_per_block)
     } else if options.debug_clouds {
@@ -1431,6 +1477,7 @@ async fn run_capture(options: ShotOptions) {
     let placed_scene = options.demo_scene
         || options.demo_overlap
         || options.demo_two_material
+        || options.demo_mixed_material
         || options.demo_village
         || options.demo_village_far
         || options.demo_groups
@@ -1679,51 +1726,48 @@ async fn run_capture(options: ShotOptions) {
             // carries the block-granular interior mask) resolves those elided interiors to
             // their coarse cubes, so the cross-section renders correctly.
             let build = voxel_worker::build_brick_field(&two_layer_chunks, density);
-            match voxel_worker::brick_representable_overlay(&two_layer_chunks) {
-                Some(overlay_active) if !build.brick_records.is_empty() => {
-                    let gpu_records = voxel_worker::pack_gpu_records(&build.brick_records, |_| {
-                        options.brick_force_miss
-                    });
-                    let sculpted = build.sculpted_brick_count();
-                    println!(
-                        "brick raymarch: {} records ({} coarse + {} sculpted), atlas {}³, \
-                         {}display=bricks",
-                        build.brick_records.len(),
-                        build.brick_records.len() - sculpted,
-                        sculpted,
-                        build.atlas_dim_voxels,
-                        if options.brick_force_miss {
-                            "ALL sculpted forced non-resident (residency-miss), "
-                        } else {
-                            ""
-                        },
-                    );
-                    let mut renderer = voxel_worker::BrickRaymarchRenderer::new(
-                        &gpu.device,
-                        &gpu.queue,
-                        COLOR_TARGET_FORMAT,
-                    );
-                    let pyramid = voxel_worker::ClipmapPyramid::from_chunks(&two_layer_chunks);
-                    let atlas = build.atlas_payload();
-                    renderer.install_brick_field(
-                        &gpu.device,
-                        &gpu.queue,
-                        &build.brick_records,
-                        &atlas,
-                        &gpu_records,
-                        &pyramid,
-                        voxel_worker::RecentreVoxels::new(grid.recentre_voxels),
-                        overlay_active,
-                    );
-                    brick_raymarch_renderer = Some(renderer);
-                }
-                _ => {
-                    println!(
-                        "brick: boundary set is empty or not representable (a block mixes \
-                         materials, or blocks disagree on the on-face grid) — falling back \
-                         to the mesh path"
-                    );
-                }
+            // The representability gate is deleted (material atlas): every NON-EMPTY scene
+            // engages the brick path, mixed-material included — a mixed brick's per-voxel cell
+            // keys upload alongside the occupancy atlas via `install_brick_field_with_cell_keys`.
+            if !build.brick_records.is_empty() {
+                let gpu_records = voxel_worker::pack_gpu_records(&build.brick_records, |_| {
+                    options.brick_force_miss
+                });
+                let sculpted = build.sculpted_brick_count();
+                println!(
+                    "brick raymarch: {} records ({} coarse + {} sculpted), atlas {}³, \
+                     {}display=bricks",
+                    build.brick_records.len(),
+                    build.brick_records.len() - sculpted,
+                    sculpted,
+                    build.atlas_dim_voxels,
+                    if options.brick_force_miss {
+                        "ALL sculpted forced non-resident (residency-miss), "
+                    } else {
+                        ""
+                    },
+                );
+                let mut renderer = voxel_worker::BrickRaymarchRenderer::new(
+                    &gpu.device,
+                    &gpu.queue,
+                    COLOR_TARGET_FORMAT,
+                );
+                let pyramid = voxel_worker::ClipmapPyramid::from_chunks(&two_layer_chunks);
+                let atlas = build.atlas_payload();
+                let cell_key_atlas = build.cell_key_atlas_payload();
+                renderer.install_brick_field_with_cell_keys(
+                    &gpu.device,
+                    &gpu.queue,
+                    &build.brick_records,
+                    &atlas,
+                    &cell_key_atlas,
+                    &gpu_records,
+                    &pyramid,
+                    voxel_worker::RecentreVoxels::new(grid.recentre_voxels),
+                );
+                brick_raymarch_renderer = Some(renderer);
+            } else {
+                println!("brick: boundary set is empty — falling back to the mesh path");
             }
         }
     }

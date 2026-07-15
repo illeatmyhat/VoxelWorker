@@ -641,7 +641,7 @@ fn exact_occupancy_set(
 fn brick_raymarch_hit_set_matches_exact_evaluator() {
     use voxel_worker::{
         build_brick_field, cpu_march_brick_field, cpu_march_exact_occupancy, pack_gpu_records,
-        brick_representable_overlay, AppCore, BrickRaymarchRenderer, ClipmapPyramid, LayerBand,
+        AppCore, BrickRaymarchRenderer, ClipmapPyramid, LayerBand,
         OrbitCamera,
         TwoLayerStore, COLOR_TARGET_FORMAT,
     };
@@ -671,7 +671,6 @@ fn brick_raymarch_hit_set_matches_exact_evaluator() {
         // The hit-identity image is occupancy-only, so material never enters the hit set;
         // a distinct-material union is brick-representable at G2 (each block single-material)
         // and still exercises the traversal. `unwrap_or(false)` keeps the overlay off.
-        let overlay_active = brick_representable_overlay(&two_layer_chunks).unwrap_or(false);
         let recentre = case.scene.recentre_voxels_for_resolve(vpb);
         let grid_dimensions = case.scene.placed_region_dimensions(vpb);
 
@@ -703,7 +702,6 @@ fn brick_raymarch_hit_set_matches_exact_evaluator() {
             &gpu_records,
             &pyramid,
             recentre,
-            overlay_active,
         );
         let frame = renderer.update_uniforms(
             &gpu.queue,
@@ -794,7 +792,7 @@ fn brick_raymarch_hit_set_matches_exact_evaluator() {
 #[test]
 fn brick_loaded_material_hit_samples_mesh_rule_texel() {
     use voxel_worker::{
-        brick_representable_overlay, build_brick_field, cpu_march_brick_field, pack_gpu_records,
+        build_brick_field, cpu_march_brick_field, pack_gpu_records,
         AppCore, BrickRaymarchRenderer, ClipmapPyramid, LayerBand, OrbitCamera, TwoLayerStore,
         COLOR_TARGET_FORMAT,
     };
@@ -849,7 +847,6 @@ fn brick_loaded_material_hit_samples_mesh_rule_texel() {
     let two_layer_chunks = TwoLayerStore::enabled().build_covering_chunks(&case.scene, vpb, 0);
     let build = build_brick_field(&two_layer_chunks, vpb);
     assert!(!build.brick_records.is_empty(), "empty brick field");
-    let overlay_active = brick_representable_overlay(&two_layer_chunks).unwrap_or(false);
     let recentre = case.scene.recentre_voxels_for_resolve(vpb);
     let grid_dimensions = case.scene.placed_region_dimensions(vpb);
 
@@ -870,7 +867,6 @@ fn brick_loaded_material_hit_samples_mesh_rule_texel() {
         &gpu_records,
         &pyramid,
         recentre,
-        overlay_active,
     );
 
     // A synthetic per-face material: six distinct solid colours, one per D2Array layer
@@ -998,7 +994,7 @@ fn brick_loaded_material_hit_samples_mesh_rule_texel() {
 #[test]
 fn brick_surface_elision_hit_set_unchanged() {
     use voxel_worker::{
-        brick_representable_overlay, build_brick_field, build_brick_field_all_blocks,
+        build_brick_field, build_brick_field_all_blocks,
         pack_gpu_records, AppCore, BrickRaymarchRenderer, ClipmapPyramid, LayerBand,
         OrbitCamera, TwoLayerStore, COLOR_TARGET_FORMAT,
     };
@@ -1026,7 +1022,6 @@ fn brick_surface_elision_hit_set_unchanged() {
             "{}: surface-only build must pack the identical atlas",
             case.name
         );
-        let overlay_active = brick_representable_overlay(&two_layer_chunks).unwrap_or(false);
         let recentre = case.scene.recentre_voxels_for_resolve(vpb);
         let grid_dimensions = case.scene.placed_region_dimensions(vpb);
 
@@ -1056,7 +1051,6 @@ fn brick_surface_elision_hit_set_unchanged() {
                 gpu_records,
                 &pyramid,
                 recentre,
-                overlay_active,
             );
             renderer.update_uniforms(
                 &gpu.queue,
@@ -1117,7 +1111,7 @@ fn brick_surface_elision_hit_set_unchanged() {
 #[test]
 fn brick_surface_elision_band_clip_renders_interior() {
     use voxel_worker::{
-        brick_representable_overlay, build_brick_field, build_brick_field_all_blocks,
+        build_brick_field, build_brick_field_all_blocks,
         pack_gpu_records, AppCore, BrickRaymarchRenderer, ClipmapPyramid, LayerBand, OrbitCamera,
         TwoLayerStore, COLOR_TARGET_FORMAT,
     };
@@ -1139,7 +1133,6 @@ fn brick_surface_elision_band_clip_renders_interior() {
         if full_build.brick_records.is_empty() {
             continue;
         }
-        let overlay_active = brick_representable_overlay(&two_layer_chunks).unwrap_or(false);
         let recentre = case.scene.recentre_voxels_for_resolve(vpb);
         let grid_dimensions = case.scene.placed_region_dimensions(vpb);
         let grid_z = grid_dimensions[2];
@@ -1178,7 +1171,6 @@ fn brick_surface_elision_band_clip_renders_interior() {
                 gpu_records,
                 &pyramid,
                 recentre,
-                overlay_active,
             );
             let frame = renderer.update_uniforms(
                 &gpu.queue,
@@ -1239,7 +1231,7 @@ fn brick_surface_elision_band_clip_renders_interior() {
 #[test]
 fn brick_raymarch_incremental_patch_matches_wholesale_install() {
     use voxel_worker::{
-        brick_representable_overlay, build_brick_field, pack_gpu_records, AppCore,
+        build_brick_field, pack_gpu_records, AppCore,
         BrickRaymarchRenderer, ClipmapPyramid, IncrementalBrickField, LayerBand, Node, NodeContent,
         NodeTransform, OrbitCamera, Scene, SdfShape, ShapeKind, TwoLayerResidentCache,
         COLOR_TARGET_FORMAT,
@@ -1282,7 +1274,6 @@ fn brick_raymarch_incremental_patch_matches_wholesale_install() {
         .collect();
     let build_a = build_brick_field(&fresh_a, vpb);
     let mut field = IncrementalBrickField::from_wholesale(build_a.clone()).0;
-    let overlay_a = brick_representable_overlay(&fresh_a).unwrap_or(false);
 
     let index_b = scene_b.build_leaf_spatial_index(vpb);
     let edit_aabb = index_b
@@ -1311,7 +1302,6 @@ fn brick_raymarch_incremental_patch_matches_wholesale_install() {
         fresh_b.len()
     );
 
-    let overlay_b = brick_representable_overlay(&fresh_b).unwrap_or(false);
     let recentre_b = scene_b.recentre_voxels_for_resolve(vpb);
     let grid_dimensions = scene_b.placed_region_dimensions(vpb);
 
@@ -1335,7 +1325,6 @@ fn brick_raymarch_incremental_patch_matches_wholesale_install() {
         &pack_gpu_records(&build_a.brick_records, |_| false),
         &ClipmapPyramid::from_chunks(&fresh_a),
         scene_a.recentre_voxels_for_resolve(vpb),
-        overlay_a,
     );
     incremental_renderer.patch_brick_field(
         &gpu.device,
@@ -1345,7 +1334,6 @@ fn brick_raymarch_incremental_patch_matches_wholesale_install() {
         &pack_gpu_records(field.records(), |_| false),
         &ClipmapPyramid::from_chunks(&fresh_b),
         recentre_b,
-        overlay_b,
     );
     if !update.atlas_grew {
         assert_eq!(
@@ -1377,7 +1365,6 @@ fn brick_raymarch_incremental_patch_matches_wholesale_install() {
         &pack_gpu_records(&wholesale_build.brick_records, |_| false),
         &ClipmapPyramid::from_chunks(&fresh_b),
         recentre_b,
-        overlay_b,
     );
     wholesale_renderer.update_uniforms(
         &gpu.queue,
@@ -1420,7 +1407,7 @@ fn brick_raymarch_incremental_patch_matches_wholesale_install() {
 fn brick_raymarch_incremental_carve_exposes_interior_across_chunk_boundary() {
     use voxel_worker::core_geom::CHUNK_BLOCKS;
     use voxel_worker::{
-        brick_representable_overlay, build_brick_field, pack_gpu_records, AppCore,
+        build_brick_field, pack_gpu_records, AppCore,
         BrickRaymarchRenderer, ClipmapPyramid, IncrementalBrickField, LayerBand, Node, NodeContent,
         NodeTransform, OrbitCamera, PlaneAxis, Scene, Sketch, SketchSolid,
         TwoLayerResidentCache, COLOR_TARGET_FORMAT,
@@ -1467,7 +1454,6 @@ fn brick_raymarch_incremental_carve_exposes_interior_across_chunk_boundary() {
     let fresh_with_b = cache.resident_two_layer_chunks(&scene_with_b, vpb, 0);
     let build_with_b = build_brick_field(&fresh_with_b, vpb);
     let mut field = IncrementalBrickField::from_wholesale(build_with_b.clone()).0;
-    let overlay_with_b = brick_representable_overlay(&fresh_with_b).unwrap_or(false);
 
     let index_carved = scene_carved.build_leaf_spatial_index(vpb);
     let carve_aabb = index_carved
@@ -1523,7 +1509,6 @@ fn brick_raymarch_incremental_carve_exposes_interior_across_chunk_boundary() {
         "the carve must EXPOSE records in a non-dirty chunk (the fixture must be real)"
     );
 
-    let overlay_carved = brick_representable_overlay(&fresh_carved).unwrap_or(false);
     let recentre_carved =
         scene_carved.recentre_voxels_for_resolve(vpb);
     let grid_dimensions = scene_carved.placed_region_dimensions(vpb);
@@ -1560,7 +1545,6 @@ fn brick_raymarch_incremental_carve_exposes_interior_across_chunk_boundary() {
         &pack_gpu_records(&build_with_b.brick_records, |_| false),
         &ClipmapPyramid::from_chunks(&fresh_with_b),
         scene_with_b.recentre_voxels_for_resolve(vpb),
-        overlay_with_b,
     );
     incremental_renderer.patch_brick_field(
         &gpu.device,
@@ -1570,7 +1554,6 @@ fn brick_raymarch_incremental_carve_exposes_interior_across_chunk_boundary() {
         &pack_gpu_records(field.records(), |_| false),
         &ClipmapPyramid::from_chunks(&fresh_carved),
         recentre_carved,
-        overlay_carved,
     );
     let incremental_image = render(&mut incremental_renderer);
 
@@ -1585,7 +1568,6 @@ fn brick_raymarch_incremental_carve_exposes_interior_across_chunk_boundary() {
         &pack_gpu_records(&wholesale_build.brick_records, |_| false),
         &ClipmapPyramid::from_chunks(&fresh_carved),
         recentre_carved,
-        overlay_carved,
     );
     let wholesale_image = render(&mut wholesale_renderer);
 
@@ -1614,7 +1596,7 @@ fn brick_raymarch_incremental_carve_exposes_interior_across_chunk_boundary() {
 #[test]
 fn brick_raymarch_residency_miss_renders_coarse_form() {
     use voxel_worker::{
-        brick_representable_overlay, build_brick_field, pack_gpu_records, AppCore,
+        build_brick_field, pack_gpu_records, AppCore,
         BrickRaymarchRenderer,
         ClipmapPyramid, LayerBand, OrbitCamera, TwoLayerStore, COLOR_TARGET_FORMAT,
     };
@@ -1636,8 +1618,6 @@ fn brick_raymarch_residency_miss_renders_coarse_form() {
             "{}: fixture must contain sculpted bricks to force a miss",
             case.name
         );
-        let overlay_active =
-            brick_representable_overlay(&two_layer_chunks).unwrap_or(false);
         let recentre = case.scene.recentre_voxels_for_resolve(vpb);
         let grid_dimensions = case.scene.placed_region_dimensions(vpb);
 
@@ -1672,7 +1652,6 @@ fn brick_raymarch_residency_miss_renders_coarse_form() {
             &pack_gpu_records(&build.brick_records, |_| false),
             &pyramid,
             recentre,
-            overlay_active,
         );
         let resident_image = render_image(&renderer);
         // Forced residency miss: every sculpted record → NON_RESIDENT sentinel.
@@ -1684,7 +1663,6 @@ fn brick_raymarch_residency_miss_renders_coarse_form() {
             &pack_gpu_records(&build.brick_records, |_| true),
             &pyramid,
             recentre,
-            overlay_active,
         );
         let miss_image = render_image(&renderer);
 
@@ -1754,7 +1732,7 @@ fn brick_raymarch_residency_miss_renders_coarse_form() {
 #[test]
 fn brick_raymarch_pyramid_on_equals_off() {
     use voxel_worker::{
-        brick_representable_overlay, build_brick_field, pack_gpu_records, AppCore,
+        build_brick_field, pack_gpu_records, AppCore,
         BrickRaymarchRenderer,
         ClipmapPyramid, LayerBand, OrbitCamera, TwoLayerStore, COLOR_TARGET_FORMAT,
     };
@@ -1781,8 +1759,6 @@ fn brick_raymarch_pyramid_on_equals_off() {
             "{}: pyramid has no cells — the on/off comparison would be vacuous",
             case.name
         );
-        let overlay_active =
-            brick_representable_overlay(&two_layer_chunks).unwrap_or(false);
         let recentre = case.scene.recentre_voxels_for_resolve(vpb);
         let grid_dimensions = case.scene.placed_region_dimensions(vpb);
 
@@ -1806,7 +1782,6 @@ fn brick_raymarch_pyramid_on_equals_off() {
                 &gpu_records,
                 pyramid,
                 recentre,
-                overlay_active,
             );
             renderer.update_uniforms(
                 &gpu.queue,
@@ -1891,7 +1866,7 @@ fn brick_raymarch_pyramid_on_equals_off() {
 #[ignore = "perf probe — run explicitly with --release --ignored --nocapture"]
 fn clipmap_scattered_scene_skips_empty_space() {
     use voxel_worker::{
-        brick_representable_overlay, build_brick_field, cpu_march_levels_counted, pack_gpu_records,
+        build_brick_field, cpu_march_levels_counted, pack_gpu_records,
         AppCore, BrickRaymarchRenderer, ClipmapLevel, ClipmapPyramid, LayerBand, NodeTransform,
         OrbitCamera, TwoLayerStore, CLIPMAP_LEVEL_1_BLOCKS_PER_CELL, CLIPMAP_LEVEL_2_BLOCKS_PER_CELL,
         CLIPMAP_LEVEL_3_BLOCKS_PER_CELL, COLOR_TARGET_FORMAT,
@@ -1939,7 +1914,6 @@ fn clipmap_scattered_scene_skips_empty_space() {
     let build = build_brick_field(&two_layer_chunks, vpb);
     let pyramid_on = ClipmapPyramid::from_records(&build.brick_records);
     let gpu_records = pack_gpu_records(&build.brick_records, |_| false);
-    let overlay_active = brick_representable_overlay(&two_layer_chunks).unwrap_or(false);
     let recentre = scene.recentre_voxels_for_resolve(vpb);
     let grid_dimensions = scene.placed_region_dimensions(vpb);
 
@@ -1971,7 +1945,6 @@ fn clipmap_scattered_scene_skips_empty_space() {
         &gpu_records,
         &pyramid_on,
         recentre,
-        overlay_active,
     );
     let frame = renderer.update_uniforms(
         &gpu.queue,
@@ -2063,7 +2036,7 @@ fn clipmap_scattered_scene_skips_empty_space() {
 #[test]
 fn onion_ghost_marches_only_the_onion_slabs() {
     use voxel_worker::{
-        brick_representable_overlay, build_brick_field, pack_gpu_records, AppCore,
+        build_brick_field, pack_gpu_records, AppCore,
         BrickRaymarchRenderer, ClipmapPyramid, LayerBand, OrbitCamera, TwoLayerStore,
         COLOR_TARGET_FORMAT,
     };
@@ -2083,7 +2056,6 @@ fn onion_ghost_marches_only_the_onion_slabs() {
     let build = build_brick_field(&two_layer_chunks, vpb);
     assert!(!build.brick_records.is_empty(), "the sphere shell must produce records");
     let records = pack_gpu_records(&build.brick_records, |_| false);
-    let overlay_active = brick_representable_overlay(&two_layer_chunks).unwrap_or(false);
     let pyramid = ClipmapPyramid::from_chunks(&two_layer_chunks);
     let recentre = case.scene.recentre_voxels_for_resolve(vpb);
     let grid_dimensions = case.scene.placed_region_dimensions(vpb);
@@ -2123,7 +2095,6 @@ fn onion_ghost_marches_only_the_onion_slabs() {
         &records,
         &pyramid,
         recentre,
-        overlay_active,
     );
 
     // The absolute-voxel-Z set of the hits a given band clip renders, via the SOLID
@@ -2296,7 +2267,6 @@ fn brick_mixed_material_matches_cpu_reference() {
         &gpu_records,
         &pyramid,
         recentre,
-        false,
     );
     let frame = renderer.update_uniforms(
         &gpu.queue,

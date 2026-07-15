@@ -41,9 +41,10 @@ use std::sync::Arc;
 use crate::brick_field::build_brick_field;
 use crate::brick_field::{
     build_brick_field_with_tiles, ClipmapPyramid, IncrementalBrickField, SculptedAtlasPayload,
+    SculptedCellKeyAtlasPayload,
 };
 use crate::voxel::RecentreVoxels;
-use crate::brick_raymarch::{brick_representable_overlay, pack_gpu_records, BrickGpuRecord};
+use crate::brick_raymarch::{pack_gpu_records, BrickGpuRecord};
 use crate::two_layer_store::TwoLayerChunk;
 use crate::workers::{build_catching, Worker};
 
@@ -84,16 +85,11 @@ pub enum BrickRebuildOutcome {
         /// from a known-good full field.
         mirror: IncrementalBrickField,
     },
-    /// The scene is not display-representable (a block mixes materials across its
-    /// microblocks, or blocks disagree on the on-face grid — ADR 0011 G2). The mirror
-    /// is still maintained; the display hands over to the cuboid mesh.
-    NotRepresentable {
-        /// The fresh incremental mirror (maintained regardless of representability).
-        mirror: IncrementalBrickField,
-    },
-    /// The scene is representable: the full display install set, ready for the
-    /// main-thread `install_brick_field` upload. Boxed so the enum stays small on the
-    /// channel (the install set dwarfs the other variants).
+    /// The full display install set, ready for the main-thread install upload. Boxed so the
+    /// enum stays small on the channel (the install set dwarfs the other variants). On a gpu
+    /// build every non-empty scene reaches this arm — the representability gate is deleted, so
+    /// mixed-material and overlay-disagreeing scenes engage the brick path too (ADR material
+    /// atlas), carrying their per-voxel cell-key side atlas in `cell_key_atlas`.
     Display(Box<BrickDisplayInstall>),
 }
 
@@ -104,12 +100,14 @@ pub struct BrickDisplayInstall {
     /// channel (item 9: the mirror is the single owner of records + tiles, so the former
     /// duplicate `BrickFieldBuild` is gone; the install reads records from `mirror`).
     pub atlas: SculptedAtlasPayload,
+    /// The per-voxel cell-key side-atlas UPLOAD payload for the scene's MIXED bricks — empty when
+    /// no block mixes materials/overlay. The install seam uploads it via
+    /// `install_brick_field_with_cell_keys` so mixed bricks shade per-voxel (material atlas).
+    pub cell_key_atlas: SculptedCellKeyAtlasPayload,
     /// The packed GPU record set (all-resident, surface-only per ADR 0011).
     pub gpu_records: Vec<BrickGpuRecord>,
     /// The L1–L3 clip-map pyramid derived from the same chunks.
     pub pyramid: ClipmapPyramid,
-    /// The scene-wide on-face-grid overlay state the shader binds.
-    pub overlay_active: bool,
     /// The fresh incremental mirror — the single CPU owner of the records + slot tiles; the
     /// install seam packs its records and reads its geometry (`atlas` is its upload payload,
     /// moved out of the wholesale build alongside it).
@@ -132,10 +130,12 @@ pub struct BrickRebuildResult {
 }
 
 /// Build a wholesale brick rebuild's artifacts — the SAME calls the synchronous path
-/// makes, in the same order (record build → representability classify → pyramid +
-/// record pack), so the outcome is byte-identical to an inline build (asserted by the
-/// build-equivalence test). Factored out so the worker loop and the equivalence test
-/// share one entry, like [`build_geometry`](crate::workers::geometry::build_geometry).
+/// makes, in the same order (record build → pyramid + record pack + cell-key pack), so the
+/// outcome is byte-identical to an inline build (asserted by the build-equivalence test).
+/// Every non-empty gpu-build scene reaches `Display` now: the representability gate is deleted,
+/// so a mixed-material scene engages the brick path with its cell-key side atlas (material atlas).
+/// Factored out so the worker loop and the equivalence test share one entry, like
+/// [`build_geometry`](crate::workers::geometry::build_geometry).
 pub fn build_brick_rebuild(request: &BrickRebuildRequest) -> BrickRebuildOutcome {
     let (build, slot_tiles) =
         build_brick_field_with_tiles(&request.two_layer_chunks, request.density);
@@ -153,22 +153,19 @@ pub fn build_brick_rebuild(request: &BrickRebuildRequest) -> BrickRebuildOutcome
     if !request.build_display_artifacts {
         return BrickRebuildOutcome::MirrorOnly { mirror };
     }
-    match brick_representable_overlay(&request.two_layer_chunks) {
-        Some(overlay_active) => {
-            let pyramid = ClipmapPyramid::from_chunks(&request.two_layer_chunks);
-            // Surface-only by construction (ADR 0011 interior elision fused into
-            // emission) — a plain all-resident 1:1 pack, read from the mirror's records.
-            let gpu_records = pack_gpu_records(mirror.records(), |_| false);
-            BrickRebuildOutcome::Display(Box::new(BrickDisplayInstall {
-                atlas,
-                gpu_records,
-                pyramid,
-                overlay_active,
-                mirror,
-            }))
-        }
-        None => BrickRebuildOutcome::NotRepresentable { mirror },
-    }
+    let pyramid = ClipmapPyramid::from_chunks(&request.two_layer_chunks);
+    // Surface-only by construction (ADR 0011 interior elision fused into emission) — a plain
+    // all-resident 1:1 pack, read from the mirror's records. A mixed record carries its cell-key
+    // slot; the cell-key side atlas below holds those slots' per-voxel tiles.
+    let gpu_records = pack_gpu_records(mirror.records(), |_| false);
+    let cell_key_atlas = mirror.pack_cell_key_atlas_payload();
+    BrickRebuildOutcome::Display(Box::new(BrickDisplayInstall {
+        atlas,
+        cell_key_atlas,
+        gpu_records,
+        pyramid,
+        mirror,
+    }))
 }
 
 /// The background brick-pipeline worker: a [`Worker`] whose pure-CPU build closure turns
@@ -240,9 +237,9 @@ mod tests {
         };
         let BrickDisplayInstall {
             atlas,
+            cell_key_atlas,
             gpu_records,
             pyramid,
-            overlay_active,
             mirror,
         } = *install;
         let sync_build = build_brick_field(&chunks, vpb);
@@ -253,6 +250,12 @@ mod tests {
              (bytes + tile geometry: bricks_per_axis / atlas_dim / brick edge + slot count)"
         );
         assert_eq!(
+            cell_key_atlas,
+            sync_build.cell_key_atlas_payload(),
+            "shipped cell-key side-atlas payload matches the synchronous build (empty for a \
+             single-material box — no mixed brick)"
+        );
+        assert_eq!(
             pyramid,
             ClipmapPyramid::from_chunks(&chunks),
             "pyramid matches the synchronous call"
@@ -261,11 +264,6 @@ mod tests {
             gpu_records,
             pack_gpu_records(&sync_build.brick_records, |_| false),
             "GPU record pack matches the synchronous call"
-        );
-        assert_eq!(
-            Some(overlay_active),
-            brick_representable_overlay(&chunks),
-            "overlay state matches the synchronous classify"
         );
         assert_eq!(
             mirror.to_build(),

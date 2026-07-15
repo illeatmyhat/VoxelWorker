@@ -88,7 +88,7 @@ pub use brick_field::{
 pub use brick_raymarch::{
     cpu_brick_hit_material, cpu_march_brick_field, cpu_march_brick_field_counted,
     cpu_march_levels_counted, cpu_march_exact_occupancy,
-    brick_representable_overlay, pack_gpu_records, BrickGpuRecord,
+    pack_gpu_records, BrickGpuRecord,
     BrickMarchFrame, BrickRaymarchRenderer, CpuMarchHit, NON_RESIDENT_ATLAS_SLOT,
 };
 pub use workers::brick::{

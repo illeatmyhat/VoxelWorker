@@ -411,15 +411,23 @@ pub const BLOCK_OCCUPANCY_MASK_WORDS: usize = BLOCK_OCCUPANCY_BITS_PER_CELL / 32
 /// occupancy vocabulary at the GPU seam ([`cell_keys`](Self::cell_keys) ∥
 /// [`cell_masks`](Self::cell_masks) ∥ [`cell_materials`](Self::cell_materials) — the fallback
 /// scalar IS the render-cell material colour index) and owning the domain [`from_chunks`] builder.
+/// The bit of a fallback word carrying the interior block's on-face-grid overlay flag, above
+/// the material colour index (which is tiny — 0..MATERIAL_COUNT). The interior-elision fallback
+/// stores one `u32` per cell, so material and overlay are packed together and split apart at the
+/// GPU seam ([`OccupancyCellPod`](crate::brick_raymarch) reads them as two fields). With the
+/// scene-wide overlay bool deleted, an interior-elision coarse hit sources its overlay from here.
+pub const OCCUPANCY_FALLBACK_OVERLAY_BIT: u32 = 1 << 16;
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct BlockOccupancyMasks {
     /// The substrate storage: present 8-block cell keys (sorted ascending) ∥ per-cell `512`-bit
     /// occupancy bitmask (`bit = (local_z*8 + local_y)*8 + local_x`, `local = block.rem_euclid(8)`)
-    /// ∥ per-cell fallback material colour index (the first occupied block's, in build order — the
-    /// coarse-cube's shade when the record-miss fallback fires). Exact for a uniform-material
-    /// interior cell (every current band golden); best-effort where a cell mixes materials (the
-    /// documented tolerance edge — the R8 atlas is occupancy-only, so per-interior-block material
-    /// would re-introduce the O(volume) record set this contract deleted).
+    /// ∥ per-cell fallback WORD: the first occupied block's material colour index packed with its
+    /// on-face-grid overlay bit (`OCCUPANCY_FALLBACK_OVERLAY_BIT`) — the coarse-cube's shade AND
+    /// overlay when the record-miss fallback fires. Exact for a uniform interior cell (every
+    /// current band golden); best-effort where a cell mixes material/overlay (the documented
+    /// tolerance edge — the R8 atlas is occupancy-only, so per-interior-block detail would
+    /// re-introduce the O(volume) record set this contract deleted).
     map: SortedKeyBitmaskMap<BLOCK_OCCUPANCY_MASK_WORDS>,
 }
 
@@ -447,14 +455,16 @@ impl BlockOccupancyMasks {
         &self.map.fallbacks
     }
 
-    /// Set one block's bit (and, first-writer-wins, its cell material) in the accumulation map.
-    /// The cell fold (`floor_div` by the 8-block cell edge) and the cell-local z-major linear bit
-    /// index are domain cell geometry; the bit-set on the fixed-width mask is substrate's
-    /// [`set_mask_bit`].
+    /// Set one block's bit (and, first-writer-wins, its cell fallback word) in the accumulation
+    /// map. The `fallback` word packs the block's material colour index with its overlay bit
+    /// (`OCCUPANCY_FALLBACK_OVERLAY_BIT`) — the coarse-cube shade + overlay a record-miss
+    /// interior hit resolves to. The cell fold (`floor_div` by the 8-block cell edge) and the
+    /// cell-local z-major linear bit index are domain cell geometry; the bit-set on the
+    /// fixed-width mask is substrate's [`set_mask_bit`].
     fn insert_block(
         cells: &mut std::collections::BTreeMap<u64, ([u32; BLOCK_OCCUPANCY_MASK_WORDS], u32)>,
         world_block: [i64; 3],
-        material: u32,
+        fallback: u32,
     ) {
         let cell_size = BLOCK_OCCUPANCY_CELL_BLOCKS as i64;
         let cell = [
@@ -472,7 +482,7 @@ impl BlockOccupancyMasks {
             + local[0];
         let entry = cells
             .entry(pack_world_block_key(cell))
-            .or_insert(([0u32; BLOCK_OCCUPANCY_MASK_WORDS], material));
+            .or_insert(([0u32; BLOCK_OCCUPANCY_MASK_WORDS], fallback));
         set_mask_bit(&mut entry.0, bit);
     }
 
@@ -500,12 +510,15 @@ impl BlockOccupancyMasks {
                 chunk.microblocks.is_empty() && chunk.coarse.iter().all(Option::is_some);
             if fully_solid {
                 // Bulk: the whole `CHUNK_BLOCKS³` block box is occupied at the chunk's first
-                // block colour — no per-block visit beyond the constant bit-set (a 4-aligned
-                // chunk box lands wholly inside one 8-block cell per axis).
+                // block colour + overlay — no per-block visit beyond the constant bit-set (a
+                // 4-aligned chunk box lands wholly inside one 8-block cell per axis).
                 let material = chunk
                     .coarse_block([0, 0, 0])
                     .map(|block_id| block_id.color_index() as u32)
                     .unwrap_or(0);
+                let fallback = material
+                    | (u32::from(chunk.coarse_block_overlay([0, 0, 0]))
+                        * OCCUPANCY_FALLBACK_OVERLAY_BIT);
                 for block_z in 0..CHUNK_BLOCKS {
                     for block_y in 0..CHUNK_BLOCKS {
                         for block_x in 0..CHUNK_BLOCKS {
@@ -516,7 +529,7 @@ impl BlockOccupancyMasks {
                                     base[1] + block_y as i64,
                                     base[2] + block_z as i64,
                                 ],
-                                material,
+                                fallback,
                             );
                         }
                     }
@@ -526,13 +539,22 @@ impl BlockOccupancyMasks {
                     for block_y in 0..CHUNK_BLOCKS {
                         for block_x in 0..CHUNK_BLOCKS {
                             let block = [block_x, block_y, block_z];
-                            let material = if let Some(block_id) = chunk.coarse_block(block) {
+                            // The fallback word: the block's material colour index packed with its
+                            // overlay bit (first cuboid's, or the coarse block's overlay marker).
+                            let fallback = if let Some(block_id) = chunk.coarse_block(block) {
                                 block_id.color_index() as u32
+                                    | (u32::from(chunk.coarse_block_overlay(block))
+                                        * OCCUPANCY_FALLBACK_OVERLAY_BIT)
                             } else if let Some(geometry) = chunk.microblocks.get(&block) {
                                 geometry
                                     .cuboids
                                     .first()
-                                    .map(|cuboid| clean_block_id(cuboid.material_id()) as u32)
+                                    .map(|cuboid| {
+                                        let key = cuboid.material_id();
+                                        clean_block_id(key) as u32
+                                            | (u32::from(cell_key_has_overlay(key))
+                                                * OCCUPANCY_FALLBACK_OVERLAY_BIT)
+                                    })
                                     .unwrap_or(0)
                             } else {
                                 continue;
@@ -544,7 +566,7 @@ impl BlockOccupancyMasks {
                                     base[1] + block_y as i64,
                                     base[2] + block_z as i64,
                                 ],
-                                material,
+                                fallback,
                             );
                         }
                     }
@@ -3272,11 +3294,10 @@ mod incremental_tests {
     // The per-voxel cell-key side atlas (the CPU half): emission classifies a
     // sculpted block uniform vs MIXED, and only a mixed block owns a cell-key tile.
     //
-    // These fixtures drive the emission builder DIRECTLY with hand-built two-layer
-    // chunks, because a mixed-material scene cannot reach the brick path through the
-    // renderer yet: `brick_representable_overlay` still routes it to the mesh (the gate
-    // dies with the GPU pool). Everything below is therefore the CPU mirror's contract,
-    // not a rendering claim.
+    // These fixtures drive the emission builder DIRECTLY with hand-built two-layer chunks —
+    // the tightest test of the CPU classifier. (The representability gate is now deleted, so a
+    // mixed scene DOES reach the brick path through the renderer; the rendering side is proven by
+    // the mixed-material golden + parity test. This module remains the CPU mirror's own contract.)
     // ========================================================================
 
     /// The density the hand-built fixtures use — small enough to state a block's cuboids

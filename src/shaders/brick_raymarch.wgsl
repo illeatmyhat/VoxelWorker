@@ -154,6 +154,14 @@ fn record_material_id(kind: u32) -> u32 {
     return (kind >> BRICK_RECORD_MATERIAL_ID_SHIFT)
         & ((1u << BRICK_RECORD_MATERIAL_ID_BITS) - 1u);
 }
+// The record's on-face-grid overlay bit (0/1) — the single bit above the material field.
+// Every non-mixed hit sources its overlay from here; the scene-wide overlay uniform is gone
+// (the representability gate is deleted, so blocks may DISAGREE on the overlay — it is a
+// per-record fact, not a scene-wide one). A mixed record's overlay rides per-voxel in its
+// cell-key texel instead (`mixed_voxel_cell_key`).
+fn record_overlay(kind: u32) -> u32 {
+    return (kind >> BRICK_RECORD_OVERLAY_SHIFT) & 1u;
+}
 
 @group(0) @binding(1)
 var<storage, read> brick_records: array<BrickGpuRecord>;
@@ -184,7 +192,9 @@ struct OccupancyCell {
     key_lo: u32,
     // The coarse-cube shade for a fallback hit (the cell's first occupied block's material).
     material: u32,
-    _pad: u32,
+    // The fallback block's on-face-grid overlay bit (0/1) — first-occupied-block-wins, the
+    // twin of `material`. Occupies the former pad slot (the pod stride is unchanged).
+    overlay: u32,
     // 512-bit mask: bit = (local_z*8 + local_y)*8 + local_x, local = block mod 8.
     mask: array<u32, 16>,
 };
@@ -198,9 +208,9 @@ var<storage, read> occupancy_cells: array<OccupancyCell>;
 // is a `texture_3d<u32>` read with `textureLoad`: exact, never filtered, never normalised.
 // Air texels are don't-care (occupancy gates the sample).
 //
-// Bound but NOT yet sampled: mixed blocks cannot reach this path while the representability
-// gate stands, and the per-voxel shade that reads this tile is the next slice. The binding
-// exists so the record format, the pool, and the layout land together.
+// Sampled by `mixed_voxel_cell_key` for every kind-2 (MIXED) record: the representability gate
+// is deleted, so mixed scenes reach this path unconditionally on gpu builds, shading each voxel
+// from its own cell-key texel (clean id + per-voxel overlay bit).
 @group(0) @binding(7)
 var cell_key_atlas: texture_3d<u32>;
 
@@ -528,13 +538,15 @@ fn sculpted_voxel_occupied(atlas_slot: u32, brick_local_voxel: vec3<i32>) -> boo
 // categorical block id (`clean_block_id`); testing it yields the overlay (`cell_key_has_overlay`).
 const MESH_GRID_OVERLAY_BIT: u32 = 0x8000u;
 
-// A MIXED brick's per-voxel MATERIAL: the clean block id of the cell-key texel at the hit
-// voxel of the material side atlas. The texel is the u16 render-cell key VERBATIM (clean id +
-// overlay bit); the shade uses only the clean id, so this masks the overlay off exactly as the
-// CPU `clean_block_id` does. Exact `textureLoad` of the R16Uint atlas at the cell-key pool's own
-// tile origin (`band_voxel_sv.z` tiles-per-axis — NOT the occupancy atlas's). Called ONLY for a
-// kind-2 record with a resident cell-key slot, so a kind-0/1 record never reaches this texture.
-fn mixed_voxel_material(cell_key_slot: u32, brick_local_voxel: vec3<i32>) -> u32 {
+// A MIXED brick's per-voxel RENDER-CELL KEY: the u16 texel at the hit voxel of the material
+// side atlas, VERBATIM (clean block-palette id in the low bits + the on-face-grid overlay bit
+// `MESH_GRID_OVERLAY_BIT`). The caller masks it: `key & (MESH_GRID_OVERLAY_BIT - 1)` is the
+// clean id the shade uses (mirroring the CPU `clean_block_id`), and the top bit is the voxel's
+// own overlay (a mixed brick's overlay is per-voxel, not per-record). Exact `textureLoad` of the
+// R16Uint atlas at the cell-key pool's own tile origin (`band_voxel_sv.z` tiles-per-axis — NOT
+// the occupancy atlas's). Called ONLY for a kind-2 record with a resident cell-key slot, so a
+// kind-0/1 record never reaches this texture.
+fn mixed_voxel_cell_key(cell_key_slot: u32, brick_local_voxel: vec3<i32>) -> u32 {
     let tiles = u32(uniforms.band_voxel_sv.z);
     let edge = uniforms.lattice_shift_and_edge.w;
     let tile = vec3<i32>(
@@ -542,8 +554,7 @@ fn mixed_voxel_material(cell_key_slot: u32, brick_local_voxel: vec3<i32>) -> u32
         i32((cell_key_slot / tiles) % tiles),
         i32(cell_key_slot / (tiles * tiles)),
     );
-    let cell_key = textureLoad(cell_key_atlas, tile * edge + brick_local_voxel, 0).r;
-    return cell_key & (MESH_GRID_OVERLAY_BIT - 1u);
+    return textureLoad(cell_key_atlas, tile * edge + brick_local_voxel, 0).r;
 }
 
 // A ray-march hit: the entry face (axis + facing sign), the plane's sv-frame
@@ -560,6 +571,10 @@ struct MarchHit {
     voxel_cell: vec3<i32>,
     // The hit block's material colour index, decoded from its record (ADR 0011 G2).
     material_id: u32,
+    // The hit's on-face-grid overlay bit (0/1): from the record for a coarse/uniform hit, or
+    // per-voxel from the cell-key texel for a mixed hit. The shade draws the grid overlay only
+    // where the master toggle (`grid_overlay_enabled`) AND this bit are set.
+    overlay: u32,
 }
 
 // Ray/AABB slab entry: max component of the near-face parameters (clamped to 0)
@@ -707,6 +722,9 @@ fn march_brick_field(ray: Ray) -> MarchHit {
         var has_geometry = record_index >= 0;
         var is_coarse = false;
         var block_material = 0u;
+        // The block's overlay bit (0/1) for a coarse/uniform hit — from the record, or from the
+        // occupancy fallback cell. A mixed hit overrides this per-voxel from its cell-key texel.
+        var block_overlay = 0u;
         var resolved_atlas_slot = 0u;
         // A MIXED brick (kind 2) shades each voxel from its per-voxel cell-key texel, not the
         // per-record material; these carry the record's cell-key slot into the voxel DDA so the
@@ -717,6 +735,7 @@ fn march_brick_field(ray: Ray) -> MarchHit {
         if (record_index >= 0) {
             let record = brick_records[record_index];
             block_material = record_material_id(record.kind);
+            block_overlay = record_overlay(record.kind);
             // Residency-miss contract: a sculpted record with no resident atlas payload
             // renders its COARSE form.
             is_coarse = record_kind(record.kind) == 0u
@@ -732,6 +751,7 @@ fn march_brick_field(ray: Ray) -> MarchHit {
                 has_geometry = true;
                 is_coarse = true; // an elided interior block is coarse-solid by definition
                 block_material = occupancy_cells[cell_index].material;
+                block_overlay = occupancy_cells[cell_index].overlay;
             }
         }
 
@@ -750,6 +770,7 @@ fn march_brick_field(ray: Ray) -> MarchHit {
                         var hit: MarchHit;
                         hit.hit = true;
                         hit.material_id = block_material;
+                        hit.overlay = block_overlay;
                         hit.entry_axis = entry.axis;
                         hit.normal_sign = -sign(ray.direction[entry.axis]);
                         hit.plane_sv = ray.origin[entry.axis]
@@ -814,14 +835,18 @@ fn march_brick_field(ray: Ray) -> MarchHit {
                         if (sculpted_voxel_occupied(resolved_atlas_slot, brick_local)) {
                             var hit: MarchHit;
                             hit.hit = true;
-                            // MIXED brick: the hit voxel's own material from the cell-key side
-                            // atlas; otherwise the per-record material. Guarded by kind == 2 (and
-                            // a resident slot) so non-mixed shading is untouched.
+                            // MIXED brick: the hit voxel's own material AND overlay from the
+                            // cell-key side atlas texel; otherwise the per-record material +
+                            // overlay. Guarded by kind == 2 (and a resident slot) so non-mixed
+                            // shading is untouched.
                             if (is_mixed && resolved_cell_key_slot != NON_RESIDENT_ATLAS_SLOT) {
-                                hit.material_id =
-                                    mixed_voxel_material(resolved_cell_key_slot, brick_local);
+                                let cell_key =
+                                    mixed_voxel_cell_key(resolved_cell_key_slot, brick_local);
+                                hit.material_id = cell_key & (MESH_GRID_OVERLAY_BIT - 1u);
+                                hit.overlay = select(0u, 1u, (cell_key & MESH_GRID_OVERLAY_BIT) != 0u);
                             } else {
                                 hit.material_id = block_material;
+                                hit.overlay = block_overlay;
                             }
                             hit.entry_axis = voxel_entry_axis;
                             hit.normal_sign = -sign(ray.direction[voxel_entry_axis]);
@@ -922,8 +947,9 @@ fn material_base_colors_lookup(material_id: u32) -> vec3<f32> {
 
 // `absolute` is the cuboid shader's `voxel_absolute_position` (world +
 // grid_half_extent); `world_normal` the face's outward unit normal; `material_id` the
-// hit block's per-record material colour index (ADR 0011 G2).
-fn shade_cuboid_surface(absolute: vec3<f32>, world_normal: vec3<f32>, material_id: u32) -> vec4<f32> {
+// hit block's per-record material colour index (ADR 0011 G2); `overlay` the hit's own
+// on-face-grid overlay bit (0/1) — the grid draws only where the master toggle AND this bit hold.
+fn shade_cuboid_surface(absolute: vec3<f32>, world_normal: vec3<f32>, material_id: u32, overlay: u32) -> vec4<f32> {
     let axis_magnitude = abs(world_normal);
     var u_value: f32;
     var v_value: f32;
@@ -976,7 +1002,11 @@ fn shade_cuboid_surface(absolute: vec3<f32>, world_normal: vec3<f32>, material_i
         color = color * base;
     }
 
-    if (uniforms.grid_overlay_enabled > 0.5) {
+    // `grid_overlay_enabled` is now the MASTER toggle only (the user's grid-overlay switch);
+    // whether THIS hit shows the grid is the master AND the hit's own per-record/per-voxel
+    // overlay bit. (Before the representability gate's deletion this was one scene-wide bool;
+    // a representable scene had a uniform overlay, so per-hit == scene-wide for it — byte-identical.)
+    if (uniforms.grid_overlay_enabled > 0.5 && overlay != 0u) {
         let in_plane = step(abs(world_normal), vec3<f32>(0.5));
         let voxel_distance = abs(absolute - floor(absolute + 0.5));
         let density = uniforms.voxels_per_block;
@@ -1066,7 +1096,7 @@ fn fragment_render(
     if (uniforms.ghost_mode != 0u) {
         output.color = uniforms.ghost_tint;
     } else {
-        output.color = shade_cuboid_surface(absolute, world_normal, hit.material_id);
+        output.color = shade_cuboid_surface(absolute, world_normal, hit.material_id, hit.overlay);
     }
     output.depth = clamp(clip.z / clip.w, 0.0, 1.0);
     return output;
@@ -1409,7 +1439,7 @@ fn fragment_color_identity(@builtin(position) position: vec4<f32>) -> @location(
     let shift = vec3<f32>(uniforms.lattice_shift_and_edge.xyz);
     let absolute = evaluation_sv - shift;
     let world_normal = select(vec3<f32>(0.0), vec3<f32>(hit.normal_sign), entry_axis_mask);
-    return shade_cuboid_surface(absolute, world_normal, hit.material_id);
+    return shade_cuboid_surface(absolute, world_normal, hit.material_id, hit.overlay);
 }
 
 // The MATERIAL-parity harness entry (tests/gpu_parity.rs, ADR 0013): a single-sample pass
