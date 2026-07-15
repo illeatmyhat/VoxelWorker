@@ -15,8 +15,8 @@
 //! A component belongs here if and only if it **consumes the classified boundary set and
 //! produces pixels** — it names a wgpu device, queue, pipeline, buffer, or shader. Every
 //! GPU sink lives here: the cuboid fallback mesher, the brick field build + its GPU record
-//! pack, the brick raymarch pipeline, the material texture atlas, the block thumbnail
-//! renderer + loaded material, the asset-pack decode/registry, and the render pipelines (view
+//! pack, the brick raymarch pipeline, the material texture atlas, the loaded block
+//! material, the asset-pack decode/registry, and the render pipelines (view
 //! cube, grids, gizmo, points). The device and queue are handed **in** from the shell as
 //! parameters; this crate never creates a device, opens a surface, or touches a window — no
 //! winit, no UI toolkit, no event loop. Windowing, input, the UI-facing palette state, and the
@@ -30,7 +30,7 @@
 //! brick-field tests build fixtures from), `voxel_core` (the value vocabulary + block/cell
 //! codec), `substrate` (interval arithmetic, cuboid decomposition, `GenerationTracker`),
 //! `camera` + `raycast` (the wgpu-free viewing + traversal mathematics the shaders mirror),
-//! `assets` (the pure-CPU block-texture loader `block_texture` decodes thumbnails from), plus
+//! `assets` (the pure-CPU block-texture loader `block_texture` builds materials from), plus
 //! `wgpu`/`glam`/`bytemuck`/`rayon`/`profiling`. Its tests hold the mesh + brick paths against the dense `Scene::resolve_region`
 //! oracle (document's `oracle` feature), compile-gated out of production builds.
 //!
@@ -54,7 +54,7 @@
 //!   pyramid) and the raymarch display sink ([`brick::BrickRaymarchRenderer`]): block DDA +
 //!   record binary search + sculpted voxel DDA, and the CPU march mirror.
 //! * [`texture_atlas`] — the packed material atlas ([`texture_atlas::MaterialAtlas`]) the sinks sample.
-//! * [`block_texture`] — the block thumbnail renderer + the runtime-loaded material (pure wgpu).
+//! * [`block_texture`] — the runtime-loaded scene block material + its bind-group layout (pure wgpu).
 //! * [`assets`] — the asset-pack decode + registry (custom packs, VS packs, face textures).
 
 // A public item's doc may link to a private helper to explain how the two relate; that
