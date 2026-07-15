@@ -20,8 +20,24 @@ that **`display` is 1:1 the scene view** (wgpu rendering only), two more crates 
 
 Workspace is now 11 library crates + the `voxel_worker` shell. `display` links no egui and no content-
 loading deps — it is the scene view (mesh/brick GPU sinks + renderer chrome + texture atlas + shaders).
-Remaining display gray-area (deferred, noted): `block_texture::ThumbnailRenderer` renders palette PREVIEW
-cubes (UI, not scene) but is a GPU utility the shell drives — left in display to avoid moving its shader.
+**No-mega-files polish pass (2026-07-15, after the crate split):**
+- `f0f67ff` — `block_texture::ThumbnailRenderer` (palette PREVIEW rendering — UI, not scene) moved from
+  `display` → shell `src/thumbnail.rs` + `src/shaders/thumbnail.wgsl`. `display` now has zero UI code.
+  `LoadedMaterial` + the bind-group layout (genuine scene material) stay in display.
+- `2e0550d` — the three biggest test modules carved into topic folders: `scene/tests/`
+  (graph/resolve/placement/grids), `brick/tests/` (field/incremental/record_packing/mixed_material/
+  pipeline_probe), `mesh/tests/` (cuboid/apron/two_layer).
+- `5fbde05` — `src/main.rs` (1866) → `src/windowed/` shell-lib modules (mod/geometry/workers/palette/
+  export/view_cube/render/events); `main.rs` is now an 11-line entry.
+- `87f374e` — `src/bin/shot.rs` (2348) → bin FOLDER `src/bin/shot/` (main/options/demos/capture); the
+  `[[bin]]` path updated, `required-features=["oracle"]` kept.
+- `e339107` — `document/src/sketch.rs` (1661) → `sketch/` (mod/solid/produce/tests); the two remaining
+  large evaluation test modules → `two_layer_store/tests/` + `store/tests/` folders.
+
+Deliberately left WHOLE (cohesive single units, not mega-files worth splitting): `brick/raymarch.rs` +
+`mesh/pipeline.rs` (one GPU renderer type each), `run_capture` (one driver with interleaved GPU
+lifetimes), `scene/graph.rs` (1292) + `vox_export.rs` (1283, ~half tests). No production library module
+above ~1300 lines that isn't a single cohesive type remains.
 
  Phase 7 landed: `app_core`(3090)→`app_core/` (`40e62c1`) and `panel`(2060)→`panel/`
 (`4bee3a6`). Workspace: `substrate·camera·raycast ← voxel_core ← document ← evaluation ← {display,
