@@ -100,3 +100,22 @@ Grill rulings that shaped the seams (full rationale in the extraction map):
   (intents live below the shell). A future upward edge fails to compile instead of passing review.
 - This is a multi-slice epic larger than substrate; it is proposed, to be executed incrementally,
   and can be paused between slices with the tree green (each crate cut is independently valuable).
+
+## Execution note — seam correction (2026-07-15, during Phase 4a)
+
+Ruling #5 above described the engagement **orchestrator** as living inside the `display` crate ("the
+engagement orchestrator switches between [mesh and brick]"). Cutting `display` revealed that is wrong:
+`DisplayOrchestrator` (the old `src/display/orchestrator.rs`) **owns `GeometryWorker` + `BrickWorker`
+as fields, spawns and dispatches them, and calls `build_brick_rebuild`** — all WORK-layer concerns. It
+is a work-layer coordinator that drives the display sinks downward, not a display component. The
+original dependency survey missed this upward edge because the worker types reach the orchestrator via
+**flat crate-root re-exports** (`crate::BrickWorker`), which a `crate::workers::` grep does not catch —
+a caution for the remaining cuts: audit crate-root re-exports, not just `crate::<module>::` paths.
+
+Correction applied: the display crate holds only the seven GPU-sink modules + `assets/` + `shaders/`.
+The orchestrator + routing stayed in the app crate, renamed `src/display/` → `src/engagement/` (the
+extern `display` crate would otherwise collide with a local `mod display`), and are placed at the
+Phase-6 **work**-crate cut (orchestrator → work; routing → work-or-display, decided then). Ruling #5's
+"display is ONE crate, mesh/brick are folders not sub-crates" stands unchanged; only the orchestrator's
+home moves. So "display is the only crate that links wgpu" is now compile-true for the sinks, while the
+shell (gpu.rs/main/panel) and the engagement coordinator still link wgpu until the work/shell split.

@@ -5,8 +5,22 @@ if only to make the connections between components easier to understand," follow
 grill-with-docs session that resolved every contested seam. Decision record: `docs/adr/0016`.
 The boundary law per crate is the architecture chapter it implements (`docs/architecture/`).
 
-**Status (2026-07-15): Phase 0 COMPLETE; Phases 1–3 LANDED (voxel_core, document, evaluation);
-Phases 4–7 not started.** Grilled; ADR written. Execution is bottom-up in gated slices (below).
+**Status (2026-07-15): Phase 0 COMPLETE; Phases 1–3 + 4a LANDED (voxel_core, document, evaluation,
+display); mega-file carves 4b–4d + phases 5–7 not started.** Grilled; ADR written. Execution is
+bottom-up in gated slices (below).
+
+**Phase 4a landed** (`04f0a37`): cut **display** — the ONLY crate that links wgpu — moving the seven
+GPU-sink modules (`renderer`, `cuboid_mesh`, `brick_field`, `brick_raymarch`, `texture_atlas`,
+`block_palette`), `assets/`, and `shaders/`. The mega-files moved WHOLE; carving them into folders is
+Phases 4b–4d (decomposed because a cut + three ~4k-line carves exceeds one agent's ~200k budget). Recon
+157+21+93+93+64=428.
+**SEAM CORRECTION (discovered in 4a):** the old `src/display/` orchestrator+routing are NOT display —
+`DisplayOrchestrator` OWNS `GeometryWorker`+`BrickWorker` and drives them, so it is WORK-layer. The
+original ADR-0016 survey missed this upward edge because the worker types are imported via flat
+crate-root re-exports (`crate::BrickWorker`, not `crate::workers::BrickWorker`). They were kept in the
+app crate, renamed `src/display/` → `src/engagement/` (to avoid colliding with the new extern `display`
+crate), and will be placed at the Phase-6 work-crate cut (orchestrator → work; routing → work-or-display,
+decide then). So the file→crate table below is corrected: orchestrator/routing move OUT of the display row.
 
 **Phases 1–3 landed** (all gated + pushed): `199ad8d` cut **voxel_core** (the foundational value
 vocabulary); `90a69f2` cut **document** (the authored-TRUTH layer); this Phase 3 commit cut
@@ -61,9 +75,9 @@ substrate · camera · raycast
 | **voxel_core** | `core_geom` (+ the `CellKey` codec moved from cuboid_mesh), the value half of `voxel.rs` (`Voxel`, `VoxelGrid`, `RecentreVoxels`, constants, `signed_distance*`, `ShapeKind`), `spatial_index`, `units` | foundational vocabulary; no behavior contract |
 | **document** | `scene/*`, `sketch`, the producer half of `voxel.rs` (`VoxelProducer` trait, `SdfShape`, `GeometryParams`), `debug_clouds`, `intent`, `command` | 01 — truth; imports no evaluation/display/wgpu |
 | **evaluation** | `two_layer_store`, `store`, `chunk_cache`, `chunk_storage`, `disk_chunk_store`, `cuboid`, `incremental_rebuild_plan` (from renderer), measurement queries (`widest_run_in_band`, diameter) | 02 — one evaluator → boundary set |
-| **display** | `renderer`, `cuboid_mesh`, `brick_field`, `brick_raymarch`, `texture_atlas`, `block_palette`, `assets/*` (+ `decode_rgba`), `display/orchestrator`, `display/routing`; `gpu` handed in from the shell | 03 — the only crate that links wgpu |
+| **display** | `renderer`, `cuboid_mesh`, `brick_field`, `brick_raymarch`, `texture_atlas`, `block_palette`, `assets/*` (+ `decode_rgba`); `gpu` handed in from the shell. (NOT orchestrator/routing — see seam correction) | 03 — the only crate that links wgpu |
 | **interchange** | `vox_export` | 03 (export) — headless sink; never wgpu |
-| **work** | `workers/*` | 04 — tempos, generations, staleness |
+| **work** | `workers/*`, `engagement/orchestrator` (owns the workers), `engagement/routing` | 04 — tempos, generations, staleness |
 | **voxel_worker** | `app_core`, `panel`, `settings`, `gpu`, `main` + `shot` bins | shell — composition root |
 
 ## Phase 0 — untangle (in the current crate, before any crate is cut)
