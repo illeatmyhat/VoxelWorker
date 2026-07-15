@@ -49,10 +49,10 @@
 //!   MSAA target helpers.
 //! * [`mesh`] — the CPU box-decomposed fallback mesher ([`mesh::CuboidMeshRenderer`]):
 //!   the always-present, no-GPU-capable voxel render path + the incremental re-mesh.
-//! * [`brick_field`] — the brick-field BUILD (two-layer boundary set → sorted brick records +
-//!   the sculpted-brick + cell-key atlases + the L1–L3 clipmap pyramid).
-//! * [`brick_raymarch`] — the brick raymarch display sink ([`brick_raymarch::BrickRaymarchRenderer`]):
-//!   block DDA + record binary search + sculpted voxel DDA, and the CPU march mirror.
+//! * [`brick`] — the brick display path: the brick-field BUILD (two-layer boundary set →
+//!   sorted brick records + the sculpted-brick + cell-key atlases + the L1–L3 clipmap
+//!   pyramid) and the raymarch display sink ([`brick::BrickRaymarchRenderer`]): block DDA +
+//!   record binary search + sculpted voxel DDA, and the CPU march mirror.
 //! * [`texture_atlas`] — the packed material atlas ([`texture_atlas::MaterialAtlas`]) the sinks sample.
 //! * [`block_palette`] — the Vintage Story block palette + the egui thumbnail renderer.
 //! * [`assets`] — the asset-pack decode + registry (custom packs, VS packs, face textures).
@@ -64,8 +64,7 @@
 
 pub mod assets;
 pub mod block_palette;
-pub mod brick_field;
-pub mod brick_raymarch;
+pub mod brick;
 pub mod mesh;
 pub mod renderer;
 pub mod texture_atlas;

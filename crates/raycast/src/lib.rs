@@ -24,7 +24,7 @@
 //! and the [`substrate::spatial::min_mip_pyramid`] cell-key search the hierarchical skip folds
 //! against; this crate never depends on the sibling `camera` crate.
 //!
-//! The domain's brick march (`voxel_worker::brick_raymarch`) is the adapter: it holds
+//! The domain's brick march (`voxel_worker::brick`) is the adapter: it holds
 //! the carried march frame, the record binary search + atlas byte fetch, and the
 //! empty-level occupancy policy, and it builds those into the closures this kernel
 //! consumes. The WGSL shader `shaders/brick_raymarch.wgsl` is a maintained *mirror* of

@@ -38,13 +38,13 @@
 use std::sync::Arc;
 
 #[cfg(test)]
-use display::brick_field::build_brick_field;
-use display::brick_field::{
+use display::brick::build_brick_field;
+use display::brick::{
     build_brick_field_with_tiles, ClipmapPyramid, IncrementalBrickField, SculptedAtlasPayload,
     SculptedCellKeyAtlasPayload,
 };
 use voxel_core::voxel::RecentreVoxels;
-use display::brick_raymarch::{pack_gpu_records, BrickGpuRecord};
+use display::brick::{pack_gpu_records, BrickGpuRecord};
 use evaluation::two_layer_store::TwoLayerChunk;
 use crate::workers::{build_catching, Worker};
 

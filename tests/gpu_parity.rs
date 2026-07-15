@@ -132,7 +132,7 @@ fn brick_slot_bytes(
 // mapping + atlas byte-exactness, which the surface-only live build shares (identical
 // classifier, identical sculpted set + slot numbering; only occluded coarse records are
 // omitted). The surface contract itself is gated by
-// `brick_field::build_emits_only_surface_records_of_a_solid_box` (CPU) and
+// `brick::build_emits_only_surface_records_of_a_solid_box` (CPU) and
 // `brick_surface_elision_hit_set_unchanged` (render).
 #[test]
 fn brick_field_build_matches_two_layer_boundary_set_byte_exactly() {
@@ -991,7 +991,7 @@ fn brick_loaded_material_hit_samples_mesh_rule_texel() {
 /// hit-identity images are BYTE-IDENTICAL. This is the display proof that never emitting a
 /// fully-occluded interior block (its six neighbours all solid) never changes a ray's first
 /// hit: the ray stops at the surrounding surface record before ever reaching it. The CPU
-/// half is `brick_field::build_emits_only_surface_records_of_a_solid_box`.
+/// half is `brick::build_emits_only_surface_records_of_a_solid_box`.
 #[test]
 fn brick_surface_elision_hit_set_unchanged() {
     use voxel_worker::{
@@ -1403,7 +1403,7 @@ fn brick_raymarch_incremental_patch_matches_wholesale_install() {
 /// and assert the render is PIXEL-IDENTICAL to a from-scratch wholesale install of the
 /// carved scene, and that the surviving record keys are BYTE-IDENTICAL to the wholesale
 /// build's. The CPU-side byte equality (occupancy included) is gated in
-/// `brick_field::incremental_carve_across_chunk_boundary_flips_neighbour_occlusion`.
+/// `brick::incremental_carve_across_chunk_boundary_flips_neighbour_occlusion`.
 #[test]
 fn brick_raymarch_incremental_carve_exposes_interior_across_chunk_boundary() {
     use voxel_core::core_geom::CHUNK_BLOCKS;
@@ -1721,7 +1721,7 @@ fn brick_raymarch_residency_miss_renders_coarse_form() {
 // change a hit. The load-bearing assertion is `pyramid-on == pyramid-off` (it
 // catches the stride-overshoot / off-by-epsilon bugs the conservative-coverage
 // unit test can't). Coarser levels are proven conservative CPU-side in
-// `brick_field::tests::clipmap_pyramid_is_conservative_and_sorted`.
+// `brick::tests::field_tests::clipmap_pyramid_is_conservative_and_sorted`.
 // ===========================================================================
 
 /// **ADR 0011 parity gate, coarse tier (the load-bearing G2 assertion).** For each

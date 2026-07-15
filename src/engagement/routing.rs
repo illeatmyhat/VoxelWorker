@@ -21,7 +21,7 @@
 //!
 //! ## The interlock (the fog/mesh-era law: NEVER patch a stale artifact)
 //! While an async wholesale brick build is OUTSTANDING the resident
-//! [`IncrementalBrickField`](display::brick_field::IncrementalBrickField) mirror (and the
+//! [`IncrementalBrickField`](display::brick::IncrementalBrickField) mirror (and the
 //! renderer's live field) reflect S0 while the worker builds S1 — so an incremental edit
 //! must NOT patch them (that would strand every brick that differs S0→S1 but isn't in the
 //! new dirty set, the Frankenstein field). [`route_brick_rebuild`] therefore routes EVERY

@@ -189,7 +189,7 @@ fn clipmap_cell_exit_t(
 }
 
 /// March one ray through the brick field with the hierarchical empty-space skip — the
-/// pure kernel behind `voxel_worker::brick_raymarch::cpu_march_levels_counted`, a
+/// pure kernel behind `voxel_worker::brick::cpu_march_levels_counted`, a
 /// step-for-step mirror of the WGSL `march_brick_field`. Returns the hit voxel (absolute)
 /// and the number of block-DDA loop iterations (each iteration is one hierarchical jump
 /// OR one per-block step) — the empty-space-skip metric the perf probe reports.
@@ -367,7 +367,7 @@ where
 
 /// March one ray over an EXACT occupancy predicate — a flat voxel-level DDA (no blocks,
 /// no records) inside the same frame/band, querying `occupied(absolute_voxel)`. The pure
-/// kernel behind `voxel_worker::brick_raymarch::cpu_march_exact_occupancy`, the parity
+/// kernel behind `voxel_worker::brick::cpu_march_exact_occupancy`, the parity
 /// net's INDEPENDENT content oracle: the brick march's hit-voxel set must equal this
 /// march's hit-voxel set. `ray` is the pixel-centre ray in the shifted march frame.
 pub fn march_exact_occupancy<OccupiedFn>(

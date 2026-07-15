@@ -2893,7 +2893,7 @@ const ONION_FOG_COLOR_HEX: u32 = 0x9c_b4_d8;
 /// matches the retired volumetric fog haze ([`ONION_FOG_COLOR_HEX`]) so the crisp ghost
 /// reads as the same "context around the band" the fog conveyed; the alpha is the src-alpha
 /// the ghost pass blends with (depth-tested `Less`, depth write ON — see the ghost
-/// pipelines in `brick_raymarch.rs` / `cuboid_mesh.rs`). Linear-space RGB, matching the
+/// pipelines in `brick/raymarch.rs` / `mesh/pipeline.rs`). Linear-space RGB, matching the
 /// linear shading both cuboid + brick shaders work in.
 const ONION_GHOST_ALPHA: f32 = 0.5;
 

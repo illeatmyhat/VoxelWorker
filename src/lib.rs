@@ -24,7 +24,7 @@ pub mod app_core;
 // pipelines (cuboid mesh + brick raymarch). It sits ABOVE the `display` crate — it DRIVES
 // the GPU sinks and owns the workers, so it was reclassified out of `display` at the ADR 0016
 // Phase 4a cut and stays in this app crate until the work-crate cut places it. The wgpu-
-// linking GPU sinks themselves (renderer, cuboid_mesh, brick_field, brick_raymarch,
+// linking GPU sinks themselves (renderer, mesh, brick,
 // texture_atlas, block_palette, assets) now live in the `display` crate.
 pub mod engagement;
 pub mod gpu;
@@ -48,7 +48,7 @@ pub use app_core::{
     default_replay_seed_scene, replay_intent_script, AppCore, RebuildOutcome, RebuildOutput,
 };
 pub use evaluation::store::{ChunkCacheKey, ChunkResolveCache, Store};
-pub use display::brick_field::{
+pub use display::brick::{
     build_brick_field, build_brick_field_all_blocks, build_brick_field_with_tiles,
     pack_clipmap_level_keys, pack_world_block_key,
     read_back_brick_atlas, unpack_world_block_key, upload_brick_atlas,
@@ -59,7 +59,7 @@ pub use display::brick_field::{
     CELL_KEY_TEXEL_BYTES, CLIPMAP_LEVEL_1_BLOCKS_PER_CELL, CLIPMAP_LEVEL_2_BLOCKS_PER_CELL,
     CLIPMAP_LEVEL_3_BLOCKS_PER_CELL,
 };
-pub use display::brick_raymarch::{
+pub use display::brick::{
     cpu_brick_hit_material, cpu_march_brick_field, cpu_march_brick_field_counted,
     cpu_march_levels_counted, cpu_march_exact_occupancy,
     pack_gpu_records, BrickGpuRecord,
@@ -453,7 +453,7 @@ pub struct FrameOverlays<'a> {
     /// the pass runs in the same MSAA pass and writes ray-hit depth, so every
     /// overlay/fog/cube/egui pass after it composites unchanged. `None` keeps the
     /// mesh path (multi-producer, loaded materials, debug modes, no-GPU builds).
-    pub brick_raymarch: Option<&'a display::brick_raymarch::BrickRaymarchRenderer>,
+    pub brick_raymarch: Option<&'a display::brick::BrickRaymarchRenderer>,
     /// Target dimensions (needed to place the view-cube corner viewport).
     pub target_width: u32,
     pub target_height: u32,
