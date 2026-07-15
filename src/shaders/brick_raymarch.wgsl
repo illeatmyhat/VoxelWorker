@@ -534,14 +534,14 @@ fn sculpted_voxel_occupied(atlas_slot: u32, brick_local_voxel: vec3<i32>) -> boo
 }
 
 // The transient on-face-grid overlay bit of a render-cell key — MUST match
-// `MESH_GRID_OVERLAY_BIT` (1 << 15) in cuboid_mesh.rs. Masking it off yields the clean
-// categorical block id (`clean_block_id`); testing it yields the overlay (`cell_key_has_overlay`).
+// `CellKey::OVERLAY_BIT` (1 << 15) in core_geom.rs. Masking it off yields the clean
+// categorical block id (`CellKey::block_id`); testing it yields the overlay (`CellKey::has_overlay`).
 const MESH_GRID_OVERLAY_BIT: u32 = 0x8000u;
 
 // A MIXED brick's per-voxel RENDER-CELL KEY: the u16 texel at the hit voxel of the material
 // side atlas, VERBATIM (clean block-palette id in the low bits + the on-face-grid overlay bit
 // `MESH_GRID_OVERLAY_BIT`). The caller masks it: `key & (MESH_GRID_OVERLAY_BIT - 1)` is the
-// clean id the shade uses (mirroring the CPU `clean_block_id`), and the top bit is the voxel's
+// clean id the shade uses (mirroring the CPU `CellKey::block_id`), and the top bit is the voxel's
 // own overlay (a mixed brick's overlay is per-voxel, not per-record). Exact `textureLoad` of the
 // R16Uint atlas at the cell-key pool's own tile origin (`band_voxel_sv.z` tiles-per-axis — NOT
 // the occupancy atlas's). Called ONLY for a kind-2 record with a resident cell-key slot, so a

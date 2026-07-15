@@ -2186,9 +2186,8 @@ fn onion_ghost_marches_only_the_onion_slabs() {
 fn brick_mixed_material_matches_cpu_reference() {
     use std::collections::BTreeMap;
     use std::sync::Arc;
-    use voxel_worker::core_geom::CHUNK_BLOCKS;
+    use voxel_worker::core_geom::{CellKey, CHUNK_BLOCKS};
     use voxel_worker::cuboid::VoxelBox;
-    use voxel_worker::cuboid_mesh::compose_cell_key;
     use voxel_worker::{
         build_brick_field, cpu_brick_hit_material, cpu_march_brick_field, pack_gpu_records, AppCore,
         BrickRaymarchRenderer, ClipmapPyramid, LayerBand, MicroblockGeometry, OrbitCamera,
@@ -2203,8 +2202,8 @@ fn brick_mixed_material_matches_cpu_reference() {
 
     // Distinct clean ids (0 and 1) with DIFFERENT overlay bits, so the clean-id mask is exercised
     // (a leaked overlay bit would make the resolved id 0x8001 ≠ 1).
-    let left_key = compose_cell_key(0, false);
-    let right_key = compose_cell_key(1, true);
+    let left_key = CellKey::compose(0, false).raw();
+    let right_key = CellKey::compose(1, true).raw();
     let half = edge / 2;
     let mixed_geometry = MicroblockGeometry {
         cuboids: vec![

@@ -48,9 +48,8 @@ use std::sync::Arc;
 
 use rayon::prelude::*;
 
-use crate::core_geom::{BlockId, CHUNK_BLOCKS};
+use crate::core_geom::{BlockId, CellKey, CHUNK_BLOCKS};
 use crate::cuboid::VoxelBoxMaterial;
-use crate::cuboid_mesh::{cell_key_has_overlay, clean_block_id};
 use crate::two_layer_store::{SeamSolidity, TwoLayerChunk};
 
 // The brick-record key codec IS substrate's `lattice_key`: an absolute world-block
@@ -550,9 +549,9 @@ impl BlockOccupancyMasks {
                                     .cuboids
                                     .first()
                                     .map(|cuboid| {
-                                        let key = cuboid.material_id();
-                                        clean_block_id(key) as u32
-                                            | (u32::from(cell_key_has_overlay(key))
+                                        let key = CellKey::from_raw(cuboid.material_id());
+                                        key.block_id() as u32
+                                            | (u32::from(key.has_overlay())
                                                 * OCCUPANCY_FALLBACK_OVERLAY_BIT)
                                     })
                                     .unwrap_or(0)
@@ -692,7 +691,7 @@ pub struct BrickRecord {
     /// truth (this holds the first cuboid's clean id there, never read as the block's).
     pub material_id: u16,
     /// The block's on-face-grid overlay bit — the other half of its cell key (the render-cell
-    /// key is `material_id | overlay`, see `cuboid_mesh::compose_cell_key`). Carried
+    /// key is `material_id | overlay`, see [`crate::core_geom::CellKey`]). Carried
     /// per-RECORD so a scene whose blocks disagree on the overlay is still one brick field.
     /// Meaningful for coarse + UNIFORM sculpted blocks; don't-care for a
     /// [`SculptedMixed`](BrickPayload::SculptedMixed) block (its tile's per-voxel keys carry
@@ -1489,8 +1488,8 @@ fn classify_block_brick(
         let (tile, cell_keys) =
             rasterize_brick_tiles(geometry, brick_edge_voxels, uniform.is_none());
         BlockBrick::Sculpted {
-            material_id: clean_block_id(record_cell_key),
-            overlay: cell_key_has_overlay(record_cell_key),
+            material_id: CellKey::from_raw(record_cell_key).block_id(),
+            overlay: CellKey::from_raw(record_cell_key).has_overlay(),
             seam_solidity: geometry.seam_solidity,
             tile,
             cell_keys,
@@ -2762,7 +2761,6 @@ mod incremental_tests {
     use super::*;
     use crate::core_geom::MaterialChoice;
     use crate::cuboid::VoxelBox;
-    use crate::cuboid_mesh::compose_cell_key;
     use crate::scene::{Node, NodeContent, NodeTransform, Scene};
     use crate::two_layer_store::{
         MicroblockGeometry, TwoLayerChunk, TwoLayerResidentCache, TwoLayerStore,
@@ -3306,7 +3304,7 @@ mod incremental_tests {
 
     /// A hand-built covering set of ONE chunk at `[0, 0, 0]`: `coarse_blocks` are
     /// `(block, block_id, overlay)`, `sculpted_blocks` are `(block, cuboids)` whose cuboid
-    /// labels are render-cell keys ([`compose_cell_key`]).
+    /// labels are render-cell keys ([`CellKey::compose`]).
     fn hand_built_chunk(
         coarse_blocks: &[([u32; 3], u16, bool)],
         sculpted_blocks: &[([u32; 3], Vec<VoxelBox>)],
@@ -3342,7 +3340,7 @@ mod incremental_tests {
         VoxelBox {
             min,
             max,
-            label: compose_cell_key(block_id, overlay),
+            label: CellKey::compose(block_id, overlay).raw(),
         }
     }
 

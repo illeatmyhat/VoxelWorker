@@ -86,6 +86,71 @@ impl BlockId {
     }
 }
 
+/// A cuboid-decomposition / region-cell key (ADR 0003 §3c): a clean categorical
+/// [`BlockId`] in the low 15 bits + a transient on-face-grid overlay marker in the high
+/// bit, packed into one `u16`.
+///
+/// The overlay bit is the flag the **cuboid mesher** folds into its region-cell key. It is
+/// NOT the retired per-voxel `GRID_OVERLAY_BIT` — that flag is gone from the persistent
+/// categorical cell. Instead a *local* decomposition key `block_id | (overlay << 15)` is
+/// composed from each voxel's clean `block_id` + its transient `grid_overlay` marker, so
+/// `decompose_into_boxes` (which stays representation-agnostic) refuses to merge a box
+/// across differing overlay flags — exactly the old per-box split — without ever seeing a
+/// render flag inside the material. The mesher then splits the key back into the clean
+/// `block_id` ([`block_id`](Self::block_id)) and the per-box overlay
+/// ([`has_overlay`](Self::has_overlay)), writing the overlay into a DEDICATED render channel
+/// so the shader reads it separately and never masks it out of the material.
+///
+/// The overlay bit lives ONLY in this render-side key — never in the persistent
+/// [`crate::voxel::Voxel`] payload, the chunk-storage codec, or the `.vox` export.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct CellKey(u16);
+
+impl CellKey {
+    /// The high bit that marks the transient on-face-grid overlay (ADR 0003 §3c). Private
+    /// to the type: consumers compose/inspect through the methods, never touch the bit.
+    const OVERLAY_BIT: u16 = 1 << 15;
+
+    /// Compose a key from a clean categorical `block_id` (low 15 bits) and a transient
+    /// on-face-grid `overlay` marker (high bit).
+    #[inline]
+    pub fn compose(block_id: u16, overlay: bool) -> Self {
+        let mut key = block_id;
+        if overlay {
+            key |= Self::OVERLAY_BIT;
+        }
+        Self(key)
+    }
+
+    /// Wrap a raw packed `u16` (as stored in the store/mesh cell arrays) as a key.
+    #[inline]
+    pub fn from_raw(raw: u16) -> Self {
+        Self(raw)
+    }
+
+    /// The raw packed `u16`, for storing back into a cell array.
+    #[inline]
+    pub fn raw(self) -> u16 {
+        self.0
+    }
+
+    /// The clean categorical `block_id` — the overlay bit masked off. Used where a consumer
+    /// needs the categorical id without the transient render flag (the two-layer occupancy
+    /// expansion, the raymarch shade).
+    #[inline]
+    pub fn block_id(self) -> u16 {
+        self.0 & !Self::OVERLAY_BIT
+    }
+
+    /// Whether the key carries the on-face-grid overlay marker. Used where a consumer needs
+    /// the render flag back out (the two-layer occupancy expansion carries it onto the
+    /// expanded `Voxel::grid_overlay`).
+    #[inline]
+    pub fn has_overlay(self) -> bool {
+        self.0 & Self::OVERLAY_BIT != 0
+    }
+}
+
 /// Typed per-`block_id` attributes (ADR 0003 §3a-bis).
 ///
 /// **Minimal forward-compat placeholder.** ADR 0003 §3a-bis pins `BlockAttrs` as a typed

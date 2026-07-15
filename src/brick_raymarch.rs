@@ -37,8 +37,7 @@ use crate::brick_field::{
     BrickRecord, ClipmapLevel, ClipmapPyramid, IncrementalBrickField, SculptedAtlasPayload,
     SculptedCellKeyAtlasPayload, BLOCK_OCCUPANCY_MASK_WORDS, CELL_KEY_TEXEL_BYTES,
 };
-use crate::core_geom::MaterialChoice;
-use crate::cuboid_mesh::clean_block_id;
+use crate::core_geom::{CellKey, MaterialChoice};
 use crate::renderer::{LayerBand, DEPTH_FORMAT, MSAA_SAMPLE_COUNT};
 
 /// The sentinel marking a sculpted record whose atlas payload is NOT resident (the
@@ -2433,7 +2432,7 @@ pub fn cpu_brick_hit_material(
                     brick_local[1],
                     brick_local[2],
                 );
-                clean_block_id(cell_key) as u32
+                CellKey::from_raw(cell_key).block_id() as u32
             } else {
                 record_material_id(record.kind)
             }
@@ -2534,7 +2533,6 @@ mod mixed_material_reference_tests {
     use crate::brick_field::build_brick_field;
     use crate::core_geom::CHUNK_BLOCKS;
     use crate::cuboid::VoxelBox;
-    use crate::cuboid_mesh::compose_cell_key;
     use crate::two_layer_store::{MicroblockGeometry, SeamSolidity, TwoLayerChunk};
     use std::collections::BTreeMap;
     use std::sync::Arc;
@@ -2572,8 +2570,8 @@ mod mixed_material_reference_tests {
 
     #[test]
     fn reference_resolves_per_voxel_mixed_material() {
-        let left = compose_cell_key(0, false); // clean id 0
-        let right = compose_cell_key(1, true); // clean id 1, overlay bit set — must be masked off
+        let left = CellKey::compose(0, false).raw(); // clean id 0
+        let right = CellKey::compose(1, true).raw(); // clean id 1, overlay bit set — must be masked off
         let build = build_brick_field(&one_block_chunk(left, right), EDGE);
         assert_eq!(build.mixed_brick_count(), 1, "the fixture must produce exactly one mixed brick");
         let records = pack_gpu_records(&build.brick_records, |_| false);
@@ -2601,7 +2599,7 @@ mod mixed_material_reference_tests {
     #[test]
     fn reference_uniform_block_uses_record_material() {
         // Both halves share one key ⇒ a UNIFORM brick: no cell-key tile, material on the record.
-        let key = compose_cell_key(2, false);
+        let key = CellKey::compose(2, false).raw();
         let build = build_brick_field(&one_block_chunk(key, key), EDGE);
         assert_eq!(build.mixed_brick_count(), 0, "a single-material block is not mixed");
         let records = pack_gpu_records(&build.brick_records, |_| false);

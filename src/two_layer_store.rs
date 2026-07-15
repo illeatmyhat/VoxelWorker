@@ -54,7 +54,7 @@ use rayon::prelude::*;
 use substrate::interval::DisjointIntervalSet;
 use substrate::solids::{CellClassification, CellContribution};
 
-use crate::core_geom::{BlockAttrs, BlockId, CHUNK_BLOCKS};
+use crate::core_geom::{BlockAttrs, BlockId, CellKey, CHUNK_BLOCKS};
 use crate::cuboid::{decompose_into_boxes, VoxelBox, VoxelBoxMaterial, VoxelRegion};
 use crate::scene::{LeafProducer, Scene};
 use crate::spatial_index::{ChunkCoverage, EditBroadphaseBvh, VoxelAabb};
@@ -116,7 +116,7 @@ pub struct MicroblockGeometry {
     ///
     /// Each cuboid's `material_id` is the cuboid mesher's **render-cell key** (ADR 0003
     /// §3c): the clean categorical `block_id` in the low bits, the transient on-face-grid
-    /// overlay marker in `crate::cuboid_mesh::MESH_GRID_OVERLAY_BIT`. The decomposition
+    /// overlay marker in the high bit (see [`crate::core_geom::CellKey`]). The decomposition
     /// therefore splits a box across differing overlay states exactly like the dense
     /// mesher, and E3's mesher reads the box's clean id + overlay back out of this key
     /// without the render flag ever entering the categorical cell. Consumers that want the
@@ -307,8 +307,8 @@ impl TwoLayerChunk {
             // 0003 §3c — the overlay never enters the occupancy / categorical cell) but
             // carry it onto the expanded voxel's `grid_overlay` render marker (E5 — so
             // the grid matches the dense resolve's per-voxel overlay bit).
-            let block_id = BlockId(crate::cuboid_mesh::clean_block_id(cuboid.material_id()));
-            let grid_overlay = crate::cuboid_mesh::cell_key_has_overlay(cuboid.material_id());
+            let block_id = BlockId(CellKey::from_raw(cuboid.material_id()).block_id());
+            let grid_overlay = CellKey::from_raw(cuboid.material_id()).has_overlay();
             for voxel_z in cuboid.min[2]..=cuboid.max[2] {
                 for voxel_y in cuboid.min[1]..=cuboid.max[1] {
                     for voxel_x in cuboid.min[0]..=cuboid.max[0] {
@@ -1195,7 +1195,7 @@ fn resolve_boundary_block(
             // overlay states exactly like the dense mesher, and the E3 mesher reads the
             // box's clean id + overlay back out — without the render flag ever entering
             // the categorical cell (the E2 occupancy expansion masks the bit off).
-            let render_key = crate::cuboid_mesh::compose_cell_key(block_id, leaf.grid_overlay);
+            let render_key = CellKey::compose(block_id, leaf.grid_overlay).raw();
             // Later document-order leaf wins on overlap: a plain overwrite reproduces
             // the dense Union (the walk visits in document order, last write persists).
             region.set(

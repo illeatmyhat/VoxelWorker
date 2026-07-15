@@ -42,60 +42,18 @@ use camera::frustum::Frustum;
 use substrate::spatial::RealAabb as Aabb;
 use crate::renderer::{LayerBand, DEPTH_FORMAT, MSAA_SAMPLE_COUNT};
 use crate::texture_atlas::MaterialAtlas;
+use crate::core_geom::CellKey;
 use crate::two_layer_store::{MicroblockGeometry, SeamSolidity, TwoLayerChunk};
 use crate::voxel::{RecentreVoxels, VoxelGrid};
 
-/// The transient on-face-grid bit the **cuboid mesher** folds into its region-cell key
-/// (ADR 0003 §3c). It is NOT the retired `crate::voxel::GRID_OVERLAY_BIT` — that flag is
-/// gone from the per-voxel categorical cell. Instead the mesher composes a *local*
-/// decomposition key `block_id | (grid_overlay << 15)` from each voxel's clean
-/// `block_id` + its transient `grid_overlay` marker, so `decompose_into_boxes` (which
-/// stays representation-agnostic) refuses to merge a box across differing overlay flags —
-/// exactly the old per-box split — without ever seeing a render flag inside the material.
-/// `emit_box_faces` then splits the key back into the clean `block_id` (low bits) and the
-/// per-box overlay (this bit), writing the overlay into a DEDICATED vertex attribute, so
-/// the shader reads the overlay separately and never masks it out of the material.
-const MESH_GRID_OVERLAY_BIT: u16 = 1 << 15;
-
 /// Compose the cuboid mesher's region-cell key for one resolved voxel (ADR 0003 §3c):
 /// the clean categorical colour index in the low bits, the transient on-face-grid marker
-/// in the high bit. Public so the `cuboid` adapter ([`crate::cuboid::region_from_voxel_grid`])
-/// builds the SAME key. The overlay bit lives ONLY in this render-side key — never in the
-/// persistent `Voxel` payload, the chunk-storage codec, or the `.vox` export.
+/// in the high bit. A thin `Voxel`-reading wrapper over [`CellKey::compose`] so callers
+/// that already hold a `Voxel` (a higher layer than `core_geom`) build the SAME key. The
+/// overlay bit lives ONLY in this render-side key — never in the persistent `Voxel`
+/// payload, the chunk-storage codec, or the `.vox` export.
 pub fn mesh_cell_key(voxel: &crate::voxel::Voxel) -> u16 {
-    compose_cell_key(voxel.color_index(), voxel.grid_overlay)
-}
-
-/// Compose a cuboid mesher region-cell key from a clean categorical `block_id` and a
-/// transient on-face-grid `overlay` marker (ADR 0003 §3c). The shared primitive behind
-/// [`mesh_cell_key`] (which reads them off a [`crate::voxel::Voxel`]) and the two-layer
-/// mesher / store (ADR 0010 E3), which already hold the id + overlay separately. The
-/// overlay bit lives ONLY in this render-side key — never in the persistent payload.
-#[inline]
-pub fn compose_cell_key(block_id: u16, overlay: bool) -> u16 {
-    let mut key = block_id;
-    if overlay {
-        key |= MESH_GRID_OVERLAY_BIT;
-    }
-    key
-}
-
-/// The clean categorical `block_id` of a render-cell key — the overlay bit
-/// ([`MESH_GRID_OVERLAY_BIT`]) masked off (ADR 0003 §3c). The inverse low-bits half of
-/// [`compose_cell_key`], used where a consumer needs the categorical id without the
-/// transient render flag (the two-layer occupancy expansion).
-#[inline]
-pub fn clean_block_id(cell_key: u16) -> u16 {
-    cell_key & !MESH_GRID_OVERLAY_BIT
-}
-
-/// Whether a render-cell key carries the on-face-grid overlay marker
-/// ([`MESH_GRID_OVERLAY_BIT`], ADR 0003 §3c) — the overlay half of
-/// [`compose_cell_key`]. Used where a consumer needs the render flag back out (the
-/// two-layer occupancy expansion carries it onto the expanded `Voxel::grid_overlay`).
-#[inline]
-pub fn cell_key_has_overlay(cell_key: u16) -> bool {
-    cell_key & MESH_GRID_OVERLAY_BIT != 0
+    CellKey::compose(voxel.color_index(), voxel.grid_overlay).raw()
 }
 
 /// One mesh vertex of a cuboid face: world position, the face's outward normal, and the
@@ -1169,7 +1127,7 @@ fn emit_coarse_block_box(
     indices_overlay: &mut Vec<u32>,
     aabb: &mut Aabb,
 ) {
-    let material_id = compose_cell_key(block_id.0, overlay);
+    let material_id = CellKey::compose(block_id.0, overlay).raw();
     // The box spans the block: world min corner = block_low_recentred, far plane = + density.
     let lo = [
         block_low_recentred[0] as f32,
@@ -1185,7 +1143,7 @@ fn emit_coarse_block_box(
     aabb.expand(glam::Vec3::new(hi[0], hi[1], hi[2]));
 
     let sink = if overlay { indices_overlay } else { indices };
-    let clean_material = clean_block_id(material_id) as u32;
+    let clean_material = CellKey::from_raw(material_id).block_id() as u32;
     for face in &FACE_TEMPLATES {
         // The face's axis + side, and the neighbour block across it.
         let (axis, side) = face_axis_side(face.neighbor_delta);
@@ -1378,7 +1336,7 @@ fn stamp_block_into_region_banded(
     };
 
     if let Some(block_id) = chunk.coarse_block(local) {
-        let key = compose_cell_key(block_id.0, chunk.coarse_block_overlay(local));
+        let key = CellKey::compose(block_id.0, chunk.coarse_block_overlay(local)).raw();
         for vz in 0..density {
             for vy in 0..density {
                 for vx in 0..density {
@@ -1538,7 +1496,7 @@ fn emit_box_faces(
     // attribute — the caller routed this box to the overlay-on or overlay-off index run by
     // its key bit, and the draw sets the per-draw overlay-active uniform per run. So strip
     // the overlay bit here and write only the categorical id into the vertex.
-    let material_id = clean_block_id(voxel_box.material_id()) as u32;
+    let material_id = CellKey::from_raw(voxel_box.material_id()).block_id() as u32;
 
     for face in &FACE_TEMPLATES {
         if !face_is_exposed(voxel_box, region, face.neighbor_delta) {
@@ -1567,7 +1525,7 @@ fn emit_box_faces(
 /// key (ADR 0003 §3c). Routes the box to the overlay-on index run.
 #[inline]
 fn box_has_overlay(voxel_box: &VoxelBox) -> bool {
-    voxel_box.material_id() & MESH_GRID_OVERLAY_BIT != 0
+    CellKey::from_raw(voxel_box.material_id()).has_overlay()
 }
 
 /// Is the given face of the box exposed against the dense apron `region`? Thin domain
