@@ -31,6 +31,11 @@ pub mod settings;
 // 45° cube tiles (NOT the scene), reaching down into `display` only for the shared
 // block-texture bind-group layout. Kept out of the `display` scene-view crate.
 pub mod thumbnail;
+// The windowed application (the default binary's logic): `WindowedState` + `App` + the winit
+// `ApplicationHandler` + per-frame render + async-worker poll seams. Carved out of `src/main.rs`
+// into a shell LIB module tree (ADR 0016) so the bin is a thin `windowed::run` entry point; the
+// lib already carries the winit/egui/wgpu deps this needs.
+pub mod windowed;
 // The engagement state machine + the async worker pool moved to the `work` crate at the ADR 0016
 // Phase 6 cut (`{display, interchange} <- work <- shell`); their types are re-exported flat below
 // so the shell's `voxel_worker::<Name>` uses keep resolving.
