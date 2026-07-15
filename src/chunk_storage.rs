@@ -488,9 +488,9 @@ fn compressed_binary_size(compressed: &CompressedChunk) -> usize {
 mod tests {
     use super::*;
     use voxel_core::core_geom::MaterialChoice;
-    use crate::scene::{DefId, Node, NodeContent, Part, Scene};
+    use document::scene::{DefId, Node, NodeContent, Part, Scene};
     use voxel_core::voxel::{ShapeKind, Voxel, VoxelGrid};
-    use crate::voxel::{GeometryParams, SdfShape, VoxelProducer};
+    use document::voxel::{GeometryParams, SdfShape, VoxelProducer};
 
     /// A pseudo-random generator (the same Numerical-Recipes LCG `cuboid.rs` uses),
     /// so the fuzz tests are deterministic without pulling in a `rand` dependency.
@@ -703,7 +703,7 @@ mod tests {
         let make_tool = |kind, offset: [i64; 3], material| {
             let shape = SdfShape::from_blocks(kind, [5, 5, 5], 1, voxels_per_block);
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
-            node.transform = crate::scene::NodeTransform::from_blocks(offset, voxels_per_block);
+            node.transform = document::scene::NodeTransform::from_blocks(offset, voxels_per_block);
             node
         };
         let demo_scene = Scene::from_nodes(vec![
@@ -717,12 +717,12 @@ mod tests {
         let tool = |kind, size: [u32; 3], offset: [i64; 3], material| {
             let shape = SdfShape::from_blocks(kind, size, 1, voxels_per_block);
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
-            node.transform = crate::scene::NodeTransform::from_blocks(offset, voxels_per_block);
+            node.transform = document::scene::NodeTransform::from_blocks(offset, voxels_per_block);
             node
         };
         let instance = |name: &str, offset: [i64; 3]| {
             let mut node = Node::new(name, NodeContent::Instance(house_def_id));
-            node.transform = crate::scene::NodeTransform::from_blocks(offset, voxels_per_block);
+            node.transform = document::scene::NodeTransform::from_blocks(offset, voxels_per_block);
             node
         };
         let mut village = Scene::from_nodes(vec![
@@ -772,7 +772,7 @@ mod tests {
         ));
         // Resolve over an explicit region (a Part-only scene has no chunk range).
         let grid = scene.resolve_region(
-            crate::scene::RegionBlocks::new([4, 4, 4]),
+            document::scene::RegionBlocks::new([4, 4, 4]),
             16,
             0,
         );
@@ -1018,7 +1018,7 @@ mod tests {
         let make_tool = |kind, offset: [i64; 3], material| {
             let shape = SdfShape::from_blocks(kind, [5, 5, 5], 1, voxels_per_block);
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
-            node.transform = crate::scene::NodeTransform::from_blocks(offset, voxels_per_block);
+            node.transform = document::scene::NodeTransform::from_blocks(offset, voxels_per_block);
             node
         };
         let village = Scene::from_nodes(vec![

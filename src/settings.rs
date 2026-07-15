@@ -24,8 +24,8 @@ use serde::{Deserialize, Serialize};
 use camera::{HomeView, OrbitCamera, ProjectionMode};
 use voxel_core::core_geom::MaterialChoice;
 use crate::panel::{LayerRange, PanelState};
-use crate::scene::Scene;
-use crate::voxel::GeometryParams;
+use document::scene::Scene;
+use document::voxel::GeometryParams;
 
 /// serde remote-derive shim for the `camera` crate's [`ProjectionMode`], which
 /// carries no serde dependency of its own (the graphics-crate boundary law keeps it
@@ -457,8 +457,8 @@ mod tests {
     /// source of truth now that the flat geometry mirror fields are gone.
     #[test]
     fn config_persists_and_reloads_its_scene() {
-        use crate::scene::{Node, NodeContent, NodePath, Scene};
-        use crate::voxel::SdfShape;
+        use document::scene::{Node, NodeContent, NodePath, Scene};
+        use document::voxel::SdfShape;
 
         let voxels_per_block = 8u32;
         let unit_box = |kind| SdfShape::from_blocks(kind, [1, 1, 1], 1, voxels_per_block);
@@ -470,7 +470,7 @@ mod tests {
             "Wood",
             NodeContent::Tool { shape: unit_box(ShapeKind::Box), material: MaterialChoice::Wood },
         );
-        wood.transform = crate::scene::NodeTransform::from_blocks([3, 0, 0], voxels_per_block);
+        wood.transform = document::scene::NodeTransform::from_blocks([3, 0, 0], voxels_per_block);
         // ADR 0003 Phase B3: selection is keyed by NodeId, so mint ids and select
         // the second node (top-level index 1) by its stable id.
         let mut scene = Scene::from_nodes(vec![stone, wood]);
@@ -586,7 +586,7 @@ mod tests {
         // (ADR 0003 §3f(0)), not the shape.
         assert_eq!(panel.scene.voxels_per_block, 20);
         match panel.scene.active_node().map(|node| &node.content) {
-            Some(crate::scene::NodeContent::Tool { shape, material }) => {
+            Some(document::scene::NodeContent::Tool { shape, material }) => {
                 // The default seed geometry, NOT the persisted flat params.
                 assert_eq!(shape.kind, ShapeKind::Cylinder);
                 // Size is voxel-canonical now (ADR 0003 §3f(0)): the 5×1×5-block seed
@@ -633,10 +633,10 @@ mod tests {
     /// resolves to the SAME occupied count.
     #[test]
     fn full_scene_round_trips_through_json() {
-        use crate::scene::{
+        use document::scene::{
             DefId, Node, NodeBuilder, NodeContent, NodePath, Part, Scene,
         };
-        use crate::voxel::SdfShape;
+        use document::voxel::SdfShape;
 
         let voxels_per_block = 8u32;
         let unit_box = |kind| SdfShape::from_blocks(kind, [1, 1, 1], 1, voxels_per_block);
@@ -654,7 +654,7 @@ mod tests {
         );
         // Top-level node 1: a Clouds Part, offset.
         let mut clouds = Node::new("Clouds", NodeContent::Part(Part::DebugClouds { seed: 7 }));
-        clouds.transform = crate::scene::NodeTransform::from_blocks([3, 0, 0], voxels_per_block);
+        clouds.transform = document::scene::NodeTransform::from_blocks([3, 0, 0], voxels_per_block);
         // Top-level node 2: a Group containing a Plain Tool offset within it.
         let mut grouped_leaf = Node::new(
             "Leaf",
@@ -663,13 +663,13 @@ mod tests {
                 material: MaterialChoice::Plain,
             },
         );
-        grouped_leaf.transform = crate::scene::NodeTransform::from_blocks([1, 0, 0], voxels_per_block);
+        grouped_leaf.transform = document::scene::NodeTransform::from_blocks([1, 0, 0], voxels_per_block);
         // Top-level node 2: a Group at +6X containing the Plain Tool offset within it
         // (`CombineOp::Union` is the default operation a built Group carries).
         let group = NodeBuilder::group_at("Group", [6, 0, 0], voxels_per_block, vec![grouped_leaf.into()]);
         // Top-level node 3: an Instance of the def, offset disjointly.
         let mut instance = Node::new("House instance", NodeContent::Instance(def_id));
-        instance.transform = crate::scene::NodeTransform::from_blocks([-6, 0, 0], voxels_per_block);
+        instance.transform = document::scene::NodeTransform::from_blocks([-6, 0, 0], voxels_per_block);
 
         // ADR 0003 Phase B3: selection is keyed by NodeId, so mint ids and select
         // the Group's child (path [2, 0]) by its stable id.
@@ -801,8 +801,8 @@ mod tests {
     /// save held; the assertion that it lands as the same `i64` value is unchanged.
     #[test]
     fn old_i32_offset_scene_loads_after_widening_to_i64() {
-        use crate::scene::{Node, NodeContent, Scene};
-        use crate::voxel::SdfShape;
+        use document::scene::{Node, NodeContent, Scene};
+        use document::voxel::SdfShape;
 
         // A single Box Tool offset +5 blocks in X — a small i32-range offset, exactly
         // what a pre-S4a `[i32; 3]` save held. Authored via the API, then serialized to
@@ -814,7 +814,7 @@ mod tests {
             NodeContent::Tool { shape, material: MaterialChoice::Stone },
         );
         // +5 blocks in X at density 8 → canonical offset_voxels = [40, 0, 0].
-        node.transform = crate::scene::NodeTransform::from_blocks([5, 0, 0], 8);
+        node.transform = document::scene::NodeTransform::from_blocks([5, 0, 0], 8);
         let scene = Scene::single_node(node);
 
         let mut panel = PanelState::with_view_cube_default();
@@ -861,8 +861,8 @@ mod tests {
     /// voxel field to exercise the full i64 range it persists.)
     #[test]
     fn large_i64_offset_round_trips_through_json() {
-        use crate::scene::{Node, NodeContent, Scene};
-        use crate::voxel::SdfShape;
+        use document::scene::{Node, NodeContent, Scene};
+        use document::voxel::SdfShape;
 
         // Beyond i32::MAX (2_147_483_647): a node placed ~3 billion blocks out. An
         // i32 field could never have held this; the i64 field must persist it exactly.
@@ -969,8 +969,8 @@ mod tests {
     /// not via any legacy `show_*` mirror. The Origin is not duplicated.
     #[test]
     fn modern_scene_keeps_its_masters_and_single_origin() {
-        use crate::scene::{Node, NodeContent, NodePath, Point, Scene};
-        use crate::voxel::SdfShape;
+        use document::scene::{Node, NodeContent, NodePath, Point, Scene};
+        use document::voxel::SdfShape;
 
         let node = Node::new(
             "Box",
@@ -1018,8 +1018,8 @@ mod tests {
     /// colliding id.
     #[test]
     fn unminted_persisted_scene_gets_ids_minted_on_load() {
-        use crate::scene::{Node, NodeContent, NodePath, NodeId, Scene};
-        use crate::voxel::SdfShape;
+        use document::scene::{Node, NodeContent, NodePath, NodeId, Scene};
+        use document::voxel::SdfShape;
 
         let make_box = |name: &str| {
             Node::new(

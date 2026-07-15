@@ -17,7 +17,7 @@
 
 use voxel_core::spatial_index::VoxelAabb;
 use voxel_core::voxel::{Voxel, VoxelGrid};
-use crate::voxel::{VoxelProducer};
+use document::voxel::{VoxelProducer};
 use std::collections::BTreeSet;
 
 /// An occupied voxel keyed for SET comparison independent of emission order. World
@@ -234,7 +234,7 @@ fn assert_windowed_subset_contract(
 #[test]
 fn sdf_shape_windowed_subset_contract() {
     use voxel_core::voxel::{ShapeKind};
-    use crate::voxel::{SdfShape};
+    use document::voxel::{SdfShape};
     // EVEN, ODD, MIXED parity voxel sizes; spheres/cylinders to exercise the SDF.
     let cases: [(ShapeKind, [u32; 3], u32); 4] = [
         (ShapeKind::Sphere, [16, 16, 16], 8),  // even
@@ -255,7 +255,7 @@ fn sdf_shape_windowed_subset_contract() {
 
 #[test]
 fn sketch_extrude_windowed_subset_contract() {
-    use crate::sketch::{PlaneAxis, Sketch, SketchSolid};
+    use document::sketch::{PlaneAxis, Sketch, SketchSolid};
     // Vary the plane so the in-plane↔world axis window mapping is exercised on every
     // normal (X / Y / Z); EVEN, ODD, MIXED profile / height parities.
     let cases: [(PlaneAxis, i64, i64, u32); 4] = [
@@ -277,7 +277,7 @@ fn sketch_extrude_windowed_subset_contract() {
 
 #[test]
 fn sketch_revolve_windowed_subset_contract() {
-    use crate::sketch::{PlaneAxis, RevolveAxis, Sketch, SketchPoint, SketchSolid};
+    use document::sketch::{PlaneAxis, RevolveAxis, Sketch, SketchPoint, SketchSolid};
 
     // (1) Full 360° revolve of a one-sided rectangle (radial >= 0): exercises the
     //     non-straddling early-out branch. Even disc diameter.
@@ -325,7 +325,7 @@ fn sketch_revolve_windowed_subset_contract() {
 /// to empty (the dense-path OOM guard is preserved).
 #[test]
 fn large_revolve_resolves_windows_despite_full_grid_cap() {
-    use crate::sketch::{PlaneAxis, RevolveAxis, Sketch, SketchSolid};
+    use document::sketch::{PlaneAxis, RevolveAxis, Sketch, SketchSolid};
     use voxel_core::voxel::MAX_GRID_VOXELS;
 
     // A 200×200-VOXEL rectangle revolved 360° → a cylinder, full grid
@@ -377,7 +377,7 @@ fn large_revolve_resolves_windows_despite_full_grid_cap() {
 
 #[test]
 fn debug_cloud_field_windowed_subset_contract() {
-    use crate::debug_clouds::DebugCloudField;
+    use document::debug_clouds::DebugCloudField;
     // EVEN, ODD, MIXED dimensions; distinct seeds.
     let cases: [([u32; 3], u32); 4] = [
         ([32, 32, 32], 1), // even

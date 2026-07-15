@@ -10,7 +10,7 @@
 //! **The counter rule (byte-equal invariant).** A minting intent advances
 //! [`Scene::next_node_id`](crate::scene::Scene::next_node_id). For `apply; undo` to
 //! restore the scene EXACTLY (so the round-trip tests can assert full `Scene`
-//! `PartialEq`), [`AppCore::undo`](crate::AppCore::undo) restores `next_node_id` to
+//! `PartialEq`), `AppCore::undo` restores `next_node_id` to
 //! the value captured BEFORE the apply ([`Command::counter_before`]). Because the
 //! stack is linear (a `redo` only ever follows an `undo` with nothing applied
 //! between), rewinding the counter is safe and makes `redo` re-mint byte-identical
@@ -110,7 +110,7 @@ pub enum Inverse {
 impl Inverse {
     /// Apply this inverse to `scene`, reversing the forward op — the STRUCTURAL arms
     /// only. The counter + selection restore is the caller's
-    /// ([`AppCore::undo`](crate::AppCore::undo)) job; this touches only the document
+    /// (`AppCore::undo`) job; this touches only the document
     /// structure the forward op mutated.
     ///
     /// **[`Inverse::Field`] is NOT handled here** (code-review FIX 2): a field-set is

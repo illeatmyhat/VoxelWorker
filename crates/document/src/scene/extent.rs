@@ -507,7 +507,7 @@ impl Scene {
     /// The recentre offset (in voxels) that `resolve_region` subtracts from every
     /// voxel to centre the composite on the origin (issue #27 S2). This is the
     /// SAME computation `resolve_region` inlines; the chunk cache
-    /// (`crate::chunk_cache::ChunkResolveCache::resolve_region`) calls it to apply
+    /// (`ChunkResolveCache::resolve_region`) calls it to apply
     /// the identical offset when reassembling the recentred monolithic grid from
     /// absolute per-chunk pieces, so the assembled output is bit-identical. `[0, 0,
     /// 0]` for a scene with no intrinsic-size leaf.

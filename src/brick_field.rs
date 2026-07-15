@@ -2259,10 +2259,10 @@ pub fn read_back_brick_atlas(
 mod tests {
     use super::*;
     use voxel_core::core_geom::MaterialChoice;
-    use crate::scene::Scene;
+    use document::scene::Scene;
     use crate::two_layer_store::TwoLayerStore;
     use voxel_core::voxel::{ShapeKind, Voxel};
-    use crate::voxel::{GeometryParams};
+    use document::voxel::{GeometryParams};
 
     // The bit-packed occupancy tile IS substrate's `BitCube`; its expand↔pack byte-parity and
     // full-word run-set-mask oracles moved with it (see `crates/substrate/src/bit_cube.rs`,
@@ -2458,7 +2458,7 @@ mod tests {
             // A dozen small shapes far apart — the scattered scene the LOD targets.
             let mut nodes = Vec::new();
             for i in 0..12i64 {
-                let shape = crate::voxel::SdfShape::from_blocks(
+                let shape = document::voxel::SdfShape::from_blocks(
                     ShapeKind::Sphere,
                     [3, 3, 3],
                     1,
@@ -2557,7 +2557,7 @@ mod tests {
             let mut nodes = Vec::new();
             for i in 0..8i64 {
                 let shape =
-                    crate::voxel::SdfShape::from_blocks(ShapeKind::Sphere, [3, 3, 3], 1, voxels_per_block);
+                    document::voxel::SdfShape::from_blocks(ShapeKind::Sphere, [3, 3, 3], 1, voxels_per_block);
                 let mut node = Node::new(
                     format!("s{i}"),
                     NodeContent::Tool { shape, material: MaterialChoice::Stone },
@@ -2614,7 +2614,7 @@ mod tests {
             );
             let mut nodes = Vec::new();
             for i in 0..8i64 {
-                let shape = crate::voxel::SdfShape::from_blocks(
+                let shape = document::voxel::SdfShape::from_blocks(
                     ShapeKind::Sphere,
                     [3, 3, 3],
                     1,
@@ -2762,12 +2762,12 @@ mod incremental_tests {
     use super::*;
     use voxel_core::core_geom::MaterialChoice;
     use crate::cuboid::VoxelBox;
-    use crate::scene::{Node, NodeContent, NodeTransform, Scene};
+    use document::scene::{Node, NodeContent, NodeTransform, Scene};
     use crate::two_layer_store::{
         MicroblockGeometry, TwoLayerChunk, TwoLayerResidentCache, TwoLayerStore,
     };
     use voxel_core::voxel::{ShapeKind};
-    use crate::voxel::{GeometryParams, SdfShape};
+    use document::voxel::{GeometryParams, SdfShape};
 
     /// The owned covering set the shell feeds `apply_dirty_update` / `build_brick_field`
     /// (the resident cache borrows, so clone out — exactly as `AppCore::rebuild` does).
@@ -3115,9 +3115,9 @@ mod incremental_tests {
         // would never exercise coarse-record occlusion flips at the interface).
         let chunk_filling_box = |offset_blocks: [i64; 3]| -> Node {
             let edge_voxels = chunk_span * density as i64;
-            let producer = crate::sketch::SketchSolid::extrude(
-                crate::sketch::Sketch::rectangle(
-                    crate::sketch::PlaneAxis::Z,
+            let producer = document::sketch::SketchSolid::extrude(
+                document::sketch::Sketch::rectangle(
+                    document::sketch::PlaneAxis::Z,
                     edge_voxels,
                     edge_voxels,
                 ),

@@ -1,0 +1,60 @@
+[package]
+name = "document"
+version = "0.1.0"
+edition = "2021"
+
+# The authored-TRUTH crate: everything the user's edits produce and nothing they
+# derive. The scene graph (nodes, groups, instances, transforms, combine ops), the
+# producers that turn authored intent into voxels (SdfShape + the sketch→extrude/
+# revolve solid, the debug-cloud part), the 2D sketch, the serializable Intent
+# mutation boundary, and the inverse-command undo stack. A component belongs here
+# iff it is part of what the user AUTHORS — expressible without any evaluation,
+# derivation, display, or wgpu concept. It sits ABOVE `voxel_core` (whose value
+# vocabulary it is phrased in) and BELOW everything else in the app. The dependency
+# edge is one-way: `voxel_core <- document <- the rest of the app`; the truth layer
+# imports no evaluation/display/wgpu, so an upward `use` (store, chunk_cache,
+# renderer, brick_*, workers, panel, gpu…) fails to compile. See
+# docs/architecture/01-document.md for the layer this crate realises and
+# docs/design/per-layer-crates-extraction-map.md (the document row) for provenance.
+
+[dependencies]
+# The foundational value vocabulary (one layer down): the resolved Voxel + sparse
+# VoxelGrid, the ShapeKind tag + signed-distance functions the producers sample, the
+# BlockId / CellKey / MaterialChoice palette, the absolute-voxel box + leaf index, and
+# the blocks/voxels units core.
+voxel_core = { path = "../voxel_core" }
+# The pure CS/math substrate library. The producers name substrate's PerlinNoise /
+# SmallRng (the debug-cloud + sketch noise) and re-export its CSG FieldInterval /
+# FieldClassification at the producer seam.
+substrate = { path = "../substrate" }
+# The vector/matrix algebra the producers and sketch geometry are written in; matched
+# to the workspace version so values cross the boundary without conversion.
+glam = "0.33.1"
+# Derive Serialize/Deserialize for the persisted authored document (Scene, Node,
+# Sketch, SdfShape, Intent, Command…).
+serde = { version = "1", features = ["derive"] }
+# Data-parallel producer resolution (the SDF sampling + cloud fill run under rayon).
+rayon = "1"
+# Profiling facade (no-op unless a backend feature like the app's `tracy` is enabled).
+# The producers mark their resolve zones (`profiling::scope!`); cargo feature
+# unification routes them through the same backend the app selects.
+profiling = "1"
+
+[features]
+# The dense whole-region resolve oracle (`Scene::resolve_region`) — the O(volume)
+# reference the sparse runtime path is cross-checked against — is compile-gated out of
+# production builds behind this feature (document's own tests reach it via cfg(test)).
+# The app forwards its `oracle` feature here (and its dev-dependency turns it on for
+# `cargo test`) so the app-crate parity tests and the `shot` golden tool can see it.
+# See the proof chapter's "Oracles" section (docs/architecture/05-proof.md).
+oracle = []
+# Cross-crate TEST helpers: a handful of `pub` fixtures (positional root-node access,
+# a whole-block offset builder) that the truth crate's own tests use AND the app crate's
+# tests reach across the boundary. Off in production (they never ship); the app's
+# dev-dependency turns it on so `cargo test --lib` sees them, exactly like `oracle`.
+test-support = []
+
+[dev-dependencies]
+# The SdfShape / NodeTransform serde round-trip tests assert the authored document
+# survives JSON.
+serde_json = "1"

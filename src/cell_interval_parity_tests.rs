@@ -22,7 +22,7 @@
 
 use voxel_core::spatial_index::VoxelAabb;
 use voxel_core::voxel::{ShapeKind, VoxelGrid, SURFACE_ISOLEVEL};
-use crate::voxel::{FieldClassification, SdfShape, VoxelProducer};
+use document::voxel::{FieldClassification, SdfShape, VoxelProducer};
 
 /// Count the voxels brute force actually fills inside `cell` (in the producer's local
 /// voxel-index frame) by resolving JUST that window. Returns `(occupied, total)` where
@@ -229,19 +229,19 @@ fn sdf_cell_interval_never_misclassifies() {
 
 #[test]
 fn sketch_extrude_cell_interval_never_misclassifies() {
-    use crate::sketch::{PlaneAxis, Sketch, SketchSolid};
+    use document::sketch::{PlaneAxis, Sketch, SketchSolid};
     let density = 16u32;
     // A rectangle and an L-shape (a concave polygon, so the bbox over-claims).
     let rectangle = Sketch::rectangle(PlaneAxis::Z, 40, 24);
     let l_shape = Sketch::new(
         PlaneAxis::Z,
         vec![
-            crate::sketch::SketchPoint::new(0, 0),
-            crate::sketch::SketchPoint::new(40, 0),
-            crate::sketch::SketchPoint::new(40, 16),
-            crate::sketch::SketchPoint::new(16, 16),
-            crate::sketch::SketchPoint::new(16, 40),
-            crate::sketch::SketchPoint::new(0, 40),
+            document::sketch::SketchPoint::new(0, 0),
+            document::sketch::SketchPoint::new(40, 0),
+            document::sketch::SketchPoint::new(40, 16),
+            document::sketch::SketchPoint::new(16, 16),
+            document::sketch::SketchPoint::new(16, 40),
+            document::sketch::SketchPoint::new(0, 40),
         ],
     );
 
@@ -278,7 +278,7 @@ fn sketch_extrude_cell_interval_never_misclassifies() {
 
 #[test]
 fn sketch_revolve_cell_interval_never_misclassifies() {
-    use crate::sketch::{PlaneAxis, RevolveAxis, Sketch, SketchPoint, SketchSolid};
+    use document::sketch::{PlaneAxis, RevolveAxis, Sketch, SketchPoint, SketchSolid};
     // density 8 keeps a 6-block-diameter radius small enough to brute-force every cell of
     // every arc/axis/profile config, while still leaving interior blocks strictly OFF the
     // revolve axis — the only place a partial wedge can go coarse (axis-adjacent blocks are
@@ -355,7 +355,7 @@ fn sketch_revolve_cell_interval_never_misclassifies() {
 
 #[test]
 fn debug_cloud_field_is_unboundable() {
-    use crate::debug_clouds::DebugCloudField;
+    use document::debug_clouds::DebugCloudField;
     let field = DebugCloudField {
         dimensions: [48, 32, 48],
         seed: 7,

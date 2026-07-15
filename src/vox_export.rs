@@ -365,7 +365,7 @@ impl VoxExport {
 /// is exactly the order `from_region_voxel_chunks` flattens the accumulated `Vec`s).
 pub struct VoxExportBuilder {
     /// The region's voxel dimensions (the tiling/decode frame) — the exact value
-    /// [`crate::scene::Scene::placed_region_dimensions`] and
+    /// [`document::scene::Scene::placed_region_dimensions`] and
     /// [`crate::two_layer_store::stream_vox_occupancy`] produce.
     region_dimensions: [u32; 3],
     /// Corner-anchoring half-extents (FLOORED `dim/2`) reused per voxel: the decode
@@ -537,7 +537,7 @@ mod tests {
     use super::*;
     use voxel_core::core_geom::MaterialChoice;
     use voxel_core::voxel::{ShapeKind};
-    use crate::voxel::{SdfShape};
+    use document::voxel::{SdfShape};
 
     /// Resolve a small cylinder and round-trip it through `.vox`, asserting the
     /// voxel count and dimensions survive (Z-up, no axis swap).
@@ -548,7 +548,7 @@ mod tests {
     /// the bare producer grid (whose low corner is 0).
     #[test]
     fn vox_round_trip_matches_grid() {
-        let scene = crate::scene::Scene::from_geometry(
+        let scene = document::scene::Scene::from_geometry(
             GeometryParams {
                 shape: ShapeKind::Cylinder,
                 size_voxels: [80, 16, 80],
@@ -593,7 +593,7 @@ mod tests {
     /// exercised here.
     #[test]
     fn atomic_write_leaves_no_temp_and_temp_is_a_dir_sibling() {
-        let scene = crate::scene::Scene::from_geometry(
+        let scene = document::scene::Scene::from_geometry(
             GeometryParams {
                 shape: ShapeKind::Cylinder,
                 size_voxels: [16, 16, 16],
@@ -652,7 +652,7 @@ mod tests {
     /// vertical axis lands on vox-Z directly, not relocated to vox-Y.
     #[test]
     fn vox_export_puts_vertical_on_vox_z_no_swap() {
-        let scene = crate::scene::Scene::from_geometry(
+        let scene = document::scene::Scene::from_geometry(
             GeometryParams {
                 shape: ShapeKind::Cylinder,
                 size_voxels: [2 * 16, 2 * 16, 5 * 16],
@@ -683,7 +683,7 @@ mod tests {
     fn vox_splits_models_over_256() {
         // 17 blocks × 16 vx = 272 > 256 on X. Resolve through a scene (recentred
         // frame) so `from_grid`'s corner-anchored decode lands every voxel in range.
-        let scene = crate::scene::Scene::from_geometry(
+        let scene = document::scene::Scene::from_geometry(
             GeometryParams {
                 shape: ShapeKind::Box,
                 size_voxels: [272, 16, 16],
@@ -712,8 +712,8 @@ mod tests {
     // ===== Issue #20 S6d: region-scoped `.vox` export ============================
 
     use crate::chunk_cache::ChunkResolveCache;
-    use crate::scene::{Node, NodeContent, Scene};
-    use crate::voxel::GeometryParams;
+    use document::scene::{Node, NodeContent, Scene};
+    use document::voxel::GeometryParams;
 
     /// Parse a `.vox` byte stream into a per-model SORTED multiset of
     /// `(size, voxel (x, y, z, color))`, so two exports compare equal regardless of
@@ -846,7 +846,7 @@ mod tests {
         let make_tool = |kind, offset: [i64; 3], material| {
             let shape = SdfShape::from_blocks(kind, [5, 5, 5], 1, vpb);
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
-            node.transform = crate::scene::NodeTransform::from_blocks(offset, vpb);
+            node.transform = document::scene::NodeTransform::from_blocks(offset, vpb);
             node
         };
         let scene = Scene::from_nodes(vec![
@@ -868,7 +868,7 @@ mod tests {
         let make_box = |offset: [i64; 3], material| {
             let shape = SdfShape::from_blocks(ShapeKind::Box, [3, 3, 3], 1, vpb);
             let mut node = Node::new("Box", NodeContent::Tool { shape, material });
-            node.transform = crate::scene::NodeTransform::from_blocks(offset, vpb);
+            node.transform = document::scene::NodeTransform::from_blocks(offset, vpb);
             node
         };
         let mut scene = Scene::from_nodes(vec![
@@ -1099,7 +1099,7 @@ mod tests {
         let make_tool = |kind, offset: [i64; 3], material| {
             let shape = SdfShape::from_blocks(kind, [5, 5, 5], 1, vpb);
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
-            node.transform = crate::scene::NodeTransform::from_blocks(offset, vpb);
+            node.transform = document::scene::NodeTransform::from_blocks(offset, vpb);
             node
         };
         // A multi-leaf scene spanning several chunks across leaves.
@@ -1157,7 +1157,7 @@ mod tests {
         let make_tool = |kind, offset: [i64; 3], material| {
             let shape = SdfShape::from_blocks(kind, [5, 5, 5], 1, vpb);
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
-            node.transform = crate::scene::NodeTransform::from_blocks(offset, vpb);
+            node.transform = document::scene::NodeTransform::from_blocks(offset, vpb);
             node
         };
         let scene = Scene::from_nodes(vec![
@@ -1170,18 +1170,18 @@ mod tests {
 
     #[test]
     fn streamed_vox_export_equals_dense_for_demo_village() {
-        use crate::scene::DefId;
+        use document::scene::DefId;
         let vpb = 16u32;
         let house_def_id = DefId(1);
         let tool = |kind, size: [u32; 3], offset: [i64; 3], material| {
             let shape = SdfShape::from_blocks(kind, size, 1, vpb);
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
-            node.transform = crate::scene::NodeTransform::from_blocks(offset, vpb);
+            node.transform = document::scene::NodeTransform::from_blocks(offset, vpb);
             node
         };
         let instance = |name: &str, offset: [i64; 3]| {
             let mut node = Node::new(name, NodeContent::Instance(house_def_id));
-            node.transform = crate::scene::NodeTransform::from_blocks(offset, vpb);
+            node.transform = document::scene::NodeTransform::from_blocks(offset, vpb);
             node
         };
         let mut scene = Scene::from_nodes(vec![
@@ -1205,7 +1205,7 @@ mod tests {
     /// coarse box) streams its per-voxel boundary path identically to the dense export.
     #[test]
     fn streamed_vox_export_equals_dense_for_sketch_solid() {
-        use crate::sketch::{PlaneAxis, RevolveAxis, Sketch, SketchSolid};
+        use document::sketch::{PlaneAxis, RevolveAxis, Sketch, SketchSolid};
         let vpb = 16u32;
         let profile = Sketch::rectangle(PlaneAxis::Z, 24, 16);
         let producer = SketchSolid::revolve(profile, RevolveAxis::InPlane0, 360);
@@ -1229,7 +1229,7 @@ mod tests {
         let make_tool = |offset: [i64; 3], material| {
             let shape = SdfShape::from_blocks(ShapeKind::Box, [4, 4, 4], 1, vpb);
             let mut node = Node::new("Box", NodeContent::Tool { shape, material });
-            node.transform = crate::scene::NodeTransform::from_blocks(offset, vpb);
+            node.transform = document::scene::NodeTransform::from_blocks(offset, vpb);
             node
         };
         let scene = Scene::from_nodes(vec![

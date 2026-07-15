@@ -737,6 +737,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "document"
+version = "0.1.0"
+dependencies = [
+ "glam",
+ "profiling",
+ "rayon",
+ "serde",
+ "serde_json",
+ "substrate",
+ "voxel_core",
+]
+
+[[package]]
 name = "document-features"
 version = "0.2.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3449,6 +3462,7 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "camera",
+ "document",
  "dot_vox",
  "egui",
  "egui-wgpu",

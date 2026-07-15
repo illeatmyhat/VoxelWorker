@@ -196,10 +196,10 @@ pub fn spawn_brick_worker() -> BrickWorker {
 mod tests {
     use super::*;
     use voxel_core::core_geom::MaterialChoice;
-    use crate::scene::Scene;
+    use document::scene::Scene;
     use crate::two_layer_store::TwoLayerStore;
     use voxel_core::voxel::{ShapeKind};
-    use crate::voxel::{GeometryParams};
+    use document::voxel::{GeometryParams};
 
     // --- build_brick_rebuild: byte-equivalence with the synchronous path ---
 

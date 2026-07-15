@@ -210,7 +210,7 @@ mod tests {
         // VoxelGrid, densify with the adapter, and verify the adapter drops no voxel
         // and the decomposition covers exactly the resolved solid set.
         use voxel_core::voxel::{ShapeKind};
-        use crate::voxel::{SdfShape, VoxelProducer};
+        use document::voxel::{SdfShape, VoxelProducer};
 
         for &kind in &[
             ShapeKind::Sphere,

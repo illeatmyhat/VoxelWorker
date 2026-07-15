@@ -23,7 +23,7 @@
 //! [`GenerationTracker`](crate::display::routing::GenerationTracker) on the shell side, like
 //! every other display worker.
 
-use crate::scene::Scene;
+use document::scene::Scene;
 use crate::two_layer_store::{streamed_widest_run_in_band, TwoLayerStore};
 use crate::workers::Worker;
 

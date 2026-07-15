@@ -19,16 +19,16 @@
 use std::sync::Arc;
 
 use camera::OrbitCamera;
-use crate::command::{Command, CommandStack, Inverse};
+use document::command::{Command, CommandStack, Inverse};
 use voxel_core::core_geom::CHUNK_BLOCKS;
-use crate::intent::{Intent, IntentEffect};
+use document::intent::{Intent, IntentEffect};
 use crate::panel::LayerRange;
 use crate::renderer::OnionFogParams;
-use crate::scene::{NodeContent, NodeId, NodeTransform, Part, Scene};
+use document::scene::{NodeContent, NodeId, NodeTransform, Part, Scene};
 use voxel_core::spatial_index::LeafSpatialIndex;
 use crate::two_layer_store::{TwoLayerChunk, TwoLayerResidentCache};
 use voxel_core::voxel::{chunk_extent_exceeds_bound, RecentreVoxels};
-use crate::voxel::{SdfShape};
+use document::voxel::{SdfShape};
 
 /// The headless orchestrator: owns the per-chunk resolve `Store` and the
 /// [`OrbitCamera`], and answers the headless scene queries the shell renders from.
@@ -546,7 +546,7 @@ impl AppCore {
         }
     }
 
-    /// The raw dispatch of one [`Intent`] to the matching [`Scene`](crate::scene::Scene)
+    /// The raw dispatch of one [`Intent`] to the matching [`Scene`](document::scene::Scene)
     /// edit op / field write (ADR 0003 Phase C — the C1 match, now factored out so both
     /// `apply_intent` and `redo` drive it). The success effect is
     /// [`effect_of`](Self::effect_of) (the single source of truth); a mutation that
@@ -789,10 +789,10 @@ impl AppCore {
 
             // --- Points ---
             Intent::AddPoint { position_blocks, name } => {
-                let point = crate::scene::Point {
+                let point = document::scene::Point {
                     name,
                     position_blocks,
-                    ..crate::scene::Point::default()
+                    ..document::scene::Point::default()
                 };
                 scene.add_point(point);
                 (full_effect, None)
@@ -1164,10 +1164,10 @@ pub fn replay_intent_script(script: &str) -> Result<Scene, String> {
 mod replay_tests {
     use super::*;
     use voxel_core::core_geom::MaterialChoice;
-    use crate::intent::{Intent, NodeSpec};
-    use crate::scene::NodeContent;
+    use document::intent::{Intent, NodeSpec};
+    use document::scene::NodeContent;
     use voxel_core::voxel::{ShapeKind};
-    use crate::voxel::{SdfShape};
+    use document::voxel::{SdfShape};
 
     /// The `RecentreVoxels` frame newtype round-trips through its one door: whatever
     /// triple it carries is exactly what `voxels()` hands back (the accessor contract the
@@ -1222,7 +1222,7 @@ mod replay_tests {
         };
         let set_offset = Intent::SetOffset {
             target: new_node_id,
-            offset_measurements: crate::intent::whole_block_offset([7, -2, 4]),
+            offset_measurements: document::intent::whole_block_offset([7, -2, 4]),
         };
         let script = format!(
             "{}\n\n{}\n",
@@ -1287,12 +1287,12 @@ mod undo_tests {
     use super::*;
     use camera::OrbitCamera;
     use voxel_core::core_geom::MaterialChoice;
-    use crate::intent::{whole_block_offset, Intent, NodeSpec};
-    use crate::scene::{Node, NodeBuilder, NodeContent, NodeGrids, NodeTransform, Point, Scene};
-    use crate::sketch::{PlaneAxis, RevolveAxis, Sketch, SketchSolid};
+    use document::intent::{whole_block_offset, Intent, NodeSpec};
+    use document::scene::{Node, NodeBuilder, NodeContent, NodeGrids, NodeTransform, Point, Scene};
+    use document::sketch::{PlaneAxis, RevolveAxis, Sketch, SketchSolid};
     use voxel_core::units::Measurement;
     use voxel_core::voxel::{ShapeKind};
-    use crate::voxel::{SdfShape};
+    use document::voxel::{SdfShape};
 
     /// A headless [`AppCore`] for the undo tests (no GPU — `apply_intent`/`undo`/`redo`
     /// only touch the borrowed scene + the owned command stack).
@@ -1985,7 +1985,7 @@ mod undo_tests {
         let mut core = test_core();
         core.apply_intent(
             &mut scene,
-            Intent::SetName { target: crate::scene::NodeId(9999), name: "ghost".to_string() },
+            Intent::SetName { target: document::scene::NodeId(9999), name: "ghost".to_string() },
         );
         assert_eq!(scene, before, "a no-op forward changes nothing");
         core.undo(&mut scene);
@@ -2407,13 +2407,13 @@ mod intent_dispatch_tests {
     use crate::app_core::AppCore;
     use voxel_core::core_geom::MaterialChoice;
     use camera::OrbitCamera;
-    use crate::intent::{whole_block_offset, Intent, IntentEffect, NodeSpec};
-    use crate::scene::{
+    use document::intent::{whole_block_offset, Intent, IntentEffect, NodeSpec};
+    use document::scene::{
         DefId, Node, NodeBuilder, NodeContent, NodeGrids, NodeId, NodeTransform, Part, Point, Scene,
     };
-    use crate::sketch::{PlaneAxis, Sketch, SketchSolid};
+    use document::sketch::{PlaneAxis, Sketch, SketchSolid};
     use voxel_core::voxel::{ShapeKind};
-    use crate::voxel::{SdfShape};
+    use document::voxel::{SdfShape};
 
     /// A headless [`AppCore`] for the dispatch tests. `apply_intent` reads no AppCore
     /// state (it borrows the scene), so a default camera suffices — no GPU.
@@ -2795,7 +2795,7 @@ mod intent_dispatch_tests {
                         node.transform.offset_voxels[axis] * 20 / old_density;
                 }
                 if let NodeContent::Tool { shape, .. } = &mut node.content {
-                    *shape = crate::voxel::SdfShape::from_measurements(
+                    *shape = document::voxel::SdfShape::from_measurements(
                         shape.kind,
                         shape.size_measurements(),
                         shape.wall_blocks,
@@ -3039,7 +3039,7 @@ mod intent_dispatch_tests {
     #[test]
     fn default_sketch_spec_equals_box() {
         use voxel_core::voxel::{Voxel, VoxelGrid};
-        use crate::voxel::{VoxelProducer};
+        use document::voxel::{VoxelProducer};
         use std::collections::BTreeSet;
 
         // Resolve a producer to a SET of (world_position_bits, block_local, material)

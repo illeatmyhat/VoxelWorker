@@ -46,7 +46,7 @@ use std::collections::HashMap;
 
 use crate::chunk_storage::{compress, decompress};
 use crate::disk_chunk_store::DiskChunkStore;
-use crate::scene::Scene;
+use document::scene::Scene;
 use voxel_core::spatial_index::{ChunkCoverage, VoxelAabb};
 use voxel_core::voxel::{Voxel, VoxelGrid};
 
@@ -420,7 +420,7 @@ impl Store {
     /// `resolve_region` assembles — byte-identical (each one
     /// is already rebased to the floating origin = composite recentre, with the
     /// subtraction done in i64 inside
-    /// [`Scene::resolve_chunk_rebased`](crate::scene::Scene::resolve_chunk_rebased)
+    /// [`Scene::resolve_chunk_rebased`](document::scene::Scene::resolve_chunk_rebased)
     /// before the f32 downcast). The union of all returned chunks' occupied voxels
     /// (position + `material_id`, in the recentred frame) therefore equals
     /// `resolve_region`'s assembled grid voxel-for-voxel; this is the seam the
@@ -429,7 +429,7 @@ impl Store {
     /// Each returned coord is the absolute chunk coord that OWNS that grid's voxels
     /// (the half-open box `[c·E, (c+1)·E)` per axis, `E = CHUNK_BLOCKS × density`),
     /// and the returned coord set equals the scene's
-    /// [`covering_chunk_range`](crate::scene::Scene::covering_chunk_range) for the
+    /// [`covering_chunk_range`](document::scene::Scene::covering_chunk_range) for the
     /// region (empty for a Part-only scene with no composite extent).
     ///
     /// The grids are **borrowed** from the cache (`&VoxelGrid`), so the returned
@@ -810,12 +810,12 @@ pub fn incremental_rebuild_plan(
 mod tests {
     use super::*;
     use voxel_core::core_geom::MaterialChoice;
-    use crate::voxel::GeometryParams;
-    use crate::scene::{
+    use document::voxel::GeometryParams;
+    use document::scene::{
         DefId, Node, NodeContent, RegionBlocks,
     };
     use voxel_core::voxel::{ShapeKind, VoxelGrid};
-    use crate::voxel::{SdfShape};
+    use document::voxel::{SdfShape};
 
     /// Canonicalise an occupied set into a sorted multiset of
     /// `(bit_exact_voxel_position, material_id)`, so two resolves compare equal
@@ -955,7 +955,7 @@ mod tests {
         let make_tool = |kind, offset: [i64; 3], material| {
             let shape = SdfShape::from_blocks(kind, [5, 5, 5], 1, voxels_per_block);
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
-            node.transform = crate::scene::NodeTransform::from_blocks(offset, voxels_per_block);
+            node.transform = document::scene::NodeTransform::from_blocks(offset, voxels_per_block);
             node
         };
         let scene = Scene::from_nodes(vec![
@@ -973,12 +973,12 @@ mod tests {
         let tool = |kind, size: [u32; 3], offset: [i64; 3], material| {
             let shape = SdfShape::from_blocks(kind, size, 1, voxels_per_block);
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
-            node.transform = crate::scene::NodeTransform::from_blocks(offset, voxels_per_block);
+            node.transform = document::scene::NodeTransform::from_blocks(offset, voxels_per_block);
             node
         };
         let instance = |name: &str, offset: [i64; 3]| {
             let mut node = Node::new(name, NodeContent::Instance(house_def_id));
-            node.transform = crate::scene::NodeTransform::from_blocks(offset, voxels_per_block);
+            node.transform = document::scene::NodeTransform::from_blocks(offset, voxels_per_block);
             node
         };
         let mut scene = Scene::from_nodes(vec![
@@ -1056,7 +1056,7 @@ mod tests {
                 label,
                 NodeContent::Tool { shape: shape.clone(), material: MaterialChoice::Stone },
             );
-            node.transform = crate::scene::NodeTransform::from_blocks(offset, voxels_per_block);
+            node.transform = document::scene::NodeTransform::from_blocks(offset, voxels_per_block);
             node
         };
         let scene = Scene::from_nodes(vec![
@@ -1141,7 +1141,7 @@ mod tests {
         let make_tool = |kind, offset: [i64; 3], material| {
             let shape = SdfShape::from_blocks(kind, [5, 5, 5], 1, voxels_per_block);
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
-            node.transform = crate::scene::NodeTransform::from_blocks(offset, voxels_per_block);
+            node.transform = document::scene::NodeTransform::from_blocks(offset, voxels_per_block);
             node
         };
         let mut scene = Scene::from_nodes(vec![
@@ -1175,7 +1175,7 @@ mod tests {
         // Move the Box from +40X to +80X. Compute the edit AABB via the spatial-index
         // diff, exactly as `main::rebuild_geometry` does.
         let mut scene_b = scene_a.clone();
-        scene_b.root_node_mut(1).transform = crate::scene::NodeTransform::from_blocks([80, 0, 0], density);
+        scene_b.root_node_mut(1).transform = document::scene::NodeTransform::from_blocks([80, 0, 0], density);
         let index_a = scene_a.build_leaf_spatial_index(density);
         let index_b = scene_b.build_leaf_spatial_index(density);
         let edit_aabb = index_b.edit_aabb_since(&index_a).expect("same density");
@@ -1228,7 +1228,7 @@ mod tests {
         let _ = cache.resolve_region(&scene_a, density, 0);
 
         let mut scene_b = scene_a.clone();
-        scene_b.root_node_mut(1).transform = crate::scene::NodeTransform::from_blocks([80, 0, 0], density);
+        scene_b.root_node_mut(1).transform = document::scene::NodeTransform::from_blocks([80, 0, 0], density);
         let index_a = scene_a.build_leaf_spatial_index(density);
         let index_b = scene_b.build_leaf_spatial_index(density);
         let edit_aabb = index_b.edit_aabb_since(&index_a).expect("same density");
@@ -1269,7 +1269,7 @@ mod tests {
         let all_resident = resident_coords(&cache);
 
         let mut scene_b = scene_a.clone();
-        scene_b.root_node_mut(1).transform = crate::scene::NodeTransform::from_blocks([80, 0, 0], density);
+        scene_b.root_node_mut(1).transform = document::scene::NodeTransform::from_blocks([80, 0, 0], density);
         let index_a = scene_a.build_leaf_spatial_index(density);
         let index_b = scene_b.build_leaf_spatial_index(density);
         let edit_aabb = index_b.edit_aabb_since(&index_a).expect("same density");
@@ -1424,12 +1424,12 @@ mod tests {
         let tool = |kind, size: [u32; 3], offset: [i64; 3], material| {
             let shape = SdfShape::from_blocks(kind, size, 1, vpb);
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
-            node.transform = crate::scene::NodeTransform::from_blocks(offset, vpb);
+            node.transform = document::scene::NodeTransform::from_blocks(offset, vpb);
             node
         };
         let instance = |name: &str, offset: [i64; 3]| {
             let mut node = Node::new(name, NodeContent::Instance(house_def_id));
-            node.transform = crate::scene::NodeTransform::from_blocks(offset, vpb);
+            node.transform = document::scene::NodeTransform::from_blocks(offset, vpb);
             node
         };
         let mut scene = Scene::from_nodes(vec![
@@ -1455,7 +1455,7 @@ mod tests {
     fn render_chunks_empty_for_part_only_scene() {
         let scene = Scene::single_node(Node::new(
             "Clouds",
-            NodeContent::Part(crate::scene::Part::DebugClouds { seed: 0 }),
+            NodeContent::Part(document::scene::Part::DebugClouds { seed: 0 }),
         ));
         let mut cache = Store::new();
         let chunks = cache.resident_render_chunks(&scene, 16, 0);
@@ -1486,7 +1486,7 @@ mod tests {
                 "box",
                 NodeContent::Tool { shape, material: MaterialChoice::Stone },
             );
-            node.transform = crate::scene::NodeTransform::from_blocks([offset_x, 0, 0], vpb);
+            node.transform = document::scene::NodeTransform::from_blocks([offset_x, 0, 0], vpb);
             Scene::single_node(node)
         };
 
@@ -1526,7 +1526,7 @@ mod tests {
     fn part_only_scene_resolves_empty_through_cache() {
         let scene = Scene::single_node(Node::new(
             "Clouds",
-            NodeContent::Part(crate::scene::Part::DebugClouds { seed: 0 }),
+            NodeContent::Part(document::scene::Part::DebugClouds { seed: 0 }),
         ));
         let mut cache = Store::new();
         let assembled = cache.resolve_region(&scene, 16, 0);
@@ -1593,7 +1593,7 @@ mod tests {
         let make_box = |offset: [i64; 3]| {
             let shape = SdfShape::from_blocks(ShapeKind::Box, [3, 3, 3], 1, vpb);
             let mut node = Node::new("box", NodeContent::Tool { shape, material: MaterialChoice::Stone });
-            node.transform = crate::scene::NodeTransform::from_blocks(offset, vpb);
+            node.transform = document::scene::NodeTransform::from_blocks(offset, vpb);
             node
         };
         // 20,000-block separation → composite centred ~10,000 blocks out → each box
@@ -1640,7 +1640,7 @@ mod tests {
         let make_tool = |kind, offset: [i64; 3], material| {
             let shape = SdfShape::from_blocks(kind, [5, 5, 5], 1, vpb);
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
-            node.transform = crate::scene::NodeTransform::from_blocks(offset, vpb);
+            node.transform = document::scene::NodeTransform::from_blocks(offset, vpb);
             node
         };
         let scene = Scene::from_nodes(vec![
@@ -1658,12 +1658,12 @@ mod tests {
         let tool = |kind, size: [u32; 3], offset: [i64; 3], material| {
             let shape = SdfShape::from_blocks(kind, size, 1, vpb);
             let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
-            node.transform = crate::scene::NodeTransform::from_blocks(offset, vpb);
+            node.transform = document::scene::NodeTransform::from_blocks(offset, vpb);
             node
         };
         let instance = |name: &str, offset: [i64; 3]| {
             let mut node = Node::new(name, NodeContent::Instance(house_def_id));
-            node.transform = crate::scene::NodeTransform::from_blocks(offset, vpb);
+            node.transform = document::scene::NodeTransform::from_blocks(offset, vpb);
             node
         };
         let mut scene = Scene::from_nodes(vec![
@@ -1758,7 +1758,7 @@ mod tests {
         // A wholly empty scene (Part-only, no occupied voxels): region run is 0.
         let empty_scene = Scene::single_node(Node::new(
             "Clouds",
-            NodeContent::Part(crate::scene::Part::DebugClouds { seed: 0 }),
+            NodeContent::Part(document::scene::Part::DebugClouds { seed: 0 }),
         ));
         let mut cache3 = Store::new();
         assert_eq!(cache3.widest_run_in_band(&empty_scene, 16, 0, 0, 100), 0);
@@ -1861,7 +1861,7 @@ mod tests {
     fn tool_node(kind: ShapeKind, size: [u32; 3], offset: [i64; 3], material: MaterialChoice) -> Node {
         let shape = SdfShape::from_blocks(kind, size, 1, 16);
         let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
-        node.transform = crate::scene::NodeTransform::from_blocks(offset, 16);
+        node.transform = document::scene::NodeTransform::from_blocks(offset, 16);
         node
     }
 
@@ -1917,7 +1917,7 @@ mod tests {
             let mut b = scene_a.clone();
             // Move the interior Box from +60X to +70X (still interior → recentre
             // fixed; dirty around BOTH endpoints).
-            b.root_node_mut(1).transform = crate::scene::NodeTransform::from_blocks([70, 0, 0], density);
+            b.root_node_mut(1).transform = document::scene::NodeTransform::from_blocks([70, 0, 0], density);
             ("move", b)
         };
         let add_node = {

@@ -1252,16 +1252,16 @@ impl Scene {
     /// Test helper (ADR 0003 Phase B5): the top-level node at positional `index`, via
     /// the [`roots`](Self::roots) spine + arena. Replaces the old `scene.nodes[index]`
     /// positional read now that storage is id-keyed.
-    #[cfg(test)]
-    pub(crate) fn root_node(&self, index: usize) -> &Node {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn root_node(&self, index: usize) -> &Node {
         let id = self.roots[index];
         &self.arena[&id]
     }
 
     /// Test helper (ADR 0003 Phase B5): the top-level node at positional `index`,
     /// mutably. Replaces the old `scene.nodes[index]` positional `&mut`.
-    #[cfg(test)]
-    pub(crate) fn root_node_mut(&mut self, index: usize) -> &mut Node {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn root_node_mut(&mut self, index: usize) -> &mut Node {
         let id = self.roots[index];
         self.arena.get_mut(&id).expect("root id present in arena")
     }

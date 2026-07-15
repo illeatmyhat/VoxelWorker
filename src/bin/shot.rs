@@ -893,7 +893,7 @@ fn build_demo_scene(voxels_per_block: u32) -> Scene {
             format!("{kind:?}"),
             NodeContent::Tool { shape, material },
         );
-        node.transform = voxel_worker::scene::NodeTransform::from_blocks(offset, voxels_per_block);
+        node.transform = document::scene::NodeTransform::from_blocks(offset, voxels_per_block);
         node
     };
     let mut scene = selecting_first_node(Scene::from_nodes(vec![
@@ -916,7 +916,7 @@ fn build_demo_overlap(voxels_per_block: u32) -> Scene {
     let make = |kind, offset: [i64; 3], material| {
         let shape = SdfShape::from_blocks(kind, [4, 4, 4], 1, voxels_per_block);
         let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
-        node.transform = voxel_worker::scene::NodeTransform::from_blocks(offset, voxels_per_block);
+        node.transform = document::scene::NodeTransform::from_blocks(offset, voxels_per_block);
         node
     };
     let mut scene = selecting_first_node(Scene::from_nodes(vec![
@@ -937,7 +937,7 @@ fn build_demo_two_material(voxels_per_block: u32) -> Scene {
     let make = |offset: [i64; 3], material| {
         let shape = SdfShape::from_blocks(ShapeKind::Box, [4, 4, 4], 1, voxels_per_block);
         let mut node = Node::new(format!("{material:?}"), NodeContent::Tool { shape, material });
-        node.transform = voxel_worker::scene::NodeTransform::from_blocks(offset, voxels_per_block);
+        node.transform = document::scene::NodeTransform::from_blocks(offset, voxels_per_block);
         node
     };
     let mut scene = selecting_first_node(Scene::from_nodes(vec![
@@ -968,7 +968,7 @@ fn build_demo_mixed_material(voxels_per_block: u32) -> Scene {
             Node::new("Wood", NodeContent::Tool { shape, material: MaterialChoice::Wood });
         // A 2-VOXEL X offset (not a whole block), so the boundary cuts THROUGH a block —
         // that block's voxels are part Stone, part Wood: a mixed brick.
-        node.transform = voxel_worker::scene::NodeTransform::from_measurements(
+        node.transform = document::scene::NodeTransform::from_measurements(
             [
                 Measurement::from_voxels(2),
                 Measurement::from_voxels(0),
@@ -1020,7 +1020,7 @@ fn build_demo_village_at(voxels_per_block: u32, base_offset_blocks: [i64; 3]) ->
     let tool = |kind, size: [u32; 3], offset: [i64; 3], material| {
         let shape = SdfShape::from_blocks(kind, size, 1, voxels_per_block);
         let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
-        node.transform = voxel_worker::scene::NodeTransform::from_blocks(offset, voxels_per_block);
+        node.transform = document::scene::NodeTransform::from_blocks(offset, voxels_per_block);
         node
     };
 
@@ -1042,7 +1042,7 @@ fn build_demo_village_at(voxels_per_block: u32, base_offset_blocks: [i64; 3]) ->
             offset[2] + base_offset_blocks[2],
         ];
         let mut node = Node::new(name, NodeContent::Instance(house_def_id));
-        node.transform = voxel_worker::scene::NodeTransform::from_blocks(placement, voxels_per_block);
+        node.transform = document::scene::NodeTransform::from_blocks(placement, voxels_per_block);
         node
     };
     let mut scene = Scene::from_nodes(vec![
@@ -1187,7 +1187,7 @@ fn build_demo_groups(voxels_per_block: u32) -> Scene {
     let tool = |kind, size: [u32; 3], offset: [i64; 3], material, name: &str| {
         let shape = SdfShape::from_blocks(kind, size, 1, voxels_per_block);
         let mut node = Node::new(name, NodeContent::Tool { shape, material });
-        node.transform = voxel_worker::scene::NodeTransform::from_blocks(offset, voxels_per_block);
+        node.transform = document::scene::NodeTransform::from_blocks(offset, voxels_per_block);
         node
     };
 
@@ -1207,7 +1207,7 @@ fn build_demo_groups(voxels_per_block: u32) -> Scene {
 
     let lone = tool(ShapeKind::Box, [2, 2, 2], [8, 0, 0], MaterialChoice::Wood, "Lone");
     let mut widget_instance = Node::new("Widget instance", NodeContent::Instance(widget_def_id));
-    widget_instance.transform = voxel_worker::scene::NodeTransform::from_blocks([12, 0, 0], voxels_per_block);
+    widget_instance.transform = document::scene::NodeTransform::from_blocks([12, 0, 0], voxels_per_block);
 
     let mut scene = Scene::from_nodes(vec![
         cluster,
@@ -1247,7 +1247,7 @@ fn build_far_offset_scene(voxels_per_block: u32, far: bool) -> Scene {
             material: MaterialChoice::Stone,
         },
     );
-    node.transform = voxel_worker::scene::NodeTransform::from_blocks(
+    node.transform = document::scene::NodeTransform::from_blocks(
         if far { FAR_OFFSET_BLOCKS } else { [0, 0, 0] },
         voxels_per_block,
     );

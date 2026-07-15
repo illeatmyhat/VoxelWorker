@@ -18,7 +18,7 @@ use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
 use voxel_core::core_geom::MaterialChoice;
-use crate::scene::{Point, Scene};
+use document::scene::{Point, Scene};
 use voxel_core::voxel::RecentreVoxels;
 // The sRGB↔linear transfer function is textbook math with no domain content, so it
 // lives in substrate (see the material/colour handling in docs/architecture); the
@@ -2970,9 +2970,9 @@ mod tests {
     // ---- issue #29 S3: per-object grid line geometry + gating ----
 
     use voxel_core::core_geom::MaterialChoice as Mc;
-    use crate::scene::{Node, NodeContent};
+    use document::scene::{Node, NodeContent};
     use voxel_core::voxel::ShapeKind;
-    use crate::voxel::SdfShape;
+    use document::voxel::SdfShape;
 
     /// `block_boundaries` returns the closing plane at `hi` (the box is enclosed in
     /// whole blocks), so a `B`-block box yields `B + 1` planes — and EXPANDING the
@@ -3125,7 +3125,7 @@ mod tests {
     fn box_node(name: &str, offset: [i64; 3], voxels_per_block: u32) -> Node {
         let shape = SdfShape::from_blocks(ShapeKind::Box, [2, 2, 2], 1, voxels_per_block);
         let mut node = Node::new(name, NodeContent::Tool { shape, material: Mc::Stone });
-        node.transform = crate::scene::NodeTransform::from_blocks(offset, voxels_per_block);
+        node.transform = document::scene::NodeTransform::from_blocks(offset, voxels_per_block);
         node
     }
 
@@ -3171,7 +3171,7 @@ mod tests {
 
     // ===== Issue #29 S5: Points (world reference grid) ==========================
 
-    use crate::scene::Point;
+    use document::scene::Point;
 
     /// A scene carrying only an Origin Point with the given plane flags; `axes`
     /// sets all three per-axis flags together (the common "axes on/off" case).

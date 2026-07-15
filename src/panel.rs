@@ -20,12 +20,12 @@
 use crate::block_palette::BlockPalette;
 use camera::ProjectionMode;
 use voxel_core::core_geom::MaterialChoice;
-use crate::intent::{Intent, NodeSpec};
-use crate::scene::{DefId, Node, NodeContent, NodeId, Part, Scene};
-use crate::sketch::{Operation, PlaneAxis, RevolveAxis, Sketch, SketchSolid};
+use document::intent::{Intent, NodeSpec};
+use document::scene::{DefId, Node, NodeContent, NodeId, Part, Scene};
+use document::sketch::{Operation, PlaneAxis, RevolveAxis, Sketch, SketchSolid};
 use voxel_core::units::{self, DisplayUnit, MeasurementError};
 use voxel_core::voxel::{ShapeKind};
-use crate::voxel::{GeometryParams, SdfShape};
+use document::voxel::{GeometryParams, SdfShape};
 
 /// Layer-range scrubber state (issue #12).
 ///
@@ -1173,7 +1173,7 @@ fn build_part_inspector_section(
 /// DEFERRED (ADR 0003 §3i, Slices 2b/2c): free-polyline point add/move/delete editing,
 /// the sweep producer, and on-surface sketching are not built here.
 ///
-/// [`in_plane_axes`]: crate::sketch::PlaneAxis::in_plane_axes
+/// [`in_plane_axes`]: document::sketch::PlaneAxis::in_plane_axes
 fn build_sketch_inspector_section(
     ui: &mut egui::Ui,
     state: &mut PanelState,

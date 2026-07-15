@@ -13,7 +13,7 @@
 #![cfg(feature = "gpu")]
 
 use voxel_core::voxel::{ShapeKind};
-use voxel_worker::voxel::{GeometryParams, SdfShape};
+use document::voxel::{GeometryParams, SdfShape};
 use voxel_worker::{
     GpuContext, MaterialChoice, Node, NodeContent, PlaneAxis, RevolveAxis, Scene, Sketch,
     SketchPoint, SketchSolid,

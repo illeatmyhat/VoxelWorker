@@ -108,9 +108,9 @@ impl Scene {
     /// Union on overlap). A region-sized Part (the cloud field) is sized to the composite
     /// `placed_region_dimensions` exactly as the dense chunk resolve sizes it.
     ///
-    /// `pub(crate)` — the evaluator seam ADR 0010 E2's [`crate::two_layer_store`] reads;
+    /// `pub` — the evaluator seam ADR 0010 E2's `two_layer_store` (up in the app crate) reads;
     /// the dense store keeps using the private [`for_each_leaf`](Self::for_each_leaf).
-    pub(crate) fn leaf_producers(&self, voxels_per_block: u32) -> Vec<LeafProducer> {
+    pub fn leaf_producers(&self, voxels_per_block: u32) -> Vec<LeafProducer> {
         let region_dimensions = self.placed_region_dimensions(voxels_per_block);
         let mut leaves = Vec::new();
         self.for_each_leaf(&mut |world_offset_voxels, content, grid_on_faces| {
@@ -600,7 +600,7 @@ pub(super) fn leaf_content_fingerprint(
 /// This is `size_blocks · d` for an [`SdfShape`] `Tool` (a whole-block grid), but
 /// the EXACT prism AABB for a [`SketchTool`] — which may NOT be a whole multiple
 /// of `d` (a sub-block profile). The chunk-coverage / spatial-index / AABB-skip
-/// math must use this true span, not the block-rounded [`leaf_size_blocks`], so a
+/// math must use this true span, not the block-rounded `leaf_size_blocks`, so a
 /// sub-block sketch's voxels are never dropped by a too-small cover.
 ///
 /// [`SketchTool`]: NodeContent::SketchTool
@@ -608,7 +608,7 @@ pub(super) fn leaf_content_fingerprint(
 /// two-layer classifier + boundary-resolve evaluate this list (in document order, Union
 /// on overlap) exactly as [`Scene::resolve_chunk_rebased`] stamps it. Yielded by
 /// [`Scene::leaf_producers`].
-pub(crate) struct LeafProducer {
+pub struct LeafProducer {
     /// The leaf's accumulated WORLD voxel offset (its corner-anchored low corner in the
     /// scene's absolute voxel frame). A local cell `idx` has absolute index
     /// `world_offset_voxels + idx` (ADR 0008 — the frame is carried).

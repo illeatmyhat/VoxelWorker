@@ -13,7 +13,7 @@ edition = "2021"
 # (the "Substrate" section) and docs/design/per-layer-crates-extraction-map.md for the
 # boundary law.
 [workspace]
-members = [".", "crates/substrate", "crates/camera", "crates/raycast", "crates/voxel_core"]
+members = [".", "crates/substrate", "crates/camera", "crates/raycast", "crates/voxel_core", "crates/document"]
 
 [lib]
 name = "voxel_worker"
@@ -41,8 +41,10 @@ gpu = []
 # Enables the dense whole-region resolve oracles (the O(volume) reference
 # resolvers the parity tests and the `shot` golden tool cross-check the sparse
 # runtime path against). Never on in production builds: `cargo test` sees them
-# via `cfg(test)`, and the `shot` binary opts in via `required-features`.
-oracle = []
+# via `cfg(test)`, and the `shot` binary opts in via `required-features`. Forwards
+# to `document/oracle` so the `shot` bin can reach the scene resolve oracle now in
+# the document crate.
+oracle = ["document/oracle"]
 # Opt-in CPU frame profiling via the Tracy backend (zones + frame marks).
 # OFF by default: with the feature absent the `profiling` facade compiles to
 # no-ops and `tracy-client` (and its C/C++ `tracy-client-sys`) is NOT pulled in.
@@ -59,6 +61,11 @@ substrate = { path = "crates/substrate" }
 # palette id / cell-key codec, the absolute-voxel box + leaf index, and the units core.
 # Depends only on glam + serde + substrate. See docs/architecture/01-document.md.
 voxel_core = { path = "crates/voxel_core" }
+# The authored-TRUTH library (one layer above voxel_core): the scene graph, the
+# producers (SdfShape / sketch solid / debug clouds), the 2D sketch, the Intent
+# mutation boundary, and the inverse-command undo stack. Imports no evaluation/
+# display/wgpu. See docs/architecture/01-document.md.
+document = { path = "crates/document" }
 # The viewing + projective-geometry library (orbit rig, projection, ViewCube,
 # screen→ray unprojection, frustum culling). wgpu-free graphics mathematics;
 # depends only on glam + substrate.
@@ -93,3 +100,8 @@ tracy-client = { version = "=0.18.4", optional = true }
 
 [dev-dependencies]
 dot_vox = "5"
+# Turn on the document crate's `oracle` feature for TEST builds only (dev-deps are
+# absent from production `cargo build`). This makes the dense `Scene::resolve_region`
+# oracle visible to the app-crate parity tests (`cargo test --lib`) without leaking the
+# O(volume) resolver into shipped binaries.
+document = { path = "crates/document", features = ["oracle", "test-support"] }

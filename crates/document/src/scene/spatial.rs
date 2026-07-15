@@ -9,7 +9,7 @@ use super::*;
 
 impl Scene {
     /// Whether the scene has at least one intrinsic-size leaf (a Tool), so it has a
-    /// composite AABB that the chunked resolve ([`crate::chunk_cache`]) can cover.
+    /// composite AABB that the chunked resolve (`chunk_cache`) can cover.
     /// `false` for a Part-only scene (e.g. a lone debug-cloud field), which has no
     /// AABB of its own and must be resolved through the explicit-region monolithic
     /// path instead. Public so the `shot` binary can pick the right resolve path
@@ -55,14 +55,14 @@ impl Scene {
     /// The inclusive range of chunk coordinates `[min_chunk, max_chunk]` whose
     /// half-open boxes cover the composite occupied AABB in **absolute** voxel
     /// space. `None` when no leaf has an intrinsic size (no AABB to cover).
-    /// `pub(crate)` so the chunk cache (issue #27 S2) iterates the covering chunks
-    /// for reassembly.
+    /// `pub` so the chunk cache (issue #27 S2, up in the app crate) iterates the covering
+    /// chunks for reassembly.
     ///
     /// Derived from [`placed_extent_voxels`](Self::placed_extent_voxels) — the
     /// producer-true voxel frame — so it covers every chunk a voxel can land in,
     /// including the chunks an odd/flat block size straddles (which the block-AABB
     /// frame would miss).
-    pub(crate) fn covering_chunk_range(&self, voxels_per_block: u32) -> Option<([i32; 3], [i32; 3])> {
+    pub fn covering_chunk_range(&self, voxels_per_block: u32) -> Option<([i32; 3], [i32; 3])> {
         let (min_voxel_corner, max_voxel_corner) = self.placed_extent_voxels(voxels_per_block)?;
         // The voxel corners are i64 (a far-placed leaf), but the chunk extent is
         // small; the block→chunk division therefore happens in i64 and the QUOTIENT

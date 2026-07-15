@@ -14,7 +14,7 @@
 //! `apply_intent` yet (only the lib tests do), so the goldens stay byte-identical.
 //! `apply_intent` dispatches each variant to the SAME [`Scene`](crate::scene::Scene)
 //! edit op / field write the panel uses today and returns an [`IntentEffect`] — the
-//! typed successor of [`PanelResponse`](crate::panel::PanelResponse)'s effect
+//! typed successor of `PanelResponse`'s effect
 //! booleans — so a later slice (C4) can drop it in for the panel's flag bag. No
 //! `CommandStack` / undo yet (that is C2): `apply_intent` just dispatches + reports.
 
@@ -98,7 +98,7 @@ impl NodeSpec {
 /// Every variant names a mutation by **stable identity** ([`NodeId`] / [`DefId`] /
 /// a point index), never by the positional path or the panel state the panel
 /// happened to reach it through, so an `Intent` round-trips through serde and is
-/// replayable. [`AppCore::apply_intent`](crate::AppCore::apply_intent) dispatches
+/// replayable. `AppCore::apply_intent` dispatches
 /// each variant to the matching [`Scene`](crate::scene::Scene) edit op / field
 /// write — the SAME mutation the panel performs today — and reports an
 /// [`IntentEffect`].
@@ -306,7 +306,7 @@ pub enum Intent {
 }
 
 /// The typed effect of applying an [`Intent`] — the successor of
-/// [`PanelResponse`](crate::panel::PanelResponse)'s effect booleans (ADR 0003 Phase
+/// `PanelResponse`'s effect booleans (ADR 0003 Phase
 /// C). `apply_intent` returns this so a caller can react exactly as the panel does
 /// today: re-resolve the scene on a geometry/scene change, persist on a points
 /// change, refresh the inspector mirror on a selection change.
@@ -380,8 +380,8 @@ impl IntentEffect {
 /// `SetOffset` intent, which now carries `[Measurement; 3]`). Each axis is a pure
 /// integer block term, so it derives to `blocks · d` voxels at any density — the
 /// same result the old block-granular path produced.
-#[cfg(test)]
-pub(crate) fn whole_block_offset(blocks: [i64; 3]) -> [Measurement; 3] {
+#[cfg(any(test, feature = "test-support"))]
+pub fn whole_block_offset(blocks: [i64; 3]) -> [Measurement; 3] {
     use voxel_core::units::ExactRational;
     [
         Measurement::new(ExactRational::from_integer(blocks[0] as i128), 0),

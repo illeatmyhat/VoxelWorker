@@ -12,7 +12,7 @@
 //!
 //! * [`BlockClassification`] / [`classify_chunk_block`] — the conservative classifier:
 //!   compose every leaf's field interval over a block cell by CSG interval arithmetic
-//!   (v1 only has [`crate::scene::CombineOp::Union`]) and take the 3-way verdict through the
+//!   (v1 only has [`document::scene::CombineOp::Union`]) and take the 3-way verdict through the
 //!   substrate black/white/grey [`substrate::solids::CellClassification`] kernel. An unboundable
 //!   producer (`cell_field_interval == None`) surfaces as "cannot classify" and forces the
 //!   block BOUNDARY. Leaf iteration + local-frame mapping + the per-voxel fallback stay here.
@@ -44,7 +44,7 @@
 //! chunk key ([`crate::store::ChunkCacheKey::chunk_coord`]). The boundary blocks'
 //! [`VoxelBox`]es are in **chunk-local voxel** indices `[0, chunk_extent_voxels)`. The
 //! expansion stamps voxels into the SAME (recentred / floating-origin-rebased) frame
-//! [`Scene::resolve_chunk_rebased`](crate::scene::Scene::resolve_chunk_rebased) produces,
+//! [`Scene::resolve_chunk_rebased`](document::scene::Scene::resolve_chunk_rebased) produces,
 //! so the round-trip is occupancy-identical to the dense path.
 
 use std::collections::BTreeMap;
@@ -56,10 +56,10 @@ use substrate::solids::{CellClassification, CellContribution};
 
 use voxel_core::core_geom::{BlockAttrs, BlockId, CellKey, CHUNK_BLOCKS};
 use crate::cuboid::{decompose_into_boxes, VoxelBox, VoxelBoxMaterial, VoxelRegion};
-use crate::scene::{LeafProducer, Scene};
+use document::scene::{LeafProducer, Scene};
 use voxel_core::spatial_index::{ChunkCoverage, EditBroadphaseBvh, VoxelAabb};
 use voxel_core::voxel::{RecentreVoxels, Voxel, VoxelGrid, SURFACE_ISOLEVEL};
-use crate::voxel::{FieldClassification};
+use document::voxel::{FieldClassification};
 
 /// The coarse verdict for a single BLOCK of a chunk (ADR 0010 Decision 2). Distinct from
 /// [`FieldClassification`] (the per-producer interval verdict) because the BLOCK verdict
@@ -217,7 +217,7 @@ impl TwoLayerChunk {
     /// CHUNK-LOCAL voxel index (the chunk's own `[0, chunk_extent_voxels)` frame) +
     /// `index_offset`, so the caller can rebase the whole chunk into the recentred /
     /// floating-origin frame in one integer add (mirroring
-    /// [`Scene::resolve_chunk_rebased`](crate::scene::Scene::resolve_chunk_rebased)).
+    /// [`Scene::resolve_chunk_rebased`](document::scene::Scene::resolve_chunk_rebased)).
     ///
     /// `index_offset` is added (in i64, before the i32 downcast) to every emitted voxel
     /// index: pass `chunk_min_voxels − floating_origin_voxels` to land the chunk in the
@@ -360,7 +360,7 @@ fn stamped_voxel(
 /// interval arithmetic and overriding to BOUNDARY for any unboundable leaf.
 ///
 /// `block_abs_voxels` is the block's half-open `[min, max)` box in the SCENE's ABSOLUTE
-/// voxel frame (the frame [`Scene::resolve_chunk`](crate::scene::Scene::resolve_chunk)
+/// voxel frame (the frame [`Scene::resolve_chunk`](document::scene::Scene::resolve_chunk)
 /// clips against — recentre is applied later as a pure index offset, so classification is
 /// frame-independent). Each leaf's interval is taken in its OWN local voxel-index frame by
 /// subtracting the leaf's `world_offset_voxels` (the same map
@@ -1440,7 +1440,7 @@ fn stream_chunk_recentred(
 /// dense grid is ever assembled — the 6M whole-region cap dissolves on this path).
 ///
 /// Returns the region's voxel `dimensions` (the SAME value
-/// [`Scene::placed_region_dimensions`](crate::scene::Scene::placed_region_dimensions)
+/// [`Scene::placed_region_dimensions`](document::scene::Scene::placed_region_dimensions)
 /// produces — the `.vox` tiling/decode frame). Returns `None` when the capability is
 /// OFF (the caller falls back to the dense path).
 pub fn stream_vox_occupancy<Sink: FnMut(Vec<Voxel>)>(
@@ -1702,9 +1702,9 @@ pub fn streamed_widest_run_in_band(
 mod tests {
     use super::*;
     use voxel_core::core_geom::MaterialChoice;
-    use crate::scene::{DefId, Node, NodeContent, NodeTransform};
+    use document::scene::{DefId, Node, NodeContent, NodeTransform};
     use voxel_core::voxel::{ShapeKind};
-    use crate::voxel::{GeometryParams, SdfShape};
+    use document::voxel::{GeometryParams, SdfShape};
 
     /// Canonicalise an occupied set into the **resolved occupancy SET**: a map from each
     /// bit-exact voxel position to the block id of the LAST (document-order) writer at that
@@ -1921,7 +1921,7 @@ mod tests {
     /// exact.
     #[test]
     fn round_trip_matches_dense_for_sketch_revolve() {
-        use crate::sketch::{PlaneAxis, RevolveAxis, Sketch, SketchSolid};
+        use document::sketch::{PlaneAxis, RevolveAxis, Sketch, SketchSolid};
         let density = 16;
         let profile = Sketch::rectangle(PlaneAxis::Z, 24, 16);
         let producer = SketchSolid::revolve(profile, RevolveAxis::InPlane0, 360);
@@ -1943,7 +1943,7 @@ mod tests {
     /// occupancy is reproduced exactly.
     #[test]
     fn round_trip_matches_dense_for_partial_revolve() {
-        use crate::sketch::{PlaneAxis, RevolveAxis, Sketch, SketchPoint, SketchSolid};
+        use document::sketch::{PlaneAxis, RevolveAxis, Sketch, SketchPoint, SketchSolid};
         let density = 16;
         // Radial (c1) straddles the axis: [-20, 20]; axial (c0) [8, 56].
         let profile = Sketch::new(
@@ -1973,7 +1973,7 @@ mod tests {
     /// (Mixed with a Tool so the scene has a composite chunk extent.)
     #[test]
     fn round_trip_matches_dense_with_unboundable_cloud() {
-        use crate::scene::Part;
+        use document::scene::Part;
         let density = 16;
         let mut cloud = Node::new("Clouds", NodeContent::Part(Part::DebugClouds { seed: 7 }));
         cloud.transform = NodeTransform::from_blocks([0, 0, 0], density);
@@ -2071,7 +2071,7 @@ mod tests {
     /// case also round-trips bit-identically to the dense oracle (the over-claim police).
     #[test]
     fn sketch_interior_elides_to_coarse_solid() {
-        use crate::sketch::{PlaneAxis, RevolveAxis, Sketch, SketchPoint, SketchSolid};
+        use document::sketch::{PlaneAxis, RevolveAxis, Sketch, SketchPoint, SketchSolid};
         let density = 8u32;
 
         // Count (coarse, boundary) blocks across a producer's covering chunk range by
@@ -2331,8 +2331,8 @@ mod tests {
     /// `DebugClouds` (unboundable → per-block), and a partial revolve (angular ambiguity).
     #[test]
     fn whole_chunk_fast_path_matches_per_block_sweep() {
-        use crate::scene::Part;
-        use crate::sketch::{PlaneAxis, RevolveAxis, Sketch, SketchPoint, SketchSolid};
+        use document::scene::Part;
+        use document::sketch::{PlaneAxis, RevolveAxis, Sketch, SketchPoint, SketchSolid};
 
         // Assert fast-path == per-block over EVERY covering chunk of `scene`.
         fn assert_identical(scene: &Scene, density: u32, label: &str) {
@@ -2711,7 +2711,7 @@ mod tests {
     /// A sketch-revolve solid (boundary-only) — its diameter streams identically.
     #[test]
     fn streamed_widest_run_matches_dense_for_sketch_solid() {
-        use crate::sketch::{PlaneAxis, RevolveAxis, Sketch, SketchSolid};
+        use document::sketch::{PlaneAxis, RevolveAxis, Sketch, SketchSolid};
         let density = 16;
         let profile = Sketch::rectangle(PlaneAxis::Z, 24, 16);
         let producer = SketchSolid::revolve(profile, RevolveAxis::InPlane0, 360);
@@ -3038,7 +3038,7 @@ mod tests {
     #[test]
     #[ignore = "perf probe — run in release with --nocapture"]
     fn widest_run_scaling_probe() {
-        use crate::sketch::{PlaneAxis, Sketch, SketchSolid};
+        use document::sketch::{PlaneAxis, Sketch, SketchSolid};
         let density = 16u32;
         for blocks in [50i64, 125, 250, 500] {
             let edge = blocks * density as i64;
@@ -3070,7 +3070,7 @@ mod tests {
     #[test]
     #[ignore = "perf probe — run in release with --nocapture"]
     fn two_layer_sketch_box_build_probe() {
-        use crate::sketch::{PlaneAxis, Sketch, SketchSolid};
+        use document::sketch::{PlaneAxis, Sketch, SketchSolid};
         let density = 16u32;
         for blocks in [25i64, 50] {
             let edge = blocks * density as i64; // 400, then 800 voxels/axis (block-aligned)
@@ -3117,7 +3117,7 @@ mod tests {
             build_brick_field, BrickRecord, ClipmapPyramid, IncrementalBrickField,
         };
         use crate::brick_raymarch::pack_gpu_records;
-        use crate::sketch::{PlaneAxis, Sketch, SketchSolid};
+        use document::sketch::{PlaneAxis, Sketch, SketchSolid};
         let density = 16u32;
         let mut block_spans = vec![50i64, 125, 250];
         if std::env::var_os("VOXELWORKER_PROBE_LARGE").is_some() {
@@ -3270,7 +3270,7 @@ mod tests {
     /// This is the "unboundable-producer edit falls back to wholesale" acceptance case.
     #[test]
     fn incremental_two_layer_cloud_edit_falls_back_to_wholesale() {
-        use crate::scene::Part;
+        use document::scene::Part;
         let density = 16u32;
         let cloud = |seed: u32| {
             let mut node = Node::new("Clouds", NodeContent::Part(Part::DebugClouds { seed }));

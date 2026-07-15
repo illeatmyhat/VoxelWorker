@@ -3044,8 +3044,8 @@ mod tests {
     #[ignore = "perf probe — run in release with --nocapture"]
     fn mesh_pipeline_scaling_probe() {
         use voxel_core::core_geom::MaterialChoice;
-        use crate::scene::{Node, NodeContent, Scene};
-        use crate::sketch::{PlaneAxis, Sketch, SketchSolid};
+        use document::scene::{Node, NodeContent, Scene};
+        use document::sketch::{PlaneAxis, Sketch, SketchSolid};
         let density = 16u32;
         for blocks in [50i64, 125, 250, 500] {
             let edge = blocks * density as i64;
@@ -3265,7 +3265,7 @@ mod tests {
     #[test]
     fn cuboid_covers_every_voxel_for_all_shapes() {
         use voxel_core::voxel::{ShapeKind};
-        use crate::voxel::{SdfShape, VoxelProducer};
+        use document::voxel::{SdfShape, VoxelProducer};
 
         for &kind in &[
             ShapeKind::Cylinder,
@@ -3896,7 +3896,7 @@ mod tests {
     #[test]
     fn per_chunk_apron_exposed_face_set_equals_whole_region() {
         use voxel_core::voxel::{ShapeKind};
-        use crate::voxel::{SdfShape, VoxelProducer};
+        use document::voxel::{SdfShape, VoxelProducer};
 
         let mut multi_chunk_seen = false;
         // Densities chosen so shapes span MULTIPLE chunks (chunk = CHUNK_BLOCKS=4
@@ -4064,7 +4064,7 @@ mod tests {
     #[test]
     fn per_chunk_band_clip_face_set_equals_whole_region() {
         use voxel_core::voxel::{ShapeKind};
-        use crate::voxel::{SdfShape, VoxelProducer};
+        use document::voxel::{SdfShape, VoxelProducer};
         let voxels_per_block = 8;
         let shape = SdfShape::from_blocks(ShapeKind::Torus, [8, 2, 8], 1, voxels_per_block);
         let dims = shape.grid_dimensions(voxels_per_block);
@@ -4145,10 +4145,10 @@ mod tests {
     // ---- ADR 0010 E3 — two-layer mesher exposed-face parity (#50) ----
 
     use voxel_core::core_geom::MaterialChoice as MC;
-    use crate::scene::{DefId, Node, NodeContent, NodeTransform, Scene};
+    use document::scene::{DefId, Node, NodeContent, NodeTransform, Scene};
     use crate::two_layer_store::TwoLayerStore;
     use voxel_core::voxel::{ShapeKind as TwoLayerShape};
-    use crate::voxel::{SdfShape as TwoLayerSdf};
+    use document::voxel::{SdfShape as TwoLayerSdf};
 
     /// Every unit face a mesh EMITS that ACTUALLY RENDERS — i.e. whose cell on the NORMAL
     /// (front) side is AIR per the dense occupancy. A face buried in solid (front solid) is
@@ -4355,7 +4355,7 @@ mod tests {
         // producer (no coarse-solid blocks — its profile fill is not a coarse box), so this
         // pins the microblock-cuboid + seam path for a non-SDF producer.
         {
-            use crate::sketch::{PlaneAxis, RevolveAxis, Sketch, SketchPoint, SketchSolid};
+            use document::sketch::{PlaneAxis, RevolveAxis, Sketch, SketchPoint, SketchSolid};
             let block = density as i64;
             let r = |b: i64| b * block;
             let h = |b: i64| b * block;

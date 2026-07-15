@@ -74,6 +74,17 @@ jobs:
       - name: Test voxel_core
         run: cargo test -p voxel_core
 
+      # The document library is the authored-TRUTH member (one layer above voxel_core):
+      # the scene graph, the producers (SdfShape / sketch solid / debug clouds), the 2D
+      # sketch, the Intent mutation boundary, and the inverse-command undo stack. It
+      # imports no evaluation/display/wgpu and carries its own gates so a regression in
+      # the truth layer fails independently of the app crate.
+      - name: Clippy document (deny warnings)
+        run: cargo clippy -p document --all-targets -- -D warnings
+
+      - name: Test document
+        run: cargo test -p document
+
       # The camera library is the wgpu-free viewing + projective-geometry member
       # (orbit rig, projection, ViewCube, screen→ray unprojection, frustum culling);
       # it depends only on glam + substrate and carries its own gates so a regression

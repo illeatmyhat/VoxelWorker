@@ -32,21 +32,13 @@ pub mod chunk_cache;
 // (cuboid mesh + brick raymarch). The DisplayOrchestrator state machine joins it later.
 pub mod display;
 pub mod chunk_storage;
-// ADR 0003 Phase C: the linear inverse-command stack behind undo/redo. See command.rs.
-pub mod command;
 pub mod cuboid;
 pub mod cuboid_mesh;
-pub mod debug_clouds;
 pub mod disk_chunk_store;
 pub mod gpu;
-// ADR 0003 Phase C: the single serializable mutation boundary (Intent → apply_intent).
-pub mod intent;
 pub mod panel;
 pub mod renderer;
-pub mod scene;
 pub mod settings;
-// ADR 0003 §3i (Slice 2a): the sketch → extrude → volume producer, alongside SdfShape.
-pub mod sketch;
 // ADR 0003 data layer: residency + per-chunk resolve + bound-region reads. See store.rs.
 pub mod store;
 pub mod texture_atlas;
@@ -54,7 +46,6 @@ pub mod texture_atlas;
 // classifier (coarse + microblock + seam flags), proven bit-exact vs the dense store.
 pub mod two_layer_store;
 pub mod vox_export;
-pub mod voxel;
 // The background workers, grouped: the generic drain-to-latest/supersede/panic-catch
 // Worker in `workers::mod`, with the geometry / diameter / brick / scan domain workers
 // as its submodules.
@@ -114,7 +105,7 @@ pub use workers::export::{
 };
 pub use workers::Worker;
 pub use texture_atlas::{AtlasSubRect, MaterialAtlas};
-pub use debug_clouds::DebugCloudField;
+pub use document::debug_clouds::DebugCloudField;
 pub use camera::{
     adjacent_face, chrome_zone_left_click_action, classify_cube_point,
     nearest_equivalent_theta, ArrowDir, ChromeClickAction, CubeChromeZone, CubeFace, CubeRect,
@@ -122,7 +113,7 @@ pub use camera::{
     RollDir, SnapTween, ViewCubeElement, CUBE_FACES, POLE_EPSILON,
 };
 pub use gpu::GpuContext;
-pub use intent::{Intent, IntentEffect, NodeSpec};
+pub use document::intent::{Intent, IntentEffect, NodeSpec};
 pub use voxel_core::core_geom::MaterialChoice;
 pub use panel::{
     build_panel, ExportPanelState, LayerRange, PanelResponse,
@@ -135,7 +126,7 @@ pub use renderer::{
     DEPTH_FORMAT, MSAA_SAMPLE_COUNT, VIEW_CUBE_VIEWPORT_PIXELS,
 };
 pub use renderer::procedural_material_average_color;
-pub use scene::{
+pub use document::scene::{
     AssemblyDef, CombineOp, DefId, Node, NodeBuilder, NodeContent, NodeId, NodePath, NodeTransform,
     Part, Point, RegionBlocks, Scene,
 };
@@ -148,13 +139,13 @@ pub use two_layer_store::{
 // (see the proof chapter's "Oracles" section, `docs/architecture/05-proof.md`).
 #[cfg(any(test, feature = "oracle"))]
 pub use two_layer_store::resolve_region_two_layer;
-pub use sketch::{Operation, PlaneAxis, RevolveAxis, Sketch, SketchPoint, SketchSolid};
+pub use document::sketch::{Operation, PlaneAxis, RevolveAxis, Sketch, SketchPoint, SketchSolid};
 pub use voxel_core::spatial_index::{LeafEntry, LeafFingerprint, LeafSpatialIndex, VoxelAabb};
 pub use vox_export::{VoxExport, VoxExportBuilder};
-// Value vocabulary now lives in the voxel_core crate; the app-crate `voxel` module keeps
-// only the producer half. Both are re-exported flat so `voxel_worker::Voxel`,
-// `voxel_worker::SdfShape`, etc. keep resolving for the bins and integration tests.
-pub use voxel::{GeometryParams, SdfShape, VoxelProducer};
+// Value vocabulary lives in the voxel_core crate; the producer half now lives in the
+// document crate. Both are re-exported flat so `voxel_worker::Voxel`, `voxel_worker::SdfShape`,
+// etc. keep resolving for the bins and integration tests.
+pub use document::voxel::{GeometryParams, SdfShape, VoxelProducer};
 pub use voxel_core::voxel::{
     widest_run_in_band_over_chunks, RecentreVoxels, ShapeKind, Voxel, VoxelGrid,
 };
