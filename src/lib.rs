@@ -77,7 +77,7 @@ pub use engagement::routing::{
 };
 pub use evaluation::chunk_storage::{compress, decompress, CompressedChunk, Occupancy, SparseCell};
 pub use evaluation::disk_chunk_store::{DiskChunkStore, DiskChunkStoreStats};
-pub use display::cuboid_mesh::{build_cuboid_mesh, CuboidMesh, CuboidMeshRenderer};
+pub use display::mesh::{build_cuboid_mesh, CuboidMesh, CuboidMeshRenderer};
 pub use workers::geometry::{
     build_geometry, spawn_geometry_worker, GeometryRebuildRequest, GeometryRebuildResult,
     GeometryWorker,
@@ -447,7 +447,7 @@ pub struct FrameOverlays<'a> {
     /// uniforms must already be uploaded via `CuboidMeshRenderer::update_uniforms`.
     /// Kept PERMANENTLY as the headless/no-GPU fallback + A/B reference (ADR 0011
     /// Decision 6) even when the brick path below takes the frame.
-    pub cuboid_mesh: &'a display::cuboid_mesh::CuboidMeshRenderer,
+    pub cuboid_mesh: &'a display::mesh::CuboidMeshRenderer,
     /// ADR 0011 G1: the brick raymarch display sink. `Some` replaces the cuboid
     /// mesh DRAW for this frame (single ported-producer scenes on the GPU path) —
     /// the pass runs in the same MSAA pass and writes ray-hit depth, so every

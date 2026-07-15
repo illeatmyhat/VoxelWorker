@@ -67,7 +67,7 @@ pub struct AppCore {
 /// The headless resolve output of a geometry [`rebuild`](AppCore::rebuild) (A2e;
 /// ADR 0010 E5). Holds ONLY the **two-layer** covering chunks (owned) the shell meshes
 /// through
-/// [`CuboidMeshRenderer::new_from_two_layer_chunks`](display::cuboid_mesh::CuboidMeshRenderer::new_from_two_layer_chunks),
+/// [`CuboidMeshRenderer::new_from_two_layer_chunks`](display::mesh::CuboidMeshRenderer::new_from_two_layer_chunks),
 /// plus the region dimensions + recentre the display frame is sized from.
 ///
 /// **ADR 0011 G5 — the dense grid is gone.** A rebuild NO LONGER assembles a whole-region
@@ -84,7 +84,7 @@ pub struct RebuildOutput {
     /// The **two-layer** covering chunks (`(absolute_chunk_coord, Arc<TwoLayerChunk>)`),
     /// `Arc`-shared out of the resident cache so they outlive the cache borrow WITHOUT a
     /// deep copy. The shell meshes them through
-    /// [`CuboidMeshRenderer::new_from_two_layer_chunks`](display::cuboid_mesh::CuboidMeshRenderer::new_from_two_layer_chunks)
+    /// [`CuboidMeshRenderer::new_from_two_layer_chunks`](display::mesh::CuboidMeshRenderer::new_from_two_layer_chunks)
     /// (coarse one-box + microblock cuboids + seam-flag culling) — the sole runtime
     /// display mesh path (ADR 0010 E5) — and the brick sink packs its records from the same
     /// set (ADR 0011 G3). Empty for a Part-only scene (no covering range).
@@ -115,8 +115,8 @@ pub struct RebuildOutput {
     /// cache itself uses (`invalidate_aabb` vs `clear`), surfaced to the GPU-buffer layer.
     ///
     /// [`TwoLayerResidentCache::invalidate_aabb`]: evaluation::two_layer_store::TwoLayerResidentCache::invalidate_aabb
-    /// [`CuboidMeshRenderer::incremental_rebuild_from_two_layer_chunks`]: display::cuboid_mesh::CuboidMeshRenderer::incremental_rebuild_from_two_layer_chunks
-    /// [`CuboidMeshRenderer::new_from_two_layer_chunks`]: display::cuboid_mesh::CuboidMeshRenderer::new_from_two_layer_chunks
+    /// [`CuboidMeshRenderer::incremental_rebuild_from_two_layer_chunks`]: display::mesh::CuboidMeshRenderer::incremental_rebuild_from_two_layer_chunks
+    /// [`CuboidMeshRenderer::new_from_two_layer_chunks`]: display::mesh::CuboidMeshRenderer::new_from_two_layer_chunks
     pub incremental_dirty_chunks: Option<Vec<[i32; 3]>>,
     /// How far the floating-origin recentre SHIFTED this rebuild, in render-frame
     /// voxels (`new_recentre − previous_recentre`; `[0, 0, 0]` on the first build).

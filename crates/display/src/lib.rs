@@ -47,7 +47,7 @@
 //! * [`renderer`] — the render-pipeline surface: the view cube, the infinite/scene grids,
 //!   the transform gizmo, the points/axes, the material source + layer band, and the depth /
 //!   MSAA target helpers.
-//! * [`cuboid_mesh`] — the CPU box-decomposed fallback mesher ([`cuboid_mesh::CuboidMeshRenderer`]):
+//! * [`mesh`] — the CPU box-decomposed fallback mesher ([`mesh::CuboidMeshRenderer`]):
 //!   the always-present, no-GPU-capable voxel render path + the incremental re-mesh.
 //! * [`brick_field`] — the brick-field BUILD (two-layer boundary set → sorted brick records +
 //!   the sculpted-brick + cell-key atlases + the L1–L3 clipmap pyramid).
@@ -66,6 +66,6 @@ pub mod assets;
 pub mod block_palette;
 pub mod brick_field;
 pub mod brick_raymarch;
-pub mod cuboid_mesh;
+pub mod mesh;
 pub mod renderer;
 pub mod texture_atlas;

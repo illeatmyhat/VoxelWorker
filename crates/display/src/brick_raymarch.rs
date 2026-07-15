@@ -724,9 +724,9 @@ impl BrickRaymarchRenderer {
         // The material atlas: the SAME procedural packing + nearest/clamp sampler
         // the cuboid path builds, so both paths sample identical texels.
         let material_atlas = crate::texture_atlas::MaterialAtlas::from_procedural_materials();
-        let material_bind_group_layout = crate::cuboid_mesh::build_atlas_bind_group_layout(device);
+        let material_bind_group_layout = crate::mesh::build_atlas_bind_group_layout(device);
         let material_texture =
-            crate::cuboid_mesh::upload_atlas_texture(device, queue, &material_atlas);
+            crate::mesh::upload_atlas_texture(device, queue, &material_atlas);
         let material_view = material_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let material_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("brick raymarch material sampler"),
@@ -1644,7 +1644,7 @@ impl BrickRaymarchRenderer {
             traversal_lo: frame.traversal_lo.extend(0.0).to_array(),
             traversal_hi: frame.traversal_hi.extend(0.0).to_array(),
             material_base_colors: base_colors,
-            material_atlas_rects: crate::cuboid_mesh::atlas_rects_from(&material_atlas),
+            material_atlas_rects: crate::mesh::atlas_rects_from(&material_atlas),
             ghost_tint,
         }
     }
