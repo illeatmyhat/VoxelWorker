@@ -1,0 +1,40 @@
+[package]
+name = "interchange"
+version = "0.1.0"
+edition = "2021"
+
+# The INTERCHANGE crate: the HEADLESS export sink (one layer above evaluation, parallel to
+# display over it). It serialises the evaluated boundary set to external formats — today the
+# MagicaVoxel `.vox` writer (`vox_export`). THE LAW: interchange NEVER links wgpu / egui / winit.
+# Export is CPU-owned truth ("the CPU owns truth; the GPU owns the frame" — architecture law 4),
+# correct without any GPU present, and reads the SAME classified two-layer chunks every other
+# sink reads ("classified once, consumed everywhere" — law 6). This no-wgpu law is exactly what
+# earns interchange its own crate rather than living in `display`: an export can never accidentally
+# depend on a GPU device, because the crate cannot name one. It sits ABOVE `evaluation` (whose
+# boundary set it serialises) and BELOW the work + shell layers; the dependency edge is one-way
+# (`evaluation <- interchange <- {work, shell}`), compile-enforced. See docs/architecture/README.md
+# (laws 4 + 6, the Derivations layer) and docs/design/per-layer-crates-extraction-map.md.
+
+[lib]
+name = "interchange"
+path = "src/lib.rs"
+
+[dependencies]
+# The classified boundary set this crate serialises: the two-layer evaluator's streaming
+# occupancy (`stream_vox_occupancy`) and the per-chunk occupied slices the `.vox` writer buckets.
+evaluation = { path = "../evaluation" }
+# The authored-TRUTH layer: the Scene the region/placed-dimension queries come from (named in the
+# `vox_export` doc links + exercised by the tests).
+document = { path = "../document" }
+# The foundational value vocabulary: the resolved Voxel + VoxelGrid the export reads, the block
+# palette id / MaterialChoice the `.vox` palette maps through.
+voxel_core = { path = "../voxel_core" }
+
+[dev-dependencies]
+# Parse our own `.vox` bytes back in the round-trip / parity tests (the reader oracle).
+dot_vox = "5"
+# Turn on document's `oracle` feature for TEST builds only: the `.vox` parity tests hold the
+# streamed / region export against the dense `Scene::resolve_region` + `resolve_region_via_chunks`
+# oracles (both `#[cfg(any(test, feature = "oracle"))]` in document). Dev-deps are absent from
+# production `cargo build`, so the O(volume) resolver never leaks into a shipped binary.
+document = { path = "../document", features = ["oracle"] }

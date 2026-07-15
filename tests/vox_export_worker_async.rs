@@ -36,7 +36,7 @@ const WORKER_TIMEOUT: Duration = Duration::from_secs(30);
 /// material (the red channel is index-derived) so a multi-material export exercises the
 /// per-`block_id` palette mapping rather than collapsing every slot to one colour. Any fixed
 /// scheme works; parity only needs both paths to use the SAME palette.
-fn test_palette() -> voxel_worker::vox_export::BlockPaletteColors {
+fn test_palette() -> interchange::vox_export::BlockPaletteColors {
     let mut palette = [[0x40, 0x50, 0x60, 0xff]; MaterialChoice::MATERIAL_COUNT];
     for (index, slot) in palette.iter_mut().enumerate() {
         // Vary one channel per slot so no two materials share a colour.

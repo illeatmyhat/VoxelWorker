@@ -32,7 +32,7 @@ use std::sync::Arc;
 
 use document::scene::Scene;
 use evaluation::two_layer_store::{stream_vox_occupancy, TwoLayerStore};
-use crate::vox_export::{BlockPaletteColors, VoxExportBuilder};
+use interchange::vox_export::{BlockPaletteColors, VoxExportBuilder};
 use crate::workers::{build_catching, Worker};
 
 /// A request to build + write one `.vox` file. Carries an OWNED scene clone plus all the

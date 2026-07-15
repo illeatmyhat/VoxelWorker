@@ -30,7 +30,6 @@ pub mod engagement;
 pub mod gpu;
 pub mod panel;
 pub mod settings;
-pub mod vox_export;
 // The background workers, grouped: the generic drain-to-latest/supersede/panic-catch
 // Worker in `workers::mod`, with the geometry / diameter / brick / scan domain workers
 // as its submodules.
@@ -126,7 +125,9 @@ pub use evaluation::two_layer_store::{
 pub use evaluation::two_layer_store::resolve_region_two_layer;
 pub use document::sketch::{Operation, PlaneAxis, RevolveAxis, Sketch, SketchPoint, SketchSolid};
 pub use voxel_core::spatial_index::{LeafEntry, LeafFingerprint, LeafSpatialIndex, VoxelAabb};
-pub use vox_export::{VoxExport, VoxExportBuilder};
+// The headless `.vox` export sink now lives in the `interchange` crate (ADR 0016 Phase 5);
+// re-exported flat so `voxel_worker::VoxExport` / `VoxExportBuilder` keep resolving.
+pub use interchange::vox_export::{VoxExport, VoxExportBuilder};
 // Value vocabulary lives in the voxel_core crate; the producer half now lives in the
 // document crate. Both are re-exported flat so `voxel_worker::Voxel`, `voxel_worker::SdfShape`,
 // etc. keep resolving for the bins and integration tests.

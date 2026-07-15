@@ -111,6 +111,19 @@ jobs:
       - name: Test display
         run: cargo test -p display
 
+      # The interchange library is the HEADLESS export sink (one layer above evaluation,
+      # parallel to display): it serialises the evaluated boundary set to external formats —
+      # today the MagicaVoxel `.vox` writer — and NEVER links wgpu/egui/winit (export is
+      # CPU-owned truth; a headless build exports the same bytes). It imports no display/work/
+      # shell and carries its own gates so a regression in the exporter fails independently of
+      # the app crate. Its `.vox` parity tests hold the streamed/region export against the dense
+      # `Scene::resolve_region` oracle (document's `oracle` feature, TEST-only via its dev-dep).
+      - name: Clippy interchange (deny warnings)
+        run: cargo clippy -p interchange --all-targets -- -D warnings
+
+      - name: Test interchange
+        run: cargo test -p interchange
+
       # The camera library is the wgpu-free viewing + projective-geometry member
       # (orbit rig, projection, ViewCube, screen→ray unprojection, frustum culling);
       # it depends only on glam + substrate and carries its own gates so a regression
