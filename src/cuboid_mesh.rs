@@ -46,16 +46,6 @@ use crate::core_geom::CellKey;
 use crate::two_layer_store::{MicroblockGeometry, SeamSolidity, TwoLayerChunk};
 use crate::voxel::{RecentreVoxels, VoxelGrid};
 
-/// Compose the cuboid mesher's region-cell key for one resolved voxel (ADR 0003 §3c):
-/// the clean categorical colour index in the low bits, the transient on-face-grid marker
-/// in the high bit. A thin `Voxel`-reading wrapper over [`CellKey::compose`] so callers
-/// that already hold a `Voxel` (a higher layer than `core_geom`) build the SAME key. The
-/// overlay bit lives ONLY in this render-side key — never in the persistent `Voxel`
-/// payload, the chunk-storage codec, or the `.vox` export.
-pub fn mesh_cell_key(voxel: &crate::voxel::Voxel) -> u16 {
-    CellKey::compose(voxel.color_index(), voxel.grid_overlay).raw()
-}
-
 /// One mesh vertex of a cuboid face: world position, the face's outward normal, and the
 /// box's `block_id` (the clean colour index, constant across the face).
 ///
@@ -354,7 +344,7 @@ fn region_from_voxel_cloud(grid: &VoxelGrid) -> (VoxelRegion, [f32; 3]) {
     let mut region = VoxelRegion::new_empty(extent);
     for voxel in &grid.occupied {
         let [lx, ly, lz] = region_index(voxel.world_position());
-        region.set(lx as u32, ly as u32, lz as u32, Some(mesh_cell_key(voxel)));
+        region.set(lx as u32, ly as u32, lz as u32, Some(voxel.cell_key().raw()));
     }
 
     // World min-corner plane of region-local index 0 = its centre minus 0.5.
@@ -462,7 +452,7 @@ fn global_occupancy_from_chunks(chunk_grids: &[([i32; 3], &VoxelGrid)]) -> Globa
             let y = (position[1] - min_world[1]).round() as u32;
             let z = (position[2] - min_world[2]).round() as u32;
             let flat = (z as usize * h as usize + y as usize) * w as usize + x as usize;
-            occupied[flat] = Some(mesh_cell_key(voxel));
+            occupied[flat] = Some(voxel.cell_key().raw());
         }
     }
     GlobalOccupancy {
@@ -648,7 +638,7 @@ fn build_chunk_meshes_with_apron_filtered(
                 gmin[axis] = gmin[axis].min(index[axis]);
                 gmax[axis] = gmax[axis].max(index[axis]);
             }
-            chunk_indices.push((index, mesh_cell_key(voxel)));
+            chunk_indices.push((index, voxel.cell_key().raw()));
         }
         if chunk_indices.is_empty() {
             continue; // every voxel clipped away by the band

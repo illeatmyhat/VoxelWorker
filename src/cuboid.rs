@@ -108,7 +108,7 @@ pub fn region_from_voxel_grid(grid: &VoxelGrid, origin: [u32; 3], extent: [u32; 
         {
             continue;
         }
-        region.set(lx as u32, ly as u32, lz as u32, Some(crate::cuboid_mesh::mesh_cell_key(voxel)));
+        region.set(lx as u32, ly as u32, lz as u32, Some(voxel.cell_key().raw()));
     }
     region
 }
@@ -158,7 +158,7 @@ mod tests {
     fn grid_overlay_bit_blocks_box_merge() {
         // The on-face-grid flag is NOT in the per-voxel `block_id`. The CUBOID MESHER
         // composes a transient region-cell key (`block_id | overlay<<15`, via
-        // `cuboid_mesh::mesh_cell_key`) from each voxel's clean `block_id` + its
+        // `Voxel::cell_key`) from each voxel's clean `block_id` + its
         // `grid_overlay` marker, so this opaque `u16` (which `decompose_into_boxes`
         // treats representation-agnostically) splits a box across differing overlay
         // flags — without a render flag ever entering the categorical id.
@@ -170,8 +170,8 @@ mod tests {
             grid_overlay: overlay,
         };
         let base = 1u16; // Wood
-        let flagged = crate::cuboid_mesh::mesh_cell_key(&make_voxel(base, true));
-        let plain = crate::cuboid_mesh::mesh_cell_key(&make_voxel(base, false));
+        let flagged = make_voxel(base, true).cell_key().raw();
+        let plain = make_voxel(base, false).cell_key().raw();
         assert_ne!(flagged, plain, "the overlay marker must change the mesher's cell key");
         // A 4×1×1 row: x<2 flagged, x>=2 plain — same base block, differing overlay.
         let extent = [4, 1, 1];
