@@ -2453,7 +2453,7 @@ mod tests {
     /// multi-object scene so the levels actually span more than one cell.
     #[test]
     fn clipmap_pyramid_is_conservative_and_sorted() {
-        use crate::{Node, NodeContent, NodeTransform};
+        use document::scene::{Node, NodeContent, NodeTransform};
         for &voxels_per_block in &[16u32, 4] {
             // A dozen small shapes far apart — the scattered scene the LOD targets.
             let mut nodes = Vec::new();
@@ -2536,7 +2536,7 @@ mod tests {
     /// at two densities.
     #[test]
     fn clipmap_from_chunks_equals_from_full_records() {
-        use crate::{Node, NodeContent, NodeTransform};
+        use document::scene::{Node, NodeContent, NodeTransform};
         for &voxels_per_block in &[16u32, 4] {
             // (a) A solid box: every interior chunk is fully-solid → exercises the bulk path.
             let box_scene = Scene::from_geometry(
@@ -2596,7 +2596,7 @@ mod tests {
     /// fully-solid path, heavy interior) and a scattered scene (the per-block partial path).
     #[test]
     fn block_occupancy_masks_mark_exactly_the_full_record_blocks() {
-        use crate::{Node, NodeContent, NodeTransform};
+        use document::scene::{Node, NodeContent, NodeTransform};
         for &voxels_per_block in &[16u32, 4] {
             let box_scene = Scene::from_geometry(
                 GeometryParams {

@@ -19,23 +19,17 @@
 
 // ADR 0003 keystone: headless orchestrator (scene + store + camera). See app_core.rs.
 pub mod app_core;
-pub mod assets;
-pub mod block_palette;
-// ADR 0011 G0: the brick-field BUILD (two-layer boundary set → sorted BrickRecords +
-// R8 sculpted-brick atlas), wired to nothing — parity-gated ahead of the G1 raymarch.
-pub mod brick_field;
-// ADR 0011 G1: the minimal brick raymarch display sink (block DDA + record binary
-// search + sculpted voxel DDA, residency-miss contract, per-sample MSAA depth).
-pub mod brick_raymarch;
-// The display subsystem: the pure per-edit routing policy for the two display pipelines
-// (cuboid mesh + brick raymarch). The DisplayOrchestrator state machine joins it later.
-pub mod display;
-pub mod cuboid_mesh;
+// The engagement subsystem: the WORK-LAYER state machine that owns both async workers
+// (GeometryWorker + BrickWorker) and the pure per-edit routing policy for the two display
+// pipelines (cuboid mesh + brick raymarch). It sits ABOVE the `display` crate — it DRIVES
+// the GPU sinks and owns the workers, so it was reclassified out of `display` at the ADR 0016
+// Phase 4a cut and stays in this app crate until the work-crate cut places it. The wgpu-
+// linking GPU sinks themselves (renderer, cuboid_mesh, brick_field, brick_raymarch,
+// texture_atlas, block_palette, assets) now live in the `display` crate.
+pub mod engagement;
 pub mod gpu;
 pub mod panel;
-pub mod renderer;
 pub mod settings;
-pub mod texture_atlas;
 pub mod vox_export;
 // The background workers, grouped: the generic drain-to-latest/supersede/panic-catch
 // Worker in `workers::mod`, with the geometry / diameter / brick / scan domain workers
@@ -54,7 +48,7 @@ pub use app_core::{
     default_replay_seed_scene, replay_intent_script, AppCore, RebuildOutcome, RebuildOutput,
 };
 pub use evaluation::store::{ChunkCacheKey, ChunkResolveCache, Store};
-pub use brick_field::{
+pub use display::brick_field::{
     build_brick_field, build_brick_field_all_blocks, build_brick_field_with_tiles,
     pack_clipmap_level_keys, pack_world_block_key,
     read_back_brick_atlas, unpack_world_block_key, upload_brick_atlas,
@@ -65,7 +59,7 @@ pub use brick_field::{
     CELL_KEY_TEXEL_BYTES, CLIPMAP_LEVEL_1_BLOCKS_PER_CELL, CLIPMAP_LEVEL_2_BLOCKS_PER_CELL,
     CLIPMAP_LEVEL_3_BLOCKS_PER_CELL,
 };
-pub use brick_raymarch::{
+pub use display::brick_raymarch::{
     cpu_brick_hit_material, cpu_march_brick_field, cpu_march_brick_field_counted,
     cpu_march_levels_counted, cpu_march_exact_occupancy,
     pack_gpu_records, BrickGpuRecord,
@@ -75,15 +69,15 @@ pub use workers::brick::{
     build_brick_rebuild, spawn_brick_worker, BrickDisplayInstall, BrickRebuildOutcome,
     BrickRebuildRequest, BrickRebuildResult, BrickWorker,
 };
-pub use display::orchestrator::{DisplayOrchestrator, DisplayRefreshContext};
-pub use display::routing::{
+pub use engagement::orchestrator::{DisplayOrchestrator, DisplayRefreshContext};
+pub use engagement::routing::{
     brick_display_handover, brick_patch_in_place, route_brick_rebuild, route_geometry_rebuild,
     route_mesh_build, BrickDisplayHandover, BrickRebuildAction, EditShape, GenerationTracker,
     MeshBuildRoute, RebuildRoute, ASYNC_REBUILD_CHUNK_THRESHOLD,
 };
 pub use evaluation::chunk_storage::{compress, decompress, CompressedChunk, Occupancy, SparseCell};
 pub use evaluation::disk_chunk_store::{DiskChunkStore, DiskChunkStoreStats};
-pub use cuboid_mesh::{build_cuboid_mesh, CuboidMesh, CuboidMeshRenderer};
+pub use display::cuboid_mesh::{build_cuboid_mesh, CuboidMesh, CuboidMeshRenderer};
 pub use workers::geometry::{
     build_geometry, spawn_geometry_worker, GeometryRebuildRequest, GeometryRebuildResult,
     GeometryWorker,
@@ -95,7 +89,7 @@ pub use workers::export::{
     spawn_vox_export_worker, VoxExportRequest, VoxExportResult, VoxExportSummary, VoxExportWorker,
 };
 pub use workers::Worker;
-pub use texture_atlas::{AtlasSubRect, MaterialAtlas};
+pub use display::texture_atlas::{AtlasSubRect, MaterialAtlas};
 pub use document::debug_clouds::DebugCloudField;
 pub use camera::{
     adjacent_face, chrome_zone_left_click_action, classify_cube_point,
@@ -110,13 +104,13 @@ pub use panel::{
     build_panel, ExportPanelState, LayerRange, PanelResponse,
     PanelState,
 };
-pub use assets::{CubeFaceSlot, FaceProvenance, FaceTextures};
-pub use renderer::{
+pub use display::assets::{CubeFaceSlot, FaceProvenance, FaceTextures};
+pub use display::renderer::{
     create_depth_view, create_msaa_color_view, InfiniteGridRenderer, LayerBand, MaterialSource,
     OnionFogParams, PointsRenderer, SceneGridRenderer, TransformGizmoRenderer, ViewCubeRenderer,
     DEPTH_FORMAT, MSAA_SAMPLE_COUNT, VIEW_CUBE_VIEWPORT_PIXELS,
 };
-pub use renderer::procedural_material_average_color;
+pub use display::renderer::procedural_material_average_color;
 pub use document::scene::{
     AssemblyDef, CombineOp, DefId, Node, NodeBuilder, NodeContent, NodeId, NodePath, NodeTransform,
     Part, Point, RegionBlocks, Scene,
@@ -248,7 +242,7 @@ pub fn run_egui_frame(
     grid_z: u32,
     measured_diameter: u32,
     export: panel::ExportPanelState,
-    palette: &block_palette::BlockPalette,
+    palette: &display::block_palette::BlockPalette,
     raw_input: egui::RawInput,
     size_in_pixels: [u32; 2],
     pixels_per_point: f32,
@@ -409,8 +403,8 @@ pub fn run_egui_frame(
 /// Each is `None` when its Display toggle is off, so the caller controls
 /// visibility without the renderer caring.
 pub struct FrameOverlays<'a> {
-    pub gizmo: Option<&'a renderer::TransformGizmoRenderer>,
-    pub view_cube: Option<&'a renderer::ViewCubeRenderer>,
+    pub gizmo: Option<&'a display::renderer::TransformGizmoRenderer>,
+    pub view_cube: Option<&'a display::renderer::ViewCubeRenderer>,
     /// The ViewCube chrome zone under the cursor (#13 Step 2). Drives which hover
     /// arrows the cube draws and which glyph is highlighted. `None` = nothing
     /// hovered (the normal render: compass + Home/Fit only, no arrows).
@@ -424,19 +418,19 @@ pub struct FrameOverlays<'a> {
     /// pass (depth-tested) before the gizmo. The renderer's per-frame batch already
     /// holds only the grid-enabled nodes' lines (master AND per-object), so the draw
     /// is self-gating; `None` skips it entirely.
-    pub scene_grid: Option<&'a renderer::SceneGridRenderer>,
+    pub scene_grid: Option<&'a display::renderer::SceneGridRenderer>,
     /// The world reference AXES (issue #29 S5): every visible Point's axis lines.
     /// Drawn in the MSAA pass (depth-tested) with the scene-grid line batch, so opaque
     /// voxels occlude them. Its batch already holds only the visible Points' enabled
     /// axes (self-gating); `None` skips it entirely (the `shot` default, so the
     /// existing goldens are unchanged).
-    pub points: Option<&'a renderer::PointsRenderer>,
+    pub points: Option<&'a display::renderer::PointsRenderer>,
     /// The analytic infinite reference grid (issue #29 Points fast-follow): every
     /// visible Point's enabled PLANES, drawn as fullscreen ray-plane passes in the
     /// MSAA pass after the voxels (depth-tested via `frag_depth`), so opaque objects
     /// occlude the grid. Replaces the old finite tiled-line ground plane. Self-gating
     /// (no enabled plane → no draw); `None` skips it (the `shot` default).
-    pub infinite_grid: Option<&'a renderer::InfiniteGridRenderer>,
+    pub infinite_grid: Option<&'a display::renderer::InfiniteGridRenderer>,
     /// ADR 0012: draw the onion GHOST pass this frame. When `true`, immediately
     /// after the solid voxel draw (inside the shared MSAA pass), the engaged display
     /// path (brick raymarch when present, else the cuboid mesh) draws its translucent
@@ -453,13 +447,13 @@ pub struct FrameOverlays<'a> {
     /// uniforms must already be uploaded via `CuboidMeshRenderer::update_uniforms`.
     /// Kept PERMANENTLY as the headless/no-GPU fallback + A/B reference (ADR 0011
     /// Decision 6) even when the brick path below takes the frame.
-    pub cuboid_mesh: &'a cuboid_mesh::CuboidMeshRenderer,
+    pub cuboid_mesh: &'a display::cuboid_mesh::CuboidMeshRenderer,
     /// ADR 0011 G1: the brick raymarch display sink. `Some` replaces the cuboid
     /// mesh DRAW for this frame (single ported-producer scenes on the GPU path) —
     /// the pass runs in the same MSAA pass and writes ray-hit depth, so every
     /// overlay/fog/cube/egui pass after it composites unchanged. `None` keeps the
     /// mesh path (multi-producer, loaded materials, debug modes, no-GPU builds).
-    pub brick_raymarch: Option<&'a brick_raymarch::BrickRaymarchRenderer>,
+    pub brick_raymarch: Option<&'a display::brick_raymarch::BrickRaymarchRenderer>,
     /// Target dimensions (needed to place the view-cube corner viewport).
     pub target_width: u32,
     pub target_height: u32,
@@ -473,7 +467,7 @@ pub fn render_frame(
     target_view: &wgpu::TextureView,
     msaa_color_view: &wgpu::TextureView,
     depth_view: &wgpu::TextureView,
-    material: renderer::MaterialSource,
+    material: display::renderer::MaterialSource,
     overlays: &FrameOverlays,
     prepared: &PreparedEguiFrame,
 ) {
@@ -544,8 +538,8 @@ pub fn render_frame(
         // depth into this same MSAA depth attachment, so the depth-tested overlays
         // below (and the fog's depth-stop) composite identically on both paths.
         let loaded_material = match material {
-            renderer::MaterialSource::Loaded(bind_group) => Some(bind_group),
-            renderer::MaterialSource::Procedural(_) => None,
+            display::renderer::MaterialSource::Loaded(bind_group) => Some(bind_group),
+            display::renderer::MaterialSource::Procedural(_) => None,
         };
         if let Some(brick_raymarch) = overlays.brick_raymarch {
             // ADR 0011 G2: a loaded VS block now textures the raymarch too — bind the

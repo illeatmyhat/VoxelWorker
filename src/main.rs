@@ -12,7 +12,7 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::window::{Window, WindowId};
 
-use voxel_worker::block_palette::{BlockPalette, LoadedMaterial, ThumbnailRenderer};
+use display::block_palette::{BlockPalette, LoadedMaterial, ThumbnailRenderer};
 use voxel_worker::workers::scan::{
     spawn_auto_scan, spawn_custom_folder_scan, FaceResolver, ScanHandle, ScanMessage,
 };
@@ -88,7 +88,7 @@ struct WindowedState {
     scan_handle: Option<ScanHandle>,
     /// Groups received from the scan worker but not yet turned into tiles; drained
     /// a few per frame so a few-hundred-block scan doesn't hitch a single frame.
-    pending_groups: std::collections::VecDeque<(voxel_worker::assets::BlockGroup, voxel_worker::assets::DecodedRgba)>,
+    pending_groups: std::collections::VecDeque<(display::assets::BlockGroup, display::assets::DecodedRgba)>,
     /// Final group count from the worker's `Done`, applied to the status line once
     /// the pending queue is fully drained.
     scan_total: Option<usize>,

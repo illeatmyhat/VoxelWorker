@@ -15,7 +15,7 @@
 //! [`substrate::catch_unwind_or_log`], re-exported here so the worker call sites stay put.
 //! The supersede/interlock contracts that decide WHICH rebuild is dispatched, and whether
 //! an arriving result is accepted, live with the domains (their `route_*` decisions +
-//! [`crate::display::routing::GenerationTracker`]). See `docs/architecture/04-work.md` (the
+//! [`crate::engagement::routing::GenerationTracker`]). See `docs/architecture/04-work.md` (the
 //! work chapter) for the seam.
 //!
 //! The domain workers themselves live in the submodules: [`brick`], [`diameter`],

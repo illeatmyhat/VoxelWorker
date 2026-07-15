@@ -19,7 +19,7 @@
 use std::sync::mpsc::{Receiver, Sender};
 use std::thread::JoinHandle;
 
-use crate::assets::{
+use display::assets::{
     custom_pack::CustomFolderSource, decode_rgba, registry::detect_all_sources, BlockGroup,
     BlockSource, DecodedRgba,
 };
@@ -164,10 +164,10 @@ impl FaceResolver {
         &self,
         group: &BlockGroup,
         chosen_variant: &std::path::Path,
-    ) -> crate::assets::FaceTextures {
+    ) -> display::assets::FaceTextures {
         // A single source is the common case; try each and take the first that
         // returns a genuinely per-face (non-uniform) mapping, else the first.
-        let mut fallback: Option<crate::assets::FaceTextures> = None;
+        let mut fallback: Option<display::assets::FaceTextures> = None;
         for source in &self.sources {
             let faces = source.resolve_faces(group, chosen_variant);
             if !faces.is_uniform() {
@@ -177,6 +177,6 @@ impl FaceResolver {
                 fallback = Some(faces);
             }
         }
-        fallback.unwrap_or_else(|| crate::assets::FaceTextures::uniform(chosen_variant.to_path_buf()))
+        fallback.unwrap_or_else(|| display::assets::FaceTextures::uniform(chosen_variant.to_path_buf()))
     }
 }

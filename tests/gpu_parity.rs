@@ -886,7 +886,7 @@ fn brick_loaded_material_hit_samples_mesh_rule_texel() {
         .map(|color| color.repeat(4)) // 2×2 pixels
         .collect();
     let layer_slices: [&[u8]; 6] = std::array::from_fn(|i| layer_bytes[i].as_slice());
-    let material_layout = voxel_worker::renderer::build_face_material_layout(&gpu.device);
+    let material_layout = display::renderer::build_face_material_layout(&gpu.device);
     let sampler = gpu.device.create_sampler(&wgpu::SamplerDescriptor {
         label: Some("test loaded material sampler"),
         address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -897,7 +897,7 @@ fn brick_loaded_material_hit_samples_mesh_rule_texel() {
         mipmap_filter: wgpu::MipmapFilterMode::Nearest,
         ..Default::default()
     });
-    let loaded = voxel_worker::block_palette::LoadedMaterial::from_face_layers(
+    let loaded = display::block_palette::LoadedMaterial::from_face_layers(
         &gpu.device,
         &gpu.queue,
         &material_layout,

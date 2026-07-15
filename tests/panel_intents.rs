@@ -15,7 +15,7 @@
 
 use egui::{Context, RawInput, Rect, pos2, vec2};
 
-use voxel_worker::block_palette::BlockPalette;
+use display::block_palette::BlockPalette;
 use voxel_worker::{build_panel, PanelState};
 
 /// Run one headless `build_panel` frame over a 1280×720 surface with an empty

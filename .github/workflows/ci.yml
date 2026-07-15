@@ -97,6 +97,20 @@ jobs:
       - name: Test evaluation
         run: cargo test -p evaluation
 
+      # The display library is the ONE CRATE THAT LINKS wgpu (one layer above evaluation):
+      # every GPU sink — the cuboid mesher, the brick field + raymarch, the material atlas,
+      # the block palette + thumbnails, the asset packs, and the render pipelines. It consumes
+      # the evaluation layer's classified two-layer chunks and produces pixels; the device/
+      # queue are handed in, and it imports no work/shell. It carries its own gates so a
+      # regression in a GPU sink fails independently of the app crate. (These CPU-side tests
+      # need no GPU device; the GPU-device integration suites stay in the app under
+      # `cargo test --features gpu`.)
+      - name: Clippy display (deny warnings)
+        run: cargo clippy -p display --all-targets -- -D warnings
+
+      - name: Test display
+        run: cargo test -p display
+
       # The camera library is the wgpu-free viewing + projective-geometry member
       # (orbit rig, projection, ViewCube, screen→ray unprojection, frustum culling);
       # it depends only on glam + substrate and carries its own gates so a regression

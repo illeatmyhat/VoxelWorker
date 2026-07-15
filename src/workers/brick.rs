@@ -24,27 +24,27 @@
 //! The same contract as every display worker, on the shared [`crate::workers::Worker`]:
 //! every request carries a monotonic generation, the worker drains its queue to the
 //! latest, and the shell (via
-//! [`GenerationTracker`](crate::display::routing::GenerationTracker)) discards any result
+//! [`GenerationTracker`](crate::engagement::routing::GenerationTracker)) discards any result
 //! whose generation a later edit superseded.
 //!
 //! ## The interlock (the fog/mesh-era law: NEVER patch a stale artifact)
 //! Where a brick edit is routed — and its DELIBERATE divergence from the geometry mesh
 //! (a mid-flight SMALL wholesale rebuilds INLINE for bricks, sound only because the
 //! shell's inline install seam `finish_brick_install` bumps the generation) — is decided
-//! by [`route_brick_rebuild`](crate::display::routing::route_brick_rebuild). The interlock
+//! by [`route_brick_rebuild`](crate::engagement::routing::route_brick_rebuild). The interlock
 //! law and that divergence note live next to the function, in the
-//! [`crate::display::routing`] module doc.
+//! [`crate::engagement::routing`] module doc.
 
 use std::sync::Arc;
 
 #[cfg(test)]
-use crate::brick_field::build_brick_field;
-use crate::brick_field::{
+use display::brick_field::build_brick_field;
+use display::brick_field::{
     build_brick_field_with_tiles, ClipmapPyramid, IncrementalBrickField, SculptedAtlasPayload,
     SculptedCellKeyAtlasPayload,
 };
 use voxel_core::voxel::RecentreVoxels;
-use crate::brick_raymarch::{pack_gpu_records, BrickGpuRecord};
+use display::brick_raymarch::{pack_gpu_records, BrickGpuRecord};
 use evaluation::two_layer_store::TwoLayerChunk;
 use crate::workers::{build_catching, Worker};
 

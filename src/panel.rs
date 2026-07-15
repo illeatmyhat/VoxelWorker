@@ -17,7 +17,7 @@
 //! sets [`GeometryParams::shape`] (never the size or the camera), and changing
 //! density only sets [`GeometryParams::voxels_per_block`] (never the block size).
 
-use crate::block_palette::BlockPalette;
+use display::block_palette::BlockPalette;
 use camera::ProjectionMode;
 use voxel_core::core_geom::MaterialChoice;
 use document::intent::{Intent, NodeSpec};

@@ -13,7 +13,7 @@ edition = "2021"
 # (the "Substrate" section) and docs/design/per-layer-crates-extraction-map.md for the
 # boundary law.
 [workspace]
-members = [".", "crates/substrate", "crates/camera", "crates/raycast", "crates/voxel_core", "crates/document", "crates/evaluation"]
+members = [".", "crates/substrate", "crates/camera", "crates/raycast", "crates/voxel_core", "crates/document", "crates/evaluation", "crates/display"]
 
 [lib]
 name = "voxel_worker"
@@ -73,6 +73,13 @@ document = { path = "crates/document" }
 # Consumes the document, produces the classified boundary set; imports no display/work/
 # shell. See docs/architecture/02-evaluation.md.
 evaluation = { path = "crates/evaluation" }
+# The DISPLAY library (one layer above evaluation): the ONLY crate that links wgpu. Every GPU
+# sink — the cuboid mesher, the brick field + raymarch, the material atlas, the block palette,
+# the asset packs, the render pipelines — lives here; it consumes the evaluation layer's
+# classified two-layer chunks and produces pixels. The device/queue are handed in from the
+# shell; it imports no work/shell. The engagement orchestrator/routing (which OWN the async
+# workers) are work-layer and stay in this app crate for now. See docs/architecture/03-display.md.
+display = { path = "crates/display" }
 # The viewing + projective-geometry library (orbit rig, projection, ViewCube,
 # screen→ray unprojection, frustum culling). wgpu-free graphics mathematics;
 # depends only on glam + substrate.

@@ -1,0 +1,69 @@
+[package]
+name = "display"
+version = "0.1.0"
+edition = "2021"
+
+# The DISPLAY crate: the ONE crate in the workspace that links wgpu. Every GPU sink lives
+# here — the cuboid fallback mesher (`cuboid_mesh`), the brick field build + its GPU record
+# pack (`brick_field`), the brick raymarch display pipeline (`brick_raymarch`), the material
+# texture atlas (`texture_atlas`), the block palette + thumbnail renderer (`block_palette`),
+# the asset pack decode/registry (`assets`), and the render pipelines + view cube + grids
+# (`renderer`). A component belongs here iff it CONSUMES the classified boundary set (the
+# evaluation layer's two-layer chunks) and PRODUCES pixels — it names a wgpu device, queue,
+# pipeline, buffer, or shader. The GPU device/queue are handed IN from the shell as
+# parameters; this crate NEVER creates a device, opens a surface, or touches a window
+# (no winit, no egui-winit) — windowing and event handling are the shell's. It sits ABOVE
+# `evaluation` (whose two-layer chunks it meshes/raymarches) and BELOW the work + shell
+# layers; the dependency edge is one-way (`evaluation <- display <- {work, shell}`),
+# compile-enforced — an upward `use` (orchestrator, routing, workers, app_core, panel,
+# settings, vox_export, gpu) fails to build. The display-state machine that OWNS the async
+# workers (the engagement orchestrator/routing) is therefore NOT here: it is work-layer and
+# lands at the work-crate cut. See docs/architecture/03-display.md for the layer this crate
+# realises and docs/design/per-layer-crates-extraction-map.md (the display row) for provenance.
+
+[dependencies]
+# The classified boundary set this crate meshes + raymarches: the two-layer chunk
+# (TwoLayerChunk / TwoLayerResidentCache) + the boundary microblock geometry the GPU sinks read.
+evaluation = { path = "../evaluation" }
+# The authored-TRUTH layer: the Scene the resolve oracles densify in tests, and the
+# scene-graph nouns (Node / NodeContent / NodeTransform) the brick-field tests build fixtures from.
+document = { path = "../document" }
+# The foundational value vocabulary: the resolved Voxel + the block palette id / cell-key
+# codec + BlockAttrs, CHUNK_BLOCKS, the recentre frame (RecentreVoxels), and the absolute-voxel box.
+voxel_core = { path = "../voxel_core" }
+# The pure CS/math substrate (interval arithmetic, cuboid decomposition, GenerationTracker) the
+# GPU sinks and the packed records are built on.
+substrate = { path = "../substrate" }
+# The viewing + projective-geometry library (orbit rig, projection, ViewCube geometry) the
+# renderer + view cube pass bind uniforms from. wgpu-free graphics mathematics.
+camera = { path = "../camera" }
+# The ray–volume traversal library (block/voxel DDA, hierarchical empty-space skip): the CPU
+# brick march is its domain adapter and the WGSL raymarch shader its GPU mirror.
+raycast = { path = "../raycast" }
+# The GPU API. This is the ONE crate that links it — the workspace's wgpu boundary.
+wgpu = "29.0.3"
+# The immediate-mode UI toolkit: the block-palette thumbnail exposes an `egui::TextureId`.
+egui = "0.34.3"
+# The egui↔wgpu bridge: the block palette registers thumbnails with the egui-wgpu Renderer.
+egui-wgpu = "0.34.3"
+# Vector/matrix mathematics for the vertex/uniform layouts and the CPU-side geometry.
+glam = "0.33.1"
+# Zero-copy POD casts for the vertex/instance/uniform buffers uploaded to the GPU.
+bytemuck = { version = "1.25", features = ["derive"] }
+# Decode/encode the material + thumbnail textures (PNG asset packs → RGBA).
+image = "0.25"
+# Data-parallel meshing / record building across the covering chunk set.
+rayon = "1"
+# Profiling facade (no-op unless a backend feature is enabled upstream): GPU-sink zones.
+profiling = "1"
+# Parse Vintage Story's lenient block/texture JSON in the asset registry.
+serde_json = "1"
+# Walk a chosen asset-pack directory to enumerate its blocks/textures.
+walkdir = "2"
+
+[dev-dependencies]
+# The display crate's own tests hold the mesh / brick paths against the dense
+# `Scene::resolve_region` oracle (document's `oracle` feature) and reach the positional
+# `root_node_mut` test fixtures (document's `test-support` feature). Both ship only in TEST
+# builds; production `cargo build` never enables them.
+document = { path = "../document", features = ["oracle", "test-support"] }

@@ -20,8 +20,8 @@
 
 use egui::{pos2, vec2, Event, PointerButton, Pos2, RawInput, Rect};
 
-use voxel_worker::assets::BlockGroup;
-use voxel_worker::block_palette::{BlockPalette, ThumbnailRenderer};
+use display::assets::BlockGroup;
+use display::block_palette::{BlockPalette, ThumbnailRenderer};
 use voxel_worker::{build_panel, EguiPaintBridge, GpuContext, PanelState, VoxelGrid};
 
 /// A tiny solid-colour decoded RGBA image to stand in for a block texture.

@@ -717,6 +717,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "display"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "camera",
+ "document",
+ "egui",
+ "egui-wgpu",
+ "evaluation",
+ "glam",
+ "image",
+ "profiling",
+ "raycast",
+ "rayon",
+ "serde_json",
+ "substrate",
+ "voxel_core",
+ "walkdir",
+ "wgpu",
+]
+
+[[package]]
 name = "displaydoc"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3474,6 +3496,7 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "camera",
+ "display",
  "document",
  "dot_vox",
  "egui",

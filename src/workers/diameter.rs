@@ -20,7 +20,7 @@
 //! measurement of the NEWEST request via the shared [`crate::workers::Worker`]
 //! drain-to-latest loop, and the shell discards any result whose generation is not the
 //! newest it dispatched — reusing
-//! [`GenerationTracker`](crate::display::routing::GenerationTracker) on the shell side, like
+//! [`GenerationTracker`](crate::engagement::routing::GenerationTracker) on the shell side, like
 //! every other display worker.
 
 use document::scene::Scene;

@@ -31,14 +31,14 @@
 //! worker builds only the newest pending request. The shell **discards any received result
 //! whose generation is stale** (an older generation than the newest request it has
 //! dispatched); that accept/discard decision is factored into
-//! [`GenerationTracker`](crate::display::routing::GenerationTracker) so it is unit-testable
+//! [`GenerationTracker`](crate::engagement::routing::GenerationTracker) so it is unit-testable
 //! without a live window.
 
 use std::sync::Arc;
 
 use voxel_core::voxel::RecentreVoxels;
-use crate::cuboid_mesh::CuboidMeshRenderer;
-use crate::renderer::LayerBand;
+use display::cuboid_mesh::CuboidMeshRenderer;
+use display::renderer::LayerBand;
 use evaluation::two_layer_store::TwoLayerChunk;
 use crate::workers::{build_catching, Worker};
 
@@ -48,7 +48,7 @@ use crate::workers::{build_catching, Worker};
 pub struct GeometryRebuildRequest {
     /// Monotonic generation stamp (supersede key). A result is accepted only when its
     /// generation matches the newest request the shell has dispatched (see
-    /// [`GenerationTracker`](crate::display::routing::GenerationTracker)).
+    /// [`GenerationTracker`](crate::engagement::routing::GenerationTracker)).
     pub generation: u64,
     /// The two-layer covering chunks the resolve produced, `Arc`-shared out of the resident
     /// cache (`Arc<TwoLayerChunk>` is `Send + Sync`, so the request stays `Send` — the move
