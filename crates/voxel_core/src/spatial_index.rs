@@ -8,9 +8,8 @@
 //! The domain seam for the substrate spatial primitives lives here:
 //!
 //! * [`VoxelAabb`] — the domain name for substrate's half-open integer box, read as an
-//!   **absolute-voxel** box `[min, max)`: the exact frame
-//!   [`Scene::resolve_chunk`](crate::scene::Scene::resolve_chunk) and chunk ownership
-//!   (`floor(position / chunk_extent)`) live in. [`ChunkCoverage`] adds the domain-only
+//!   **absolute-voxel** box `[min, max)`: the exact frame `Scene::resolve_chunk` and
+//!   chunk ownership (`floor(position / chunk_extent)`) live in. [`ChunkCoverage`] adds the domain-only
 //!   reading (a box → the chunk coordinates it touches) that substrate's pure box omits.
 //! * [`EditBroadphaseBvh`] — the domain name for substrate's `Bvh` used as THE edit
 //!   broadphase (ADR 0011 Decision 4b, #66): a per-build BVH over producer world-AABBs
@@ -67,8 +66,7 @@ pub use substrate::spatial::Bvh as EditBroadphaseBvh;
 pub trait ChunkCoverage {
     /// The inclusive `[min_chunk, max_chunk]` range, or `None` when the box is empty.
     /// The lowest chunk owns `min`, the highest owns `max - 1` (the last occupied voxel
-    /// of the half-open box). Mirrors
-    /// [`Scene::covering_chunk_range`](crate::scene::Scene::covering_chunk_range).
+    /// of the half-open box). Mirrors the app-crate `Scene::covering_chunk_range`.
     fn covering_chunk_range(&self, voxels_per_block: u32) -> Option<([i32; 3], [i32; 3])>;
 }
 
@@ -127,7 +125,7 @@ pub struct LeafEntry {
 
 /// A flat spatial index over a scene's leaf world-AABBs at a fixed density.
 ///
-/// Built by [`Scene::build_leaf_spatial_index`](crate::scene::Scene::build_leaf_spatial_index)
+/// Built by the app-crate `Scene::build_leaf_spatial_index`
 /// from a single `for_each_leaf` walk, so the set of entries is — by construction —
 /// exactly the leaves that walk yields. Queried by AABB overlap
 /// ([`leaves_intersecting`](Self::leaves_intersecting)); diffed against a previous
@@ -240,8 +238,7 @@ struct VoxelAabbKey {
 }
 
 /// Narrow an `i64` chunk coordinate to `i32` (the cache-key / chunk-index width).
-/// See the audit note on
-/// [`Scene::covering_chunk_range`](crate::scene::Scene::covering_chunk_range): the
+/// See the audit note on the app-crate `Scene::covering_chunk_range`: the
 /// absolute-voxel math is i64, but the chunk coordinate stays well inside i32 for
 /// the supported offset range (S4a).
 fn narrow_chunk_coord(chunk_coord: i64) -> i32 {

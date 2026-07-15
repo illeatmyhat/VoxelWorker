@@ -957,7 +957,7 @@ fn build_demo_two_material(voxels_per_block: u32) -> Scene {
 /// same block). The golden pins its brick render == its mesh render — the proof the mixed-material
 /// mesh cliff is closed. The 2-voxel X offset lands mid-block for any `voxels_per_block >= 3`.
 fn build_demo_mixed_material(voxels_per_block: u32) -> Scene {
-    use voxel_worker::units::Measurement;
+    use voxel_core::units::Measurement;
     let stone = {
         let shape = SdfShape::from_blocks(ShapeKind::Box, [4, 4, 4], 1, voxels_per_block);
         Node::new("Stone", NodeContent::Tool { shape, material: MaterialChoice::Stone })
@@ -1530,8 +1530,8 @@ async fn run_capture(options: ShotOptions) {
     // Part-only branches (which build no dense per-chunk accessor).
     let mut reference_store: Option<voxel_worker::Store> = None;
     let (grid, region_dimensions, mut render_chunks_for_mesh) =
-        if voxel_worker::voxel::chunk_extent_exceeds_bound(density) {
-            let chunk_extent = (voxel_worker::core_geom::CHUNK_BLOCKS * density.max(1)) as u64;
+        if voxel_core::voxel::chunk_extent_exceeds_bound(density) {
+            let chunk_extent = (voxel_core::core_geom::CHUNK_BLOCKS * density.max(1)) as u64;
             let chunk_voxels = chunk_extent * chunk_extent * chunk_extent;
             panel_state.voxel_cap_warning_millions = Some(chunk_voxels as f32 / 1_000_000.0);
             eprintln!(
@@ -1672,7 +1672,7 @@ async fn run_capture(options: ShotOptions) {
         let mut palette_colors = VoxExport::block_palette_from_active(options.material, representative);
         for (slot, color) in palette_colors.iter_mut().enumerate() {
             *color = procedural_material_average_color(
-                voxel_worker::core_geom::MaterialChoice::from_material_id(slot as u16),
+                voxel_core::core_geom::MaterialChoice::from_material_id(slot as u16),
             );
         }
         palette_colors[options.material.material_id() as usize] = representative;

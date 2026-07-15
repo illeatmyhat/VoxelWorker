@@ -20,10 +20,9 @@
 //! tested where it now lives, in `substrate::interval::field_interval`; this file keeps only the
 //! producer-vs-brute-force exactness gate.
 
-use crate::spatial_index::VoxelAabb;
-use crate::voxel::{
-    FieldClassification, SdfShape, ShapeKind, VoxelGrid, VoxelProducer, SURFACE_ISOLEVEL,
-};
+use voxel_core::spatial_index::VoxelAabb;
+use voxel_core::voxel::{ShapeKind, VoxelGrid, SURFACE_ISOLEVEL};
+use crate::voxel::{FieldClassification, SdfShape, VoxelProducer};
 
 /// Count the voxels brute force actually fills inside `cell` (in the producer's local
 /// voxel-index frame) by resolving JUST that window. Returns `(occupied, total)` where

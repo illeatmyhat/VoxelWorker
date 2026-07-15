@@ -5,11 +5,12 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::core_geom::MaterialChoice;
+use voxel_core::core_geom::MaterialChoice;
 use crate::debug_clouds::DebugCloudField;
 use crate::sketch::SketchSolid;
-use crate::spatial_index::VoxelAabb;
-use crate::voxel::{SdfShape, VoxelGrid, VoxelProducer};
+use voxel_core::spatial_index::VoxelAabb;
+use voxel_core::voxel::{VoxelGrid};
+use crate::voxel::{SdfShape, VoxelProducer};
 
 use super::*;
 
@@ -113,7 +114,7 @@ impl Scene {
         let region_dimensions = self.placed_region_dimensions(voxels_per_block);
         let mut leaves = Vec::new();
         self.for_each_leaf(&mut |world_offset_voxels, content, grid_on_faces| {
-            let (material, producer): (Option<crate::core_geom::BlockId>, Box<dyn VoxelProducer>) =
+            let (material, producer): (Option<voxel_core::core_geom::BlockId>, Box<dyn VoxelProducer>) =
                 match content {
                     NodeContent::Tool { shape, material } => {
                         (material_id_for(*material), Box::new(shape.clone()))
@@ -354,7 +355,7 @@ impl Scene {
     /// `recentre_voxels`).
     ///
     /// A chunk is a `CHUNK_BLOCKS³`-block cell (`CHUNK_BLOCKS = 4`,
-    /// [`crate::core_geom::CHUNK_BLOCKS`]); one chunk therefore spans
+    /// [`voxel_core::core_geom::CHUNK_BLOCKS`]); one chunk therefore spans
     /// `CHUNK_BLOCKS * voxels_per_block` voxels per axis. `chunk_coord` is that
     /// cell's integer coordinate, so the chunk covers the **half-open** absolute
     /// voxel box
@@ -413,7 +414,7 @@ impl Scene {
 
         // Chunk extent fits i64 trivially; the chunk's absolute-voxel corners can be
         // large (a far-placed chunk), so they are computed in i64 (S4a).
-        let chunk_extent_voxels = (crate::core_geom::CHUNK_BLOCKS * voxels_per_block.max(1)) as i64;
+        let chunk_extent_voxels = (voxel_core::core_geom::CHUNK_BLOCKS * voxels_per_block.max(1)) as i64;
 
         // The chunk's half-open absolute-voxel box `[min, max)` per axis.
         let chunk_min_voxels = [
@@ -472,7 +473,7 @@ impl Scene {
             }
             let translation_voxels = world_offset_voxels;
             let (material_override, producer): (
-                Option<crate::core_geom::BlockId>,
+                Option<voxel_core::core_geom::BlockId>,
                 Box<dyn VoxelProducer>,
             ) = match content
             {
@@ -560,7 +561,7 @@ impl Scene {
 /// A content fingerprint for a leaf: the bytes (placement + content) that affect the
 /// voxels it resolves to. Two leaves with the same fingerprint at the same world
 /// position resolve to the same voxels, so the edit diff
-/// ([`LeafSpatialIndex::edit_aabb_since`](crate::spatial_index::LeafSpatialIndex::edit_aabb_since))
+/// ([`LeafSpatialIndex::edit_aabb_since`](voxel_core::spatial_index::LeafSpatialIndex::edit_aabb_since))
 /// treats them as unchanged. `world_offset` is included so a moved Tool whose box
 /// happens to coincide with another's still reads as distinct.
 pub(super) fn leaf_content_fingerprint(
@@ -617,11 +618,11 @@ pub(crate) struct LeafProducer {
     pub producer: Box<dyn VoxelProducer>,
     /// The single-material override id a Tool stamps onto every voxel (`Some`), or `None`
     /// for a Part that brings its own per-voxel materials (the cloud field emits id 0).
-    pub material: Option<crate::core_geom::BlockId>,
+    pub material: Option<voxel_core::core_geom::BlockId>,
     /// The owning node's `grids.voxel_grid_on_faces` flag (issue #29 S4 / ADR 0003 §3c) —
     /// the transient on-face-grid render marker. Carried so the two-layer mesher (ADR 0010
     /// E3) can attach the per-box overlay flag exactly as the dense resolve bakes
-    /// [`crate::voxel::Voxel::grid_overlay`]. It is a RENDER hint only: it never enters the
+    /// [`voxel_core::voxel::Voxel::grid_overlay`]. It is a RENDER hint only: it never enters the
     /// categorical `block_id`, the chunk codec, or `.vox` export (§3c).
     pub grid_overlay: bool,
 }
@@ -643,11 +644,11 @@ pub(super) fn leaf_producer_grid_voxels(content: &NodeContent, _voxels_per_block
     }
 }
 
-/// Map a Tool's [`MaterialChoice`] to the categorical [`BlockId`](crate::core_geom::BlockId)
+/// Map a Tool's [`MaterialChoice`] to the categorical [`BlockId`](voxel_core::core_geom::BlockId)
 /// it stamps (ADR 0001 step 3 "Materials"; ADR 0003 §3a). A Tool is single-material by
 /// nature: every voxel it emits takes this one block id, so distinct nodes render in
 /// distinct materials. Stone = 0, Wood = 1, Plain = 2 (see [`MaterialChoice::block_id`]).
-fn material_id_for(material: MaterialChoice) -> Option<crate::core_geom::BlockId> {
+fn material_id_for(material: MaterialChoice) -> Option<voxel_core::core_geom::BlockId> {
     Some(material.block_id())
 }
 
@@ -671,7 +672,7 @@ fn stamp_producer(
     output: &mut VoxelGrid,
     region_dimensions: [u32; 3],
     translation_voxels: [i64; 3],
-    material_override: Option<crate::core_geom::BlockId>,
+    material_override: Option<voxel_core::core_geom::BlockId>,
     grid_overlay: bool,
     producer: &dyn VoxelProducer,
     voxels_per_block: u32,
@@ -748,7 +749,7 @@ fn stamp_producer_into_chunk(
     region_dimensions: [u32; 3],
     translation_voxels: [i64; 3],
     floating_origin_voxels: [i64; 3],
-    material_override: Option<crate::core_geom::BlockId>,
+    material_override: Option<voxel_core::core_geom::BlockId>,
     grid_overlay: bool,
     producer: &dyn VoxelProducer,
     voxels_per_block: u32,
@@ -768,7 +769,7 @@ fn stamp_producer_into_chunk(
     // a producer spanning N chunks now resolves each chunk's cells once instead of
     // re-resolving its full extent N×.
     let mut local = VoxelGrid::new(region_dimensions);
-    let window_local = crate::spatial_index::VoxelAabb::new(
+    let window_local = voxel_core::spatial_index::VoxelAabb::new(
         [
             chunk_min_voxels[0] - translation_voxels[0],
             chunk_min_voxels[1] - translation_voxels[1],

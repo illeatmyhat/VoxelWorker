@@ -1,16 +1,41 @@
-//! The document-bound producer half: the [`VoxelProducer`] trait every parametric
-//! source implements and its first implementor, the [`SdfShape`] primitive.
+//! The producers that fill the resolved voxel grid.
 //!
-//! This half is the future `document` layer — it may depend UPWARD on nothing but
-//! DOWNWARD on the value half ([`super::value`]) and on `core_geom` / `units` /
-//! `spatial_index`. It samples the pure signed-distance functions that live in
-//! `super::value`; the value half never names anything here (see the ⊥ note on
-//! [`super::value`]).
+//! ## Coordinate convention (PROJECT-WIDE — Z-up, right-handed)
+//!
+//! **Vertical / up = +Z** ([`glam::Vec3::Z`], array index **2**) EVERYWHERE in this
+//! project — camera, SDFs, onion skin, layers, diameter, mesh and `.vox` export all
+//! agree. The ground plane is **XY** (normal +Z); **front = −Y** (the front view looks
+//! along +Y); LEFT/RIGHT = ±X; TOP/BOTTOM = ±Z. Panel X/Y/Z fields map directly to
+//! indices 0/1/2 with Z genuinely the vertical axis — no relabel shim.
+//!
+//! Consequences pinned by tests: a tall cylinder/tube/torus has its axis along Z
+//! (`size_voxels[2]` is the vertical extent), layer slices are Z-slices, the onion
+//! band is a Z-range, and the `.vox` export writes our Z straight to vox-Z with
+//! NO axis swap (MagicaVoxel is itself Z-up).
+//!
+//! ## The producer seam (`REPRESENTATION.md`)
+//!
+//! This module implements the architectural seam **the renderer never calls the SDF
+//! directly**: instead a [`VoxelProducer`] resolves a parametric shape (or, later, a
+//! sculpt overlay) into a [`VoxelGrid`] — the one consumed truth. The renderer, the
+//! layer-range diameter readout (issue #12) and the `.vox` export all read the grid,
+//! so adding a second producer touches nothing downstream. The first (and, in M2,
+//! only) implementor is [`SdfShape`], which runs the sampling triple-loop transcribed
+//! from `ARCHITECTURE.md` §1/§2.
+//!
+//! ## The value ⊥ producer split (ADR 0016)
+//!
+//! This is the **document-bound** producer half. It depends DOWNWARD on the
+//! foundational value vocabulary in the `voxel_core` crate (the resolved [`Voxel`],
+//! its [`VoxelGrid`], the frame-bearing recentre, the primitive-kind tag and the pure
+//! signed-distance functions) and on `voxel_core`'s `units` / `spatial_index`; the
+//! value crate never names anything here. That ⊥ is compile-enforced by the crate
+//! boundary: `voxel_core` cannot import the document layer.
 
 use glam::Vec3;
 use rayon::prelude::*;
 
-use super::value::{
+use voxel_core::voxel::{
     signed_distance, BlockAttrs, BlockId, ShapeKind, Voxel, VoxelGrid, MAX_GRID_VOXELS,
     SURFACE_ISOLEVEL,
 };
@@ -76,7 +101,7 @@ pub trait VoxelProducer: Send + Sync {
         &self,
         grid: &mut VoxelGrid,
         voxels_per_block: u32,
-        window_local_voxels: crate::spatial_index::VoxelAabb,
+        window_local_voxels: voxel_core::spatial_index::VoxelAabb,
     );
 
     /// CONSERVATIVE bound on the producer's SIGNED field over a block-sized cell — the
@@ -98,7 +123,7 @@ pub trait VoxelProducer: Send + Sync {
     /// [`resolve_into`]: VoxelProducer::resolve_into
     fn cell_field_interval(
         &self,
-        cell_local_voxels: crate::spatial_index::VoxelAabb,
+        cell_local_voxels: voxel_core::spatial_index::VoxelAabb,
         voxels_per_block: u32,
     ) -> Option<FieldInterval> {
         let _ = (cell_local_voxels, voxels_per_block);
@@ -122,7 +147,7 @@ pub trait VoxelProducer: Send + Sync {
 /// (`lo >= hi`), so the iteration writes nothing. Shared by every `resolve_into`.
 #[inline]
 pub(crate) fn clamp_window_to_grid(
-    window_local_voxels: crate::spatial_index::VoxelAabb,
+    window_local_voxels: voxel_core::spatial_index::VoxelAabb,
     full_dimensions: [u32; 3],
 ) -> [(u32, u32); 3] {
     let mut bounds = [(0u32, 0u32); 3];
@@ -169,7 +194,7 @@ pub struct GeometryParams {
     /// when the size carries no parametric block expression (a pure-voxel size). The
     /// canonical `size_voxels` always wins for geometry; this is retention/display
     /// only, kept so a density re-target re-evaluates losslessly.
-    pub size_measurements: Option<Box<[crate::units::Measurement; 3]>>,
+    pub size_measurements: Option<Box<[voxel_core::units::Measurement; 3]>>,
     /// Voxels per block (chisel fineness): the density slider's transient UI value,
     /// mirrored to/from [`Scene::voxels_per_block`](crate::scene::Scene). Default 16.
     pub voxels_per_block: u32,
@@ -227,7 +252,7 @@ pub struct SdfShape {
     /// then SYNTHESISES a pure-voxel measurement from `size_voxels`. Boxed so the
     /// common (`None`) case keeps `SdfShape` small.
     #[serde(default)]
-    size_measurements: Option<Box<[crate::units::Measurement; 3]>>,
+    size_measurements: Option<Box<[voxel_core::units::Measurement; 3]>>,
 }
 
 /// Persistence defaults for a partial [`SdfShape`] (a missing field falls back to
@@ -283,7 +308,7 @@ impl SdfShape {
         wall_blocks: u32,
         voxels_per_block: u32,
     ) -> Self {
-        use crate::units::{ExactRational, Measurement};
+        use voxel_core::units::{ExactRational, Measurement};
         let density = voxels_per_block.max(1);
         let blocks = [size_blocks[0].max(1), size_blocks[1].max(1), size_blocks[2].max(1)];
         let size_voxels =
@@ -316,9 +341,9 @@ impl SdfShape {
         }
     }
 
-    /// Build a shape from a per-axis authored [`Measurement`](crate::units::Measurement)
+    /// Build a shape from a per-axis authored [`Measurement`](voxel_core::units::Measurement)
     /// size at density `voxels_per_block` (ADR 0003 §3f(0)). The canonical voxel size
-    /// is DERIVED via [`Measurement::to_voxels`](crate::units::Measurement::to_voxels)
+    /// is DERIVED via [`Measurement::to_voxels`](voxel_core::units::Measurement::to_voxels)
     /// and clamped to `>= 1`; the measurements are RETAINED for lossless density
     /// re-targeting. Mirrors
     /// [`NodeTransform::from_measurements`](crate::scene::NodeTransform::from_measurements),
@@ -328,11 +353,11 @@ impl SdfShape {
     /// below 1 voxel is clamped to 1 and resynthesised to the pure-voxel `1`.)
     pub fn from_measurements(
         kind: ShapeKind,
-        measurements: [crate::units::Measurement; 3],
+        measurements: [voxel_core::units::Measurement; 3],
         wall_blocks: u32,
         voxels_per_block: u32,
     ) -> Self {
-        use crate::units::{Measurement, MeasurementError};
+        use voxel_core::units::{Measurement, MeasurementError};
         let resolve_axis = |measurement: Measurement| -> (u32, Measurement) {
             let raw = match measurement.to_voxels(voxels_per_block) {
                 Ok(voxels) => (voxels, Some(measurement)),
@@ -371,10 +396,10 @@ impl SdfShape {
     /// byte-identical and serde gains no redundant husk. Mirrors
     /// `NodeTransform::retained_or_none`.
     fn retained_or_none(
-        measurements: Option<Box<[crate::units::Measurement; 3]>>,
+        measurements: Option<Box<[voxel_core::units::Measurement; 3]>>,
         size_voxels: [u32; 3],
-    ) -> Option<Box<[crate::units::Measurement; 3]>> {
-        use crate::units::Measurement;
+    ) -> Option<Box<[voxel_core::units::Measurement; 3]>> {
+        use voxel_core::units::Measurement;
         let measurements = measurements?;
         let is_synthesisable = (0..3)
             .all(|axis| measurements[axis] == Measurement::from_voxels(size_voxels[axis] as i64));
@@ -390,8 +415,8 @@ impl SdfShape {
     /// SYNTHESISES a pure-voxel measurement equal to `size_voxels` per axis (correct
     /// at any density, just non-parametric). Mirrors
     /// `NodeTransform::offset_measurements`.
-    pub fn size_measurements(&self) -> [crate::units::Measurement; 3] {
-        use crate::units::Measurement;
+    pub fn size_measurements(&self) -> [voxel_core::units::Measurement; 3] {
+        use voxel_core::units::Measurement;
         match &self.size_measurements {
             Some(measurements) => **measurements,
             None => [
@@ -440,7 +465,7 @@ impl VoxelProducer for SdfShape {
         self.resolve_into(
             grid,
             voxels_per_block,
-            crate::spatial_index::VoxelAabb::new(
+            voxel_core::spatial_index::VoxelAabb::new(
                 [0, 0, 0],
                 [full_x as i64, full_y as i64, full_z as i64],
             ),
@@ -451,7 +476,7 @@ impl VoxelProducer for SdfShape {
         &self,
         grid: &mut VoxelGrid,
         voxels_per_block: u32,
-        window_local_voxels: crate::spatial_index::VoxelAabb,
+        window_local_voxels: voxel_core::spatial_index::VoxelAabb,
     ) {
         profiling::scope!("sdf_resolve");
         let [grid_x, grid_y, grid_z] = self.grid_dimensions(voxels_per_block);
@@ -542,7 +567,7 @@ impl VoxelProducer for SdfShape {
     /// can never misclassify (proven by the E1 parity gate).
     fn cell_field_interval(
         &self,
-        cell_local_voxels: crate::spatial_index::VoxelAabb,
+        cell_local_voxels: voxel_core::spatial_index::VoxelAabb,
         voxels_per_block: u32,
     ) -> Option<FieldInterval> {
         if cell_local_voxels.is_empty() {
@@ -612,7 +637,7 @@ impl VoxelProducer for SdfShape {
 #[cfg(test)]
 mod sdf_size_units_tests {
     use super::*;
-    use crate::units::{DisplayUnit, ExactRational, Measurement};
+    use voxel_core::units::{DisplayUnit, ExactRational, Measurement};
 
     /// A whole-**block** size built via `from_blocks` derives `size_voxels =
     /// blocks · d` (byte-identical to the OLD block-granular store), and retains
@@ -726,8 +751,8 @@ mod sdf_size_units_tests {
     #[test]
     fn size_format_parse_round_trips() {
         for voxels in [1_i64, 16, 56, 80, 83, 257] {
-            let text = crate::units::format(voxels, 16, DisplayUnit::BlocksAndVoxels);
-            let reparsed = crate::units::parse(&text).expect("re-parses");
+            let text = voxel_core::units::format(voxels, 16, DisplayUnit::BlocksAndVoxels);
+            let reparsed = voxel_core::units::parse(&text).expect("re-parses");
             assert_eq!(reparsed.to_voxels(16).unwrap(), voxels, "round-trip via `{text}`");
         }
     }

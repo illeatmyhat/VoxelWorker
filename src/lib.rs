@@ -31,8 +31,6 @@ pub mod chunk_cache;
 // The display subsystem: the pure per-edit routing policy for the two display pipelines
 // (cuboid mesh + brick raymarch). The DisplayOrchestrator state machine joins it later.
 pub mod display;
-// ADR 0003 bottom layer: dependency-free geometry primitives + the streaming quantum.
-pub mod core_geom;
 pub mod chunk_storage;
 // ADR 0003 Phase C: the linear inverse-command stack behind undo/redo. See command.rs.
 pub mod command;
@@ -49,15 +47,12 @@ pub mod scene;
 pub mod settings;
 // ADR 0003 §3i (Slice 2a): the sketch → extrude → volume producer, alongside SdfShape.
 pub mod sketch;
-pub mod spatial_index;
 // ADR 0003 data layer: residency + per-chunk resolve + bound-region reads. See store.rs.
 pub mod store;
 pub mod texture_atlas;
 // ADR 0010 E2: the OFF-by-default boundary-aware two-layer chunk store + block
 // classifier (coarse + microblock + seam flags), proven bit-exact vs the dense store.
 pub mod two_layer_store;
-// ADR 0003 §3f(0) (Slice 2+): the parametric blocks/voxels units parser core.
-pub mod units;
 pub mod vox_export;
 pub mod voxel;
 // The background workers, grouped: the generic drain-to-latest/supersede/panic-catch
@@ -128,7 +123,7 @@ pub use camera::{
 };
 pub use gpu::GpuContext;
 pub use intent::{Intent, IntentEffect, NodeSpec};
-pub use core_geom::MaterialChoice;
+pub use voxel_core::core_geom::MaterialChoice;
 pub use panel::{
     build_panel, ExportPanelState, LayerRange, PanelResponse,
     PanelState,
@@ -154,11 +149,14 @@ pub use two_layer_store::{
 #[cfg(any(test, feature = "oracle"))]
 pub use two_layer_store::resolve_region_two_layer;
 pub use sketch::{Operation, PlaneAxis, RevolveAxis, Sketch, SketchPoint, SketchSolid};
-pub use spatial_index::{LeafEntry, LeafFingerprint, LeafSpatialIndex, VoxelAabb};
+pub use voxel_core::spatial_index::{LeafEntry, LeafFingerprint, LeafSpatialIndex, VoxelAabb};
 pub use vox_export::{VoxExport, VoxExportBuilder};
-pub use voxel::{
-    widest_run_in_band_over_chunks, GeometryParams, RecentreVoxels, SdfShape, ShapeKind, Voxel,
-    VoxelGrid, VoxelProducer,
+// Value vocabulary now lives in the voxel_core crate; the app-crate `voxel` module keeps
+// only the producer half. Both are re-exported flat so `voxel_worker::Voxel`,
+// `voxel_worker::SdfShape`, etc. keep resolving for the bins and integration tests.
+pub use voxel::{GeometryParams, SdfShape, VoxelProducer};
+pub use voxel_core::voxel::{
+    widest_run_in_band_over_chunks, RecentreVoxels, ShapeKind, Voxel, VoxelGrid,
 };
 
 /// Surface / offscreen colour format used everywhere in the project.

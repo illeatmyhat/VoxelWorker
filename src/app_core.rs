@@ -20,14 +20,15 @@ use std::sync::Arc;
 
 use camera::OrbitCamera;
 use crate::command::{Command, CommandStack, Inverse};
-use crate::core_geom::CHUNK_BLOCKS;
+use voxel_core::core_geom::CHUNK_BLOCKS;
 use crate::intent::{Intent, IntentEffect};
 use crate::panel::LayerRange;
 use crate::renderer::OnionFogParams;
 use crate::scene::{NodeContent, NodeId, NodeTransform, Part, Scene};
-use crate::spatial_index::LeafSpatialIndex;
+use voxel_core::spatial_index::LeafSpatialIndex;
 use crate::two_layer_store::{TwoLayerChunk, TwoLayerResidentCache};
-use crate::voxel::{chunk_extent_exceeds_bound, RecentreVoxels, SdfShape};
+use voxel_core::voxel::{chunk_extent_exceeds_bound, RecentreVoxels};
+use crate::voxel::{SdfShape};
 
 /// The headless orchestrator: owns the per-chunk resolve `Store` and the
 /// [`OrbitCamera`], and answers the headless scene queries the shell renders from.
@@ -1162,10 +1163,11 @@ pub fn replay_intent_script(script: &str) -> Result<Scene, String> {
 #[cfg(test)]
 mod replay_tests {
     use super::*;
-    use crate::core_geom::MaterialChoice;
+    use voxel_core::core_geom::MaterialChoice;
     use crate::intent::{Intent, NodeSpec};
     use crate::scene::NodeContent;
-    use crate::voxel::{SdfShape, ShapeKind};
+    use voxel_core::voxel::{ShapeKind};
+    use crate::voxel::{SdfShape};
 
     /// The `RecentreVoxels` frame newtype round-trips through its one door: whatever
     /// triple it carries is exactly what `voxels()` hands back (the accessor contract the
@@ -1284,12 +1286,13 @@ mod replay_tests {
 mod undo_tests {
     use super::*;
     use camera::OrbitCamera;
-    use crate::core_geom::MaterialChoice;
+    use voxel_core::core_geom::MaterialChoice;
     use crate::intent::{whole_block_offset, Intent, NodeSpec};
     use crate::scene::{Node, NodeBuilder, NodeContent, NodeGrids, NodeTransform, Point, Scene};
     use crate::sketch::{PlaneAxis, RevolveAxis, Sketch, SketchSolid};
-    use crate::units::Measurement;
-    use crate::voxel::{SdfShape, ShapeKind};
+    use voxel_core::units::Measurement;
+    use voxel_core::voxel::{ShapeKind};
+    use crate::voxel::{SdfShape};
 
     /// A headless [`AppCore`] for the undo tests (no GPU — `apply_intent`/`undo`/`redo`
     /// only touch the borrowed scene + the owned command stack).
@@ -1624,8 +1627,8 @@ mod undo_tests {
     #[test]
     fn set_offset_apply_derives_voxels_at_density() {
         let expression = [
-            Measurement::new(crate::units::ExactRational::new(7, 2).unwrap(), 0), // 3.5 blocks
-            Measurement::new(crate::units::ExactRational::from_integer(-2), 4),   // -2 blocks 4 voxels
+            Measurement::new(voxel_core::units::ExactRational::new(7, 2).unwrap(), 0), // 3.5 blocks
+            Measurement::new(voxel_core::units::ExactRational::from_integer(-2), 4),   // -2 blocks 4 voxels
             Measurement::from_voxels(7),                                          // 7 voxels
         ];
 
@@ -1669,7 +1672,7 @@ mod undo_tests {
         let mut core = test_core();
 
         let first = [
-            Measurement::new(crate::units::ExactRational::from_integer(2), 8), // 2 blocks 8 voxels
+            Measurement::new(voxel_core::units::ExactRational::from_integer(2), 8), // 2 blocks 8 voxels
             Measurement::from_voxels(0),
             Measurement::from_voxels(0),
         ];
@@ -1832,7 +1835,7 @@ mod undo_tests {
         let target = scene.roots[1];
         let mut core = test_core();
         let expression = [
-            Measurement::new(crate::units::ExactRational::from_integer(3), 8), // 3 blocks 8 voxels
+            Measurement::new(voxel_core::units::ExactRational::from_integer(3), 8), // 3 blocks 8 voxels
             Measurement::from_voxels(0),
             Measurement::from_voxels(0),
         ];
@@ -2315,7 +2318,7 @@ mod undo_tests {
     /// exactly symmetric, with a voxel BOUNDARY on the origin.
     #[test]
     fn shapes_render_centered_on_origin_in_rebuild_frame() {
-        use crate::voxel::ShapeKind;
+        use voxel_core::voxel::ShapeKind;
         let cases: [(ShapeKind, [u32; 3]); 3] = [
             (ShapeKind::Box, [1, 1, 1]),
             (ShapeKind::Sphere, [5, 5, 5]),
@@ -2402,14 +2405,15 @@ mod undo_tests {
 #[cfg(test)]
 mod intent_dispatch_tests {
     use crate::app_core::AppCore;
-    use crate::core_geom::MaterialChoice;
+    use voxel_core::core_geom::MaterialChoice;
     use camera::OrbitCamera;
     use crate::intent::{whole_block_offset, Intent, IntentEffect, NodeSpec};
     use crate::scene::{
         DefId, Node, NodeBuilder, NodeContent, NodeGrids, NodeId, NodeTransform, Part, Point, Scene,
     };
     use crate::sketch::{PlaneAxis, Sketch, SketchSolid};
-    use crate::voxel::{SdfShape, ShapeKind};
+    use voxel_core::voxel::{ShapeKind};
+    use crate::voxel::{SdfShape};
 
     /// A headless [`AppCore`] for the dispatch tests. `apply_intent` reads no AppCore
     /// state (it borrows the scene), so a default camera suffices — no GPU.
@@ -3034,7 +3038,8 @@ mod intent_dispatch_tests {
     /// sketch.rs, here pinned on the footprint-extrude-up `PlaneAxis::Z` default.)
     #[test]
     fn default_sketch_spec_equals_box() {
-        use crate::voxel::{Voxel, VoxelGrid, VoxelProducer};
+        use voxel_core::voxel::{Voxel, VoxelGrid};
+        use crate::voxel::{VoxelProducer};
         use std::collections::BTreeSet;
 
         // Resolve a producer to a SET of (world_position_bits, block_local, material)

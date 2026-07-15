@@ -54,13 +54,12 @@ use rayon::prelude::*;
 use substrate::interval::DisjointIntervalSet;
 use substrate::solids::{CellClassification, CellContribution};
 
-use crate::core_geom::{BlockAttrs, BlockId, CellKey, CHUNK_BLOCKS};
+use voxel_core::core_geom::{BlockAttrs, BlockId, CellKey, CHUNK_BLOCKS};
 use crate::cuboid::{decompose_into_boxes, VoxelBox, VoxelBoxMaterial, VoxelRegion};
 use crate::scene::{LeafProducer, Scene};
-use crate::spatial_index::{ChunkCoverage, EditBroadphaseBvh, VoxelAabb};
-use crate::voxel::{
-    FieldClassification, RecentreVoxels, Voxel, VoxelGrid, SURFACE_ISOLEVEL,
-};
+use voxel_core::spatial_index::{ChunkCoverage, EditBroadphaseBvh, VoxelAabb};
+use voxel_core::voxel::{RecentreVoxels, Voxel, VoxelGrid, SURFACE_ISOLEVEL};
+use crate::voxel::{FieldClassification};
 
 /// The coarse verdict for a single BLOCK of a chunk (ADR 0010 Decision 2). Distinct from
 /// [`FieldClassification`] (the per-producer interval verdict) because the BLOCK verdict
@@ -116,7 +115,7 @@ pub struct MicroblockGeometry {
     ///
     /// Each cuboid's `material_id` is the cuboid mesher's **render-cell key** (ADR 0003
     /// §3c): the clean categorical `block_id` in the low bits, the transient on-face-grid
-    /// overlay marker in the high bit (see [`crate::core_geom::CellKey`]). The decomposition
+    /// overlay marker in the high bit (see [`voxel_core::core_geom::CellKey`]). The decomposition
     /// therefore splits a box across differing overlay states exactly like the dense
     /// mesher, and E3's mesher reads the box's clean id + overlay back out of this key
     /// without the render flag ever entering the categorical cell. Consumers that want the
@@ -761,7 +760,7 @@ impl TwoLayerResidentCache {
     /// build only for the evicted (dirty) chunks.
     ///
     /// `edit_aabb` is what
-    /// [`LeafSpatialIndex::edit_aabb_since`](crate::spatial_index::LeafSpatialIndex::edit_aabb_since)
+    /// [`LeafSpatialIndex::edit_aabb_since`](voxel_core::spatial_index::LeafSpatialIndex::edit_aabb_since)
     /// returns: the union of an edit's old and new leaf boxes, so a moved node dirties chunks
     /// around BOTH its source and destination. An empty `edit_aabb` evicts nothing.
     ///
@@ -1486,7 +1485,7 @@ pub fn stream_vox_occupancy<Sink: FnMut(Vec<Voxel>)>(
 /// every `(y, z)` row it covers, with NO per-voxel expansion) and a boundary block
 /// per-voxel. Returns the SAME value
 /// [`Store::widest_run_in_band`](crate::store::Store::widest_run_in_band) /
-/// [`VoxelGrid::widest_run_in_band`](crate::voxel::VoxelGrid::widest_run_in_band)
+/// [`VoxelGrid::widest_run_in_band`](voxel_core::voxel::VoxelGrid::widest_run_in_band)
 /// returns for the assembled region, but never assembles a dense grid.
 ///
 /// Returns `None` when the capability is OFF (the caller falls back to the dense
@@ -1702,9 +1701,10 @@ pub fn streamed_widest_run_in_band(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core_geom::MaterialChoice;
+    use voxel_core::core_geom::MaterialChoice;
     use crate::scene::{DefId, Node, NodeContent, NodeTransform};
-    use crate::voxel::{GeometryParams, SdfShape, ShapeKind};
+    use voxel_core::voxel::{ShapeKind};
+    use crate::voxel::{GeometryParams, SdfShape};
 
     /// Canonicalise an occupied set into the **resolved occupancy SET**: a map from each
     /// bit-exact voxel position to the block id of the LAST (document-order) writer at that

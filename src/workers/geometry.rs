@@ -36,7 +36,7 @@
 
 use std::sync::Arc;
 
-use crate::voxel::RecentreVoxels;
+use voxel_core::voxel::RecentreVoxels;
 use crate::cuboid_mesh::CuboidMeshRenderer;
 use crate::renderer::LayerBand;
 use crate::two_layer_store::TwoLayerChunk;

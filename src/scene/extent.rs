@@ -5,11 +5,11 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::units::{ExactRational, Measurement};
+use voxel_core::units::{ExactRational, Measurement};
 
 use super::producers::leaf_producer_grid_voxels;
 use super::*;
-use crate::voxel::RecentreVoxels;
+use voxel_core::voxel::RecentreVoxels;
 
 /// The working volume the scene resolves into, expressed in **whole blocks**
 /// (ADR 0001 "Scale": the canvas is the user-set stock / build volume). Step 1
@@ -141,11 +141,11 @@ impl NodeTransform {
         let resolve_axis = |measurement: Measurement| -> (i64, Measurement) {
             match measurement.to_voxels(voxels_per_block) {
                 Ok(voxels) => (voxels, measurement),
-                Err(crate::units::MeasurementError::BlockTermNotWholeVoxels {
+                Err(voxel_core::units::MeasurementError::BlockTermNotWholeVoxels {
                     nearest_floor_voxels,
                     ..
                 }) => (nearest_floor_voxels, Measurement::from_voxels(nearest_floor_voxels)),
-                Err(crate::units::MeasurementError::ZeroDensity) => {
+                Err(voxel_core::units::MeasurementError::ZeroDensity) => {
                     let voxels = measurement.voxel_term();
                     (voxels, Measurement::from_voxels(voxels))
                 }

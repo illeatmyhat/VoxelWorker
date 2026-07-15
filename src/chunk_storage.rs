@@ -13,7 +13,7 @@
 //!
 //! Since ADR 0003 §3a the per-voxel payload stores the voxel's INTEGER index
 //! (`Voxel::local_index`) directly — the f32 centre is only ever reconstructed at
-//! consumption as `index + 0.5` ([`crate::voxel::Voxel::world_position`]). This codec
+//! consumption as `index + 0.5` ([`voxel_core::voxel::Voxel::world_position`]). This codec
 //! therefore consumes the stored integer DIRECTLY (it no longer reverse-engineers an
 //! index out of an f32 via `floor()` + a uniform fractional-part debug-assert). We store
 //! the integer index relative to the chunk's min corner (in i64 so a far-placed chunk
@@ -44,7 +44,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::voxel::{Voxel, VoxelGrid};
+use voxel_core::voxel::{Voxel, VoxelGrid};
 
 /// A single occupied cell in the **sparse** encoding: where it is and what it is.
 ///
@@ -367,10 +367,10 @@ pub fn decompress(compressed: &CompressedChunk) -> VoxelGrid {
                 grid.occupied.push(Voxel {
                     local_index: index_of(cell.local_linear_index),
                     block_local_coord: cell.block_local_coord,
-                    block_id: crate::core_geom::BlockId(
+                    block_id: voxel_core::core_geom::BlockId(
                         compressed.material_palette[cell.palette_index as usize],
                     ),
-                    attrs: crate::core_geom::BlockAttrs::DEFAULT,
+                    attrs: voxel_core::core_geom::BlockAttrs::DEFAULT,
                     grid_overlay: false,
                 });
             }
@@ -393,10 +393,10 @@ pub fn decompress(compressed: &CompressedChunk) -> VoxelGrid {
                 grid.occupied.push(Voxel {
                     local_index: index_of(linear),
                     block_local_coord: block_local_coords[next_coord],
-                    block_id: crate::core_geom::BlockId(
+                    block_id: voxel_core::core_geom::BlockId(
                         compressed.material_palette[palette_index],
                     ),
-                    attrs: crate::core_geom::BlockAttrs::DEFAULT,
+                    attrs: voxel_core::core_geom::BlockAttrs::DEFAULT,
                     grid_overlay: false,
                 });
                 next_coord += 1;
@@ -487,9 +487,10 @@ fn compressed_binary_size(compressed: &CompressedChunk) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core_geom::MaterialChoice;
+    use voxel_core::core_geom::MaterialChoice;
     use crate::scene::{DefId, Node, NodeContent, Part, Scene};
-    use crate::voxel::{GeometryParams, SdfShape, ShapeKind, Voxel, VoxelGrid, VoxelProducer};
+    use voxel_core::voxel::{ShapeKind, Voxel, VoxelGrid};
+    use crate::voxel::{GeometryParams, SdfShape, VoxelProducer};
 
     /// A pseudo-random generator (the same Numerical-Recipes LCG `cuboid.rs` uses),
     /// so the fuzz tests are deterministic without pulling in a `rand` dependency.
@@ -585,8 +586,8 @@ mod tests {
                             (z as f32 + 0.5 - half[2]).floor() as i32,
                         ],
                         block_local_coord: [(x % 4) as u8, (y % 4) as u8, (z % 4) as u8],
-                        block_id: crate::core_geom::BlockId(7),
-                        attrs: crate::core_geom::BlockAttrs::DEFAULT,
+                        block_id: voxel_core::core_geom::BlockId(7),
+                        attrs: voxel_core::core_geom::BlockAttrs::DEFAULT,
                         grid_overlay: false,
                     });
                 }
@@ -627,8 +628,8 @@ mod tests {
                             (z as f32 + 0.5 - half[2]).floor() as i32,
                         ],
                         block_local_coord: [x as u8, y as u8, z as u8],
-                        block_id: crate::core_geom::BlockId(material),
-                        attrs: crate::core_geom::BlockAttrs::DEFAULT,
+                        block_id: voxel_core::core_geom::BlockId(material),
+                        attrs: voxel_core::core_geom::BlockAttrs::DEFAULT,
                         grid_overlay: false,
                     });
                 }
@@ -813,8 +814,8 @@ mod tests {
                                             (y % 4) as u8,
                                             (z % 4) as u8,
                                         ],
-                                        block_id: crate::core_geom::BlockId(material),
-                                        attrs: crate::core_geom::BlockAttrs::DEFAULT,
+                                        block_id: voxel_core::core_geom::BlockId(material),
+                                        attrs: voxel_core::core_geom::BlockAttrs::DEFAULT,
                                         grid_overlay: false,
                                     });
                                 }
@@ -846,8 +847,8 @@ mod tests {
                 grid.occupied.push(Voxel {
                     local_index: [x, y, 0],
                     block_local_coord: [0, 0, 0],
-                    block_id: crate::core_geom::BlockId(materials[x as usize]),
-                    attrs: crate::core_geom::BlockAttrs::DEFAULT,
+                    block_id: voxel_core::core_geom::BlockId(materials[x as usize]),
+                    attrs: voxel_core::core_geom::BlockAttrs::DEFAULT,
                     grid_overlay: false,
                 });
             }
@@ -998,8 +999,8 @@ mod tests {
                                 (z as f32 + 0.5 - sparse_half[2]).floor() as i32,
                             ],
                             block_local_coord: [0, 0, 0],
-                            block_id: crate::core_geom::BlockId(1),
-                            attrs: crate::core_geom::BlockAttrs::DEFAULT,
+                            block_id: voxel_core::core_geom::BlockId(1),
+                            attrs: voxel_core::core_geom::BlockAttrs::DEFAULT,
                             grid_overlay: false,
                         });
                     }

@@ -17,9 +17,9 @@
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
-use crate::core_geom::MaterialChoice;
+use voxel_core::core_geom::MaterialChoice;
 use crate::scene::{Point, Scene};
-use crate::voxel::RecentreVoxels;
+use voxel_core::voxel::RecentreVoxels;
 // The sRGB↔linear transfer function is textbook math with no domain content, so it
 // lives in substrate (see the material/colour handling in docs/architecture); the
 // call sites below keep their names via this import.
@@ -2969,9 +2969,9 @@ mod tests {
 
     // ---- issue #29 S3: per-object grid line geometry + gating ----
 
-    use crate::core_geom::MaterialChoice as Mc;
+    use voxel_core::core_geom::MaterialChoice as Mc;
     use crate::scene::{Node, NodeContent};
-    use crate::voxel::ShapeKind;
+    use voxel_core::voxel::ShapeKind;
     use crate::voxel::SdfShape;
 
     /// `block_boundaries` returns the closing plane at `hi` (the box is enclosed in

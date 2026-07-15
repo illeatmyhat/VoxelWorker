@@ -1,0 +1,35 @@
+[package]
+name = "voxel_core"
+version = "0.1.0"
+edition = "2021"
+
+# The foundational value-vocabulary crate: the plain domain values every higher
+# layer is phrased in — the resolved voxel cell and its sparse grid, the
+# frame-bearing recentre, the primitive-kind tag and the pure signed-distance
+# functions, the block-palette id / cell-key codec / material choice, the
+# absolute-voxel box and the leaf spatial index, and the blocks/voxels units
+# core. It sits ABOVE `substrate` (whose pure CS/math structures it names at the
+# domain seam) and BELOW everything else in the app. A component belongs here iff
+# it is describable as domain *value* — measurement, geometry, a coordinate frame —
+# with no evaluation, display, wgpu, or scene type in sight. The dependency edge is
+# one-way: `substrate <- voxel_core <- the rest of the app`; an upward `use` fails
+# to compile. See docs/architecture/01-document.md for the vocabulary this crate
+# supplies and docs/design/per-layer-crates-extraction-map.md (voxel_core row) for
+# the provenance.
+
+[dependencies]
+# The pure CS/math substrate library. voxel_core names substrate structures at the
+# domain seam: the half-open integer box (`VoxelAabb`), the edit-broadphase BVH, the
+# exact `Rational` behind a `Measurement`, and the CSG field interval.
+substrate = { path = "../substrate" }
+# The vector/matrix algebra the signed-distance functions and voxel geometry are
+# expressed in; matched to the workspace version so values cross the boundary
+# without conversion.
+glam = "0.33.1"
+# Derive Serialize/Deserialize for the persisted value types (`ShapeKind`,
+# `BlockId`, `BlockAttrs`, `MaterialChoice`, `Measurement`).
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+# The units serde round-trip test asserts a `Measurement` survives JSON.
+serde_json = "1"

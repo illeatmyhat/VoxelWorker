@@ -20,10 +20,10 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::core_geom::MaterialChoice;
+use voxel_core::core_geom::MaterialChoice;
 use crate::scene::{DefId, Node, NodeContent, NodeGrids, NodeId, Part};
 use crate::sketch::SketchSolid;
-use crate::units::Measurement;
+use voxel_core::units::Measurement;
 use crate::voxel::SdfShape;
 
 /// A **by-value node payload** for the structural add intents (ADR 0003 Phase C).
@@ -67,7 +67,7 @@ impl NodeSpec {
     /// panel's `new_tool_node` (which labels it with the chip label, i.e. the kind
     /// name).
     ///
-    /// [`ShapeKind`]: crate::voxel::ShapeKind
+    /// [`ShapeKind`]: voxel_core::voxel::ShapeKind
     fn tool_node_name(shape: &SdfShape) -> String {
         format!("{:?}", shape.kind)
     }
@@ -382,7 +382,7 @@ impl IntentEffect {
 /// same result the old block-granular path produced.
 #[cfg(test)]
 pub(crate) fn whole_block_offset(blocks: [i64; 3]) -> [Measurement; 3] {
-    use crate::units::ExactRational;
+    use voxel_core::units::ExactRational;
     [
         Measurement::new(ExactRational::from_integer(blocks[0] as i128), 0),
         Measurement::new(ExactRational::from_integer(blocks[1] as i128), 0),

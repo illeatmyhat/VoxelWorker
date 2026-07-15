@@ -15,7 +15,7 @@
 //! [`region_from_voxel_grid`] densifier below, which builds a region from a
 //! [`VoxelGrid`] sub-box.
 
-use crate::voxel::VoxelGrid;
+use voxel_core::voxel::VoxelGrid;
 
 /// One axis-aligned, single-material cuboid — the domain reading of a substrate
 /// [`Cuboid`] whose label is a `u16` render-cell key.
@@ -116,7 +116,7 @@ pub fn region_from_voxel_grid(grid: &VoxelGrid, origin: [u32; 3], extent: [u32; 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::voxel::Voxel;
+    use voxel_core::voxel::Voxel;
 
     #[test]
     fn adapter_from_voxel_grid_whole_grid() {
@@ -132,8 +132,8 @@ mod tests {
                     grid.occupied.push(Voxel {
                         local_index: [i as i32, j as i32, k as i32],
                         block_local_coord: [i as u8, j as u8, k as u8],
-                        block_id: crate::core_geom::BlockId(5),
-                        attrs: crate::core_geom::BlockAttrs::DEFAULT,
+                        block_id: voxel_core::core_geom::BlockId(5),
+                        attrs: voxel_core::core_geom::BlockAttrs::DEFAULT,
                         grid_overlay: false,
                     });
                 }
@@ -162,11 +162,11 @@ mod tests {
         // `grid_overlay` marker, so this opaque `u16` (which `decompose_into_boxes`
         // treats representation-agnostically) splits a box across differing overlay
         // flags — without a render flag ever entering the categorical id.
-        let make_voxel = |block: u16, overlay: bool| crate::voxel::Voxel {
+        let make_voxel = |block: u16, overlay: bool| voxel_core::voxel::Voxel {
             local_index: [0, 0, 0],
             block_local_coord: [0, 0, 0],
-            block_id: crate::core_geom::BlockId(block),
-            attrs: crate::core_geom::BlockAttrs::DEFAULT,
+            block_id: voxel_core::core_geom::BlockId(block),
+            attrs: voxel_core::core_geom::BlockAttrs::DEFAULT,
             grid_overlay: overlay,
         };
         let base = 1u16; // Wood
@@ -209,7 +209,8 @@ mod tests {
         // Resolve real SDF primitives (sphere, cylinder, box, torus, tube) into a
         // VoxelGrid, densify with the adapter, and verify the adapter drops no voxel
         // and the decomposition covers exactly the resolved solid set.
-        use crate::voxel::{SdfShape, ShapeKind, VoxelProducer};
+        use voxel_core::voxel::{ShapeKind};
+        use crate::voxel::{SdfShape, VoxelProducer};
 
         for &kind in &[
             ShapeKind::Sphere,
@@ -267,8 +268,8 @@ mod tests {
                     grid.occupied.push(Voxel {
                         local_index: [i as i32, j as i32, k as i32],
                         block_local_coord: [0, 0, 0],
-                        block_id: crate::core_geom::BlockId(8),
-                        attrs: crate::core_geom::BlockAttrs::DEFAULT,
+                        block_id: voxel_core::core_geom::BlockId(8),
+                        attrs: voxel_core::core_geom::BlockAttrs::DEFAULT,
                         grid_overlay: false,
                     });
                 }

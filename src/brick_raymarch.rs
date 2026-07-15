@@ -30,14 +30,14 @@
 use bytemuck::{Pod, Zeroable};
 use wgpu::util::DeviceExt;
 
-use crate::voxel::RecentreVoxels;
+use voxel_core::voxel::RecentreVoxels;
 use crate::brick_field::{
     pack_clipmap_level_keys, unpack_world_block_key, upload_brick_atlas,
     upload_brick_cell_key_atlas, BlockOccupancyMasks, BrickFieldBuild, BrickFieldUpdate,
     BrickRecord, ClipmapLevel, ClipmapPyramid, IncrementalBrickField, SculptedAtlasPayload,
     SculptedCellKeyAtlasPayload, BLOCK_OCCUPANCY_MASK_WORDS, CELL_KEY_TEXEL_BYTES,
 };
-use crate::core_geom::{CellKey, MaterialChoice};
+use voxel_core::core_geom::{CellKey, MaterialChoice};
 use crate::renderer::{LayerBand, DEPTH_FORMAT, MSAA_SAMPLE_COUNT};
 
 /// The sentinel marking a sculpted record whose atlas payload is NOT resident (the
@@ -2447,7 +2447,7 @@ mod record_packing_tests {
     //! material mask, the overlay bit, the field order) shows up only as wrong pixels.
     use super::*;
     use crate::brick_field::{pack_world_block_key, BrickPayload, BrickRecord};
-    use crate::core_geom::BlockId;
+    use voxel_core::core_geom::BlockId;
     use crate::two_layer_store::SeamSolidity;
 
     fn record(material_id: u16, overlay: bool, payload: BrickPayload) -> BrickRecord {
@@ -2531,7 +2531,7 @@ mod mixed_material_reference_tests {
     //! GPU half is `tests/gpu_parity.rs::brick_mixed_material_matches_cpu_reference`.
     use super::*;
     use crate::brick_field::build_brick_field;
-    use crate::core_geom::CHUNK_BLOCKS;
+    use voxel_core::core_geom::CHUNK_BLOCKS;
     use crate::cuboid::VoxelBox;
     use crate::two_layer_store::{MicroblockGeometry, SeamSolidity, TwoLayerChunk};
     use std::collections::BTreeMap;

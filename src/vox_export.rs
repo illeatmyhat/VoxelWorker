@@ -34,13 +34,13 @@
 //! representative-colour export. A multi-material scene now exports each block in its
 //! own palette colour rather than collapsing to one.
 
-use crate::voxel::VoxelGrid;
+use voxel_core::voxel::VoxelGrid;
 
 /// The per-`block_id` RGBA palette the `.vox` export writes (ADR 0003 §3a). Index `i`
 /// is the colour for `block_id == i`; it is written to `.vox` file palette slot `i + 1`
 /// (MagicaVoxel palette is 1-based, 0 = empty). Sized to the procedural material set —
 /// the categorical capability over the existing three materials.
-pub type BlockPaletteColors = [[u8; 4]; crate::core_geom::MaterialChoice::MATERIAL_COUNT];
+pub type BlockPaletteColors = [[u8; 4]; voxel_core::core_geom::MaterialChoice::MATERIAL_COUNT];
 
 /// MagicaVoxel per-axis maximum (coordinates are stored as `u8`, 0..=255).
 pub const VOX_AXIS_MAX: u32 = 256;
@@ -101,10 +101,10 @@ impl VoxExport {
     /// one representative colour (ADR 0003 §3a): a single-material scene (every voxel
     /// `block_id == active`) still references one slot, so its file bytes are unchanged.
     pub fn block_palette_from_active(
-        active: crate::core_geom::MaterialChoice,
+        active: voxel_core::core_geom::MaterialChoice,
         representative_rgba: [u8; 4],
     ) -> BlockPaletteColors {
-        let mut palette = [[0x80, 0x80, 0x80, 0xff]; crate::core_geom::MaterialChoice::MATERIAL_COUNT];
+        let mut palette = [[0x80, 0x80, 0x80, 0xff]; voxel_core::core_geom::MaterialChoice::MATERIAL_COUNT];
         palette[active.material_id() as usize] = representative_rgba;
         palette
     }
@@ -136,7 +136,7 @@ impl VoxExport {
     /// equality.
     pub fn from_region_voxels<'voxels>(
         region_dimensions: [u32; 3],
-        chunk_voxels: impl IntoIterator<Item = &'voxels [crate::voxel::Voxel]>,
+        chunk_voxels: impl IntoIterator<Item = &'voxels [voxel_core::voxel::Voxel]>,
         palette_colors: BlockPaletteColors,
     ) -> Self {
         Self::from_region_voxel_iter(
@@ -161,7 +161,7 @@ impl VoxExport {
     /// fits the dense path — the E4 parity gate.
     pub fn from_region_voxel_chunks(
         region_dimensions: [u32; 3],
-        chunk_voxels: impl IntoIterator<Item = Vec<crate::voxel::Voxel>>,
+        chunk_voxels: impl IntoIterator<Item = Vec<voxel_core::voxel::Voxel>>,
         palette_colors: BlockPaletteColors,
     ) -> Self {
         Self::from_region_voxel_iter(
@@ -171,7 +171,7 @@ impl VoxExport {
         )
     }
 
-    /// The shared bucketing core: stream EVERY occupied [`Voxel`](crate::voxel::Voxel)
+    /// The shared bucketing core: stream EVERY occupied [`Voxel`](voxel_core::voxel::Voxel)
     /// into its 256-tile model at the corner-anchored decode index, dropping each as it
     /// is consumed (so an owned per-chunk stream never holds the whole region). Both
     /// [`from_region_voxels`](Self::from_region_voxels) (borrowed slices) and
@@ -181,7 +181,7 @@ impl VoxExport {
     /// so the streamed and dense exports can never drift.
     fn from_region_voxel_iter(
         region_dimensions: [u32; 3],
-        voxels: impl Iterator<Item = crate::voxel::Voxel>,
+        voxels: impl Iterator<Item = voxel_core::voxel::Voxel>,
         palette_colors: BlockPaletteColors,
     ) -> Self {
         let mut builder = VoxExportBuilder::new(region_dimensions, palette_colors);
@@ -435,7 +435,7 @@ impl VoxExportBuilder {
     /// Bucket every voxel in one STREAMED chunk into its model, so the caller can DROP
     /// the chunk buffer afterward (ADR 0010 E4): only one chunk's voxels are ever
     /// resident. This is the sink [`crate::two_layer_store::stream_vox_occupancy`] drives.
-    pub fn ingest_chunk(&mut self, chunk_voxels: &[crate::voxel::Voxel]) {
+    pub fn ingest_chunk(&mut self, chunk_voxels: &[voxel_core::voxel::Voxel]) {
         for voxel in chunk_voxels {
             self.ingest_voxel(*voxel);
         }
@@ -444,7 +444,7 @@ impl VoxExportBuilder {
     /// Decode one voxel's corner-anchored grid index, tile it, and push it into its
     /// model (dropping it if it falls outside the region — the same guard the dense
     /// path used). The block id selects the `.vox` palette slot (ADR 0003 §3a).
-    fn ingest_voxel(&mut self, voxel: crate::voxel::Voxel) {
+    fn ingest_voxel(&mut self, voxel: voxel_core::voxel::Voxel) {
         let [grid_x, grid_y, grid_z] = self.region_dimensions;
         // Recover non-negative integer grid indices from the world-centred
         // voxel-centre position: `i = round(world_x + dim_x/2 - 0.5)`.
@@ -478,7 +478,7 @@ impl VoxExportBuilder {
         // the procedural palette so a stray id stays in range.
         let palette_slot = voxel
             .color_index()
-            .min(crate::core_geom::MaterialChoice::MATERIAL_COUNT as u16 - 1)
+            .min(voxel_core::core_geom::MaterialChoice::MATERIAL_COUNT as u16 - 1)
             as u8
             + 1;
         self.models[model_pos].voxels.push(VoxVoxel {
@@ -535,8 +535,9 @@ fn write_chunk(out: &mut Vec<u8>, id: &[u8; 4], content: &[u8], children: &[u8])
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core_geom::MaterialChoice;
-    use crate::voxel::{SdfShape, ShapeKind};
+    use voxel_core::core_geom::MaterialChoice;
+    use voxel_core::voxel::{ShapeKind};
+    use crate::voxel::{SdfShape};
 
     /// Resolve a small cylinder and round-trip it through `.vox`, asserting the
     /// voxel count and dimensions survive (Z-up, no axis swap).
@@ -555,7 +556,7 @@ mod tests {
                 voxels_per_block: 16,
                 wall_blocks: 1,
             },
-            crate::core_geom::MaterialChoice::Stone,
+            voxel_core::core_geom::MaterialChoice::Stone,
         );
         let grid = scene.resolve_region(scene.full_extent_blocks(16), 16, 0);
         assert!(grid.occupied_count() > 0, "expected a non-empty grid");
@@ -600,7 +601,7 @@ mod tests {
                 voxels_per_block: 8,
                 wall_blocks: 1,
             },
-            crate::core_geom::MaterialChoice::Stone,
+            voxel_core::core_geom::MaterialChoice::Stone,
         );
         let grid = scene.resolve_region(scene.full_extent_blocks(8), 8, 0);
         let export = VoxExport::from_grid(
@@ -659,7 +660,7 @@ mod tests {
                 voxels_per_block: 16,
                 wall_blocks: 1,
             },
-            crate::core_geom::MaterialChoice::Stone,
+            voxel_core::core_geom::MaterialChoice::Stone,
         );
         let grid = scene.resolve_region(scene.full_extent_blocks(16), 16, 0);
         let [gx, gy, gz] = grid.dimensions; // 32 × 32 × 80
@@ -690,7 +691,7 @@ mod tests {
                 voxels_per_block: 16,
                 wall_blocks: 1,
             },
-            crate::core_geom::MaterialChoice::Stone,
+            voxel_core::core_geom::MaterialChoice::Stone,
         );
         let grid = scene.resolve_region(scene.full_extent_blocks(16), 16, 0);
 
@@ -978,14 +979,14 @@ mod tests {
 
     // ===== ADR 0010 E4: cacheless STREAMING `.vox` export ========================
 
-    use crate::core_geom::MaterialChoice as Mat;
+    use voxel_core::core_geom::MaterialChoice as Mat;
     use crate::two_layer_store::{stream_vox_occupancy, TwoLayerStore};
 
     /// Build the `.vox` export by STREAMING the cacheless two-layer evaluator (coarse
     /// `d³` fast-fill + boundary per-voxel) — the E4 path the export button drives.
     fn streamed_vox_export(scene: &Scene, vpb: u32, rgba: BlockPaletteColors) -> VoxExport {
         let store = TwoLayerStore::enabled();
-        let mut chunks: Vec<Vec<crate::voxel::Voxel>> = Vec::new();
+        let mut chunks: Vec<Vec<voxel_core::voxel::Voxel>> = Vec::new();
         let dims = stream_vox_occupancy(&store, scene, vpb, |chunk| chunks.push(chunk))
             .expect("the two-layer capability is enabled");
         VoxExport::from_region_voxel_chunks(dims, chunks, rgba)
@@ -1068,7 +1069,7 @@ mod tests {
 
         // Accumulate-then-convert ORACLE (the retired path): push every chunk into a
         // Vec<Vec<Voxel>> before converting — O(all voxels) peak.
-        let mut accumulated_chunks: Vec<Vec<crate::voxel::Voxel>> = Vec::new();
+        let mut accumulated_chunks: Vec<Vec<voxel_core::voxel::Voxel>> = Vec::new();
         stream_vox_occupancy(&store, scene, vpb, |chunk| accumulated_chunks.push(chunk))
             .expect("the two-layer capability is enabled");
         let accumulated =

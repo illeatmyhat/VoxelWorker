@@ -21,7 +21,7 @@
 //! * **Per-chunk voxel bound.** The old whole-region `MAX_GRID_VOXELS` guard is now
 //!   a *per-chunk* bound (a single chunk can't exceed it), so a scene whose TOTAL
 //!   voxel count is far beyond the old 6M ceiling resolves fine as long as every
-//!   individual chunk is small. See [`crate::voxel::MAX_CHUNK_VOXELS`].
+//!   individual chunk is small. See [`voxel_core::voxel::MAX_CHUNK_VOXELS`].
 //! * **Identical render output.** `Store::resolve_region` rebuilds the
 //!   SAME recentred monolithic grid the renderer/mesher/fog consume today — but
 //!   assembled from cached chunks. The bytes downstream are unchanged (see the
@@ -31,7 +31,7 @@
 //! [`Store::invalidate_aabb`] evicts exactly the chunks an edit's
 //! world-AABB intersects (whole-chunk dirty granularity, ADR 0002 Decision 3). The
 //! edit AABB is computed by
-//! [`LeafSpatialIndex::edit_aabb_since`](crate::spatial_index::LeafSpatialIndex::edit_aabb_since)
+//! [`LeafSpatialIndex::edit_aabb_since`](voxel_core::spatial_index::LeafSpatialIndex::edit_aabb_since)
 //! (diffing the scene's leaf spatial index before vs after the edit);
 //! [`Store::clear`] remains the fallback for edits that can't be
 //! localised (a density change or a region-spanning Part edit).
@@ -47,8 +47,8 @@ use std::collections::HashMap;
 use crate::chunk_storage::{compress, decompress};
 use crate::disk_chunk_store::DiskChunkStore;
 use crate::scene::Scene;
-use crate::spatial_index::{ChunkCoverage, VoxelAabb};
-use crate::voxel::{Voxel, VoxelGrid};
+use voxel_core::spatial_index::{ChunkCoverage, VoxelAabb};
+use voxel_core::voxel::{Voxel, VoxelGrid};
 
 /// Back-compat alias for the pre-A2b name. Existing call sites refer to the
 /// store as `ChunkResolveCache`; later slices migrate them to [`Store`].
@@ -215,7 +215,7 @@ impl Store {
     /// and re-binds (a chunk's voxel extent is density-dependent).
     ///
     /// A chunk whose resolved voxel count would exceed the per-chunk bound
-    /// ([`crate::voxel::MAX_CHUNK_VOXELS`]) is rejected by the call sites BEFORE
+    /// ([`voxel_core::voxel::MAX_CHUNK_VOXELS`]) is rejected by the call sites BEFORE
     /// resolving (the bound is a guard on the chunk's voxel *capacity*, evaluated
     /// from the chunk's voxel extent); this method itself does not re-check it (it
     /// resolves whatever the scene yields for that chunk).
@@ -472,7 +472,7 @@ impl Store {
     /// occupied run in the layer band `[band_min, band_max]` (the scrubber/diameter
     /// readout) from the scene's per-chunk grids, WITHOUT assembling a monolithic
     /// grid — returning the SAME value
-    /// [`VoxelGrid::widest_run_in_band`](crate::voxel::VoxelGrid::widest_run_in_band)
+    /// [`VoxelGrid::widest_run_in_band`](voxel_core::voxel::VoxelGrid::widest_run_in_band)
     /// returns for the assembled region.
     ///
     /// The cache is bound to the composite recentre (exactly as
@@ -480,7 +480,7 @@ impl Store {
     /// in the recentred frame, then every chunk's voxels are bucketed into ONE
     /// shared per-`(y, z)` occupancy row keyed by the GLOBAL X index — so a run
     /// crossing a chunk seam is one contiguous span (see
-    /// [`widest_run_in_band_over_chunks`](crate::voxel::widest_run_in_band_over_chunks)
+    /// [`widest_run_in_band_over_chunks`](voxel_core::voxel::widest_run_in_band_over_chunks)
     /// for the stitching detail). The chunks resolved on a miss are CACHED, so a
     /// later `resolve_region` / re-measure reuses them.
     pub fn widest_run_in_band(
@@ -492,7 +492,7 @@ impl Store {
         band_max: u32,
     ) -> u32 {
         let region_dimensions = self.bind_region(scene, voxels_per_block, lod);
-        crate::voxel::widest_run_in_band_over_chunks(
+        voxel_core::voxel::widest_run_in_band_over_chunks(
             region_dimensions,
             self.covering_chunk_grids(scene, voxels_per_block, lod),
             band_min,
@@ -649,7 +649,7 @@ impl Store {
     /// untouched.
     ///
     /// `edit_aabb` is what
-    /// [`LeafSpatialIndex::edit_aabb_since`](crate::spatial_index::LeafSpatialIndex::edit_aabb_since)
+    /// [`LeafSpatialIndex::edit_aabb_since`](voxel_core::spatial_index::LeafSpatialIndex::edit_aabb_since)
     /// returns: the union of the old and new boxes of whatever the edit changed
     /// (moved / added / removed / edited leaves), so a moved node dirties chunks
     /// around BOTH its source and destination. An empty `edit_aabb` (nothing changed)
@@ -809,12 +809,13 @@ pub fn incremental_rebuild_plan(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core_geom::MaterialChoice;
+    use voxel_core::core_geom::MaterialChoice;
     use crate::voxel::GeometryParams;
     use crate::scene::{
         DefId, Node, NodeContent, RegionBlocks,
     };
-    use crate::voxel::{SdfShape, ShapeKind, VoxelGrid};
+    use voxel_core::voxel::{ShapeKind, VoxelGrid};
+    use crate::voxel::{SdfShape};
 
     /// Canonicalise an occupied set into a sorted multiset of
     /// `(bit_exact_voxel_position, material_id)`, so two resolves compare equal
@@ -1071,7 +1072,7 @@ mod tests {
             * region.size_blocks[2] as u64
             * (voxels_per_block as u64).pow(3);
         assert!(
-            whole_region_voxels > crate::voxel::MAX_GRID_VOXELS,
+            whole_region_voxels > voxel_core::voxel::MAX_GRID_VOXELS,
             "the synthetic scene's whole-region voxel count ({whole_region_voxels}) must \
              exceed the OLD 6M total cap to prove the point"
         );
@@ -1088,7 +1089,7 @@ mod tests {
                 for chunk_x in min_chunk[0]..=max_chunk[0] {
                     let chunk = cache.chunk([chunk_x, chunk_y, chunk_z], &scene, voxels_per_block, 0);
                     assert!(
-                        (chunk.occupied_count() as u64) <= crate::voxel::MAX_CHUNK_VOXELS,
+                        (chunk.occupied_count() as u64) <= voxel_core::voxel::MAX_CHUNK_VOXELS,
                         "every chunk must stay under the per-chunk bound"
                     );
                     total_resolved += chunk.occupied_count();
@@ -1110,14 +1111,14 @@ mod tests {
         // extent cubed). A density large enough that one chunk's capacity exceeds
         // the bound must be rejected by the guard helper.
         let chunk_capacity_at = |voxels_per_block: u32| -> u64 {
-            let extent = (crate::core_geom::CHUNK_BLOCKS * voxels_per_block) as u64;
+            let extent = (voxel_core::core_geom::CHUNK_BLOCKS * voxels_per_block) as u64;
             extent * extent * extent
         };
         // Density 16: chunk extent = 64 voxels → 64³ = 262_144 voxels/chunk, well
         // under the bound — NOT rejected.
-        assert!(chunk_capacity_at(16) <= crate::voxel::MAX_CHUNK_VOXELS);
+        assert!(chunk_capacity_at(16) <= voxel_core::voxel::MAX_CHUNK_VOXELS);
         assert!(
-            !crate::voxel::chunk_extent_exceeds_bound(16),
+            !voxel_core::voxel::chunk_extent_exceeds_bound(16),
             "a normal density-16 chunk is under the per-chunk bound"
         );
 
@@ -1125,11 +1126,11 @@ mod tests {
         // chunk extent = CHUNK_BLOCKS × density; pick a density making 64³·k > bound.
         let huge_density = 64u32; // extent = 256 → 256³ = 16_777_216 voxels/chunk.
         assert!(
-            chunk_capacity_at(huge_density) > crate::voxel::MAX_CHUNK_VOXELS,
+            chunk_capacity_at(huge_density) > voxel_core::voxel::MAX_CHUNK_VOXELS,
             "the chosen huge density must make one chunk exceed the per-chunk bound"
         );
         assert!(
-            crate::voxel::chunk_extent_exceeds_bound(huge_density),
+            voxel_core::voxel::chunk_extent_exceeds_bound(huge_density),
             "a chunk whose voxel capacity exceeds the per-chunk bound must be rejected"
         );
     }
@@ -1234,7 +1235,7 @@ mod tests {
 
         // The chunk owning the OLD Box centre (40·16 = 640 voxels) and the chunk
         // owning the NEW centre (80·16 = 1280 voxels) must BOTH be in the edit range.
-        let chunk_extent = (crate::core_geom::CHUNK_BLOCKS * density) as i32;
+        let chunk_extent = (voxel_core::core_geom::CHUNK_BLOCKS * density) as i32;
         let old_chunk_x = (640i32).div_euclid(chunk_extent);
         let new_chunk_x = (1280i32).div_euclid(chunk_extent);
         let (min_chunk, max_chunk) = edit_aabb.covering_chunk_range(density).unwrap();
@@ -1250,7 +1251,7 @@ mod tests {
         let mut cache = Store::new();
         let _ = cache.resolve_region(&scene, density, 0);
         let before = resident_coords(&cache);
-        let empty = crate::spatial_index::VoxelAabb::new([0, 0, 0], [0, 0, 0]);
+        let empty = voxel_core::spatial_index::VoxelAabb::new([0, 0, 0], [0, 0, 0]);
         let evicted = cache.invalidate_aabb(&empty, density);
         assert!(evicted.is_empty(), "an empty edit AABB reports an empty evicted set");
         assert_eq!(resident_coords(&cache), before, "an empty edit AABB evicts nothing");
@@ -1316,7 +1317,7 @@ mod tests {
         assert!(!before.is_empty());
 
         // Invalidate at a DIFFERENT density than the cache is bound to → clear path.
-        let aabb = crate::spatial_index::VoxelAabb::new([0, 0, 0], [16, 16, 16]);
+        let aabb = voxel_core::spatial_index::VoxelAabb::new([0, 0, 0], [16, 16, 16]);
         let returned: std::collections::BTreeSet<[i32; 3]> =
             cache.invalidate_aabb(&aabb, 8).into_iter().collect();
         assert_eq!(returned, before, "a density mismatch evicts (and reports) every resident coord");
@@ -1376,7 +1377,7 @@ mod tests {
         // Coord correctness: each returned coord is the absolute chunk coord that
         // owns its grid's voxels. The accessor binds to the recentre, so a chunk
         // coord `c` owns rebased voxels in `[c·E - recentre, (c+1)·E - recentre)`.
-        let chunk_extent = (crate::core_geom::CHUNK_BLOCKS * voxels_per_block) as i64;
+        let chunk_extent = (voxel_core::core_geom::CHUNK_BLOCKS * voxels_per_block) as i64;
         let recentre = scene.recentre_voxels_for_resolve(voxels_per_block).voxels();
         for (coord, grid) in &chunks {
             for voxel in &grid.occupied {
@@ -1709,7 +1710,7 @@ mod tests {
         let mut cache = Store::new();
         let actual = cache.widest_run_in_band(&scene, vpb, 0, band.0, band.1);
 
-        let chunk_extent_voxels = crate::core_geom::CHUNK_BLOCKS * vpb; // 64
+        let chunk_extent_voxels = voxel_core::core_geom::CHUNK_BLOCKS * vpb; // 64
         assert!(
             expected > chunk_extent_voxels,
             "the bar's widest run ({expected}) must exceed one chunk's voxel extent \
@@ -2214,7 +2215,7 @@ mod tests {
         // `invalidate_aabb` expects.
         let region_aabb = {
             let (lo, hi) = scene.covering_chunk_range(density).unwrap();
-            let chunk_extent = (crate::core_geom::CHUNK_BLOCKS * density) as i64;
+            let chunk_extent = (voxel_core::core_geom::CHUNK_BLOCKS * density) as i64;
             let min_v = [
                 lo[0] as i64 * chunk_extent,
                 lo[1] as i64 * chunk_extent,
@@ -2225,7 +2226,7 @@ mod tests {
                 (hi[1] as i64 + 1) * chunk_extent,
                 (hi[2] as i64 + 1) * chunk_extent,
             ];
-            crate::spatial_index::VoxelAabb::new(min_v, max_v)
+            voxel_core::spatial_index::VoxelAabb::new(min_v, max_v)
         };
         let _ = cache2.invalidate_aabb(&region_aabb, density);
         let reloads_before2 = cache2.disk_reload_count();

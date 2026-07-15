@@ -42,7 +42,7 @@
 //! The packer therefore returns BOTH the full tile UV rect (for diagnostics) and
 //! the half-texel-inset sampling window the shader actually uses.
 
-use crate::core_geom::MaterialChoice;
+use voxel_core::core_geom::MaterialChoice;
 // The pure packer geometry — shelf layout, half-texel-inset UV rects, and the
 // replicated-edge blit — is textbook rectangle packing with no material/texture
 // vocabulary, so it lives in substrate (see the material-atlas handling in

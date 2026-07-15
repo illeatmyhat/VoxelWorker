@@ -1,11 +1,12 @@
     use super::producers::leaf_producer_grid_voxels;
     use super::*;
-    use crate::core_geom::MaterialChoice;
+    use voxel_core::core_geom::MaterialChoice;
     use crate::debug_clouds::DebugCloudField;
     use crate::sketch::SketchSolid;
-    use crate::spatial_index::VoxelAabb;
-    use crate::units::{ExactRational, Measurement};
-    use crate::voxel::{GeometryParams, SdfShape, ShapeKind, VoxelGrid, VoxelProducer};
+    use voxel_core::spatial_index::VoxelAabb;
+    use voxel_core::units::{ExactRational, Measurement};
+    use voxel_core::voxel::{ShapeKind, VoxelGrid};
+    use crate::voxel::{GeometryParams, SdfShape, VoxelProducer};
 
     /// `from_measurements` derives the canonical voxel offset from the per-axis
     /// authored expression and retains the expression (ADR 0003 §3f(0)). A `3.5
@@ -1454,7 +1455,7 @@
         // Each per-chunk resolve must keep every voxel inside its OWN chunk AABB
         // (exactly-one-chunk ownership). Walk the covering range and re-resolve.
         let chunk_extent_voxels =
-            (crate::core_geom::CHUNK_BLOCKS * voxels_per_block.max(1)) as i32;
+            (voxel_core::core_geom::CHUNK_BLOCKS * voxels_per_block.max(1)) as i32;
         if let Some((min_chunk, max_chunk)) = scene.covering_chunk_range(voxels_per_block) {
             let mut total_from_chunks = 0usize;
             for chunk_z in min_chunk[2]..=max_chunk[2] {
@@ -1724,7 +1725,7 @@
         // A chunk far outside the (origin-area) composite AABB.
         let chunk = scene.resolve_chunk([1000, 1000, 1000], 16, 0);
         assert_eq!(chunk.occupied_count(), 0, "a far-off chunk must be empty");
-        let chunk_extent = crate::core_geom::CHUNK_BLOCKS * 16;
+        let chunk_extent = voxel_core::core_geom::CHUNK_BLOCKS * 16;
         assert_eq!(
             chunk.dimensions,
             [chunk_extent, chunk_extent, chunk_extent],
@@ -1821,7 +1822,7 @@
         // The owning chunk coordinates are around 100_000 × density / chunk_extent,
         // i.e. far from chunk 0 — the chunk addressing places it far away too.
         let chunk_extent_voxels =
-            (crate::core_geom::CHUNK_BLOCKS * voxels_per_block) as i64;
+            (voxel_core::core_geom::CHUNK_BLOCKS * voxels_per_block) as i64;
         let expected_chunk_x = ((offset_blocks * voxels_per_block as i64) / chunk_extent_voxels) as i32;
         let (min_chunk, max_chunk) = scene
             .covering_chunk_range(voxels_per_block)
@@ -1935,7 +1936,7 @@
 
         // The covering chunk range also derives correctly (chunk coord narrows to i32
         // safely): chunk-X = composed_voxels / chunk_extent, well inside i32.
-        let chunk_extent = (crate::core_geom::CHUNK_BLOCKS as i64) * density;
+        let chunk_extent = (voxel_core::core_geom::CHUNK_BLOCKS as i64) * density;
         let expected_chunk_x = composed_voxels.div_euclid(chunk_extent);
         assert!(
             expected_chunk_x <= i32::MAX as i64,
@@ -1960,8 +1961,8 @@
     fn walk_leaf_aabbs_intersecting(
         scene: &Scene,
         voxels_per_block: u32,
-        query: &crate::spatial_index::VoxelAabb,
-    ) -> Vec<crate::spatial_index::VoxelAabb> {
+        query: &voxel_core::spatial_index::VoxelAabb,
+    ) -> Vec<voxel_core::spatial_index::VoxelAabb> {
         let mut matched = Vec::new();
         scene.for_each_leaf(&mut |world_offset_voxels, content, _grid_on_faces| {
             let Some(grid_voxels) = leaf_producer_grid_voxels(content, voxels_per_block) else {
@@ -1976,7 +1977,7 @@
                 min[axis] = world_offset_voxels[axis];
                 max[axis] = min[axis] + grid;
             }
-            let aabb = crate::spatial_index::VoxelAabb::new(min, max);
+            let aabb = voxel_core::spatial_index::VoxelAabb::new(min, max);
             if aabb.intersects(query) {
                 matched.push(aabb);
             }
@@ -1985,7 +1986,7 @@
     }
 
     fn sorted_aabbs(
-        mut boxes: Vec<crate::spatial_index::VoxelAabb>,
+        mut boxes: Vec<voxel_core::spatial_index::VoxelAabb>,
     ) -> Vec<([i64; 3], [i64; 3])> {
         boxes.sort_by_key(|b| (b.min, b.max));
         boxes.into_iter().map(|b| (b.min, b.max)).collect()
@@ -2046,7 +2047,7 @@
     /// `--demo-village`). This is the S3 spatial-index correctness proof.
     #[test]
     fn spatial_index_query_matches_full_walk() {
-        use crate::spatial_index::VoxelAabb;
+        use voxel_core::spatial_index::VoxelAabb;
         let voxels_per_block = 16;
         let scenes = [
             ("single", Scene::from_geometry(
@@ -2118,7 +2119,7 @@
         let recoloured = index_c.edit_aabb_since(&index_a).expect("same density");
         assert!(!recoloured.is_empty(), "a same-box content change is still dirty");
         // CORNER-ANCHORING: Sphere at origin, 5 blocks → span [0, 5·16) = [0, 80).
-        assert_eq!(recoloured, crate::spatial_index::VoxelAabb::new([0, 0, 0], [80, 80, 80]));
+        assert_eq!(recoloured, voxel_core::spatial_index::VoxelAabb::new([0, 0, 0], [80, 80, 80]));
     }
 
     /// A density change can't be localised: the diff returns `None` (clear).

@@ -22,7 +22,7 @@
 use serde::{Deserialize, Serialize};
 
 use camera::{HomeView, OrbitCamera, ProjectionMode};
-use crate::core_geom::MaterialChoice;
+use voxel_core::core_geom::MaterialChoice;
 use crate::panel::{LayerRange, PanelState};
 use crate::scene::Scene;
 use crate::voxel::GeometryParams;
@@ -392,7 +392,7 @@ impl AppConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::voxel::ShapeKind;
+    use voxel_core::voxel::ShapeKind;
 
     #[test]
     fn config_round_trips_through_json() {

@@ -2,13 +2,14 @@
 //! frame-bearing recentre, the primitive-kind tag, and the pure signed-distance
 //! functions the producers sample.
 //!
-//! This half is the future `voxel_core` crate: it depends only DOWNWARD (on
-//! `core_geom`) and NEVER on the producer half — no `SdfShape`, no `VoxelProducer`,
-//! no `GeometryParams`. That ⊥ is load-bearing: `voxel_core` must not be able to
-//! import `document`, so the boundary is enforced here as a module split.
+//! This is the `voxel_core` value layer: it depends only DOWNWARD (on `core_geom`)
+//! and NEVER on the producer half — no `SdfShape`, no `VoxelProducer`, no
+//! `GeometryParams` (those live in the app-crate `voxel` module). That ⊥ is
+//! load-bearing: `voxel_core` cannot import the document layer, and the crate
+//! boundary now compile-enforces it.
 //!
-//! See the crate-level module doc in [`super`] for the project-wide Z-up coordinate
-//! convention every value here obeys.
+//! Every value here obeys the project-wide Z-up coordinate convention (vertical = +Z,
+//! array index 2; ground = XY; front = −Y) — see `docs/architecture/01-document.md`.
 
 use glam::Vec3;
 
@@ -21,7 +22,7 @@ pub const SURFACE_ISOLEVEL: f32 = 0.0;
 /// shows a warning) so dragging a sphere to 16×16×16 @32 can't freeze the app.
 ///
 /// **Issue #27 S2 — no longer a whole-scene total cap.** The resolve is now
-/// chunked + lazy (see [`crate::chunk_cache`]), so the guard moved to a *per-chunk*
+/// chunked + lazy (see the app-crate `chunk_cache`), so the guard moved to a *per-chunk*
 /// bound: [`MAX_CHUNK_VOXELS`]. A scene whose TOTAL voxel count is far beyond this
 /// 6M figure now resolves fine, as long as each individual chunk is small. This
 /// constant is retained because the single-shape `exceeds_voxel_cap` guard still
@@ -30,7 +31,7 @@ pub const SURFACE_ISOLEVEL: f32 = 0.0;
 pub const MAX_GRID_VOXELS: u64 = 6_000_000;
 
 /// Per-chunk voxel bound (ADR 0002 Decision 3, issue #27 S2): the most voxels a
-/// SINGLE chunk may hold. The deep chunked resolve ([`crate::chunk_cache`]) caps
+/// SINGLE chunk may hold. The deep chunked resolve (the app-crate `chunk_cache`) caps
 /// each chunk, not the whole scene — so total scene size is bounded only by how
 /// many chunks resolve, not by one 6M ceiling.
 ///
@@ -75,7 +76,7 @@ pub use crate::core_geom::{BlockAttrs, BlockId};
 /// install) as this newtype, and the compiler enforces that the install uses the request's
 /// recentre rather than a same-shaped `[i64; 3]` from somewhere else.
 ///
-/// **The one mint point** is [`Scene::recentre_voxels_for_resolve`](crate::scene::Scene::recentre_voxels_for_resolve),
+/// **The one mint point** is `Scene::recentre_voxels_for_resolve` (in the app-crate scene),
 /// which returns this newtype directly — so a build's recentre is born already carrying its
 /// frame. Transport only this increment: it is `Copy`, has no arithmetic, and [`voxels`] is
 /// the ONE way back to the raw triple — unwrapped only at the point of actual positional
@@ -95,7 +96,7 @@ impl RecentreVoxels {
     /// Carry a known recentre triple as its frame value — the boundary/test constructor
     /// for a recentre that arrives as a raw `[i64; 3]` (the `shot` oracle grid's carried
     /// field, the parity tests' known recentre). The PRODUCTION mint is
-    /// [`Scene::recentre_voxels_for_resolve`](crate::scene::Scene::recentre_voxels_for_resolve),
+    /// `Scene::recentre_voxels_for_resolve` (in the app-crate scene),
     /// which returns this newtype directly.
     pub fn new(voxels: [i64; 3]) -> Self {
         Self(voxels)

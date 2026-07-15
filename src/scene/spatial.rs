@@ -2,7 +2,7 @@
 //! chunk range (ADR 0002 far-placement i64 math narrowed to the i32 chunk key),
 //! and the per-leaf [`LeafSpatialIndex`] the edit-diff broadphase reads.
 
-use crate::spatial_index::{LeafEntry, LeafFingerprint, LeafSpatialIndex, VoxelAabb};
+use voxel_core::spatial_index::{LeafEntry, LeafFingerprint, LeafSpatialIndex, VoxelAabb};
 
 use super::producers::{leaf_content_fingerprint, leaf_producer_grid_voxels};
 use super::*;
@@ -68,7 +68,7 @@ impl Scene {
         // small; the block→chunk division therefore happens in i64 and the QUOTIENT
         // (the chunk coordinate) narrows to i32 safely — for offsets up to ±10⁹
         // blocks at density 16 a chunk coord is ≤ ±2.5×10⁸, well inside i32 (S4a).
-        let chunk_extent_voxels = (crate::core_geom::CHUNK_BLOCKS * voxels_per_block.max(1)) as i64;
+        let chunk_extent_voxels = (voxel_core::core_geom::CHUNK_BLOCKS * voxels_per_block.max(1)) as i64;
 
         let mut min_chunk = [0i32; 3];
         let mut max_chunk = [0i32; 3];
@@ -109,7 +109,7 @@ impl Scene {
     /// can land in. A leaf with an intrinsic size (a Tool) gets a concrete box
     /// `[off·d − grid/2, off·d + grid/2)`; a region-spanning leaf (a Part, no
     /// intrinsic size) gets an empty box and a
-    /// [`RegionSpanning`](crate::spatial_index::LeafFingerprint::RegionSpanning)
+    /// [`RegionSpanning`](voxel_core::spatial_index::LeafFingerprint::RegionSpanning)
     /// fingerprint (it cannot be chunk-localised; an edit touching it forces a
     /// wholesale clear).
     ///

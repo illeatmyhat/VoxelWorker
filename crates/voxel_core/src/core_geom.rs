@@ -62,8 +62,8 @@ impl MaterialChoice {
 ///
 /// This replaces the old 3-value `material_id` enum jammed into a `u16` (with a render
 /// flag in its high bit). It is an OPAQUE palette index that rides through the store,
-/// the chunk-storage codec and meshing; the active block palette
-/// ([`crate::block_palette`]) maps it to a colour / texture, and `.vox` export maps it
+/// the chunk-storage codec and meshing; the active block palette (`block_palette`)
+/// maps it to a colour / texture, and `.vox` export maps it
 /// through that same palette. The three procedural materials occupy ids `0..3`
 /// (Stone/Wood/Plain), so existing scenes resolve byte-identically; the rich VS palette
 /// CONTENT (hundreds of named blocks) is the deferred part — this is only the

@@ -43,7 +43,7 @@ use crate::brick_field::{
     build_brick_field_with_tiles, ClipmapPyramid, IncrementalBrickField, SculptedAtlasPayload,
     SculptedCellKeyAtlasPayload,
 };
-use crate::voxel::RecentreVoxels;
+use voxel_core::voxel::RecentreVoxels;
 use crate::brick_raymarch::{pack_gpu_records, BrickGpuRecord};
 use crate::two_layer_store::TwoLayerChunk;
 use crate::workers::{build_catching, Worker};
@@ -195,10 +195,11 @@ pub fn spawn_brick_worker() -> BrickWorker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core_geom::MaterialChoice;
+    use voxel_core::core_geom::MaterialChoice;
     use crate::scene::Scene;
     use crate::two_layer_store::TwoLayerStore;
-    use crate::voxel::{GeometryParams, ShapeKind};
+    use voxel_core::voxel::{ShapeKind};
+    use crate::voxel::{GeometryParams};
 
     // --- build_brick_rebuild: byte-equivalence with the synchronous path ---
 

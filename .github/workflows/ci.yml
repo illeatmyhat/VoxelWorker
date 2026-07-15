@@ -63,6 +63,17 @@ jobs:
       - name: Test substrate
         run: cargo test -p substrate
 
+      # The voxel_core library is the foundational value-vocabulary member (one layer
+      # above substrate): the resolved voxel cell + sparse grid, the recentre frame, the
+      # SDF value functions, the block-palette id / cell-key codec, the absolute-voxel box
+      # + leaf index, and the units core. It depends only on glam + serde + substrate and
+      # carries its own gates so a regression in the value layer fails independently.
+      - name: Clippy voxel_core (deny warnings)
+        run: cargo clippy -p voxel_core --all-targets -- -D warnings
+
+      - name: Test voxel_core
+        run: cargo test -p voxel_core
+
       # The camera library is the wgpu-free viewing + projective-geometry member
       # (orbit rig, projection, ViewCube, screen→ray unprojection, frustum culling);
       # it depends only on glam + substrate and carries its own gates so a regression

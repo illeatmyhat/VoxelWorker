@@ -12,7 +12,8 @@
 //! Run: `cargo test --features gpu --test gpu_parity`
 #![cfg(feature = "gpu")]
 
-use voxel_worker::voxel::{GeometryParams, SdfShape, ShapeKind};
+use voxel_core::voxel::{ShapeKind};
+use voxel_worker::voxel::{GeometryParams, SdfShape};
 use voxel_worker::{
     GpuContext, MaterialChoice, Node, NodeContent, PlaneAxis, RevolveAxis, Scene, Sketch,
     SketchPoint, SketchSolid,
@@ -135,7 +136,7 @@ fn brick_slot_bytes(
 // `brick_surface_elision_hit_set_unchanged` (render).
 #[test]
 fn brick_field_build_matches_two_layer_boundary_set_byte_exactly() {
-    use voxel_worker::core_geom::CHUNK_BLOCKS;
+    use voxel_core::core_geom::CHUNK_BLOCKS;
     use voxel_worker::{
         build_brick_field_all_blocks, read_back_brick_atlas, upload_brick_atlas, BrickPayload,
         NodeTransform, TwoLayerStore, Voxel,
@@ -612,7 +613,7 @@ fn exact_occupancy_set(
     )],
     voxels_per_block: u32,
 ) -> std::collections::HashSet<[i64; 3]> {
-    use voxel_worker::core_geom::CHUNK_BLOCKS;
+    use voxel_core::core_geom::CHUNK_BLOCKS;
     let chunk_extent = (CHUNK_BLOCKS * voxels_per_block) as i64;
     let mut occupied = std::collections::HashSet::new();
     let mut expanded = Vec::new();
@@ -1405,7 +1406,7 @@ fn brick_raymarch_incremental_patch_matches_wholesale_install() {
 /// `brick_field::incremental_carve_across_chunk_boundary_flips_neighbour_occlusion`.
 #[test]
 fn brick_raymarch_incremental_carve_exposes_interior_across_chunk_boundary() {
-    use voxel_worker::core_geom::CHUNK_BLOCKS;
+    use voxel_core::core_geom::CHUNK_BLOCKS;
     use voxel_worker::{
         build_brick_field, pack_gpu_records, AppCore,
         BrickRaymarchRenderer, ClipmapPyramid, IncrementalBrickField, LayerBand, Node, NodeContent,
@@ -2186,7 +2187,7 @@ fn onion_ghost_marches_only_the_onion_slabs() {
 fn brick_mixed_material_matches_cpu_reference() {
     use std::collections::BTreeMap;
     use std::sync::Arc;
-    use voxel_worker::core_geom::{CellKey, CHUNK_BLOCKS};
+    use voxel_core::core_geom::{CellKey, CHUNK_BLOCKS};
     use voxel_worker::cuboid::VoxelBox;
     use voxel_worker::{
         build_brick_field, cpu_brick_hit_material, cpu_march_brick_field, pack_gpu_records, AppCore,

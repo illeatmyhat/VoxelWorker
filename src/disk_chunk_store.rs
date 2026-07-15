@@ -358,7 +358,7 @@ fn remove_file_if_present(path: &Path) -> std::io::Result<()> {
 mod tests {
     use super::*;
     use crate::chunk_storage::{compress, decompress};
-    use crate::voxel::{Voxel, VoxelGrid};
+    use voxel_core::voxel::{Voxel, VoxelGrid};
 
     /// A unique temp directory under the system temp dir, cleaned up by [`TempDir`]
     /// on drop so no test leaves disk litter.
@@ -408,8 +408,8 @@ mod tests {
                             (y % 4) as u8,
                             (z % 4) as u8,
                         ],
-                        block_id: crate::core_geom::BlockId(seed),
-                        attrs: crate::core_geom::BlockAttrs::DEFAULT,
+                        block_id: voxel_core::core_geom::BlockId(seed),
+                        attrs: voxel_core::core_geom::BlockAttrs::DEFAULT,
                         grid_overlay: false,
                     });
                 }

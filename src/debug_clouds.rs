@@ -17,7 +17,8 @@
 //! permutation, so the same parameters always resolve to the same field (good for
 //! a reproducible debug object and for golden-image tests later).
 
-use crate::voxel::{Voxel, VoxelGrid, VoxelProducer};
+use voxel_core::voxel::{Voxel, VoxelGrid};
+use crate::voxel::{VoxelProducer};
 use glam::Vec3;
 use rayon::prelude::*;
 use substrate::noise::{PerlinNoise, SmallRng};
@@ -112,7 +113,7 @@ impl VoxelProducer for DebugCloudField {
         self.resolve_into(
             grid,
             voxels_per_block,
-            crate::spatial_index::VoxelAabb::new(
+            voxel_core::spatial_index::VoxelAabb::new(
                 [0, 0, 0],
                 [full_x as i64, full_y as i64, full_z as i64],
             ),
@@ -123,7 +124,7 @@ impl VoxelProducer for DebugCloudField {
         &self,
         grid: &mut VoxelGrid,
         voxels_per_block: u32,
-        window_local_voxels: crate::spatial_index::VoxelAabb,
+        window_local_voxels: voxel_core::spatial_index::VoxelAabb,
     ) {
         let [grid_x, grid_y, grid_z] = self.dimensions;
         // FULL dimensions even when only a window is written.
@@ -184,8 +185,8 @@ impl VoxelProducer for DebugCloudField {
                                     (j % voxels_per_block) as u8,
                                     (k % voxels_per_block) as u8,
                                 ],
-                                block_id: crate::core_geom::BlockId::DEFAULT,
-                                attrs: crate::core_geom::BlockAttrs::DEFAULT,
+                                block_id: voxel_core::core_geom::BlockId::DEFAULT,
+                                attrs: voxel_core::core_geom::BlockAttrs::DEFAULT,
                                 grid_overlay: false,
                             });
                         }
@@ -203,7 +204,7 @@ impl VoxelProducer for DebugCloudField {
     /// trait default; the explicit override documents the intent at the producer.)
     fn cell_field_interval(
         &self,
-        _cell_local_voxels: crate::spatial_index::VoxelAabb,
+        _cell_local_voxels: voxel_core::spatial_index::VoxelAabb,
         _voxels_per_block: u32,
     ) -> Option<crate::voxel::FieldInterval> {
         None
@@ -284,7 +285,7 @@ fn scatter_cloud_puffs(seed: u32, extent: Vec3) -> Vec<CloudPuff> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::voxel::VoxelGrid;
+    use voxel_core::voxel::VoxelGrid;
 
     #[test]
     fn resolves_some_but_not_all_voxels() {

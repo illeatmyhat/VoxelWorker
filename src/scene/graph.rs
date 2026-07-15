@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::core_geom::MaterialChoice;
+use voxel_core::core_geom::MaterialChoice;
 use crate::voxel::{GeometryParams, SdfShape};
 
 use super::*;

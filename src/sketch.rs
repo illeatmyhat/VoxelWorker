@@ -25,7 +25,8 @@
 //! The profile is a closed simple polygon (≥3 points); a degenerate profile
 //! (fewer than 3 points, or zero area) resolves to nothing rather than panicking.
 
-use crate::voxel::{Voxel, VoxelGrid, VoxelProducer, MAX_GRID_VOXELS};
+use voxel_core::voxel::{Voxel, VoxelGrid, MAX_GRID_VOXELS};
+use crate::voxel::{VoxelProducer};
 use rayon::prelude::*;
 
 /// Which axis the sketch plane's normal points along — i.e. the axis the profile
@@ -449,7 +450,7 @@ impl VoxelProducer for SketchSolid {
         self.resolve_into(
             grid,
             voxels_per_block,
-            crate::spatial_index::VoxelAabb::new(
+            voxel_core::spatial_index::VoxelAabb::new(
                 [0, 0, 0],
                 [full_x as i64, full_y as i64, full_z as i64],
             ),
@@ -460,7 +461,7 @@ impl VoxelProducer for SketchSolid {
         &self,
         grid: &mut VoxelGrid,
         voxels_per_block: u32,
-        window_local_voxels: crate::spatial_index::VoxelAabb,
+        window_local_voxels: voxel_core::spatial_index::VoxelAabb,
     ) {
         profiling::scope!("sketch_resolve");
         match self.operation {
@@ -496,7 +497,7 @@ impl VoxelProducer for SketchSolid {
     /// `[0, full_dim)` (ADR 0008 — carried, never re-derived).
     fn cell_field_interval(
         &self,
-        cell_local_voxels: crate::spatial_index::VoxelAabb,
+        cell_local_voxels: voxel_core::spatial_index::VoxelAabb,
         voxels_per_block: u32,
     ) -> Option<crate::voxel::FieldInterval> {
         let _ = voxels_per_block;
@@ -506,7 +507,7 @@ impl VoxelProducer for SketchSolid {
         let dimensions = self.grid_dimensions();
         let [full_x, full_y, full_z] = dimensions;
         // A degenerate (empty-occupancy) producer: every cell is AIR.
-        let grid_aabb = crate::spatial_index::VoxelAabb::new(
+        let grid_aabb = voxel_core::spatial_index::VoxelAabb::new(
             [0, 0, 0],
             [full_x as i64, full_y as i64, full_z as i64],
         );
@@ -556,7 +557,7 @@ impl SketchSolid {
     /// axis-aligned FACE block — fully solid, but with its face lattice line collinear with
     /// the profile edge — while never over-claiming (the edge sits 0.5 beyond the outermost
     /// sample centre).
-    fn extrude_cell_is_solid(&self, cell: crate::spatial_index::VoxelAabb) -> bool {
+    fn extrude_cell_is_solid(&self, cell: voxel_core::spatial_index::VoxelAabb) -> bool {
         let Some((min, _max)) = self.profile_bounds() else {
             return false;
         };
@@ -600,7 +601,7 @@ impl SketchSolid {
     /// coarse claim can never disagree with the per-voxel truth.
     fn revolve_cell_is_solid(
         &self,
-        cell: crate::spatial_index::VoxelAabb,
+        cell: voxel_core::spatial_index::VoxelAabb,
         axis: RevolveAxis,
         sweep: RevolveSweep,
         dimensions: [u32; 3],
@@ -680,7 +681,7 @@ impl SketchSolid {
         grid: &mut VoxelGrid,
         voxels_per_block: u32,
         height_voxels: u32,
-        window_local_voxels: crate::spatial_index::VoxelAabb,
+        window_local_voxels: voxel_core::spatial_index::VoxelAabb,
     ) {
         let dimensions = self.grid_dimensions();
         // FULL dimensions even when only a window is written.
@@ -763,8 +764,8 @@ impl SketchSolid {
                             (index[1] % density) as u8,
                             (index[2] % density) as u8,
                         ],
-                        block_id: crate::core_geom::BlockId::DEFAULT,
-                        attrs: crate::core_geom::BlockAttrs::DEFAULT,
+                        block_id: voxel_core::core_geom::BlockId::DEFAULT,
+                        attrs: voxel_core::core_geom::BlockAttrs::DEFAULT,
                         grid_overlay: false,
                     }
                 })
@@ -802,7 +803,7 @@ impl SketchSolid {
         voxels_per_block: u32,
         axis: RevolveAxis,
         sweep: RevolveSweep,
-        window_local_voxels: crate::spatial_index::VoxelAabb,
+        window_local_voxels: voxel_core::spatial_index::VoxelAabb,
     ) {
         let dimensions = self.grid_dimensions();
         // FULL dimensions even when only a window is written.
@@ -977,8 +978,8 @@ impl SketchSolid {
                                 (index[1] % density) as u8,
                                 (index[2] % density) as u8,
                             ],
-                            block_id: crate::core_geom::BlockId::DEFAULT,
-                            attrs: crate::core_geom::BlockAttrs::DEFAULT,
+                            block_id: voxel_core::core_geom::BlockId::DEFAULT,
+                            attrs: voxel_core::core_geom::BlockAttrs::DEFAULT,
                             grid_overlay: false,
                         });
                     }
@@ -992,7 +993,8 @@ impl SketchSolid {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::voxel::{SdfShape, ShapeKind, VoxelProducer};
+    use voxel_core::voxel::{ShapeKind};
+    use crate::voxel::{SdfShape, VoxelProducer};
     use std::collections::BTreeSet;
 
     /// Collect a producer's occupied voxels as a sorted set of

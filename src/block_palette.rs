@@ -528,8 +528,8 @@ impl BlockPalette {
         });
     }
 
-    /// Map a categorical [`BlockId`](crate::core_geom::BlockId) (ADR 0003 §3a) to the
-    /// procedural [`MaterialChoice`](crate::core_geom::MaterialChoice) it renders as.
+    /// Map a categorical [`BlockId`](voxel_core::core_geom::BlockId) (ADR 0003 §3a) to the
+    /// procedural [`MaterialChoice`](voxel_core::core_geom::MaterialChoice) it renders as.
     ///
     /// This is the categorical block-palette resolution the per-voxel cell now routes
     /// through: the three procedural materials ARE the palette today (`block_id` ⇒
@@ -538,8 +538,8 @@ impl BlockPalette {
     /// is the seam it will replace, so the renderer + `.vox` export call one resolver
     /// rather than reading the id directly. `&self` is taken so a future palette with
     /// real content resolves against THIS palette's loaded tiles, not a global table.
-    pub fn material_for_block(&self, block_id: crate::core_geom::BlockId) -> crate::core_geom::MaterialChoice {
-        crate::core_geom::MaterialChoice::from_material_id(block_id.color_index())
+    pub fn material_for_block(&self, block_id: voxel_core::core_geom::BlockId) -> voxel_core::core_geom::MaterialChoice {
+        voxel_core::core_geom::MaterialChoice::from_material_id(block_id.color_index())
     }
 
     /// Pick the next pseudo-random variant path of `tile_index` and bump the

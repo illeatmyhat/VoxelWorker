@@ -19,12 +19,13 @@
 
 use crate::block_palette::BlockPalette;
 use camera::ProjectionMode;
-use crate::core_geom::MaterialChoice;
+use voxel_core::core_geom::MaterialChoice;
 use crate::intent::{Intent, NodeSpec};
 use crate::scene::{DefId, Node, NodeContent, NodeId, Part, Scene};
 use crate::sketch::{Operation, PlaneAxis, RevolveAxis, Sketch, SketchSolid};
-use crate::units::{self, DisplayUnit, MeasurementError};
-use crate::voxel::{GeometryParams, SdfShape, ShapeKind};
+use voxel_core::units::{self, DisplayUnit, MeasurementError};
+use voxel_core::voxel::{ShapeKind};
+use crate::voxel::{GeometryParams, SdfShape};
 
 /// Layer-range scrubber state (issue #12).
 ///
@@ -1396,7 +1397,7 @@ fn build_sketch_inspector_section(
 /// voxel offset formatted as blocks+voxels and, on commit (Enter or focus loss),
 /// parsed via [`units::parse`] and validated to land on a whole voxel at the
 /// document density; on success it emits a single `SetOffset` carrying the
-/// per-axis [`Measurement`](crate::units::Measurement)s (the edited axis plus the
+/// per-axis [`Measurement`](voxel_core::units::Measurement)s (the edited axis plus the
 /// two unchanged retained ones). A parse / non-landing error is shown inline (red)
 /// and NOTHING is emitted, so the canonical offset never moves on bad input.
 ///

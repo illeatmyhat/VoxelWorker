@@ -35,16 +35,16 @@ use bytemuck::{Pod, Zeroable};
 use rayon::prelude::*;
 use wgpu::util::DeviceExt;
 
-use crate::core_geom::{MaterialChoice, CHUNK_BLOCKS};
+use voxel_core::core_geom::{MaterialChoice, CHUNK_BLOCKS};
 use crate::cuboid::{decompose_into_boxes, VoxelBox, VoxelBoxMaterial, VoxelRegion};
 use substrate::solids::CulledBoxMeshing;
 use camera::frustum::Frustum;
 use substrate::spatial::RealAabb as Aabb;
 use crate::renderer::{LayerBand, DEPTH_FORMAT, MSAA_SAMPLE_COUNT};
 use crate::texture_atlas::MaterialAtlas;
-use crate::core_geom::CellKey;
+use voxel_core::core_geom::CellKey;
 use crate::two_layer_store::{MicroblockGeometry, SeamSolidity, TwoLayerChunk};
-use crate::voxel::{RecentreVoxels, VoxelGrid};
+use voxel_core::voxel::{RecentreVoxels, VoxelGrid};
 
 /// One mesh vertex of a cuboid face: world position, the face's outward normal, and the
 /// box's `block_id` (the clean colour index, constant across the face).
@@ -1106,7 +1106,7 @@ fn build_two_layer_chunk_meshes_filtered(
 /// recentred frame; `abs_block` its absolute block coord (to look up neighbours).
 #[allow(clippy::too_many_arguments)]
 fn emit_coarse_block_box(
-    block_id: crate::core_geom::BlockId,
+    block_id: voxel_core::core_geom::BlockId,
     overlay: bool,
     density: u32,
     block_low_recentred: [i64; 3],
@@ -3011,7 +3011,7 @@ fn bucket_grid_into_chunk_grids(
     voxels_per_block: u32,
 ) -> Vec<([i32; 3], VoxelGrid)> {
     use std::collections::HashMap;
-    let chunk_extent = (crate::core_geom::CHUNK_BLOCKS * voxels_per_block.max(1)) as f32;
+    let chunk_extent = (voxel_core::core_geom::CHUNK_BLOCKS * voxels_per_block.max(1)) as f32;
     let mut buckets: HashMap<[i32; 3], VoxelGrid> = HashMap::new();
     for voxel in &grid.occupied {
         let position = voxel.world_position();
@@ -3034,7 +3034,7 @@ fn bucket_grid_into_chunk_grids(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::voxel::Voxel;
+    use voxel_core::voxel::Voxel;
 
     /// Perf probe (mesh-display scaling guard): per-size timing + emission counts of the pure
     /// CPU two-layer mesh generation — the path the display takes when a loaded VS material
@@ -3043,7 +3043,7 @@ mod tests {
     #[test]
     #[ignore = "perf probe — run in release with --nocapture"]
     fn mesh_pipeline_scaling_probe() {
-        use crate::core_geom::MaterialChoice;
+        use voxel_core::core_geom::MaterialChoice;
         use crate::scene::{Node, NodeContent, Scene};
         use crate::sketch::{PlaneAxis, Sketch, SketchSolid};
         let density = 16u32;
@@ -3108,8 +3108,8 @@ mod tests {
                     (k as f32 + 0.5 - half[2]).floor() as i32,
                 ],
                 block_local_coord: [0, 0, 0],
-                block_id: crate::core_geom::BlockId(material),
-                attrs: crate::core_geom::BlockAttrs::DEFAULT,
+                block_id: voxel_core::core_geom::BlockId(material),
+                attrs: voxel_core::core_geom::BlockAttrs::DEFAULT,
                 grid_overlay: false,
             });
         }
@@ -3178,8 +3178,8 @@ mod tests {
                 (1.0 + 0.5 - half[2]).floor() as i32,
             ],
             block_local_coord: [0, 0, 0],
-            block_id: crate::core_geom::BlockId(1),
-            attrs: crate::core_geom::BlockAttrs::DEFAULT,
+            block_id: voxel_core::core_geom::BlockId(1),
+            attrs: voxel_core::core_geom::BlockAttrs::DEFAULT,
             grid_overlay: false,
         });
         let mesh = build_cuboid_mesh(&grid, 1);
@@ -3264,7 +3264,8 @@ mod tests {
     /// shape off-centre). A wedge means lost coverage; this asserts none is lost.
     #[test]
     fn cuboid_covers_every_voxel_for_all_shapes() {
-        use crate::voxel::{SdfShape, ShapeKind, VoxelProducer};
+        use voxel_core::voxel::{ShapeKind};
+        use crate::voxel::{SdfShape, VoxelProducer};
 
         for &kind in &[
             ShapeKind::Cylinder,
@@ -3411,8 +3412,8 @@ mod tests {
                 (1.0 + 0.5 - half[2]).floor() as i32,
             ],
             block_local_coord: [0, 0, 0],
-            block_id: crate::core_geom::BlockId(1),
-            attrs: crate::core_geom::BlockAttrs::DEFAULT,
+            block_id: voxel_core::core_geom::BlockId(1),
+            attrs: voxel_core::core_geom::BlockAttrs::DEFAULT,
             grid_overlay: false,
         });
 
@@ -3894,7 +3895,8 @@ mod tests {
     /// that every genuine face is actually emitted by each path (no real hole).
     #[test]
     fn per_chunk_apron_exposed_face_set_equals_whole_region() {
-        use crate::voxel::{SdfShape, ShapeKind, VoxelProducer};
+        use voxel_core::voxel::{ShapeKind};
+        use crate::voxel::{SdfShape, VoxelProducer};
 
         let mut multi_chunk_seen = false;
         // Densities chosen so shapes span MULTIPLE chunks (chunk = CHUNK_BLOCKS=4
@@ -3981,7 +3983,7 @@ mod tests {
     #[test]
     fn solid_slab_across_chunk_seam_has_no_interior_faces() {
         let density = 8u32;
-        let chunk_voxels = crate::core_geom::CHUNK_BLOCKS * density; // 32
+        let chunk_voxels = voxel_core::core_geom::CHUNK_BLOCKS * density; // 32
         let nx = chunk_voxels * 2; // span two chunks in X
         let ny = density; // 8
         let nz = density; // 8
@@ -3991,15 +3993,15 @@ mod tests {
         for k in 0..nz {
             for j in 0..ny {
                 for i in 0..nx {
-                    grid.occupied.push(crate::voxel::Voxel {
+                    grid.occupied.push(voxel_core::voxel::Voxel {
                         local_index: [
                             (i as f32 + 0.5 - half[0]).floor() as i32,
                             (j as f32 + 0.5 - half[1]).floor() as i32,
                             (k as f32 + 0.5 - half[2]).floor() as i32,
                         ],
                         block_local_coord: [0, 0, 0],
-                        block_id: crate::core_geom::BlockId(0),
-                        attrs: crate::core_geom::BlockAttrs::DEFAULT,
+                        block_id: voxel_core::core_geom::BlockId(0),
+                        attrs: voxel_core::core_geom::BlockAttrs::DEFAULT,
                         grid_overlay: false,
                     });
                 }
@@ -4061,7 +4063,8 @@ mod tests {
     /// real air boundaries → cap faces).
     #[test]
     fn per_chunk_band_clip_face_set_equals_whole_region() {
-        use crate::voxel::{SdfShape, ShapeKind, VoxelProducer};
+        use voxel_core::voxel::{ShapeKind};
+        use crate::voxel::{SdfShape, VoxelProducer};
         let voxels_per_block = 8;
         let shape = SdfShape::from_blocks(ShapeKind::Torus, [8, 2, 8], 1, voxels_per_block);
         let dims = shape.grid_dimensions(voxels_per_block);
@@ -4141,10 +4144,11 @@ mod tests {
 
     // ---- ADR 0010 E3 — two-layer mesher exposed-face parity (#50) ----
 
-    use crate::core_geom::MaterialChoice as MC;
+    use voxel_core::core_geom::MaterialChoice as MC;
     use crate::scene::{DefId, Node, NodeContent, NodeTransform, Scene};
     use crate::two_layer_store::TwoLayerStore;
-    use crate::voxel::{SdfShape as TwoLayerSdf, ShapeKind as TwoLayerShape};
+    use voxel_core::voxel::{ShapeKind as TwoLayerShape};
+    use crate::voxel::{SdfShape as TwoLayerSdf};
 
     /// Every unit face a mesh EMITS that ACTUALLY RENDERS — i.e. whose cell on the NORMAL
     /// (front) side is AIR per the dense occupancy. A face buried in solid (front solid) is

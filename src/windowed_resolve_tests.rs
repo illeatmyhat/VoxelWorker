@@ -15,8 +15,9 @@
 //! These are the regression net for Commit 2, which switches the call site onto
 //! `resolve_into`. Commit 1 changes NO behaviour, so they pass against today's tree.
 
-use crate::spatial_index::VoxelAabb;
-use crate::voxel::{Voxel, VoxelGrid, VoxelProducer};
+use voxel_core::spatial_index::VoxelAabb;
+use voxel_core::voxel::{Voxel, VoxelGrid};
+use crate::voxel::{VoxelProducer};
 use std::collections::BTreeSet;
 
 /// An occupied voxel keyed for SET comparison independent of emission order. World
@@ -232,7 +233,8 @@ fn assert_windowed_subset_contract(
 
 #[test]
 fn sdf_shape_windowed_subset_contract() {
-    use crate::voxel::{SdfShape, ShapeKind};
+    use voxel_core::voxel::{ShapeKind};
+    use crate::voxel::{SdfShape};
     // EVEN, ODD, MIXED parity voxel sizes; spheres/cylinders to exercise the SDF.
     let cases: [(ShapeKind, [u32; 3], u32); 4] = [
         (ShapeKind::Sphere, [16, 16, 16], 8),  // even
@@ -324,7 +326,7 @@ fn sketch_revolve_windowed_subset_contract() {
 #[test]
 fn large_revolve_resolves_windows_despite_full_grid_cap() {
     use crate::sketch::{PlaneAxis, RevolveAxis, Sketch, SketchSolid};
-    use crate::voxel::MAX_GRID_VOXELS;
+    use voxel_core::voxel::MAX_GRID_VOXELS;
 
     // A 200×200-VOXEL rectangle revolved 360° → a cylinder, full grid
     // 200×400×400 ≈ 32M voxels ≫ the 6M cap (rectangle spans are in voxels).

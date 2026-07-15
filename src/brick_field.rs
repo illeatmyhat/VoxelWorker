@@ -48,7 +48,7 @@ use std::sync::Arc;
 
 use rayon::prelude::*;
 
-use crate::core_geom::{BlockId, CellKey, CHUNK_BLOCKS};
+use voxel_core::core_geom::{BlockId, CellKey, CHUNK_BLOCKS};
 use crate::cuboid::VoxelBoxMaterial;
 use crate::two_layer_store::{SeamSolidity, TwoLayerChunk};
 
@@ -691,7 +691,7 @@ pub struct BrickRecord {
     /// truth (this holds the first cuboid's clean id there, never read as the block's).
     pub material_id: u16,
     /// The block's on-face-grid overlay bit — the other half of its cell key (the render-cell
-    /// key is `material_id | overlay`, see [`crate::core_geom::CellKey`]). Carried
+    /// key is `material_id | overlay`, see [`voxel_core::core_geom::CellKey`]). Carried
     /// per-RECORD so a scene whose blocks disagree on the overlay is still one brick field.
     /// Meaningful for coarse + UNIFORM sculpted blocks; don't-care for a
     /// [`SculptedMixed`](BrickPayload::SculptedMixed) block (its tile's per-voxel keys carry
@@ -2258,10 +2258,11 @@ pub fn read_back_brick_atlas(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core_geom::MaterialChoice;
+    use voxel_core::core_geom::MaterialChoice;
     use crate::scene::Scene;
     use crate::two_layer_store::TwoLayerStore;
-    use crate::voxel::{GeometryParams, ShapeKind, Voxel};
+    use voxel_core::voxel::{ShapeKind, Voxel};
+    use crate::voxel::{GeometryParams};
 
     // The bit-packed occupancy tile IS substrate's `BitCube`; its expand↔pack byte-parity and
     // full-word run-set-mask oracles moved with it (see `crates/substrate/src/bit_cube.rs`,
@@ -2759,13 +2760,14 @@ mod tests {
 #[cfg(test)]
 mod incremental_tests {
     use super::*;
-    use crate::core_geom::MaterialChoice;
+    use voxel_core::core_geom::MaterialChoice;
     use crate::cuboid::VoxelBox;
     use crate::scene::{Node, NodeContent, NodeTransform, Scene};
     use crate::two_layer_store::{
         MicroblockGeometry, TwoLayerChunk, TwoLayerResidentCache, TwoLayerStore,
     };
-    use crate::voxel::{GeometryParams, SdfShape, ShapeKind};
+    use voxel_core::voxel::{ShapeKind};
+    use crate::voxel::{GeometryParams, SdfShape};
 
     /// The owned covering set the shell feeds `apply_dirty_update` / `build_brick_field`
     /// (the resident cache borrows, so clone out — exactly as `AppCore::rebuild` does).

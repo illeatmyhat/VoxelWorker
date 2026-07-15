@@ -223,7 +223,7 @@ fn face_for_axis_sign(axis: usize, positive: bool) -> CubeFace {
 /// §3a): slot `material_id` carries that material's average colour, so a multi-material
 /// scene exports each block in its own colour.
 fn vox_export_procedural_palette() -> voxel_worker::vox_export::BlockPaletteColors {
-    use voxel_worker::core_geom::MaterialChoice;
+    use voxel_core::core_geom::MaterialChoice;
     let mut palette = [[0u8; 4]; MaterialChoice::MATERIAL_COUNT];
     for (slot, color) in palette.iter_mut().enumerate() {
         *color = procedural_material_average_color(MaterialChoice::from_material_id(slot as u16));
