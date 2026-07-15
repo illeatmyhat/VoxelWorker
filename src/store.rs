@@ -7,7 +7,7 @@
 //!
 //! S0 made resolve **chunk-addressable** ([`Scene::resolve_chunk`]) and proved a
 //! whole-region resolve can be reassembled from per-chunk pieces
-//! ([`Scene::resolve_region_via_chunks`]). S2 turns that decomposition into the
+//! (`Scene::resolve_region_via_chunks`). S2 turns that decomposition into the
 //! **resolve mechanism**: a cache keyed by `(chunk_coord, lod)` that resolves a
 //! chunk **on demand** (lazily) and stores the result, so a second request for the
 //! same chunk is a map lookup instead of a re-resolve.
@@ -22,10 +22,10 @@
 //!   a *per-chunk* bound (a single chunk can't exceed it), so a scene whose TOTAL
 //!   voxel count is far beyond the old 6M ceiling resolves fine as long as every
 //!   individual chunk is small. See [`crate::voxel::MAX_CHUNK_VOXELS`].
-//! * **Identical render output.** [`Store::resolve_region`] rebuilds the
+//! * **Identical render output.** `Store::resolve_region` rebuilds the
 //!   SAME recentred monolithic grid the renderer/mesher/fog consume today — but
 //!   assembled from cached chunks. The bytes downstream are unchanged (see the
-//!   module-level invariant in [`Store::resolve_region`]).
+//!   module-level invariant in `Store::resolve_region`).
 //!
 //! **S3 (#27) added smart invalidation** on top of this seam:
 //! [`Store::invalidate_aabb`] evicts exactly the chunks an edit's
@@ -80,7 +80,7 @@ impl ChunkCacheKey {
 /// in voxels is a function of density, so mixing densities in one cache would key
 /// chunks of different physical sizes under the same coordinate. A density change
 /// therefore [`clear`](Self::clear)s and re-binds the cache (see
-/// [`resolve_region`](Self::resolve_region)).
+/// `resolve_region`).
 ///
 /// **S3 seam:** invalidation is currently all-or-nothing
 /// ([`clear`](Self::clear)) plus a single-chunk drop
@@ -413,11 +413,11 @@ impl Store {
 
     /// **Per-chunk render accessor (issue #20 S6c step 4).** Bind the cache to the
     /// composite recentre/floating-origin for `(scene, density, lod)` EXACTLY as
-    /// [`resolve_region`](Self::resolve_region) does, then return every covering
+    /// `resolve_region` does, then return every covering
     /// chunk as `([i32; 3] absolute_chunk_coord, &VoxelGrid rebased_grid)`.
     ///
     /// The returned grids are the SAME rebased per-chunk grids whose union
-    /// [`resolve_region`](Self::resolve_region) assembles — byte-identical (each one
+    /// `resolve_region` assembles — byte-identical (each one
     /// is already rebased to the floating origin = composite recentre, with the
     /// subtraction done in i64 inside
     /// [`Scene::resolve_chunk_rebased`](crate::scene::Scene::resolve_chunk_rebased)
@@ -438,7 +438,7 @@ impl Store {
     /// [`bind_region`](Self::bind_region), all-mut), and the
     /// borrows are gathered only AFTER every covering chunk is resident (so the
     /// returned slice is all cache HITs — no interleaved mut/shared borrow). The
-    /// resolved chunks stay CACHED, so a later [`resolve_region`] reuses them.
+    /// resolved chunks stay CACHED, so a later `resolve_region` reuses them.
     pub fn resident_render_chunks(
         &mut self,
         scene: &Scene,
@@ -476,13 +476,13 @@ impl Store {
     /// returns for the assembled region.
     ///
     /// The cache is bound to the composite recentre (exactly as
-    /// [`resolve_region`](Self::resolve_region)) so each covering chunk's voxels are
+    /// `resolve_region`) so each covering chunk's voxels are
     /// in the recentred frame, then every chunk's voxels are bucketed into ONE
     /// shared per-`(y, z)` occupancy row keyed by the GLOBAL X index — so a run
     /// crossing a chunk seam is one contiguous span (see
     /// [`widest_run_in_band_over_chunks`](crate::voxel::widest_run_in_band_over_chunks)
     /// for the stitching detail). The chunks resolved on a miss are CACHED, so a
-    /// later [`resolve_region`] / re-measure reuses them.
+    /// later `resolve_region` / re-measure reuses them.
     pub fn widest_run_in_band(
         &mut self,
         scene: &Scene,
@@ -502,7 +502,7 @@ impl Store {
 
     /// **Bound-region read primitive (ADR 0003 store seam; issue #20 S6d).** Bind
     /// the cache to the scene's ACTIVE region (recentre + density, as
-    /// [`resolve_region`](Self::resolve_region) does), ensure every covering chunk
+    /// `resolve_region` does), ensure every covering chunk
     /// is resolved + resident, and return the region's voxel dimensions alongside
     /// the resident covering chunks' occupied slices — WITHOUT assembling a
     /// monolithic grid. This is the cache/export-agnostic primitive the `.vox`
@@ -591,7 +591,7 @@ impl Store {
     /// Still used for the edit kinds [`invalidate_aabb`](Self::invalidate_aabb) can't
     /// localise (a density change, or a region-spanning Part edit) and on the very
     /// first rebuild (no previous scene to diff against). For a localisable edit,
-    /// prefer [`invalidate_aabb`].
+    /// prefer `invalidate_aabb`.
     pub fn clear(&mut self) {
         self.chunks.clear();
         self.bound_density = None;
@@ -657,7 +657,7 @@ impl Store {
     ///
     /// A density mismatch against the cache's bound density is treated
     /// conservatively (the AABB was computed at a different chunk size) by clearing
-    /// everything — but the caller [`main`] already falls back to [`clear`] for a
+    /// everything — but the caller [`main`] already falls back to `clear` for a
     /// density change, so this path is belt-and-braces.
     ///
     /// **Returns the set of chunk-coords actually evicted** (those that were

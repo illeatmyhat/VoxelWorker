@@ -34,7 +34,7 @@ pub struct NodeId(pub u64);
 
 /// A path to a node anywhere in the **top-level assembly** (ADR 0001 step 4 UI).
 ///
-/// The path is a list of child indices walked from [`Scene::nodes`] down through
+/// The path is a list of child indices walked from `Scene::nodes` down through
 /// [`NodeContent::Group`] children: an empty-ish single element `[i]` selects the
 /// top-level node `i`; `[i, j]` selects the `j`-th child of the Group at top-level
 /// `i`; and so on to any depth. A path is **always non-empty** for a real
@@ -570,7 +570,7 @@ impl Scene {
         self.definitions.iter().find(|def| def.id == id)
     }
 
-    /// The node at `path`, walking from [`nodes`](Self::nodes) down through Group
+    /// The node at `path`, walking from `nodes` down through Group
     /// children. `None` when any index along the path is out of range or the path
     /// tries to descend through a non-Group (a Tool / Part / Instance has no
     /// addressable children).
@@ -735,7 +735,7 @@ impl Scene {
     ///   sized from the SELECTED node's extent (not the whole region).
     ///
     /// For a Group / Instance selection the AABB is the union of all leaves under
-    /// it (the same union [`placed_extent_blocks`] forms scene-wide, but rooted at
+    /// it (the same union `placed_extent_blocks` forms scene-wide, but rooted at
     /// the selected node). Single-node scenes recentre that node onto the origin,
     /// so its pivot is `[0, 0, 0]` — the gizmo only visibly *moves* with a
     /// multi-node selection (which is the point of a per-selection manipulator).

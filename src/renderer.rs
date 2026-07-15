@@ -2045,7 +2045,7 @@ const FLOOR_VOXEL_ALPHA: f32 = 0.16;
 /// Issue #29 S3: this is no longer ONE whole-region lattice. Each frame the caller
 /// walks the scene and, for every node whose grids are enabled (the scene master
 /// ANDed with the node's own toggle), appends that node's block lattice and/or
-/// floor lines into the renderer's per-frame batch via [`Self::set_batch`]. A
+/// floor lines into the renderer's per-frame batch via `Self::set_batch`. A
 /// lattice box is a 3D box lattice with lines at every BLOCK boundary (spacing =
 /// density) spanning the node's enclosing-block AABB; the floor is the horizontal
 /// grid at the node's base plane, snapped to the same global block lines.
@@ -2081,7 +2081,7 @@ const FLOOR_DEPTH_BIAS_NDC: f32 = -5.0e-4;
 
 impl SceneGridRenderer {
     /// Create the renderer for a colour target. The line batches start empty —
-    /// the caller fills them each frame via [`Self::set_batch`] from the visible
+    /// the caller fills them each frame via `Self::set_batch` from the visible
     /// nodes' enabled grids.
     pub fn new(device: &wgpu::Device, color_format: wgpu::TextureFormat) -> Self {
         let lattice_capacity = 1u32;

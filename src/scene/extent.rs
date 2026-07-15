@@ -263,7 +263,7 @@ impl Scene {
     /// The box is the node's block-aligned voxel AABB **expanded out to enclosing
     /// whole blocks** — i.e. the union of every visible leaf under the node, each
     /// leaf snapped to the whole-block range `[off − floor(size/2), … + size)` (the
-    /// same split [`node_subtree_extent_blocks`] forms), then scaled by `density`
+    /// same split `node_subtree_extent_blocks` forms), then scaled by `density`
     /// and shifted by `− recentre_voxels_for_resolve`. Because the corners are taken
     /// in WHOLE blocks before scaling, a sub-block (1-voxel) translate that crosses a
     /// block boundary moves the enclosing-block box by exactly one whole block — the
@@ -504,10 +504,10 @@ impl Scene {
         self.recentre_voxels_for_resolve(voxels_per_block).voxels()
     }
 
-    /// The recentre offset (in voxels) that [`resolve_region`] subtracts from every
+    /// The recentre offset (in voxels) that `resolve_region` subtracts from every
     /// voxel to centre the composite on the origin (issue #27 S2). This is the
-    /// SAME computation [`resolve_region`] inlines; the chunk cache
-    /// ([`crate::chunk_cache::ChunkResolveCache::resolve_region`]) calls it to apply
+    /// SAME computation `resolve_region` inlines; the chunk cache
+    /// (`crate::chunk_cache::ChunkResolveCache::resolve_region`) calls it to apply
     /// the identical offset when reassembling the recentred monolithic grid from
     /// absolute per-chunk pieces, so the assembled output is bit-identical. `[0, 0,
     /// 0]` for a scene with no intrinsic-size leaf.
@@ -542,7 +542,7 @@ impl Scene {
     }
 
     /// The full composite extent in voxels — the size the whole-region grids
-    /// ([`resolve_region`], [`resolve_region_via_chunks`]) are seeded with. The chunk
+    /// (`resolve_region`, `resolve_region_via_chunks`) are seeded with. The chunk
     /// cache (issue #20 S2) seeds its reassembled grid to the same dimensions.
     ///
     /// **Producer voxel frame (center-anchoring retirement).** This is the EXACT
@@ -557,7 +557,7 @@ impl Scene {
     /// block-frame consumer.)
     ///
     /// **This IS the size the assembled render grid takes** for a chunkable scene:
-    /// both [`resolve_region`] and the chunk-cache reassembly size their output to
+    /// both `resolve_region` and the chunk-cache reassembly size their output to
     /// exactly this value (asserted in `placed_region_dimensions_equals_assembled_grid`).
     /// `pub` so the `shot` binary can do the same substitution.
     ///

@@ -8,8 +8,8 @@
 //! Each detected install yields one [`VintageStorySource`] per asset domain that
 //! has a `textures/block` directory (`survival`, `game`, `creative` — `survival`
 //! holds the bulk). [`VintageStorySource::scan`] walks that dir with `walkdir`,
-//! applies [`is_chiselable`](super::is_chiselable), and groups variants via
-//! [`group_block_textures`](super::group_block_textures).
+//! applies [`is_chiselable`], and groups variants via
+//! [`group_block_textures`].
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;

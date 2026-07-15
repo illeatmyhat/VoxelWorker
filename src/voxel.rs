@@ -206,7 +206,7 @@ pub struct VoxelGrid {
     /// document density — e.g. `SdfShape::size_voxels`).
     pub dimensions: [u32; 3],
     /// The integer voxel offset this grid's world positions were RECENTRED by
-    /// ([`Scene::resolve_region`](crate::scene::Scene::resolve_region) subtracts it from
+    /// (`Scene::resolve_region` subtracts it from
     /// every voxel). **ADR 0008 — the carried frame.** A placed composite is recentred by
     /// `(min+max)/2` (= `floor(dim/2)` for a lone producer); a Part-only / bare-producer
     /// grid is corner-anchored, so this is `[0,0,0]`. Carrying it lets every consumer

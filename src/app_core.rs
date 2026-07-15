@@ -29,7 +29,7 @@ use crate::spatial_index::LeafSpatialIndex;
 use crate::two_layer_store::{TwoLayerChunk, TwoLayerResidentCache};
 use crate::voxel::{chunk_extent_exceeds_bound, RecentreVoxels, SdfShape};
 
-/// The headless orchestrator: owns the per-chunk resolve [`Store`] and the
+/// The headless orchestrator: owns the per-chunk resolve `Store` and the
 /// [`OrbitCamera`], and answers the headless scene queries the shell renders from.
 pub struct AppCore {
     /// The **boundary-aware two-layer** resolve cache (ADR 0010 E5 — the SOLE runtime

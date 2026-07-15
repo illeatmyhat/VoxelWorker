@@ -1,7 +1,7 @@
 //! 2D **sketch → extrude → volume** — the sketch-to-volume authoring atom
 //! (ADR 0003 §3i, Slice 2a).
 //!
-//! This is a SECOND [`VoxelProducer`](crate::voxel::VoxelProducer), added
+//! This is a SECOND [`VoxelProducer`], added
 //! **alongside** [`SdfShape`](crate::voxel::SdfShape) (NOT replacing it). It takes
 //! a grid-aligned plane plus a closed polygon *profile* of voxel-granular points
 //! and extrudes that profile a whole number of voxels along the plane normal,

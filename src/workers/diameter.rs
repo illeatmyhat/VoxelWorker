@@ -1,7 +1,7 @@
 //! Async diameter / widest-run measurement worker (ADR 0010 E5 follow-up).
 //!
 //! The layer-scrubber readout ("Ø N vx") is the widest occupied run in the current layer
-//! band, computed by [`streamed_widest_run_in_band`](crate::two_layer_store::streamed_widest_run_in_band).
+//! band, computed by [`streamed_widest_run_in_band`].
 //! Even after the block-row dedup that query is O(total blocks) — sub-second on a huge
 //! solid but NOT free (~0.5s at 8000³), and it fires on every band scrub and every
 //! grid-changing edit. Running it inline on the event-loop thread froze the UI for the

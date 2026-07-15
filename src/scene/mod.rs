@@ -11,23 +11,23 @@
 //! are data changes, not rewrites), but only the two leaves that exist today are
 //! actually resolved:
 //!
-//!   * [`NodeContent::Tool`] — a *parametric* producer ([`SdfShape`]) that carries
-//!     the Tool's single [`MaterialChoice`].
+//!   * [`NodeContent::Tool`] — a *parametric* producer (`SdfShape`) that carries
+//!     the Tool's single `MaterialChoice`.
 //!   * [`NodeContent::Part`] — a *static* voxel body; today the only variant is
 //!     [`Part::DebugClouds`].
 //!
 //! [`NodeContent::Group`] and [`NodeContent::Instance`] (recursion + reuse) exist
 //! as types but are intentionally not resolved yet — see the `// step 4` markers
-//! in [`Scene::resolve_region`].
+//! in `Scene::resolve_region`.
 //!
 //! ## Identical-behaviour guarantee
 //!
-//! The producer trait ([`VoxelProducer`]) does **not** change: producers still
+//! The producer trait (`VoxelProducer`) does **not** change: producers still
 //! emit content centred at the origin. The Scene's new job is **compositing** —
 //! walk the node tree, resolve each visible leaf into its own local grid, and
 //! **stamp** it (under the node's transform) into the output grid. For a one-node
 //! scene whose region is the node's full extent with a zero offset, the stamp is
-//! the identity, so the resulting [`VoxelGrid`] is bit-for-bit what
+//! the identity, so the resulting `VoxelGrid` is bit-for-bit what
 //! `SdfShape::resolve` / `DebugCloudField::resolve` produce today (same
 //! dimensions, same occupied set). See `tool_scene_matches_bare_producer` below.
 
@@ -60,7 +60,7 @@ fn default_master_grid() -> bool {
 }
 
 /// The scene (assembly): a list of placed nodes resolved into the shared
-/// [`VoxelGrid`] truth. ADR 0001's full model carries reusable `definitions` too;
+/// `VoxelGrid` truth. ADR 0001's full model carries reusable `definitions` too;
 /// step 2 added the flat node list plus the `active` selection that drives the
 /// inspector. **Step 4** wires up `definitions` so a [`NodeContent::Instance`]
 /// resolves the referenced [`AssemblyDef`] under its transform (reuse by

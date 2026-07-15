@@ -2,14 +2,14 @@
 //! (ADR 0003 Phase C, slice C1).
 //!
 //! ADR 0003 Phase B made identity / selection / edit-ops / storage all key on a
-//! stable [`NodeId`](crate::scene::NodeId). Phase C introduces `Intent` as the one
+//! stable [`NodeId`]. Phase C introduces `Intent` as the one
 //! **serializable** description of every document mutation, so the live flow
 //! becomes `ui → AppCore::apply_intent(Intent) → (later) Command`. An `Intent` is a
 //! pure value: it names WHAT to change (by stable id / index), never HOW the panel
 //! reached the change, so it survives serialization, scripting (`shot --replay`,
 //! C3) and undo (`CommandStack`, C2).
 //!
-//! **C1 is additive only.** This module + [`AppCore::apply_intent`] sit ALONGSIDE
+//! **C1 is additive only.** This module + `AppCore::apply_intent` sit ALONGSIDE
 //! the current panel-mutates-`Scene`-directly flow; nothing in the live path calls
 //! `apply_intent` yet (only the lib tests do), so the goldens stay byte-identical.
 //! `apply_intent` dispatches each variant to the SAME [`Scene`](crate::scene::Scene)
@@ -321,16 +321,12 @@ pub enum Intent {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct IntentEffect {
     /// The scene's geometry changed → the caller re-resolves the grid + re-frames
-    /// (the typed successor of [`PanelResponse::scene_changed`] /
+    /// (the typed successor of `PanelResponse::scene_changed` /
     /// `geometry_changed`, which the caller already treats identically as "rebuild").
-    ///
-    /// [`PanelResponse::scene_changed`]: crate::panel::PanelResponse::scene_changed
     pub scene_changed: bool,
     /// A reference Point changed → the caller may persist (Points are pure overlay,
     /// rebuilt every frame, so this does NOT trigger a voxel re-resolve — matching
-    /// [`PanelResponse::points_changed`]).
-    ///
-    /// [`PanelResponse::points_changed`]: crate::panel::PanelResponse::points_changed
+    /// `PanelResponse::points_changed`).
     pub points_changed: bool,
     /// The active node / point selection changed → the caller refreshes the
     /// inspector mirror (the panel folds this into `scene_changed` today, but the

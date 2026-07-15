@@ -98,7 +98,7 @@ impl ChunkCoverage for VoxelAabb {
 /// must dirty a leaf whose voxels changed even when its box did not, so the
 /// fingerprint is compared alongside the AABB.
 ///
-/// It is derived from the bytes of the leaf's [`NodeContent`] that affect the
+/// It is derived from the bytes of the leaf's `NodeContent` that affect the
 /// resolved voxels. `RegionSpanning` marks a leaf with no intrinsic AABB (a Part
 /// such as the debug-cloud field, whose voxels fill the whole composite region):
 /// such a leaf cannot be localised to chunks, so any edit touching it forces a
@@ -140,7 +140,7 @@ pub struct LeafSpatialIndex {
     /// another at the same density).
     pub voxels_per_block: u32,
     /// Whether the scene contains a region-spanning leaf (a Part). When `true`, a
-    /// precise edit AABB can't always be computed; see [`edit_aabb_since`].
+    /// precise edit AABB can't always be computed; see `edit_aabb_since`.
     pub has_region_spanning_leaf: bool,
 }
 

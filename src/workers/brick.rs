@@ -1,7 +1,7 @@
 //! Async wholesale brick-pipeline worker (perf follow-up to epic #64, on the issue #60
 //! stale-while-rebuilding pattern).
 //!
-//! A WHOLESALE brick rebuild — [`build_brick_field`] (records + sculpted atlas bytes) +
+//! A WHOLESALE brick rebuild — `build_brick_field` (records + sculpted atlas bytes) +
 //! the [`ClipmapPyramid`] + the representability classify + the GPU record pack — ran
 //! synchronously inside `rebuild_geometry` and cost ~2s of main-thread hitch per
 //! wholesale route on a giant scene (8000³ vx: record build ~1.15s, pyramid ~0.7s,

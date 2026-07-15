@@ -12,6 +12,11 @@
 //!     captured frame is identical to the live one.
 //!   * The colour identity from ARCHITECTURE.md §8 (warm-dark workshop).
 
+// A public item's doc may link to a private helper to explain how the two relate; that
+// cross-reference is deliberate and stays a navigable link under `--document-private-items`.
+// The CI doc gate denies broken and redundant links but permits these.
+#![allow(rustdoc::private_intra_doc_links)]
+
 // ADR 0003 keystone: headless orchestrator (scene + store + camera). See app_core.rs.
 pub mod app_core;
 pub mod assets;

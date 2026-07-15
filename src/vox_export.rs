@@ -1,6 +1,6 @@
 //! MagicaVoxel `.vox` export (Milestone 8).
 //!
-//! Serialises a resolved [`VoxelGrid`](crate::voxel::VoxelGrid) to a MagicaVoxel
+//! Serialises a resolved [`VoxelGrid`] to a MagicaVoxel
 //! `.vox` file so the result can be ingested by the **Automatic Chiselling
 //! REBORN** Vintage Story mod (DATA.md §".vox export"). The chunked binary is
 //! hand-written (no crate dependency) — it is a `VOX ` magic + version 150
@@ -81,7 +81,7 @@ impl VoxExport {
     /// ≤256 models if any dimension exceeds [`VOX_AXIS_MAX`].
     ///
     /// `palette_colors` maps each `block_id` to its RGBA palette colour (ADR 0003 §3a;
-    /// build it with [`block_palette_from_active`] or pass the procedural material
+    /// build it with `block_palette_from_active` or pass the procedural material
     /// colours). Each voxel references `block_id + 1` in the `.vox` palette.
     pub fn from_grid(grid: &VoxelGrid, palette_colors: BlockPaletteColors) -> Self {
         // One bucketing path: the whole-grid case is the region case with a single

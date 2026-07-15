@@ -206,7 +206,7 @@ impl ClipmapLevel {
     /// fully-solid chunk (all `CHUNK_BLOCKS³` coarse-solid, no microblocks) covers one aligned
     /// block box, so its occupied cells are the cell range that box spans — bulk-added WITHOUT
     /// visiting its 64 blocks. A boundary / partial chunk adds one cell per occupied (coarse or
-    /// microblock) block. The resulting cell set is BYTE-IDENTICAL to [`from_records`] over the
+    /// microblock) block. The resulting cell set is BYTE-IDENTICAL to `from_records` over the
     /// full, interior-inclusive record set (proven by
     /// `clipmap_from_chunks_equals_from_full_records`): every occupied block's cell is present,
     /// no others.
@@ -408,9 +408,9 @@ pub const BLOCK_OCCUPANCY_MASK_WORDS: usize = BLOCK_OCCUPANCY_BITS_PER_CELL / 32
 ///
 /// **Storage:** the sorted-key / bitmask / fallback shape is substrate's
 /// [`SortedKeyBitmaskMap`] (see the seam comment above); this domain type wraps it, keeping the
-/// occupancy vocabulary at the GPU seam ([`cell_keys`](Self::cell_keys) ∥
-/// [`cell_masks`](Self::cell_masks) ∥ [`cell_materials`](Self::cell_materials) — the fallback
-/// scalar IS the render-cell material colour index) and owning the domain [`from_chunks`] builder.
+/// occupancy vocabulary at the GPU seam (`cell_keys` ∥
+/// `cell_masks` ∥ `cell_materials` — the fallback
+/// scalar IS the render-cell material colour index) and owning the domain `from_chunks` builder.
 /// The bit of a fallback word carrying the interior block's on-face-grid overlay flag, above
 /// the material colour index (which is tiny — 0..MATERIAL_COUNT). The interior-elision fallback
 /// stores one `u32` per cell, so material and overlay are packed together and split apart at the
@@ -687,7 +687,7 @@ pub struct BrickRecord {
     /// `block_id`'s colour index for a coarse block, the single microblock material for a
     /// UNIFORM boundary block. The occupancy atlas is occupancy-only, so this is the
     /// per-BLOCK material the raymarch shades with, packed into the GPU record's `kind`
-    /// high bits by [`pack_gpu_records`]. **Don't-care for a
+    /// high bits by `pack_gpu_records`. **Don't-care for a
     /// [`SculptedMixed`](BrickPayload::SculptedMixed) block** — its per-voxel keys are the
     /// truth (this holds the first cuboid's clean id there, never read as the block's).
     pub material_id: u16,
@@ -1631,7 +1631,7 @@ impl IncrementalBrickField {
     /// occupancy tiles (dense slot order), MOVING both in — the zero-re-derive path for the
     /// live worker/orchestrator wholesale build. [`build_brick_field_with_tiles`] returns the
     /// build alongside the very tiles it rasterised; handing them here skips the
-    /// [`from_wholesale`] re-gather (`sculpted_brick_occupancy` per slot) + re-bit-pack of
+    /// `from_wholesale` re-gather (`sculpted_brick_occupancy` per slot) + re-bit-pack of
     /// bytes the packer just produced. The tiles MUST be the build's own sculpted tiles (one
     /// per sculpted record, slot order); a debug assert pins the count.
     pub fn from_wholesale_with_tiles(

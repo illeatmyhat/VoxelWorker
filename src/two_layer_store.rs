@@ -4,7 +4,7 @@
 //!
 //! This is the heart of the ADR 0009 → ADR 0010 port: the **one evaluator** classifies
 //! each BLOCK of a covering chunk **air / coarse-solid / boundary** via the E1 interval
-//! bound ([`VoxelProducer::cell_field_interval`]), then materialises only the boundary
+//! bound (`VoxelProducer::cell_field_interval`), then materialises only the boundary
 //! blocks per-voxel. A solid interior carries block ids with **NO voxel data** — the
 //! whole point of the port (an 800×800-revolve-class solid stops densifying its interior).
 //!
@@ -34,7 +34,7 @@
 //!   incremental edits; the mesher + brick fog sink read its resident set directly (ADR 0011
 //!   G5 retired the dense fog-grid stream — `expand_resident_chunks_into_grid` is now a
 //!   `#[cfg(test)]` parity oracle).
-//!   The dense [`Store::resolve_region`](crate::store::Store::resolve_region) is retired from
+//!   The dense `Store::resolve_region` is retired from
 //!   every RUNTIME path and kept ONLY as the test parity + golden reference oracle.
 //!
 //! ## Frame (ADR 0008 — the voxel-frame invariant)
@@ -116,7 +116,7 @@ pub struct MicroblockGeometry {
     ///
     /// Each cuboid's `material_id` is the cuboid mesher's **render-cell key** (ADR 0003
     /// §3c): the clean categorical `block_id` in the low bits, the transient on-face-grid
-    /// overlay marker in [`crate::cuboid_mesh::MESH_GRID_OVERLAY_BIT`]. The decomposition
+    /// overlay marker in `crate::cuboid_mesh::MESH_GRID_OVERLAY_BIT`. The decomposition
     /// therefore splits a box across differing overlay states exactly like the dense
     /// mesher, and E3's mesher reads the box's clean id + overlay back out of this key
     /// without the render flag ever entering the categorical cell. Consumers that want the

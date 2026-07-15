@@ -10,7 +10,7 @@
 //!   of queued requests down to the single newest — so it never backlogs and never spends
 //!   work on a request a later one already superseded.
 //! * **Accept side (the dispatcher):** [`GenerationTracker`] mints a strictly increasing
-//!   *generation* for every dispatch and, when a result comes back, [`accepts`] it only if
+//!   *generation* for every dispatch and, when a result comes back, `accepts` it only if
 //!   its generation is still the newest dispatched. A result from a request that a later
 //!   dispatch superseded is discarded, so a stale result never overwrites a fresher state.
 //!

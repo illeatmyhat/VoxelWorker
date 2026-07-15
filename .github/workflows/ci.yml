@@ -41,6 +41,16 @@ jobs:
       - name: Clippy (deny warnings)
         run: cargo clippy --all-targets -- -D warnings
 
+      # Documentation gate: broken and redundant intra-doc links fail the build so
+      # doc references cannot silently drift from the code (e.g. a link to a renamed
+      # or retired symbol). Public->private links are permitted by a crate-level
+      # `#![allow(rustdoc::private_intra_doc_links)]`; everything else `-D warnings`
+      # catches. `--no-deps` keeps the check to this workspace's own crates.
+      - name: Doc (deny broken/redundant intra-doc links)
+        run: cargo doc --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+
       - name: Test (GPU-free; `gpu` feature off)
         run: cargo test
 

@@ -32,7 +32,7 @@ pub enum Part {
 /// (Group or Instance).
 ///
 /// Step 1 resolves only the two leaf kinds; `Group` / `Instance` are present as
-/// types but unimplemented in [`Scene::resolve_region`] (recursion + instancing
+/// types but unimplemented in `Scene::resolve_region` (recursion + instancing
 /// arrive in step 4).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum NodeContent {
@@ -345,13 +345,13 @@ impl Scene {
     /// Resolve exactly **one chunk** of the scene into a fresh [`VoxelGrid`], in
     /// **absolute (non-recentred) composite voxel coordinates**.
     ///
-    /// This is the chunk-addressable counterpart to [`resolve_region`] required by
+    /// This is the chunk-addressable counterpart to `resolve_region` required by
     /// issue #27 (deep chunked resolve). It is **additive**: the live render path
-    /// still goes through [`resolve_region`] (which recentres the composite on the
+    /// still goes through `resolve_region` (which recentres the composite on the
     /// origin); this path does **not** recentre, so its voxel positions are the
     /// scene's true composite coordinates. The two frames differ by exactly the
-    /// recentre offset [`resolve_region`] subtracts (see
-    /// [`recentre_voxels`](Self::recentre_voxels)).
+    /// recentre offset `resolve_region` subtracts (see
+    /// `recentre_voxels`).
     ///
     /// A chunk is a `CHUNK_BLOCKS³`-block cell (`CHUNK_BLOCKS = 4`,
     /// [`crate::core_geom::CHUNK_BLOCKS`]); one chunk therefore spans
@@ -397,10 +397,10 @@ impl Scene {
     /// in **absolute** space (f64), so a far chunk's boundary voxels are never
     /// misclassified by f32 rounding.
     ///
-    /// `floating_origin_voxels = [0, 0, 0]` reproduces [`resolve_chunk`] exactly. The
+    /// `floating_origin_voxels = [0, 0, 0]` reproduces `resolve_chunk` exactly. The
     /// live render passes [`recentre_voxels_for_resolve`](Self::recentre_voxels_for_resolve)
     /// (the composite recentre, an integer-block-aligned point), so for a near scene
-    /// the result is bit-identical to today's recentred [`resolve_region`] while a
+    /// the result is bit-identical to today's recentred `resolve_region` while a
     /// far-placed scene renders with no f32 jitter (the S1 speckle fix).
     pub fn resolve_chunk_rebased(
         &self,

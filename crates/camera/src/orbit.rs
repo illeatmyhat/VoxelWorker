@@ -249,7 +249,7 @@ impl OrbitCamera {
     /// The up vector for `look_at_rh`, well-defined and CONTINUOUS through the
     /// poles (no `look_at` degeneracy, no roll-flip).
     ///
-    /// Away from the poles this is just `Vec3::Z`. Within [`UP_BLEND_BAND`] of a
+    /// Away from the poles this is just `Vec3::Z`. Within `UP_BLEND_BAND` of a
     /// pole it smoothly blends to an **azimuth-derived horizontal up** — the exact
     /// limit of "`Vec3::Z` projected onto the view plane, normalised" as
     /// `phi → 0/π`. That limit is `(−cos θ, −sin θ, 0)` at the top pole and

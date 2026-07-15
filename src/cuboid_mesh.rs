@@ -1,6 +1,6 @@
 //! Cuboid mesh render path (ADR 0002 E3b-1, part of #18) — BEHIND A FLAG.
 //!
-//! The instanced renderer ([`crate::renderer::VoxelRenderer`]) draws one cube
+//! The instanced renderer (`crate::renderer::VoxelRenderer`) draws one cube
 //! per occupied voxel. This module is the FIRST step of replacing that with a
 //! Vintage-Story-style **cuboid mesher**: it decomposes the resolved grid into a
 //! small set of single-material axis-aligned boxes ([`crate::cuboid`]) and builds
@@ -1904,7 +1904,7 @@ impl CuboidMeshRenderer {
     /// Build the cuboid renderer from a WHOLE grid (the wrapper kept for `shot.rs`
     /// and tests that have a monolithic grid). Buckets the grid into per-chunk
     /// sub-grids by `floor(world_position / chunk_extent)` — the SAME key the
-    /// instanced [`crate::renderer::VoxelRenderer::rebuild_instances`] wrapper uses —
+    /// instanced `crate::renderer::VoxelRenderer::rebuild_instances` wrapper uses —
     /// then meshes per chunk with an apron via [`Self::new_from_chunks`]. So a build
     /// from the whole grid is byte-identical to a build from the resolve cache's
     /// per-chunk accessor.
@@ -1962,7 +1962,7 @@ impl CuboidMeshRenderer {
     /// microblock cuboids, and inter-block / inter-chunk seam faces are culled via the
     /// per-face seam-solidity flags (plus the neighbour coarse layer) — NOT a densified
     /// apron. The emitted exposed-face set is proven identical to the dense
-    /// [`new_from_chunks`] path (the E3 parity gate), so it renders pixel-identical.
+    /// `new_from_chunks` path (the E3 parity gate), so it renders pixel-identical.
     ///
     /// `chunks` is `(absolute_chunk_coord, TwoLayerChunk)` per covering chunk;
     /// `grid_dimensions` is the whole composite voxel dims; `recentre_voxels` is the
@@ -1994,7 +1994,7 @@ impl CuboidMeshRenderer {
         )
     }
 
-    /// As [`new_from_two_layer_chunks`], but builds the mesh already CLIPPED to `band`
+    /// As `new_from_two_layer_chunks`, but builds the mesh already CLIPPED to `band`
     /// (issue #60 M2). The async worker uses this so the swapped-in renderer already matches
     /// the active `effective_band` — the swap frame then does NOT trigger a full synchronous
     /// `rebuild_for_band` re-mesh on the main thread (the multi-second hitch #60 removed,
@@ -2509,14 +2509,14 @@ impl CuboidMeshRenderer {
     }
 
     /// Incrementally update the per-chunk buffers for a geometry edit on the **two-layer**
-    /// path (issue #55 — the two-layer analogue of [`incremental_rebuild_from_chunks`]):
+    /// path (issue #55 — the two-layer analogue of `incremental_rebuild_from_chunks`):
     /// re-mesh + re-upload ONLY the chunks the edit (and its 26-neighbourhood seam footprint)
     /// touched, drop vacated chunks, and KEEP every other chunk's existing buffers — instead
-    /// of the wholesale [`new_from_two_layer_chunks`] recreate that re-meshes + re-uploads the
+    /// of the wholesale `new_from_two_layer_chunks` recreate that re-meshes + re-uploads the
     /// WHOLE resident set every edit (the exact per-edit latency #40 fixed for the dense path,
     /// regressed onto the two-layer live renderer after E5).
     ///
-    /// `chunks` is the FULL post-edit covering set (the [`TwoLayerResidentCache`]'s resident
+    /// `chunks` is the FULL post-edit covering set (the `TwoLayerResidentCache`'s resident
     /// chunks), needed IN FULL so the re-meshed chunks' seam-flag culling consults every
     /// neighbour; `recentre_voxels` / `voxels_per_block` are the resolve's carried frame
     /// (ADR 0008); `grid_dimensions` the whole composite's voxel dims (band-clip mapping);
@@ -2531,7 +2531,7 @@ impl CuboidMeshRenderer {
     /// by `incremental_two_layer_gpu_buffer_rebuild_equals_wholesale`).
     ///
     /// PRECONDITION: this must be the two-layer path (built via
-    /// [`new_from_two_layer_chunks`]). A two-layer chunk is chunk-local-integer (ADR 0008), so
+    /// `new_from_two_layer_chunks`). A two-layer chunk is chunk-local-integer (ADR 0008), so
     /// — unlike the dense path — a floating-origin recentre SHIFT does NOT staleen the resident
     /// buffers (the recentre is a pure index offset re-applied here as `recentre_voxels`); the
     /// caller need not fall back on a recentre shift, only on a DENSITY change (which resizes
@@ -2971,7 +2971,7 @@ impl CuboidMeshRenderer {
 
     /// (ADR 0012 H1) Draw the onion GHOST pass: the two thin per-slab meshes flat-tinted
     /// translucent, alpha-blended over the solid with the depth test `Less` + depth WRITE ON
-    /// (nearest ghost surface wins, builder-independent). MUST be called AFTER [`draw`], inside
+    /// (nearest ghost surface wins, builder-independent). MUST be called AFTER `draw`, inside
     /// the same MSAA pass (the solid's depth is what occludes the ghost). A no-op when onion is off (both slab
     /// maps empty). Group(1) binds the procedural atlas even for loaded-material scenes —
     /// the ghost shader flat-tints and never samples it (flat tint even over `cuboid_loaded`).

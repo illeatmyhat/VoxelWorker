@@ -6,7 +6,7 @@
 //! scene scale (an 8000³ region, ~1.95M covering chunks) that build + write is a
 //! multi-second job; running it inline on the event-loop thread (the button handler used
 //! to) froze the UI for the whole export. This module moves it onto the shared background
-//! [`Worker`](crate::workers::Worker): the shell dispatches an owned [`Scene`] clone plus
+//! [`Worker`]: the shell dispatches an owned [`Scene`] clone plus
 //! the already-chosen path, keeps drawing, and reads a per-chunk progress counter until
 //! the finished [`VoxExportResult`] lands. See the display chapter
 //! (`docs/architecture/03-display.md`) for the worker plumbing and the two-layer chapter
@@ -21,7 +21,7 @@
 //! export the moment a second one was queued, losing a file the user asked for. So this
 //! worker carries NO generation; instead the shell **serialises** — it disables the
 //! export button while a request is outstanding, so a second export can never be queued
-//! and drain-to-latest never bites. The [`build_catching`](crate::workers::build_catching)
+//! and drain-to-latest never bites. The [`build_catching`]
 //! generation argument is therefore a fixed `0` (there is no generation to report); it
 //! still serves its real purpose here — mapping a build panic to a failure result the
 //! shell can show, rather than wedging the worker thread.
@@ -86,7 +86,7 @@ pub type VoxExportWorker = Worker<VoxExportRequest, VoxExportResult>;
 /// [`TwoLayerStore`], pre-create the [`VoxExportBuilder`] model set from the region
 /// dimensions, [`stream_vox_occupancy`] each covering chunk into it (bumping
 /// `progress_chunks` per chunk), finish, and write. The whole build runs under
-/// [`build_catching`](crate::workers::build_catching) so a panic becomes a failure result
+/// [`build_catching`] so a panic becomes a failure result
 /// (not a wedged thread); an IO error maps to its `to_string()`.
 pub fn spawn_vox_export_worker() -> VoxExportWorker {
     Worker::spawn("voxel-worker vox export", |request: VoxExportRequest| {

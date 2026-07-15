@@ -54,7 +54,7 @@ impl ScanHandle {
 }
 
 /// Spawn the auto-detect + scan worker. Returns immediately; results stream over
-/// the channel. Detection runs every known [`SourceDetector`]; each found
+/// the channel. Detection runs every known `SourceDetector`; each found
 /// source's groups are decoded and sent in order.
 pub fn spawn_auto_scan() -> ScanHandle {
     spawn_with(detect_all_sources)

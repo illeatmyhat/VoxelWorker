@@ -1145,7 +1145,7 @@ impl BrickRaymarchRenderer {
     }
 
     /// **ADR 0011 G3 — incremental dirty-brick patch.** Patch ONLY the dirty slots of the
-    /// PERSISTENT atlas from an [`IncrementalBrickField`](crate::brick_field::IncrementalBrickField)
+    /// PERSISTENT atlas from an [`IncrementalBrickField`]
     /// update, then swap in the merged records + rebuilt pyramid — no wholesale atlas
     /// re-upload, no occupancy readback. `update.written_slots` are the only texels
     /// touched (untouched slots keep their bytes) UNLESS `update.atlas_grew`, where the
