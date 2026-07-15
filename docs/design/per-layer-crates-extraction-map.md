@@ -5,9 +5,17 @@ if only to make the connections between components easier to understand," follow
 grill-with-docs session that resolved every contested seam. Decision record: `docs/adr/0016`.
 The boundary law per crate is the architecture chapter it implements (`docs/architecture/`).
 
-**Status (2026-07-15): Phase 0 COMPLETE; Phases 1–5 LANDED (voxel_core, document, evaluation, display
-+ carves, interchange); phases 6–7 (work, shell) blocked on a design fork — see below.** Grilled; ADR
-written. Execution is bottom-up in gated slices (below).
+**Status (2026-07-15): Phase 0 COMPLETE; Phases 1–6 LANDED — ALL 8 LAYERS CUT (voxel_core, document,
+evaluation, display, interchange, work; on top of substrate/camera/raycast). Only Phase 7 remains:
+carve the shell mega-files `app_core`(3090)/`panel`(2060) per the no-mega-files rule.** Grilled; ADR
+written.
+
+**Phase 6 landed** (`bffe329`): cut **work** = `workers/*` + `engagement/*` (deps display/interchange/
+evaluation/document/voxel_core/substrate + wgpu/profiling; wgpu INTENTIONAL per owner — see the ADR law
+revision). Enforced boundary: work imports no shell. `build_brick_rebuild`/`BrickDisplayInstall` were in
+`workers/brick.rs` (not shell), so no upward edge. Recon 110+21+93+93+64+18+29=428. The shell
+(`voxel_worker`) now = `app_core`, `panel`, `settings`, `gpu`, `main`+`shot` bins, lib.rs facade, 2
+parity-test modules.
 
 **Phase 5 landed** (`693d650`): cut **interchange** (`vox_export`, the headless `.vox` sink; deps
 evaluation/document/voxel_core, ZERO wgpu — the no-wgpu law that earns it a crate holds). Recon

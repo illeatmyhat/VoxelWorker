@@ -119,3 +119,21 @@ Phase-6 **work**-crate cut (orchestrator → work; routing → work-or-display, 
 "display is ONE crate, mesh/brick are folders not sub-crates" stands unchanged; only the orchestrator's
 home moves. So "display is the only crate that links wgpu" is now compile-true for the sinks, while the
 shell (gpu.rs/main/panel) and the engagement coordinator still link wgpu until the work/shell split.
+
+## Law revision — the work layer links wgpu (owner decision 2026-07-15, during Phase 6)
+
+Phase 6 confirmed `workers/geometry.rs` holds a `wgpu::Device`/`Queue` (the geometry worker builds GPU
+meshes on its background thread) and `engagement/orchestrator.rs` owns the device + the display
+renderers. A `work` crate therefore CANNOT be wgpu-free. Presented the fork; the owner chose to **cut a
+`work` crate that links wgpu** (over folding work into the shell, or a device-decoupling refactor). The
+headline law is refined, not abandoned:
+
+- **`interchange` and `evaluation` and everything below still never link wgpu** — the "CPU owns truth,
+  a headless export cannot touch a GPU device" guarantee is intact and compile-enforced.
+- **`display` is the only crate that links wgpu *for rendering*** — the GPU sinks live only there.
+- **`work` links wgpu to *build and drive* GPU resources off the render thread** (background mesh/brick
+  construction + the engagement state machine), and **the shell owns the device**. `work`'s device-touching
+  code sits behind a `work/gpu` feature the app forwards.
+
+The enforced boundary that earns `work` its crate is **"work imports no shell"** (no app_core/panel/
+settings/gpu/main) — verified at the cut. `crates/work` = `workers/*` + `engagement/*` (`bffe329`).
