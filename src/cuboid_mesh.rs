@@ -507,7 +507,7 @@ pub struct CuboidRebuildPlan {
 /// 1-VOXEL APRON: a chunk's boundary faces are culled against its neighbours
 /// ([`build_chunk_meshes_with_apron`]), so a neighbour's occupancy change can alter
 /// this chunk's mesh. This is the load-bearing difference from the instanced-era
-/// [`crate::renderer::incremental_rebuild_plan`] (one-instance-per-voxel, no
+/// [`crate::store::incremental_rebuild_plan`] (one-instance-per-voxel, no
 /// inter-chunk dependency): here the dirty set is DILATED by the 26-neighbourhood.
 ///
 /// - `resident` — the chunk coords whose state the renderer currently holds (its
