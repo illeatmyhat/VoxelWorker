@@ -47,6 +47,11 @@
 //!   [`lattice_key`](spatial::lattice_key) packing codec, the [`Ray`](spatial::Ray) primitive
 //!   with its slab-method box test, and the [`SparseMinMipPyramid`](spatial::SparseMinMipPyramid)
 //!   occupancy fold.
+//! - [`geom2d`] — the planar computational-geometry predicates:
+//!   [`orient2d`](geom2d::orient2d), [`segments_intersect`](geom2d::segments_intersect),
+//!   [`segment_intersects_rect`](geom2d::segment_intersects_rect),
+//!   [`point_in_polygon`](geom2d::point_in_polygon), and
+//!   [`rectangle_inside_polygon`](geom2d::rectangle_inside_polygon).
 //! - [`interval`] — [`FieldInterval`](interval::FieldInterval),
 //!   [`DisjointIntervalSet`](interval::DisjointIntervalSet), and [`Rational`](interval::Rational).
 //! - [`occupancy`] — the bit/atlas kit: [`BitCube`](occupancy::BitCube) and its payload sibling
@@ -69,6 +74,7 @@
 // call site (`substrate::spatial::LatticeAabb`, `substrate::occupancy::BitCube`);
 // each category module re-exports its own types. `supersede` and `srgb` belong to
 // no family and stay at the crate root.
+pub mod geom2d;
 pub mod interval;
 pub mod occupancy;
 pub mod solids;

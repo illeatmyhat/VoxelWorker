@@ -374,142 +374,14 @@ impl SketchSolid {
     }
 }
 
-/// Even-odd (ray-crossing) point-in-polygon test for the cell whose centre sits at
-/// `(sample_0, sample_1)` in the profile's own (un-normalized) coordinate space.
-///
-/// The classic crossing-number test: count how many polygon edges a ray cast in
-/// the +axis1 direction from the sample point crosses. An odd count is inside.
-/// Edges are taken between consecutive vertices, closing the last → first. Cell
-/// centres sit at half-integer positions (`min + i + 0.5`), which never coincide
-/// with the integer-coordinate vertices/edges, so there are no on-boundary
-/// ambiguities — the rasterization is exact and deterministic.
-fn point_in_polygon(profile: &[SketchPoint], sample_0: f64, sample_1: f64) -> bool {
-    let mut inside = false;
-    let count = profile.len();
-    let mut previous = count - 1;
-    for current in 0..count {
-        let current_point = profile[current].offset_voxels;
-        let previous_point = profile[previous].offset_voxels;
-        let current_0 = current_point[0] as f64;
-        let current_1 = current_point[1] as f64;
-        let previous_0 = previous_point[0] as f64;
-        let previous_1 = previous_point[1] as f64;
-        // Does a horizontal-in-axis1 ray from the sample cross this edge?
-        let straddles = (current_1 > sample_1) != (previous_1 > sample_1);
-        if straddles {
-            // X (axis0) of the edge at the sample's axis1 height.
-            let crossing_0 = (previous_0 - current_0) * (sample_1 - current_1)
-                / (previous_1 - current_1)
-                + current_0;
-            if sample_0 < crossing_0 {
-                inside = !inside;
-            }
-        }
-        previous = current;
-    }
-    inside
-}
-
-/// Whether the CLOSED axis-aligned rectangle `[c0_lo, c0_hi] × [c1_lo, c1_hi]` lies
-/// ENTIRELY inside the profile polygon, in the profile's native `(c0, c1)` space (the SAME
-/// space [`point_in_polygon`] samples). The coarse-solid interior-elision test (ADR 0010).
-///
-/// Callers pass the SAMPLE-CENTRE rectangle — the span of a block's per-voxel sample
-/// centres (`min + idx + 0.5`), NOT the voxel corners — so the polygon boundary that runs
-/// along a block face sits 0.5 beyond the outermost centre and no longer "crosses" (an
-/// axis-aligned face block IS fully solid and elides).
-///
-/// EXACT by connectedness: if no polygon edge crosses the closed rectangle then it contains
-/// no piece of the polygon boundary, so it is wholly inside or wholly outside — one interior
-/// sample (the centre, which is not on any edge given no crossing) decides. So the rectangle
-/// is inside iff **no polygon edge intersects it AND its centre is inside**; every sample
-/// centre then lies inside ⇒ every voxel solid. Conservative: a rectangle whose edge grazes
-/// a polygon edge counts as crossing ⇒ BOUNDARY (still exact). A DEGENERATE rectangle (a span
-/// that collapses to a single voxel ⇒ `hi == lo`, i.e. a segment or a point) is handled
-/// directly: the edge tests run against the degenerate box and the centre reduces to the
-/// point/segment-midpoint — for a single-voxel block this is exactly `point_in_polygon` at
-/// that voxel's own centre, matching the per-voxel resolve. Correct for convex, concave (the
-/// L reflex corner), and rectangle profiles alike.
-fn rectangle_inside_polygon(
-    profile: &[SketchPoint],
-    c0_lo: f64,
-    c0_hi: f64,
-    c1_lo: f64,
-    c1_hi: f64,
-) -> bool {
-    let count = profile.len();
-    // Allow a degenerate (single-voxel) span (`hi == lo`); only a truly inverted box is
-    // rejected. The sample-centre span guarantees `hi >= lo` (width = voxels − 1 >= 0).
-    if count < 3 || c0_hi < c0_lo || c1_hi < c1_lo {
-        return false;
-    }
-    let rect_min = [c0_lo, c1_lo];
-    let rect_max = [c0_hi, c1_hi];
-    let mut previous = count - 1;
-    for current in 0..count {
-        let a = profile[current].offset_voxels;
-        let b = profile[previous].offset_voxels;
-        let a = [a[0] as f64, a[1] as f64];
-        let b = [b[0] as f64, b[1] as f64];
-        if segment_intersects_rect(a, b, rect_min, rect_max) {
-            return false;
-        }
-        previous = current;
-    }
-    point_in_polygon(profile, (c0_lo + c0_hi) * 0.5, (c1_lo + c1_hi) * 0.5)
-}
-
-/// Whether segment `a→b` intersects the CLOSED axis-aligned rectangle
-/// `[rect_min, rect_max]` (component-wise min <= max). True iff an endpoint is inside the
-/// rectangle OR the segment crosses one of the four rectangle edges — complete for a
-/// convex box. Points are `[coord0, coord1]` in the profile's native space.
-fn segment_intersects_rect(a: [f64; 2], b: [f64; 2], rect_min: [f64; 2], rect_max: [f64; 2]) -> bool {
-    let inside = |p: [f64; 2]| {
-        p[0] >= rect_min[0] && p[0] <= rect_max[0] && p[1] >= rect_min[1] && p[1] <= rect_max[1]
-    };
-    if inside(a) || inside(b) {
-        return true;
-    }
-    let corners = [
-        [rect_min[0], rect_min[1]],
-        [rect_max[0], rect_min[1]],
-        [rect_max[0], rect_max[1]],
-        [rect_min[0], rect_max[1]],
-    ];
-    (0..4).any(|edge| segments_intersect(a, b, corners[edge], corners[(edge + 1) % 4]))
-}
-
-/// Robust segment–segment intersection (proper crossings AND collinear / endpoint
-/// touches), via orientation signs. Used only for the exact rectangle-inside-polygon test.
-fn segments_intersect(p0: [f64; 2], p1: [f64; 2], q0: [f64; 2], q1: [f64; 2]) -> bool {
-    let orient = |a: [f64; 2], b: [f64; 2], c: [f64; 2]| -> i32 {
-        let value = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
-        if value > 0.0 {
-            1
-        } else if value < 0.0 {
-            -1
-        } else {
-            0
-        }
-    };
-    // `c` (collinear with `a→b`) lies within `a→b`'s bounding box.
-    let on_segment = |a: [f64; 2], b: [f64; 2], c: [f64; 2]| -> bool {
-        c[0] >= a[0].min(b[0])
-            && c[0] <= a[0].max(b[0])
-            && c[1] >= a[1].min(b[1])
-            && c[1] <= a[1].max(b[1])
-    };
-    let d1 = orient(q0, q1, p0);
-    let d2 = orient(q0, q1, p1);
-    let d3 = orient(p0, p1, q0);
-    let d4 = orient(p0, p1, q1);
-    if d1 != d2 && d3 != d4 {
-        return true;
-    }
-    (d1 == 0 && on_segment(q0, q1, p0))
-        || (d2 == 0 && on_segment(q0, q1, p1))
-        || (d3 == 0 && on_segment(p0, p1, q0))
-        || (d4 == 0 && on_segment(p0, p1, q1))
+/// The profile's vertices as plain `[f64; 2]` points in its native `(c0, c1)` voxel space —
+/// the polygon the [`substrate::geom2d`] predicates consume. Converted ONCE per resolve and
+/// reused across every per-voxel sample, so the hot loops never re-allocate.
+fn to_profile_points(profile: &[SketchPoint]) -> Vec<[f64; 2]> {
+    profile
+        .iter()
+        .map(|point| [point.offset_voxels[0] as f64, point.offset_voxels[1] as f64])
+        .collect()
 }
 
 /// Whether the centred radial corner box `[a_lo, a_hi] × [b_lo, b_hi]` — over the two
@@ -693,7 +565,8 @@ impl SketchSolid {
         let c0_hi = (min[0] + cell.max[in_plane_0]) as f64 - 0.5;
         let c1_lo = (min[1] + cell.min[in_plane_1]) as f64 + 0.5;
         let c1_hi = (min[1] + cell.max[in_plane_1]) as f64 - 0.5;
-        rectangle_inside_polygon(&self.sketch.profile, c0_lo, c0_hi, c1_lo, c1_hi)
+        let profile_points = to_profile_points(&self.sketch.profile);
+        substrate::geom2d::rectangle_inside_polygon(&profile_points, [c0_lo, c1_lo], [c0_hi, c1_hi])
     }
 
     /// Whether a revolve cell (PROVEN fully inside `[0, full_dim)` by the caller) is
@@ -784,7 +657,9 @@ impl SketchSolid {
             RevolveAxis::InPlane0 => (axial_lo, axial_hi, r_lo, r_hi),
             RevolveAxis::InPlane1 => (r_lo, r_hi, axial_lo, axial_hi),
         };
-        if !rectangle_inside_polygon(&self.sketch.profile, c0_lo, c0_hi, c1_lo, c1_hi) {
+        let profile_points = to_profile_points(&self.sketch.profile);
+        if !substrate::geom2d::rectangle_inside_polygon(&profile_points, [c0_lo, c1_lo], [c0_hi, c1_hi])
+        {
             return false;
         }
         // Condition 1 (radial/axial) holds. A full turn needs nothing more (the sweep gate
@@ -844,12 +719,13 @@ impl SketchSolid {
         // centre — §3i). The polygon test is on `min + cell`, which is FULL-derived;
         // only the iterated cell range narrows.
         let _ = (in_plane_span_0, in_plane_span_1);
+        let profile_points = to_profile_points(&self.sketch.profile);
         let mut filled_in_plane: Vec<[u32; 2]> = Vec::new();
         for cell_1 in cell_1_lo..cell_1_hi {
             let sample_1 = min[1] as f64 + cell_1 as f64 + 0.5;
             for cell_0 in cell_0_lo..cell_0_hi {
                 let sample_0 = min[0] as f64 + cell_0 as f64 + 0.5;
-                if point_in_polygon(&self.sketch.profile, sample_0, sample_1) {
+                if substrate::geom2d::point_in_polygon(&profile_points, [sample_0, sample_1]) {
                     filled_in_plane.push([cell_0, cell_1]);
                 }
             }
@@ -991,7 +867,7 @@ impl SketchSolid {
         }
         let radial_max = radial_max as f64;
 
-        let profile = &self.sketch.profile;
+        let profile_points = to_profile_points(&self.sketch.profile);
 
         // Clamp the WORLD-axis window to `[0, full_dim)`; all per-cell math (half,
         // radial_max, the centred sample, profile_axial) stays FULL-derived — only
@@ -1079,7 +955,7 @@ impl SketchSolid {
                                 RevolveAxis::InPlane0 => (profile_axial, signed_radius),
                                 RevolveAxis::InPlane1 => (signed_radius, profile_axial),
                             };
-                            point_in_polygon(profile, sample_0, sample_1)
+                            substrate::geom2d::point_in_polygon(&profile_points, [sample_0, sample_1])
                         };
                         let is_inside = if profile_straddles_axis {
                             inside(radius) || inside(-radius)
