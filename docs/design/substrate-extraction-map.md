@@ -226,6 +226,22 @@ unchanged). **Deliberately left domain** (surveyed, rejected): the relaxed-JSON 
 fold in opportunistically), and vox_export's TLV framer / atomic-write idiom (marginal). None
 introduces a dependency law; none warrants a crate.
 
+**Third scan (2026-07-14, `fcbf278`).** A follow-on survey of the un-surveyed display/shell/UI
+files (renderer, main, gpu, panel, app_core, orchestrator, routing) and a residual sweep of the
+already-mined big files (two_layer_store, brick_field, brick_raymarch, voxel, cuboid_mesh, units,
+chunk_storage). One extraction taken: **`Rational::to_terminating_decimal`** (was
+`units.rs::decimal_string`) — the base-10 terminating-decimal criterion (2/5-smooth denominator)
++ exact power-of-ten expansion; pure number theory, distinct from Rational's gcd/reduction, landed
+as a method on the existing type. Surveyed and **deliberately left**: the Pineda edge-function
+rasterizer + Porter–Duff compositing in `renderer.rs` (real textbook kernels — Pineda 1988, Porter
+& Duff 1984 — but the guts of the restraint-listed chrome-glyph rasterizer; owner declined to
+reconsider the restraint); `voxel.rs::signed_distance_box` (exact sdBox — clean, but extracting
+only the box splits the SDF family, whose siblings are approximate and stay domain); the
+3×3×3 Moore-neighbourhood dilation in `cuboid_mesh.rs` (real name, but a 12-line loop whose
+function identity is the domain rebuild-plan). The display/shell files are otherwise wgpu
+plumbing + UI glue with no severable math. **The component hunt is considered complete** — three
+scans have driven the yield down to formulas and restraint-listed kernels.
+
 **Tooling note (2026-07-14):** structural rewrites here used **ast-grep** (installed) + the
 compiler as oracle; module *moves* have no end-to-end tool (`rust-analyzer ssr` CLI is broken
 upstream — verified across two versions). See the [[refactor-tooling-astgrep]] /
