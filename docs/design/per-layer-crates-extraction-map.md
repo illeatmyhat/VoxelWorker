@@ -5,8 +5,25 @@ if only to make the connections between components easier to understand," follow
 grill-with-docs session that resolved every contested seam. Decision record: `docs/adr/0016`.
 The boundary law per crate is the architecture chapter it implements (`docs/architecture/`).
 
-**Status (2026-07-15): EPIC COMPLETE.** All 8 layers cut into workspace crates and every production
-mega-file carved. Phase 7 landed: `app_core`(3090)→`app_core/` (`40e62c1`) and `panel`(2060)→`panel/`
+**Status (2026-07-15): EPIC COMPLETE + a "display = scene view" refinement pass (Phases 8–9).** All 8
+layers cut into workspace crates and every production mega-file carved; then, applying the principle
+that **`display` is 1:1 the scene view** (wgpu rendering only), two more crates were split out:
+- **`ui`** (`2b65170`, Phase 8b) — the egui control surface: the inspector `panel/` + the block-palette
+  UI state. Links ONLY egui + document/voxel_core/camera; NEVER wgpu/display. Preceded by **8a**
+  (`d3c0d95`): display's `block_palette` split — GPU half → `display::block_texture` (`ThumbnailRenderer`
+  /`LoadedMaterial`), UI half → shell, and egui + egui-wgpu DROPPED from display. The palette is split
+  ui-facing (`PaletteTile{label,variant_count,thumbnail_id,variants}` in `ui`) vs a shell `PaletteHost`
+  holding the index-aligned `wgpu::Texture` keep-alive + `BlockGroup` + the render→register bridge.
+- **`assets`** (`92a569e`, Phase 9) — the pluggable block-content loader (VS scan + PNG decode). A pure
+  CPU LEAF crate (deps: image/walkdir/serde_json, ZERO workspace deps), was misfiled in display; now
+  consumed downward by display/work/shell. display dropped image/walkdir/serde_json.
+
+Workspace is now 11 library crates + the `voxel_worker` shell. `display` links no egui and no content-
+loading deps — it is the scene view (mesh/brick GPU sinks + renderer chrome + texture atlas + shaders).
+Remaining display gray-area (deferred, noted): `block_texture::ThumbnailRenderer` renders palette PREVIEW
+cubes (UI, not scene) but is a GPU utility the shell drives — left in display to avoid moving its shader.
+
+ Phase 7 landed: `app_core`(3090)→`app_core/` (`40e62c1`) and `panel`(2060)→`panel/`
 (`4bee3a6`). Workspace: `substrate·camera·raycast ← voxel_core ← document ← evaluation ← {display,
 interchange} ← work ← voxel_worker(shell)`. 428 tests reconcile across the crates; all gates green.
 

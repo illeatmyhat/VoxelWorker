@@ -141,3 +141,26 @@ headline law is refined, not abandoned:
 
 The enforced boundary that earns `work` its crate is **"work imports no shell"** (no app_core/panel/
 settings/gpu/main) — verified at the cut. `crates/work` = `workers/*` + `engagement/*` (`bffe329`).
+
+## Refinement — `display` is 1:1 the scene view: the `ui` and `assets` crates (2026-07-15)
+
+After the eight layers landed, the owner sharpened the display crate's charter to **exactly the scene
+view** (wgpu rendering) and asked what didn't belong. Two things were split out:
+
+- **`ui` crate** (Phase 8b, `2b65170`) — the egui control surface: the inspector `panel/` + the block-
+  palette UI state. It links ONLY egui + document/voxel_core/camera, **never wgpu/display**. This was
+  set up by Phase 8a (`d3c0d95`), which discovered display linked egui for a *single* field
+  (`PaletteTile.thumbnail_id: egui::TextureId`); 8a split `block_palette` (GPU half →
+  `display::block_texture`, UI half → shell) and **dropped egui + egui-wgpu from `display`**. The palette
+  is now ui-facing tiles (egui-only) vs a shell `PaletteHost` that owns the `wgpu::Texture` keep-alive,
+  the `BlockGroup`, and the thumbnail render→register bridge (the shell hands the panel already-registered
+  `TextureId`s — full decoupling, the owner's chosen seam over ui-depends-on-display).
+- **`assets` crate** (Phase 9, `92a569e`) — the pluggable block-content loader (VS install scan + PNG
+  decode). Pure CPU, a true LEAF (image/walkdir/serde_json, zero workspace deps); it was misfiled inside
+  display (which only `block_texture` even touched) and is now consumed downward by display/work/shell.
+  `display` dropped image/walkdir/serde_json.
+
+Net: `display` links no egui and no content-loading deps — it is the scene view (mesh/brick GPU sinks +
+renderer chrome + texture atlas + shaders). One deferred gray-area: `block_texture::ThumbnailRenderer`
+renders palette *preview* cubes (UI, not scene) but is a GPU utility the shell drives; left in display to
+avoid relocating its shader. The workspace is now 11 library crates + the `voxel_worker` shell.
