@@ -1,8 +1,12 @@
 # ADR 0016 — Per-layer crates: the five architecture layers become compile-enforced crate boundaries
 
-- **Status:** **Proposed (2026-07-14)** — grilled and specified; extraction map + slice order in
-  `docs/design/per-layer-crates-extraction-map.md`. Not yet executed.
-- **Date:** 2026-07-14
+- **Status:** **Accepted — EXECUTED (2026-07-15)**. All eight layers are cut into workspace crates
+  (`substrate·camera·raycast ← voxel_core ← document ← evaluation ← {display, interchange} ← work ←
+  voxel_worker`), every mega-file carved into folders, tree green throughout. Two execution notes
+  below record seam corrections found during the cut (the `engagement` reclassification and the
+  `work`-links-wgpu law revision). Slice-by-slice detail in
+  `docs/design/per-layer-crates-extraction-map.md`.
+- **Date:** 2026-07-14 (proposed) / 2026-07-15 (executed)
 - **Layer:** repo shape. **Supersedes, in part, ADR 0014's "keep the app fused" ruling** — see below.
 - **Supersedes in part:** ADR 0014 (substrate) deliberately rejected splitting display/shell/
   workers/UI into crates, on the grounds that a crate must enforce *a dependency law worth

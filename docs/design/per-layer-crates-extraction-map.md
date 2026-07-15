@@ -5,10 +5,17 @@ if only to make the connections between components easier to understand," follow
 grill-with-docs session that resolved every contested seam. Decision record: `docs/adr/0016`.
 The boundary law per crate is the architecture chapter it implements (`docs/architecture/`).
 
-**Status (2026-07-15): Phase 0 COMPLETE; Phases 1–6 LANDED — ALL 8 LAYERS CUT (voxel_core, document,
-evaluation, display, interchange, work; on top of substrate/camera/raycast). Only Phase 7 remains:
-carve the shell mega-files `app_core`(3090)/`panel`(2060) per the no-mega-files rule.** Grilled; ADR
-written.
+**Status (2026-07-15): EPIC COMPLETE.** All 8 layers cut into workspace crates and every production
+mega-file carved. Phase 7 landed: `app_core`(3090)→`app_core/` (`40e62c1`) and `panel`(2060)→`panel/`
+(`4bee3a6`). Workspace: `substrate·camera·raycast ← voxel_core ← document ← evaluation ← {display,
+interchange} ← work ← voxel_worker(shell)`. 428 tests reconcile across the crates; all gates green.
+
+**Remaining large files (deliberately NOT carved — not production library mega-files):** the per-module
+`tests.rs` suites (scene 2959, brick 1899, mesh 1871 — test code travels as one file per owner-accepted
+orchestrator judgment); the two bins `src/bin/shot.rs` (2349, golden oracle) + `src/main.rs` (1868,
+winit/egui event loop); and `display/brick/raymarch.rs` (1884 — ONE cohesive GPU renderer type, like
+`mesh/pipeline.rs`). Optional future follow-ups if desired: split the big test suites, carve the two
+bins. None blocks the epic.
 
 **Phase 6 landed** (`bffe329`): cut **work** = `workers/*` + `engagement/*` (deps display/interchange/
 evaluation/document/voxel_core/substrate + wgpu/profiling; wgpu INTENTIONAL per owner — see the ADR law
