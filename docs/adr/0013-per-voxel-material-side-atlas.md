@@ -1,7 +1,11 @@
 # ADR 0013 — Per-voxel materials as a sparse R16 cell-key side atlas; the representability gate is deleted
 
-- **Status:** **Accepted (2026-07-13), not yet built** — the design ruling for the "mixed-material mesh cliff"
-  (slow-paths item 1). Architecture chapters get their timeless update when the epic lands.
+- **Status:** **Accepted & shipped (2026-07-14)** — the design ruling for the "mixed-material mesh cliff"
+  (slow-paths item 1), built in four slices (`c50375d` CPU mirror + `substrate::ValueCube<T>` →
+  `7789011` R16 GPU pool + widened record → `e7b3cb1` per-voxel shading with exact shader==CPU-march
+  gpu_parity → `ee2c827` gate deleted, mixed golden). The cliff is closed: mixed scenes engage the
+  brick path. `brick_representable_overlay` is gone; overlay is per-record/per-voxel/per-cell, not
+  scene-wide. GPU bit-per-voxel occupancy (the remaining 8× VRAM cut) stays a separate later slice.
 - **Date:** 2026-07-13
 - **Layer:** DISPLAY (the ADR 0011 brick-field sink). Governed by
   [ADR 0006](0006-authoring-truth-and-gpu-boundary.md) (GPU is a display shell — authoring truth already
