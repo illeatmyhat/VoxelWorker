@@ -817,14 +817,14 @@ fn file_stem_of(path: &std::path::Path) -> String {
 /// chiselable block has distinct faces. Returns `None` if no install is found or
 /// the stem can't be located on disk.
 fn resolve_demo_stem(stem: &str) -> Option<voxel_worker::FaceTextures> {
-    use display::assets::registry::detect_all_sources;
+    use assets::registry::detect_all_sources;
 
     // Find the actual variant PNG on disk for this stem, under each install's
     // textures dir, trying both domains. The detectors give us the block dirs.
     let chosen_variant = locate_stem_png(stem)?;
     // Build a synthetic group keyed by the stem so the resolver can look up the
     // matching blocktype (its `base` entries reference this stem's directory).
-    let group = display::assets::BlockGroup {
+    let group = assets::BlockGroup {
         label: stem.rsplit('/').next().unwrap_or(stem).to_string(),
         key: stem.to_string(),
         variants: vec![chosen_variant.clone()],

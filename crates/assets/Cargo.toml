@@ -1,0 +1,22 @@
+[package]
+name = "assets"
+version = "0.1.0"
+edition = "2021"
+
+# The ASSETS crate: pluggable block-texture content sourcing + image decode. Given a game
+# install or a user-picked folder, it discovers chiselable block textures, groups them, resolves
+# per-face texture maps from Vintage Story's lenient block JSON, and decodes the chosen PNGs to
+# RGBA. It is PURE CPU — no wgpu, no egui, no winit — and names NO domain crate (no voxel_core /
+# document / evaluation): it deals only in filesystem paths, byte buffers, and RGBA pixels. That
+# makes it a LEAF below everything — display consumes the decoded RGBA to build GPU thumbnails,
+# work drives the scan off-thread, and the shell feeds the palette — while assets depends on
+# nobody in the workspace. Its only edges are external crates. See
+# docs/design/per-layer-crates-extraction-map.md for the boundary law.
+
+[dependencies]
+# Walk a game install / chosen asset-pack directory to enumerate its blocks/textures.
+walkdir = "2"
+# Decode the discovered block PNGs to RGBA pixel buffers (the thumbnail + face source).
+image = "0.25"
+# Parse Vintage Story's lenient block/texture JSON when resolving a group's per-face textures.
+serde_json = "1"

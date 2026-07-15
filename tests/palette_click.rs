@@ -20,7 +20,7 @@
 
 use egui::{pos2, vec2, Event, PointerButton, Pos2, RawInput, Rect};
 
-use display::assets::BlockGroup;
+use assets::BlockGroup;
 use voxel_worker::block_palette::PaletteHost;
 use voxel_worker::{build_panel, EguiPaintBridge, GpuContext, PanelState, VoxelGrid};
 

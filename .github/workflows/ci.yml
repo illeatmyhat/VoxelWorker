@@ -97,9 +97,21 @@ jobs:
       - name: Test evaluation
         run: cargo test -p evaluation
 
+      # The assets library is a PURE-CPU LEAF below the domain layers: it scans a game install /
+      # picked folder for chiselable block textures, groups them, resolves per-face maps from
+      # Vintage Story's lenient block JSON, and decodes the chosen PNGs to RGBA. It links no
+      # wgpu/egui and names no domain crate; it carries its own gates so a content-loader
+      # regression fails independently of the crates above it.
+      - name: Clippy assets (deny warnings)
+        run: cargo clippy -p assets --all-targets -- -D warnings
+
+      - name: Test assets
+        run: cargo test -p assets
+
       # The display library is the ONE CRATE THAT LINKS wgpu (one layer above evaluation):
       # every GPU sink — the cuboid mesher, the brick field + raymarch, the material atlas,
-      # the block palette + thumbnails, the asset packs, and the render pipelines. It consumes
+      # the block palette + thumbnails, and the render pipelines (block thumbnails decode from
+      # the pure-CPU `assets` leaf). It consumes
       # the evaluation layer's classified two-layer chunks and produces pixels; the device/
       # queue are handed in, and it imports no work/shell. It carries its own gates so a
       # regression in a GPU sink fails independently of the app crate. (These CPU-side tests

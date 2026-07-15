@@ -18,11 +18,21 @@
 //! [`vintage_story`] is the first detector/source; [`custom_pack`] handles an
 //! arbitrary folder the user points the OS picker at (the only user-action path).
 //!
+//! THE LAW — this is a pure-CPU content loader, a LEAF below everything: it links no
+//! wgpu/egui/winit and names no domain crate (voxel_core / document / evaluation). It deals
+//! only in filesystem paths, byte buffers, and decoded RGBA pixels; display, work, and the
+//! shell sit above it and import downward.
+//!
 //! The chiselable filter + variant grouping (the ALLOW / EXCLUDE lists, the
 //! "anything under a `/rock/` segment" accept, the trailing-digit group key and
 //! Title-Case label) are transcribed from the browser prototype's
 //! `isChiselable` / `scanBlocks` / `prettify` (chisel-bench-reference.html) into
 //! [`is_chiselable`] / [`group_block_textures`] / [`prettify_label`] below.
+
+// A public item's doc may link to a private helper to explain how the two relate; that
+// cross-reference stays a navigable link under `--document-private-items`. The CI doc gate
+// denies broken and redundant links but permits these.
+#![allow(rustdoc::private_intra_doc_links)]
 
 use std::path::PathBuf;
 

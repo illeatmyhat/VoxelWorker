@@ -99,7 +99,7 @@ pub use ui::panel::{
     build_panel, ExportPanelState, LayerRange, PanelResponse,
     PanelState,
 };
-pub use display::assets::{CubeFaceSlot, FaceProvenance, FaceTextures};
+pub use assets::{CubeFaceSlot, FaceProvenance, FaceTextures};
 pub use display::renderer::{
     create_depth_view, create_msaa_color_view, InfiniteGridRenderer, LayerBand, MaterialSource,
     OnionFogParams, PointsRenderer, SceneGridRenderer, TransformGizmoRenderer, ViewCubeRenderer,

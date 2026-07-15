@@ -7,8 +7,8 @@ edition = "2021"
 # here — the cuboid fallback mesher (`cuboid_mesh`), the brick field build + its GPU record
 # pack (`brick_field`), the brick raymarch display pipeline (`brick_raymarch`), the material
 # texture atlas (`texture_atlas`), the block thumbnail renderer + loaded material
-# (`block_texture`), the asset pack decode/registry (`assets`), and the render pipelines +
-# view cube + grids (`renderer`). A component belongs here iff it CONSUMES the classified
+# (`block_texture`, which consumes the pure-CPU `assets` leaf's decoded RGBA), and the render
+# pipelines + view cube + grids (`renderer`). A component belongs here iff it CONSUMES the classified
 # boundary set (the evaluation layer's two-layer chunks) and PRODUCES pixels — it names a wgpu
 # device, queue, pipeline, buffer, or shader. The GPU device/queue are handed IN from the shell
 # as parameters; this crate NEVER creates a device, opens a surface, or touches a window
@@ -41,22 +41,20 @@ camera = { path = "../camera" }
 # The ray–volume traversal library (block/voxel DDA, hierarchical empty-space skip): the CPU
 # brick march is its domain adapter and the WGSL raymarch shader its GPU mirror.
 raycast = { path = "../raycast" }
+# The pure-CPU asset-pack loader (scan a game install / picked folder for chiselable block
+# textures, resolve per-face maps, decode PNGs to RGBA). block_texture consumes its DecodedRgba +
+# FaceTextures to build GPU thumbnails.
+assets = { path = "../assets" }
 # The GPU API. This is the ONE crate that links it — the workspace's wgpu boundary.
 wgpu = "29.0.3"
 # Vector/matrix mathematics for the vertex/uniform layouts and the CPU-side geometry.
 glam = "0.33.1"
 # Zero-copy POD casts for the vertex/instance/uniform buffers uploaded to the GPU.
 bytemuck = { version = "1.25", features = ["derive"] }
-# Decode/encode the material + thumbnail textures (PNG asset packs → RGBA).
-image = "0.25"
 # Data-parallel meshing / record building across the covering chunk set.
 rayon = "1"
 # Profiling facade (no-op unless a backend feature is enabled upstream): GPU-sink zones.
 profiling = "1"
-# Parse Vintage Story's lenient block/texture JSON in the asset registry.
-serde_json = "1"
-# Walk a chosen asset-pack directory to enumerate its blocks/textures.
-walkdir = "2"
 
 [dev-dependencies]
 # The display crate's own tests hold the mesh / brick paths against the dense

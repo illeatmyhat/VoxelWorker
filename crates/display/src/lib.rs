@@ -30,8 +30,8 @@
 //! brick-field tests build fixtures from), `voxel_core` (the value vocabulary + block/cell
 //! codec), `substrate` (interval arithmetic, cuboid decomposition, `GenerationTracker`),
 //! `camera` + `raycast` (the wgpu-free viewing + traversal mathematics the shaders mirror),
-//! plus `wgpu`/`glam`/`bytemuck`/`image`/`rayon`/`profiling`/`serde_json`/
-//! `walkdir`. Its tests hold the mesh + brick paths against the dense `Scene::resolve_region`
+//! `assets` (the pure-CPU block-texture loader `block_texture` decodes thumbnails from), plus
+//! `wgpu`/`glam`/`bytemuck`/`rayon`/`profiling`. Its tests hold the mesh + brick paths against the dense `Scene::resolve_region`
 //! oracle (document's `oracle` feature), compile-gated out of production builds.
 //!
 //! ## The chapter it serves
@@ -62,7 +62,6 @@
 // denies broken and redundant links but permits these.
 #![allow(rustdoc::private_intra_doc_links)]
 
-pub mod assets;
 pub mod block_texture;
 pub mod brick;
 pub mod mesh;

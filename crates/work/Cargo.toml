@@ -30,6 +30,9 @@ gpu = []
 display = { path = "../display" }
 # The headless `.vox` export sink the export worker serialises to off-thread.
 interchange = { path = "../interchange" }
+# The pure-CPU asset-pack loader the scan worker drives off-thread (detect sources, walk the
+# install, decode PNGs, resolve per-face textures).
+assets = { path = "../assets" }
 # The classified boundary set the workers consume: the two-layer chunk + resident cache the
 # geometry/brick/diameter rebuilds read their covering chunks from.
 evaluation = { path = "../evaluation" }

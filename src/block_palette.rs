@@ -20,7 +20,7 @@
 //! scanned from `groups[i]`. Only [`PaletteHost::add_group`] (push) and
 //! [`PaletteHost::clear`] (truncate all three) mutate them, so the alignment holds.
 
-use display::assets::{BlockGroup, DecodedRgba};
+use assets::{BlockGroup, DecodedRgba};
 use display::block_texture::ThumbnailRenderer;
 pub use ui::palette::{BlockPalette, PaletteTile};
 

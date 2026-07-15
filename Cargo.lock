@@ -214,6 +214,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "assets"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "serde_json",
+ "walkdir",
+]
+
+[[package]]
 name = "atomic-waker"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -720,19 +729,17 @@ dependencies = [
 name = "display"
 version = "0.1.0"
 dependencies = [
+ "assets",
  "bytemuck",
  "camera",
  "document",
  "evaluation",
  "glam",
- "image",
  "profiling",
  "raycast",
  "rayon",
- "serde_json",
  "substrate",
  "voxel_core",
- "walkdir",
  "wgpu",
 ]
 
@@ -3512,6 +3519,7 @@ dependencies = [
 name = "voxel_worker"
 version = "0.1.0"
 dependencies = [
+ "assets",
  "bytemuck",
  "camera",
  "display",
@@ -4347,6 +4355,7 @@ checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 name = "work"
 version = "0.1.0"
 dependencies = [
+ "assets",
  "display",
  "document",
  "evaluation",
