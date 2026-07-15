@@ -123,6 +123,64 @@ impl Rational {
             truncated
         }
     }
+
+    /// Render this rational as a **terminating** decimal string, or `None` when it
+    /// has no finite base-10 expansion. Pure integer arithmetic — no `f64` anywhere,
+    /// so the result is exact (`1/8` → `"0.125"`, `1/3` → `None`).
+    ///
+    /// A reduced fraction `p/q` terminates in base 10 iff `q` is **2/5-smooth** — its
+    /// only prime factors are 2 and 5 (the prime factors of the base). The method
+    /// strips factors of 2 and 5 from the denominator; if anything remains it does not
+    /// terminate. Otherwise it scales the numerator up to a power of ten and splits off
+    /// the fractional digits. Textbook elementary number theory (the terminating-decimal
+    /// criterion; Hardy & Wright, *An Introduction to the Theory of Numbers*).
+    pub fn to_terminating_decimal(self) -> Option<String> {
+        if self.is_integer() {
+            return Some(self.numerator.to_string());
+        }
+        // Strip factors of 2 and 5 from the denominator; whatever remains must be 1
+        // for the decimal to terminate.
+        let mut denominator = self.denominator;
+        let mut factor_twos = 0;
+        let mut factor_fives = 0;
+        while denominator % 2 == 0 {
+            denominator /= 2;
+            factor_twos += 1;
+        }
+        while denominator % 5 == 0 {
+            denominator /= 5;
+            factor_fives += 1;
+        }
+        if denominator != 1 {
+            return None;
+        }
+        // Scale numerator/denominator up to a power of ten, then split off the
+        // fractional digits.
+        let fractional_digits = factor_twos.max(factor_fives);
+        let mut scaled_numerator = self.numerator;
+        for _ in 0..(fractional_digits - factor_twos) {
+            scaled_numerator *= 2;
+        }
+        for _ in 0..(fractional_digits - factor_fives) {
+            scaled_numerator *= 5;
+        }
+        let scale = 10i128.pow(fractional_digits as u32);
+        let negative = scaled_numerator < 0;
+        let magnitude = scaled_numerator.unsigned_abs();
+        let whole_part = (magnitude / scale as u128) as i128;
+        let fraction_part = (magnitude % scale as u128) as i128;
+        let mut fraction_text =
+            format!("{fraction_part:0width$}", width = fractional_digits as usize);
+        while fraction_text.ends_with('0') {
+            fraction_text.pop();
+        }
+        let sign = if negative { "-" } else { "" };
+        if fraction_text.is_empty() {
+            Some(format!("{sign}{whole_part}"))
+        } else {
+            Some(format!("{sign}{whole_part}.{fraction_text}"))
+        }
+    }
 }
 
 /// Euclid's algorithm on unsigned magnitudes. `gcd(x, 0) == x`, so a `0`
@@ -161,6 +219,21 @@ mod tests {
         let whole = Rational::from_integer(5);
         assert_eq!(whole.floor(), 5);
         assert_eq!(whole.ceil(), 5);
+    }
+
+    #[test]
+    fn terminating_decimal_expansion() {
+        let dec = |n, d| Rational::new(n, d).unwrap().to_terminating_decimal();
+        assert_eq!(dec(1, 8), Some("0.125".to_string())); // 2-smooth
+        assert_eq!(dec(1, 10), Some("0.1".to_string())); // 2·5
+        assert_eq!(dec(3, 4), Some("0.75".to_string()));
+        assert_eq!(dec(-7, 20), Some("-0.35".to_string())); // sign carried
+        assert_eq!(dec(5, 1), Some("5".to_string())); // integer
+        assert_eq!(Rational::from_integer(42).to_terminating_decimal(), Some("42".to_string()));
+        // Non-2/5-smooth denominators do not terminate.
+        assert_eq!(dec(1, 3), None);
+        assert_eq!(dec(2, 7), None);
+        assert_eq!(dec(1, 6), None); // 6 = 2·3, the 3 blocks it
     }
 
     #[test]

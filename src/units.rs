@@ -193,7 +193,7 @@ pub fn format(voxels: i64, density: u32, style: DisplayUnit) -> String {
             // fall back to whole blocks + voxels so we never emit a rounded float.
             let blocks =
                 ExactRational::new(voxels as i128, density as i128).expect("density >= 1");
-            match decimal_string(blocks) {
+            match blocks.to_terminating_decimal() {
                 Some(text) => format!("{text} {}", pluralise_rational(blocks, "block")),
                 None => {
                     // Non-terminating in base 10 (e.g. 1/3 of a block): present the
@@ -226,56 +226,6 @@ fn pluralise_rational(blocks: ExactRational, singular: &str) -> String {
         singular.to_string()
     } else {
         format!("{singular}s")
-    }
-}
-
-/// Render a reduced rational as a terminating decimal string, or `None` when it
-/// does not terminate in base 10 (denominator has a prime factor other than 2 or
-/// 5). Pure integer arithmetic — no `f64` anywhere.
-fn decimal_string(value: ExactRational) -> Option<String> {
-    if value.is_integer() {
-        return Some(value.numerator().to_string());
-    }
-    // Strip factors of 2 and 5 from the denominator; whatever remains must be 1
-    // for the decimal to terminate.
-    let mut denominator = value.denominator();
-    let mut factor_twos = 0;
-    let mut factor_fives = 0;
-    while denominator % 2 == 0 {
-        denominator /= 2;
-        factor_twos += 1;
-    }
-    while denominator % 5 == 0 {
-        denominator /= 5;
-        factor_fives += 1;
-    }
-    if denominator != 1 {
-        return None;
-    }
-    // Scale numerator/denominator up to a power of ten, then split off the
-    // fractional digits.
-    let fractional_digits = factor_twos.max(factor_fives);
-    let mut scaled_numerator = value.numerator();
-    for _ in 0..(fractional_digits - factor_twos) {
-        scaled_numerator *= 2;
-    }
-    for _ in 0..(fractional_digits - factor_fives) {
-        scaled_numerator *= 5;
-    }
-    let scale = 10i128.pow(fractional_digits as u32);
-    let negative = scaled_numerator < 0;
-    let magnitude = scaled_numerator.unsigned_abs();
-    let whole_part = (magnitude / scale as u128) as i128;
-    let fraction_part = (magnitude % scale as u128) as i128;
-    let mut fraction_text = format!("{fraction_part:0width$}", width = fractional_digits as usize);
-    while fraction_text.ends_with('0') {
-        fraction_text.pop();
-    }
-    let sign = if negative { "-" } else { "" };
-    if fraction_text.is_empty() {
-        Some(format!("{sign}{whole_part}"))
-    } else {
-        Some(format!("{sign}{whole_part}.{fraction_text}"))
     }
 }
 
