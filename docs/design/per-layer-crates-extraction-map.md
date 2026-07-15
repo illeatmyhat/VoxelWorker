@@ -5,8 +5,21 @@ if only to make the connections between components easier to understand," follow
 grill-with-docs session that resolved every contested seam. Decision record: `docs/adr/0016`.
 The boundary law per crate is the architecture chapter it implements (`docs/architecture/`).
 
-**Status (2026-07-14): SPECIFIED, not started.** Grilled; ADR written. Execution is bottom-up in
-gated slices (below).
+**Status (2026-07-14): Phase 0 COMPLETE; crate cuts (phases 1–7) not started.** Grilled; ADR
+written. Execution is bottom-up in gated slices (below).
+
+**Phase 0 landed 2026-07-14** (`b7d3c13`→`521c216`, all gated + pushed): the four untangle
+relocations are done and the module graph is now a clean DAG.
+1. `b7d3c13` — cell-key codec `cuboid_mesh` → `core_geom` as the `CellKey(u16)` newtype.
+2. `8cb14b6` — `incremental_rebuild_plan` `renderer` → `store` (retired `store → renderer`).
+3. `604ade0` — `decode_rgba`/`DecodedRgba` `workers/scan` → `assets::decode` (retired `block_palette → workers`).
+4. `521c216` — `voxel.rs` split into `voxel/value.rs` (foundational) + `voxel/producer.rs`
+   (document-bound), re-exported from `voxel/mod.rs` so call sites are unchanged; `mesh_cell_key`
+   folded onto `Voxel::cell_key()` in the value half (retired the last `cuboid → cuboid_mesh` edge);
+   the `AppCore`-importing dispatch test moved `intent` → `app_core` (retired the test-only
+   `document → shell` edge). Call-site paths kept as `crate::voxel::*` via explicit re-exports — the
+   crate cut rewrites them to the real `voxel_core::`/`document::` paths in one ast-grep pass, so the
+   split isn't churned twice.
 
 ## The dependency law
 
