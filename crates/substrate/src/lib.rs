@@ -52,6 +52,8 @@
 //!   [`segment_intersects_rect`](geom2d::segment_intersects_rect),
 //!   [`point_in_polygon`](geom2d::point_in_polygon), and
 //!   [`rectangle_inside_polygon`](geom2d::rectangle_inside_polygon).
+//! - [`noise`] — a procedural-generation kit: the [`SmallRng`](noise::SmallRng) LCG and
+//!   [`PerlinNoise`](noise::PerlinNoise) gradient noise with fBm.
 //! - [`interval`] — [`FieldInterval`](interval::FieldInterval),
 //!   [`DisjointIntervalSet`](interval::DisjointIntervalSet), and [`Rational`](interval::Rational).
 //! - [`occupancy`] — the bit/atlas kit: [`BitCube`](occupancy::BitCube) and its payload sibling
@@ -76,6 +78,7 @@
 // no family and stay at the crate root.
 pub mod geom2d;
 pub mod interval;
+pub mod noise;
 pub mod occupancy;
 pub mod solids;
 pub mod spatial;

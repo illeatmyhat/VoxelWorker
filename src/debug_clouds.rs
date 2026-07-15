@@ -20,6 +20,7 @@
 use crate::voxel::{Voxel, VoxelGrid, VoxelProducer};
 use glam::Vec3;
 use rayon::prelude::*;
+use substrate::noise::{PerlinNoise, SmallRng};
 
 /// How far past the radial edge the fBm displacement may push the surface, as a
 /// fraction of each cloud's radius. Keeps clouds bounded (so the gaps survive)
@@ -98,7 +99,7 @@ impl DebugCloudField {
     /// The seed-shuffled Perlin permutation table (the GPU view-resolve streams it so
     /// its WGSL noise indexes the SAME table as the CPU `PerlinNoise`).
     pub fn permutation_table(&self) -> [u8; 512] {
-        PerlinNoise::new(self.seed).permutation
+        PerlinNoise::new(self.seed).permutation()
     }
 }
 
@@ -278,166 +279,6 @@ fn scatter_cloud_puffs(seed: u32, extent: Vec3) -> Vec<CloudPuff> {
         });
     }
     clouds
-}
-
-// ---------------------------------------------------------------------------
-// Deterministic small RNG (LCG) — just enough for placement/jitter. Not for
-// anything that needs statistical quality.
-// ---------------------------------------------------------------------------
-
-struct SmallRng {
-    state: u32,
-}
-
-impl SmallRng {
-    fn new(seed: u32) -> Self {
-        Self {
-            state: seed.wrapping_mul(2_654_435_761).wrapping_add(1),
-        }
-    }
-
-    /// Next raw u32 (Numerical Recipes LCG constants).
-    fn next_u32(&mut self) -> u32 {
-        self.state = self
-            .state
-            .wrapping_mul(1_664_525)
-            .wrapping_add(1_013_904_223);
-        self.state
-    }
-
-    /// Uniform f32 in [0, 1).
-    fn unit(&mut self) -> f32 {
-        (self.next_u32() >> 8) as f32 / (1u32 << 24) as f32
-    }
-
-    /// Uniform f32 in [-1, 1).
-    fn signed_unit(&mut self) -> f32 {
-        self.unit() * 2.0 - 1.0
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Improved Perlin gradient noise (Ken Perlin, 2002) + fBm. Self-contained so the
-// project takes no new dependency for a debug feature.
-// ---------------------------------------------------------------------------
-
-struct PerlinNoise {
-    /// 0..255 permutation, duplicated to 512 to avoid index wrapping in `noise`.
-    permutation: [u8; 512],
-}
-
-impl PerlinNoise {
-    fn new(seed: u32) -> Self {
-        // Identity table, shuffled deterministically (Fisher–Yates with an LCG).
-        let mut table: [u8; 256] = std::array::from_fn(|i| i as u8);
-        let mut random = SmallRng::new(seed);
-        for i in (1..256).rev() {
-            let j = (random.next_u32() as usize) % (i + 1);
-            table.swap(i, j);
-        }
-        let mut permutation = [0u8; 512];
-        for i in 0..512 {
-            permutation[i] = table[i & 255];
-        }
-        Self { permutation }
-    }
-
-    /// Improved-Perlin 3D noise in roughly [-1, 1].
-    fn noise(&self, point: Vec3) -> f32 {
-        let xi = point.x.floor();
-        let yi = point.y.floor();
-        let zi = point.z.floor();
-        let cube_x = (xi as i32 & 255) as usize;
-        let cube_y = (yi as i32 & 255) as usize;
-        let cube_z = (zi as i32 & 255) as usize;
-
-        let fx = point.x - xi;
-        let fy = point.y - yi;
-        let fz = point.z - zi;
-
-        let u = fade(fx);
-        let v = fade(fy);
-        let w = fade(fz);
-
-        let p = &self.permutation;
-        let a = p[cube_x] as usize + cube_y;
-        let aa = p[a] as usize + cube_z;
-        let ab = p[a + 1] as usize + cube_z;
-        let b = p[cube_x + 1] as usize + cube_y;
-        let ba = p[b] as usize + cube_z;
-        let bb = p[b + 1] as usize + cube_z;
-
-        let x1 = lerp(
-            grad(p[aa], fx, fy, fz),
-            grad(p[ba], fx - 1.0, fy, fz),
-            u,
-        );
-        let x2 = lerp(
-            grad(p[ab], fx, fy - 1.0, fz),
-            grad(p[bb], fx - 1.0, fy - 1.0, fz),
-            u,
-        );
-        let y1 = lerp(x1, x2, v);
-
-        let x3 = lerp(
-            grad(p[aa + 1], fx, fy, fz - 1.0),
-            grad(p[ba + 1], fx - 1.0, fy, fz - 1.0),
-            u,
-        );
-        let x4 = lerp(
-            grad(p[ab + 1], fx, fy - 1.0, fz - 1.0),
-            grad(p[bb + 1], fx - 1.0, fy - 1.0, fz - 1.0),
-            u,
-        );
-        let y2 = lerp(x3, x4, v);
-
-        lerp(y1, y2, w)
-    }
-
-    /// Fractional Brownian motion: summed octaves of `noise`, normalised back to
-    /// roughly [-1, 1]. This is the "fractal" that turns one smooth gradient field
-    /// into a cloud-like surface.
-    fn fractal_noise(&self, point: Vec3, octaves: u32, lacunarity: f32, gain: f32) -> f32 {
-        let mut frequency = 1.0;
-        let mut amplitude = 1.0;
-        let mut sum = 0.0;
-        let mut normalization = 0.0;
-        for _ in 0..octaves {
-            sum += amplitude * self.noise(point * frequency);
-            normalization += amplitude;
-            amplitude *= gain;
-            frequency *= lacunarity;
-        }
-        if normalization == 0.0 {
-            0.0
-        } else {
-            sum / normalization
-        }
-    }
-}
-
-fn fade(t: f32) -> f32 {
-    t * t * t * (t * (t * 6.0 - 15.0) + 10.0)
-}
-
-fn lerp(a: f32, b: f32, t: f32) -> f32 {
-    a + t * (b - a)
-}
-
-/// Perlin's gradient: pick one of 12 edge directions from the low hash bits.
-fn grad(hash: u8, x: f32, y: f32, z: f32) -> f32 {
-    let h = hash & 15;
-    let u = if h < 8 { x } else { y };
-    let v = if h < 4 {
-        y
-    } else if h == 12 || h == 14 {
-        x
-    } else {
-        z
-    };
-    let u_term = if h & 1 == 0 { u } else { -u };
-    let v_term = if h & 2 == 0 { v } else { -v };
-    u_term + v_term
 }
 
 #[cfg(test)]
