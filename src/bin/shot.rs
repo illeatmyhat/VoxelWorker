@@ -222,7 +222,7 @@ struct ShotOptions {
     /// (per-voxel cell-key shading). Overrides --shape/--size/--density.
     demo_mixed_material: bool,
     /// `--two-layer` (ADR 0010 E3 / #50): render the voxel mesh THROUGH the two-layer
-    /// path — build each covering chunk's [`voxel_worker::two_layer_store::TwoLayerChunk`]
+    /// path — build each covering chunk's [`evaluation::two_layer_store::TwoLayerChunk`]
     /// (coarse one-box + microblock cuboids + seam-solidity flags) and mesh from it via
     /// [`CuboidMeshRenderer::new_from_two_layer_chunks`], instead of the dense per-chunk
     /// `VoxelGrid`. PROVES the two-layer mesher renders pixel-identical to the dense path
@@ -1715,7 +1715,7 @@ async fn run_capture(options: ShotOptions) {
             );
         } else {
             let density = options.geometry.voxels_per_block;
-            let two_layer_chunks = voxel_worker::two_layer_store::TwoLayerStore::enabled()
+            let two_layer_chunks = evaluation::two_layer_store::TwoLayerStore::enabled()
                 .build_covering_chunks(&scene, density, 0);
             // shot's --brick goldens verify the brick display against the dense reference
             // INCLUDING onion-band cut planes. This installs the LIVE surface-only build
@@ -1801,7 +1801,7 @@ async fn run_capture(options: ShotOptions) {
             drop(render_chunks);
         }
         let density = options.geometry.voxels_per_block;
-        let store = voxel_worker::two_layer_store::TwoLayerStore::enabled();
+        let store = evaluation::two_layer_store::TwoLayerStore::enabled();
         let two_layer_chunks = store.build_covering_chunks(&scene, density, 0);
         println!(
             "two-layer mesher: {} covering chunks, {} stored boundary voxels (interior elided)",

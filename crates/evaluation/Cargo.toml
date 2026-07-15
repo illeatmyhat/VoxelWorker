@@ -1,0 +1,63 @@
+[package]
+name = "evaluation"
+version = "0.1.0"
+edition = "2021"
+
+# The EVALUATION crate: the one evaluator that turns the authored document into the
+# classified boundary set every derivation reads. It owns the residency + per-chunk
+# resolve store (`store`, its re-export shim `chunk_cache`), the boundary-aware
+# two-layer chunk representation + block classifier (`two_layer_store`), the sparse
+# chunk codec (`chunk_storage`), the out-of-core spill store (`disk_chunk_store`), and
+# the boundary cuboid decomposition (`cuboid`). A component belongs here iff it CONSUMES
+# the document and PRODUCES the classified boundary set — no display, work, or shell
+# concept in sight. It sits ABOVE `document` (whose scene/producers it evaluates) and
+# `voxel_core` (its value vocabulary) and BELOW the display + interchange sinks. The
+# dependency edge is one-way: `voxel_core·document <- evaluation <- {display,interchange}`;
+# the evaluator imports no display/work/shell, so an upward `use` (renderer, cuboid_mesh,
+# brick_*, texture_atlas, block_palette, assets, vox_export, workers, app_core, panel,
+# settings, gpu) fails to compile. See docs/architecture/02-evaluation.md for the layer
+# this crate realises and docs/design/per-layer-crates-extraction-map.md (the evaluation
+# row) for provenance.
+
+[dependencies]
+# The authored-TRUTH layer (one layer down): the scene graph the evaluator resolves, the
+# producers whose conservative interval bound drives block classification, and the
+# FieldClassification the CSG composition names.
+document = { path = "../document" }
+# The foundational value vocabulary: the resolved Voxel + sparse VoxelGrid the resolve
+# assembles, the BlockId / CellKey / BlockAttrs palette, CHUNK_BLOCKS, the absolute-voxel
+# box + leaf index + edit broadphase, the recentre frame, and the widest-run query.
+voxel_core = { path = "../voxel_core" }
+# The pure CS/math substrate: the CSG interval arithmetic (DisjointIntervalSet), the
+# black/white/grey cell-classification kernel, and the greedy cuboid decomposition the
+# boundary geometry is stored as.
+substrate = { path = "../substrate" }
+# Data-parallel per-chunk classification (the covering-chunk build runs under rayon).
+rayon = "1"
+# Derive Serialize/Deserialize for the persisted sparse chunk codec (CompressedChunk).
+serde = { version = "1", features = ["derive"] }
+# The on-disk spill store serialises chunks as serde_json (production path in
+# `disk_chunk_store`).
+serde_json = "1"
+
+[features]
+# The dense whole-region resolve oracles (`Store::resolve_region`,
+# `resolve_region_two_layer`) — the O(volume) reference the sparse runtime path is
+# cross-checked against — are compile-gated out of production builds behind this feature
+# (this crate's own tests reach them via `cfg(test)`). The app forwards its `oracle`
+# feature here (and its dev-dependency turns it on for `cargo test`) so the app-crate
+# parity tests and the `shot` golden tool can see them. See the proof chapter's
+# "Oracles" section (docs/architecture/05-proof.md).
+oracle = []
+# Cross-crate TEST helper: the dense `expand_resident_chunks_into_grid` oracle expander,
+# `#[cfg(test)]` within this crate, that the app crate's tests reach across the boundary.
+# Off in production (it never ships); the app's dev-dependency turns it on so its
+# `cargo test --lib` sees it, exactly like `oracle`.
+test-support = []
+
+[dev-dependencies]
+# The evaluation crate's own tests hold the sparse store/two-layer paths against the
+# dense `Scene::resolve_region` oracle (document's `oracle` feature) and reach the
+# positional root-node test fixtures (document's `test-support` feature). Both ship only
+# in TEST builds.
+document = { path = "../document", features = ["oracle", "test-support"] }

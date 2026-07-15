@@ -3,7 +3,7 @@
 //! The instanced renderer (`crate::renderer::VoxelRenderer`) draws one cube
 //! per occupied voxel. This module is the FIRST step of replacing that with a
 //! Vintage-Story-style **cuboid mesher**: it decomposes the resolved grid into a
-//! small set of single-material axis-aligned boxes ([`crate::cuboid`]) and builds
+//! small set of single-material axis-aligned boxes ([`evaluation::cuboid`]) and builds
 //! a triangle mesh of each box's **exposed faces only** (faces internal to the
 //! solid set are culled). Each face vertex carries the box's `material_id` and a
 //! face normal; the shader (`shaders/cuboid.wgsl`) flat-shades it with the same
@@ -36,14 +36,14 @@ use rayon::prelude::*;
 use wgpu::util::DeviceExt;
 
 use voxel_core::core_geom::{MaterialChoice, CHUNK_BLOCKS};
-use crate::cuboid::{decompose_into_boxes, VoxelBox, VoxelBoxMaterial, VoxelRegion};
+use evaluation::cuboid::{decompose_into_boxes, VoxelBox, VoxelBoxMaterial, VoxelRegion};
 use substrate::solids::CulledBoxMeshing;
 use camera::frustum::Frustum;
 use substrate::spatial::RealAabb as Aabb;
 use crate::renderer::{LayerBand, DEPTH_FORMAT, MSAA_SAMPLE_COUNT};
 use crate::texture_atlas::MaterialAtlas;
 use voxel_core::core_geom::CellKey;
-use crate::two_layer_store::{MicroblockGeometry, SeamSolidity, TwoLayerChunk};
+use evaluation::two_layer_store::{MicroblockGeometry, SeamSolidity, TwoLayerChunk};
 use voxel_core::voxel::{RecentreVoxels, VoxelGrid};
 
 /// One mesh vertex of a cuboid face: world position, the face's outward normal, and the
@@ -497,14 +497,14 @@ pub struct CuboidRebuildPlan {
 /// 1-VOXEL APRON: a chunk's boundary faces are culled against its neighbours
 /// ([`build_chunk_meshes_with_apron`]), so a neighbour's occupancy change can alter
 /// this chunk's mesh. This is the load-bearing difference from the instanced-era
-/// [`crate::store::incremental_rebuild_plan`] (one-instance-per-voxel, no
+/// [`evaluation::store::incremental_rebuild_plan`] (one-instance-per-voxel, no
 /// inter-chunk dependency): here the dirty set is DILATED by the 26-neighbourhood.
 ///
 /// - `resident` — the chunk coords whose state the renderer currently holds (its
 ///   `source_chunk_grids` coords, NOT just the buffered ones, so fully-occluded
 ///   occupied chunks stay stable instead of re-meshing every edit).
 /// - `evicted_dirty` — the resolve cache's evicted coords for this edit (chunks whose
-///   OWN occupancy may have changed; from [`crate::store::Store::invalidate_aabb`]).
+///   OWN occupancy may have changed; from [`evaluation::store::Store::invalidate_aabb`]).
 /// - `occupied` — the post-edit covering coords that resolve to a NON-EMPTY grid.
 ///
 /// `seed` = changed-occupancy chunks = `evicted_dirty` ∪ newly-appeared
@@ -1806,7 +1806,7 @@ pub struct CuboidMeshRenderer {
     /// source grids. Empty on the dense path; populated only by [`new_from_two_layer_chunks`].
     /// `recentre`/`density` are the frame + density the two-layer mesher needs to re-emit in
     /// the SAME world frame on every band change.
-    source_two_layer_chunks: Vec<([i32; 3], Arc<crate::two_layer_store::TwoLayerChunk>)>,
+    source_two_layer_chunks: Vec<([i32; 3], Arc<evaluation::two_layer_store::TwoLayerChunk>)>,
     source_two_layer_recentre: RecentreVoxels,
     source_two_layer_density: u32,
     /// The whole composite grid's voxel dims (the band clip maps an absolute layer to
@@ -1922,7 +1922,7 @@ impl CuboidMeshRenderer {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         color_format: wgpu::TextureFormat,
-        chunks: &[([i32; 3], Arc<crate::two_layer_store::TwoLayerChunk>)],
+        chunks: &[([i32; 3], Arc<evaluation::two_layer_store::TwoLayerChunk>)],
         grid_dimensions: [u32; 3],
         recentre_voxels: RecentreVoxels,
         voxels_per_block: u32,
@@ -1954,7 +1954,7 @@ impl CuboidMeshRenderer {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         color_format: wgpu::TextureFormat,
-        chunks: &[([i32; 3], Arc<crate::two_layer_store::TwoLayerChunk>)],
+        chunks: &[([i32; 3], Arc<evaluation::two_layer_store::TwoLayerChunk>)],
         grid_dimensions: [u32; 3],
         recentre_voxels: RecentreVoxels,
         voxels_per_block: u32,
@@ -2469,7 +2469,7 @@ impl CuboidMeshRenderer {
     /// neighbour; `recentre_voxels` / `voxels_per_block` are the resolve's carried frame
     /// (ADR 0008); `grid_dimensions` the whole composite's voxel dims (band-clip mapping);
     /// `evicted_dirty` the resident cache's evicted coords for this edit (from
-    /// [`TwoLayerResidentCache::invalidate_aabb`](crate::two_layer_store::TwoLayerResidentCache::invalidate_aabb)).
+    /// [`TwoLayerResidentCache::invalidate_aabb`](evaluation::two_layer_store::TwoLayerResidentCache::invalidate_aabb)).
     ///
     /// The dirty set is dilated by the 26-neighbourhood via the SAME
     /// [`cuboid_incremental_plan`] the dense path uses — the seam-solidity dependency footprint
@@ -2488,7 +2488,7 @@ impl CuboidMeshRenderer {
     pub fn incremental_rebuild_from_two_layer_chunks(
         &mut self,
         device: &wgpu::Device,
-        chunks: &[([i32; 3], Arc<crate::two_layer_store::TwoLayerChunk>)],
+        chunks: &[([i32; 3], Arc<evaluation::two_layer_store::TwoLayerChunk>)],
         grid_dimensions: [u32; 3],
         recentre_voxels: RecentreVoxels,
         voxels_per_block: u32,
@@ -2541,7 +2541,7 @@ impl CuboidMeshRenderer {
         // reclip re-meshes from it): drop evicted, upsert each rebuilt coord's chunk.
         // Untouched chunks are resident-cache hits → already correct. Rebuilding a chunk that
         // went all-air still upserts its (empty) chunk so the retained set matches `chunks`.
-        let chunks_by_coord: std::collections::HashMap<[i32; 3], &Arc<crate::two_layer_store::TwoLayerChunk>> =
+        let chunks_by_coord: std::collections::HashMap<[i32; 3], &Arc<evaluation::two_layer_store::TwoLayerChunk>> =
             chunks.iter().map(|(coord, chunk)| (*coord, chunk)).collect();
         let evict_set: std::collections::HashSet<[i32; 3]> = plan.evict.iter().copied().collect();
         self.source_two_layer_chunks
@@ -3056,7 +3056,7 @@ mod tests {
                 NodeContent::SketchTool { producer: extrude, material: MaterialChoice::Stone },
             )]);
             let chunks =
-                crate::two_layer_store::TwoLayerStore::enabled().build_covering_chunks(
+                evaluation::two_layer_store::TwoLayerStore::enabled().build_covering_chunks(
                     &scene, density, 0,
                 );
             let dims = scene.placed_region_dimensions(density);
@@ -4146,7 +4146,7 @@ mod tests {
 
     use voxel_core::core_geom::MaterialChoice as MC;
     use document::scene::{DefId, Node, NodeContent, NodeTransform, Scene};
-    use crate::two_layer_store::TwoLayerStore;
+    use evaluation::two_layer_store::TwoLayerStore;
     use voxel_core::voxel::{ShapeKind as TwoLayerShape};
     use document::voxel::{SdfShape as TwoLayerSdf};
 
@@ -4396,7 +4396,7 @@ mod tests {
     /// incremental-edit mesh parity test below so it can mesh a chunk set assembled through the
     /// resident cache (post-edit) rather than a fresh `build_covering_chunks`.
     fn two_layer_chunk_set_renderable_faces(
-        chunks: &[([i32; 3], Arc<crate::two_layer_store::TwoLayerChunk>)],
+        chunks: &[([i32; 3], Arc<evaluation::two_layer_store::TwoLayerChunk>)],
         density: u32,
         world_offset: [f32; 3],
         recentre: RecentreVoxels,
@@ -4435,7 +4435,7 @@ mod tests {
     /// leaves no stale geometry and misses no fresh surface through the mesher.
     #[test]
     fn incremental_two_layer_edit_meshes_identically_to_full_rebuild() {
-        use crate::two_layer_store::TwoLayerResidentCache;
+        use evaluation::two_layer_store::TwoLayerResidentCache;
         let density = 16u32;
 
         // A base scene with a wide sphere (many chunks) plus an interior subject box, so an
@@ -4582,7 +4582,7 @@ mod tests {
     ///    proves per-edit mesh cost scales with the dirty set, not the scene size.
     #[test]
     fn incremental_two_layer_gpu_buffer_rebuild_equals_wholesale() {
-        use crate::two_layer_store::TwoLayerResidentCache;
+        use evaluation::two_layer_store::TwoLayerResidentCache;
         let density = 16u32;
 
         // Two ANCHOR boxes at fixed extremes PLUS an interior subject box. The anchors are

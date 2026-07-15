@@ -31,7 +31,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 use document::scene::Scene;
-use crate::two_layer_store::{stream_vox_occupancy, TwoLayerStore};
+use evaluation::two_layer_store::{stream_vox_occupancy, TwoLayerStore};
 use crate::vox_export::{BlockPaletteColors, VoxExportBuilder};
 use crate::workers::{build_catching, Worker};
 

@@ -49,8 +49,8 @@ use std::sync::Arc;
 use rayon::prelude::*;
 
 use voxel_core::core_geom::{BlockId, CellKey, CHUNK_BLOCKS};
-use crate::cuboid::VoxelBoxMaterial;
-use crate::two_layer_store::{SeamSolidity, TwoLayerChunk};
+use evaluation::cuboid::VoxelBoxMaterial;
+use evaluation::two_layer_store::{SeamSolidity, TwoLayerChunk};
 
 // The brick-record key codec IS substrate's `lattice_key`: an absolute world-block
 // coordinate packed into one sortable `u64` in z-major lexicographic (z, y, x) order,
@@ -1376,7 +1376,7 @@ impl ChunkOcclusionContext<'_> {
 /// disagree — the **uniform vs MIXED** classification, made at emission (the one place that
 /// decides whether a block owns a cell-key tile). An empty block (no cuboids) is trivially
 /// uniform at the fallback key `0`.
-fn uniform_cell_key(geometry: &crate::two_layer_store::MicroblockGeometry) -> Option<u16> {
+fn uniform_cell_key(geometry: &evaluation::two_layer_store::MicroblockGeometry) -> Option<u16> {
     let mut cuboids = geometry.cuboids.iter();
     let first = match cuboids.next() {
         Some(cuboid) => cuboid.material_id(),
@@ -1398,7 +1398,7 @@ fn uniform_cell_key(geometry: &crate::two_layer_store::MicroblockGeometry) -> Op
 /// occupancy gates every read. `mixed` is the [`uniform_cell_key`] verdict: a uniform block
 /// gets no tile (its one key rides on the record).
 fn rasterize_brick_tiles(
-    geometry: &crate::two_layer_store::MicroblockGeometry,
+    geometry: &evaluation::two_layer_store::MicroblockGeometry,
     brick_edge_voxels: u32,
     mixed: bool,
 ) -> (BrickOccupancyTile, Option<BrickCellKeyTile>) {
@@ -1834,7 +1834,7 @@ impl IncrementalBrickField {
     /// * `fresh_chunks` — the FULL current covering set (dirty chunks freshly resolved,
     ///   clean chunks reused verbatim). Only the dirty chunks + their ring are read.
     /// * `dirty_chunks` — the chunk coords the edit invalidated
-    ///   ([`TwoLayerResidentCache::invalidate_aabb`](crate::two_layer_store::TwoLayerResidentCache::invalidate_aabb)
+    ///   ([`TwoLayerResidentCache::invalidate_aabb`](evaluation::two_layer_store::TwoLayerResidentCache::invalidate_aabb)
     ///   evicted). Every OCCUPANCY change lives in one of these; a block's record content
     ///   (key, material, seam flags, occupancy) is intrinsic to its own chunk.
     ///
@@ -2260,7 +2260,7 @@ mod tests {
     use super::*;
     use voxel_core::core_geom::MaterialChoice;
     use document::scene::Scene;
-    use crate::two_layer_store::TwoLayerStore;
+    use evaluation::two_layer_store::TwoLayerStore;
     use voxel_core::voxel::{ShapeKind, Voxel};
     use document::voxel::{GeometryParams};
 
@@ -2761,9 +2761,9 @@ mod tests {
 mod incremental_tests {
     use super::*;
     use voxel_core::core_geom::MaterialChoice;
-    use crate::cuboid::VoxelBox;
+    use evaluation::cuboid::VoxelBox;
     use document::scene::{Node, NodeContent, NodeTransform, Scene};
-    use crate::two_layer_store::{
+    use evaluation::two_layer_store::{
         MicroblockGeometry, TwoLayerChunk, TwoLayerResidentCache, TwoLayerStore,
     };
     use voxel_core::voxel::{ShapeKind};

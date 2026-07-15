@@ -39,7 +39,7 @@ use std::sync::Arc;
 use voxel_core::voxel::RecentreVoxels;
 use crate::cuboid_mesh::CuboidMeshRenderer;
 use crate::renderer::LayerBand;
-use crate::two_layer_store::TwoLayerChunk;
+use evaluation::two_layer_store::TwoLayerChunk;
 use crate::workers::{build_catching, Worker};
 
 /// A request to build a wholesale cuboid mesh on the worker (issue #60). Carries the

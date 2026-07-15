@@ -5,8 +5,20 @@ if only to make the connections between components easier to understand," follow
 grill-with-docs session that resolved every contested seam. Decision record: `docs/adr/0016`.
 The boundary law per crate is the architecture chapter it implements (`docs/architecture/`).
 
-**Status (2026-07-14): Phase 0 COMPLETE; crate cuts (phases 1–7) not started.** Grilled; ADR
-written. Execution is bottom-up in gated slices (below).
+**Status (2026-07-15): Phase 0 COMPLETE; Phases 1–3 LANDED (voxel_core, document, evaluation);
+Phases 4–7 not started.** Grilled; ADR written. Execution is bottom-up in gated slices (below).
+
+**Phases 1–3 landed** (all gated + pushed): `199ad8d` cut **voxel_core** (the foundational value
+vocabulary); `90a69f2` cut **document** (the authored-TRUTH layer); this Phase 3 commit cut
+**evaluation** (the one evaluator). Phase 3 also carved the two evaluation mega-files into folders:
+`store.rs` (2299) → `store/` (`mod`/`key`/`cache`/`rebuild_plan`/`tests`) and `two_layer_store.rs`
+(3366) → `two_layer_store/` (`mod`/`chunk`/`classify`/`builder`/`resident_cache`/`stream`/`tests`).
+The one upward test edge — a brick-pipeline perf probe that packs GPU records from two-layer
+chunks — was relocated up into the app crate's `brick_raymarch.rs` (it names DISPLAY types the
+evaluator's law forbids), reaching the classifier via the public `evaluation::two_layer_store`
+path. The dense `Store::resolve_region` / `resolve_region_two_layer` oracles gate behind
+`evaluation/oracle`; the `expand_resident_chunks_into_grid` cross-crate test oracle behind
+`evaluation/test-support` (the app's dev-dependency turns both on).
 
 **Phase 0 landed 2026-07-14** (`b7d3c13`→`521c216`, all gated + pushed): the four untangle
 relocations are done and the module graph is now a clean DAG.
@@ -79,9 +91,10 @@ Each slice: create the workspace crate, `git mv` its modules, add the `lib.rs` l
 
 ## Mega-file split targets (as their crate lands)
 
-`cuboid_mesh` 4955, `brick_field` 3901, `renderer` 3461, `two_layer_store` 3365, `app_core` 2400,
-`store` 2233, `panel` 2059, `sketch` 1783 — each breaks into a folder of cohesive submodules under
-its crate. Owner rule (2026-07-14): no mega-files; folders for organization.
+`cuboid_mesh` 4955, `brick_field` 3901, `renderer` 3461, `app_core` 2400, `panel` 2059,
+`sketch` 1783 — each breaks into a folder of cohesive submodules under its crate. Owner rule
+(2026-07-14): no mega-files; folders for organization. **Done as their crate landed:**
+`two_layer_store` (3366) and `store` (2299) carved into folders when evaluation was cut (Phase 3).
 
 ## Deliberately NOT crates (restraint, per ADR 0016 + 0014)
 

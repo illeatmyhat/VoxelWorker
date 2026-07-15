@@ -609,7 +609,7 @@ fn brick_render_cases() -> Vec<BrickRenderCase> {
 fn exact_occupancy_set(
     two_layer_chunks: &[(
         [i32; 3],
-        std::sync::Arc<voxel_worker::two_layer_store::TwoLayerChunk>,
+        std::sync::Arc<evaluation::two_layer_store::TwoLayerChunk>,
     )],
     voxels_per_block: u32,
 ) -> std::collections::HashSet<[i64; 3]> {
@@ -2188,7 +2188,7 @@ fn brick_mixed_material_matches_cpu_reference() {
     use std::collections::BTreeMap;
     use std::sync::Arc;
     use voxel_core::core_geom::{CellKey, CHUNK_BLOCKS};
-    use voxel_worker::cuboid::VoxelBox;
+    use evaluation::cuboid::VoxelBox;
     use voxel_worker::{
         build_brick_field, cpu_brick_hit_material, cpu_march_brick_field, pack_gpu_records, AppCore,
         BrickRaymarchRenderer, ClipmapPyramid, LayerBand, MicroblockGeometry, OrbitCamera,

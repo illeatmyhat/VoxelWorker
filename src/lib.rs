@@ -27,24 +27,15 @@ pub mod brick_field;
 // ADR 0011 G1: the minimal brick raymarch display sink (block DDA + record binary
 // search + sculpted voxel DDA, residency-miss contract, per-sample MSAA depth).
 pub mod brick_raymarch;
-pub mod chunk_cache;
 // The display subsystem: the pure per-edit routing policy for the two display pipelines
 // (cuboid mesh + brick raymarch). The DisplayOrchestrator state machine joins it later.
 pub mod display;
-pub mod chunk_storage;
-pub mod cuboid;
 pub mod cuboid_mesh;
-pub mod disk_chunk_store;
 pub mod gpu;
 pub mod panel;
 pub mod renderer;
 pub mod settings;
-// ADR 0003 data layer: residency + per-chunk resolve + bound-region reads. See store.rs.
-pub mod store;
 pub mod texture_atlas;
-// ADR 0010 E2: the OFF-by-default boundary-aware two-layer chunk store + block
-// classifier (coarse + microblock + seam flags), proven bit-exact vs the dense store.
-pub mod two_layer_store;
 pub mod vox_export;
 // The background workers, grouped: the generic drain-to-latest/supersede/panic-catch
 // Worker in `workers::mod`, with the geometry / diameter / brick / scan domain workers
@@ -62,7 +53,7 @@ mod cell_interval_parity_tests;
 pub use app_core::{
     default_replay_seed_scene, replay_intent_script, AppCore, RebuildOutcome, RebuildOutput,
 };
-pub use store::{ChunkCacheKey, ChunkResolveCache, Store};
+pub use evaluation::store::{ChunkCacheKey, ChunkResolveCache, Store};
 pub use brick_field::{
     build_brick_field, build_brick_field_all_blocks, build_brick_field_with_tiles,
     pack_clipmap_level_keys, pack_world_block_key,
@@ -90,8 +81,8 @@ pub use display::routing::{
     route_mesh_build, BrickDisplayHandover, BrickRebuildAction, EditShape, GenerationTracker,
     MeshBuildRoute, RebuildRoute, ASYNC_REBUILD_CHUNK_THRESHOLD,
 };
-pub use chunk_storage::{compress, decompress, CompressedChunk, Occupancy, SparseCell};
-pub use disk_chunk_store::{DiskChunkStore, DiskChunkStoreStats};
+pub use evaluation::chunk_storage::{compress, decompress, CompressedChunk, Occupancy, SparseCell};
+pub use evaluation::disk_chunk_store::{DiskChunkStore, DiskChunkStoreStats};
 pub use cuboid_mesh::{build_cuboid_mesh, CuboidMesh, CuboidMeshRenderer};
 pub use workers::geometry::{
     build_geometry, spawn_geometry_worker, GeometryRebuildRequest, GeometryRebuildResult,
@@ -131,14 +122,14 @@ pub use document::scene::{
     Part, Point, RegionBlocks, Scene,
 };
 pub use settings::AppConfig;
-pub use two_layer_store::{
+pub use evaluation::two_layer_store::{
     stream_vox_occupancy, streamed_widest_run_in_band, BlockClassification, MicroblockGeometry,
     SeamSolidity, TwoLayerChunk, TwoLayerResidentCache, TwoLayerStore,
 };
 // The dense whole-region resolve oracle is compile-gated out of production builds
 // (see the proof chapter's "Oracles" section, `docs/architecture/05-proof.md`).
 #[cfg(any(test, feature = "oracle"))]
-pub use two_layer_store::resolve_region_two_layer;
+pub use evaluation::two_layer_store::resolve_region_two_layer;
 pub use document::sketch::{Operation, PlaneAxis, RevolveAxis, Sketch, SketchPoint, SketchSolid};
 pub use voxel_core::spatial_index::{LeafEntry, LeafFingerprint, LeafSpatialIndex, VoxelAabb};
 pub use vox_export::{VoxExport, VoxExportBuilder};

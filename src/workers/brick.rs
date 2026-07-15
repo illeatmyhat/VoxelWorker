@@ -45,7 +45,7 @@ use crate::brick_field::{
 };
 use voxel_core::voxel::RecentreVoxels;
 use crate::brick_raymarch::{pack_gpu_records, BrickGpuRecord};
-use crate::two_layer_store::TwoLayerChunk;
+use evaluation::two_layer_store::TwoLayerChunk;
 use crate::workers::{build_catching, Worker};
 
 /// A request to rebuild the brick pipeline WHOLESALE on the worker. Carries the
@@ -197,7 +197,7 @@ mod tests {
     use super::*;
     use voxel_core::core_geom::MaterialChoice;
     use document::scene::Scene;
-    use crate::two_layer_store::TwoLayerStore;
+    use evaluation::two_layer_store::TwoLayerStore;
     use voxel_core::voxel::{ShapeKind};
     use document::voxel::{GeometryParams};
 

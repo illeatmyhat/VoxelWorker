@@ -944,6 +944,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "evaluation"
+version = "0.1.0"
+dependencies = [
+ "document",
+ "rayon",
+ "serde",
+ "serde_json",
+ "substrate",
+ "voxel_core",
+]
+
+[[package]]
 name = "exr"
 version = "1.74.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3467,6 +3479,7 @@ dependencies = [
  "egui",
  "egui-wgpu",
  "egui-winit",
+ "evaluation",
  "glam",
  "image",
  "pollster",

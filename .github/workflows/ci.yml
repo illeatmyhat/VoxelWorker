@@ -85,6 +85,18 @@ jobs:
       - name: Test document
         run: cargo test -p document
 
+      # The evaluation library is the ONE EVALUATOR member (one layer above document): the
+      # residency + per-chunk resolve store, the boundary-aware two-layer chunk + block
+      # classifier, the sparse chunk codec, the out-of-core spill store, and the boundary
+      # cuboid decomposition. It consumes the document and produces the classified boundary
+      # set, imports no display/work/shell, and carries its own gates so a regression in the
+      # evaluator fails independently of the app crate.
+      - name: Clippy evaluation (deny warnings)
+        run: cargo clippy -p evaluation --all-targets -- -D warnings
+
+      - name: Test evaluation
+        run: cargo test -p evaluation
+
       # The camera library is the wgpu-free viewing + projective-geometry member
       # (orbit rig, projection, ViewCube, screen→ray unprojection, frustum culling);
       # it depends only on glam + substrate and carries its own gates so a regression

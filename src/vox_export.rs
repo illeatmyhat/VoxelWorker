@@ -151,7 +151,7 @@ impl VoxExport {
     /// of OWNED per-chunk voxel `Vec`s — each chunk buffer is bucketed then DROPPED, so
     /// no whole-region dense grid is ever assembled. This is the seam the export button
     /// drives over the cacheless two-layer evaluator
-    /// ([`crate::two_layer_store::stream_vox_occupancy`]): a coarse-solid block is a
+    /// ([`evaluation::two_layer_store::stream_vox_occupancy`]): a coarse-solid block is a
     /// fast `d³` fill, a boundary block is per-voxel — and the **6M whole-region cap
     /// dissolves on the export path** because the only transient is one chunk's voxels.
     ///
@@ -342,7 +342,7 @@ impl VoxExport {
 /// voxels into the `.vox` 256-tile model set ONE chunk (or one voxel) at a time, so the
 /// export never holds more than a single streamed chunk's voxels plus the per-model
 /// output buffers — the inherent `.vox` output cost. This is the seam the live export
-/// button drives over [`crate::two_layer_store::stream_vox_occupancy`]: each covering
+/// button drives over [`evaluation::two_layer_store::stream_vox_occupancy`]: each covering
 /// chunk's freshly-expanded `Vec<Voxel>` is ingested then DROPPED, so peak transient
 /// memory is O(one chunk + the output buffers), never O(all occupied voxels). It
 /// dissolves the `Vec<Vec<Voxel>>` accumulate-then-convert intermediate the button used
@@ -366,7 +366,7 @@ impl VoxExport {
 pub struct VoxExportBuilder {
     /// The region's voxel dimensions (the tiling/decode frame) — the exact value
     /// [`document::scene::Scene::placed_region_dimensions`] and
-    /// [`crate::two_layer_store::stream_vox_occupancy`] produce.
+    /// [`evaluation::two_layer_store::stream_vox_occupancy`] produce.
     region_dimensions: [u32; 3],
     /// Corner-anchoring half-extents (FLOORED `dim/2`) reused per voxel: the decode
     /// `round(world + floor(dim/2) − 0.5)` recovers the exact index for an odd dim too.
@@ -434,7 +434,7 @@ impl VoxExportBuilder {
 
     /// Bucket every voxel in one STREAMED chunk into its model, so the caller can DROP
     /// the chunk buffer afterward (ADR 0010 E4): only one chunk's voxels are ever
-    /// resident. This is the sink [`crate::two_layer_store::stream_vox_occupancy`] drives.
+    /// resident. This is the sink [`evaluation::two_layer_store::stream_vox_occupancy`] drives.
     pub fn ingest_chunk(&mut self, chunk_voxels: &[voxel_core::voxel::Voxel]) {
         for voxel in chunk_voxels {
             self.ingest_voxel(*voxel);
@@ -711,7 +711,7 @@ mod tests {
 
     // ===== Issue #20 S6d: region-scoped `.vox` export ============================
 
-    use crate::chunk_cache::ChunkResolveCache;
+    use evaluation::chunk_cache::ChunkResolveCache;
     use document::scene::{Node, NodeContent, Scene};
     use document::voxel::GeometryParams;
 
@@ -980,7 +980,7 @@ mod tests {
     // ===== ADR 0010 E4: cacheless STREAMING `.vox` export ========================
 
     use voxel_core::core_geom::MaterialChoice as Mat;
-    use crate::two_layer_store::{stream_vox_occupancy, TwoLayerStore};
+    use evaluation::two_layer_store::{stream_vox_occupancy, TwoLayerStore};
 
     /// Build the `.vox` export by STREAMING the cacheless two-layer evaluator (coarse
     /// `d³` fast-fill + boundary per-voxel) — the E4 path the export button drives.

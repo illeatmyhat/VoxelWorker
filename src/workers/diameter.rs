@@ -11,7 +11,7 @@
 //!
 //! ## What crosses the channel
 //! A request carries an OWNED [`Scene`] clone (`Send`) plus the density + band scalars.
-//! The worker builds its own [`TwoLayerStore::enabled()`](crate::two_layer_store::TwoLayerStore)
+//! The worker builds its own [`TwoLayerStore::enabled()`](evaluation::two_layer_store::TwoLayerStore)
 //! (cheap, stateless) and streams the widest run — the SAME call the synchronous path made,
 //! so the value is identical.
 //!
@@ -24,7 +24,7 @@
 //! every other display worker.
 
 use document::scene::Scene;
-use crate::two_layer_store::{streamed_widest_run_in_band, TwoLayerStore};
+use evaluation::two_layer_store::{streamed_widest_run_in_band, TwoLayerStore};
 use crate::workers::Worker;
 
 /// A request to measure the widest occupied run in a layer band (the diameter readout).

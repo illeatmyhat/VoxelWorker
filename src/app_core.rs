@@ -26,7 +26,7 @@ use crate::panel::LayerRange;
 use crate::renderer::OnionFogParams;
 use document::scene::{NodeContent, NodeId, NodeTransform, Part, Scene};
 use voxel_core::spatial_index::LeafSpatialIndex;
-use crate::two_layer_store::{TwoLayerChunk, TwoLayerResidentCache};
+use evaluation::two_layer_store::{TwoLayerChunk, TwoLayerResidentCache};
 use voxel_core::voxel::{chunk_extent_exceeds_bound, RecentreVoxels};
 use document::voxel::{SdfShape};
 
@@ -114,7 +114,7 @@ pub struct RebuildOutput {
     /// [`CuboidMeshRenderer::new_from_two_layer_chunks`]. This is the same split the resident
     /// cache itself uses (`invalidate_aabb` vs `clear`), surfaced to the GPU-buffer layer.
     ///
-    /// [`TwoLayerResidentCache::invalidate_aabb`]: crate::two_layer_store::TwoLayerResidentCache::invalidate_aabb
+    /// [`TwoLayerResidentCache::invalidate_aabb`]: evaluation::two_layer_store::TwoLayerResidentCache::invalidate_aabb
     /// [`CuboidMeshRenderer::incremental_rebuild_from_two_layer_chunks`]: crate::cuboid_mesh::CuboidMeshRenderer::incremental_rebuild_from_two_layer_chunks
     /// [`CuboidMeshRenderer::new_from_two_layer_chunks`]: crate::cuboid_mesh::CuboidMeshRenderer::new_from_two_layer_chunks
     pub incremental_dirty_chunks: Option<Vec<[i32; 3]>>,
@@ -2133,7 +2133,7 @@ mod undo_tests {
                 // two-layer chunks it DID return (the cache's output, so this still exercises
                 // the S3 invalidation path) through the test-oracle expander, then count the
                 // flagged voxels — the property under test is unchanged.
-                let grid = crate::two_layer_store::expand_resident_chunks_into_grid(
+                let grid = evaluation::two_layer_store::expand_resident_chunks_into_grid(
                     &output.two_layer_chunks,
                     output.region_dimensions,
                     output.recentre_voxels,
@@ -2274,7 +2274,7 @@ mod undo_tests {
         // ADR 0011 G5: `rebuild` returns no dense grid. Expand its OWN resident two-layer
         // chunks (the exact windowed-app path) through the test-oracle expander — bit-identical
         // to the retired rebuild grid, so the pinned render-frame coordinates are unchanged.
-        let grid = crate::two_layer_store::expand_resident_chunks_into_grid(
+        let grid = evaluation::two_layer_store::expand_resident_chunks_into_grid(
             &output.two_layer_chunks,
             output.region_dimensions,
             output.recentre_voxels,
