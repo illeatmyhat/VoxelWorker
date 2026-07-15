@@ -48,7 +48,7 @@ use crate::core_geom::MaterialChoice;
 // vocabulary, so it lives in substrate (see the material-atlas handling in
 // docs/architecture). This module is the domain adapter: it owns the material
 // ordering, the gutter choice, and the `MaterialAtlas`/`AtlasSubRect` names.
-use substrate::shelf_bin_pack::{ShelfBinPack, TileImage, TileSize};
+use substrate::occupancy::shelf_bin_pack::{ShelfBinPack, TileImage, TileSize};
 
 /// Texels of replicated-edge gutter padded around every tile in the atlas. One
 /// texel is enough to absorb a single-texel filter/derivative spill at a cell
@@ -202,7 +202,7 @@ impl MaterialAtlas {
 
 // The pure packer-geometry tests (one-placement-per-tile, unit-square/disjoint
 // rects, gutter edge replication) moved with the geometry to
-// `substrate::shelf_bin_pack`. The tests that stay here exercise the DOMAIN adapter:
+// `substrate::occupancy::shelf_bin_pack`. The tests that stay here exercise the DOMAIN adapter:
 // the material ordering and the empty-list placeholder.
 #[cfg(test)]
 mod tests {

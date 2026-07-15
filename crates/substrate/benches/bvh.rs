@@ -10,7 +10,7 @@
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use std::hint::black_box;
-use substrate::{LatticeAabb, Bvh};
+use substrate::spatial::{LatticeAabb, Bvh};
 
 /// A deterministic LCG (Numerical Recipes constants) — the same generator the
 /// substrate tests use, so bench populations are reproducible with no `rand` dep.

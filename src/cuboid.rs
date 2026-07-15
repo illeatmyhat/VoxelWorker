@@ -1,8 +1,8 @@
 //! Domain seam for the cuboid mesher's box decomposition.
 //!
 //! The greedy 3D box-growing algorithm itself is domain-free and lives in
-//! [`substrate::greedy_cuboid_decomposition`] as [`GreedyCuboidDecomposition`] over a
-//! generic labeled [`substrate::CellGrid`]. This module is the thin adapter that reads
+//! [`substrate::solids::greedy_cuboid_decomposition`] as [`GreedyCuboidDecomposition`] over a
+//! generic labeled [`substrate::solids::CellGrid`]. This module is the thin adapter that reads
 //! that algorithm in the project's own vocabulary: a [`VoxelRegion`] is a dense grid of
 //! per-voxel render-cell keys (`u16`), a [`VoxelBox`] is one single-material cuboid, and
 //! [`decompose_into_boxes`] runs the substrate decomposition over them.
@@ -33,7 +33,7 @@ pub type VoxelBox = Cuboid<u16>;
 /// from a chunk's resolved voxels.
 pub type VoxelRegion = CellGrid<u16>;
 
-pub use substrate::{CellGrid, Cuboid, GreedyCuboidDecomposition};
+pub use substrate::solids::{CellGrid, Cuboid, GreedyCuboidDecomposition};
 
 /// Reads a [`VoxelBox`]'s label back in the domain's word. Substrate names the generic
 /// payload `label` (it assigns cuboid labels no meaning); at this seam a `VoxelBox`'s label

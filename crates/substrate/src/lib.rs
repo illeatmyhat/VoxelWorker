@@ -39,58 +39,42 @@
 //!
 //! ## Components
 //!
-//! Each is a self-contained module with its own literature citations and oracles:
-//! [`LatticeAabb`] and its closed f32 twin [`RealAabb`], [`Bvh`], and the [`lattice_key`]
-//! packing codec (spatial); [`FieldInterval`],
-//! [`DisjointIntervalSet`], and [`Rational`] (interval + rational arithmetic);
-//! [`GreedyCuboidDecomposition`] over a [`CellGrid`] into [`Cuboid`]s (box decomposition);
-//! the [`supersede`] protocol — [`CoalescingWorker`], [`GenerationTracker`], and their
-//! [`drain_to_latest`] / [`catch_unwind_or_log`] helpers (concurrency); [`BitCube`], its
-//! payload sibling [`ValueCube`],
-//! [`SlotFreeList`], [`CubeTilePacking`], and the [`ShelfBinPack`] rectangle packer (bit/atlas
-//! kit); the [`SparseMinMipPyramid`] occupancy fold; the [`SortedKeyBitmaskMap`] sorted
-//! parallel-array map; the [`CellClassification`] black/white/grey CSG cell classifier; the
-//! [`CulledBoxMeshing`] exposed-face determination; the [`Ray`] primitive with its slab-method
-//! ray–box test; and the [`srgb`] transfer-function codec. See the extraction map referenced
-//! above for each component's provenance and the domain adapter that wraps it.
+//! Each is a self-contained module with its own literature citations and oracles,
+//! grouped into category modules:
+//!
+//! - [`spatial`] — [`LatticeAabb`](spatial::LatticeAabb) and its closed f32 twin
+//!   [`RealAabb`](spatial::RealAabb), the [`Bvh`](spatial::Bvh), the
+//!   [`lattice_key`](spatial::lattice_key) packing codec, the [`Ray`](spatial::Ray) primitive
+//!   with its slab-method box test, and the [`SparseMinMipPyramid`](spatial::SparseMinMipPyramid)
+//!   occupancy fold.
+//! - [`interval`] — [`FieldInterval`](interval::FieldInterval),
+//!   [`DisjointIntervalSet`](interval::DisjointIntervalSet), and [`Rational`](interval::Rational).
+//! - [`occupancy`] — the bit/atlas kit: [`BitCube`](occupancy::BitCube) and its payload sibling
+//!   [`ValueCube`](occupancy::ValueCube), [`SlotFreeList`](occupancy::SlotFreeList),
+//!   [`CubeTilePacking`](occupancy::CubeTilePacking), the
+//!   [`ShelfBinPack`](occupancy::ShelfBinPack) rectangle packer, and the
+//!   [`SortedKeyBitmaskMap`](occupancy::SortedKeyBitmaskMap).
+//! - [`solids`] — the [`CellClassification`](solids::CellClassification) black/white/grey CSG cell
+//!   classifier, the [`GreedyCuboidDecomposition`](solids::GreedyCuboidDecomposition) into
+//!   [`Cuboid`](solids::Cuboid)s, and the [`CulledBoxMeshing`](solids::CulledBoxMeshing)
+//!   exposed-face determination.
+//! - crate root — the [`supersede`] protocol ([`CoalescingWorker`], [`GenerationTracker`], and
+//!   their [`drain_to_latest`] / [`catch_unwind_or_log`] helpers) and the [`srgb`]
+//!   transfer-function codec, which belong to no family.
+//!
+//! See the extraction map referenced above for each component's provenance and the domain
+//! adapter that wraps it.
 
-pub mod aabb;
-pub mod bit_cube;
-pub mod bitmask_map;
-pub mod bvh;
-pub mod cell_classification;
-pub mod cube_packing;
-pub mod culled_box_meshing;
-pub mod disjoint_interval_set;
-pub mod field_interval;
-pub mod free_list;
-pub mod greedy_cuboid_decomposition;
-pub mod lattice_key;
-pub mod min_mip_pyramid;
-pub mod ray;
-pub mod rational;
-pub mod shelf_bin_pack;
+// Components are grouped into category modules so the taxonomy is visible at the
+// call site (`substrate::spatial::LatticeAabb`, `substrate::occupancy::BitCube`);
+// each category module re-exports its own types. `supersede` and `srgb` belong to
+// no family and stay at the crate root.
+pub mod interval;
+pub mod occupancy;
+pub mod solids;
+pub mod spatial;
 pub mod srgb;
 pub mod supersede;
-pub mod value_cube;
 
-pub use aabb::{LatticeAabb, RealAabb};
-pub use bit_cube::BitCube;
-pub use bitmask_map::{mask_bit_is_set, set_mask_bit, SortedKeyBitmaskMap};
-pub use bvh::Bvh;
-pub use cell_classification::{CellClassification, CellCombineOp, CellContribution};
-pub use cube_packing::CubeTilePacking;
-pub use culled_box_meshing::CulledBoxMeshing;
-pub use disjoint_interval_set::DisjointIntervalSet;
-pub use field_interval::{union_field_intervals, FieldClassification, FieldInterval};
-pub use free_list::SlotFreeList;
-pub use greedy_cuboid_decomposition::{CellGrid, Cuboid, GreedyCuboidDecomposition};
-pub use min_mip_pyramid::{MinMipLevel, SparseMinMipPyramid};
-pub use ray::{Ray, RayBoxIntersection, SLAB_ZERO_DIRECTION_GUARD};
-pub use rational::Rational;
-pub use shelf_bin_pack::{
-    NormalizedTileRect, PackedTilePlacement, ShelfBinPack, TileImage, TileSize,
-};
 pub use srgb::{srgb_component_to_linear, srgb_hex_to_linear};
 pub use supersede::{catch_unwind_or_log, drain_to_latest, CoalescingWorker, GenerationTracker};
-pub use value_cube::ValueCube;

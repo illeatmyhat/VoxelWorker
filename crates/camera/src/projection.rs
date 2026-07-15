@@ -18,7 +18,7 @@
 //! convention (z ∈ [0, 1], y up in NDC).
 
 use glam::{Mat4, Vec3, Vec4};
-use substrate::Ray;
+use substrate::spatial::Ray;
 
 use crate::orbit::{OrbitCamera, ProjectionMode, ORTHO_HALF_HEIGHT_FACTOR, PERSPECTIVE_FOV_Y};
 

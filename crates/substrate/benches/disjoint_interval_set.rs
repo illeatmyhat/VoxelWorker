@@ -10,7 +10,7 @@
 
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 use std::hint::black_box;
-use substrate::DisjointIntervalSet;
+use substrate::interval::DisjointIntervalSet;
 
 /// Number of intervals inserted per iteration — the sweep's per-band scale.
 const INTERVAL_COUNT: i64 = 10_000;

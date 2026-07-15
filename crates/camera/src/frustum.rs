@@ -21,7 +21,7 @@
 //! negative (no on-screen geometry is ever wrongly culled).
 
 use glam::{Mat4, Vec3, Vec4};
-pub use substrate::RealAabb;
+pub use substrate::spatial::RealAabb;
 
 /// The six planes of a view frustum, each stored as `(a, b, c, d)` where
 /// `a*x + b*y + c*z + d >= 0` for points on the inside (the normal points

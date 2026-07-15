@@ -37,9 +37,9 @@ use wgpu::util::DeviceExt;
 
 use crate::core_geom::{MaterialChoice, CHUNK_BLOCKS};
 use crate::cuboid::{decompose_into_boxes, VoxelBox, VoxelBoxMaterial, VoxelRegion};
-use substrate::CulledBoxMeshing;
+use substrate::solids::CulledBoxMeshing;
 use camera::frustum::Frustum;
-use substrate::RealAabb as Aabb;
+use substrate::spatial::RealAabb as Aabb;
 use crate::renderer::{LayerBand, DEPTH_FORMAT, MSAA_SAMPLE_COUNT};
 use crate::texture_atlas::MaterialAtlas;
 use crate::two_layer_store::{MicroblockGeometry, SeamSolidity, TwoLayerChunk};

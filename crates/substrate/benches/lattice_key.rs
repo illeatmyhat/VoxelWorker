@@ -10,7 +10,7 @@
 
 use criterion::{criterion_group, criterion_main, Criterion, Throughput};
 use std::hint::black_box;
-use substrate::lattice_key::{pack_lattice_key, split_key_hi_lo, unpack_lattice_key};
+use substrate::spatial::lattice_key::{pack_lattice_key, split_key_hi_lo, unpack_lattice_key};
 
 /// Records touched per edit at scale — the multiplier this per-record cost meets.
 const RECORD_COUNT: usize = 100_000;

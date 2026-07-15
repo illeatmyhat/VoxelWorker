@@ -47,7 +47,7 @@
 
 use glam::Vec3;
 
-use crate::aabb::RealAabb;
+use crate::spatial::aabb::RealAabb;
 
 /// The magnitude any near-zero ray-direction component is nudged to before the
 /// slab test takes its reciprocal, so a component of exactly `0` becomes a large

@@ -27,7 +27,7 @@
 
 use std::fmt;
 
-/// The units layer's exact rational — substrate's [`substrate::Rational`], the
+/// The units layer's exact rational — substrate's [`substrate::interval::Rational`], the
 /// sign-normalized, gcd-reduced `i128` ratio.
 ///
 /// The units layer must not touch `f64`: parsing `"3.5"` as `7/2` and never an `f64`
@@ -36,7 +36,7 @@ use std::fmt;
 /// CS primitive and lives in substrate; the domain keeps the name `ExactRational` at
 /// this seam because it is the public measurement vocabulary used across the scene and
 /// intent layers. See `docs/architecture/01-document.md` (the units/measurement core).
-pub use substrate::Rational as ExactRational;
+pub use substrate::interval::Rational as ExactRational;
 
 /// A parametric blocks + voxels measurement (ADR 0003 §3f(0)).
 ///

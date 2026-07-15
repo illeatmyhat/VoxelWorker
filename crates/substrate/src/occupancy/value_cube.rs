@@ -1,15 +1,15 @@
 //! A cubic 3D grid of `Copy` payload values, one X-row at a time — the payload sibling of
-//! [`BitCube`](crate::bit_cube::BitCube).
+//! [`BitCube`](crate::occupancy::bit_cube::BitCube).
 //!
 //! `ValueCube<T>` is a fixed-size cube of `edge³` values with `edge <= 64`, stored X-row-major
-//! in EXACTLY the [`BitCube`](crate::bit_cube::BitCube) row layout: row index `z * edge + y`,
+//! in EXACTLY the [`BitCube`](crate::occupancy::bit_cube::BitCube) row layout: row index `z * edge + y`,
 //! element `x` inside the row, x-fastest. The two structures are therefore cell-for-cell
 //! addressable by the same `(x, y, z)` arithmetic — a bit cube can gate a value cube of the
 //! same edge (the bit says "this cell carries a value"; the value cube says which), and one
 //! rasterizing walk can fill both without a second index derivation. This is the textbook
 //! dense row-major array specialised to a cube whose edge matches the bitset's word bound.
 //!
-//! ## Why this is NOT [`CellGrid`](crate::greedy_cuboid_decomposition::CellGrid)
+//! ## Why this is NOT [`CellGrid`](crate::solids::greedy_cuboid_decomposition::CellGrid)
 //!
 //! `CellGrid<T>` is the *decomposition input*: an arbitrary-extent `[w, h, d]` grid of
 //! `Option<T>` cells, where `None` IS the datum (an empty cell the greedy box decomposition
@@ -37,7 +37,7 @@
 //! with the word-packed `BitCube` of the same edge.
 
 /// A cubic grid of `edge³` values of `T`, X-row-major (row index `z * edge + y`, element `x`)
-/// — the same row layout as [`BitCube`](crate::bit_cube::BitCube) of the same edge.
+/// — the same row layout as [`BitCube`](crate::occupancy::bit_cube::BitCube) of the same edge.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct ValueCube<T: Copy> {
     /// The cube edge in cells (`1..=64`, matching the paired bitset's bound).
@@ -88,7 +88,7 @@ impl<T: Copy> ValueCube<T> {
     }
 
     /// The flat index of `(x, y, z)` — the SAME `(row, element)` split
-    /// [`BitCube`](crate::bit_cube::BitCube) uses (`row = z * edge + y`, element `x`).
+    /// [`BitCube`](crate::occupancy::bit_cube::BitCube) uses (`row = z * edge + y`, element `x`).
     #[inline]
     fn flat_index(&self, x: u32, y: u32, z: u32) -> usize {
         let edge = self.edge as usize;
@@ -107,7 +107,7 @@ impl<T: Copy> ValueCube<T> {
     }
 
     /// Fill the contiguous X-run `min_x..=max_x` of the row at `(row_y, row_z)` with `value` —
-    /// the payload twin of [`BitCube::set_x_run`](crate::bit_cube::BitCube::set_x_run) (which
+    /// the payload twin of [`BitCube::set_x_run`](crate::occupancy::bit_cube::BitCube::set_x_run) (which
     /// ORs the same run's mask), so one walk over a set of runs can fill an occupancy bitset
     /// and a value cube in lockstep.
     pub fn fill_x_run(&mut self, row_y: u32, row_z: u32, min_x: u32, max_x: u32, value: T) {
@@ -127,7 +127,7 @@ impl<T: Copy> ValueCube<T> {
 
     /// Copy one X-row (`row_index = z * edge + y`) into `out_row`, the `edge`-long destination
     /// — the row seam mirroring
-    /// [`BitCube::expand_row_into`](crate::bit_cube::BitCube::expand_row_into): a packer that
+    /// [`BitCube::expand_row_into`](crate::occupancy::bit_cube::BitCube::expand_row_into): a packer that
     /// scatters tiles into a larger destination cube differs only in how it slices `out_row`
     /// out of that cube, never in how a row is read.
     pub fn copy_row_into(&self, row_index: usize, out_row: &mut [T]) {
@@ -145,7 +145,7 @@ impl ValueCube<u16> {
     /// 16-bit-per-texel consumer (a 16-bit image, a `u16` texture upload) reads, one value's low
     /// byte first. The LE choice is not free: it is the byte order every mainstream 16-bit texel
     /// format is defined in, and the same order
-    /// [`CubeTilePacking::pack_u16_value_cubes`](crate::cube_packing::CubeTilePacking::pack_u16_value_cubes)
+    /// [`CubeTilePacking::pack_u16_value_cubes`](crate::occupancy::cube_packing::CubeTilePacking::pack_u16_value_cubes)
     /// scatters a set of these cubes in, so one cube's bytes and a packed cube-of-cubes'
     /// bytes agree value-for-value.
     pub fn to_le_bytes(&self) -> Vec<u8> {
@@ -160,7 +160,7 @@ impl ValueCube<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bit_cube::BitCube;
+    use crate::occupancy::bit_cube::BitCube;
 
     /// Round-trip: `set`/`get` per cell, `fill_x_run` over runs, and `as_slice` /
     /// `from_values` are inverses — checked against a naive dense reference at several edges

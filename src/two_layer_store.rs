@@ -13,7 +13,7 @@
 //! * [`BlockClassification`] / [`classify_chunk_block`] — the conservative classifier:
 //!   compose every leaf's field interval over a block cell by CSG interval arithmetic
 //!   (v1 only has [`crate::scene::CombineOp::Union`]) and take the 3-way verdict through the
-//!   substrate black/white/grey [`substrate::CellClassification`] kernel. An unboundable
+//!   substrate black/white/grey [`substrate::solids::CellClassification`] kernel. An unboundable
 //!   producer (`cell_field_interval == None`) surfaces as "cannot classify" and forces the
 //!   block BOUNDARY. Leaf iteration + local-frame mapping + the per-voxel fallback stay here.
 //! * [`TwoLayerChunk`] — the per-chunk store: a coarse per-block [`BlockId`] grid
@@ -51,7 +51,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use rayon::prelude::*;
-use substrate::{CellClassification, CellContribution, DisjointIntervalSet};
+use substrate::interval::DisjointIntervalSet;
+use substrate::solids::{CellClassification, CellContribution};
 
 use crate::core_geom::{BlockAttrs, BlockId, CHUNK_BLOCKS};
 use crate::cuboid::{decompose_into_boxes, VoxelBox, VoxelBoxMaterial, VoxelRegion};

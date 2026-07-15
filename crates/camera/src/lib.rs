@@ -15,7 +15,7 @@
 //! only by plain numbers and `glam` vectors, **never** by wgpu, winit, egui, or any
 //! domain type (a scene, a producer, a chunk). The dependency edge is one-way:
 //! `substrate ← camera ← the application`. The only non-`glam` dependency is
-//! `substrate`, for the shared [`substrate::Ray`] the unprojection produces; this
+//! `substrate`, for the shared [`substrate::spatial::Ray`] the unprojection produces; this
 //! crate never depends on the sibling `raycast` crate that consumes those rays.
 //!
 //! The WGSL shaders that draw the scene are maintained *mirrors* of this CPU math,
@@ -36,8 +36,8 @@
 //!   and the pure zone→action dispatch.
 //! * [`tween`] — eased angle interpolation (`easeInOutQuad`) and angle normalisation.
 //! * [`frustum`] — Gribb–Hartmann plane extraction (2001) + Ericson positive-vertex
-//!   AABB culling (2005), over substrate's closed continuous [`substrate::RealAabb`]
-//!   (co-located there beside its half-open integer twin [`substrate::LatticeAabb`]).
+//!   AABB culling (2005), over substrate's closed continuous [`substrate::spatial::RealAabb`]
+//!   (co-located there beside its half-open integer twin [`substrate::spatial::LatticeAabb`]).
 
 pub mod frustum;
 pub mod orbit;

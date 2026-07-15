@@ -10,14 +10,14 @@
 //!
 //! ## Literature
 //!
-//! The intersection is the same **slab method** as [`substrate::Ray::intersect_box_slab`]
+//! The intersection is the same **slab method** as [`substrate::spatial::Ray::intersect_box_slab`]
 //! (Kay & Kajiya 1986; Ericson 2005), but retained here in the variant that also reports
 //! the entered face's *axis and sign* — which the box-interval primitive does not surface
 //! — and that uses the picker's own `1e-6` parallel-axis guard. The cube itself is the
 //! Autodesk ViewCube widget (its orientation model lives in the `camera` crate).
 
 use glam::Vec3;
-use substrate::Ray;
+use substrate::spatial::Ray;
 
 /// The ViewCube's half-extent: the cube spans `[-0.7, 0.7]` on each axis.
 pub const VIEW_CUBE_HALF_EXTENT: f32 = 0.7;

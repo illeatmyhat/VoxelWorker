@@ -1,6 +1,6 @@
 //! A sparse, world-fixed **min-mip occupancy pyramid** over a set of packed lattice keys.
 //!
-//! Given a sparse set of occupied lattice cells (each a [`crate::lattice_key`]-packed signed
+//! Given a sparse set of occupied lattice cells (each a [`crate::spatial::lattice_key`]-packed signed
 //! 3-vector), a [`MinMipLevel`] folds every key to the coarser cell that contains it — cell
 //! coordinate `floor_div(lattice_coordinate, cell_edge)` per axis — then keeps the folded cell
 //! keys **sorted ascending and deduplicated**. Because a cell is present whenever *any* of its
@@ -12,7 +12,7 @@
 //! level reports occupancy.
 //!
 //! The sorted key layout is the same one a binary search (on CPU, and — split to `(hi, lo)` u32
-//! pairs — on a GPU) relies on; see [`crate::lattice_key`]. Folding, sorting, and lookup are pure
+//! pairs — on a GPU) relies on; see [`crate::spatial::lattice_key`]. Folding, sorting, and lookup are pure
 //! functions of the key set and the edge list — no traversal of any source structure lives here;
 //! a producer walks its own domain data, emits keys, and hands them to this fold.
 //!
@@ -32,7 +32,7 @@
 
 use rayon::prelude::*;
 
-use crate::lattice_key::{pack_lattice_key, unpack_lattice_key};
+use crate::spatial::lattice_key::{pack_lattice_key, unpack_lattice_key};
 
 /// Fold a signed lattice coordinate to the coordinate of the cell of edge `cell_edge` that
 /// contains it: `floor_div` per axis (Euclidean, so negatives round toward −∞ and cells tile the
@@ -58,7 +58,7 @@ pub fn sorted_cell_keys_contain(cell_keys: &[u64], coordinate: [i64; 3], cell_ed
 }
 
 /// One min-mip occupancy level: the sparse set of occupied cells of edge [`cell_edge`](Self::cell_edge)
-/// lattice units, each a [`crate::lattice_key`]-packed cell key. [`cell_keys`](Self::cell_keys) is
+/// lattice units, each a [`crate::spatial::lattice_key`]-packed cell key. [`cell_keys`](Self::cell_keys) is
 /// kept **sorted strictly ascending and unique** — the order a binary search (and a GPU's split-key
 /// search) depends on. The set is a conservative superset of the true occupancy: every occupied
 /// finer key's cell is present, and no cell without an occupied key is.

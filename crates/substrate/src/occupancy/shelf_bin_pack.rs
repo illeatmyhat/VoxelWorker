@@ -4,7 +4,7 @@
 //! by the **shelf** (a.k.a. next-fit level) heuristic: tiles are placed left to
 //! right along a "shelf" (a horizontal band), and when the current shelf has taken
 //! its quota of tiles a new shelf is started above the previous one. It is the 2D
-//! sibling of this crate's [`crate::cube_packing::CubeTilePacking`] — a linear
+//! sibling of this crate's [`crate::occupancy::cube_packing::CubeTilePacking`] — a linear
 //! sequence turned into a space-filling placement — specialized to rectangles laid
 //! on rows rather than cubes stacked in a grid.
 //!

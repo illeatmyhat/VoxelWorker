@@ -11,7 +11,7 @@
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use std::hint::black_box;
-use substrate::{CellGrid, GreedyCuboidDecomposition};
+use substrate::solids::{CellGrid, GreedyCuboidDecomposition};
 
 /// The block edge in cells (Vintage Story block density).
 const EDGE: u32 = 16;

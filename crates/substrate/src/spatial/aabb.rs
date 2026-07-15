@@ -107,7 +107,7 @@ impl LatticeAabb {
 /// render/world-space units. Touching boxes INTERSECT — the conservative bias a
 /// continuous culling or overlap test needs (see the module docs for the contrast
 /// with the half-open [`LatticeAabb`]). Consumed by the `camera` crate's frustum
-/// culling test and by [`crate::Ray::intersect_box_slab`].
+/// culling test and by [`crate::spatial::Ray::intersect_box_slab`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RealAabb {
     pub min: Vec3,

@@ -5,7 +5,7 @@
 //!
 //! This is the pure **kernel** of a culled mesher: it never sees vertices, UVs, atlas
 //! layers, materials, chunk seams, or wgpu. Its input is one [`Cuboid<T>`] (the box whose
-//! faces are being tested — reusing the box type of [`GreedyCuboidDecomposition`](crate::GreedyCuboidDecomposition)),
+//! faces are being tested — reusing the box type of [`GreedyCuboidDecomposition`](crate::solids::GreedyCuboidDecomposition)),
 //! a unit axis step naming the face direction, and a caller-supplied predicate answering
 //! *"is this integer lattice cell solid?"*. Its output is a single boolean per face: exposed
 //! or not. Face geometry (the world-space rectangle, its winding, normals, and per-vertex
@@ -43,12 +43,12 @@
 //! folklore: emit a face only when the cell across it is empty. **Deviation:** the canonical
 //! culled mesher culls the six faces of each individual *voxel*; here we cull the six faces
 //! of pre-decomposed disjoint *boxes* — the output of the greedy box cover
-//! ([`GreedyCuboidDecomposition`](crate::GreedyCuboidDecomposition), the same Lysenko greedy
+//! ([`GreedyCuboidDecomposition`](crate::solids::GreedyCuboidDecomposition), the same Lysenko greedy
 //! lineage). Culling merged-box faces is why the slab is scanned across the box's full
 //! in-plane extent and why a partially-exposed face is reported whole, rather than the
 //! single-cell test a per-voxel mesher uses.
 
-use crate::greedy_cuboid_decomposition::Cuboid;
+use crate::solids::greedy_cuboid_decomposition::Cuboid;
 
 /// The culled box mesher — a namespace for the [`CulledBoxMeshing::face_is_exposed`] culling
 /// decision. Zero-sized: it carries no state, only the algorithm.

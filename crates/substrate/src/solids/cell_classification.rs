@@ -54,7 +54,7 @@
 //! black/white/grey classification; the mapping to [`FieldClassification`]'s `Air` / `CoarseSolid` /
 //! `Boundary` lives in the shared [`FieldInterval::classify`] verdict this kernel returns.
 
-use crate::field_interval::{FieldClassification, FieldInterval};
+use crate::interval::field_interval::{FieldClassification, FieldInterval};
 
 /// The CSG role by which a contribution combines into the running classification interval — the
 /// interval extensions of the Boolean set operations of constructive solid geometry. The domain's

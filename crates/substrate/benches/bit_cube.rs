@@ -10,7 +10,7 @@
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use std::hint::black_box;
-use substrate::BitCube;
+use substrate::occupancy::BitCube;
 
 /// The two edges the domain actually uses: VS density and the 1..=64 bound.
 const EDGES: [u32; 2] = [16, 64];

@@ -37,27 +37,27 @@
 
 use crate::core_geom::CHUNK_BLOCKS;
 
-/// The domain name for the substrate half-open integer box [`substrate::LatticeAabb`],
+/// The domain name for the substrate half-open integer box [`substrate::spatial::LatticeAabb`],
 /// read as an **absolute-voxel** box `[min, max)` — the frame the chunk decomposition
 /// owns (a voxel at absolute position `p` belongs to chunk `floor(p / chunk_extent)`).
 ///
 /// Kept as a domain alias deliberately: substrate also carries the *floating-point*
-/// closed twin [`substrate::RealAabb`] (frustum culling consumes it via
-/// `substrate::RealAabb`), and `VoxelAabb` keeps the integer-voxel box unambiguous
+/// closed twin [`substrate::spatial::RealAabb`] (frustum culling consumes it via
+/// `substrate::spatial::RealAabb`), and `VoxelAabb` keeps the integer-voxel box unambiguous
 /// at every call site.
 /// The corners are `i64` (64-bit world addressing): absolute voxels = block offset ×
 /// density, so a far-placed leaf (±10⁹ blocks × density) overflows i32; the derived
 /// CHUNK coordinate stays i32 (see [`ChunkCoverage::covering_chunk_range`]). See
 /// `docs/architecture/data-structures.md` (the Substrate section) for the box itself.
-pub use substrate::LatticeAabb as VoxelAabb;
+pub use substrate::spatial::LatticeAabb as VoxelAabb;
 
-/// The domain name for the substrate [`substrate::Bvh`] used as **THE edit broadphase**
+/// The domain name for the substrate [`substrate::spatial::Bvh`] used as **THE edit broadphase**
 /// (ADR 0011 Decision 4b, #66): a bounding-volume hierarchy over producer world-AABBs
 /// answering "which producers overlap this chunk box", rebuilt per wholesale build /
 /// edit and never persisted (the C1 stale-cache lesson). The domain construction and
 /// per-chunk query live at the seam in `two_layer_store` (`leaf_edit_broadphase`,
 /// `chunk_candidate_leaves`); see `docs/architecture/02-evaluation.md`.
-pub use substrate::Bvh as EditBroadphaseBvh;
+pub use substrate::spatial::Bvh as EditBroadphaseBvh;
 
 /// The domain reading of a [`VoxelAabb`]: the inclusive chunk-coordinate range
 /// `[min_chunk, max_chunk]` whose half-open chunk boxes the AABB intersects, at a given

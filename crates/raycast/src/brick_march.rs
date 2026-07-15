@@ -13,7 +13,7 @@
 //! * **Slab entry**: Kay & Kajiya, "Ray Tracing Complex Scenes" (SIGGRAPH 1986);
 //!   Ericson, *Real-Time Collision Detection* (2005) §5.3.3 — the ray's parameter
 //!   interval inside an AABB is the intersection of its three per-axis slab intervals.
-//!   The traversal-box entry reuses [`substrate::Ray::intersect_box_slab`].
+//!   The traversal-box entry reuses [`substrate::spatial::Ray::intersect_box_slab`].
 //! * **DDA**: Amanatides & Woo (1987) — see [`crate::voxel_dda`], stepped at block edge
 //!   and at voxel edge 1.
 //! * **Hierarchical empty-space skip**: Crassin, Neyret, Lefebvre & Eisemann,
@@ -21,20 +21,20 @@
 //!   occupancy pyramid coarsest-first and, at the coarsest EMPTY level covering the
 //!   current cell, leap the ray to that cell's far face in one stride instead of
 //!   stepping block by block. The pyramid's cell-key search is
-//!   [`substrate::min_mip_pyramid`]; the empty-level-means-occupied *policy* stays in
+//!   [`substrate::spatial::min_mip_pyramid`]; the empty-level-means-occupied *policy* stays in
 //!   the app's `level_occupied` closure.
 //!
 //! ## Byte-exact arithmetic (the parity obligation)
 //!
 //! The WGSL shader is a mirror of this march and `gpu_parity` pins them byte-identical,
 //! so the arithmetic here reproduces the shader's exactly: the near-zero direction guard
-//! ([`substrate::SLAB_ZERO_DIRECTION_GUARD`]), the reciprocal `1.0 / safe_direction`
+//! ([`substrate::spatial::SLAB_ZERO_DIRECTION_GUARD`]), the reciprocal `1.0 / safe_direction`
 //! shared between the slab entry and every DDA seed, the small `1e-4` entry nudge, the
 //! [`CLIPMAP_JUMP_EPSILON`] cell-exit hair, the x → y → z tie order, and the step
 //! budgets are all load-bearing. Reproduce the exact ops; never "simplify".
 
 use glam::{IVec3, Vec3};
-use substrate::{Ray, RealAabb};
+use substrate::spatial::{Ray, RealAabb};
 
 use crate::voxel_dda::VoxelDda;
 
@@ -130,11 +130,11 @@ pub fn entry_face_normal(axis: usize, direction: Vec3) -> [i32; 3] {
 /// The ray direction with any component whose magnitude is below the slab guard nudged
 /// to `+guard`, so the reciprocal used for the slab entry and every DDA seed stays finite
 /// (the shared arithmetic the shader mirror pins). Identical guard to
-/// [`substrate::Ray::slab_inverse_direction`], applied to the direction itself.
+/// [`substrate::spatial::Ray::slab_inverse_direction`], applied to the direction itself.
 fn guarded_direction(direction: Vec3) -> Vec3 {
     let guard = |component: f32| -> f32 {
-        if component.abs() < substrate::SLAB_ZERO_DIRECTION_GUARD {
-            substrate::SLAB_ZERO_DIRECTION_GUARD
+        if component.abs() < substrate::spatial::SLAB_ZERO_DIRECTION_GUARD {
+            substrate::spatial::SLAB_ZERO_DIRECTION_GUARD
         } else {
             component
         }

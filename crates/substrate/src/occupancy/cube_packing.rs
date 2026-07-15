@@ -24,8 +24,8 @@
 //! texture-atlas packing practice (a linear allocation tiled into an N³ volume). No single
 //! canonical citation — the geometry is `count → ceil(cbrt) → mixed-radix origin`.
 
-use crate::bit_cube::BitCube;
-use crate::value_cube::ValueCube;
+use crate::occupancy::bit_cube::BitCube;
+use crate::occupancy::value_cube::ValueCube;
 
 /// The geometry of a cube-shaped tile grid: how many tiles per axis, and the resulting cube
 /// side in cells. Both derive from a tile count and a tile edge.

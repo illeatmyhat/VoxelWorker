@@ -9,7 +9,7 @@
 //! also holds the pure [`pick_view_cube_slab`] element picker. It is a sibling of
 //! `substrate` and `camera` — a read-first library of well-known concepts under their
 //! literature names — but graphics-specific, and the consuming end of the ray a
-//! [`substrate::Ray`] carries (a `camera` unprojection produces one, this crate marches
+//! [`substrate::spatial::Ray`] carries (a `camera` unprojection produces one, this crate marches
 //! it).
 //!
 //! ## The graphics-crate boundary law
@@ -20,8 +20,8 @@
 //! **injected occupancy closures**, never by wgpu, winit, egui, or any domain type (a
 //! record, an atlas byte, a residency policy). The dependency edge is one-way:
 //! `substrate ← raycast ← the application`. The only non-`glam` dependency is
-//! `substrate`, for the shared [`substrate::Ray`] / [`substrate::RealAabb`] geometry
-//! and the [`substrate::min_mip_pyramid`] cell-key search the hierarchical skip folds
+//! `substrate`, for the shared [`substrate::spatial::Ray`] / [`substrate::spatial::RealAabb`] geometry
+//! and the [`substrate::spatial::min_mip_pyramid`] cell-key search the hierarchical skip folds
 //! against; this crate never depends on the sibling `camera` crate.
 //!
 //! The domain's brick march (`voxel_worker::brick_raymarch`) is the adapter: it holds

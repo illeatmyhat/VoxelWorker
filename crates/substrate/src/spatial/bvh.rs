@@ -29,7 +29,7 @@
 //! centroid of the longest axis, fixed leaf cap 8, no SAH — the build-speed-over-query
 //! trade for a hierarchy rebuilt per use.
 
-use crate::aabb::LatticeAabb;
+use crate::spatial::aabb::LatticeAabb;
 
 /// Entries per leaf node before a subtree stops splitting. Small enough that the
 /// per-leaf linear overlap test stays trivial, large enough to keep the node count

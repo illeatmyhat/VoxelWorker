@@ -189,7 +189,7 @@ fn gpu_record_of(
     let kind = kind_discriminant
         | ((record.material_id as u32) << BRICK_RECORD_MATERIAL_ID_SHIFT)
         | ((record.overlay as u32) << BRICK_RECORD_OVERLAY_SHIFT);
-    let [key_hi, key_lo] = substrate::lattice_key::split_key_hi_lo(key);
+    let [key_hi, key_lo] = substrate::spatial::lattice_key::split_key_hi_lo(key);
     BrickGpuRecord {
         key_hi,
         key_lo,
@@ -338,7 +338,7 @@ fn pack_occupancy_cells(masks: &BlockOccupancyMasks) -> Vec<OccupancyCellPod> {
         .zip(masks.cell_masks())
         .zip(masks.cell_materials())
         .map(|((&key, &mask), &fallback)| {
-            let [key_hi, key_lo] = substrate::lattice_key::split_key_hi_lo(key);
+            let [key_hi, key_lo] = substrate::spatial::lattice_key::split_key_hi_lo(key);
             // The fallback word packs the overlay bit above the material colour index (the map
             // stores one u32 per cell); split it into the pod's two fields the shader reads.
             let overlay = u32::from(
@@ -2244,7 +2244,7 @@ fn cpu_clipmap_cell_occupied(level: &ClipmapLevel, absolute_block: glam::IVec3) 
     if level.cell_keys.is_empty() {
         return true;
     }
-    substrate::min_mip_pyramid::sorted_cell_keys_contain(
+    substrate::spatial::min_mip_pyramid::sorted_cell_keys_contain(
         &level.cell_keys,
         [
             absolute_block.x as i64,
@@ -2323,7 +2323,7 @@ pub fn cpu_march_levels_counted(
             .collect(),
     };
     let (hit, steps) = raycast::march_brick_hierarchy(
-        substrate::Ray::new(origin, direction),
+        substrate::spatial::Ray::new(origin, direction),
         &params,
         // Level-occupancy: the domain's "empty level ⇒ occupied (skip disabled)" policy
         // over substrate's sorted cell-key search.
@@ -2379,7 +2379,7 @@ pub fn cpu_march_exact_occupancy(
         band_voxel_sv: frame.band_voxel_sv,
         voxel_bias: frame.voxel_bias,
     };
-    raycast::march_exact_occupancy(substrate::Ray::new(origin, direction), &params, |absolute| {
+    raycast::march_exact_occupancy(substrate::spatial::Ray::new(origin, direction), &params, |absolute| {
         occupied(absolute)
     })
     .map(|hit| CpuMarchHit {

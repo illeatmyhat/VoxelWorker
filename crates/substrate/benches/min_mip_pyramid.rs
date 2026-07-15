@@ -9,8 +9,8 @@
 
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use std::hint::black_box;
-use substrate::lattice_key::pack_lattice_key;
-use substrate::SparseMinMipPyramid;
+use substrate::spatial::lattice_key::pack_lattice_key;
+use substrate::spatial::SparseMinMipPyramid;
 
 /// The domain's three clip-map cell edges (blocks per cell): 8 → 64 → 512.
 const CELL_EDGES: [u32; 3] = [8, 64, 512];

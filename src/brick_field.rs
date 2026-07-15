@@ -60,7 +60,7 @@ use crate::two_layer_store::{SeamSolidity, TwoLayerChunk};
 // as a `(hi, lo)` u32 pair on the GPU). The domain keeps the "world-block key" name at
 // this seam; the space-filling-curve definition and citations live in the substrate
 // module. See docs/architecture/data-structures.md (Substrate) for the codec itself.
-pub use substrate::lattice_key::{
+pub use substrate::spatial::lattice_key::{
     pack_lattice_key as pack_world_block_key, unpack_lattice_key as unpack_world_block_key,
 };
 
@@ -71,8 +71,8 @@ pub use substrate::lattice_key::{
 // substrate's `CubeTilePacking` (linear slot → cubic tile grid) and the per-slot store is a
 // `SlotFreeList` (stable-index free-list). See docs/architecture/03-display.md (the
 // brick-field atlas) for how these pack into the R8 atlas the raymarch samples.
-use substrate::{CubeTilePacking, SlotFreeList};
-pub use substrate::BitCube as BrickOccupancyTile;
+use substrate::occupancy::{CubeTilePacking, SlotFreeList};
+pub use substrate::occupancy::BitCube as BrickOccupancyTile;
 
 // A MIXED block's per-voxel cell-key tile IS substrate's `ValueCube<u16>`: the payload sibling
 // of the occupancy `BitCube` — the same cube edge, the same X-row layout (row = z*edge + y),
@@ -82,7 +82,7 @@ pub use substrate::BitCube as BrickOccupancyTile;
 // the substrate module. A cell key is the render-cell key of `cuboid_mesh` (clean block-palette
 // id + the on-face-grid overlay bit), stored verbatim. See docs/architecture/03-display.md (the
 // brick-field atlas) for the per-voxel material side atlas these tiles feed.
-pub use substrate::ValueCube as ValueTile;
+pub use substrate::occupancy::ValueCube as ValueTile;
 
 /// One mixed block's per-voxel cell-key tile: `edge³` render-cell keys (clean block id +
 /// overlay bit), block-local x-fastest — the sibling of [`BrickOccupancyTile`]. Only a block
@@ -104,7 +104,7 @@ const AIR_CELL_KEY_DONT_CARE: u16 = 0;
 // the multi-level assembly, and the binary-search lookup live in the substrate module. The
 // three-level edge progression (8/64/512) is domain configuration, passed to the fold. See
 // docs/architecture/03-display.md (the brick-field clip-map) for how the levels drive the march.
-use substrate::min_mip_pyramid::{fold_coordinate_to_cell, MinMipLevel};
+use substrate::spatial::min_mip_pyramid::{fold_coordinate_to_cell, MinMipLevel};
 
 // The block-occupancy masks' STORAGE is substrate's `SortedKeyBitmaskMap`: a sorted parallel-array
 // map (keys ∥ fixed-width bitmasks ∥ per-key fallback scalar), binary-searchable, with the textbook
@@ -114,7 +114,7 @@ use substrate::min_mip_pyramid::{fold_coordinate_to_cell, MinMipLevel};
 // the binary search, and the bit set/test live in the substrate module (fallback = a caller-defined
 // `u32`, here the render-cell material colour index). See docs/architecture/03-display.md (the
 // band-clip interior fallback) for how the packed cells feed the raymarch.
-use substrate::bitmask_map::{set_mask_bit, SortedKeyBitmaskMap};
+use substrate::occupancy::bitmask_map::{set_mask_bit, SortedKeyBitmaskMap};
 
 // ============================================================================
 // Clip-map occupancy pyramid (ADR 0011 Decision 4a / slice G2+G4) — THREE
@@ -300,7 +300,7 @@ impl ClipmapPyramid {
         // multi-level assembly ([`SparseMinMipPyramid::from_key_iter`]). Stream the record keys to
         // the kernel (it buffers them ONCE internally for the three folds — the domain builds no
         // intermediate `Vec<u64>`), then wrap each level.
-        let assembled = substrate::SparseMinMipPyramid::from_key_iter(
+        let assembled = substrate::spatial::SparseMinMipPyramid::from_key_iter(
             records.iter().map(|record| record.packed_world_block_key),
             &[
                 CLIPMAP_LEVEL_1_BLOCKS_PER_CELL,
@@ -367,7 +367,7 @@ pub fn pack_clipmap_level_keys(level: &ClipmapLevel) -> Vec<[u32; 2]> {
     level
         .cell_keys
         .iter()
-        .map(|&key| substrate::lattice_key::split_key_hi_lo(key))
+        .map(|&key| substrate::spatial::lattice_key::split_key_hi_lo(key))
         .collect()
 }
 

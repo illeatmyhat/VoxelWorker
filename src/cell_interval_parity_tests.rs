@@ -17,7 +17,7 @@
 //! surface, and tiny single-voxel features.
 //!
 //! The CSG interval algebra itself (union / intersect / subtract / classify) is unit-
-//! tested where it now lives, in `substrate::field_interval`; this file keeps only the
+//! tested where it now lives, in `substrate::interval::field_interval`; this file keeps only the
 //! producer-vs-brute-force exactness gate.
 
 use crate::spatial_index::VoxelAabb;
