@@ -185,3 +185,50 @@ slices (extend as verification work surfaces more):
 - Verification citations ride with the proofs: Kani (Kani/CBMC docs), Creusot (Denis et al.
   2022), Verus (Lattuada et al. 2023), and the specific theorem sources above (Duff 1992 for
   the conservatism statement).
+
+## Addendum — category modules + later-surveyed candidates (2026-07-14)
+
+Two follow-on surveys after the S0–S10 extraction, plus a reorganization, all landed this day.
+
+**Category-module reorg** (`ae63d65`). Substrate's 19 flat modules were grouped into category
+submodules so the taxonomy is visible at the call site (`substrate::spatial::LatticeAabb`,
+`substrate::occupancy::BitCube`): `spatial/` (aabb, bvh, lattice_key, ray, min_mip_pyramid),
+`interval/` (field_interval, disjoint_interval_set, rational), `occupancy/` (bit_cube,
+value_cube, free_list, cube_packing, shelf_bin_pack, bitmask_map), `solids/`
+(cell_classification, greedy_cuboid_decomposition, culled_box_meshing); `supersede` + `srgb`
+belong to no family and stay at the crate root. Public paths carry the category (no flat
+facade) — the decluttering is load-bearing, not cosmetic. Chosen over a new crate deliberately:
+per ADR 0014, a crate must enforce a *dependency law*, and a pure-math decluttering introduces
+none. `document`/`evaluation` remain the only future crates (they DO enforce a boundary law).
+
+**Two new well-known-structure clusters extracted** (owner-directed second survey — "identify
+well-known data structures as candidates", same lens as ADR 0014/0015):
+
+- **`geom2d`** (`f3ae779`) — the planar computational-geometry predicates that were private
+  `fn`s in `sketch.rs`: `orient2d` (signed-area/CCW; Shewchuk 1997, O'Rourke 1998),
+  `segments_intersect` (CLRS §33.1), `segment_intersects_rect` (Ericson 2005), `point_in_polygon`
+  (crossing-number / Franklin PNPOLY), `rectangle_inside_polygon` (connectedness). Generic over
+  `[f64; 2]`; sketch keeps the `SketchPoint → [f64; 2]` adapter, converted once per resolve so
+  the per-voxel loops don't re-allocate. `revolve_box_within_sweep_arc` stayed domain (its EPS
+  and seam handling are tuned to the resolve's f32 `atan2`).
+- **`noise`** (`4318c88`) — the procedural-generation kit from `debug_clouds.rs`: `noise::rng`
+  (`SmallRng`, an LCG + Fisher–Yates shuffle; Numerical Recipes constants, Knuth) and
+  `noise::perlin` (`PerlinNoise` improved gradient noise, Perlin 2002, + fBm). Kept as substrate
+  (not a new crate) on the `srgb`/`ray` precedent: pure math with a WGSL mirror lives in
+  substrate, and `perlin` is documented as the shader's readable CPU spec. debug_clouds keeps the
+  metaball-union field + jittered octant scatter that consume the kit. Byte-preserving (identical
+  RNG call sequence).
+
+Both are behavior-preserving (substrate 92 → 106 tests; all sketch + cloud parity tests
+unchanged). **Deliberately left domain** (surveyed, rejected): the relaxed-JSON normalizer
+(`assets/faces.rs` — single consumer, not CS/math structure), the `BlockTypeIndex` inverted index
+(`assets/vintage_story.rs` — domain-baked scoring, one consumer), `resize_rgba_nearest` (small,
+fold in opportunistically), and vox_export's TLV framer / atomic-write idiom (marginal). None
+introduces a dependency law; none warrants a crate.
+
+**Tooling note (2026-07-14):** structural rewrites here used **ast-grep** (installed) + the
+compiler as oracle; module *moves* have no end-to-end tool (`rust-analyzer ssr` CLI is broken
+upstream — verified across two versions). See the [[refactor-tooling-astgrep]] /
+[[rust-analyzer-ssr-cli-broken]] memories. A **CI doc-link gate** was added the same day
+(`56b35b6`): `cargo doc --workspace` under `-D warnings`, broken/redundant links fail,
+public→private permitted by a crate allow.
