@@ -5,9 +5,30 @@ if only to make the connections between components easier to understand," follow
 grill-with-docs session that resolved every contested seam. Decision record: `docs/adr/0016`.
 The boundary law per crate is the architecture chapter it implements (`docs/architecture/`).
 
-**Status (2026-07-15): Phase 0 COMPLETE; Phases 1–3 + 4a LANDED (voxel_core, document, evaluation,
-display); mega-file carves 4b–4d + phases 5–7 not started.** Grilled; ADR written. Execution is
-bottom-up in gated slices (below).
+**Status (2026-07-15): Phase 0 COMPLETE; Phases 1–5 LANDED (voxel_core, document, evaluation, display
++ carves, interchange); phases 6–7 (work, shell) blocked on a design fork — see below.** Grilled; ADR
+written. Execution is bottom-up in gated slices (below).
+
+**Phase 5 landed** (`693d650`): cut **interchange** (`vox_export`, the headless `.vox` sink; deps
+evaluation/document/voxel_core, ZERO wgpu — the no-wgpu law that earns it a crate holds). Recon
+139+21+93+93+64+18=428.
+
+**Phase 6 DESIGN FORK (open, needs owner):** the survey found `workers/geometry.rs` AND
+`engagement/orchestrator.rs` both hold `wgpu::Device`/`Queue` directly (the geometry worker builds GPU
+meshes on its thread; the orchestrator owns the device + the display renderers). So a `work` crate
+CANNOT be wgpu-free — which revises the ADR's headline "display is the only crate that links wgpu."
+Options: (a) cut a `work` crate that DOES link wgpu (workers + engagement); (b) fold work/engagement
+into the shell (no separate work crate — the shell legitimately owns the device); (c) decouple the
+workers from the device (pass it per-call) so the work layer purifies — a real refactor. No cycle
+exists (workers reference engagement only in doc-comments; orchestrator→workers via flat re-exports).
+
+**Phase 4b–4d landed** (`c0e4b9f`, `3f73f27`, `b7963c1`): the three display mega-files carved into
+folders — `cuboid_mesh`(4907)→`mesh/` (geometry/builder/two_layer/emit/pipeline/tests, module renamed
+`cuboid_mesh`→`mesh`); `brick_field`(3901)+`brick_raymarch`(2696) MERGED→`brick/` (clipmap/occupancy/
+record/build/incremental/atlas/gpu_record/raymarch/cpu_march/tests, modules collapsed to one `brick`);
+`renderer`(3389)→`renderer/` (materials/view_cube/chrome/lines/gizmo/grid/points/infinite_grid/targets/
+onion/tests, name kept so zero consumer churn). No non-test submodule is a mega-file. Test counts
+unchanged (=428) throughout; all gates incl. GPU golden/parity green.
 
 **Phase 4a landed** (`04f0a37`): cut **display** — the ONLY crate that links wgpu — moving the seven
 GPU-sink modules (`renderer`, `cuboid_mesh`, `brick_field`, `brick_raymarch`, `texture_atlas`,
