@@ -109,6 +109,16 @@ op-stack field (see `docs/adr/0011`; generalizes the ADR 0007 fog atlas).
 
 ## Composition
 
+- **Part** — the fundamental assembly object: a **container** that composes primitives,
+  tools, operators, and nested parts into one body under the ordered fold. A part is a
+  sealed composition scope — its internal booleans are spent inside it. A **one-off part**
+  is authored in place (the scene-tree grouping node); a **reusable part** is a definition
+  placed by instances. **The scene root is itself a concrete part** (the Fusion 360 root-
+  component model): primitives placed "at root" are ingredients of the root part, and
+  anything that applies to a part — per-part display state included — applies to the root
+  part too. Primitives and tools are never assembly citizens on their own — they are a
+  part's ingredients.
+
 - **Ordered fold** — the composition semantics (`docs/adr/0017`): a scope's children
   evaluate in document order, each folding into the accumulated result under its combine
   operation (union / subtract / intersect). A boolean affects everything accumulated
@@ -136,6 +146,18 @@ op-stack field (see `docs/adr/0011`; generalizes the ADR 0007 fog atlas).
   roads at an intersection). A junction is **a part built to suit the situation** —
   authored and placed like any other (possibly as a fixture) — never a world-frame patch
   on the composed result.
+
+## Viewing
+
+- **View mode** — the scene viewer's exclusive rendering mode, one of exactly three:
+  **Normal** (the finished look — no ghosts, no clipping), **Onion fog** (the selected
+  object clips to the layer band with ghost haze for the layers outside it, inside the
+  object's own region; everything else renders finished), **Show booleans** (every
+  subtract/intersect operand in the selected subtree x-rays over the finished scene).
+  A property of the **viewer, never the document**: it follows the active selection,
+  is not saved with the scene, and never enters undo history. Selecting the root part
+  applies the mode scene-wide; with nothing selected a mode has no target and the scene
+  renders finished.
 
 ## Authoring truth
 
