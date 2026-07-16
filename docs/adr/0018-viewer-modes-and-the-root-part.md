@@ -67,6 +67,10 @@ operators are its ingredients, never assembly citizens on their own; **the scene
    View Cube holds Home, Fit, and the **viewport-mode cycle button** (Normal → Onion fog → Show booleans →
    Normal, current mode iconified). Detailed display settings that need real controls — the layer scrubber and
    onion depth among them — live in a highly collapsible stack panel, surfaced when Onion fog is active.
+   **Visual language decided 2026-07-16** after a four-way prototype round: the "Signal" instrument language —
+   view cube top-right with Fusion's 26 selectable zones, icon-only rail beneath it, panel folding to vertical
+   edge tabs, one accent (the onion-haze hue). Spec + tokens: `docs/design/viewport-chrome-signal.md`; the
+   interactive reference is the owner's claude.ai/design project "VoxelWorker — Viewport Chrome".
 
 ## Alternatives considered
 
