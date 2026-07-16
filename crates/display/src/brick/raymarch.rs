@@ -29,6 +29,17 @@ pub struct BrickMarchFrame {
     pub traversal_hi: glam::Vec3,
     pub brick_edge_voxels: i32,
     pub bricks_per_axis: u32,
+    /// ADR 0018 Decision 5 (S5): the onion-fog REGION clip in the sv voxel frame, half-open
+    /// `[lo, hi)`, or `None` for a scene-wide band. For the SOLID march (ConfineBand) the band
+    /// is applied per voxel INSIDE this box only; outside renders finished. For a GHOST slab
+    /// (ClipToRegion) the box additionally confines the traversal AABB.
+    pub region_lo_sv: [i32; 3],
+    pub region_hi_sv: [i32; 3],
+    /// Whether the region clip is live this frame (`region_hi_active.w`).
+    pub region_active: bool,
+    /// The region ROLE — `false` = ConfineBand (SOLID), `true` = ClipToRegion (ghost). Packed
+    /// into `region_lo_role.w`. Inert for the haze march (the traversal AABB confines the ghost).
+    pub region_role_ghost: bool,
 }
 
 /// One block-occupancy cell as the shader consumes it (ADR 0011 band-clip interior fallback):
@@ -124,6 +135,12 @@ pub(crate) struct BrickUniformsPod {
     // ADR 0012 (H1): the onion ghost tint (linear RGB + src alpha), read only when
     // `ghost_mode != 0`. Appended so the solid draw's uniform layout is unchanged.
     ghost_tint: [f32; 4],
+    // ADR 0018 Decision 5 (S5): the onion-fog REGION clip (sv voxel frame). xyz = low corner;
+    // w = role (0 ConfineBand / 1 ClipToRegion). Appended after `ghost_tint` so every pre-S5
+    // field offset — and thus a region-inactive draw's bytes — is unchanged.
+    region_lo_role: [i32; 4],
+    // xyz = high corner (half-open `[lo, hi)`); w = region_active (0/1).
+    region_hi_active: [i32; 4],
 }
 
 /// The G1 brick raymarch renderer: owns the record buffer, the sculpted atlas
@@ -1155,6 +1172,8 @@ impl BrickRaymarchRenderer {
         viewport_px: [u32; 4],
         grid_dimensions: [u32; 3],
         band: LayerBand,
+        region: Option<RegionClip>,
+        ghost_confine: bool,
     ) -> BrickMarchFrame {
         let edge = self.brick_edge_voxels.max(1) as i64;
         // Corner-anchoring: the cuboid path recovers the shading-absolute frame
@@ -1207,16 +1226,54 @@ impl BrickRaymarchRenderer {
         let clamp_i32 = |value: i64| value.clamp(i32::MIN as i64 + 1, i32::MAX as i64 - 1) as i32;
         let band_lo_sv = clamp_i32(band.band_min as i64 + lattice_shift[2] as i64);
         let band_hi_sv = clamp_i32(band.band_max as i64 + 1 + lattice_shift[2] as i64);
-        // The band ACTUALLY clips the solid when it narrows the resident Z-extent — only then
-        // can a cut plane enter an elided coarse interior, so only then does the record-miss
-        // block-occupancy fallback fire (ADR 0011 band-clip interior fix). A full/loose band
-        // leaves the surface-only set hit-identical, so the fallback stays off (common path).
+
+        // ADR 0018 Decision 5 (S5): the onion-fog region → the sv voxel frame. A recentred voxel
+        // `v` maps to `sv = v + half + lattice_shift` (the exact frame the band conversion above
+        // uses on Z: `band_min` is already `recentred_z + half_z`). Half-open `[lo, hi)`.
+        let region_sv = region.map(|clip| {
+            let to_sv = |v: [i64; 3]| {
+                [
+                    clamp_i32(v[0] + half[0] + lattice_shift[0] as i64),
+                    clamp_i32(v[1] + half[1] + lattice_shift[1] as i64),
+                    clamp_i32(v[2] + half[2] + lattice_shift[2] as i64),
+                ]
+            };
+            (to_sv(clip.min), to_sv(clip.max))
+        });
+
+        // Fold the band + region into the traversal AABB and the occupancy-fallback gate.
         let pre_band_lo_z = traversal_lo.z;
         let pre_band_hi_z = traversal_hi.z;
-        traversal_lo.z = traversal_lo.z.max(band_lo_sv as f32);
-        traversal_hi.z = traversal_hi.z.min(band_hi_sv as f32);
-        let band_clip_active =
-            traversal_lo.z > pre_band_lo_z || traversal_hi.z < pre_band_hi_z;
+        let band_clip_active;
+        match region_sv {
+            // No region — the pre-S5 scene-wide band: clamp the traversal Z to the band slab,
+            // and fire the interior fallback exactly when that narrows the resident Z-extent.
+            None => {
+                traversal_lo.z = traversal_lo.z.max(band_lo_sv as f32);
+                traversal_hi.z = traversal_hi.z.min(band_hi_sv as f32);
+                band_clip_active = traversal_lo.z > pre_band_lo_z || traversal_hi.z < pre_band_hi_z;
+            }
+            // SOLID (ConfineBand): the traversal spans the FULL resident Z (outside-region
+            // geometry above/below the band must stay reachable) — the band is a per-voxel clip
+            // INSIDE the region only. The interior fallback fires when the band narrows the
+            // region's own Z-extent (a cut plane can then enter an elided in-region interior).
+            Some((region_lo, region_hi)) if !ghost_confine => {
+                band_clip_active = band_lo_sv > region_lo[2] || band_hi_sv < region_hi[2];
+            }
+            // GHOST slab (ClipToRegion): clamp the traversal to region ∩ slab — the AABB itself
+            // confines the haze to `region ∩ onion-slab` (no per-voxel region test needed), and
+            // the narrowed Z keeps the interior fallback available inside it.
+            Some((region_lo, region_hi)) => {
+                traversal_lo.x = traversal_lo.x.max(region_lo[0] as f32);
+                traversal_lo.y = traversal_lo.y.max(region_lo[1] as f32);
+                traversal_lo.z = traversal_lo.z.max(band_lo_sv.max(region_lo[2]) as f32);
+                traversal_hi.x = traversal_hi.x.min(region_hi[0] as f32);
+                traversal_hi.y = traversal_hi.y.min(region_hi[1] as f32);
+                traversal_hi.z = traversal_hi.z.min(band_hi_sv.min(region_hi[2]) as f32);
+                band_clip_active = traversal_lo.z > pre_band_lo_z || traversal_hi.z < pre_band_hi_z;
+            }
+        }
+        let (region_lo_sv, region_hi_sv) = region_sv.unwrap_or(([0; 3], [0; 3]));
 
         BrickMarchFrame {
             view_projection,
@@ -1237,6 +1294,13 @@ impl BrickRaymarchRenderer {
             traversal_hi,
             brick_edge_voxels: self.brick_edge_voxels.max(1) as i32,
             bricks_per_axis: self.bricks_per_axis.max(1),
+            region_lo_sv,
+            region_hi_sv,
+            // The SOLID march reads the region per voxel (ConfineBand). The ghost's region is
+            // folded into the traversal AABB above, so its per-voxel region test is inert — the
+            // uniform is still carried (role 1) for completeness.
+            region_active: region_sv.is_some(),
+            region_role_ghost: ghost_confine,
         }
     }
 
@@ -1252,10 +1316,14 @@ impl BrickRaymarchRenderer {
         viewport_px: [u32; 4],
         grid_dimensions: [u32; 3],
         band: LayerBand,
+        region: Option<RegionClip>,
         grid_overlay_master: bool,
         bound: Option<MaterialChoice>,
     ) -> BrickMarchFrame {
-        let frame = self.march_frame(view_projection, viewport_px, grid_dimensions, band);
+        // ADR 0018 Decision 5 (S5): the SOLID march confines the band to the region
+        // (ConfineBand); outside the region it renders finished. `ghost_confine = false`.
+        let frame =
+            self.march_frame(view_projection, viewport_px, grid_dimensions, band, region, false);
         // The bound procedural material drives modulation exactly as the cuboid
         // path: `Some` enables the relative base-colour array, `None` (a loaded VS
         // block — the brick path disengages for those, but mirror anyway) is neutral.
@@ -1368,6 +1436,19 @@ impl BrickRaymarchRenderer {
             material_base_colors: base_colors,
             material_atlas_rects: crate::mesh::atlas_rects_from(&material_atlas),
             ghost_tint,
+            region_lo_role: [
+                frame.region_lo_sv[0],
+                frame.region_lo_sv[1],
+                frame.region_lo_sv[2],
+                // Role: 0 = ConfineBand (solid), 1 = ClipToRegion (ghost).
+                i32::from(frame.region_role_ghost),
+            ],
+            region_hi_active: [
+                frame.region_hi_sv[0],
+                frame.region_hi_sv[1],
+                frame.region_hi_sv[2],
+                i32::from(frame.region_active),
+            ],
         }
     }
 
@@ -1389,6 +1470,7 @@ impl BrickRaymarchRenderer {
         viewport_px: [u32; 4],
         grid_dimensions: [u32; 3],
         band: LayerBand,
+        region: Option<RegionClip>,
     ) {
         self.ghost_lower_active = false;
         self.ghost_upper_active = false;
@@ -1407,7 +1489,9 @@ impl BrickRaymarchRenderer {
                 band_max: band.band_min - 1,
                 onion_depth: 0,
             };
-            let frame = self.march_frame(view_projection, viewport_px, grid_dimensions, slab);
+            // ClipToRegion: the slab AND the region confine the traversal AABB (`ghost_confine`).
+            let frame =
+                self.march_frame(view_projection, viewport_px, grid_dimensions, slab, region, true);
             let pod = self.build_uniforms_pod(&frame, 0.0, 0.0, neutral, 1, tint);
             queue.write_buffer(
                 &self.uniform_buffer,
@@ -1424,7 +1508,8 @@ impl BrickRaymarchRenderer {
                 band_max: (band.band_max + depth).min(last_layer),
                 onion_depth: 0,
             };
-            let frame = self.march_frame(view_projection, viewport_px, grid_dimensions, slab);
+            let frame =
+                self.march_frame(view_projection, viewport_px, grid_dimensions, slab, region, true);
             let pod = self.build_uniforms_pod(&frame, 0.0, 0.0, neutral, 1, tint);
             queue.write_buffer(
                 &self.uniform_buffer,

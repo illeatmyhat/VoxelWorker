@@ -715,8 +715,8 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     // Normal / Show-booleans (and a placed/demo scene with no onion selection) render finished.
     // In Onion-fog the `--layer-lower/--layer-upper` handles are OBJECT-RELATIVE over the
     // selected object's Z extent; `mesh_clip` offsets them into the scene-absolute `band` and
-    // confines it to the object's placed AABB (`region`). The cuboid mesh path honours the
-    // region; the brick raymarch region parity is the next slice #85.
+    // confines it to the object's placed AABB (`region`). BOTH display paths honour the region:
+    // the cuboid mesh path (geometry) and the brick raymarch (per-frame uniforms, #85).
     let clip = AppCore::mesh_clip(
         &panel_state.scene,
         density,
@@ -1018,6 +1018,8 @@ pub(crate) async fn run_capture(options: ShotOptions) {
             prepared.viewport_px,
             grid_dimensions,
             band,
+            // ADR 0018 Decision 5 (S5): the brick path honours the region clip too.
+            clip.region,
             options.show_grid_overlay,
             bound,
         );
@@ -1028,6 +1030,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
             prepared.viewport_px,
             grid_dimensions,
             band,
+            clip.region,
         );
     }
 

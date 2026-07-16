@@ -113,6 +113,19 @@ struct BrickUniforms {
     // ADR 0012 (H1): the onion ghost tint (linear RGB + src alpha), read only when
     // `ghost_mode != 0`. Appended so the solid draw's uniform layout is unchanged.
     ghost_tint: vec4<f32>,
+    // ADR 0018 Decision 5 (S5) — the onion-fog REGION clip, in the sv (shifted-render)
+    // voxel frame. The layer band no longer bites scene-wide: it is confined to the
+    // selected object's placed AABB. xyz = the region's low voxel corner (sv frame);
+    // w = the region ROLE (0 = ConfineBand — the SOLID march: inside the AABB the band
+    // clips, OUTSIDE it renders finished/full-Z; 1 = ClipToRegion — the ghost, whose slab
+    // confinement is the traversal AABB, so the haze never reads this per-voxel).
+    region_lo_role: vec4<i32>,
+    // xyz = the region's high voxel corner (sv frame, HALF-OPEN `[lo, hi)` per axis);
+    // w = region_active (0 ⇒ no region: the pre-S5 scene-wide band, enforced entirely by
+    // the traversal / band_z bounds; 1 ⇒ the region clip is live). Appended after
+    // `ghost_tint` so every pre-S5 field offset is unchanged (region-inactive draws stay
+    // byte-identical — the parity + goldens hold).
+    region_hi_active: vec4<i32>,
 };
 
 @group(0) @binding(0)
@@ -610,10 +623,61 @@ fn clamped_box_entry(ray: Ray, box_lo: vec3<f32>, box_hi: vec3<f32>) -> SlabEntr
     return entry;
 }
 
+// ADR 0018 Decision 5 (S5) — the onion-fog REGION clip helpers (sv frame). These are
+// pure r-value reads (no dynamic component stores), so the FXC X3500 l-value hazard does
+// not apply. They mirror the mesh path's `voxel_meshed` / `RegionClip` predicate exactly.
+
+// Whether an sv-frame voxel cell is inside the half-open region box `[lo, hi)`.
+fn region_contains(voxel_cell: vec3<i32>) -> bool {
+    let lo = uniforms.region_lo_role.xyz;
+    let hi = uniforms.region_hi_active.xyz;
+    return voxel_cell.x >= lo.x && voxel_cell.x < hi.x
+        && voxel_cell.y >= lo.y && voxel_cell.y < hi.y
+        && voxel_cell.z >= lo.z && voxel_cell.z < hi.z;
+}
+
+// Whether an sv-frame voxel Z lies in the current solid/slab band `[band_min, band_max)`.
+fn voxel_in_band(voxel_z: i32) -> bool {
+    return voxel_z >= uniforms.band_voxel_sv.x && voxel_z < uniforms.band_voxel_sv.y;
+}
+
+// Whether an OCCUPIED voxel `voxel_cell` (sv frame) is MESHED under the region-scoped band
+// (the GPU twin of the cuboid mesher's `voxel_meshed`). `region_active == 0` ⇒ no region:
+// return `true` and let the traversal / band_z bounds enforce the band (byte-identical to
+// the pre-S5 path). Role 0 (ConfineBand, SOLID): inside the region clip to the band, OUTSIDE
+// render finished. Role 1 (ClipToRegion, ghost): inside the region AND in the slab.
+fn voxel_meshed(voxel_cell: vec3<i32>) -> bool {
+    if (uniforms.region_hi_active.w == 0) {
+        return true;
+    }
+    let inside = region_contains(voxel_cell);
+    if (uniforms.region_lo_role.w == 0) {
+        return select(true, voxel_in_band(voxel_cell.z), inside);
+    }
+    return inside && voxel_in_band(voxel_cell.z);
+}
+
+// Whether a block spanning sv voxels `[block_min_voxel, block_max_voxel)` intersects the
+// region AABB. A region-inactive frame never calls this (the caller guards on region_active).
+fn block_intersects_region(block_min_voxel: vec3<i32>, block_max_voxel: vec3<i32>) -> bool {
+    let lo = uniforms.region_lo_role.xyz;
+    let hi = uniforms.region_hi_active.xyz;
+    return block_max_voxel.x > lo.x && block_min_voxel.x < hi.x
+        && block_max_voxel.y > lo.y && block_min_voxel.y < hi.y
+        && block_max_voxel.z > lo.z && block_min_voxel.z < hi.z;
+}
+
 // March one ray through the brick field. Blocks step by DDA; a resident block
 // resolves via the record kinds (coarse cube / sculpted voxel DDA / non-resident
 // falls back to the coarse cube). All boxes are clamped to the traversal AABB so
 // the band clip yields cap faces, exactly like the banded mesh.
+//
+// ADR 0018 Decision 5 (S5): under an ACTIVE region (ConfineBand) the traversal AABB spans
+// the FULL resident Z (the band is NOT pre-clamped into it — outside-region geometry above
+// or below the band must stay reachable), and the band is applied PER VOXEL via
+// `voxel_meshed`. A coarse block that intersects the region routes through the per-voxel DDA
+// (as an all-occupied brick) so its band/region cut is exact at the AABB face; a coarse block
+// wholly OUTSIDE the region keeps the O(1) full-Z cube.
 fn march_brick_field(ray: Ray) -> MarchHit {
     var miss: MarchHit;
     miss.hit = false;
@@ -710,6 +774,14 @@ fn march_brick_field(ray: Ray) -> MarchHit {
             }
         }
 
+        // The block's sv voxel span + its relation to the region clip (S5). Computed once so
+        // the occupancy-fallback gate, the coarse routing, and the voxel DDA all share it.
+        let block_min_voxel = block_cell * edge_i;
+        let block_max_voxel = block_min_voxel + vec3<i32>(edge_i);
+        let region_active = uniforms.region_hi_active.w != 0;
+        let region_intersects =
+            region_active && block_intersects_region(block_min_voxel, block_max_voxel);
+
         let key = pack_world_block_key_split(absolute_block);
         let record_index = find_brick_record(key.x, key.y);
 
@@ -718,7 +790,9 @@ fn march_brick_field(ray: Ray) -> MarchHit {
         // interior the surface-only record set omitted (ADR 0011 interior elision). A present
         // occupancy bit renders its COARSE block-cube, exactly the record the interior-inclusive
         // oracle build would carry. Under a full band this branch never fires (band_clip_active
-        // 0), keeping the common path a single record lookup.
+        // 0), keeping the common path a single record lookup. S5: under an active region the
+        // fallback is consulted only for blocks that INTERSECT it — a band cut exposes interiors
+        // only inside the region; outside it geometry renders full, its surface intact.
         var has_geometry = record_index >= 0;
         var is_coarse = false;
         var block_material = 0u;
@@ -743,7 +817,8 @@ fn march_brick_field(ray: Ray) -> MarchHit {
             resolved_atlas_slot = record.atlas_slot;
             is_mixed = record_kind(record.kind) == 2u;
             resolved_cell_key_slot = record.cell_key_slot;
-        } else if (uniforms.band_clip_active != 0u && uniforms.occupancy_cell_count > 0u) {
+        } else if (uniforms.band_clip_active != 0u && uniforms.occupancy_cell_count > 0u
+            && (!region_active || region_intersects)) {
             let occupancy_cell = clipmap_cell_of(absolute_block, 8);
             let occupancy_key = pack_world_block_key_split(occupancy_cell);
             let cell_index = find_occupancy_cell(occupancy_key.x, occupancy_key.y);
@@ -766,7 +841,12 @@ fn march_brick_field(ray: Ray) -> MarchHit {
                 && clamped_lo.z < clamped_hi.z) {
                 let entry = clamped_box_entry(ray, clamped_lo, clamped_hi);
                 if (entry.t_exit >= entry.t_enter) {
-                    if (is_coarse) {
+                    // A COARSE block WHOLLY outside the region (or region-inactive) hits as its
+                    // O(1) clamped cube. Under S5 a coarse block that intersects the region
+                    // instead descends into the per-voxel DDA below (as an all-occupied brick)
+                    // so its band/region cut is exact at the AABB face — the surface routing the
+                    // cuboid mesher does via `decide_block_route`.
+                    if (is_coarse && !region_intersects) {
                         var hit: MarchHit;
                         hit.hit = true;
                         hit.material_id = block_material;
@@ -783,7 +863,6 @@ fn march_brick_field(ray: Ray) -> MarchHit {
                         }
                         hit.hit_t = entry.t_enter;
                         let hit_position = ray.origin + ray.direction * (entry.t_enter + 1e-4);
-                        let block_min_voxel = block_cell * edge_i;
                         hit.voxel_cell = clamp(
                             vec3<i32>(floor(hit_position)),
                             block_min_voxel,
@@ -791,8 +870,12 @@ fn march_brick_field(ray: Ray) -> MarchHit {
                         );
                         return hit;
                     }
-                    // Sculpted brick: voxel DDA over the atlas slot, bounded to the
-                    // in-band voxel range of this block.
+                    // Sculpted brick (or a region-intersecting coarse block, marched as an
+                    // all-occupied brick): voxel DDA over the atlas slot, bounded to the
+                    // in-band voxel range of this block. S5: under an active region the Z bound
+                    // opens to the whole block and the band is applied per voxel via
+                    // `voxel_meshed` (inside the region ⇒ band, outside ⇒ finished).
+                    let coarse_all_occupied = is_coarse;
                     let voxel_entry_position =
                         ray.origin + ray.direction * (entry.t_enter + 1e-4);
                     var voxel_cell = vec3<i32>(floor(voxel_entry_position));
@@ -815,11 +898,20 @@ fn march_brick_field(ray: Ray) -> MarchHit {
                             voxel_step.z > 0,
                         ) + entry.t_enter,
                     );
-                    let block_min_voxel = block_cell * edge_i;
-                    let block_max_voxel = block_min_voxel + vec3<i32>(edge_i);
-                    // The in-band voxel-Z range of this block (the band clip).
-                    let band_z_lo = max(block_min_voxel.z, uniforms.band_voxel_sv.x);
-                    let band_z_hi = min(block_max_voxel.z, uniforms.band_voxel_sv.y);
+                    // The in-band voxel-Z range of this block (the band clip). Region-inactive:
+                    // clamped to the band (the pre-S5 hard Z bound). Region-active: opened to the
+                    // whole block — the band is a per-voxel `voxel_meshed` test instead, so a
+                    // voxel OUTSIDE the region still meshes (full) at any Z.
+                    let band_z_lo = select(
+                        max(block_min_voxel.z, uniforms.band_voxel_sv.x),
+                        block_min_voxel.z,
+                        region_active,
+                    );
+                    let band_z_hi = select(
+                        min(block_max_voxel.z, uniforms.band_voxel_sv.y),
+                        block_max_voxel.z,
+                        region_active,
+                    );
                     var voxel_entry_axis = entry.axis;
                     var t_voxel_enter = entry.t_enter;
                     for (var voxel_step_index = 0; voxel_step_index < MAX_VOXEL_STEPS;
@@ -832,7 +924,14 @@ fn march_brick_field(ray: Ray) -> MarchHit {
                             break;
                         }
                         let brick_local = voxel_cell - block_min_voxel;
-                        if (sculpted_voxel_occupied(resolved_atlas_slot, brick_local)) {
+                        // Occupancy: a real sculpted brick samples its atlas; a region-routed
+                        // coarse block is all-occupied. The region-scoped band is folded in via
+                        // `voxel_meshed` (a no-op `true` when region-inactive — the band_z bounds
+                        // already clip, so the pre-S5 hit is byte-identical).
+                        let occupied = coarse_all_occupied
+                            || sculpted_voxel_occupied(resolved_atlas_slot, brick_local);
+                        let meshed = select(true, voxel_meshed(voxel_cell), region_active);
+                        if (occupied && meshed) {
                             var hit: MarchHit;
                             hit.hit = true;
                             // MIXED brick: the hit voxel's own material AND overlay from the

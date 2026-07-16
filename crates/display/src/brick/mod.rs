@@ -55,7 +55,7 @@ use voxel_core::core_geom::{BlockId, CellKey, MaterialChoice, CHUNK_BLOCKS};
 use voxel_core::voxel::RecentreVoxels;
 use evaluation::cuboid::VoxelBoxMaterial;
 use evaluation::two_layer_store::{SeamSolidity, TwoLayerChunk};
-use crate::renderer::{LayerBand, DEPTH_FORMAT, MSAA_SAMPLE_COUNT};
+use crate::renderer::{LayerBand, RegionClip, DEPTH_FORMAT, MSAA_SAMPLE_COUNT};
 
 // The brick-record key codec IS substrate's `lattice_key`: an absolute world-block
 // coordinate packed into one sortable `u64` in z-major lexicographic (z, y, x) order,

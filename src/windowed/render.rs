@@ -343,8 +343,8 @@ impl WindowedState {
         let layer_range = self.panel_state.layer_range;
         // ADR 0018 Decisions 4–5: the region-scoped clip (band + onion-fog region). The
         // band bites only in Onion-fog mode with a selection; the region confines it to the
-        // selected object's AABB (the cuboid mesh path honours the region; the brick
-        // raymarch region parity is the next slice #85 — it clips band-only for now).
+        // selected object's AABB. BOTH display paths honour the region — the cuboid mesh path
+        // (geometry) and the brick raymarch (per-frame uniforms, #85).
         let clip = self.current_mesh_clip(grid_dimensions[2]);
         let band = clip.band;
         // Part of #20: the cuboid mesh path is the sole voxel renderer. Upload its
@@ -406,6 +406,9 @@ impl WindowedState {
                 prepared.viewport_px,
                 grid_dimensions,
                 band,
+                // ADR 0018 Decision 5 (S5): the region-scoped clip on the brick path too — the
+                // band bites only inside the selected object's AABB (`None` ⇒ whole scene).
+                clip.region,
                 self.panel_state.scene.master_voxel_grid,
                 bound,
             );
@@ -417,6 +420,7 @@ impl WindowedState {
                 prepared.viewport_px,
                 grid_dimensions,
                 band,
+                clip.region,
             );
             true
         } else {

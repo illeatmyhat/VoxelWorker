@@ -711,6 +711,7 @@ fn brick_raymarch_hit_set_matches_exact_evaluator() {
             viewport_px,
             grid_dimensions,
             band,
+            None,
             false,
             Some(MaterialChoice::default()),
         );
@@ -918,6 +919,7 @@ fn brick_loaded_material_hit_samples_mesh_rule_texel() {
         viewport_px,
         grid_dimensions,
         LayerBand::FULL,
+        None,
         false,
         None,
     );
@@ -1060,6 +1062,7 @@ fn brick_surface_elision_hit_set_unchanged() {
                 viewport_px,
                 grid_dimensions,
                 band,
+                None,
                 false,
                 Some(MaterialChoice::default()),
             );
@@ -1180,6 +1183,7 @@ fn brick_surface_elision_band_clip_renders_interior() {
                 viewport_px,
                 grid_dimensions,
                 band,
+                None,
                 false,
                 Some(MaterialChoice::default()),
             );
@@ -1350,6 +1354,7 @@ fn brick_raymarch_incremental_patch_matches_wholesale_install() {
         viewport_px,
         grid_dimensions,
         band,
+        None,
         false,
         Some(MaterialChoice::default()),
     );
@@ -1374,6 +1379,7 @@ fn brick_raymarch_incremental_patch_matches_wholesale_install() {
         viewport_px,
         grid_dimensions,
         band,
+        None,
         false,
         Some(MaterialChoice::default()),
     );
@@ -1530,6 +1536,7 @@ fn brick_raymarch_incremental_carve_exposes_interior_across_chunk_boundary() {
             viewport_px,
             grid_dimensions,
             band,
+            None,
             false,
             Some(MaterialChoice::default()),
         );
@@ -1638,6 +1645,7 @@ fn brick_raymarch_residency_miss_renders_coarse_form() {
                 viewport_px,
                 grid_dimensions,
                 band,
+                None,
                 false,
                 Some(MaterialChoice::default()),
             );
@@ -1791,6 +1799,7 @@ fn brick_raymarch_pyramid_on_equals_off() {
                 viewport_px,
                 grid_dimensions,
                 band,
+                None,
                 false,
                 Some(MaterialChoice::default()),
             );
@@ -1954,6 +1963,7 @@ fn clipmap_scattered_scene_skips_empty_space() {
         [0, 0, width, height],
         grid_dimensions,
         LayerBand::FULL,
+        None,
         false,
         Some(MaterialChoice::default()),
     );
@@ -2109,6 +2119,7 @@ fn onion_ghost_marches_only_the_onion_slabs() {
             viewport_px,
             grid_dimensions,
             clip,
+            None,
             false,
             Some(MaterialChoice::default()),
         );
@@ -2144,7 +2155,7 @@ fn onion_ghost_marches_only_the_onion_slabs() {
     // Uniform-only (ADR 0012): rebinding the ghost slabs for two different bands must NOT
     // touch the installed field — no re-mesh / atlas re-upload on a brick-path band scrub.
     let record_count_before = renderer.record_count();
-    renderer.update_ghost_uniforms(&gpu.queue, view_projection, viewport_px, grid_dimensions, band);
+    renderer.update_ghost_uniforms(&gpu.queue, view_projection, viewport_px, grid_dimensions, band, None);
     let scrubbed = LayerBand {
         band_min: band.band_min + 3,
         band_max: band.band_max + 3,
@@ -2156,6 +2167,7 @@ fn onion_ghost_marches_only_the_onion_slabs() {
         viewport_px,
         grid_dimensions,
         scrubbed,
+        None,
     );
     assert_eq!(
         renderer.record_count(),
@@ -2165,6 +2177,200 @@ fn onion_ghost_marches_only_the_onion_slabs() {
     assert!(
         renderer.has_brick_field(),
         "the installed field stays live across ghost band scrubs"
+    );
+}
+
+/// **ADR 0018 Decision 5 (S5) — the brick raymarch's onion clip is REGION-SCOPED: the layer
+/// band bites ONLY inside the selected object's placed AABB; everything outside renders
+/// finished/full-Z.** The two paths' onion AESTHETICS legitimately differ (haze vs crisp), so
+/// this gate — the brick-path twin of the mesh path's region behaviour — asserts on the clip
+/// REGION, entirely from GPU hit-identity renders (no CPU-march oracle, matching the onion
+/// gate's style). The region is the +X half of the tall sphere in the recentred voxel frame
+/// (`x >= 0`); the band is a mid-Z slab. Three SOLID hit-identity renders are compared:
+///  - `full`   — `LayerBand::FULL`, no region (the no-onion render).
+///  - `banded` — the mid slab, no region (the pre-S5 SCENE-WIDE band).
+///  - `region` — the mid slab, confined to the AABB (ConfineBand).
+///
+/// The invariants (each unconditionally true of the region-scoped predicate):
+///  1. OUTSIDE the AABB the render is FULL: for every pixel whose `full` hit is outside the
+///     region, `region` hits the SAME voxel — because the full render's hit is the FIRST
+///     occupied voxel along the ray (nothing occupied precedes it), and an outside-region
+///     voxel is always meshed, so the region march cannot diverge. This is the task's "pixels
+///     outside the selected AABB identical to a no-onion brick render", pixel-exact.
+///  2. INSIDE the AABB the band bites: every `region` hit inside the AABB lands within the
+///     absolute-Z span the `banded` render occupies (the same band, observed empirically so
+///     the assert is frame-agnostic).
+///  3. The scoping is REAL (contrast vs scene-wide band): outside-AABB `region` hits exist
+///     whose Z is OUTSIDE that band span — geometry the scene-wide `banded` render hides but
+///     the region render shows finished. This makes invariant 1 non-vacuous over exactly the
+///     band-transcending geometry the mesh path renders full outside the AABB.
+///
+/// Finally the O(1) contract: installing the region + scrubbing the band is uniform-only — the
+/// brick field is never re-installed (`record_count` / `has_brick_field` unchanged).
+#[test]
+fn onion_region_confines_the_band_to_the_selected_aabb() {
+    use voxel_worker::{
+        build_brick_field, pack_gpu_records, AppCore, BrickRaymarchRenderer, ClipmapPyramid,
+        LayerBand, OrbitCamera, RegionClip, RegionRole, TwoLayerStore, COLOR_TARGET_FORMAT,
+    };
+
+    let gpu = pollster::block_on(GpuContext::new(None));
+    let width = 128u32;
+    let height = 128u32;
+
+    // The tall hollow sphere: its shell spans the whole Z-extent both sides of the region's
+    // X-split, so the +X half sections to the band while the −X half stays full.
+    let case = brick_render_cases()
+        .into_iter()
+        .find(|c| c.name == "render-sphere-80-d16")
+        .expect("render matrix carries the tall sphere case");
+    let vpb = case.voxels_per_block;
+    let two_layer_chunks = TwoLayerStore::enabled().build_covering_chunks(&case.scene, vpb, 0);
+    let build = build_brick_field(&two_layer_chunks, vpb);
+    assert!(!build.brick_records.is_empty(), "the sphere shell must produce records");
+    let records = pack_gpu_records(&build.brick_records, |_| false);
+    let pyramid = ClipmapPyramid::from_chunks(&two_layer_chunks);
+    let recentre = case.scene.recentre_voxels_for_resolve(vpb);
+    let recentre_v = recentre.voxels();
+    let grid_dimensions = case.scene.placed_region_dimensions(vpb);
+    let grid_z = grid_dimensions[2];
+
+    let band = LayerBand {
+        band_min: grid_z / 2 - 2,
+        band_max: grid_z / 2 + 1,
+        onion_depth: 0,
+    };
+    // The region: the +X half in the recentred voxel frame (`x >= 0`), spanning all of Y and Z
+    // (bounds far beyond the sphere). Any region is CORRECT for the invariants; this one makes
+    // each existence check non-vacuous (right half in-band, left half band-transcending).
+    let far = 1_000_000i64;
+    let region = RegionClip {
+        min: [0, -far, -far],
+        max: [far, far, far],
+        role: RegionRole::ConfineBand,
+    };
+
+    let mut app_core = AppCore::new(OrbitCamera::default());
+    app_core.camera.target = glam::Vec3::ZERO;
+    app_core.camera.orbit_distance = OrbitCamera::auto_framed_distance(grid_dimensions);
+    let aspect_ratio = width as f32 / height as f32;
+    let view_projection = app_core.view_projection(aspect_ratio, grid_dimensions);
+    let viewport_px = [0u32, 0, width, height];
+
+    let mut renderer = BrickRaymarchRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
+    renderer.install_brick_field(
+        &gpu.device,
+        &gpu.queue,
+        &build.brick_records,
+        &build.atlas_payload(),
+        &records,
+        &pyramid,
+        recentre,
+    );
+
+    let render = |renderer: &BrickRaymarchRenderer,
+                  clip: LayerBand,
+                  region: Option<RegionClip>|
+     -> Vec<[u32; 4]> {
+        renderer.update_uniforms(
+            &gpu.queue,
+            view_projection,
+            viewport_px,
+            grid_dimensions,
+            clip,
+            region,
+            false,
+            Some(MaterialChoice::default()),
+        );
+        renderer.render_hit_identity_image(&gpu.device, &gpu.queue, width, height)
+    };
+
+    let full = render(&renderer, LayerBand::FULL, None);
+    let banded = render(&renderer, band, None);
+    let regioned = render(&renderer, band, Some(region));
+
+    // A hit pixel `[hit, x, y, z]` → the recentred X (the region split axis) and absolute Z.
+    let recentred_x = |px: &[u32; 4]| px[1] as i32 as i64 - recentre_v[0];
+    let inside_region = |px: &[u32; 4]| recentred_x(px) >= 0; // Y/Z bounds are effectively infinite
+    let abs_z = |px: &[u32; 4]| px[3] as i32;
+
+    // The absolute-Z span the SCENE-WIDE banded render occupies (the band, observed).
+    let banded_zs: Vec<i32> = banded.iter().filter(|px| px[0] == 1).map(&abs_z).collect();
+    assert!(!banded_zs.is_empty(), "the mid band must render some solid voxels");
+    let band_z_lo = *banded_zs.iter().min().unwrap();
+    let band_z_hi = *banded_zs.iter().max().unwrap();
+
+    // Invariant 1 — OUTSIDE the AABB the region render equals the no-onion (full) render.
+    let mut outside_mismatches = 0usize;
+    let mut outside_full_hits = 0usize;
+    for (f, r) in full.iter().zip(regioned.iter()) {
+        if f[0] == 1 && !inside_region(f) {
+            outside_full_hits += 1;
+            if r != f {
+                outside_mismatches += 1;
+            }
+        }
+    }
+    assert!(
+        outside_full_hits > 0,
+        "the −X half of the sphere must produce outside-region full hits (test would be vacuous)"
+    );
+    assert_eq!(
+        outside_mismatches, 0,
+        "outside the selected AABB the brick region render must be pixel-identical to the \
+         no-onion render ({outside_mismatches}/{outside_full_hits} pixels diverged)"
+    );
+
+    // Invariant 2 — INSIDE the AABB every region hit lands within the band's Z span.
+    let mut inside_hits = 0usize;
+    for r in regioned.iter().filter(|px| px[0] == 1 && inside_region(px)) {
+        inside_hits += 1;
+        let z = abs_z(r);
+        assert!(
+            z >= band_z_lo && z <= band_z_hi,
+            "an inside-AABB region hit at Z {z} fell outside the band span [{band_z_lo}, {band_z_hi}]"
+        );
+    }
+    assert!(inside_hits > 0, "the +X half must section to the band (some inside-AABB hits)");
+
+    // Invariant 3 — the scoping is REAL: outside-AABB region hits exist BELOW/ABOVE the band
+    // (geometry the scene-wide banded render hides but the region render shows finished).
+    let band_transcending_outside = regioned
+        .iter()
+        .filter(|px| px[0] == 1 && !inside_region(px))
+        .filter(|px| abs_z(px) < band_z_lo || abs_z(px) > band_z_hi)
+        .count();
+    assert!(
+        band_transcending_outside > 0,
+        "the region clip must reveal outside-AABB geometry the scene-wide band hides \
+         (none found — the region is not scoping the band)"
+    );
+
+    // O(1): installing the region + scrubbing the band is uniform-only — no field re-install.
+    let record_count_before = renderer.record_count();
+    let _ = render(&renderer, band, Some(region));
+    let scrubbed = LayerBand {
+        band_min: band.band_min + 5,
+        band_max: band.band_max + 5,
+        onion_depth: 0,
+    };
+    let _ = render(&renderer, scrubbed, Some(region));
+    renderer.update_ghost_uniforms(
+        &gpu.queue,
+        view_projection,
+        viewport_px,
+        grid_dimensions,
+        LayerBand { onion_depth: 4, ..band },
+        Some(region),
+    );
+    assert_eq!(
+        renderer.record_count(),
+        record_count_before,
+        "a region set + band scrub must be uniform-only (no field re-install / re-upload)"
+    );
+    assert!(
+        renderer.has_brick_field(),
+        "the installed field stays live across region/band uniform updates"
     );
 }
 
@@ -2275,6 +2481,7 @@ fn brick_mixed_material_matches_cpu_reference() {
         viewport_px,
         grid_dimensions,
         band,
+        None,
         false,
         Some(MaterialChoice::default()),
     );
