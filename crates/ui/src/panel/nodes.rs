@@ -4,7 +4,7 @@
 use super::palette::SHAPE_CHIPS;
 use super::{PanelResponse, PanelState};
 use document::intent::{Intent, NodeSpec};
-use document::scene::{DefId, Node, NodeContent, NodeId, VoxelBody};
+use document::scene::{DefId, Node, NodeContent, NodeId, VoxelBody, ROOT_NODE_ID};
 use document::sketch::{PlaneAxis, Sketch, SketchSolid};
 use document::voxel::{GeometryParams, SdfShape};
 use voxel_core::voxel::ShapeKind;
@@ -16,7 +16,7 @@ fn node_row_label(node: &Node) -> String {
         NodeContent::Tool { shape, .. } => format!("{:?}", shape.kind),
         NodeContent::SketchTool { .. } => "Sketch".to_string(),
         NodeContent::VoxelBody(VoxelBody::DebugClouds { .. }) => "Clouds".to_string(),
-        NodeContent::Group(children) => format!("Group ({})", children.len()),
+        NodeContent::Group(children) => format!("Part ({})", children.len()),
         NodeContent::Instance(_) => "Instance".to_string(),
     };
     if node.name.is_empty() {
@@ -32,7 +32,7 @@ fn node_row_label(node: &Node) -> String {
 /// selectable name (indented by depth), and a per-row delete ✕. Beneath the tree:
 ///
 ///   * **+ Add** — append a Tool (any shape) or a Clouds VoxelBody at top level.
-///   * **Group** — wrap the active node in a new Group (then add children to it
+///   * **Part** — wrap the active node in a new part (then add children to it
 ///     via "+ Add child").
 ///   * **+ Add child** — when the active node is a Group, append a Tool/VoxelBody into
 ///     it.
@@ -70,6 +70,24 @@ pub(super) fn build_node_list_section(
     let active_id = state.scene.active;
     for (_path, id, depth) in &rows {
         let is_active = active_id == Some(*id);
+        // ADR 0018 Decision 2: the root part is the top row — selectable like any node,
+        // but undeletable and with no visibility toggle (it always folds; hiding it is
+        // meaningless). Its child count is `roots.len()` (its real spine), since the
+        // container node's own `Group` payload is unused.
+        if *id == ROOT_NODE_ID {
+            ui.horizontal(|ui| {
+                ui.add_space(*depth as f32 * 14.0);
+                let label = format!("Part ({})", state.scene.roots.len());
+                if ui
+                    .selectable_label(is_active, label)
+                    .on_hover_text("The scene's root part — the assembly everything folds into")
+                    .clicked()
+                {
+                    select = Some(*id);
+                }
+            });
+            continue;
+        }
         // Read the node by id; mutate visibility via a deferred op (a separate
         // lookup) so the borrow of `nodes` does not span the whole row.
         let (label, visible) = match state.scene.node_by_id(*id) {
@@ -180,19 +198,28 @@ fn sketch_node_spec(state: &PanelState) -> NodeSpec {
 }
 
 /// Build the action buttons under the tree: **+ Add** (top-level), **+ Add child**
-/// (into the active Group), **Group** (wrap the active node), and **Make
+/// (into the active Group), **Part** (wrap the active node in a new part), and **Make
 /// definition** (turn the active node into a reusable [`AssemblyDef`] + Instance).
 ///
 /// [`AssemblyDef`]: document::scene::AssemblyDef
 fn build_node_actions(ui: &mut egui::Ui, state: &mut PanelState, response: &mut PanelResponse) {
     ui.add_space(4.0);
 
-    // Whether the active node is a Group (gates "+ Add child").
-    let active_is_group = matches!(
-        state.scene.active_node().map(|node| &node.content),
-        Some(NodeContent::Group(_))
-    );
-    let has_active = state.scene.active.is_some();
+    // Whether the root part is the active selection (ADR 0018 Decision 2): it is a
+    // container but NOT a "+ Add child" / Group / Make-definition target — its children
+    // are added via the top-level "+ Add", and it can neither be wrapped nor turned
+    // into a definition.
+    let root_active = state.scene.active == Some(ROOT_NODE_ID);
+    // Whether the active node is a Group (gates "+ Add child") — the root part is
+    // excluded (adding into it means a top-level "+ Add", and `add_child_to_group`
+    // does not resolve the root's reserved id).
+    let active_is_group = !root_active
+        && matches!(
+            state.scene.active_node().map(|node| &node.content),
+            Some(NodeContent::Group(_))
+        );
+    // Group / Make-definition act on a concrete, non-root node.
+    let has_active_non_root = state.scene.active.is_some() && !root_active;
 
     ui.horizontal_wrapped(|ui| {
         // + Add — a top-level Tool or Clouds VoxelBody. ADR 0003 Phase C C4a: described as
@@ -262,10 +289,12 @@ fn build_node_actions(ui: &mut egui::Ui, state: &mut PanelState, response: &mut 
             });
         }
 
-        // Group — wrap the active node in a new Group → `GroupNode { target: active }`.
+        // Part — wrap the active node in a new part (a fresh composition container) →
+        // `GroupNode { target: active }`. Disabled for the root part (it cannot wrap
+        // itself).
         if ui
-            .add_enabled(has_active, egui::Button::new("Group"))
-            .on_hover_text("Wrap the selected node in a new Group")
+            .add_enabled(has_active_non_root, egui::Button::new("Part"))
+            .on_hover_text("Wrap the selected node in a new Part")
             .clicked()
         {
             if let Some(target) = state.scene.active {
@@ -275,9 +304,10 @@ fn build_node_actions(ui: &mut egui::Ui, state: &mut PanelState, response: &mut 
 
         // Make definition — the active node becomes a reusable AssemblyDef and is
         // replaced by an Instance of it → `MakeDefinition { target: active, name }`.
+        // Disabled for the root part (a definition of the whole scene is out of scope).
         if ui
-            .add_enabled(has_active, egui::Button::new("Make definition"))
-            .on_hover_text("Turn the selected Group/node into a reusable definition, placed by an Instance")
+            .add_enabled(has_active_non_root, egui::Button::new("Make definition"))
+            .on_hover_text("Turn the selected Part/node into a reusable definition, placed by an Instance")
             .clicked()
         {
             if let Some(target) = state.scene.active {

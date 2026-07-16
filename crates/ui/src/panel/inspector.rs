@@ -4,7 +4,7 @@
 use super::palette::SHAPE_CHIPS;
 use super::{PanelResponse, PanelState};
 use document::intent::Intent;
-use document::scene::{CombineOp, NodeContent, VoxelBody};
+use document::scene::{CombineOp, NodeContent, VoxelBody, ROOT_NODE_ID};
 use document::sketch::{Operation, PlaneAxis, RevolveAxis, Sketch, SketchSolid};
 use document::voxel::SdfShape;
 use voxel_core::core_geom::MaterialChoice;
@@ -28,9 +28,16 @@ pub(super) fn build_inspector_section(
         VoxelBody,
         Group,
         Instance,
+        /// The reified root part (ADR 0018 Decision 2): a minimal name-only editor —
+        /// its operation / offset / grids are inert (the fold walks `roots` directly,
+        /// never the root's own transform or op), so no dead controls are shown.
+        RootPart,
         None,
     }
-    let kind = match state.scene.active_node().map(|node| &node.content) {
+    let kind = if state.scene.active == Some(ROOT_NODE_ID) {
+        ActiveKind::RootPart
+    } else {
+        match state.scene.active_node().map(|node| &node.content) {
         Some(NodeContent::Tool { .. }) => ActiveKind::Tool,
         // ADR 0003 §3i: a sketch node shows the rectangle-profile editor
         // (Plane / Width / Depth / Height) — or, for a hand-built non-rectangular
@@ -41,6 +48,7 @@ pub(super) fn build_inspector_section(
         Some(NodeContent::Group(_)) => ActiveKind::Group,
         Some(NodeContent::Instance(_)) => ActiveKind::Instance,
         None => ActiveKind::None,
+        }
     };
 
     match kind {
@@ -116,11 +124,17 @@ pub(super) fn build_inspector_section(
             // so its OWN operation is meaningful — the group's composed body folds
             // into its parent under it. The selector therefore shows on Groups too.
             build_operation_section(ui, state, response);
-            build_group_inspector_section(ui, state, "Group", response);
+            build_group_inspector_section(ui, state, "Part", response);
             build_offset_section(ui, state, response);
             build_node_grids_section(ui, state, response);
             // Issue #79: the per-node "Show child booleans" display toggle.
             build_child_booleans_section(ui, state, response);
+        }
+        ActiveKind::RootPart => {
+            // ADR 0018 Decision 2: the root part edits only its name. Its operation,
+            // offset and grids never enter the fold (which walks `roots` directly), so
+            // showing them would be dead controls.
+            build_group_inspector_section(ui, state, "Part", response);
         }
         ActiveKind::Instance => {
             // ADR 0017 / issue #76: an Instance folds the referenced definition's

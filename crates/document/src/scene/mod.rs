@@ -44,7 +44,10 @@ mod spatial;
 mod tests;
 
 pub use extent::{NodeTransform, RegionBlocks};
-pub use graph::{AssemblyDef, CombineOp, DefId, Node, NodeBuilder, NodeGrids, NodeId, NodePath, Point};
+pub use graph::{
+    AssemblyDef, CombineOp, DefId, Node, NodeBuilder, NodeGrids, NodeId, NodePath, Point,
+    ROOT_NODE_ID,
+};
 pub use producers::{NodeContent, VoxelBody};
 pub use producers::{operation_masks_beyond_bounds, LeafProducer, ScopeFrame};
 
@@ -78,6 +81,21 @@ pub struct Scene {
     /// reorder later-wins material on overlap).
     #[serde(default)]
     pub roots: Vec<NodeId>,
+    /// The always-present **root part** (ADR 0018 Decision 2): the concrete,
+    /// selectable container node the scene tree presents as its top row ("Part"). Its
+    /// children are the top-level nodes — the ordered spine [`roots`](Self::roots),
+    /// which stays the source of truth for the fold entry ([`for_each_leaf`] walks it
+    /// directly, so root reification changes NO composition semantics). The node lives
+    /// HERE (not in the [`arena`](Self::arena)) so its reserved id [`ROOT_NODE_ID`]
+    /// never mingles with user ids and every arena scan is unchanged; its own `Group`
+    /// payload is left empty (the real children are `roots`). Undeletable, and never a
+    /// `MakeDefinition`/`GroupNode` target (a definition of the whole scene is out of
+    /// scope — see [`make_definition_from_active`](Self::make_definition_from_active)).
+    ///
+    /// [`for_each_leaf`]: Self::for_each_leaf
+    /// [`make_definition_from_active`]: Self::make_definition_from_active
+    #[serde(default = "default_root_part")]
+    pub root: Node,
     /// The id-keyed node storage (ADR 0003 Phase B5). A [`BTreeMap`] (not `HashMap`)
     /// so it iterates/serializes in ascending-id order → deterministic, and so the
     /// load-path `max_existing` scan in [`ensure_node_ids`](Self::ensure_node_ids) is
@@ -159,6 +177,19 @@ fn default_density() -> u32 {
     16
 }
 
+/// The default **root part** node (ADR 0018 Decision 2): a `Union`, identity-placed
+/// [`NodeContent::Group`] named "Part" carrying the reserved [`ROOT_NODE_ID`]. Its
+/// own children `Vec` is left empty — the scene's top-level nodes live on
+/// [`Scene::roots`], which is the container's real (and fold-authoritative) spine.
+/// Used both by [`Scene::default`] and as the `serde(default)` for the `root` field,
+/// so a document missing it (an older save) loads with its `roots` adopted as this
+/// fresh part's children.
+fn default_root_part() -> Node {
+    let mut node = Node::new("Part", NodeContent::Group(Vec::new()));
+    node.id = ROOT_NODE_ID;
+    node
+}
+
 impl Default for Scene {
     /// An empty scene with the issue-#29 master defaults — **all three masters ON**
     /// (grid-rework fix), while every node's per-object grid flag stays default OFF,
@@ -168,6 +199,7 @@ impl Default for Scene {
     fn default() -> Self {
         Self {
             roots: Vec::new(),
+            root: default_root_part(),
             arena: BTreeMap::new(),
             definitions: Vec::new(),
             active: None,
@@ -176,7 +208,9 @@ impl Default for Scene {
             master_voxel_grid: true,
             master_floor_grid: true,
             active_point: None,
-            next_node_id: 0,
+            // Real node ids start at 2; `1` is reserved for the root part
+            // ([`ROOT_NODE_ID`]), so a minted user id never collides with it.
+            next_node_id: 2,
             voxels_per_block: default_density(),
         }
     }

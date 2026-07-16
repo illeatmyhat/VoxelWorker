@@ -1085,16 +1085,21 @@ use crate::voxel::VoxelProducer;
         let rows = scene.tree_rows();
         let paths: Vec<(Vec<usize>, usize)> =
             rows.iter().map(|(p, _id, d)| (p.indices.clone(), *d)).collect();
+        // ADR 0018 Decision 2: the root part is the top row (empty path, depth 0), and
+        // the former top-level nodes indent one level beneath it under their part.
         assert_eq!(
             paths,
             vec![
-                (vec![0], 0),    // Group
-                (vec![0, 0], 1), // wrapped A
-                (vec![0, 1], 1), // added child
-                (vec![1], 0),    // B
+                (vec![], 0),     // root part ("Part")
+                (vec![0], 1),    // Group
+                (vec![0, 0], 2), // wrapped A
+                (vec![0, 1], 2), // added child
+                (vec![1], 1),    // B
             ],
-            "tree_rows is depth-first with Group children indented under their parent"
+            "tree_rows leads with the root part, then depth-first Group children indented"
         );
+        // The first row IS the reified root part.
+        assert_eq!(rows[0].1, crate::scene::ROOT_NODE_ID, "row 0 is the root part");
     }
 
     /// Selecting a node by path reaches a Group child (not just top-level nodes) —

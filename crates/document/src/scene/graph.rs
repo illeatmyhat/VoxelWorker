@@ -32,6 +32,15 @@ pub struct DefId(pub u32);
 )]
 pub struct NodeId(pub u64);
 
+/// The reserved identity of the always-present **root part** (ADR 0018 Decision 2):
+/// the concrete container node whose children are the scene's top-level nodes
+/// ([`Scene::roots`]). It is minted once, never handed to a user node (the mint
+/// floor starts real ids at `2`, see [`Scene::mint_node_id`]), so
+/// `active == Some(ROOT_NODE_ID)` unambiguously means "the root part is selected".
+/// The root part lives on [`Scene::root`] (a field, NOT in the [`arena`](Scene::arena))
+/// and its children spine IS [`Scene::roots`] — its own `Group` payload is unused.
+pub const ROOT_NODE_ID: NodeId = NodeId(1);
+
 /// A path to a node anywhere in the **top-level assembly** (ADR 0001 step 4 UI).
 ///
 /// The path is a list of child indices walked from `Scene::nodes` down through
@@ -504,7 +513,9 @@ impl Scene {
         for id in self.arena.keys() {
             max_existing = max_existing.max(id.0);
         }
-        self.next_node_id = self.next_node_id.max(max_existing + 1).max(1);
+        // `.max(2)`: id `1` is reserved for the root part ([`ROOT_NODE_ID`]), so the
+        // first real id a load-path mint hands out is `2`.
+        self.next_node_id = self.next_node_id.max(max_existing + 1).max(2);
 
         // Re-key any still-unassigned node out of the `NodeId(0)` sentinel slot. With
         // the arena keyed by id, minting a fresh id means MOVING the arena entry AND
@@ -697,6 +708,12 @@ impl Scene {
         if id == NodeId(0) {
             return None;
         }
+        // ADR 0018 Decision 2: the root part lives on `self.root` (a field, not the
+        // arena), so resolve its reserved id there — this is what makes it selectable
+        // (`active_node`) and inspectable like any other node.
+        if id == ROOT_NODE_ID {
+            return Some(&self.root);
+        }
         self.arena.get(&id)
     }
 
@@ -706,6 +723,12 @@ impl Scene {
         // ADR 0003 Phase B5: direct id-keyed arena lookup.
         if id == NodeId(0) {
             return None;
+        }
+        // ADR 0018 Decision 2: the root part is a field, not an arena entry — its
+        // reserved id edits `self.root` (e.g. a rename via `SetName`). Its children
+        // are `self.roots`, never mutated through this handle.
+        if id == ROOT_NODE_ID {
+            return Some(&mut self.root);
         }
         self.arena.get_mut(&id)
     }
@@ -769,7 +792,12 @@ impl Scene {
     /// without a `path → id` round-trip; the `NodePath` stays for depth/path display.
     pub fn tree_rows(&self) -> Vec<(NodePath, NodeId, usize)> {
         let mut rows = Vec::new();
-        collect_tree_rows(self, &self.roots, &mut Vec::new(), 0, &mut rows);
+        // ADR 0018 Decision 2: the root part is the TOP ROW (depth 0), addressed by
+        // the empty `NodePath` (it is not in the `roots` spine — `node_at_path` on the
+        // empty path returns `None`, so geometry consumers like the grid batch skip it
+        // harmlessly). Its children — the top-level nodes — indent one level beneath it.
+        rows.push((NodePath::from_indices(Vec::new()), ROOT_NODE_ID, 0));
+        collect_tree_rows(self, &self.roots, &mut Vec::new(), 1, &mut rows);
         rows
     }
 
@@ -894,7 +922,9 @@ impl Scene {
     /// (`0` is the unassigned sentinel). Used by the `add_*` edit ops so a new node
     /// carries a stable id the moment it joins the tree.
     fn mint_node_id(&mut self) -> NodeId {
-        self.next_node_id = self.next_node_id.max(1);
+        // `.max(2)`: `1` is the reserved root-part id ([`ROOT_NODE_ID`]); user nodes
+        // mint from `2` upward so one can never collide with the root.
+        self.next_node_id = self.next_node_id.max(2);
         let id = NodeId(self.next_node_id);
         self.next_node_id += 1;
         id
@@ -1196,8 +1226,9 @@ impl Scene {
             siblings.insert(index, group_id);
             child_id
         };
-        // The new Group owns the wrapped child by id; store it in the arena.
-        let mut group = Node::new("Group", NodeContent::Group(vec![child_id]));
+        // The new Group owns the wrapped child by id; store it in the arena. Named
+        // "Part" (ADR 0018 Decision 1: the composition container is user-facing "Part").
+        let mut group = Node::new("Part", NodeContent::Group(vec![child_id]));
         group.id = group_id;
         self.arena.insert(group_id, group);
         // ADR 0003 Phase B4: return the new Group's stable id (minted above) rather
@@ -1229,6 +1260,11 @@ impl Scene {
     /// definition can be placed again via [`add_instance`](Self::add_instance) —
     /// the village workflow: one stored body, many placements.
     pub fn make_definition_from_active(&mut self, name: impl Into<String>) -> Option<DefId> {
+        // ADR 0018 Decision 2: the root part is never a definition target (a definition
+        // of the whole scene is out of scope) — reject it before touching anything.
+        if self.active == Some(ROOT_NODE_ID) {
+            return None;
+        }
         let def_id = self.next_def_id();
         // ADR 0003 Phase B3: resolve the selected NodeId to its current position.
         // The node keeps its id while only its content becomes an Instance, so the

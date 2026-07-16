@@ -289,8 +289,25 @@ use crate::voxel::SdfShape;
         ]);
         scene.ensure_node_ids();
 
-        // Every tree row resolves both ways, consistently.
+        // ADR 0018 Decision 2: the root part is the top tree row but is NOT in the
+        // `roots` spine — it has no positional `NodePath` (its empty path resolves to
+        // nothing), yet it IS reachable by its reserved id. Assert that asymmetry, then
+        // skip it in the positional round-trip below.
+        assert_eq!(scene.tree_rows()[0].1, crate::scene::ROOT_NODE_ID, "row 0 is the root part");
+        assert!(
+            scene.node_by_id(crate::scene::ROOT_NODE_ID).is_some(),
+            "the root part resolves by its reserved id"
+        );
+        assert!(
+            scene.path_of(crate::scene::ROOT_NODE_ID).is_none(),
+            "the root part has no positional path (it is not in the roots spine)"
+        );
+
+        // Every NON-root tree row resolves both ways, consistently.
         for (path, row_id, _depth) in scene.tree_rows() {
+            if row_id == crate::scene::ROOT_NODE_ID {
+                continue;
+            }
             let id = scene.id_at_path(&path).expect("path resolves to an id");
             assert_eq!(id, row_id, "the row's carried id matches id_at_path");
             assert_ne!(id, NodeId(0), "a minted node never has the 0 sentinel");
