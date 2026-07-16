@@ -243,9 +243,9 @@ use super::*;
     /// (Mixed with a Tool so the scene has a composite chunk extent.)
     #[test]
     fn round_trip_matches_dense_with_unboundable_cloud() {
-        use document::scene::Part;
+        use document::scene::VoxelBody;
         let density = 16;
-        let mut cloud = Node::new("Clouds", NodeContent::Part(Part::DebugClouds { seed: 7 }));
+        let mut cloud = Node::new("Clouds", NodeContent::VoxelBody(VoxelBody::DebugClouds { seed: 7 }));
         cloud.transform = NodeTransform::from_blocks([0, 0, 0], density);
         let scene = Scene::from_nodes(vec![
             make_tool(ShapeKind::Box, [0, 0, 0], MaterialChoice::Stone, density),
@@ -601,7 +601,7 @@ use super::*;
     /// `DebugClouds` (unboundable → per-block), and a partial revolve (angular ambiguity).
     #[test]
     fn whole_chunk_fast_path_matches_per_block_sweep() {
-        use document::scene::Part;
+        use document::scene::VoxelBody;
         use document::sketch::{PlaneAxis, RevolveAxis, Sketch, SketchPoint, SketchSolid};
 
         // Assert fast-path == per-block over EVERY covering chunk of `scene`.
@@ -678,7 +678,7 @@ use super::*;
         // falls back to per-block; every chunk must still match.
         let cloud_scene = Scene::from_nodes(vec![Node::new(
             "Clouds",
-            NodeContent::Part(Part::DebugClouds { seed: 7 }),
+            NodeContent::VoxelBody(VoxelBody::DebugClouds { seed: 7 }),
         )]);
         assert_identical(&cloud_scene, density, "debug-clouds");
 

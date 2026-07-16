@@ -11,7 +11,7 @@ use crate::voxel::{GeometryParams, SdfShape};
 
 use super::*;
 
-/// A reusable identifier for a [`Tool`-or-`Part`](NodeContent) definition that an
+/// A reusable identifier for a [`Tool`-or-`VoxelBody`](NodeContent) definition that an
 /// [`NodeContent::Instance`] points at (ADR 0001: reuse by reference). Step 1
 /// never constructs an Instance, so this is a forward-declared type only.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -647,7 +647,7 @@ impl Scene {
 
     /// The node at `path`, walking from `nodes` down through Group
     /// children. `None` when any index along the path is out of range or the path
-    /// tries to descend through a non-Group (a Tool / Part / Instance has no
+    /// tries to descend through a non-Group (a Tool / VoxelBody / Instance has no
     /// addressable children).
     pub fn node_at_path(&self, path: &NodePath) -> Option<&Node> {
         // Walk the id-spine (`roots`, then each Group's `Vec<NodeId>`) for ORDER,
@@ -798,7 +798,7 @@ impl Scene {
     /// The transform gizmo's placement for the **active/selected** node, in the
     /// SAME recentred render frame the resolved voxels live in (issue #29 S2).
     /// `None` when nothing is selected (the gizmo is hidden) or the selection has
-    /// no intrinsic extent (e.g. a lone Part with no size).
+    /// no intrinsic extent (e.g. a lone VoxelBody with no size).
     ///
     /// Returns `(pivot_voxels, extent_voxels)`:
     /// * `pivot_voxels` — the **centre** of the node's block-aligned AABB in the
@@ -1307,7 +1307,7 @@ impl Scene {
     /// shape, carrying `material` as its single material.
     ///
     /// Step 2 removed the `debug_clouds: bool` selector — "Clouds" is now an
-    /// Add-a-Part action in the node list ([`Part::DebugClouds`]), not a mode of
+    /// Add-a-VoxelBody action in the node list ([`VoxelBody::DebugClouds`]), not a mode of
     /// the geometry. So this constructor only ever builds a Tool; the back-compat
     /// config load (a single persisted geometry) routes through here.
     pub fn from_geometry(geometry: GeometryParams, material: MaterialChoice) -> Self {

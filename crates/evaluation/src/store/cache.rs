@@ -379,7 +379,7 @@ impl Store {
     /// (the half-open box `[c·E, (c+1)·E)` per axis, `E = CHUNK_BLOCKS × density`),
     /// and the returned coord set equals the scene's
     /// [`covering_chunk_range`](document::scene::Scene::covering_chunk_range) for the
-    /// region (empty for a Part-only scene with no composite extent).
+    /// region (empty for a VoxelBody-only scene with no composite extent).
     ///
     /// The grids are **borrowed** from the cache (`&VoxelGrid`), so the returned
     /// `Vec` borrows `self` immutably for its lifetime. Resolving misses needs
@@ -538,7 +538,7 @@ impl Store {
     /// Drop every cached chunk (the all-or-nothing invalidation seam).
     ///
     /// Still used for the edit kinds [`invalidate_aabb`](Self::invalidate_aabb) can't
-    /// localise (a density change, or a region-spanning Part edit) and on the very
+    /// localise (a density change, or a region-spanning VoxelBody edit) and on the very
     /// first rebuild (no previous scene to diff against). For a localisable edit,
     /// prefer `invalidate_aabb`.
     pub fn clear(&mut self) {

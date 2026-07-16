@@ -155,9 +155,9 @@ use crate::voxel::VoxelProducer;
         );
     }
 
-    /// The same guarantee for a Part (the debug cloud field): a one-node Part
+    /// The same guarantee for a VoxelBody (the debug cloud field): a one-node VoxelBody
     /// scene matches `DebugCloudField::resolve` at the same dimensions. Step 2
-    /// builds the Part node directly (the `debug_clouds` selector is gone).
+    /// builds the VoxelBody node directly (the `debug_clouds` selector is gone).
     #[test]
     fn part_scene_matches_bare_cloud_field() {
         let size_blocks = [4u32, 4, 4];
@@ -175,7 +175,7 @@ use crate::voxel::VoxelProducer;
         bare_field.resolve(&mut bare, voxels_per_block);
 
         let scene =
-            Scene::single_node(Node::new("Clouds", NodeContent::Part(Part::DebugClouds { seed: 0 })));
+            Scene::single_node(Node::new("Clouds", NodeContent::VoxelBody(VoxelBody::DebugClouds { seed: 0 })));
         let region = RegionBlocks::new(size_blocks);
         let resolved = scene.resolve_region(region, voxels_per_block, 0);
 
@@ -195,7 +195,7 @@ use crate::voxel::VoxelProducer;
         for (size_blocks, vpb) in [([5u32, 5, 5], 1u32), ([5, 5, 5], 5)] {
             let scene = Scene::single_node(Node::new(
                 "Clouds",
-                NodeContent::Part(Part::DebugClouds { seed: 7 }),
+                NodeContent::VoxelBody(VoxelBody::DebugClouds { seed: 7 }),
             ));
             let region = RegionBlocks::new(size_blocks);
             let dims = [
@@ -210,7 +210,7 @@ use crate::voxel::VoxelProducer;
             assert!(!monolithic.occupied.is_empty(), "[{label}] non-empty cloud");
 
             // (a) every centre is a half-integer; (c) every decoded index ∈ [0, dim).
-            // A Part-only cloud is corner-anchored at the explicit region (low corner 0,
+            // A VoxelBody-only cloud is corner-anchored at the explicit region (low corner 0,
             // recentre 0), so the decode is `floor(world)`.
             let mut decoded = 0usize;
             for voxel in &monolithic.occupied {
@@ -234,11 +234,11 @@ use crate::voxel::VoxelProducer;
                 "[{label}] every emitted voxel decodes in-range (no silent drop)"
             );
 
-            // A Part-only scene has no chunkable extent, so the monolithic path above
+            // A VoxelBody-only scene has no chunkable extent, so the monolithic path above
             // IS the resolve path (the chunk reassembly is for Tool-bearing scenes).
             assert!(
                 !scene.has_chunkable_extent(vpb),
-                "[{label}] a Part-only cloud has no chunkable extent"
+                "[{label}] a VoxelBody-only cloud has no chunkable extent"
             );
         }
     }
@@ -261,7 +261,7 @@ use crate::voxel::VoxelProducer;
             },
         );
         tool.transform = NodeTransform::from_blocks([0, 0, 0], vpb);
-        let cloud = Node::new("Clouds", NodeContent::Part(Part::DebugClouds { seed: 3 }));
+        let cloud = Node::new("Clouds", NodeContent::VoxelBody(VoxelBody::DebugClouds { seed: 3 }));
         let scene = scene_with_top_level_selected(
             Scene::from_nodes(vec![tool, cloud]),
             0,
@@ -1078,7 +1078,7 @@ use crate::voxel::VoxelProducer;
         let group_id = scene.group_active().expect("active node");
         let added = scene.add_child_to_group(
             group_id,
-            Node::new("child", NodeContent::Part(Part::DebugClouds { seed: 0 })),
+            Node::new("child", NodeContent::VoxelBody(VoxelBody::DebugClouds { seed: 0 })),
         );
         assert!(added, "the wrapped node is a Group so a child can be added");
 

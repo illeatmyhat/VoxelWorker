@@ -7,7 +7,7 @@
 
 use document::command::{Command, Inverse};
 use document::intent::{Intent, IntentEffect};
-use document::scene::{NodeContent, NodeId, NodeTransform, Part, Scene};
+use document::scene::{NodeContent, NodeId, NodeTransform, VoxelBody, Scene};
 use document::voxel::SdfShape;
 
 use super::AppCore;
@@ -231,7 +231,7 @@ impl AppCore {
             },
             Intent::SetCloudSeed { target, .. } => match scene.node_by_id(*target) {
                 Some(node) => match &node.content {
-                    NodeContent::Part(Part::DebugClouds { seed }) => {
+                    NodeContent::VoxelBody(VoxelBody::DebugClouds { seed }) => {
                         Inverse::Field(Intent::SetCloudSeed {
                             target: *target,
                             seed: *seed,
@@ -573,7 +573,7 @@ impl AppCore {
             Intent::SetCloudSeed { target, seed } => {
                 let applied = match scene.node_by_id_mut(target) {
                     Some(node) => match &mut node.content {
-                        NodeContent::Part(Part::DebugClouds { seed: node_seed }) => {
+                        NodeContent::VoxelBody(VoxelBody::DebugClouds { seed: node_seed }) => {
                             *node_seed = seed;
                             true
                         }

@@ -8,7 +8,7 @@ use voxel_worker::{
     create_depth_view, create_msaa_color_view, procedural_material_average_color, render_frame,
     run_egui_frame, AppCore, CuboidMeshRenderer, EguiPaintBridge, FrameOverlays, GpuContext,
     InfiniteGridRenderer, LayerBand, LayerRange, MaterialSource, Node, NodeContent, NodePath,
-    OrbitCamera, PanelState, Part, Point, PointsRenderer, RegionBlocks, Scene, SceneGridRenderer,
+    OrbitCamera, PanelState, VoxelBody, Point, PointsRenderer, RegionBlocks, Scene, SceneGridRenderer,
     SdfShape, SelectedOperandGhostRenderer, TransformGizmoRenderer, ViewCubeRenderer, VoxExport,
     VoxelGrid, COLOR_TARGET_FORMAT,
 };
@@ -111,7 +111,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     // ADR 0001 step 2/3: resolve through a scene. `--demo-scene` builds a
     // hardcoded multi-node PLACED scene (sphere at origin + box offset +8 in X +
     // clouds offset in Z) to verify separated placement; otherwise a one-node
-    // scene — a Tool, or a DebugClouds Part when `--shape debug-clouds`. Seed the
+    // scene — a Tool, or a DebugClouds VoxelBody when `--shape debug-clouds`. Seed the
     // panel's scene so the node-list section renders the nodes in the captured
     // panel.
     // `--replay` (ADR 0003 Phase C, slice C3) is the highest-precedence scene SOURCE:
@@ -169,7 +169,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     } else if options.debug_clouds {
         Scene::single_node(Node::new(
             "Clouds",
-            NodeContent::Part(Part::DebugClouds { seed: 0 }),
+            NodeContent::VoxelBody(VoxelBody::DebugClouds { seed: 0 }),
         ))
     } else {
         Scene::from_geometry(options.geometry.clone(), options.material)
@@ -304,7 +304,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     // scene the goldens test — resolves through `AppCore::rebuild`, the SAME
     // store-backed resolve + per-chunk path the windowed app drives, so the golden
     // net now exercises the real core instead of a parallel copy (A3 keystone). The
-    // density-cap and Part-only branches stay shot-specific (the windowed app never
+    // density-cap and VoxelBody-only branches stay shot-specific (the windowed app never
     // produces them). `render_chunks_for_mesh` carries the per-chunk accessor
     // (chunkable path only) to the cuboid mesh build below; it borrows the store, so
     // `app_core` is left untouched until it is consumed + dropped there.
@@ -316,13 +316,13 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     // `placed_region_dimensions`, proven in
     // `scene::tests::placed_region_dimensions_equals_assembled_grid`); for the
     // chunkable path it comes straight off `AppCore::rebuild`'s output (no recompute).
-    // A Part-only scene (`--shape debug-clouds`) has no composite extent, so it is
+    // A VoxelBody-only scene (`--shape debug-clouds`) has no composite extent, so it is
     // resolved through the explicit-region path and sized `region × density` (rather
     // than `placed_region_dimensions`, which is `[0,0,0]` for it).
     // The dense reference `Store` (ADR 0010 E5) owns the per-chunk grids the default
     // (dense) mesh path borrows via `render_chunks_for_mesh`; it must outlive that
     // borrow, so it lives here at the `main` scope. `None` on the density-cap /
-    // Part-only branches (which build no dense per-chunk accessor).
+    // VoxelBody-only branches (which build no dense per-chunk accessor).
     let mut reference_store: Option<voxel_worker::Store> = None;
     let (grid, region_dimensions, mut render_chunks_for_mesh) =
         if voxel_core::voxel::chunk_extent_exceeds_bound(density) {
@@ -367,11 +367,11 @@ pub(crate) async fn run_capture(options: ShotOptions) {
             let render_chunks = store.resident_render_chunks(&scene, density, 0);
             (grid, region_dimensions, Some(render_chunks))
         } else {
-            // A Part-only scene (e.g. `--shape debug-clouds`) has no intrinsic-size
+            // A VoxelBody-only scene (e.g. `--shape debug-clouds`) has no intrinsic-size
             // leaf, so there is no composite AABB to chunk — the cloud field sizes
             // itself to the EXPLICIT region. Resolve it directly through the monolithic
             // path, exactly as before (unchanged output). The windowed app never
-            // produces a Part-only scene.
+            // produces a VoxelBody-only scene.
             let grid = scene.resolve_region(region, density, 0);
             let region_dimensions = [
                 region.size_blocks[0] * density,
@@ -490,7 +490,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
 
     // ADR 0011 G2: `--brick` sources the voxel display from the brick raymarch. The
     // gate mirrors the live app's: `--features gpu`, a chunkable procedural scene
-    // (SDF / SketchSolid — the ADR 0007-ported set; DebugClouds is Part-only, so the
+    // (SDF / SketchSolid — the ADR 0007-ported set; DebugClouds is VoxelBody-only, so the
     // two-layer store has no boundary set for it), brick-representable (every rendered
     // block single-material + uniform overlay — per-record ids carry per-block materials,
     // so multi-producer distinct-material scenes engage; the R8 atlas is occupancy-only,
@@ -632,7 +632,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         drop(render_chunks);
         renderer
     } else {
-        // Density-cap (empty grid) or Part-only scene: mesh the whole grid (the
+        // Density-cap (empty grid) or VoxelBody-only scene: mesh the whole grid (the
         // wrapper buckets it into per-chunk sub-grids internally → identical mesh).
         CuboidMeshRenderer::new(
             &gpu.device,

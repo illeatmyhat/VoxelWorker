@@ -106,13 +106,13 @@ fn selecting_first_node(mut scene: Scene) -> Scene {
 /// offsets open clear gaps and the three solids sit visibly apart (no overlap at
 /// the origin) — the headless check the demo exists to confirm.
 ///
-/// NOTE (ADR deviation): the task example named a clouds Part as the third node.
-/// The `DebugClouds` Part has no intrinsic bounded size — it fills whatever region
-/// it is handed (a bounded stored body is a later Part variant), so as a region-
+/// NOTE (ADR deviation): the task example named a clouds VoxelBody as the third node.
+/// The `DebugClouds` VoxelBody has no intrinsic bounded size — it fills whatever region
+/// it is handed (a bounded stored body is a later VoxelBody variant), so as a region-
 /// filling fog it would densely OCCLUDE the sphere and box and defeat the very
 /// separation the demo verifies. A third SDF Tool (torus) is a crisp, bounded
-/// solid that makes the disjoint placement unambiguous in the PNG. Part placement
-/// itself is covered by the scene.rs unit tests (a Part stamps under its offset),
+/// solid that makes the disjoint placement unambiguous in the PNG. VoxelBody placement
+/// itself is covered by the scene.rs unit tests (a VoxelBody stamps under its offset),
 /// and the in-app inspector offsets both Tools and Parts.
 pub(crate) fn build_demo_scene(voxels_per_block: u32) -> Scene {
     let make_tool = |kind, offset: [i64; 3], material| {

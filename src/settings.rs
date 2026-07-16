@@ -626,7 +626,7 @@ mod tests {
         assert_eq!(panel.scene.roots.len(), 1);
     }
 
-    /// step 8 round-trip: a NON-TRIVIAL scene (top-level Tool + Part nodes with
+    /// step 8 round-trip: a NON-TRIVIAL scene (top-level Tool + VoxelBody nodes with
     /// non-zero offsets and distinct materials, a Group with children, an
     /// `AssemblyDef`, and an `Instance` of it) survives
     /// `capture → JSON → deserialize → to_panel_state` structurally intact and
@@ -634,7 +634,7 @@ mod tests {
     #[test]
     fn full_scene_round_trips_through_json() {
         use document::scene::{
-            DefId, Node, NodeBuilder, NodeContent, NodePath, Part, Scene,
+            DefId, Node, NodeBuilder, NodeContent, NodePath, VoxelBody, Scene,
         };
         use document::voxel::SdfShape;
 
@@ -652,8 +652,8 @@ mod tests {
                 material: MaterialChoice::Stone,
             },
         );
-        // Top-level node 1: a Clouds Part, offset.
-        let mut clouds = Node::new("Clouds", NodeContent::Part(Part::DebugClouds { seed: 7 }));
+        // Top-level node 1: a Clouds VoxelBody, offset.
+        let mut clouds = Node::new("Clouds", NodeContent::VoxelBody(VoxelBody::DebugClouds { seed: 7 }));
         clouds.transform = document::scene::NodeTransform::from_blocks([3, 0, 0], voxels_per_block);
         // Top-level node 2: a Group containing a Plain Tool offset within it.
         let mut grouped_leaf = Node::new(

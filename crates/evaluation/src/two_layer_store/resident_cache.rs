@@ -90,7 +90,7 @@ impl TwoLayerResidentCache {
     /// Drop every cached chunk (the all-or-nothing invalidation seam) — the two-layer analogue
     /// of [`Store::clear`](crate::store::Store::clear). Used for the first build (no previous
     /// scene to diff) and the edit kinds [`invalidate_aabb`](Self::invalidate_aabb) can't
-    /// localise (a density change, or a region-spanning Part edit).
+    /// localise (a density change, or a region-spanning VoxelBody edit).
     pub fn clear(&mut self) {
         self.resident.clear();
         self.bound_density = None;
@@ -159,7 +159,7 @@ impl TwoLayerResidentCache {
     /// (needing `&mut self`) runs FIRST, then the gather clones the resident `Arc`s.
     ///
     /// Returns an empty `Vec` when the capability is OFF (dense fallback) or the scene has no
-    /// covering chunk range (a Part-only scene).
+    /// covering chunk range (a VoxelBody-only scene).
     pub fn resident_two_layer_chunks(
         &mut self,
         scene: &Scene,

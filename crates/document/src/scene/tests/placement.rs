@@ -400,11 +400,11 @@ use crate::voxel::SdfShape;
         );
     }
 
-    /// A region-spanning Part edit can't be localised: the diff returns `None`.
+    /// A region-spanning VoxelBody edit can't be localised: the diff returns `None`.
     #[test]
     fn edit_aabb_diff_part_edit_is_none() {
         let voxels_per_block = 16;
-        // A scene with a Tool plus a debug-cloud Part.
+        // A scene with a Tool plus a debug-cloud VoxelBody.
         let mut tool = Node::new(
             "Sphere",
             NodeContent::Tool {
@@ -413,19 +413,19 @@ use crate::voxel::SdfShape;
             },
         );
         tool.transform = NodeTransform::from_blocks([0, 0, 0], voxels_per_block);
-        let part = Node::new("Clouds", NodeContent::Part(Part::DebugClouds { seed: 1 }));
-        let scene_a = scene_with_top_level_selected(Scene::from_nodes(vec![tool.clone(), part]), 0);
+        let voxel_body = Node::new("Clouds", NodeContent::VoxelBody(VoxelBody::DebugClouds { seed: 1 }));
+        let scene_a = scene_with_top_level_selected(Scene::from_nodes(vec![tool.clone(), voxel_body]), 0);
         let index_a = scene_a.build_leaf_spatial_index(voxels_per_block);
         assert!(index_a.has_region_spanning_leaf);
 
-        // Change the Part's seed (a region-spanning content change).
+        // Change the VoxelBody's seed (a region-spanning content change).
         let mut scene_b = scene_a.clone();
-        scene_b.root_node_mut(1).content = NodeContent::Part(Part::DebugClouds { seed: 2 });
+        scene_b.root_node_mut(1).content = NodeContent::VoxelBody(VoxelBody::DebugClouds { seed: 2 });
         let index_b = scene_b.build_leaf_spatial_index(voxels_per_block);
         assert_eq!(
             index_b.edit_aabb_since(&index_a),
             None,
-            "editing a region-spanning Part forces a wholesale clear"
+            "editing a region-spanning VoxelBody forces a wholesale clear"
         );
     }
 

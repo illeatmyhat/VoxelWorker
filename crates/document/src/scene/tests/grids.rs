@@ -122,7 +122,7 @@ use crate::voxel::SdfShape;
         }
     }
 
-    /// A size-less node (a Part with no intrinsic extent — `DebugClouds`) has NO
+    /// A size-less node (a VoxelBody with no intrinsic extent — `DebugClouds`) has NO
     /// lattice box: `node_block_lattice_box_recentred` returns `None` (nothing to
     /// draw), at each density.
     #[test]
@@ -130,7 +130,7 @@ use crate::voxel::SdfShape;
         for density in [1u32, 15, 16] {
             let scene = Scene::single_node(Node::new(
                 "Clouds",
-                NodeContent::Part(Part::DebugClouds { seed: 0 }),
+                NodeContent::VoxelBody(VoxelBody::DebugClouds { seed: 0 }),
             ));
             assert_eq!(
                 scene.node_block_lattice_box_recentred(&NodePath::root_index(0), density),
@@ -200,7 +200,7 @@ use crate::voxel::SdfShape;
     #[test]
     fn ensure_node_ids_mints_unique_stable_ids() {
         fn clouds(name: &str) -> Node {
-            Node::new(name, NodeContent::Part(Part::DebugClouds { seed: 0 }))
+            Node::new(name, NodeContent::VoxelBody(VoxelBody::DebugClouds { seed: 0 }))
         }
         let mut scene = Scene::from_nodes(vec![
             NodeBuilder::Leaf(clouds("A")),
@@ -232,9 +232,9 @@ use crate::voxel::SdfShape;
         // minted id (the "preset", id 5) lives under key NodeId(5), while a still-
         // unminted node sits under the NodeId(0) sentinel. `next_node_id` starts at 0,
         // as it would for a freshly-deserialized scene before normalization.
-        let mut preset = Node::new("preset", NodeContent::Part(Part::DebugClouds { seed: 0 }));
+        let mut preset = Node::new("preset", NodeContent::VoxelBody(VoxelBody::DebugClouds { seed: 0 }));
         preset.id = NodeId(5);
-        let mut fresh = Node::new("fresh", NodeContent::Part(Part::DebugClouds { seed: 0 }));
+        let mut fresh = Node::new("fresh", NodeContent::VoxelBody(VoxelBody::DebugClouds { seed: 0 }));
         fresh.id = NodeId(0);
         let mut scene = Scene::default();
         scene.arena.insert(NodeId(5), preset);
@@ -274,7 +274,7 @@ use crate::voxel::SdfShape;
     #[test]
     fn node_id_and_path_resolution_round_trip() {
         fn clouds(name: &str) -> Node {
-            Node::new(name, NodeContent::Part(Part::DebugClouds { seed: 0 }))
+            Node::new(name, NodeContent::VoxelBody(VoxelBody::DebugClouds { seed: 0 }))
         }
         let mut scene = Scene::from_nodes(vec![
             NodeBuilder::Leaf(clouds("A")),

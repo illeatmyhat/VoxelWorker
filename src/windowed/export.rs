@@ -77,7 +77,7 @@ impl WindowedState {
         // Size the progress denominator (covering chunks) + a large-export warning WITHOUT
         // resolving any occupancy — the worker's per-chunk counter counts up to exactly
         // this total (the streaming build ingests one covering chunk at a time; ADR 0010
-        // E4). `0` for a Part-only / empty scene (still exports a valid empty `.vox`).
+        // E4). `0` for a VoxelBody-only / empty scene (still exports a valid empty `.vox`).
         let total_chunks = self.panel_state.scene.covering_chunk_count(density);
         let region_dimensions = self.panel_state.scene.placed_region_dimensions(density);
         // Large-export warning (non-blocking text, NOT a modal): the user's 8000³ scene is

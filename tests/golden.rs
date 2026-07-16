@@ -303,7 +303,7 @@ const CASES: &[GoldenCase] = &[
 
 /// The subset of [`CASES`] whose scene is CHUNKABLE (has an intrinsic-size leaf), i.e. the
 /// cases the two-layer mesher actually meshes through (ADR 0010 E3 / #50). `debug-clouds` is
-/// Part-only (no chunkable extent) so it is excluded — `--two-layer` falls back to the dense
+/// VoxelBody-only (no chunkable extent) so it is excluded — `--two-layer` falls back to the dense
 /// path there, which the cross-check would test only trivially. Every name MUST exist in
 /// `CASES`.
 ///

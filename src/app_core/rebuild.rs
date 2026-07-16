@@ -16,7 +16,7 @@ impl AppCore {
     /// edit's dirty world-AABB, and evict ONLY the chunks that AABB touches (every
     /// other cached chunk stays resident). Fall back to a wholesale `clear()` when a
     /// precise AABB can't be computed — the first rebuild (no previous index), a
-    /// density change, or a region-spanning Part edit (no localisable box, see
+    /// density change, or a region-spanning VoxelBody edit (no localisable box, see
     /// `LeafSpatialIndex::edit_aabb_since`). The reassembled grid is byte-identical
     /// either way (the same chunks are re-resolved; untouched chunks are reused).
     ///
@@ -49,7 +49,7 @@ impl AppCore {
         // ADR 0010 E5: S3 targeted invalidation on the TWO-LAYER resident cache (#54).
         // `invalidate_aabb` evicts the edit's dirty chunks (so the next
         // `resident_two_layer_chunks` re-classifies only them); `clear()` handles the
-        // first build / density change / region-spanning Part edit where there is no
+        // first build / density change / region-spanning VoxelBody edit where there is no
         // localisable AABB. A two-layer chunk is chunk-local-integer (ADR 0008), so —
         // unlike the retired dense store — a floating-origin SHIFT does NOT invalidate
         // the cache (the recentre is a pure index offset applied at expand/mesh time).
@@ -86,7 +86,7 @@ impl AppCore {
         let buffers_reframed = density_changed || recentre_shifted;
         // The incremental GPU-buffer re-mesh hint (#55): `Some(evicted_dirty)` only when the
         // edit LOCALISED (an `invalidate_aabb` path) AND the resident buffers stayed in frame.
-        // Any wholesale `clear()` — first build, region-spanning Part edit — and any reframing
+        // Any wholesale `clear()` — first build, region-spanning VoxelBody edit — and any reframing
         // (density change / recentre shift) yields `None`, so the shell re-meshes wholesale.
         let incremental_dirty_chunks: Option<Vec<[i32; 3]>> = match self
             .previous_leaf_index

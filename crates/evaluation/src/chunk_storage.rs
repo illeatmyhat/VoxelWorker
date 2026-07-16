@@ -488,7 +488,7 @@ fn compressed_binary_size(compressed: &CompressedChunk) -> usize {
 mod tests {
     use super::*;
     use voxel_core::core_geom::MaterialChoice;
-    use document::scene::{DefId, Node, NodeContent, Part, Scene};
+    use document::scene::{DefId, Node, NodeContent, VoxelBody, Scene};
     use voxel_core::voxel::{ShapeKind, Voxel, VoxelGrid};
     use document::voxel::{GeometryParams, SdfShape, VoxelProducer};
 
@@ -764,13 +764,13 @@ mod tests {
 
     #[test]
     fn round_trip_part_only_debug_clouds_grid() {
-        // A Part producer (debug clouds) fills a grid with material_id 0 voxels at a
+        // A VoxelBody producer (debug clouds) fills a grid with material_id 0 voxels at a
         // pseudo-random fill — a different occupancy profile than the SDF shells.
         let scene = Scene::single_node(Node::new(
             "Clouds",
-            NodeContent::Part(Part::DebugClouds { seed: 1 }),
+            NodeContent::VoxelBody(VoxelBody::DebugClouds { seed: 1 }),
         ));
-        // Resolve over an explicit region (a Part-only scene has no chunk range).
+        // Resolve over an explicit region (a VoxelBody-only scene has no chunk range).
         let grid = scene.resolve_region(
             document::scene::RegionBlocks::new([4, 4, 4]),
             16,

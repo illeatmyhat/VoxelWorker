@@ -25,7 +25,7 @@
 //! [`LeafSpatialIndex::edit_aabb_since`](voxel_core::spatial_index::LeafSpatialIndex::edit_aabb_since)
 //! (diffing the scene's leaf spatial index before vs after the edit); [`Store::clear`]
 //! remains the fallback for edits that can't be localised (a density change or a
-//! region-spanning Part edit).
+//! region-spanning VoxelBody edit).
 //!
 //! ## Modules
 //!

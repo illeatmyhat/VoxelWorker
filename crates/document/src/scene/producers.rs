@@ -1,4 +1,4 @@
-//! Leaf producers and resolution: the [`Part`] / [`NodeContent`] leaf kinds, the
+//! Leaf producers and resolution: the [`VoxelBody`] / [`NodeContent`] leaf kinds, the
 //! tree walk that composes placed leaves, the monolithic and chunk-scoped resolve
 //! paths (region resolve is a test/oracle-gated oracle), and the per-leaf stamp
 //! helpers that write a producer's voxels into an output grid or chunk.
@@ -18,7 +18,7 @@ use super::*;
 /// as-is (ADR 0001). v1 has one variant; future variants are saved chiseled
 /// blocks and imported `.vox` bodies, each carrying baked per-voxel materials.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Part {
+pub enum VoxelBody {
     /// The debug cloud field (several distinct billowy fBm blobs) — "a part with
     /// one trivial knob" (the seed).
     DebugClouds {
@@ -29,7 +29,7 @@ pub enum Part {
     // future: SavedBody(VoxelBlob), ImportedVox(...).
 }
 
-/// What a node *is*: a leaf producer (Tool or Part) or an interior assembly
+/// What a node *is*: a leaf producer (Tool or VoxelBody) or an interior assembly
 /// (Group or Instance).
 ///
 /// Step 1 resolves only the two leaf kinds; `Group` / `Instance` are present as
@@ -56,7 +56,7 @@ pub enum NodeContent {
     /// lattice shift) — see [`Scene::recentre_voxels_for_resolve`].
     ///
     /// [`Tool`]: NodeContent::Tool
-    /// [`Part`]: NodeContent::Part
+    /// [`VoxelBody`]: NodeContent::VoxelBody
     SketchTool {
         /// The sketch + operation to resolve.
         producer: SketchSolid,
@@ -64,7 +64,7 @@ pub enum NodeContent {
         material: MaterialChoice,
     },
     /// A static voxel body, dropped in as-is.
-    Part(Part),
+    VoxelBody(VoxelBody),
     /// An owned, one-off sub-assembly. **ADR 0003 Phase B5:** a Group owns its
     /// children by **identity** — the ordered spine of child [`NodeId`]s — while the
     /// child `Node`s themselves live in the scene-wide [`Scene::arena`]. The `Vec`
@@ -111,7 +111,7 @@ pub(super) type LeafVisitor<'walk> =
 impl Scene {
     /// Walk the whole node tree depth-first, invoking
     /// `visitor(world_offset_voxels, leaf)` once for every **visible leaf** (`Tool`
-    /// / `Part`) with its accumulated **world** VOXEL offset (`parent_offset +
+    /// / `VoxelBody`) with its accumulated **world** VOXEL offset (`parent_offset +
     /// node.offset_voxels`, summed down the tree — translation-only composition,
     /// ADR 0001 step 4; voxels at the document density, ADR 0003 §3f(0)).
     ///
@@ -150,7 +150,7 @@ impl Scene {
     /// op-stack the two-layer classifier / boundary-resolve evaluate over — the SAME
     /// leaves [`resolve_chunk_rebased`](Self::resolve_chunk_rebased) stamps, in the SAME
     /// document (walk) order, so the two-layer round-trip composes identically (later-wins
-    /// Union on overlap). A region-sized Part (the cloud field) is sized to the composite
+    /// Union on overlap). A region-sized VoxelBody (the cloud field) is sized to the composite
     /// `placed_region_dimensions` exactly as the dense chunk resolve sizes it.
     ///
     /// `pub` — the evaluator seam ADR 0010 E2's `two_layer_store` (up in the app crate) reads;
@@ -167,7 +167,7 @@ impl Scene {
                     NodeContent::SketchTool { producer, material } => {
                         (material_id_for(*material), Box::new(producer.clone()))
                     }
-                    NodeContent::Part(Part::DebugClouds { seed }) => (
+                    NodeContent::VoxelBody(VoxelBody::DebugClouds { seed }) => (
                         None,
                         Box::new(DebugCloudField {
                             dimensions: region_dimensions,
@@ -223,7 +223,7 @@ impl Scene {
             match &node.content {
                 NodeContent::Tool { .. }
                 | NodeContent::SketchTool { .. }
-                | NodeContent::Part(_) => {
+                | NodeContent::VoxelBody(_) => {
                     // ADR 0017: the leaf carries its OWN `operation` plus the chain
                     // of enclosing sealed-scope frames (issue #74) into the flat
                     // walk — consumers reconstruct the scoped fold from the paths.
@@ -356,7 +356,7 @@ impl Scene {
         // recentre`, so a block-framed region (`size·d`) would clip a parity-mismatched
         // multi-leaf composite. For a chunkable scene we IGNORE the passed-in block
         // `region` for sizing and use the voxel span; the explicit `region` argument
-        // still sizes a Part-only scene (which has no composite voxel extent).
+        // still sizes a VoxelBody-only scene (which has no composite voxel extent).
         let region_dimensions = match self.placed_extent_voxels(voxels_per_block) {
             Some(_) => self.placed_region_dimensions(voxels_per_block),
             None => [
@@ -373,7 +373,7 @@ impl Scene {
         // composite's voxel space is `offset_voxels`, and the whole composite's centre
         // is `(min + max).div_euclid(2)` (producer-true voxel frame). Subtracting that
         // centre from every node's translation lands the composite centred in `output`.
-        // A Part-only scene (e.g. `DebugClouds`) has no composite extent, so this is
+        // A VoxelBody-only scene (e.g. `DebugClouds`) has no composite extent, so this is
         // `[0,0,0]` and the field stays CORNER-anchored at `[0, region)` — the shipped
         // convention (see `part_only_cloud_at_odd_density_drops_no_voxels` /
         // `mixed_tool_and_cloud_resolve_in_one_frame`). ADR 0008: the recentre is CARRIED on
@@ -421,7 +421,7 @@ impl Scene {
                 let producer: Box<dyn VoxelProducer> = match content {
                     NodeContent::Tool { shape, .. } => Box::new(shape.clone()),
                     NodeContent::SketchTool { producer, .. } => Box::new(producer.clone()),
-                    NodeContent::Part(Part::DebugClouds { seed }) => Box::new(DebugCloudField {
+                    NodeContent::VoxelBody(VoxelBody::DebugClouds { seed }) => Box::new(DebugCloudField {
                         dimensions: region_dimensions,
                         seed: *seed,
                     }),
@@ -475,7 +475,7 @@ impl Scene {
                         voxels_per_block,
                     );
                 }
-                NodeContent::Part(Part::DebugClouds { seed }) => {
+                NodeContent::VoxelBody(VoxelBody::DebugClouds { seed }) => {
                     let producer = DebugCloudField {
                         // The cloud field sizes itself from the region (today's
                         // behaviour resolved it at the shape's grid dimensions).
@@ -486,7 +486,7 @@ impl Scene {
                         target,
                         region_dimensions,
                         translation_voxels,
-                        // A Part brings its own per-voxel materials; today the
+                        // A VoxelBody brings its own per-voxel materials; today the
                         // cloud field emits material 0, so the stamp keeps that.
                         None,
                         // Issue #29 S4: still OR the flag bit per-voxel when this
@@ -497,7 +497,7 @@ impl Scene {
                     );
                 }
                 // `for_each_leaf` only ever yields leaf content (Tool / SketchTool /
-                // Part); the interior kinds were already recursed through by the walk.
+                // VoxelBody); the interior kinds were already recursed through by the walk.
                 NodeContent::Group(_) | NodeContent::Instance(_) => {}
             }
         });
@@ -631,7 +631,7 @@ impl Scene {
             // its voxel centres, and `stamp_producer_into_chunk` keeps only centres
             // inside `[chunk_min, chunk_max)`; if those two half-open boxes don't
             // intersect, the stamp would have clipped EVERY voxel anyway. A
-            // region-spanning leaf (a Part, `leaf_size_blocks` → `None`) has no
+            // region-spanning leaf (a VoxelBody, `leaf_size_blocks` → `None`) has no
             // localisable AABB, so it is never skipped (it may emit anywhere).
             //
             // ADR 0017 (#75): an Intersect-INFLUENCE leaf (its own operation is
@@ -675,7 +675,7 @@ impl Scene {
                 NodeContent::SketchTool { producer, material } => {
                     (material_id_for(*material), Box::new(producer.clone()))
                 }
-                NodeContent::Part(Part::DebugClouds { seed }) => (
+                NodeContent::VoxelBody(VoxelBody::DebugClouds { seed }) => (
                     None,
                     Box::new(DebugCloudField {
                         dimensions: region_dimensions,
@@ -776,7 +776,7 @@ impl Scene {
         let mut output = VoxelGrid::new(region_dimensions);
 
         let Some(chunk_range) = self.covering_chunk_range(voxels_per_block) else {
-            // No leaf has an intrinsic size (a Part-only scene with no Tools): no
+            // No leaf has an intrinsic size (a VoxelBody-only scene with no Tools): no
             // composite AABB, so there are no chunks to resolve.
             return output;
         };
@@ -869,8 +869,8 @@ pub(super) fn leaf_content_fingerprint(
         NodeContent::SketchTool { producer, material } => {
             format!("SketchTool@{world_offset_voxels:?}:{producer:?}:{material:?}{grid}{op}{scopes}")
         }
-        NodeContent::Part(part) => format!("Part@{world_offset_voxels:?}:{part:?}{grid}{op}{scopes}"),
-        // for_each_leaf only ever yields leaf content (Tool / SketchTool / Part);
+        NodeContent::VoxelBody(voxel_body) => format!("VoxelBody@{world_offset_voxels:?}:{voxel_body:?}{grid}{op}{scopes}"),
+        // for_each_leaf only ever yields leaf content (Tool / SketchTool / VoxelBody);
         // Group / Instance are interior and never reach a visitor. Fingerprint
         // defensively anyway.
         NodeContent::Group(_) => format!("Group@{world_offset_voxels:?}{grid}{op}{scopes}"),
@@ -903,7 +903,7 @@ pub struct LeafProducer {
     /// local voxel-index frame.
     pub producer: Box<dyn VoxelProducer>,
     /// The single-material override id a Tool stamps onto every voxel (`Some`), or `None`
-    /// for a Part that brings its own per-voxel materials (the cloud field emits id 0).
+    /// for a VoxelBody that brings its own per-voxel materials (the cloud field emits id 0).
     pub material: Option<voxel_core::core_geom::BlockId>,
     /// The owning node's `grids.voxel_grid_on_faces` flag (issue #29 S4 / ADR 0003 §3c) —
     /// the transient on-face-grid render marker. Carried so the two-layer mesher (ADR 0010
@@ -974,7 +974,7 @@ pub(super) fn leaf_producer_grid_voxels(content: &NodeContent, _voxels_per_block
             let [grid_x, grid_y, grid_z] = producer.grid_dimensions();
             Some([grid_x as i64, grid_y as i64, grid_z as i64])
         }
-        NodeContent::Part(_) | NodeContent::Group(_) | NodeContent::Instance(_) => None,
+        NodeContent::VoxelBody(_) | NodeContent::Group(_) | NodeContent::Instance(_) => None,
     }
 }
 
@@ -1085,7 +1085,7 @@ fn material_id_for(material: MaterialChoice) -> Option<voxel_core::core_geom::Bl
 /// (the one-node, zero-offset path — guarantees a bit-for-bit match with the bare
 /// producer). When `material_override` is `Some(id)`, every stamped voxel takes
 /// that id (a Tool's single material); when `None`, each voxel keeps the material
-/// the producer emitted (a Part's own per-voxel materials).
+/// the producer emitted (a VoxelBody's own per-voxel materials).
 ///
 /// Private helper of the dense [`Scene::resolve_region`] oracle only (the per-chunk
 /// path uses [`stamp_producer_into_chunk`]), so it carries the same `oracle` compile

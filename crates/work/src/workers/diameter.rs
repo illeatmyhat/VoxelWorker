@@ -57,7 +57,7 @@ pub type DiameterWorker = Worker<DiameterRequest, DiameterResult>;
 
 /// Spawn the diameter worker on a dedicated thread. The closure streams the widest run via
 /// the SAME [`streamed_widest_run_in_band`] call the synchronous readout made — `unwrap_or(0)`
-/// covers the Part-only / empty scene (no covering chunk range); the two-layer capability is
+/// covers the VoxelBody-only / empty scene (no covering chunk range); the two-layer capability is
 /// always ON. Unlike the geometry/brick workers this build cannot panic on bad input, so it
 /// carries no `build_catching` — preserving the measure path's original (containment-free)
 /// behaviour.

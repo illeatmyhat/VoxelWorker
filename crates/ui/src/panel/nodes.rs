@@ -4,7 +4,7 @@
 use super::palette::SHAPE_CHIPS;
 use super::{PanelResponse, PanelState};
 use document::intent::{Intent, NodeSpec};
-use document::scene::{DefId, Node, NodeContent, NodeId, Part};
+use document::scene::{DefId, Node, NodeContent, NodeId, VoxelBody};
 use document::sketch::{PlaneAxis, Sketch, SketchSolid};
 use document::voxel::{GeometryParams, SdfShape};
 use voxel_core::voxel::ShapeKind;
@@ -15,7 +15,7 @@ fn node_row_label(node: &Node) -> String {
     let kind = match &node.content {
         NodeContent::Tool { shape, .. } => format!("{:?}", shape.kind),
         NodeContent::SketchTool { .. } => "Sketch".to_string(),
-        NodeContent::Part(Part::DebugClouds { .. }) => "Clouds".to_string(),
+        NodeContent::VoxelBody(VoxelBody::DebugClouds { .. }) => "Clouds".to_string(),
         NodeContent::Group(children) => format!("Group ({})", children.len()),
         NodeContent::Instance(_) => "Instance".to_string(),
     };
@@ -31,10 +31,10 @@ fn node_row_label(node: &Node) -> String {
 /// any depth (not just top-level nodes). Each row carries a visibility checkbox, a
 /// selectable name (indented by depth), and a per-row delete ✕. Beneath the tree:
 ///
-///   * **+ Add** — append a Tool (any shape) or a Clouds Part at top level.
+///   * **+ Add** — append a Tool (any shape) or a Clouds VoxelBody at top level.
 ///   * **Group** — wrap the active node in a new Group (then add children to it
 ///     via "+ Add child").
-///   * **+ Add child** — when the active node is a Group, append a Tool/Part into
+///   * **+ Add child** — when the active node is a Group, append a Tool/VoxelBody into
 ///     it.
 ///   * **Make definition** — turn the active Group/node into a reusable
 ///     [`AssemblyDef`] and replace it with an `Instance` of it.
@@ -195,7 +195,7 @@ fn build_node_actions(ui: &mut egui::Ui, state: &mut PanelState, response: &mut 
     let has_active = state.scene.active.is_some();
 
     ui.horizontal_wrapped(|ui| {
-        // + Add — a top-level Tool or Clouds Part. ADR 0003 Phase C C4a: described as
+        // + Add — a top-level Tool or Clouds VoxelBody. ADR 0003 Phase C C4a: described as
         // `AddNode` intents (`NodeSpec` carries the same shape+material/Clouds the old
         // `new_tool_node` / `Node::new` built). The new node becomes active inside the
         // add op, so the loop re-syncs the inspector mirror on the returned effect.
@@ -215,7 +215,7 @@ fn build_node_actions(ui: &mut egui::Ui, state: &mut PanelState, response: &mut 
                 });
                 ui.close();
             }
-            if ui.button("Clouds (Part)").clicked() {
+            if ui.button("Clouds (Body)").clicked() {
                 response.emit_and_frame(Intent::AddNode {
                     content: NodeSpec::CloudsPart,
                 });
@@ -250,7 +250,7 @@ fn build_node_actions(ui: &mut egui::Ui, state: &mut PanelState, response: &mut 
                     }
                     ui.close();
                 }
-                if ui.button("Clouds (Part)").clicked() {
+                if ui.button("Clouds (Body)").clicked() {
                     if let Some(group_id) = group_id {
                         response.emit_and_frame(Intent::AddChild {
                             group: group_id,

@@ -140,7 +140,7 @@ impl SceneGridRenderer {
     /// * `master_block_lattice && node.grids.block_lattice` → block lattice lines.
     /// * `master_floor_grid && node.grids.floor_grid` → base-plane floor lines.
     ///
-    /// A node with no intrinsic extent (size-less Part / empty subtree) yields no
+    /// A node with no intrinsic extent (size-less VoxelBody / empty subtree) yields no
     /// box and is skipped. When NOTHING is enabled both batches are empty and
     /// [`Self::draw`] becomes a no-op — the new default, where per-object grids are
     /// off until the user turns them on.

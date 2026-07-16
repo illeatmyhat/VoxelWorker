@@ -166,7 +166,7 @@ impl PanelState {
     /// Copy the active node's parameters into the inspector mirror
     /// ([`geometry`](Self::geometry) / [`material`](Self::material)) when it is a
     /// Tool, so the inspector edits the active selection. Called whenever the
-    /// active node changes (selection or delete). A Part active node leaves the
+    /// active node changes (selection or delete). A VoxelBody active node leaves the
     /// mirror untouched (its editor shows name + seed instead).
     pub fn sync_mirror_from_active(&mut self) {
         if let Some(node) = self.scene.active_node() {

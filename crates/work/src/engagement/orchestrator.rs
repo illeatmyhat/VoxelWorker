@@ -210,7 +210,7 @@ impl DisplayOrchestrator {
         #[cfg_attr(not(feature = "gpu"), allow(unused_mut))]
         let mut brick_async_outstanding = false;
         // The startup covering set is non-empty iff the scene is chunkable with geometry
-        // (`resident_two_layer_chunks` yields nothing for a non-chunkable / Part-only scene),
+        // (`resident_two_layer_chunks` yields nothing for a non-chunkable / VoxelBody-only scene),
         // so `!is_empty()` matches the old `has_chunkable_extent && !is_empty()` gate.
         #[cfg(feature = "gpu")]
         if !two_layer_chunks.is_empty() {
@@ -289,7 +289,7 @@ impl DisplayOrchestrator {
         // the two-layer store (coarse one-box + microblock cuboids + seam-flag culling) — the
         // SAME path `rebuild_geometry` takes on every later edit, so the startup frame it draws
         // is pixel-identical to the two-layer runtime path. `build_covering_chunks` returns
-        // empty for a Part-only scene (the windowed startup default is always chunkable).
+        // empty for a VoxelBody-only scene (the windowed startup default is always chunkable).
         //
         // Brick-display perf follow-up to epic #64: when the brick raymarch engaged above and no
         // mesh-only mode is active (a config may persist `debug_face_orientation`; a material is
@@ -758,7 +758,7 @@ impl DisplayOrchestrator {
                 // discard any superseded in-flight async brick result on arrival.
                 self.finish_brick_install();
             } else {
-                // Non-chunkable (a Part-only field): no brick mirror, no display brick. Any
+                // Non-chunkable (a VoxelBody-only field): no brick mirror, no display brick. Any
                 // in-flight async brick result was built for a scene shape that no longer
                 // applies — the seam's generation bump discards it on arrival.
                 self.finish_brick_install();

@@ -244,7 +244,7 @@ pub(crate) fn classify_chunk_block(
             // and the masks cover everything here, so every voxel keeps the
             // single additive leaf's material. Any other mix (multiple additive
             // leaves; a single additive leaf with no single-material id, i.e. a
-            // Part's per-voxel materials) is forced BOUNDARY so the per-voxel pass
+            // VoxelBody's per-voxel materials) is forced BOUNDARY so the per-voxel pass
             // decides — still exact, just unelided. When in doubt, Boundary: it is
             // always exact.
             let mut additive_leaves = overlapping
@@ -628,7 +628,7 @@ fn compose_leaf_into_region(
     }
 
     // Stamp each emitted voxel into the block-local region at its material (a Tool
-    // overrides every voxel's id; a Part keeps its own per-voxel id). The voxel's
+    // overrides every voxel's id; a VoxelBody keeps its own per-voxel id). The voxel's
     // local index is in the LEAF's frame, so shift back to block-local by adding the
     // leaf offset and subtracting the block's absolute low corner.
     for voxel in &local.occupied {

@@ -97,7 +97,7 @@ pub struct RebuildOutput {
     /// [`CuboidMeshRenderer::new_from_two_layer_chunks`](display::mesh::CuboidMeshRenderer::new_from_two_layer_chunks)
     /// (coarse one-box + microblock cuboids + seam-flag culling) — the sole runtime
     /// display mesh path (ADR 0010 E5) — and the brick sink packs its records from the same
-    /// set (ADR 0011 G3). Empty for a Part-only scene (no covering range).
+    /// set (ADR 0011 G3). Empty for a VoxelBody-only scene (no covering range).
     ///
     /// **Why `Arc`, not owned chunks.** Every rebuild used to deep-clone EVERY resident
     /// chunk into an owned `Vec` here (O(all-blocks) per edit) purely so the set could
@@ -119,7 +119,7 @@ pub struct RebuildOutput {
     /// via [`CuboidMeshRenderer::incremental_rebuild_from_two_layer_chunks`], keeping every
     /// other chunk's GPU buffers in place. `None` when the edit could NOT localise — the first
     /// build (no previous index, wholesale [`clear`](TwoLayerResidentCache::clear)), a density
-    /// change (re-keys every chunk's voxel extent), or a region-spanning Part edit (no
+    /// change (re-keys every chunk's voxel extent), or a region-spanning VoxelBody edit (no
     /// localisable box) — in which case the shell re-meshes WHOLESALE via
     /// [`CuboidMeshRenderer::new_from_two_layer_chunks`]. This is the same split the resident
     /// cache itself uses (`invalidate_aabb` vs `clear`), surfaced to the GPU-buffer layer.

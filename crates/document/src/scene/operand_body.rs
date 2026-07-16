@@ -240,7 +240,7 @@ impl Scene {
                     }
                 }
                 _ => {
-                    // Leaf producers (Tool / SketchTool / Part).
+                    // Leaf producers (Tool / SketchTool / VoxelBody).
                     if emit_own_body {
                         slices.push((
                             node.operation,

@@ -12,7 +12,7 @@ use super::*;
 impl Scene {
     /// Whether the scene has at least one intrinsic-size leaf (a Tool), so it has a
     /// composite AABB that the chunked resolve (`chunk_cache`) can cover.
-    /// `false` for a Part-only scene (e.g. a lone debug-cloud field), which has no
+    /// `false` for a VoxelBody-only scene (e.g. a lone debug-cloud field), which has no
     /// AABB of its own and must be resolved through the explicit-region monolithic
     /// path instead. Public so the `shot` binary can pick the right resolve path
     /// (issue #27 S2).
@@ -88,7 +88,7 @@ impl Scene {
 
     /// The number of covering chunks the `.vox` streaming export will visit at
     /// `voxels_per_block` — the product of the per-axis chunk-range extents from
-    /// [`covering_chunk_range`](Self::covering_chunk_range), or `0` for a Part-only /
+    /// [`covering_chunk_range`](Self::covering_chunk_range), or `0` for a VoxelBody-only /
     /// empty scene (no covering range). Public so the shell can size the export progress
     /// readout's denominator without materialising any occupancy; the async export worker
     /// increments its per-chunk counter to exactly this total.
@@ -109,7 +109,7 @@ impl Scene {
     /// [`resolve_chunk`](Self::resolve_chunk) and `placed_extent_voxels` use, so a
     /// chunk derived from a leaf's index AABB is exactly a chunk that leaf's voxels
     /// can land in. A leaf with an intrinsic size (a Tool) gets a concrete box
-    /// `[off·d − grid/2, off·d + grid/2)`; a region-spanning leaf (a Part, no
+    /// `[off·d − grid/2, off·d + grid/2)`; a region-spanning leaf (a VoxelBody, no
     /// intrinsic size) gets an empty box and a
     /// [`RegionSpanning`](voxel_core::spatial_index::LeafFingerprint::RegionSpanning)
     /// fingerprint (it cannot be chunk-localised; an edit touching it forces a
@@ -160,7 +160,7 @@ impl Scene {
                     });
                 }
                 None => {
-                    // A region-spanning leaf (a Part): no intrinsic box. Record it
+                    // A region-spanning leaf (a VoxelBody): no intrinsic box. Record it
                     // with an empty AABB + a region-spanning fingerprint so an edit
                     // touching it forces a wholesale clear (it can't be localised).
                     has_region_spanning_leaf = true;

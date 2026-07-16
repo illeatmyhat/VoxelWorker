@@ -15,7 +15,7 @@ impl AppCore {
     ///
     /// ADR 0010 E5: this streams the whole-region grid from the **two-layer evaluator**
     /// (coarse fast-fill + boundary per-voxel), NOT the retired dense
-    /// `Scene::resolve_region` — bit-identical (the E2 round-trip parity gate). A Part-only
+    /// `Scene::resolve_region` — bit-identical (the E2 round-trip parity gate). A VoxelBody-only
     /// scene (no covering range) resolves to an empty grid, exactly as the dense store did.
     ///
     /// The startup region door — the SINGLE place the windowed shell seeds its first-frame
@@ -40,8 +40,8 @@ impl AppCore {
     /// [`Scene::placed_region_dimensions`]. For a chunkable scene (every Tool scene,
     /// including the startup default) that is the composite extent (proven byte-identical to
     /// the old assembled grid in `scene::tests::placed_region_dimensions_equals_assembled_grid`);
-    /// a **Part-only** scene (a lone debug-cloud field) has no composite extent, so this is
-    /// `[0, 0, 0]` — exactly the empty grid's dimensions the old Part-only fallback returned.
+    /// a **VoxelBody-only** scene (a lone debug-cloud field) has no composite extent, so this is
+    /// `[0, 0, 0]` — exactly the empty grid's dimensions the old VoxelBody-only fallback returned.
     pub fn region_dimensions_for(scene: &Scene, density: u32) -> [u32; 3] {
         scene.placed_region_dimensions(density)
     }

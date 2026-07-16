@@ -13,8 +13,8 @@
 //!
 //!   * [`NodeContent::Tool`] — a *parametric* producer (`SdfShape`) that carries
 //!     the Tool's single `MaterialChoice`.
-//!   * [`NodeContent::Part`] — a *static* voxel body; today the only variant is
-//!     [`Part::DebugClouds`].
+//!   * [`NodeContent::VoxelBody`] — a *static* voxel body; today the only variant is
+//!     [`VoxelBody::DebugClouds`].
 //!
 //! [`NodeContent::Group`] and [`NodeContent::Instance`] (recursion + reuse) exist
 //! as types but are intentionally not resolved yet — see the `// step 4` markers
@@ -45,7 +45,7 @@ mod tests;
 
 pub use extent::{NodeTransform, RegionBlocks};
 pub use graph::{AssemblyDef, CombineOp, DefId, Node, NodeBuilder, NodeGrids, NodeId, NodePath, Point};
-pub use producers::{NodeContent, Part};
+pub use producers::{NodeContent, VoxelBody};
 pub use producers::{operation_masks_beyond_bounds, LeafProducer, ScopeFrame};
 
 /// Default +X spacing (in blocks) between successive instances of the same

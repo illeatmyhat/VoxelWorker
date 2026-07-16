@@ -102,7 +102,7 @@ pub(crate) struct ShotOptions {
     pub(crate) debug_clouds: bool,
     /// `--demo-scene` (ADR 0001 step 3): ignore the single-shape options and build
     /// a hardcoded multi-node PLACED scene (a sphere at the origin, a box offset
-    /// +8 blocks in X, and a clouds Part offset in Z) so the headless capture can
+    /// +8 blocks in X, and a clouds VoxelBody offset in Z) so the headless capture can
     /// confirm nodes appear separated in space (not overlapping at the origin).
     /// Useful for future headless multi-node checks.
     pub(crate) demo_scene: bool,

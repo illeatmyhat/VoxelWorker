@@ -1,10 +1,10 @@
-//! The inspector: the per-node editors (Tool / Sketch / Part / Group / Instance)
+//! The inspector: the per-node editors (Tool / Sketch / VoxelBody / Group / Instance)
 //! plus the shared shape / size / density / material / offset / grids sub-sections.
 
 use super::palette::SHAPE_CHIPS;
 use super::{PanelResponse, PanelState};
 use document::intent::Intent;
-use document::scene::{CombineOp, NodeContent, Part};
+use document::scene::{CombineOp, NodeContent, VoxelBody};
 use document::sketch::{Operation, PlaneAxis, RevolveAxis, Sketch, SketchSolid};
 use document::voxel::SdfShape;
 use voxel_core::core_geom::MaterialChoice;
@@ -14,7 +14,7 @@ use voxel_core::voxel::ShapeKind;
 /// The inspector: switches on the active node. A **Tool** shows the shape chips,
 /// size sliders, density slider and material selector (editing the active Tool node;
 /// ADR 0003 Phase C C4a routes each edit to a `SetShape`/`SetDensity`/`SetMaterial`
-/// intent the loop applies). A **Clouds Part** shows its name + seed instead. With no
+/// intent the loop applies). A **Clouds VoxelBody** shows its name + seed instead. With no
 /// active node, a hint.
 pub(super) fn build_inspector_section(
     ui: &mut egui::Ui,
@@ -25,7 +25,7 @@ pub(super) fn build_inspector_section(
     enum ActiveKind {
         Tool,
         Sketch,
-        Part,
+        VoxelBody,
         Group,
         Instance,
         None,
@@ -37,7 +37,7 @@ pub(super) fn build_inspector_section(
         // profile, a read-only note + Plane/Height — plus the shared material /
         // placement / grids sections (see `build_sketch_inspector_section`).
         Some(NodeContent::SketchTool { .. }) => ActiveKind::Sketch,
-        Some(NodeContent::Part(_)) => ActiveKind::Part,
+        Some(NodeContent::VoxelBody(_)) => ActiveKind::VoxelBody,
         Some(NodeContent::Group(_)) => ActiveKind::Group,
         Some(NodeContent::Instance(_)) => ActiveKind::Instance,
         None => ActiveKind::None,
@@ -46,7 +46,7 @@ pub(super) fn build_inspector_section(
     match kind {
         ActiveKind::Tool => {
             // ADR 0017: the combine-operation selector shows on every node kind —
-            // leaves (Tool / Sketch / Clouds Part), Groups (sealed scopes, issue
+            // leaves (Tool / Sketch / Clouds VoxelBody), Groups (sealed scopes, issue
             // #74), and Instances (reusable cutters, issue #76).
             build_operation_section(ui, state, response);
             // ADR 0003 Phase C C4a: the inspector still binds the widgets to the
@@ -103,9 +103,9 @@ pub(super) fn build_inspector_section(
             // Issue #79: the per-node "Show child booleans" display toggle.
             build_child_booleans_section(ui, state, response);
         }
-        ActiveKind::Part => {
+        ActiveKind::VoxelBody => {
             build_operation_section(ui, state, response);
-            build_part_inspector_section(ui, state, response);
+            build_voxel_body_inspector_section(ui, state, response);
             build_offset_section(ui, state, response);
             build_node_grids_section(ui, state, response);
             // Issue #79: the per-node "Show child booleans" display toggle.
@@ -207,18 +207,18 @@ fn build_group_inspector_section(
     ui.separator();
 }
 
-/// Inspector for a Clouds Part active node: its name and seed (its one knob). A
+/// Inspector for a Clouds VoxelBody active node: its name and seed (its one knob). A
 /// seed change re-resolves the scene. ADR 0003 Phase C C4a: the name/seed widgets bind
 /// to LOCAL buffers (read from the active node each frame); a change emits `SetName` /
 /// `SetCloudSeed` instead of mutating the node. A seed edit auto-frames like the old
 /// `scene_changed`.
-fn build_part_inspector_section(
+fn build_voxel_body_inspector_section(
     ui: &mut egui::Ui,
     state: &mut PanelState,
     response: &mut PanelResponse,
 ) {
     ui.add_space(8.0);
-    ui.strong("Clouds (Part)");
+    ui.strong("Clouds (Body)");
     let Some(target) = state.scene.active else {
         return;
     };
@@ -227,7 +227,7 @@ fn build_part_inspector_section(
     };
     let mut name = node.name.clone();
     let current_seed = match &node.content {
-        NodeContent::Part(Part::DebugClouds { seed }) => Some(*seed),
+        NodeContent::VoxelBody(VoxelBody::DebugClouds { seed }) => Some(*seed),
         _ => None,
     };
     ui.horizontal(|ui| {
@@ -505,7 +505,7 @@ fn build_sketch_inspector_section(
 /// material on overlap), `Subtract` carves, `Intersect` keeps only the cells the
 /// node's body also covers (both booleans are occupancy-only masks that never
 /// stamp material). Shown on EVERY node kind: leaf nodes (Tool / Sketch / Clouds
-/// Part), Groups (a Group is a sealed composition scope whose composed body folds
+/// VoxelBody), Groups (a Group is a sealed composition scope whose composed body folds
 /// under its own operation — ADR 0017 Decision 3, issue #74), and Instances (the
 /// referenced definition's finished body folds under the INSTANCE's operation, so
 /// a definition instanced with Subtract is the reusable cutter — issue #76; the

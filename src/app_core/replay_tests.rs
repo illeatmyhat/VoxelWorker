@@ -113,6 +113,6 @@
         };
         let script = format!("\n   \n{}\n\n", serde_json::to_string(&add).unwrap());
         let scene = replay_intent_script(&script).expect("blank lines skipped");
-        // Seed (1 Tool) + 1 Clouds Part = 2 top-level nodes.
+        // Seed (1 Tool) + 1 Clouds VoxelBody = 2 top-level nodes.
         assert_eq!(scene.roots.len(), 2);
     }

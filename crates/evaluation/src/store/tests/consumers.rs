@@ -125,17 +125,17 @@ use super::*;
         assert_render_chunks_match_resolve_region(&scene, vpb, "demo-village");
     }
 
-    /// A Part-only scene (no composite extent) yields an empty render-chunk set,
+    /// A VoxelBody-only scene (no composite extent) yields an empty render-chunk set,
     /// matching `resolve_region`'s empty grid.
     #[test]
     fn render_chunks_empty_for_part_only_scene() {
         let scene = Scene::single_node(Node::new(
             "Clouds",
-            NodeContent::Part(document::scene::Part::DebugClouds { seed: 0 }),
+            NodeContent::VoxelBody(document::scene::VoxelBody::DebugClouds { seed: 0 }),
         ));
         let mut cache = Store::new();
         let chunks = cache.resident_render_chunks(&scene, 16, 0);
-        assert!(chunks.is_empty(), "a Part-only scene has no covering chunks");
+        assert!(chunks.is_empty(), "a VoxelBody-only scene has no covering chunks");
     }
 
     /// **ADR 0002 S4b — origin-rebased rendering, far-offset precision.** A box
@@ -196,17 +196,17 @@ use super::*;
         );
     }
 
-    /// A Part-only scene (no intrinsic-size leaf) resolves to an empty recentred
+    /// A VoxelBody-only scene (no intrinsic-size leaf) resolves to an empty recentred
     /// grid through the cache, exactly as monolithic `resolve_region` does.
     #[test]
     fn part_only_scene_resolves_empty_through_cache() {
         let scene = Scene::single_node(Node::new(
             "Clouds",
-            NodeContent::Part(document::scene::Part::DebugClouds { seed: 0 }),
+            NodeContent::VoxelBody(document::scene::VoxelBody::DebugClouds { seed: 0 }),
         ));
         let mut cache = Store::new();
         let assembled = cache.resolve_region(&scene, 16, 0);
-        // A Part-only scene has no composite AABB → resolve_region returns a
+        // A VoxelBody-only scene has no composite AABB → resolve_region returns a
         // zero-sized empty grid; the cache path matches.
         let monolithic = scene.resolve_region(RegionBlocks::new([0, 0, 0]), 16, 0);
         assert_eq!(assembled.occupied_count(), monolithic.occupied_count());
@@ -431,10 +431,10 @@ use super::*;
         assert_eq!(expected_out, 0);
         assert_eq!(actual_out, expected_out);
 
-        // A wholly empty scene (Part-only, no occupied voxels): region run is 0.
+        // A wholly empty scene (VoxelBody-only, no occupied voxels): region run is 0.
         let empty_scene = Scene::single_node(Node::new(
             "Clouds",
-            NodeContent::Part(document::scene::Part::DebugClouds { seed: 0 }),
+            NodeContent::VoxelBody(document::scene::VoxelBody::DebugClouds { seed: 0 }),
         ));
         let mut cache3 = Store::new();
         assert_eq!(cache3.widest_run_in_band(&empty_scene, 16, 0, 0, 100), 0);

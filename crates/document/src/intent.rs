@@ -21,7 +21,7 @@
 use serde::{Deserialize, Serialize};
 
 use voxel_core::core_geom::MaterialChoice;
-use crate::scene::{CombineOp, DefId, Node, NodeContent, NodeGrids, NodeId, Part};
+use crate::scene::{CombineOp, DefId, Node, NodeContent, NodeGrids, NodeId, VoxelBody};
 use crate::sketch::SketchSolid;
 use voxel_core::units::Measurement;
 use crate::voxel::SdfShape;
@@ -33,7 +33,7 @@ use crate::voxel::SdfShape;
 /// [`Node`], but a `Node` carries a non-serializable-by-intent id slot + grid flags
 /// the caller never sets when adding. `NodeSpec` is the small serializable spec of
 /// "what to add"; [`NodeSpec::into_node`] turns it into the exact [`Node`] the panel
-/// builds today (the Tool's name is its shape kind's label; the Clouds Part is named
+/// builds today (the Tool's name is its shape kind's label; the Clouds VoxelBody is named
 /// `"Clouds"` with seed `0`), so an `AddNode` intent reproduces the panel's add.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum NodeSpec {
@@ -55,8 +55,8 @@ pub enum NodeSpec {
         /// The single material the sketch node stamps onto its voxels.
         material: MaterialChoice,
     },
-    /// A debug-cloud [`Part`] node, named `"Clouds"` with seed `0` — the panel's
-    /// "Clouds (Part)" add.
+    /// A debug-cloud [`VoxelBody`] node, named `"Clouds"` with seed `0` — the panel's
+    /// "Clouds (Body)" add.
     CloudsPart,
 }
 
@@ -74,7 +74,7 @@ impl NodeSpec {
 
     /// Turn the spec into the [`Node`] the add edit ops expect — mirroring how the
     /// panel builds these nodes today (the Tool name = its shape kind label; the
-    /// Clouds Part = `"Clouds"` + [`Part::DebugClouds`] seed `0`). The returned node
+    /// Clouds VoxelBody = `"Clouds"` + [`VoxelBody::DebugClouds`] seed `0`). The returned node
     /// carries the unassigned [`NodeId(0)`](NodeId) sentinel; the add op mints its
     /// real id.
     pub fn into_node(self) -> Node {
@@ -87,7 +87,7 @@ impl NodeSpec {
                 Node::new("Sketch", NodeContent::SketchTool { producer, material })
             }
             NodeSpec::CloudsPart => {
-                Node::new("Clouds", NodeContent::Part(Part::DebugClouds { seed: 0 }))
+                Node::new("Clouds", NodeContent::VoxelBody(VoxelBody::DebugClouds { seed: 0 }))
             }
         }
     }
@@ -235,10 +235,10 @@ pub enum Intent {
         /// The new name.
         name: String,
     },
-    /// Set the seed of the Clouds [`Part`] node `target` (a no-op for a non-Clouds
+    /// Set the seed of the Clouds [`VoxelBody`] node `target` (a no-op for a non-Clouds
     /// node).
     SetCloudSeed {
-        /// The Clouds Part node to edit.
+        /// The Clouds VoxelBody node to edit.
         target: NodeId,
         /// The new seed.
         seed: u32,

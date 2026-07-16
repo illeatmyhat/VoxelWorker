@@ -121,7 +121,7 @@ pub use display::renderer::{
 pub use display::renderer::procedural_material_average_color;
 pub use document::scene::{
     AssemblyDef, CombineOp, DefId, Node, NodeBuilder, NodeContent, NodeId, NodePath, NodeTransform,
-    Part, Point, RegionBlocks, Scene,
+    VoxelBody, Point, RegionBlocks, Scene,
 };
 pub use settings::AppConfig;
 pub use evaluation::two_layer_store::{

@@ -17,7 +17,7 @@
 //! (centres at `idx + 0.5 − grid/2`), but its placement does NOT route through
 //! `leaf_lattice_shift_voxels`: a sketch's footprint is corner-anchored, so the
 //! block-lattice shift the implicit-centre model needed is identically zero. (The
-//! resolve path treats a sketch leaf like a Part — no intrinsic block size, no
+//! resolve path treats a sketch leaf like a VoxelBody — no intrinsic block size, no
 //! lattice snap — see `Scene::resolve_*`.)
 //!
 //! 2a SCOPE: AXIS-ALIGNED planes only (the normal is one of ±X / ±Y / ±Z). A

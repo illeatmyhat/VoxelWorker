@@ -42,7 +42,7 @@ impl TwoLayerStore {
     /// `(absolute_chunk_coord, chunk)` list the two-layer mesher
     /// (`CuboidMeshRenderer::new_from_two_layer_chunks`, up in the display layer) consumes,
     /// visited in the SAME z,y,x order the dense store assembles. Returns an empty list when
-    /// the capability is OFF or the scene has no covering chunk range (a Part-only scene —
+    /// the capability is OFF or the scene has no covering chunk range (a VoxelBody-only scene —
     /// the caller falls back to the dense path). This keeps the `pub(crate)` chunk-range
     /// logic inside the crate while exposing the covering-chunk build to the `shot` binary.
     pub fn build_covering_chunks(
@@ -131,7 +131,7 @@ pub(crate) fn enumerate_covering_chunk_coords(min_chunk: [i32; 3], max_chunk: [i
 
 /// The leaf's world-AABB in absolute voxels: `[world_offset, world_offset + full_dimensions)`,
 /// corner-anchored — the SAME box [`classify_chunk_block`] / [`resolve_boundary_block`] test
-/// each block against. A region-spanning Part (the cloud field) reports its composite-region
+/// each block against. A region-spanning VoxelBody (the cloud field) reports its composite-region
 /// `full_dimensions`, so its box correctly spans every chunk it fills.
 pub(crate) fn leaf_world_aabb(leaf: &LeafProducer, voxels_per_block: u32) -> VoxelAabb {
     let grid_dimensions = leaf.producer.full_dimensions(voxels_per_block);

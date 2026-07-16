@@ -271,7 +271,7 @@ impl Scene {
     /// of the expand-to-block on the shifted box.
     ///
     /// For a Group / Instance node the box is the union of all leaves under it.
-    /// A size-less node (a Part-only / empty subtree, or a path that descends
+    /// A size-less node (a VoxelBody-only / empty subtree, or a path that descends
     /// through a non-Group) returns `None` — there is no block lattice to draw.
     pub fn node_block_lattice_box_recentred(
         &self,
@@ -441,7 +441,7 @@ impl Scene {
     /// ADR 0003 §3f(0)); the composite extent is the union of
     /// those boxes (`max_corner - min_corner` per axis). With every node at a zero
     /// offset this reduces to the per-axis MAX of the node sizes (the step-2
-    /// behaviour). A Part-only node (the cloud field, which has no intrinsic size)
+    /// behaviour). A VoxelBody-only node (the cloud field, which has no intrinsic size)
     /// contributes no box and adopts whatever extent the Tools establish.
     ///
     /// Returns a zero-sized region when no leaf has an intrinsic size.
@@ -465,7 +465,7 @@ impl Scene {
     /// coordinates: `(min_corner, max_corner)` where each leaf with intrinsic
     /// `size_blocks` is CORNER-ANCHORED at its block-offset (the derived block view of
     /// its voxel placement, ADR 0003 §3f(0)) and so spans `[offset, offset + size]`.
-    /// `None` when no leaf has an intrinsic size (a Part-only scene). Drives
+    /// `None` when no leaf has an intrinsic size (a VoxelBody-only scene). Drives
     /// [`full_extent_blocks`] (the whole-block size readout) and the block-lattice
     /// overlay extent.
     ///
@@ -565,11 +565,11 @@ impl Scene {
     /// exactly this value (asserted in `placed_region_dimensions_equals_assembled_grid`).
     /// `pub` so the `shot` binary can do the same substitution.
     ///
-    /// **Caveat — a Part-only scene** (no intrinsic-size leaf, e.g. a lone
+    /// **Caveat — a VoxelBody-only scene** (no intrinsic-size leaf, e.g. a lone
     /// debug-cloud field) returns `[0, 0, 0]` here because it has no composite
     /// extent; such a scene is resolved through the *explicit-region* monolithic
     /// path (sized to the caller's chosen region, not this), so a consumer of a
-    /// Part-only scene must use that explicit region — not this — as its dimensions.
+    /// VoxelBody-only scene must use that explicit region — not this — as its dimensions.
     ///
     /// [`placed_extent_voxels`]: Self::placed_extent_voxels
     /// [`recentre_voxels_for_resolve`]: Self::recentre_voxels_for_resolve
@@ -622,11 +622,11 @@ fn leaf_size_blocks(content: &NodeContent, voxels_per_block: u32) -> Option<[u32
             ])
         }
         // The cloud field has no intrinsic size; today it adopts the shape's grid
-        // dimensions, so a step-1 Part-only scene has no extent of its own. The
-        // call sites that resolve a Part always pass the region explicitly, so
+        // dimensions, so a step-1 VoxelBody-only scene has no extent of its own. The
+        // call sites that resolve a VoxelBody always pass the region explicitly, so
         // this path is unused by them; report whole blocks for completeness.
-        NodeContent::Part(Part::DebugClouds { .. }) => {
-            // A Part stamped at the app density occupies `dimensions / density`
+        NodeContent::VoxelBody(VoxelBody::DebugClouds { .. }) => {
+            // A VoxelBody stamped at the app density occupies `dimensions / density`
             // blocks; with no stored body in step 1 it has no size. Returning
             // `None` keeps `full_extent_blocks` deferring to the next leaf.
             let _ = density;

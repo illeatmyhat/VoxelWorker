@@ -3,7 +3,7 @@
     use camera::OrbitCamera;
     use document::intent::{whole_block_offset, Intent, IntentEffect, NodeSpec};
     use document::scene::{
-        DefId, Node, NodeBuilder, NodeContent, NodeGrids, NodeId, NodeTransform, Part, Point, Scene,
+        DefId, Node, NodeBuilder, NodeContent, NodeGrids, NodeId, NodeTransform, VoxelBody, Point, Scene,
     };
     use document::sketch::{PlaneAxis, Sketch, SketchSolid};
     use voxel_core::voxel::{ShapeKind};
@@ -418,7 +418,7 @@
         let target = root_id(&scene, 0);
         assert_dispatch_matches(&scene, Intent::SetCloudSeed { target, seed: 42 }, |s| {
             if let Some(node) = s.node_by_id_mut(target) {
-                if let NodeContent::Part(Part::DebugClouds { seed }) = &mut node.content {
+                if let NodeContent::VoxelBody(VoxelBody::DebugClouds { seed }) = &mut node.content {
                     *seed = 42;
                 }
             }

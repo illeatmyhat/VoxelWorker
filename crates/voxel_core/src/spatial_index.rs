@@ -97,7 +97,7 @@ impl ChunkCoverage for VoxelAabb {
 /// fingerprint is compared alongside the AABB.
 ///
 /// It is derived from the bytes of the leaf's `NodeContent` that affect the
-/// resolved voxels. `RegionSpanning` marks a leaf with no intrinsic AABB (a Part
+/// resolved voxels. `RegionSpanning` marks a leaf with no intrinsic AABB (a VoxelBody
 /// such as the debug-cloud field, whose voxels fill the whole composite region):
 /// such a leaf cannot be localised to chunks, so any edit touching it forces a
 /// wholesale clear (see [`LeafSpatialIndex::edit_aabb_since`]).
@@ -116,8 +116,8 @@ pub enum LeafFingerprint {
     /// [`RegionSpanning`](Self::RegionSpanning). Narrowing the dirty region to the
     /// enclosing scope's AABB is a recorded follow-up, not this slice.
     MasksBeyondItsBox(String),
-    /// A leaf with no intrinsic AABB (region-spanning), e.g. a Part. Carries its
-    /// content bytes so a Part edit is still seen as a change, but its presence in a
+    /// A leaf with no intrinsic AABB (region-spanning), e.g. a VoxelBody. Carries its
+    /// content bytes so a VoxelBody edit is still seen as a change, but its presence in a
     /// diff forces a wholesale clear (it cannot be chunk-localised).
     RegionSpanning(String),
 }
@@ -147,7 +147,7 @@ pub struct LeafSpatialIndex {
     /// The density the AABBs were computed at (an index is only comparable to
     /// another at the same density).
     pub voxels_per_block: u32,
-    /// Whether the scene contains a region-spanning leaf (a Part). When `true`, a
+    /// Whether the scene contains a region-spanning leaf (a VoxelBody). When `true`, a
     /// precise edit AABB can't always be computed; see `edit_aabb_since`.
     pub has_region_spanning_leaf: bool,
 }
@@ -195,7 +195,7 @@ impl LeafSpatialIndex {
     /// * `None` — a **conservative fallback**: the caller must `clear()` the whole
     ///   cache. This happens when (a) the two indices were built at different
     ///   densities (every chunk's voxel extent changed), (b) a **region-spanning**
-    ///   leaf (a Part) was added, removed, or edited — it has no localisable box, so
+    ///   leaf (a VoxelBody) was added, removed, or edited — it has no localisable box, so
     ///   its dirty region is "everywhere" — or (c) an **Intersect-influence** leaf
     ///   ([`LeafFingerprint::MasksBeyondItsBox`], ADR 0017 #75) appears in the diff:
     ///   its mask effect reaches beyond its box, so the box union under-dirties.
@@ -229,7 +229,7 @@ impl LeafSpatialIndex {
             }
             match fingerprint {
                 LeafFingerprint::RegionSpanning(_) => {
-                    // A Part changed (added/removed/edited): its dirty region is the
+                    // A VoxelBody changed (added/removed/edited): its dirty region is the
                     // whole scene — fall back to a wholesale clear.
                     return None;
                 }

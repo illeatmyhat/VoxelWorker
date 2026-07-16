@@ -179,7 +179,7 @@ struct WindowedState {
     export_outstanding: bool,
     /// While an export is in flight: `(per-chunk counter the worker bumps, total covering
     /// chunks)`. The panel reads it for the "Exporting… done/total chunks" line. A `0`
-    /// denominator (empty / Part-only scene) shows just the count.
+    /// denominator (empty / VoxelBody-only scene) shows just the count.
     export_progress: Option<(Arc<std::sync::atomic::AtomicU64>, u64)>,
     /// The last export completion or failure message (replaces the old `println!`/
     /// `eprintln!`), plus the large-export warning. Shown as small weak text under the
@@ -354,7 +354,7 @@ impl WindowedState {
         // seam-flag culling) — the SAME path `rebuild_geometry` takes on every later
         // edit, so the startup frame (which renders until the first edit re-meshes) is
         // pixel-identical to the two-layer runtime path. `build_covering_chunks` returns
-        // empty for a Part-only scene (the windowed startup default is always chunkable).
+        // empty for a VoxelBody-only scene (the windowed startup default is always chunkable).
         let startup_density = panel_state.geometry.voxels_per_block;
         // Build the startup covering set THROUGH the resident cache that becomes
         // `app_core.two_layer_cache` (async-brick startup follow-up): byte-identical

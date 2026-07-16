@@ -70,7 +70,7 @@ use super::*;
                 (evicted.len(), true)
             }
             None => {
-                // The wholesale fallback: a density change or a region-spanning Part edit
+                // The wholesale fallback: a density change or a region-spanning VoxelBody edit
                 // has no localisable box (mirrors `app_core::rebuild`'s `clear()` arm).
                 cache.clear();
                 (0, false)
@@ -358,15 +358,15 @@ use super::*;
     }
 
     /// **WHOLESALE FALLBACK — editing an unbounded (region-spanning) producer.** Editing a
-    /// `DebugClouds` Part (its dirty region is "everywhere", `edit_aabb_since` returns
+    /// `DebugClouds` VoxelBody (its dirty region is "everywhere", `edit_aabb_since` returns
     /// `None`) forces a wholesale clear; the rebuilt cache still equals a full rebuild.
     /// This is the "unboundable-producer edit falls back to wholesale" acceptance case.
     #[test]
     fn incremental_two_layer_cloud_edit_falls_back_to_wholesale() {
-        use document::scene::Part;
+        use document::scene::VoxelBody;
         let density = 16u32;
         let cloud = |seed: u32| {
-            let mut node = Node::new("Clouds", NodeContent::Part(Part::DebugClouds { seed }));
+            let mut node = Node::new("Clouds", NodeContent::VoxelBody(VoxelBody::DebugClouds { seed }));
             node.transform = NodeTransform::from_blocks([0, 0, 0], density);
             node
         };
@@ -376,7 +376,7 @@ use super::*;
         ]);
         // Edit the cloud's seed (a region-spanning content change; root index 1).
         let mut scene_b = scene_a.clone();
-        if let NodeContent::Part(Part::DebugClouds { seed }) =
+        if let NodeContent::VoxelBody(VoxelBody::DebugClouds { seed }) =
             &mut scene_b.root_node_mut(1).content
         {
             *seed = 42;
@@ -388,7 +388,7 @@ use super::*;
             apply_two_layer_incremental_edit(&mut cache, &scene_a, &scene_b, density);
         assert!(
             !took_aabb_path,
-            "editing a region-spanning Part must take the wholesale fallback, not the AABB path"
+            "editing a region-spanning VoxelBody must take the wholesale fallback, not the AABB path"
         );
         let incremental = resident_snapshot(&mut cache, &scene_b, density);
         assert_eq!(

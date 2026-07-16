@@ -208,7 +208,7 @@ pub struct VoxelGrid {
     /// The integer voxel offset this grid's world positions were RECENTRED by
     /// (`Scene::resolve_region` subtracts it from
     /// every voxel). **ADR 0008 — the carried frame.** A placed composite is recentred by
-    /// `(min+max)/2` (= `floor(dim/2)` for a lone producer); a Part-only / bare-producer
+    /// `(min+max)/2` (= `floor(dim/2)` for a lone producer); a VoxelBody-only / bare-producer
     /// grid is corner-anchored, so this is `[0,0,0]`. Carrying it lets every consumer
     /// decode `world → index` correctly WITHOUT re-deriving the centring (the assumption
     /// that, hard-coded as `floor(dim/2)`, made the fog drop a corner-anchored cloud
@@ -242,7 +242,7 @@ impl VoxelGrid {
     /// A producer corner-anchors each centre at `idx + 0.5`, then the resolve subtracts
     /// `recentre_voxels`, so `world = idx + 0.5 − recentre`; this inverts that exactly for
     /// any dimension parity. Because the recentre is *carried* (not assumed), a centred
-    /// placed Tool (`recentre = floor(dim/2)`) and a corner-anchored Part-only
+    /// placed Tool (`recentre = floor(dim/2)`) and a corner-anchored VoxelBody-only
     /// `DebugClouds` (`recentre = [0,0,0]`) BOTH decode into `[0, dimensions)` — the
     /// divergence that, with a hard-coded `floor(dim/2)`, dropped ~7/8 of a corner-
     /// anchored cloud field. For a centred grid this reduces to the historical

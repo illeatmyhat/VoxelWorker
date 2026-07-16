@@ -26,7 +26,7 @@ use super::*;
 /// the dense path bit-for-bit (position + block id).
 ///
 /// Returns `None` when the capability is OFF (the caller stays on the dense path) or the
-/// scene has no covering chunk range (a Part-only scene — handled by the dense path).
+/// scene has no covering chunk range (a VoxelBody-only scene — handled by the dense path).
 ///
 /// **Oracle — compile-gated.** This streams a whole-region dense [`VoxelGrid`] purely so
 /// the parity gate can compare it against `Store::resolve_region`; no runtime display
@@ -54,7 +54,7 @@ pub fn resolve_region_two_layer(
     output.recentre_voxels = recentre.voxels();
 
     let Some((min_chunk, max_chunk)) = scene.covering_chunk_range(voxels_per_block) else {
-        return Some(output); // No composite extent (Part-only): empty region.
+        return Some(output); // No composite extent (VoxelBody-only): empty region.
     };
 
     // Unwrap the frame at the per-chunk rebase arithmetic below.
@@ -210,7 +210,7 @@ pub fn stream_vox_occupancy<Sink: FnMut(Vec<Voxel>)>(
     // `stream_chunk_recentred`'s per-chunk rebase, never at this return.
     let recentre = scene.recentre_voxels_for_resolve(voxels_per_block);
     let Some((min_chunk, max_chunk)) = scene.covering_chunk_range(voxels_per_block) else {
-        // No composite extent (Part-only): an empty occupancy is still a valid export.
+        // No composite extent (VoxelBody-only): an empty occupancy is still a valid export.
         return Some(region_dimensions);
     };
     for chunk_z in min_chunk[2]..=max_chunk[2] {
