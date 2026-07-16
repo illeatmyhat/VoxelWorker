@@ -31,6 +31,45 @@ blur, or drift it. Transforms outside that group are not placements; they are
 authoring operations (a producer's own parameters), where losslessness is defined
 by the producer, not by the lattice.
 
+## Composition
+
+The tree composes by an **ordered fold**. Within a scope, children evaluate in document
+order, each folding into the accumulated result under its combine operation — union,
+subtract, or intersect. A boolean affects everything accumulated before it in its scope,
+and nothing else; **placement order, never operand selection, decides what it touches**.
+There is no per-operation targeting, no "objects to cut" list, no feature scope. Geometry
+is protected from a cut by being placed after it, or beside it in a sibling scope. The
+tree therefore serves two masters — organization and boolean semantics — and that is a
+deliberate trade: the structure the user reads is the structure that composes.
+
+Union is the constructive operation and carries material (later writers win on overlap).
+Subtract and intersect are **occupancy-only masks**: subtract clears cells, intersect
+keeps only cells present on both sides, and neither ever stamps material — surviving
+cells keep what they had. A cutter is not a special node kind; it is an ordinary part
+placed under a subtract operation, reusable through the same definition/instance
+machinery as any other part.
+
+**Groups and definition bodies are sealed composition scopes.** A scope resolves its
+children into one body, then folds that body into its parent under the scope node's own
+operation. A boolean inside a scope can never affect geometry outside it — the seal is
+what makes a subtree a *thing* rather than a region of influence, and it is why a
+definition's internal cuts are fully spent before an instance places the finished body.
+
+One declaration pierces one level of that sealing: a definition may be flagged a
+**fixture**. A fixture does not pre-compose; its children splice into the hosting
+scope's fold at the instance's position, in order, under the instance's transform — so a
+window definition (an opening cutter, then a frame) cuts its host wall and fills the
+frame with a single placement. The host is **positional**: whatever accumulated before
+the instance in its scope. It is never a stored reference, so there is no rehosting, no
+orphaned voids, no host-tracking lifecycle — move the fixture into another wall's scope
+and it cuts that wall. A fixture instance's own combine operation is inert (its children
+carry their own), and the seal of every scope above the host remains absolute.
+
+Where structures like walls meet at corners, the junction is **a part built to suit the
+situation** — authored and placed like any other part, additive or fixture — never a
+patch stored against the composed result. Site-specificity comes from being a distinct
+part instanced at that spot, not from a world-frame override layer; no such layer exists.
+
 ## Producers
 
 A leaf producer is the atom of geometry. Producers are **parametric and analytic**: a
