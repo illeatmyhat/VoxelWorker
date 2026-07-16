@@ -182,6 +182,50 @@ pub(crate) fn build_demo_subtract(voxels_per_block: u32) -> Scene {
     scene
 }
 
+/// Build the `--demo-group-subtract` (ADR 0017 Decision 3 / #74): the SEALED-SCOPE golden.
+/// A Group holds a Stone body plus a cutter placed AFTER it under [`CombineOp::Subtract`],
+/// so the cutter bites a corner-octant notch out of the body — INSIDE the group. A sibling
+/// Wood "bystander" box sits BEFORE the group in document order and overlaps the cutter's
+/// volume: under a flat (unsealed) fold the cutter — later in depth-first order — would
+/// carve the bystander too, so the bystander rendering INTACT, nestled into the notch, is
+/// the visible proof that a boolean inside a scope can never affect geometry outside it.
+/// The cutter carries the Plain material, which must appear nowhere (a Subtract never
+/// stamps — the notch faces render Stone).
+///
+/// [`CombineOp::Subtract`]: voxel_worker::CombineOp
+pub(crate) fn build_demo_group_subtract(voxels_per_block: u32) -> Scene {
+    let make = |size: [u32; 3], offset: [i64; 3], material, operation, name: &str| {
+        let shape = SdfShape::from_blocks(ShapeKind::Box, size, 1, voxels_per_block);
+        let mut node = Node::new(name, NodeContent::Tool { shape, material });
+        node.transform = document::scene::NodeTransform::from_blocks(offset, voxels_per_block);
+        node.operation = operation;
+        node
+    };
+    let mut scene = selecting_first_node(Scene::from_nodes(vec![
+        // The bystander spans blocks [3,5)³ — its lower corner octant [3,4)³ lies INSIDE
+        // the cutter's box. Placed BEFORE the group, so only the scope seal protects it.
+        NodeBuilder::Leaf(make(
+            [2, 2, 2],
+            [3, 3, 3],
+            MaterialChoice::Wood,
+            CombineOp::Union,
+            "Bystander",
+        )),
+        NodeBuilder::group(
+            "Carved body",
+            vec![
+                make([4, 4, 4], [0, 0, 0], MaterialChoice::Stone, CombineOp::Union, "Body").into(),
+                // Spans blocks [2,4)³ — the body's top corner octant — placed AFTER the
+                // body inside the group, so it carves the body and nothing else.
+                make([2, 2, 2], [2, 2, 2], MaterialChoice::Plain, CombineOp::Subtract, "Cutter")
+                    .into(),
+            ],
+        ),
+    ]));
+    scene.voxels_per_block = voxels_per_block;
+    scene
+}
+
 /// Build the `--demo-two-material` (ADR 0011 G2): two solid boxes of DISTINCT materials
 /// placed SEPARATED (a whole chunk of air between them) so NO block is shared — every
 /// rendered block is single-material. This is the brick-representable multi-producer scene

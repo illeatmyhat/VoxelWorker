@@ -342,11 +342,13 @@ impl Scene {
         let mut max_corner = [i64::MIN; 3];
         let mut any = false;
         let mut def_path: Vec<DefId> = Vec::new();
+        let mut scope_path: Vec<ScopeFrame> = Vec::new();
         self.walk_nodes(
             &[target_id],
             parent_offset_voxels,
             &mut def_path,
-            &mut |world_offset_voxels, content, _grid_on_faces, _operation| {
+            &mut scope_path,
+            &mut |world_offset_voxels, content, _grid_on_faces, _operation, _scope_path| {
                 let Some(size_blocks) = leaf_size_blocks(content, voxels_per_block) else {
                     return;
                 };
@@ -409,11 +411,13 @@ impl Scene {
         let mut max_corner = [i64::MIN; 3];
         let mut any = false;
         let mut def_path: Vec<DefId> = Vec::new();
+        let mut scope_path: Vec<ScopeFrame> = Vec::new();
         self.walk_nodes(
             &[target_id],
             parent_offset_voxels,
             &mut def_path,
-            &mut |world_offset_voxels, content, _grid_on_faces, _operation| {
+            &mut scope_path,
+            &mut |world_offset_voxels, content, _grid_on_faces, _operation, _scope_path| {
                 let Some(grid_voxels) = leaf_producer_grid_voxels(content, voxels_per_block) else {
                     return;
                 };
@@ -471,7 +475,7 @@ impl Scene {
         let mut min_corner = [i64::MAX; 3];
         let mut max_corner = [i64::MIN; 3];
         let mut any = false;
-        self.for_each_leaf(&mut |world_offset_voxels, content, _grid_on_faces, _operation| {
+        self.for_each_leaf(&mut |world_offset_voxels, content, _grid_on_faces, _operation, _scope_path| {
             let Some(size_blocks) = leaf_size_blocks(content, voxels_per_block) else {
                 return;
             };

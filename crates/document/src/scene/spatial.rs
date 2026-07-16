@@ -33,7 +33,7 @@ impl Scene {
         let mut min_corner = [i64::MAX; 3];
         let mut max_corner = [i64::MIN; 3];
         let mut any = false;
-        self.for_each_leaf(&mut |world_offset_voxels, content, _grid_on_faces, _operation| {
+        self.for_each_leaf(&mut |world_offset_voxels, content, _grid_on_faces, _operation, _scope_path| {
             let Some(grid_voxels) = leaf_producer_grid_voxels(content, voxels_per_block) else {
                 return;
             };
@@ -119,7 +119,7 @@ impl Scene {
     pub fn build_leaf_spatial_index(&self, voxels_per_block: u32) -> LeafSpatialIndex {
         let mut entries: Vec<LeafEntry> = Vec::new();
         let mut has_region_spanning_leaf = false;
-        self.for_each_leaf(&mut |world_offset_voxels, content, grid_on_faces, operation| {
+        self.for_each_leaf(&mut |world_offset_voxels, content, grid_on_faces, operation, scope_path| {
             match leaf_producer_grid_voxels(content, voxels_per_block) {
                 Some(grid_voxels) => {
                     // The producer-true emitted grid (`size·d` for an SDF Tool, the
@@ -141,6 +141,7 @@ impl Scene {
                             content,
                             grid_on_faces,
                             operation,
+                            scope_path,
                         )),
                     });
                 }
@@ -156,6 +157,7 @@ impl Scene {
                             content,
                             grid_on_faces,
                             operation,
+                            scope_path,
                         )),
                     });
                 }

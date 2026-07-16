@@ -183,6 +183,12 @@ pub(crate) struct ShotOptions {
     /// never stamps material). The CSG tracer-bullet golden. Overrides
     /// --shape/--size/--density.
     pub(crate) demo_subtract: bool,
+    /// `--demo-group-subtract` (ADR 0017 Decision 3 / #74): a Group holding a Stone body
+    /// plus a Subtract cutter (a corner notch carved INSIDE the group), with a Wood
+    /// bystander box BEFORE the group overlapping the cutter's volume — rendered intact,
+    /// the visible proof that a boolean inside a sealed scope cannot escape it. Overrides
+    /// --shape/--size/--density.
+    pub(crate) demo_group_subtract: bool,
     /// `--demo-two-material` (ADR 0011 G2): two solid boxes of DISTINCT materials placed
     /// SEPARATED so no block is shared — every rendered block is single-material, the
     /// brick-representable multi-producer scene the G2 per-record-material golden locks
@@ -275,6 +281,7 @@ impl Default for ShotOptions {
             synthetic_block: false,
             demo_overlap: false,
             demo_subtract: false,
+            demo_group_subtract: false,
             demo_two_material: false,
             demo_mixed_material: false,
             two_layer: false,
@@ -567,6 +574,9 @@ pub(crate) fn parse_options() -> ShotOptions {
             "--demo-subtract" => {
                 options.demo_subtract = true;
             }
+            "--demo-group-subtract" => {
+                options.demo_group_subtract = true;
+            }
             "--demo-two-material" => {
                 options.demo_two_material = true;
             }
@@ -679,7 +689,7 @@ pub(crate) fn parse_options() -> ShotOptions {
                      \x20            [--force-demo-stem <texture/stem>]\n\
                      \x20            [--gizmo] [--select-node <usize>] [--lattice] [--floor] [--points] [--point-at <X Y Z>] [--no-viewcube]\n\
                      \x20            [--debug-faces] [--debug-chunks]\n\
-                     \x20            [--demo-scene] [--demo-overlap] [--demo-subtract] [--demo-two-material] [--demo-village] [--demo-village-far] [--demo-groups]\n\
+                     \x20            [--demo-scene] [--demo-overlap] [--demo-subtract] [--demo-group-subtract] [--demo-two-material] [--demo-village] [--demo-village-far] [--demo-groups]\n\
                      \x20            [--demo-sketch-extrude] [--demo-sketch-revolve]\n\
                      \x20            [--demo-far-offset] [--demo-far-offset-near]\n\
                      \x20            [--layer-lower <u32>] [--layer-upper <u32>] [--onion <u32>]\n\

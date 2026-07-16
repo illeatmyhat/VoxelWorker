@@ -291,18 +291,45 @@
     }
 
     #[test]
-    fn set_operation_on_group_is_noop() {
-        // ADR 0017 sibling-level slice: a Group's operation is inert in the resolver
-        // (sealed scopes are issue #74), so SetOperation on a Group must no-op.
+    fn set_operation_on_group_dispatches() {
+        // ADR 0017 Decision 3 (#74): a Group is a sealed composition scope whose
+        // composed body folds under the GROUP's own operation, so SetOperation on a
+        // Group target must apply (it was a no-op in the #73 sibling-level slice).
         let mut scene = two_tool_scene();
         scene.active = Some(root_id(&scene, 0));
         let group = scene.group_active().expect("grouping the active node succeeds");
+        assert_dispatch_matches(
+            &scene,
+            Intent::SetOperation {
+                target: group,
+                operation: document::scene::CombineOp::Subtract,
+            },
+            |s| {
+                if let Some(node) = s.node_by_id_mut(group) {
+                    node.operation = document::scene::CombineOp::Subtract;
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn set_operation_on_instance_is_noop() {
+        // The resolver honours an Instance's operation (a definition instanced with
+        // Subtract is the reusable cutter, ADR 0017 Decision 3), but its EDIT
+        // surface is issue #76's slice — until then SetOperation on an Instance
+        // target must no-op, mirroring the missing inspector selector.
+        let mut scene = two_tool_scene();
+        scene.active = Some(root_id(&scene, 0));
+        scene
+            .make_definition_from_active("Part def")
+            .expect("definition from the active node succeeds");
+        let instance = root_id(&scene, 0); // the active node became the Instance.
         let mut core = test_core();
         let mut applied = scene.clone();
         let effect = core.apply_intent(
             &mut applied,
             Intent::SetOperation {
-                target: group,
+                target: instance,
                 operation: document::scene::CombineOp::Subtract,
             },
         );

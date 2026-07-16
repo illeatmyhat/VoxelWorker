@@ -23,6 +23,7 @@ mod core;
 mod streaming;
 mod incremental;
 mod subtract;
+mod sealed_scopes;
 
     pub(super) fn shape_scene(kind: ShapeKind, voxels_per_block: u32) -> Scene {
         Scene::from_geometry(

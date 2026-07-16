@@ -45,10 +45,9 @@ pub(super) fn build_inspector_section(
 
     match kind {
         ActiveKind::Tool => {
-            // ADR 0017: the combine-operation selector shows on LEAF nodes only
-            // (Tool / Sketch / Clouds Part) — Group / Instance operations are inert
-            // in this sibling-level slice (sealed scopes are issue #74), so they get
-            // no selector.
+            // ADR 0017: the combine-operation selector shows on leaf nodes (Tool /
+            // Sketch / Clouds Part) and on Groups (sealed scopes, issue #74);
+            // Instances wait on issue #76.
             build_operation_section(ui, state, response);
             // ADR 0003 Phase C C4a: the inspector still binds the widgets to the
             // `geometry`/`material` mirror buffer (egui needs the `&mut`), but a change
@@ -107,11 +106,18 @@ pub(super) fn build_inspector_section(
             build_node_grids_section(ui, state, response);
         }
         ActiveKind::Group => {
+            // ADR 0017 Decision 3 (issue #74): a Group is a sealed composition scope,
+            // so its OWN operation is meaningful — the group's composed body folds
+            // into its parent under it. The selector therefore shows on Groups too.
+            build_operation_section(ui, state, response);
             build_group_inspector_section(ui, state, "Group", response);
             build_offset_section(ui, state, response);
             build_node_grids_section(ui, state, response);
         }
         ActiveKind::Instance => {
+            // An Instance's operation is semantically meaningful too (a definition
+            // instanced with Subtract is the reusable cutter), but its selector +
+            // tests are issue #76's slice — no selector here yet.
             build_group_inspector_section(ui, state, "Instance", response);
             build_offset_section(ui, state, response);
             build_node_grids_section(ui, state, response);
@@ -473,14 +479,16 @@ fn build_sketch_inspector_section(
     }
 }
 
-/// Combine-operation selector (ADR 0017): how the active LEAF node folds into the
+/// Combine-operation selector (ADR 0017): how the active node folds into the
 /// result accumulated before it among its siblings — `Union` adds (later-wins
 /// material on overlap), `Subtract` carves (an occupancy-only mask that never
-/// stamps material). Shown ONLY on leaf nodes (Tool / Sketch / Clouds Part); Group
-/// / Instance operations are inert in this sibling-level slice (sealed scopes are
-/// issue #74). A change emits `Intent::SetOperation` WITHOUT an auto-frame (a
-/// cutter flip never changes the composite extent — the cutter's AABB already
-/// contributes to it — so the camera stays put, like a material pick).
+/// stamps material). Shown on leaf nodes (Tool / Sketch / Clouds Part) AND on
+/// Groups (a Group is a sealed composition scope whose composed body folds under
+/// its own operation — ADR 0017 Decision 3, issue #74); Instance nodes get no
+/// selector yet (a definition instanced with Subtract is issue #76's slice). A
+/// change emits `Intent::SetOperation` WITHOUT an auto-frame (a cutter flip never
+/// changes the composite extent — the cutter's AABB already contributes to it —
+/// so the camera stays put, like a material pick).
 fn build_operation_section(
     ui: &mut egui::Ui,
     state: &mut PanelState,

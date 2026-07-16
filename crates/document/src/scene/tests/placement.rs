@@ -229,7 +229,7 @@ use crate::voxel::SdfShape;
         query: &voxel_core::spatial_index::VoxelAabb,
     ) -> Vec<voxel_core::spatial_index::VoxelAabb> {
         let mut matched = Vec::new();
-        scene.for_each_leaf(&mut |world_offset_voxels, content, _grid_on_faces, _operation| {
+        scene.for_each_leaf(&mut |world_offset_voxels, content, _grid_on_faces, _operation, _scope_path| {
             let Some(grid_voxels) = leaf_producer_grid_voxels(content, voxels_per_block) else {
                 return; // region-spanning leaf — not an AABB match.
             };

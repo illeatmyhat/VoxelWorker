@@ -127,7 +127,10 @@ pub struct Node {
     /// Step 1 only ever uses the identity (zero offset).
     #[serde(default)]
     pub transform: NodeTransform,
-    /// How this node combines with earlier ones. v1: always [`CombineOp::Union`].
+    /// How this node folds into the result accumulated before it in its scope (ADR
+    /// 0017). For a leaf, the leaf's own role; for a `Group` (and, resolver-side, an
+    /// `Instance`), the operation the scope's PRE-COMPOSED body folds under
+    /// (Decision 3 — sealed composition scopes, issue #74).
     #[serde(default)]
     pub operation: CombineOp,
     /// Whether the node contributes to resolution (a hidden node stamps nothing).

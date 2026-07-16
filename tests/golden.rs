@@ -197,6 +197,17 @@ const CASES: &[GoldenCase] = &[
         name: "demo-subtract",
         args: &["--demo-subtract"],
     },
+    // ADR 0017 Decision 3 (#74): the SEALED-SCOPE golden — a Group holds a Stone body
+    // carved by a Subtract cutter, and a Wood bystander box placed BEFORE the group
+    // overlaps the cutter's volume. Under a flat (unsealed) fold the cutter — later in
+    // depth-first order — would carve the bystander; here it renders INTACT, nestled
+    // into the notch: the visible proof that a boolean inside a scope cannot affect
+    // geometry outside it. The cutter's Plain material appears nowhere (a Subtract
+    // never stamps; the notch faces render Stone).
+    GoldenCase {
+        name: "demo-group-subtract",
+        args: &["--demo-group-subtract"],
+    },
 ];
 
 /// The subset of [`CASES`] whose scene is CHUNKABLE (has an intrinsic-size leaf), i.e. the
@@ -238,6 +249,11 @@ const TWO_LAYER_CASE_NAMES: &[&str] = &[
     // pixel-identical to the dense reference (the carve must classify + resolve the same
     // on both paths).
     "demo-subtract",
+    // ADR 0017 Decision 3 (#74): the sealed-scope scene through `--two-layer` — the
+    // scoped classification + scoped boundary resolve must render pixel-identical to
+    // the dense scoped oracle (the group's cutter carves the group's body only, on
+    // both paths).
+    "demo-group-subtract",
 ];
 
 /// ADR 0011 G1 (#67): the golden cases whose scene is a chunkable SINGLE producer with a

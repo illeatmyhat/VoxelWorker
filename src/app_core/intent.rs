@@ -190,18 +190,20 @@ impl AppCore {
                 None => Inverse::NoOp,
             },
             Intent::SetOperation { target, .. } => match scene.node_by_id(*target) {
-                // The operation is a LEAF-node field in this slice (ADR 0017
-                // sibling-level; Group / Instance operations stay inert until
-                // sealed scopes, issue #74), so only a leaf captures an inverse —
-                // mirroring the dispatch's leaf-only apply.
+                // The operation is meaningful on leaves AND on Groups (ADR 0017
+                // Decision 3, issue #74: a Group is a sealed scope whose composed
+                // body folds under its own operation), so both capture an inverse.
+                // An Instance's operation stays inert until issue #76, so it stays
+                // NoOp — mirroring the dispatch's apply.
                 Some(node) => match &node.content {
                     NodeContent::Tool { .. }
                     | NodeContent::SketchTool { .. }
-                    | NodeContent::Part(_) => Inverse::Field(Intent::SetOperation {
+                    | NodeContent::Part(_)
+                    | NodeContent::Group(_) => Inverse::Field(Intent::SetOperation {
                         target: *target,
                         operation: node.operation,
                     }),
-                    _ => Inverse::NoOp,
+                    NodeContent::Instance(_) => Inverse::NoOp,
                 },
                 None => Inverse::NoOp,
             },
@@ -499,19 +501,23 @@ impl AppCore {
                 (if applied { full_effect } else { none }, None)
             }
             Intent::SetOperation { target, operation } => {
-                // ADR 0017 (sibling-level slice): the combine operation is a LEAF
-                // field — a Group / Instance operation is inert in the resolver, so
-                // setting it would be a silent no-effect edit; no-op instead (the
-                // inspector only offers the selector on leaf nodes).
+                // ADR 0017: the combine operation applies to leaves AND to Groups
+                // (Decision 3, issue #74 — a Group's composed body folds into its
+                // parent under the GROUP's operation). The resolver honours an
+                // Instance's operation too (a definition instanced with Subtract is
+                // the reusable cutter), but its EDIT surface — selector, dispatch,
+                // tests — is issue #76's slice, so an Instance target still no-ops
+                // here.
                 let applied = match scene.node_by_id_mut(target) {
                     Some(node) => match &node.content {
                         NodeContent::Tool { .. }
                         | NodeContent::SketchTool { .. }
-                        | NodeContent::Part(_) => {
+                        | NodeContent::Part(_)
+                        | NodeContent::Group(_) => {
                             node.operation = operation;
                             true
                         }
-                        _ => false,
+                        NodeContent::Instance(_) => false,
                     },
                     None => false,
                 };

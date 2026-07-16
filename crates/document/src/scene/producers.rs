@@ -75,11 +75,38 @@ pub enum NodeContent {
     Instance(DefId),
 }
 
+/// One enclosing **sealed composition scope** of a leaf (ADR 0017 Decision 3): a `Group`
+/// node, or a definition body expanded under an `Instance` node. The leaf's chain of
+/// frames — outermost first — is its **scope path**: the walk emits leaves in depth-first
+/// document order, and two consecutive leaves are in the same scope iff their paths are
+/// equal, so a consumer reconstructs the scope-open/scope-close markers of the depth-first
+/// fold (the push/pop evaluation of the SDF-editor prior art, `docs/design/
+/// csg-prior-art-study.md` round 2) by comparing adjacent paths. Carrying the path on each
+/// leaf — instead of interleaving marker entries — keeps the flat `LeafProducer` list a
+/// plain document-order sequence, so the edit broadphase's positional indexing and the
+/// candidate-subsequence filtering stay valid unchanged (dropping a leaf drops nothing but
+/// that leaf; an emptied scope simply never opens).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScopeFrame {
+    /// The scope node's stable [`NodeId`] — the `Group` node itself, or the `Instance`
+    /// node whose referenced definition body this expansion is. Distinguishes two sibling
+    /// scopes (and two expansions of the same definition: their instance nodes differ), and
+    /// is stable across walks so it can enter the leaf fingerprint (a regroup or a scope-op
+    /// flip must dirty the leaves inside — see [`leaf_content_fingerprint`]).
+    pub scope_node: NodeId,
+    /// The scope node's own [`CombineOp`] — the operation the scope's COMPOSED body folds
+    /// under into its parent scope (ADR 0017 Decision 3: a Group/definition pre-composes
+    /// its children into one body; that body then folds as a unit).
+    pub operation: CombineOp,
+}
+
 /// The [`Scene::for_each_leaf`] / [`Scene::walk_nodes`] visitor callback: invoked once per
-/// visible leaf with `(world_offset_voxels, content, grid_on_faces, operation)` — the
-/// accumulated world VOXEL offset, the leaf content, the node's on-face-grid flag (issue
-/// #29 S4), and the node's [`CombineOp`] role in the ordered fold (ADR 0017).
-pub(super) type LeafVisitor<'walk> = dyn FnMut([i64; 3], &NodeContent, bool, CombineOp) + 'walk;
+/// visible leaf with `(world_offset_voxels, content, grid_on_faces, operation, scope_path)`
+/// — the accumulated world VOXEL offset, the leaf content, the node's on-face-grid flag
+/// (issue #29 S4), the node's own [`CombineOp`] role in the ordered fold (ADR 0017), and
+/// the chain of enclosing sealed scopes (outermost first — see [`ScopeFrame`]).
+pub(super) type LeafVisitor<'walk> =
+    dyn FnMut([i64; 3], &NodeContent, bool, CombineOp, &[ScopeFrame]) + 'walk;
 
 impl Scene {
     /// Walk the whole node tree depth-first, invoking
@@ -99,15 +126,19 @@ impl Scene {
     /// offset, its content, its own `grids.voxel_grid_on_faces` flag (issue
     /// #29 S4 — the resolver ORs [`crate::voxel::GRID_OVERLAY_BIT`] into the
     /// leaf's stamped `material_id` when this is set, so the on-face voxel grid
-    /// travels with each voxel through chunk bucketing), and its own
+    /// travels with each voxel through chunk bucketing), its own
     /// [`CombineOp`] (ADR 0017: the leaf's role in the ordered document-order
     /// fold — a `Subtract` leaf removes occupancy from everything accumulated
-    /// before it). Group / Instance node operations are NOT consulted in this
-    /// sibling-level slice (sealed scopes are issue #74); a leaf inside a Group
-    /// carries its OWN operation into the flat walk.
+    /// before it *in its scope*), and its **scope path** — the chain of
+    /// enclosing sealed composition scopes (ADR 0017 Decision 3, issue #74):
+    /// every `Group` node and every `Instance`-expanded definition body on the
+    /// way down, outermost first, each carrying the SCOPE node's own operation
+    /// (see [`ScopeFrame`]). A scope pre-composes its leaves into one body; a
+    /// boolean inside it can never affect geometry outside it.
     pub(super) fn for_each_leaf(&self, visitor: &mut LeafVisitor<'_>) {
         let mut def_path: Vec<DefId> = Vec::new();
-        self.walk_nodes(&self.roots, [0, 0, 0], &mut def_path, visitor);
+        let mut scope_path: Vec<ScopeFrame> = Vec::new();
+        self.walk_nodes(&self.roots, [0, 0, 0], &mut def_path, &mut scope_path, visitor);
     }
 
 
@@ -124,7 +155,7 @@ impl Scene {
     pub fn leaf_producers(&self, voxels_per_block: u32) -> Vec<LeafProducer> {
         let region_dimensions = self.placed_region_dimensions(voxels_per_block);
         let mut leaves = Vec::new();
-        self.for_each_leaf(&mut |world_offset_voxels, content, grid_on_faces, operation| {
+        self.for_each_leaf(&mut |world_offset_voxels, content, grid_on_faces, operation, scope_path| {
             let (material, producer): (Option<voxel_core::core_geom::BlockId>, Box<dyn VoxelProducer>) =
                 match content {
                     NodeContent::Tool { shape, material } => {
@@ -148,6 +179,7 @@ impl Scene {
                 material,
                 grid_overlay: grid_on_faces,
                 operation,
+                scope_path: scope_path.to_vec(),
             });
         });
         leaves
@@ -157,12 +189,16 @@ impl Scene {
     /// is the accumulated world VOXEL offset of the assembly that owns `nodes`;
     /// `def_path` is the stack of definition ids currently being expanded (for the
     /// cycle guard — an `Instance` that would re-enter a definition already on the
-    /// path is skipped instead of recursing forever).
+    /// path is skipped instead of recursing forever); `scope_path` is the stack of
+    /// enclosing sealed-scope frames (ADR 0017 Decision 3 — pushed on entering a
+    /// `Group` or an `Instance`'s definition body, popped on leaving) handed to the
+    /// visitor per leaf.
     pub(super) fn walk_nodes(
         &self,
         spine: &[NodeId],
         parent_offset: [i64; 3],
         def_path: &mut Vec<DefId>,
+        scope_path: &mut Vec<ScopeFrame>,
         visitor: &mut LeafVisitor<'_>,
     ) {
         // GOLDEN-CRITICAL (ADR 0003 B5): iterate the id-spine for ORDER (document
@@ -185,18 +221,29 @@ impl Scene {
                 NodeContent::Tool { .. }
                 | NodeContent::SketchTool { .. }
                 | NodeContent::Part(_) => {
-                    // ADR 0017 (sibling-level slice): the leaf carries its OWN
-                    // `operation` into the flat walk; Group / Instance operations
-                    // stay ignored until sealed scopes land (issue #74).
+                    // ADR 0017: the leaf carries its OWN `operation` plus the chain
+                    // of enclosing sealed-scope frames (issue #74) into the flat
+                    // walk — consumers reconstruct the scoped fold from the paths.
                     visitor(
                         world_offset_voxels,
                         &node.content,
                         node.grids.voxel_grid_on_faces,
                         node.operation,
+                        scope_path,
                     );
                 }
                 NodeContent::Group(children) => {
-                    self.walk_nodes(children, world_offset_voxels, def_path, visitor);
+                    // ADR 0017 Decision 3 (issue #74): a Group is a SEALED
+                    // composition scope — its frame (identity + the GROUP node's own
+                    // operation) encloses every leaf below it, so the group's
+                    // children pre-compose into one body that folds into the parent
+                    // under the group's operation.
+                    scope_path.push(ScopeFrame {
+                        scope_node: node.id,
+                        operation: node.operation,
+                    });
+                    self.walk_nodes(children, world_offset_voxels, def_path, scope_path, visitor);
+                    scope_path.pop();
                 }
                 NodeContent::Instance(def_id) => {
                     // Cycle guard: an Instance may not reference an ancestor
@@ -215,7 +262,18 @@ impl Scene {
                         continue;
                     };
                     def_path.push(*def_id);
-                    self.walk_nodes(&def.children, world_offset_voxels, def_path, visitor);
+                    // ADR 0017 Decision 3 (issue #74): a definition body is a SEALED
+                    // scope too — it pre-composes (internal booleans are fully spent
+                    // inside it), and the finished body folds into the parent under
+                    // the INSTANCE node's operation. The frame's identity is the
+                    // INSTANCE node (unique per placement), so two expansions of the
+                    // same definition are distinct scopes.
+                    scope_path.push(ScopeFrame {
+                        scope_node: node.id,
+                        operation: node.operation,
+                    });
+                    self.walk_nodes(&def.children, world_offset_voxels, def_path, scope_path, visitor);
+                    scope_path.pop();
                     def_path.pop();
                 }
             }
@@ -294,7 +352,18 @@ impl Scene {
         // without overflow; the result is downcast to f32 inside the stamp (the
         // render frame stays f32 — S4b makes the far case byte-identical via origin
         // rebasing).
-        self.for_each_leaf(&mut |world_offset_voxels, content, grid_on_faces, operation| {
+        // ADR 0017 Decision 3 (issue #74): the walk is evaluated as a SCOPED depth-first
+        // fold — each open Group / definition-body scope composes its leaves into its own
+        // scratch grid, and a closing scope folds that composed body into its parent under
+        // the SCOPE's operation (`sync_grid_scope_stack`), so a boolean inside a scope can
+        // never affect geometry outside it.
+        let mut scope_stack: Vec<(ScopeFrame, VoxelGrid)> = Vec::new();
+        self.for_each_leaf(&mut |world_offset_voxels, content, grid_on_faces, operation, scope_path| {
+            sync_grid_scope_stack(&mut scope_stack, &mut output, scope_path, region_dimensions);
+            let target: &mut VoxelGrid = match scope_stack.last_mut() {
+                Some((_, scratch)) => scratch,
+                None => &mut output,
+            };
             // Every producer corner-anchors its grid at its world voxel offset (the low
             // corner); the recentre (from the producer-true voxel frame) symmetrises the
             // composite about the origin for ALL size·d parities, so no per-leaf lattice
@@ -305,8 +374,9 @@ impl Scene {
                 world_offset_voxels[2] - recentre_voxels[2],
             ];
             // ADR 0017: a Subtract leaf is an occupancy-only mask — it CARVES its
-            // body out of everything stamped before it (document order) and never
-            // stamps material, so it takes the carve path instead of a stamp.
+            // body out of everything stamped before it (document order, within its
+            // scope) and never stamps material, so it takes the carve path instead
+            // of a stamp.
             if operation == CombineOp::Subtract {
                 let producer: Box<dyn VoxelProducer> = match content {
                     NodeContent::Tool { shape, .. } => Box::new(shape.clone()),
@@ -318,7 +388,7 @@ impl Scene {
                     NodeContent::Group(_) | NodeContent::Instance(_) => return,
                 };
                 carve_producer(
-                    &mut output,
+                    target,
                     region_dimensions,
                     translation_voxels,
                     producer.as_ref(),
@@ -329,7 +399,7 @@ impl Scene {
             match content {
                 NodeContent::Tool { shape, material } => {
                     stamp_producer(
-                        &mut output,
+                        target,
                         region_dimensions,
                         translation_voxels,
                         material_id_for(*material),
@@ -346,7 +416,7 @@ impl Scene {
                     // like SdfShape, so it stamps through the same path at the plain
                     // `translation_voxels` (world offset minus recentre, no shift).
                     stamp_producer(
-                        &mut output,
+                        target,
                         region_dimensions,
                         translation_voxels,
                         material_id_for(*material),
@@ -363,7 +433,7 @@ impl Scene {
                         seed: *seed,
                     };
                     stamp_producer(
-                        &mut output,
+                        target,
                         region_dimensions,
                         translation_voxels,
                         // A Part brings its own per-voxel materials; today the
@@ -381,6 +451,9 @@ impl Scene {
                 NodeContent::Group(_) | NodeContent::Instance(_) => {}
             }
         });
+        // Close every scope still open after the last leaf (folding each composed
+        // body down into `output` under its scope's operation).
+        sync_grid_scope_stack(&mut scope_stack, &mut output, &[], region_dimensions);
 
         output
     }
@@ -487,7 +560,16 @@ impl Scene {
         // only the voxels whose absolute centre falls in this chunk's box.
         let region_dimensions = self.placed_region_dimensions(voxels_per_block);
         let chunk_box = VoxelAabb::new(chunk_min_voxels, chunk_max_voxels);
-        self.for_each_leaf(&mut |world_offset_voxels, content, grid_on_faces, operation| {
+        // ADR 0017 Decision 3 (issue #74): the same scoped depth-first fold as
+        // `resolve_region`, restricted to this chunk. Composition is cell-local (a
+        // union appends a cell, a subtract removes a cell), so restricting every
+        // stamp / carve / scope-close to the chunk's cells commutes with the fold —
+        // the reassembled chunks equal the monolithic scoped resolve exactly. A leaf
+        // whose AABB misses the chunk is skipped WITHOUT syncing the stack: it
+        // contributes no cells here, and a scope none of whose leaves touch the
+        // chunk simply never opens (an empty scope folds to nothing).
+        let mut scope_stack: Vec<(ScopeFrame, VoxelGrid)> = Vec::new();
+        self.for_each_leaf(&mut |world_offset_voxels, content, grid_on_faces, operation, scope_path| {
             // Issue #27 S3 optimisation: skip a leaf whose world-AABB doesn't touch
             // this chunk, so resolving one chunk costs ~the leaves that overlap it
             // (not the whole tree). This is BIT-IDENTICAL to stamping-then-clipping:
@@ -536,13 +618,22 @@ impl Scene {
                 ),
                 NodeContent::Group(_) | NodeContent::Instance(_) => return,
             };
+            // The leaf overlaps the chunk: sync the scope stack to its path (closing /
+            // opening scopes exactly where the depth-first fold does) and compose into
+            // the innermost open scope's scratch grid — or `output` at root level.
+            sync_grid_scope_stack(&mut scope_stack, &mut output, scope_path, chunk_dimensions);
+            let target: &mut VoxelGrid = match scope_stack.last_mut() {
+                Some((_, scratch)) => scratch,
+                None => &mut output,
+            };
             // ADR 0017: a Subtract leaf carves its body's cells OUT of the voxels
-            // stamped so far in this chunk (occupancy-only — no material, no stamp).
-            // A leaf whose AABB missed the chunk was already skipped above (it
-            // carves nothing here), so this sees only genuinely-overlapping cutters.
+            // stamped so far in this chunk WITHIN ITS SCOPE (occupancy-only — no
+            // material, no stamp). A leaf whose AABB missed the chunk was already
+            // skipped above (it carves nothing here), so this sees only
+            // genuinely-overlapping cutters.
             if operation == CombineOp::Subtract {
                 carve_producer_from_chunk(
-                    &mut output,
+                    target,
                     region_dimensions,
                     translation_voxels,
                     floating_origin_voxels,
@@ -554,7 +645,7 @@ impl Scene {
                 return;
             }
             stamp_producer_into_chunk(
-                &mut output,
+                target,
                 region_dimensions,
                 translation_voxels,
                 floating_origin_voxels,
@@ -569,6 +660,8 @@ impl Scene {
                 chunk_max_voxels,
             );
         });
+        // Close every scope still open after the last overlapping leaf.
+        sync_grid_scope_stack(&mut scope_stack, &mut output, &[], chunk_dimensions);
 
         output
     }
@@ -628,6 +721,7 @@ pub(super) fn leaf_content_fingerprint(
     content: &NodeContent,
     grid_on_faces: bool,
     operation: CombineOp,
+    scope_path: &[ScopeFrame],
 ) -> String {
     // The on-face-grid flag is baked into the resolved voxels as `GRID_OVERLAY_BIT`
     // (issue #29 S4), so two otherwise-identical leaves that differ only in this flag
@@ -644,25 +738,46 @@ pub(super) fn leaf_content_fingerprint(
     // dirty exactly that AABB — and the store's dirtied chunks are RE-CLASSIFIED
     // (a Subtract can turn coarse-solid blocks into boundary or air), not merely
     // re-meshed.
+    //
+    // The leaf's SCOPE PATH (ADR 0017 Decision 3, issue #74) is fingerprinted too:
+    // a Group's operation flip, or a restructure that moves the leaf into a
+    // different scope, changes how the leaf composes — and the change is confined
+    // to the leaves inside the scope (a scope-op flip re-folds exactly the scope's
+    // composed body, whose cells all lie within its leaves' AABBs), so dirtying
+    // every enclosed leaf's AABB dirties precisely the scope's subtree AABB. The
+    // frame's stable `NodeId` (not a walk-order counter) keeps the fingerprint
+    // stable across unrelated edits.
     let grid = if grid_on_faces { ":grid=1" } else { ":grid=0" };
-    let op = match operation {
-        CombineOp::Union => ":op=union",
-        CombineOp::Subtract => ":op=subtract",
+    let op_token = |operation: CombineOp| match operation {
+        CombineOp::Union => "union",
+        CombineOp::Subtract => "subtract",
+    };
+    let op = format!(":op={}", op_token(operation));
+    let scopes = {
+        let mut token = String::from(":scopes=[");
+        for (depth, frame) in scope_path.iter().enumerate() {
+            if depth > 0 {
+                token.push(',');
+            }
+            token.push_str(&format!("{}:{}", frame.scope_node.0, op_token(frame.operation)));
+        }
+        token.push(']');
+        token
     };
     match content {
         NodeContent::Tool { shape, material } => {
-            format!("Tool@{world_offset_voxels:?}:{shape:?}:{material:?}{grid}{op}")
+            format!("Tool@{world_offset_voxels:?}:{shape:?}:{material:?}{grid}{op}{scopes}")
         }
         NodeContent::SketchTool { producer, material } => {
-            format!("SketchTool@{world_offset_voxels:?}:{producer:?}:{material:?}{grid}{op}")
+            format!("SketchTool@{world_offset_voxels:?}:{producer:?}:{material:?}{grid}{op}{scopes}")
         }
-        NodeContent::Part(part) => format!("Part@{world_offset_voxels:?}:{part:?}{grid}{op}"),
+        NodeContent::Part(part) => format!("Part@{world_offset_voxels:?}:{part:?}{grid}{op}{scopes}"),
         // for_each_leaf only ever yields leaf content (Tool / SketchTool / Part);
         // Group / Instance are interior and never reach a visitor. Fingerprint
         // defensively anyway.
-        NodeContent::Group(_) => format!("Group@{world_offset_voxels:?}{grid}{op}"),
+        NodeContent::Group(_) => format!("Group@{world_offset_voxels:?}{grid}{op}{scopes}"),
         NodeContent::Instance(def_id) => {
-            format!("Instance@{world_offset_voxels:?}:{def_id:?}{grid}{op}")
+            format!("Instance@{world_offset_voxels:?}:{def_id:?}{grid}{op}{scopes}")
         }
     }
 }
@@ -698,13 +813,20 @@ pub struct LeafProducer {
     /// [`voxel_core::voxel::Voxel::grid_overlay`]. It is a RENDER hint only: it never enters the
     /// categorical `block_id`, the chunk codec, or `.vox` export (§3c).
     pub grid_overlay: bool,
-    /// The leaf's [`CombineOp`] role in the ordered document-order fold (ADR 0017):
-    /// `Union` stamps (later-wins material on overlap); `Subtract` is an
-    /// occupancy-only mask that removes cells accumulated before it and never
-    /// stamps material. This is the owning NODE's operation — a leaf inside a
-    /// Group carries its own operation into the flat list (sibling-level slice;
-    /// sealed scopes are issue #74).
+    /// The leaf's [`CombineOp`] role in the ordered fold (ADR 0017): `Union` stamps
+    /// (later-wins material on overlap); `Subtract` is an occupancy-only mask that
+    /// removes cells accumulated before it **within its scope** and never stamps
+    /// material. This is the owning NODE's operation; the scope structure it folds
+    /// inside is `scope_path`.
     pub operation: CombineOp,
+    /// The chain of enclosing sealed composition scopes (ADR 0017 Decision 3, issue
+    /// #74), outermost first — every `Group` and every `Instance`-expanded definition
+    /// body above this leaf, each frame carrying the SCOPE node's own [`CombineOp`].
+    /// The flat list stays plain document order; a consumer reconstructs the
+    /// depth-first fold's scope-open / scope-close markers by comparing adjacent
+    /// leaves' paths (see [`ScopeFrame`]). Empty for a root-level leaf, which folds
+    /// directly into the scene's root accumulator — the pre-#74 behaviour.
+    pub scope_path: Vec<ScopeFrame>,
 }
 
 pub(super) fn leaf_producer_grid_voxels(content: &NodeContent, _voxels_per_block: u32) -> Option<[i64; 3]> {
@@ -721,6 +843,80 @@ pub(super) fn leaf_producer_grid_voxels(content: &NodeContent, _voxels_per_block
             Some([grid_x as i64, grid_y as i64, grid_z as i64])
         }
         NodeContent::Part(_) | NodeContent::Group(_) | NodeContent::Instance(_) => None,
+    }
+}
+
+/// Sync the dense resolvers' **scope stack** to `target_path` — the stack-evaluated
+/// depth-first fold of ADR 0017 Decision 3 (issue #74), reconstructed from each leaf's
+/// carried [`ScopeFrame`] path (scopes are contiguous in the depth-first walk, so
+/// comparing the open stack against the next leaf's path recovers the exact
+/// scope-close / scope-open marker sequence).
+///
+/// Frames deeper than the common prefix CLOSE (innermost first): the popped scratch
+/// grid — the scope's fully composed body so far — folds into its parent (the next
+/// stack entry, or `root`) under the SCOPE's own operation via
+/// [`fold_closed_scope_into`]. Frames beyond the common prefix OPEN: a fresh scratch
+/// grid is pushed, so the scope's leaves compose sealed until it closes. Called once
+/// per visited leaf and once with the empty path after the walk (closing everything).
+///
+/// For a pure-`Union` scene this is provably the identity transformation on the output
+/// occupied list: a union close APPENDS the scratch voxels at exactly the walk position
+/// the scope closed (before any later sibling stamped), preserving both the element
+/// order and the later-wins material resolution of the flat pre-#74 walk — which is why
+/// the pure-Union goldens hold byte-identical.
+fn sync_grid_scope_stack(
+    stack: &mut Vec<(ScopeFrame, VoxelGrid)>,
+    root: &mut VoxelGrid,
+    target_path: &[ScopeFrame],
+    accumulator_dimensions: [u32; 3],
+) {
+    // The longest prefix of open frames the target path keeps open.
+    let mut common = 0;
+    while common < stack.len()
+        && common < target_path.len()
+        && stack[common].0 == target_path[common]
+    {
+        common += 1;
+    }
+    // Close the scopes deeper than the common prefix, innermost first.
+    while stack.len() > common {
+        let (frame, closed) = stack.pop().expect("len checked by the loop condition");
+        let parent: &mut VoxelGrid = match stack.last_mut() {
+            Some((_, scratch)) => scratch,
+            None => root,
+        };
+        fold_closed_scope_into(parent, frame.operation, closed);
+    }
+    // Open the target path's scopes beyond the common prefix, outermost first.
+    for frame in &target_path[common..] {
+        stack.push((*frame, VoxelGrid::new(accumulator_dimensions)));
+    }
+}
+
+/// Fold one CLOSED scope's composed body into its parent accumulator under the scope's
+/// own [`CombineOp`] (ADR 0017 Decision 3):
+///
+/// * `Union` — append the body's voxels. The parent's occupied list is later-wins on
+///   overlap (last write persists downstream), and the body's voxels are appended at
+///   the walk position the scope closed, so the union close reproduces the flat
+///   depth-first later-wins order exactly.
+/// * `Subtract` — an occupancy-only mask (ADR 0017 Decision 1): every parent voxel
+///   whose integer index coincides with one of the body's occupied cells is REMOVED;
+///   surviving voxels keep their material and overlay, and the body's materials never
+///   enter the parent.
+fn fold_closed_scope_into(parent: &mut VoxelGrid, operation: CombineOp, closed: VoxelGrid) {
+    match operation {
+        CombineOp::Union => parent.occupied.extend(closed.occupied),
+        CombineOp::Subtract => {
+            let carved: std::collections::HashSet<[i32; 3]> = closed
+                .occupied
+                .iter()
+                .map(|voxel| voxel.local_index)
+                .collect();
+            parent
+                .occupied
+                .retain(|voxel| !carved.contains(&voxel.local_index));
+        }
     }
 }
 

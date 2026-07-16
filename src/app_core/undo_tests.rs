@@ -286,6 +286,20 @@
         );
     }
 
+    #[test]
+    fn set_operation_on_group_round_trips() {
+        // ADR 0017 Decision 3 (#74): a GROUP's operation is meaningful (its composed
+        // body folds under it), so the flip must capture the same field inverse —
+        // undo restores the group's prior Union, redo re-applies the Subtract.
+        let mut scene = two_tool_scene();
+        scene.active = Some(scene.roots[0]);
+        let group = scene.group_active().expect("grouping the active node succeeds");
+        assert_round_trips(
+            &mut scene,
+            Intent::SetOperation { target: group, operation: document::scene::CombineOp::Subtract },
+        );
+    }
+
     /// A normalized scene whose first node is a Sketch and whose second is a Tool,
     /// ids minted + Origin point, first node active — the sketch-edit fixture.
     fn sketch_then_tool_scene() -> Scene {
