@@ -1,7 +1,8 @@
 # ADR 0017 — Composition beyond union: the ordered fold, sealed scopes, and fixtures
 
 - **Status:** Accepted (2026-07-15 — design grill + two prior-art study rounds,
-  `docs/design/csg-prior-art-study.md`; **implementation not started**). Supersedes, in
+  `docs/design/csg-prior-art-study.md`; **implementation not started** — epic #72,
+  slices #73–#77). Supersedes, in
   part, ADR 0003: the §1 *assembly-scoped override layers* seam is retired unbuilt
   (junctions are parts, nothing patches the composed result), and the §3b per-part
   `Vec<Layer>` stack is not adopted — composition stays node-granular on the scene graph,
