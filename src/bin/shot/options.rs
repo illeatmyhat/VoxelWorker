@@ -194,6 +194,12 @@ pub(crate) struct ShotOptions {
     /// volume survives, rendered STONE (an Intersect keeps the ACCUMULATED material and
     /// never stamps its own). The intersect golden. Overrides --shape/--size/--density.
     pub(crate) demo_intersect: bool,
+    /// `--demo-cutter-def` (ADR 0017 / #76): ONE cutter definition placed by TWO Instance
+    /// nodes under Subtract, each carving its own separated Stone host's corner — two
+    /// identical notches from a single stored definition (the reusable cutter). The def
+    /// body's Wood material appears nowhere (a Subtract instance is an occupancy-only
+    /// mask). Overrides --shape/--size/--density.
+    pub(crate) demo_cutter_def: bool,
     /// `--demo-two-material` (ADR 0011 G2): two solid boxes of DISTINCT materials placed
     /// SEPARATED so no block is shared — every rendered block is single-material, the
     /// brick-representable multi-producer scene the G2 per-record-material golden locks
@@ -288,6 +294,7 @@ impl Default for ShotOptions {
             demo_subtract: false,
             demo_group_subtract: false,
             demo_intersect: false,
+            demo_cutter_def: false,
             demo_two_material: false,
             demo_mixed_material: false,
             two_layer: false,
@@ -586,6 +593,9 @@ pub(crate) fn parse_options() -> ShotOptions {
             "--demo-intersect" => {
                 options.demo_intersect = true;
             }
+            "--demo-cutter-def" => {
+                options.demo_cutter_def = true;
+            }
             "--demo-two-material" => {
                 options.demo_two_material = true;
             }
@@ -698,7 +708,7 @@ pub(crate) fn parse_options() -> ShotOptions {
                      \x20            [--force-demo-stem <texture/stem>]\n\
                      \x20            [--gizmo] [--select-node <usize>] [--lattice] [--floor] [--points] [--point-at <X Y Z>] [--no-viewcube]\n\
                      \x20            [--debug-faces] [--debug-chunks]\n\
-                     \x20            [--demo-scene] [--demo-overlap] [--demo-subtract] [--demo-group-subtract] [--demo-intersect] [--demo-two-material] [--demo-village] [--demo-village-far] [--demo-groups]\n\
+                     \x20            [--demo-scene] [--demo-overlap] [--demo-subtract] [--demo-group-subtract] [--demo-intersect] [--demo-cutter-def] [--demo-two-material] [--demo-village] [--demo-village-far] [--demo-groups]\n\
                      \x20            [--demo-sketch-extrude] [--demo-sketch-revolve]\n\
                      \x20            [--demo-far-offset] [--demo-far-offset-near]\n\
                      \x20            [--layer-lower <u32>] [--layer-upper <u32>] [--onion <u32>]\n\

@@ -333,28 +333,29 @@
     }
 
     #[test]
-    fn set_operation_on_instance_is_noop() {
-        // The resolver honours an Instance's operation (a definition instanced with
-        // Subtract is the reusable cutter, ADR 0017 Decision 3), but its EDIT
-        // surface is issue #76's slice — until then SetOperation on an Instance
-        // target must no-op, mirroring the missing inspector selector.
+    fn set_operation_on_instance_dispatches() {
+        // ADR 0017 / issue #76: an Instance folds the referenced definition's
+        // finished body under the INSTANCE's own operation — a definition instanced
+        // with Subtract is the reusable cutter — so SetOperation on an Instance
+        // target must apply (it was a deliberate no-op until this slice).
         let mut scene = two_tool_scene();
         scene.active = Some(root_id(&scene, 0));
         scene
             .make_definition_from_active("Part def")
             .expect("definition from the active node succeeds");
         let instance = root_id(&scene, 0); // the active node became the Instance.
-        let mut core = test_core();
-        let mut applied = scene.clone();
-        let effect = core.apply_intent(
-            &mut applied,
+        assert_dispatch_matches(
+            &scene,
             Intent::SetOperation {
                 target: instance,
                 operation: document::scene::CombineOp::Subtract,
             },
+            |s| {
+                if let Some(node) = s.node_by_id_mut(instance) {
+                    node.operation = document::scene::CombineOp::Subtract;
+                }
+            },
         );
-        assert_eq!(applied, scene);
-        assert_eq!(effect, IntentEffect::none());
     }
 
     #[test]

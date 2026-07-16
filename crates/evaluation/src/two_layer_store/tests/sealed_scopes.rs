@@ -192,3 +192,40 @@ use document::voxel::SdfShape;
             "a sealed cutter must not carve or degrade a block outside its scope"
         );
     }
+
+    /// ADR 0017 / #76 (reusable cutter definitions): the two-layer classification for
+    /// a scene whose cutters are DEFINITION INSTANCES placed under Subtract is
+    /// occupancy-identical to the dense oracle — one definition, two placements, each
+    /// carving its own separated host at its own transform (the golden's shape), plus
+    /// the ordering no-op (a Subtract instance before its host carves nothing).
+    #[test]
+    fn round_trip_matches_dense_for_instanced_cutters() {
+        use document::scene::DefId;
+        let cutter_def_id = DefId(1);
+        let instance = |offset_blocks: [i64; 3], operation, name: &str| {
+            let mut node = Node::new(name, NodeContent::Instance(cutter_def_id));
+            node.transform = NodeTransform::from_blocks(offset_blocks, DENSITY);
+            node.operation = operation;
+            node
+        };
+        let cutter_body =
+            || vec![box_tool([2, 2, 2], [0, 0, 0], MaterialChoice::Wood, CombineOp::Union)];
+
+        // (1) One cutter def instanced twice under Subtract, carving two hosts.
+        let mut scene = Scene::from_nodes(vec![
+            box_tool([4, 4, 4], [0, 0, 0], MaterialChoice::Stone, CombineOp::Union),
+            box_tool([4, 4, 4], [8, 0, 0], MaterialChoice::Stone, CombineOp::Union),
+            instance([2, 2, 2], CombineOp::Subtract, "Cut 1"),
+            instance([10, 2, 2], CombineOp::Subtract, "Cut 2"),
+        ]);
+        scene.add_definition(cutter_def_id, "Corner cutter", cutter_body());
+        assert_two_layer_round_trip_matches_dense(&scene, DENSITY, "instanced-cutters");
+
+        // (2) The ordering law: a Subtract instance BEFORE its host is a no-op.
+        let mut scene = Scene::from_nodes(vec![
+            instance([2, 2, 2], CombineOp::Subtract, "Cut"),
+            box_tool([4, 4, 4], [0, 0, 0], MaterialChoice::Stone, CombineOp::Union),
+        ]);
+        scene.add_definition(cutter_def_id, "Corner cutter", cutter_body());
+        assert_two_layer_round_trip_matches_dense(&scene, DENSITY, "instanced-cutter-before");
+    }

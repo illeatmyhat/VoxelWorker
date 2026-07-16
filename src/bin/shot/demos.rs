@@ -252,6 +252,57 @@ pub(crate) fn build_demo_group_subtract(voxels_per_block: u32) -> Scene {
     scene
 }
 
+/// Build the `--demo-cutter-def` (ADR 0017 / #76): the REUSABLE CUTTER golden. ONE
+/// "corner cutter" definition (a 2³-block Wood box) placed by TWO `Instance` nodes under
+/// [`CombineOp::Subtract`], each overlapping its own separated 4³-block Stone host's top
+/// corner octant — so the render shows two hosts wearing IDENTICAL notches carved from a
+/// single stored definition (reuse by reference: editing the def re-carves every
+/// placement). The def body deliberately carries the WOOD material, which must appear
+/// nowhere: a Subtract instance folds the def's pre-composed body as an occupancy-only
+/// mask, so every notch face renders STONE.
+///
+/// [`CombineOp::Subtract`]: voxel_worker::CombineOp
+pub(crate) fn build_demo_cutter_def(voxels_per_block: u32) -> Scene {
+    let cutter_def_id = DefId(1);
+    let host = |offset: [i64; 3], name: &str| {
+        let shape = SdfShape::from_blocks(ShapeKind::Box, [4, 4, 4], 1, voxels_per_block);
+        let mut node = Node::new(
+            name,
+            NodeContent::Tool { shape, material: MaterialChoice::Stone },
+        );
+        node.transform = document::scene::NodeTransform::from_blocks(offset, voxels_per_block);
+        node
+    };
+    let cut = |offset: [i64; 3], name: &str| {
+        let mut node = Node::new(name, NodeContent::Instance(cutter_def_id));
+        node.transform = document::scene::NodeTransform::from_blocks(offset, voxels_per_block);
+        node.operation = CombineOp::Subtract;
+        node
+    };
+    let mut scene = Scene::from_nodes(vec![
+        host([0, 0, 0], "Host 1"),
+        host([8, 0, 0], "Host 2"),
+        // Placed AFTER the hosts ⇒ each carves (document-order fold), each at its own
+        // transform over its own host's top +X/+Y corner octant (blocks [2,4)³ resp.
+        // [10,12)×[2,4)²).
+        cut([2, 2, 2], "Cut 1"),
+        cut([10, 2, 2], "Cut 2"),
+    ]);
+    scene.add_definition(
+        cutter_def_id,
+        "Corner cutter",
+        vec![{
+            let shape = SdfShape::from_blocks(ShapeKind::Box, [2, 2, 2], 1, voxels_per_block);
+            Node::new(
+                "Cutter body",
+                NodeContent::Tool { shape, material: MaterialChoice::Wood },
+            )
+        }],
+    );
+    scene.voxels_per_block = voxels_per_block;
+    selecting_first_node(scene)
+}
+
 /// Build the `--demo-two-material` (ADR 0011 G2): two solid boxes of DISTINCT materials
 /// placed SEPARATED (a whole chunk of air between them) so NO block is shared — every
 /// rendered block is single-material. This is the brick-representable multi-producer scene

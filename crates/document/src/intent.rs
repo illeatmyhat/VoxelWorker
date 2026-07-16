@@ -186,13 +186,15 @@ pub enum Intent {
         /// The new material.
         material: MaterialChoice,
     },
-    /// Set the [`CombineOp`] of the LEAF node `target` (ADR 0017: the node's role
-    /// in the ordered document-order fold — `Subtract` carves everything
-    /// accumulated before it among its siblings). A no-op for a Group / Instance
-    /// node (this sibling-level slice ignores their operations; sealed scopes are
-    /// issue #74).
+    /// Set the [`CombineOp`] of the node `target` (ADR 0017: the node's role in the
+    /// ordered document-order fold — `Subtract` carves / `Intersect` masks
+    /// everything accumulated before it in its scope). Applies to EVERY node kind:
+    /// a leaf folds its own body, a Group folds its sealed composed body (Decision
+    /// 3, issue #74), and an Instance folds the referenced definition's finished
+    /// body — a definition instanced with `Subtract` is the reusable cutter
+    /// (issue #76).
     SetOperation {
-        /// The leaf node to edit.
+        /// The node to edit.
         target: NodeId,
         /// The new combine operation.
         operation: CombineOp,

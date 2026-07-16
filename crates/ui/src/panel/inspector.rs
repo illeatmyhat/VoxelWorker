@@ -45,9 +45,9 @@ pub(super) fn build_inspector_section(
 
     match kind {
         ActiveKind::Tool => {
-            // ADR 0017: the combine-operation selector shows on leaf nodes (Tool /
-            // Sketch / Clouds Part) and on Groups (sealed scopes, issue #74);
-            // Instances wait on issue #76.
+            // ADR 0017: the combine-operation selector shows on every node kind —
+            // leaves (Tool / Sketch / Clouds Part), Groups (sealed scopes, issue
+            // #74), and Instances (reusable cutters, issue #76).
             build_operation_section(ui, state, response);
             // ADR 0003 Phase C C4a: the inspector still binds the widgets to the
             // `geometry`/`material` mirror buffer (egui needs the `&mut`), but a change
@@ -115,9 +115,12 @@ pub(super) fn build_inspector_section(
             build_node_grids_section(ui, state, response);
         }
         ActiveKind::Instance => {
-            // An Instance's operation is semantically meaningful too (a definition
-            // instanced with Subtract is the reusable cutter), but its selector +
-            // tests are issue #76's slice — no selector here yet.
+            // ADR 0017 / issue #76: an Instance folds the referenced definition's
+            // finished (pre-composed) body under its OWN operation — a definition
+            // instanced with Subtract is the reusable cutter — so the selector
+            // shows on Instances too. (Issue #77 will HIDE it again for fixture
+            // instances, whose operation is inert.)
+            build_operation_section(ui, state, response);
             build_group_inspector_section(ui, state, "Instance", response);
             build_offset_section(ui, state, response);
             build_node_grids_section(ui, state, response);
@@ -483,10 +486,12 @@ fn build_sketch_inspector_section(
 /// result accumulated before it among its siblings — `Union` adds (later-wins
 /// material on overlap), `Subtract` carves, `Intersect` keeps only the cells the
 /// node's body also covers (both booleans are occupancy-only masks that never
-/// stamp material). Shown on leaf nodes (Tool / Sketch / Clouds Part) AND on
-/// Groups (a Group is a sealed composition scope whose composed body folds under
-/// its own operation — ADR 0017 Decision 3, issue #74); Instance nodes get no
-/// selector yet (a definition instanced with Subtract is issue #76's slice). A
+/// stamp material). Shown on EVERY node kind: leaf nodes (Tool / Sketch / Clouds
+/// Part), Groups (a Group is a sealed composition scope whose composed body folds
+/// under its own operation — ADR 0017 Decision 3, issue #74), and Instances (the
+/// referenced definition's finished body folds under the INSTANCE's operation, so
+/// a definition instanced with Subtract is the reusable cutter — issue #76; the
+/// #77 fixture flag will hide it again for fixture instances). A
 /// change emits `Intent::SetOperation` WITHOUT an auto-frame (a cutter flip never
 /// changes the composite extent — the cutter's AABB already contributes to it —
 /// so the camera stays put, like a material pick).

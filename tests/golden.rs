@@ -219,6 +219,17 @@ const CASES: &[GoldenCase] = &[
         name: "demo-intersect",
         args: &["--demo-intersect"],
     },
+    // ADR 0017 (#76): the REUSABLE CUTTER golden — ONE "corner cutter" definition placed
+    // by TWO Instance nodes under CombineOp::Subtract, each carving its own separated
+    // Stone host's top corner octant. Two identical notches from a single stored
+    // definition is the visible proof of reuse-by-reference cutters (the sealed def body
+    // pre-composes, then each instance folds it as a carve at its own transform); the def
+    // body's Wood material appears nowhere (a Subtract instance never stamps — every
+    // notch face renders Stone).
+    GoldenCase {
+        name: "demo-cutter-def",
+        args: &["--demo-cutter-def"],
+    },
 ];
 
 /// The subset of [`CASES`] whose scene is CHUNKABLE (has an intrinsic-size leaf), i.e. the
@@ -269,6 +280,10 @@ const TWO_LAYER_CASE_NAMES: &[&str] = &[
     // conservative interval fold (never-dropped mask candidates, whole-chunk degrade,
     // per-voxel boundary resolve) must render pixel-identical to the dense oracle.
     "demo-intersect",
+    // ADR 0017 (#76): the instanced-cutter scene through `--two-layer` — the
+    // definition-scope expansion under each instance's Subtract must classify +
+    // resolve pixel-identical to the dense oracle at both placements.
+    "demo-cutter-def",
 ];
 
 /// ADR 0011 G1 (#67): the golden cases whose scene is a chunkable SINGLE producer with a

@@ -301,6 +301,61 @@
     }
 
     #[test]
+    fn set_operation_on_instance_round_trips() {
+        // ADR 0017 / issue #76: an INSTANCE's operation is meaningful (the referenced
+        // definition's finished body folds under it — the reusable cutter), so the
+        // flip captures the same field inverse as leaves and Groups.
+        let mut scene = two_tool_scene();
+        scene.active = Some(scene.roots[0]);
+        scene.make_definition_from_active("Body").expect("def made");
+        let instance = scene.roots[0]; // the active node became the Instance.
+        assert_round_trips(
+            &mut scene,
+            Intent::SetOperation {
+                target: instance,
+                operation: document::scene::CombineOp::Subtract,
+            },
+        );
+    }
+
+    #[test]
+    fn placing_a_subtract_instance_undoes_to_intact_hosts() {
+        // Issue #76 acceptance: the reusable-cutter placement gesture — AddInstance
+        // then SetOperation(Subtract) on the minted node — undoes cleanly: two undos
+        // restore the pre-placement scene byte-for-byte (both hosts intact, the
+        // instance gone), and two redos re-apply the carve placement.
+        let mut scene = two_tool_scene();
+        scene.active = Some(scene.roots[0]);
+        let def = scene.make_definition_from_active("Cutter body").expect("def made");
+        let mut core = test_core();
+        let before = scene.clone();
+
+        core.apply_intent(&mut scene, Intent::AddInstance { def });
+        let minted = scene.active.expect("AddInstance selects the minted instance");
+        core.apply_intent(
+            &mut scene,
+            Intent::SetOperation {
+                target: minted,
+                operation: document::scene::CombineOp::Subtract,
+            },
+        );
+        let after = scene.clone();
+        assert_ne!(scene, before, "the placement must change the scene");
+        assert_eq!(core.undo_depth(), 2, "two commands pushed");
+
+        core.undo(&mut scene);
+        core.undo(&mut scene);
+        assert_eq!(
+            scene, before,
+            "undoing the Subtract-instance placement must restore the hosts intact"
+        );
+
+        core.redo(&mut scene);
+        core.redo(&mut scene);
+        assert_eq!(scene, after, "redo must re-apply the carve placement byte-for-byte");
+    }
+
+    #[test]
     fn set_operation_intersect_round_trips() {
         // ADR 0017 (#75): the Intersect arm rides the SAME field-inverse pattern —
         // undo restores the prior Union, redo re-applies the Intersect — on a leaf
