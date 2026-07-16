@@ -248,14 +248,6 @@ impl AppCore {
                 }),
                 None => Inverse::NoOp,
             },
-            // Issue #79: a plain field-set — the inverse replays the prior flag.
-            Intent::SetShowChildBooleans { target, .. } => match scene.node_by_id(*target) {
-                Some(node) => Inverse::Field(Intent::SetShowChildBooleans {
-                    target: *target,
-                    show: node.show_child_booleans,
-                }),
-                None => Inverse::NoOp,
-            },
 
             // --- Global ---
             // Density is a single document-level field (ADR 0003 §3f(0)), so the
@@ -405,10 +397,6 @@ impl AppCore {
             | Intent::SetDensity { .. } => IntentEffect::scene(),
             // The grid masters are read live by the per-frame line batch — no re-resolve.
             Intent::SetGridMasters { .. } => IntentEffect::none(),
-            // Issue #79: the child-boolean ghost flag is pure display — the shell
-            // re-derives the operand-ghost overlay (bounded by the ghosted bodies'
-            // covering chunks), NEVER a whole-scene re-resolve (the acceptance bound).
-            Intent::SetShowChildBooleans { .. } => IntentEffect::operand_ghosts(),
             // Selection is a view concern (re-sync the inspector mirror only).
             Intent::SelectNode { .. } | Intent::SelectPoint { .. } => IntentEffect::selection(),
             // Points are pure overlay (no voxel re-resolve).
@@ -593,19 +581,6 @@ impl AppCore {
                 };
                 (if applied { full_effect } else { none }, None)
             }
-            // Issue #79: the per-node child-boolean ghost flag — a plain field write
-            // whose success effect is `operand_ghosts()` (display-only, no re-resolve).
-            Intent::SetShowChildBooleans { target, show } => {
-                let applied = match scene.node_by_id_mut(target) {
-                    Some(node) => {
-                        node.show_child_booleans = show;
-                        true
-                    }
-                    None => false,
-                };
-                (if applied { full_effect } else { none }, None)
-            }
-
             // --- Global ---
             Intent::SetDensity { voxels_per_block } => {
                 // Density is a document-level attribute (ADR 0003 §3f(0)): one field

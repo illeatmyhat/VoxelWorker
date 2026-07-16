@@ -8,6 +8,26 @@ use document::scene::{NodeContent, NodeId, Scene};
 use document::voxel::GeometryParams;
 use voxel_core::core_geom::MaterialChoice;
 
+/// The viewer's exclusive rendering mode (ADR 0018 Decision 3). The viewer is always in
+/// exactly one of these three; the mode is **viewer state, never document state** — it
+/// follows the active selection, is not saved with the scene, and never enters undo
+/// history (the [`PanelState`] display-param precedent, like [`ProjectionMode`]). Sticky
+/// across selection changes; default [`Normal`](Self::Normal).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ViewMode {
+    /// The finished look: no ghosts, no band clip, anywhere (ADR 0018 Decision 4).
+    #[default]
+    Normal,
+    /// Onion fog: the selected object clips to the layer band with ghost haze outside it
+    /// (ADR 0018 Decision 5). The per-object clip lands in a later slice; for now the
+    /// band/onion controls keep their scene-wide meaning.
+    OnionFog,
+    /// Show booleans: every Subtract/Intersect operand in the selected subtree x-rays
+    /// over the finished scene (ADR 0018 Decision 6). Selecting the root part covers the
+    /// whole scene.
+    ShowBooleans,
+}
+
 /// Layer-range scrubber state (issue #12).
 ///
 /// The layer-range scrubber subsumes the old 2D mid-vertical slice map. Z-up: layers
@@ -126,6 +146,10 @@ pub struct PanelState {
     /// its label, shown under the Material selector. `None` = a procedural
     /// material is active.
     pub applied_block_label: Option<String>,
+    /// The viewer's exclusive rendering mode (ADR 0018 Decision 3): Normal / Onion fog /
+    /// Show booleans. Display-only viewer state (no rebuild, never serialized, never in
+    /// undo). Sticky across selection changes; defaults to Normal.
+    pub view_mode: ViewMode,
     /// Layer-range scrubber state (issue #12): the visible band along Z (Z-up: layers
     /// are Z-slices) plus the snap/onion controls. Bounds clamped/rescaled on rebuild.
     pub layer_range: LayerRange,

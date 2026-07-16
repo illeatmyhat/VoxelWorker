@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 
 use camera::{HomeView, OrbitCamera, ProjectionMode};
 use voxel_core::core_geom::MaterialChoice;
-use ui::panel::{LayerRange, PanelState};
+use ui::panel::{LayerRange, PanelState, ViewMode};
 use document::scene::Scene;
 use document::voxel::GeometryParams;
 
@@ -290,6 +290,9 @@ impl AppConfig {
                 onion_skin: self.onion_skin,
                 onion_depth: self.onion_depth.clamp(1, 8),
             },
+            // ADR 0018 Decision 3: the viewer mode is transient view state (never
+            // persisted), so it always starts Normal (the finished look).
+            view_mode: ViewMode::Normal,
             // Restored just below: the persisted full scene, or — for an old
             // config without one — the default seed scene.
             scene: Scene::default(),

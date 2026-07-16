@@ -84,26 +84,21 @@ struct WindowedState {
     /// handles in [`DisplayOrchestrator::first_build`].
     display: DisplayOrchestrator,
     transform_gizmo_renderer: TransformGizmoRenderer,
-    /// The selected-operand ghost (issue #78): the ACTIVE node's own body as an
-    /// operation-coded x-ray over the composed scene. Its meshes are re-derived ONLY on
-    /// selection/geometry change (see the dirty flag below), never per frame.
+    /// The boolean-operand ghost (ADR 0018 Decision 6, "Show booleans" mode): every
+    /// Subtract/Intersect operand body in the selected subtree, as an operation-coded
+    /// x-ray over the composed scene. One renderer instance; its meshes are re-derived
+    /// ONLY on selection / geometry / MODE change (see the dirty flag below), never per
+    /// frame. Empty in Normal / Onion-fog mode.
     selected_operand_ghost_renderer: crate::SelectedOperandGhostRenderer,
-    /// The persistent child-boolean ghost (issue #79): every Subtract/Intersect operand
-    /// body inside the "Show child booleans"-checked subtrees, drawn with the SAME
-    /// renderer type as the selection ghost (two instances, one per concern) and
-    /// re-derived at the same seam — the two derivations share triggers, and the
-    /// selection matters to BOTH (the persistent set excludes the active node's body,
-    /// the cross-overlay dedupe rule).
-    child_boolean_ghost_renderer: crate::SelectedOperandGhostRenderer,
-    /// Forces a selected-operand + child-boolean ghost re-derivation on the next frame.
-    /// Set at startup and whenever an applied Intent reports `selection_changed` /
-    /// `scene_changed` / `operand_ghosts_changed` (the #79 checkbox toggle); the render
-    /// seam also re-derives when `scene.active` differs from
-    /// `selected_ghost_selection` (belt-and-braces for any selection writer outside the
-    /// Intent door).
+    /// Forces a boolean-operand ghost re-derivation on the next frame. Set at startup and
+    /// whenever an applied Intent reports `selection_changed` / `scene_changed`; the
+    /// render seam also re-derives when `scene.active` or the view mode differs from what
+    /// the ghost was last derived for.
     selected_ghost_dirty: bool,
     /// The selection the ghost meshes were last derived for.
     selected_ghost_selection: Option<crate::NodeId>,
+    /// The view mode the ghost meshes were last derived for (re-derive on a mode change).
+    selected_ghost_view_mode: crate::ViewMode,
     /// Per-object block lattice + floor grid (issue #29 S3). Its line batch is
     /// rebuilt each frame from the visible nodes' enabled grids.
     scene_grid_renderer: SceneGridRenderer,
@@ -388,13 +383,10 @@ impl WindowedState {
         // node each frame; seed it at the region size (overwritten on first frame).
         let transform_gizmo_renderer =
             TransformGizmoRenderer::new(&gpu.device, COLOR_TARGET_FORMAT, region_dimensions);
-        // The selected-operand ghost (issue #78): built empty; the first render frame
-        // derives it for the loaded scene's selection (`selected_ghost_dirty` below).
+        // The boolean-operand ghost (ADR 0018 Decision 6): built empty; the first render
+        // frame derives it for the loaded scene's selection when the view mode is
+        // Show-booleans (`selected_ghost_dirty` below).
         let selected_operand_ghost_renderer =
-            crate::SelectedOperandGhostRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
-        // The persistent child-boolean ghost (issue #79): same renderer type, its own
-        // instance; also built empty and derived on the first frame.
-        let child_boolean_ghost_renderer =
             crate::SelectedOperandGhostRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
         // Per-object block lattice + floor grid (issue #29 S3): its line batch is
         // (re)built per frame from the grid-enabled nodes, so it starts empty.
@@ -451,9 +443,9 @@ impl WindowedState {
             display,
             transform_gizmo_renderer,
             selected_operand_ghost_renderer,
-            child_boolean_ghost_renderer,
             selected_ghost_dirty: true,
             selected_ghost_selection: None,
+            selected_ghost_view_mode: crate::ViewMode::Normal,
             scene_grid_renderer,
             points_renderer,
             infinite_grid_renderer,

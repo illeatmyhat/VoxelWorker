@@ -250,19 +250,6 @@ pub enum Intent {
         /// The new per-node grid display settings.
         grids: NodeGrids,
     },
-    /// Set the per-node "Show child booleans" display flag of `target` (issue #79):
-    /// when on, every Subtract/Intersect operand body within the node's subtree
-    /// renders persistently as the issue #78 operand ghost. A pure display flag —
-    /// unlike `SetNodeGrids` (whose on-face-grid bit is baked at resolve time) its
-    /// effect only re-derives the ghost overlay, never the scene
-    /// ([`IntentEffect::operand_ghosts`]).
-    SetShowChildBooleans {
-        /// The node to edit.
-        target: NodeId,
-        /// The new flag value.
-        show: bool,
-    },
-
     // --- Global ---
     /// Set the document-level density (voxels per block). Density is a single attribute
     /// on the [`Scene`](crate::scene::Scene) — which block-game grid the plan targets
@@ -373,12 +360,6 @@ pub struct IntentEffect {
     /// inspector mirror (the panel folds this into `scene_changed` today, but the
     /// typed effect separates it so a pure selection switch re-resolves nothing).
     pub selection_changed: bool,
-    /// A per-node boolean-ghost display flag changed (issue #79 `SetShowChildBooleans`)
-    /// → the caller re-derives the operand-ghost overlay ONLY. Deliberately separate
-    /// from `scene_changed` so flipping the checkbox never re-resolves the scene (the
-    /// #79 acceptance bound); the derivation itself is bounded by the ghosted bodies'
-    /// covering chunks.
-    pub operand_ghosts_changed: bool,
 }
 
 impl IntentEffect {
@@ -412,15 +393,6 @@ impl IntentEffect {
         }
     }
 
-    /// An effect flagging only an operand-ghost re-derivation (issue #79 — the
-    /// `SetShowChildBooleans` display toggle: no re-resolve, no re-frame).
-    pub fn operand_ghosts() -> Self {
-        Self {
-            operand_ghosts_changed: true,
-            ..Self::none()
-        }
-    }
-
     /// The OR-merge of two effects — the union of their set flags. Useful when a
     /// later slice batches several intents into one frame's effect.
     pub fn merged_with(self, other: Self) -> Self {
@@ -428,7 +400,6 @@ impl IntentEffect {
             scene_changed: self.scene_changed || other.scene_changed,
             points_changed: self.points_changed || other.points_changed,
             selection_changed: self.selection_changed || other.selection_changed,
-            operand_ghosts_changed: self.operand_ghosts_changed || other.operand_ghosts_changed,
         }
     }
 }

@@ -34,7 +34,7 @@ mod palette;
 mod points;
 mod state;
 
-pub use state::{ExportPanelState, LayerRange, PanelResponse, PanelState};
+pub use state::{ExportPanelState, LayerRange, PanelResponse, PanelState, ViewMode};
 
 use crate::palette::BlockPalette;
 

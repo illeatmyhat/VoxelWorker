@@ -242,62 +242,62 @@ const CASES: &[GoldenCase] = &[
         name: "demo-window-fixture",
         args: &["--demo-window-fixture"],
     },
-    // Issue #78: the BURIED-CUTTER golden — a Subtract cutter entirely inside a Stone
-    // host (an internal void invisible by success), with the CUTTER selected. The
-    // selected-operand ghost renders the cutter's whole body in the LOUD occluded red
-    // (depth test `Greater` — every ghost fragment is behind the host's surface), so the
-    // invisible void x-rays through the unbroken box. Deliberately more obvious than
-    // Fusion's treatment of internal voids (the owner's call).
+    // ADR 0018 Decision 6: the BURIED-CUTTER golden — a Subtract cutter entirely inside a
+    // Stone host (an internal void invisible by success), with the CUTTER selected, in
+    // Show-booleans mode. The boolean-operand ghost renders the cutter's whole body in the
+    // LOUD occluded red (depth test `Greater` — every ghost fragment is behind the host's
+    // surface), so the invisible void x-rays through the unbroken box. Deliberately more
+    // obvious than Fusion's treatment of internal voids (the owner's call).
     GoldenCase {
         name: "demo-buried-cutter",
-        args: &["--demo-buried-cutter"],
+        args: &["--demo-buried-cutter", "--view-mode", "booleans"],
     },
-    // Issue #78: the CORNER-CUTTER golden — the demo-subtract scene with the CUTTER
-    // selected (`--select-node 1`; the committed demo-subtract reference keeps its
-    // default Body selection). The cutter's exposed carve faces COINCIDE with the
-    // notch's cut surface — the delicate half of the depth split: another mesher's
-    // triangulation of the same plane must still classify QUIET (depth `LessEqual` +
-    // the shared toward-viewer bias), never loud and never dropped. The whole notch is
-    // camera-visible here, so the ghost is all-quiet; the loud half is pinned by
-    // demo-buried-cutter above and the window case below.
+    // ADR 0018 Decision 6: the CORNER-CUTTER golden — the demo-subtract scene with the
+    // CUTTER selected (`--select-node 1`), in Show-booleans mode. The cutter's exposed
+    // carve faces COINCIDE with the notch's cut surface — the delicate half of the depth
+    // split: another mesher's triangulation of the same plane must still classify QUIET
+    // (depth `LessEqual` + the shared toward-viewer bias), never loud and never dropped.
+    // The whole notch is camera-visible here, so the ghost is all-quiet; the loud half is
+    // pinned by demo-buried-cutter above and the window case below.
     GoldenCase {
         name: "demo-subtract-cutter-selected",
-        args: &["--demo-subtract", "--select-node", "1"],
+        args: &["--demo-subtract", "--select-node", "1", "--view-mode", "booleans"],
     },
-    // Issue #78: the FIXTURE-SELECTION golden — the window scene with the window
-    // INSTANCE selected. Its own operation is inert (ADR 0017 Decision 4), so the ghost
-    // derives one body PER SPLICED CHILD: the opening cutter in red (QUIET on the
-    // opening's exposed carve faces, LOUD where the wall thickness / the later-placed
-    // frame bury it — both halves of the depth split in one image) and the frame in the
-    // subtle constructive tint.
+    // ADR 0018 Decision 6: the FIXTURE-SELECTION golden — the window scene with the window
+    // INSTANCE selected, in Show-booleans mode. Its own operation is inert (ADR 0017
+    // Decision 4), so the walk splices its children: only the opening cutter ghosts (red,
+    // QUIET on the opening's exposed carve faces, LOUD where the wall thickness / the
+    // later-placed frame bury it — both halves of the depth split in one image). The Union
+    // frame is already visible and never ghosts (the retired #78 union tint).
     GoldenCase {
         name: "demo-window-fixture-selected",
-        args: &["--demo-window-fixture", "--select-node", "1"],
+        args: &["--demo-window-fixture", "--select-node", "1", "--view-mode", "booleans"],
     },
-    // Issue #78: the INTERSECT-mask ghost — the demo-intersect scene with the MASK
-    // selected. The mask's body ghosts AMBER: quiet over the empty space the fold
-    // cleared (nothing occludes it there), loud where the surviving Stone cube buries
-    // it. Also pins that Intersect never renders the Subtract red.
+    // ADR 0018 Decision 6: the INTERSECT-mask ghost — the demo-intersect scene with the
+    // MASK selected, in Show-booleans mode. The mask's body ghosts AMBER: quiet over the
+    // empty space the fold cleared (nothing occludes it there), loud where the surviving
+    // Stone cube buries it. Also pins that Intersect never renders the Subtract red.
     GoldenCase {
         name: "demo-intersect-mask-selected",
-        args: &["--demo-intersect", "--select-node", "1"],
+        args: &["--demo-intersect", "--select-node", "1", "--view-mode", "booleans"],
     },
-    // Issue #79: the CHILD-BOOLEANS golden pair — a Group whose Stone body carries an
-    // exposed corner cutter AND a strictly-interior buried cutter, NOTHING selected.
-    // With the Group's "Show child booleans" flag ON, BOTH cutters render persistently
-    // as the #78 operand ghost (red; the corner cutter's exposed carve faces quiet, its
-    // walled-off remainder and the whole buried cutter loud) — build with the cutters
-    // visible. No union tint appears anywhere: the persistent mode ghosts only the
-    // invisible-by-success boolean masks.
+    // ADR 0018 Decision 6: the ROOT-PART master — a Group whose Stone body carries an
+    // exposed corner cutter AND a strictly-interior buried cutter, with the ROOT PART
+    // selected in Show-booleans mode (`--select-root --view-mode booleans`). Selecting the
+    // root x-rays EVERY boolean in the whole scene: both cutters render as operand ghosts
+    // (red; the corner cutter's exposed carve faces quiet, its walled-off remainder and
+    // the whole buried cutter loud). The scene-wide master ask (the #79 deferral). No union
+    // tint appears anywhere — the mode ghosts only the invisible-by-success boolean masks.
     GoldenCase {
-        name: "demo-child-booleans",
-        args: &["--demo-child-booleans"],
+        name: "demo-booleans-root",
+        args: &["--demo-child-booleans", "--select-root", "--view-mode", "booleans"],
     },
-    // The IDENTICAL scene with the flag OFF: the finished carved look — pins that the
-    // per-node flag (default off) is the only thing separating the pair.
+    // ADR 0018 Decision 4: the SAME scene in NORMAL mode — the finished carved look with
+    // ZERO ghosts. Pins that Normal renders no overlay regardless of selection (the mode,
+    // not a per-node flag, is what separates this from the master case above).
     GoldenCase {
-        name: "demo-child-booleans-off",
-        args: &["--demo-child-booleans-off"],
+        name: "demo-child-booleans-normal",
+        args: &["--demo-child-booleans", "--view-mode", "normal"],
     },
 ];
 
@@ -358,20 +358,20 @@ const TWO_LAYER_CASE_NAMES: &[&str] = &[
     // pixel-identical to the dense oracle: the spliced cutter is a root cutter and
     // the spliced frame a root additive leaf to the conservative fast paths.
     "demo-window-fixture",
-    // Issue #78: the selected-operand ghost cases through `--two-layer`. The ghost
-    // GEOMETRY is path-independent (derived from the selection slice's two-layer
-    // chunks either way), and the two-layer solid's exposed-face set is proven
-    // identical to the dense mesh — so the composite (translucent ghost over solid)
-    // must match the dense reference within the tolerance band, unlike the onion
-    // ghost's known band-clip×elision seam case above.
+    // ADR 0018 Decision 6: the boolean-operand ghost cases through `--two-layer`. The
+    // ghost GEOMETRY is path-independent (derived from the operand slices' two-layer
+    // chunks either way), and the two-layer solid's exposed-face set is proven identical
+    // to the dense mesh — so the composite (translucent ghost over solid) must match the
+    // dense reference within the tolerance band, unlike the onion ghost's known
+    // band-clip×elision seam case above.
     "demo-buried-cutter",
     "demo-subtract-cutter-selected",
     "demo-window-fixture-selected",
     "demo-intersect-mask-selected",
-    // Issue #79: the persistent child-boolean ghost through `--two-layer` — the same
-    // path-independence argument as the #78 selection-ghost cases above.
-    "demo-child-booleans",
-    "demo-child-booleans-off",
+    // The root-part master + its Normal-mode counterpart through `--two-layer` — same
+    // path-independence argument (the Normal case is a plain finished solid).
+    "demo-booleans-root",
+    "demo-child-booleans-normal",
 ];
 
 /// ADR 0011 G1 (#67): the golden cases whose scene is a chunkable SINGLE producer with a

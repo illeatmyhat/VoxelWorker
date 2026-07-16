@@ -157,18 +157,6 @@ pub struct Node {
     /// config without this field deserialises to the all-off default.
     #[serde(default)]
     pub grids: NodeGrids,
-    /// Per-node "Show child booleans" display flag (issue #79): when set, EVERY
-    /// Subtract/Intersect operand body within this node's subtree (this node
-    /// included, if it is itself a boolean) renders persistently as the issue #78
-    /// operand ghost — build with the cutters visible; unchecked, the finished
-    /// look. Persisted like the [`NodeGrids`] flags (serde default **off**, so
-    /// older documents and all existing goldens are unchanged), but deliberately
-    /// NOT a `NodeGrids` member: `SetNodeGrids` re-resolves the scene (the
-    /// on-face-grid bit is baked at resolve time), while this flag is pure
-    /// display — its own `SetShowChildBooleans` intent only re-derives the ghost
-    /// overlay, never the scene.
-    #[serde(default)]
-    pub show_child_booleans: bool,
     /// What the node is.
     pub content: NodeContent,
 }
@@ -192,8 +180,6 @@ impl Node {
             operation: CombineOp::Union,
             visible: true,
             grids: NodeGrids::default(),
-            // Issue #79: child-boolean ghosts default OFF (the finished look).
-            show_child_booleans: false,
             content,
         }
     }

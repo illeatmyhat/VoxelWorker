@@ -1,8 +1,10 @@
-//! Selected-operand ghost renderer (issue #78) — the x-ray of the ACTIVE node's own body.
+//! Boolean-operand ghost renderer (ADR 0018 Decision 6) — the x-ray of the selected
+//! subtree's boolean operands.
 //!
-//! When the selection is a node, the shell derives that node's OWN body (its subtree
-//! resolved standalone, `AppCore::selected_operand_ghost`) and hands it here as two-layer
-//! chunks + an operation style. This renderer meshes each body through the SAME two-layer
+//! In Show-booleans mode the shell derives each boolean operand body in the selected
+//! subtree (resolved standalone, `AppCore::boolean_operand_ghost`) and hands it here as
+//! two-layer chunks + an operation style. This renderer meshes each body through the SAME
+//! two-layer
 //! cuboid mesher the solid path uses, then draws the mesh TWICE per frame with the
 //! `cuboid.wgsl` ghost branch (the ADR 0012 H1 onion-ghost precedent) — the owner-decided
 //! **two-pass depth split**:
@@ -23,11 +25,9 @@
 //! triangulation of the same plane may interpolate depth a ULP apart) classifies robustly
 //! as quiet, never as loud and never dropped.
 //!
-//! Issue #79 reuses this renderer UNCHANGED for the persistent child-boolean ghost (the
-//! "Show child booleans" per-node checkbox): the shell owns a SECOND instance fed by the
-//! subtree derivation (`AppCore::child_boolean_ghost`) and draws it just before the
-//! selection instance — one renderer type, one concern per instance, the derivations
-//! deduped so no body ever draws in both.
+//! ADR 0018 Decision 6: in "Show booleans" mode the shell feeds this renderer the
+//! boolean-operand bodies of the selected subtree (`AppCore::boolean_operand_ghost`) —
+//! one renderer instance, drawn over both display paths.
 //!
 //! The mesh is rebuilt only on selection/geometry change (`rebuild`), never per frame;
 //! `update_uniforms` per frame writes only the camera + tints. Drawn as a raster overlay

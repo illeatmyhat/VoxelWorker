@@ -256,32 +256,32 @@ impl WindowedState {
             // via explicit controls (Home/Fit/Focus) and the startup fit.
             self.rebuild_geometry();
         }
-        // Issue #78: re-derive the selected-operand ghost on selection/geometry change
-        // ONLY (never per frame). A `SelectNode` marks it dirty without a scene
-        // re-resolve; the derivation itself is bounded by the SELECTED subtree's
-        // covering chunks (`AppCore::selected_operand_ghost`), so this stays cheap even
-        // in a huge scene. The `active` comparison is belt-and-braces for any selection
-        // writer that bypassed the Intent effects.
-        // Issue #79: the persistent child-boolean ghost re-derives at the SAME seam —
-        // the two overlays share every trigger (the selection matters to both via the
-        // cross-overlay dedupe rule), plus the checkbox toggle's dedicated
-        // `operand_ghosts_changed` effect, which re-derives WITHOUT the scene
-        // re-resolve above (the #79 acceptance bound).
-        if merged_effect.selection_changed
-            || merged_effect.scene_changed
-            || merged_effect.operand_ghosts_changed
-        {
+        // ADR 0018 Decision 6: re-derive the boolean-operand ghost on selection /
+        // geometry / MODE change ONLY (never per frame). A `SelectNode` marks it dirty
+        // without a scene re-resolve; the derivation is bounded by the ghosted operands'
+        // covering chunks (`AppCore::boolean_operand_ghost`), so this stays cheap even in
+        // a huge scene. The `active` / mode comparisons are belt-and-braces for any
+        // selection or mode writer that bypassed the Intent effects. The ghost is
+        // populated only in Show-booleans mode; Normal / Onion-fog derive nothing.
+        if merged_effect.selection_changed || merged_effect.scene_changed {
             self.selected_ghost_dirty = true;
         }
         if self.selected_ghost_dirty
             || self.selected_ghost_selection != self.panel_state.scene.active
+            || self.selected_ghost_view_mode != self.panel_state.view_mode
         {
             self.selected_ghost_dirty = false;
             self.selected_ghost_selection = self.panel_state.scene.active;
-            match AppCore::selected_operand_ghost(
-                &self.panel_state.scene,
-                self.panel_state.geometry.voxels_per_block,
-            ) {
+            self.selected_ghost_view_mode = self.panel_state.view_mode;
+            let ghost = (self.panel_state.view_mode == crate::ViewMode::ShowBooleans)
+                .then(|| {
+                    AppCore::boolean_operand_ghost(
+                        &self.panel_state.scene,
+                        self.panel_state.geometry.voxels_per_block,
+                    )
+                })
+                .flatten();
+            match ghost {
                 Some(ghost) => self.selected_operand_ghost_renderer.rebuild(
                     &self.gpu.device,
                     &ghost.bodies,
@@ -290,20 +290,6 @@ impl WindowedState {
                     ghost.density,
                 ),
                 None => self.selected_operand_ghost_renderer.clear(),
-            }
-            // Issue #79: the persistent set, through the same bounded evaluation.
-            match AppCore::child_boolean_ghost(
-                &self.panel_state.scene,
-                self.panel_state.geometry.voxels_per_block,
-            ) {
-                Some(ghost) => self.child_boolean_ghost_renderer.rebuild(
-                    &self.gpu.device,
-                    &ghost.bodies,
-                    ghost.grid_dimensions,
-                    ghost.recentre,
-                    ghost.density,
-                ),
-                None => self.child_boolean_ghost_renderer.clear(),
             }
         }
         // Brick-display perf follow-up to epic #64: a debug-face toggle or a loaded-material
@@ -479,11 +465,9 @@ impl WindowedState {
             view_projection,
             self.app_core.camera.eye().to_array(),
         );
-        // Issue #78/#79: the operand ghosts' per-frame camera + tint uploads (the
-        // meshes were derived at the selection/geometry seam above, never here).
+        // ADR 0018 Decision 6: the boolean-operand ghost's per-frame camera + tint upload
+        // (the meshes were derived at the selection/geometry/mode seam above, never here).
         self.selected_operand_ghost_renderer
-            .update_uniforms(&self.gpu.queue, view_projection);
-        self.child_boolean_ghost_renderer
             .update_uniforms(&self.gpu.queue, view_projection);
         self.view_cube_renderer
             .update_uniforms(&self.gpu.queue, self.app_core.camera.view_cube_view_projection());
@@ -522,17 +506,12 @@ impl WindowedState {
             // ghosts the onion slabs after its solid draw). Its uniforms/geometry were
             // prepared by the renderers' `update_uniforms` / `update_ghost_uniforms` above.
             onion_ghost_active,
-            // Issue #78: the selected-operand ghost draws over BOTH display paths.
-            // Suppressed in debug-faces mode (a diagnostic render — every ghost is off
-            // there, matching the onion ghost's forced-FULL band); self-gates on an
-            // empty selection.
+            // ADR 0018 Decision 6: the boolean-operand ghost draws over BOTH display
+            // paths. Suppressed in debug-faces mode (a diagnostic render — every ghost is
+            // off there, matching the onion ghost's forced-FULL band); self-gates on an
+            // empty ghost (Normal / Onion-fog mode, or no covered boolean).
             selected_operand_ghost: (!self.panel_state.debug_face_orientation)
                 .then_some(&self.selected_operand_ghost_renderer),
-            // Issue #79: the persistent child-boolean ghost draws UNDER the selection
-            // ghost (same suppression rules); the persistent set excludes the active
-            // node's body, so the two overlays never double an alpha.
-            child_boolean_ghost: (!self.panel_state.debug_face_orientation)
-                .then_some(&self.child_boolean_ghost_renderer),
             cuboid_mesh: self.display.cuboid_mesh_renderer(),
             // ADR 0011 G1: when engaged (field installed, no mesh-only mode), the
             // brick raymarch replaces the cuboid-mesh DRAW for this frame; the mesh

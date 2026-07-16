@@ -110,7 +110,7 @@ pub use document::intent::{Intent, IntentEffect, NodeSpec};
 pub use voxel_core::core_geom::MaterialChoice;
 pub use ui::panel::{
     build_panel, ExportPanelState, LayerRange, PanelResponse,
-    PanelState,
+    PanelState, ViewMode,
 };
 pub use assets::{CubeFaceSlot, FaceProvenance, FaceTextures};
 pub use display::renderer::{
@@ -121,7 +121,7 @@ pub use display::renderer::{
 pub use display::renderer::procedural_material_average_color;
 pub use document::scene::{
     AssemblyDef, CombineOp, DefId, Node, NodeBuilder, NodeContent, NodeId, NodePath, NodeTransform,
-    VoxelBody, Point, RegionBlocks, Scene,
+    VoxelBody, Point, RegionBlocks, Scene, ROOT_NODE_ID,
 };
 pub use settings::AppConfig;
 pub use evaluation::two_layer_store::{
@@ -452,21 +452,15 @@ pub struct FrameOverlays<'a> {
     /// or thin-slab-remesh (mesh) update, never the fog atlas rebuild. The ghost
     /// uniforms/geometry must already be prepared by the renderers' `update_uniforms`.
     pub onion_ghost_active: bool,
-    /// Issue #78: the selected-operand ghost — the ACTIVE node's own body as an
-    /// operation-coded x-ray (quiet where directly visible, loud where buried; ADR 0012
-    /// H1 is the ghost-pass precedent). Drawn immediately after the solid + onion ghost
-    /// inside the shared MSAA pass, so it composes over BOTH display paths (the brick
-    /// raymarch writes ray-hit depth into the same attachment the passes test against).
-    /// Self-gating (no selection → no bodies → no draw); `None` skips it entirely (the
+    /// ADR 0018 Decision 6: the boolean-operand ghost — every Subtract/Intersect operand
+    /// body in the selected subtree as an operation-coded x-ray (quiet where directly
+    /// visible, loud where buried; ADR 0012 H1 is the ghost-pass precedent). Drawn
+    /// immediately after the solid + onion ghost inside the shared MSAA pass, so it
+    /// composes over BOTH display paths (the brick raymarch writes ray-hit depth into the
+    /// same attachment the passes test against). Self-gating (no bodies → no draw — the
+    /// ghost is empty outside Show-booleans mode); `None` skips it entirely (the
     /// debug-faces diagnostic mode, which suppresses every ghost).
     pub selected_operand_ghost: Option<&'a display::mesh::SelectedOperandGhostRenderer>,
-    /// Issue #79: the persistent child-boolean ghost — every Subtract/Intersect operand
-    /// body inside the "Show child booleans"-checked subtrees, in the SAME #78 styles
-    /// (a second instance of the same renderer). Drawn just BEFORE the selection ghost
-    /// (which reads as the emphasis on top); the derivation excludes the active node's
-    /// body, so the two overlays never double-shade one body. Self-gating like the
-    /// selection ghost; `None` in debug-faces mode.
-    pub child_boolean_ghost: Option<&'a display::mesh::SelectedOperandGhostRenderer>,
     /// The cuboid mesh renderer — the CPU voxel render path (part of #20; the legacy
     /// instanced mesher was removed). Draws the voxels as a box-decomposed mesh; its
     /// uniforms must already be uploaded via `CuboidMeshRenderer::update_uniforms`.
@@ -597,12 +591,8 @@ pub fn render_frame(
         // loud `Greater`, no depth writes). Runs after the solid + onion ghost so both
         // display paths' depth is final; before the depth-tested overlays below, which
         // it cannot occlude (it writes no depth).
-        // Issue #79: the persistent child-boolean ghost first (the always-on layer),
-        // then the selection ghost on top (the emphasis). Both write no depth and the
-        // derivation dedupes their bodies, so the order only fixes the command stream.
-        if let Some(child_boolean_ghost) = overlays.child_boolean_ghost {
-            child_boolean_ghost.draw(&mut voxel_pass);
-        }
+        // ADR 0018 Decision 6: the boolean-operand ghost (Show-booleans mode). Writes no
+        // depth; empty outside the mode, so this is a no-op then.
         if let Some(selected_operand_ghost) = overlays.selected_operand_ghost {
             selected_operand_ghost.draw(&mut voxel_pass);
         }

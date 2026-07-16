@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use voxel_worker::{
     CubeFace, GeometryParams, MaterialChoice, ProjectionMode, SdfShape, ShapeKind, ViewCubeElement,
+    ViewMode,
 };
 
 pub(crate) struct ShotOptions {
@@ -29,6 +30,16 @@ pub(crate) struct ShotOptions {
     /// gizmo FOLLOWS a chosen (non-origin) node. `None` keeps the scene's default
     /// selection. Out-of-range clears the selection (gizmo hidden).
     pub(crate) select_node: Option<usize>,
+    /// `--select-root` (ADR 0018 Decision 2): override the scene's active selection to the
+    /// ROOT PART ([`voxel_worker::ROOT_NODE_ID`]), so a headless capture can prove a
+    /// view mode applies scene-wide (Show-booleans x-rays every boolean). Takes precedence
+    /// over `--select-node`.
+    pub(crate) select_root: bool,
+    /// `--view-mode <normal|onion|booleans>` (ADR 0018 Decision 3): the viewer's exclusive
+    /// rendering mode. Default Normal (the finished look, no ghosts). Show-booleans x-rays
+    /// the selected subtree's boolean operands; Onion-fog keeps its scene-wide band meaning
+    /// this slice.
+    pub(crate) view_mode: ViewMode,
     /// Whether the block lattice is drawn (M8 `--lattice`).
     pub(crate) show_block_lattice: bool,
     /// Whether the fine floor grid is drawn (M8 `--floor`).
@@ -211,15 +222,12 @@ pub(crate) struct ShotOptions {
     /// selected, so the selected-operand ghost renders it wholly in the LOUD occluded
     /// style (the buried-cutter golden). Overrides --shape/--size/--density.
     pub(crate) demo_buried_cutter: bool,
-    /// `--demo-child-booleans` (issue #79): a Group whose Stone body carries an exposed
-    /// corner cutter AND a strictly-interior buried cutter, with the Group's
-    /// `show_child_booleans` flag ON and NOTHING selected — both cutters render
-    /// persistently as the #78 operand ghost (the buried one wholly loud). Overrides
-    /// --shape/--size/--density.
+    /// `--demo-child-booleans` (ADR 0018 Decision 6): a Group whose Stone body carries an
+    /// exposed corner cutter AND a strictly-interior buried cutter. In Show-booleans mode
+    /// with the root part selected (`--select-root --view-mode booleans`) both cutters
+    /// x-ray as operand ghosts (the buried one wholly loud); in Normal mode the render is
+    /// the finished carved look with zero ghosts. Overrides --shape/--size/--density.
     pub(crate) demo_child_booleans: bool,
-    /// `--demo-child-booleans-off` (issue #79): the IDENTICAL scene with the flag off —
-    /// the finished carved look (the checkbox's unchecked half of the golden pair).
-    pub(crate) demo_child_booleans_off: bool,
     /// `--demo-two-material` (ADR 0011 G2): two solid boxes of DISTINCT materials placed
     /// SEPARATED so no block is shared — every rendered block is single-material, the
     /// brick-representable multi-producer scene the G2 per-record-material golden locks
@@ -277,6 +285,8 @@ impl Default for ShotOptions {
             show_grid_overlay: false,
             show_origin_gizmo: false,
             select_node: None,
+            select_root: false,
+            view_mode: ViewMode::Normal,
             show_block_lattice: false,
             show_floor_grid: false,
             show_points: false,
@@ -318,7 +328,6 @@ impl Default for ShotOptions {
             demo_window_fixture: false,
             demo_buried_cutter: false,
             demo_child_booleans: false,
-            demo_child_booleans_off: false,
             demo_two_material: false,
             demo_mixed_material: false,
             two_layer: false,
@@ -415,6 +424,16 @@ fn parse_material(value: &str) -> MaterialChoice {
         "wood" => MaterialChoice::Wood,
         "plain" => MaterialChoice::Plain,
         other => panic!("--material must be stone|wood|plain, got '{other}'"),
+    }
+}
+
+/// Parse a `--view-mode` value into a [`ViewMode`] (ADR 0018 Decision 3).
+fn parse_view_mode(value: &str) -> ViewMode {
+    match value.to_ascii_lowercase().as_str() {
+        "normal" => ViewMode::Normal,
+        "onion" | "onion-fog" | "onionfog" => ViewMode::OnionFog,
+        "booleans" | "show-booleans" => ViewMode::ShowBooleans,
+        other => panic!("--view-mode must be normal|onion|booleans, got '{other}'"),
     }
 }
 
@@ -541,6 +560,13 @@ pub(crate) fn parse_options() -> ShotOptions {
                         .expect("--select-node index must be a non-negative integer"),
                 );
             }
+            "--select-root" => {
+                options.select_root = true;
+            }
+            "--view-mode" => {
+                options.view_mode =
+                    parse_view_mode(&args.next().expect("--view-mode requires a value"));
+            }
             "--lattice" => {
                 options.show_block_lattice = true;
             }
@@ -628,9 +654,6 @@ pub(crate) fn parse_options() -> ShotOptions {
             }
             "--demo-child-booleans" => {
                 options.demo_child_booleans = true;
-            }
-            "--demo-child-booleans-off" => {
-                options.demo_child_booleans_off = true;
             }
             "--demo-two-material" => {
                 options.demo_two_material = true;
@@ -742,9 +765,9 @@ pub(crate) fn parse_options() -> ShotOptions {
                      \x20            [--synthetic-block] [--two-layer]\n\
                      \x20            [--replay <script.jsonl>]\n\
                      \x20            [--force-demo-stem <texture/stem>]\n\
-                     \x20            [--gizmo] [--select-node <usize>] [--lattice] [--floor] [--points] [--point-at <X Y Z>] [--no-viewcube]\n\
+                     \x20            [--gizmo] [--select-node <usize>] [--select-root] [--view-mode <normal|onion|booleans>] [--lattice] [--floor] [--points] [--point-at <X Y Z>] [--no-viewcube]\n\
                      \x20            [--debug-faces] [--debug-chunks]\n\
-                     \x20            [--demo-scene] [--demo-overlap] [--demo-subtract] [--demo-group-subtract] [--demo-intersect] [--demo-cutter-def] [--demo-window-fixture] [--demo-buried-cutter] [--demo-child-booleans] [--demo-child-booleans-off] [--demo-two-material] [--demo-village] [--demo-village-far] [--demo-groups]\n\
+                     \x20            [--demo-scene] [--demo-overlap] [--demo-subtract] [--demo-group-subtract] [--demo-intersect] [--demo-cutter-def] [--demo-window-fixture] [--demo-buried-cutter] [--demo-child-booleans] [--demo-two-material] [--demo-village] [--demo-village-far] [--demo-groups]\n\
                      \x20            [--demo-sketch-extrude] [--demo-sketch-revolve]\n\
                      \x20            [--demo-far-offset] [--demo-far-offset-near]\n\
                      \x20            [--layer-lower <u32>] [--layer-upper <u32>] [--onion <u32>]\n\
