@@ -62,28 +62,34 @@ pub fn build_panel(
         .resizable(false)
         .default_size(300.0)
         .show_inside(root_ui, |ui| {
-            ui.add_space(8.0);
-            ui.heading("VoxelWorker");
-            ui.label("Vintage Story chiseling planner");
-            ui.add_space(6.0);
-            ui.separator();
+            // The panel outgrows short windows; scroll (wheel or drag) instead
+            // of clipping the lower sections.
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.add_space(8.0);
+                    ui.heading("VoxelWorker");
+                    ui.label("Vintage Story chiseling planner");
+                    ui.add_space(6.0);
+                    ui.separator();
 
-            nodes::build_node_list_section(ui, state, &mut response);
-            points::build_points_section(ui, state, &mut response);
-            inspector::build_inspector_section(ui, state, &mut response);
-            controls::build_camera_section(ui, state);
-            controls::build_display_section(ui, state, &mut response);
-            controls::build_export_section(ui, &mut response, export);
-            layers::build_layers_section(ui, state, grid_z, measured_diameter);
+                    nodes::build_node_list_section(ui, state, &mut response);
+                    points::build_points_section(ui, state, &mut response);
+                    inspector::build_inspector_section(ui, state, &mut response);
+                    controls::build_camera_section(ui, state);
+                    controls::build_display_section(ui, state, &mut response);
+                    controls::build_export_section(ui, &mut response, export);
+                    layers::build_layers_section(ui, state, grid_z, measured_diameter);
 
-            if let Some(millions) = state.voxel_cap_warning_millions {
-                ui.add_space(8.0);
-                ui.separator();
-                ui.colored_label(
-                    egui::Color32::from_rgb(0xd9, 0x60, 0x3f),
-                    format!("3D paused — {millions:.1}M voxels; lower size/density"),
-                );
-            }
+                    if let Some(millions) = state.voxel_cap_warning_millions {
+                        ui.add_space(8.0);
+                        ui.separator();
+                        ui.colored_label(
+                            egui::Color32::from_rgb(0xd9, 0x60, 0x3f),
+                            format!("3D paused — {millions:.1}M voxels; lower size/density"),
+                        );
+                    }
+                });
         });
 
     response
