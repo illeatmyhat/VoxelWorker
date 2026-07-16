@@ -44,11 +44,12 @@ impl WindowedState {
         // Issue #60 M2: the effective layer-clip band the render path will apply this frame.
         // The async worker builds the mesh already clipped to this band so the swap frame's
         // `rebuild_for_band` is a no-op (no full main-thread re-mesh — the hitch #60 removed).
-        let band = self.current_layer_band(grid_dimensions[2]);
+        let clip = self.current_mesh_clip(grid_dimensions[2]);
         // Map item 2: delegate the display-artifact rebuild (the brick sink + the fallback
         // cuboid mesh + the F1 brick-display handover reconcile) to the orchestrator. The shell
         // keeps the camera recentre-shift compensation, the layer-band rescale, and the region /
-        // measurement bookkeeping below.
+        // measurement bookkeeping below. ADR 0018 Decision 5: the async mesh build region-scopes
+        // via `clip.region` (the brick sink's region parity is the next slice #85).
         self.display.rebuild(
             two_layer_chunks,
             incremental_dirty_chunks,
@@ -56,7 +57,8 @@ impl WindowedState {
             grid_dimensions,
             recentre_voxels,
             density,
-            band,
+            clip.band,
+            clip.region,
             self.panel_state.debug_face_orientation,
         );
 

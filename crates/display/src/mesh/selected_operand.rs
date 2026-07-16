@@ -254,6 +254,7 @@ impl SelectedOperandGhostRenderer {
                 recentre,
                 voxels_per_block,
                 LayerBand::FULL,
+                None,
             );
             let mut buffers_by_coord = upload_chunk_meshes(device, &meshes);
             if buffers_by_coord.is_empty() {

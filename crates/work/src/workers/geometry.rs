@@ -38,7 +38,7 @@ use std::sync::Arc;
 
 use voxel_core::voxel::RecentreVoxels;
 use display::mesh::CuboidMeshRenderer;
-use display::renderer::LayerBand;
+use display::renderer::{LayerBand, RegionClip};
 use evaluation::two_layer_store::TwoLayerChunk;
 use crate::workers::{build_catching, Worker};
 
@@ -72,6 +72,10 @@ pub struct GeometryRebuildRequest {
     /// band moved between dispatch and swap the per-frame `rebuild_for_band` still corrects
     /// it — this only optimises the common stable-band case.
     pub band: LayerBand,
+    /// The onion-fog region the band is confined to (ADR 0018 Decision 5), or `None` for a
+    /// scene-wide band / no clip. Carried alongside `band` so the worker's wholesale build
+    /// already region-scopes and the swap frame does not re-mesh (M2).
+    pub region: Option<RegionClip>,
 }
 
 /// A finished wholesale mesh built by the worker (issue #60): the whole
@@ -143,5 +147,6 @@ pub fn build_geometry(
         request.recentre_voxels,
         request.density,
         request.band,
+        request.region,
     )
 }

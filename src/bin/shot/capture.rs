@@ -709,25 +709,31 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     // placed scene), used for the band clip + uniforms so a demo scene that grew
     // past the single-shape `grid_z` is not clipped or mis-sized. Layers are Z-slices.
     let render_grid_z = grid_dimensions[2];
-    // Issue #12: the layer-range band for the 3D clip + the measured-diameter
-    // readout (widest occupied run in the active band). The demo scene always
-    // renders the full band (placement, not layer-scrubbing, is what it verifies).
-    let band = if placed_scene
-        || (layer_range.is_full_range(render_grid_z) && !layer_range.onion_skin)
-    {
-        LayerBand::FULL
+    // ADR 0018 Decisions 4–5: the region-scoped layer clip (band + onion-fog region),
+    // derived by the SAME `AppCore::mesh_clip` the windowed shell uses. The band bites only
+    // in Onion-fog mode with a selection (`--view-mode onion` + `--select-node`/`--select-root`);
+    // Normal / Show-booleans (and a placed/demo scene with no onion selection) render finished.
+    // In Onion-fog the `--layer-lower/--layer-upper` handles are OBJECT-RELATIVE over the
+    // selected object's Z extent; `mesh_clip` offsets them into the scene-absolute `band` and
+    // confines it to the object's placed AABB (`region`). The cuboid mesh path honours the
+    // region; the brick raymarch region parity is the next slice #85.
+    let clip = AppCore::mesh_clip(
+        &panel_state.scene,
+        density,
+        options.view_mode,
+        layer_range,
+        render_grid_z,
+        options.debug_face_orientation,
+    );
+    let band = clip.band;
+    // The measured-diameter readout: the widest occupied run in the effective (scene-absolute)
+    // band, or the whole scene when the band is FULL.
+    let (diam_lower, diam_upper) = if band == LayerBand::FULL {
+        (0, render_grid_z)
     } else {
-        LayerBand {
-            band_min: layer_range.lower,
-            band_max: layer_range.upper.min(render_grid_z.saturating_sub(1)),
-            onion_depth: if layer_range.onion_skin {
-                layer_range.onion_depth.clamp(1, 8)
-            } else {
-                0
-            },
-        }
+        (band.band_min, band.band_max)
     };
-    let measured_diameter = grid.widest_run_in_band(layer_range.lower, layer_range.upper);
+    let measured_diameter = grid.widest_run_in_band(diam_lower, diam_upper);
 
     // Build the orbit camera from the CLI flags. `--snap` overrides theta/phi
     // with the face's snapped angles directly (no tween in the headless path).
@@ -912,7 +918,9 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         &gpu.device,
         &gpu.queue,
         &mut panel_state,
-        render_grid_z,
+        // ADR 0018 Decision 5: the layer scrubber's track spans the selected object's Z
+        // extent in Onion-fog mode (else the whole scene).
+        clip.track_len,
         measured_diameter,
         // The headless capture never runs an export; the section renders idle.
         voxel_worker::ExportPanelState::default(),
@@ -989,6 +997,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         options.show_grid_overlay,
         bound,
         band,
+        clip.region,
         options.debug_face_orientation,
     );
     println!(

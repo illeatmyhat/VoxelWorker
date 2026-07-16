@@ -32,7 +32,7 @@ use display::brick::{
     SculptedAtlasPayload,
 };
 use display::mesh::CuboidMeshRenderer;
-use display::renderer::LayerBand;
+use display::renderer::{LayerBand, RegionClip};
 use document::scene::Scene;
 use evaluation::two_layer_store::{TwoLayerChunk, TwoLayerResidentCache};
 use voxel_core::voxel::RecentreVoxels;
@@ -68,6 +68,9 @@ pub struct DisplayRefreshContext<'a> {
     /// The effective layer-clip band the render path will apply this frame (so a stale-mesh
     /// rebuild builds already clipped to it — no swap-frame re-mesh).
     pub band: LayerBand,
+    /// The onion-fog region the band is confined to this frame (ADR 0018 Decision 5), or
+    /// `None` for a scene-wide band / no clip.
+    pub region: Option<RegionClip>,
     /// Whether debug-face orientation mode is active (the mesh-only display flag that drops
     /// brick engagement).
     pub debug_face_orientation: bool,
@@ -483,6 +486,7 @@ impl DisplayOrchestrator {
         recentre_voxels: RecentreVoxels,
         density: u32,
         band: LayerBand,
+        region: Option<RegionClip>,
     ) {
         let generation = self.geometry_generation.next_generation();
         self.geometry_async_outstanding = true;
@@ -493,6 +497,7 @@ impl DisplayOrchestrator {
             recentre_voxels,
             density,
             band,
+            region,
         });
     }
 
@@ -512,6 +517,7 @@ impl DisplayOrchestrator {
         recentre_voxels: RecentreVoxels,
         density: u32,
         band: LayerBand,
+        region: Option<RegionClip>,
         debug_face_orientation: bool,
     ) {
         // The brick mirror (`incremental_brick_field`, plain CPU) is maintained for ANY
@@ -855,6 +861,7 @@ impl DisplayOrchestrator {
                     recentre_voxels,
                     density,
                     band,
+                    region,
                 );
                 // The worker owns the (re)build now; the outstanding flag carries the C1
                 // interlock. `mesh_stale` is intentionally NOT cleared here (cleanup b: only
@@ -879,6 +886,7 @@ impl DisplayOrchestrator {
                     recentre_voxels,
                     density,
                     band,
+                    region,
                 );
                 self.finish_mesh_install();
             }
@@ -1111,12 +1119,20 @@ impl DisplayOrchestrator {
         let grid_dimensions = context.region_dimensions;
         let recentre = context.recentre_voxels;
         let band = context.band;
+        let region = context.region;
         if chunks.len() > ASYNC_REBUILD_CHUNK_THRESHOLD {
             // Large: dispatch async so the toggle never freezes. Keep drawing the current display
             // until the result installs (`poll_geometry_worker` → `finish_mesh_install` clears
             // `mesh_stale`). `mesh_stale` stays set meanwhile; the outstanding guard above keeps
             // us from re-dispatching each frame.
-            self.dispatch_wholesale_mesh_rebuild(chunks, grid_dimensions, recentre, density, band);
+            self.dispatch_wholesale_mesh_rebuild(
+                chunks,
+                grid_dimensions,
+                recentre,
+                density,
+                band,
+                region,
+            );
             println!(
                 "mesh: fallback rebuild dispatched async (brick display disengaged — \
                  debug-face / material)"
@@ -1132,6 +1148,7 @@ impl DisplayOrchestrator {
                 recentre,
                 density,
                 band,
+                region,
             );
             self.finish_mesh_install();
             println!(

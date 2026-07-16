@@ -40,7 +40,7 @@ use evaluation::cuboid::{decompose_into_boxes, VoxelBox, VoxelBoxMaterial, Voxel
 use substrate::solids::CulledBoxMeshing;
 use camera::frustum::Frustum;
 use substrate::spatial::RealAabb as Aabb;
-use crate::renderer::{LayerBand, DEPTH_FORMAT, MSAA_SAMPLE_COUNT};
+use crate::renderer::{LayerBand, RegionClip, RegionRole, DEPTH_FORMAT, MSAA_SAMPLE_COUNT};
 use crate::texture_atlas::MaterialAtlas;
 use voxel_core::core_geom::CellKey;
 use evaluation::two_layer_store::{MicroblockGeometry, SeamSolidity, TwoLayerChunk};

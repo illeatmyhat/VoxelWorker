@@ -514,6 +514,7 @@ impl WindowedState {
         region_dimensions: [u32; 3],
         recentre_voxels: RecentreVoxels,
         band: LayerBand,
+        region: Option<crate::RegionClip>,
     ) -> DisplayRefreshContext<'a> {
         DisplayRefreshContext {
             scene: &panel_state.scene,
@@ -522,37 +523,26 @@ impl WindowedState {
             region_dimensions,
             recentre_voxels,
             band,
+            region,
             debug_face_orientation: panel_state.debug_face_orientation,
         }
     }
 
-    /// The EFFECTIVE layer-clip band the render path will apply this frame for a grid of
-    /// `grid_z` layers (issue #12 / #60 M2). Mirrors exactly what `update_uniforms` computes
-    /// (the scrubber → shader band, plus the debug-faces override that forces FULL), so the
-    /// async worker can build the mesh already clipped to THIS band and the swap frame's
-    /// `rebuild_for_band` becomes a no-op (no full main-thread re-mesh on the swap).
-    fn current_layer_band(&self, grid_z: u32) -> LayerBand {
-        // Debug-faces mode bypasses the band (the instanced check sees the whole model), so
-        // force FULL — matching `update_uniforms`' `effective_band`.
-        if self.panel_state.debug_face_orientation {
-            return LayerBand::FULL;
-        }
-        let layer_range = self.panel_state.layer_range;
-        if layer_range.is_full_range(grid_z) && !layer_range.onion_skin {
-            LayerBand::FULL
-        } else {
-            LayerBand {
-                band_min: layer_range.lower,
-                // `upper` is the last visible layer index; clamp into the grid so a
-                // full-range upper (== grid_z) still includes the top layer.
-                band_max: layer_range.upper.min(grid_z.saturating_sub(1)),
-                onion_depth: if layer_range.onion_skin {
-                    layer_range.onion_depth.clamp(1, 8)
-                } else {
-                    0
-                },
-            }
-        }
+    /// The EFFECTIVE layer clip (band + onion-fog region) the render path will apply this
+    /// frame for a whole-scene grid of `scene_grid_z` layers (issue #12 / #60 M2 / ADR 0018
+    /// Decisions 4–5). Delegates to the shared [`AppCore::mesh_clip`] so the async worker,
+    /// the fallback rebuild, and the render uniforms all clip identically (the swap frame's
+    /// `rebuild_for_band` then no-ops). The band bites only in Onion-fog mode with a
+    /// selection; debug-faces / Normal / Show-booleans force FULL + no region.
+    fn current_mesh_clip(&self, scene_grid_z: u32) -> crate::MeshClip {
+        AppCore::mesh_clip(
+            &self.panel_state.scene,
+            self.panel_state.geometry.voxels_per_block,
+            self.panel_state.view_mode,
+            self.panel_state.layer_range,
+            scene_grid_z,
+            self.panel_state.debug_face_orientation,
+        )
     }
 
     /// Persist the current UI + camera + window state to the platform config

@@ -28,7 +28,7 @@ fn mesh_pipeline_scaling_probe() {
         let recentre = scene.recentre_voxels_for_resolve(density);
         let start = std::time::Instant::now();
         let meshes =
-            build_two_layer_chunk_meshes(&chunks, dims, recentre, density, LayerBand::FULL);
+            build_two_layer_chunk_meshes(&chunks, dims, recentre, density, LayerBand::FULL, None);
         let elapsed = start.elapsed();
         let boxes: u64 = meshes.iter().map(|mesh| mesh.box_count as u64).sum();
         let vertices: u64 = meshes.iter().map(|mesh| mesh.vertices.len() as u64).sum();

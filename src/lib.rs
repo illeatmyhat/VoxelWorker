@@ -49,8 +49,8 @@ mod windowed_resolve_tests;
 mod cell_interval_parity_tests;
 
 pub use app_core::{
-    default_replay_seed_scene, replay_intent_script, AppCore, RebuildOutcome, RebuildOutput,
-    SelectedOperandGhost,
+    default_replay_seed_scene, replay_intent_script, AppCore, MeshClip, RebuildOutcome,
+    RebuildOutput, SelectedOperandGhost,
 };
 pub use evaluation::store::{ChunkCacheKey, ChunkResolveCache, Store};
 pub use display::brick::{
@@ -115,8 +115,9 @@ pub use ui::panel::{
 pub use assets::{CubeFaceSlot, FaceProvenance, FaceTextures};
 pub use display::renderer::{
     create_depth_view, create_msaa_color_view, InfiniteGridRenderer, LayerBand, MaterialSource,
-    OnionFogParams, PointsRenderer, SceneGridRenderer, TransformGizmoRenderer, ViewCubeRenderer,
-    DEPTH_FORMAT, MSAA_SAMPLE_COUNT, VIEW_CUBE_VIEWPORT_PIXELS,
+    OnionFogParams, PointsRenderer, RegionClip, RegionRole, SceneGridRenderer,
+    TransformGizmoRenderer, ViewCubeRenderer, DEPTH_FORMAT, MSAA_SAMPLE_COUNT,
+    VIEW_CUBE_VIEWPORT_PIXELS,
 };
 pub use display::renderer::procedural_material_average_color;
 pub use document::scene::{

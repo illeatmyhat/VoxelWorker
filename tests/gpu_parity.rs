@@ -457,6 +457,7 @@ fn worker_build_matches_sync_build_for_large_scene() {
         density: vpb,
         // FULL band — the worker's banded build at FULL is byte-identical to the sync build.
         band: LayerBand::FULL,
+        region: None,
     };
     let worker = build_geometry(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT, &request);
 

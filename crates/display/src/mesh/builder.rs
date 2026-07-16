@@ -447,8 +447,9 @@ pub(crate) fn build_chunk_meshes_with_apron(
     chunk_grids: &[([i32; 3], &VoxelGrid)],
     grid_dimensions: [u32; 3],
     band: LayerBand,
+    region: Option<RegionClip>,
 ) -> Vec<CuboidChunkMesh> {
-    build_chunk_meshes_with_apron_filtered(chunk_grids, None, grid_dimensions, band)
+    build_chunk_meshes_with_apron_filtered(chunk_grids, None, grid_dimensions, band, region)
 }
 
 /// Like [`build_chunk_meshes_with_apron`] but meshes ONLY the chunks in `only`
@@ -462,6 +463,7 @@ pub(crate) fn build_chunk_meshes_with_apron_filtered(
     only: Option<&std::collections::HashSet<[i32; 3]>>,
     grid_dimensions: [u32; 3],
     band: LayerBand,
+    region: Option<RegionClip>,
 ) -> Vec<CuboidChunkMesh> {
     let global = global_occupancy_from_chunks(chunk_grids);
     if global.occupied.is_empty() {
@@ -485,6 +487,35 @@ pub(crate) fn build_chunk_meshes_with_apron_filtered(
         }
         let layer = base_layer + gz;
         layer >= band.band_min as i64 && layer <= band.band_max as i64
+    };
+
+    // ADR 0018 Decision 5 — region-scoped clip. A global index `gi` sits at recentred
+    // voxel coord `gi + world_offset` (both this dense path and the two-layer path emit
+    // that voxel at the same recentred world position; `world_offset` is integer-valued —
+    // `min_world` is a half-integer voxel centre — so the round is exact). The band test
+    // in the recentred frame is `layer = recentred_z + floor(dim_z/2) ∈ [band_min,
+    // band_max]`, equal to `global_z_in_band(gz)`.
+    let half_z_i = (grid_dimensions[2] / 2) as i64;
+    let world_offset_int = [
+        world_offset[0].round() as i64,
+        world_offset[1].round() as i64,
+        world_offset[2].round() as i64,
+    ];
+    let z_in_band_recentred = |recentred_z: i64| -> bool {
+        if !band_active {
+            return true;
+        }
+        let layer = recentred_z + half_z_i;
+        layer >= band.band_min as i64 && layer <= band.band_max as i64
+    };
+    // Whether the voxel at global index `gi` is meshed (band + optional region clip).
+    let voxel_shown = |gi: [i64; 3]| -> bool {
+        let recentred = [
+            gi[0] + world_offset_int[0],
+            gi[1] + world_offset_int[1],
+            gi[2] + world_offset_int[2],
+        ];
+        voxel_meshed(recentred, &z_in_band_recentred, region)
     };
 
     let mut meshes = Vec::new();
@@ -511,7 +542,7 @@ pub(crate) fn build_chunk_meshes_with_apron_filtered(
                 (position[1] - (world_offset[1] + 0.5)).round() as i64,
                 (position[2] - (world_offset[2] + 0.5)).round() as i64,
             ];
-            if !global_z_in_band(index[2]) {
+            if !voxel_shown(index) {
                 continue;
             }
             for axis in 0..3 {
@@ -557,33 +588,65 @@ pub(crate) fn build_chunk_meshes_with_apron_filtered(
         let mut apron = VoxelRegion::new_empty(extent);
         let [gw, gh, gd] = global.extent;
         let [aw, ah, _ad] = extent;
-        for lz in 0..extent[2] {
-            let gz = origin[2] + lz as i64;
-            // Z-up: the band clip is along Z (layers are Z-slices), so an out-of-band
-            // Z plane reads as air — synthesising the cap face at the band edge.
-            if gz < 0 || gz >= gd as i64 || !global_z_in_band(gz) {
-                continue;
+        if region.is_none() {
+            // Band-only (or FULL) path: a whole out-of-band Z plane reads as air (cap face
+            // at the band edge), and each in-band row is copied with `copy_from_slice`.
+            for lz in 0..extent[2] {
+                let gz = origin[2] + lz as i64;
+                if gz < 0 || gz >= gd as i64 || !global_z_in_band(gz) {
+                    continue;
+                }
+                for ly in 0..extent[1] {
+                    let gy = origin[1] + ly as i64;
+                    if gy < 0 || gy >= gh as i64 {
+                        continue;
+                    }
+                    // The apron row spans global X in `[origin.x, origin.x + aw)`; clip
+                    // it to the global region's `[0, gw)` and copy the overlap directly.
+                    let row_gx0 = origin[0].max(0);
+                    let row_gx1 = (origin[0] + aw as i64).min(gw as i64);
+                    if row_gx1 <= row_gx0 {
+                        continue;
+                    }
+                    let src_base =
+                        (gz as usize * gh as usize + gy as usize) * gw as usize + row_gx0 as usize;
+                    let len = (row_gx1 - row_gx0) as usize;
+                    let dst_lx = (row_gx0 - origin[0]) as u32;
+                    let dst_base =
+                        (lz as usize * ah as usize + ly as usize) * aw as usize + dst_lx as usize;
+                    apron.cells[dst_base..dst_base + len]
+                        .copy_from_slice(&global.occupied[src_base..src_base + len]);
+                }
             }
-            for ly in 0..extent[1] {
-                let gy = origin[1] + ly as i64;
-                if gy < 0 || gy >= gh as i64 {
+        } else {
+            // ADR 0018 Decision 5 — region-scoped clip: the mask is XY-dependent, so fill
+            // the apron PER CELL (the region clip is an onion-mode-only path; the dense
+            // mesher here is the shot/oracle reference, not the live incremental path).
+            for lz in 0..extent[2] {
+                let gz = origin[2] + lz as i64;
+                if gz < 0 || gz >= gd as i64 {
                     continue;
                 }
-                // The apron row spans global X in `[origin.x, origin.x + aw)`; clip
-                // it to the global region's `[0, gw)` and copy the overlap directly.
-                let row_gx0 = origin[0].max(0);
-                let row_gx1 = (origin[0] + aw as i64).min(gw as i64);
-                if row_gx1 <= row_gx0 {
-                    continue;
+                for ly in 0..extent[1] {
+                    let gy = origin[1] + ly as i64;
+                    if gy < 0 || gy >= gh as i64 {
+                        continue;
+                    }
+                    for lx in 0..extent[0] {
+                        let gx = origin[0] + lx as i64;
+                        if gx < 0 || gx >= gw as i64 {
+                            continue;
+                        }
+                        if !voxel_shown([gx, gy, gz]) {
+                            continue;
+                        }
+                        let src = (gz as usize * gh as usize + gy as usize) * gw as usize
+                            + gx as usize;
+                        let dst = (lz as usize * ah as usize + ly as usize) * aw as usize
+                            + lx as usize;
+                        apron.cells[dst] = global.occupied[src];
+                    }
                 }
-                let src_base =
-                    (gz as usize * gh as usize + gy as usize) * gw as usize + row_gx0 as usize;
-                let len = (row_gx1 - row_gx0) as usize;
-                let dst_lx = (row_gx0 - origin[0]) as u32;
-                let dst_base =
-                    (lz as usize * ah as usize + ly as usize) * aw as usize + dst_lx as usize;
-                apron.cells[dst_base..dst_base + len]
-                    .copy_from_slice(&global.occupied[src_base..src_base + len]);
             }
         }
 

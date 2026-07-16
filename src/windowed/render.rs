@@ -41,13 +41,14 @@ impl WindowedState {
         // Perf follow-up to epic #64: install a finished (non-stale) wholesale brick
         // rebuild — mirror + display field — before drawing (stale-while-rebuilding).
         {
-            let band = self.current_layer_band(self.region_dimensions[2]);
+            let clip = self.current_mesh_clip(self.region_dimensions[2]);
             let context = Self::make_refresh_context(
                 &self.panel_state,
                 &mut self.app_core.two_layer_cache,
                 self.region_dimensions,
                 self.recentre_voxels,
-                band,
+                clip.band,
+                clip.region,
             );
             if self.display.poll_brick_worker(context) {
                 self.window.request_redraw();
@@ -138,6 +139,10 @@ impl WindowedState {
             status_line: export_status_line.as_deref(),
         };
 
+        // ADR 0018 Decision 5: the layer scrubber's track spans the SELECTED object's Z
+        // extent in Onion-fog mode (else the whole scene). Read it from the shared clip
+        // (a no-op walk outside Onion-fog mode, where it returns the scene `grid_z`).
+        let layer_track_len = self.current_mesh_clip(grid_z).track_len;
         let mut prepared = {
             profiling::scope!("egui_frame");
             run_egui_frame(
@@ -145,7 +150,7 @@ impl WindowedState {
             &self.gpu.device,
             &self.gpu.queue,
             &mut self.panel_state,
-            grid_z,
+            layer_track_len,
             self.measured_diameter,
             export_panel,
             &self.palette.ui,
@@ -298,13 +303,14 @@ impl WindowedState {
         // it here the frame it is next needed, so a stale/empty mesh is never drawn. A no-op
         // unless the mesh is stale AND about to be shown.
         {
-            let band = self.current_layer_band(self.region_dimensions[2]);
+            let clip = self.current_mesh_clip(self.region_dimensions[2]);
             let context = Self::make_refresh_context(
                 &self.panel_state,
                 &mut self.app_core.two_layer_cache,
                 self.region_dimensions,
                 self.recentre_voxels,
-                band,
+                clip.band,
+                clip.region,
             );
             self.display.ensure_display_mesh_current(context);
         }
@@ -335,9 +341,14 @@ impl WindowedState {
         // is computed by the shared `current_layer_band` helper (issue #60 M2) so the async
         // worker builds the mesh at the SAME band the render path applies here.
         let layer_range = self.panel_state.layer_range;
-        let band = self.current_layer_band(grid_dimensions[2]);
+        // ADR 0018 Decisions 4–5: the region-scoped clip (band + onion-fog region). The
+        // band bites only in Onion-fog mode with a selection; the region confines it to the
+        // selected object's AABB (the cuboid mesh path honours the region; the brick
+        // raymarch region parity is the next slice #85 — it clips band-only for now).
+        let clip = self.current_mesh_clip(grid_dimensions[2]);
+        let band = clip.band;
         // Part of #20: the cuboid mesh path is the sole voxel renderer. Upload its
-        // per-frame uniforms (camera + per-material base colours + band clip). A
+        // per-frame uniforms (camera + per-material base colours + band + region clip). A
         // loaded VS block textures it per-face (its 6-layer D2Array is bound at DRAW
         // time in `render_frame`, selecting the loaded pipeline); `bound = None` then
         // just disables the procedural per-box modulation/atlas, which the loaded
@@ -358,6 +369,7 @@ impl WindowedState {
             self.panel_state.scene.master_voxel_grid,
             bound,
             band,
+            clip.region,
             self.panel_state.debug_face_orientation,
         );
         // ADR 0011 G1: the brick raymarch takes THIS frame's voxel-model draw when a

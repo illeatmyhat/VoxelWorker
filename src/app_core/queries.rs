@@ -1,11 +1,26 @@
 //! Headless render-data queries — region dims, view-projection, gizmo placement and
 //! onion-skin params: the data the windowed shell + `shot` render from ([`AppCore`]).
 
-use ui::panel::LayerRange;
-use display::renderer::OnionFogParams;
+use ui::panel::{LayerRange, ViewMode};
+use display::renderer::{LayerBand, OnionFogParams, RegionClip, RegionRole};
 use document::scene::{NodeId, Scene};
 
 use super::AppCore;
+
+/// The mesh/brick layer clip for a frame, region-scoped per ADR 0018 Decision 5. Bundles
+/// the effective [`LayerBand`] (scene-absolute layers), the optional [`RegionClip`] the
+/// band is confined to (the selected object's placed AABB, recentred voxels — `None` for a
+/// scene-wide band / no clip), and the layer-track domain the UI scrubber spans.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MeshClip {
+    /// The band the mesh/brick path clips to (scene-absolute Z-layer indices).
+    pub band: LayerBand,
+    /// The region the band is confined to (`role = ConfineBand`), or `None`.
+    pub region: Option<RegionClip>,
+    /// The layer-track length for the UI scrubber: the selected object's Z extent in
+    /// Onion-fog mode with a selection, else the whole-scene `grid_z`.
+    pub track_len: u32,
+}
 
 impl AppCore {
     /// Resolve the whole [`Scene`] into a fresh grid (ADR 0001 step 2). Every
@@ -88,6 +103,79 @@ impl AppCore {
         density: u32,
     ) -> Option<([f32; 3], [f32; 3])> {
         scene.gizmo_placement_for_id(node_id, density)
+    }
+
+    /// The region-scoped layer clip for a frame (ADR 0018 Decisions 4–5) — the SINGLE
+    /// place both the windowed shell and `shot` derive the mesh/brick band + region from,
+    /// so the two never drift. The band clips ONLY in **Onion-fog mode with a selection**;
+    /// Normal / Show-booleans (and Onion-fog with nothing selected, or a debug-face render)
+    /// render the whole scene finished (band FULL, no region — the pre-ADR-0018 scene-wide
+    /// band clip is retired).
+    ///
+    /// In Onion-fog the scrubber's `lower`/`upper` are **object-relative** layer indices
+    /// over the selected object's Z extent (Decision 5: the track spans the object, not the
+    /// scene); this offsets them by the object's base layer into scene-absolute band indices
+    /// and derives the recentred-voxel region the band is confined to. Selecting the ROOT
+    /// part gives the whole-scene region (the pre-0018 behaviour recovered).
+    pub fn mesh_clip(
+        scene: &Scene,
+        density: u32,
+        view_mode: ViewMode,
+        layer_range: LayerRange,
+        scene_grid_z: u32,
+        debug_face_orientation: bool,
+    ) -> MeshClip {
+        let finished = MeshClip {
+            band: LayerBand::FULL,
+            region: None,
+            track_len: scene_grid_z,
+        };
+        // Debug-face mode + any non-onion mode render the whole model finished.
+        if debug_face_orientation || view_mode != ViewMode::OnionFog {
+            return finished;
+        }
+        // Onion-fog needs a selected object to scope the clip to. No selection / hidden /
+        // empty subtree ⇒ finished (no implicit whole-scene clip — ADR 0018 Decision 2/5).
+        let Some((rmin, rmax)) = scene.selected_region_extent_recentred_voxels(density) else {
+            return finished;
+        };
+        // The mesher maps a recentred voxel-Z `v` to absolute layer `v + floor(dim_z/2)`.
+        let half_z = (scene_grid_z / 2) as i64;
+        // The object's bottom layer in scene-absolute layer indices.
+        let obj_base_layer = rmin[2] + half_z;
+        let track_len = (rmax[2] - rmin[2]).max(0) as u32;
+        // Object-relative scrubber handles, clamped into the object's track.
+        let lower_obj = layer_range.lower.min(track_len);
+        let upper_obj = layer_range.upper.min(track_len);
+        let onion_depth = if layer_range.onion_skin {
+            layer_range.onion_depth.clamp(1, 8)
+        } else {
+            0
+        };
+        // A full-object band with no ghost is a no-op clip ⇒ render finished (and skip the
+        // needless per-block densify the region path would do).
+        if lower_obj == 0 && upper_obj >= track_len && onion_depth == 0 {
+            return finished;
+        }
+        // Scene-absolute band (`upper` is the last visible layer; the region confines the
+        // off-by-one at the object top and both are clamped into the grid).
+        let band_min = (obj_base_layer + lower_obj as i64).clamp(0, scene_grid_z as i64) as u32;
+        let band_max = (obj_base_layer + upper_obj as i64)
+            .clamp(0, scene_grid_z.saturating_sub(1) as i64) as u32;
+        let region = RegionClip {
+            min: rmin,
+            max: rmax,
+            role: RegionRole::ConfineBand,
+        };
+        MeshClip {
+            band: LayerBand {
+                band_min,
+                band_max,
+                onion_depth,
+            },
+            region: Some(region),
+            track_len,
+        }
     }
 
     /// Build the onion-skin frame parameters (issue #12) from the camera-derived

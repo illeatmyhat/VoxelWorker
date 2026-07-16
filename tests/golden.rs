@@ -119,9 +119,17 @@ const CASES: &[GoldenCase] = &[
     // underlying solid's per-path shading shows through the ghost), so it is deliberately
     // EXCLUDED from the two-layer + brick cross-checks — the brick ghost is gated separately by
     // `onion_ghost_marches_only_the_onion_slabs` in `tests/gpu_parity.rs`.
+    // ADR 0018 (#84): onion fog is now a VIEWER MODE with a per-object region-scoped clip.
+    // The band bites only in `--view-mode onion` with a selection; selecting the sole object
+    // (`--select-node 0`) scopes the region to it — which, being the whole scene, makes the
+    // ConfineBand clip + ghost slabs identical to the pre-0018 scene-wide band, so this renders
+    // pixel-identically to the pre-0018 `onion-ghost` reference (viewport AND panel — the sphere
+    // stays the selected/inspected node). The mode gate is what keeps the band alive here
+    // (Normal mode would render the full sphere — see `normal-ignores-band`).
     GoldenCase {
         name: "onion-ghost",
         args: &[
+            "--view-mode", "onion", "--select-node", "0",
             "--shape", "sphere", "--size-x", "8", "--size-y", "8", "--size-z", "8",
             "--onion", "8", "--layer-lower", "56", "--layer-upper", "72",
         ],
@@ -164,9 +172,15 @@ const CASES: &[GoldenCase] = &[
     // waist and a flared lip that a box / extrude cannot produce. Pins the revolve
     // producer resolving + rendering through the SAME cuboid/instanced pipeline as
     // SdfShape at the fixed golden camera.
+    // The revolve was IMPLICITLY band-clipped pre-0018 (its composite grid_z 128 exceeded the
+    // default layer-track's 80, so the top third clipped scene-wide). ADR 0018 (#84) retired
+    // the scene-wide band: the clip now needs `--view-mode onion` to bite. Selecting the sole
+    // revolve node (`--select-node 0`) scopes the (default [0,80]) hard band to it — the whole
+    // scene — reproducing the pre-0018 clipped image pixel-for-pixel (viewport AND panel), so
+    // this stays the band-clipped SketchSolid case in the two-layer / brick cross-checks.
     GoldenCase {
         name: "sketch-revolve-dome",
-        args: &["--demo-sketch-revolve"],
+        args: &["--demo-sketch-revolve", "--view-mode", "onion", "--select-node", "0"],
     },
     // ADR 0010 E3 (#50): a sketch→extrude (L-footprint) solid — a SketchSolid producer that
     // is NOT band-clipped (its 3-block extrusion fits under the layer-track grid_z), the
@@ -298,6 +312,32 @@ const CASES: &[GoldenCase] = &[
     GoldenCase {
         name: "demo-child-booleans-normal",
         args: &["--demo-child-booleans", "--view-mode", "normal"],
+    },
+    // ADR 0018 Decision 5 (#84): the REGION-SCOPING proof. A three-object scene (Sphere at the
+    // origin, Box at +8 blocks X, Torus at +6 blocks Z) in `--view-mode onion` with ONLY the
+    // Sphere selected (`--select-node 0`). The Sphere clips to its mid-band [30,50] of its own
+    // 80-layer Z track with the ghost haze above/below — INSIDE its placed AABB only; the Box
+    // and Torus, outside that AABB, render FULLY SOLID/finished. This is what distinguishes the
+    // per-object clip from the retired scene-wide band: two untouched neighbours beside a
+    // sectioned object.
+    GoldenCase {
+        name: "onion-region-two-object",
+        args: &[
+            "--demo-scene", "--view-mode", "onion", "--select-node", "0",
+            "--onion", "8", "--layer-lower", "30", "--layer-upper", "50",
+        ],
+    },
+    // ADR 0018 Decision 4 (#84): Normal mode IGNORES the layer band. A sphere with a NARROW
+    // band ([56,72]) but `--view-mode normal` renders the FULL finished sphere — the band is
+    // Onion-fog's tool alone and does not clip here (contrast `onion-ghost`, the same-shape
+    // band alive under `--view-mode onion --select-root`).
+    GoldenCase {
+        name: "normal-ignores-band",
+        args: &[
+            "--view-mode", "normal",
+            "--shape", "sphere", "--size-x", "8", "--size-y", "8", "--size-z", "8",
+            "--layer-lower", "56", "--layer-upper", "72",
+        ],
     },
 ];
 

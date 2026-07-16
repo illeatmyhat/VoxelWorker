@@ -80,6 +80,7 @@ impl Fixture {
             region_dimensions: self.region_dimensions,
             recentre_voxels: self.recentre_voxels,
             band: LayerBand::FULL,
+            region: None,
             debug_face_orientation,
         }
     }
@@ -200,6 +201,7 @@ fn rebuild_keeps_brick_engaged_and_skips_mesh() {
         fixture.recentre_voxels,
         VPB,
         LayerBand::FULL,
+        None,
         false,
     );
 

@@ -435,6 +435,49 @@ impl Scene {
         any.then_some((min_corner, max_corner))
     }
 
+    /// The placed AABB of the ACTIVE selection's subtree in the **recentred voxel
+    /// frame** — the frame the display mesher emits vertices in and the layer band
+    /// clips within (a voxel at absolute producer coord `a` lands at `a −
+    /// recentre_voxels`, ADR 0008). Half-open `[min, max)` per axis.
+    ///
+    /// This is the region ADR 0018 Decision 5 confines the onion-fog band clip to:
+    /// inside it the selected object clips to the band (ghost outside the band),
+    /// everything outside renders finished. Selecting the **root part**
+    /// ([`ROOT_NODE_ID`]) returns the WHOLE scene's extent (the scene-wide clip,
+    /// i.e. the pre-ADR-0018 behaviour). `None` when nothing is selected, the
+    /// selection is hidden, or its subtree has no intrinsic extent (a lone
+    /// VoxelBody) — the caller then applies no region clip.
+    pub fn selected_region_extent_recentred_voxels(
+        &self,
+        voxels_per_block: u32,
+    ) -> Option<([i64; 3], [i64; 3])> {
+        let active = self.active?;
+        let (min_abs, max_abs) = if active == ROOT_NODE_ID {
+            // The root part IS the whole scene (its subtree is every top-level node),
+            // and it is not addressable in the `roots` spine, so use the scene-wide
+            // producer-true extent directly.
+            self.placed_extent_voxels(voxels_per_block)?
+        } else {
+            let path = self.path_of(active)?;
+            self.node_subtree_extent_voxels(&path, voxels_per_block)?
+        };
+        // Rebase the absolute producer-true corners into the recentred frame (ADR
+        // 0008: subtract the composite recentre the resolve applies).
+        let recentre = self.recentre_voxels_for_resolve(voxels_per_block).voxels();
+        Some((
+            [
+                min_abs[0] - recentre[0],
+                min_abs[1] - recentre[1],
+                min_abs[2] - recentre[2],
+            ],
+            [
+                max_abs[0] - recentre[0],
+                max_abs[1] - recentre[1],
+                max_abs[2] - recentre[2],
+            ],
+        ))
+    }
+
     /// The whole-block extent of the scene: the per-axis size of the bounding box
     /// that encompasses every placed leaf node (ADR 0001 step 3). Each leaf
     /// occupies `block-offset ± size/2` (its placement's derived block view,

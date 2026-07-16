@@ -62,6 +62,7 @@ fn build_request(generation: u64, blocks_per_axis: u32, vpb: u32) -> GeometryReb
         recentre_voxels,
         density: vpb,
         band: LayerBand::FULL,
+        region: None,
     }
 }
 
@@ -254,6 +255,7 @@ fn empty_request_does_not_hang_worker_and_it_survives_for_the_next() {
         recentre_voxels: RecentreVoxels::new([0, 0, 0]),
         density: 16,
         band: LayerBand::FULL,
+        region: None,
     };
     worker.dispatch(empty);
     let result = common::poll_until_result(&worker, WORKER_TIMEOUT, "empty request");

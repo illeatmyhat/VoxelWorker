@@ -92,8 +92,8 @@ fn incremental_cuboid_rebuild_equals_wholesale() {
             buckets_b.iter().map(|(c, g)| (*c, g)).collect();
 
         // Wholesale builds (the ground truth) for A (prior state) and B (target).
-        let wholesale_a = build_chunk_meshes_with_apron(&refs_a, dims, LayerBand::FULL);
-        let wholesale_b = build_chunk_meshes_with_apron(&refs_b, dims, LayerBand::FULL);
+        let wholesale_a = build_chunk_meshes_with_apron(&refs_a, dims, LayerBand::FULL, None);
+        let wholesale_b = build_chunk_meshes_with_apron(&refs_b, dims, LayerBand::FULL, None);
 
         // Per-chunk occupancy index sets, to derive the faithful dirty set.
         let occ = |buckets: &[([i32; 3], VoxelGrid)]| {
@@ -138,7 +138,7 @@ fn incremental_cuboid_rebuild_equals_wholesale() {
         let rebuild_set: std::collections::HashSet<[i32; 3]> =
             plan.rebuild.iter().copied().collect();
         let rebuilt =
-            build_chunk_meshes_with_apron_filtered(&refs_b, Some(&rebuild_set), dims, LayerBand::FULL);
+            build_chunk_meshes_with_apron_filtered(&refs_b, Some(&rebuild_set), dims, LayerBand::FULL, None);
 
         let mut result = mesh_map(&wholesale_a);
         for coord in &plan.evict {
@@ -223,7 +223,7 @@ fn per_chunk_apron_exposed_face_set_equals_whole_region() {
                 multi_chunk_seen = true;
             }
             let chunk_meshes =
-                build_chunk_meshes_with_apron(&chunk_refs, dims, LayerBand::FULL);
+                build_chunk_meshes_with_apron(&chunk_refs, dims, LayerBand::FULL, None);
             let mut per_chunk_visible = std::collections::HashSet::new();
             for mesh in &chunk_meshes {
                 per_chunk_visible.extend(visible_unit_faces(
@@ -307,7 +307,7 @@ fn solid_slab_across_chunk_seam_has_no_interior_faces() {
 
     let chunk_refs: Vec<([i32; 3], &VoxelGrid)> =
         buckets.iter().map(|(c, g)| (*c, g)).collect();
-    let chunk_meshes = build_chunk_meshes_with_apron(&chunk_refs, dims, LayerBand::FULL);
+    let chunk_meshes = build_chunk_meshes_with_apron(&chunk_refs, dims, LayerBand::FULL, None);
     let mut per_chunk_visible = std::collections::HashSet::new();
     for mesh in &chunk_meshes {
         per_chunk_visible.extend(visible_unit_faces(
@@ -403,7 +403,7 @@ fn per_chunk_band_clip_face_set_equals_whole_region() {
     assert!(buckets.len() > 1, "torus must span multiple chunks");
     let chunk_refs: Vec<([i32; 3], &VoxelGrid)> =
         buckets.iter().map(|(c, g)| (*c, g)).collect();
-    let chunk_meshes = build_chunk_meshes_with_apron(&chunk_refs, dims, band);
+    let chunk_meshes = build_chunk_meshes_with_apron(&chunk_refs, dims, band, None);
     let mut per_chunk_visible = std::collections::HashSet::new();
     for mesh in &chunk_meshes {
         per_chunk_visible.extend(visible_unit_faces(

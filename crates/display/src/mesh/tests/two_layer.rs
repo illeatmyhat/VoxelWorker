@@ -55,7 +55,7 @@ fn two_layer_renderable_faces(
     let store = TwoLayerStore::enabled();
     let chunks = store.build_covering_chunks(scene, density, 0);
     let meshes =
-        build_two_layer_chunk_meshes(&chunks, grid_dimensions, recentre, density, LayerBand::FULL);
+        build_two_layer_chunk_meshes(&chunks, grid_dimensions, recentre, density, LayerBand::FULL, None);
     let mut renderable = std::collections::HashSet::new();
     for mesh in &meshes {
         renderable.extend(renderable_unit_faces(
@@ -262,7 +262,7 @@ fn two_layer_chunk_set_renderable_faces(
     occupied: &std::collections::HashSet<[i64; 3]>,
 ) -> std::collections::HashSet<UnitFace> {
     let meshes =
-        build_two_layer_chunk_meshes(chunks, grid_dimensions, recentre, density, LayerBand::FULL);
+        build_two_layer_chunk_meshes(chunks, grid_dimensions, recentre, density, LayerBand::FULL, None);
     let mut renderable = std::collections::HashSet::new();
     for mesh in &meshes {
         renderable.extend(renderable_unit_faces(
@@ -509,6 +509,7 @@ fn incremental_two_layer_gpu_buffer_rebuild_equals_wholesale() {
             recentre,
             density,
             LayerBand::FULL,
+            None,
         );
 
         // The edit: invalidate the dirty AABB (or clear), then re-derive the resident set.
@@ -571,6 +572,7 @@ fn incremental_two_layer_gpu_buffer_rebuild_equals_wholesale() {
             recentre_b,
             density,
             LayerBand::FULL,
+            None,
         );
         let remeshed_coords: std::collections::HashSet<[i32; 3]> =
             rebuilt.iter().map(|m| m.coord).collect();
@@ -601,6 +603,7 @@ fn incremental_two_layer_gpu_buffer_rebuild_equals_wholesale() {
             recentre_b,
             density,
             LayerBand::FULL,
+            None,
         );
         let target = two_layer_mesh_map(&wholesale_b);
         assert_eq!(
@@ -689,6 +692,7 @@ fn assert_two_layer_banded_face_parity(
         RecentreVoxels::new(dense.recentre_voxels),
         density,
         band,
+        None,
     );
     let mut renderable = std::collections::HashSet::new();
     for mesh in &meshes {

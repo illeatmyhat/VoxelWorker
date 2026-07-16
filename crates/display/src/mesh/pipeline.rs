@@ -1,5 +1,28 @@
 use super::*;
 
+/// The region clip as the SOLID pass reads it: the band is CONFINED to the region, so
+/// every voxel outside the selected object's AABB renders finished (ADR 0018 Decision 5).
+/// The renderer stores the selection region role-agnostically; the two build passes stamp
+/// the role.
+#[inline]
+fn solid_region(region: Option<RegionClip>) -> Option<RegionClip> {
+    region.map(|r| RegionClip {
+        role: RegionRole::ConfineBand,
+        ..r
+    })
+}
+
+/// The region clip as the GHOST pass reads it: only voxels INSIDE the region are meshed
+/// (the finished scene outside is drawn by the solid pass), so the onion haze never spills
+/// past the selected object's AABB (ADR 0018 Decision 5).
+#[inline]
+fn ghost_region(region: Option<RegionClip>) -> Option<RegionClip> {
+    region.map(|r| RegionClip {
+        role: RegionRole::ClipToRegion,
+        ..r
+    })
+}
+
 /// std140-safe uniform block for the cuboid pass (ADR 0002 E3b-2). Carries the
 /// camera matrix, the grid half-extent and density (driving the per-voxel texture
 /// slice and the position-based grid overlay), the grid-overlay parameters, and
@@ -356,6 +379,10 @@ pub struct CuboidMeshRenderer {
     /// Total boxes across all chunks the last build produced (diagnostic).
     total_box_count: u32,
     current_band: LayerBand,
+    /// The region the onion band is confined to (ADR 0018 Decision 5), or `None` for a
+    /// scene-wide band / no clip. Part of the reclip key alongside `current_band` (a
+    /// selection change re-meshes exactly like a band scrub).
+    current_region: Option<RegionClip>,
     /// The loaded-VS-block material bind-group layout (a 6-layer D2Array + sampler,
     /// from [`crate::renderer::build_face_material_layout`]). Retained so a
     /// runtime-loaded block (M6/M7) can build a bind group of the SAME shape via
@@ -383,10 +410,10 @@ pub struct CuboidMeshRenderer {
     /// when onion is off. Kept as two maps because a tall chunk can straddle both slabs.
     ghost_lower_buffers: std::collections::HashMap<[i32; 3], CuboidChunkBuffers>,
     ghost_upper_buffers: std::collections::HashMap<[i32; 3], CuboidChunkBuffers>,
-    /// The band the ghost slabs were last built for (`None` = never built / cleared), so
-    /// a same-band frame skips the slab re-mesh and a band change (or the first frame
-    /// after an async swap that built only the solid) rebuilds them.
-    ghost_built_band: Option<LayerBand>,
+    /// The band + region the ghost slabs were last built for (`None` = never built /
+    /// cleared), so a same-key frame skips the slab re-mesh and a band OR region change
+    /// (or the first frame after an async swap that built only the solid) rebuilds them.
+    ghost_built_band: Option<(LayerBand, Option<RegionClip>)>,
 }
 
 impl CuboidMeshRenderer {
@@ -435,7 +462,7 @@ impl CuboidMeshRenderer {
             .map(|(coord, grid)| (*coord, (*grid).clone()))
             .collect();
         let chunk_meshes =
-            build_chunk_meshes_with_apron(chunk_grids, grid_dimensions, LayerBand::FULL);
+            build_chunk_meshes_with_apron(chunk_grids, grid_dimensions, LayerBand::FULL, None);
         Self::assemble(
             device,
             queue,
@@ -480,6 +507,7 @@ impl CuboidMeshRenderer {
             recentre_voxels,
             voxels_per_block,
             LayerBand::FULL,
+            None,
         )
     }
 
@@ -500,6 +528,7 @@ impl CuboidMeshRenderer {
         recentre_voxels: RecentreVoxels,
         voxels_per_block: u32,
         band: LayerBand,
+        region: Option<RegionClip>,
     ) -> Self {
         profiling::scope!("cuboid_mesh_build_two_layer");
         let chunk_meshes = build_two_layer_chunk_meshes(
@@ -508,6 +537,7 @@ impl CuboidMeshRenderer {
             recentre_voxels,
             voxels_per_block,
             band,
+            solid_region(region),
         );
         let mut renderer = Self::assemble(
             device,
@@ -522,9 +552,11 @@ impl CuboidMeshRenderer {
         renderer.source_two_layer_chunks = chunks.to_vec();
         renderer.source_two_layer_recentre = recentre_voxels;
         renderer.source_two_layer_density = voxels_per_block.max(1);
-        // The mesh was built AT `band`, so record it — a same-band `update_uniforms` is then
-        // a no-op instead of a full re-mesh (M2). A later band change still re-clips.
+        // The mesh was built AT `band` + `region`, so record them — a same-key
+        // `update_uniforms` is then a no-op instead of a full re-mesh (M2). A later band
+        // or selection change still re-clips.
         renderer.current_band = band;
+        renderer.current_region = region;
         renderer
     }
 
@@ -890,6 +922,7 @@ impl CuboidMeshRenderer {
             source_grid_dimensions: grid_dimensions,
             total_box_count,
             current_band: LayerBand::FULL,
+            current_region: None,
             loaded_material_layout,
             loaded_material_sampler,
             ghost_pipeline,
@@ -945,6 +978,7 @@ impl CuboidMeshRenderer {
             Some(&rebuild_set),
             grid_dimensions,
             self.current_band,
+            solid_region(self.current_region),
         );
         let rebuilt_buffers = upload_chunk_meshes(device, &meshes);
 
@@ -1050,6 +1084,7 @@ impl CuboidMeshRenderer {
             recentre_voxels,
             voxels_per_block,
             self.current_band,
+            solid_region(self.current_region),
         );
         let rebuilt_buffers = upload_chunk_meshes(device, &meshes);
 
@@ -1115,13 +1150,19 @@ impl CuboidMeshRenderer {
     /// edges get real cap faces, so it must rebuild geometry (a fragment discard
     /// would leave a merged column's slab open-topped). No-op when the band is
     /// unchanged.
-    fn rebuild_for_band(&mut self, device: &wgpu::Device, band: LayerBand) {
-        // --- SOLID geometry (clipped to the exact [band_min, band_max]; `onion_depth` is
-        // NOT a solid input, so the solid band is unchanged by ADR 0012). Skipped when the
-        // band is unchanged (the M2 no-swap-rehitch property). ---
-        if band != self.current_band {
+    fn rebuild_for_band(
+        &mut self,
+        device: &wgpu::Device,
+        band: LayerBand,
+        region: Option<RegionClip>,
+    ) {
+        // --- SOLID geometry (clipped to the exact [band_min, band_max] inside the region;
+        // finished outside it — ADR 0018 Decision 5). `onion_depth` is NOT a solid input.
+        // Skipped when neither the band NOR the region changed (M2 no-swap-rehitch). ---
+        if band != self.current_band || region != self.current_region {
             self.current_band = band;
-            if let Some(chunk_meshes) = self.build_band_meshes(band) {
+            self.current_region = region;
+            if let Some(chunk_meshes) = self.build_band_meshes(band, solid_region(region)) {
                 self.total_box_count = chunk_meshes.iter().map(|m| m.box_count).sum();
                 self.chunk_buffers = upload_chunk_meshes(device, &chunk_meshes);
                 // All chunks visible until the next frustum cull in `update_uniforms`.
@@ -1131,23 +1172,28 @@ impl CuboidMeshRenderer {
             // A source-less (empty) build leaves the geometry in place (matches pre-0012).
         }
 
-        // --- GHOST geometry (ADR 0012 H1): the thin per-slab onion meshes. Rebuilt on a
-        // band change OR when never built for this band (the first frame after an async
-        // swap that pre-built only the solid — the slabs are cheap, so this is not the
-        // multi-second re-mesh #60 removed). ---
-        if self.ghost_built_band != Some(band) {
-            self.rebuild_ghost_slabs(device, band);
-            self.ghost_built_band = Some(band);
+        // --- GHOST geometry (ADR 0012 H1 / ADR 0018 Decision 5): the thin per-slab onion
+        // meshes, region-clipped. Rebuilt on a band OR region change OR when never built for
+        // this key (the first frame after an async swap that pre-built only the solid — the
+        // slabs are cheap, so this is not the multi-second re-mesh #60 removed). ---
+        if self.ghost_built_band != Some((band, region)) {
+            self.rebuild_ghost_slabs(device, band, region);
+            self.ghost_built_band = Some((band, region));
         }
     }
 
-    /// Build the per-chunk SOLID meshes clipped to `band` from whichever source the
+    /// Build the per-chunk meshes clipped to `band` + `region` from whichever source the
     /// renderer retains (the two-layer store, else the dense per-chunk grids). `None`
     /// when the renderer has neither source (an empty build). The two-layer analogue of
     /// the dense apron mesher, kept as ONE helper so [`rebuild_for_band`] and the ghost
     /// slab build share the exact same clip semantics (ADR 0012: the two ghost slabs are
-    /// just this build at the slab bands).
-    fn build_band_meshes(&self, band: LayerBand) -> Option<Vec<CuboidChunkMesh>> {
+    /// just this build at the slab bands). `region` carries its own [`RegionRole`], so the
+    /// caller passes `solid_region` (finished outside) or `ghost_region` (clipped to inside).
+    fn build_band_meshes(
+        &self,
+        band: LayerBand,
+        region: Option<RegionClip>,
+    ) -> Option<Vec<CuboidChunkMesh>> {
         if !self.source_two_layer_chunks.is_empty() {
             return Some(build_two_layer_chunk_meshes(
                 &self.source_two_layer_chunks,
@@ -1155,6 +1201,7 @@ impl CuboidMeshRenderer {
                 self.source_two_layer_recentre,
                 self.source_two_layer_density,
                 band,
+                region,
             ));
         }
         if self.source_chunk_grids.is_empty() {
@@ -1169,6 +1216,7 @@ impl CuboidMeshRenderer {
             &chunk_refs,
             self.source_grid_dimensions,
             band,
+            region,
         ))
     }
 
@@ -1180,12 +1228,21 @@ impl CuboidMeshRenderer {
     /// brick raymarch ghost's per-slab traversal clamp produces the same caps, which is what
     /// keeps `brick_golden_matches_dense` green. Empty (both maps cleared) when onion is off
     /// (`onion_depth == 0`) or a slab falls outside the grid.
-    fn rebuild_ghost_slabs(&mut self, device: &wgpu::Device, band: LayerBand) {
+    fn rebuild_ghost_slabs(
+        &mut self,
+        device: &wgpu::Device,
+        band: LayerBand,
+        region: Option<RegionClip>,
+    ) {
         self.ghost_lower_buffers.clear();
         self.ghost_upper_buffers.clear();
         if band.onion_depth == 0 {
             return;
         }
+        // ADR 0018 Decision 5: the ghost only fills INSIDE the selected object's region
+        // (the finished scene outside is drawn by the solid pass), so the slabs are
+        // hard-clipped to it (`ClipToRegion`). With no region the slabs span the scene.
+        let slab_region = ghost_region(region);
         let depth = band.onion_depth;
         let grid_z = self.source_grid_dimensions[2];
         let last_layer = grid_z.saturating_sub(1);
@@ -1197,7 +1254,7 @@ impl CuboidMeshRenderer {
                 band_max: band.band_min - 1,
                 onion_depth: 0,
             };
-            if let Some(meshes) = self.build_band_meshes(slab) {
+            if let Some(meshes) = self.build_band_meshes(slab, slab_region) {
                 self.ghost_lower_buffers = upload_chunk_meshes(device, &meshes);
             }
         }
@@ -1209,7 +1266,7 @@ impl CuboidMeshRenderer {
                 band_max: (band.band_max + depth).min(last_layer),
                 onion_depth: 0,
             };
-            if let Some(meshes) = self.build_band_meshes(slab) {
+            if let Some(meshes) = self.build_band_meshes(slab, slab_region) {
                 self.ghost_upper_buffers = upload_chunk_meshes(device, &meshes);
             }
         }
@@ -1270,18 +1327,19 @@ impl CuboidMeshRenderer {
         grid_overlay_enabled: bool,
         bound: Option<MaterialChoice>,
         band: LayerBand,
+        region: Option<RegionClip>,
         debug_face_mode: bool,
     ) {
-        // Layer-range band clip (issue #12 parity): re-mesh the grid clipped to the
-        // band (real cap faces at the band edges) when it changed. Debug-faces mode
-        // bypasses the band (the instanced check sees the whole model), so force the
-        // full band while it is on.
-        let effective_band = if debug_face_mode {
-            LayerBand::FULL
+        // Layer-range band clip (issue #12 parity) + region scoping (ADR 0018 Decision 5):
+        // re-mesh clipped to the band inside the region (real cap faces at the band /
+        // region edges) when either changed. Debug-faces mode bypasses BOTH (the check
+        // sees the whole model), so force the full band + no region while it is on.
+        let (effective_band, effective_region) = if debug_face_mode {
+            (LayerBand::FULL, None)
         } else {
-            band
+            (band, region)
         };
-        self.rebuild_for_band(device, effective_band);
+        self.rebuild_for_band(device, effective_band, effective_region);
         // The bound procedural material drives BOTH the texture binding (selected
         // in `draw`) and the per-box modulation. A `None` (loaded VS block) falls
         // back to Plain's texture + neutral modulation for now (the cuboid path

@@ -31,6 +31,63 @@ impl LayerBand {
     };
 }
 
+/// How a [`RegionClip`] gates a voxel relative to the layer band (ADR 0018 Decision 5).
+/// The onion-fog clip is REGION-SCOPED: it only bites inside the selected object's
+/// placed AABB, and the ghost slabs only fill inside it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegionRole {
+    /// SOLID pass: the band clips ONLY inside the region — every voxel OUTSIDE the
+    /// region is meshed finished/solid (the band is ignored there).
+    ConfineBand,
+    /// GHOST pass: only voxels INSIDE the region are meshed at all; outside is empty
+    /// (the finished scene shows through, drawn by the solid pass).
+    ClipToRegion,
+}
+
+/// The selected object's placed AABB the onion-fog band clip is confined to (ADR 0018
+/// Decision 5), in the **recentred voxel frame** the mesher emits vertices in — a voxel
+/// at absolute producer coord `a` sits at recentred `a − recentre_voxels` (ADR 0008),
+/// so the two-layer mesher tests its `block_low_recentred` directly and the dense mesher
+/// tests `global_index + world_offset` (both the same world lattice). Half-open
+/// `[min, max)` per axis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RegionClip {
+    pub min: [i64; 3],
+    pub max: [i64; 3],
+    pub role: RegionRole,
+}
+
+impl RegionClip {
+    /// Whether recentred voxel `v` is inside the half-open region box.
+    #[inline]
+    pub fn contains(&self, v: [i64; 3]) -> bool {
+        (0..3).all(|axis| v[axis] >= self.min[axis] && v[axis] < self.max[axis])
+    }
+
+    /// Whether a block spanning recentred `[lo, hi]` (INCLUSIVE corners) lies wholly
+    /// OUTSIDE the region (no overlap on some axis).
+    #[inline]
+    pub fn block_fully_outside(&self, lo: [i64; 3], hi: [i64; 3]) -> bool {
+        (0..3).any(|axis| hi[axis] < self.min[axis] || lo[axis] >= self.max[axis])
+    }
+
+    /// Whether a block spanning recentred `[lo, hi]` (INCLUSIVE corners) lies wholly
+    /// INSIDE the region.
+    #[inline]
+    pub fn block_fully_inside(&self, lo: [i64; 3], hi: [i64; 3]) -> bool {
+        (0..3).all(|axis| lo[axis] >= self.min[axis] && hi[axis] < self.max[axis])
+    }
+
+    /// Whether a block spanning recentred `[lo, hi]`, DILATED by `pad` voxels on every
+    /// side, intersects the region. The SOLID pass routes a fully-outside block that is
+    /// still within one block of the region through the banded mesher so its wall
+    /// against the band-clipped interior is exposed correctly (the cross-seam fix).
+    #[inline]
+    pub fn block_intersects_dilated(&self, lo: [i64; 3], hi: [i64; 3], pad: i64) -> bool {
+        (0..3).all(|axis| hi[axis] + pad >= self.min[axis] && lo[axis] - pad < self.max[axis])
+    }
+}
+
 // (The instanced `VoxelRenderer` + its per-chunk GPU instance cache were removed
 // with the legacy mesher — part of #20. The cuboid path is the sole renderer.)
 

@@ -1,18 +1,27 @@
 //! The Layers section (issue #12): the layer-range scrubber widget.
 
-use super::{LayerRange, PanelState};
+use super::{LayerRange, PanelState, ViewMode};
 
 /// The Layers section (issue #12): the layer-range scrubber that subsumes the old
 /// 2D mid-vertical slice map. Z-up: layers are Z-slices. A video-clip-style track
 /// over `0..grid_z` with two trim handles (lower/upper), the selected band
 /// highlighted, block-boundary ticks, the layers/blocks readout, the snap + onion
 /// controls, and the measured-diameter stat line (widest occupied run in the band).
+///
+/// ADR 0018 Decision 5: the layer scrubber + onion-depth controls + diameter stat are
+/// **Onion-fog mode's tools** — the whole section is hidden in Normal / Show-booleans
+/// mode (the band does not apply there). `grid_z` is the layer-track length: the SELECTED
+/// object's Z extent in Onion-fog mode (the track spans the object, not the scene).
 pub(super) fn build_layers_section(
     ui: &mut egui::Ui,
     state: &mut PanelState,
     grid_z: u32,
     measured_diameter: u32,
 ) {
+    // The band clip is Onion-fog's tool alone; surface the section only in that mode.
+    if state.view_mode != ViewMode::OnionFog {
+        return;
+    }
     ui.add_space(8.0);
     ui.strong("Layers");
 

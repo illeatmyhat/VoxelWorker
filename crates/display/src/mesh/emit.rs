@@ -173,9 +173,37 @@ pub(crate) fn emit_boundary_block_cuboids(
     }
 }
 
+/// Whether a recentred-frame voxel `v` is meshed under the layer band + optional region
+/// clip (ADR 0018 Decision 5). `z_in_band` is the band's Z-slice test (or the ghost slab's,
+/// for a ghost build). With no region this is the plain scene-wide band (pre-ADR-0018). With
+/// a region the band is either CONFINED to it (solid: outside renders finished) or the region
+/// HARD-CLIPS (ghost: only inside is meshed) — see [`RegionRole`].
+#[inline]
+pub(crate) fn voxel_meshed(v: [i64; 3], z_in_band: &dyn Fn(i64) -> bool, region: Option<RegionClip>) -> bool {
+    match region {
+        None => z_in_band(v[2]),
+        Some(clip) => {
+            let inside = clip.contains(v);
+            match clip.role {
+                // Solid: inside the region clip to the band; outside render finished.
+                RegionRole::ConfineBand => {
+                    if inside {
+                        z_in_band(v[2])
+                    } else {
+                        true
+                    }
+                }
+                // Ghost: only voxels inside the region AND in the ghost slab are meshed.
+                RegionRole::ClipToRegion => inside && z_in_band(v[2]),
+            }
+        }
+    }
+}
+
 /// Stamp the block at chunk-local-or-neighbour block index `abs_block`'s per-voxel occupancy
 /// into `region` at the apron-local offset `dst_lo` (so a neighbour block lands at the apron
-/// border), CLIPPED to the band via `z_in_band` (ADR 0010 #53). A coarse-solid block fills
+/// border), CLIPPED to the band + optional region via [`voxel_meshed`] (ADR 0010 #53 / ADR
+/// 0018 Decision 5). A coarse-solid block fills
 /// every `density³` cell at its render key; a boundary block stamps each cuboid; an air /
 /// missing block stamps nothing. `block_low_recentred_z` is the block's low voxel-Z in the
 /// recentred frame, so a block-local voxel-Z `vz` maps to recentred Z
@@ -190,10 +218,11 @@ pub(crate) fn stamp_block_into_region_banded(
     chunk_by_coord: &std::collections::HashMap<[i32; 3], &TwoLayerChunk>,
     abs_block: [i64; 3],
     density: u32,
-    block_low_recentred_z: i64,
+    block_low_recentred: [i64; 3],
     dst_lo: [i64; 3],
     z_in_band: &dyn Fn(i64) -> bool,
-    region: &mut VoxelRegion,
+    clip: Option<RegionClip>,
+    out_region: &mut VoxelRegion,
 ) {
     let chunk_blocks = CHUNK_BLOCKS as i64;
     let chunk_coord = [
@@ -209,12 +238,18 @@ pub(crate) fn stamp_block_into_region_banded(
         abs_block[1].rem_euclid(chunk_blocks) as u32,
         abs_block[2].rem_euclid(chunk_blocks) as u32,
     ];
-    let [ex, ey, ez] = region.extent;
+    let [ex, ey, ez] = out_region.extent;
 
-    // Stamp one block-local voxel `(vx, vy, vz)` of render key `key` into the region, band-
-    // masked on Z and bounds-checked against the apron extent.
-    let stamp = |vx: u32, vy: u32, vz: u32, key: u16, region: &mut VoxelRegion| {
-        if !z_in_band(block_low_recentred_z + vz as i64) {
+    // Stamp one block-local voxel `(vx, vy, vz)` of render key `key` into the region,
+    // masked to the band + optional region clip (ADR 0018 Decision 5) and bounds-checked
+    // against the apron extent.
+    let stamp = |vx: u32, vy: u32, vz: u32, key: u16, out_region: &mut VoxelRegion| {
+        let recentred = [
+            block_low_recentred[0] + vx as i64,
+            block_low_recentred[1] + vy as i64,
+            block_low_recentred[2] + vz as i64,
+        ];
+        if !voxel_meshed(recentred, z_in_band, clip) {
             return;
         }
         let lx = dst_lo[0] + vx as i64;
@@ -223,7 +258,7 @@ pub(crate) fn stamp_block_into_region_banded(
         if lx < 0 || ly < 0 || lz < 0 || lx >= ex as i64 || ly >= ey as i64 || lz >= ez as i64 {
             return;
         }
-        region.set(lx as u32, ly as u32, lz as u32, Some(key));
+        out_region.set(lx as u32, ly as u32, lz as u32, Some(key));
     };
 
     if let Some(block_id) = chunk.coarse_block(local) {
@@ -231,7 +266,7 @@ pub(crate) fn stamp_block_into_region_banded(
         for vz in 0..density {
             for vy in 0..density {
                 for vx in 0..density {
-                    stamp(vx, vy, vz, key, region);
+                    stamp(vx, vy, vz, key, out_region);
                 }
             }
         }
@@ -240,7 +275,7 @@ pub(crate) fn stamp_block_into_region_banded(
             for vz in cuboid.min[2]..=cuboid.max[2] {
                 for vy in cuboid.min[1]..=cuboid.max[1] {
                     for vx in cuboid.min[0]..=cuboid.max[0] {
-                        stamp(vx, vy, vz, cuboid.material_id(), region);
+                        stamp(vx, vy, vz, cuboid.material_id(), out_region);
                     }
                 }
             }
@@ -264,6 +299,7 @@ pub(crate) fn emit_block_banded(
     abs_block: [i64; 3],
     chunk_by_coord: &std::collections::HashMap<[i32; 3], &TwoLayerChunk>,
     z_in_band: &dyn Fn(i64) -> bool,
+    clip: Option<RegionClip>,
     vertices: &mut Vec<CuboidVertex>,
     indices: &mut Vec<u32>,
     indices_overlay: &mut Vec<u32>,
@@ -274,14 +310,15 @@ pub(crate) fn emit_block_banded(
     let apron_extent = [density + 2, density + 2, density + 2];
     let mut interior = VoxelRegion::new_empty(apron_extent);
 
-    // Interior = THIS block's own voxels at local +1, band-clipped on Z.
+    // Interior = THIS block's own voxels at local +1, band- + region-clipped.
     stamp_block_into_region_banded(
         chunk_by_coord,
         abs_block,
         density,
-        block_low_recentred[2],
+        block_low_recentred,
         [1, 1, 1],
         z_in_band,
+        clip,
         &mut interior,
     );
 
@@ -310,14 +347,19 @@ pub(crate) fn emit_block_banded(
             abs_block[1] + delta[1],
             abs_block[2] + delta[2],
         ];
-        let neighbour_low_z = block_low_recentred[2] + delta[2] * density as i64;
+        let neighbour_low_recentred = [
+            block_low_recentred[0] + delta[0] * density as i64,
+            block_low_recentred[1] + delta[1] * density as i64,
+            block_low_recentred[2] + delta[2] * density as i64,
+        ];
         stamp_block_into_region_banded(
             chunk_by_coord,
             neighbour,
             density,
-            neighbour_low_z,
+            neighbour_low_recentred,
             dst_lo,
             z_in_band,
+            clip,
             &mut apron,
         );
     }

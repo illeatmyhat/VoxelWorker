@@ -26,6 +26,7 @@ use voxel_core::voxel::RecentreVoxels;
 
 mod intent;
 mod queries;
+pub use queries::MeshClip;
 mod rebuild;
 mod replay;
 mod selected_operand;
