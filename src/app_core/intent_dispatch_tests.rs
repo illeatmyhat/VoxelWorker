@@ -442,6 +442,39 @@
     }
 
     #[test]
+    fn set_show_child_booleans_dispatches() {
+        // Issue #79: a plain per-node field write.
+        let scene = two_tool_scene();
+        let target = root_id(&scene, 0);
+        assert_dispatch_matches(
+            &scene,
+            Intent::SetShowChildBooleans { target, show: true },
+            |s| {
+                if let Some(node) = s.node_by_id_mut(target) {
+                    node.show_child_booleans = true;
+                }
+            },
+        );
+    }
+
+    /// Issue #79 acceptance: toggling the child-boolean checkbox re-derives the ghost
+    /// overlay ONLY — its effect is `operand_ghosts()`, never `scene_changed`, so no
+    /// whole-scene re-resolve fires at the shell's rebuild seam.
+    #[test]
+    fn set_show_child_booleans_effect_is_ghosts_only_never_a_re_resolve() {
+        let mut scene = two_tool_scene();
+        let target = root_id(&scene, 0);
+        let mut core = test_core();
+        let effect = core.apply_intent(&mut scene, Intent::SetShowChildBooleans { target, show: true });
+        assert_eq!(effect, IntentEffect::operand_ghosts());
+        assert!(!effect.scene_changed, "the display toggle must not re-resolve the scene");
+        // A write to a missing id stays a no-op (the field-write law).
+        let effect =
+            core.apply_intent(&mut scene, Intent::SetShowChildBooleans { target: NodeId(9999), show: true });
+        assert_eq!(effect, IntentEffect::none());
+    }
+
+    #[test]
     fn field_write_to_missing_id_is_noop() {
         let scene = two_tool_scene();
         let mut core = test_core();
@@ -674,6 +707,7 @@
             Intent::SetName { target: NodeId(1), name: "Foo".to_string() },
             Intent::SetCloudSeed { target: NodeId(1), seed: 9 },
             Intent::SetNodeGrids { target: NodeId(1), grids },
+            Intent::SetShowChildBooleans { target: NodeId(1), show: true },
             Intent::SetDensity { voxels_per_block: 16 },
             Intent::SetGridMasters { voxel: true, lattice: false, floor: true },
             Intent::SelectNode { target: Some(NodeId(4)) },

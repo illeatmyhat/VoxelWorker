@@ -564,6 +564,15 @@
     }
 
     #[test]
+    fn set_show_child_booleans_round_trips() {
+        // Issue #79: the child-boolean ghost flag persists on the node and its intent
+        // undo restores the prior value (the Field-inverse law).
+        let mut scene = two_tool_scene();
+        let target = scene.roots[0];
+        assert_round_trips(&mut scene, Intent::SetShowChildBooleans { target, show: true });
+    }
+
+    #[test]
     fn set_density_round_trips() {
         // Density is a single document-level field now (ADR 0003 §3f(0)); start from a
         // non-default prior so the inverse must restore the exact prior value, not 16.
@@ -900,7 +909,12 @@
         // And it is not the old blanket-true effect.
         assert_ne!(
             undo_effect,
-            IntentEffect { scene_changed: true, points_changed: true, selection_changed: true },
+            IntentEffect {
+                scene_changed: true,
+                points_changed: true,
+                selection_changed: true,
+                operand_ghosts_changed: true,
+            },
             "undo no longer returns blanket-true",
         );
         let redo_effect = core.redo(&mut scene);

@@ -35,7 +35,8 @@ use crate::scene::{DefId, Node, NodeContent, NodeId, Point};
 /// and `undo` rewinds the counter so a later `redo` re-mints the same ids).
 pub enum Inverse {
     /// Reverse a field-set intent (SetVisible / SetShape / SetMaterial / SetOffset /
-    /// SetName / SetCloudSeed / SetNodeGrids / SetDensity / SetGridMasters and the point
+    /// SetName / SetCloudSeed / SetNodeGrids / SetShowChildBooleans / SetDensity /
+    /// SetGridMasters and the point
     /// field-sets SetPointHidden / SetPointPlanes / SetPointAxes / SetPointPosition) by
     /// replaying the SAME intent carrying the field's PRIOR value, captured before the
     /// mutate. `SetDensity` joins this group now that density is a single document-level

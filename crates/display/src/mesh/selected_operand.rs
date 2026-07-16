@@ -23,6 +23,12 @@
 //! triangulation of the same plane may interpolate depth a ULP apart) classifies robustly
 //! as quiet, never as loud and never dropped.
 //!
+//! Issue #79 reuses this renderer UNCHANGED for the persistent child-boolean ghost (the
+//! "Show child booleans" per-node checkbox): the shell owns a SECOND instance fed by the
+//! subtree derivation (`AppCore::child_boolean_ghost`) and draws it just before the
+//! selection instance — one renderer type, one concern per instance, the derivations
+//! deduped so no body ever draws in both.
+//!
 //! The mesh is rebuilt only on selection/geometry change (`rebuild`), never per frame;
 //! `update_uniforms` per frame writes only the camera + tints. Drawn as a raster overlay
 //! inside the shared MSAA pass AFTER the solid draw, so it composes over BOTH display

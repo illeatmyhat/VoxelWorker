@@ -262,7 +262,15 @@ impl WindowedState {
         // covering chunks (`AppCore::selected_operand_ghost`), so this stays cheap even
         // in a huge scene. The `active` comparison is belt-and-braces for any selection
         // writer that bypassed the Intent effects.
-        if merged_effect.selection_changed || merged_effect.scene_changed {
+        // Issue #79: the persistent child-boolean ghost re-derives at the SAME seam —
+        // the two overlays share every trigger (the selection matters to both via the
+        // cross-overlay dedupe rule), plus the checkbox toggle's dedicated
+        // `operand_ghosts_changed` effect, which re-derives WITHOUT the scene
+        // re-resolve above (the #79 acceptance bound).
+        if merged_effect.selection_changed
+            || merged_effect.scene_changed
+            || merged_effect.operand_ghosts_changed
+        {
             self.selected_ghost_dirty = true;
         }
         if self.selected_ghost_dirty
@@ -282,6 +290,20 @@ impl WindowedState {
                     ghost.density,
                 ),
                 None => self.selected_operand_ghost_renderer.clear(),
+            }
+            // Issue #79: the persistent set, through the same bounded evaluation.
+            match AppCore::child_boolean_ghost(
+                &self.panel_state.scene,
+                self.panel_state.geometry.voxels_per_block,
+            ) {
+                Some(ghost) => self.child_boolean_ghost_renderer.rebuild(
+                    &self.gpu.device,
+                    &ghost.bodies,
+                    ghost.grid_dimensions,
+                    ghost.recentre,
+                    ghost.density,
+                ),
+                None => self.child_boolean_ghost_renderer.clear(),
             }
         }
         // Brick-display perf follow-up to epic #64: a debug-face toggle or a loaded-material
@@ -457,9 +479,11 @@ impl WindowedState {
             view_projection,
             self.app_core.camera.eye().to_array(),
         );
-        // Issue #78: the selected-operand ghost's per-frame camera + tint upload (the
+        // Issue #78/#79: the operand ghosts' per-frame camera + tint uploads (the
         // meshes were derived at the selection/geometry seam above, never here).
         self.selected_operand_ghost_renderer
+            .update_uniforms(&self.gpu.queue, view_projection);
+        self.child_boolean_ghost_renderer
             .update_uniforms(&self.gpu.queue, view_projection);
         self.view_cube_renderer
             .update_uniforms(&self.gpu.queue, self.app_core.camera.view_cube_view_projection());
@@ -504,6 +528,11 @@ impl WindowedState {
             // empty selection.
             selected_operand_ghost: (!self.panel_state.debug_face_orientation)
                 .then_some(&self.selected_operand_ghost_renderer),
+            // Issue #79: the persistent child-boolean ghost draws UNDER the selection
+            // ghost (same suppression rules); the persistent set excludes the active
+            // node's body, so the two overlays never double an alpha.
+            child_boolean_ghost: (!self.panel_state.debug_face_orientation)
+                .then_some(&self.child_boolean_ghost_renderer),
             cuboid_mesh: self.display.cuboid_mesh_renderer(),
             // ADR 0011 G1: when engaged (field installed, no mesh-only mode), the
             // brick raymarch replaces the cuboid-mesh DRAW for this frame; the mesh

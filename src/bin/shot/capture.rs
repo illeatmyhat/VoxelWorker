@@ -16,7 +16,7 @@ use voxel_worker::{
 use crate::demos::{
     build_demo_groups, build_demo_mixed_material, build_demo_overlap, build_demo_scene,
     build_demo_sketch_box, build_demo_sketch_extrude, build_demo_sketch_revolve,
-    build_demo_buried_cutter,
+    build_demo_buried_cutter, build_demo_child_booleans,
     build_demo_cutter_def, build_demo_group_subtract, build_demo_intersect, build_demo_subtract,
     build_demo_window_fixture,
     build_demo_two_material,
@@ -156,6 +156,10 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         build_demo_window_fixture(options.geometry.voxels_per_block)
     } else if options.demo_buried_cutter {
         build_demo_buried_cutter(options.geometry.voxels_per_block)
+    } else if options.demo_child_booleans {
+        build_demo_child_booleans(options.geometry.voxels_per_block, true)
+    } else if options.demo_child_booleans_off {
+        build_demo_child_booleans(options.geometry.voxels_per_block, false)
     } else if options.demo_two_material {
         build_demo_two_material(options.geometry.voxels_per_block)
     } else if options.demo_mixed_material {
@@ -265,6 +269,8 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         || options.demo_cutter_def
         || options.demo_window_fixture
         || options.demo_buried_cutter
+        || options.demo_child_booleans
+        || options.demo_child_booleans_off
         || options.demo_two_material
         || options.demo_mixed_material
         || options.demo_village
@@ -657,6 +663,25 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         );
         println!("selected-operand ghost: {} body(ies)", ghost.bodies.len());
     }
+    // Issue #79: the persistent child-boolean ghost — every Subtract/Intersect operand
+    // inside the "Show child booleans"-checked subtrees, a second instance of the same
+    // renderer. Derived from the same panel scene (so the demo builders' per-node flag
+    // steers it); the derivation excludes the active node's body (the cross-overlay
+    // dedupe rule), so it composes with the selection ghost without doubling an alpha.
+    let mut child_boolean_ghost_renderer =
+        SelectedOperandGhostRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
+    if let Some(ghost) =
+        AppCore::child_boolean_ghost(&panel_state.scene, options.geometry.voxels_per_block)
+    {
+        child_boolean_ghost_renderer.rebuild(
+            &gpu.device,
+            &ghost.bodies,
+            ghost.grid_dimensions,
+            ghost.recentre,
+            ghost.density,
+        );
+        println!("child-boolean ghost: {} body(ies)", ghost.bodies.len());
+    }
 
     // Transform gizmo (issue #29 S2): when `--gizmo` is passed, place it ON the
     // active/selected node — sized to the node's own extent, positioned at its
@@ -951,9 +976,10 @@ pub(crate) async fn run_capture(options: ShotOptions) {
             app_core.camera.eye().to_array(),
         );
     }
-    // Issue #78: the selected-operand ghost's camera + tint upload (meshes were built
-    // at derivation above).
+    // Issue #78/#79: the operand ghosts' camera + tint uploads (meshes were built at
+    // derivation above).
     selected_operand_ghost_renderer.update_uniforms(&gpu.queue, view_projection);
+    child_boolean_ghost_renderer.update_uniforms(&gpu.queue, view_projection);
     view_cube_renderer.update_uniforms(&gpu.queue, app_core.camera.view_cube_view_projection());
 
     // Part of #20: upload the cuboid path's uniforms (camera + per-material base
@@ -1060,6 +1086,10 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         // off there); self-gates on an empty selection.
         selected_operand_ghost: (!options.debug_face_orientation)
             .then_some(&selected_operand_ghost_renderer),
+        // Issue #79: the persistent child-boolean ghost draws under the selection
+        // ghost, with the same debug-faces suppression; self-gates on no checked flag.
+        child_boolean_ghost: (!options.debug_face_orientation)
+            .then_some(&child_boolean_ghost_renderer),
         cuboid_mesh: &cuboid_mesh_renderer,
         // ADR 0011 G1: when engaged, the brick raymarch takes the voxel-model draw
         // (the mesh renderer above was built empty); everything else is unchanged.

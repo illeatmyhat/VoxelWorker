@@ -92,18 +92,24 @@ pub(super) fn build_inspector_section(
             // node kinds; it emits its own `SetOffset` intent.
             build_offset_section(ui, state, response);
             build_node_grids_section(ui, state, response);
+            // Issue #79: the per-node "Show child booleans" display toggle.
+            build_child_booleans_section(ui, state, response);
         }
         ActiveKind::Sketch => {
             build_operation_section(ui, state, response);
             build_sketch_inspector_section(ui, state, response);
             build_offset_section(ui, state, response);
             build_node_grids_section(ui, state, response);
+            // Issue #79: the per-node "Show child booleans" display toggle.
+            build_child_booleans_section(ui, state, response);
         }
         ActiveKind::Part => {
             build_operation_section(ui, state, response);
             build_part_inspector_section(ui, state, response);
             build_offset_section(ui, state, response);
             build_node_grids_section(ui, state, response);
+            // Issue #79: the per-node "Show child booleans" display toggle.
+            build_child_booleans_section(ui, state, response);
         }
         ActiveKind::Group => {
             // ADR 0017 Decision 3 (issue #74): a Group is a sealed composition scope,
@@ -113,6 +119,8 @@ pub(super) fn build_inspector_section(
             build_group_inspector_section(ui, state, "Group", response);
             build_offset_section(ui, state, response);
             build_node_grids_section(ui, state, response);
+            // Issue #79: the per-node "Show child booleans" display toggle.
+            build_child_booleans_section(ui, state, response);
         }
         ActiveKind::Instance => {
             // ADR 0017 / issue #76: an Instance folds the referenced definition's
@@ -132,6 +140,8 @@ pub(super) fn build_inspector_section(
             build_group_inspector_section(ui, state, "Instance", response);
             build_offset_section(ui, state, response);
             build_node_grids_section(ui, state, response);
+            // Issue #79: the per-node "Show child booleans" display toggle.
+            build_child_booleans_section(ui, state, response);
         }
         ActiveKind::None => {
             ui.add_space(8.0);
@@ -725,6 +735,37 @@ fn build_node_grids_section(
         response.emit_and_frame(Intent::SetNodeGrids { target, grids });
     } else if other_changed {
         response.emit(Intent::SetNodeGrids { target, grids });
+    }
+    ui.separator();
+}
+
+/// Per-node "Show child booleans" checkbox (issue #79): when on, every
+/// Subtract/Intersect operand body within the active node's subtree renders
+/// persistently as the issue #78 operand ghost — build with the cutters visible;
+/// unchecked, the finished look. Shown for every node kind (on a leaf it ghosts the
+/// leaf itself when the leaf is a boolean). Emits `SetShowChildBooleans` WITHOUT an
+/// auto-frame: a pure display toggle that re-derives only the ghost overlay
+/// (`operand_ghosts_changed`), never a scene re-resolve.
+///
+/// A scene-wide master (the grid-masters precedent) is deliberately DEFERRED: the
+/// per-node flag is the feature, and a master row in the always-visible Display
+/// section would shift every golden for a control with no requester yet.
+fn build_child_booleans_section(
+    ui: &mut egui::Ui,
+    state: &mut PanelState,
+    response: &mut PanelResponse,
+) {
+    let Some(target) = state.scene.active else {
+        return;
+    };
+    let Some(node) = state.scene.active_node() else {
+        return;
+    };
+    ui.add_space(8.0);
+    ui.strong("Booleans (this object)");
+    let mut show = node.show_child_booleans;
+    if ui.checkbox(&mut show, "Show child booleans").changed() {
+        response.emit(Intent::SetShowChildBooleans { target, show });
     }
     ui.separator();
 }

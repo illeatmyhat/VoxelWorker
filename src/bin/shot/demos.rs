@@ -213,6 +213,50 @@ pub(crate) fn build_demo_buried_cutter(voxels_per_block: u32) -> Scene {
     scene
 }
 
+/// Build the `--demo-child-booleans` / `--demo-child-booleans-off` scene (issue #79): a
+/// Group whose 4³-block Stone body carries TWO Subtract cutters — a corner cutter whose
+/// carve faces are exposed (ghosting QUIET where camera-visible) and a 1³-block cutter
+/// buried STRICTLY inside the body (an invisible-by-success void, ghosting wholly LOUD).
+/// With `show_child_booleans` on the Group (`--demo-child-booleans`) both cutters render
+/// persistently as the #78 operand ghost; off (`--demo-child-booleans-off`) the render is
+/// the finished carved look. NOTHING is selected (`active = None`), so the image shows
+/// the persistent ghost alone — no #78 selection tint, and no inspector panel rows.
+pub(crate) fn build_demo_child_booleans(voxels_per_block: u32, show: bool) -> Scene {
+    let make = |size: [u32; 3], offset: [i64; 3], material, operation, name: &str| {
+        let shape = SdfShape::from_blocks(ShapeKind::Box, size, 1, voxels_per_block);
+        let mut node = Node::new(name, NodeContent::Tool { shape, material });
+        node.transform = document::scene::NodeTransform::from_blocks(offset, voxels_per_block);
+        node.operation = operation;
+        node
+    };
+    let mut scene = Scene::from_nodes(vec![NodeBuilder::group(
+        "Carved assembly",
+        vec![
+            make([4, 4, 4], [0, 0, 0], MaterialChoice::Stone, CombineOp::Union, "Body").into(),
+            // Spans blocks [2,4)³ — the body's top corner octant. Its carve faces are
+            // exposed on the notch (quiet); the rest sits behind body walls (loud).
+            make([2, 2, 2], [2, 2, 2], MaterialChoice::Plain, CombineOp::Subtract, "Corner cutter")
+                .into(),
+            // Spans blocks [1,2)³ — strictly interior: a void that never reaches a
+            // face, so its ghost renders WHOLLY loud (the buried-portions-loud case).
+            make([1, 1, 1], [1, 1, 1], MaterialChoice::Wood, CombineOp::Subtract, "Buried cutter")
+                .into(),
+        ],
+    )]);
+    scene.ensure_node_ids();
+    if show {
+        // The issue #79 checkbox, on the GROUP: every boolean in its subtree ghosts.
+        let group_id = scene.roots[0];
+        scene
+            .node_by_id_mut(group_id)
+            .expect("the demo group resolves")
+            .show_child_booleans = true;
+    }
+    scene.active = None;
+    scene.voxels_per_block = voxels_per_block;
+    scene
+}
+
 /// Build the `--demo-intersect` (ADR 0017 / #75): a solid Stone body box INTERSECTED by an
 /// overlapping box placed AFTER it under [`CombineOp::Intersect`]. Only the cells present in
 /// BOTH bodies survive, so the render shows exactly the overlap volume — a 2³-block cube at

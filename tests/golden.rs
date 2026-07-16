@@ -282,6 +282,23 @@ const CASES: &[GoldenCase] = &[
         name: "demo-intersect-mask-selected",
         args: &["--demo-intersect", "--select-node", "1"],
     },
+    // Issue #79: the CHILD-BOOLEANS golden pair — a Group whose Stone body carries an
+    // exposed corner cutter AND a strictly-interior buried cutter, NOTHING selected.
+    // With the Group's "Show child booleans" flag ON, BOTH cutters render persistently
+    // as the #78 operand ghost (red; the corner cutter's exposed carve faces quiet, its
+    // walled-off remainder and the whole buried cutter loud) — build with the cutters
+    // visible. No union tint appears anywhere: the persistent mode ghosts only the
+    // invisible-by-success boolean masks.
+    GoldenCase {
+        name: "demo-child-booleans",
+        args: &["--demo-child-booleans"],
+    },
+    // The IDENTICAL scene with the flag OFF: the finished carved look — pins that the
+    // per-node flag (default off) is the only thing separating the pair.
+    GoldenCase {
+        name: "demo-child-booleans-off",
+        args: &["--demo-child-booleans-off"],
+    },
 ];
 
 /// The subset of [`CASES`] whose scene is CHUNKABLE (has an intrinsic-size leaf), i.e. the
@@ -351,6 +368,10 @@ const TWO_LAYER_CASE_NAMES: &[&str] = &[
     "demo-subtract-cutter-selected",
     "demo-window-fixture-selected",
     "demo-intersect-mask-selected",
+    // Issue #79: the persistent child-boolean ghost through `--two-layer` — the same
+    // path-independence argument as the #78 selection-ghost cases above.
+    "demo-child-booleans",
+    "demo-child-booleans-off",
 ];
 
 /// ADR 0011 G1 (#67): the golden cases whose scene is a chunkable SINGLE producer with a

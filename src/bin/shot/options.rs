@@ -211,6 +211,15 @@ pub(crate) struct ShotOptions {
     /// selected, so the selected-operand ghost renders it wholly in the LOUD occluded
     /// style (the buried-cutter golden). Overrides --shape/--size/--density.
     pub(crate) demo_buried_cutter: bool,
+    /// `--demo-child-booleans` (issue #79): a Group whose Stone body carries an exposed
+    /// corner cutter AND a strictly-interior buried cutter, with the Group's
+    /// `show_child_booleans` flag ON and NOTHING selected — both cutters render
+    /// persistently as the #78 operand ghost (the buried one wholly loud). Overrides
+    /// --shape/--size/--density.
+    pub(crate) demo_child_booleans: bool,
+    /// `--demo-child-booleans-off` (issue #79): the IDENTICAL scene with the flag off —
+    /// the finished carved look (the checkbox's unchecked half of the golden pair).
+    pub(crate) demo_child_booleans_off: bool,
     /// `--demo-two-material` (ADR 0011 G2): two solid boxes of DISTINCT materials placed
     /// SEPARATED so no block is shared — every rendered block is single-material, the
     /// brick-representable multi-producer scene the G2 per-record-material golden locks
@@ -308,6 +317,8 @@ impl Default for ShotOptions {
             demo_cutter_def: false,
             demo_window_fixture: false,
             demo_buried_cutter: false,
+            demo_child_booleans: false,
+            demo_child_booleans_off: false,
             demo_two_material: false,
             demo_mixed_material: false,
             two_layer: false,
@@ -615,6 +626,12 @@ pub(crate) fn parse_options() -> ShotOptions {
             "--demo-buried-cutter" => {
                 options.demo_buried_cutter = true;
             }
+            "--demo-child-booleans" => {
+                options.demo_child_booleans = true;
+            }
+            "--demo-child-booleans-off" => {
+                options.demo_child_booleans_off = true;
+            }
             "--demo-two-material" => {
                 options.demo_two_material = true;
             }
@@ -727,7 +744,7 @@ pub(crate) fn parse_options() -> ShotOptions {
                      \x20            [--force-demo-stem <texture/stem>]\n\
                      \x20            [--gizmo] [--select-node <usize>] [--lattice] [--floor] [--points] [--point-at <X Y Z>] [--no-viewcube]\n\
                      \x20            [--debug-faces] [--debug-chunks]\n\
-                     \x20            [--demo-scene] [--demo-overlap] [--demo-subtract] [--demo-group-subtract] [--demo-intersect] [--demo-cutter-def] [--demo-window-fixture] [--demo-buried-cutter] [--demo-two-material] [--demo-village] [--demo-village-far] [--demo-groups]\n\
+                     \x20            [--demo-scene] [--demo-overlap] [--demo-subtract] [--demo-group-subtract] [--demo-intersect] [--demo-cutter-def] [--demo-window-fixture] [--demo-buried-cutter] [--demo-child-booleans] [--demo-child-booleans-off] [--demo-two-material] [--demo-village] [--demo-village-far] [--demo-groups]\n\
                      \x20            [--demo-sketch-extrude] [--demo-sketch-revolve]\n\
                      \x20            [--demo-far-offset] [--demo-far-offset-near]\n\
                      \x20            [--layer-lower <u32>] [--layer-upper <u32>] [--onion <u32>]\n\

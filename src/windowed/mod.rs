@@ -88,9 +88,17 @@ struct WindowedState {
     /// operation-coded x-ray over the composed scene. Its meshes are re-derived ONLY on
     /// selection/geometry change (see the dirty flag below), never per frame.
     selected_operand_ghost_renderer: crate::SelectedOperandGhostRenderer,
-    /// Forces a selected-operand ghost re-derivation on the next frame. Set at startup
-    /// and whenever an applied Intent reports `selection_changed` / `scene_changed`;
-    /// the render seam also re-derives when `scene.active` differs from
+    /// The persistent child-boolean ghost (issue #79): every Subtract/Intersect operand
+    /// body inside the "Show child booleans"-checked subtrees, drawn with the SAME
+    /// renderer type as the selection ghost (two instances, one per concern) and
+    /// re-derived at the same seam — the two derivations share triggers, and the
+    /// selection matters to BOTH (the persistent set excludes the active node's body,
+    /// the cross-overlay dedupe rule).
+    child_boolean_ghost_renderer: crate::SelectedOperandGhostRenderer,
+    /// Forces a selected-operand + child-boolean ghost re-derivation on the next frame.
+    /// Set at startup and whenever an applied Intent reports `selection_changed` /
+    /// `scene_changed` / `operand_ghosts_changed` (the #79 checkbox toggle); the render
+    /// seam also re-derives when `scene.active` differs from
     /// `selected_ghost_selection` (belt-and-braces for any selection writer outside the
     /// Intent door).
     selected_ghost_dirty: bool,
@@ -384,6 +392,10 @@ impl WindowedState {
         // derives it for the loaded scene's selection (`selected_ghost_dirty` below).
         let selected_operand_ghost_renderer =
             crate::SelectedOperandGhostRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
+        // The persistent child-boolean ghost (issue #79): same renderer type, its own
+        // instance; also built empty and derived on the first frame.
+        let child_boolean_ghost_renderer =
+            crate::SelectedOperandGhostRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
         // Per-object block lattice + floor grid (issue #29 S3): its line batch is
         // (re)built per frame from the grid-enabled nodes, so it starts empty.
         let scene_grid_renderer = SceneGridRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
@@ -439,6 +451,7 @@ impl WindowedState {
             display,
             transform_gizmo_renderer,
             selected_operand_ghost_renderer,
+            child_boolean_ghost_renderer,
             selected_ghost_dirty: true,
             selected_ghost_selection: None,
             scene_grid_renderer,
