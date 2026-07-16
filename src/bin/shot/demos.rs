@@ -182,6 +182,37 @@ pub(crate) fn build_demo_subtract(voxels_per_block: u32) -> Scene {
     scene
 }
 
+/// Build the `--demo-buried-cutter` (issue #78): a solid 4³-block Stone host carrying a
+/// 2³-block Subtract cutter placed ENTIRELY inside it (blocks `[1,3)³` within `[0,4)³`) —
+/// an internal void that is invisible by success: the composed render is just the host's
+/// unbroken outer surface. The CUTTER is the active selection (not the host), so the
+/// selected-operand ghost must render the cutter's whole body in the LOUD occluded style
+/// — the buried-cutter golden, deliberately more obvious than Fusion's invisible internal
+/// voids. The cutter carries the Wood material, which must appear nowhere (a Subtract is
+/// an occupancy-only mask).
+///
+/// [`CombineOp::Subtract`]: voxel_worker::CombineOp
+pub(crate) fn build_demo_buried_cutter(voxels_per_block: u32) -> Scene {
+    let make = |size: [u32; 3], offset: [i64; 3], material, operation, name: &str| {
+        let shape = SdfShape::from_blocks(ShapeKind::Box, size, 1, voxels_per_block);
+        let mut node = Node::new(name, NodeContent::Tool { shape, material });
+        node.transform = document::scene::NodeTransform::from_blocks(offset, voxels_per_block);
+        node.operation = operation;
+        node
+    };
+    let mut scene = Scene::from_nodes(vec![
+        make([4, 4, 4], [0, 0, 0], MaterialChoice::Stone, CombineOp::Union, "Host"),
+        // Placed AFTER the host ⇒ it carves (document-order fold). Spans blocks [1,3)³
+        // — strictly interior to the host's [0,4)³, so the void never reaches a face.
+        make([2, 2, 2], [1, 1, 1], MaterialChoice::Wood, CombineOp::Subtract, "Buried cutter"),
+    ]);
+    scene.ensure_node_ids();
+    // Select the CUTTER (the demo's whole point): the selected-operand ghost x-rays it.
+    scene.active = scene.roots.get(1).copied();
+    scene.voxels_per_block = voxels_per_block;
+    scene
+}
+
 /// Build the `--demo-intersect` (ADR 0017 / #75): a solid Stone body box INTERSECTED by an
 /// overlapping box placed AFTER it under [`CombineOp::Intersect`]. Only the cells present in
 /// BOTH bodies survive, so the render shows exactly the overlap volume — a 2³-block cube at

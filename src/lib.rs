@@ -50,6 +50,7 @@ mod cell_interval_parity_tests;
 
 pub use app_core::{
     default_replay_seed_scene, replay_intent_script, AppCore, RebuildOutcome, RebuildOutput,
+    SelectedOperandGhost,
 };
 pub use evaluation::store::{ChunkCacheKey, ChunkResolveCache, Store};
 pub use display::brick::{
@@ -81,7 +82,10 @@ pub use work::engagement::routing::{
 };
 pub use evaluation::chunk_storage::{compress, decompress, CompressedChunk, Occupancy, SparseCell};
 pub use evaluation::disk_chunk_store::{DiskChunkStore, DiskChunkStoreStats};
-pub use display::mesh::{build_cuboid_mesh, CuboidMesh, CuboidMeshRenderer};
+pub use display::mesh::{
+    build_cuboid_mesh, CuboidMesh, CuboidMeshRenderer, SelectedOperandGhostBody,
+    SelectedOperandGhostRenderer,
+};
 pub use work::workers::geometry::{
     build_geometry, spawn_geometry_worker, GeometryRebuildRequest, GeometryRebuildResult,
     GeometryWorker,
@@ -448,6 +452,14 @@ pub struct FrameOverlays<'a> {
     /// or thin-slab-remesh (mesh) update, never the fog atlas rebuild. The ghost
     /// uniforms/geometry must already be prepared by the renderers' `update_uniforms`.
     pub onion_ghost_active: bool,
+    /// Issue #78: the selected-operand ghost — the ACTIVE node's own body as an
+    /// operation-coded x-ray (quiet where directly visible, loud where buried; ADR 0012
+    /// H1 is the ghost-pass precedent). Drawn immediately after the solid + onion ghost
+    /// inside the shared MSAA pass, so it composes over BOTH display paths (the brick
+    /// raymarch writes ray-hit depth into the same attachment the passes test against).
+    /// Self-gating (no selection → no bodies → no draw); `None` skips it entirely (the
+    /// debug-faces diagnostic mode, which suppresses every ghost).
+    pub selected_operand_ghost: Option<&'a display::mesh::SelectedOperandGhostRenderer>,
     /// The cuboid mesh renderer — the CPU voxel render path (part of #20; the legacy
     /// instanced mesher was removed). Draws the voxels as a box-decomposed mesh; its
     /// uniforms must already be uploaded via `CuboidMeshRenderer::update_uniforms`.
@@ -571,6 +583,15 @@ pub fn render_frame(
             } else {
                 overlays.cuboid_mesh.draw_ghost(&mut voxel_pass);
             }
+        }
+
+        // Issue #78 — the selected-operand ghost: the ACTIVE node's own body, drawn
+        // twice against the solid depth already in the attachment (quiet `LessEqual` /
+        // loud `Greater`, no depth writes). Runs after the solid + onion ghost so both
+        // display paths' depth is final; before the depth-tested overlays below, which
+        // it cannot occlude (it writes no depth).
+        if let Some(selected_operand_ghost) = overlays.selected_operand_ghost {
+            selected_operand_ghost.draw(&mut voxel_pass);
         }
 
         // Per-object block lattice + floor grid (issue #29 S3): same MSAA pass,

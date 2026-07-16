@@ -28,8 +28,10 @@ mod intent;
 mod queries;
 mod rebuild;
 mod replay;
+mod selected_operand;
 
 pub use replay::{default_replay_seed_scene, replay_intent_script};
+pub use selected_operand::SelectedOperandGhost;
 
 #[cfg(test)]
 mod replay_tests;

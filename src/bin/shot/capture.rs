@@ -9,12 +9,14 @@ use voxel_worker::{
     run_egui_frame, AppCore, CuboidMeshRenderer, EguiPaintBridge, FrameOverlays, GpuContext,
     InfiniteGridRenderer, LayerBand, LayerRange, MaterialSource, Node, NodeContent, NodePath,
     OrbitCamera, PanelState, Part, Point, PointsRenderer, RegionBlocks, Scene, SceneGridRenderer,
-    SdfShape, TransformGizmoRenderer, ViewCubeRenderer, VoxExport, VoxelGrid, COLOR_TARGET_FORMAT,
+    SdfShape, SelectedOperandGhostRenderer, TransformGizmoRenderer, ViewCubeRenderer, VoxExport,
+    VoxelGrid, COLOR_TARGET_FORMAT,
 };
 
 use crate::demos::{
     build_demo_groups, build_demo_mixed_material, build_demo_overlap, build_demo_scene,
     build_demo_sketch_box, build_demo_sketch_extrude, build_demo_sketch_revolve,
+    build_demo_buried_cutter,
     build_demo_cutter_def, build_demo_group_subtract, build_demo_intersect, build_demo_subtract,
     build_demo_window_fixture,
     build_demo_two_material,
@@ -152,6 +154,8 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         build_demo_cutter_def(options.geometry.voxels_per_block)
     } else if options.demo_window_fixture {
         build_demo_window_fixture(options.geometry.voxels_per_block)
+    } else if options.demo_buried_cutter {
+        build_demo_buried_cutter(options.geometry.voxels_per_block)
     } else if options.demo_two_material {
         build_demo_two_material(options.geometry.voxels_per_block)
     } else if options.demo_mixed_material {
@@ -260,6 +264,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         || options.demo_intersect
         || options.demo_cutter_def
         || options.demo_window_fixture
+        || options.demo_buried_cutter
         || options.demo_two_material
         || options.demo_mixed_material
         || options.demo_village
@@ -631,6 +636,28 @@ pub(crate) async fn run_capture(options: ShotOptions) {
             options.geometry.voxels_per_block,
         )
     };
+    // Issue #78: the selected-operand ghost — the ACTIVE node's own body as an
+    // operation-coded x-ray (quiet where directly visible, loud where buried). Derived
+    // from the SAME `panel_state.scene` the gizmo reads (so `--select-node` steers it),
+    // bounded by the selected subtree's covering chunks; meshed against the COMPOSED
+    // scene's recentre so it lands voxel-exact on the node's place (ADR 0008). Its
+    // per-frame uniforms upload below once the viewport-derived camera is known.
+    let mut selected_operand_ghost_renderer =
+        SelectedOperandGhostRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
+    if let Some(ghost) = AppCore::selected_operand_ghost(
+        &panel_state.scene,
+        options.geometry.voxels_per_block,
+    ) {
+        selected_operand_ghost_renderer.rebuild(
+            &gpu.device,
+            &ghost.bodies,
+            ghost.grid_dimensions,
+            ghost.recentre,
+            ghost.density,
+        );
+        println!("selected-operand ghost: {} body(ies)", ghost.bodies.len());
+    }
+
     // Transform gizmo (issue #29 S2): when `--gizmo` is passed, place it ON the
     // active/selected node — sized to the node's own extent, positioned at its
     // recentred pivot. `None` (no selection / no extent) keeps `--gizmo` a no-op,
@@ -924,6 +951,9 @@ pub(crate) async fn run_capture(options: ShotOptions) {
             app_core.camera.eye().to_array(),
         );
     }
+    // Issue #78: the selected-operand ghost's camera + tint upload (meshes were built
+    // at derivation above).
+    selected_operand_ghost_renderer.update_uniforms(&gpu.queue, view_projection);
     view_cube_renderer.update_uniforms(&gpu.queue, app_core.camera.view_cube_view_projection());
 
     // Part of #20: upload the cuboid path's uniforms (camera + per-material base
@@ -1025,6 +1055,11 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         // The display ghosts the onion slabs (prepared in the cuboid/brick
         // `update_uniforms` above); the volumetric fog is retired.
         onion_ghost_active: band.onion_depth > 0,
+        // Issue #78: the selected-operand ghost draws over BOTH display paths (mesh +
+        // brick). Suppressed in debug-faces mode (a diagnostic render — every ghost is
+        // off there); self-gates on an empty selection.
+        selected_operand_ghost: (!options.debug_face_orientation)
+            .then_some(&selected_operand_ghost_renderer),
         cuboid_mesh: &cuboid_mesh_renderer,
         // ADR 0011 G1: when engaged, the brick raymarch takes the voxel-model draw
         // (the mesh renderer above was built empty); everything else is unchanged.

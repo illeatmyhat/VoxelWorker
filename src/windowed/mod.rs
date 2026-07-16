@@ -84,6 +84,18 @@ struct WindowedState {
     /// handles in [`DisplayOrchestrator::first_build`].
     display: DisplayOrchestrator,
     transform_gizmo_renderer: TransformGizmoRenderer,
+    /// The selected-operand ghost (issue #78): the ACTIVE node's own body as an
+    /// operation-coded x-ray over the composed scene. Its meshes are re-derived ONLY on
+    /// selection/geometry change (see the dirty flag below), never per frame.
+    selected_operand_ghost_renderer: crate::SelectedOperandGhostRenderer,
+    /// Forces a selected-operand ghost re-derivation on the next frame. Set at startup
+    /// and whenever an applied Intent reports `selection_changed` / `scene_changed`;
+    /// the render seam also re-derives when `scene.active` differs from
+    /// `selected_ghost_selection` (belt-and-braces for any selection writer outside the
+    /// Intent door).
+    selected_ghost_dirty: bool,
+    /// The selection the ghost meshes were last derived for.
+    selected_ghost_selection: Option<crate::NodeId>,
     /// Per-object block lattice + floor grid (issue #29 S3). Its line batch is
     /// rebuilt each frame from the visible nodes' enabled grids.
     scene_grid_renderer: SceneGridRenderer,
@@ -368,6 +380,10 @@ impl WindowedState {
         // node each frame; seed it at the region size (overwritten on first frame).
         let transform_gizmo_renderer =
             TransformGizmoRenderer::new(&gpu.device, COLOR_TARGET_FORMAT, region_dimensions);
+        // The selected-operand ghost (issue #78): built empty; the first render frame
+        // derives it for the loaded scene's selection (`selected_ghost_dirty` below).
+        let selected_operand_ghost_renderer =
+            crate::SelectedOperandGhostRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
         // Per-object block lattice + floor grid (issue #29 S3): its line batch is
         // (re)built per frame from the grid-enabled nodes, so it starts empty.
         let scene_grid_renderer = SceneGridRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
@@ -422,6 +438,9 @@ impl WindowedState {
             panel_state,
             display,
             transform_gizmo_renderer,
+            selected_operand_ghost_renderer,
+            selected_ghost_dirty: true,
+            selected_ghost_selection: None,
             scene_grid_renderer,
             points_renderer,
             infinite_grid_renderer,

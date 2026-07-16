@@ -51,6 +51,7 @@ mod builder;
 mod two_layer;
 mod emit;
 mod pipeline;
+mod selected_operand;
 #[cfg(test)]
 mod tests;
 
@@ -60,6 +61,7 @@ pub use builder::{
     CuboidMesh, CuboidRebuildPlan,
 };
 pub use pipeline::CuboidMeshRenderer;
+pub use selected_operand::{SelectedOperandGhostBody, SelectedOperandGhostRenderer};
 
 // Internal cross-submodule glue: each submodule reaches its siblings (and the shared
 // imports above) through `use super::*`.

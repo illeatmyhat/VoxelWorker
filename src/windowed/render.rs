@@ -256,6 +256,34 @@ impl WindowedState {
             // via explicit controls (Home/Fit/Focus) and the startup fit.
             self.rebuild_geometry();
         }
+        // Issue #78: re-derive the selected-operand ghost on selection/geometry change
+        // ONLY (never per frame). A `SelectNode` marks it dirty without a scene
+        // re-resolve; the derivation itself is bounded by the SELECTED subtree's
+        // covering chunks (`AppCore::selected_operand_ghost`), so this stays cheap even
+        // in a huge scene. The `active` comparison is belt-and-braces for any selection
+        // writer that bypassed the Intent effects.
+        if merged_effect.selection_changed || merged_effect.scene_changed {
+            self.selected_ghost_dirty = true;
+        }
+        if self.selected_ghost_dirty
+            || self.selected_ghost_selection != self.panel_state.scene.active
+        {
+            self.selected_ghost_dirty = false;
+            self.selected_ghost_selection = self.panel_state.scene.active;
+            match AppCore::selected_operand_ghost(
+                &self.panel_state.scene,
+                self.panel_state.geometry.voxels_per_block,
+            ) {
+                Some(ghost) => self.selected_operand_ghost_renderer.rebuild(
+                    &self.gpu.device,
+                    &ghost.bodies,
+                    ghost.grid_dimensions,
+                    ghost.recentre,
+                    ghost.density,
+                ),
+                None => self.selected_operand_ghost_renderer.clear(),
+            }
+        }
         // Brick-display perf follow-up to epic #64: a debug-face toggle or a loaded-material
         // change are PURE display flags (they never `scene_changed`, so no rebuild fires) that
         // can turn OFF brick engagement — making the SKIPPED fallback mesh the display. Rebuild
@@ -429,6 +457,10 @@ impl WindowedState {
             view_projection,
             self.app_core.camera.eye().to_array(),
         );
+        // Issue #78: the selected-operand ghost's per-frame camera + tint upload (the
+        // meshes were derived at the selection/geometry seam above, never here).
+        self.selected_operand_ghost_renderer
+            .update_uniforms(&self.gpu.queue, view_projection);
         self.view_cube_renderer
             .update_uniforms(&self.gpu.queue, self.app_core.camera.view_cube_view_projection());
 
@@ -466,6 +498,12 @@ impl WindowedState {
             // ghosts the onion slabs after its solid draw). Its uniforms/geometry were
             // prepared by the renderers' `update_uniforms` / `update_ghost_uniforms` above.
             onion_ghost_active,
+            // Issue #78: the selected-operand ghost draws over BOTH display paths.
+            // Suppressed in debug-faces mode (a diagnostic render — every ghost is off
+            // there, matching the onion ghost's forced-FULL band); self-gates on an
+            // empty selection.
+            selected_operand_ghost: (!self.panel_state.debug_face_orientation)
+                .then_some(&self.selected_operand_ghost_renderer),
             cuboid_mesh: self.display.cuboid_mesh_renderer(),
             // ADR 0011 G1: when engaged (field installed, no mesh-only mode), the
             // brick raymarch replaces the cuboid-mesh DRAW for this frame; the mesh

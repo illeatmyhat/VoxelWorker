@@ -37,6 +37,7 @@ use serde::{Deserialize, Serialize};
 
 mod extent;
 mod graph;
+mod operand_body;
 mod producers;
 mod spatial;
 #[cfg(test)]

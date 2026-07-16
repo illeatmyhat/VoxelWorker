@@ -35,6 +35,7 @@ mod grid;
 mod points;
 mod infinite_grid;
 mod onion;
+mod operand_ghost;
 #[cfg(test)]
 mod tests;
 
@@ -54,6 +55,7 @@ pub use grid::SceneGridRenderer;
 pub use points::{enabled_grid_planes, GridPlaneInstance, PointsRenderer};
 pub use infinite_grid::InfiniteGridRenderer;
 pub use onion::{onion_ghost_tint, OnionFogParams};
+pub use operand_ghost::{operand_ghost_loud_tint, operand_ghost_quiet_tint, OperandGhostStyle};
 
 // Internal cross-submodule glue: each submodule reaches its siblings' non-`pub`
 // (`pub(crate)`) items — and the shared imports above — through `use super::*`.

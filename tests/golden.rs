@@ -242,6 +242,46 @@ const CASES: &[GoldenCase] = &[
         name: "demo-window-fixture",
         args: &["--demo-window-fixture"],
     },
+    // Issue #78: the BURIED-CUTTER golden — a Subtract cutter entirely inside a Stone
+    // host (an internal void invisible by success), with the CUTTER selected. The
+    // selected-operand ghost renders the cutter's whole body in the LOUD occluded red
+    // (depth test `Greater` — every ghost fragment is behind the host's surface), so the
+    // invisible void x-rays through the unbroken box. Deliberately more obvious than
+    // Fusion's treatment of internal voids (the owner's call).
+    GoldenCase {
+        name: "demo-buried-cutter",
+        args: &["--demo-buried-cutter"],
+    },
+    // Issue #78: the CORNER-CUTTER golden — the demo-subtract scene with the CUTTER
+    // selected (`--select-node 1`; the committed demo-subtract reference keeps its
+    // default Body selection). The cutter's exposed carve faces COINCIDE with the
+    // notch's cut surface — the delicate half of the depth split: another mesher's
+    // triangulation of the same plane must still classify QUIET (depth `LessEqual` +
+    // the shared toward-viewer bias), never loud and never dropped. The whole notch is
+    // camera-visible here, so the ghost is all-quiet; the loud half is pinned by
+    // demo-buried-cutter above and the window case below.
+    GoldenCase {
+        name: "demo-subtract-cutter-selected",
+        args: &["--demo-subtract", "--select-node", "1"],
+    },
+    // Issue #78: the FIXTURE-SELECTION golden — the window scene with the window
+    // INSTANCE selected. Its own operation is inert (ADR 0017 Decision 4), so the ghost
+    // derives one body PER SPLICED CHILD: the opening cutter in red (QUIET on the
+    // opening's exposed carve faces, LOUD where the wall thickness / the later-placed
+    // frame bury it — both halves of the depth split in one image) and the frame in the
+    // subtle constructive tint.
+    GoldenCase {
+        name: "demo-window-fixture-selected",
+        args: &["--demo-window-fixture", "--select-node", "1"],
+    },
+    // Issue #78: the INTERSECT-mask ghost — the demo-intersect scene with the MASK
+    // selected. The mask's body ghosts AMBER: quiet over the empty space the fold
+    // cleared (nothing occludes it there), loud where the surviving Stone cube buries
+    // it. Also pins that Intersect never renders the Subtract red.
+    GoldenCase {
+        name: "demo-intersect-mask-selected",
+        args: &["--demo-intersect", "--select-node", "1"],
+    },
 ];
 
 /// The subset of [`CASES`] whose scene is CHUNKABLE (has an intrinsic-size leaf), i.e. the
@@ -301,6 +341,16 @@ const TWO_LAYER_CASE_NAMES: &[&str] = &[
     // pixel-identical to the dense oracle: the spliced cutter is a root cutter and
     // the spliced frame a root additive leaf to the conservative fast paths.
     "demo-window-fixture",
+    // Issue #78: the selected-operand ghost cases through `--two-layer`. The ghost
+    // GEOMETRY is path-independent (derived from the selection slice's two-layer
+    // chunks either way), and the two-layer solid's exposed-face set is proven
+    // identical to the dense mesh — so the composite (translucent ghost over solid)
+    // must match the dense reference within the tolerance band, unlike the onion
+    // ghost's known band-clip×elision seam case above.
+    "demo-buried-cutter",
+    "demo-subtract-cutter-selected",
+    "demo-window-fixture-selected",
+    "demo-intersect-mask-selected",
 ];
 
 /// ADR 0011 G1 (#67): the golden cases whose scene is a chunkable SINGLE producer with a

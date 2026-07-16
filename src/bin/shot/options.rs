@@ -206,6 +206,11 @@ pub(crate) struct ShotOptions {
     /// hole is cut AND the frame filled by a single Instance node (the window
     /// golden). The instance's own operation is inert.
     pub(crate) demo_window_fixture: bool,
+    /// `--demo-buried-cutter` (issue #78): a Stone host box carrying a Subtract cutter
+    /// ENTIRELY inside it — an internal void invisible by success — with the CUTTER
+    /// selected, so the selected-operand ghost renders it wholly in the LOUD occluded
+    /// style (the buried-cutter golden). Overrides --shape/--size/--density.
+    pub(crate) demo_buried_cutter: bool,
     /// `--demo-two-material` (ADR 0011 G2): two solid boxes of DISTINCT materials placed
     /// SEPARATED so no block is shared — every rendered block is single-material, the
     /// brick-representable multi-producer scene the G2 per-record-material golden locks
@@ -302,6 +307,7 @@ impl Default for ShotOptions {
             demo_intersect: false,
             demo_cutter_def: false,
             demo_window_fixture: false,
+            demo_buried_cutter: false,
             demo_two_material: false,
             demo_mixed_material: false,
             two_layer: false,
@@ -606,6 +612,9 @@ pub(crate) fn parse_options() -> ShotOptions {
             "--demo-window-fixture" => {
                 options.demo_window_fixture = true;
             }
+            "--demo-buried-cutter" => {
+                options.demo_buried_cutter = true;
+            }
             "--demo-two-material" => {
                 options.demo_two_material = true;
             }
@@ -718,7 +727,7 @@ pub(crate) fn parse_options() -> ShotOptions {
                      \x20            [--force-demo-stem <texture/stem>]\n\
                      \x20            [--gizmo] [--select-node <usize>] [--lattice] [--floor] [--points] [--point-at <X Y Z>] [--no-viewcube]\n\
                      \x20            [--debug-faces] [--debug-chunks]\n\
-                     \x20            [--demo-scene] [--demo-overlap] [--demo-subtract] [--demo-group-subtract] [--demo-intersect] [--demo-cutter-def] [--demo-window-fixture] [--demo-two-material] [--demo-village] [--demo-village-far] [--demo-groups]\n\
+                     \x20            [--demo-scene] [--demo-overlap] [--demo-subtract] [--demo-group-subtract] [--demo-intersect] [--demo-cutter-def] [--demo-window-fixture] [--demo-buried-cutter] [--demo-two-material] [--demo-village] [--demo-village-far] [--demo-groups]\n\
                      \x20            [--demo-sketch-extrude] [--demo-sketch-revolve]\n\
                      \x20            [--demo-far-offset] [--demo-far-offset-near]\n\
                      \x20            [--layer-lower <u32>] [--layer-upper <u32>] [--onion <u32>]\n\

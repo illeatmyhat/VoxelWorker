@@ -9,7 +9,7 @@ use super::*;
 /// must be 16-aligned). Field order matches the WGSL `CuboidUniforms` exactly.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Pod, Zeroable)]
-struct CuboidUniforms {
+pub(crate) struct CuboidUniforms {
     view_projection: [[f32; 4]; 4],
     grid_half_extent: [f32; 3],
     voxels_per_block: f32,
@@ -57,10 +57,69 @@ pub(crate) fn atlas_rects_from(atlas: &MaterialAtlas) -> [[f32; 4]; MaterialChoi
     rects
 }
 
+/// Build a ghost-only [`CuboidUniforms`] block (issue #78 — the selected-operand ghost
+/// passes; ADR 0012 H1 is the ghost-branch precedent): `ghost_mode = 1` + `ghost_tint`,
+/// with the camera + frame scalars the vertex stage reads. The `cuboid.wgsl` ghost branch
+/// returns the flat tint before any texture / material / overlay / band read, so every
+/// other field is filled with inert values (overlay + modulation off, band FULL).
+pub(crate) fn flat_ghost_uniforms(
+    view_projection: glam::Mat4,
+    grid_dimensions: [u32; 3],
+    voxels_per_block: u32,
+    ghost_tint: [f32; 4],
+) -> CuboidUniforms {
+    let overlay = crate::renderer::grid_overlay_params();
+    CuboidUniforms {
+        view_projection: view_projection.to_cols_array_2d(),
+        // FLOORED half, matching the solid draw's corner-anchoring (an odd dim's
+        // `dim/2.0` would sit half a voxel off — see `update_uniforms`).
+        grid_half_extent: [
+            (grid_dimensions[0] / 2) as f32,
+            (grid_dimensions[1] / 2) as f32,
+            (grid_dimensions[2] / 2) as f32,
+        ],
+        voxels_per_block: voxels_per_block.max(1) as f32,
+        voxel_line_color: overlay.voxel_line_color,
+        grid_overlay_enabled: 0.0,
+        block_line_color: overlay.block_line_color,
+        material_modulation_enabled: 0.0,
+        voxel_line_half_width: overlay.voxel_line_half_width,
+        block_line_half_width: overlay.block_line_half_width,
+        voxel_line_alpha: overlay.voxel_line_alpha,
+        block_line_alpha: overlay.block_line_alpha,
+        band_min: 0.0,
+        band_max: u32::MAX as f32,
+        debug_face_mode: 0.0,
+        ghost_mode: 1.0,
+        material_base_colors: [[1.0, 1.0, 1.0, 0.0]; MaterialChoice::MATERIAL_COUNT],
+        material_atlas_rects: [[0.0, 0.0, 1.0, 1.0]; MaterialChoice::MATERIAL_COUNT],
+        ghost_tint,
+    }
+}
+
+/// The group(0) camera/frame uniform bind-group layout every cuboid-shader pipeline binds
+/// (the solid/ghost draws in [`CuboidMeshRenderer::assemble`] and the selected-operand
+/// ghost passes, issue #78). ONE builder so the layouts stay bind-compatible.
+pub(crate) fn cuboid_uniform_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("cuboid uniform bind group layout"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        }],
+    })
+}
+
 /// The per-draw on-face-grid overlay-active bind-group layout (group 2, ADR 0003 §3c / ADR
 /// 0010 E3): one `u32` uniform read with a DYNAMIC OFFSET, so the overlay-off and overlay-on
 /// draws of a chunk select `0` / `1` from a two-entry buffer without a per-vertex flag.
-fn overlay_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+pub(crate) fn overlay_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
     device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("cuboid overlay-active bind group layout"),
         entries: &[wgpu::BindGroupLayoutEntry {
@@ -80,7 +139,7 @@ fn overlay_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
 /// group (ADR 0003 §3c). Entry 0 = `0` (overlay off), entry 1 (at the device's
 /// `min_uniform_buffer_offset_alignment`) = `1` (overlay on). Returns the bind group and
 /// the stride to pass as the dynamic offset for the overlay-on draw.
-fn build_overlay_bind_group(
+pub(crate) fn build_overlay_bind_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
 ) -> (wgpu::BindGroup, u32) {
@@ -201,6 +260,24 @@ pub(crate) struct CuboidChunkBuffers {
     /// rebuild touches only a subset of chunks (an incremental update can't sum from
     /// the freshly-built meshes alone — the untouched chunks' buffers carry it).
     box_count: u32,
+}
+
+impl CuboidChunkBuffers {
+    /// Record one indexed draw over the chunk's WHOLE index buffer (the overlay-off run
+    /// followed by the overlay-on run together) into an already-begun pass. The draw
+    /// style of a ghost pass: the flat-tinting ghost branch ignores the on-face grid
+    /// overlay, so the ADR 0003 §3c two-draw split is unnecessary — one draw suffices
+    /// (the onion ghost in [`CuboidMeshRenderer::draw_ghost`] and the selected-operand
+    /// ghost passes, issue #78, both draw this way). A no-op for an empty chunk.
+    pub(crate) fn draw_all_runs(&self, render_pass: &mut wgpu::RenderPass<'_>) {
+        let total = self.index_count + self.index_count_overlay;
+        if total == 0 {
+            return;
+        }
+        render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+        render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+        render_pass.draw_indexed(0..total, 0, 0..1);
+    }
 }
 
 /// All GPU resources for drawing the cuboid mesh (DEFAULT render path; per-chunk
@@ -473,20 +550,7 @@ impl CuboidMeshRenderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let uniform_bind_group_layout =
-            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                label: Some("cuboid uniform bind group layout"),
-                entries: &[wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                }],
-            });
+        let uniform_bind_group_layout = cuboid_uniform_bind_group_layout(device);
         let uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("cuboid uniform bind group"),
             layout: &uniform_bind_group_layout,
@@ -1426,7 +1490,7 @@ impl CuboidMeshRenderer {
 
 /// Upload built per-chunk meshes into GPU buffers, one [`CuboidChunkBuffers`] per
 /// non-empty chunk (issue #20 S6c-2d).
-fn upload_chunk_meshes(
+pub(crate) fn upload_chunk_meshes(
     device: &wgpu::Device,
     chunk_meshes: &[CuboidChunkMesh],
 ) -> std::collections::HashMap<[i32; 3], CuboidChunkBuffers> {
