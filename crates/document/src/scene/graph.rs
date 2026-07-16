@@ -255,6 +255,16 @@ pub struct AssemblyDef {
     /// [`Scene::arena`]. The `Vec` order is document order.
     #[serde(default)]
     pub children: Vec<NodeId>,
+    /// Whether this definition is a **fixture** (ADR 0017 Decision 4, issue #77): a
+    /// fixture does NOT pre-compose — its children splice into the HOSTING scope's
+    /// ordered fold at the instance's spine position, in order, under the instance's
+    /// transform (how a window both cuts its opening and fills its frame with one
+    /// placement). The flag lives HERE because being a fixture is what the part *is*;
+    /// instances stay pure reference+transform, and a fixture instance's own
+    /// [`CombineOp`] is inert (the resolver never consults it — see
+    /// [`Scene::walk_nodes`]). `serde(default)`: pre-fixture documents load sealed.
+    #[serde(default)]
+    pub fixture: bool,
 }
 
 /// A world-anchored **reference element** (issue #29 grid rework): a named point
@@ -426,6 +436,9 @@ impl Scene {
             id,
             name: name.into(),
             children: child_ids,
+            // Sealed by default (ADR 0017 Decision 3); flip via
+            // `set_definition_fixture` to opt a part into splicing (Decision 4).
+            fixture: false,
         });
     }
 
@@ -586,6 +599,36 @@ impl Scene {
     /// missing definition resolves to nothing.
     pub fn def_by_id(&self, id: DefId) -> Option<&AssemblyDef> {
         self.definitions.iter().find(|def| def.id == id)
+    }
+
+    /// Set the [`fixture`](AssemblyDef::fixture) flag of the definition `id` (ADR
+    /// 0017 Decision 4, issue #77 — the `SetDefinitionFixture` intent's field
+    /// write). Returns whether a definition carried the id (a dangling id is a
+    /// no-op, like every other field write to a missing target).
+    pub fn set_definition_fixture(&mut self, id: DefId, fixture: bool) -> bool {
+        match self.definitions.iter_mut().find(|def| def.id == id) {
+            Some(def) => {
+                def.fixture = fixture;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Whether `node`'s own [`CombineOp`] is **inert** (ADR 0017 Decision 4, issue
+    /// #77): true exactly for an `Instance` of a FIXTURE definition, whose children
+    /// splice into the hosting scope's fold under their OWN operations — the
+    /// instance's operation is never consulted by the resolver, so the inspector
+    /// hides the Operation selector (no dead control). Every other node kind (and an
+    /// instance of a sealed definition, or of a missing one) folds under its own
+    /// operation as usual.
+    pub fn node_operation_is_inert(&self, node: &Node) -> bool {
+        match &node.content {
+            NodeContent::Instance(def_id) => {
+                self.def_by_id(*def_id).is_some_and(|def| def.fixture)
+            }
+            _ => false,
+        }
     }
 
     /// The node at `path`, walking from `nodes` down through Group
@@ -1209,6 +1252,9 @@ impl Scene {
             id: def_id,
             name: name.into(),
             children: child_ids,
+            // A freshly-extracted part is SEALED (ADR 0017 Decision 3) — splicing
+            // is a deliberate per-definition opt-in (Decision 4, issue #77).
+            fixture: false,
         });
         Some(def_id)
     }

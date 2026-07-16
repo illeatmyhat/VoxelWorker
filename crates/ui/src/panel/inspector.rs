@@ -118,9 +118,17 @@ pub(super) fn build_inspector_section(
             // ADR 0017 / issue #76: an Instance folds the referenced definition's
             // finished (pre-composed) body under its OWN operation — a definition
             // instanced with Subtract is the reusable cutter — so the selector
-            // shows on Instances too. (Issue #77 will HIDE it again for fixture
-            // instances, whose operation is inert.)
-            build_operation_section(ui, state, response);
+            // shows on Instances too. EXCEPT for an instance of a FIXTURE
+            // definition (Decision 4, issue #77), whose operation is INERT (the
+            // spliced children fold under their own operations): the selector is
+            // HIDDEN there — no dead control.
+            let operation_inert = state
+                .scene
+                .active_node()
+                .is_some_and(|node| state.scene.node_operation_is_inert(node));
+            if !operation_inert {
+                build_operation_section(ui, state, response);
+            }
             build_group_inspector_section(ui, state, "Instance", response);
             build_offset_section(ui, state, response);
             build_node_grids_section(ui, state, response);

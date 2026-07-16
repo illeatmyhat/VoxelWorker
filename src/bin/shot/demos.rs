@@ -303,6 +303,62 @@ pub(crate) fn build_demo_cutter_def(voxels_per_block: u32) -> Scene {
     selecting_first_node(scene)
 }
 
+/// Build the `--demo-window-fixture` (ADR 0017 Decision 4 / #77): THE WINDOW golden.
+/// A Stone wall (8×1×6 blocks, standing in the XZ plane — Z-up), then ONE `Instance`
+/// of a FIXTURE definition "Window" = [opening cutter `Subtract` (3×1×3, Plain),
+/// frame `Union` (3×1×1, Wood)] placed AFTER the wall at the opening's low corner.
+/// Because the definition is flagged `fixture`, it does NOT pre-compose: its children
+/// splice into the wall's (root) scope at the instance's spine position, in order,
+/// under the instance's transform — so ONE placement both CUTS the 3×3-block hole
+/// through the wall and FILLS the Wood frame bar along the hole's bottom. The render
+/// shows daylight through the opening above a Wood sill; the cutter's Plain material
+/// appears nowhere (a Subtract never stamps), and the instance's own operation is
+/// left at the default (it is INERT on a fixture instance — the spliced children fold
+/// under their own operations).
+pub(crate) fn build_demo_window_fixture(voxels_per_block: u32) -> Scene {
+    let window_def_id = DefId(1);
+    let wall = {
+        let shape = SdfShape::from_blocks(ShapeKind::Box, [8, 1, 6], 1, voxels_per_block);
+        Node::new("Wall", NodeContent::Tool { shape, material: MaterialChoice::Stone })
+    };
+    let window = {
+        // Placed AFTER the wall ⇒ the spliced cutter carves it (document-order
+        // fold); the opening spans blocks [2,5)×[0,1)×[2,5) of the wall.
+        let mut node = Node::new("Window", NodeContent::Instance(window_def_id));
+        node.transform = document::scene::NodeTransform::from_blocks([2, 0, 2], voxels_per_block);
+        node
+    };
+    let mut scene = Scene::from_nodes(vec![wall, window]);
+    scene.add_definition(
+        window_def_id,
+        "Window",
+        vec![
+            {
+                // The opening: cuts the full wall thickness. Its Plain material must
+                // never render (an occupancy-only mask).
+                let shape =
+                    SdfShape::from_blocks(ShapeKind::Box, [3, 1, 3], 1, voxels_per_block);
+                let mut node = Node::new(
+                    "Opening",
+                    NodeContent::Tool { shape, material: MaterialChoice::Plain },
+                );
+                node.operation = CombineOp::Subtract;
+                node
+            },
+            {
+                // The frame: a Wood bar refilling the opening's bottom row — the
+                // visible proof the SAME placement also ADDS geometry to the host.
+                let shape =
+                    SdfShape::from_blocks(ShapeKind::Box, [3, 1, 1], 1, voxels_per_block);
+                Node::new("Frame", NodeContent::Tool { shape, material: MaterialChoice::Wood })
+            },
+        ],
+    );
+    scene.set_definition_fixture(window_def_id, true);
+    scene.voxels_per_block = voxels_per_block;
+    selecting_first_node(scene)
+}
+
 /// Build the `--demo-two-material` (ADR 0011 G2): two solid boxes of DISTINCT materials
 /// placed SEPARATED (a whole chunk of air between them) so NO block is shared — every
 /// rendered block is single-material. This is the brick-representable multi-producer scene

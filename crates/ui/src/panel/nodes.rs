@@ -300,7 +300,12 @@ fn build_node_actions(ui: &mut egui::Ui, state: &mut PanelState, response: &mut 
 
 /// The **Definitions** list (ADR 0001 step 4): the reusable [`AssemblyDef`]s, each
 /// with an **Add instance** button that places another `Instance` of it at a
-/// nudged offset (the village workflow: one stored body placed at several offsets).
+/// nudged offset (the village workflow: one stored body placed at several offsets)
+/// and a **Fixture** toggle (ADR 0017 Decision 4, issue #77) — whether the
+/// definition splices its children into each hosting scope's fold (a window that
+/// cuts its opening AND fills its frame with one placement) instead of
+/// pre-composing sealed. The toggle sits on the DEFINITION row because being a
+/// fixture is what the part IS; instances stay pure reference+transform.
 ///
 /// [`AssemblyDef`]: document::scene::AssemblyDef
 fn build_definitions_section(
@@ -314,9 +319,9 @@ fn build_definitions_section(
     ui.add_space(6.0);
     ui.strong("Definitions");
 
-    // Collect (id, label) first so the per-row button can mutate the scene without
-    // borrowing `definitions` across the click.
-    let defs: Vec<(DefId, String)> = state
+    // Collect (id, label, fixture) first so the per-row widgets can mutate the scene
+    // without borrowing `definitions` across the click.
+    let defs: Vec<(DefId, String, bool)> = state
         .scene
         .definitions
         .iter()
@@ -326,12 +331,17 @@ fn build_definitions_section(
             } else {
                 def.name.clone()
             };
-            (def.id, format!("{} ({} node)", label, def.children.len()))
+            (
+                def.id,
+                format!("{} ({} node)", label, def.children.len()),
+                def.fixture,
+            )
         })
         .collect();
 
     let mut add_instance_of: Option<DefId> = None;
-    for (id, label) in &defs {
+    let mut set_fixture_of: Option<(DefId, bool)> = None;
+    for (id, label, fixture) in &defs {
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new(label).small());
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -342,6 +352,20 @@ fn build_definitions_section(
                 {
                     add_instance_of = Some(*id);
                 }
+                let mut is_fixture = *fixture;
+                if ui
+                    .checkbox(&mut is_fixture, egui::RichText::new("Fixture").small())
+                    .on_hover_text(
+                        "Splice this definition's children into each hosting scope's \
+                         fold at the instance's position (in order, under the \
+                         instance's transform) instead of pre-composing a sealed body \
+                         — how a window cuts its opening and fills its frame with one \
+                         placement",
+                    )
+                    .changed()
+                {
+                    set_fixture_of = Some((*id, is_fixture));
+                }
             });
         });
     }
@@ -350,5 +374,10 @@ fn build_definitions_section(
     // becomes active inside the add op, so the loop re-syncs the mirror on the effect.
     if let Some(id) = add_instance_of {
         response.emit_and_frame(Intent::AddInstance { def: id });
+    }
+    // ADR 0017 Decision 4 (issue #77): a definition-field write — every placement's
+    // composition changes at once (no auto-frame; the geometry stays in place).
+    if let Some((id, fixture)) = set_fixture_of {
+        response.emit(Intent::SetDefinitionFixture { def: id, fixture });
     }
 }

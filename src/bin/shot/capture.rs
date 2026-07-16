@@ -16,6 +16,7 @@ use crate::demos::{
     build_demo_groups, build_demo_mixed_material, build_demo_overlap, build_demo_scene,
     build_demo_sketch_box, build_demo_sketch_extrude, build_demo_sketch_revolve,
     build_demo_cutter_def, build_demo_group_subtract, build_demo_intersect, build_demo_subtract,
+    build_demo_window_fixture,
     build_demo_two_material,
     build_demo_village,
     build_demo_village_far,
@@ -149,6 +150,8 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         build_demo_intersect(options.geometry.voxels_per_block)
     } else if options.demo_cutter_def {
         build_demo_cutter_def(options.geometry.voxels_per_block)
+    } else if options.demo_window_fixture {
+        build_demo_window_fixture(options.geometry.voxels_per_block)
     } else if options.demo_two_material {
         build_demo_two_material(options.geometry.voxels_per_block)
     } else if options.demo_mixed_material {
@@ -256,6 +259,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         || options.demo_group_subtract
         || options.demo_intersect
         || options.demo_cutter_def
+        || options.demo_window_fixture
         || options.demo_two_material
         || options.demo_mixed_material
         || options.demo_village

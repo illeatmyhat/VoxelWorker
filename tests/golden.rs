@@ -230,6 +230,18 @@ const CASES: &[GoldenCase] = &[
         name: "demo-cutter-def",
         args: &["--demo-cutter-def"],
     },
+    // ADR 0017 Decision 4 (#77): THE WINDOW golden — a Stone wall and ONE placement
+    // of a FIXTURE definition [opening cutter Subtract, Wood frame Union]. The def
+    // does not pre-compose: its children splice into the wall's scope at the
+    // instance's position, so the single placement both CUTS the 3×3-block opening
+    // through the wall AND FILLS the Wood frame bar along its bottom (daylight
+    // through the hole above a Wood sill). The cutter's Plain material appears
+    // nowhere (a spliced Subtract never stamps) and the instance's own operation is
+    // inert. This is the epic's finale golden: cut + fill from one Instance node.
+    GoldenCase {
+        name: "demo-window-fixture",
+        args: &["--demo-window-fixture"],
+    },
 ];
 
 /// The subset of [`CASES`] whose scene is CHUNKABLE (has an intrinsic-size leaf), i.e. the
@@ -284,6 +296,11 @@ const TWO_LAYER_CASE_NAMES: &[&str] = &[
     // definition-scope expansion under each instance's Subtract must classify +
     // resolve pixel-identical to the dense oracle at both placements.
     "demo-cutter-def",
+    // ADR 0017 Decision 4 (#77): the window-fixture scene through `--two-layer` —
+    // the frameless (spliced) definition expansion must classify + resolve
+    // pixel-identical to the dense oracle: the spliced cutter is a root cutter and
+    // the spliced frame a root additive leaf to the conservative fast paths.
+    "demo-window-fixture",
 ];
 
 /// ADR 0011 G1 (#67): the golden cases whose scene is a chunkable SINGLE producer with a

@@ -359,6 +359,25 @@
     }
 
     #[test]
+    fn set_definition_fixture_dispatches() {
+        // ADR 0017 Decision 4 (#77): SetDefinitionFixture is a DEFINITION field
+        // write — the flag lives on the AssemblyDef (being a fixture is what the
+        // part IS), so the dispatch mutates the definition, not any node.
+        let mut scene = two_tool_scene();
+        scene.active = Some(root_id(&scene, 0));
+        let def = scene
+            .make_definition_from_active("Window")
+            .expect("definition from the active node succeeds");
+        assert_dispatch_matches(
+            &scene,
+            Intent::SetDefinitionFixture { def, fixture: true },
+            |s| {
+                s.set_definition_fixture(def, true);
+            },
+        );
+    }
+
+    #[test]
     fn set_offset_dispatches() {
         let scene = two_tool_scene();
         let target = root_id(&scene, 1);

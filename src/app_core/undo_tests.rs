@@ -319,6 +319,17 @@
     }
 
     #[test]
+    fn set_definition_fixture_round_trips() {
+        // ADR 0017 Decision 4 (#77): the fixture flag is a DEFINITION field write,
+        // so the flip captures a definition-targeted field inverse — undo restores
+        // the sealed default, redo re-applies the splice.
+        let mut scene = two_tool_scene();
+        scene.active = Some(scene.roots[0]);
+        let def = scene.make_definition_from_active("Window").expect("def made");
+        assert_round_trips(&mut scene, Intent::SetDefinitionFixture { def, fixture: true });
+    }
+
+    #[test]
     fn placing_a_subtract_instance_undoes_to_intact_hosts() {
         // Issue #76 acceptance: the reusable-cutter placement gesture — AddInstance
         // then SetOperation(Subtract) on the minted node — undoes cleanly: two undos

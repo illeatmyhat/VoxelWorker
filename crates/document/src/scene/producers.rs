@@ -131,10 +131,13 @@ impl Scene {
     /// fold — a `Subtract` leaf removes occupancy from everything accumulated
     /// before it *in its scope*), and its **scope path** — the chain of
     /// enclosing sealed composition scopes (ADR 0017 Decision 3, issue #74):
-    /// every `Group` node and every `Instance`-expanded definition body on the
-    /// way down, outermost first, each carrying the SCOPE node's own operation
-    /// (see [`ScopeFrame`]). A scope pre-composes its leaves into one body; a
-    /// boolean inside it can never affect geometry outside it.
+    /// every `Group` node and every `Instance`-expanded SEALED definition body
+    /// on the way down, outermost first, each carrying the SCOPE node's own
+    /// operation (see [`ScopeFrame`]). A scope pre-composes its leaves into one
+    /// body; a boolean inside it can never affect geometry outside it. A
+    /// FIXTURE definition's expansion contributes NO frame (ADR 0017 Decision
+    /// 4, issue #77): its leaves splice into the hosting scope's fold carrying
+    /// the HOST's path, so they compose directly at the instance's position.
     pub(super) fn for_each_leaf(&self, visitor: &mut LeafVisitor<'_>) {
         let mut def_path: Vec<DefId> = Vec::new();
         let mut scope_path: Vec<ScopeFrame> = Vec::new();
@@ -262,18 +265,53 @@ impl Scene {
                         continue;
                     };
                     def_path.push(*def_id);
-                    // ADR 0017 Decision 3 (issue #74): a definition body is a SEALED
-                    // scope too — it pre-composes (internal booleans are fully spent
-                    // inside it), and the finished body folds into the parent under
-                    // the INSTANCE node's operation. The frame's identity is the
-                    // INSTANCE node (unique per placement), so two expansions of the
-                    // same definition are distinct scopes.
-                    scope_path.push(ScopeFrame {
-                        scope_node: node.id,
-                        operation: node.operation,
-                    });
-                    self.walk_nodes(&def.children, world_offset_voxels, def_path, scope_path, visitor);
-                    scope_path.pop();
+                    if def.fixture {
+                        // ADR 0017 Decision 4 (issue #77): a FIXTURE definition does
+                        // NOT pre-compose — NO scope frame is pushed, so its children
+                        // SPLICE into the HOSTING scope's fold at this instance's
+                        // spine position, in order, under the instance's transform
+                        // (`world_offset_voxels` composes exactly as for a sealed
+                        // body — the carried-frame discipline of ADR 0008; the host
+                        // is POSITIONAL, never a stored reference). The instance's
+                        // own `operation` is INERT (never consulted): each spliced
+                        // leaf folds under its OWN operation. The fixture pierces
+                        // exactly this ONE level of pre-composition — every scope
+                        // frame already on `scope_path` (the host scope's seal and
+                        // above) stays absolute. Invalidation: flipping a def's
+                        // fixture flag changes every expanded leaf's carried scope
+                        // path (the instance frame appears/disappears), so their
+                        // fingerprints change and the store re-classifies exactly
+                        // those leaves' AABBs — which contain every cell a splice
+                        // can differ in (Union adds / Subtract carves only within a
+                        // leaf's own body; an Intersect-influence leaf is already a
+                        // wholesale-clear fingerprint kind either way).
+                        self.walk_nodes(
+                            &def.children,
+                            world_offset_voxels,
+                            def_path,
+                            scope_path,
+                            visitor,
+                        );
+                    } else {
+                        // ADR 0017 Decision 3 (issue #74): a definition body is a
+                        // SEALED scope — it pre-composes (internal booleans are fully
+                        // spent inside it), and the finished body folds into the
+                        // parent under the INSTANCE node's operation. The frame's
+                        // identity is the INSTANCE node (unique per placement), so
+                        // two expansions of the same definition are distinct scopes.
+                        scope_path.push(ScopeFrame {
+                            scope_node: node.id,
+                            operation: node.operation,
+                        });
+                        self.walk_nodes(
+                            &def.children,
+                            world_offset_voxels,
+                            def_path,
+                            scope_path,
+                            visitor,
+                        );
+                        scope_path.pop();
+                    }
                     def_path.pop();
                 }
             }
@@ -793,7 +831,11 @@ pub(super) fn leaf_content_fingerprint(
     // composed body, whose cells all lie within its leaves' AABBs), so dirtying
     // every enclosed leaf's AABB dirties precisely the scope's subtree AABB. The
     // frame's stable `NodeId` (not a walk-order counter) keeps the fingerprint
-    // stable across unrelated edits.
+    // stable across unrelated edits. The same mechanism absorbs a definition's
+    // FIXTURE flip (ADR 0017 Decision 4, issue #77): sealed↔spliced changes every
+    // expanded leaf's carried path (the instance frame appears/disappears), so
+    // every placement's leaves re-fingerprint and their AABBs — which bound every
+    // cell the splice can differ in — are dirtied.
     //
     // NOTE the `Intersect` asymmetry (ADR 0017 / issue #75): the two locality claims
     // above hold for Union/Subtract only. An Intersect mask kills accumulated cells
@@ -876,8 +918,11 @@ pub struct LeafProducer {
     /// inside is `scope_path`.
     pub operation: CombineOp,
     /// The chain of enclosing sealed composition scopes (ADR 0017 Decision 3, issue
-    /// #74), outermost first — every `Group` and every `Instance`-expanded definition
-    /// body above this leaf, each frame carrying the SCOPE node's own [`CombineOp`].
+    /// #74), outermost first — every `Group` and every `Instance`-expanded SEALED
+    /// definition body above this leaf, each frame carrying the SCOPE node's own
+    /// [`CombineOp`]. A FIXTURE definition's expansion adds no frame (Decision 4,
+    /// issue #77): its leaves carry the HOSTING scope's path unchanged, which is
+    /// exactly what makes them splice into the host's fold.
     /// The flat list stays plain document order; a consumer reconstructs the
     /// depth-first fold's scope-open / scope-close markers by comparing adjacent
     /// leaves' paths (see [`ScopeFrame`]). Empty for a root-level leaf, which folds

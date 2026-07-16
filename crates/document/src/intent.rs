@@ -192,12 +192,28 @@ pub enum Intent {
     /// a leaf folds its own body, a Group folds its sealed composed body (Decision
     /// 3, issue #74), and an Instance folds the referenced definition's finished
     /// body — a definition instanced with `Subtract` is the reusable cutter
-    /// (issue #76).
+    /// (issue #76). EXCEPTION: on an Instance of a FIXTURE definition the operation
+    /// is INERT (Decision 4, issue #77 — the spliced children fold under their own
+    /// operations), so the inspector hides the selector there.
     SetOperation {
         /// The node to edit.
         target: NodeId,
         /// The new combine operation.
         operation: CombineOp,
+    },
+    /// Set the [`fixture`](crate::scene::AssemblyDef::fixture) flag of the
+    /// definition `def` (ADR 0017 Decision 4, issue #77;
+    /// [`Scene::set_definition_fixture`](crate::scene::Scene::set_definition_fixture)).
+    /// A fixture definition does not pre-compose: its children splice into the
+    /// hosting scope's fold at each instance's position, under the instance's
+    /// transform — being a fixture is what the part IS, so the flag is a
+    /// DEFINITION field write (instances stay pure reference+transform, their own
+    /// operation inert).
+    SetDefinitionFixture {
+        /// The definition to flag.
+        def: DefId,
+        /// Whether the definition splices (`true`) or pre-composes sealed (`false`).
+        fixture: bool,
     },
     /// Set the offset of `target`'s transform from a per-axis authored unit
     /// expression (ADR 0003 §3f(0)).

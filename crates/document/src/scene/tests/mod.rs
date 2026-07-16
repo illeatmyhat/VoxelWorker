@@ -9,6 +9,7 @@ mod subtract;
 mod sealed_scopes;
 mod intersect;
 mod cutter_definitions;
+mod fixture_definitions;
 
 /// Mint stable [`NodeId`]s for a freshly-built test scene and select the
 /// top-level node at `index` by id (ADR 0003 Phase B3: selection is keyed by

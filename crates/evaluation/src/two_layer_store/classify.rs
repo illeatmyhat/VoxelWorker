@@ -42,6 +42,12 @@ pub(crate) enum ScopedLeafStep<'leaf> {
 /// the filters above guarantee it cannot, because every leaf inside such a scope is
 /// Intersect-influence ([`LeafProducer::masks_beyond_bounds`]) and is never dropped.
 ///
+/// FIXTURE definitions (ADR 0017 Decision 4, issue #77) need no machinery here: a
+/// fixture's expansion contributes NO scope frame, so its leaves arrive carrying the
+/// HOSTING scope's path plus their own operations — to this fold (and to every
+/// conservative fast path reasoning over `operation` + `scope_path`) a fixture's
+/// Subtract child is indistinguishable from a scoped-or-root cutter authored in place.
+///
 /// `leaves` MUST be a document-order subsequence of one `Scene::leaf_producers` list (a
 /// filter, never a reorder) — the same precondition the callers already carry.
 pub(crate) fn scoped_leaf_steps<'leaf>(

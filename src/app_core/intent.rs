@@ -201,6 +201,17 @@ impl AppCore {
                 }),
                 None => Inverse::NoOp,
             },
+            Intent::SetDefinitionFixture { def, .. } => match scene.def_by_id(*def) {
+                // A DEFINITION field write (ADR 0017 Decision 4, issue #77): the
+                // fixture flag lives on the AssemblyDef, so the inverse captures the
+                // definition's prior flag — the same field-inverse shape as the
+                // node-targeted writes above.
+                Some(definition) => Inverse::Field(Intent::SetDefinitionFixture {
+                    def: *def,
+                    fixture: definition.fixture,
+                }),
+                None => Inverse::NoOp,
+            },
             Intent::SetOffset { target, .. } => match scene.node_by_id(*target) {
                 Some(node) => Inverse::Field(Intent::SetOffset {
                     target: *target,
@@ -378,6 +389,7 @@ impl AppCore {
             | Intent::SetSketch { .. }
             | Intent::SetMaterial { .. }
             | Intent::SetOperation { .. }
+            | Intent::SetDefinitionFixture { .. }
             | Intent::SetOffset { .. }
             | Intent::SetName { .. }
             | Intent::SetCloudSeed { .. }
@@ -508,6 +520,15 @@ impl AppCore {
                     }
                     None => false,
                 };
+                (if applied { full_effect } else { none }, None)
+            }
+            Intent::SetDefinitionFixture { def, fixture } => {
+                // ADR 0017 Decision 4 (issue #77): sealed↔spliced is what the part
+                // IS, so this writes the DEFINITION's flag. Every placement changes
+                // composition at once; the resolver's leaf fingerprints carry the
+                // scope path, which this flip changes for every expanded leaf, so
+                // the store re-classifies each instance's chunks.
+                let applied = scene.set_definition_fixture(def, fixture);
                 (if applied { full_effect } else { none }, None)
             }
             Intent::SetOffset { target, offset_measurements } => {
