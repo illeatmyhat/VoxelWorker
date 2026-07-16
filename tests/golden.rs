@@ -186,6 +186,17 @@ const CASES: &[GoldenCase] = &[
         name: "demo-overlap",
         args: &["--demo-overlap"],
     },
+    // ADR 0017 (#73): the CSG tracer bullet — a solid Stone box carved by a smaller box
+    // placed AFTER it under CombineOp::Subtract (the ordered document-order fold). The
+    // render shows a crisp cubic notch bitten out of the box's corner, and the cutter's
+    // own material (Wood) never appears: a Subtract is an occupancy-only mask, so every
+    // newly-exposed face inside the notch renders STONE. Pins the whole subtract path:
+    // document walk → conservative re-classification (coarse-solid corner blocks become
+    // boundary/air) → per-voxel boundary resolve → mesh.
+    GoldenCase {
+        name: "demo-subtract",
+        args: &["--demo-subtract"],
+    },
 ];
 
 /// The subset of [`CASES`] whose scene is CHUNKABLE (has an intrinsic-size leaf), i.e. the
@@ -222,6 +233,11 @@ const TWO_LAYER_CASE_NAMES: &[&str] = &[
     "sketch-revolve-dome",
     "sketch-extrude-l",
     "demo-overlap",
+    // ADR 0017 (#73): the subtract scene is chunkable and multi-producer, so the
+    // two-layer cross-check re-renders the carved box through `--two-layer` and pins it
+    // pixel-identical to the dense reference (the carve must classify + resolve the same
+    // on both paths).
+    "demo-subtract",
 ];
 
 /// ADR 0011 G1 (#67): the golden cases whose scene is a chunkable SINGLE producer with a

@@ -272,6 +272,45 @@
     }
 
     #[test]
+    fn set_operation_dispatches() {
+        // ADR 0017 (#73): SetOperation writes the leaf node's combine operation.
+        let scene = two_tool_scene();
+        let target = root_id(&scene, 0);
+        assert_dispatch_matches(
+            &scene,
+            Intent::SetOperation {
+                target,
+                operation: document::scene::CombineOp::Subtract,
+            },
+            |s| {
+                if let Some(node) = s.node_by_id_mut(target) {
+                    node.operation = document::scene::CombineOp::Subtract;
+                }
+            },
+        );
+    }
+
+    #[test]
+    fn set_operation_on_group_is_noop() {
+        // ADR 0017 sibling-level slice: a Group's operation is inert in the resolver
+        // (sealed scopes are issue #74), so SetOperation on a Group must no-op.
+        let mut scene = two_tool_scene();
+        scene.active = Some(root_id(&scene, 0));
+        let group = scene.group_active().expect("grouping the active node succeeds");
+        let mut core = test_core();
+        let mut applied = scene.clone();
+        let effect = core.apply_intent(
+            &mut applied,
+            Intent::SetOperation {
+                target: group,
+                operation: document::scene::CombineOp::Subtract,
+            },
+        );
+        assert_eq!(applied, scene);
+        assert_eq!(effect, IntentEffect::none());
+    }
+
+    #[test]
     fn set_offset_dispatches() {
         let scene = two_tool_scene();
         let target = root_id(&scene, 1);

@@ -40,7 +40,7 @@ use super::*;
     /// `Scene::resolve_region`, for the gated scene. Mirrors
     /// `store.rs::cache_region_matches_monolithic_*`. Returns the chunk + cell counts the
     /// build classified (so the harness can report coverage).
-    fn assert_two_layer_round_trip_matches_dense(
+    pub(super) fn assert_two_layer_round_trip_matches_dense(
         scene: &Scene,
         voxels_per_block: u32,
         label: &str,

@@ -2,8 +2,8 @@
 //! texture-stem file helpers they and the `--force-demo-stem` path share.
 
 use voxel_worker::{
-    DefId, MaterialChoice, Node, NodeBuilder, NodeContent, PlaneAxis, RevolveAxis, Scene, SdfShape,
-    ShapeKind, Sketch, SketchPoint, SketchSolid,
+    CombineOp, DefId, MaterialChoice, Node, NodeBuilder, NodeContent, PlaneAxis, RevolveAxis,
+    Scene, SdfShape, ShapeKind, Sketch, SketchPoint, SketchSolid,
 };
 
 /// The block offset of the far-offset demo box (ADR 0002 streaming S1; S4b makes it
@@ -150,6 +150,33 @@ pub(crate) fn build_demo_overlap(voxels_per_block: u32) -> Scene {
     let mut scene = selecting_first_node(Scene::from_nodes(vec![
         make(ShapeKind::Box, [0, 0, 0], MaterialChoice::Stone),
         make(ShapeKind::Box, [2, 2, 0], MaterialChoice::Wood),
+    ]));
+    scene.voxels_per_block = voxels_per_block;
+    scene
+}
+
+/// Build the `--demo-subtract` (ADR 0017 / #73): a solid Stone box CARVED by a smaller
+/// box placed AFTER it under [`CombineOp::Subtract`] — the ordered-fold tracer golden. The
+/// cutter is a 2³-block box overlapping the Stone box's top +X/+Y corner octant, so the
+/// render shows a crisp cubic NOTCH bitten out of the corner. The cutter deliberately
+/// carries the WOOD material: a Subtract is an occupancy-only mask that never stamps, so
+/// every newly-exposed face inside the notch must render STONE — visible proof that
+/// surviving cells keep their material.
+///
+/// [`CombineOp::Subtract`]: voxel_worker::CombineOp
+pub(crate) fn build_demo_subtract(voxels_per_block: u32) -> Scene {
+    let make = |size: [u32; 3], offset: [i64; 3], material, operation, name: &str| {
+        let shape = SdfShape::from_blocks(ShapeKind::Box, size, 1, voxels_per_block);
+        let mut node = Node::new(name, NodeContent::Tool { shape, material });
+        node.transform = document::scene::NodeTransform::from_blocks(offset, voxels_per_block);
+        node.operation = operation;
+        node
+    };
+    let mut scene = selecting_first_node(Scene::from_nodes(vec![
+        make([4, 4, 4], [0, 0, 0], MaterialChoice::Stone, CombineOp::Union, "Body"),
+        // Placed AFTER the body ⇒ it carves it (document-order fold). Spans blocks
+        // [2, 4)³ inside the body plus empty space beyond — the corner octant notch.
+        make([2, 2, 2], [2, 2, 2], MaterialChoice::Wood, CombineOp::Subtract, "Cutter"),
     ]));
     scene.voxels_per_block = voxels_per_block;
     scene

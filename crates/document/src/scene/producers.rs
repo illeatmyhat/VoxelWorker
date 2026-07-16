@@ -75,6 +75,12 @@ pub enum NodeContent {
     Instance(DefId),
 }
 
+/// The [`Scene::for_each_leaf`] / [`Scene::walk_nodes`] visitor callback: invoked once per
+/// visible leaf with `(world_offset_voxels, content, grid_on_faces, operation)` — the
+/// accumulated world VOXEL offset, the leaf content, the node's on-face-grid flag (issue
+/// #29 S4), and the node's [`CombineOp`] role in the ordered fold (ADR 0017).
+pub(super) type LeafVisitor<'walk> = dyn FnMut([i64; 3], &NodeContent, bool, CombineOp) + 'walk;
+
 impl Scene {
     /// Walk the whole node tree depth-first, invoking
     /// `visitor(world_offset_voxels, leaf)` once for every **visible leaf** (`Tool`
@@ -90,11 +96,16 @@ impl Scene {
     ///
     /// [`walk_nodes`]: Self::walk_nodes
     /// The visitor receives, per visible leaf: its accumulated world VOXEL
-    /// offset, its content, and its own `grids.voxel_grid_on_faces` flag (issue
+    /// offset, its content, its own `grids.voxel_grid_on_faces` flag (issue
     /// #29 S4 — the resolver ORs [`crate::voxel::GRID_OVERLAY_BIT`] into the
     /// leaf's stamped `material_id` when this is set, so the on-face voxel grid
-    /// travels with each voxel through chunk bucketing).
-    pub(super) fn for_each_leaf(&self, visitor: &mut dyn FnMut([i64; 3], &NodeContent, bool)) {
+    /// travels with each voxel through chunk bucketing), and its own
+    /// [`CombineOp`] (ADR 0017: the leaf's role in the ordered document-order
+    /// fold — a `Subtract` leaf removes occupancy from everything accumulated
+    /// before it). Group / Instance node operations are NOT consulted in this
+    /// sibling-level slice (sealed scopes are issue #74); a leaf inside a Group
+    /// carries its OWN operation into the flat walk.
+    pub(super) fn for_each_leaf(&self, visitor: &mut LeafVisitor<'_>) {
         let mut def_path: Vec<DefId> = Vec::new();
         self.walk_nodes(&self.roots, [0, 0, 0], &mut def_path, visitor);
     }
@@ -113,7 +124,7 @@ impl Scene {
     pub fn leaf_producers(&self, voxels_per_block: u32) -> Vec<LeafProducer> {
         let region_dimensions = self.placed_region_dimensions(voxels_per_block);
         let mut leaves = Vec::new();
-        self.for_each_leaf(&mut |world_offset_voxels, content, grid_on_faces| {
+        self.for_each_leaf(&mut |world_offset_voxels, content, grid_on_faces, operation| {
             let (material, producer): (Option<voxel_core::core_geom::BlockId>, Box<dyn VoxelProducer>) =
                 match content {
                     NodeContent::Tool { shape, material } => {
@@ -136,6 +147,7 @@ impl Scene {
                 producer,
                 material,
                 grid_overlay: grid_on_faces,
+                operation,
             });
         });
         leaves
@@ -151,7 +163,7 @@ impl Scene {
         spine: &[NodeId],
         parent_offset: [i64; 3],
         def_path: &mut Vec<DefId>,
-        visitor: &mut dyn FnMut([i64; 3], &NodeContent, bool),
+        visitor: &mut LeafVisitor<'_>,
     ) {
         // GOLDEN-CRITICAL (ADR 0003 B5): iterate the id-spine for ORDER (document
         // order = later-wins on overlap), fetching each node's content from the
@@ -173,7 +185,15 @@ impl Scene {
                 NodeContent::Tool { .. }
                 | NodeContent::SketchTool { .. }
                 | NodeContent::Part(_) => {
-                    visitor(world_offset_voxels, &node.content, node.grids.voxel_grid_on_faces);
+                    // ADR 0017 (sibling-level slice): the leaf carries its OWN
+                    // `operation` into the flat walk; Group / Instance operations
+                    // stay ignored until sealed scopes land (issue #74).
+                    visitor(
+                        world_offset_voxels,
+                        &node.content,
+                        node.grids.voxel_grid_on_faces,
+                        node.operation,
+                    );
                 }
                 NodeContent::Group(children) => {
                     self.walk_nodes(children, world_offset_voxels, def_path, visitor);
@@ -274,7 +294,7 @@ impl Scene {
         // without overflow; the result is downcast to f32 inside the stamp (the
         // render frame stays f32 — S4b makes the far case byte-identical via origin
         // rebasing).
-        self.for_each_leaf(&mut |world_offset_voxels, content, grid_on_faces| {
+        self.for_each_leaf(&mut |world_offset_voxels, content, grid_on_faces, operation| {
             // Every producer corner-anchors its grid at its world voxel offset (the low
             // corner); the recentre (from the producer-true voxel frame) symmetrises the
             // composite about the origin for ALL size·d parities, so no per-leaf lattice
@@ -284,6 +304,28 @@ impl Scene {
                 world_offset_voxels[1] - recentre_voxels[1],
                 world_offset_voxels[2] - recentre_voxels[2],
             ];
+            // ADR 0017: a Subtract leaf is an occupancy-only mask — it CARVES its
+            // body out of everything stamped before it (document order) and never
+            // stamps material, so it takes the carve path instead of a stamp.
+            if operation == CombineOp::Subtract {
+                let producer: Box<dyn VoxelProducer> = match content {
+                    NodeContent::Tool { shape, .. } => Box::new(shape.clone()),
+                    NodeContent::SketchTool { producer, .. } => Box::new(producer.clone()),
+                    NodeContent::Part(Part::DebugClouds { seed }) => Box::new(DebugCloudField {
+                        dimensions: region_dimensions,
+                        seed: *seed,
+                    }),
+                    NodeContent::Group(_) | NodeContent::Instance(_) => return,
+                };
+                carve_producer(
+                    &mut output,
+                    region_dimensions,
+                    translation_voxels,
+                    producer.as_ref(),
+                    voxels_per_block,
+                );
+                return;
+            }
             match content {
                 NodeContent::Tool { shape, material } => {
                     stamp_producer(
@@ -445,7 +487,7 @@ impl Scene {
         // only the voxels whose absolute centre falls in this chunk's box.
         let region_dimensions = self.placed_region_dimensions(voxels_per_block);
         let chunk_box = VoxelAabb::new(chunk_min_voxels, chunk_max_voxels);
-        self.for_each_leaf(&mut |world_offset_voxels, content, grid_on_faces| {
+        self.for_each_leaf(&mut |world_offset_voxels, content, grid_on_faces, operation| {
             // Issue #27 S3 optimisation: skip a leaf whose world-AABB doesn't touch
             // this chunk, so resolving one chunk costs ~the leaves that overlap it
             // (not the whole tree). This is BIT-IDENTICAL to stamping-then-clipping:
@@ -494,6 +536,23 @@ impl Scene {
                 ),
                 NodeContent::Group(_) | NodeContent::Instance(_) => return,
             };
+            // ADR 0017: a Subtract leaf carves its body's cells OUT of the voxels
+            // stamped so far in this chunk (occupancy-only — no material, no stamp).
+            // A leaf whose AABB missed the chunk was already skipped above (it
+            // carves nothing here), so this sees only genuinely-overlapping cutters.
+            if operation == CombineOp::Subtract {
+                carve_producer_from_chunk(
+                    &mut output,
+                    region_dimensions,
+                    translation_voxels,
+                    floating_origin_voxels,
+                    producer.as_ref(),
+                    voxels_per_block,
+                    chunk_min_voxels,
+                    chunk_max_voxels,
+                );
+                return;
+            }
             stamp_producer_into_chunk(
                 &mut output,
                 region_dimensions,
@@ -568,6 +627,7 @@ pub(super) fn leaf_content_fingerprint(
     world_offset_voxels: [i64; 3],
     content: &NodeContent,
     grid_on_faces: bool,
+    operation: CombineOp,
 ) -> String {
     // The on-face-grid flag is baked into the resolved voxels as `GRID_OVERLAY_BIT`
     // (issue #29 S4), so two otherwise-identical leaves that differ only in this flag
@@ -577,20 +637,33 @@ pub(super) fn leaf_content_fingerprint(
     // grid-less chunks in place until an unrelated edit evicts them. The embedded
     // offset is voxels (the canonical placement unit, ADR 0003 §3f(0)); it is an
     // opaque cache key, all leaves on the same unit for consistency.
+    //
+    // The leaf's `CombineOp` (ADR 0017) is fingerprinted for the same reason: a
+    // Union↔Subtract flip changes the composite's voxels WITHIN the leaf's own
+    // AABB (a cutter only ever removes cells its body covers), so the flip must
+    // dirty exactly that AABB — and the store's dirtied chunks are RE-CLASSIFIED
+    // (a Subtract can turn coarse-solid blocks into boundary or air), not merely
+    // re-meshed.
     let grid = if grid_on_faces { ":grid=1" } else { ":grid=0" };
+    let op = match operation {
+        CombineOp::Union => ":op=union",
+        CombineOp::Subtract => ":op=subtract",
+    };
     match content {
         NodeContent::Tool { shape, material } => {
-            format!("Tool@{world_offset_voxels:?}:{shape:?}:{material:?}{grid}")
+            format!("Tool@{world_offset_voxels:?}:{shape:?}:{material:?}{grid}{op}")
         }
         NodeContent::SketchTool { producer, material } => {
-            format!("SketchTool@{world_offset_voxels:?}:{producer:?}:{material:?}{grid}")
+            format!("SketchTool@{world_offset_voxels:?}:{producer:?}:{material:?}{grid}{op}")
         }
-        NodeContent::Part(part) => format!("Part@{world_offset_voxels:?}:{part:?}{grid}"),
+        NodeContent::Part(part) => format!("Part@{world_offset_voxels:?}:{part:?}{grid}{op}"),
         // for_each_leaf only ever yields leaf content (Tool / SketchTool / Part);
         // Group / Instance are interior and never reach a visitor. Fingerprint
         // defensively anyway.
-        NodeContent::Group(_) => format!("Group@{world_offset_voxels:?}{grid}"),
-        NodeContent::Instance(def_id) => format!("Instance@{world_offset_voxels:?}:{def_id:?}{grid}"),
+        NodeContent::Group(_) => format!("Group@{world_offset_voxels:?}{grid}{op}"),
+        NodeContent::Instance(def_id) => {
+            format!("Instance@{world_offset_voxels:?}:{def_id:?}{grid}{op}")
+        }
     }
 }
 
@@ -625,6 +698,13 @@ pub struct LeafProducer {
     /// [`voxel_core::voxel::Voxel::grid_overlay`]. It is a RENDER hint only: it never enters the
     /// categorical `block_id`, the chunk codec, or `.vox` export (§3c).
     pub grid_overlay: bool,
+    /// The leaf's [`CombineOp`] role in the ordered document-order fold (ADR 0017):
+    /// `Union` stamps (later-wins material on overlap); `Subtract` is an
+    /// occupancy-only mask that removes cells accumulated before it and never
+    /// stamps material. This is the owning NODE's operation — a leaf inside a
+    /// Group carries its own operation into the flat list (sibling-level slice;
+    /// sealed scopes are issue #74).
+    pub operation: CombineOp,
 }
 
 pub(super) fn leaf_producer_grid_voxels(content: &NodeContent, _voxels_per_block: u32) -> Option<[i64; 3]> {
@@ -721,6 +801,47 @@ fn stamp_producer(
         output.occupied.push(voxel);
     }
 }
+
+/// Resolve `producer` into its own local grid and **carve** it out of `output`:
+/// every output voxel whose index coincides with one of the producer's occupied
+/// cells (translated by `translation_voxels`) is REMOVED (ADR 0017 Decision 1 —
+/// `Subtract` is an occupancy-only mask). Material and overlay of the surviving
+/// voxels are untouched; the cutter's own material never enters the output.
+///
+/// The carve sibling of [`stamp_producer`], and like it a private helper of the
+/// dense [`Scene::resolve_region`] oracle only, so it carries the same `oracle`
+/// compile gate (see the proof chapter's "Oracles" section,
+/// `docs/architecture/05-proof.md`).
+#[cfg(any(test, feature = "oracle"))]
+fn carve_producer(
+    output: &mut VoxelGrid,
+    region_dimensions: [u32; 3],
+    translation_voxels: [i64; 3],
+    producer: &dyn VoxelProducer,
+    voxels_per_block: u32,
+) {
+    let mut local = VoxelGrid::new(region_dimensions);
+    producer.resolve(&mut local, voxels_per_block);
+
+    // The cutter's occupied INTEGER indices in the output's frame (the same
+    // i64-then-downcast translation the stamp applies, so a carved cell coincides
+    // bit-exactly with the stamped cell it removes).
+    let carved: std::collections::HashSet<[i32; 3]> = local
+        .occupied
+        .iter()
+        .map(|voxel| {
+            [
+                (voxel.local_index[0] as i64 + translation_voxels[0]) as i32,
+                (voxel.local_index[1] as i64 + translation_voxels[1]) as i32,
+                (voxel.local_index[2] as i64 + translation_voxels[2]) as i32,
+            ]
+        })
+        .collect();
+    output
+        .occupied
+        .retain(|voxel| !carved.contains(&voxel.local_index));
+}
+
 /// Resolve `producer` into its own origin-centred local grid, translate it by
 /// `translation_voxels` (the node's WORLD placement × density — **no recentre**),
 /// and stamp only the voxels whose absolute centre falls in the half-open chunk
@@ -813,4 +934,66 @@ fn stamp_producer_into_chunk(
         voxel.grid_overlay = grid_overlay;
         output.occupied.push(voxel);
     }
+}
+
+/// Resolve `producer`'s cells inside the chunk window and **carve** them out of
+/// `output`: every already-stamped voxel whose (rebased) index coincides with one
+/// of the cutter's cells is REMOVED (ADR 0017 Decision 1 — `Subtract` is an
+/// occupancy-only mask; surviving voxels keep their material and overlay).
+///
+/// The carve sibling of [`stamp_producer_into_chunk`]: the same local resolve
+/// window (`[chunk_min, chunk_max)` mapped into the producer's local frame — a
+/// cutter cell outside this chunk can only affect OTHER chunks) and the same
+/// i64-before-f32-downcast rebase to `floating_origin_voxels`, so the carved
+/// index coincides bit-exactly with the stamped index it removes.
+#[allow(clippy::too_many_arguments)]
+fn carve_producer_from_chunk(
+    output: &mut VoxelGrid,
+    region_dimensions: [u32; 3],
+    translation_voxels: [i64; 3],
+    floating_origin_voxels: [i64; 3],
+    producer: &dyn VoxelProducer,
+    voxels_per_block: u32,
+    chunk_min_voxels: [i64; 3],
+    chunk_max_voxels: [i64; 3],
+) {
+    // Resolve ONLY the cutter cells this chunk owns, in the producer's LOCAL
+    // voxel-index frame — the identical window arithmetic as the stamp (see
+    // `stamp_producer_into_chunk` for the half-open-edge derivation).
+    let mut local = VoxelGrid::new(region_dimensions);
+    let window_local = voxel_core::spatial_index::VoxelAabb::new(
+        [
+            chunk_min_voxels[0] - translation_voxels[0],
+            chunk_min_voxels[1] - translation_voxels[1],
+            chunk_min_voxels[2] - translation_voxels[2],
+        ],
+        [
+            chunk_max_voxels[0] - translation_voxels[0],
+            chunk_max_voxels[1] - translation_voxels[1],
+            chunk_max_voxels[2] - translation_voxels[2],
+        ],
+    );
+    producer.resolve_into(&mut local, voxels_per_block, window_local);
+
+    // Rebase the cutter's indices exactly as the stamp rebases stamped ones (pure
+    // i64 subtraction BEFORE the downcast), so carve and stamp agree bit-exactly.
+    let rebased_translation = [
+        translation_voxels[0] - floating_origin_voxels[0],
+        translation_voxels[1] - floating_origin_voxels[1],
+        translation_voxels[2] - floating_origin_voxels[2],
+    ];
+    let carved: std::collections::HashSet<[i32; 3]> = local
+        .occupied
+        .iter()
+        .map(|voxel| {
+            [
+                (voxel.local_index[0] as i64 + rebased_translation[0]) as i32,
+                (voxel.local_index[1] as i64 + rebased_translation[1]) as i32,
+                (voxel.local_index[2] as i64 + rebased_translation[2]) as i32,
+            ]
+        })
+        .collect();
+    output
+        .occupied
+        .retain(|voxel| !carved.contains(&voxel.local_index));
 }

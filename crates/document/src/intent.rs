@@ -21,7 +21,7 @@
 use serde::{Deserialize, Serialize};
 
 use voxel_core::core_geom::MaterialChoice;
-use crate::scene::{DefId, Node, NodeContent, NodeGrids, NodeId, Part};
+use crate::scene::{CombineOp, DefId, Node, NodeContent, NodeGrids, NodeId, Part};
 use crate::sketch::SketchSolid;
 use voxel_core::units::Measurement;
 use crate::voxel::SdfShape;
@@ -185,6 +185,17 @@ pub enum Intent {
         target: NodeId,
         /// The new material.
         material: MaterialChoice,
+    },
+    /// Set the [`CombineOp`] of the LEAF node `target` (ADR 0017: the node's role
+    /// in the ordered document-order fold — `Subtract` carves everything
+    /// accumulated before it among its siblings). A no-op for a Group / Instance
+    /// node (this sibling-level slice ignores their operations; sealed scopes are
+    /// issue #74).
+    SetOperation {
+        /// The leaf node to edit.
+        target: NodeId,
+        /// The new combine operation.
+        operation: CombineOp,
     },
     /// Set the offset of `target`'s transform from a per-axis authored unit
     /// expression (ADR 0003 §3f(0)).

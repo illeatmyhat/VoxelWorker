@@ -189,6 +189,22 @@ impl AppCore {
                 },
                 None => Inverse::NoOp,
             },
+            Intent::SetOperation { target, .. } => match scene.node_by_id(*target) {
+                // The operation is a LEAF-node field in this slice (ADR 0017
+                // sibling-level; Group / Instance operations stay inert until
+                // sealed scopes, issue #74), so only a leaf captures an inverse —
+                // mirroring the dispatch's leaf-only apply.
+                Some(node) => match &node.content {
+                    NodeContent::Tool { .. }
+                    | NodeContent::SketchTool { .. }
+                    | NodeContent::Part(_) => Inverse::Field(Intent::SetOperation {
+                        target: *target,
+                        operation: node.operation,
+                    }),
+                    _ => Inverse::NoOp,
+                },
+                None => Inverse::NoOp,
+            },
             Intent::SetOffset { target, .. } => match scene.node_by_id(*target) {
                 Some(node) => Inverse::Field(Intent::SetOffset {
                     target: *target,
@@ -365,6 +381,7 @@ impl AppCore {
             | Intent::SetShape { .. }
             | Intent::SetSketch { .. }
             | Intent::SetMaterial { .. }
+            | Intent::SetOperation { .. }
             | Intent::SetOffset { .. }
             | Intent::SetName { .. }
             | Intent::SetCloudSeed { .. }
@@ -473,6 +490,25 @@ impl AppCore {
                         // material edit applies to them too (ADR 0003 §3i).
                         NodeContent::SketchTool { material: node_material, .. } => {
                             *node_material = material;
+                            true
+                        }
+                        _ => false,
+                    },
+                    None => false,
+                };
+                (if applied { full_effect } else { none }, None)
+            }
+            Intent::SetOperation { target, operation } => {
+                // ADR 0017 (sibling-level slice): the combine operation is a LEAF
+                // field — a Group / Instance operation is inert in the resolver, so
+                // setting it would be a silent no-effect edit; no-op instead (the
+                // inspector only offers the selector on leaf nodes).
+                let applied = match scene.node_by_id_mut(target) {
+                    Some(node) => match &node.content {
+                        NodeContent::Tool { .. }
+                        | NodeContent::SketchTool { .. }
+                        | NodeContent::Part(_) => {
+                            node.operation = operation;
                             true
                         }
                         _ => false,

@@ -70,17 +70,24 @@ impl NodePath {
     }
 }
 
-/// How a node combines with the nodes resolved before it. v1 only ever
-/// constructs [`CombineOp::Union`]; the enum exists so subtract / intersect /
-/// override become a data change on the node rather than a re-architecture
-/// (ADR 0001 decision 1).
+/// How a node combines with the nodes resolved before it (ADR 0001 decision 1;
+/// ADR 0017 the ordered fold). Composition is an ordered document-order fold:
+/// within a scope, each node folds into the result accumulated by the nodes
+/// BEFORE it under its own `CombineOp` — no operand targeting, ever (ADR 0017
+/// Decision 2). Geometry is protected by *placement* (after the cutter), never
+/// by per-operation target selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum CombineOp {
     /// Additive: the output occupied set is the OR of the contributing nodes; on
     /// overlap the later node wins the material.
     #[default]
     Union,
-    // future: Subtract, Intersect, Override, …
+    /// Subtractive: an **occupancy-only mask** (ADR 0017 Decision 1) — the node's
+    /// body REMOVES occupancy from everything accumulated before it among its
+    /// siblings. It never stamps material; surviving cells keep the material they
+    /// already had.
+    Subtract,
+    // future: Intersect (ADR 0017 Decision 1 — issue #75), Override, …
 }
 /// Per-node grid display settings (issue #29 grid rework, S1). Each grid type a
 /// node can show is gated by a scene-wide master ANDed with the node's own flag;

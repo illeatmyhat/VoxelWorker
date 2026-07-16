@@ -142,8 +142,19 @@ use super::*;
             b.remove_node(interior_id);
             ("remove", b)
         };
+        let operation_flip = {
+            // ADR 0017 (#73): flip the subject Union→Subtract — it becomes a cutter
+            // (here carving nothing, so its own chunks empty out). The flip must be
+            // localisable (the operation is part of the leaf fingerprint, so the diff
+            // dirties exactly the leaf's AABB) and the dirtied chunks must
+            // RE-CLASSIFY, not merely re-mesh: solid blocks become air.
+            let mut b = scene_a.clone();
+            b.root_node_mut(1).operation = document::scene::CombineOp::Subtract;
+            ("operation-flip", b)
+        };
 
-        for (label, scene_b) in [recolor, resize, move_node, add_node, remove_node] {
+        for (label, scene_b) in [recolor, resize, move_node, add_node, remove_node, operation_flip]
+        {
             // Incremental: wholesale-build A, then apply the single edit and re-fill.
             let mut cache = TwoLayerResidentCache::enabled();
             let total_before = {

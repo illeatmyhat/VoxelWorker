@@ -22,6 +22,7 @@ use voxel_core::voxel::VoxelGrid;
 mod core;
 mod streaming;
 mod incremental;
+mod subtract;
 
     pub(super) fn shape_scene(kind: ShapeKind, voxels_per_block: u32) -> Scene {
         Scene::from_geometry(

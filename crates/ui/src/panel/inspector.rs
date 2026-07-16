@@ -4,7 +4,7 @@
 use super::palette::SHAPE_CHIPS;
 use super::{PanelResponse, PanelState};
 use document::intent::Intent;
-use document::scene::{NodeContent, Part};
+use document::scene::{CombineOp, NodeContent, Part};
 use document::sketch::{Operation, PlaneAxis, RevolveAxis, Sketch, SketchSolid};
 use document::voxel::SdfShape;
 use voxel_core::core_geom::MaterialChoice;
@@ -45,6 +45,11 @@ pub(super) fn build_inspector_section(
 
     match kind {
         ActiveKind::Tool => {
+            // ADR 0017: the combine-operation selector shows on LEAF nodes only
+            // (Tool / Sketch / Clouds Part) — Group / Instance operations are inert
+            // in this sibling-level slice (sealed scopes are issue #74), so they get
+            // no selector.
+            build_operation_section(ui, state, response);
             // ADR 0003 Phase C C4a: the inspector still binds the widgets to the
             // `geometry`/`material` mirror buffer (egui needs the `&mut`), but a change
             // now EMITS the matching intent instead of calling `write_mirror_to_active`.
@@ -90,11 +95,13 @@ pub(super) fn build_inspector_section(
             build_node_grids_section(ui, state, response);
         }
         ActiveKind::Sketch => {
+            build_operation_section(ui, state, response);
             build_sketch_inspector_section(ui, state, response);
             build_offset_section(ui, state, response);
             build_node_grids_section(ui, state, response);
         }
         ActiveKind::Part => {
+            build_operation_section(ui, state, response);
             build_part_inspector_section(ui, state, response);
             build_offset_section(ui, state, response);
             build_node_grids_section(ui, state, response);
@@ -464,6 +471,51 @@ fn build_sketch_inspector_section(
     if build_material_section(ui, state, response) {
         response.emit(Intent::SetMaterial { target, material: state.material });
     }
+}
+
+/// Combine-operation selector (ADR 0017): how the active LEAF node folds into the
+/// result accumulated before it among its siblings — `Union` adds (later-wins
+/// material on overlap), `Subtract` carves (an occupancy-only mask that never
+/// stamps material). Shown ONLY on leaf nodes (Tool / Sketch / Clouds Part); Group
+/// / Instance operations are inert in this sibling-level slice (sealed scopes are
+/// issue #74). A change emits `Intent::SetOperation` WITHOUT an auto-frame (a
+/// cutter flip never changes the composite extent — the cutter's AABB already
+/// contributes to it — so the camera stays put, like a material pick).
+fn build_operation_section(
+    ui: &mut egui::Ui,
+    state: &mut PanelState,
+    response: &mut PanelResponse,
+) {
+    let Some(target) = state.scene.active else {
+        return;
+    };
+    let Some(node) = state.scene.active_node() else {
+        return;
+    };
+    let current = node.operation;
+
+    /// The selector label for a combine operation.
+    fn operation_label(operation: CombineOp) -> &'static str {
+        match operation {
+            CombineOp::Union => "Union",
+            CombineOp::Subtract => "Subtract",
+        }
+    }
+
+    ui.add_space(8.0);
+    ui.strong("Operation");
+    let mut selected = current;
+    egui::ComboBox::from_id_salt(("node_combine_operation", target))
+        .selected_text(operation_label(selected))
+        .show_ui(ui, |ui| {
+            for option in [CombineOp::Union, CombineOp::Subtract] {
+                ui.selectable_value(&mut selected, option, operation_label(option));
+            }
+        });
+    if selected != current {
+        response.emit(Intent::SetOperation { target, operation: selected });
+    }
+    ui.separator();
 }
 
 /// Offset (placement) section (ADR 0003 §3f(0)): three per-axis text fields

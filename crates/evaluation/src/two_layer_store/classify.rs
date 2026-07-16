@@ -1,11 +1,11 @@
 //! The interval-bound block classifier (air / coarse-solid / boundary) + boundary-block per-voxel resolve + seam-solidity computation.
 
 
-use substrate::solids::{CellClassification, CellContribution};
+use substrate::solids::{CellClassification, CellCombineOp, CellContribution};
 
 use voxel_core::core_geom::{BlockId, CellKey};
 use crate::cuboid::{decompose_into_boxes, VoxelRegion};
-use document::scene::LeafProducer;
+use document::scene::{CombineOp, LeafProducer};
 use voxel_core::spatial_index::VoxelAabb;
 use voxel_core::voxel::{VoxelGrid, SURFACE_ISOLEVEL};
 use document::voxel::FieldClassification;
@@ -25,12 +25,14 @@ use super::*;
 /// [`stamp_producer_into_chunk`](crate::scene) uses for its resolve window).
 ///
 /// Returns:
-/// * [`BlockClassification::Air`] iff EVERY overlapping leaf provably misses the block
-///   (and no leaf is unboundable) — the conservative interval guarantees brute force
-///   finds zero voxels.
-/// * [`BlockClassification::CoarseSolid`] iff a single leaf provably fills the WHOLE block
-///   solid (a Union's nearer surface wins) — every voxel occupied, one material.
-/// * [`BlockClassification::Boundary`] otherwise (straddling, multi-leaf overlap that
+/// * [`BlockClassification::Air`] iff the ordered fold provably leaves the block empty
+///   (every overlapping Union leaf misses it, or an overlapping Subtract leaf provably
+///   carves it whole; no leaf unboundable) — the conservative interval guarantees brute
+///   force finds zero voxels.
+/// * [`BlockClassification::CoarseSolid`] iff a single Union leaf provably fills the
+///   WHOLE block solid AND the fold (which carries any Subtract intervals, ADR 0017)
+///   still proves solidity — every voxel occupied, one material.
+/// * [`BlockClassification::Boundary`] otherwise (straddling, multi-Union overlap that
 ///   can't be proven uniformly solid, or any unboundable leaf) — the always-safe verdict.
 ///
 /// The classifier is CONSERVATIVE: a block it calls AIR or COARSE-SOLID is occupancy-
@@ -59,17 +61,34 @@ pub(crate) fn classify_chunk_block(
         }
     }
 
-    if overlapping.is_empty() {
-        // No leaf touches the block ⇒ provably empty.
+    // ADR 0017: composition is an ordered document-order fold. Within THIS block,
+    // the accumulated result before a leaf is the fold of the earlier OVERLAPPING
+    // leaves (a non-overlapping leaf contributes nothing here: a dropped Union adds
+    // no occupancy, a dropped Subtract carves none). A Subtract leaf that precedes
+    // the first overlapping Union leaf therefore carves from NOTHING — drop it so
+    // the substrate fold (which seeds its running interval with the FIRST
+    // contribution regardless of role) never seeds on a cutter's body.
+    let leading_subtract_count = overlapping
+        .iter()
+        .take_while(|leaf| leaf.operation == CombineOp::Subtract)
+        .count();
+    let contributions: &[&LeafProducer] = &overlapping[leading_subtract_count..];
+
+    if contributions.is_empty() {
+        // No Union leaf touches the block (only cutters, or nothing at all) ⇒
+        // provably empty: a Subtract can only remove occupancy, never add it.
         return BlockClassification::Air;
     }
 
-    // v1 composes leaves by Union (CombineOp::Union, later-wins material on overlap). Fold the
-    // per-leaf conservative field intervals through the substrate black/white/grey classifier
-    // (`CellClassification`): union of intervals + 3-way verdict, `None` iff any leaf is
-    // unboundable ⇒ BOUNDARY. Leaf iteration + the local-frame map stay HERE (domain).
+    // Fold the per-leaf conservative field intervals through the substrate
+    // black/white/grey classifier (`CellClassification`) under each leaf's CSG role
+    // (ADR 0017: Union = min-of-fields, Subtract = the conservative difference
+    // `max(running, −operand)` — Duff 1992 interval arithmetic, so a Subtract
+    // operand can only degrade a verdict toward Boundary/Air-it-can-prove, never
+    // claim solidity). `None` iff any leaf is unboundable ⇒ BOUNDARY. Leaf
+    // iteration + the local-frame map stay HERE (domain).
     let verdict = CellClassification::classify(
-        overlapping.iter().map(|leaf| {
+        contributions.iter().map(|leaf| {
             // Map the absolute block box into THIS leaf's local voxel-index frame `[0, full)`
             // by subtracting its world offset — the exact frame `cell_field_interval` expects
             // (ADR 0008: the frame is carried, never re-derived).
@@ -85,13 +104,21 @@ pub(crate) fn classify_chunk_block(
                     block_abs_voxels.max[2] - leaf.world_offset_voxels[2],
                 ],
             );
-            CellContribution::union(leaf.producer.cell_field_interval(cell_local, voxels_per_block))
+            CellContribution {
+                field_interval: leaf
+                    .producer
+                    .cell_field_interval(cell_local, voxels_per_block),
+                combine: match leaf.operation {
+                    CombineOp::Union => CellCombineOp::Union,
+                    CombineOp::Subtract => CellCombineOp::Subtract,
+                },
+            }
         }),
         SURFACE_ISOLEVEL,
     );
 
     let Some(classification) = verdict else {
-        // An unboundable leaf in the union (cannot classify) ⇒ resolve the block per-voxel.
+        // An unboundable leaf in the fold (cannot classify) ⇒ resolve the block per-voxel.
         return BlockClassification::Boundary;
     };
 
@@ -99,19 +126,28 @@ pub(crate) fn classify_chunk_block(
         FieldClassification::Air => BlockClassification::Air,
         FieldClassification::Boundary => BlockClassification::Boundary,
         FieldClassification::CoarseSolid => {
-            // A composed-solid verdict is only SAFELY coarse when EXACTLY ONE leaf
-            // overlaps the block: with two leaves the Union's per-voxel MATERIAL is
-            // "later wins on overlap", which the composed interval cannot resolve (it
-            // proves geometric solidity, not which id each voxel takes). A multi-leaf
-            // solid block is therefore forced BOUNDARY so the per-voxel pass assigns the
-            // correct (later-wins) material — still exact, just unelided. (A single-leaf
-            // solid block is uniform-material by construction: a Tool is single-material.)
-            match (overlapping.len(), overlapping[0].material) {
-                // Single single-material leaf provably filling the block ⇒ elide to coarse.
-                (1, Some(block_id)) => BlockClassification::CoarseSolid(block_id),
-                // Multi-leaf overlap (Union material is per-voxel later-wins, not coarsely
-                // decidable) OR a single leaf with no single-material id (a Part's
-                // per-voxel materials) ⇒ resolve per-voxel. Still exact, just unelided.
+            // A composed-solid verdict is only SAFELY coarse when EXACTLY ONE UNION
+            // leaf overlaps the block: with two Union leaves the per-voxel MATERIAL
+            // is "later wins on overlap", which the composed interval cannot resolve
+            // (it proves geometric solidity, not which id each voxel takes). Under
+            // ADR 0017 a Subtract leaf never stamps material, so overlapping cutters
+            // do NOT disqualify the elision — the kernel's fold already carried
+            // their subtract intervals, and a CoarseSolid verdict PROVES the cutters
+            // carve nothing here, so every voxel keeps the single Union leaf's
+            // material. Any other mix (multiple Union leaves; a single Union leaf
+            // with no single-material id, i.e. a Part's per-voxel materials) is
+            // forced BOUNDARY so the per-voxel pass decides — still exact, just
+            // unelided. When in doubt, Boundary: it is always exact.
+            let mut union_leaves = contributions
+                .iter()
+                .filter(|leaf| leaf.operation == CombineOp::Union);
+            match (union_leaves.next(), union_leaves.next()) {
+                // Single single-material Union leaf provably filling the block ⇒ coarse.
+                (Some(leaf), None) => match leaf.material {
+                    Some(block_id) => BlockClassification::CoarseSolid(block_id),
+                    None => BlockClassification::Boundary,
+                },
+                // Multiple Union leaves ⇒ per-voxel later-wins material ⇒ boundary.
                 _ => BlockClassification::Boundary,
             }
         }
@@ -133,10 +169,11 @@ pub(crate) fn leaf_world_box(leaf: &LeafProducer, voxels_per_block: u32) -> Voxe
     )
 }
 
-/// The FIRST leaf whose grid AABB overlaps `block_abs_voxels`, or `None` if none does. The
-/// overlap test mirrors [`classify_chunk_block`]'s exactly, so the same leaf is found. A
-/// coarse-solid block is owned by exactly one leaf (the classifier forces any multi-leaf
-/// overlap to boundary), so for a coarse verdict this first hit IS the single owning leaf.
+/// The FIRST **Union** leaf whose grid AABB overlaps `block_abs_voxels`, or `None` if none
+/// does. The overlap test mirrors [`classify_chunk_block`]'s exactly, so the same leaf is
+/// found. A coarse-solid block is owned by exactly one UNION leaf (the classifier forces
+/// any multi-Union overlap to boundary, and a Subtract leaf never stamps — ADR 0017), so
+/// for a coarse verdict this first Union hit IS the single owning leaf.
 pub(crate) fn single_overlapping_leaf<'a>(
     leaves: &[&'a LeafProducer],
     block_abs_voxels: VoxelAabb,
@@ -145,12 +182,13 @@ pub(crate) fn single_overlapping_leaf<'a>(
     leaves
         .iter()
         .copied()
+        .filter(|leaf| leaf.operation == CombineOp::Union)
         .find(|leaf| leaf_world_box(leaf, voxels_per_block).intersects(&block_abs_voxels))
 }
 
-/// The on-face-grid overlay (ADR 0003 §3c) of the SINGLE leaf overlapping `block_abs_voxels`,
-/// or `false` if none overlaps (an unreachable case for a coarse-solid verdict — guarded
-/// defensively).
+/// The on-face-grid overlay (ADR 0003 §3c) of the SINGLE Union leaf overlapping
+/// `block_abs_voxels`, or `false` if none overlaps (an unreachable case for a coarse-solid
+/// verdict — guarded defensively).
 pub(crate) fn single_overlapping_leaf_overlay(
     leaves: &[&LeafProducer],
     block_abs_voxels: VoxelAabb,
@@ -205,12 +243,43 @@ pub(crate) fn classify_whole_chunk(
     voxels_per_block: u32,
 ) -> WholeChunkVerdict {
     match classify_chunk_block(leaves, chunk_abs_voxels, voxels_per_block) {
-        BlockClassification::Air => WholeChunkVerdict::AllAir,
+        BlockClassification::Air => {
+            // ADR 0017: a chunk-level AIR verdict can now lean on a SUBTRACT
+            // operand (a cutter provably carving the whole chunk pushes the fold's
+            // minimum above the isolevel). That proof only transfers to every
+            // sub-block if the cutter stays IN each sub-block's own fold — i.e. its
+            // grid AABB overlaps every sub-block — because a sub-block the cutter's
+            // box misses DROPS the operand (mirroring the per-block overlap filter)
+            // and would re-decide from the Union leaves alone. Sound in practice
+            // (a producer's field is only deeply-inside within its own AABB), but
+            // conservatively require every overlapping Subtract leaf's box to
+            // CONTAIN the chunk — the same defensive containment posture as the
+            // AllCoarse guard below; anything less degrades to the always-exact
+            // per-block sweep. A chunk with NO overlapping Union leaf is trivially
+            // all-air regardless (Subtract only removes; every sub-block sees no
+            // Union leaf either).
+            let any_union_overlaps = leaves.iter().any(|leaf| {
+                leaf.operation == CombineOp::Union
+                    && leaf_world_box(leaf, voxels_per_block).intersects(&chunk_abs_voxels)
+            });
+            if !any_union_overlaps || subtract_leaves_contain_chunk(leaves, chunk_abs_voxels, voxels_per_block)
+            {
+                WholeChunkVerdict::AllAir
+            } else {
+                WholeChunkVerdict::PerBlock
+            }
+        }
         BlockClassification::Boundary => WholeChunkVerdict::PerBlock,
         BlockClassification::CoarseSolid(block_id) => {
             // classify_chunk_block returns CoarseSolid ONLY for a single single-material
-            // leaf; recover it (the sole overlapping leaf) to read its overlay AND to prove
-            // its grid AABB encloses the whole chunk.
+            // UNION leaf; recover it (the sole overlapping Union leaf) to read its overlay
+            // AND to prove its grid AABB encloses the whole chunk. Overlapping SUBTRACT
+            // leaves need no extra guard here: the chunk fold PROVED they carve nothing in
+            // the chunk (their negated interval stayed at-or-below the isolevel), a
+            // sub-block's operand intervals nest inside the chunk's (the inclusion
+            // monotonicity above extends to the subtract role — `max` preserves interval
+            // inclusion), and a sub-block that DROPS a cutter from its fold is only MORE
+            // solid — so every sub-block re-proves CoarseSolid at the same material.
             match single_overlapping_leaf(leaves, chunk_abs_voxels, voxels_per_block) {
                 Some(leaf)
                     if leaf_world_box(leaf, voxels_per_block).contains_box(&chunk_abs_voxels) =>
@@ -223,15 +292,37 @@ pub(crate) fn classify_whole_chunk(
     }
 }
 
+/// Whether every SUBTRACT leaf whose grid AABB overlaps `chunk_abs_voxels` also CONTAINS
+/// it — the defensive containment guard the whole-chunk AIR fast path requires under ADR
+/// 0017 (see [`classify_whole_chunk`]): only a cutter present in EVERY sub-block's fold
+/// transfers a chunk-level carved-to-air proof to each sub-block. Vacuously true with no
+/// overlapping cutters (the pure-Union case, where AIR was proven by the Union intervals
+/// alone and is inclusion-monotone as before).
+fn subtract_leaves_contain_chunk(
+    leaves: &[&LeafProducer],
+    chunk_abs_voxels: VoxelAabb,
+    voxels_per_block: u32,
+) -> bool {
+    leaves
+        .iter()
+        .filter(|leaf| leaf.operation == CombineOp::Subtract)
+        .map(|leaf| leaf_world_box(leaf, voxels_per_block))
+        .all(|cutter_box| {
+            !cutter_box.intersects(&chunk_abs_voxels)
+                || cutter_box.contains_box(&chunk_abs_voxels)
+        })
+}
+
 
 /// Resolve a boundary block per-voxel into a dense `density³` [`VoxelRegion`] (the
 /// material at each occupied voxel), decompose it to cuboids, and compute its per-face
 /// seam-solidity flags. `block_min_abs` is the block's low corner in absolute voxels.
 ///
 /// Per-voxel resolution reuses each overlapping leaf's [`VoxelProducer::resolve_into`]
-/// over the block window, composed by the SAME Union semantics the dense path uses
-/// (document order, later-wins on overlap) — so the materialised block is bit-identical
-/// to the dense store's voxels for that block.
+/// over the block window, composed by the SAME ordered-fold semantics the dense path
+/// uses (document order — a Union leaf stamps later-wins on overlap, a Subtract leaf
+/// CLEARS the cells its body covers, ADR 0017) — so the materialised block is
+/// bit-identical to the dense store's voxels for that block.
 pub(crate) fn resolve_boundary_block(
     leaves: &[&LeafProducer],
     block_min_abs: [i64; 3],
@@ -242,7 +333,8 @@ pub(crate) fn resolve_boundary_block(
     let mut region = VoxelRegion::new_empty(extent);
 
     // Compose leaves in DOCUMENT ORDER (the order `leaf_producers` yields them, which is
-    // `for_each_leaf`'s walk order), later-wins on overlap — exactly the dense Union.
+    // `for_each_leaf`'s walk order): a Union leaf stamps (later wins on overlap), a
+    // Subtract leaf clears — exactly the dense ordered fold (ADR 0017).
     for &leaf in leaves {
         let grid_dimensions = leaf.producer.full_dimensions(voxels_per_block);
         let leaf_box = VoxelAabb::new(
@@ -294,6 +386,19 @@ pub(crate) fn resolve_boundary_block(
             ];
             if block_local.iter().any(|&c| c < 0 || c >= density as i64) {
                 continue; // Outside this block (the window clamps, but guard anyway).
+            }
+            // ADR 0017: a Subtract leaf is an occupancy-only mask — every cell its
+            // body covers is CLEARED from the accumulated result, in the same
+            // document-order walk. It never writes a render key, so the material of
+            // every surviving cell is untouched.
+            if leaf.operation == CombineOp::Subtract {
+                region.set(
+                    block_local[0] as u32,
+                    block_local[1] as u32,
+                    block_local[2] as u32,
+                    None,
+                );
+                continue;
             }
             let block_id = match leaf.material {
                 Some(id) => id.0,

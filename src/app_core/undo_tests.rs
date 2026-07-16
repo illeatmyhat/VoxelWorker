@@ -273,6 +273,19 @@
         );
     }
 
+    #[test]
+    fn set_operation_round_trips() {
+        // ADR 0017 (#73): flipping a leaf's combine operation to Subtract reverses
+        // via the field-inverse pattern — undo restores the prior Union, redo
+        // re-applies the Subtract.
+        let mut scene = two_tool_scene();
+        let target = scene.roots[0];
+        assert_round_trips(
+            &mut scene,
+            Intent::SetOperation { target, operation: document::scene::CombineOp::Subtract },
+        );
+    }
+
     /// A normalized scene whose first node is a Sketch and whose second is a Tool,
     /// ids minted + Origin point, first node active — the sketch-edit fixture.
     fn sketch_then_tool_scene() -> Scene {
