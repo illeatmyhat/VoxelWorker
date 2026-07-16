@@ -291,6 +291,26 @@
     }
 
     #[test]
+    fn set_operation_intersect_dispatches() {
+        // ADR 0017 (#75): SetOperation carries the Intersect arm through the same
+        // field write as Subtract — no structural change, just the third value.
+        let scene = two_tool_scene();
+        let target = root_id(&scene, 0);
+        assert_dispatch_matches(
+            &scene,
+            Intent::SetOperation {
+                target,
+                operation: document::scene::CombineOp::Intersect,
+            },
+            |s| {
+                if let Some(node) = s.node_by_id_mut(target) {
+                    node.operation = document::scene::CombineOp::Intersect;
+                }
+            },
+        );
+    }
+
+    #[test]
     fn set_operation_on_group_dispatches() {
         // ADR 0017 Decision 3 (#74): a Group is a sealed composition scope whose
         // composed body folds under the GROUP's own operation, so SetOperation on a

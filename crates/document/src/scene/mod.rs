@@ -45,7 +45,7 @@ mod tests;
 pub use extent::{NodeTransform, RegionBlocks};
 pub use graph::{AssemblyDef, CombineOp, DefId, Node, NodeBuilder, NodeGrids, NodeId, NodePath, Point};
 pub use producers::{NodeContent, Part};
-pub use producers::{LeafProducer, ScopeFrame};
+pub use producers::{operation_masks_beyond_bounds, LeafProducer, ScopeFrame};
 
 /// Default +X spacing (in blocks) between successive instances of the same
 /// definition added via [`Scene::add_instance`], so a freshly-placed village

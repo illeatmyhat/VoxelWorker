@@ -181,20 +181,37 @@ pub(crate) fn chunk_world_voxel_aabb(chunk_coord: [i32; 3], voxels_per_block: u3
 /// document-order subsequence of `leaves` (a filter, never a reorder), so later-wins Union
 /// material resolution is unchanged.
 ///
-/// EXACTNESS: a leaf whose AABB does not overlap the chunk cannot affect any block in it, so
-/// a chunk classified against only its overlapping candidates is byte-identical to one
-/// classified against all leaves (the per-block AABB tests inside the classifier already
-/// narrow further per block — the broadphase just hands them a smaller exact-superset set).
+/// EXACTNESS: a Union/Subtract leaf whose AABB does not overlap the chunk cannot affect any
+/// block in it, so a chunk classified against only its overlapping candidates is
+/// byte-identical to one classified against all leaves (the per-block AABB tests inside the
+/// classifier already narrow further per block — the broadphase just hands them a smaller
+/// exact-superset set). An INTERSECT-influence leaf (ADR 0017 #75,
+/// [`LeafProducer::masks_beyond_bounds`]) breaks that argument — its mask kills cells
+/// anywhere OUTSIDE its box — so every such leaf is kept in EVERY chunk's candidate set
+/// regardless of overlap (merged back in at its document-order position; the per-block
+/// filters downstream apply the same keep rule).
 pub(crate) fn chunk_candidate_leaves<'leaf_slice>(
     broadphase: &EditBroadphaseBvh,
     leaves: &'leaf_slice [LeafProducer],
     chunk_coord: [i32; 3],
     voxels_per_block: u32,
 ) -> Vec<&'leaf_slice LeafProducer> {
-    broadphase
-        .overlapping_input_indices(&chunk_world_voxel_aabb(chunk_coord, voxels_per_block))
-        .into_iter()
-        .map(|leaf_index| &leaves[leaf_index])
+    let mut include = vec![false; leaves.len()];
+    for leaf_index in
+        broadphase.overlapping_input_indices(&chunk_world_voxel_aabb(chunk_coord, voxels_per_block))
+    {
+        include[leaf_index] = true;
+    }
+    for (leaf_index, leaf) in leaves.iter().enumerate() {
+        if leaf.masks_beyond_bounds() {
+            include[leaf_index] = true;
+        }
+    }
+    leaves
+        .iter()
+        .enumerate()
+        .filter(|(leaf_index, _)| include[*leaf_index])
+        .map(|(_, leaf)| leaf)
         .collect()
 }
 
@@ -222,12 +239,14 @@ pub(crate) fn build_two_layer_chunk(
 /// hoisted core of [`build_two_layer_chunk`] (#63).
 ///
 /// `leaves` MUST be a document-order subsequence of `scene.leaf_producers(voxels_per_block)`
-/// (a filter, never a reorder) that INCLUDES every leaf whose world AABB overlaps this chunk.
-/// The edit broadphase ([`chunk_candidate_leaves`]) guarantees exactly that: a leaf whose AABB
-/// does NOT overlap the chunk cannot affect ANY block in it (the per-block AABB tests inside
-/// [`classify_chunk_block`] / [`resolve_boundary_block`] would skip it regardless), so passing
-/// only the chunk-overlapping candidates yields IDENTICAL coarse / microblock / seam output
-/// while preserving later-wins Union material resolution (document order kept).
+/// (a filter, never a reorder) that INCLUDES every leaf whose world AABB overlaps this chunk
+/// AND every Intersect-influence leaf regardless of overlap (ADR 0017 #75,
+/// [`LeafProducer::masks_beyond_bounds`] — a mask affects cells outside its own box). The
+/// edit broadphase ([`chunk_candidate_leaves`]) guarantees exactly that: a Union/Subtract
+/// leaf whose AABB does NOT overlap the chunk cannot affect ANY block in it (the per-block
+/// AABB tests inside [`classify_chunk_block`] / [`resolve_boundary_block`] would skip it
+/// regardless), so passing only these candidates yields IDENTICAL coarse / microblock / seam
+/// output while preserving later-wins Union material resolution (document order kept).
 pub(crate) fn build_two_layer_chunk_from_leaves(
     chunk_coord: [i32; 3],
     leaves: &[&LeafProducer],

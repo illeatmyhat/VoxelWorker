@@ -481,8 +481,9 @@ fn build_sketch_inspector_section(
 
 /// Combine-operation selector (ADR 0017): how the active node folds into the
 /// result accumulated before it among its siblings — `Union` adds (later-wins
-/// material on overlap), `Subtract` carves (an occupancy-only mask that never
-/// stamps material). Shown on leaf nodes (Tool / Sketch / Clouds Part) AND on
+/// material on overlap), `Subtract` carves, `Intersect` keeps only the cells the
+/// node's body also covers (both booleans are occupancy-only masks that never
+/// stamp material). Shown on leaf nodes (Tool / Sketch / Clouds Part) AND on
 /// Groups (a Group is a sealed composition scope whose composed body folds under
 /// its own operation — ADR 0017 Decision 3, issue #74); Instance nodes get no
 /// selector yet (a definition instanced with Subtract is issue #76's slice). A
@@ -507,6 +508,7 @@ fn build_operation_section(
         match operation {
             CombineOp::Union => "Union",
             CombineOp::Subtract => "Subtract",
+            CombineOp::Intersect => "Intersect",
         }
     }
 
@@ -516,7 +518,7 @@ fn build_operation_section(
     egui::ComboBox::from_id_salt(("node_combine_operation", target))
         .selected_text(operation_label(selected))
         .show_ui(ui, |ui| {
-            for option in [CombineOp::Union, CombineOp::Subtract] {
+            for option in [CombineOp::Union, CombineOp::Subtract, CombineOp::Intersect] {
                 ui.selectable_value(&mut selected, option, operation_label(option));
             }
         });

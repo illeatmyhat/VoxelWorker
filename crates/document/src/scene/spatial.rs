@@ -4,7 +4,9 @@
 
 use voxel_core::spatial_index::{LeafEntry, LeafFingerprint, LeafSpatialIndex, VoxelAabb};
 
-use super::producers::{leaf_content_fingerprint, leaf_producer_grid_voxels};
+use super::producers::{
+    leaf_content_fingerprint, leaf_producer_grid_voxels, operation_masks_beyond_bounds,
+};
 use super::*;
 
 impl Scene {
@@ -134,15 +136,27 @@ impl Scene {
                         min[axis] = world_offset_voxels[axis];
                         max[axis] = min[axis] + grid;
                     }
+                    let payload = leaf_content_fingerprint(
+                        world_offset_voxels,
+                        content,
+                        grid_on_faces,
+                        operation,
+                        scope_path,
+                    );
+                    // ADR 0017 (#75): an Intersect-influence leaf's edits cannot be
+                    // localised to its box (its mask kills cells anywhere outside its
+                    // body), so it carries the fingerprint kind whose presence in an
+                    // edit diff forces a wholesale clear. The box itself stays real
+                    // for overlap queries.
+                    let fingerprint =
+                        if operation_masks_beyond_bounds(operation, scope_path) {
+                            LeafFingerprint::MasksBeyondItsBox(payload)
+                        } else {
+                            LeafFingerprint::Bounded(payload)
+                        };
                     entries.push(LeafEntry {
                         world_aabb: VoxelAabb::new(min, max),
-                        fingerprint: LeafFingerprint::Bounded(leaf_content_fingerprint(
-                            world_offset_voxels,
-                            content,
-                            grid_on_faces,
-                            operation,
-                            scope_path,
-                        )),
+                        fingerprint,
                     });
                 }
                 None => {

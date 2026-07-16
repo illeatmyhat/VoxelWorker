@@ -106,6 +106,16 @@ pub enum LeafFingerprint {
     /// A localisable leaf with a concrete world-AABB; the payload identifies its
     /// resolved content so a same-box content change is still detected.
     Bounded(String),
+    /// A leaf with a concrete world-AABB whose EDITS nevertheless cannot be localised
+    /// to that box (ADR 0017 issue #75): an `Intersect`-influence leaf — its own
+    /// operation is `Intersect`, or an enclosing scope folds under `Intersect`. Such a
+    /// mask removes occupancy anywhere OUTSIDE its body, so a change involving it
+    /// dirties, in the worst case, its whole enclosing scope's extent — which this
+    /// index does not track. Its world-AABB stays real (overlap queries still work);
+    /// only its presence in an edit DIFF forces a wholesale clear, like
+    /// [`RegionSpanning`](Self::RegionSpanning). Narrowing the dirty region to the
+    /// enclosing scope's AABB is a recorded follow-up, not this slice.
+    MasksBeyondItsBox(String),
     /// A leaf with no intrinsic AABB (region-spanning), e.g. a Part. Carries its
     /// content bytes so a Part edit is still seen as a change, but its presence in a
     /// diff forces a wholesale clear (it cannot be chunk-localised).
@@ -184,9 +194,11 @@ impl LeafSpatialIndex {
     /// * `Some(empty)` (an empty AABB) — nothing changed; invalidate nothing.
     /// * `None` — a **conservative fallback**: the caller must `clear()` the whole
     ///   cache. This happens when (a) the two indices were built at different
-    ///   densities (every chunk's voxel extent changed), or (b) a **region-spanning**
+    ///   densities (every chunk's voxel extent changed), (b) a **region-spanning**
     ///   leaf (a Part) was added, removed, or edited — it has no localisable box, so
-    ///   its dirty region is "everywhere".
+    ///   its dirty region is "everywhere" — or (c) an **Intersect-influence** leaf
+    ///   ([`LeafFingerprint::MasksBeyondItsBox`], ADR 0017 #75) appears in the diff:
+    ///   its mask effect reaches beyond its box, so the box union under-dirties.
     pub fn edit_aabb_since(&self, previous: &LeafSpatialIndex) -> Option<VoxelAabb> {
         if self.voxels_per_block != previous.voxels_per_block {
             // A density change resizes every chunk; nothing is reusable.
@@ -219,6 +231,16 @@ impl LeafSpatialIndex {
                 LeafFingerprint::RegionSpanning(_) => {
                     // A Part changed (added/removed/edited): its dirty region is the
                     // whole scene — fall back to a wholesale clear.
+                    return None;
+                }
+                LeafFingerprint::MasksBeyondItsBox(_) => {
+                    // ADR 0017 (#75): an Intersect-influence leaf changed (added /
+                    // removed / edited / moved, or a flip to/from Intersect — the flip
+                    // puts old and new entries in the diff and at least one carries
+                    // this kind). Its mask effect reaches cells outside its box (the
+                    // enclosing scope's whole extent in the worst case), which this
+                    // index cannot bound — fall back to a wholesale clear.
+                    // Conservative, never narrow.
                     return None;
                 }
                 LeafFingerprint::Bounded(_) => {

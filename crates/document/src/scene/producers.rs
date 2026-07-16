@@ -373,11 +373,13 @@ impl Scene {
                 world_offset_voxels[1] - recentre_voxels[1],
                 world_offset_voxels[2] - recentre_voxels[2],
             ];
-            // ADR 0017: a Subtract leaf is an occupancy-only mask — it CARVES its
-            // body out of everything stamped before it (document order, within its
-            // scope) and never stamps material, so it takes the carve path instead
-            // of a stamp.
-            if operation == CombineOp::Subtract {
+            // ADR 0017: Subtract and Intersect leaves are occupancy-only masks — they
+            // never stamp material, so they take a mask path instead of a stamp. A
+            // Subtract CARVES its body out of everything stamped before it (document
+            // order, within its scope); an Intersect (issue #75) keeps ONLY the cells
+            // its body covers, killing accumulated cells anywhere OUTSIDE its body —
+            // including an empty result when nothing accumulated yet (fold start).
+            if operation == CombineOp::Subtract || operation == CombineOp::Intersect {
                 let producer: Box<dyn VoxelProducer> = match content {
                     NodeContent::Tool { shape, .. } => Box::new(shape.clone()),
                     NodeContent::SketchTool { producer, .. } => Box::new(producer.clone()),
@@ -387,13 +389,23 @@ impl Scene {
                     }),
                     NodeContent::Group(_) | NodeContent::Instance(_) => return,
                 };
-                carve_producer(
-                    target,
-                    region_dimensions,
-                    translation_voxels,
-                    producer.as_ref(),
-                    voxels_per_block,
-                );
+                if operation == CombineOp::Subtract {
+                    carve_producer(
+                        target,
+                        region_dimensions,
+                        translation_voxels,
+                        producer.as_ref(),
+                        voxels_per_block,
+                    );
+                } else {
+                    intersect_producer(
+                        target,
+                        region_dimensions,
+                        translation_voxels,
+                        producer.as_ref(),
+                        voxels_per_block,
+                    );
+                }
                 return;
             }
             match content {
@@ -567,7 +579,11 @@ impl Scene {
         // the reassembled chunks equal the monolithic scoped resolve exactly. A leaf
         // whose AABB misses the chunk is skipped WITHOUT syncing the stack: it
         // contributes no cells here, and a scope none of whose leaves touch the
-        // chunk simply never opens (an empty scope folds to nothing).
+        // chunk simply never opens (an empty scope folds to nothing under Union /
+        // Subtract). EXCEPTION (ADR 0017 #75): an Intersect-influence leaf is never
+        // skipped — its mask applies precisely where its body has no cells, and an
+        // Intersect-closing scope must open even here so its ∅-in-chunk body
+        // annihilates the parent on close (see the skip guard below).
         let mut scope_stack: Vec<(ScopeFrame, VoxelGrid)> = Vec::new();
         self.for_each_leaf(&mut |world_offset_voxels, content, grid_on_faces, operation, scope_path| {
             // Issue #27 S3 optimisation: skip a leaf whose world-AABB doesn't touch
@@ -579,20 +595,32 @@ impl Scene {
             // intersect, the stamp would have clipped EVERY voxel anyway. A
             // region-spanning leaf (a Part, `leaf_size_blocks` → `None`) has no
             // localisable AABB, so it is never skipped (it may emit anywhere).
-            if let Some(grid_voxels) = leaf_producer_grid_voxels(content, voxels_per_block) {
-                let mut leaf_min = [0i64; 3];
-                let mut leaf_max = [0i64; 3];
-                for axis in 0..3 {
-                    // The producer corner-anchors its grid, so placed at the world
-                    // voxel offset (its low corner) it spans `[off, off + grid)`. Using
-                    // the producer-true grid (exact emitted voxels, NOT block-rounded)
-                    // keeps the skip AABB bit-identical to stamping-then-clipping.
-                    let grid = grid_voxels[axis];
-                    leaf_min[axis] = world_offset_voxels[axis];
-                    leaf_max[axis] = leaf_min[axis] + grid;
-                }
-                if !VoxelAabb::new(leaf_min, leaf_max).intersects(&chunk_box) {
-                    return;
+            //
+            // ADR 0017 (#75): an Intersect-INFLUENCE leaf (its own operation is
+            // Intersect, or any enclosing scope closes under Intersect) is NEVER
+            // skipped either: its mask kills accumulated cells anywhere OUTSIDE its
+            // body, so a chunk its AABB misses is exactly where the mask must still
+            // apply (its body has no cells here ⇒ everything accumulated in this
+            // chunk within its scope dies). Keeping it also guarantees every
+            // Intersect-closing scope OPENS in this chunk's fold (its leaves all
+            // carry the Intersect frame), so the ∅-body scope close annihilates the
+            // parent here exactly as the monolithic fold does.
+            if !operation_masks_beyond_bounds(operation, scope_path) {
+                if let Some(grid_voxels) = leaf_producer_grid_voxels(content, voxels_per_block) {
+                    let mut leaf_min = [0i64; 3];
+                    let mut leaf_max = [0i64; 3];
+                    for axis in 0..3 {
+                        // The producer corner-anchors its grid, so placed at the world
+                        // voxel offset (its low corner) it spans `[off, off + grid)`. Using
+                        // the producer-true grid (exact emitted voxels, NOT block-rounded)
+                        // keeps the skip AABB bit-identical to stamping-then-clipping.
+                        let grid = grid_voxels[axis];
+                        leaf_min[axis] = world_offset_voxels[axis];
+                        leaf_max[axis] = leaf_min[axis] + grid;
+                    }
+                    if !VoxelAabb::new(leaf_min, leaf_max).intersects(&chunk_box) {
+                        return;
+                    }
                 }
             }
             let translation_voxels = world_offset_voxels;
@@ -633,6 +661,25 @@ impl Scene {
             // genuinely-overlapping cutters.
             if operation == CombineOp::Subtract {
                 carve_producer_from_chunk(
+                    target,
+                    region_dimensions,
+                    translation_voxels,
+                    floating_origin_voxels,
+                    producer.as_ref(),
+                    voxels_per_block,
+                    chunk_min_voxels,
+                    chunk_max_voxels,
+                );
+                return;
+            }
+            // ADR 0017 (#75): an Intersect leaf keeps ONLY the cells its body covers
+            // in this chunk within its scope (occupancy-only). It is never skipped by
+            // the AABB guard, so a mask whose box misses the chunk resolves an EMPTY
+            // window here and correctly kills everything accumulated so far — the
+            // restriction to this chunk's cells still commutes with the fold, because
+            // a cell survives iff the mask occupies THAT cell.
+            if operation == CombineOp::Intersect {
+                intersect_producer_in_chunk(
                     target,
                     region_dimensions,
                     translation_voxels,
@@ -747,10 +794,19 @@ pub(super) fn leaf_content_fingerprint(
     // every enclosed leaf's AABB dirties precisely the scope's subtree AABB. The
     // frame's stable `NodeId` (not a walk-order counter) keeps the fingerprint
     // stable across unrelated edits.
+    //
+    // NOTE the `Intersect` asymmetry (ADR 0017 / issue #75): the two locality claims
+    // above hold for Union/Subtract only. An Intersect mask kills accumulated cells
+    // ANYWHERE OUTSIDE its own body, so an edit involving an Intersect-influence leaf
+    // (see [`operation_masks_beyond_bounds`]) is NOT confined to the changed leaves'
+    // AABBs — the spatial index records such leaves under a distinct fingerprint kind
+    // (`LeafFingerprint::MasksBeyondItsBox`, chosen in `build_leaf_spatial_index`) so
+    // the edit diff degrades to a wholesale clear instead of trusting the box union.
     let grid = if grid_on_faces { ":grid=1" } else { ":grid=0" };
     let op_token = |operation: CombineOp| match operation {
         CombineOp::Union => "union",
         CombineOp::Subtract => "subtract",
+        CombineOp::Intersect => "intersect",
     };
     let op = format!(":op={}", op_token(operation));
     let scopes = {
@@ -829,6 +885,37 @@ pub struct LeafProducer {
     pub scope_path: Vec<ScopeFrame>,
 }
 
+impl LeafProducer {
+    /// Whether this leaf can remove occupancy at cells its own body does NOT cover —
+    /// see [`operation_masks_beyond_bounds`]. Consumers that filter leaf subsequences
+    /// by AABB overlap (per-block classify, per-chunk broadphase, the chunk-resolve
+    /// skip) MUST keep such a leaf regardless of overlap, or a mask would silently
+    /// stop applying outside its box (erring toward SOLID — never conservative).
+    pub fn masks_beyond_bounds(&self) -> bool {
+        operation_masks_beyond_bounds(self.operation, &self.scope_path)
+    }
+}
+
+/// Whether a leaf carrying `operation` under `scope_path` can remove occupancy at cells
+/// its own body does NOT cover (ADR 0017 / issue #75). True exactly when `Intersect` is
+/// involved anywhere on the leaf's fold path:
+///
+/// * the leaf's OWN operation is `Intersect` — its mask kills every accumulated cell
+///   outside its body, at any distance from its AABB; or
+/// * ANY enclosing scope folds under `Intersect` — the scope's composed body (which the
+///   leaf contributes to) masks the parent accumulator everywhere outside it, so the
+///   scope must open (and close under `Intersect`) even where none of its leaves emit.
+///
+/// `Union` and `Subtract` influence, by contrast, is confined to the contributing
+/// leaves' own AABBs (a union adds cells only within its body; a subtract removes only
+/// cells its body covers), which is what licenses every AABB-overlap filter for them.
+pub fn operation_masks_beyond_bounds(operation: CombineOp, scope_path: &[ScopeFrame]) -> bool {
+    operation == CombineOp::Intersect
+        || scope_path
+            .iter()
+            .any(|frame| frame.operation == CombineOp::Intersect)
+}
+
 pub(super) fn leaf_producer_grid_voxels(content: &NodeContent, _voxels_per_block: u32) -> Option<[i64; 3]> {
     match content {
         // The Tool's exact emitted grid is its canonical voxel size directly (ADR
@@ -904,6 +991,11 @@ fn sync_grid_scope_stack(
 ///   whose integer index coincides with one of the body's occupied cells is REMOVED;
 ///   surviving voxels keep their material and overlay, and the body's materials never
 ///   enter the parent.
+/// * `Intersect` — the complementary occupancy-only mask (issue #75): the parent KEEPS
+///   ONLY the voxels whose index coincides with one of the body's occupied cells;
+///   everything else dies, including cells far outside the body's AABB. A scope that
+///   closed at the EMPTY body therefore annihilates its parent (`A ∩ ∅ = ∅`), matching
+///   the substrate kernel's ∅ identity. Surviving voxels keep their material/overlay.
 fn fold_closed_scope_into(parent: &mut VoxelGrid, operation: CombineOp, closed: VoxelGrid) {
     match operation {
         CombineOp::Union => parent.occupied.extend(closed.occupied),
@@ -916,6 +1008,16 @@ fn fold_closed_scope_into(parent: &mut VoxelGrid, operation: CombineOp, closed: 
             parent
                 .occupied
                 .retain(|voxel| !carved.contains(&voxel.local_index));
+        }
+        CombineOp::Intersect => {
+            let kept: std::collections::HashSet<[i32; 3]> = closed
+                .occupied
+                .iter()
+                .map(|voxel| voxel.local_index)
+                .collect();
+            parent
+                .occupied
+                .retain(|voxel| kept.contains(&voxel.local_index));
         }
     }
 }
@@ -1036,6 +1138,47 @@ fn carve_producer(
     output
         .occupied
         .retain(|voxel| !carved.contains(&voxel.local_index));
+}
+
+/// Resolve `producer` into its own local grid and **intersect** `output` with it:
+/// only the output voxels whose index coincides with one of the producer's occupied
+/// cells (translated by `translation_voxels`) SURVIVE (ADR 0017 Decision 1, issue
+/// #75 — `Intersect` is an occupancy-only mask). Surviving voxels keep their
+/// material and overlay; the mask's own material never enters the output, and every
+/// accumulated voxel outside the mask's body dies — however far from its AABB.
+///
+/// The intersect sibling of [`carve_producer`], and like it a private helper of the
+/// dense [`Scene::resolve_region`] oracle only, so it carries the same `oracle`
+/// compile gate (see the proof chapter's "Oracles" section,
+/// `docs/architecture/05-proof.md`).
+#[cfg(any(test, feature = "oracle"))]
+fn intersect_producer(
+    output: &mut VoxelGrid,
+    region_dimensions: [u32; 3],
+    translation_voxels: [i64; 3],
+    producer: &dyn VoxelProducer,
+    voxels_per_block: u32,
+) {
+    let mut local = VoxelGrid::new(region_dimensions);
+    producer.resolve(&mut local, voxels_per_block);
+
+    // The mask's occupied INTEGER indices in the output's frame (the same
+    // i64-then-downcast translation the stamp applies, so a kept cell coincides
+    // bit-exactly with the stamped cell it preserves).
+    let kept: std::collections::HashSet<[i32; 3]> = local
+        .occupied
+        .iter()
+        .map(|voxel| {
+            [
+                (voxel.local_index[0] as i64 + translation_voxels[0]) as i32,
+                (voxel.local_index[1] as i64 + translation_voxels[1]) as i32,
+                (voxel.local_index[2] as i64 + translation_voxels[2]) as i32,
+            ]
+        })
+        .collect();
+    output
+        .occupied
+        .retain(|voxel| kept.contains(&voxel.local_index));
 }
 
 /// Resolve `producer` into its own origin-centred local grid, translate it by
@@ -1192,4 +1335,69 @@ fn carve_producer_from_chunk(
     output
         .occupied
         .retain(|voxel| !carved.contains(&voxel.local_index));
+}
+
+/// Resolve `producer`'s cells inside the chunk window and **intersect** `output`
+/// with them: only the already-stamped voxels whose (rebased) index coincides with
+/// one of the mask's cells SURVIVE (ADR 0017 Decision 1, issue #75 — `Intersect` is
+/// an occupancy-only mask; surviving voxels keep their material and overlay).
+///
+/// The intersect sibling of [`carve_producer_from_chunk`]: the same local resolve
+/// window and the same i64-before-f32-downcast rebase, so the kept index coincides
+/// bit-exactly with the stamped index it preserves. Restricting the mask to the
+/// chunk window is EXACT (not merely conservative): a cell survives iff the mask
+/// occupies that very cell, and every output voxel here lies inside the chunk — a
+/// mask cell in another chunk can only affect that other chunk. A mask whose box
+/// misses this chunk entirely resolves an EMPTY window and thus clears everything
+/// accumulated so far, which is exactly `accumulated ∩ ∅ = ∅` restricted here.
+#[allow(clippy::too_many_arguments)]
+fn intersect_producer_in_chunk(
+    output: &mut VoxelGrid,
+    region_dimensions: [u32; 3],
+    translation_voxels: [i64; 3],
+    floating_origin_voxels: [i64; 3],
+    producer: &dyn VoxelProducer,
+    voxels_per_block: u32,
+    chunk_min_voxels: [i64; 3],
+    chunk_max_voxels: [i64; 3],
+) {
+    // Resolve ONLY the mask cells this chunk owns, in the producer's LOCAL
+    // voxel-index frame — the identical window arithmetic as the stamp (see
+    // `stamp_producer_into_chunk` for the half-open-edge derivation).
+    let mut local = VoxelGrid::new(region_dimensions);
+    let window_local = voxel_core::spatial_index::VoxelAabb::new(
+        [
+            chunk_min_voxels[0] - translation_voxels[0],
+            chunk_min_voxels[1] - translation_voxels[1],
+            chunk_min_voxels[2] - translation_voxels[2],
+        ],
+        [
+            chunk_max_voxels[0] - translation_voxels[0],
+            chunk_max_voxels[1] - translation_voxels[1],
+            chunk_max_voxels[2] - translation_voxels[2],
+        ],
+    );
+    producer.resolve_into(&mut local, voxels_per_block, window_local);
+
+    // Rebase the mask's indices exactly as the stamp rebases stamped ones (pure
+    // i64 subtraction BEFORE the downcast), so mask and stamp agree bit-exactly.
+    let rebased_translation = [
+        translation_voxels[0] - floating_origin_voxels[0],
+        translation_voxels[1] - floating_origin_voxels[1],
+        translation_voxels[2] - floating_origin_voxels[2],
+    ];
+    let kept: std::collections::HashSet<[i32; 3]> = local
+        .occupied
+        .iter()
+        .map(|voxel| {
+            [
+                (voxel.local_index[0] as i64 + rebased_translation[0]) as i32,
+                (voxel.local_index[1] as i64 + rebased_translation[1]) as i32,
+                (voxel.local_index[2] as i64 + rebased_translation[2]) as i32,
+            ]
+        })
+        .collect();
+    output
+        .occupied
+        .retain(|voxel| kept.contains(&voxel.local_index));
 }

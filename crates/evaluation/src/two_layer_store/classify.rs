@@ -37,7 +37,10 @@ pub(crate) enum ScopedLeafStep<'leaf> {
 /// broadphase / per-block overlap filters): a dropped leaf contributes nothing to the
 /// cell being evaluated, and a scope all of whose leaves were dropped simply never opens
 /// (an empty scope folds to nothing under Union/Subtract — see the substrate kernel's ∅
-/// identities).
+/// identities). An INTERSECT-closing scope must NOT disappear that way (`A ∩ ∅ = ∅`
+/// annihilates the parent, so the close must happen even where no scope leaf emits);
+/// the filters above guarantee it cannot, because every leaf inside such a scope is
+/// Intersect-influence ([`LeafProducer::masks_beyond_bounds`]) and is never dropped.
 ///
 /// `leaves` MUST be a document-order subsequence of one `Scene::leaf_producers` list (a
 /// filter, never a reorder) — the same precondition the callers already carry.
@@ -77,11 +80,13 @@ pub(crate) fn scoped_leaf_steps<'leaf>(
 
 /// Whether this leaf can ADD occupancy to the scene's root accumulator: its own operation
 /// is `Union` and every enclosing scope folds under `Union` (ADR 0017 Decision 3). A
-/// `Subtract` anywhere on the path makes the leaf's root-level influence purely
-/// subtractive — e.g. a Union leaf inside a Group placed under Subtract only ever CARVES
+/// boolean anywhere on the path makes the leaf's root-level influence purely
+/// removing — e.g. a Union leaf inside a Group placed under Subtract only ever CARVES
 /// the parent (its body enters the group's composed occupancy, which is then removed
-/// from the parent). Purely additive leaves are also the only leaves that ever STAMP
-/// material at the root (booleans never stamp — Decision 1).
+/// from the parent), and a Union leaf inside a Group placed under Intersect (#75) only
+/// ever PRESERVES parent cells its scope's body covers (it never creates root
+/// occupancy of its own). Purely additive leaves are also the only leaves that ever
+/// STAMP material at the root (booleans never stamp — Decision 1).
 pub(crate) fn leaf_is_purely_additive(leaf: &LeafProducer) -> bool {
     leaf.operation == CombineOp::Union
         && leaf
@@ -95,6 +100,7 @@ fn cell_combine_role(operation: CombineOp) -> CellCombineOp {
     match operation {
         CombineOp::Union => CellCombineOp::Union,
         CombineOp::Subtract => CellCombineOp::Subtract,
+        CombineOp::Intersect => CellCombineOp::Intersect,
     }
 }
 
@@ -137,15 +143,28 @@ pub(crate) fn classify_chunk_block(
     // nothing to any cell in it: a dropped Union adds no occupancy, a dropped
     // Subtract carves none, and a scope whose leaves are all dropped never opens).
     // A leaf's absolute span is `[off, off + grid)` (corner-anchored).
+    //
+    // ADR 0017 (#75): an Intersect-INFLUENCE leaf (its own operation is Intersect, or
+    // any enclosing scope closes under Intersect) is NEVER dropped: its mask kills
+    // cells OUTSIDE its body, so a block its box misses is exactly where it still
+    // applies (dropping it would err toward SOLID — never conservative). Keeping it
+    // also guarantees every Intersect-closing scope opens in the fold, so the ∅-body
+    // close annihilates the parent interval (the kernel's `A ∩ ∅ = ∅`). Its interval
+    // over a far block comes from the producer as usual: provably-air for the shipped
+    // producers (an SDF's Lipschitz bound / the sketch's outside-extent arm), or
+    // `None` ⇒ the always-exact per-voxel fallback.
     let overlapping: Vec<&LeafProducer> = leaves
         .iter()
         .copied()
-        .filter(|leaf| leaf_world_box(leaf, voxels_per_block).intersects(&block_abs_voxels))
+        .filter(|leaf| {
+            leaf_world_box(leaf, voxels_per_block).intersects(&block_abs_voxels)
+                || leaf.masks_beyond_bounds()
+        })
         .collect();
 
-    // With the Union/Subtract roles that exist today, occupancy at the root can only
-    // be CREATED by a purely additive leaf (ADR 0017: booleans — at any scope depth —
-    // only ever remove). No overlapping purely-additive leaf ⇒ provably empty.
+    // Occupancy at the root can only be CREATED by a purely additive leaf (ADR 0017:
+    // booleans — Subtract and Intersect, at any scope depth — only ever remove). No
+    // overlapping purely-additive leaf ⇒ provably empty.
     if !overlapping.iter().any(|leaf| leaf_is_purely_additive(leaf)) {
         return BlockClassification::Air;
     }
@@ -211,11 +230,12 @@ pub(crate) fn classify_chunk_block(
             // per-voxel MATERIAL is "later wins on overlap", which the composed
             // interval cannot resolve (it proves geometric solidity, not which id
             // each voxel takes). Under ADR 0017 no boolean ever stamps material —
-            // neither a Subtract leaf nor a Union leaf whose scope folds under
-            // Subtract (its body only ever carves the parent) — so overlapping
-            // subtractive-influence leaves do NOT disqualify the elision: the
-            // scoped fold already carried their intervals, and a CoarseSolid
-            // verdict PROVES they carve nothing here, so every voxel keeps the
+            // not a Subtract leaf, not an Intersect mask (#75), nor a Union leaf
+            // whose scope folds under a boolean (its body only ever removes /
+            // preserves parent cells) — so overlapping boolean-influence leaves do
+            // NOT disqualify the elision: the scoped fold already carried their
+            // intervals, and a CoarseSolid verdict PROVES the cutters carve nothing
+            // and the masks cover everything here, so every voxel keeps the
             // single additive leaf's material. Any other mix (multiple additive
             // leaves; a single additive leaf with no single-material id, i.e. a
             // Part's per-voxel materials) is forced BOUNDARY so the per-voxel pass
@@ -326,6 +346,31 @@ pub(crate) fn classify_whole_chunk(
     chunk_abs_voxels: VoxelAabb,
     voxels_per_block: u32,
 ) -> WholeChunkVerdict {
+    // ADR 0017 (#75): the whole-chunk TRANSFER arguments below were proven WITHOUT
+    // Intersect masks in the fold, and a mask breaks their shared premise — that a
+    // sub-block dropping an operand from its fold can only become MORE solid (true for
+    // a dropped cutter, false for a mask, which is precisely never dropped). Rather
+    // than re-prove the transfer under masks, any chunk evaluated against an
+    // Intersect-influence leaf degrades to the always-exact per-block sweep (which
+    // still elides coarse interiors block-by-block, mask intervals included) — when in
+    // doubt, degrade; never err toward air/solid (Decision 6). The one still-provable
+    // escape is kept: a chunk NO purely-additive leaf overlaps is trivially all-air
+    // regardless of masks (booleans only remove — the same argument as the per-block
+    // early return), so the vast empty space around a masked scene stays one call.
+    // Extending the fast path to root-scope masks (the transfer arguments do appear to
+    // survive: mask operands are never dropped and `max` preserves interval inclusion)
+    // is a recorded follow-up, deliberately not this slice.
+    if leaves.iter().any(|leaf| leaf.masks_beyond_bounds()) {
+        let any_additive_overlaps = leaves.iter().any(|leaf| {
+            leaf_is_purely_additive(leaf)
+                && leaf_world_box(leaf, voxels_per_block).intersects(&chunk_abs_voxels)
+        });
+        return if any_additive_overlaps {
+            WholeChunkVerdict::PerBlock
+        } else {
+            WholeChunkVerdict::AllAir
+        };
+    }
     // ADR 0017 Decision 3 (issue #74): the chunk-verdict→per-block TRANSFER arguments
     // below were proven for the FLAT fold of the sibling-level slice. They carry over
     // verbatim exactly when the scoped fold over this chunk's overlapping leaves is
@@ -467,11 +512,17 @@ pub(crate) fn resolve_boundary_block(
     // Only the leaves whose grid AABB overlaps this block can touch its cells; dropping
     // the rest cannot change the fold (a dropped Union adds nothing here, a dropped
     // Subtract carves nothing here, and a scope whose leaves are all dropped never
-    // opens — see `scoped_leaf_steps`).
+    // opens — see `scoped_leaf_steps`) — EXCEPT an Intersect-influence leaf (ADR 0017
+    // #75), which is never dropped: its mask kills cells outside its body (a box miss
+    // means its window resolves EMPTY here and everything accumulated in its scope
+    // dies), and keeping it guarantees every Intersect-closing scope opens.
     let overlapping: Vec<&LeafProducer> = leaves
         .iter()
         .copied()
-        .filter(|leaf| leaf_world_box(leaf, voxels_per_block).intersects(&block_abs))
+        .filter(|leaf| {
+            leaf_world_box(leaf, voxels_per_block).intersects(&block_abs)
+                || leaf.masks_beyond_bounds()
+        })
         .collect();
 
     // Compose in DOCUMENT ORDER (the order `leaf_producers` yields them, which is
@@ -507,9 +558,11 @@ pub(crate) fn resolve_boundary_block(
 /// Resolve one leaf's cells inside the block window and compose them into `region` (the
 /// innermost open scope's block-local accumulator) under the LEAF's own operation: a
 /// Union leaf stamps its render key (later document-order write wins — a plain overwrite
-/// reproduces the dense Union), a Subtract leaf CLEARS every cell its body covers
-/// (occupancy-only, ADR 0017 Decision 1 — it never writes a render key, so the material
-/// of every surviving cell is untouched).
+/// reproduces the dense Union), a Subtract leaf CLEARS every cell its body covers, and an
+/// Intersect leaf (#75) KEEPS ONLY the cells its body covers — clearing every other cell
+/// of the accumulator, including the whole block when its body misses it (`A ∩ ∅ = ∅`).
+/// Both booleans are occupancy-only (ADR 0017 Decision 1 — they never write a render key,
+/// so the material of every surviving cell is untouched).
 fn compose_leaf_into_region(
     region: &mut VoxelRegion,
     leaf: &LeafProducer,
@@ -533,6 +586,40 @@ fn compose_leaf_into_region(
     let mut local = VoxelGrid::default();
     leaf.producer
         .resolve_into(&mut local, voxels_per_block, window_local);
+
+    // ADR 0017 (#75): an Intersect leaf keeps ONLY the accumulator cells its body also
+    // covers in this block. Collect the body's block-local cells, then sweep the whole
+    // block-local extent clearing every occupied cell the body misses — surviving cells
+    // keep the render key they already carry (the mask never stamps). A body whose box
+    // misses the block resolves an EMPTY window, so the sweep clears everything: the
+    // block-local reading of `A ∩ ∅ = ∅`.
+    if leaf.operation == CombineOp::Intersect {
+        let mut body_covers: std::collections::HashSet<[i64; 3]> =
+            std::collections::HashSet::with_capacity(local.occupied.len());
+        for voxel in &local.occupied {
+            let block_local = [
+                voxel.local_index[0] as i64 + leaf.world_offset_voxels[0] - block_min_abs[0],
+                voxel.local_index[1] as i64 + leaf.world_offset_voxels[1] - block_min_abs[1],
+                voxel.local_index[2] as i64 + leaf.world_offset_voxels[2] - block_min_abs[2],
+            ];
+            if block_local.iter().any(|&c| c < 0 || c >= density as i64) {
+                continue; // Outside this block (the window clamps, but guard anyway).
+            }
+            body_covers.insert(block_local);
+        }
+        for z in 0..density {
+            for y in 0..density {
+                for x in 0..density {
+                    if region.cell_at(x, y, z).is_some()
+                        && !body_covers.contains(&[x as i64, y as i64, z as i64])
+                    {
+                        region.set(x, y, z, None);
+                    }
+                }
+            }
+        }
+        return;
+    }
 
     // Stamp each emitted voxel into the block-local region at its material (a Tool
     // overrides every voxel's id; a Part keeps its own per-voxel id). The voxel's
@@ -589,6 +676,10 @@ fn compose_leaf_into_region(
 ///   overwrite is exactly the later-wins rule of the flat fold).
 /// * `Subtract` — every occupied cell of the body CLEARS the parent's cell
 ///   (occupancy-only; the body's render keys never enter the parent).
+/// * `Intersect` (#75) — the parent KEEPS ONLY the cells the body also occupies: every
+///   parent cell the body does NOT cover is cleared (occupancy-only; surviving cells
+///   keep their parent render key). A body that composed to EMPTY clears the whole
+///   parent — `A ∩ ∅ = ∅`, the ∅ identity of the substrate kernel.
 fn fold_closed_scope_into_region(
     parent: &mut VoxelRegion,
     operation: CombineOp,
@@ -598,12 +689,17 @@ fn fold_closed_scope_into_region(
     for z in 0..extent[2] {
         for y in 0..extent[1] {
             for x in 0..extent[0] {
-                let Some(render_key) = closed.cell_at(x, y, z) else {
-                    continue;
-                };
-                match operation {
-                    CombineOp::Union => parent.set(x, y, z, Some(render_key)),
-                    CombineOp::Subtract => parent.set(x, y, z, None),
+                match (operation, closed.cell_at(x, y, z)) {
+                    (CombineOp::Union, Some(render_key)) => {
+                        parent.set(x, y, z, Some(render_key));
+                    }
+                    (CombineOp::Subtract, Some(_)) => parent.set(x, y, z, None),
+                    (CombineOp::Intersect, None) => parent.set(x, y, z, None),
+                    // Union/Subtract ignore cells the body left empty; Intersect
+                    // keeps (does not touch) the parent cells the body covers.
+                    (CombineOp::Union, None)
+                    | (CombineOp::Subtract, None)
+                    | (CombineOp::Intersect, Some(_)) => {}
                 }
             }
         }

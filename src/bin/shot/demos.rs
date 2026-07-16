@@ -182,6 +182,32 @@ pub(crate) fn build_demo_subtract(voxels_per_block: u32) -> Scene {
     scene
 }
 
+/// Build the `--demo-intersect` (ADR 0017 / #75): a solid Stone body box INTERSECTED by an
+/// overlapping box placed AFTER it under [`CombineOp::Intersect`]. Only the cells present in
+/// BOTH bodies survive, so the render shows exactly the overlap volume — a 2³-block cube at
+/// blocks `[2,4)³` — floating where the two boxes met. The mask deliberately carries the WOOD
+/// material: an Intersect is an occupancy-only mask that never stamps, so the surviving cube
+/// must render STONE — visible proof that surviving cells keep their ACCUMULATED material.
+///
+/// [`CombineOp::Intersect`]: voxel_worker::CombineOp
+pub(crate) fn build_demo_intersect(voxels_per_block: u32) -> Scene {
+    let make = |size: [u32; 3], offset: [i64; 3], material, operation, name: &str| {
+        let shape = SdfShape::from_blocks(ShapeKind::Box, size, 1, voxels_per_block);
+        let mut node = Node::new(name, NodeContent::Tool { shape, material });
+        node.transform = document::scene::NodeTransform::from_blocks(offset, voxels_per_block);
+        node.operation = operation;
+        node
+    };
+    let mut scene = selecting_first_node(Scene::from_nodes(vec![
+        make([4, 4, 4], [0, 0, 0], MaterialChoice::Stone, CombineOp::Union, "Body"),
+        // Placed AFTER the body ⇒ it masks it (document-order fold). Spans blocks
+        // [2, 6)³, overlapping the body's top corner octant [2, 4)³ — the survivor.
+        make([4, 4, 4], [2, 2, 2], MaterialChoice::Wood, CombineOp::Intersect, "Mask"),
+    ]));
+    scene.voxels_per_block = voxels_per_block;
+    scene
+}
+
 /// Build the `--demo-group-subtract` (ADR 0017 Decision 3 / #74): the SEALED-SCOPE golden.
 /// A Group holds a Stone body plus a cutter placed AFTER it under [`CombineOp::Subtract`],
 /// so the cutter bites a corner-octant notch out of the body — INSIDE the group. A sibling

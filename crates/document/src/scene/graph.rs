@@ -87,7 +87,15 @@ pub enum CombineOp {
     /// siblings. It never stamps material; surviving cells keep the material they
     /// already had.
     Subtract,
-    // future: Intersect (ADR 0017 Decision 1 — issue #75), Override, …
+    /// Intersective: an **occupancy-only mask** (ADR 0017 Decision 1, issue #75) —
+    /// the accumulated result KEEPS ONLY the cells the node's body also occupies;
+    /// every accumulated cell OUTSIDE the body dies, including cells far outside
+    /// the node's own AABB. Like `Subtract` it never stamps material (surviving
+    /// cells keep their accumulated material), and intersecting the EMPTY
+    /// accumulator (fold start) yields empty — predictable per the ordering law
+    /// (Decision 2).
+    Intersect,
+    // future: Override, …
 }
 /// Per-node grid display settings (issue #29 grid rework, S1). Each grid type a
 /// node can show is gated by a scene-wide master ANDed with the node's own flag;

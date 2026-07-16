@@ -24,6 +24,7 @@ mod streaming;
 mod incremental;
 mod subtract;
 mod sealed_scopes;
+mod intersect;
 
     pub(super) fn shape_scene(kind: ShapeKind, voxels_per_block: u32) -> Scene {
         Scene::from_geometry(

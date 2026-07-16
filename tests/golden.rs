@@ -208,6 +208,17 @@ const CASES: &[GoldenCase] = &[
         name: "demo-group-subtract",
         args: &["--demo-group-subtract"],
     },
+    // ADR 0017 (#75): the INTERSECT golden — a Stone body box and an overlapping box
+    // placed AFTER it under CombineOp::Intersect. Exactly the overlap volume survives (a
+    // 2³-block cube where the boxes met), and the mask's own material (Wood) never
+    // appears: an Intersect is an occupancy-only mask, so the surviving cube renders
+    // STONE. Pins the whole intersect path: document walk → conservative bound algebra
+    // (blocks outside the mask re-classify to air, mask-grazed blocks degrade to
+    // boundary) → per-voxel boundary resolve → mesh.
+    GoldenCase {
+        name: "demo-intersect",
+        args: &["--demo-intersect"],
+    },
 ];
 
 /// The subset of [`CASES`] whose scene is CHUNKABLE (has an intrinsic-size leaf), i.e. the
@@ -254,6 +265,10 @@ const TWO_LAYER_CASE_NAMES: &[&str] = &[
     // the dense scoped oracle (the group's cutter carves the group's body only, on
     // both paths).
     "demo-group-subtract",
+    // ADR 0017 (#75): the intersect scene through `--two-layer` — the mask's
+    // conservative interval fold (never-dropped mask candidates, whole-chunk degrade,
+    // per-voxel boundary resolve) must render pixel-identical to the dense oracle.
+    "demo-intersect",
 ];
 
 /// ADR 0011 G1 (#67): the golden cases whose scene is a chunkable SINGLE producer with a

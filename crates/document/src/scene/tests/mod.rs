@@ -7,6 +7,7 @@ mod placement;
 mod grids;
 mod subtract;
 mod sealed_scopes;
+mod intersect;
 
 /// Mint stable [`NodeId`]s for a freshly-built test scene and select the
 /// top-level node at `index` by id (ADR 0003 Phase B3: selection is keyed by

@@ -15,7 +15,8 @@ use voxel_worker::{
 use crate::demos::{
     build_demo_groups, build_demo_mixed_material, build_demo_overlap, build_demo_scene,
     build_demo_sketch_box, build_demo_sketch_extrude, build_demo_sketch_revolve,
-    build_demo_group_subtract, build_demo_subtract, build_demo_two_material, build_demo_village,
+    build_demo_group_subtract, build_demo_intersect, build_demo_subtract, build_demo_two_material,
+    build_demo_village,
     build_demo_village_far,
     build_far_offset_scene, file_stem_of, resolve_demo_stem, FAR_OFFSET_BLOCKS,
     FAR_SCENE_BASE_BLOCKS,
@@ -143,6 +144,8 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         build_demo_subtract(options.geometry.voxels_per_block)
     } else if options.demo_group_subtract {
         build_demo_group_subtract(options.geometry.voxels_per_block)
+    } else if options.demo_intersect {
+        build_demo_intersect(options.geometry.voxels_per_block)
     } else if options.demo_two_material {
         build_demo_two_material(options.geometry.voxels_per_block)
     } else if options.demo_mixed_material {
@@ -248,6 +251,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         || options.demo_overlap
         || options.demo_subtract
         || options.demo_group_subtract
+        || options.demo_intersect
         || options.demo_two_material
         || options.demo_mixed_material
         || options.demo_village

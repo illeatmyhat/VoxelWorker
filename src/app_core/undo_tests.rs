@@ -300,6 +300,26 @@
         );
     }
 
+    #[test]
+    fn set_operation_intersect_round_trips() {
+        // ADR 0017 (#75): the Intersect arm rides the SAME field-inverse pattern —
+        // undo restores the prior Union, redo re-applies the Intersect — on a leaf
+        // and on a Group (the scope's composed body folds under Intersect).
+        let mut scene = two_tool_scene();
+        let target = scene.roots[0];
+        assert_round_trips(
+            &mut scene,
+            Intent::SetOperation { target, operation: document::scene::CombineOp::Intersect },
+        );
+        let mut scene = two_tool_scene();
+        scene.active = Some(scene.roots[0]);
+        let group = scene.group_active().expect("grouping the active node succeeds");
+        assert_round_trips(
+            &mut scene,
+            Intent::SetOperation { target: group, operation: document::scene::CombineOp::Intersect },
+        );
+    }
+
     /// A normalized scene whose first node is a Sketch and whose second is a Tool,
     /// ids minted + Origin point, first node active — the sketch-edit fixture.
     fn sketch_then_tool_scene() -> Scene {

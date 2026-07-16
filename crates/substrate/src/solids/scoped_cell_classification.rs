@@ -264,6 +264,26 @@ mod tests {
     }
 
     #[test]
+    fn a_leading_intersect_operand_folds_into_empty_and_stays_empty() {
+        // ∅ ∩ B = ∅: an Intersect OPERAND before anything accumulated (the fold-start
+        // edge case of the ordering law) annihilates nothing into nothing — alone it
+        // classifies exactly Air, and a union operand AFTER it seeds fresh (∅ ∪ A = A).
+        let alone = ScopedCellClassification::classify(
+            [contribution(-3.0, -1.0, CellCombineOp::Intersect)],
+            0.0,
+        );
+        assert_eq!(alone, Some(FieldClassification::Air));
+        let then_union = ScopedCellClassification::classify(
+            [
+                contribution(-3.0, -1.0, CellCombineOp::Intersect),
+                contribution(-3.0, -1.0, CellCombineOp::Union),
+            ],
+            0.0,
+        );
+        assert_eq!(then_union, Some(FieldClassification::CoarseSolid));
+    }
+
+    #[test]
     fn an_empty_scope_annihilates_the_parent_under_intersect() {
         // A ∩ ∅ = ∅: the parent solid intersected with an empty scope body is provably empty.
         let verdict = ScopedCellClassification::classify(
