@@ -48,7 +48,9 @@ pub use materials::{
     relative_material_base_colors_public, upload_face_material_texture, GridOverlayParams,
     LayerBand, MaterialSource, RegionClip, RegionRole,
 };
-pub use view_cube::{ViewCubeRenderer, VIEW_CUBE_VIEWPORT_MARGIN, VIEW_CUBE_VIEWPORT_PIXELS};
+pub use view_cube::{
+    view_cube_corner, ViewCubeRenderer, VIEW_CUBE_VIEWPORT_MARGIN, VIEW_CUBE_VIEWPORT_PIXELS,
+};
 pub use targets::{create_depth_view, create_msaa_color_view, DEPTH_FORMAT, MSAA_SAMPLE_COUNT};
 pub use gizmo::TransformGizmoRenderer;
 pub use grid::SceneGridRenderer;

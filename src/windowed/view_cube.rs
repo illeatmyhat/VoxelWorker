@@ -65,28 +65,33 @@ impl WindowedState {
         self.app_core.camera.orbit_distance = OrbitCamera::auto_framed_distance(region_dimensions);
     }
 
-    /// Is the pixel `(x, y)` inside the view-cube viewport? Issue #25: the cube's
-    /// corner is offset into the central 3D viewport rect (cached from the last
-    /// frame), so the hit rect tracks the cube's actual on-screen position rather
-    /// than the window's top-left.
+    /// Is the pixel `(x, y)` inside the view-cube viewport? Signal (#86): the cube is
+    /// in the **top-right** of the central 3D viewport rect (cached from the last
+    /// frame). The corner comes from the SAME [`view_cube_corner`] the renderer draws
+    /// with, so the hit rect always coincides with the drawn cube. When the viewport
+    /// is below the minimum size the cube isn't drawn, so no pixel is inside it.
     pub(super) fn position_in_view_cube(&self, x: f64, y: f64) -> bool {
-        let [viewport_x, viewport_y, _, _] = self.last_viewport_px;
-        let corner_x = (viewport_x + VIEW_CUBE_VIEWPORT_MARGIN) as f64;
-        let corner_y = (viewport_y + VIEW_CUBE_VIEWPORT_MARGIN) as f64;
+        let Some((corner_x, corner_y)) = view_cube_corner(self.last_viewport_px) else {
+            return false;
+        };
+        let (corner_x, corner_y) = (corner_x as f64, corner_y as f64);
         let size = VIEW_CUBE_VIEWPORT_PIXELS as f64;
         x >= corner_x && x <= corner_x + size && y >= corner_y && y <= corner_y + size
     }
 
-    /// The ViewCube's on-screen square in window pixels (#13 Step 3), so the chrome
-    /// hit-math ([`classify_cube_point`]) shares the SAME rect as
-    /// [`Self::position_in_view_cube`] and the renderer. Offset into the central 3D
-    /// viewport rect (issue #25), matching `pick_view_cube_element`.
+    /// The ViewCube's on-screen square in window pixels, so the chrome hit-math
+    /// ([`classify_cube_point`]) shares the SAME rect as [`Self::position_in_view_cube`]
+    /// and the renderer (both via [`view_cube_corner`]). A degenerate rect (size 0) is
+    /// returned when the cube isn't drawn (viewport below the minimum size), so every
+    /// chrome hit-test cleanly misses.
     pub(super) fn cube_rect(&self) -> CubeRect {
-        let [viewport_x, viewport_y, _, _] = self.last_viewport_px;
-        CubeRect {
-            x: (viewport_x + VIEW_CUBE_VIEWPORT_MARGIN) as f32,
-            y: (viewport_y + VIEW_CUBE_VIEWPORT_MARGIN) as f32,
-            size: VIEW_CUBE_VIEWPORT_PIXELS as f32,
+        match view_cube_corner(self.last_viewport_px) {
+            Some((corner_x, corner_y)) => CubeRect {
+                x: corner_x as f32,
+                y: corner_y as f32,
+                size: VIEW_CUBE_VIEWPORT_PIXELS as f32,
+            },
+            None => CubeRect { x: 0.0, y: 0.0, size: 0.0 },
         }
     }
 
@@ -106,14 +111,15 @@ impl WindowedState {
     /// the hit [`ViewCubeElement`] (face / edge / corner). NDC is computed within
     /// the cube's screen rect, then unprojected through the view-cube matrix; the
     /// entry face is found by a slab intersection, and the 3D hit point's in-plane
-    /// coordinates pick one of the face's 9 hot zones (3×3 grid at the 1/3 and 2/3
-    /// thresholds): centre → the face, an edge zone → this face + the neighbour the
-    /// zone points toward, a corner zone → this face + both neighbours.
+    /// coordinates pick one of the face's 9 hot zones (3×3 grid at the Signal 68 %
+    /// centre patch, ±`VIEW_CUBE_ZONE_THRESHOLD`): centre → the face, an edge zone →
+    /// this face + the neighbour the zone points toward, a corner zone → this face +
+    /// both neighbours.
     pub(super) fn pick_view_cube_element(&self, x: f64, y: f64) -> Option<ViewCubeElement> {
-        // Issue #25: the cube's corner is offset into the central viewport rect.
-        let [viewport_x, viewport_y, _, _] = self.last_viewport_px;
-        let corner_x = (viewport_x + VIEW_CUBE_VIEWPORT_MARGIN) as f32;
-        let corner_y = (viewport_y + VIEW_CUBE_VIEWPORT_MARGIN) as f32;
+        // Signal (#86): the cube's corner is the top-right of the central viewport rect
+        // (shared with the renderer via `view_cube_corner`).
+        let (corner_x, corner_y) = view_cube_corner(self.last_viewport_px)?;
+        let (corner_x, corner_y) = (corner_x as f32, corner_y as f32);
         let size = VIEW_CUBE_VIEWPORT_PIXELS as f32;
         // NDC inside the cube rect (y up).
         let ndc_x = ((x as f32 - corner_x) / size) * 2.0 - 1.0;

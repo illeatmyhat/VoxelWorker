@@ -930,6 +930,10 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         pixels_per_point,
         // #13 Step 3: the headless path never opens the ViewCube context menu.
         &mut None,
+        // Signal (#86): no zone-name readout in the goldens — the highlight lives in
+        // the cube itself; the readout is a windowed-only overlay. Keeps every golden
+        // diff to the two cube corners.
+        None,
     );
 
     // Issue #25: now that egui has laid out its panels, derive the camera aspect

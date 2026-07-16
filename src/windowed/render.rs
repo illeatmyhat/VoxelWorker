@@ -158,6 +158,10 @@ impl WindowedState {
             [self.surface_config.width, self.surface_config.height],
                 pixels_per_point,
                 &mut self.context_menu_open_at,
+                // Signal (#86): the hovered cube zone's readout name, or None.
+                self.hovered_cube_zone
+                    .and_then(camera::view_cube_zone_readout)
+                    .as_deref(),
             )
         };
 

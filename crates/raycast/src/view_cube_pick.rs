@@ -3,10 +3,20 @@
 //! Casting a ray at the small on-screen orientation cube and deciding which element it
 //! hit — a face, an edge, or a corner — is pure ray geometry: a slab intersection
 //! against the cube `[-half, half]³` gives the entered face (its dominant axis and
-//! sign), and the 3×3 grid of hot zones on that face, split at the ±half/3 thresholds,
-//! decides whether the pick is the face's centre (→ the face), an edge column/row (→ the
-//! face plus one in-plane neighbour), or a corner (→ the face plus two). This module
-//! holds that geometry; the app maps the axes and signs to its ViewCube face vocabulary.
+//! sign), and the 3×3 grid of hot zones on that face, split at the ±(0.68·half)
+//! thresholds, decides whether the pick is the face's centre (→ the face), an edge
+//! column/row (→ the face plus one in-plane neighbour), or a corner (→ the face plus
+//! two). This module holds that geometry; the app maps the axes and signs to its
+//! ViewCube face vocabulary.
+//!
+//! ## Zone proportion (Signal spec)
+//!
+//! The centre patch spans **68 %** of each face (16 % edge strips on either side) — the
+//! `docs/design/viewport-chrome-signal.md` proportion. The pick threshold and the
+//! renderer's drawn slice lines are BOTH derived from [`VIEW_CUBE_CENTRE_PATCH_FRACTION`]
+//! so the picture is the hit-map: a fragment on a face is in the central zone exactly
+//! when its in-plane coordinate is within `±(0.68·half)` (the drawn 16 %/84 % slice
+//! lines sit on those same planes).
 //!
 //! ## Literature
 //!
@@ -22,10 +32,19 @@ use substrate::spatial::Ray;
 /// The ViewCube's half-extent: the cube spans `[-0.7, 0.7]` on each axis.
 pub const VIEW_CUBE_HALF_EXTENT: f32 = 0.7;
 
-/// The hot-zone threshold: a third of the half-extent. An in-plane hit coordinate beyond
-/// `±VIEW_CUBE_ZONE_THRESHOLD` falls in that axis's edge/corner zone rather than the
-/// central face zone.
-pub const VIEW_CUBE_ZONE_THRESHOLD: f32 = VIEW_CUBE_HALF_EXTENT / 3.0;
+/// The fraction of a face spanned by its central (face-centre) zone — the Signal
+/// spec's **68 % centre patch**, leaving two 16 % edge strips. The renderer draws the
+/// 3×3 slice lines at this same proportion so the drawn partition IS the pick partition.
+pub const VIEW_CUBE_CENTRE_PATCH_FRACTION: f32 = 0.68;
+
+/// The hot-zone threshold: the half-width of the 68 %-centre patch, in cube units. An
+/// in-plane hit coordinate beyond `±VIEW_CUBE_ZONE_THRESHOLD` falls in that axis's
+/// edge/corner (16 %) strip rather than the central face zone. Derived from
+/// [`VIEW_CUBE_CENTRE_PATCH_FRACTION`] so a retune moves both the pick and the drawn
+/// slices together: a centre patch covering fraction `f` of the full `2·half` face
+/// extends `±(f·half)` from the face centre.
+pub const VIEW_CUBE_ZONE_THRESHOLD: f32 =
+    VIEW_CUBE_HALF_EXTENT * VIEW_CUBE_CENTRE_PATCH_FRACTION;
 
 /// The parallel-axis guard: a direction component below this magnitude is treated as
 /// parallel to that pair of slab planes (mirrors the picker's original `1e-6`).

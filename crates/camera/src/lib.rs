@@ -50,6 +50,7 @@ pub use orbit::{HomeView, OrbitCamera, ProjectionMode, POLE_EPSILON};
 pub use projection::unproject_screen_point_to_ray;
 pub use tween::{ease_in_out_quad, nearest_equivalent_theta, normalize_roll, SnapTween};
 pub use view_cube::{
-    adjacent_face, chrome_zone_left_click_action, classify_cube_point, ArrowDir, ChromeClickAction,
-    CubeChromeZone, CubeFace, CubeRect, RollDir, ViewCubeElement, CUBE_FACES,
+    adjacent_face, chrome_zone_left_click_action, classify_cube_point, view_cube_zone_readout,
+    ArrowDir, ChromeClickAction, CubeChromeZone, CubeFace, CubeRect, RollDir, ViewCubeElement,
+    CUBE_FACES,
 };

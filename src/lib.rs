@@ -114,8 +114,8 @@ pub use ui::panel::{
 };
 pub use assets::{CubeFaceSlot, FaceProvenance, FaceTextures};
 pub use display::renderer::{
-    create_depth_view, create_msaa_color_view, InfiniteGridRenderer, LayerBand, MaterialSource,
-    OnionFogParams, PointsRenderer, RegionClip, RegionRole, SceneGridRenderer,
+    create_depth_view, create_msaa_color_view, view_cube_corner, InfiniteGridRenderer, LayerBand,
+    MaterialSource, OnionFogParams, PointsRenderer, RegionClip, RegionRole, SceneGridRenderer,
     TransformGizmoRenderer, ViewCubeRenderer, DEPTH_FORMAT, MSAA_SAMPLE_COUNT,
     VIEW_CUBE_VIEWPORT_PIXELS,
 };
@@ -262,6 +262,10 @@ pub fn run_egui_frame(
     // menu's clicks. The menu clears this (`= None`) on selection or click-away.
     // The headless `shot` path passes `&mut None` (no menu).
     cube_context_menu_at: &mut Option<egui::Pos2>,
+    // Signal (#86): the hovered view-cube zone's name (e.g. `TOP·FRONT`), drawn as a
+    // faint readout line under the cube. `None` when nothing is hovered — and always
+    // `None` on the headless `shot` path, so the goldens stay pure cube geometry.
+    view_cube_zone_readout: Option<&str>,
 ) -> PreparedEguiFrame {
     let mut panel_response = PanelResponse::default();
     let mut cube_menu_request: Option<ViewCubeMenuRequest> = None;
@@ -346,6 +350,36 @@ pub fn run_egui_frame(
                     *cube_context_menu_at = None;
                 }
             }
+        }
+
+        // Signal (#86): the faint zone-name readout, centred just under the top-right
+        // view cube. Anchored off the post-panel central rect so it tracks the cube as
+        // the side panel resizes. Non-interactive (a pure label).
+        if let Some(label) = view_cube_zone_readout {
+            let margin = display::renderer::VIEW_CUBE_VIEWPORT_MARGIN as f32 / pixels_per_point;
+            let cube_size = VIEW_CUBE_VIEWPORT_PIXELS as f32 / pixels_per_point;
+            let cube_left = central_rect_points.right() - margin - cube_size;
+            let cube_bottom = central_rect_points.top() + margin + cube_size;
+            let context = ui.ctx().clone();
+            egui::Area::new(egui::Id::new("view_cube_zone_readout"))
+                .order(egui::Order::Foreground)
+                .interactable(false)
+                .fixed_pos(egui::pos2(cube_left, cube_bottom + 4.0))
+                .show(&context, |ui| {
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(cube_size, 0.0),
+                        egui::Layout::top_down(egui::Align::Center),
+                        |ui| {
+                            ui.label(
+                                egui::RichText::new(label)
+                                    .monospace()
+                                    .size(10.0)
+                                    // Signal "text — faint" (#4d565f) readout.
+                                    .color(egui::Color32::from_rgb(0x4d, 0x56, 0x5f)),
+                            );
+                        },
+                    );
+                });
         }
     });
 

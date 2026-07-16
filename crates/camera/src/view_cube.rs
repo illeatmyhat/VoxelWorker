@@ -126,6 +126,32 @@ impl ViewCubeElement {
         &self.faces[..self.count as usize]
     }
 
+    /// The per-axis sign selector `[sx, sy, sz]` (each in `{-1, 0, +1}`) describing
+    /// this element geometrically for the renderer's hover highlight. For each cube
+    /// axis, the value is the sign of the element's face normal along it, or `0` if no
+    /// face of the element touches that axis. A face has one non-zero entry, an edge
+    /// two, a corner three (e.g. the FRONT·TOP·RIGHT corner → `[+1, -1, +1]`: Right +X,
+    /// Front −Y, Top +Z). The renderer highlights a face fragment at cube position `p`
+    /// iff, on every axis `a`, `p[a]` lies on the selector's side of the centre patch
+    /// (`sel[a]·p[a] ≥ threshold`, or `|p[a]| ≤ threshold` when `sel[a] = 0`) — which
+    /// lights exactly the 1/2/3 across-the-fold facets of the hovered element.
+    pub fn axis_selectors(&self) -> [f32; 3] {
+        let mut selectors = [0.0f32; 3];
+        for face in self.faces() {
+            let normal = face.normal();
+            if normal.x != 0.0 {
+                selectors[0] = normal.x.signum();
+            }
+            if normal.y != 0.0 {
+                selectors[1] = normal.y.signum();
+            }
+            if normal.z != 0.0 {
+                selectors[2] = normal.z.signum();
+            }
+        }
+        selectors
+    }
+
     /// Is this a pure pole element (the TOP-only or BOTTOM-only face)? At the
     /// poles azimuth is undefined, so we special-case theta below.
     fn is_pole(&self) -> bool {
@@ -289,6 +315,48 @@ pub enum CubeChromeZone {
     FitButton,
 }
 
+/// The readout order rank of a face for the [`view_cube_zone_readout`] label:
+/// vertical faces first (TOP/BOTTOM), then depth (FRONT/BACK), then horizontal
+/// (RIGHT/LEFT), so a corner reads `TOP·FRONT·RIGHT` (Signal spec order).
+fn face_readout_rank(face: CubeFace) -> u8 {
+    match face {
+        CubeFace::Top | CubeFace::Bottom => 0,
+        CubeFace::Front | CubeFace::Back => 1,
+        CubeFace::Right | CubeFace::Left => 2,
+    }
+}
+
+/// The human label of a face (`RIGHT`/`LEFT`/`BACK`/`FRONT`/`TOP`/`BOTTOM`) — the
+/// [`CUBE_FACES`] vocabulary.
+fn face_label(face: CubeFace) -> &'static str {
+    CUBE_FACES
+        .iter()
+        .find(|(f, _)| *f == face)
+        .map(|(_, label)| *label)
+        .unwrap_or("")
+}
+
+/// The dot-joined zone name for a hovered chrome `zone`, e.g. `TOP·FRONT` (edge) or
+/// `TOP·FRONT·RIGHT` (corner), or a single face name. Returns `None` for the
+/// non-element chrome zones (arrows / badges), which have no cube-zone readout. Used
+/// by the Signal view cube's faint readout line under the cube (`ADR 0018` Decision 8
+/// / `docs/design/viewport-chrome-signal.md`). Faces are ordered vertical → depth →
+/// horizontal so the label reads TOP·FRONT·RIGHT regardless of pick order.
+pub fn view_cube_zone_readout(zone: CubeChromeZone) -> Option<String> {
+    let CubeChromeZone::Element(element) = zone else {
+        return None;
+    };
+    let mut faces: Vec<CubeFace> = element.faces().to_vec();
+    faces.sort_by_key(|face| face_readout_rank(*face));
+    Some(
+        faces
+            .iter()
+            .map(|face| face_label(*face))
+            .collect::<Vec<_>>()
+            .join("·"),
+    )
+}
+
 /// **ViewCube chrome layout** — pure screen-space hit-testing over the cube's
 /// square `rect`. All zones are expressed as fractions of `rect.size` so the
 /// renderer draws them in the identical pixels. Documented fractions (origin = rect
@@ -443,6 +511,50 @@ mod tests {
 
     fn approx(a: f32, b: f32) -> bool {
         (a - b).abs() < 1e-4
+    }
+
+    #[test]
+    fn axis_selectors_encode_face_edge_corner() {
+        // A face has one non-zero selector, an edge two, a corner three; each entry is
+        // the sign of the element's face normal along that axis (Z-up: Right +X, Front
+        // −Y, Top +Z).
+        assert_eq!(
+            ViewCubeElement::from_face(CubeFace::Right).axis_selectors(),
+            [1.0, 0.0, 0.0]
+        );
+        assert_eq!(
+            ViewCubeElement::from_edge(CubeFace::Front, CubeFace::Top).axis_selectors(),
+            [0.0, -1.0, 1.0]
+        );
+        assert_eq!(
+            ViewCubeElement::from_corner(CubeFace::Front, CubeFace::Top, CubeFace::Right)
+                .axis_selectors(),
+            [1.0, -1.0, 1.0]
+        );
+    }
+
+    #[test]
+    fn zone_readout_orders_vertical_depth_horizontal() {
+        // Faces read vertical → depth → horizontal regardless of pick order.
+        let top_front = CubeChromeZone::Element(ViewCubeElement::from_edge(
+            CubeFace::Front,
+            CubeFace::Top,
+        ));
+        assert_eq!(view_cube_zone_readout(top_front).as_deref(), Some("TOP·FRONT"));
+        let corner = CubeChromeZone::Element(ViewCubeElement::from_corner(
+            CubeFace::Right,
+            CubeFace::Front,
+            CubeFace::Top,
+        ));
+        assert_eq!(view_cube_zone_readout(corner).as_deref(), Some("TOP·FRONT·RIGHT"));
+        let face = CubeChromeZone::Element(ViewCubeElement::from_face(CubeFace::Right));
+        assert_eq!(view_cube_zone_readout(face).as_deref(), Some("RIGHT"));
+        // Non-element chrome zones have no zone readout.
+        assert_eq!(view_cube_zone_readout(CubeChromeZone::HomeButton), None);
+        assert_eq!(
+            view_cube_zone_readout(CubeChromeZone::RotateArrow(ArrowDir::Left)),
+            None
+        );
     }
 
     #[test]

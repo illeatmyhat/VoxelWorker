@@ -1,16 +1,18 @@
-// View-cube shader (Milestone 5).
+// View-cube shader (Milestone 5; restyled to the "Signal" language, #86).
 //
-// Draws a small labelled cube in a corner viewport that mirrors the main
-// camera's orientation. Each face samples its own label texture from a 6-layer
-// 2D texture array (layer = materialIndex order +X,-X,+Y,-Y,+Z,-Z). A simple
-// hemispheric light keeps the faces readable.
+// Draws the small orientation cube in the top-right corner viewport. Each face is a
+// FLAT translucent near-black fill sampled from its own label texture (a 6-layer 2D
+// array, layer = materialIndex order +X,-X,+Y,-Y,+Z,-Z) — no lighting, per the Signal
+// "flat fills" rule. On hover, an element's across-the-fold facets are tinted with the
+// onion-haze accent, decided GEOMETRICALLY from the fragment's cube-space position and
+// the hovered element's per-axis sign selector (so an edge lights a thin strip cell on
+// each of its two faces, a corner a corner cell on each of three).
 
 struct CubeUniforms {
     view_projection: mat4x4<f32>,
-    // #13 Step 6.2: `highlight.x` packs a 6-bit face mask (bit `layer` set ⇒ that
-    // face is part of the hovered face/edge/corner element and is brightened). The
-    // remaining components are unused padding (matches the Rust `LineUniforms`
-    // `depth_bias: vec4` slot the cube buffer reuses).
+    // Signal hover: `highlight = [sel_x, sel_y, sel_z, active]`. Each `sel` ∈ {-1,0,+1}
+    // is the hovered element's face-normal sign along that axis; `active` (0/1) gates
+    // the highlight. Reuses the Rust `LineUniforms.depth_bias` vec4 slot (offset 64).
     highlight: vec4<f32>,
 };
 
@@ -34,6 +36,8 @@ struct VertexOutput {
     @location(0) normal: vec3<f32>,
     @location(1) uv: vec2<f32>,
     @location(2) @interpolate(flat) layer: u32,
+    // Cube-space surface position (in [-HALF, HALF]³) for the geometric hover test.
+    @location(3) local_pos: vec3<f32>,
 };
 
 @vertex
@@ -43,23 +47,42 @@ fn vertex_main(vertex: VertexInput) -> VertexOutput {
     output.normal = vertex.normal;
     output.uv = vertex.uv;
     output.layer = vertex.layer;
+    output.local_pos = vertex.position;
     return output;
+}
+
+// The half-width of the 68 %-centre patch in cube units: 0.68 · HALF (HALF = 0.7).
+// MUST track `raycast::VIEW_CUBE_ZONE_THRESHOLD` so the highlight lands on the drawn
+// slice lines and the pick zones.
+const CENTRE_HALF: f32 = 0.476;
+
+// Is coordinate `p` on the selector's side of the centre patch on one axis?
+//   sel > 0  → high strip  (p ≥ +CENTRE_HALF)
+//   sel < 0  → low strip   (p ≤ -CENTRE_HALF)
+//   sel = 0  → centre band (|p| ≤ CENTRE_HALF)
+fn axis_ok(sel: f32, p: f32) -> bool {
+    if (sel > 0.5) { return p >= CENTRE_HALF; }
+    if (sel < -0.5) { return p <= -CENTRE_HALF; }
+    return abs(p) <= CENTRE_HALF;
 }
 
 @fragment
 fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    let texel = textureSample(label_textures, label_sampler, input.uv, input.layer).rgb;
-    // Soft hemispheric lighting so each face stays legible but shaded.
-    let light_direction = normalize(vec3<f32>(0.4, 0.7, 0.6));
-    let lit = 0.6 + 0.4 * max(dot(normalize(input.normal), light_direction), 0.0);
-    var color = texel * lit;
-    // #13 Step 6.2: brighten the hovered face/edge/corner. Decode bit `layer` of the
-    // packed 6-bit mask; if set, tint toward the teal hover accent so the whole
-    // hovered element (1–3 faces) glows on hover — matching the Fusion highlight.
-    let mask = u32(uniforms.highlight.x + 0.5);
-    if ((mask >> input.layer) & 1u) == 1u {
-        let accent = vec3<f32>(0.45, 0.95, 0.85);
-        color = mix(color, accent, 0.5) + vec3<f32>(0.10, 0.10, 0.10);
+    // Flat fill (translucent near-black + baked slice lines + label). No lighting.
+    var color = textureSample(label_textures, label_sampler, input.uv, input.layer).rgb;
+
+    // Geometric hover highlight: tint the fragment toward the accent iff it lies in the
+    // hovered element's cell on every axis.
+    if (uniforms.highlight.w > 0.5) {
+        let sel = uniforms.highlight.xyz;
+        let p = input.local_pos;
+        if (axis_ok(sel.x, p.x) && axis_ok(sel.y, p.y) && axis_ok(sel.z, p.z)) {
+            // #9cb4d8 in linear space; ~45 % accent fill (Signal's sole accent).
+            let accent = vec3<f32>(0.333, 0.457, 0.687);
+            color = mix(color, accent, 0.45);
+        }
     }
-    return vec4<f32>(color, 1.0);
+
+    // Translucent instrument-panel face (~80 % alpha over the resolved scene).
+    return vec4<f32>(color, 0.82);
 }

@@ -37,7 +37,7 @@ use crate::{
     HomeView, OrbitCamera, PanelState, SdfShape, SnapTween, ViewCubeElement,
     ViewCubeMenuRequest,
     ViewCubeRenderer, COLOR_TARGET_FORMAT,
-    VIEW_CUBE_VIEWPORT_PIXELS,
+    view_cube_corner, VIEW_CUBE_VIEWPORT_PIXELS,
 };
 // The display-state machine (both renderers + both async workers + the install seams) now
 // lives in the `DisplayOrchestrator`; the shell holds one and calls it at its integration
@@ -59,10 +59,6 @@ mod workers;
 /// Drag threshold (pixels) distinguishing a click (snap) from a drag (orbit) on
 /// the view cube, and the general orbit-start threshold.
 const VIEW_CUBE_DRAG_THRESHOLD_PIXELS: f64 = 5.0;
-
-/// Margin from the top-left corner to the view-cube viewport (must match the
-/// renderer's `VIEW_CUBE_VIEWPORT_MARGIN`).
-const VIEW_CUBE_VIEWPORT_MARGIN: u32 = 16;
 
 /// State that exists only once the window and GPU have been created (on first
 /// `resumed`). Kept in its own struct so `App` can start as `None` before then.
