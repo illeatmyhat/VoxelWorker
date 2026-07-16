@@ -107,6 +107,36 @@ op-stack field (see `docs/adr/0011`; generalizes the ADR 0007 fog atlas).
   overlap a region — via a single BVH of producer bounds (stateless, rebuilt per edit). One query,
   one structure: the edit broadphase is shared by the wholesale build and incremental re-evaluation.
 
+## Composition
+
+- **Ordered fold** — the composition semantics (`docs/adr/0017`): a scope's children
+  evaluate in document order, each folding into the accumulated result under its combine
+  operation (union / subtract / intersect). A boolean affects everything accumulated
+  before it; **placement order — never operand selection — decides what it touches**.
+  Geometry is protected from a cut by being placed after it, or in a sibling scope.
+
+- **Composition scope** — the boundary an ordered fold runs inside: a Group or a
+  definition body. Children compose into one body within the scope; a boolean inside a
+  scope can never affect geometry outside it.
+
+- **Sealed part** — the default definition behaviour: the definition pre-composes its
+  children into one finished body, and an instance places that body under a single
+  combine operation. Internal booleans are fully spent inside the definition.
+
+- **Fixture** — a definition flagged so its children **splice into the hosting scope's
+  ordered fold at the instance's position** instead of pre-composing. How a window both
+  cuts its opening and adds its frame with one placement. The "host" is positional —
+  whatever accumulated before the instance in its scope — never a stored reference; a
+  fixture moved into a different wall's scope cuts that wall.
+
+- **Cutter** — a part placed under a subtract operation; it carves the accumulated
+  result. Cutters are ordinary parts (reusable via definitions), not a special node kind.
+
+- **Junction** — a corner/meeting piece where instanced parts adjoin (walls at a bastion,
+  roads at an intersection). A junction is **a part built to suit the situation** —
+  authored and placed like any other (possibly as a fixture) — never a world-frame patch
+  on the composed result.
+
 ## Authoring truth
 
 - **Operation stack** — the ordered list of authoring operations for a part's geometry: parametric

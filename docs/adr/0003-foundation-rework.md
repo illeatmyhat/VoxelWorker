@@ -4,7 +4,11 @@
   shipped portions (units §3f(0), the Sketch system §3i, chunk-windowed `resolve_into` §3d, the
   `Intent` door §6a / command stack / `shot --replay`) prove the direction. Remaining unbuilt pieces
   — sculpt, the absolute-i64 store, rotation (§3f G4), async (§7) — are tracked as issues, not as an
-  open proposal.)
+  open proposal.) **Amended by ADR 0017 (2026-07-15):** the §1 *assembly-scoped override layers*
+  seam is retired unbuilt (junctions are parts; nothing patches the composed result), and the §3b
+  per-part `Vec<Layer>` stack is not adopted — composition beyond union lands node-granular on the
+  scene graph with sealed scopes + fixtures instead. §3e def-local sculpt overrides remain reserved
+  for the freehand-sculpt follow-on ADR.
 - **Date:** 2026-06-27
 - **Supersedes / extends:** consolidates and supersedes the open growth-path clauses of
   [ADR 0001](0001-scene-graph-parts-and-tools.md) (composition beyond union; transforms beyond
