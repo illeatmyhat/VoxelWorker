@@ -108,6 +108,12 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         // ADR 0018 Decision 3: the viewer mode (`--view-mode`). Only Show-booleans
         // populates the boolean-operand ghost this slice; Normal / Onion-fog leave it empty.
         view_mode: options.view_mode,
+        // Issue #88: pin the folded/expanded state of the floating Signal display stack for
+        // the golden (no pointer input exists on the single shot frame to fold it live).
+        stack: voxel_worker::SignalStackState {
+            folded: options.stack_folded,
+            ..voxel_worker::SignalStackState::default()
+        },
         layer_range,
         ..PanelState::default()
     };
@@ -1098,6 +1104,8 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         brick_raymarch: brick_raymarch_renderer.as_ref(),
         target_width: options.width,
         target_height: options.height,
+        // Signal (issue #88): slide the cube left of the floating display stack.
+        view_cube_right_inset_px: prepared.view_cube_right_inset_px,
     };
 
     // Paint via the exact same render-target-agnostic core the window uses.

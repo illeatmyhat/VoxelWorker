@@ -213,6 +213,11 @@ struct WindowedState {
     /// events, outside `render`) needs the cube's top-left corner, which is offset
     /// into this central rect — so we cache the rect each frame.
     last_viewport_px: [u32; 4],
+    /// Signal (issue #88): the view cube's right inset (physical px) = the floating display
+    /// stack's current width, cached from the most recent rendered frame so the cube
+    /// hit-testing (run in mouse events, outside `render`) offsets the cube corner by the
+    /// SAME amount `run_egui_frame` drew it with. Kept beside `last_viewport_px`.
+    last_cube_right_inset: u32,
     /// #13 Step 3: the screen position (window pixels) of an open ViewCube
     /// right-click context menu, or `None` when no menu is open. Set on a
     /// right-press inside the cube rect; the egui pass draws a small menu there and
@@ -480,6 +485,8 @@ impl WindowedState {
             view_cube_drag_active: false,
             // Default to the full target until the first frame fills it in.
             last_viewport_px: [0, 0, width, height],
+            // Issue #88: the expanded stack's inset until the first frame refreshes it.
+            last_cube_right_inset: crate::cube_right_inset_points(false).round() as u32,
             context_menu_open_at: None,
             hovered_cube_zone: None,
         }

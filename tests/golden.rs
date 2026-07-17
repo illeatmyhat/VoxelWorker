@@ -329,6 +329,16 @@ const CASES: &[GoldenCase] = &[
             "--onion", "8", "--layer-lower", "30", "--layer-upper", "50",
         ],
     },
+    // Issue #88: the FOLDED display stack. The same instanced village with the floating
+    // Signal display stack collapsed to its vertical edge tabs (`--stack-folded`): a `«`
+    // expander tab plus a VIEWPORT and a GRIDS tab hug the viewport's right edge (no ONION
+    // FOG tab — Normal mode), and the view cube + icon rail have SLID RIGHT toward the edge
+    // (the folded strip is far narrower than the ~226px expanded panel). Pins the fold
+    // mechanics + the cube/rail slide; every other (expanded) golden pins the panel open.
+    GoldenCase {
+        name: "stack-folded",
+        args: &["--demo-village", "--stack-folded"],
+    },
     // ADR 0018 Decision 4 (#84): Normal mode IGNORES the layer band. A sphere with a NARROW
     // band ([56,72]) but `--view-mode normal` renders the FULL finished sphere — the band is
     // Onion-fog's tool alone and does not clip here (contrast `onion-ghost`, the same-shape

@@ -71,7 +71,9 @@ impl WindowedState {
     /// with, so the hit rect always coincides with the drawn cube. When the viewport
     /// is below the minimum size the cube isn't drawn, so no pixel is inside it.
     pub(super) fn position_in_view_cube(&self, x: f64, y: f64) -> bool {
-        let Some((corner_x, corner_y)) = view_cube_corner(self.last_viewport_px) else {
+        let Some((corner_x, corner_y)) =
+            view_cube_corner(self.last_viewport_px, self.last_cube_right_inset)
+        else {
             return false;
         };
         let (corner_x, corner_y) = (corner_x as f64, corner_y as f64);
@@ -85,7 +87,7 @@ impl WindowedState {
     /// returned when the cube isn't drawn (viewport below the minimum size), so every
     /// chrome hit-test cleanly misses.
     pub(super) fn cube_rect(&self) -> CubeRect {
-        match view_cube_corner(self.last_viewport_px) {
+        match view_cube_corner(self.last_viewport_px, self.last_cube_right_inset) {
             Some((corner_x, corner_y)) => CubeRect {
                 x: corner_x as f32,
                 y: corner_y as f32,
@@ -118,7 +120,7 @@ impl WindowedState {
     pub(super) fn pick_view_cube_element(&self, x: f64, y: f64) -> Option<ViewCubeElement> {
         // Signal (#86): the cube's corner is the top-right of the central viewport rect
         // (shared with the renderer via `view_cube_corner`).
-        let (corner_x, corner_y) = view_cube_corner(self.last_viewport_px)?;
+        let (corner_x, corner_y) = view_cube_corner(self.last_viewport_px, self.last_cube_right_inset)?;
         let (corner_x, corner_y) = (corner_x as f32, corner_y as f32);
         let size = VIEW_CUBE_VIEWPORT_PIXELS as f32;
         // NDC inside the cube rect (y up).

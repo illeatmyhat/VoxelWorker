@@ -113,8 +113,8 @@ pub use gpu::GpuContext;
 pub use document::intent::{Intent, IntentEffect, NodeSpec};
 pub use voxel_core::core_geom::MaterialChoice;
 pub use ui::panel::{
-    build_panel, ExportPanelState, LayerRange, PanelResponse,
-    PanelState, ViewMode,
+    build_panel, build_signal_stack, cube_right_inset_points, ExportPanelState, LayerRange,
+    PanelResponse, PanelState, SignalStackState, ViewMode,
 };
 pub use assets::{CubeFaceSlot, FaceProvenance, FaceTextures};
 pub use display::renderer::{
@@ -247,6 +247,12 @@ pub struct PreparedEguiFrame {
     /// `panel_state.view_mode` (pure display state), like the ortho toggle, so it is not
     /// reported here. `None` on the headless `shot` path (the rail is never clicked).
     pub rail_action: Option<ChromeClickAction>,
+    /// Signal (issue #88): the horizontal inset (PHYSICAL PIXELS) from the central
+    /// viewport's RIGHT edge to the view cube's right edge, so the cube + rail slide left
+    /// of the floating display stack and track its fold state. The caller feeds it to
+    /// [`view_cube_corner`] (the GPU cube draw) and caches it for the cube hit-testing, so
+    /// the drawn cube, its pick rect and the egui rail share one anchor.
+    pub view_cube_right_inset_px: u32,
 }
 
 /// Run the egui pass for one frame: build the panel, upload changed textures to
@@ -284,6 +290,9 @@ pub fn run_egui_frame(
     // shell's `ChromeClickAction`; a mode-cycle click mutates `panel_state.view_mode` in
     // place inside the closure (never surfaced), like the ortho toggle.
     let mut rail_action: Option<ChromeClickAction> = None;
+    // Signal (issue #88): the cube's right inset (physical px) = the display stack's current
+    // width, computed inside the closure once the central rect + fold state are known.
+    let mut view_cube_right_inset_px: u32 = 0;
     // Issue #25: the central 3D viewport rect, in egui points. `build_panel` shows
     // the right side panel + bottom palette dock INSIDE `ui`; whatever room those
     // panels leave is the central area where the 3D scene should be centred. We
@@ -294,7 +303,7 @@ pub fn run_egui_frame(
         egui::vec2(size_in_pixels[0] as f32, size_in_pixels[1] as f32),
     );
     let full_output = bridge.context.run_ui(raw_input, |ui| {
-        panel_response = build_panel(ui, panel_state, grid_z, measured_diameter, export, palette);
+        panel_response = build_panel(ui, panel_state, export, palette);
         // After both panels have been shown inside the root ui, the remaining
         // space is the central viewport.
         central_rect_points = ui.available_rect_before_wrap();
@@ -367,20 +376,41 @@ pub fn run_egui_frame(
             }
         }
 
+        // Signal (issue #88): the floating DISPLAY stack, anchored to the top-right of the
+        // central viewport (the cube + rail slide to its left). Drawn on the SAME single
+        // frame the side panel is (an absolute-rect immediate-mode child, not an Area) so it
+        // renders on the headless `shot` capture. It mutates `panel_state` (fold / section
+        // toggles, projection, layer band) and appends any `SetGridMasters` to the response.
+        // Capture the fold state as DRAWN this frame (a fold/expand click takes effect next
+        // frame), so the cube slide matches the panel width actually painted.
+        let stack_folded_drawn = panel_state.stack.folded;
+        build_signal_stack(
+            ui,
+            panel_state,
+            central_rect_points,
+            grid_z,
+            measured_diameter,
+            &mut panel_response,
+        );
+
         // Signal (ADR 0018 Decision 8): the cube's on-screen anchors in egui points
         // (shared by the readout, icon rail, and status line so they track the cube as
-        // the side panel resizes). `cube_fits` mirrors `view_cube_corner`'s minimum-size
-        // rule (viewport ≥ margin + cube on each axis) — below it the cube isn't drawn,
-        // so the rail hides too.
+        // the side panel resizes AND slide left of the display stack). The cube's right
+        // inset from the central edge is the stack's current width (issue #88); `cube_fits`
+        // mirrors `view_cube_corner`'s minimum-size rule (viewport ≥ inset + cube wide, ≥
+        // margin + cube tall) — below it the cube isn't drawn, so the rail hides too.
         let cube_margin = display::renderer::VIEW_CUBE_VIEWPORT_MARGIN as f32 / pixels_per_point;
         let cube_size = VIEW_CUBE_VIEWPORT_PIXELS as f32 / pixels_per_point;
-        let cube_left = central_rect_points.right() - cube_margin - cube_size;
+        let cube_right_inset = cube_right_inset_points(stack_folded_drawn);
+        let cube_left = central_rect_points.right() - cube_right_inset - cube_size;
         let cube_bottom = central_rect_points.top() + cube_margin + cube_size;
-        let cube_extent_px =
-            (display::renderer::VIEW_CUBE_VIEWPORT_MARGIN + VIEW_CUBE_VIEWPORT_PIXELS) as f32;
+        let cube_right_inset_px = (cube_right_inset * pixels_per_point).round() as u32;
+        view_cube_right_inset_px = cube_right_inset_px;
         let cube_fits = panel_state.show_view_cube
-            && central_rect_points.width() * pixels_per_point >= cube_extent_px
-            && central_rect_points.height() * pixels_per_point >= cube_extent_px;
+            && central_rect_points.width() * pixels_per_point
+                >= cube_right_inset_px as f32 + VIEW_CUBE_VIEWPORT_PIXELS as f32
+            && central_rect_points.height() * pixels_per_point
+                >= (display::renderer::VIEW_CUBE_VIEWPORT_MARGIN + VIEW_CUBE_VIEWPORT_PIXELS) as f32;
 
         // Signal: the icon rail directly under the cube (Home / Fit / viewport-mode
         // cycle). Home/Fit reuse the shell's `ChromeClickAction`; a mode-cycle click
@@ -494,6 +524,7 @@ pub fn run_egui_frame(
         viewport_px,
         cube_menu_request,
         rail_action,
+        view_cube_right_inset_px,
     }
 }
 
@@ -585,6 +616,10 @@ pub struct FrameOverlays<'a> {
     /// Target dimensions (needed to place the view-cube corner viewport).
     pub target_width: u32,
     pub target_height: u32,
+    /// Signal (issue #88): the view cube's right inset (physical px) = the floating display
+    /// stack's current width, so the GPU-drawn cube slides left of the stack and matches the
+    /// egui rail's anchor (both via [`view_cube_corner`]). From `PreparedEguiFrame`.
+    pub view_cube_right_inset_px: u32,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -747,6 +782,7 @@ pub fn render_frame(
             overlays.target_width,
             overlays.target_height,
             prepared.viewport_px,
+            overlays.view_cube_right_inset_px,
             overlays.cube_hovered_zone,
             overlays.cube_rotate_arrows_visible,
         );

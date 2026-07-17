@@ -32,23 +32,26 @@ mod layers;
 mod nodes;
 mod palette;
 mod points;
+mod signal_stack;
 mod state;
 
-pub use state::{ExportPanelState, LayerRange, PanelResponse, PanelState, ViewMode};
+pub use signal_stack::{build_signal_stack, cube_right_inset_points};
+pub use state::{
+    ExportPanelState, LayerRange, PanelResponse, PanelState, SignalStackState, ViewMode,
+};
 
 use crate::palette::BlockPalette;
 
 /// Build the right-hand side panel into the root [`egui::Ui`] of the frame.
 ///
-/// `grid_z` is the current grid height in voxels (Z-up: layers are Z-slices, so the
-/// layer-scrubber track spans `0..grid_z`); `measured_diameter` is the widest
-/// occupied voxel run in the active band (`grid.widest_run_in_band`), shown as a
-/// small stat line. Returns a [`PanelResponse`] describing what the user changed.
+/// The sidebar hosts the scene tree, points, inspector and export; the display-related
+/// sections (VIEWPORT / ONION FOG / GRIDS) left it for the floating Signal display stack
+/// ([`build_signal_stack`], issue #88), which the shell renders separately with the
+/// layer-track length + measured diameter. Returns a [`PanelResponse`] describing what the
+/// user changed.
 pub fn build_panel(
     root_ui: &mut egui::Ui,
     state: &mut PanelState,
-    grid_z: u32,
-    measured_diameter: u32,
     export: ExportPanelState,
     palette: &BlockPalette,
 ) -> PanelResponse {
@@ -73,13 +76,14 @@ pub fn build_panel(
                     ui.add_space(6.0);
                     ui.separator();
 
+                    // The display-related sections (VIEWPORT / ONION FOG / GRIDS) left the
+                    // sidebar for the floating Signal display stack (issue #88,
+                    // `panel::signal_stack`, rendered by `run_egui_frame`). The sidebar keeps
+                    // the scene tree, points, inspector and export.
                     nodes::build_node_list_section(ui, state, &mut response);
                     points::build_points_section(ui, state, &mut response);
                     inspector::build_inspector_section(ui, state, &mut response);
-                    controls::build_camera_section(ui, state);
-                    controls::build_display_section(ui, state, &mut response);
                     controls::build_export_section(ui, &mut response, export);
-                    layers::build_layers_section(ui, state, grid_z, measured_diameter);
 
                     if let Some(millions) = state.voxel_cap_warning_millions {
                         ui.add_space(8.0);

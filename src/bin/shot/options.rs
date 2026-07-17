@@ -40,6 +40,11 @@ pub(crate) struct ShotOptions {
     /// the selected subtree's boolean operands; Onion-fog keeps its scene-wide band meaning
     /// this slice.
     pub(crate) view_mode: ViewMode,
+    /// `--stack-folded` (issue #88): start the floating Signal display stack FOLDED to its
+    /// vertical edge tabs (the cube + rail slide right toward the edge). There is no pointer
+    /// input on the single `shot` frame, so this flag is how the folded-state golden is
+    /// pinned. Default `false` (the expanded stack).
+    pub(crate) stack_folded: bool,
     /// Whether the block lattice is drawn (M8 `--lattice`).
     pub(crate) show_block_lattice: bool,
     /// Whether the fine floor grid is drawn (M8 `--floor`).
@@ -287,6 +292,7 @@ impl Default for ShotOptions {
             select_node: None,
             select_root: false,
             view_mode: ViewMode::Normal,
+            stack_folded: false,
             show_block_lattice: false,
             show_floor_grid: false,
             show_points: false,
@@ -566,6 +572,9 @@ pub(crate) fn parse_options() -> ShotOptions {
                 options.view_mode =
                     parse_view_mode(&args.next().expect("--view-mode requires a value"));
             }
+            "--stack-folded" => {
+                options.stack_folded = true;
+            }
             "--lattice" => {
                 options.show_block_lattice = true;
             }
@@ -764,7 +773,7 @@ pub(crate) fn parse_options() -> ShotOptions {
                      \x20            [--synthetic-block] [--two-layer]\n\
                      \x20            [--replay <script.jsonl>]\n\
                      \x20            [--force-demo-stem <texture/stem>]\n\
-                     \x20            [--gizmo] [--select-node <usize>] [--select-root] [--view-mode <normal|onion|booleans>] [--lattice] [--floor] [--points] [--point-at <X Y Z>] [--no-viewcube]\n\
+                     \x20            [--gizmo] [--select-node <usize>] [--select-root] [--view-mode <normal|onion|booleans>] [--stack-folded] [--lattice] [--floor] [--points] [--point-at <X Y Z>] [--no-viewcube]\n\
                      \x20            [--debug-faces] [--debug-chunks]\n\
                      \x20            [--demo-scene] [--demo-overlap] [--demo-subtract] [--demo-group-subtract] [--demo-intersect] [--demo-cutter-def] [--demo-window-fixture] [--demo-buried-cutter] [--demo-child-booleans] [--demo-two-material] [--demo-village] [--demo-village-far] [--demo-groups]\n\
                      \x20            [--demo-sketch-extrude] [--demo-sketch-revolve]\n\

@@ -1,30 +1,24 @@
 //! The Layers section (issue #12): the layer-range scrubber widget.
 
-use super::{LayerRange, PanelState, ViewMode};
+use super::{LayerRange, PanelState};
 
-/// The Layers section (issue #12): the layer-range scrubber that subsumes the old
-/// 2D mid-vertical slice map. Z-up: layers are Z-slices. A video-clip-style track
-/// over `0..grid_z` with two trim handles (lower/upper), the selected band
-/// highlighted, block-boundary ticks, the layers/blocks readout, the snap + onion
-/// controls, and the measured-diameter stat line (widest occupied run in the band).
+/// The layer-range scrubber + onion-depth controls + widest-run stat — the **body** of the
+/// Signal stack's ONION FOG section (issue #88, ADR 0018 Decision 5). The scrubber (issue
+/// #12) subsumes the old 2D mid-vertical slice map: Z-up, layers are Z-slices, a
+/// video-clip-style track over `0..grid_z` with two trim handles (lower/upper), the
+/// selected band highlighted, block-boundary ticks, the layers/blocks readout, the snap +
+/// onion controls, and the measured-diameter stat line (widest occupied run in the band).
 ///
-/// ADR 0018 Decision 5: the layer scrubber + onion-depth controls + diameter stat are
-/// **Onion-fog mode's tools** — the whole section is hidden in Normal / Show-booleans
-/// mode (the band does not apply there). `grid_z` is the layer-track length: the SELECTED
-/// object's Z extent in Onion-fog mode (the track spans the object, not the scene).
-pub(super) fn build_layers_section(
+/// The band clip is **Onion-fog mode's tool** alone; the STACK mounts this section (tab
+/// included) only in [`ViewMode::OnionFog`], so this body does not re-check the mode.
+/// `grid_z` is the layer-track length: the SELECTED object's Z extent in Onion-fog mode
+/// (the track spans the object, not the scene). The section header is drawn by the stack.
+pub(super) fn build_onion_body(
     ui: &mut egui::Ui,
     state: &mut PanelState,
     grid_z: u32,
     measured_diameter: u32,
 ) {
-    // The band clip is Onion-fog's tool alone; surface the section only in that mode.
-    if state.view_mode != ViewMode::OnionFog {
-        return;
-    }
-    ui.add_space(8.0);
-    ui.strong("Layers");
-
     let voxels_per_block = state.geometry.voxels_per_block.max(1);
     // The scrubber edits `state.layer_range` in place; the bounds are kept valid
     // (clamped to grid_z, lower <= upper, snapped if requested) by the widget.
@@ -74,7 +68,6 @@ pub(super) fn build_layers_section(
             .small()
             .weak(),
     );
-    ui.separator();
 }
 
 /// Custom range-scrubber widget (issue #12). Z-up: layers are Z-slices, so it paints

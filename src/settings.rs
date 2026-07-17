@@ -293,6 +293,9 @@ impl AppConfig {
             // ADR 0018 Decision 3: the viewer mode is transient view state (never
             // persisted), so it always starts Normal (the finished look).
             view_mode: ViewMode::Normal,
+            // Issue #88: the Signal display stack's fold / section-open state is likewise
+            // transient viewer state (never persisted) — it starts expanded, all open.
+            stack: crate::SignalStackState::default(),
             // Restored just below: the persisted full scene, or — for an old
             // config without one — the default seed scene.
             scene: Scene::default(),

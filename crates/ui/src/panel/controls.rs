@@ -5,10 +5,10 @@ use super::{ExportPanelState, PanelResponse, PanelState};
 use camera::ProjectionMode;
 use document::intent::Intent;
 
-/// Camera projection toggle (display-only: no rebuild).
-pub(super) fn build_camera_section(ui: &mut egui::Ui, state: &mut PanelState) {
-    ui.add_space(8.0);
-    ui.strong("Camera → Projection");
+/// The camera projection toggle (display-only: no rebuild) — the **body** of the Signal
+/// stack's VIEWPORT section (issue #88). The section header + framing are drawn by the
+/// stack; this only lays out the Perspective / Orthographic segmented control.
+pub(super) fn build_camera_body(ui: &mut egui::Ui, state: &mut PanelState) {
     ui.horizontal(|ui| {
         ui.selectable_value(
             &mut state.projection_mode,
@@ -21,14 +21,13 @@ pub(super) fn build_camera_section(ui: &mut egui::Ui, state: &mut PanelState) {
             "Orthographic",
         );
     });
-    ui.separator();
 }
 
-/// Display section. M4 added the voxel-grid overlay; M5 wired the view cube and
-/// the origin gizmo; M8 wires the block lattice and fine floor grid (#10).
-pub(super) fn build_display_section(ui: &mut egui::Ui, state: &mut PanelState, response: &mut PanelResponse) {
-    ui.add_space(8.0);
-    ui.strong("Display");
+/// The display MASTER toggles (voxel grid on faces, block lattice, floor grid, view cube,
+/// debug faces) — the **body** of the Signal stack's GRIDS section (issue #88). M4 added
+/// the voxel-grid overlay; M5 wired the view cube; M8 wired the block lattice + fine floor
+/// grid (#10). The section header is drawn by the stack; this only lays out the checkboxes.
+pub(super) fn build_display_body(ui: &mut egui::Ui, state: &mut PanelState, response: &mut PanelResponse) {
     // ADR 0003 Phase C C4a: the three grid MASTERS are scene fields, so they bind to
     // LOCAL copies and a change emits ONE `SetGridMasters`. The masters are read live
     // by the per-frame line batch / mesh shader (no re-resolve), so `SetGridMasters`'s
@@ -54,7 +53,6 @@ pub(super) fn build_display_section(ui: &mut egui::Ui, state: &mut PanelState, r
     // Issue #29 S2: the transform gizmo is now selection-driven (drawn on the
     // active node), so it no longer has a Display toggle.
     ui.checkbox(&mut state.debug_face_orientation, "Debug: face orientation");
-    ui.separator();
 }
 
 /// Export section (M8): a single "Export .vox" button plus a progress / status line

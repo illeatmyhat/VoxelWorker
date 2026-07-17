@@ -53,6 +53,40 @@ impl ViewMode {
     }
 }
 
+/// The floating Signal **display stack**'s viewer state (issue #88; ADR 0018 Decision 8,
+/// `docs/design/viewport-chrome-signal.md` §Chrome layout — display panel bullet).
+///
+/// The stack is the near-black instrument panel that floats top-right of the 3D viewport
+/// (the cube + rail slide left of it). Whether it is folded to edge tabs, and which
+/// sections are open, are **viewer state, never document state** — like [`ViewMode`], they
+/// follow the session, are not saved with the scene, and never enter undo history.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SignalStackState {
+    /// When `true` the whole stack is collapsed to vertical edge tabs hugging the
+    /// viewport's right edge (Blender N-panel style); the `»` header button folds it and a
+    /// `«` tab (or any section tab) expands it again.
+    pub folded: bool,
+    /// The VIEWPORT section (mode readout + camera projection) is expanded.
+    pub viewport_open: bool,
+    /// The ONION FOG section (layer scrubber + onion depth + widest-run stat) is expanded.
+    /// Only mounts in [`ViewMode::OnionFog`]; ignored in other modes.
+    pub onion_open: bool,
+    /// The GRIDS section (the display master toggles) is expanded.
+    pub grids_open: bool,
+}
+
+impl Default for SignalStackState {
+    fn default() -> Self {
+        // Expanded with every section open — the finished-look default the goldens pin.
+        Self {
+            folded: false,
+            viewport_open: true,
+            onion_open: true,
+            grids_open: true,
+        }
+    }
+}
+
 /// Layer-range scrubber state (issue #12).
 ///
 /// The layer-range scrubber subsumes the old 2D mid-vertical slice map. Z-up: layers
@@ -175,6 +209,10 @@ pub struct PanelState {
     /// Show booleans. Display-only viewer state (no rebuild, never serialized, never in
     /// undo). Sticky across selection changes; defaults to Normal.
     pub view_mode: ViewMode,
+    /// The floating Signal display stack's viewer state (issue #88): folded-to-edge-tabs
+    /// and per-section open/closed. Display-only viewer state (never serialized / undone),
+    /// like [`view_mode`](Self::view_mode).
+    pub stack: SignalStackState,
     /// Layer-range scrubber state (issue #12): the visible band along Z (Z-up: layers
     /// are Z-slices) plus the snap/onion controls. Bounds clamped/rescaled on rebuild.
     pub layer_range: LayerRange,

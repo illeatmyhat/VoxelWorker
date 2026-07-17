@@ -25,15 +25,19 @@ pub const VIEW_CUBE_VIEWPORT_MARGIN: u32 = 16;
 /// the viewport is smaller than the cube + margin on either axis — the **minimum
 /// on-screen size** rule that keeps the 68 %-centre slice lines' 16 % edge strips
 /// (≈ `0.16 · 128 ≈ 20 px`) comfortably hittable; below it the cube is not drawn.
-pub fn view_cube_corner(viewport: [u32; 4]) -> Option<(u32, u32)> {
+pub fn view_cube_corner(viewport: [u32; 4], right_inset_px: u32) -> Option<(u32, u32)> {
     let [viewport_x, viewport_y, viewport_width, viewport_height] = viewport;
     let margin = VIEW_CUBE_VIEWPORT_MARGIN;
     let size = VIEW_CUBE_VIEWPORT_PIXELS;
-    if viewport_width < margin + size || viewport_height < margin + size {
+    // Issue #88: the cube's right inset is the floating display stack's current width (the
+    // cube slides left of it), replacing the old bare `margin`. It must still clear the
+    // cube + a vertical margin — below that the cube isn't drawn (the min on-screen rule).
+    if viewport_width < right_inset_px + size || viewport_height < margin + size {
         return None;
     }
-    // Top-RIGHT: hug the right edge (just left of the side panel), margin down from the top.
-    let corner_x = viewport_x + viewport_width - margin - size;
+    // Top-RIGHT: hug the right edge (just left of the display stack), inset for the stack
+    // horizontally and `margin` down from the top.
+    let corner_x = viewport_x + viewport_width - right_inset_px - size;
     let corner_y = viewport_y + margin;
     Some((corner_x, corner_y))
 }
@@ -347,6 +351,7 @@ impl ViewCubeRenderer {
         target_width: u32,
         target_height: u32,
         viewport: [u32; 4],
+        right_inset_px: u32,
         hovered_zone: Option<camera::CubeChromeZone>,
         rotate_arrows_visible: bool,
     ) {
@@ -368,7 +373,7 @@ impl ViewCubeRenderer {
         let size = VIEW_CUBE_VIEWPORT_PIXELS;
         // Signal: top-RIGHT placement (shared with the shell's hit-testing). The helper
         // also enforces the minimum on-screen size (bails when the viewport is too small).
-        let Some((corner_x, corner_y)) = view_cube_corner(viewport) else {
+        let Some((corner_x, corner_y)) = view_cube_corner(viewport, right_inset_px) else {
             return;
         };
         // Bail if the cube would fall outside the actual target (defensive).

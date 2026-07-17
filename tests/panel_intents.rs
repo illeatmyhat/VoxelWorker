@@ -32,8 +32,6 @@ fn run_frame(state: &mut PanelState, raw_input: RawInput) -> voxel_worker::Panel
         response = build_panel(
             ui,
             state,
-            16,
-            0,
             voxel_worker::ExportPanelState::default(),
             &palette,
         );

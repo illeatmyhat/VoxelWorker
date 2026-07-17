@@ -168,6 +168,8 @@ impl WindowedState {
         // Issue #25: cache the central 3D viewport rect so the view-cube
         // hit-testing (run later, in mouse events) can offset the cube corner.
         self.last_viewport_px = prepared.viewport_px;
+        // Issue #88: cache the cube's stack-derived right inset for the hit-testing.
+        self.last_cube_right_inset = prepared.view_cube_right_inset_px;
 
         // #13 Step 3: execute a context-menu selection (egui drew + closed the
         // menu; the ortho toggle already mutated `panel_state.projection_mode`).
@@ -552,6 +554,8 @@ impl WindowedState {
             },
             target_width: self.surface_config.width,
             target_height: self.surface_config.height,
+            // Signal (issue #88): slide the cube left of the floating display stack.
+            view_cube_right_inset_px: prepared.view_cube_right_inset_px,
         };
 
         // M6: an applied VS block overrides the procedural material selection.
