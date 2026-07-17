@@ -170,6 +170,9 @@ impl WindowedState {
         self.last_viewport_px = prepared.viewport_px;
         // Issue #88: cache the cube's stack-derived right inset for the hit-testing.
         self.last_cube_right_inset = prepared.view_cube_right_inset_px;
+        // Cache the Signal chrome hit-rects (stack + rail) for the camera gate
+        // (`position_in_signal_chrome`, run in mouse events like the cube hit-test).
+        self.last_chrome_rects_px = prepared.chrome_rects_px.clone();
 
         // #13 Step 3: execute a context-menu selection (egui drew + closed the
         // menu; the ortho toggle already mutated `panel_state.projection_mode`).

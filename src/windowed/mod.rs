@@ -221,6 +221,13 @@ struct WindowedState {
     /// hit-testing (run in mouse events, outside `render`) offsets the cube corner by the
     /// SAME amount `run_egui_frame` drew it with. Kept beside `last_viewport_px`.
     last_cube_right_inset: u32,
+    /// The Signal chrome hit-rects (`[x, y, w, h]`, physical px) from the most recent
+    /// rendered frame: the floating display stack + the icon rail. The camera gate
+    /// (orbit / pan / wheel-zoom, run in mouse events) treats pointer input inside them
+    /// as chrome, mirroring the cube's reserved region — the stack no longer allocates
+    /// in egui's root ui (the #88 full-width dead-band regression), so egui's own
+    /// pointer-consumption heuristic no longer covers this chrome and the shell must.
+    last_chrome_rects_px: Vec<[f32; 4]>,
     /// #13 Step 3: the screen position (window pixels) of an open ViewCube
     /// right-click context menu, or `None` when no menu is open. Set on a
     /// right-press inside the cube rect; the egui pass draws a small menu there and
@@ -493,6 +500,8 @@ impl WindowedState {
             last_viewport_px: [0, 0, width, height],
             // Issue #88: the expanded stack's inset until the first frame refreshes it.
             last_cube_right_inset: crate::cube_right_inset_points(false).round() as u32,
+            // Empty until the first frame fills it in (no chrome to reserve yet).
+            last_chrome_rects_px: Vec::new(),
             context_menu_open_at: None,
             hovered_cube_zone: None,
         }

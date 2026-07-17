@@ -76,6 +76,16 @@ pub fn rail_top(cube_bottom: f32) -> f32 {
     cube_bottom + RAIL_GAP
 }
 
+/// The rail's full rect (egui points) from the cube anchors — the shell's chrome
+/// hit-rect for the camera gate (the same geometry [`icon_rail`] draws at).
+pub fn rail_rect(cube_left: f32, cube_bottom: f32, cube_size: f32) -> Rect {
+    let rail_left = cube_left + (cube_size - RAIL_WIDTH) * 0.5;
+    Rect::from_min_size(
+        Pos2::new(rail_left, rail_top(cube_bottom)),
+        Vec2::new(RAIL_WIDTH, rail_height()),
+    )
+}
+
 /// Draw the Signal **icon rail** directly under the view cube and return a click, if
 /// any. `cube_left` / `cube_bottom` are the cube's top-left-derived screen anchors (in
 /// egui points, the same the S6 readout uses); `cube_size` is the cube's on-screen edge
@@ -96,9 +106,7 @@ pub fn icon_rail(
     cube_size: f32,
     view_mode: ViewMode,
 ) -> Option<RailClick> {
-    let rail_left = cube_left + (cube_size - RAIL_WIDTH) * 0.5;
-    let top = rail_top(cube_bottom);
-    let rail_rect = Rect::from_min_size(Pos2::new(rail_left, top), Vec2::new(RAIL_WIDTH, rail_height()));
+    let rail_rect = rail_rect(cube_left, cube_bottom, cube_size);
     let painter = ui
         .ctx()
         .layer_painter(LayerId::new(Order::Foreground, Id::new("signal_icon_rail")));

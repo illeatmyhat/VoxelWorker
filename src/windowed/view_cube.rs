@@ -81,6 +81,19 @@ impl WindowedState {
         x >= corner_x && x <= corner_x + size && y >= corner_y && y <= corner_y + size
     }
 
+    /// Is the pixel `(x, y)` inside the Signal chrome (the floating display stack or the
+    /// icon rail)? Rects are cached from the last rendered frame
+    /// (`PreparedEguiFrame::chrome_rects_px`), like the cube's. The camera gate treats
+    /// pointer input inside them as chrome — with the stack no longer allocating in
+    /// egui's root ui (the #88 dead-band regression), egui's own pointer-consumption
+    /// heuristic no longer covers this chrome, so the shell reserves it here.
+    pub(super) fn position_in_signal_chrome(&self, x: f64, y: f64) -> bool {
+        let (x, y) = (x as f32, y as f32);
+        self.last_chrome_rects_px.iter().any(|[rx, ry, rw, rh]| {
+            x >= *rx && x < rx + rw && y >= *ry && y < ry + rh
+        })
+    }
+
     /// The ViewCube's on-screen square in window pixels, so the chrome hit-math
     /// ([`classify_cube_point`]) shares the SAME rect as [`Self::position_in_view_cube`]
     /// and the renderer (both via [`view_cube_corner`]). A degenerate rect (size 0) is

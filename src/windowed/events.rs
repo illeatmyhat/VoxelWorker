@@ -69,8 +69,13 @@ impl ApplicationHandler for App {
                     // (`left_button_held`): a press on the cube either becomes a
                     // cube-drag orbit (handled in CursorMoved) or, if it stays put,
                     // snaps on release. So the scene orbit path is reserved for
-                    // presses that started outside the cube and weren't on egui.
-                    state.left_button_held = !egui_consumed && !in_cube;
+                    // presses that started outside the cube, outside the Signal
+                    // chrome (stack + rail — egui's heuristic no longer covers them
+                    // now the stack doesn't allocate in the root ui), and not on egui.
+                    let in_chrome = position
+                        .map(|(x, y)| state.position_in_signal_chrome(x, y))
+                        .unwrap_or(false);
+                    state.left_button_held = !egui_consumed && !in_cube && !in_chrome;
                 } else {
                     // Release: a press that started in the cube and DIDN'T become a
                     // drag (stayed within the threshold) selects the picked hot-zone
@@ -128,11 +133,15 @@ impl ApplicationHandler for App {
                 ..
             } => {
                 // Middle-drag pans the camera (explicit camera action). A press
-                // that egui consumed (over the side panel / dock) doesn't grab the
-                // scene, mirroring the left-orbit gate. The view cube doesn't take
-                // middle clicks, so no cube gating is needed here.
+                // that egui consumed (over the side panel / dock) or on the Signal
+                // chrome doesn't grab the scene, mirroring the left-orbit gate. The
+                // view cube doesn't take middle clicks, so no cube gating is needed here.
+                let in_chrome = state
+                    .last_cursor_position
+                    .map(|(x, y)| state.position_in_signal_chrome(x, y))
+                    .unwrap_or(false);
                 state.middle_button_held =
-                    button_state == ElementState::Pressed && !egui_consumed;
+                    button_state == ElementState::Pressed && !egui_consumed && !in_chrome;
             }
             WindowEvent::MouseInput {
                 state: button_state,
@@ -259,11 +268,19 @@ impl ApplicationHandler for App {
                 };
             }
             WindowEvent::MouseWheel { delta, .. } if !egui_consumed => {
-                let scroll_lines = match delta {
-                    MouseScrollDelta::LineDelta(_, vertical) => vertical,
-                    MouseScrollDelta::PixelDelta(position) => position.y as f32,
-                };
-                state.app_core.camera.zoom_by_wheel(scroll_lines);
+                // Wheel over the Signal chrome (stack + rail) belongs to the chrome,
+                // not the camera — mirroring the orbit/pan gates.
+                let in_chrome = state
+                    .last_cursor_position
+                    .map(|(x, y)| state.position_in_signal_chrome(x, y))
+                    .unwrap_or(false);
+                if !in_chrome {
+                    let scroll_lines = match delta {
+                        MouseScrollDelta::LineDelta(_, vertical) => vertical,
+                        MouseScrollDelta::PixelDelta(position) => position.y as f32,
+                    };
+                    state.app_core.camera.zoom_by_wheel(scroll_lines);
+                }
             }
             WindowEvent::RedrawRequested => {
                 // Finding #0 (data-loss guard): poll the export worker and honour a pending

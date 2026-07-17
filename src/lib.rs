@@ -253,6 +253,13 @@ pub struct PreparedEguiFrame {
     /// [`view_cube_corner`] (the GPU cube draw) and caches it for the cube hit-testing, so
     /// the drawn cube, its pick rect and the egui rail share one anchor.
     pub view_cube_right_inset_px: u32,
+    /// The Signal chrome's hit-rects in PHYSICAL PIXELS (`[x, y, w, h]`): the floating
+    /// display stack plus the icon rail. The windowed shell gates camera input
+    /// (orbit / pan / wheel-zoom) OFF inside these, the same way `position_in_view_cube`
+    /// reserves the cube region — the stack no longer allocates in the root ui (the #88
+    /// full-width dead-band regression), so egui's own "over egui" heuristic no longer
+    /// covers this chrome and the shell must.
+    pub chrome_rects_px: Vec<[f32; 4]>,
 }
 
 /// Run the egui pass for one frame: build the panel, upload changed textures to
@@ -293,6 +300,9 @@ pub fn run_egui_frame(
     // Signal (issue #88): the cube's right inset (physical px) = the display stack's current
     // width, computed inside the closure once the central rect + fold state are known.
     let mut view_cube_right_inset_px: u32 = 0;
+    // The Signal chrome hit-rects (egui points; converted to px after the frame): the
+    // stack + the rail — the shell's camera gate reads these (see `chrome_rects_px`).
+    let mut chrome_rects_points: Vec<egui::Rect> = Vec::new();
     // Issue #25: the central 3D viewport rect, in egui points. `build_panel` shows
     // the right side panel + bottom palette dock INSIDE `ui`; whatever room those
     // panels leave is the central area where the 3D scene should be centred. We
@@ -393,7 +403,7 @@ pub fn run_egui_frame(
         // Capture the fold state as DRAWN this frame (a fold/expand click takes effect next
         // frame), so the cube slide matches the panel width actually painted.
         let stack_folded_drawn = panel_state.stack.folded;
-        build_signal_stack(
+        let stack_rect_points = build_signal_stack(
             ui,
             panel_state,
             central_rect_points,
@@ -401,6 +411,7 @@ pub fn run_egui_frame(
             measured_diameter,
             &mut panel_response,
         );
+        chrome_rects_points.push(stack_rect_points);
 
         // Signal (ADR 0018 Decision 8): the cube's on-screen anchors in egui points
         // (shared by the readout, icon rail, and status line so they track the cube as
@@ -428,6 +439,7 @@ pub fn run_egui_frame(
         // off. Rendered here (inside `run_egui_frame`) so it draws on BOTH the windowed
         // surface and the `shot` capture.
         if cube_fits {
+            chrome_rects_points.push(signal_chrome::rail_rect(cube_left, cube_bottom, cube_size));
             if let Some(click) = signal_chrome::icon_rail(
                 ui,
                 cube_left,
@@ -511,6 +523,19 @@ pub fn run_egui_frame(
         [x, y, width, height]
     };
 
+    // The chrome hit-rects, points → physical pixels (same conversion as `viewport_px`).
+    let chrome_rects_px: Vec<[f32; 4]> = chrome_rects_points
+        .iter()
+        .map(|rect| {
+            [
+                rect.min.x * pixels_per_point,
+                rect.min.y * pixels_per_point,
+                rect.width() * pixels_per_point,
+                rect.height() * pixels_per_point,
+            ]
+        })
+        .collect();
+
     for (texture_id, image_delta) in &full_output.textures_delta.set {
         bridge
             .renderer
@@ -534,6 +559,7 @@ pub fn run_egui_frame(
         cube_menu_request,
         rail_action,
         view_cube_right_inset_px,
+        chrome_rects_px,
     }
 }
 

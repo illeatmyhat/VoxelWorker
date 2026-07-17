@@ -69,6 +69,19 @@ pub fn cube_right_inset_points(folded: bool) -> f32 {
 /// the post-panel 3D viewport rect (egui points); the stack anchors to its top-right
 /// corner. Mutates `state` (fold / section-open toggles, projection, layer band, grid
 /// masters) and pushes any `SetGridMasters` intent onto `response`.
+///
+/// Returns the stack's PAINTED rect (egui points) — the shell's chrome hit-rect, so the
+/// windowed camera gate can treat pointer input inside it as chrome (the view-cube idiom).
+///
+/// The stack draws in a NON-ALLOCATING child ui ([`egui::Ui::new_child`]), never
+/// `scope_builder`: egui 0.34's scope advances the PARENT cursor past the child
+/// (`advance_cursor_after_rect`), and `Context::run_ui` records the root ui's remaining
+/// `available_rect_before_wrap` as the "not over egui" region for input. With the scope,
+/// the whole FULL-WIDTH band above the stack's bottom edge fell outside that rect, so
+/// `wants_pointer_input` reported it as egui's — and the shell's orbit/pan/zoom (all gated
+/// on egui consumption) went DEAD across the top of the viewport, growing with the stack
+/// (worst in Onion-fog, whose section is tallest). A non-allocating child paints the
+/// identical pixels while leaving the root cursor — and thus the input region — untouched.
 pub fn build_signal_stack(
     root_ui: &mut egui::Ui,
     state: &mut PanelState,
@@ -76,7 +89,7 @@ pub fn build_signal_stack(
     grid_z: u32,
     measured_diameter: u32,
     response: &mut PanelResponse,
-) {
+) -> Rect {
     let folded = state.stack.folded;
     let width = stack_width(folded);
     let left = central_rect.right() - STACK_MARGIN - width;
@@ -87,17 +100,17 @@ pub fn build_signal_stack(
         Vec2::new(width, (central_rect.height() - 2.0 * STACK_MARGIN).max(0.0)),
     );
 
-    root_ui.scope_builder(UiBuilder::new().max_rect(max_rect), |ui| {
-        // The stack's scoped Signal style (promoted to `signal_theme`, issue #89): built
-        // from `Style::default` so the floating stack stays byte-identical to its #80
-        // rendering regardless of the app-wide restyle around it.
-        signal_theme::apply_stack_style(ui);
-        if folded {
-            build_folded_tabs(ui, state);
-        } else {
-            build_expanded_stack(ui, state, grid_z, measured_diameter, response);
-        }
-    });
+    let mut stack_ui = root_ui.new_child(UiBuilder::new().max_rect(max_rect));
+    // The stack's scoped Signal style (promoted to `signal_theme`, issue #89): built
+    // from `Style::default` so the floating stack stays byte-identical to its #80
+    // rendering regardless of the app-wide restyle around it.
+    signal_theme::apply_stack_style(&mut stack_ui);
+    if folded {
+        build_folded_tabs(&mut stack_ui, state);
+    } else {
+        build_expanded_stack(&mut stack_ui, state, grid_z, measured_diameter, response);
+    }
+    stack_ui.min_rect()
 }
 
 /// The expanded stack: the DISPLAY header bar (with the `»` fold button) then the
@@ -335,4 +348,59 @@ fn chevron(painter: &egui::Painter, center: Pos2, open: bool) {
         ]
     };
     painter.add(Shape::convex_polygon(points, TEXT_FAINT, Stroke::NONE));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::panel::{PanelResponse, PanelState};
+
+    /// ADR 0018 #88 input regression: the floating stack must NOT allocate in the root
+    /// ui. egui 0.34's `run_ui` records the root's final `available_rect_before_wrap`
+    /// as the "not over egui" input region; a stack drawn via `scope_builder` advances
+    /// the root cursor past its bottom edge, carving a FULL-WIDTH band above it out of
+    /// that region — and the shell's orbit/pan/zoom (all gated on egui pointer
+    /// consumption) go dead across the top of the viewport, growing with the stack
+    /// (tallest in Onion-fog, where the bug was reported). Pins the non-allocating
+    /// `new_child` draw across view modes and fold states.
+    #[test]
+    fn stack_leaves_root_cursor_untouched() {
+        for (view_mode, folded) in [
+            (ViewMode::Normal, false),
+            (ViewMode::OnionFog, false),
+            (ViewMode::ShowBooleans, false),
+            (ViewMode::Normal, true),
+        ] {
+            let context = egui::Context::default();
+            let mut state = PanelState {
+                view_mode,
+                ..PanelState::default()
+            };
+            state.stack.folded = folded;
+            let mut response = PanelResponse::default();
+            let raw_input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(
+                    Pos2::ZERO,
+                    Vec2::new(1280.0, 800.0),
+                )),
+                ..Default::default()
+            };
+            let _ = context.run_ui(raw_input, |ui| {
+                let central = ui.available_rect_before_wrap();
+                let stack_rect =
+                    build_signal_stack(ui, &mut state, central, 800, 0, &mut response);
+                assert_eq!(
+                    central,
+                    ui.available_rect_before_wrap(),
+                    "the stack must not advance the root cursor \
+                     (view_mode={view_mode:?}, folded={folded})"
+                );
+                // The returned chrome hit-rect is the painted stack: non-empty,
+                // anchored at the viewport's top-right margin (± the 1 px frame stroke).
+                assert!(stack_rect.width() > 0.0 && stack_rect.height() > 0.0);
+                assert!((stack_rect.right() - (central.right() - STACK_MARGIN)).abs() <= 2.5);
+                assert!((stack_rect.top() - (central.top() + STACK_MARGIN)).abs() <= 2.5);
+            });
+        }
+    }
 }
