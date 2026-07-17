@@ -3,6 +3,7 @@
 
 use super::palette::SHAPE_CHIPS;
 use super::{PanelResponse, PanelState};
+use crate::signal_theme;
 use document::intent::{Intent, NodeSpec};
 use document::scene::{DefId, Node, NodeContent, NodeId, VoxelBody, ROOT_NODE_ID};
 use document::sketch::{PlaneAxis, Sketch, SketchSolid};
@@ -50,7 +51,7 @@ pub(super) fn build_node_list_section(
     response: &mut PanelResponse,
 ) {
     ui.add_space(8.0);
-    ui.strong("Scene");
+    signal_theme::section_heading(ui, "Scene");
 
     let mut select: Option<NodeId> = None;
     let mut delete: Option<NodeId> = None;
@@ -347,7 +348,7 @@ fn build_definitions_section(
         return;
     }
     ui.add_space(6.0);
-    ui.strong("Definitions");
+    signal_theme::section_heading(ui, "Definitions");
 
     // Collect (id, label, fixture) first so the per-row widgets can mutate the scene
     // without borrowing `definitions` across the click.

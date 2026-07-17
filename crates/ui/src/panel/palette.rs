@@ -2,6 +2,7 @@
 
 use super::PanelResponse;
 use crate::palette::BlockPalette;
+use crate::signal_theme;
 use voxel_core::voxel::ShapeKind;
 
 /// The palette dock (M6): a status line, a "Connect folder…" button, and a
@@ -18,7 +19,7 @@ pub(super) fn build_palette_dock(
         .show_inside(root_ui, |ui| {
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                ui.strong("Blocks");
+                signal_theme::section_heading(ui, "Blocks");
                 ui.add_space(8.0);
                 if ui.button("Connect folder…").clicked() {
                     response.clicked_connect_folder = true;

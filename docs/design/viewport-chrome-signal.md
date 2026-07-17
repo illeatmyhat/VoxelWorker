@@ -14,6 +14,11 @@ micro-labels, and exactly one accent colour — the onion-haze blue, so the chro
 ghost pass share an identity. Nothing is decorated; state is shown by an accent inset bar
 or an accent-filled cell, never by glows or shadows.
 
+The whole app wears Signal: the viewport chrome, the floating DISPLAY stack, the right
+sidebar and the bottom palette dock share one theme (`crates/ui/src/signal_theme.rs` — the
+token table, the app-wide `egui::Style`, and the section-header painting helpers), so every
+surface reads as one instrument panel.
+
 ## Tokens
 
 | Role | Value |

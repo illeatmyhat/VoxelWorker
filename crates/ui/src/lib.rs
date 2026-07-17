@@ -31,3 +31,4 @@
 
 pub mod palette;
 pub mod panel;
+pub mod signal_theme;

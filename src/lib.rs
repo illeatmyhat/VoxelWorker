@@ -302,6 +302,15 @@ pub fn run_egui_frame(
         egui::pos2(0.0, 0.0),
         egui::vec2(size_in_pixels[0] as f32, size_in_pixels[1] as f32),
     );
+    // Signal (issue #89): dress the WHOLE app in the Signal instrument-panel skin — the
+    // right sidebar + bottom palette dock inherit the near-black fills, hairlines,
+    // monospace type and the one accent from `signal_theme`. Applied to both the dark and
+    // light context styles so it holds regardless of theme; the floating DISPLAY stack
+    // re-scopes its own variant, and the chrome painters (cube/rail/status) are
+    // style-immune (explicit colours), so both stay byte-stable.
+    bridge
+        .context
+        .all_styles_mut(ui::signal_theme::apply_app_style);
     let full_output = bridge.context.run_ui(raw_input, |ui| {
         panel_response = build_panel(ui, panel_state, export, palette);
         // After both panels have been shown inside the root ui, the remaining

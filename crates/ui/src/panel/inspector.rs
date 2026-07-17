@@ -3,6 +3,7 @@
 
 use super::palette::SHAPE_CHIPS;
 use super::{PanelResponse, PanelState};
+use crate::signal_theme;
 use document::intent::Intent;
 use document::scene::{CombineOp, NodeContent, VoxelBody, ROOT_NODE_ID};
 use document::sketch::{Operation, PlaneAxis, RevolveAxis, Sketch, SketchSolid};
@@ -172,7 +173,7 @@ fn build_group_inspector_section(
     response: &mut PanelResponse,
 ) {
     ui.add_space(8.0);
-    ui.strong(heading);
+    signal_theme::section_heading(ui, heading);
     // Capture the def label (immutable borrow) before taking the active node.
     let def_label = match state.scene.active_node().map(|n| &n.content) {
         Some(NodeContent::Instance(def_id)) => state
@@ -222,7 +223,7 @@ fn build_voxel_body_inspector_section(
     response: &mut PanelResponse,
 ) {
     ui.add_space(8.0);
-    ui.strong("Clouds (Body)");
+    signal_theme::section_heading(ui, "Clouds (Body)");
     let Some(target) = state.scene.active else {
         return;
     };
@@ -318,10 +319,13 @@ fn build_sketch_inspector_section(
     };
 
     ui.add_space(8.0);
-    ui.strong(match current_kind {
-        OperationKind::Extrude => "Sketch → Extrude",
-        OperationKind::Revolve => "Sketch → Revolve",
-    });
+    signal_theme::section_heading(
+        ui,
+        match current_kind {
+            OperationKind::Extrude => "Sketch → Extrude",
+            OperationKind::Revolve => "Sketch → Revolve",
+        },
+    );
 
     // The label for a plane choice in the picker.
     fn plane_label(plane: PlaneAxis) -> &'static str {
@@ -540,7 +544,7 @@ fn build_operation_section(
     }
 
     ui.add_space(8.0);
-    ui.strong("Operation");
+    signal_theme::section_heading(ui, "Operation");
     let mut selected = current;
     egui::ComboBox::from_id_salt(("node_combine_operation", target))
         .selected_text(operation_label(selected))
@@ -587,7 +591,7 @@ fn build_offset_section(ui: &mut egui::Ui, state: &mut PanelState, response: &mu
     let retained_measurements = node.transform.offset_measurements();
 
     ui.add_space(8.0);
-    ui.strong("Offset (blocks + voxels)");
+    signal_theme::section_heading(ui, "Offset (blocks + voxels)");
 
     for (axis_index, axis_label) in ["X", "Y", "Z"].iter().enumerate() {
         // Per-axis stable ids for the in-progress text buffer and last error.
@@ -718,7 +722,7 @@ fn build_node_grids_section(
         return;
     };
     ui.add_space(8.0);
-    ui.strong("Grids (this object)");
+    signal_theme::section_heading(ui, "Grids (this object)");
     // ADR 0003 Phase C C4a: the three checkboxes bind to a LOCAL copy of the node's
     // grids; a change emits ONE `SetNodeGrids` carrying all three. The on-face-grid
     // flag is baked at RESOLVE time, so flipping it must re-resolve AND it auto-framed
@@ -751,7 +755,7 @@ fn build_node_grids_section(
 /// [`GeometryParams::shape`]: document::voxel::GeometryParams::shape
 fn build_shape_section(ui: &mut egui::Ui, state: &mut PanelState) -> bool {
     ui.add_space(8.0);
-    ui.strong("Shape");
+    signal_theme::section_heading(ui, "Shape");
     let mut changed = false;
     ui.horizontal_wrapped(|ui| {
         for (kind, label) in SHAPE_CHIPS {
@@ -786,7 +790,7 @@ fn build_shape_section(ui: &mut egui::Ui, state: &mut PanelState) -> bool {
 /// density changes reflect.
 fn build_size_section(ui: &mut egui::Ui, state: &mut PanelState) -> bool {
     ui.add_space(8.0);
-    ui.strong("Size (blocks + voxels)");
+    signal_theme::section_heading(ui, "Size (blocks + voxels)");
 
     let mut changed = false;
     let density = state.geometry.voxels_per_block;
@@ -897,7 +901,7 @@ fn build_size_section(ui: &mut egui::Ui, state: &mut PanelState) -> bool {
 /// emits a global `SetDensity` AND auto-frames).
 fn build_density_section(ui: &mut egui::Ui, state: &mut PanelState) -> bool {
     ui.add_space(8.0);
-    ui.strong("Density");
+    signal_theme::section_heading(ui, "Density");
     let mut density = state.geometry.voxels_per_block;
     let slider = egui::Slider::new(&mut density, 2..=32).text("vx/block");
     let changed = ui.add(slider).changed();
@@ -920,7 +924,7 @@ fn build_material_section(
     response: &mut PanelResponse,
 ) -> bool {
     ui.add_space(8.0);
-    ui.strong("Material");
+    signal_theme::section_heading(ui, "Material");
     let mut changed = false;
     ui.horizontal(|ui| {
         for (choice, label) in [

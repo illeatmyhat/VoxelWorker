@@ -41,6 +41,7 @@ pub use state::{
 };
 
 use crate::palette::BlockPalette;
+use crate::signal_theme;
 
 /// Build the right-hand side panel into the root [`egui::Ui`] of the frame.
 ///
@@ -70,9 +71,22 @@ pub fn build_panel(
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
+                    // The title block in the Signal voice (issue #89): primary-tier
+                    // wordmark over a faint subtitle.
                     ui.add_space(8.0);
-                    ui.heading("VoxelWorker");
-                    ui.label("Vintage Story chiseling planner");
+                    ui.label(
+                        egui::RichText::new("VoxelWorker")
+                            .monospace()
+                            .size(15.0)
+                            .strong()
+                            .color(signal_theme::TEXT_PRIMARY),
+                    );
+                    ui.label(
+                        egui::RichText::new("Vintage Story chiseling planner")
+                            .monospace()
+                            .size(9.5)
+                            .color(signal_theme::TEXT_FAINT),
+                    );
                     ui.add_space(6.0);
                     ui.separator();
 
@@ -89,7 +103,7 @@ pub fn build_panel(
                         ui.add_space(8.0);
                         ui.separator();
                         ui.colored_label(
-                            egui::Color32::from_rgb(0xd9, 0x60, 0x3f),
+                            signal_theme::WARN,
                             format!("3D paused — {millions:.1}M voxels; lower size/density"),
                         );
                     }

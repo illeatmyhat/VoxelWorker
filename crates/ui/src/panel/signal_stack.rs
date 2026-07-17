@@ -25,33 +25,14 @@
 //! stack's current width.
 
 use egui::{
-    Align2, Color32, CornerRadius, FontId, Margin, Pos2, Rect, Sense, Shape, Stroke, StrokeKind,
-    UiBuilder, Vec2,
+    Align2, CornerRadius, Margin, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, UiBuilder, Vec2,
 };
 
 use super::{controls, layers, PanelResponse, PanelState, ViewMode};
-
-// --- Signal tokens (docs/design/viewport-chrome-signal.md §Tokens) ---
-/// Panel background `#0b0d0f` at ~85 % over the viewport.
-const BG: Color32 = Color32::from_rgba_unmultiplied_const(0x0b, 0x0d, 0x0f, 217);
-/// Hairline outer border `#2b3238`.
-const BORDER: Color32 = Color32::from_rgb(0x2b, 0x32, 0x38);
-/// Hairline inner rule / separator `#1c2126`.
-const RULE: Color32 = Color32::from_rgb(0x1c, 0x21, 0x26);
-/// Header / row hover fill `#12161b`.
-const HOVER_BG: Color32 = Color32::from_rgb(0x12, 0x16, 0x1b);
-/// Text — primary (row values) `#dfe7ef`.
-const TEXT_PRIMARY: Color32 = Color32::from_rgb(0xdf, 0xe7, 0xef);
-/// Text — secondary (section header names) `#aeb9c4`.
-const TEXT_SECONDARY: Color32 = Color32::from_rgb(0xae, 0xb9, 0xc4);
-/// Header name hover `#e3ebf3`.
-const TEXT_HOVER: Color32 = Color32::from_rgb(0xe3, 0xeb, 0xf3);
-/// Text — muted (row labels, idle tabs) `#78828c`.
-const TEXT_MUTED: Color32 = Color32::from_rgb(0x78, 0x82, 0x8c);
-/// Text — faint (readouts, counts, chevrons) `#4d565f`.
-const TEXT_FAINT: Color32 = Color32::from_rgb(0x4d, 0x56, 0x5f);
-/// The single accent — the ADR 0012 onion-haze hue `#9cb4d8`.
-const ACCENT: Color32 = Color32::from_rgb(0x9c, 0xb4, 0xd8);
+use crate::signal_theme::{
+    self, ACCENT, BG_FLOAT as BG, BORDER, HOVER_BG, RULE, TEXT_FAINT, TEXT_HOVER, TEXT_MUTED,
+    TEXT_SECONDARY,
+};
 
 // --- Layout constants (egui points) ---
 /// Expanded stack width.
@@ -111,51 +92,16 @@ pub fn build_signal_stack(
     );
 
     root_ui.scope_builder(UiBuilder::new().max_rect(max_rect), |ui| {
-        apply_signal_style(ui);
+        // The stack's scoped Signal style (promoted to `signal_theme`, issue #89): built
+        // from `Style::default` so the floating stack stays byte-identical to its #80
+        // rendering regardless of the app-wide restyle around it.
+        signal_theme::apply_stack_style(ui);
         if folded {
             build_folded_tabs(ui, state);
         } else {
             build_expanded_stack(ui, state, grid_z, measured_diameter, response);
         }
     });
-}
-
-/// The Signal scoped [`egui::Style`] override for the stack's widgets: zero corner radius
-/// everywhere, dark fills, hairline strokes, the onion-haze accent as the selection fill,
-/// tight spacing. Pixel-perfect widget cloning is not required (issue #88) — the tokens,
-/// the SHAPES (no rounding) and the layout are.
-fn apply_signal_style(ui: &mut egui::Ui) {
-    let style = ui.style_mut();
-    style.spacing.item_spacing = Vec2::new(6.0, 5.0);
-    style.spacing.button_padding = Vec2::new(6.0, 2.0);
-    style.spacing.interact_size.y = 18.0;
-    let v = &mut style.visuals;
-    v.override_text_color = Some(TEXT_PRIMARY);
-    // Selection (segmented active cell + slider fill) = accent.
-    v.selection.bg_fill = ACCENT;
-    v.selection.stroke = Stroke::new(1.0, Color32::from_rgb(0x0b, 0x0d, 0x0f));
-    v.hyperlink_color = ACCENT;
-    for w in [
-        &mut v.widgets.noninteractive,
-        &mut v.widgets.inactive,
-        &mut v.widgets.hovered,
-        &mut v.widgets.active,
-        &mut v.widgets.open,
-    ] {
-        w.corner_radius = CornerRadius::ZERO;
-    }
-    v.widgets.noninteractive.bg_fill = Color32::TRANSPARENT;
-    v.widgets.inactive.bg_fill = Color32::from_rgb(0x12, 0x16, 0x1b);
-    v.widgets.inactive.weak_bg_fill = Color32::from_rgb(0x12, 0x16, 0x1b);
-    v.widgets.inactive.bg_stroke = Stroke::new(1.0, BORDER);
-    v.widgets.inactive.fg_stroke = Stroke::new(1.0, TEXT_MUTED);
-    v.widgets.hovered.bg_fill = HOVER_BG;
-    v.widgets.hovered.weak_bg_fill = HOVER_BG;
-    v.widgets.hovered.bg_stroke = Stroke::new(1.0, ACCENT);
-    v.widgets.hovered.fg_stroke = Stroke::new(1.0, TEXT_HOVER);
-    v.widgets.active.bg_fill = Color32::from_rgb(0x16, 0x1a, 0x1e);
-    v.widgets.active.bg_stroke = Stroke::new(1.0, ACCENT);
-    v.widgets.active.fg_stroke = Stroke::new(1.0, TEXT_PRIMARY);
 }
 
 /// The expanded stack: the DISPLAY header bar (with the `»` fold button) then the
@@ -181,7 +127,7 @@ fn build_expanded_stack(
             let (bar_rect, _) =
                 ui.allocate_exact_size(Vec2::new(STACK_WIDTH, HEADER_BAR_HEIGHT), Sense::hover());
             let painter = ui.painter_at(bar_rect);
-            let title = letter_spaced(ui, "DISPLAY", TEXT_SECONDARY, 10.5, 2.0);
+            let title = signal_theme::letter_spaced(ui, "DISPLAY", TEXT_SECONDARY, 10.5, 2.0);
             painter.galley(
                 Pos2::new(bar_rect.left() + 8.0, bar_rect.center().y - title.size().y * 0.5),
                 title,
@@ -196,7 +142,7 @@ fn build_expanded_stack(
             if fold_resp.hovered() {
                 ui.painter().rect_filled(fold_rect, 0.0, HOVER_BG);
             }
-            let fold_glyph = letter_spaced(
+            let fold_glyph = signal_theme::letter_spaced(
                 ui,
                 "\u{00bb}",
                 if fold_resp.hovered() { TEXT_HOVER } else { TEXT_MUTED },
@@ -270,14 +216,14 @@ fn section_header(ui: &mut egui::Ui, name: &str, count: &str, open: bool) -> boo
     chevron(ui.painter(), Pos2::new(rect.left() + 11.0, rect.center().y), open);
     // Name.
     let name_color = if hovered { TEXT_HOVER } else { TEXT_SECONDARY };
-    let galley = letter_spaced(ui, name, name_color, 10.0, 1.5);
+    let galley = signal_theme::letter_spaced(ui, name, name_color, 10.0, 1.5);
     ui.painter().galley(
         Pos2::new(rect.left() + 22.0, rect.center().y - galley.size().y * 0.5),
         galley,
         name_color,
     );
     // Count (faint, right-aligned).
-    let count_galley = letter_spaced(ui, count, TEXT_FAINT, 9.0, 0.0);
+    let count_galley = signal_theme::letter_spaced(ui, count, TEXT_FAINT, 9.0, 0.0);
     ui.painter().galley(
         Pos2::new(rect.right() - 10.0 - count_galley.size().x, rect.center().y - count_galley.size().y * 0.5),
         count_galley,
@@ -337,7 +283,7 @@ fn edge_tab(ui: &mut egui::Ui, caption: &str, height: f32, expander: bool) -> bo
     let color = if hovered { TEXT_HOVER } else { TEXT_MUTED };
     let size = if expander { 13.0 } else { 10.0 };
     let spacing = if expander { 0.0 } else { 1.5 };
-    let galley = letter_spaced(ui, caption, color, size, spacing);
+    let galley = signal_theme::letter_spaced(ui, caption, color, size, spacing);
     // Rotate the pre-laid galley 90° clockwise so the caption reads top-to-bottom,
     // centred in the tab (egui's `Shape::text` can't letter-space, hence the galley).
     let text_shape = egui::epaint::TextShape::new(rect.center(), galley, color)
@@ -349,29 +295,6 @@ fn edge_tab(ui: &mut egui::Ui, caption: &str, height: f32, expander: bool) -> bo
         format!("Open {caption}")
     };
     resp.on_hover_text(tip).clicked()
-}
-
-/// Lay out `text` as UPPERCASE monospace with extra letter spacing, returning the galley
-/// for painting (and width/height measurement).
-fn letter_spaced(
-    ui: &egui::Ui,
-    text: &str,
-    color: Color32,
-    size: f32,
-    spacing: f32,
-) -> std::sync::Arc<egui::Galley> {
-    let mut job = egui::text::LayoutJob::default();
-    job.append(
-        &text.to_uppercase(),
-        0.0,
-        egui::TextFormat {
-            font_id: FontId::monospace(size),
-            color,
-            extra_letter_spacing: spacing,
-            ..Default::default()
-        },
-    );
-    ui.painter().layout_job(job)
 }
 
 /// Draw a full-width inner-rule hairline at `y`.
