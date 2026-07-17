@@ -13,6 +13,13 @@ edition = "2021"
 # release; intended for reading, naming, and isolated performance reasoning. See the
 # "Substrate" section of docs/architecture/data-structures.md for the boundary law.
 
+# `cfg(kani)` gates the bounded-model-checking proofs in the finite bit/index kernels
+# (`lattice_key.rs`, and the other decision-6 targets as they land). It is set only under
+# `cargo kani`; register it here so ordinary `cargo`/clippy builds don't warn on the unknown
+# cfg (the proofs stay inactive). See docs/design/substrate-extraction-map.md item 10b.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
 [dependencies]
 rayon = "1"
 glam = "0.33.1"

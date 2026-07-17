@@ -104,6 +104,14 @@ block the extraction on proofs). Tool fit per component, matched to what each to
   runs in WSL/CI, not native Windows): `BitCube` run-set/popcount/expand-pack inverses,
   `LatticeKey` round-trip + order preservation, `CubeTilePacking` index bijection. The density
   bound 1..=64 doubles as the verification bound — these checks are effectively exhaustive.
+  - **Landed 2026-07-17:** `LatticeKey` (`spatial/lattice_key.rs` `mod kani_proofs`) — three
+    harnesses: pack∘unpack identity, integer-key-order ⇔ z-major `(z,y,x)` lexicographic order
+    (which pins injectivity), and the GPU `(hi, lo)` split being loss-free; all over the full
+    representable `[-BIAS, BIAS)^3` domain. Sibling: the `raycast` crate's `VoxelDda`
+    (Amanatides & Woo) got the same in-file Kani treatment the same day — the box-entry clamp
+    (grazing-rim fix) plus advance-step correctness (one-axis move, `t` monotone + invariant
+    preserved, x→y→z tie-break). Still open here: `BitCube` inverses, `CubeTilePacking`
+    bijection.
 - **Creusot or Verus** (deductive proofs on the real Rust) for stateful invariants:
   `DisjointRunList` (sorted ∧ disjoint ∧ non-touching after any insert; widest-run correctness),
   `SlotFreeList` (no double-allocation, stable indices), generation-supersede (newest-wins,

@@ -62,6 +62,82 @@ pub fn split_key_hi_lo(key: u64) -> [u32; 2] {
     [(key >> 32) as u32, key as u32]
 }
 
+/// Kani bounded-model-checking proofs of the [`pack_lattice_key`] codec's two load-bearing
+/// laws — **round-trip identity** and **integer order == z-major lexicographic order** —
+/// verified over the WHOLE representable coordinate space, not just the handful of points the
+/// unit test happens to name. A packing bug is exactly the silent kind that corrupts a sparse
+/// lookup (a key that aliases two cells, or a sort order the binary search disagrees with),
+/// which no differential render would reliably surface; the doctrine (ADR 0014 decision 6,
+/// `docs/architecture/05-proof.md` §"Prove the kernel") assigns Kani to these finite bit/index
+/// kernels. `#[cfg(kani)]` keeps them inactive in ordinary builds. Run under WSL:
+/// `cargo kani -p substrate`.
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    /// A symbolic lattice coordinate confined to the representable biased range
+    /// `[-BIAS, BIAS)` on every axis — outside it `pack_lattice_key` deliberately panics (a
+    /// wrap would alias two distinct cells onto one key), so the laws below are stated over
+    /// exactly the domain the packer accepts. Kani also proves that internal `assert!` never
+    /// fires within this domain.
+    fn coordinate_in_range() -> [i64; 3] {
+        let x: i64 = kani::any();
+        let y: i64 = kani::any();
+        let z: i64 = kani::any();
+        kani::assume(x >= -BIAS && x < BIAS);
+        kani::assume(y >= -BIAS && y < BIAS);
+        kani::assume(z >= -BIAS && z < BIAS);
+        [x, y, z]
+    }
+
+    /// Lexicographic order on `(z, y, x)` — z most significant, matching the lane layout that
+    /// puts z in the highest bits.
+    fn lex_less_z_major(a: [i64; 3], b: [i64; 3]) -> bool {
+        if a[2] != b[2] {
+            a[2] < b[2]
+        } else if a[1] != b[1] {
+            a[1] < b[1]
+        } else {
+            a[0] < b[0]
+        }
+    }
+
+    /// **Round-trip identity.** Unpacking a packed key recovers the exact coordinate, for every
+    /// representable coordinate — so a sparse structure keyed on the packed value can never
+    /// silently read back a different cell than the one that was stored.
+    #[kani::proof]
+    fn pack_then_unpack_is_the_identity() {
+        let coordinate = coordinate_in_range();
+        assert!(unpack_lattice_key(pack_lattice_key(coordinate)) == coordinate);
+    }
+
+    /// **The key IS the z-major lexicographic order.** Integer comparison of two packed keys
+    /// agrees exactly with lexicographic `(z, y, x)` comparison of their coordinates — the
+    /// invariant a sorted, binary-searched key set (on CPU and GPU) rides on. The `==` clause
+    /// pins injectivity (equal keys ⟺ equal coordinates); together they make `pack` a strict
+    /// order isomorphism onto its image.
+    #[kani::proof]
+    fn integer_key_order_is_z_major_lexicographic() {
+        let a = coordinate_in_range();
+        let b = coordinate_in_range();
+        let key_a = pack_lattice_key(a);
+        let key_b = pack_lattice_key(b);
+        assert!((key_a < key_b) == lex_less_z_major(a, b));
+        assert!((key_a == key_b) == (a == b));
+    }
+
+    /// **The GPU split is loss-free.** Recomposing [`split_key_hi_lo`]'s `(hi, lo)` halves
+    /// reproduces the `u64` key exactly, for every representable coordinate — so the 32-bit
+    /// halved key a GPU binary-searches (no native `u64` there) denotes the same cell, and the
+    /// `(hi, lo)` lexicographic comparison the shader does reproduces the `u64` comparison.
+    #[kani::proof]
+    fn hi_lo_split_recomposes_the_key_exactly() {
+        let key = pack_lattice_key(coordinate_in_range());
+        let [hi, lo] = split_key_hi_lo(key);
+        assert!(((hi as u64) << 32) | (lo as u64) == key);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

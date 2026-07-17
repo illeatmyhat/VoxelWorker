@@ -249,6 +249,98 @@ mod kani_proofs {
         assert!(dda.cell.x >= 0 && dda.cell.x <= 3);
         assert!(dda.cell.y >= 0 && dda.cell.y <= 3);
     }
+
+    /// A symbolic DDA cursor with finite, magnitude-bounded float parameters, a signum step
+    /// (`-1..=1`, what [`VoxelDda::seed`] derives from the ray direction), and a lattice cell far
+    /// from `i32` saturation — the general pre-state for reasoning about a single
+    /// [`advance`](VoxelDda::advance). The bounds keep the solver on the real geometric domain
+    /// and away from float/overflow corners no seeded cursor can reach.
+    fn arbitrary_cursor() -> VoxelDda {
+        let bounded_cell = || -> i32 {
+            let value: i32 = kani::any();
+            kani::assume(value >= -(1 << 24) && value <= (1 << 24));
+            value
+        };
+        let signum_step = || -> i32 {
+            let value: i32 = kani::any();
+            kani::assume((-1..=1).contains(&value));
+            value
+        };
+        VoxelDda {
+            cell: IVec3::new(bounded_cell(), bounded_cell(), bounded_cell()),
+            step: IVec3::new(signum_step(), signum_step(), signum_step()),
+            t_max: Vec3::new(finite_f32(1e18), finite_f32(1e18), finite_f32(1e18)),
+            t_delta: Vec3::new(finite_f32(1e18), finite_f32(1e18), finite_f32(1e18)),
+            t_cell_enter: finite_f32(1e18),
+            entry_axis: 0,
+        }
+    }
+
+    /// **Each `advance` moves exactly one cell axis, by that axis's step, leaving the other two
+    /// fixed** — the structural core of "the DDA visits the pierced cells one at a time and never
+    /// skips a cell laterally" (Amanatides & Woo). The axis that moved is exactly the one named by
+    /// the updated `entry_axis`, so the entry-face normal the shade reads always matches the step
+    /// just taken.
+    #[kani::proof]
+    fn advance_moves_exactly_one_axis_by_its_step() {
+        let before = arbitrary_cursor();
+        let mut after = before;
+        after.advance();
+        assert!(after.entry_axis < 3);
+        let moved_x = after.cell.x - before.cell.x;
+        let moved_y = after.cell.y - before.cell.y;
+        let moved_z = after.cell.z - before.cell.z;
+        match after.entry_axis {
+            0 => assert!(moved_x == before.step.x && moved_y == 0 && moved_z == 0),
+            1 => assert!(moved_y == before.step.y && moved_x == 0 && moved_z == 0),
+            _ => assert!(moved_z == before.step.z && moved_x == 0 && moved_y == 0),
+        }
+    }
+
+    /// **`advance` never moves the ray backward, and it preserves the DDA's ordering invariant.**
+    /// Precondition — the invariant every seeded cursor satisfies: each axis's next-boundary
+    /// parameter is at or ahead of the current cell-entry parameter, and the whole-cell spans are
+    /// non-negative. Then after one advance the new cell-entry parameter is ≥ the old one (`t` is
+    /// monotone non-decreasing — the march only ever moves forward), AND the same invariant holds
+    /// again. Because the step preserves the invariant, induction extends the monotonicity to the
+    /// entire walk, however many cells it crosses — the "each pierced cell is entered once, in
+    /// increasing `t`" half of Amanatides & Woo, discharged as a one-step obligation.
+    #[kani::proof]
+    fn advance_is_monotone_in_t_and_preserves_the_invariant() {
+        let mut dda = arbitrary_cursor();
+        kani::assume(dda.t_delta.x >= 0.0 && dda.t_delta.y >= 0.0 && dda.t_delta.z >= 0.0);
+        kani::assume(
+            dda.t_max.x >= dda.t_cell_enter
+                && dda.t_max.y >= dda.t_cell_enter
+                && dda.t_max.z >= dda.t_cell_enter,
+        );
+        let entry_before = dda.t_cell_enter;
+        dda.advance();
+        assert!(dda.t_cell_enter >= entry_before);
+        assert!(
+            dda.t_max.x >= dda.t_cell_enter
+                && dda.t_max.y >= dda.t_cell_enter
+                && dda.t_max.z >= dda.t_cell_enter
+        );
+    }
+
+    /// **The advance selects the axis of minimum `t_max`, breaking ties x → y → z, and records
+    /// that axis in `entry_axis`.** This pins the load-bearing tie order (module docs) as a
+    /// checked contract: the stepped axis's `t_max` is ≤ the other two, and when several are equal
+    /// the earliest of x, y, z wins — the exact rule the WGSL mirror shares, so a corner-grazing
+    /// ray reports the same voxel on CPU and GPU. (`arbitrary_cursor` seeds finite `t_max`, so the
+    /// strict inequalities below are well-defined — no NaN branch.)
+    #[kani::proof]
+    fn advance_selects_min_t_max_with_x_then_y_then_z_ties() {
+        let mut dda = arbitrary_cursor();
+        let t = dda.t_max;
+        dda.advance();
+        match dda.entry_axis {
+            0 => assert!(t.x <= t.y && t.x <= t.z),
+            1 => assert!(t.y <= t.z && t.y < t.x),
+            _ => assert!(t.z < t.x && t.z < t.y),
+        }
+    }
 }
 
 #[cfg(test)]
