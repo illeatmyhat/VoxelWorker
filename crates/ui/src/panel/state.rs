@@ -28,6 +28,31 @@ pub enum ViewMode {
     ShowBooleans,
 }
 
+impl ViewMode {
+    /// The next mode in the Signal icon rail's cycle order (ADR 0018 Decision 8 /
+    /// `docs/design/viewport-chrome-signal.md`): Normal -> Onion fog -> Show booleans ->
+    /// Normal. The viewport-mode button steps through this; it is pure display state (no
+    /// rebuild, never serialized, never undone), so cycling it only re-derives the
+    /// display overlays at the shell's existing mode-change seam.
+    pub fn next(self) -> Self {
+        match self {
+            ViewMode::Normal => ViewMode::OnionFog,
+            ViewMode::OnionFog => ViewMode::ShowBooleans,
+            ViewMode::ShowBooleans => ViewMode::Normal,
+        }
+    }
+
+    /// The UPPERCASE status-line label for this mode (the Signal status line's
+    /// `VIEWPORT <MODE>` field): `NORMAL` / `ONION FOG` / `SHOW BOOLEANS`.
+    pub fn status_label(self) -> &'static str {
+        match self {
+            ViewMode::Normal => "NORMAL",
+            ViewMode::OnionFog => "ONION FOG",
+            ViewMode::ShowBooleans => "SHOW BOOLEANS",
+        }
+    }
+}
+
 /// Layer-range scrubber state (issue #12).
 ///
 /// The layer-range scrubber subsumes the old 2D mid-vertical slice map. Z-up: layers

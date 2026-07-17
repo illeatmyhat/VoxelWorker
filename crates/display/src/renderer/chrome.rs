@@ -1,7 +1,8 @@
-//! #13 Step 2 — ViewCube chrome overlay (Home/Fit + hover rotate/roll arrows).
-//! Screen-space, fixed to the cube rect; the layout fractions mirror
-//! `camera::classify_cube_point` EXACTLY so the rendered glyphs sit on the Step-1
-//! hit zones. Also owns the CPU rasterisation of the glyph textures.
+//! #13 Step 2 — ViewCube chrome overlay (the rotate + roll arrows). Screen-space,
+//! fixed to the cube rect; the layout fractions mirror `camera::classify_cube_point`
+//! EXACTLY so the rendered glyphs sit on the Step-1 hit zones. Also owns the CPU
+//! rasterisation of the glyph textures. (Home/Fit left the cube for the Signal icon
+//! rail — ADR 0018 Decision 8 — so this overlay no longer draws badge glyphs.)
 
 use super::*;
 
@@ -22,13 +23,12 @@ pub(crate) struct ChromeVertex {
     pub(crate) layer: u32,
 }
 
-/// The chrome-glyph texture-array layers (#13 Step 2), in upload order. The
-/// Home/Fit badges are ALWAYS drawn; the arrows are drawn only when the matching
-/// zone is hovered.
+/// The chrome-glyph texture-array layers (#13 Step 2), in upload order. The four
+/// rotate arrows draw persistently when the view is face-constrained; the two roll
+/// arrows draw only when their zone is hovered. (Home/Fit moved to the Signal icon
+/// rail — ADR 0018 Decision 8.)
 #[derive(Debug, Clone, Copy)]
 enum ChromeGlyph {
-    HomeButton,
-    FitButton,
     ArrowUp,
     ArrowDown,
     ArrowLeft,
@@ -39,9 +39,7 @@ enum ChromeGlyph {
 
 impl ChromeGlyph {
     /// Upload/lookup order for the texture array (must match `chrome_glyph_pixels`).
-    const ALL: [ChromeGlyph; 8] = [
-        ChromeGlyph::HomeButton,
-        ChromeGlyph::FitButton,
+    const ALL: [ChromeGlyph; 6] = [
         ChromeGlyph::ArrowUp,
         ChromeGlyph::ArrowDown,
         ChromeGlyph::ArrowLeft,
@@ -63,8 +61,6 @@ fn chrome_glyph_pixels(glyph: ChromeGlyph) -> Vec<u8> {
     let size = CHROME_GLYPH_TEXTURE_SIZE as usize;
     let mut pixels = vec![0u8; size * size * 4]; // transparent
     match glyph {
-        ChromeGlyph::HomeButton => draw_home_icon(&mut pixels, size),
-        ChromeGlyph::FitButton => draw_fit_icon(&mut pixels, size),
         ChromeGlyph::ArrowUp => draw_triangle_arrow(&mut pixels, size, ArrowFacing::Up),
         ChromeGlyph::ArrowDown => draw_triangle_arrow(&mut pixels, size, ArrowFacing::Down),
         ChromeGlyph::ArrowLeft => draw_triangle_arrow(&mut pixels, size, ArrowFacing::Left),
@@ -172,67 +168,6 @@ fn blend_pixel(pixels: &mut [u8], size: usize, x: usize, y: usize, color: [u8; 4
 /// Signed area of the triangle (a, b, c) — the edge function used for fill tests.
 fn edge(a: (f32, f32), b: (f32, f32), c: (f32, f32)) -> f32 {
     (b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0)
-}
-
-/// Fill an axis-aligned rectangle (in float coordinates) with anti-aliased edges.
-fn fill_rect(pixels: &mut [u8], size: usize, x0: f32, y0: f32, x1: f32, y1: f32, color: [u8; 4]) {
-    let min_x = x0.floor().max(0.0) as usize;
-    let max_x = (x1.ceil() as usize).min(size);
-    let min_y = y0.floor().max(0.0) as usize;
-    let max_y = (y1.ceil() as usize).min(size);
-    for y in min_y..max_y {
-        for x in min_x..max_x {
-            // Per-pixel coverage = overlap of the pixel cell with the rect.
-            let cover_x = ((x as f32 + 1.0).min(x1) - (x as f32).max(x0)).clamp(0.0, 1.0);
-            let cover_y = ((y as f32 + 1.0).min(y1) - (y as f32).max(y0)).clamp(0.0, 1.0);
-            let coverage = cover_x * cover_y;
-            if coverage > 0.0 {
-                blend_pixel(pixels, size, x, y, color, coverage);
-            }
-        }
-    }
-}
-
-/// Draw a simple house silhouette (Home button): a triangular roof over a square.
-fn draw_home_icon(pixels: &mut [u8], size: usize) {
-    const INK: [u8; 4] = [0xff, 0xff, 0xff, 0xff];
-    let s = size as f32;
-    // Roof triangle (slightly overhanging the body for a cleaner house read).
-    fill_triangle(
-        pixels,
-        size,
-        (s * 0.5, s * 0.16),
-        (s * 0.14, s * 0.52),
-        (s * 0.86, s * 0.52),
-        INK,
-    );
-    // Body square, anti-aliased.
-    fill_rect(pixels, size, s * 0.28, s * 0.46, s * 0.72, s * 0.82, INK);
-}
-
-/// Draw a "fit to view" icon: four corner brackets (a crop/frame mark). #13 Step
-/// 6.3: corner brackets read as "frame the model" and are clearly distinct from
-/// the Home house, while staying legible at the small badge size.
-fn draw_fit_icon(pixels: &mut [u8], size: usize) {
-    const INK: [u8; 4] = [0xff, 0xff, 0xff, 0xff];
-    let s = size as f32;
-    let lo = s * 0.18;
-    let hi = s * 0.82;
-    let thick = (s * 0.12).max(2.0);
-    let arm = s * 0.26; // length of each bracket arm
-    // Four L-shaped corner brackets (each = a horizontal + a vertical bar).
-    // Top-left.
-    fill_rect(pixels, size, lo, lo, lo + arm, lo + thick, INK);
-    fill_rect(pixels, size, lo, lo, lo + thick, lo + arm, INK);
-    // Top-right.
-    fill_rect(pixels, size, hi - arm, lo, hi, lo + thick, INK);
-    fill_rect(pixels, size, hi - thick, lo, hi, lo + arm, INK);
-    // Bottom-left.
-    fill_rect(pixels, size, lo, hi - thick, lo + arm, hi, INK);
-    fill_rect(pixels, size, lo, hi - arm, lo + thick, hi, INK);
-    // Bottom-right.
-    fill_rect(pixels, size, hi - arm, hi - thick, hi, hi, INK);
-    fill_rect(pixels, size, hi - thick, hi - arm, hi, hi, INK);
 }
 
 /// Draw a roll arc with an arrowhead (CW or CCW) — a curved 270° stroke with a
@@ -499,14 +434,6 @@ pub(crate) fn build_chrome_vertices(
             with_alpha(CHROME_GLYPH_RGB, 1.0)
         }
     };
-
-    // --- Always-on: Home / Fit badges (top-left), Step-1 u∈[0,.12]/[.12,.24], v∈[0,.12]. ---
-    let badge_y = 0.07;
-    let badge_size = 0.12;
-    let home_hovered = hovered_zone == Some(CubeChromeZone::HomeButton);
-    push_glyph_quad(&mut verts, ChromeGlyph::HomeButton, 0.06, badge_y, badge_size, badge_size, tint(home_hovered));
-    let fit_hovered = hovered_zone == Some(CubeChromeZone::FitButton);
-    push_glyph_quad(&mut verts, ChromeGlyph::FitButton, 0.18, badge_y, badge_size, badge_size, tint(fit_hovered));
 
     // --- The 4 rotate arrows: drawn PERSISTENTLY whenever the view is face-
     // constrained (decoupled from hover); the hovered one is brightened. ---

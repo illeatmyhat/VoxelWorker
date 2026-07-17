@@ -4,8 +4,9 @@
 //! 12 edges, 8 corners — as a single [`ViewCubeElement`], and maps each to the
 //! orbit `(theta, phi)` the camera should snap to. On top of the cube body sit the
 //! screen affordances Autodesk's widget is known for: rotate arrows that step the
-//! view 90° to an adjacent face along a great circle ([`adjacent_face`]), roll
-//! arrows, and Home/Fit badges. [`classify_cube_point`] is the pure screen-space
+//! view 90° to an adjacent face along a great circle ([`adjacent_face`]) and roll
+//! arrows. (Home/Fit moved to the Signal icon rail — ADR 0018 Decision 8 — so the cube
+//! no longer carries badge zones.) [`classify_cube_point`] is the pure screen-space
 //! hit-test over that layout, and [`chrome_zone_left_click_action`] is the pure
 //! zone→action dispatch (it never mutates the camera; the windowed caller executes
 //! the returned [`ChromeClickAction`]).
@@ -309,10 +310,6 @@ pub enum CubeChromeZone {
     RotateArrow(ArrowDir),
     /// A roll arrow at a top corner.
     RollArrow(RollDir),
-    /// The Home button (top-left corner badge).
-    HomeButton,
-    /// The Fit button (next to Home).
-    FitButton,
 }
 
 /// The readout order rank of a face for the [`view_cube_zone_readout`] label:
@@ -364,7 +361,7 @@ pub fn view_cube_zone_readout(zone: CubeChromeZone) -> Option<String> {
 ///
 /// ```text
 ///   ┌─────────────────────────────┐  0.00
-///   │ H F      [ ▲ ]         ⟲  ⟳ │  Home/Fit badges (TL), roll arrows (TR)
+///   │          [ ▲ ]        ⟲  ⟳ │  roll arrows (TR)
 ///   │  ┌───────────────────────┐  │  0.15   rotate-UP gutter  : x∈[.35,.65] y∈[.04,.15]
 ///   │  │                       │  │         roll arrows       : y∈[.00,.13]
 ///   │[◀]      cube body      [▶]│         CUBE BODY (raycast): [.15,.85]²
@@ -374,10 +371,12 @@ pub fn view_cube_zone_readout(zone: CubeChromeZone) -> Option<String> {
 ///   └─────────────────────────────┘  1.00
 /// ```
 ///
-/// Precedence (first match wins): Home/Fit badges, roll arrows, the four rotate
-/// gutters, then the central cube body (delegated to `body_picker`). A point inside
-/// `rect` that matches no chrome zone and whose `body_picker` returns `None` yields
-/// `None`; a point outside `rect` is `None`.
+/// Precedence (first match wins): roll arrows, the four rotate gutters, then the
+/// central cube body (delegated to `body_picker`). A point inside `rect` that matches
+/// no chrome zone and whose `body_picker` returns `None` yields `None`; a point outside
+/// `rect` is `None`. (Home/Fit left the cube for the Signal icon rail — ADR 0018
+/// Decision 8 — so the top-left badge zones are gone; every other zone's geometry is
+/// unchanged.)
 ///
 /// `body_picker` is the caller's raycast; it is invoked only for the central body
 /// region. In tests a stub picker stands in, keeping this function fully headless.
@@ -392,18 +391,6 @@ pub fn classify_cube_point(
     let v = (cursor_y - rect.y) / rect.size;
     if !(0.0..=1.0).contains(&u) || !(0.0..=1.0).contains(&v) {
         return None; // outside the cube rect entirely.
-    }
-
-    // --- Home / Fit badges: two small squares in the top-left corner. ---
-    const BADGE_TOP: f32 = 0.00;
-    const BADGE_BOTTOM: f32 = 0.12;
-    if (BADGE_TOP..BADGE_BOTTOM).contains(&v) {
-        if (0.00..0.12).contains(&u) {
-            return Some(CubeChromeZone::HomeButton);
-        }
-        if (0.12..0.24).contains(&u) {
-            return Some(CubeChromeZone::FitButton);
-        }
     }
 
     // --- Roll arrows: two small rects in the top-right corner. ---
@@ -462,12 +449,14 @@ pub fn classify_cube_point(
 ///   * [`RotateArrow`](CubeChromeZone::RotateArrow) → a face snap toward
 ///     `adjacent_face(nearest_face, dir)`.
 ///   * [`Element`](CubeChromeZone::Element) → the existing element snap.
-///   * [`HomeButton`](CubeChromeZone::HomeButton) → `Home` (caller runs the home
-///     tween, which also sets the home distance).
-///   * [`FitButton`](CubeChromeZone::FitButton) → `Fit` (caller frames the model).
 ///   * [`RollArrow`](CubeChromeZone::RollArrow) → a roll tween: twist the view ∓90°
 ///     about the view axis (the real roll DOF). `Cw`/`Ccw` set the sign; the orbit
 ///     angles are held.
+///
+/// The [`Home`](ChromeClickAction::Home) / [`Fit`](ChromeClickAction::Fit) actions are
+/// no longer produced here — they left the cube for the Signal icon rail (ADR 0018
+/// Decision 8), which constructs them directly and runs them through the same
+/// `run_chrome_action`.
 #[derive(Debug, Clone, Copy)]
 pub enum ChromeClickAction {
     /// Start this eased snap tween (face / element / roll).
@@ -494,8 +483,6 @@ pub fn chrome_zone_left_click_action(
             let target = adjacent_face(camera.nearest_face(), dir);
             ChromeClickAction::Snap(SnapTween::to_face(camera, target))
         }
-        CubeChromeZone::HomeButton => ChromeClickAction::Home,
-        CubeChromeZone::FitButton => ChromeClickAction::Fit,
         // The real roll DOF — twist the view ∓90° about the view axis.
         CubeChromeZone::RollArrow(direction) => {
             ChromeClickAction::Snap(SnapTween::roll(camera, direction))
@@ -549,8 +536,11 @@ mod tests {
         assert_eq!(view_cube_zone_readout(corner).as_deref(), Some("TOP·FRONT·RIGHT"));
         let face = CubeChromeZone::Element(ViewCubeElement::from_face(CubeFace::Right));
         assert_eq!(view_cube_zone_readout(face).as_deref(), Some("RIGHT"));
-        // Non-element chrome zones have no zone readout.
-        assert_eq!(view_cube_zone_readout(CubeChromeZone::HomeButton), None);
+        // Non-element chrome zones (arrows) have no zone readout.
+        assert_eq!(
+            view_cube_zone_readout(CubeChromeZone::RollArrow(RollDir::Cw)),
+            None
+        );
         assert_eq!(
             view_cube_zone_readout(CubeChromeZone::RotateArrow(ArrowDir::Left)),
             None
@@ -719,18 +709,15 @@ mod tests {
     }
 
     #[test]
-    fn classify_home_and_fit_badges() {
+    fn classify_top_left_corner_is_no_longer_a_badge_zone() {
+        // ADR 0018 Decision 8: Home/Fit left the cube for the Signal icon rail, so the
+        // former top-left badge region now classifies as no chrome zone (a stationary
+        // click there is a no-op — the rail owns those actions).
         let rect = test_cube_rect();
-        let (x, y) = at(rect, 0.05, 0.06);
-        assert_eq!(
-            classify_cube_point(rect, x, y, no_body),
-            Some(CubeChromeZone::HomeButton)
-        );
-        let (x, y) = at(rect, 0.18, 0.06);
-        assert_eq!(
-            classify_cube_point(rect, x, y, no_body),
-            Some(CubeChromeZone::FitButton)
-        );
+        for (u, v) in [(0.05, 0.06), (0.18, 0.06)] {
+            let (x, y) = at(rect, u, v);
+            assert_eq!(classify_cube_point(rect, x, y, no_body), None);
+        }
     }
 
     #[test]
@@ -882,20 +869,13 @@ mod tests {
         assert!(approx(tween.phi_to, reference.phi_to));
     }
 
-    /// Home / Fit map to their dedicated (non-tween) actions; a roll arrow maps to a
-    /// real roll tween.
+    /// A roll arrow maps to a real roll tween. (Home/Fit are no longer cube zones —
+    /// they moved to the Signal icon rail, ADR 0018 Decision 8 — but `ChromeClickAction`
+    /// keeps its `Home`/`Fit` variants, which the rail constructs directly.)
     #[test]
-    fn home_fit_roll_zones_map_to_their_actions() {
+    fn roll_zone_maps_to_roll_action() {
         let camera = OrbitCamera::default();
-        assert!(matches!(
-            chrome_zone_left_click_action(CubeChromeZone::HomeButton, &camera),
-            ChromeClickAction::Home
-        ));
-        assert!(matches!(
-            chrome_zone_left_click_action(CubeChromeZone::FitButton, &camera),
-            ChromeClickAction::Fit
-        ));
-        // A roll arrow click is now a Snap tween that targets ∓π/2 of roll.
+        // A roll arrow click is a Snap tween that targets ∓π/2 of roll.
         let action = chrome_zone_left_click_action(
             CubeChromeZone::RollArrow(RollDir::Cw),
             &camera,

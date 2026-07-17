@@ -379,8 +379,9 @@ fn parse_snap_element(value: &str) -> ViewCubeElement {
 }
 
 /// Parse a `--cube-hover` value (#13 Step 2) into the forced hovered chrome zone.
-/// Accepts the rotate/roll arrows and the Home/Fit badges so a golden can show
-/// any highlighted chrome element.
+/// Accepts the rotate/roll arrows and a cube-body `element:` so a golden can show any
+/// highlighted chrome element. (Home/Fit left the cube for the Signal icon rail — ADR
+/// 0018 Decision 8 — so they are no longer cube zones.)
 fn parse_cube_hover(value: &str) -> camera::CubeChromeZone {
     use camera::{ArrowDir, CubeChromeZone, RollDir};
     match value.to_ascii_lowercase().as_str() {
@@ -390,8 +391,6 @@ fn parse_cube_hover(value: &str) -> camera::CubeChromeZone {
         "rotate-right" | "right" => CubeChromeZone::RotateArrow(ArrowDir::Right),
         "roll-cw" | "cw" => CubeChromeZone::RollArrow(RollDir::Cw),
         "roll-ccw" | "ccw" => CubeChromeZone::RollArrow(RollDir::Ccw),
-        "home" => CubeChromeZone::HomeButton,
-        "fit" => CubeChromeZone::FitButton,
         // #13 Step 6.2: an `element:<spec>` value forces a hovered face/edge/corner
         // so a golden can show the element highlight on the cube body. Reuses the
         // `--snap` element parser (`front`, `front-top`, `front-top-right`).
@@ -400,7 +399,7 @@ fn parse_cube_hover(value: &str) -> camera::CubeChromeZone {
         }
         other => panic!(
             "--cube-hover must be one of rotate-up|rotate-down|rotate-left|rotate-right|\
-             roll-cw|roll-ccw|home|fit|element:<face|edge|corner>, got '{other}'"
+             roll-cw|roll-ccw|element:<face|edge|corner>, got '{other}'"
         ),
     }
 }

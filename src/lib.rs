@@ -27,6 +27,10 @@ pub mod app_core;
 pub mod block_palette;
 pub mod gpu;
 pub mod settings;
+// The Signal viewport chrome that renders in egui (ADR 0018 Decision 8): the icon rail
+// under the view cube + the bottom-left status line. Built inside `run_egui_frame` so
+// both the windowed surface and the headless `shot` capture draw it identically.
+pub mod signal_chrome;
 // The palette PREVIEW thumbnail renderer: a shell-side GPU sink that draws the UI's
 // 45° cube tiles (NOT the scene), reaching down into `display` only for the shared
 // block-texture bind-group layout. Kept out of the `display` scene-view crate.
@@ -236,6 +240,13 @@ pub struct PreparedEguiFrame {
     /// caller runs Home/Fit/SetHome; the ortho toggle is applied in-place to
     /// `panel_state.projection_mode` and is not reported here.
     pub cube_menu_request: Option<ViewCubeMenuRequest>,
+    /// The Signal icon rail's Home / Fit click this frame (ADR 0018 Decision 8), if any,
+    /// pre-mapped onto the SAME [`ChromeClickAction`] the retired cube badges dispatched
+    /// so the caller runs it through the shell's existing `run_chrome_action` (no forked
+    /// logic). The rail's viewport-mode-cycle button is applied IN PLACE to
+    /// `panel_state.view_mode` (pure display state), like the ortho toggle, so it is not
+    /// reported here. `None` on the headless `shot` path (the rail is never clicked).
+    pub rail_action: Option<ChromeClickAction>,
 }
 
 /// Run the egui pass for one frame: build the panel, upload changed textures to
@@ -269,6 +280,10 @@ pub fn run_egui_frame(
 ) -> PreparedEguiFrame {
     let mut panel_response = PanelResponse::default();
     let mut cube_menu_request: Option<ViewCubeMenuRequest> = None;
+    // Signal (ADR 0018 Decision 8): the icon rail's Home/Fit click, pre-mapped onto the
+    // shell's `ChromeClickAction`; a mode-cycle click mutates `panel_state.view_mode` in
+    // place inside the closure (never surfaced), like the ortho toggle.
+    let mut rail_action: Option<ChromeClickAction> = None;
     // Issue #25: the central 3D viewport rect, in egui points. `build_panel` shows
     // the right side panel + bottom palette dock INSIDE `ui`; whatever room those
     // panels leave is the central area where the 3D scene should be centred. We
@@ -352,19 +367,77 @@ pub fn run_egui_frame(
             }
         }
 
-        // Signal (#86): the faint zone-name readout, centred just under the top-right
-        // view cube. Anchored off the post-panel central rect so it tracks the cube as
-        // the side panel resizes. Non-interactive (a pure label).
+        // Signal (ADR 0018 Decision 8): the cube's on-screen anchors in egui points
+        // (shared by the readout, icon rail, and status line so they track the cube as
+        // the side panel resizes). `cube_fits` mirrors `view_cube_corner`'s minimum-size
+        // rule (viewport ≥ margin + cube on each axis) — below it the cube isn't drawn,
+        // so the rail hides too.
+        let cube_margin = display::renderer::VIEW_CUBE_VIEWPORT_MARGIN as f32 / pixels_per_point;
+        let cube_size = VIEW_CUBE_VIEWPORT_PIXELS as f32 / pixels_per_point;
+        let cube_left = central_rect_points.right() - cube_margin - cube_size;
+        let cube_bottom = central_rect_points.top() + cube_margin + cube_size;
+        let cube_extent_px =
+            (display::renderer::VIEW_CUBE_VIEWPORT_MARGIN + VIEW_CUBE_VIEWPORT_PIXELS) as f32;
+        let cube_fits = panel_state.show_view_cube
+            && central_rect_points.width() * pixels_per_point >= cube_extent_px
+            && central_rect_points.height() * pixels_per_point >= cube_extent_px;
+
+        // Signal: the icon rail directly under the cube (Home / Fit / viewport-mode
+        // cycle). Home/Fit reuse the shell's `ChromeClickAction`; a mode-cycle click
+        // steps `view_mode` in place (pure display state — the shell re-derives overlays
+        // at its existing mode-change seam). Hidden when the cube can't fit or is toggled
+        // off. Rendered here (inside `run_egui_frame`) so it draws on BOTH the windowed
+        // surface and the `shot` capture.
+        if cube_fits {
+            if let Some(click) = signal_chrome::icon_rail(
+                ui,
+                cube_left,
+                cube_bottom,
+                cube_size,
+                panel_state.view_mode,
+            ) {
+                match click {
+                    signal_chrome::RailClick::Home => rail_action = Some(ChromeClickAction::Home),
+                    signal_chrome::RailClick::Fit => rail_action = Some(ChromeClickAction::Fit),
+                    signal_chrome::RailClick::CycleMode => {
+                        panel_state.view_mode = panel_state.view_mode.next();
+                    }
+                }
+            }
+        }
+
+        // Signal: the persistent bottom-left status line (mode · selection · dims ·
+        // density). Draws on BOTH paths. Selection name + scene dims + density are read
+        // from the panel's scene each frame.
+        {
+            let density = panel_state.scene.voxels_per_block;
+            let dims = panel_state.scene.placed_region_dimensions(density);
+            let selection = panel_state
+                .scene
+                .active_node()
+                .map(|node| node.name.as_str())
+                .filter(|name| !name.is_empty());
+            signal_chrome::status_line(
+                ui,
+                central_rect_points,
+                panel_state.view_mode,
+                selection,
+                dims,
+                density,
+            );
+        }
+
+        // Signal (#86): the faint zone-name readout, centred under the cube but BELOW the
+        // icon rail (so the two never overlap). Anchored off the post-panel central rect
+        // so it tracks the cube as the side panel resizes. Non-interactive (a pure label);
+        // windowed-only (the `shot` path passes `None`).
         if let Some(label) = view_cube_zone_readout {
-            let margin = display::renderer::VIEW_CUBE_VIEWPORT_MARGIN as f32 / pixels_per_point;
-            let cube_size = VIEW_CUBE_VIEWPORT_PIXELS as f32 / pixels_per_point;
-            let cube_left = central_rect_points.right() - margin - cube_size;
-            let cube_bottom = central_rect_points.top() + margin + cube_size;
+            let readout_top = signal_chrome::rail_top(cube_bottom) + signal_chrome::rail_height() + 4.0;
             let context = ui.ctx().clone();
             egui::Area::new(egui::Id::new("view_cube_zone_readout"))
                 .order(egui::Order::Foreground)
                 .interactable(false)
-                .fixed_pos(egui::pos2(cube_left, cube_bottom + 4.0))
+                .fixed_pos(egui::pos2(cube_left, readout_top))
                 .show(&context, |ui| {
                     ui.allocate_ui_with_layout(
                         egui::vec2(cube_size, 0.0),
@@ -420,6 +493,7 @@ pub fn run_egui_frame(
         panel_response,
         viewport_px,
         cube_menu_request,
+        rail_action,
     }
 }
 

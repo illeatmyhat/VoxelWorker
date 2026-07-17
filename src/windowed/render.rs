@@ -180,6 +180,15 @@ impl WindowedState {
             None => {}
         }
 
+        // Signal (ADR 0018 Decision 8): the icon rail's Home/Fit click, pre-mapped onto a
+        // `ChromeClickAction`, runs through the SAME `run_chrome_action` the (now retired)
+        // cube badges used — no forked framing logic. A rail mode-cycle already mutated
+        // `panel_state.view_mode` inside `run_egui_frame`, so it needs nothing here (the
+        // overlay re-derivation below keys on the mode change, like a panel-driven one).
+        if let Some(action) = prepared.rail_action {
+            self.run_chrome_action(action);
+        }
+
         // Camera UX change: right-click a node row → "Focus" frames that node. This
         // is the ONLY edit-tree action that moves the camera. Set the orbit target to
         // the node's recentred world centre and fit the distance to its AABB (same fit

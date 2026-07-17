@@ -80,7 +80,7 @@ pub struct ViewCubeRenderer {
     uniform_buffer: wgpu::Buffer,
     uniform_bind_group: wgpu::BindGroup,
     label_bind_group: wgpu::BindGroup,
-    // --- #13 Step 2: screen-space chrome overlay (Home/Fit + hover arrows) ---
+    // --- #13 Step 2: screen-space chrome overlay (rotate + roll arrows) ---
     chrome_pipeline: wgpu::RenderPipeline,
     chrome_bind_group: wgpu::BindGroup,
     chrome_vertex_buffer: wgpu::Buffer,
@@ -282,8 +282,8 @@ impl ViewCubeRenderer {
         // --- #13 Step 2: screen-space chrome overlay pipeline + glyph textures ---
         let (chrome_pipeline, chrome_bind_group) =
             build_chrome_overlay(device, queue, color_format);
-        // Cap: at most Home + Fit + one hovered arrow on screen at once; size
-        // generously for all glyph quads (6 verts each).
+        // Cap: the four persistent rotate arrows + one hovered roll arrow on screen at
+        // once; size generously for all glyph quads (6 verts each).
         let chrome_vertex_capacity = 12 * 6;
         let chrome_vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("view cube chrome vertices"),
@@ -330,13 +330,13 @@ impl ViewCubeRenderer {
     /// attachments span the whole target; the scissor confines the draw).
     ///
     /// #13 Step 2: `hovered_zone` is the chrome zone currently under the cursor
-    /// (from `classify_cube_point`). The Home/Fit badges are drawn ALWAYS; the
-    /// roll arrows are drawn ONLY when their zone is hovered. #13 Step 6 follow-up:
-    /// the four rotate arrows are drawn PERSISTENTLY whenever `rotate_arrows_visible`
-    /// (the view is face-constrained), with the hovered one brightened. The chrome
-    /// is a
-    /// screen-space overlay FIXED to the cube rect (it does NOT rotate with the
-    /// cube), laid out in the same `rect.size` fractions Step 1 hit-tests against.
+    /// (from `classify_cube_point`). The roll arrows are drawn ONLY when their zone is
+    /// hovered. #13 Step 6 follow-up: the four rotate arrows are drawn PERSISTENTLY
+    /// whenever `rotate_arrows_visible` (the view is face-constrained), with the hovered
+    /// one brightened. (Home/Fit left the cube for the Signal icon rail — ADR 0018
+    /// Decision 8.) The chrome is a screen-space overlay FIXED to the cube rect (it does
+    /// NOT rotate with the cube), laid out in the same `rect.size` fractions Step 1
+    /// hit-tests against.
     #[allow(clippy::too_many_arguments)]
     pub fn draw(
         &self,

@@ -147,12 +147,12 @@ const CASES: &[GoldenCase] = &[
         args: &["--demo-village", "--points"],
     },
     // #86 (Signal restyle): the ViewCube chrome with an EDGE hover. The same village,
-    // but the top-right Signal cube carries the always-on Home/Fit glyphs AND a
-    // HIGHLIGHTED TOP·RIGHT edge (forced via `--cube-hover element:top-right`). Both
-    // the TOP and RIGHT faces are visible at the golden camera, so the hover lights the
-    // two across-the-fold facets — the right-strip cell of TOP and the top-strip cell of
-    // RIGHT — in the accent, pinning the fold-crossing highlight. The 3D viewport/panel
-    // are untouched.
+    // with a HIGHLIGHTED TOP·RIGHT edge (forced via `--cube-hover element:top-right`).
+    // Both the TOP and RIGHT faces are visible at the golden camera, so the hover lights
+    // the two across-the-fold facets — the right-strip cell of TOP and the top-strip cell
+    // of RIGHT — in the accent, pinning the fold-crossing highlight. (ADR 0018 Decision 8:
+    // the Home/Fit badges left the cube for the Signal icon rail, which now renders under
+    // the cube; the badges no longer appear here.) The 3D viewport/panel are untouched.
     GoldenCase {
         name: "cube-chrome-hover",
         args: &["--demo-village", "--cube-hover", "element:top-right"],
