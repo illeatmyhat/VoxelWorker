@@ -148,6 +148,54 @@ fn expand_row_word_into(word: u64, out_row: &mut [u8], set_byte: u8) {
     }
 }
 
+/// Kani bounded-model-checking proofs of [`BitCube`]'s two silent-corruption-prone kernels —
+/// the **overflow-safe run mask** and **row isolation** — verified over the whole bounded input
+/// space rather than the handful of fixtures the unit test names. The run mask is exactly the
+/// place a naive `(1 << (max + 1)) - 1` form wraps at `max == 63`; a wrong mask sets stray
+/// occupancy bits that no differential render reliably samples. The doctrine (ADR 0014 decision
+/// 6 / `docs/architecture/05-proof.md`) assigns Kani to these finite bit kernels; the density
+/// bound `1..=64` doubles as the verification bound. `#[cfg(kani)]` keeps them inactive in
+/// ordinary builds. Run under WSL: `cargo kani -p substrate`.
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    /// **The run-set mask sets EXACTLY the inclusive run `[min_x, max_x]`, and no bit outside
+    /// it.** Proved at edge 64 — the full-word case, the ONLY edge whose run can reach bit 63,
+    /// where the naive mask overflows; a smaller edge sets a strict sub-range of the same mask,
+    /// so edge 64 subsumes them. Sweeps every `min_x <= max_x < 64` and every query `x`, so the
+    /// overflow-safety and the `is_set` shift are both pinned over the whole input space.
+    #[kani::proof]
+    fn set_x_run_mask_sets_exactly_the_inclusive_run_at_the_full_word() {
+        let mut cube = BitCube::empty(64);
+        let min_x: u32 = kani::any();
+        let max_x: u32 = kani::any();
+        kani::assume(min_x <= max_x && max_x < 64);
+        cube.set_x_run(0, 0, min_x, max_x);
+        let x: u32 = kani::any();
+        kani::assume(x < 64);
+        assert!(cube.is_set(x, 0, 0) == (min_x <= x && x <= max_x));
+    }
+
+    /// **Row isolation.** Setting a run in one row `(row_y, row_z)` leaves every cell of every
+    /// OTHER row clear — the addressing `row = z·edge + y` never spills a run into a neighbour.
+    /// (A concrete edge 8 keeps the row-word vector small; the row-index arithmetic is the same
+    /// at every edge.)
+    #[kani::proof]
+    fn set_x_run_does_not_touch_other_rows() {
+        let mut cube = BitCube::empty(8);
+        let (row_y, row_z): (u32, u32) = (kani::any(), kani::any());
+        let (min_x, max_x): (u32, u32) = (kani::any(), kani::any());
+        kani::assume(row_y < 8 && row_z < 8);
+        kani::assume(min_x <= max_x && max_x < 8);
+        cube.set_x_run(row_y, row_z, min_x, max_x);
+        let (x, y, z): (u32, u32, u32) = (kani::any(), kani::any(), kani::any());
+        kani::assume(x < 8 && y < 8 && z < 8);
+        kani::assume(y != row_y || z != row_z); // a cell in some other row
+        assert!(!cube.is_set(x, y, z));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

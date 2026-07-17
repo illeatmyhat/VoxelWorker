@@ -157,6 +157,60 @@ impl ValueCube<u16> {
     }
 }
 
+/// Kani bounded-model-checking proofs of the **row-major cube index** shared by [`ValueCube`]
+/// (`flat_index`) and [`BitCube`](crate::occupancy::bit_cube::BitCube) (`row = z·edge + y`, bit
+/// `x`). The index is the addressing a *paired* occupancy/payload lookup trusts: an aliasing
+/// index would read one cell's occupancy against another's value (the exact desync the two-source
+/// design forbids), and an out-of-range index would panic. Proving the bijection over every edge
+/// `1..=64` makes both guarantees luck-independent. Symbolic-edge cubes are infeasible for Kani
+/// (an `edge³` allocation), so the bijection is proved on the exact index arithmetic and ANCHORED
+/// to the production `flat_index` at a concrete edge. `#[cfg(kani)]` keeps them out of ordinary
+/// builds. Run under WSL: `cargo kani -p substrate`.
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    /// A symbolic in-bounds coordinate on `[0, edge)`.
+    fn coord_below(edge: u32) -> u32 {
+        let value: u32 = kani::any();
+        kani::assume(value < edge);
+        value
+    }
+
+    /// The row-major flat index — the exact formula `ValueCube::flat_index`, `BitCube::is_set`,
+    /// and every run walk compute. Proved equal to the production method below.
+    fn row_major_index(edge: u32, x: u32, y: u32, z: u32) -> u32 {
+        (z * edge + y) * edge + x
+    }
+
+    /// **The row-major index is a bijection on `[0, edge)³`, in range.** For every edge `1..=64`:
+    /// the index of any in-bounds cell is `< edge³` (so `get`/`set`/`is_set` never index past the
+    /// backing buffer), and two cells share an index IFF they are the same cell (no aliasing) —
+    /// the mixed-radix uniqueness the paired occupancy/payload addressing rides on.
+    #[kani::proof]
+    fn row_major_index_is_a_bijection_within_bounds() {
+        let edge: u32 = kani::any();
+        kani::assume((1..=64).contains(&edge));
+        let (x, y, z) = (coord_below(edge), coord_below(edge), coord_below(edge));
+        let index = row_major_index(edge, x, y, z);
+        assert!(index < edge * edge * edge); // in range: never past edge³
+        let (x2, y2, z2) = (coord_below(edge), coord_below(edge), coord_below(edge));
+        let index2 = row_major_index(edge, x2, y2, z2);
+        assert!((index == index2) == (x == x2 && y == y2 && z == z2)); // injective
+    }
+
+    /// **Anchor: the production `ValueCube::flat_index` IS the formula proved above** — checked at
+    /// a concrete edge (whose `edge³` buffer is small enough to construct) for every in-bounds
+    /// cell, so the bijection theorem transfers to the real code.
+    #[kani::proof]
+    fn production_flat_index_matches_the_proved_formula() {
+        const EDGE: u32 = 4;
+        let cube = ValueCube::<u16>::new_filled(EDGE, 0);
+        let (x, y, z) = (coord_below(EDGE), coord_below(EDGE), coord_below(EDGE));
+        assert!(cube.flat_index(x, y, z) == row_major_index(EDGE, x, y, z) as usize);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

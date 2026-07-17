@@ -110,8 +110,16 @@ block the extraction on proofs). Tool fit per component, matched to what each to
     representable `[-BIAS, BIAS)^3` domain. Sibling: the `raycast` crate's `VoxelDda`
     (Amanatides & Woo) got the same in-file Kani treatment the same day — the box-entry clamp
     (grazing-rim fix) plus advance-step correctness (one-axis move, `t` monotone + invariant
-    preserved, x→y→z tie-break). Still open here: `BitCube` inverses, `CubeTilePacking`
-    bijection.
+    preserved, x→y→z tie-break).
+  - **Landed 2026-07-17 (cont.):** `BitCube` (`occupancy/bit_cube.rs`) — the overflow-safe
+    run-set mask sets exactly the inclusive `[min_x, max_x]` at the full 64-bit word (the bit-63
+    case that wraps a naive mask), and row isolation (a run never spills into a neighbour row).
+    `ValueCube` (`occupancy/value_cube.rs`) — the row-major index `(z·edge+y)·edge+x` shared by
+    both cubes is a bijection on `[0,edge)³`, in range `<edge³`, over every edge `1..=64`,
+    anchored to the production `flat_index` at a concrete edge (symbolic-edge cubes are
+    infeasible — an `edge³` allocation). Still open here: `BitCube` expand↔pack whole-cube
+    round-trip (the row-word kernel is bounded but the cube loop needs a fixed edge to unwind),
+    `CubeTilePacking` index bijection.
 - **Creusot or Verus** (deductive proofs on the real Rust) for stateful invariants:
   `DisjointRunList` (sorted ∧ disjoint ∧ non-touching after any insert; widest-run correctness),
   `SlotFreeList` (no double-allocation, stable indices), generation-supersede (newest-wins,
