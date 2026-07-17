@@ -609,7 +609,7 @@ fn build_offset_section(ui: &mut egui::Ui, state: &mut PanelState, response: &mu
             .unwrap_or_else(|| seed.clone());
 
         let widget = egui::TextEdit::singleline(&mut buffer)
-            .desired_width(110.0)
+            .desired_width(142.0)
             .hint_text("blocks + voxels");
         let widget_response = ui.horizontal(|ui| {
             ui.label(format!("{axis_label} "));
@@ -819,7 +819,7 @@ fn build_size_section(ui: &mut egui::Ui, state: &mut PanelState) -> bool {
             .unwrap_or_else(|| seed.clone());
 
         let widget = egui::TextEdit::singleline(&mut buffer)
-            .desired_width(110.0)
+            .desired_width(142.0)
             .hint_text("blocks + voxels");
         let widget_response = ui.horizontal(|ui| {
             ui.label(format!("{axis_label} "));
