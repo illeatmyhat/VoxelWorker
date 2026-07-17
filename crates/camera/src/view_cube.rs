@@ -237,12 +237,18 @@ pub enum RollDir {
 /// Up/Down reach TOP/BOTTOM, and TOP/BOTTOM's Left/Right reach the LEFT/RIGHT
 /// equatorial faces (a spin about the vertical axis). Full table:
 ///
-///   * FRONT (−Y): Up→Top,  Down→Bottom, Left→Left,  Right→Right
-///   * BACK (+Y):  Up→Bottom, Down→Top,  Left→Right, Right→Left
-///   * RIGHT (+X): Up→Top,  Down→Bottom, Left→Front, Right→Back
-///   * LEFT (−X):  Up→Top,  Down→Bottom, Left→Back,  Right→Front
-///   * TOP (+Z):   Up→Back, Down→Front,  Left→Left,  Right→Right
-///   * BOTTOM(−Z): Up→Front, Down→Back,  Left→Left,  Right→Right
+/// Conventions differ by axis (owner ruling, 2026-07-17): **Up/Down orbit the
+/// camera** (Up shows the TOP — you climb over the cube), while **Left/Right spin
+/// the cube** (the arrow is the direction the visible face slides, so the face on
+/// the arrow's OPPOSITE side rotates into view: from FRONT, Right shows LEFT).
+/// The previous all-camera-orbit mapping read as yaw-inverted in use.
+///
+///   * FRONT (−Y): Up→Top,  Down→Bottom, Left→Right, Right→Left
+///   * BACK (+Y):  Up→Bottom, Down→Top,  Left→Left,  Right→Right
+///   * RIGHT (+X): Up→Top,  Down→Bottom, Left→Back,  Right→Front
+///   * LEFT (−X):  Up→Top,  Down→Bottom, Left→Front, Right→Back
+///   * TOP (+Z):   Up→Back, Down→Front,  Left→Right, Right→Left
+///   * BOTTOM(−Z): Up→Front, Down→Back,  Left→Right, Right→Left
 ///
 /// Properties (proven in tests): the four neighbours of any face are distinct
 /// (never the face itself); four Up steps cycle the vertical circle and four
@@ -257,33 +263,33 @@ pub fn adjacent_face(current: CubeFace, dir: ArrowDir) -> CubeFace {
     match (current, dir) {
         (F::Front, A::Up) => F::Top,
         (F::Front, A::Down) => F::Bottom,
-        (F::Front, A::Left) => F::Left,
-        (F::Front, A::Right) => F::Right,
+        (F::Front, A::Left) => F::Right,
+        (F::Front, A::Right) => F::Left,
 
         (F::Back, A::Up) => F::Bottom,
         (F::Back, A::Down) => F::Top,
-        (F::Back, A::Left) => F::Right,
-        (F::Back, A::Right) => F::Left,
+        (F::Back, A::Left) => F::Left,
+        (F::Back, A::Right) => F::Right,
 
         (F::Right, A::Up) => F::Top,
         (F::Right, A::Down) => F::Bottom,
-        (F::Right, A::Left) => F::Front,
-        (F::Right, A::Right) => F::Back,
+        (F::Right, A::Left) => F::Back,
+        (F::Right, A::Right) => F::Front,
 
         (F::Left, A::Up) => F::Top,
         (F::Left, A::Down) => F::Bottom,
-        (F::Left, A::Left) => F::Back,
-        (F::Left, A::Right) => F::Front,
+        (F::Left, A::Left) => F::Front,
+        (F::Left, A::Right) => F::Back,
 
         (F::Top, A::Up) => F::Back,
         (F::Top, A::Down) => F::Front,
-        (F::Top, A::Left) => F::Left,
-        (F::Top, A::Right) => F::Right,
+        (F::Top, A::Left) => F::Right,
+        (F::Top, A::Right) => F::Left,
 
         (F::Bottom, A::Up) => F::Front,
         (F::Bottom, A::Down) => F::Back,
-        (F::Bottom, A::Left) => F::Left,
-        (F::Bottom, A::Right) => F::Right,
+        (F::Bottom, A::Left) => F::Right,
+        (F::Bottom, A::Right) => F::Left,
     }
 }
 
@@ -753,11 +759,13 @@ mod tests {
     #[test]
     fn adjacent_face_spot_checks() {
         use ArrowDir::*;
-        assert_eq!(adjacent_face(CubeFace::Front, Right), CubeFace::Right);
+        // Yaw arrows SPIN THE CUBE (owner ruling): Right slides the visible face
+        // rightward, so the LEFT face rotates into view. Up/Down orbit the camera.
+        assert_eq!(adjacent_face(CubeFace::Front, Right), CubeFace::Left);
         assert_eq!(adjacent_face(CubeFace::Front, Up), CubeFace::Top);
-        assert_eq!(adjacent_face(CubeFace::Front, Left), CubeFace::Left);
+        assert_eq!(adjacent_face(CubeFace::Front, Left), CubeFace::Right);
         assert_eq!(adjacent_face(CubeFace::Front, Down), CubeFace::Bottom);
-        assert_eq!(adjacent_face(CubeFace::Right, Left), CubeFace::Front);
+        assert_eq!(adjacent_face(CubeFace::Right, Left), CubeFace::Back);
         assert_eq!(adjacent_face(CubeFace::Top, Down), CubeFace::Front);
     }
 
@@ -821,7 +829,7 @@ mod tests {
 
     #[test]
     fn adjacent_face_four_right_steps_cycle_the_equator() {
-        // FRONT --Right--> Right --> Back --> Left --> FRONT.
+        // Cube-spin yaw: FRONT --Right--> Left --> Back --> Right --> FRONT.
         let mut face = CubeFace::Front;
         let visited: Vec<CubeFace> = (0..4)
             .map(|_| {
@@ -831,16 +839,17 @@ mod tests {
             .collect();
         assert_eq!(
             visited,
-            vec![CubeFace::Right, CubeFace::Back, CubeFace::Left, CubeFace::Front]
+            vec![CubeFace::Left, CubeFace::Back, CubeFace::Right, CubeFace::Front]
         );
     }
 
     // ---- pure chrome-click dispatch (zone → action) ----
 
     /// A RotateArrow(Right) click from a FRONT-facing camera tweens toward
-    /// `adjacent_face(Front, Right) = Right`'s angles (shortest theta).
+    /// `adjacent_face(Front, Right) = Left`'s angles (cube-spin yaw: the visible
+    /// face slides right, the LEFT face rotates in), shortest theta.
     #[test]
-    fn rotate_arrow_right_from_front_targets_right_face() {
+    fn rotate_arrow_right_from_front_targets_left_face() {
         let (theta, phi) = CubeFace::Front.snap_angles();
         let camera = OrbitCamera {
             orbit_theta: theta,
@@ -854,9 +863,9 @@ mod tests {
         let ChromeClickAction::Snap(tween) = action else {
             panic!("expected Snap, got {action:?}");
         };
-        let (right_theta, right_phi) = CubeFace::Right.snap_angles();
-        assert!(approx(tween.theta_to, nearest_equivalent_theta(theta, right_theta)));
-        assert!(approx(tween.phi_to, right_phi));
+        let (left_theta, left_phi) = CubeFace::Left.snap_angles();
+        assert!(approx(tween.theta_to, nearest_equivalent_theta(theta, left_theta)));
+        assert!(approx(tween.phi_to, left_phi));
     }
 
     /// An Element click reproduces the existing element snap.
