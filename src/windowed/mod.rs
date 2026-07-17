@@ -572,6 +572,26 @@ impl WindowedState {
         config.save();
     }
 
+    /// Dump the CURRENT scene + LIVE camera (theta/phi/distance/roll/projection) to a
+    /// repro file the `shot` harness loads with `--from-config`, so a bug seen at an exact
+    /// live view reproduces headlessly byte-for-byte. Bound to F9. Writes to the system temp
+    /// dir (`voxelworker-repro.json`) and prints the absolute path. Unlike `save_config`, this
+    /// captures the camera AS IT IS THIS FRAME (config.json only persists on exit), which is the
+    /// whole point — an artifact pose is never the last-saved pose.
+    fn export_repro(&self) {
+        let window_size = [self.surface_config.width, self.surface_config.height];
+        let config =
+            AppConfig::capture(&self.panel_state, &self.app_core.camera, self.home_view, window_size);
+        let path = std::env::temp_dir().join("voxelworker-repro.json");
+        match serde_json::to_string_pretty(&config)
+            .map_err(|e| e.to_string())
+            .and_then(|json| std::fs::write(&path, json).map_err(|e| e.to_string()))
+        {
+            Ok(()) => eprintln!("repro: wrote current scene + camera to {}", path.display()),
+            Err(error) => eprintln!("repro: failed to write {}: {error}", path.display()),
+        }
+    }
+
     /// The shared shutdown sequence: persist config, then exit the loop. Called from both
     /// the immediate `CloseRequested` path and the deferred-close honour seam so the two
     /// never drift (finding #9).

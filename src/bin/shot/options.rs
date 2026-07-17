@@ -276,6 +276,14 @@ pub(crate) struct ShotOptions {
     /// (`--proj`, `--theta`, `--phi`, `--dist`, ...) still apply. `None` keeps the
     /// existing demo/shape behaviour, byte-identical to today.
     pub(crate) replay_path: Option<PathBuf>,
+    /// `--from-config <path>` (2026-07-17 repro flow): load the EXACT scene AND camera from an
+    /// `AppConfig` JSON — either the app's persisted `config.json` or an F9 `export_repro` dump.
+    /// Reproduces a live-app view headlessly byte-for-byte (scene tree + density + material +
+    /// orbit theta/phi/distance/roll + projection), so a bug seen at a precise pose is
+    /// investigable in `shot`. Overrides the `--shape`/`--demo-*` scene source and the
+    /// `--theta`/`--phi`/`--dist`/`--proj` camera flags (the whole point is the app's exact
+    /// state); `--brick`, `--width`/`--height`, and debug flags still apply.
+    pub(crate) from_config: Option<PathBuf>,
 }
 
 impl Default for ShotOptions {
@@ -340,6 +348,7 @@ impl Default for ShotOptions {
             brick: false,
             brick_force_miss: false,
             replay_path: None,
+            from_config: None,
         }
     }
 }
@@ -672,6 +681,11 @@ pub(crate) fn parse_options() -> ShotOptions {
             "--replay" => {
                 options.replay_path = Some(PathBuf::from(
                     args.next().expect("--replay requires a path argument"),
+                ));
+            }
+            "--from-config" => {
+                options.from_config = Some(PathBuf::from(
+                    args.next().expect("--from-config requires a path argument"),
                 ));
             }
             "--demo-far-offset" => {

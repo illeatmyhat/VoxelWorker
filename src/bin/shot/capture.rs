@@ -129,7 +129,32 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     // `AppCore::apply_intent`. A parse/read error is reported (line number + bad line)
     // and the process exits non-zero, rather than panicking. The camera/projection
     // flags below still apply to the replay render.
-    let mut scene = if let Some(replay_path) = &options.replay_path {
+    // `--from-config` (repro flow): the app's persisted `config.json` / an F9 repro dump is the
+    // HIGHEST-precedence scene+camera source. Its scene REPLACES the shape/demo build and its
+    // camera is stashed to override the CLI theta/phi/dist/proj below. Loaded loud (a bad path
+    // exits) so a headless repro never silently renders a different scene.
+    let from_config = options.from_config.as_ref().map(|path| {
+        voxel_worker::AppConfig::load_from(path).unwrap_or_else(|error| {
+            eprintln!("shot: --from-config {error}");
+            std::process::exit(2);
+        })
+    });
+    if let Some(config) = &from_config {
+        // Adopt the persisted scene + density + material + projection so the render matches the
+        // app frame-for-frame. `to_panel_state` reconstructs the full node tree (with ids + the
+        // origin point); we take its scene and the app-level display attributes.
+        let restored = config.to_panel_state();
+        panel_state.scene = restored.scene;
+        panel_state.geometry = restored.geometry;
+        panel_state.material = restored.material;
+        panel_state.projection_mode = config.projection_mode;
+        panel_state.applied_block_label = restored.applied_block_label;
+    }
+
+    let mut scene = if from_config.is_some() {
+        // The scene was already adopted into `panel_state.scene` from the loaded config above.
+        panel_state.scene.clone()
+    } else if let Some(replay_path) = &options.replay_path {
         match build_scene_from_replay(replay_path) {
             Ok(replayed_scene) => replayed_scene,
             Err(message) => {
@@ -746,9 +771,12 @@ pub(crate) async fn run_capture(options: ShotOptions) {
 
     // Build the orbit camera from the CLI flags. `--snap` overrides theta/phi
     // with the face's snapped angles directly (no tween in the headless path).
-    let (theta, phi) = match options.snap_element {
-        Some(element) => element.snap_angles(),
-        None => (options.theta, options.phi),
+    let (theta, phi) = match (&from_config, options.snap_element) {
+        // `--from-config` reproduces the app's EXACT live view: its orbit angles win over the
+        // CLI theta/phi (and over --snap — the whole point is the persisted pose).
+        (Some(config), _) => (config.orbit_theta, config.orbit_phi),
+        (None, Some(element)) => element.snap_angles(),
+        (None, None) => (options.theta, options.phi),
     };
     // The render-chunk borrow from `AppCore::rebuild` was consumed + dropped at the
     // cuboid mesh build above, so `app_core` is free again — install the CLI camera
@@ -758,12 +786,21 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         target: glam::Vec3::ZERO,
         orbit_theta: theta,
         orbit_phi: phi,
-        orbit_distance: options
-            .distance
-            .unwrap_or_else(|| OrbitCamera::auto_framed_distance(region_dimensions)),
+        // `--from-config` uses the persisted orbit distance (the exact live zoom); otherwise the
+        // CLI `--dist`, or the auto-frame. The scene resolves recentred on the origin on both the
+        // app and shot paths, so the app's target≈origin and the distance transfers directly.
+        orbit_distance: match &from_config {
+            Some(config) => config.orbit_distance,
+            None => options
+                .distance
+                .unwrap_or_else(|| OrbitCamera::auto_framed_distance(region_dimensions)),
+        },
         // #13 Step 5: `--roll <radians>` twists the whole view about the view axis.
         roll: options.roll,
-        projection_mode: options.projection_mode,
+        projection_mode: match &from_config {
+            Some(config) => config.projection_mode,
+            None => options.projection_mode,
+        },
     };
     // Issue #25: ALL uniform uploads (camera matrix → gizmo/lattice/view-cube
     // and the voxel pass) are deferred to AFTER `run_egui_frame`, because the

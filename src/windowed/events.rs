@@ -51,6 +51,17 @@ impl ApplicationHandler for App {
             WindowEvent::Resized(new_size) => {
                 state.resize(new_size.width, new_size.height);
             }
+            // F9: dump the current scene + LIVE camera to the repro file (`shot --from-config`).
+            // Lets an exact live-view bug reproduce headlessly. Ignored while egui has focus so it
+            // never fires from a text field.
+            WindowEvent::KeyboardInput { event: key_event, .. } if !egui_consumed => {
+                if key_event.state == ElementState::Pressed
+                    && key_event.physical_key
+                        == winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::F9)
+                {
+                    state.export_repro();
+                }
+            }
             WindowEvent::MouseInput {
                 state: button_state,
                 button: MouseButton::Left,

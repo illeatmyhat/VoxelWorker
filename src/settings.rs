@@ -371,6 +371,17 @@ impl AppConfig {
         }
     }
 
+    /// Load a config from an EXPLICIT path (the `shot --from-config` repro flow / the app's
+    /// F9 `export_repro` dump). Unlike [`load`](Self::load) this is fallible-loud: an unreadable
+    /// or malformed file returns the parse/IO error so the harness can exit with a clear message
+    /// (a headless repro must not silently fall back to a different scene).
+    pub fn load_from(path: &std::path::Path) -> Result<Self, String> {
+        let text = std::fs::read_to_string(path)
+            .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+        serde_json::from_str::<Self>(&text)
+            .map_err(|e| format!("invalid config {}: {e}", path.display()))
+    }
+
     /// Save the config to the platform path (pretty JSON), creating parent dirs.
     /// Errors are reported but not fatal — a failed save must not crash exit.
     pub fn save(&self) {
