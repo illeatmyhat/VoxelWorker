@@ -155,12 +155,14 @@ impl Default for OrbitCamera {
     fn default() -> Self {
         Self {
             target: Vec3::ZERO,
-            // Home view = the TOP-FRONT-LEFT iso corner: the eye sits in the
-            // (−X, −Y, +Z) octant looking at the corner where the Top/Front/Left
-            // faces meet (Z-up: front = −Y). `theta = −3π/4` aims the eye toward
-            // (−X, −Y); `phi = acos(1/√3) ≈ 54.7°` from +Z is the symmetric corner
+            // Home view = the TOP-FRONT-RIGHT iso corner: the eye sits in the
+            // (+X, −Y, +Z) octant looking at the corner where the Top/Front/Right
+            // faces meet (Z-up: front = −Y). `theta = −π/4` aims the eye toward
+            // (+X, −Y) — the SAME angles the ViewCube's FRONT·TOP·RIGHT corner
+            // snap computes (`atan2(−1, 1)`), so Home and that cube corner agree;
+            // `phi = acos(1/√3) ≈ 54.7°` from +Z is the symmetric corner
             // elevation so all three faces are seen equally.
-            orbit_theta: -3.0 * std::f32::consts::FRAC_PI_4,
+            orbit_theta: -std::f32::consts::FRAC_PI_4,
             orbit_phi: (1.0 / 3.0_f32.sqrt()).acos(),
             orbit_distance: 10.0,
             roll: 0.0,
