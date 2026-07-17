@@ -14,6 +14,13 @@ micro-labels, and exactly one accent colour — the onion-haze blue, so the chro
 ghost pass share an identity. Nothing is decorated; state is shown by an accent inset bar
 or an accent-filled cell, never by glows or shadows.
 
+The viewport itself is not a flat clear: it carries a cool near-black **radial gradient
+field** biased above-left of centre (`radial-gradient(120% 90% at 45% 38%, #1d2023, #141618
+62%, #0e0f11)`), painted as the background of both display paths (cuboid mesh + brick
+raymarch) and the headless capture. The chrome surfaces (view cube, icon rail, display
+stack) are **fully opaque** near-black so they read solid over a textured voxel scene — the
+approved screenshots' solid look is the law, not the mock's convenience alpha.
+
 The whole app wears Signal: the viewport chrome, the floating DISPLAY stack, the right
 sidebar and the bottom palette dock share one theme (`crates/ui/src/signal_theme.rs` — the
 token table, the app-wide `egui::Style`, and the section-header painting helpers), so every
@@ -23,7 +30,9 @@ surface reads as one instrument panel.
 
 | Role | Value |
 | --- | --- |
-| Panel background | `#0b0d0f` at ~85% over the viewport |
+| Viewport field | `radial-gradient(120% 90% at 45% 38%, #1d2023, #141618 62%, #0e0f11)` |
+| Panel background | `#0b0d0f`, opaque (solid over the scene) |
+| Ground reference grid | desaturated neutral slate `#39414a`, low alpha, strong rim fade |
 | Hairline border (outer) | `#2b3238` |
 | Hairline rule (inner) | `#1c2126` |
 | Hover fill | `#12161b` (panel rows), `#161a1e` (rail buttons) |
@@ -47,14 +56,18 @@ with accent border. Steppers/segments: bordered cells separated by hairlines.
 
 ## Chrome layout (all anchored to the viewport, Z-up world)
 
-- **View cube — top-right** (industry norm), ~116 px. Generated from real projection
-  (yaw ≈ 31°, pitch ≈ 22°, front face dominant). Each visible face partitioned 3×3 with a
-  68% centre patch → the **26 selectable zones** (6 faces, 12 edges, 8 corners; 19
-  visible). Hover highlights every facet of the zone **across the fold** (edge/corner
-  zones span faces) at accent ~45% fill, with a faint readout line under the cube naming
-  the zone (`TOP·FRONT`, `TOP·FRONT·RIGHT`). Cube faces are translucent panel-fills with
-  hairline slice lines; face labels (FRONT/RIGHT/TOP) are projected onto the faces, never
-  skewed by hand. **Axis-coloured edges** all emanate from the front-bottom-right corner —
+- **View cube — top-right** (industry norm), ~144 px on-screen with a 16 px margin.
+  Generated from real projection (yaw ≈ 31°, pitch ≈ 22°, front face dominant). Each
+  visible face partitioned 3×3 with a 68% centre patch → the **26 selectable zones** (6
+  faces, 12 edges, 8 corners; 19 visible). Hover highlights every facet of the zone
+  **across the fold** (edge/corner zones span faces) at accent ~45% fill, with a faint
+  readout line under the cube naming the zone (`TOP·FRONT`, `TOP·FRONT·RIGHT`). Cube faces
+  are solid (opaque) panel-fills; the hairline slice lines, the silhouette, the axis edges
+  and the X/Y/Z letters all render at a **constant ~1.4 px screen-space width, anti-aliased
+  and angle-independent** (the slice lines as an fwidth SDF in face-UV space, the wireframe
+  as screen-space-expanded quads) — so glancing angles never thin them. Face labels
+  (FRONT/RIGHT/TOP) are projected onto the faces, never skewed by hand. **Axis-coloured
+  edges** all emanate from the front-bottom-right corner —
   the one fully visible corner: X red along the front-bottom edge, Y green up the receding
   right-bottom edge, Z blue up the front-right vertical — with letter labels at the far
   ends. egui: raycast picking against the 26 zone quads; minimum on-screen size so the

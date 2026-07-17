@@ -9,29 +9,6 @@ pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// UI pass still renders at 1 sample onto the resolved target.
 pub const MSAA_SAMPLE_COUNT: u32 = 4;
 
-/// Create a single-sample depth texture view (used by the view-cube pass).
-pub(crate) fn create_single_sample_depth_view(
-    device: &wgpu::Device,
-    width: u32,
-    height: u32,
-) -> wgpu::TextureView {
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("view cube depth texture"),
-        size: wgpu::Extent3d {
-            width: width.max(1),
-            height: height.max(1),
-            depth_or_array_layers: 1,
-        },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: DEPTH_FORMAT,
-        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
-        view_formats: &[],
-    });
-    texture.create_view(&wgpu::TextureViewDescriptor::default())
-}
-
 /// Create a 4-sample (MSAA) colour texture view for the 3D pass, sized to a
 /// render target. Recreated on window resize / created at the offscreen size for
 /// the headless capture. `format` matches the resolve target.

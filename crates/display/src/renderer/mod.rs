@@ -26,6 +26,7 @@ use voxel_core::voxel::RecentreVoxels;
 use substrate::srgb::{srgb_component_to_linear, srgb_hex_to_linear};
 
 mod materials;
+mod background;
 mod view_cube;
 mod chrome;
 mod targets;
@@ -48,6 +49,7 @@ pub use materials::{
     relative_material_base_colors_public, upload_face_material_texture, GridOverlayParams,
     LayerBand, MaterialSource, RegionClip, RegionRole,
 };
+pub use background::BackgroundGradientRenderer;
 pub use view_cube::{
     view_cube_corner, ViewCubeRenderer, VIEW_CUBE_VIEWPORT_MARGIN, VIEW_CUBE_VIEWPORT_PIXELS,
 };
@@ -68,7 +70,6 @@ pub(crate) use chrome::*;
 pub(crate) use gizmo::*;
 pub(crate) use lines::*;
 pub(crate) use points::*;
-pub(crate) use targets::*;
 // `grid`/`view_cube` expose their `pub(crate)` geometry helpers ONLY to the unit
 // tests (their in-crate render callers reach them within their own module), so the
 // glue glob is test-only — unconditional, it would be an unused import in the lib build.

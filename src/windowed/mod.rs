@@ -106,6 +106,9 @@ struct WindowedState {
     /// the old finite tiled-line ground plane.
     infinite_grid_renderer: InfiniteGridRenderer,
     view_cube_renderer: ViewCubeRenderer,
+    /// The Signal viewport background gradient (issue #91): a fullscreen radial field
+    /// painted first in the 3D pass so the scene composites over it.
+    background_gradient_renderer: display::renderer::BackgroundGradientRenderer,
     /// The palette of scanned VS blocks: the UI-facing tiles/status/click counter plus
     /// the shell-side GPU host (thumbnail renderer + texture keep-alives + block groups),
     /// kept index-aligned (M6).
@@ -398,6 +401,8 @@ impl WindowedState {
         let infinite_grid_renderer = InfiniteGridRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
         let view_cube_renderer =
             ViewCubeRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
+        let background_gradient_renderer =
+            display::renderer::BackgroundGradientRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
 
         // Kick off the VS auto-detect + scan on a background thread immediately;
         // results stream in over the next frames (no startup block).
@@ -451,6 +456,7 @@ impl WindowedState {
             points_renderer,
             infinite_grid_renderer,
             view_cube_renderer,
+            background_gradient_renderer,
             palette,
             scan_handle,
             pending_groups: std::collections::VecDeque::new(),

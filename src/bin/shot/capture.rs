@@ -711,6 +711,9 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     // it. Built below from `scene.points` + the camera once the view matrix is known.
     let mut infinite_grid_renderer = InfiniteGridRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
     let view_cube_renderer = ViewCubeRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
+    // Issue #91 (item 1): the Signal viewport background gradient (always on).
+    let background_gradient_renderer =
+        display::renderer::BackgroundGradientRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
     // Z-up: the voxel-space grid_z of the ACTUALLY resolved grid (the composite for a
     // placed scene), used for the band clip + uniforms so a demo scene that grew
     // past the single-shape `grid_z` is not clipped or mis-sized. Layers are Z-slices.
@@ -1063,6 +1066,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     };
 
     let overlays = FrameOverlays {
+        background_gradient: &background_gradient_renderer,
         gizmo: gizmo_placement
             .is_some()
             .then_some(&transform_gizmo_renderer),

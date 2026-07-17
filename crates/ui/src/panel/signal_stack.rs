@@ -24,14 +24,11 @@
 //! [`cube_right_inset_points`], fed back to `view_cube_corner` so the anchor tracks the
 //! stack's current width.
 
-use egui::{
-    Align2, CornerRadius, Margin, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, UiBuilder, Vec2,
-};
+use egui::{CornerRadius, Margin, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, UiBuilder, Vec2};
 
 use super::{controls, layers, PanelResponse, PanelState, ViewMode};
 use crate::signal_theme::{
-    self, ACCENT, BG_FLOAT as BG, BORDER, HOVER_BG, RULE, TEXT_FAINT, TEXT_HOVER, TEXT_MUTED,
-    TEXT_SECONDARY,
+    self, ACCENT, BG, BORDER, HOVER_BG, RULE, TEXT_FAINT, TEXT_HOVER, TEXT_MUTED, TEXT_SECONDARY,
 };
 
 // --- Layout constants (egui points) ---
@@ -47,10 +44,9 @@ const CUBE_GAP: f32 = 10.0;
 const HEADER_BAR_HEIGHT: f32 = 24.0;
 /// A collapsible section header row height.
 const SECTION_HEADER_HEIGHT: f32 = 22.0;
-/// A folded section tab's height (fits the rotated caption).
-const TAB_HEIGHT: f32 = 78.0;
-/// The `«` expander tab height.
-const EXPANDER_TAB_HEIGHT: f32 = 26.0;
+/// Vertical padding (points) above + below the rotated caption inside a folded tab
+/// (issue #91 item 5): the tab HEIGHT is the rotated galley's width plus 2× this.
+const TAB_TEXT_PAD: f32 = 9.0;
 
 /// The stack's current width (points) — expanded vs the folded tab strip.
 fn stack_width(folded: bool) -> f32 {
@@ -255,18 +251,18 @@ fn section_body(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
 /// with that section opened; the `«` tab just expands.
 fn build_folded_tabs(ui: &mut egui::Ui, state: &mut PanelState) {
     // The « expander.
-    if edge_tab(ui, "\u{00ab}", EXPANDER_TAB_HEIGHT, true) {
+    if edge_tab(ui, "\u{00ab}", true) {
         state.stack.folded = false;
     }
-    if edge_tab(ui, "VIEWPORT", TAB_HEIGHT, false) {
+    if edge_tab(ui, "VIEWPORT", false) {
         state.stack.folded = false;
         state.stack.viewport_open = true;
     }
-    if state.view_mode == ViewMode::OnionFog && edge_tab(ui, "ONION FOG", TAB_HEIGHT, false) {
+    if state.view_mode == ViewMode::OnionFog && edge_tab(ui, "ONION FOG", false) {
         state.stack.folded = false;
         state.stack.onion_open = true;
     }
-    if edge_tab(ui, "GRIDS", TAB_HEIGHT, false) {
+    if edge_tab(ui, "GRIDS", false) {
         state.stack.folded = false;
         state.stack.grids_open = true;
     }
@@ -274,21 +270,37 @@ fn build_folded_tabs(ui: &mut egui::Ui, state: &mut PanelState) {
 
 /// One vertical edge tab: a hairline-bordered near-black cell with a rotated (top-to-bottom)
 /// caption. Idle muted, hover brightens on the hover fill. Returns `true` when clicked.
-fn edge_tab(ui: &mut egui::Ui, caption: &str, height: f32, expander: bool) -> bool {
+///
+/// Issue #91 item 5: the tab box is sized from the ROTATED galley's bounds (a 90° rotation
+/// swaps width/height, so the box is `TAB_WIDTH` wide and `galley_width + 2·pad` tall) and
+/// the galley is positioned so it sits CENTRED INSIDE the box — the old
+/// `with_angle_and_anchor` placement dropped the caption outside its rectangle.
+fn edge_tab(ui: &mut egui::Ui, caption: &str, expander: bool) -> bool {
+    let size = if expander { 13.0 } else { 10.0 };
+    let spacing = if expander { 0.0 } else { 1.5 };
+    // Measure the caption (galley size is colour-independent) to size the tab box.
+    let measured = signal_theme::letter_spaced(ui, caption, TEXT_MUTED, size, spacing);
+    let galley_width = measured.size().x;
+    let galley_height = measured.size().y;
+    let height = galley_width + 2.0 * TAB_TEXT_PAD;
+
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(TAB_WIDTH, height), Sense::click());
     let hovered = resp.hovered();
     ui.painter().rect_filled(rect, 0.0, if hovered { HOVER_BG } else { BG });
     ui.painter()
         .rect_stroke(rect, 0.0, Stroke::new(1.0, BORDER), StrokeKind::Inside);
+
     let color = if hovered { TEXT_HOVER } else { TEXT_MUTED };
-    let size = if expander { 13.0 } else { 10.0 };
-    let spacing = if expander { 0.0 } else { 1.5 };
     let galley = signal_theme::letter_spaced(ui, caption, color, size, spacing);
-    // Rotate the pre-laid galley 90° clockwise so the caption reads top-to-bottom,
-    // centred in the tab (egui's `Shape::text` can't letter-space, hence the galley).
-    let text_shape = egui::epaint::TextShape::new(rect.center(), galley, color)
-        .with_angle_and_anchor(std::f32::consts::FRAC_PI_2, Align2::CENTER_CENTER);
+    // Rotate the pre-laid galley 90° clockwise (egui's `Shape::text` can't letter-space,
+    // hence the galley). A TextShape draws the galley from `pos` then rotates it about
+    // `pos`; for +90° the galley's rotated bbox centre lands at `pos + (h/2, -w/2)`, so we
+    // offset `pos` by the inverse to centre the rotated caption exactly in the tab rect.
+    let pos = rect.center() + Vec2::new(galley_height * 0.5, -galley_width * 0.5);
+    let text_shape = egui::epaint::TextShape::new(pos, galley, color)
+        .with_angle(std::f32::consts::FRAC_PI_2);
     ui.painter().add(text_shape);
+
     let tip = if expander {
         "Expand display panel".to_string()
     } else {

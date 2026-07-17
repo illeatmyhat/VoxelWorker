@@ -243,6 +243,7 @@ pub(crate) fn build_chrome_overlay(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     color_format: wgpu::TextureFormat,
+    sample_count: u32,
 ) -> (wgpu::RenderPipeline, wgpu::BindGroup) {
     let layer_count = ChromeGlyph::ALL.len() as u32;
     let glyph_size = CHROME_GLYPH_TEXTURE_SIZE;
@@ -386,7 +387,7 @@ pub(crate) fn build_chrome_overlay(
             stencil: wgpu::StencilState::default(),
             bias: wgpu::DepthBiasState::default(),
         }),
-        multisample: wgpu::MultisampleState { count: 1, mask: !0, alpha_to_coverage_enabled: false },
+        multisample: wgpu::MultisampleState { count: sample_count, mask: !0, alpha_to_coverage_enabled: false },
         multiview_mask: None,
         cache: None,
     });

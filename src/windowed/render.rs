@@ -510,6 +510,7 @@ impl WindowedState {
         let _ = layer_range;
 
         let overlays = FrameOverlays {
+            background_gradient: &self.background_gradient_renderer,
             gizmo: gizmo_placement
                 .is_some()
                 .then_some(&self.transform_gizmo_renderer),

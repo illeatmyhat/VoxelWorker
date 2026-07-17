@@ -562,6 +562,10 @@ pub fn run_egui_frame(
 /// Each is `None` when its Display toggle is off, so the caller controls
 /// visibility without the renderer caring.
 pub struct FrameOverlays<'a> {
+    /// The viewport background gradient (issue #91): a fullscreen radial field painted
+    /// FIRST in the 3D MSAA pass (before the voxels, depth-test off), so both display
+    /// paths and `shot` composite the scene over the same Signal background.
+    pub background_gradient: &'a display::renderer::BackgroundGradientRenderer,
     pub gizmo: Option<&'a display::renderer::TransformGizmoRenderer>,
     pub view_cube: Option<&'a display::renderer::ViewCubeRenderer>,
     /// The ViewCube chrome zone under the cursor (#13 Step 2). Drives which hover
@@ -702,6 +706,11 @@ pub fn render_frame(
             1.0,
         );
         voxel_pass.set_scissor_rect(viewport_x, viewport_y, viewport_width, viewport_height);
+
+        // Issue #91 (item 1): the Signal viewport background — a fullscreen radial
+        // gradient painted FIRST (depth-test off / no write), so every voxel + overlay
+        // below composites over it and both display paths + `shot` share one background.
+        overlays.background_gradient.draw(&mut voxel_pass);
 
         // The voxel model: the brick raymarch (ADR 0011 G1) when engaged, else the
         // cuboid mesh path. When a VS block is applied the mesh path binds the

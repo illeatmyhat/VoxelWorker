@@ -130,7 +130,10 @@ fn grid_coverage(coord: vec2<f32>, spacing: f32, line_pixels: f32) -> vec2<f32> 
     // unaffected: its near cells are many px and keep lod≈1).
     let cells_per_pixel = max(derivative.x, derivative.y);
     let pixels_per_cell = 1.0 / max(cells_per_pixel, 1e-8);
-    let lod = smoothstep(2.0, 4.0, pixels_per_cell);
+    // Issue #91 (item 4): fade each tier out EARLIER (a cell must span ~3→7 px to be fully
+    // lit, vs the old 2→4) so the plane dissolves harder toward the rim/distance and stays
+    // a calm scaffold rather than a noisy sheet that buries the bottom-left status text.
+    let lod = smoothstep(3.0, 7.0, pixels_per_cell);
     return vec2<f32>(clamp(coverage, 0.0, 1.0), lod);
 }
 

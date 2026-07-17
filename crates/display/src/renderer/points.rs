@@ -2,17 +2,18 @@
 
 use super::*;
 
-/// Reference-plane line colour `#5fb8a4` (teal patina) — shared with the lattice so
-/// the Point ground reads as the same family of scaffold lines. Used by the analytic
-/// infinite-grid shader (issue #29 Points fast-follow).
-pub(crate) const POINT_PLANE_COLOR_HEX: u32 = 0x5f_b8_a4;
-/// Base alpha of a MINOR (per-VOXEL, spacing 1) analytic-grid line. Deliberately low
-/// so the ground stays subtle and does not fight a node's on-face voxel grid; the
-/// shader's distance fade scales it down further toward the horizon.
-pub(crate) const POINT_PLANE_MINOR_ALPHA: f32 = 0.10;
-/// Base alpha of a MAJOR (per-BLOCK, spacing = density) analytic-grid line — bolder
-/// than the voxel lines so block-cell boundaries pop while the field stays subtle.
-pub(crate) const POINT_PLANE_MAJOR_ALPHA: f32 = 0.30;
+/// Reference-plane line colour `#39414a` (issue #91 item 4): a desaturated near-neutral
+/// slate from the Signal token family (the mock's faint `#2a2e33` ground strokes are the
+/// visual target), replacing the old bright teal `#5fb8a4` that buried the bottom-left
+/// status text. Used by the analytic infinite-grid shader.
+pub(crate) const POINT_PLANE_COLOR_HEX: u32 = 0x39_41_4a;
+/// Base alpha of a MINOR (per-VOXEL, spacing 1) analytic-grid line. Kept low so the
+/// ground stays a quiet scaffold; the shader's per-tier LOD fade scales it toward the rim.
+pub(crate) const POINT_PLANE_MINOR_ALPHA: f32 = 0.08;
+/// Base alpha of a MAJOR (per-BLOCK, spacing = density) analytic-grid line — bolder than
+/// the voxel lines so block boundaries still read, but the two-tier contrast is COMPRESSED
+/// (issue #91 item 4) from the old 3× ratio so the field stays calm over the gradient.
+pub(crate) const POINT_PLANE_MAJOR_ALPHA: f32 = 0.18;
 
 /// Half-length (in BLOCKS) of each Point's axis lines, drawn through the Point
 /// origin in the reference axis colours. A few blocks is enough to read as a frame

@@ -56,6 +56,33 @@ fn vertex_main(vertex: VertexInput) -> VertexOutput {
 // slice lines and the pick zones.
 const CENTRE_HALF: f32 = 0.476;
 
+// The 68 %-centre patch fraction (issue #91 item 3): the 3×3 partition boundaries sit
+// at these face-UV coordinates. MUST track `raycast::VIEW_CUBE_CENTRE_PATCH_FRACTION`.
+const PATCH_FRACTION: f32 = 0.68;
+
+// sRGB (0..1) → linear, for baking the hairline slice-line colour in shader.
+fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
+    let cutoff = vec3<f32>(0.04045);
+    let low = c / 12.92;
+    let high = pow((c + vec3<f32>(0.055)) / 1.055, vec3<f32>(2.4));
+    return select(low, high, c > cutoff);
+}
+
+// Issue #91 (item 3): the 3×3 slice lines rendered as a screen-space SDF in face-UV
+// space (NOT baked into the face texture), so `fwidth` keeps them a CONSTANT ~1.4 px
+// wide with 1 px anti-aliased edges at ANY orbit angle — no perspective-minification
+// thinning at glancing angles. Returns line coverage in [0,1].
+fn slice_coverage(uv: vec2<f32>) -> f32 {
+    let low = (1.0 - PATCH_FRACTION) * 0.5; // 0.16
+    let high = 1.0 - low;                   // 0.84
+    // Distance (in pixels) to the nearest of the two boundaries on each axis.
+    let du = min(abs(uv.x - low), abs(uv.x - high)) / max(fwidth(uv.x), 1e-6);
+    let dv = min(abs(uv.y - low), abs(uv.y - high)) / max(fwidth(uv.y), 1e-6);
+    let d = min(du, dv);
+    let half_px = 0.7; // → a 1.4 px line
+    return 1.0 - smoothstep(half_px - 0.5, half_px + 0.5, d);
+}
+
 // Is coordinate `p` on the selector's side of the centre patch on one axis?
 //   sel > 0  → high strip  (p ≥ +CENTRE_HALF)
 //   sel < 0  → low strip   (p ≤ -CENTRE_HALF)
@@ -68,8 +95,14 @@ fn axis_ok(sel: f32, p: f32) -> bool {
 
 @fragment
 fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    // Flat fill (translucent near-black + baked slice lines + label). No lighting.
+    // Flat fill + projected FRONT/TOP/RIGHT label from the face texture. No lighting.
     var color = textureSample(label_textures, label_sampler, input.uv, input.layer).rgb;
+
+    // Issue #91 (item 3): composite the hairline `#2b3238` 3×3 slice lines over the fill
+    // as a constant-width anti-aliased SDF (screen-space, so glancing angles don't thin
+    // them). The drawn partition still coincides with the pick partition (PATCH_FRACTION).
+    let slice = srgb_to_linear(vec3<f32>(f32(0x2b), f32(0x32), f32(0x38)) / 255.0);
+    color = mix(color, slice, slice_coverage(input.uv));
 
     // Geometric hover highlight: tint the fragment toward the accent iff it lies in the
     // hovered element's cell on every axis.
@@ -83,6 +116,8 @@ fn fragment_main(input: VertexOutput) -> @location(0) vec4<f32> {
         }
     }
 
-    // Translucent instrument-panel face (~80 % alpha over the resolved scene).
-    return vec4<f32>(color, 0.82);
+    // Issue #91 (item 6): the instrument-panel faces are FULLY OPAQUE (they must read
+    // solid over a textured voxel scene, matching the approved screenshots), so no scene
+    // bleeds through. The face pipeline still alpha-blends for the AA-line feathering.
+    return vec4<f32>(color, 1.0);
 }

@@ -371,12 +371,15 @@ pub fn view_cube_zone_readout(zone: CubeChromeZone) -> Option<String> {
 ///   └─────────────────────────────┘  1.00
 /// ```
 ///
-/// Precedence (first match wins): roll arrows, the four rotate gutters, then the
-/// central cube body (delegated to `body_picker`). A point inside `rect` that matches
-/// no chrome zone and whose `body_picker` returns `None` yields `None`; a point outside
-/// `rect` is `None`. (Home/Fit left the cube for the Signal icon rail — ADR 0018
-/// Decision 8 — so the top-left badge zones are gone; every other zone's geometry is
-/// unchanged.)
+/// Precedence (first match wins): roll arrows, then the cube BODY (delegated to
+/// `body_picker`, which raycasts and self-limits to the drawn silhouette), then the four
+/// rotate gutters. The body is tested BEFORE the rotate gutters so the cube's
+/// edges/corners + front-bottom-right axis triad that project INTO a gutter band still
+/// resolve to their zone instead of a suppressed off-face rotate arrow; a true margin
+/// hover misses the ray and falls through to the arrows. A point inside `rect` matching
+/// no zone (ray missed, not a gutter) yields `None`; a point outside `rect` is `None`.
+/// (Home/Fit left the cube for the Signal icon rail — ADR 0018 Decision 8 — so the
+/// top-left badge zones are gone; every other zone's geometry is unchanged.)
 ///
 /// `body_picker` is the caller's raycast; it is invoked only for the central body
 /// region. In tests a stub picker stands in, keeping this function fully headless.
@@ -405,13 +408,20 @@ pub fn classify_cube_point(
         }
     }
 
-    // --- Rotate arrows: 4 rects in the gutters just outside the cube body. ---
-    // The cube body occupies the central [.15, .85]² region; the gutters are the
-    // bands between the body and the rect edge, centred on each side. The rotate
-    // arrows are pushed OUT to the rect edge (a wider gutter band) so they no longer
-    // crowd the cube — they sit clearly in the margin, Fusion-style.
-    const BODY_MIN: f32 = 0.15;
-    const BODY_MAX: f32 = 0.85;
+    // --- Cube body FIRST: the actual cube silhouette wins over the screen-space rotate
+    // gutters. The raycast picker returns `None` when the ray misses the cube slab, so it
+    // self-limits to the drawn silhouette. Running it BEFORE the rotate gutters is what
+    // makes the cube's corners/edges hoverable even where they project INTO a gutter band
+    // — notably the front-bottom-right AXIS TRIAD corner, which projects into the DOWN
+    // gutter and so was being classified as a (suppressed, off-face) rotate arrow → no
+    // highlight. A genuine gutter hover (in the margin, off the cube) still misses the
+    // ray and falls through to the rotate arrows below. ---
+    if let Some(element) = body_picker() {
+        return Some(CubeChromeZone::Element(element));
+    }
+
+    // --- Rotate arrows: 4 rects in the gutters just outside the cube body. Reached only
+    // when the ray missed the cube (a true margin hover). ---
     const GUTTER_LO: f32 = 0.38; // along-side span of each rotate arrow
     const GUTTER_HI: f32 = 0.62;
     // UP gutter: hugging the TOP rect edge, horizontally centred.
@@ -429,11 +439,6 @@ pub fn classify_cube_point(
     // RIGHT gutter: hugging the RIGHT rect edge, vertically centred.
     if (0.87..1.00).contains(&u) && (GUTTER_LO..GUTTER_HI).contains(&v) {
         return Some(CubeChromeZone::RotateArrow(ArrowDir::Right));
-    }
-
-    // --- Cube body: the central region, resolved by the caller's raycast. ---
-    if (BODY_MIN..=BODY_MAX).contains(&u) && (BODY_MIN..=BODY_MAX).contains(&v) {
-        return body_picker().map(CubeChromeZone::Element);
     }
 
     None

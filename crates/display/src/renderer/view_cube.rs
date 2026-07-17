@@ -13,8 +13,10 @@
 
 use super::*;
 
-/// Edge length (pixels) of the corner view-cube viewport (top-right).
-pub const VIEW_CUBE_VIEWPORT_PIXELS: u32 = 128;
+/// Edge length (pixels) of the corner view-cube viewport (top-right). Bumped 128 → 144
+/// (issue #91 item 3) for a modestly larger cube; the 16 px margin is unchanged and the
+/// rail anchor + shell hit-testing derive from this constant, so they track it.
+pub const VIEW_CUBE_VIEWPORT_PIXELS: u32 = 144;
 /// Margin (pixels) from the viewport's top-right corner to the cube.
 pub const VIEW_CUBE_VIEWPORT_MARGIN: u32 = 16;
 
@@ -46,10 +48,9 @@ pub fn view_cube_corner(viewport: [u32; 4], right_inset_px: u32) -> Option<(u32,
 const FACE_LABEL_TEXTURE_SIZE: u32 = 128;
 
 // --- Signal tokens (docs/design/viewport-chrome-signal.md §Tokens) ---
-// The translucent face-fill alpha (~0.82) and the `#9cb4d8` hover accent live in
-// `viewcube.wgsl` (fragment output + `mix`); the tokens baked on the CPU are below.
-/// Hairline slice-line colour `#2b3238` (the 3×3 face partition).
-const SLICE_LINE_HEX: u32 = 0x2b_32_38;
+// The face-fill (now opaque, issue #91 item 6), the `#2b3238` slice lines (now an SDF)
+// and the `#9cb4d8` hover accent all live in `viewcube.wgsl`; the tokens baked on the
+// CPU (silhouette + axis edges + labels) are below.
 /// Cube silhouette colour `#59636d` (the 9 non-axis edges).
 const SILHOUETTE_HEX: u32 = 0x59_63_6d;
 /// Face-label lettering colour `#aeb9c4` (Signal "text — secondary"), monospace.
@@ -70,20 +71,88 @@ pub(crate) struct CubeLabelVertex {
     layer: u32,
 }
 
+/// One expanded thick-line vertex (issue #91 item 3): the segment's two endpoints (so
+/// the vertex shader can compute the screen-space direction), the line colour, and a
+/// `[side, end]` selector (`side` ∈ {-1,+1} across the width, `end` ∈ {0,1} picks the
+/// endpoint). Six per source segment → a screen-space quad of constant pixel width.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+pub(crate) struct ThickLineVertex {
+    position_a: [f32; 3],
+    position_b: [f32; 3],
+    color: [f32; 4],
+    side_end: [f32; 2],
+}
+
+/// Uniforms for the anti-aliased cube-line pipeline: the cube VP matrix, the cube's
+/// square on-screen pixel size (to convert the pixel width into an NDC offset), and the
+/// line's core half-width + feather in pixels.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Pod, Zeroable)]
+struct CubeLineUniforms {
+    view_projection: [[f32; 4]; 4],
+    viewport_px: [f32; 2],
+    half_width_px: f32,
+    feather_px: f32,
+}
+
+/// Core half-width (px) of the cube linework → a ~1.4 px line, plus a 1 px feather.
+const CUBE_LINE_HALF_WIDTH_PX: f32 = 0.7;
+const CUBE_LINE_FEATHER_PX: f32 = 1.0;
+
+/// Expand a `LineList` vertex stream (consecutive `a, b` pairs) into thick-line quad
+/// vertices (6 per segment). Both endpoints of a cube edge share a colour, so the quad
+/// takes the pair's first colour.
+fn expand_thick_lines(segments: &[LineVertex]) -> Vec<ThickLineVertex> {
+    // (side, end) for the two triangles of the quad.
+    const CORNERS: [(f32, f32); 6] = [
+        (-1.0, 0.0),
+        (-1.0, 1.0),
+        (1.0, 0.0),
+        (1.0, 0.0),
+        (-1.0, 1.0),
+        (1.0, 1.0),
+    ];
+    let mut out = Vec::with_capacity(segments.len() / 2 * 6);
+    for pair in segments.chunks_exact(2) {
+        let (a, b) = (pair[0], pair[1]);
+        for (side, end) in CORNERS {
+            out.push(ThickLineVertex {
+                position_a: a.position,
+                position_b: b.position,
+                color: a.color,
+                side_end: [side, end],
+            });
+        }
+    }
+    out
+}
+
 /// The corner view cube: a labelled cube mirroring the main camera, plus a teal
 /// edge wireframe (ARCHITECTURE.md §4). Rendered into a scissored top-left
 /// viewport in its own pass (depth cleared there first).
 pub struct ViewCubeRenderer {
     face_pipeline: wgpu::RenderPipeline,
-    edge_pipeline: wgpu::RenderPipeline,
+    /// The anti-aliased screen-space thick-line pipeline (issue #91 item 3): silhouette,
+    /// axis edges, and X/Y/Z letters at constant ~1.4 px width.
+    line_pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     index_count: u32,
-    edge_buffer: wgpu::Buffer,
-    edge_vertex_count: u32,
+    line_buffer: wgpu::Buffer,
+    line_vertex_count: u32,
+    line_uniform_buffer: wgpu::Buffer,
+    line_uniform_bind_group: wgpu::BindGroup,
     uniform_buffer: wgpu::Buffer,
     uniform_bind_group: wgpu::BindGroup,
     label_bind_group: wgpu::BindGroup,
+    // --- Issue #91 item 3: composite the resolved MSAA cube over the scene ---
+    composite_pipeline: wgpu::RenderPipeline,
+    composite_bind_group_layout: wgpu::BindGroupLayout,
+    composite_sampler: wgpu::Sampler,
+    /// The colour target format, for building the transient offscreen MSAA + resolve
+    /// textures the cube renders into.
+    color_format: wgpu::TextureFormat,
     // --- #13 Step 2: screen-space chrome overlay (rotate + roll arrows) ---
     chrome_pipeline: wgpu::RenderPipeline,
     chrome_bind_group: wgpu::BindGroup,
@@ -108,11 +177,11 @@ impl ViewCubeRenderer {
             usage: wgpu::BufferUsages::INDEX,
         });
 
-        let edges = view_cube_edges();
-        let edge_vertex_count = edges.len() as u32;
-        let edge_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("view cube edges"),
-            contents: bytemuck::cast_slice(&edges),
+        let line_vertices = expand_thick_lines(&view_cube_edges());
+        let line_vertex_count = line_vertices.len() as u32;
+        let line_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("view cube edge lines"),
+            contents: bytemuck::cast_slice(&line_vertices),
             usage: wgpu::BufferUsages::VERTEX,
         });
 
@@ -268,24 +337,85 @@ impl ViewCubeRenderer {
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
-            multisample: wgpu::MultisampleState { count: 1, mask: !0, alpha_to_coverage_enabled: false },
+            // Issue #91 (item 3): the cube renders into its own 4× MSAA offscreen target
+            // (resolved + composited in `draw`) so the face silhouettes + linework are
+            // coverage-anti-aliased, not just the SDF/thick-line feathering.
+            multisample: wgpu::MultisampleState { count: MSAA_SAMPLE_COUNT, mask: !0, alpha_to_coverage_enabled: false },
             multiview_mask: None,
             cache: None,
         });
 
-        // --- Edge pipeline (teal wireframe, 1 sample, depth-tested) ---
-        let edge_pipeline = build_line_pipeline(
+        // --- Edge lines: constant screen-space width, anti-aliased (issue #91 item 3) ---
+        let line_uniform_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("view cube line uniforms"),
+            size: std::mem::size_of::<CubeLineUniforms>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let line_uniform_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("view cube line uniform layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    // The fragment stage reads the width/feather for the AA edge too.
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            });
+        let line_uniform_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("view cube line uniform bind group"),
+            layout: &line_uniform_bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: line_uniform_buffer.as_entire_binding(),
+            }],
+        });
+        let line_pipeline = build_cube_line_pipeline(
             device,
             color_format,
-            &uniform_bind_group_layout,
-            "view cube edge",
-            true,
-            1,
+            &line_uniform_bind_group_layout,
         );
 
         // --- #13 Step 2: screen-space chrome overlay pipeline + glyph textures ---
         let (chrome_pipeline, chrome_bind_group) =
-            build_chrome_overlay(device, queue, color_format);
+            build_chrome_overlay(device, queue, color_format, MSAA_SAMPLE_COUNT);
+
+        // --- Composite pipeline (issue #91 item 3): blend the resolved MSAA cube on top ---
+        let composite_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("view cube composite layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
+        let composite_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("view cube composite sampler"),
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+        let composite_pipeline =
+            build_cube_composite_pipeline(device, color_format, &composite_bind_group_layout);
         // Cap: the four persistent rotate arrows + one hovered roll arrow on screen at
         // once; size generously for all glyph quads (6 verts each).
         let chrome_vertex_capacity = 12 * 6;
@@ -298,15 +428,21 @@ impl ViewCubeRenderer {
 
         Self {
             face_pipeline,
-            edge_pipeline,
+            line_pipeline,
             vertex_buffer,
             index_buffer,
             index_count: indices.len() as u32,
-            edge_buffer,
-            edge_vertex_count,
+            line_buffer,
+            line_vertex_count,
+            line_uniform_buffer,
+            line_uniform_bind_group,
             uniform_buffer,
             uniform_bind_group,
             label_bind_group,
+            composite_pipeline,
+            composite_bind_group_layout,
+            composite_sampler,
+            color_format,
             chrome_pipeline,
             chrome_bind_group,
             chrome_vertex_buffer,
@@ -321,6 +457,16 @@ impl ViewCubeRenderer {
             depth_bias: [0.0; 4],
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
+        // The anti-aliased line pipeline (issue #91 item 3) needs the same VP plus the
+        // cube's square on-screen pixel size + line width to expand its screen-space quads.
+        let size = VIEW_CUBE_VIEWPORT_PIXELS as f32;
+        let line_uniforms = CubeLineUniforms {
+            view_projection: view_projection.to_cols_array_2d(),
+            viewport_px: [size, size],
+            half_width_px: CUBE_LINE_HALF_WIDTH_PX,
+            feather_px: CUBE_LINE_FEATHER_PX,
+        };
+        queue.write_buffer(&self.line_uniform_buffer, 0, bytemuck::bytes_of(&line_uniforms));
     }
 
     /// Draw the cube into a scissored corner of `target_view` (its own render pass,
@@ -380,66 +526,115 @@ impl ViewCubeRenderer {
         if corner_x + size > target_width || corner_y + size > target_height {
             return;
         }
-        // The depth attachment must match the colour attachment's size, so this
-        // transient single-sample depth texture spans the whole target; the
-        // scissor/viewport still confine the cube to the top-left corner.
-        let depth_texture =
-            create_single_sample_depth_view(device, target_width, target_height);
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("view cube pass"),
+        // Issue #91 (item 3): render the cube into its OWN small 4× MSAA offscreen target
+        // (cleared transparent), resolve it to a single-sample texture with coverage-AA'd
+        // silhouettes, then composite that over the scene in the corner. This anti-aliases
+        // the opaque FACE silhouettes as well as the linework — the whole cube reads clean.
+        let msaa_color = create_msaa_color_view(device, size, size, self.color_format);
+        let msaa_depth = create_depth_view(device, size, size);
+        let resolve_texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("view cube resolve texture"),
+            size: wgpu::Extent3d { width: size, height: size, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: self.color_format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let resolve_view = resolve_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("view cube msaa pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &msaa_color,
+                    resolve_target: Some(&resolve_view),
+                    depth_slice: None,
+                    ops: wgpu::Operations {
+                        // Transparent clear: the corners of the square around the cube stay
+                        // empty so the composite lets the scene background show through.
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                        store: wgpu::StoreOp::Discard,
+                    },
+                })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &msaa_depth,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Discard,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            // Full offscreen viewport (the cube square); the composite places it at the corner.
+            pass.set_viewport(0.0, 0.0, size as f32, size as f32, 0.0, 1.0);
+            pass.set_scissor_rect(0, 0, size, size);
+
+            pass.set_pipeline(&self.face_pipeline);
+            pass.set_bind_group(0, &self.uniform_bind_group, &[]);
+            pass.set_bind_group(1, &self.label_bind_group, &[]);
+            pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+            pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+            pass.draw_indexed(0..self.index_count, 0, 0..1);
+
+            pass.set_pipeline(&self.line_pipeline);
+            pass.set_bind_group(0, &self.line_uniform_bind_group, &[]);
+            pass.set_vertex_buffer(0, self.line_buffer.slice(..));
+            pass.draw(0..self.line_vertex_count, 0..1);
+
+            // --- #13 Step 2: screen-space chrome overlay, fixed to the cube rect. ---
+            let chrome = build_chrome_vertices(hovered_zone, rotate_arrows_visible);
+            if !chrome.is_empty() {
+                let count = chrome.len().min(self.chrome_vertex_capacity as usize);
+                queue.write_buffer(
+                    &self.chrome_vertex_buffer,
+                    0,
+                    bytemuck::cast_slice(&chrome[..count]),
+                );
+                pass.set_pipeline(&self.chrome_pipeline);
+                pass.set_bind_group(0, &self.chrome_bind_group, &[]);
+                pass.set_vertex_buffer(0, self.chrome_vertex_buffer.slice(..));
+                pass.draw(0..count as u32, 0..1);
+            }
+        }
+
+        // Composite the resolved cube over the scene at the corner (premultiplied OVER).
+        let composite_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("view cube composite bind group"),
+            layout: &self.composite_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&resolve_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.composite_sampler),
+                },
+            ],
+        });
+        let mut composite_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("view cube composite pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: target_view,
                 resolve_target: None,
                 depth_slice: None,
-                ops: wgpu::Operations {
-                    // Load the resolved scene; the scissor confines our writes to
-                    // the corner so the rest of the frame is untouched.
-                    load: wgpu::LoadOp::Load,
-                    store: wgpu::StoreOp::Store,
-                },
+                ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
             })],
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: &depth_texture,
-                depth_ops: Some(wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(1.0),
-                    store: wgpu::StoreOp::Discard,
-                }),
-                stencil_ops: None,
-            }),
+            depth_stencil_attachment: None,
             timestamp_writes: None,
             occlusion_query_set: None,
             multiview_mask: None,
         });
-
-        pass.set_viewport(corner_x as f32, corner_y as f32, size as f32, size as f32, 0.0, 1.0);
-        pass.set_scissor_rect(corner_x, corner_y, size, size);
-
-        pass.set_pipeline(&self.face_pipeline);
-        pass.set_bind_group(0, &self.uniform_bind_group, &[]);
-        pass.set_bind_group(1, &self.label_bind_group, &[]);
-        pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-        pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-        pass.draw_indexed(0..self.index_count, 0, 0..1);
-
-        pass.set_pipeline(&self.edge_pipeline);
-        pass.set_bind_group(0, &self.uniform_bind_group, &[]);
-        pass.set_vertex_buffer(0, self.edge_buffer.slice(..));
-        pass.draw(0..self.edge_vertex_count, 0..1);
-
-        // --- #13 Step 2: screen-space chrome overlay, fixed to the cube rect. ---
-        let chrome = build_chrome_vertices(hovered_zone, rotate_arrows_visible);
-        if !chrome.is_empty() {
-            let count = chrome.len().min(self.chrome_vertex_capacity as usize);
-            queue.write_buffer(
-                &self.chrome_vertex_buffer,
-                0,
-                bytemuck::cast_slice(&chrome[..count]),
-            );
-            pass.set_pipeline(&self.chrome_pipeline);
-            pass.set_bind_group(0, &self.chrome_bind_group, &[]);
-            pass.set_vertex_buffer(0, self.chrome_vertex_buffer.slice(..));
-            pass.draw(0..count as u32, 0..1);
-        }
+        composite_pass.set_viewport(corner_x as f32, corner_y as f32, size as f32, size as f32, 0.0, 1.0);
+        composite_pass.set_scissor_rect(corner_x, corner_y, size, size);
+        composite_pass.set_pipeline(&self.composite_pipeline);
+        composite_pass.set_bind_group(0, &composite_bind_group, &[]);
+        composite_pass.draw(0..3, 0..1);
     }
 }
 
@@ -472,6 +667,139 @@ fn cube_uniform_bind_group(
         }],
     });
     (layout, bind_group)
+}
+
+/// Build the anti-aliased cube-line pipeline (issue #91 item 3): screen-space thick-line
+/// quads (`viewcube_lines.wgsl`), alpha-blended over the opaque faces, depth-tested `Less`
+/// against the cube's private depth, 1 sample (the cube pass resolves at 1 sample).
+fn build_cube_line_pipeline(
+    device: &wgpu::Device,
+    color_format: wgpu::TextureFormat,
+    uniform_bind_group_layout: &wgpu::BindGroupLayout,
+) -> wgpu::RenderPipeline {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("view cube line shader"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/viewcube_lines.wgsl").into()),
+    });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("view cube line pipeline layout"),
+        bind_group_layouts: &[Some(uniform_bind_group_layout)],
+        immediate_size: 0,
+    });
+    let vertex_layout = wgpu::VertexBufferLayout {
+        array_stride: std::mem::size_of::<ThickLineVertex>() as u64,
+        step_mode: wgpu::VertexStepMode::Vertex,
+        attributes: &[
+            wgpu::VertexAttribute { offset: 0, shader_location: 0, format: wgpu::VertexFormat::Float32x3 },
+            wgpu::VertexAttribute { offset: 12, shader_location: 1, format: wgpu::VertexFormat::Float32x3 },
+            wgpu::VertexAttribute { offset: 24, shader_location: 2, format: wgpu::VertexFormat::Float32x4 },
+            wgpu::VertexAttribute { offset: 40, shader_location: 3, format: wgpu::VertexFormat::Float32x2 },
+        ],
+    };
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("view cube line pipeline"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vertex_main"),
+            buffers: &[vertex_layout],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fragment_main"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: color_format,
+                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            strip_index_format: None,
+            front_face: wgpu::FrontFace::Ccw,
+            // The expanded quads can wind either way depending on the projected edge
+            // direction, so no back-face culling.
+            cull_mode: None,
+            unclipped_depth: false,
+            polygon_mode: wgpu::PolygonMode::Fill,
+            conservative: false,
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: DEPTH_FORMAT,
+            depth_write_enabled: Some(true),
+            depth_compare: Some(wgpu::CompareFunction::Less),
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        }),
+        multisample: wgpu::MultisampleState { count: MSAA_SAMPLE_COUNT, mask: !0, alpha_to_coverage_enabled: false },
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
+/// Build the composite pipeline (issue #91 item 3): a fullscreen textured quad that blends
+/// the resolved MSAA cube over the scene in the corner with premultiplied-alpha blending.
+fn build_cube_composite_pipeline(
+    device: &wgpu::Device,
+    color_format: wgpu::TextureFormat,
+    bind_group_layout: &wgpu::BindGroupLayout,
+) -> wgpu::RenderPipeline {
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("view cube composite shader"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/viewcube_composite.wgsl").into()),
+    });
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("view cube composite pipeline layout"),
+        bind_group_layouts: &[Some(bind_group_layout)],
+        immediate_size: 0,
+    });
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("view cube composite pipeline"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vertex_main"),
+            buffers: &[],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fragment_main"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: color_format,
+                // Premultiplied-alpha OVER: dst = src + dst·(1 − src.a).
+                blend: Some(wgpu::BlendState {
+                    color: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::One,
+                        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                        operation: wgpu::BlendOperation::Add,
+                    },
+                    alpha: wgpu::BlendComponent {
+                        src_factor: wgpu::BlendFactor::One,
+                        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                        operation: wgpu::BlendOperation::Add,
+                    },
+                }),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            strip_index_format: None,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: None,
+            unclipped_depth: false,
+            polygon_mode: wgpu::PolygonMode::Fill,
+            conservative: false,
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState { count: 1, mask: !0, alpha_to_coverage_enabled: false },
+        multiview_mask: None,
+        cache: None,
+    })
 }
 
 /// Build the labelled-cube geometry (side 1.4, centred on origin). Face order +X,
@@ -679,36 +1007,18 @@ fn generate_face_label_textures() -> Vec<u8> {
 }
 
 /// Render one Signal face-label texture (RGBA8, `FACE_LABEL_TEXTURE_SIZE` square):
-/// flat `fill_hex` background, hairline slice lines at the 68 %-centre partition, and
-/// the monospace label.
+/// flat `fill_hex` background and the monospace label. The 3×3 slice lines are NOT baked
+/// here anymore (issue #91 item 3): they render as a constant-width anti-aliased SDF in
+/// `viewcube.wgsl` (screen-space, so glancing angles never thin them), leaving this
+/// texture as just the flat fill + centred label.
 fn render_face_label(label: &str, fill_hex: u32) -> Vec<u8> {
     let size = FACE_LABEL_TEXTURE_SIZE as usize;
     let background = hex_texel(fill_hex);
-    let slice = hex_texel(SLICE_LINE_HEX);
     let text = hex_texel(FACE_LABEL_HEX);
 
     let mut pixels = vec![0u8; size * size * 4];
     for pixel in pixels.chunks_exact_mut(4) {
         pixel.copy_from_slice(&background);
-    }
-    let put = |pixels: &mut [u8], x: usize, y: usize, color: [u8; 4]| {
-        if x < size && y < size {
-            let index = (y * size + x) * 4;
-            pixels[index..index + 4].copy_from_slice(&color);
-        }
-    };
-
-    // Hairline 3×3 slice lines at the 68 %-centre boundaries (16 % / 84 % of the face).
-    // These coincide with the geometric hover-highlight threshold (±0.68·half in cube
-    // units → UV 0.16 / 0.84), and — since the pattern is symmetric — with the pick
-    // partition regardless of the per-face UV winding.
-    let low = ((1.0 - raycast::VIEW_CUBE_CENTRE_PATCH_FRACTION) * 0.5 * size as f32) as usize;
-    let high = size - 1 - low;
-    for c in 0..size {
-        put(&mut pixels, low, c, slice); //  vertical, left boundary
-        put(&mut pixels, high, c, slice); // vertical, right boundary
-        put(&mut pixels, c, low, slice); //  horizontal, top boundary
-        put(&mut pixels, c, high, slice); // horizontal, bottom boundary
     }
 
     // Monospace label, sized to sit inside the 68 % centre patch.
