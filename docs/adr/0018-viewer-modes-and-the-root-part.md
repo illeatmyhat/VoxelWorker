@@ -1,7 +1,10 @@
 # ADR 0018 — Exclusive viewer modes (Normal / Onion fog / Show booleans) and the reified root part
 
-- **Status:** Proposed (grill of 2026-07-16; supersedes the display surfaces of issues #78/#79 and
-  amends ADR 0012's scene-wide onion clip to a per-object, mode-gated one)
+- **Status:** **Accepted & shipped (2026-07-16)** — epic #80, slices #81–#88 (`8653ded..444ba16`): Part
+  vocabulary + reified root part, the three exclusive viewer modes, the region-scoped onion clip on both
+  display paths, the #78/#79 overlay-surface retirement, and the Signal chrome (view cube / rail / status
+  line / folding display stack per `docs/design/viewport-chrome-signal.md`). Supersedes the display
+  surfaces of issues #78/#79 and amends ADR 0012's scene-wide onion clip to a per-object, mode-gated one.
 - **Date:** 2026-07-16
 - **Layer:** DISPLAY + UI + document vocabulary. Governed by [ADR 0006](0006-authoring-truth-and-gpu-boundary.md)
   (display is never truth) and [ADR 0017](0017-composition-beyond-union.md) (sealed scopes, ordered fold —
