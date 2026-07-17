@@ -118,6 +118,12 @@ pub struct AppConfig {
     pub orbit_phi: f32,
     #[serde(default = "default_distance")]
     pub orbit_distance: f32,
+    /// The orbit TARGET (the world point the camera looks at / orbits). Panning moves it off
+    /// the origin, so without it a repro reframes on the origin and misses a panned view (the
+    /// F9 `--from-config` flow). `#[serde(default)]` = `[0,0,0]` for an old config, matching the
+    /// pre-field behaviour (target defaulted to the origin).
+    #[serde(default)]
+    pub orbit_target: [f32; 3],
 
     // --- view-cube home view (#13) ---
     // The Home button's saved view. New fields: `#[serde(default)]` so an OLD
@@ -178,6 +184,7 @@ impl Default for AppConfig {
             orbit_theta: default_theta(),
             orbit_phi: default_phi(),
             orbit_distance: default_distance(),
+            orbit_target: [0.0, 0.0, 0.0],
             home_theta: default_theta(),
             home_phi: default_phi(),
             home_distance: default_distance(),
@@ -216,6 +223,7 @@ impl AppConfig {
             orbit_theta: camera.orbit_theta,
             orbit_phi: camera.orbit_phi,
             orbit_distance: camera.orbit_distance,
+            orbit_target: camera.target.to_array(),
             home_theta: home_view.theta,
             home_phi: home_view.phi,
             home_distance: home_view.distance,
@@ -337,6 +345,7 @@ impl AppConfig {
         camera.orbit_theta = self.orbit_theta;
         camera.orbit_phi = self.orbit_phi;
         camera.orbit_distance = self.orbit_distance;
+        camera.target = glam::Vec3::from_array(self.orbit_target);
         camera.projection_mode = self.projection_mode;
     }
 
@@ -426,6 +435,7 @@ mod tests {
             orbit_theta: 1.23,
             orbit_phi: 0.95,
             orbit_distance: 42.0,
+            orbit_target: [3.0, -7.5, 11.0],
             home_theta: 2.34,
             home_phi: 1.11,
             home_distance: 18.0,

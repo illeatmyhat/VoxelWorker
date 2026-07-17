@@ -783,7 +783,14 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     // so the headless render sources `view_projection` from the same `AppCore` the
     // windowed shell does.
     app_core.camera = OrbitCamera {
-        target: glam::Vec3::ZERO,
+        // `--from-config` reproduces the app's PAN too: the persisted orbit target (the world
+        // point the camera looks at). Without it a panned view reframes on the origin and misses
+        // the artifact. A non-config render keeps the origin-centred target (the scene recentres
+        // there).
+        target: match &from_config {
+            Some(config) => glam::Vec3::from_array(config.orbit_target),
+            None => glam::Vec3::ZERO,
+        },
         orbit_theta: theta,
         orbit_phi: phi,
         // `--from-config` uses the persisted orbit distance (the exact live zoom); otherwise the
