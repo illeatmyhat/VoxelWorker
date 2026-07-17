@@ -238,6 +238,10 @@ pub struct BrickRaymarchRenderer {
     /// last install (0 ⇒ the shader's record-miss fallback never fires). The occupancy buffer is
     /// rebuilt with the records/pyramid in [`rebuild_field_state`](Self::rebuild_field_state).
     occupancy_cell_count: u32,
+    /// Grazing-rim DIAGNOSTIC mode (`--debug-faces --brick`): 0 = normal shade, 1 =
+    /// face-axis colour + UV checkerboard. Uploaded into the spare `band_voxel_sv.w`
+    /// slot; default 0 keeps every non-debug draw byte-identical. See `debug_face_shade`.
+    debug_mode: u32,
 }
 
 impl BrickRaymarchRenderer {
@@ -797,7 +801,17 @@ impl BrickRaymarchRenderer {
             clipmap_level_3_blocks: crate::brick::CLIPMAP_LEVEL_3_BLOCKS_PER_CELL,
             clipmap_level_3_count: 0,
             occupancy_cell_count: 0,
+            debug_mode: 0,
         }
+    }
+
+    /// Set the grazing-rim DIAGNOSTIC mode (`--debug-faces --brick` / the live-app
+    /// keybind): `0` = normal shade; `1` = face-axis colour + UV checkerboard (the
+    /// geometry-staircase vs shading-precision discriminator, `debug_face_shade` in the
+    /// shader). Carried in the otherwise-unused `band_voxel_sv.w` slot, so the default
+    /// `0` leaves every uniform byte — and thus every golden — unchanged.
+    pub fn set_debug_mode(&mut self, debug_mode: u32) {
+        self.debug_mode = debug_mode;
     }
 
     /// Install (or replace) the brick field: upload the packed records + the
@@ -1417,7 +1431,9 @@ impl BrickRaymarchRenderer {
                 // the cell-key cube — never the occupancy atlas's `block_bias_and_tiles.w`. 1 for
                 // the placeholder / a no-mixed-brick field (its cell-key sample never fires).
                 (self.cell_key_texture_dim / self.brick_edge_voxels.max(1)).max(1) as i32,
-                0,
+                // w: grazing-rim DIAGNOSTIC mode (0 = normal shade). Non-zero routes the
+                // MSAA visual entry to `debug_face_shade`; the ghost + parity entries ignore it.
+                self.debug_mode as i32,
             ],
             clipmap_blocks_and_counts: [
                 self.clipmap_level_1_blocks.max(1),

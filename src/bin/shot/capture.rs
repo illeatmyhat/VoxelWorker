@@ -538,11 +538,14 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         if !cfg!(feature = "gpu") {
             println!("brick: --brick requires --features gpu — falling back to the mesh path");
         } else if !scene.has_chunkable_extent(options.geometry.voxels_per_block)
-            || options.debug_face_orientation
             || options.scan_vs
         {
+            // NOTE: `--debug-faces` is NO LONGER a brick disqualifier — with `--brick` it
+            // drives the brick raymarch's OWN diagnostic mode (`set_debug_mode` below), the
+            // grazing-rim geometry-vs-shading discriminator. Without `--brick` it still means
+            // the cuboid-mesh face-orientation debug.
             println!(
-                "brick: scene not gated (needs a chunkable procedural scene, no debug-faces, \
+                "brick: scene not gated (needs a chunkable procedural scene, \
                  no loaded VS material) — falling back to the mesh path"
             );
         } else {
@@ -597,6 +600,12 @@ pub(crate) async fn run_capture(options: ShotOptions) {
                     &pyramid,
                     voxel_worker::RecentreVoxels::new(grid.recentre_voxels),
                 );
+                // Grazing-rim DIAGNOSTIC: `--brick --debug-faces` shades every hit by its
+                // face axis + a per-voxel UV checkerboard (geometry-staircase vs shading-
+                // precision discriminator). Default off leaves the brick goldens byte-identical.
+                if options.debug_face_orientation {
+                    renderer.set_debug_mode(1);
+                }
                 brick_raymarch_renderer = Some(renderer);
             } else {
                 println!("brick: boundary set is empty — falling back to the mesh path");

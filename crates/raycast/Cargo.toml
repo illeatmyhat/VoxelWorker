@@ -16,6 +16,12 @@ edition = "2021"
 # closures). It never depends on the sibling `camera` crate. See the graphics-crate
 # law in docs/adr/0015 and docs/design/graphics-crates-extraction-map.md (Crate 2).
 
+# `cfg(kani)` gates the bounded-model-checking proofs in `voxel_dda.rs` (the box-entry
+# invariant behind the grazing-rim fix). It is set only under `cargo kani`; register it here
+# so ordinary `cargo`/clippy builds don't warn on the unknown cfg (the proofs stay inactive).
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+
 [dependencies]
 glam = "0.33.1"
 # The shared ray/box vocabulary and the min-mip cell-key search live in substrate;

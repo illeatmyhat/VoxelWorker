@@ -197,6 +197,12 @@ pub struct PanelState {
     /// outward face normal + a back-facing marker, cull off). Display toggle, OFF
     /// by default; the standard way to verify face winding/culling.
     pub debug_face_orientation: bool,
+    /// Grazing-rim DIAGNOSTIC for the BRICK raymarch (`set_debug_mode`): shade every hit
+    /// by its face axis + a per-voxel UV checkerboard, so a wrong first-hit voxel/face
+    /// shows as a face-colour break and a UV smear. Unlike `debug_face_orientation` (which
+    /// drops to the mesh path), this keeps the brick path ENGAGED — it IS the path under
+    /// investigation. Display toggle, OFF by default; never serialized.
+    pub debug_brick_faces: bool,
     /// When `Some`, the 3D rebuild was skipped because the grid exceeds the
     /// voxel cap; the panel shows a warning. Set by the caller after it decides
     /// whether to rebuild. Value is the would-be voxel count (in millions).

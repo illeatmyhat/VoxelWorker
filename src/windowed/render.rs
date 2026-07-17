@@ -418,6 +418,9 @@ impl WindowedState {
             // ADR 0011 G2: mirror the applied-block state into the shader so solid hits
             // shade from the block's D2Array (its bind group is passed to `draw`).
             renderer.set_loaded_material_active(has_loaded_material);
+            // Grazing-rim diagnostic (Display → "Debug: brick faces"): face-axis colour +
+            // UV checkerboard in place of the material shade. Per-frame toggle, no rebuild.
+            renderer.set_debug_mode(u32::from(self.panel_state.debug_brick_faces));
             renderer.update_uniforms(
                 &self.gpu.queue,
                 view_projection,

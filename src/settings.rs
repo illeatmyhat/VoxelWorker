@@ -285,6 +285,8 @@ impl AppConfig {
             // Face-orientation debug is a transient verification mode; it is not
             // persisted, so it always starts off.
             debug_face_orientation: false,
+            // Brick-faces diagnostic is likewise transient (never persisted).
+            debug_brick_faces: false,
             voxel_cap_warning_millions: None,
             // Re-applied lazily/best-effort: only the label is restored (for the
             // panel readout); the material itself reverts to procedural.

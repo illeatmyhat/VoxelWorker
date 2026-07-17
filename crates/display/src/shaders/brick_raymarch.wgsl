@@ -878,7 +878,17 @@ fn march_brick_field(ray: Ray) -> MarchHit {
                     let coarse_all_occupied = is_coarse;
                     let voxel_entry_position =
                         ray.origin + ray.direction * (entry.t_enter + 1e-4);
-                    var voxel_cell = vec3<i32>(floor(voxel_entry_position));
+                    // Seed CLAMPED into the block's voxel range (mirrors `VoxelDda::seed_in_box`):
+                    // a grazing ray entering the block through a MAX face lands
+                    // `voxel_entry_position` exactly on that face, so a plain floor seeds one voxel
+                    // PAST the block and the bound check below breaks before testing any voxel —
+                    // skipping the block that holds the surface (the grazing-rim bug, 2026-07-17).
+                    // `voxel_t_max` derives from the clamped cell, so an empty seed still steps on.
+                    var voxel_cell = clamp(
+                        vec3<i32>(floor(voxel_entry_position)),
+                        block_min_voxel,
+                        block_max_voxel - vec3<i32>(1),
+                    );
                     let voxel_step = vec3<i32>(sign(ray.direction));
                     let voxel_t_delta = abs(1.0 / ray.safe_direction);
                     var voxel_t_max = vec3<f32>(
@@ -1153,6 +1163,49 @@ fn shade_cuboid_surface(absolute: vec3<f32>, world_normal: vec3<f32>, material_i
     return vec4<f32>(color, 1.0);
 }
 
+// ── Diagnostic render for the grazing-rim investigation (band_voxel_sv.w ≠ 0) ──
+// A pure visualization that answers ONE question: is the terracing a GEOMETRY
+// staircase or a SHADING precision loss? It shows two independent signals at once.
+//
+//   FACE COLOUR — the hit face's outward axis+sign, six saturated hues. A smoothly
+//   curved wall reads as a smooth run of ONE side colour; if the surface is actually
+//   stepping at block resolution the run breaks into alternating side/riser and +Z
+//   tread (blue) patches — a real geometry staircase you can see face-by-face.
+//
+//   CHECKERBOARD — a 1-voxel checker keyed to the SAME per-face (u,v) the texture
+//   samples (`absolute` on the two in-plane axes). Where `absolute` is precise the
+//   checker is crisp 1-voxel; where the shading evaluation coordinate blew up at
+//   grazing (t_centre extrapolation → huge magnitude → `floor`/`fract` lose bits) the
+//   checker smears and terraces to BLOCK size — the shading-precision fingerprint.
+//
+// Uniform-precise flow (only `absolute`/`world_normal`), so it is legal here.
+fn debug_face_shade(absolute: vec3<f32>, world_normal: vec3<f32>) -> vec3<f32> {
+    let axis_magnitude = abs(world_normal);
+    var base: vec3<f32>;
+    var u_value: f32;
+    var v_value: f32;
+    if (axis_magnitude.x > 0.5) {
+        base = select(vec3<f32>(0.45, 0.02, 0.02), vec3<f32>(1.0, 0.15, 0.15), world_normal.x > 0.0);
+        u_value = absolute.y;
+        v_value = absolute.z;
+    } else if (axis_magnitude.y > 0.5) {
+        base = select(vec3<f32>(0.05, 0.35, 0.05), vec3<f32>(0.2, 1.0, 0.2), world_normal.y > 0.0);
+        u_value = absolute.x;
+        v_value = absolute.z;
+    } else {
+        // +Z (top TREAD) bright blue vs −Z (bottom) magenta — the tread colour is the
+        // one that lights up a real staircase on a nominally-vertical wall.
+        base = select(vec3<f32>(1.0, 0.1, 0.9), vec3<f32>(0.15, 0.6, 1.0), world_normal.z > 0.0);
+        u_value = absolute.x;
+        v_value = absolute.y;
+    }
+    // 1-voxel checker (parity of the two in-plane integer coords). At huge magnitude the
+    // parity math loses its low bit exactly as the texture's `fract` does → visible smear.
+    let parity_sum = floor(u_value) + floor(v_value);
+    let checker = parity_sum - 2.0 * floor(parity_sum * 0.5); // 0.0 or 1.0
+    return base * (0.5 + 0.5 * checker);
+}
+
 struct FragmentOutput {
     @location(0) color: vec4<f32>,
     @builtin(frag_depth) depth: f32,
@@ -1210,6 +1263,11 @@ fn fragment_render(
     // pass ran first) but the pipeline discards the depth write.
     if (uniforms.ghost_mode != 0u) {
         output.color = uniforms.ghost_tint;
+    } else if (uniforms.band_voxel_sv.w != 0) {
+        // Grazing-rim DIAGNOSTIC (--debug-faces --brick): face-axis colour + UV checker.
+        // Only the MSAA visual entry branches here; the parity identity entries are
+        // untouched, and band_voxel_sv.w defaults to 0 so every golden is byte-identical.
+        output.color = vec4<f32>(debug_face_shade(absolute, world_normal), 1.0);
     } else {
         // Analytic screen-step derivative of the evaluation position on the hit
         // face's plane (voxel units per pixel, per axis): a one-pixel-right and a
@@ -1404,7 +1462,17 @@ fn march_brick_haze(ray: Ray) -> HazeResult {
                         // voxel's crossing length (exit − enter, clamped to the box).
                         let voxel_entry_position =
                             ray.origin + ray.direction * (entry.t_enter + 1e-4);
-                        var voxel_cell = vec3<i32>(floor(voxel_entry_position));
+                        let block_min_voxel = block_cell * edge_i;
+                        let block_max_voxel = block_min_voxel + vec3<i32>(edge_i);
+                        // Seed CLAMPED into the block (mirrors `VoxelDda::seed_in_box`): a grazing
+                        // ray entering through a MAX face floors one voxel PAST the block, which the
+                        // bound check would read as already-exited — skipping the block's rim solid
+                        // (the grazing-rim bug, 2026-07-17; here it would under-count ghost thickness).
+                        var voxel_cell = clamp(
+                            vec3<i32>(floor(voxel_entry_position)),
+                            block_min_voxel,
+                            block_max_voxel - vec3<i32>(1),
+                        );
                         let voxel_step = vec3<i32>(sign(ray.direction));
                         let voxel_t_delta = abs(1.0 / ray.safe_direction);
                         var voxel_t_max = vec3<f32>(
@@ -1424,8 +1492,6 @@ fn march_brick_haze(ray: Ray) -> HazeResult {
                                 voxel_step.z > 0,
                             ) + entry.t_enter,
                         );
-                        let block_min_voxel = block_cell * edge_i;
-                        let block_max_voxel = block_min_voxel + vec3<i32>(edge_i);
                         let band_z_lo = max(block_min_voxel.z, uniforms.band_voxel_sv.x);
                         let band_z_hi = min(block_max_voxel.z, uniforms.band_voxel_sv.y);
                         var t_voxel_enter = entry.t_enter;

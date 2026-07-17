@@ -81,20 +81,7 @@ impl VoxelDda {
         );
         let t_delta = (Vec3::splat(cell_edge) / safe_direction).abs();
         let cell = (entry_point / cell_edge).floor().as_ivec3();
-        // Parameter from the entry point to the first cell boundary ahead on each axis:
-        // the FAR face (cell + 1) when stepping positive, the NEAR face (cell) otherwise.
-        let seed_axis = |cell_coord: i32, step_axis: i32, entry_axis: f32, safe_axis: f32| -> f32 {
-            if step_axis > 0 {
-                ((cell_coord + 1) as f32 * cell_edge - entry_axis) / safe_axis
-            } else {
-                (cell_coord as f32 * cell_edge - entry_axis) / safe_axis
-            }
-        };
-        let t_max = Vec3::new(
-            seed_axis(cell.x, step.x, entry_point.x, safe_direction.x) + entry_t,
-            seed_axis(cell.y, step.y, entry_point.y, safe_direction.y) + entry_t,
-            seed_axis(cell.z, step.z, entry_point.z, safe_direction.z) + entry_t,
-        );
+        let t_max = Self::seed_t_max(cell, step, entry_point, entry_t, cell_edge, safe_direction);
         VoxelDda {
             cell,
             step,
@@ -103,6 +90,72 @@ impl VoxelDda {
             t_cell_enter: entry_t,
             entry_axis: initial_entry_axis,
         }
+    }
+
+    /// Like [`seed`](Self::seed), but the entry cell is CLAMPED into the inclusive box
+    /// `[cell_min, cell_max]` (with `t_max` recomputed consistently for the clamped cell).
+    /// This corrects the classic box-entry hazard: a ray entering a box through one of its
+    /// MAX faces lands exactly on that face, so `floor(entry)` falls one cell PAST the box on
+    /// that axis. A per-box-confined march (the brick's inner voxel DDA, whose bounds check
+    /// then reads the seed as already-exited) would skip the box entirely — the grazing-rim
+    /// bug (2026-07-17). Because the ray genuinely occupies the clamped cell at `entry_t`, the
+    /// clamp is always sound; `t_max` derives from the clamped cell so an empty seed steps on
+    /// correctly. MUST stay mirrored by the WGSL inner voxel-DDA seed (`gpu_parity`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn seed_in_box(
+        direction: Vec3,
+        safe_direction: Vec3,
+        entry_point: Vec3,
+        entry_t: f32,
+        cell_edge: f32,
+        initial_entry_axis: usize,
+        cell_min: IVec3,
+        cell_max: IVec3,
+    ) -> Self {
+        let step = IVec3::new(
+            direction.x.signum() as i32,
+            direction.y.signum() as i32,
+            direction.z.signum() as i32,
+        );
+        let t_delta = (Vec3::splat(cell_edge) / safe_direction).abs();
+        let cell = (entry_point / cell_edge)
+            .floor()
+            .as_ivec3()
+            .clamp(cell_min, cell_max);
+        let t_max = Self::seed_t_max(cell, step, entry_point, entry_t, cell_edge, safe_direction);
+        VoxelDda {
+            cell,
+            step,
+            t_max,
+            t_delta,
+            t_cell_enter: entry_t,
+            entry_axis: initial_entry_axis,
+        }
+    }
+
+    /// The per-axis `t_max` seed: the ray parameter from `entry_point` to the first cell
+    /// boundary ahead of `cell` — the FAR face (`cell + 1`) when stepping positive, the NEAR
+    /// face (`cell`) otherwise — offset by `entry_t` so the cursor's parameters are absolute.
+    fn seed_t_max(
+        cell: IVec3,
+        step: IVec3,
+        entry_point: Vec3,
+        entry_t: f32,
+        cell_edge: f32,
+        safe_direction: Vec3,
+    ) -> Vec3 {
+        let seed_axis = |cell_coord: i32, step_axis: i32, entry_axis: f32, safe_axis: f32| -> f32 {
+            if step_axis > 0 {
+                ((cell_coord + 1) as f32 * cell_edge - entry_axis) / safe_axis
+            } else {
+                (cell_coord as f32 * cell_edge - entry_axis) / safe_axis
+            }
+        };
+        Vec3::new(
+            seed_axis(cell.x, step.x, entry_point.x, safe_direction.x) + entry_t,
+            seed_axis(cell.y, step.y, entry_point.y, safe_direction.y) + entry_t,
+            seed_axis(cell.z, step.z, entry_point.z, safe_direction.z) + entry_t,
+        )
     }
 
     /// Step to the next cell the ray pierces: advance along the axis whose `t_max` is
@@ -130,6 +183,74 @@ impl VoxelDda {
     }
 }
 
+/// Kani bounded-model-checking proofs of the box-entry invariant behind
+/// [`VoxelDda::seed_in_box`] (the grazing-rim fix, 2026-07-17). Unlike the differential
+/// render / the deterministic sweep (which only catch the bug on the scenes they happen to
+/// sample), these verify the postcondition over the WHOLE bounded input space — every finite
+/// direction and entry point — so the guarantee does not depend on luck. `#[cfg(kani)]` keeps
+/// them out of ordinary builds/tests. Run under WSL: `cargo kani -p raycast`.
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    /// A finite, magnitude-bounded symbolic `f32` (excludes NaN/±inf and absurd magnitudes,
+    /// so the solver reasons over the real geometric domain).
+    fn finite_f32(max_abs: f32) -> f32 {
+        let value: f32 = kani::any();
+        kani::assume(value.is_finite() && value.abs() <= max_abs);
+        value
+    }
+
+    /// **Safety invariant.** For ANY finite ray and entry point, `seed_in_box` returns a cell
+    /// inside the box — the guarantee the per-block-confined inner voxel DDA relies on (a seed
+    /// OUTSIDE the box makes its bound check break before testing a voxel, which was the bug).
+    #[kani::proof]
+    fn seed_in_box_cell_is_always_within_the_box() {
+        // A representative unit-cell box `[0, 3]^3` (the property is translation/edge invariant).
+        let cell_min = IVec3::splat(0);
+        let cell_max = IVec3::splat(3);
+        let axis: usize = kani::any();
+        kani::assume(axis < 3);
+        let dir = Vec3::new(finite_f32(1e3), finite_f32(1e3), finite_f32(1e3));
+        // The march guards near-zero components up to a floor before dividing (SLAB guard).
+        let g = |d: f32| if d.abs() < 1e-20 { 1e-20 } else { d };
+        let safe = Vec3::new(g(dir.x), g(dir.y), g(dir.z));
+        let entry = Vec3::new(finite_f32(1e3), finite_f32(1e3), finite_f32(1e3));
+        let entry_t = finite_f32(1e6);
+        let dda = VoxelDda::seed_in_box(dir, safe, entry, entry_t, 1.0, axis, cell_min, cell_max);
+        assert!(dda.cell.x >= cell_min.x && dda.cell.x <= cell_max.x);
+        assert!(dda.cell.y >= cell_min.y && dda.cell.y <= cell_max.y);
+        assert!(dda.cell.z >= cell_min.z && dda.cell.z <= cell_max.z);
+    }
+
+    /// **The fix, directly.** A ray entering the box through its MAX-Z face (entry exactly on
+    /// `z = 4`, the integer face a plain `floor` sends one cell PAST to `z = 4`) seeds onto the
+    /// LAST in-box layer `z = 3` — for every in-box lateral entry and every descending
+    /// direction. This is the grazing-rim staircase's root cause, proved absent.
+    #[kani::proof]
+    fn seed_in_box_max_face_entry_lands_on_the_last_cell() {
+        let cell_min = IVec3::splat(0);
+        let cell_max = IVec3::splat(3);
+        let ex = finite_f32(3.999);
+        let ey = finite_f32(3.999);
+        kani::assume(ex >= 0.0 && ey >= 0.0);
+        let entry = Vec3::new(ex, ey, 4.0); // exactly on the max-Z face
+        let dx = finite_f32(1e3);
+        let dy = finite_f32(1e3);
+        let dz = finite_f32(1e3);
+        kani::assume(dz < -1e-6); // descending into the box through the top
+        let safe = Vec3::new(
+            if dx.abs() < 1e-20 { 1e-20 } else { dx },
+            if dy.abs() < 1e-20 { 1e-20 } else { dy },
+            dz,
+        );
+        let dda = VoxelDda::seed_in_box(Vec3::new(dx, dy, dz), safe, entry, 0.0, 1.0, 2, cell_min, cell_max);
+        assert!(dda.cell.z == 3, "max-face entry must land on the last in-box layer, not one past");
+        assert!(dda.cell.x >= 0 && dda.cell.x <= 3);
+        assert!(dda.cell.y >= 0 && dda.cell.y <= 3);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,6 +268,93 @@ mod tests {
         assert_eq!(dda.entry_axis, 0);
         dda.advance();
         assert_eq!(dda.cell, IVec3::new(2, 0, 0));
+    }
+
+    fn in_box(cell: IVec3, lo: IVec3, hi_inclusive: IVec3) -> bool {
+        cell.x >= lo.x
+            && cell.y >= lo.y
+            && cell.z >= lo.z
+            && cell.x <= hi_inclusive.x
+            && cell.y <= hi_inclusive.y
+            && cell.z <= hi_inclusive.z
+    }
+
+    /// **The box-entry invariant behind [`VoxelDda::seed_in_box`]** (the grazing-rim fix,
+    /// 2026-07-17). A ray entering a box lands its FIRST in-box voxel at the SAME cell whether
+    /// seeded box-confined or traversed by the unconfined flat DDA skipped forward into the box.
+    /// A plain `floor(entry)` seed falls one cell PAST a MAX face at grazing (the entry
+    /// coordinate sits exactly on the integer face), which a per-box-confined march then reads
+    /// as already-exited — the bug that block-stepped the tube rim. This sweeps the failure
+    /// class DETERMINISTICALLY: every one of the six faces, entered at grazing incidence from a
+    /// dense grid of directions and positions — so the guard does NOT depend on a differential
+    /// render happening to sample a lucky scene+camera (which is how the head-on parity case
+    /// missed this for months). Kani proves the same postcondition over the bounded input space.
+    #[test]
+    fn seed_in_box_matches_flat_dda_first_in_box_cell() {
+        let edge = 16.0f32;
+        let cell_min = IVec3::splat(0);
+        let cell_max = IVec3::splat(15); // inclusive: box cells [0,15]^3 for a 16-voxel block
+        let guard = |d: f32| if d.abs() < 1e-20 { 1e-20 } else { d };
+        let perp_positions = [0.3f32, 2.5, 7.5, 12.5, 15.7];
+        let along_small = [0.03f32, 0.2, 1.0, 3.0]; // includes grazing (near-parallel) incidence
+        let perp_dirs = [-3.0f32, -1.0, -0.2, 0.2, 1.0, 3.0];
+        let mut cases = 0u32;
+        for axis in 0..3usize {
+            let b = (axis + 1) % 3;
+            let c = (axis + 2) % 3;
+            // Both faces on this axis: the MIN face (coord 0, ray points +axis) and the MAX
+            // face (coord `edge`, ray points −axis, where a plain floor seeds one cell past).
+            for &(face_coord, along_sign) in &[(0.0f32, 1.0f32), (edge, -1.0f32)] {
+                for &along in &along_small {
+                    for &pb in &perp_positions {
+                        for &pc in &perp_positions {
+                            for &db in &perp_dirs {
+                                for &dc in &perp_dirs {
+                                    let mut entry = [0.0f32; 3];
+                                    entry[axis] = face_coord;
+                                    entry[b] = pb;
+                                    entry[c] = pc;
+                                    let entry = Vec3::from_array(entry);
+                                    let mut dir = [0.0f32; 3];
+                                    dir[axis] = along_sign * along;
+                                    dir[b] = db;
+                                    dir[c] = dc;
+                                    let dir = Vec3::from_array(dir).normalize();
+                                    let safe = Vec3::new(guard(dir.x), guard(dir.y), guard(dir.z));
+
+                                    // Box-confined seed: MUST land inside the box.
+                                    let confined =
+                                        VoxelDda::seed_in_box(dir, safe, entry, 0.0, 1.0, axis, cell_min, cell_max);
+                                    assert!(
+                                        in_box(confined.cell, cell_min, cell_max),
+                                        "seed_in_box left the box: cell={:?} entry={entry:?} dir={dir:?}",
+                                        confined.cell
+                                    );
+
+                                    // Reference: the unconfined flat DDA skipped forward to the box.
+                                    let mut flat = VoxelDda::seed(dir, safe, entry, 0.0, 1.0, axis);
+                                    let mut steps = 0;
+                                    while !in_box(flat.cell, cell_min, cell_max) && steps < 64 {
+                                        flat.advance();
+                                        steps += 1;
+                                    }
+                                    assert!(
+                                        in_box(flat.cell, cell_min, cell_max),
+                                        "flat DDA never entered the box: entry={entry:?} dir={dir:?}"
+                                    );
+                                    assert_eq!(
+                                        confined.cell, flat.cell,
+                                        "box-confined seed != flat first-in-box cell; axis={axis} entry={entry:?} dir={dir:?}"
+                                    );
+                                    cases += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(cases >= 500, "sweep unexpectedly small: {cases}");
     }
 
     /// A ray through the exact cell corner (equal `t_max` on all three axes) advances

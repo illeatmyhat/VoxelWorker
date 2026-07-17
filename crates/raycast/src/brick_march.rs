@@ -315,10 +315,23 @@ where
                             // Inner voxel DDA (cell edge 1), tracking the per-voxel entry
                             // axis for the hit face's normal, clipped to the block and band.
                             let voxel_entry = origin + direction * (box_enter + ENTRY_NUDGE);
-                            let mut voxel_dda =
-                                VoxelDda::seed(direction, safe, voxel_entry, box_enter, 1.0, entry_axis);
                             let block_min_voxel = block_dda.cell * edge_i;
                             let block_max_voxel = block_min_voxel + IVec3::splat(edge_i);
+                            // Seed CLAMPED into the block's voxel range: a grazing ray entering
+                            // the block through a MAX face lands `voxel_entry` exactly on that
+                            // face, so a plain floor seeds one voxel PAST the block and the bound
+                            // check below would break before testing a single voxel — skipping the
+                            // block that holds the surface (the grazing-rim bug, 2026-07-17).
+                            let mut voxel_dda = VoxelDda::seed_in_box(
+                                direction,
+                                safe,
+                                voxel_entry,
+                                box_enter,
+                                1.0,
+                                entry_axis,
+                                block_min_voxel,
+                                block_max_voxel - IVec3::ONE,
+                            );
                             let band_z_lo = block_min_voxel.z.max(params.band_voxel_sv[0]);
                             let band_z_hi = block_max_voxel.z.min(params.band_voxel_sv[1]);
                             for _ in 0..MAX_VOXEL_STEPS {

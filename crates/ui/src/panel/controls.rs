@@ -54,6 +54,10 @@ pub(super) fn build_display_body(ui: &mut egui::Ui, state: &mut PanelState, resp
     // Issue #29 S2: the transform gizmo is now selection-driven (drawn on the
     // active node), so it no longer has a Display toggle.
     ui.checkbox(&mut state.debug_face_orientation, "Debug: face orientation");
+    // Grazing-rim brick diagnostic (face-axis colour + UV checkerboard). Keeps the brick
+    // path engaged (unlike the mesh-only face-orientation debug above) so the raymarch under
+    // investigation is what's shown.
+    ui.checkbox(&mut state.debug_brick_faces, "Debug: brick faces");
 }
 
 /// Export section (M8): a single "Export .vox" button plus a progress / status line
