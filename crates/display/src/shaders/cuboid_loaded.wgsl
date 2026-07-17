@@ -203,15 +203,25 @@ fn fragment_main(
         let block_distance =
             abs(absolute / density - floor(absolute / density + 0.5)) * density;
 
-        let antialias = 0.012;
-        let voxel_half_width = uniforms.voxel_line_half_width;
-        let block_half_width = uniforms.block_line_half_width;
+        // Screen-space-aware line coverage — identical maths/constants to
+        // `cuboid.wgsl` (see the comment there): minimum pixel half-width,
+        // ~1-pixel antialias band, per-axis per-tier fade near pixel pitch.
+        let derivative = fwidth(absolute);
+        let pixel_antialias = max(derivative, vec3<f32>(0.012));
+        let voxel_half_width =
+            max(vec3<f32>(uniforms.voxel_line_half_width), derivative * 0.6);
+        let block_half_width =
+            max(vec3<f32>(uniforms.block_line_half_width), derivative * 0.6);
+        let voxel_fade =
+            vec3<f32>(1.0) - smoothstep(vec3<f32>(0.1), vec3<f32>(0.25), derivative);
+        let block_fade = vec3<f32>(1.0)
+            - smoothstep(vec3<f32>(0.1), vec3<f32>(0.25), derivative / density);
         let voxel_line = (vec3<f32>(1.0)
-            - smoothstep(vec3<f32>(voxel_half_width), vec3<f32>(voxel_half_width + antialias), voxel_distance))
-            * in_plane;
+            - smoothstep(voxel_half_width, voxel_half_width + pixel_antialias, voxel_distance))
+            * voxel_fade * in_plane;
         let block_line = (vec3<f32>(1.0)
-            - smoothstep(vec3<f32>(block_half_width), vec3<f32>(block_half_width + antialias), block_distance))
-            * in_plane;
+            - smoothstep(block_half_width, block_half_width + pixel_antialias, block_distance))
+            * block_fade * in_plane;
         let voxel_strength = max(max(voxel_line.x, voxel_line.y), voxel_line.z);
         let block_strength = max(max(block_line.x, block_line.y), block_line.z);
 

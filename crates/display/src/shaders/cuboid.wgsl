@@ -302,15 +302,30 @@ fn fragment_main(
         let block_distance =
             abs(absolute / density - floor(absolute / density + 0.5)) * density;
 
-        let antialias = 0.012;
-        let voxel_half_width = uniforms.voxel_line_half_width;
-        let block_half_width = uniforms.block_line_half_width;
+        // Screen-space-aware line coverage (the `infinite_grid.wgsl` anti-moiré
+        // law applied to the on-face overlay). `derivative` is voxels per pixel,
+        // per axis: each line is held at a minimum PIXEL half-width and blended
+        // over a ~1-pixel band, and each tier's line family fades out per axis as
+        // its pitch nears the pixel grid. Constant voxel-space widths otherwise
+        // undersample into stippled moiré arcs at zoomed-out / grazing views.
+        let derivative = fwidth(absolute);
+        let pixel_antialias = max(derivative, vec3<f32>(0.012));
+        let voxel_half_width =
+            max(vec3<f32>(uniforms.voxel_line_half_width), derivative * 0.6);
+        let block_half_width =
+            max(vec3<f32>(uniforms.block_line_half_width), derivative * 0.6);
+        // Tier visibility: fully on at >= 10 px per cell (derivative 0.1), gone
+        // below ~4 px per cell (derivative 0.25). Block pitch = density voxels.
+        let voxel_fade =
+            vec3<f32>(1.0) - smoothstep(vec3<f32>(0.1), vec3<f32>(0.25), derivative);
+        let block_fade = vec3<f32>(1.0)
+            - smoothstep(vec3<f32>(0.1), vec3<f32>(0.25), derivative / density);
         let voxel_line = (vec3<f32>(1.0)
-            - smoothstep(vec3<f32>(voxel_half_width), vec3<f32>(voxel_half_width + antialias), voxel_distance))
-            * in_plane;
+            - smoothstep(voxel_half_width, voxel_half_width + pixel_antialias, voxel_distance))
+            * voxel_fade * in_plane;
         let block_line = (vec3<f32>(1.0)
-            - smoothstep(vec3<f32>(block_half_width), vec3<f32>(block_half_width + antialias), block_distance))
-            * in_plane;
+            - smoothstep(block_half_width, block_half_width + pixel_antialias, block_distance))
+            * block_fade * in_plane;
         let voxel_strength = max(max(voxel_line.x, voxel_line.y), voxel_line.z);
         let block_strength = max(max(block_line.x, block_line.y), block_line.z);
 

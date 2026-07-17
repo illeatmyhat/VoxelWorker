@@ -1048,7 +1048,11 @@ fn material_base_colors_lookup(material_id: u32) -> vec3<f32> {
 // grid_half_extent); `world_normal` the face's outward unit normal; `material_id` the
 // hit block's per-record material colour index (ADR 0011 G2); `overlay` the hit's own
 // on-face-grid overlay bit (0/1) — the grid draws only where the master toggle AND this bit hold.
-fn shade_cuboid_surface(absolute: vec3<f32>, world_normal: vec3<f32>, material_id: u32, overlay: u32) -> vec4<f32> {
+// `screen_derivative` is the analytic voxels-per-pixel of the evaluation position on the hit
+// face's plane (the raymarch's stand-in for the mesh path's `fwidth(absolute)` — derivative
+// builtins are illegal in this non-uniform control flow), driving the overlay's
+// screen-space line width + tier fade.
+fn shade_cuboid_surface(absolute: vec3<f32>, world_normal: vec3<f32>, material_id: u32, overlay: u32, screen_derivative: vec3<f32>) -> vec4<f32> {
     let axis_magnitude = abs(world_normal);
     var u_value: f32;
     var v_value: f32;
@@ -1112,15 +1116,27 @@ fn shade_cuboid_surface(absolute: vec3<f32>, world_normal: vec3<f32>, material_i
         let block_distance =
             abs(absolute / density - floor(absolute / density + 0.5)) * density;
 
-        let antialias = 0.012;
-        let voxel_half_width = uniforms.voxel_line_half_width;
-        let block_half_width = uniforms.block_line_half_width;
+        // Screen-space-aware line coverage — identical maths/constants to
+        // `cuboid.wgsl` (see the comment there): minimum pixel half-width,
+        // ~1-pixel antialias band, per-axis per-tier fade near pixel pitch. The
+        // derivative arrives analytically (`screen_derivative`) instead of via
+        // `fwidth`, which is illegal in this non-uniform control flow.
+        let derivative = screen_derivative;
+        let pixel_antialias = max(derivative, vec3<f32>(0.012));
+        let voxel_half_width =
+            max(vec3<f32>(uniforms.voxel_line_half_width), derivative * 0.6);
+        let block_half_width =
+            max(vec3<f32>(uniforms.block_line_half_width), derivative * 0.6);
+        let voxel_fade =
+            vec3<f32>(1.0) - smoothstep(vec3<f32>(0.1), vec3<f32>(0.25), derivative);
+        let block_fade = vec3<f32>(1.0)
+            - smoothstep(vec3<f32>(0.1), vec3<f32>(0.25), derivative / density);
         let voxel_line = (vec3<f32>(1.0)
-            - smoothstep(vec3<f32>(voxel_half_width), vec3<f32>(voxel_half_width + antialias), voxel_distance))
-            * in_plane;
+            - smoothstep(voxel_half_width, voxel_half_width + pixel_antialias, voxel_distance))
+            * voxel_fade * in_plane;
         let block_line = (vec3<f32>(1.0)
-            - smoothstep(vec3<f32>(block_half_width), vec3<f32>(block_half_width + antialias), block_distance))
-            * in_plane;
+            - smoothstep(block_half_width, block_half_width + pixel_antialias, block_distance))
+            * block_fade * in_plane;
         let voxel_strength = max(max(voxel_line.x, voxel_line.y), voxel_line.z);
         let block_strength = max(max(block_line.x, block_line.y), block_line.z);
 
@@ -1195,7 +1211,27 @@ fn fragment_render(
     if (uniforms.ghost_mode != 0u) {
         output.color = uniforms.ghost_tint;
     } else {
-        output.color = shade_cuboid_surface(absolute, world_normal, hit.material_id, hit.overlay);
+        // Analytic screen-step derivative of the evaluation position on the hit
+        // face's plane (voxel units per pixel, per axis): a one-pixel-right and a
+        // one-pixel-down ray intersected with the SAME plane, differenced against
+        // the centre evaluation. Exact under both projections; feeds the grid
+        // overlay's screen-space line width + tier fade (the mesh path uses
+        // `fwidth`, unavailable here in non-uniform control flow). The normal-axis
+        // component is 0 by construction; a grazing plane makes `t` explode and the
+        // derivative huge, which correctly fades the overlay out there.
+        let right_ray = camera_ray(pixel_centre + vec2<f32>(1.0, 0.0));
+        let down_ray = camera_ray(pixel_centre + vec2<f32>(0.0, 1.0));
+        let t_right = (hit.plane_sv - right_ray.origin[hit.entry_axis])
+            / right_ray.safe_direction[hit.entry_axis];
+        let t_down = (hit.plane_sv - down_ray.origin[hit.entry_axis])
+            / down_ray.safe_direction[hit.entry_axis];
+        let right_sv = right_ray.origin + right_ray.direction * t_right;
+        let down_sv = down_ray.origin + down_ray.direction * t_down;
+        // `fwidth` semantics are |ddx| + |ddy| (per component) — SUM, not max — so
+        // the brick overlay widths/fades agree with the mesh paths' fwidth.
+        let screen_derivative =
+            abs(right_sv - evaluation_sv) + abs(down_sv - evaluation_sv);
+        output.color = shade_cuboid_surface(absolute, world_normal, hit.material_id, hit.overlay, screen_derivative);
     }
     output.depth = clamp(clip.z / clip.w, 0.0, 1.0);
     return output;
@@ -1538,7 +1574,21 @@ fn fragment_color_identity(@builtin(position) position: vec4<f32>) -> @location(
     let shift = vec3<f32>(uniforms.lattice_shift_and_edge.xyz);
     let absolute = evaluation_sv - shift;
     let world_normal = select(vec3<f32>(0.0), vec3<f32>(hit.normal_sign), entry_axis_mask);
-    return shade_cuboid_surface(absolute, world_normal, hit.material_id, hit.overlay);
+    // Same analytic screen-step derivative as `fragment_render` (one-pixel-right /
+    // one-pixel-down rays intersected with the hit plane), so the parity harness
+    // shades through the identical overlay path.
+    let right_ray = camera_ray(pixel_centre + vec2<f32>(1.0, 0.0));
+    let down_ray = camera_ray(pixel_centre + vec2<f32>(0.0, 1.0));
+    let t_right = (hit.plane_sv - right_ray.origin[hit.entry_axis])
+        / right_ray.safe_direction[hit.entry_axis];
+    let t_down = (hit.plane_sv - down_ray.origin[hit.entry_axis])
+        / down_ray.safe_direction[hit.entry_axis];
+    let right_sv = right_ray.origin + right_ray.direction * t_right;
+    let down_sv = down_ray.origin + down_ray.direction * t_down;
+    // `fwidth` semantics are |ddx| + |ddy| (per component) — SUM, not max.
+    let screen_derivative =
+        abs(right_sv - evaluation_sv) + abs(down_sv - evaluation_sv);
+    return shade_cuboid_surface(absolute, world_normal, hit.material_id, hit.overlay, screen_derivative);
 }
 
 // The MATERIAL-parity harness entry (tests/gpu_parity.rs, ADR 0013): a single-sample pass

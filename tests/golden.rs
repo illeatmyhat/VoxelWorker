@@ -351,6 +351,23 @@ const CASES: &[GoldenCase] = &[
             "--layer-lower", "56", "--layer-upper", "72",
         ],
     },
+    // Grid-overlay anti-moiré (the 2026-07-17 "waffle iron" fix): a LARGE thin-walled
+    // elliptical tube (800×160×800 voxels) auto-framed at the standard camera with the
+    // on-face voxel/block grid overlay ON — at this framing a voxel projects sub-pixel.
+    // The pre-fix overlay drew constant VOXEL-space line widths, which undersampled
+    // into stippled moiré arcs sweeping the walls (both display paths); the overlay now
+    // derives per-pixel screen-space widths (`fwidth` on the mesh paths, the analytic
+    // plane-step on the brick raymarch), holds each line at a minimum pixel width, and
+    // fades a tier out as its pitch nears the pixel grid. This golden is the ONLY case
+    // exercising `--grid`, pinning that behaviour at exactly the kind of view that
+    // exposed the bug.
+    GoldenCase {
+        name: "tube-grid-overlay",
+        args: &[
+            "--shape", "tube", "--size-x", "50", "--size-y", "10", "--size-z", "50",
+            "--wall", "1", "--grid",
+        ],
+    },
 ];
 
 /// The subset of [`CASES`] whose scene is CHUNKABLE (has an intrinsic-size leaf), i.e. the
@@ -424,6 +441,9 @@ const TWO_LAYER_CASE_NAMES: &[&str] = &[
     // path-independence argument (the Normal case is a plain finished solid).
     "demo-booleans-root",
     "demo-child-booleans-normal",
+    // The grid-overlay anti-moiré case: the overlay is a pure per-fragment function of
+    // absolute voxel position, so the two-layer mesh must draw it pixel-identically.
+    "tube-grid-overlay",
 ];
 
 /// ADR 0011 G1 (#67): the golden cases whose scene is a chunkable SINGLE producer with a
@@ -443,6 +463,11 @@ const BRICK_CASE_NAMES: &[&str] = &[
     "torus",
     "sketch-revolve-dome",
     "sketch-extrude-l",
+    // The grid-overlay anti-moiré case: single-producer chunkable tube, so bricks engage.
+    // The brick overlay derives its screen-space line width ANALYTICALLY (plane-step of
+    // one-pixel-offset rays) where the mesh path uses `fwidth`; this cross-check pins the
+    // two derivations agreeing within the tolerance band at the sub-pixel-voxel framing.
+    "tube-grid-overlay",
 ];
 
 /// Fixed orbit angles so the framing is identical to the committed reference. The
