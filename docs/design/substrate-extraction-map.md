@@ -182,7 +182,8 @@ block the extraction on proofs). Tool fit per component, matched to what each to
   statements over unbounded/exact domains. Originally scoped to two: `FieldInterval` conservatism
   and `SparseMinMipPyramid`'s conservative-superset property. The first was **re-assigned to Kani in
   2026-07-18** (see below) — its only real defect lived in the float representation, which an exact
-  model cannot see — leaving the pyramid superset theorem.
+  model cannot see. The second was **proved core-only the same day** (`lean/Pyramid.lean`). Both
+  decision-6 Lean targets are now discharged; the voxel-frame algebra (ADR 0008) is what remains.
   - **Stood up 2026-07-17:** Lean 4.32.0 via `elan` (WSL, under `$HOME`, no root), green on a
     first proof — `verification/lean/Fold.lean`, the floor-division fold bound over ALL `Int` at
     each pyramid edge (the unbounded form of the Kani fold harness, `omega`-discharged, core-only).
@@ -218,12 +219,27 @@ block the extraction on proofs). Tool fit per component, matched to what each to
     sounds.** The Lipschitz *bound* is the mathlib-shaped part and is not a target at this boundary
     at all — `from_lipschitz_center` never sees the field, so 1-Lipschitz-ness is a caller
     precondition with nothing in `substrate` to prove.
+  - **Pyramid conservative superset — PROVED 2026-07-18, core-only:**
+    `verification/lean/Pyramid.lean`. The theorem consumers actually depend on is not "the level
+    contains every occupied cell" (the unit tests cover that shape) but **coarse absence implies
+    fine absence** — the property that lets a hierarchical traverser leap the coarsest empty cell
+    in one stride without inspecting a finer level. It rests on the fold NESTING across levels
+    (`(n/8)/8 = n/64`, `(n/64)/8 = n/512`), which is specific to the floor/Euclidean division
+    `div_euclid` performs and can fail for truncating division at negative coordinates — so it is
+    a real obligation, not folklore. Also proved: no stray cells, and the superset property for a
+    key list of ANY length (the Kani search harness is bounded to 5). Scope: one axis (the fold is
+    componentwise, the key packing a bijection), literal edges 8/64/512, dedup modelled explicitly
+    since `List.dedup` is not in core.
+    - `Fold.lean`'s `same_quotient_same_cell` was **retired** in the same pass: it read
+      `h : a / 8 = b / 8 ⊢ a / 8 = b / 8`, a tautology. The version with content is the
+      cross-level `same_cell_8_implies_same_cell_64`. Worth a standing check — a theorem whose
+      hypothesis matches its goal proves nothing, and reads exactly like one that does.
   - **The `mathlib` gate is RETIRED (2026-07-18).** Of the three targets that supposedly forced it,
-    one is done without it, one is out of scope (above), and the remaining two — the pyramid
-    superset theorem and the voxel-frame algebra (ADR 0008) — are integer/order reasoning, the same
-    shape `lean/Fold.lean` already discharged core-only. "Needs mathlib" was asserted this week for
-    floor/ceil, gcd reduction, AND `FieldInterval`; all three landed without it. Attempt core-only
-    first; wire mathlib only against a concrete proof that demonstrably stalls without it.
+    two are now done without it and one (the Lipschitz precondition) is out of scope. Only the
+    voxel-frame algebra (ADR 0008) remains, and it is the same integer/order shape. "Needs mathlib"
+    was asserted this week for floor/ceil, gcd reduction, `FieldInterval`, AND the pyramid superset;
+    it was wrong all four times. Attempt core-only first; wire mathlib only against a concrete proof
+    that demonstrably stalls without it.
 
 Standing limit (reaffirmed by the FXC X3500 episode): the GPU side is not a proof target — no
 source-level theorem catches a shader-compiler bug. Verification hardens substrate kernels; the

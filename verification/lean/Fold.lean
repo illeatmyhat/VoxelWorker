@@ -26,8 +26,14 @@ theorem fold_lands_in_cell_64 (n : Int) :
 theorem fold_lands_in_cell_512 (n : Int) :
     512 * (n / 512) ≤ n ∧ n < 512 * (n / 512) + 512 := by omega
 
-/-- Two coordinates in the same edge-8 cell fold to the same index — the dedup basis of the
-    min-mip (any two coords with equal quotient share a cell key). -/
-theorem same_quotient_same_cell (a b : Int) (h : a / 8 = b / 8) : a / 8 = b / 8 := h
+/-! `same_quotient_same_cell` — "two coordinates in the same edge-8 cell fold to the same index",
+    once stated here as the dedup basis of the min-mip.
+
+    RETIRED 2026-07-18: as written this was `h : P ⊢ P`, a tautology that proves nothing about
+    the fold. The statement with actual content is the CROSS-LEVEL one (sharing a fine cell
+    implies sharing the coarse cell), which needs the nesting lemma `(n/8)/8 = n/64` and now
+    lives in `Pyramid.lean` as `same_cell_8_implies_same_cell_64`. Kept here only as a marker
+    so the removal is not mistaken for a lost proof. -/
+-- theorem same_quotient_same_cell (a b : Int) (h : a / 8 = b / 8) : a / 8 = b / 8 := h
 
 end Substrate

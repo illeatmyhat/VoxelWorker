@@ -174,9 +174,12 @@ impl SparseMinMipPyramid {
 /// property) and the **sorted binary search** (membership by `binary_search` agrees with a linear
 /// scan on any sorted key set — the equivalence the sorted-layout skip relies on). A mis-binned
 /// fold or a wrong search silently mis-skips occupied space, which no differential render reliably
-/// samples. The deep superset theorem over the whole (unbounded) pyramid is the extraction map's
-/// Lean target; these Kani harnesses pin the finite arithmetic beneath it. `#[cfg(kani)]` keeps
-/// them inactive in ordinary builds. Run under WSL: `cargo kani -p substrate`.
+/// samples. These Kani harnesses pin the finite arithmetic; the deep superset theorem over the
+/// whole UNBOUNDED pyramid is `verification/lean/Pyramid.lean` — the fold nests across levels
+/// (`(n/8)/8 = n/64`), so cells nest, so coarse absence implies fine absence, which is what makes
+/// a hierarchical traverser's one-stride leap over an empty coarse cell sound for every `Int`
+/// coordinate and any key-set size. `#[cfg(kani)]` keeps these inactive in ordinary builds. Run
+/// under WSL: `cargo kani -p substrate`.
 #[cfg(kani)]
 mod kani_proofs {
     use super::*;

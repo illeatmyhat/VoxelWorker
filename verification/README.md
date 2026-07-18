@@ -70,13 +70,13 @@ Measured 2026-07-18 (`-j`, warm build):
 
 | tier | time | scope |
 | --- | --- | --- |
-| Lean | 4 s | 3 files |
+| Lean | 2 s | 4 files |
 | Verus | 6 s | 4 files, 26 obligations |
 | Kani `raycast` | 4 s | 5 harnesses |
-| **Kani `substrate`** | **116 s** | 20 harnesses |
-| **total** | **130 s** | |
+| **Kani `substrate`** | **85 s** | 20 harnesses |
+| **total** | **93 s** | |
 
-**The deductive and algebraic tiers are effectively free** — 10 s for all 30 proofs, so `--quick` can
+**The deductive and algebraic tiers are effectively free** — 6 s for all 34 proofs, so `--quick` can
 run per commit without anyone noticing. Kani is ~90% of the cost, and within Kani the distribution is
 extremely skewed: profile before optimizing.
 
@@ -89,8 +89,11 @@ domain, which was decisive for the `Rational` integer harnesses — bought almos
 174 s**). Mixed-precision float reasoning is bit-blasted `f32`→`f64` conversion plus `f64` arithmetic;
 the cost is set by the BIT-WIDTH, which is fixed, not by the value range, which an assumption can
 narrow. Splitting the two assertions into two harnesses so `-j` runs them on parallel threads took
-the pair to **~46 s wall each, concurrent** — the tier went 82 s → 116 s for three new harnesses
-rather than the +174 s the single-harness shape would have cost.
+the pair to **~46 s wall each, concurrent** — the tier absorbed three new harnesses for roughly the
+cost of one (85–116 s across runs, against the 82 s baseline) rather than the +174 s the
+single-harness shape would have cost. Note the spread: this tier's wall time varies ~35% run to run
+with core contention, so treat a single measurement as an estimate and re-measure before concluding
+a change made things slower.
 
 So: **integer harness too slow ⇒ narrow the domain / derive the unwind. Float harness too slow ⇒
 split it for parallelism.** Narrowing a float domain is the move that looks right and is not.
@@ -168,6 +171,23 @@ When wiring a CI job:
 - **`lean/RationalReduce.lean`** — `Rational::new`'s gcd reduction yields canonical form: the Euclid
   loop (proved `= Nat.gcd`) divides both magnitudes exactly, the reduced pair is coprime (⇒ equal
   values have identical representations), and a non-zero denominator stays ≥ 1.
+- **`lean/Pyramid.lean`** — `SparseMinMipPyramid`'s conservative-superset theorem, core-only. Four
+  layers: the fold **nests** across levels (`(n/8)/8 = n/64`, and 64→512); therefore cells nest
+  (sharing a fine cell ⇒ sharing the coarse cell); therefore **coarse absence implies fine
+  absence** — the theorem that makes a hierarchical traverser's "leap the coarsest empty cell in
+  one stride" sound, over all of `Int`; and the level is a superset with **no stray cells** for a
+  key list of ANY length (the Kani search harness is bounded to 5). The nesting is the load-bearing
+  step and is NOT generic integer-division folklore — it holds for the floor/Euclidean division
+  `div_euclid` performs and can fail for truncating division at negative coordinates. A traverser
+  that wrongly skips a coarse cell drops occupied space silently, which no differential render
+  reliably samples; that is the failure this file rules out.
+  - Scope, stated in the file: one axis (the real fold is componentwise over three independent
+    axes and the key packing is a bijection), at the literal edges 8/64/512 (a symbolic edge is
+    nonlinear and out of `omega`'s reach — the same scoping `Fold.lean` uses), and `List.dedup` is
+    not in core so the dedup is modelled explicitly and its membership behaviour proved.
+  - `Fold.lean`'s `same_quotient_same_cell` was **retired** in the same pass: it read
+    `h : a / 8 = b / 8 ⊢ a / 8 = b / 8`, a tautology proving nothing. The statement with content is
+    the cross-level one, now `Pyramid.lean`'s `same_cell_8_implies_same_cell_64`.
 
 ## Next targets (decision-6 tool assignment)
 
@@ -198,9 +218,10 @@ of them need it:
    this boundary**. `from_lipschitz_center` takes `field_at_center` and `r` on trust and never sees
    the field, so there is nothing in `substrate` to prove; that the caller's field is 1-Lipschitz is
    a documented precondition. Closed as out-of-scope, not deferred.
-3. **Pyramid superset + voxel-frame algebra (ADR 0008)** — integer and order reasoning.
-   `lean/Fold.lean` already did the pyramid fold bound core-only, which is a strong prior that these
-   follow the same way.
+3. **Pyramid superset** — DONE core-only, `lean/Pyramid.lean` (see above). The prior held: it is
+   integer and order reasoning, `omega` plus a hand-rolled dedup model, 1 s to check.
+4. **Voxel-frame algebra (ADR 0008)** — the last one, still open. Same integer/order shape; expect
+   the same answer, and attempt it core-only first.
 
 **Treat "needs mathlib" as a hypothesis to test cheaply, never as a gate.** It was asserted this week
 for floor/ceil, for gcd reduction, and for `FieldInterval` conservatism; all three landed without it.
