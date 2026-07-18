@@ -29,8 +29,8 @@ release that bundles Z3 and installs entirely under `$HOME` — self-contained, 
   rust toolchain `1.96.0` (`rustup install 1.96.0-x86_64-unknown-linux-gnu`, already done). The
   `verus` launcher is `$(find $HOME/verus-dist -name verus)`.
 - **Lean** — `elan` (Lean toolchain manager) under `$HOME/.elan/`; toolchain `stable` = Lean
-  4.32.0 + Lake 5.0.0. Core-only proofs check with `lean file.lean` (no mathlib yet — a Lake
-  project with a mathlib dependency gets stood up when the rational-arithmetic proofs need it).
+  4.32.0 + Lake 5.0.0. Core-only proofs check with `lean file.lean`. **No mathlib, and no target
+  currently needs it** — see "Next targets" below before assuming otherwise.
 
 ## Running (from Git Bash on Windows)
 
@@ -71,14 +71,29 @@ Measured 2026-07-18 (`-j`, warm build):
 | tier | time | scope |
 | --- | --- | --- |
 | Lean | 4 s | 3 files |
-| Verus | 4 s | 4 files, 26 obligations |
+| Verus | 6 s | 4 files, 26 obligations |
 | Kani `raycast` | 4 s | 5 harnesses |
-| **Kani `substrate`** | **82 s** | 16 harnesses |
-| **total** | **94 s** | |
+| **Kani `substrate`** | **116 s** | 20 harnesses |
+| **total** | **130 s** | |
 
-**The deductive and algebraic tiers are effectively free** — 8 s for all 30 proofs, so `--quick` can
+**The deductive and algebraic tiers are effectively free** — 10 s for all 30 proofs, so `--quick` can
 run per commit without anyone noticing. Kani is ~90% of the cost, and within Kani the distribution is
 extremely skewed: profile before optimizing.
+
+### Split a harness to buy parallelism when the cost is irreducible
+
+The `FieldInterval` float harnesses added the second cost lesson, and it is the OPPOSITE of the
+`unwind` one below. `lipschitz_bound_encloses_exact_arithmetic` cost **199 s** as a single harness
+asserting both endpoints. The obvious first move — restricting the operands to the scene coordinate
+domain, which was decisive for the `Rational` integer harnesses — bought almost nothing (**199 s →
+174 s**). Mixed-precision float reasoning is bit-blasted `f32`→`f64` conversion plus `f64` arithmetic;
+the cost is set by the BIT-WIDTH, which is fixed, not by the value range, which an assumption can
+narrow. Splitting the two assertions into two harnesses so `-j` runs them on parallel threads took
+the pair to **~46 s wall each, concurrent** — the tier went 82 s → 116 s for three new harnesses
+rather than the +174 s the single-harness shape would have cost.
+
+So: **integer harness too slow ⇒ narrow the domain / derive the unwind. Float harness too slow ⇒
+split it for parallelism.** Narrowing a float domain is the move that looks right and is not.
 
 ### Derive `unwind` from Lamé's theorem, do not guess it
 
@@ -169,6 +184,28 @@ theorem, which `times`/`plus` inherit by routing through `new`; and **i128 overf
 concern a field-law proof over exact `Rat` would not catch anyway, and is a documented accepted
 deviation in the source. So `mathlib` stays unwired.
 
-Remaining Lean targets that *would* still justify wiring `mathlib` (a Lake project +
-`lake exe cache get`) when tackled: the voxel-frame algebra (ADR 0008) compose/invert laws;
-`SparseMinMipPyramid`'s conservative-superset theorem; `FieldInterval` conservatism (Duff 1992).
+**The `mathlib` gate is RETIRED (2026-07-18).** This section previously held that three remaining
+targets would justify wiring `mathlib` (a Lake project + `lake exe cache get`). On inspection none
+of them need it:
+
+1. **`FieldInterval` conservatism** — DONE, and it never wanted ℝ. The CSG operations are
+   `min`/`max`/negation, all **exact** in IEEE-754, so the lattice laws are pure order reasoning over
+   a linear order. The one place rounding could narrow an interval is the Lipschitz endpoints, and
+   that is a claim about *machine floats*, which is BMC's home ground, not ℝ's — proved by the three
+   `field_interval` Kani harnesses. A real-arithmetic model would have proved the wrong thing: it
+   would have assumed away the only defect.
+2. **The Lipschitz bound itself** — the genuinely mathlib-shaped part, and **not a proof target at
+   this boundary**. `from_lipschitz_center` takes `field_at_center` and `r` on trust and never sees
+   the field, so there is nothing in `substrate` to prove; that the caller's field is 1-Lipschitz is
+   a documented precondition. Closed as out-of-scope, not deferred.
+3. **Pyramid superset + voxel-frame algebra (ADR 0008)** — integer and order reasoning.
+   `lean/Fold.lean` already did the pyramid fold bound core-only, which is a strong prior that these
+   follow the same way.
+
+**Treat "needs mathlib" as a hypothesis to test cheaply, never as a gate.** It was asserted this week
+for floor/ceil, for gcd reduction, and for `FieldInterval` conservatism; all three landed without it.
+The cost of being wrong in the other direction is real — the Lean tier is currently **4 s with zero
+dependencies**, and mathlib means a multi-GB olean cache, a toolchain pin (mathlib tracks specific
+Lean versions; ours is `stable` 4.32.0 and unifying risks disturbing three working files), and a CI
+story that goes from "nothing to install" to "cache gigabytes or download per run". Attempt the
+target core-only FIRST; wire mathlib only against a concrete proof that stalls without it.

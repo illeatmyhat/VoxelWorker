@@ -28,7 +28,11 @@
 //! [`FieldInterval::from_lipschitz_center`] builds the bound for a **1-Lipschitz**
 //! field (a true signed-distance field, whose value changes by at most the travelled
 //! distance): from the centre sample and the region's circumradius `r`, the field over
-//! the region lies within `[centre − r, centre + r]`.
+//! the region lies within `[centre − r, centre + r]`. Those two endpoints are the only
+//! place `f32` rounding could narrow an interval, so both are rounded **outward** — the
+//! standard directed-rounding discipline of interval arithmetic. Every other operation
+//! here (`min`/`max`/negation/compare) is exact in IEEE-754, so containment is rigorous
+//! throughout, not merely display-grade.
 //!
 //! Cite: Moore 1966 / Moore, Kearfott & Cloud, *Introduction to Interval Analysis*
 //! (2009) — interval arithmetic and the containment (inclusion) property. Duff 1992,
@@ -36,8 +40,8 @@
 //! constructive solid geometry* (SIGGRAPH) — exactly this classify-a-cell-under-CSG
 //! use, the source of the black/white/grey subdivision. Hart 1996, *Sphere tracing* —
 //! the Lipschitz bound that makes a distance field's centre-plus-radius interval sound.
-//! Deviation: `f32` bounds (display-grade precision, not a rigorous rounded-interval
-//! containment); the classify threshold is a plain parameter, not a fixed constant.
+//! Deviation: bounds are `f32` rather than a wider type, and the classify threshold is a
+//! plain parameter rather than a fixed constant.
 
 /// A conservative interval `[minimum, maximum]` bounding a signed scalar field over a
 /// region. Conservative means the true field range over the region is CONTAINED in
@@ -62,11 +66,27 @@ impl FieldInterval {
     /// field changes by at most `r` between the centre and any point within radius `r`,
     /// so this brackets every in-region sample. If a given field is only *approximately*
     /// 1-Lipschitz the caller must WIDEN `cell_circumradius`, never narrow it.
+    ///
+    /// Both endpoints are rounded OUTWARD by one ULP. `fl(c − r)` rounds to nearest, so
+    /// it may land ABOVE the true difference (and `fl(c + r)` below the true sum) by up
+    /// to half an ULP — which would make the interval marginally too NARROW, breaking the
+    /// never-narrower contract the coarse verdicts rest on. Widening each endpoint one ULP
+    /// outward restores rigorous containment; too-wide is always safe here, since it can
+    /// only yield `Boundary` where a sharper bound would have decided.
+    ///
+    /// The widening is a contract repair, not a bug fix for any observed misclassification.
+    /// At the isolevel `0`, the narrowing is UNREACHABLE: an endpoint can only round across
+    /// zero when `|c| ≈ r`, and by **Sterbenz's lemma** (`fl(a − b)` is exact when `a` and
+    /// `b` lie within a factor of two) that regime is exactly where the arithmetic does not
+    /// round at all. A search over 5.6e8 `(c, r)` pairs — exhaustive across the cancellation
+    /// band — found zero flipped verdicts at isolevel `0`, and flips within seconds once the
+    /// threshold moved off zero. Since `classify` takes the isolevel as a PARAMETER, the
+    /// guarantee should not rest on every caller happening to pass `0`.
     pub fn from_lipschitz_center(field_at_center: f32, cell_circumradius: f32) -> Self {
         let radius = cell_circumradius.abs();
         Self {
-            minimum: field_at_center - radius,
-            maximum: field_at_center + radius,
+            minimum: (field_at_center - radius).next_down(),
+            maximum: (field_at_center + radius).next_up(),
         }
     }
 
@@ -156,6 +176,123 @@ pub fn union_field_intervals(
         accumulated
     } else {
         None
+    }
+}
+
+/// Bounded model checking of the INCLUSION property — the one-sided soundness every coarse
+/// verdict rests on — over symbolic IEEE-754 floats rather than sampled ones. The unit tests
+/// below fuzz this with an LCG; Kani quantifies over every non-NaN bit pattern, which is what
+/// it takes to claim the property rather than observe it. This is the float counterpart to the
+/// machine-integer harnesses in `interval::rational`: same question (does the abstraction leak
+/// through the machine representation?), different representation.
+///
+/// The CSG operations are `min`/`max`/negation only, all exact in IEEE-754, so inclusion there
+/// is expected to hold outright. The interesting harness is the Lipschitz one, where `−`/`+`
+/// genuinely round — it checks the `f32` bound against the same computation in `f64`, which is
+/// exact for these operands (any `f32 ± f32` is representable in `f64`).
+///
+/// `#[cfg(kani)]` keeps these out of ordinary builds. Run under WSL with
+/// `cargo kani -p substrate -j --output-format=terse`, or all three tiers via
+/// `verification/run-all.sh`. No `unwind` bound is needed: these harnesses are loop-free.
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    /// A finite (non-NaN, non-infinite) symbolic float. Infinities are excluded because they
+    /// make the containment question degenerate — `(+inf).next_down()` is `f32::MAX`, which
+    /// reads as a narrowing but bounds nothing meaningful. Callers pass sampled field values
+    /// and a geometric radius; neither is ever infinite.
+    fn any_finite_f32() -> f32 {
+        let value: f32 = kani::any();
+        kani::assume(value.is_finite());
+        value
+    }
+
+    /// A symbolic interval together with a symbolic sample it contains.
+    fn any_interval_with_contained_sample() -> (FieldInterval, f32) {
+        let minimum = any_finite_f32();
+        let maximum = any_finite_f32();
+        let sample = any_finite_f32();
+        kani::assume(minimum <= maximum);
+        kani::assume(minimum <= sample && sample <= maximum);
+        (FieldInterval { minimum, maximum }, sample)
+    }
+
+    /// The inclusion property under every CSG operation: if `sample_a` is bracketed by `a` and
+    /// `sample_b` by `b`, then the composed field value is bracketed by the composed interval.
+    /// This is the theorem `csg_composition_brackets_every_sample` samples 5000 points of.
+    #[kani::proof]
+    fn csg_composition_brackets_every_contained_sample() {
+        let (a, sample_a) = any_interval_with_contained_sample();
+        let (b, sample_b) = any_interval_with_contained_sample();
+
+        let union = a.union(b);
+        let union_value = sample_a.min(sample_b);
+        assert!(union.minimum <= union_value && union_value <= union.maximum);
+
+        let intersect = a.intersect(b);
+        let intersect_value = sample_a.max(sample_b);
+        assert!(intersect.minimum <= intersect_value && intersect_value <= intersect.maximum);
+
+        let subtract = a.subtract(b);
+        let subtract_value = sample_a.max(-sample_b);
+        assert!(subtract.minimum <= subtract_value && subtract_value <= subtract.maximum);
+    }
+
+    /// The verdicts are ONE-SIDED SOUND: a coarse `Air` or `CoarseSolid` can never disagree with
+    /// a per-sample evaluation of any point the interval contains. `Boundary` asserts nothing —
+    /// it is the always-safe answer, which is exactly why widening a bound is harmless.
+    #[kani::proof]
+    fn coarse_verdicts_never_disagree_with_a_contained_sample() {
+        let (interval, sample) = any_interval_with_contained_sample();
+        let isolevel = any_finite_f32();
+        match interval.classify(isolevel) {
+            // Claimed entirely empty ⇒ the sample must indeed be outside.
+            FieldClassification::Air => assert!(sample > isolevel),
+            // Claimed entirely full ⇒ the sample must indeed be at-or-below the isolevel.
+            FieldClassification::CoarseSolid => assert!(sample <= isolevel),
+            FieldClassification::Boundary => {}
+        }
+    }
+
+    /// The Lipschitz bound never rounds INWARD. `f64` arithmetic on `f32` operands is exact, so
+    /// it stands in for real arithmetic: the `f32` endpoints must enclose the exact ones. Without
+    /// the outward `next_down`/`next_up` this fails — round-to-nearest moves each endpoint up to
+    /// half an ULP the wrong way, producing an interval narrower than the truth. (Verified: with
+    /// the widening removed, BOTH assertions below are refuted in 0.1 s, so neither is vacuous.)
+    ///
+    /// The two endpoints are SEPARATE harnesses purely for cost. Mixed-precision float reasoning
+    /// is what makes this expensive — CBMC bit-blasts the `f32`→`f64` conversions and the `f64`
+    /// arithmetic — and splitting lets the battery's `-j` verify them on parallel threads, which
+    /// is the only lever that moved the number. Restricting the operands to the scene coordinate
+    /// domain, the obvious first idea, bought almost nothing (199 s → 174 s): unlike the integer
+    /// harnesses in `interval::rational`, where narrowing the domain was decisive, a float range
+    /// assumption does not shrink the search — the bit-width does, and that is fixed.
+    fn lipschitz_endpoints() -> (FieldInterval, f64, f64) {
+        let field_at_center = any_finite_f32();
+        let cell_circumradius = any_finite_f32();
+        let interval = FieldInterval::from_lipschitz_center(field_at_center, cell_circumradius);
+        kani::assume(interval.minimum.is_finite() && interval.maximum.is_finite());
+        let radius = cell_circumradius.abs() as f64;
+        (
+            interval,
+            field_at_center as f64 - radius,
+            field_at_center as f64 + radius,
+        )
+    }
+
+    /// The LOWER endpoint encloses the exact difference (never rounds up past it).
+    #[kani::proof]
+    fn lipschitz_lower_bound_encloses_exact_arithmetic() {
+        let (interval, exact_minimum, _) = lipschitz_endpoints();
+        assert!((interval.minimum as f64) <= exact_minimum);
+    }
+
+    /// The UPPER endpoint encloses the exact sum (never rounds down past it).
+    #[kani::proof]
+    fn lipschitz_upper_bound_encloses_exact_arithmetic() {
+        let (interval, _, exact_maximum) = lipschitz_endpoints();
+        assert!((interval.maximum as f64) >= exact_maximum);
     }
 }
 
@@ -282,12 +419,43 @@ mod tests {
 
     #[test]
     fn lipschitz_center_brackets_by_the_circumradius() {
+        // The endpoints round one ULP OUTWARD, so the bound encloses [2.5, 5.5] rather
+        // than equalling it — never narrower, which is the contract.
         let interval = FieldInterval::from_lipschitz_center(4.0, 1.5);
-        assert_eq!(interval, FieldInterval::new(2.5, 5.5));
+        assert!(interval.minimum < 2.5 && interval.minimum == 2.5f32.next_down());
+        assert!(interval.maximum > 5.5 && interval.maximum == 5.5f32.next_up());
         // A negative circumradius is treated by magnitude (never narrows the bound).
         assert_eq!(
             FieldInterval::from_lipschitz_center(4.0, -1.5),
-            FieldInterval::new(2.5, 5.5)
+            interval,
+            "circumradius sign must not affect the bound"
         );
+    }
+
+    /// The Lipschitz bound must enclose the true real-arithmetic endpoints even where
+    /// `f32` subtraction/addition rounds. Computing the endpoints in `f64` (exact for
+    /// these operands, since `f32 ± f32` always fits `f64`) gives the truth to compare
+    /// against; the `f32` bound must never fall inside it.
+    #[test]
+    fn lipschitz_bound_is_never_narrower_than_exact_arithmetic() {
+        let mut rng = Lcg::new(0x11F5_u64);
+        for _ in 0..20_000 {
+            // Spread magnitudes across the large-coordinate range where ULPs get coarse.
+            let center = (rng.next_u64() as f32 / u64::MAX as f32 - 0.5) * 40_000.0;
+            let radius = (rng.next_u64() as f32 / u64::MAX as f32) * 100.0;
+            let interval = FieldInterval::from_lipschitz_center(center, radius);
+            let exact_minimum = center as f64 - radius as f64;
+            let exact_maximum = center as f64 + radius as f64;
+            assert!(
+                (interval.minimum as f64) <= exact_minimum,
+                "lower bound {} rounded INWARD past {exact_minimum}",
+                interval.minimum
+            );
+            assert!(
+                (interval.maximum as f64) >= exact_maximum,
+                "upper bound {} rounded INWARD past {exact_maximum}",
+                interval.maximum
+            );
+        }
     }
 }

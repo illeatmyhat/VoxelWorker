@@ -178,10 +178,11 @@ block the extraction on proofs). Tool fit per component, matched to what each to
       increase, acceptance is unique to the newest, a superseded generation is discarded (stale never
       swaps in over fresher state), nothing is accepted before any dispatch; plus a burst that ties
       the theorems to the real `next_generation`/`accepts` API.
-- **Lean model** (proves the mathematics, linked to code by the existing parity oracles) for the
-  two genuinely mathematical statements: `FieldInterval` conservatism (the interval algebra
-  bounds the CSG field — the exact-classification theorem) and `SparseMinMipPyramid`'s
-  conservative-superset property.
+- **Lean model** (proves the mathematics, linked to code by the existing parity oracles) for
+  statements over unbounded/exact domains. Originally scoped to two: `FieldInterval` conservatism
+  and `SparseMinMipPyramid`'s conservative-superset property. The first was **re-assigned to Kani in
+  2026-07-18** (see below) — its only real defect lived in the float representation, which an exact
+  model cannot see — leaving the pyramid superset theorem.
   - **Stood up 2026-07-17:** Lean 4.32.0 via `elan` (WSL, under `$HOME`, no root), green on a
     first proof — `verification/lean/Fold.lean`, the floor-division fold bound over ALL `Int` at
     each pyramid edge (the unbounded form of the Kani fold harness, `omega`-discharged, core-only).
@@ -204,9 +205,25 @@ block the extraction on proofs). Tool fit per component, matched to what each to
     values ⇒ identical structs, so `==` is real value equality) IS `lean/RationalReduce.lean`'s
     coprime-reduction theorem, inherited by `times`/`plus` via `new`; i128 overflow is a BMC-shaped
     concern a field-law proof over exact `Rat` would miss anyway, and a documented accepted deviation.
-  - Still open, and these WOULD justify wiring `mathlib` (Lake project + `lake exe cache get`) when
-    taken: `FieldInterval` conservatism, the pyramid superset theorem, the voxel-frame algebra
-    (ADR 0008). mathlib stays unwired until one of THESE is tackled — the field laws never force it.
+  - **`FieldInterval` conservatism — PROVED 2026-07-18, and it belonged to KANI, not Lean.** Listed
+    here for years as a Lean/mathlib target; it was mis-assigned. The CSG operations are
+    `min`/`max`/negation, all exact in IEEE-754, so the lattice laws are order reasoning that needs
+    no ℝ; and the one real risk — the Lipschitz endpoints `c ± r` rounding INWARD and making the
+    interval narrower than the truth, violating the never-narrower contract — is a fact about
+    *machine floats*, which a real-arithmetic model would have assumed away entirely. Three
+    `#[cfg(kani)]` harnesses in `crates/substrate/src/interval/field_interval.rs` now cover the
+    inclusion property, one-sided verdict soundness, and endpoint enclosure vs exact (`f64`)
+    arithmetic. Fix: both endpoints round one ULP outward (`next_down`/`next_up`).
+    **Lesson: pick the tier by where the defect can LIVE, not by how mathematical the statement
+    sounds.** The Lipschitz *bound* is the mathlib-shaped part and is not a target at this boundary
+    at all — `from_lipschitz_center` never sees the field, so 1-Lipschitz-ness is a caller
+    precondition with nothing in `substrate` to prove.
+  - **The `mathlib` gate is RETIRED (2026-07-18).** Of the three targets that supposedly forced it,
+    one is done without it, one is out of scope (above), and the remaining two — the pyramid
+    superset theorem and the voxel-frame algebra (ADR 0008) — are integer/order reasoning, the same
+    shape `lean/Fold.lean` already discharged core-only. "Needs mathlib" was asserted this week for
+    floor/ceil, gcd reduction, AND `FieldInterval`; all three landed without it. Attempt core-only
+    first; wire mathlib only against a concrete proof that demonstrably stalls without it.
 
 Standing limit (reaffirmed by the FXC X3500 episode): the GPU side is not a proof target — no
 source-level theorem catches a shader-compiler bug. Verification hardens substrate kernels; the
