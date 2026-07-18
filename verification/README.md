@@ -49,14 +49,39 @@ MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu -- bash -lc \
    lean /mnt/c/Users/Kai_Yuu/Documents/VoxelWorker/verification/lean/Fold.lean'
 ```
 
-## Cadence: run the proof tiers at EPIC boundaries, not per commit
+## Running the battery
 
-None of these tiers belong in the per-commit gate. Measured 2026-07-17, the two `Rational`
-binary-operator Kani harnesses solve in **606 s and 666 s** (pure solve; the build was 1.4 s) —
-against a whole `substrate` unit suite of **117 tests in 0.02 s**. A multi-minute proof pass on every
-PR gets resented and then disabled, and nightly would burn runner minutes on days nothing in the
-proven crates moved. An **epic boundary** is the right trigger: it is this repo's unit of work, and it
-fires the pass exactly when the proven code has actually changed.
+```bash
+./verification/run-all.sh              # all three tiers; exits non-zero if any proof fails
+./verification/run-all.sh --quick      # Lean + Verus only — ~8 s, safe per-commit
+./verification/run-all.sh --kani-only  # just the BMC tier
+```
+
+It DISCOVERS proof files rather than listing them, so a new proof is picked up automatically. Set
+`KANI_TARGET_DIR` under WSL (e.g. `$HOME/rc-kani-target`) — building on `/mnt/c` is slow; leave it
+unset on a native CI runner, where it buys nothing.
+
+Use it rather than running tiers by hand: `lean/RationalReduce.lean` once sat BROKEN across a commit
+because a cosmetic edit was never re-checked, and only a full-battery run caught it.
+
+## Cadence: run the full battery at EPIC boundaries, not per commit
+
+Measured 2026-07-18 (`-j`, warm build):
+
+| tier | time | scope |
+| --- | --- | --- |
+| Lean | 4 s | 3 files |
+| Verus | 4 s | 4 files, 26 obligations |
+| Kani `raycast` | 4 s | 5 harnesses |
+| **Kani `substrate`** | **467 s** | 16 harnesses |
+| **total** | **479 s** | |
+
+**The deductive and algebraic tiers are effectively free** — 8 s for all 30 proofs, so `--quick` can
+run per commit without anyone noticing. The entire cost is Kani on `substrate`, and within it a
+couple of harnesses dominate (see the cost lesson in `interval/rational.rs`'s `kani_proofs` doc). A
+multi-minute pass on every PR gets resented and then disabled, and nightly would burn runner minutes
+on days nothing in the proven crates moved. An **epic boundary** is the right trigger for the full
+run: it is this repo's unit of work, and it fires exactly when the proven code has actually changed.
 
 The everyday `cargo` gate keeps its own job — a theorem verifies the mathematics, the gate verifies
 the shipping binary still implements it. The Kani harnesses are `#[cfg(kani)]` and the Verus/Lean

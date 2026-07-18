@@ -234,35 +234,30 @@ fn greatest_common_divisor(mut first: u128, mut second: u128) -> u128 {
 /// measurement domain (small exact ratios), and where exactly does the raw `i128` boundary bite?
 /// `#[cfg(kani)]` keeps them out of ordinary builds. Run under WSL: `cargo kani -p substrate`.
 ///
-/// ## Runtime — read before wiring these into CI
+/// ## Runtime — and the cost lesson that shaped these
 ///
-/// Measured 2026-07-18, all four together under `-j` (solve time only; the build was ~1.4 s):
-/// **550 s wall-clock**, the slowest harness ~547 s, and the concrete-input boundary harness
-/// 0.16 s. (Terse output does not label which thread ran which harness, so per-harness attribution
-/// beyond the concrete one is inference; the total is exact.)
+/// These are cheap (seconds). They were NOT: two earlier harnesses proved `times`/`plus` commutative
+/// and cost ~606 s and ~666 s. The lesson is worth keeping, because the fix was not a faster solver:
 ///
-/// The two binary-operator harnesses dominate because each chains DATA-DEPENDENT Euclid loops —
-/// `greatest_common_divisor` does `first % second` with a SYMBOLIC divisor, the single worst shape
-/// for CBMC — and unwinding multiplies against the symbolic domain.
+/// * **Cost tracks DATA-DEPENDENT LOOP CHAINS, not bounds.** `greatest_common_divisor` does
+///   `first % second` with a SYMBOLIC divisor — the worst shape for CBMC, and on `i128` it builds a
+///   full 128-bit division circuit per unwound iteration REGARDLESS of how tightly the inputs are
+///   assumed. That is why tightening the domain `±200`→`±8` bought almost nothing.
+/// * **`CARGO_TARGET_DIR` on a Linux FS is a WSL-only fix** for the slow `/mnt/c` mount — the build
+///   is ~1.4 s either way, and a native CI runner is unaffected. It never touched solve time.
+/// * **The real fix was asking what the harness proved.** Swapping the operands of `times`/`plus`
+///   yields the *same argument expressions* to `new`, so commutativity follows from `i128` `*`/`+`
+///   commuting and the gcd is irrelevant to it — ~21 minutes of solving for no information about
+///   this code. Replaced by a unit test (which catches the transposition typo that was the only real
+///   risk) plus the overflow-envelope harness above, which proves something genuinely unknown.
 ///
-/// What did NOT help, recorded so nobody re-tries it: tightening the domain `±200`→`±8` (the cost is
-/// the loop chain, not the bound), and `CARGO_TARGET_DIR` on a Linux FS (a WSL-only fix for the slow
-/// `/mnt/c` mount — the build is ~1.4 s either way, and a native CI runner is unaffected).
+/// So: before optimizing a slow harness, check it is worth running at all; then cut loop chains out
+/// of the HARNESS before touching production code. Rejected on purpose: a binary/Stein gcd (a subtler
+/// algorithm in COLD code purely to please a verifier) and `#[kani::stub]`-ing the gcd (which stops
+/// verifying the real one).
 ///
-/// What DID help: removing gcd chains from the harness rather than from the code. Building operands
-/// straight from their fields instead of through `new`, and dropping a reduced-form assertion that
-/// `new`'s own harness already proves, took the chain from five Euclid loops to two and roughly
-/// halved the worst harness. The remaining cost is the gcd INSIDE `times`/`plus`, which can only go
-/// by changing production code (a binary/Stein gcd, trading Knuth-cited Euclid for a subtler
-/// algorithm in COLD code purely to please a verifier) or by `#[kani::stub]`-ing the gcd (which stops
-/// verifying the real one). Neither is worth it at an epic cadence.
-///
-/// So: these belong in a proof job run **at EPIC boundaries, NOT per-commit** (an epic is this repo's
-/// unit of work, and it ties the pass to when the proven code actually changed — nightly would burn
-/// runner minutes on days nothing in `substrate` moved). For scale, the whole `substrate` unit suite
-/// is 118 tests in 0.02 s. Run the pass with `cargo kani -p substrate -j --output-format=terse`
-/// (`-j` verifies harnesses on parallel threads and REQUIRES terse output; it turned ~21 min of
-/// serial solving into ~9 min wall-clock).
+/// Run the tier with `cargo kani -p substrate -j --output-format=terse` — `-j` verifies harnesses on
+/// parallel threads and REQUIRES terse output. Or run all three tiers via `verification/run-all.sh`.
 ///
 /// These proofs do not replace the unit tests below: they are `#[cfg(kani)]`, so they are invisible
 /// to `cargo test`/`clippy`/CI, and the tests remain the only always-on check that the shipping
@@ -277,22 +272,6 @@ mod kani_proofs {
     /// canonical form) are structural, so a wider domain costs solver time without covering a new
     /// case. Overflow-freedom is NOT the interesting claim at this bound (it is trivially true);
     /// the real `i128` boundary is probed separately below.
-    /// Built DIRECTLY from its fields rather than through `Rational::new`, which would run an
-    /// Euclid loop per operand. `times`/`plus` read the raw fields and re-canonicalize through
-    /// `new`, so their commutativity does not depend on the operands already being reduced — only
-    /// on the type's structural invariant, a positive denominator. Skipping `new` here removes two
-    /// of the harness's data-dependent loop chains, which is what the solver actually pays for.
-    fn measurement_rational() -> Rational {
-        let numerator: i128 = kani::any();
-        let denominator: i128 = kani::any();
-        kani::assume(numerator >= -8 && numerator <= 8);
-        kani::assume(denominator >= 1 && denominator <= 8);
-        Rational {
-            numerator,
-            denominator,
-        }
-    }
-
     /// `new` is overflow-free and produces canonical form (positive, gcd-reduced denominator) over
     /// the whole measurement domain — the reduction proved abstractly in `RationalReduce.lean`, now
     /// on the real `i128` code with the overflow checks live.
@@ -313,25 +292,37 @@ mod kani_proofs {
         );
     }
 
-    /// `times` is commutative over the measurement domain. The result's canonical form is NOT
-    /// re-asserted here — `times` returns `new`'s output, and
-    /// `new_is_overflow_free_and_reduced_in_the_measurement_domain` already proves `new` yields
-    /// canonical form. Dropping that assertion removes another Euclid loop from the chain.
+    /// **The overflow envelope** — the one genuinely unverified thing about `times`/`plus`, and the
+    /// source's own documented deviation ("a long chain of operations can overflow"). Both operators
+    /// CROSS-MULTIPLY before reducing, so the products, not the reduction, are where `i128` gives
+    /// out. This establishes the safe operating envelope:
+    ///
+    /// > if every component of both operands fits an `i64`, neither `times` nor `plus` can overflow.
+    ///
+    /// That bound is tight enough to be useful and tight enough to be true only just: `plus` forms
+    /// `an·bd + bn·ad`, whose magnitude reaches `2^127 − 2^64`, a hair under `i128::MAX = 2^127 − 1`.
+    ///
+    /// This mirrors the exact argument expressions rather than calling `times`/`plus`, because the
+    /// real calls route through `new`'s Euclid loop and gcd over `2^63`-wide operands needs ~90
+    /// unwound iterations of a 128-bit division circuit — not BMC-tractable. The mirror is anchored
+    /// to the real operators by `times_and_plus_are_the_cross_multiply_expressions` in the unit tests
+    /// below. (Same mirror-and-anchor shape as `ValueCube`'s `row_major_index` proof.)
     #[kani::proof]
-    #[kani::unwind(11)]
-    fn times_is_commutative() {
-        let a = measurement_rational();
-        let b = measurement_rational();
-        assert!(a.times(b) == b.times(a));
-    }
+    fn i64_bounded_components_cannot_overflow_times_or_plus() {
+        let (a_numerator, a_denominator): (i128, i128) = (kani::any(), kani::any());
+        let (b_numerator, b_denominator): (i128, i128) = (kani::any(), kani::any());
+        kani::assume(a_numerator >= i64::MIN as i128 && a_numerator <= i64::MAX as i128);
+        kani::assume(b_numerator >= i64::MIN as i128 && b_numerator <= i64::MAX as i128);
+        // Denominators are positive by the type's invariant.
+        kani::assume(a_denominator >= 1 && a_denominator <= i64::MAX as i128);
+        kani::assume(b_denominator >= 1 && b_denominator <= i64::MAX as i128);
 
-    /// `plus` is commutative over the measurement domain (canonical form covered as above).
-    #[kani::proof]
-    #[kani::unwind(11)]
-    fn plus_is_commutative() {
-        let a = measurement_rational();
-        let b = measurement_rational();
-        assert!(a.plus(b) == b.plus(a));
+        // `times` computes exactly these two products ...
+        let _ = a_numerator * b_numerator;
+        let _ = a_denominator * b_denominator;
+        // ... and `plus` these (the denominator product is shared). Kani's arithmetic-overflow
+        // checks on each are the proof; no assertion is needed.
+        let _ = a_numerator * b_denominator + b_numerator * a_denominator;
     }
 
     /// The raw-boundary probe that FOUND the `i128::MIN` overflow (`new` used to sign-normalize by
@@ -398,6 +389,42 @@ mod tests {
         assert_eq!(dec(1, 3), None);
         assert_eq!(dec(2, 7), None);
         assert_eq!(dec(1, 6), None); // 6 = 2·3, the 3 blocks it
+    }
+
+    /// `times`/`plus` are commutative. This was briefly a Kani harness, which cost ~10 minutes each
+    /// to prove something that follows from commutativity of `i128` `*` and `+`: swapping the
+    /// operands yields the *same argument expressions* to `new`, so the gcd inside it is irrelevant
+    /// to the property and the solver was re-deriving school arithmetic. What that harness could
+    /// actually catch was a TRANSPOSITION TYPO (`other.den * other.den` for `self.den * other.den`),
+    /// which asymmetric operands catch here for free. Deliberately asymmetric in numerator,
+    /// denominator, and sign so a swapped term cannot coincidentally agree.
+    #[test]
+    fn times_and_plus_are_commutative() {
+        let a = Rational::new(-3, 7).unwrap();
+        let b = Rational::new(5, 11).unwrap();
+        assert_eq!(a.times(b), b.times(a));
+        assert_eq!(a.plus(b), b.plus(a));
+
+        // A second pair whose cross terms differ in magnitude AND sign.
+        let c = Rational::new(9, 2).unwrap();
+        let d = Rational::new(-4, 13).unwrap();
+        assert_eq!(c.times(d), d.times(c));
+        assert_eq!(c.plus(d), d.plus(c));
+    }
+
+    /// Anchors the Kani harness `i64_bounded_components_cannot_overflow_times_or_plus`, which proves
+    /// the overflow envelope on MIRRORED cross-multiply expressions (the real calls route through
+    /// `new`'s Euclid loop, untractable at `2^63`-wide operands). This pins that the mirror is what
+    /// `times`/`plus` actually compute, so the envelope transfers to the real operators.
+    #[test]
+    fn times_and_plus_are_the_cross_multiply_expressions() {
+        let a = Rational::new(-3, 7).unwrap();
+        let b = Rational::new(5, 11).unwrap();
+        let (an, ad) = (a.numerator(), a.denominator());
+        let (bn, bd) = (b.numerator(), b.denominator());
+
+        assert_eq!(a.times(b), Rational::new(an * bn, ad * bd).unwrap());
+        assert_eq!(a.plus(b), Rational::new(an * bd + bn * ad, ad * bd).unwrap());
     }
 
     /// The asymmetric two's-complement boundary. `|i128::MIN|` is `2^127`, one past `i128::MAX`, so
