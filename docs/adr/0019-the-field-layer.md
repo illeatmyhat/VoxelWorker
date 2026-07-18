@@ -131,15 +131,28 @@ That question is settled here because the answer determines what a profile *is*.
    voxel index, so a density change cannot move an authored point (ADR 0008's carried-frame
    discipline; the units law).
 
-10. **Slice mode and the boolean sugar are deferred, and the layering says why.** Slice
-    yields two bodies, and a field is a single scalar function — so slice is not a field
-    operation at all but an **Intent-layer topology-and-identity** question. It collides
-    with *junctions are parts* and no-operand-targeting not by coincidence but because it
-    operates at the wrong layer; any version of it must first answer who owns the
-    manufactured second body, and no field math will answer that. Boolean Extrude / Trim /
-    Cut Groove are Intent-layer sugar expanding into field combinators — the
-    primitives-as-sugar pattern, now with a precise meaning for "sugar over what." Neither
-    is decided here.
+10. **Slice mode is rejected pending a concrete use case; the boolean sugar is deferred.**
+
+    Slice yields two bodies, and a field is a single scalar function — so slice is not a
+    field operation at all but an **Intent-layer topology-and-identity** question. It
+    collides with *junctions are parts* and no-operand-targeting not by coincidence but
+    because it operates at the wrong layer; any version of it would first have to answer who
+    owns the manufactured second body, and no field math will answer that.
+
+    The owner's ruling goes further than deferral: **there is no evident value in it here.**
+    Slice earns its keep in mesh modeling because generating the split geometry by hand is
+    tedious — the boolean's value is that it *produces* geometry. In a parametric planner
+    authoring two parts costs about what configuring a slice would, and lands in the model
+    the fold already understands, with both bodies named and owned. The feature solves a
+    problem this representation does not have. **Reopen only when a user surfaces a
+    well-reasoned argument from a concrete case**, not on grounds of prior-art parity.
+
+    Note that slice's genuinely useful half is already captured: its **Inset** parameter —
+    the deliberate gap between the resulting pieces — is a negative outset under Decision 7.
+
+    Boolean Extrude / Trim / Cut Groove remain **deferred, not rejected**: they are
+    Intent-layer sugar expanding into field combinators — the primitives-as-sugar pattern,
+    now with a precise meaning for "sugar over what."
 
 ## Considered options
 
