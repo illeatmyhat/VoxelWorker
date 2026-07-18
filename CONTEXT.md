@@ -147,6 +147,60 @@ op-stack field (see `docs/adr/0011`; generalizes the ADR 0007 fog atlas).
   authored and placed like any other (possibly as a fixture) — never a world-frame patch
   on the composed result.
 
+## Sketching
+
+- **Profile** — the authored 2D outline a body is lifted from: a closed path of lines, arcs,
+  Bézier segments and whatever curve kinds arrive later, positioned in continuous
+  coordinates and **never required to align to the voxel lattice**. Editable input with
+  control points, kept exact; it is what the author manipulates, not what the document
+  means.
+
+- **Flattened profile** — the profile reduced to a polygon at sub-voxel chord tolerance.
+  **This is the profile's meaning, not an approximation of it**: field, classification,
+  resolve and outset see only the polygon, so a new curve kind is additive at the authoring
+  layer and invisible below it. Because the polygon *is* the meaning, the flattening is
+  deterministic and versioned — changing it changes existing documents.
+
+- **Lattice snapping** — the voxel grid standing in for a constraint solver. Snapping to
+  grid, edges and axes delivers axis-alignment, equal lengths and coincidence as a
+  by-product of quantization, so the profile layer carries no constraint entities, no
+  solver, and none of the over-constrained or flipped-solution states those bring.
+
+## Field
+
+- **Field** — the signed scalar meaning of a node: negative inside the body, positive
+  outside, zero on the surface. Every producer has one, and composition is field algebra
+  (union is the minimum, subtract and intersect are maxima). The field is the seam between
+  **Intent** and **Occupancy**: authoring says what a body *is* in field terms, and
+  occupancy is derived by asking where the field is at or below the isolevel. It is a
+  *meaning*, not a stored artifact — nothing keeps a field resident.
+
+- **Field metric** — the distance notion a field is exact in. **Euclidean** (L2) measures
+  straight-line distance and rounds offsets; **Chebyshev** (L∞) measures largest-axis
+  distance and keeps offsets square, matching the rectilinear grain of block and voxel
+  work. Exactness is a property of the *data*, not of a producer kind — a rectilinear
+  profile admits a cheap exact L∞ field, the same producer over a diagonal edge does not —
+  so a body's metric is **derived on demand, never authored and never saved**.
+
+- **Field lift** — how a lower-dimensional field becomes a body's field: an operation takes
+  the sketch's 2D profile field into 3D. Extrude combines it with a slab, revolve evaluates
+  it in radius-and-axial terms, sweep carries it along a path. The sketch→volume authoring
+  atom and the lift are the same joint seen from two sides.
+
+- **Lipschitz bound** — the guarantee that a field never changes faster than distance does
+  (moving a step can change it by at most that step's length, in the field's own metric).
+  What makes a field usable over a whole cell rather than point by point: a single sample
+  plus the cell's radius brackets every value inside it. A field claiming a metric it does
+  not satisfy makes every classification built on it unsound.
+
+- **Outset** — a body dilated uniformly outward before it composes; equivalently, the field
+  shifted by a constant. Applied to a **cutter** it is clearance: cut this, but leave a gap.
+  A negative outset (**inset**) shrinks instead. Uniform across producers because it is a
+  property of the field, not of any particular shape's parameters. Its shape follows the
+  body's category, never its edge angles: **boxes and every profile-lifted body outset
+  square** (they are polygonal once flattened), **curved primitives outset round** (no
+  closed-form L∞ distance exists for them). A measurement, not an integer voxel count.
+
 ## Viewing
 
 - **View mode** — the scene viewer's exclusive rendering mode, one of exactly three:
