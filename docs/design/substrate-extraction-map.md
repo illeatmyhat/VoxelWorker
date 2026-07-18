@@ -264,7 +264,15 @@ slices (extend as verification work surfaces more):
   octree node classification — our air/coarse-solid/boundary IS this trichotomy).
 - `CulledBoxMeshing` — Lysenko 2012 (culled vs greedy voxel meshing); hidden-surface face
   culling folklore.
-- `Rational` — Knuth TAOCP vol. 2 §4.5 (rational arithmetic, Euclid's gcd).
+- `Rational` — Knuth TAOCP vol. 2 §4.5 (rational arithmetic, Euclid's gcd). `new` normalizes in
+  UNSIGNED magnitudes, not by multiplying through by a sign: `|i128::MIN|` is `2^127`, one past
+  `i128::MAX`, so `numerator * -1` overflowed for the most-negative input — a panic escaping a `pub
+  fn` whose contract is to return `None`. Found 2026-07-17 by Kani (`rational.rs`'s
+  `new_handles_the_i128_min_boundary_without_overflow`), which also caught a second latent defect:
+  `greatest_common_divisor(..) as i128` wrapped a gcd of `2^127` to a NEGATIVE divisor, corrupting
+  `new(i128::MIN, i128::MIN)`. Working in `u128` throughout removes both. This is the one real bug
+  the proof effort surfaced, and it came from BMC on concrete limbs — the deductive (Verus) and
+  algebraic (Lean) tiers structurally cannot see a limb overflow, since exact `Rat` has no limbs.
 - generation-supersede (`CoalescingWorker` + `GenerationTracker`) — no single canonical
   name; the confluence of work coalescing / conflation, stale-while-revalidate, and a
   monotonic version counter as a lost-update guard. Cite Herlihy & Shavit, *The Art of
