@@ -793,13 +793,13 @@ impl Scene {
         self.active.and_then(|id| self.node_by_id(id))
     }
 
-    /// The active node mutably, if any (the inspector edits through this). ADR 0003
-    /// Phase B3: resolves the selected [`NodeId`] via
-    /// [`node_by_id_mut`](Self::node_by_id_mut).
-    pub fn active_node_mut(&mut self) -> Option<&mut Node> {
-        let id = self.active?;
-        self.node_by_id_mut(id)
-    }
+    // `active_node_mut` was DELETED 2026-07-18 with zero callers. Its doc claimed "the
+    // inspector edits through this", which was never true in this form: an inspector edit is
+    // an Intent carrying its TARGET id, applied via `node_by_id_mut(target)` (see
+    // `app_core::intent`), so the edit path never consults `active`. Reading the active node
+    // is still a real need (`active_node`); mutating THROUGH the selection is not, and would
+    // in fact be the wrong shape — it would let an edit silently retarget when the selection
+    // moves. Do not reintroduce it; take the id.
 
     /// The [`NodePath`] currently addressing the active node, or `None` when nothing
     /// is selected (or the selected [`NodeId`] no longer resolves). ADR 0003 Phase

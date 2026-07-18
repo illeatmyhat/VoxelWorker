@@ -164,15 +164,11 @@ impl LeafSpatialIndex {
             .collect()
     }
 
-    /// The union of every leaf world-AABB in the index (the scene's whole occupied
-    /// box), or an empty box when there are no bounded leaves.
-    pub fn bounding_aabb(&self) -> VoxelAabb {
-        let mut acc = VoxelAabb::new([0; 3], [0; 3]);
-        for entry in &self.entries {
-            acc = acc.union(&entry.world_aabb);
-        }
-        acc
-    }
+    // `bounding_aabb` (the union of every leaf world-AABB) was DELETED 2026-07-18 with zero
+    // callers. The scene's whole occupied box is derived from the scene extent instead
+    // (`Scene::placed_extent_voxels`), not by folding the leaf index; this index exists to
+    // answer INTERSECTION queries (`leaves_intersecting`, `edit_aabb_since`), which is what
+    // every live caller wants.
 
     /// The world-AABB an edit dirtied, computed by diffing this index (the scene
     /// AFTER the edit) against `previous` (the scene BEFORE it).

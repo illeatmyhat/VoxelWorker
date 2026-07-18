@@ -219,10 +219,9 @@ impl SelectedOperandGhostRenderer {
         }
     }
 
-    /// Whether any ghost body is resident (a selection with geometry was rebuilt).
-    pub fn has_bodies(&self) -> bool {
-        !self.bodies.is_empty()
-    }
+    // `has_bodies` was DELETED 2026-07-18 with zero callers — a residency probe that was
+    // never wired into the shell. `draw` already no-ops on an empty body list, so a caller
+    // has nothing to gate on.
 
     /// Drop every ghost body (the selection cleared / resolves to no geometry).
     pub fn clear(&mut self) {

@@ -64,45 +64,12 @@ pub struct DebugCloudField {
     pub seed: u32,
 }
 
-/// One cloud puff's resolved parameters, flattened for the GPU view-resolve (ADR
-/// 0007). The producer evaluates `distance + fBm` against these on the GPU exactly as
-/// [`cloud_field_is_solid`] does on the CPU.
-#[derive(Debug, Clone, Copy)]
-pub struct CloudPuffParams {
-    /// World-centred centre (same frame as the centred SDF sample `idx + 0.5 - grid/2`).
-    pub center: [f32; 3],
-    /// Base radius in voxels (before noise displacement).
-    pub radius: f32,
-    /// Per-cloud offset into the noise field.
-    pub noise_offset: [f32; 3],
-}
-
-impl DebugCloudField {
-    /// The resolved cloud puffs (the GPU view-resolve streams these), computed from
-    /// `seed` + `dimensions` EXACTLY as [`resolve_into`](DebugCloudField::resolve_into)
-    /// does — same `scatter_cloud_puffs`, so the GPU eval matches the CPU bit-for-bit.
-    pub fn gpu_puffs(&self) -> Vec<CloudPuffParams> {
-        let extent = Vec3::new(
-            self.dimensions[0] as f32,
-            self.dimensions[1] as f32,
-            self.dimensions[2] as f32,
-        );
-        scatter_cloud_puffs(self.seed, extent)
-            .into_iter()
-            .map(|cloud| CloudPuffParams {
-                center: cloud.center.to_array(),
-                radius: cloud.radius,
-                noise_offset: cloud.noise_offset.to_array(),
-            })
-            .collect()
-    }
-
-    /// The seed-shuffled Perlin permutation table (the GPU view-resolve streams it so
-    /// its WGSL noise indexes the SAME table as the CPU `PerlinNoise`).
-    pub fn permutation_table(&self) -> [u8; 512] {
-        PerlinNoise::new(self.seed).permutation()
-    }
-}
+// `CloudPuffParams`, `gpu_puffs` and `permutation_table` were DELETED 2026-07-18. They
+// existed only to flatten this producer's puffs + Perlin table for the ADR 0007 GPU
+// view-resolve to stream into WGSL; ADR 0012 deleted that evaluator (it was the fog's, and
+// the fog went with it), leaving all three with zero callers. The CPU `resolve_into` below
+// computes the same puffs via `scatter_cloud_puffs` and is the only path. Restore from git
+// history if a GPU producer mirror returns.
 
 impl VoxelProducer for DebugCloudField {
     /// `voxels_per_block` is the document-level density (ADR 0003 §3f(0)) — only

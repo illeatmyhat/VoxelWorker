@@ -11,11 +11,10 @@
 //! merging its solid voxels into a small set of axis-aligned, single-material cuboids
 //! (`BlockEntityMicroBlock.GenShape`); see the cuboid mesher in
 //! `docs/architecture/03-display.md`. The decomposition step is domain-free — its only
-//! project-facing pieces are the `u16` render-cell key payload and the
-//! [`region_from_voxel_grid`] densifier below, which builds a region from a
-//! [`VoxelGrid`] sub-box.
-
-use voxel_core::voxel::VoxelGrid;
+//! project-facing piece is the `u16` render-cell key payload. Densifying a voxel set INTO a
+//! region is the caller's job and lives with the caller: the cuboid mesher does it in
+//! `display::mesh::builder::region_from_voxel_cloud`, which anchors on the cloud's own
+//! minimum voxel and is therefore shift-invariant.
 
 /// One axis-aligned, single-material cuboid — the domain reading of a substrate
 /// [`Cuboid`] whose label is a `u16` render-cell key.
@@ -29,8 +28,8 @@ pub type VoxelBox = Cuboid<u16>;
 /// the domain reading of a substrate [`CellGrid`]. `Some(material)` is a solid voxel,
 /// `None` is air; see [`CellGrid`] for the row-major layout (X fastest).
 ///
-/// Built by hand (tests), from a [`VoxelGrid`] sub-box ([`region_from_voxel_grid`]), or
-/// from a chunk's resolved voxels.
+/// Built by hand (tests), from a chunk's resolved voxels, or by the mesher's
+/// `region_from_voxel_cloud` densifier.
 pub type VoxelRegion = CellGrid<u16>;
 
 pub use substrate::solids::{CellGrid, Cuboid, GreedyCuboidDecomposition};
@@ -64,21 +63,20 @@ pub fn decompose_into_boxes(region: &VoxelRegion) -> Vec<VoxelBox> {
     GreedyCuboidDecomposition::decompose(region)
 }
 
-/// Build a dense [`VoxelRegion`] from an axis-aligned sub-box of a [`VoxelGrid`]
-/// (the per-chunk adapter the cuboid mesher calls).
-///
-/// `origin` is the region's minimum voxel index in grid space; `extent` is its
-/// size in voxels. A grid voxel maps to its index with the project-wide
-/// CORNER-ANCHORED rule `i = round(world_position + floor(dimensions/2) - 0.5)`
-/// (see `VoxelGrid::widest_run_in_band` / `renderer::upload_grid`) — the producers
-/// emit corner-anchored half-integer centres, so this is exact for any dim parity.
-/// Voxels whose index falls inside `[origin, origin + extent)` are copied into the
-/// region with their material key; everything else stays air. Out-of-grid origins
-/// simply yield air for the uncovered cells.
-///
-/// Passing `origin = [0, 0, 0]` and `extent = grid.dimensions` decomposes the
-/// whole grid in one call.
-pub fn region_from_voxel_grid(grid: &VoxelGrid, origin: [u32; 3], extent: [u32; 3]) -> VoxelRegion {
+// `region_from_voxel_grid` was DEMOTED to a test helper 2026-07-18 (it is now
+// `tests::region_from_voxel_grid` below). It was `pub`, and its doc called it "the per-chunk
+// adapter the cuboid mesher calls" — but that had been false since the mesher moved to
+// `display::mesh::builder::region_from_voxel_cloud`, which superseded it precisely because
+// this one's fixed `dim/2`-anchored convention lost ~55% of a cylinder's voxels. Its only
+// remaining callers were its own tests, so it lives there now; the tests it carries are kept
+// because one of them is real coverage of `decompose_into_boxes` over the SDF shapes.
+
+#[cfg(test)]
+fn region_from_voxel_grid(
+    grid: &voxel_core::voxel::VoxelGrid,
+    origin: [u32; 3],
+    extent: [u32; 3],
+) -> VoxelRegion {
     let mut region = VoxelRegion::new_empty(extent);
     let [grid_x, grid_y, grid_z] = grid.dimensions;
     if grid_x == 0 || grid_y == 0 || grid_z == 0 {
@@ -116,7 +114,7 @@ pub fn region_from_voxel_grid(grid: &VoxelGrid, origin: [u32; 3], extent: [u32; 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use voxel_core::voxel::Voxel;
+    use voxel_core::voxel::{Voxel, VoxelGrid};
 
     #[test]
     fn adapter_from_voxel_grid_whole_grid() {

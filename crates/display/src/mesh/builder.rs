@@ -162,8 +162,9 @@ pub fn build_cuboid_mesh_banded(
 /// the cloud's ACTUAL minimum voxel, returning the region plus the world-space
 /// min-corner plane of region-local index `(0,0,0)`.
 ///
-/// Unlike [`region_from_voxel_grid`] — which uses the project-wide
-/// `round(world + dimensions/2 - 0.5)` index convention anchored at index 0 — this
+/// Unlike the retired `evaluation::cuboid::region_from_voxel_grid` — which used the
+/// project-wide `round(world + dimensions/2 - 0.5)` convention anchored at index 0, and was
+/// demoted to a test helper in 2026-07-18 once this superseded it — this
 /// anchors region-local index 0 at the cloud's own minimum voxel
 /// (`round(world - min_world_center)`). That makes it **shift-invariant**: a
 /// composite recentred off `dimensions/2` (e.g. an odd block size, via
