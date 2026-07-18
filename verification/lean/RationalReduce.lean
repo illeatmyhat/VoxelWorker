@@ -18,10 +18,11 @@
 
 namespace Substrate
 
+-- `h` is bound for `decreasing_by`'s use, which the unused-variable linter does not see.
+set_option linter.unusedVariables false in
 /-- The source's `greatest_common_divisor` loop, ported: repeatedly replace `(a, b)` with
     `(b, a % b)` until the second reaches zero. (The `.max 1` tail is applied at the use sites
     below.) -/
-set_option linter.unusedVariables false in
 def euclid (a b : Nat) : Nat :=
   if h : b = 0 then a else euclid b (a % b)
 termination_by b
