@@ -102,6 +102,14 @@ impl DisjointIntervalSet {
     }
 }
 
+// NOTE (verification): the `insert` normalization invariant (sorted ∧ disjoint ∧ non-touching
+// after any insert) is NOT a Kani target. A `Vec::splice`-backed insert makes CBMC model the
+// drain + reallocation machinery, which exploded to thousands of VCCs on a 3-interval set — a
+// known bounded-model-checking pathology for heavy std-collection mutation, not a property
+// failure. This is exactly why the extraction map (docs/design/substrate-extraction-map.md,
+// decision-6) assigns this stateful invariant to a DEDUCTIVE prover (Creusot/Verus), not Kani;
+// it waits for that tier to be stood up. The unit tests below pin the behaviour meanwhile.
+
 #[cfg(test)]
 mod tests {
     use super::*;

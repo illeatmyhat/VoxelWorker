@@ -169,6 +169,89 @@ impl SparseMinMipPyramid {
     }
 }
 
+/// Kani bounded-model-checking proofs of the pyramid's two pure kernels: the **fold** (each
+/// coordinate lands in the cell that contains it — the basis of the conservative-superset
+/// property) and the **sorted binary search** (membership by `binary_search` agrees with a linear
+/// scan on any sorted key set — the equivalence the sorted-layout skip relies on). A mis-binned
+/// fold or a wrong search silently mis-skips occupied space, which no differential render reliably
+/// samples. The deep superset theorem over the whole (unbounded) pyramid is the extraction map's
+/// Lean target; these Kani harnesses pin the finite arithmetic beneath it. `#[cfg(kani)]` keeps
+/// them inactive in ordinary builds. Run under WSL: `cargo kani -p substrate`.
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    /// A symbolic coordinate spanning both signs (so the Euclidean fold's negative rounding is
+    /// exercised), magnitude-bounded so it and its folded cell stay well inside `i64`.
+    fn any_coord() -> i64 {
+        let value: i64 = kani::any();
+        kani::assume(value > -(1 << 20) && value < (1 << 20));
+        value
+    }
+
+    /// Assert the fold lands `coordinate` in the cell that CONTAINS it at `edge`:
+    /// `cell·edge <= coord < (cell+1)·edge` on each axis. Kept a helper taking a CONCRETE `edge`
+    /// (each caller passes a literal) so the `div_euclid` and the check multiplies are by a
+    /// constant — a cheap circuit for the SAT backend, versus the intractable general 64-bit
+    /// divide/multiply a symbolic divisor would blast out.
+    fn assert_fold_contains(coordinate: [i64; 3], edge_units: u32) {
+        let cell = fold_coordinate_to_cell(coordinate, edge_units);
+        let edge = edge_units as i64;
+        let mut axis = 0;
+        while axis < 3 {
+            assert!(cell[axis] * edge <= coordinate[axis]);
+            assert!(coordinate[axis] < (cell[axis] + 1) * edge);
+            axis += 1;
+        }
+    }
+
+    /// **The fold assigns each coordinate to the unique cell that CONTAINS it**, at every edge the
+    /// pyramid actually uses (`1` the identity, then the geometric `8, 64, 512`). The folded cell
+    /// `c` satisfies `c·edge <= coord < (c+1)·edge` per axis — the Euclidean floor division that
+    /// tiles the lattice without a gap at the origin (negatives round toward −∞), over all
+    /// two-signed coordinates. Two coordinates in one cell therefore fold to one key, and none is
+    /// mis-binned across a boundary — the foundation the conservative superset stands on.
+    #[kani::proof]
+    fn fold_lands_in_the_containing_cell() {
+        let coordinate = [any_coord(), any_coord(), any_coord()];
+        assert_fold_contains(coordinate, 1);
+        assert_fold_contains(coordinate, 8);
+        assert_fold_contains(coordinate, 64);
+        assert_fold_contains(coordinate, 512);
+    }
+
+    /// **The sorted binary search agrees with a linear scan.** For any strictly-ascending key set
+    /// (the invariant a [`MinMipLevel`] maintains), [`MinMipLevel::contains_cell`] — a
+    /// `binary_search` — reports a cell key present exactly when a linear scan does, so the
+    /// sorted-layout skip never mis-answers. Stated on an already-packed key (the fold that
+    /// produces one is proved separately by `fold_lands_in_the_containing_cell`), so no symbolic
+    /// division enters the search proof. Bounded to a small key set — the tail where an off-by-one
+    /// in the search boundary would hide.
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn binary_search_membership_agrees_with_linear_scan() {
+        const N: usize = 5;
+        let mut cell_keys = [0u64; N];
+        let mut i = 0;
+        while i < N {
+            cell_keys[i] = kani::any();
+            i += 1;
+        }
+        let mut j = 1;
+        while j < N {
+            kani::assume(cell_keys[j - 1] < cell_keys[j]); // sorted strictly ascending (dedup ⇒ strict)
+            j += 1;
+        }
+        let target: u64 = kani::any();
+        let linear = cell_keys.iter().any(|&existing| existing == target);
+        let level = MinMipLevel {
+            cell_edge: 8,
+            cell_keys: cell_keys.to_vec(),
+        };
+        assert!(level.contains_cell(target) == linear);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -120,10 +120,24 @@ block the extraction on proofs). Tool fit per component, matched to what each to
     infeasible — an `edge³` allocation). Still open here: `BitCube` expand↔pack whole-cube
     round-trip (the row-word kernel is bounded but the cube loop needs a fixed edge to unwind),
     `CubeTilePacking` index bijection.
+  - **Landed 2026-07-17 (cont.):** `SparseMinMipPyramid` (`spatial/min_mip_pyramid.rs`) — the
+    Euclidean fold lands every coordinate in the cell that contains it (`cell·edge ≤ coord <
+    (cell+1)·edge`) at each edge the pyramid uses `{1, 8, 64, 512}` over two-signed coordinates,
+    and `MinMipLevel::contains_cell`'s binary search agrees with a linear scan on any sorted key
+    set. Practical shape learned here: the fold passes **concrete-edge literals** so `div_euclid`
+    and the check multiplies are constant-divisor circuits — a *symbolic* divisor blew the SAT
+    time up past minutes; the search harness states its target as an already-packed key so no
+    division enters it at all.
 - **Creusot or Verus** (deductive proofs on the real Rust) for stateful invariants:
   `DisjointRunList` (sorted ∧ disjoint ∧ non-touching after any insert; widest-run correctness),
   `SlotFreeList` (no double-allocation, stable indices), generation-supersede (newest-wins,
   stale never accepted).
+  - **Confirmed 2026-07-17 that `DisjointRunList`/`DisjointIntervalSet` insert is NOT a Kani
+    target** (empirically, not by assumption): a `Vec::splice`-backed insert makes CBMC model the
+    drain + reallocation machinery, which exploded to ~8k VCCs on a mere 3-interval set before the
+    solver even started — the classic BMC pathology for heavy std-collection mutation. The
+    invariant genuinely belongs to the deductive tier; it waits for Creusot/Verus to be stood up
+    (a code note sits at the head of `interval/disjoint_interval_set.rs`).
 - **Lean model** (proves the mathematics, linked to code by the existing parity oracles) for the
   two genuinely mathematical statements: `FieldInterval` conservatism (the interval algebra
   bounds the CSG field — the exact-classification theorem) and `SparseMinMipPyramid`'s
