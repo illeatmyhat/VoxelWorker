@@ -156,12 +156,25 @@ block the extraction on proofs). Tool fit per component, matched to what each to
     target** (empirically, not by assumption): a `Vec::splice`-backed insert makes CBMC model the
     drain + reallocation machinery, which exploded to ~8k VCCs on a mere 3-interval set before the
     solver even started — the classic BMC pathology for heavy std-collection mutation. The
-    invariant genuinely belongs to the deductive tier; it waits for Creusot/Verus to be stood up
-    (a code note sits at the head of `interval/disjoint_interval_set.rs`).
+    invariant genuinely belongs to the deductive tier (a code note sits at the head of
+    `interval/disjoint_interval_set.rs`).
+  - **Deductive tool chosen + stood up 2026-07-17: VERUS** (not Creusot). This box has no
+    passwordless `sudo`, which makes Creusot's Why3/opam/SMT platform painful; Verus ships a
+    prebuilt release bundling Z3 that installs entirely under `$HOME`. Verus 0.2026.07.12 is
+    installed in WSL and green on a first proof — `verification/verus/widest_span.rs`, a
+    loop-invariant model of `widest_span` establishing the machinery the insert proof needs. See
+    `verification/README.md`. Still to prove here: the interval insert invariant, `SlotFreeList`,
+    generation-supersede.
 - **Lean model** (proves the mathematics, linked to code by the existing parity oracles) for the
   two genuinely mathematical statements: `FieldInterval` conservatism (the interval algebra
   bounds the CSG field — the exact-classification theorem) and `SparseMinMipPyramid`'s
   conservative-superset property.
+  - **Stood up 2026-07-17:** Lean 4.32.0 via `elan` (WSL, under `$HOME`, no root), green on a
+    first proof — `verification/lean/Fold.lean`, the floor-division fold bound over ALL `Int` at
+    each pyramid edge (the unbounded form of the Kani fold harness, `omega`-discharged, core-only).
+    `mathlib` is not wired yet — it gets a Lake project when the `Rational` field-law proofs need
+    it. See `verification/README.md`. Still to prove here: `FieldInterval` conservatism, the
+    pyramid superset theorem, `Rational` field laws, the voxel-frame algebra (ADR 0008).
 
 Standing limit (reaffirmed by the FXC X3500 episode): the GPU side is not a proof target — no
 source-level theorem catches a shader-compiler bug. Verification hardens substrate kernels; the
