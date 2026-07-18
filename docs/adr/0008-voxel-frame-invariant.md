@@ -1,6 +1,7 @@
 # ADR 0008 — The voxel-frame invariant: carry or enforce the frame, never re-derive it
 
-- **Status:** Accepted
+- **Status:** Accepted — the CARRY half still binds; the decode authority is retired (see
+  "Amendment 2026-07-18" at the foot)
 - **Date:** 2026-06-29
 - **Relates to:** [ADR 0006](0006-authoring-truth-and-gpu-boundary.md) (the single Intent door is the
   enforcement point), [ADR 0007](0007-gpu-view-resolve.md) (the GPU resolve already carries its frame
@@ -100,3 +101,40 @@ in the position — and is left as is; the invariant is satisfied either way, ne
 - **End-state:** once occupancy is the ADR 0003 integer-indexed compact representation rather than a
   float `world_position` everyone round-trips through a guessed decode, option (c) becomes
   *unrepresentable* — which is the real goal; this ADR is the convention that holds until then.
+
+## Amendment 2026-07-18 — the end-state arrived, and it retired the decode authority
+
+The end-state above is **reached**. `Voxel` stores an integer `local_index` (ADR 0003 §3a) and f32
+is produced only at consumption, so no consumer holds a world position that needs decoding back to
+an index. Combined with ADR 0012 deleting the volumetric fog — the decode's only caller — a survey
+found `VoxelGrid::voxel_index_of` had **zero callers in the tree, not even a test.** It has been
+deleted; restore from git history if a consumer reappears.
+
+What this changes about the decision:
+
+- **The (a)/(b)/never-(c) rule stands unchanged.** It is the durable part and applies to every
+  future frame-bearing Intent, including the sculpt delta.
+- **The carry half still binds:** `recentre_voxels` travels on the grid and through the worker
+  channels as `RecentreVoxels`, and the two-layer expansion applies it at one arithmetic site.
+- **The structural guard is gone with its consumer.** "One decode authority" was the mechanism that
+  stopped (c) re-appearing; there is now no decode to be the authority over. The guard against
+  re-introducing (c) is that a world position is no longer available to re-derive from — a stronger
+  guarantee than the method was, which is why deleting it is not a regression.
+
+### The audit gap this surfaced
+
+Retiring the decode focused attention on the surviving arithmetic, which turned out to carry an
+unstated bound. The expansion rebases in `i64` and stamps into an **`i32`** `local_index` with an
+unchecked `as` (`two_layer_store::chunk::stamped_voxel`). The S4a audit on `narrow_chunk_coord`
+(ADR 0002 Decision 2) states a supported range of ±~8×10⁹ blocks — but that audit bounds the CHUNK
+COORDINATE, which fits `i32` precisely because it is a voxel index *divided* by the chunk extent.
+The expansion then multiplies back by that same extent. **Bounding a quotient says nothing about
+the product it came from**: at the stated range the voxel index overruns `i32` by 4× at density 1
+and 238× at density 64, and the cast wraps rather than saturating, so two chunks a multiple of 2³²
+voxels apart would alias onto one `local_index`.
+
+Not reachable through the UI (the true bound still allows ±3.3×10⁷ blocks at density 64, against
+scenes of tens to thousands), so it is **named and proved rather than fixed** — the cast is in the
+innermost expansion loop and the useful output is an honest bound, not a branch. The bound is
+`voxel_core::core_geom::max_supported_block_offset`, with Kani harnesses establishing that the cast
+is lossless within it and aliases beyond it.

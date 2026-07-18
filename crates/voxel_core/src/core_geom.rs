@@ -10,6 +10,192 @@
 /// AABB intersects the camera frustum are drawn.
 pub const CHUNK_BLOCKS: u32 = 4;
 
+/// The largest absolute voxel index a resolved [`crate::voxel::Voxel::local_index`] can
+/// carry — it is an `i32`, and the two-layer expansion stamps it with an unchecked
+/// `as i32` after rebasing in `i64` (`two_layer_store::chunk::stamped_voxel`, ADR 0008).
+pub const MAX_LOCAL_VOXEL_INDEX: i64 = i32::MAX as i64;
+
+/// The furthest block offset from the resolve frame's origin whose voxels still fit
+/// [`MAX_LOCAL_VOXEL_INDEX`], at `voxels_per_block`. **This is the real supported
+/// placement range of the resolve/expand path**, and it is much smaller than the
+/// ±~8×10⁹-block range the `narrow_chunk_coord` audit (S4a, ADR 0002 Decision 2) states.
+///
+/// The two are not in conflict by accident — the S4a audit is correct about what it
+/// actually bounds, and the gap is a step it does not take. It proves the CHUNK
+/// COORDINATE fits `i32`, which it does precisely because a chunk coordinate is a voxel
+/// index DIVIDED by the chunk extent. The expansion then multiplies back by that same
+/// extent to rebase each voxel, so the quantity finally stored is `chunk_extent` times
+/// larger than the one proved safe. Bounding a quotient says nothing about the product
+/// it came from.
+///
+/// Concretely, at the stated ±8×10⁹ blocks the absolute voxel index overruns `i32` by
+/// **4× at density 1 and 238× at density 64**, and the `as i32` wraps rather than
+/// saturating — so a far-placed voxel would be stamped at a plainly wrong position, and
+/// two chunks a multiple of 2³² voxels apart would alias onto the SAME `local_index`.
+///
+/// Not reachable through the UI: at density 64 this still allows ±3.3×10⁷ blocks, and a
+/// chiselling scene is tens to thousands. It is recorded and proved rather than fixed
+/// because the cast sits in the innermost expansion loop, and because the useful output
+/// is the honest bound, not a branch. See the `kani_proofs` module below.
+pub fn max_supported_block_offset(voxels_per_block: u32) -> i64 {
+    MAX_LOCAL_VOXEL_INDEX / voxels_per_block.max(1) as i64
+}
+
+/// Whether a rebased absolute voxel index still fits the `i32`
+/// [`crate::voxel::Voxel::local_index`] — i.e. whether the expansion's `as i32` is
+/// lossless for it. The bound [`max_supported_block_offset`] names in blocks, in voxels.
+#[inline]
+pub fn local_voxel_index_fits(absolute_voxel_index: i64) -> bool {
+    absolute_voxel_index >= i32::MIN as i64 && absolute_voxel_index <= MAX_LOCAL_VOXEL_INDEX
+}
+
+/// Bounded model checking of the frame-rebase cast (ADR 0008): the expansion rebases a
+/// chunk-local voxel into the recentred frame in `i64`, then stamps it into an `i32`
+/// `local_index` with an unchecked `as`. These harnesses establish exactly where that is
+/// lossless and exactly where it stops being so.
+///
+/// This is the same shape as the `substrate::interval::rational` overflow harnesses and
+/// the `FieldInterval` endpoint ones: a documented deviation that a deductive or algebraic
+/// model could not see, because a proof over mathematical integers has no `i32` to overflow.
+///
+/// `#[cfg(kani)]` keeps them out of ordinary builds. Run under WSL:
+/// `cargo kani -p voxel_core -j --output-format=terse`, or via `verification/run-all.sh`.
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    /// The expansion's rebase arithmetic, verbatim from
+    /// `two_layer_store::chunk::stamped_voxel` + `stream::stream_chunk_recentred`:
+    /// `index_offset = chunk_coord·chunk_extent − recentre`, then `chunk_local + offset`.
+    fn rebased_index(chunk_coord: i64, density: i64, recentre: i64, chunk_local: i64) -> i64 {
+        chunk_local + (chunk_coord * (CHUNK_BLOCKS as i64 * density) - recentre)
+    }
+
+    /// **Within the envelope the cast is LOSSLESS.** If the rebased index satisfies
+    /// [`local_voxel_index_fits`], the `as i32` the expansion performs round-trips exactly —
+    /// the stamped `local_index` IS the absolute voxel index, so every consumer reading it
+    /// back gets the position the evaluator meant.
+    #[kani::proof]
+    fn local_index_cast_is_lossless_within_the_envelope() {
+        let rebased: i64 = kani::any();
+        kani::assume(local_voxel_index_fits(rebased));
+        assert!(rebased as i32 as i64 == rebased);
+    }
+
+    /// **The envelope is TIGHT, in the units the range is stated in.** For a density in the
+    /// supported `1..=64` band, a block offset within [`max_supported_block_offset`] rebases
+    /// to an index the cast carries losslessly — and the bound is exact: one block further
+    /// overruns, at every density in the band.
+    #[kani::proof]
+    fn the_supported_block_offset_bound_is_sound_and_tight() {
+        let density: u32 = kani::any();
+        kani::assume(density >= 1 && density <= 64);
+        let block_offset: i64 = kani::any();
+        let limit = max_supported_block_offset(density);
+        kani::assume(block_offset >= -limit && block_offset <= limit);
+
+        // A voxel at `block_offset` blocks from the frame origin sits at this voxel index.
+        let voxel_index = block_offset * density as i64;
+        assert!(local_voxel_index_fits(voxel_index));
+        assert!(voxel_index as i32 as i64 == voxel_index);
+        // Tight in BOTH directions, with no per-density escape: one block past the limit
+        // leaves the envelope. (Sound at density 1 too, where the limit is `i32::MAX` and
+        // `(limit + 1)` is exactly the first unrepresentable index.)
+        assert!(!local_voxel_index_fits((limit + 1) * density as i64));
+    }
+
+    /// The same soundness statement over the PRODUCTION arithmetic rather than an abstract
+    /// index: the chunk rebase `chunk_local + (chunk_coord·chunk_extent − recentre)` that
+    /// `stream_chunk_recentred` + `stamped_voxel` actually perform is lossless whenever its
+    /// result is in the envelope, and — the part worth checking — the `i64` it computes in
+    /// cannot itself overflow for any chunk coordinate `narrow_chunk_coord` can produce.
+    #[kani::proof]
+    fn the_production_rebase_stays_within_i64_and_casts_losslessly() {
+        let chunk_coord: i32 = kani::any();
+        let density: u32 = kani::any();
+        kani::assume(density >= 1 && density <= 64);
+        // A chunk-local voxel index, bounded by one chunk's extent.
+        let chunk_local: i64 = kani::any();
+        kani::assume(chunk_local >= 0 && chunk_local < CHUNK_BLOCKS as i64 * density as i64);
+        // The recentre is a raw carried `i64`; bound it to the same scale the chunk term can
+        // reach, which is what any minted recentre satisfies (it is a composite extent
+        // midpoint, not an arbitrary word).
+        let recentre: i64 = kani::any();
+        kani::assume(recentre > -(1i64 << 48) && recentre < (1i64 << 48));
+
+        // No `i64` overflow anywhere in the rebase: the chunk term is at most
+        // 2^31 · (4 · 64) = 2^39, and the recentre is bounded to 2^48.
+        let rebased = rebased_index(chunk_coord as i64, density as i64, recentre, chunk_local);
+
+        // Within the envelope, the stamp the expansion performs is exact.
+        if local_voxel_index_fits(rebased) {
+            assert!(rebased as i32 as i64 == rebased);
+        }
+    }
+
+    /// **Outside the envelope the cast WRAPS rather than saturating** — the failure mode is a
+    /// voxel stamped at a wrong position, not a dropped one. Stated as the concrete aliasing
+    /// witness: two chunk coordinates exactly 2³² voxels apart collide onto one `local_index`.
+    /// This is what makes the bound worth naming rather than leaving implicit.
+    #[kani::proof]
+    fn beyond_the_envelope_distinct_voxels_alias() {
+        let rebased: i64 = kani::any();
+        // Keep the shifted value in range so the `+ 2^32` cannot itself overflow `i64`.
+        kani::assume(rebased > -(1i64 << 40) && rebased < (1i64 << 40));
+        let shifted = rebased + (1i64 << 32);
+        // Distinct absolute indices, identical stamped index: silent aliasing.
+        assert!(shifted != rebased);
+        assert!(shifted as i32 == rebased as i32);
+    }
+}
+
+#[cfg(test)]
+mod frame_envelope_tests {
+    use super::*;
+
+    /// The Kani harnesses above are `#[cfg(kani)]` and therefore invisible to `cargo test`;
+    /// this is the always-on check that the shipping constants still say what they prove.
+    #[test]
+    fn the_supported_block_offset_matches_the_i32_local_index() {
+        // The documented figures in `max_supported_block_offset`'s doc comment.
+        assert_eq!(max_supported_block_offset(1), 2_147_483_647);
+        assert_eq!(max_supported_block_offset(64), 33_554_431);
+        // A zero density is treated as 1 (the `.max(1)` the resolve applies everywhere).
+        assert_eq!(max_supported_block_offset(0), max_supported_block_offset(1));
+
+        for density in [1u32, 4, 16, 32, 64] {
+            let limit = max_supported_block_offset(density);
+            let last = limit * density as i64;
+            assert!(local_voxel_index_fits(last), "density {density}: limit must fit");
+            assert_eq!(last as i32 as i64, last, "density {density}: cast must be lossless");
+            assert!(
+                !local_voxel_index_fits((limit + 1) * density as i64),
+                "density {density}: the bound must be TIGHT"
+            );
+        }
+    }
+
+    /// The gap this bound was written to record: the S4a audit's ±8×10⁹-block figure is a
+    /// bound on the chunk COORDINATE, and the expansion multiplies back by the chunk extent.
+    /// If someone ever widens `local_index` past `i32`, this test is the reminder to revisit
+    /// ADR 0008's amendment and `narrow_chunk_coord`'s correction note.
+    #[test]
+    fn the_s4a_stated_range_does_not_fit_the_local_index() {
+        let s4a_stated_blocks: i64 = 8_000_000_000;
+        for (density, expected_overrun) in [(1u32, 3), (64u32, 238)] {
+            let voxel_index = s4a_stated_blocks * density as i64;
+            assert!(
+                !local_voxel_index_fits(voxel_index),
+                "density {density}: the stated S4a range must NOT fit local_index"
+            );
+            assert!(
+                voxel_index / MAX_LOCAL_VOXEL_INDEX >= expected_overrun,
+                "density {density}: overrun should be at least {expected_overrun}x"
+            );
+        }
+    }
+}
+
 /// Procedural material choice. Selects which procedural texture (Stone/Wood/
 /// Plain) binds in the M4 texture-slice shader.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]

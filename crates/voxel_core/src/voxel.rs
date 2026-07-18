@@ -234,30 +234,17 @@ impl VoxelGrid {
         self.occupied.len()
     }
 
-    /// The local `[0, dimensions)` voxel index of the voxel whose centre sits at
-    /// `world_position`, decoded with this grid's CARRIED [`recentre_voxels`] rather than
-    /// a re-derived `floor(dim/2)`.
-    ///
-    /// **ADR 0008 (the voxel-frame invariant): the SINGLE world→index decode authority.**
-    /// A producer corner-anchors each centre at `idx + 0.5`, then the resolve subtracts
-    /// `recentre_voxels`, so `world = idx + 0.5 − recentre`; this inverts that exactly for
-    /// any dimension parity. Because the recentre is *carried* (not assumed), a centred
-    /// placed Tool (`recentre = floor(dim/2)`) and a corner-anchored VoxelBody-only
-    /// `DebugClouds` (`recentre = [0,0,0]`) BOTH decode into `[0, dimensions)` — the
-    /// divergence that, with a hard-coded `floor(dim/2)`, dropped ~7/8 of a corner-
-    /// anchored cloud field. For a centred grid this reduces to the historical
-    /// `round(world + floor(dim/2) − 0.5)`, so placed scenes are byte-identical. The
-    /// result may fall outside `[0, dimensions)` for a stray position — callers
-    /// bounds-check.
-    ///
-    /// [`recentre_voxels`]: VoxelGrid::recentre_voxels
-    pub fn voxel_index_of(&self, world_position: [f32; 3]) -> [i64; 3] {
-        [
-            (world_position[0] + self.recentre_voxels[0] as f32 - 0.5).round() as i64,
-            (world_position[1] + self.recentre_voxels[1] as f32 - 0.5).round() as i64,
-            (world_position[2] + self.recentre_voxels[2] as f32 - 0.5).round() as i64,
-        ]
-    }
+    // `voxel_index_of` — ADR 0008's world→index decode authority — was DELETED 2026-07-18.
+    // Its last consumer was the per-chunk volumetric fog, which ADR 0012 removed along with
+    // the rest of the fog subsystem; a survey found zero callers left in the tree, not even
+    // a test. The half of ADR 0008 that still binds is the CARRY half: `recentre_voxels`
+    // below travels with the grid, and the two-layer expansion applies it (see
+    // `core_geom::max_supported_block_offset` for the range over which that rebase is
+    // lossless). Nothing decodes world→index any more, because nothing holds a world
+    // position to decode — `Voxel` stores an integer `local_index` (ADR 0003 §3a) and f32 is
+    // produced only at consumption. Restore from git history if a consumer reappears; do not
+    // re-inline a `round(world + floor(dim/2) − 0.5)` at a call site, which is the (c)
+    // re-derive ADR 0008 forbids.
 
     /// Measure the widest occupied voxel run (the diameter readout, issue #12),
     /// restricted to the layers `[band_min, band_max]` (inclusive) along Z (Z-up:

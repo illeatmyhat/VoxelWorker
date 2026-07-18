@@ -28,8 +28,8 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VERIFICATION_DIR="$REPO_ROOT/verification"
 
-# Crates carrying `#[cfg(kani)]` harnesses. Both are wgpu-free, hence CBMC-analyzable.
-KANI_CRATES=(substrate raycast)
+# Crates carrying `#[cfg(kani)]` harnesses. All are wgpu-free, hence CBMC-analyzable.
+KANI_CRATES=(substrate raycast voxel_core)
 
 run_lean=1
 run_verus=1

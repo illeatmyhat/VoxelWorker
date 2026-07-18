@@ -14,7 +14,7 @@ binary still implements it.
 
 | Tier | Tool | Lives | Proves |
 | --- | --- | --- | --- |
-| **BMC** | **Kani** 0.67.0 | inline `#[cfg(kani)] mod kani_proofs` in `crates/{substrate,raycast}` | finite bit/index/arithmetic kernels over their whole *bounded* input space |
+| **BMC** | **Kani** 0.67.0 | inline `#[cfg(kani)] mod kani_proofs` in `crates/{substrate,raycast,voxel_core}` | finite bit/index/arithmetic kernels over their whole *bounded* input space |
 | **Deductive** | **Verus** 0.2026.07.12 | `verification/verus/*.rs` | **stateful** invariants via loop/data invariants (unbounded), where BMC's unrolling explodes |
 | **Algebraic** | **Lean** 4.32.0 | `verification/lean/*.lean` | theorems over **unbounded/exact** domains (all `Int`, rationals, fold/frame algebra) |
 
@@ -70,11 +70,12 @@ Measured 2026-07-18 (`-j`, warm build):
 
 | tier | time | scope |
 | --- | --- | --- |
-| Lean | 2 s | 4 files |
-| Verus | 6 s | 4 files, 26 obligations |
-| Kani `raycast` | 4 s | 5 harnesses |
+| Lean | 4 s | 4 files |
+| Verus | 4 s | 4 files, 26 obligations |
+| Kani `raycast` | 3 s | 5 harnesses |
+| Kani `voxel_core` | 2 s | 4 harnesses |
 | **Kani `substrate`** | **85 s** | 20 harnesses |
-| **total** | **93 s** | |
+| **total** | **98 s** | |
 
 **The deductive and algebraic tiers are effectively free** — 6 s for all 34 proofs, so `--quick` can
 run per commit without anyone noticing. Kani is ~90% of the cost, and within Kani the distribution is
@@ -220,8 +221,23 @@ of them need it:
    a documented precondition. Closed as out-of-scope, not deferred.
 3. **Pyramid superset** — DONE core-only, `lean/Pyramid.lean` (see above). The prior held: it is
    integer and order reasoning, `omega` plus a hand-rolled dedup model, 1 s to check.
-4. **Voxel-frame algebra (ADR 0008)** — the last one, still open. Same integer/order shape; expect
-   the same answer, and attempt it core-only first.
+4. **Voxel-frame algebra (ADR 0008)** — **dissolved on inspection, 2026-07-18.** As scoped ("the
+   compose/invert laws") it is `(x − r) + r = x` over exact integers: one `omega` line proving
+   something nobody could get wrong, because a frame transform here is a *translation* and
+   translations have no interesting algebra. Investigating it instead found two real things, and
+   neither was a Lean target:
+   - ADR 0008's decode authority `VoxelGrid::voxel_index_of` had **zero live callers** — its only
+     consumer was the fog ADR 0012 deleted. Removed; the ADR carries a 2026-07-18 amendment.
+   - The surviving rebase stamps an `i64` index into an **`i32`** `local_index` with an unchecked
+     `as`, and the S4a audit that supposedly covers it bounds the chunk COORDINATE — a voxel index
+     *divided* by the chunk extent — while the expansion multiplies back by that extent. The real
+     envelope is `voxel_core::core_geom::max_supported_block_offset`, now Kani-proved (4 harnesses,
+     2 s) and unit-tested. **Bounding a quotient says nothing about the product it came from.**
+
+   This is the third time a "Lean/mathlib" target turned out to live in the machine representation
+   (after `FieldInterval`, and the `Rational` limb overflows before it). **Pick the tier by where
+   the defect can live, not by how mathematical the statement sounds** — a proof over mathematical
+   integers has no `i32` to overflow, so it would have certified exactly the code that is wrong.
 
 **Treat "needs mathlib" as a hypothesis to test cheaply, never as a gate.** It was asserted this week
 for floor/ceil, for gcd reduction, and for `FieldInterval` conservatism; all three landed without it.

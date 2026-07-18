@@ -193,8 +193,17 @@ impl Scene {
 /// 64 voxels, so a block offset of ±10⁹ yields a chunk coord of only ±2.5×10⁸,
 /// comfortably inside i32 (±2.1×10⁹). Keeping the chunk coord / cache key i32 is
 /// therefore safe and avoids widening the whole chunk index. A coordinate that
-/// would not fit i32 means a block offset past ~±8×10⁹ — beyond the supported
-/// range — and is clamped (debug-asserted) rather than silently wrapping.
+/// would not fit i32 means a block offset past ~±8×10⁹ and is clamped
+/// (debug-asserted) rather than silently wrapping.
+///
+/// **Correction 2026-07-18 — ±8×10⁹ is NOT the supported placement range.** This audit is
+/// sound about what it bounds (the chunk coordinate) but that is a voxel index DIVIDED by
+/// the chunk extent, and the two-layer expansion multiplies back by that extent to rebase
+/// each voxel into an `i32` `local_index`. Bounding the quotient says nothing about the
+/// product: at ±8×10⁹ blocks the voxel index overruns `i32` by 4× at density 1 and 238× at
+/// density 64. The real range is [`voxel_core::core_geom::max_supported_block_offset`]
+/// (±3.3×10⁷ blocks at density 64), which is what the expansion's unchecked `as i32`
+/// actually tolerates — Kani-proved there. See ADR 0008's 2026-07-18 amendment.
 fn narrow_chunk_coord(chunk_coord: i64) -> i32 {
     debug_assert!(
         chunk_coord >= i32::MIN as i64 && chunk_coord <= i32::MAX as i64,
