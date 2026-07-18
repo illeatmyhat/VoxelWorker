@@ -256,7 +256,10 @@ slices (extend as verification work surfaces more):
   *Interval arithmetic and recursive subdivision for implicit functions and constructive solid
   geometry* (exactly our classify-under-CSG use); Hart 1996 (Lipschitz/sphere-tracing bound).
 - `DisjointIntervalSet` — union-of-intervals folklore; CLRS interval material; interval-set
-  containers (cf. Boost ICL); kept simple deliberately (sorted vec, splice merge).
+  containers (cf. Boost ICL); kept simple deliberately (sorted vec, splice merge). `widest_span`
+  SATURATES: `insert` accepts any `lo < hi`, so a legal set can hold an interval whose true width
+  (`2^64 − 1` for `[i64::MIN, i64::MAX)`) does not fit an `i64`, and the plain `hi - lo` overflowed
+  and panicked. Found 2026-07-18 by Kani (`widest_span_does_not_overflow_on_a_legal_interval`, 0.5 s).
 - `GreedyCuboidDecomposition` — greedy meshing lineage (Lysenko, "Meshing in a Minecraft
   Game", 0fps 2012); optimal rectilinear box cover is NP-hard (Soltan & Gorpinevich 1993) —
   greedy non-minimal is the informed choice, cite the hardness result to justify it.

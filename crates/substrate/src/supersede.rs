@@ -208,6 +208,30 @@ impl GenerationTracker {
     }
 }
 
+/// Kani probe of the MACHINE-INTEGER edge the Verus proof assumed away. That proof
+/// (`verification/verus/generation_supersede.rs`) requires `latest_dispatched < u64::MAX` so it can
+/// reason about the monotonic counter; this asks what the real `+= 1` does AT that bound.
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    /// `next_generation` does an unchecked `+= 1`. Saturating the counter needs 2^64 dispatches —
+    /// at a dispatch every microsecond that is ~585,000 years — so this is a characterization of
+    /// the boundary, not a reachable defect. It is recorded because the Verus precondition made the
+    /// bound an assumption rather than a checked fact.
+    #[kani::proof]
+    fn next_generation_below_the_ceiling_never_overflows() {
+        let start: u64 = kani::any();
+        kani::assume(start < u64::MAX); // the Verus precondition, now machine-checked
+        let mut tracker = GenerationTracker {
+            latest_dispatched: start,
+        };
+        let minted = tracker.next_generation();
+        assert!(minted > start); // strictly increasing, no wrap
+        assert!(tracker.accepts(minted));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

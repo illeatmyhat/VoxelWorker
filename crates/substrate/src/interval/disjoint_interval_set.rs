@@ -53,10 +53,16 @@ impl DisjointIntervalSet {
 
     /// The width of the widest stored interval (`max(hi − lo)`), or `0` when empty.
     /// Because the set is kept minimal, this IS the widest contiguous run it covers.
+    ///
+    /// The width **saturates at `i64::MAX`**. `insert` accepts any `lo < hi`, so a caller may store
+    /// an interval whose true width does not fit an `i64` — the span of `[i64::MIN, i64::MAX)` is
+    /// `2^64 − 1` — and a plain `hi - lo` would overflow and panic there. Saturating keeps this
+    /// total over every set the public API can build; in the voxel-coordinate workloads it serves,
+    /// widths are bounded by the grid, so the saturating case is unreachable and the value exact.
     pub fn widest_span(&self) -> i64 {
         self.intervals
             .iter()
-            .map(|&(lo, hi)| hi - lo)
+            .map(|&(lo, hi)| hi.saturating_sub(lo))
             .max()
             .unwrap_or(0)
     }
@@ -110,6 +116,33 @@ impl DisjointIntervalSet {
 // decision-6) assigns this stateful invariant to a DEDUCTIVE prover (Creusot/Verus), not Kani;
 // it waits for that tier to be stood up. The unit tests below pin the behaviour meanwhile.
 
+/// Kani probes of the MACHINE-INTEGER edges of this type — the edges the Verus proof of `insert`
+/// deliberately assumed away in its preconditions, and which the deductive tier therefore never
+/// examined. (`verification/verus/disjoint_interval_set_insert.rs` proves the normalization
+/// invariant; `verification/verus/widest_span.rs` proves the max-fold, but takes PRE-COMPUTED
+/// non-negative widths, so the `hi - lo` subtraction below was never modelled at all.)
+///
+/// Note this does NOT contradict the NOTE above about `insert` not being a Kani target: these
+/// harnesses insert into an EMPTY set, which takes the O(1) push fast path and never reaches the
+/// `Vec::splice` that exploded BMC.
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    /// `widest_span` computes `hi - lo` on `i64`. A maximally wide interval is legal input to
+    /// `insert` (`lo < hi` is the only constraint), so this asks whether the subtraction can
+    /// overflow on a set built entirely through the public API.
+    #[kani::proof]
+    fn widest_span_does_not_overflow_on_a_legal_interval() {
+        let lo: i64 = kani::any();
+        let hi: i64 = kani::any();
+        kani::assume(lo < hi); // the type's own notion of a non-empty interval
+        let mut set = DisjointIntervalSet::new();
+        set.insert(lo, hi);
+        let _ = set.widest_span();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -162,6 +195,27 @@ mod tests {
         set.insert(0, 2); // strictly left of the last run
         set.insert(4, 6); // between, disjoint
         assert_eq!(set.intervals(), &[(0, 2), (4, 6), (10, 12)]);
+    }
+
+    /// A maximally wide interval is legal input to `insert` (`lo < hi` is the only constraint), but
+    /// its true width (`2^64 − 1`) does not fit an `i64`, so the plain `hi - lo` used to overflow
+    /// and PANIC here. Found by the Kani harness
+    /// `widest_span_does_not_overflow_on_a_legal_interval`; the width now saturates.
+    #[test]
+    fn widest_span_saturates_instead_of_overflowing() {
+        let mut set = DisjointIntervalSet::new();
+        set.insert(i64::MIN, i64::MAX);
+        assert_eq!(set.widest_span(), i64::MAX, "saturates rather than panicking");
+
+        // One step in from the boundary still overflows a plain subtraction, and still saturates.
+        let mut nearly = DisjointIntervalSet::new();
+        nearly.insert(i64::MIN + 1, i64::MAX);
+        assert_eq!(nearly.widest_span(), i64::MAX);
+
+        // Ordinary widths are unaffected — the value is exact wherever it fits.
+        let mut ordinary = DisjointIntervalSet::new();
+        ordinary.insert(-5, 7);
+        assert_eq!(ordinary.widest_span(), 12);
     }
 
     #[test]
