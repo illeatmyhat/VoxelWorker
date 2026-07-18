@@ -1,7 +1,9 @@
 # ADR 0020 — The field trait, half-space cutters, and emboss
 
-- **Status:** Accepted (2026-07-18 — design grill; **implementation not started**). Builds
-  on ADR 0019 (the field layer) and extends ADR 0017's `CombineOp`. Alters no ADR 0017 law:
+- **Status:** Accepted (2026-07-18 — design grill; **implementation not started**).
+  **Decision 1's premise corrected by ADR 0021**: `DebugCloudField` is *not* fieldless, and
+  the `Option` on `as_field` rests on freehand sculpt instead. The trait shape is unchanged.
+  Builds on ADR 0019 (the field layer) and extends ADR 0017's `CombineOp`. Alters no ADR 0017 law:
   the new arm reads the accumulator and nothing else, so ordered-DFS-with-no-operand-
   targeting stands.
 - **Date:** 2026-07-18

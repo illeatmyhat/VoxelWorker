@@ -201,6 +201,12 @@ op-stack field (see `docs/adr/0011`; generalizes the ADR 0007 fog atlas).
   square** (they are polygonal once flattened), **curved primitives outset round** (no
   closed-form L∞ distance exists for them). A measurement, not an integer voxel count.
 
+- **Displacement** — perturbing a body's field by a bounded noise, giving surfaces that
+  parametric primitives cannot express: weathered stone, eroded edges, irregular rock. It
+  costs no new classification machinery — a displaced body's cell bracket is the undisplaced
+  one widened by the displacement amplitude, the same interval arithmetic outset performs in
+  one direction rather than two.
+
 - **Emboss** — raising or recessing the accumulated surface within a cutter's footprint,
   rather than adding or removing the cutter's own volume. A signed amount: outward raises,
   inward engraves. Like subtract it reads everything accumulated before it and nothing else,
