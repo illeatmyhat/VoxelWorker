@@ -250,6 +250,14 @@ fn greatest_common_divisor(mut first: u128, mut second: u128) -> u128 {
 ///   commuting and the gcd is irrelevant to it — ~21 minutes of solving for no information about
 ///   this code. Replaced by a unit test (which catches the transposition typo that was the only real
 ///   risk) plus the overflow-envelope harness above, which proves something genuinely unknown.
+/// * **`unwind` must be DERIVED, not guessed — this dominated everything else.** A guessed
+///   `unwind(31)` over `±200` made the reduction anchor take **462 s, 99% of the entire `substrate`
+///   Kani tier**; Lamé's bound gives `unwind(10)` at `±64`, taking it to 72 s and the whole
+///   three-tier battery from 479 s to 94 s. Guessing LOW is safe (loud unwinding-assertion failure);
+///   guessing HIGH is silently expensive.
+/// * **Profile before theorizing.** The envelope harness above was predicted to cost ~290 s from
+///   arithmetic on totals; measured, it is **3.8 s**. Pair each `Thread N: Checking harness <name>`
+///   line with that thread's `Verification Time` — terse output does carry the attribution.
 ///
 /// So: before optimizing a slow harness, check it is worth running at all; then cut loop chains out
 /// of the HARNESS before touching production code. Rejected on purpose: a binary/Stein gcd (a subtler
@@ -273,15 +281,25 @@ mod kani_proofs {
     /// case. Overflow-freedom is NOT the interesting claim at this bound (it is trivially true);
     /// the real `i128` boundary is probed separately below.
     /// `new` is overflow-free and produces canonical form (positive, gcd-reduced denominator) over
-    /// the whole measurement domain — the reduction proved abstractly in `RationalReduce.lean`, now
-    /// on the real `i128` code with the overflow checks live.
+    /// the measurement domain. This is the ANCHOR tying `lean/RationalReduce.lean` — which proves
+    /// coprime reduction for ALL naturals — to the real `i128` code with the overflow checks live,
+    /// so a modest domain does the job; the unbounded claim lives in the Lean proof and the extremes
+    /// in `new_handles_the_i128_min_boundary_without_overflow`.
+    ///
+    /// The `unwind` bound is DERIVED, not guessed. By Lamé's theorem, Euclid's worst case for a
+    /// given magnitude is a consecutive Fibonacci pair; under 64 that is `(55, 34)`, which takes 8
+    /// iterations, so 10 covers it with margin. This matters: every surplus unwind inlines another
+    /// full 128-bit division circuit, and this harness runs TWO gcd chains (inside `new`, and the
+    /// coprimality assertion). A guessed `unwind(31)` over `±200` cost 462 s — 99% of the whole
+    /// `substrate` Kani tier. Setting it too low fails loudly with an unwinding assertion, so
+    /// deriving it is safe.
     #[kani::proof]
-    #[kani::unwind(31)]
+    #[kani::unwind(10)]
     fn new_is_overflow_free_and_reduced_in_the_measurement_domain() {
         let numerator: i128 = kani::any();
         let denominator: i128 = kani::any();
-        kani::assume(numerator >= -200 && numerator <= 200);
-        kani::assume(denominator >= 1 && denominator <= 200);
+        kani::assume(numerator >= -64 && numerator <= 64);
+        kani::assume(denominator >= 1 && denominator <= 64);
         let reduced = Rational::new(numerator, denominator).unwrap();
         assert!(reduced.denominator() >= 1);
         assert!(

@@ -73,13 +73,31 @@ Measured 2026-07-18 (`-j`, warm build):
 | Lean | 4 s | 3 files |
 | Verus | 4 s | 4 files, 26 obligations |
 | Kani `raycast` | 4 s | 5 harnesses |
-| **Kani `substrate`** | **467 s** | 16 harnesses |
-| **total** | **479 s** | |
+| **Kani `substrate`** | **82 s** | 16 harnesses |
+| **total** | **94 s** | |
 
 **The deductive and algebraic tiers are effectively free** — 8 s for all 30 proofs, so `--quick` can
-run per commit without anyone noticing. The entire cost is Kani on `substrate`, and within it a
-couple of harnesses dominate (see the cost lesson in `interval/rational.rs`'s `kani_proofs` doc). A
-multi-minute pass on every PR gets resented and then disabled, and nightly would burn runner minutes
+run per commit without anyone noticing. Kani is ~90% of the cost, and within Kani the distribution is
+extremely skewed: profile before optimizing.
+
+### Derive `unwind` from Lamé's theorem, do not guess it
+
+The battery was **479 s** until a single harness was fixed. `new_is_overflow_free_and_reduced_in_the
+_measurement_domain` took **462 s — 99% of the whole `substrate` tier** — because its `unwind` was
+guessed at 31 over a `±200` domain. Every surplus unwind inlines another full **128-bit division
+circuit**, and that harness runs two gcd chains (inside `new`, and the coprimality assertion).
+
+By **Lamé's theorem** the worst case for Euclid's step count at a given magnitude is a consecutive
+Fibonacci pair, so the bound is computable: under 64 that is `(55, 34)` → 8 iterations → `unwind(10)`.
+Retuning to `±64` / `unwind(10)` took that harness to **72 s** and the battery to **94 s (5.1×)**.
+Setting `unwind` too LOW fails loudly with an unwinding assertion, so deriving it is safe — guessing
+high is the silently expensive direction.
+
+Profile with `cargo kani -p <crate> -j --output-format=terse` and pair each
+`Thread N: Checking harness <name>` line with that thread's `Verification Time` — terse output does
+carry the attribution.
+
+A multi-minute pass on every PR gets resented and then disabled, and nightly would burn runner minutes
 on days nothing in the proven crates moved. An **epic boundary** is the right trigger for the full
 run: it is this repo's unit of work, and it fires exactly when the proven code has actually changed.
 
