@@ -1,7 +1,8 @@
 # ADR 0019 — The field layer: profiles, metrics, and outset
 
 - **Status:** Accepted (2026-07-18 — design grill; **implementation not started**).
-  Extends ADR 0017's ordered fold with a named seam beneath it. Does not alter any ADR 0017
+  **Extended by ADR 0020**, which settles the boolean sugar Decision 10 left open and fixes
+  the field trait shape. Extends ADR 0017's ordered fold with a named seam beneath it. Does not alter any ADR 0017
   law: the fold stays ordered DFS with no operand targeting, Groups and definition bodies
   stay sealed scopes, fixtures stay def-level flags with positional hosts, and
   `Subtract`/`Intersect` stay occupancy-only masks. Confirms and depends on ADR 0011's

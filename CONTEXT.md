@@ -201,6 +201,17 @@ op-stack field (see `docs/adr/0011`; generalizes the ADR 0007 fog atlas).
   square** (they are polygonal once flattened), **curved primitives outset round** (no
   closed-form L∞ distance exists for them). A measurement, not an integer voxel count.
 
+- **Emboss** — raising or recessing the accumulated surface within a cutter's footprint,
+  rather than adding or removing the cutter's own volume. A signed amount: outward raises,
+  inward engraves. Like subtract it reads everything accumulated before it and nothing else,
+  so it needs no operand selection — but it reads that accumulation *twice*, which is why it
+  is a combine operation in its own right and not a shorthand for a sequence of others.
+
+- **Half-space** — a cutter that is one side of a plane, unbounded by nature. Trivial as a
+  field and useless as a mesh, which is why mesh tools reach for an extrude-into-a-solid
+  trick and this one does not. Legal only under operations the accumulation bounds — it may
+  cut, mask or emboss, but never union, which would fill all space.
+
 ## Viewing
 
 - **View mode** — the scene viewer's exclusive rendering mode, one of exactly three:
