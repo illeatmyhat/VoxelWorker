@@ -599,12 +599,32 @@ impl VoxelProducer for SdfShape {
         );
         let circumradius = (extent * 0.5).length();
 
-        // Conservative Lipschitz constant: 1 for the truly-1-Lipschitz kinds, the
-        // semi-axis anisotropy for the ellipsoid / cylinder / tube whose gradient can
-        // steepen along the shorter axis. Always >= the true constant ⇒ never narrows.
+        // Conservative Lipschitz constant. Always >= the true constant ⇒ never narrows.
         let lipschitz_constant = match self.kind {
-            ShapeKind::Box | ShapeKind::Torus => 1.0,
-            ShapeKind::Sphere | ShapeKind::Cylinder | ShapeKind::Tube => {
+            // The elliptical CYLINDER and TUBE are exactly 1-Lipschitz, so they belong here
+            // with the box and torus rather than carrying the anisotropy widening (issue #62).
+            // The radial term is `(k − 1)·m` with `k = |(x/ax, y/ay)|` and `m = min(ax, ay)`;
+            // writing `u = (x/ax, y/ay)`, its gradient is
+            //     |∇k| = |(uₓ/ax, u_y/ay)| / |u| ≤ max(1/ax, 1/ay) = 1/m
+            // so `|∇radial| = m·|∇k| ≤ 1` — the `min(ax, ay)` scale factor exactly cancels the
+            // worst-case gradient along the SHORTER cross-section axis, which is precisely
+            // where the old widening feared it steepened. The axial term `|z| − half_height`
+            // is 1-Lipschitz outright, and `max` / `min` / the positive-part norm / negation
+            // all preserve the constant — so the tube's `outer.max(−inner)` is 1-Lipschitz too.
+            //
+            // Empirically confirmed before the change: the constant these kinds actually
+            // REQUIRE measures 0.93–1.00 across anisotropies to 32:1, never above 1. The old
+            // `max_semi / min_semi` was over-conservative by exactly the anisotropy factor
+            // (8–33× headroom), which is what suppressed interior elision for long cylinders.
+            ShapeKind::Box | ShapeKind::Torus | ShapeKind::Cylinder | ShapeKind::Tube => 1.0,
+            // The IQ ellipsoid is a genuine APPROXIMATION, not a true distance field, and its
+            // gradient really does blow up deep inside a thin shape — measured at 277 against
+            // a claimed 32 for a 32:1 ellipsoid, i.e. this widening is ALREADY an
+            // under-estimate. It survives on magnitude dominance (the field's whole range is
+            // bounded by the minor semi-axis while `L·R` scales with the major one), which the
+            // `strongly_anisotropic_sdf_cells_stay_sound_where_lipschitz_is_underestimated`
+            // parity test pins. Do NOT tighten this one; if anything it wants widening.
+            ShapeKind::Sphere => {
                 let largest = semi_axes.x.max(semi_axes.y).max(semi_axes.z);
                 let smallest = semi_axes.x.min(semi_axes.y).min(semi_axes.z);
                 if smallest > 0.0 {

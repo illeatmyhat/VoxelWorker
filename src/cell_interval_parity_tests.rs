@@ -248,12 +248,14 @@ fn sdf_cell_interval_never_misclassifies() {
 /// It also **measures which safety net is doing the work per kind**, which differs sharply
 /// between them and partly contradicts the issue's framing:
 ///
-/// * **Cylinder / Tube** — the required `L` is ~1.0 at EVERY anisotropy measured (up to 32:1),
-///   so the anisotropy widening is pure waste; headroom 8–33×. Nets (a)/(c) are not
-///   load-bearing here. Measured: an axis-separated bound (radial anisotropy only, dropping
-///   the axial `semi.z`) passes this whole parity suite and moves 200 cells Boundary→**Air**
-///   — but adds ZERO extra `CoarseSolid`, so it buys exterior skipping, not the *interior*
-///   elision the issue is named for. Worth knowing before taking the perf half.
+/// * **Cylinder / Tube** — the required `L` measured ~1.0 at EVERY anisotropy up to 32:1, so
+///   the anisotropy widening was pure waste (headroom 8–33×) and nets (a)/(c) were never
+///   load-bearing for them. **This was since acted on:** the elliptical cylinder is
+///   *provably* exactly 1-Lipschitz (the `min(ax,ay)` scale factor cancels the worst-case
+///   radial gradient — see `cell_field_interval`), and `Tube`'s `outer.max(−inner)` inherits
+///   it, so both now take `L = 1` outright rather than an axis-separated anisotropy. A
+///   64×4×4 cylinder went from **0 → 128** coarse interior blocks, 32×8×8 from 8 → 744; the
+///   isotropic control is unchanged, as it must be.
 /// * **Sphere** — the required `L` EXCEEDS the claimed one by ~8.7× (claimed 32, needed 277
 ///   for a 32:1 ellipsoid). The sphere bound is *already* an under-estimate; it is NOT
 ///   over-conservative and must NOT be tightened. Its soundness rests entirely on (a): the
