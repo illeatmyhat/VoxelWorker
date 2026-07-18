@@ -227,6 +227,203 @@ fn sdf_cell_interval_never_misclassifies() {
     );
 }
 
+/// **Issue #62 — interior soundness under an UNDER-ESTIMATED Lipschitz constant.**
+///
+/// The ADR 0010-core audit flagged that the SDF widening `L = max_semi / min_semi` is not
+/// actually an upper bound on the IQ-ellipsoid's gradient: deep inside a thin ellipsoid the
+/// true gradient runs far above it. Today that is still SOUND, but only via three
+/// circumstances the audit enumerated — (a) field magnitude dominates in the interior, (b)
+/// near the surface the gradient stays under the claimed `L`, and (c) for strongly
+/// anisotropic shapes the widened `L` makes every block `Boundary` anyway. The coverage gap
+/// was that `sdf_cell_interval_never_misclassifies` above fuzzes anisotropy only to 8:1 and
+/// asserts nothing about the interior branch.
+///
+/// One correction to the audit, measured rather than assumed: the existing test does NOT in
+/// fact "pass only because those cells come out Boundary" — a crude `L = 1` retune makes it
+/// fail on its `CoarseSolid` branch. So the gap is narrower than stated. What this test adds
+/// is (i) anisotropy to 32:1, (ii) explicit deep-interior coverage (628 fully-interior cells),
+/// and (iii) a guard that fires at the CONTAINMENT level, before any verdict goes wrong —
+/// which is a strictly earlier and more diagnosable failure than a misclassification.
+///
+/// It also **measures which safety net is doing the work per kind**, which differs sharply
+/// between them and partly contradicts the issue's framing:
+///
+/// * **Cylinder / Tube** — the required `L` is ~1.0 at EVERY anisotropy measured (up to 32:1),
+///   so the anisotropy widening is pure waste; headroom 8–33×. Nets (a)/(c) are not
+///   load-bearing here. Measured: an axis-separated bound (radial anisotropy only, dropping
+///   the axial `semi.z`) passes this whole parity suite and moves 200 cells Boundary→**Air**
+///   — but adds ZERO extra `CoarseSolid`, so it buys exterior skipping, not the *interior*
+///   elision the issue is named for. Worth knowing before taking the perf half.
+/// * **Sphere** — the required `L` EXCEEDS the claimed one by ~8.7× (claimed 32, needed 277
+///   for a 32:1 ellipsoid). The sphere bound is *already* an under-estimate; it is NOT
+///   over-conservative and must NOT be tightened. Its soundness rests entirely on (a): the
+///   interval `[f_c ± L·R]` is far wider than the field's whole range, because the range is
+///   bounded by the MINOR semi-axis while `L·R` scales with the MAJOR one.
+///
+/// So the assertion below is deliberately NOT "required L ≤ claimed L" — that is false, and
+/// asserting it would fail today. It is the property that actually holds and is load-bearing:
+/// **wherever the Lipschitz constant is under-estimated, the verdict must be `Boundary`.** A
+/// future tightening (the issue's perf half) that lets such a cell claim `Air`/`CoarseSolid`
+/// breaks this test, which is exactly the trap the audit asked to be caught.
+#[test]
+fn strongly_anisotropic_sdf_cells_stay_sound_where_lipschitz_is_underestimated() {
+    use glam::Vec3;
+    use voxel_core::voxel::signed_distance;
+
+    let density = 16u32;
+    // Anisotropy to 32:1 — the existing fuzz above reaches only 8:1.
+    let sizes: [[u32; 3]; 5] = [
+        [256, 32, 32],   // 8:1
+        [256, 16, 16],   // 16:1
+        [512, 16, 16],   // 32:1 — the sphere's worst under-estimate
+        [384, 96, 32],   // fully anisotropic, 12:1
+        [128, 128, 128], // isotropic control (claimed L == 1 == true L)
+    ];
+    let kinds = [ShapeKind::Sphere, ShapeKind::Cylinder, ShapeKind::Tube];
+
+    let mut underestimated_cells = 0u64;
+    let mut interior_cells = 0u64;
+    let mut checked = 0u64;
+
+    for &size in &sizes {
+        for &kind in &kinds {
+            let shape = SdfShape::from_voxels(kind, size, 1);
+            let dims = shape.grid_dimensions(density);
+            let half = Vec3::new(
+                dims[0] as f32 / 2.0,
+                dims[1] as f32 / 2.0,
+                dims[2] as f32 / 2.0,
+            );
+            let wall_voxels = (shape.wall_blocks * density) as f32;
+            let block = density as i64;
+            let mut z = 0i64;
+            while z < dims[2] as i64 {
+                let mut y = 0i64;
+                while y < dims[1] as i64 {
+                    let mut x = 0i64;
+                    while x < dims[0] as i64 {
+                        let cell = VoxelAabb::new(
+                            [x, y, z],
+                            [
+                                (x + block).min(dims[0] as i64),
+                                (y + block).min(dims[1] as i64),
+                                (z + block).min(dims[2] as i64),
+                            ],
+                        );
+                        let label = format!("SDF#62 {kind:?} {size:?}");
+                        // (1) The verdict must never disagree with brute force — the same
+                        // exactness gate as above, now at up to 32:1 anisotropy.
+                        assert_cell_bound_exact(&shape, cell, density, &label);
+
+                        if let Some(interval) = shape.cell_field_interval(cell, density) {
+                            checked += 1;
+                            // The Lipschitz constant this cell's samples ACTUALLY require.
+                            let centre = Vec3::new(
+                                (cell.min[0] + cell.max[0]) as f32 / 2.0 - half.x,
+                                (cell.min[1] + cell.max[1]) as f32 / 2.0 - half.y,
+                                (cell.min[2] + cell.max[2]) as f32 / 2.0 - half.z,
+                            );
+                            let field_at_centre =
+                                signed_distance(kind, centre, half, wall_voxels);
+                            // Recover the Lipschitz constant the PRODUCTION code actually
+                            // used, rather than duplicating its formula here: the interval is
+                            // `[f_c ± L·R]`, so `L = (max − min) / 2R`. Reading it back keeps
+                            // this guard correct across the very change it exists to police —
+                            // a copied formula would go stale the moment the bound is retuned
+                            // and would then silently compare against the OLD constant.
+                            let extent = Vec3::new(
+                                (cell.max[0] - cell.min[0]) as f32,
+                                (cell.max[1] - cell.min[1]) as f32,
+                                (cell.max[2] - cell.min[2]) as f32,
+                            );
+                            let circumradius = (extent * 0.5).length();
+                            let claimed_lipschitz = if circumradius > 1e-6 {
+                                (interval.maximum - interval.minimum) / (2.0 * circumradius)
+                            } else {
+                                f32::INFINITY
+                            };
+                            let mut required_lipschitz: f32 = 0.0;
+                            let mut every_sample_inside = true;
+                            for k in cell.min[2]..cell.max[2] {
+                                for j in cell.min[1]..cell.max[1] {
+                                    for i in cell.min[0]..cell.max[0] {
+                                        let sample = Vec3::new(
+                                            i as f32 + 0.5 - half.x,
+                                            j as f32 + 0.5 - half.y,
+                                            k as f32 + 0.5 - half.z,
+                                        );
+                                        let field =
+                                            signed_distance(kind, sample, half, wall_voxels);
+                                        if field > SURFACE_ISOLEVEL {
+                                            every_sample_inside = false;
+                                        }
+                                        // (2) Containment: the interval must bracket every
+                                        // in-cell sample. This is what net (a) buys, and it
+                                        // holds even where the Lipschitz constant does not.
+                                        assert!(
+                                            field >= interval.minimum && field <= interval.maximum,
+                                            "{label}: sample {field} escaped the interval \
+                                             {interval:?} (cell={cell:?})"
+                                        );
+                                        let travel = (sample - centre).length();
+                                        if travel > 1e-6 {
+                                            required_lipschitz = required_lipschitz
+                                                .max((field - field_at_centre).abs() / travel);
+                                        }
+                                    }
+                                }
+                            }
+                            if every_sample_inside {
+                                interior_cells += 1;
+                            }
+                            // (3) THE TRAP GUARD. Where the claimed constant is an
+                            // under-estimate, the interval is sound only by magnitude
+                            // dominance — so it must not be making a coarse claim. If a
+                            // future tightening lets one of these decide Air/CoarseSolid,
+                            // this fires.
+                            // 1% tolerance: for an ISOTROPIC shape the claimed constant is
+                            // exactly the true one (a real SDF has unit gradient), so the
+                            // measured value lands a few ULPs over it — 1.0000029 vs 1.0 —
+                            // which is float noise, not an under-estimate. The real ones are
+                            // ~8.7× over, so the separation is not delicate.
+                            if required_lipschitz > claimed_lipschitz * 1.01 {
+                                underestimated_cells += 1;
+                                assert_eq!(
+                                    interval.classify(SURFACE_ISOLEVEL),
+                                    FieldClassification::Boundary,
+                                    "{label}: cell needs Lipschitz {required_lipschitz} but only \
+                                     {claimed_lipschitz} is claimed, yet it made a COARSE claim \
+                                     — the under-estimate is now load-bearing (cell={cell:?}, \
+                                     interval={interval:?})"
+                                );
+                            }
+                        }
+                        x += block;
+                    }
+                    y += block;
+                }
+                z += block;
+            }
+        }
+    }
+
+    // Non-vacuity, both ways: the fuzz must actually reach cells where the constant is
+    // under-estimated (or guard (3) proves nothing), AND must actually cover deep-interior
+    // cells (the coverage gap the audit named).
+    assert!(
+        underestimated_cells > 0,
+        "no cell exercised an under-estimated Lipschitz constant — guard (3) is vacuous"
+    );
+    assert!(
+        interior_cells > 0,
+        "no fully-interior cell was covered — the audit's interior gap is still open"
+    );
+    eprintln!(
+        "SDF #62 interior soundness: {checked} cells ({interior_cells} fully interior, \
+         {underestimated_cells} with an under-estimated Lipschitz constant, all Boundary)"
+    );
+}
+
 #[test]
 fn sketch_extrude_cell_interval_never_misclassifies() {
     use document::sketch::{PlaneAxis, Sketch, SketchSolid};
