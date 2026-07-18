@@ -131,3 +131,21 @@ escape hatches; if you don't want things cut, put them after the subtract.*
 - The fixture splice is the one place instance identity and fold position interact;
   the implementation must keep ADR 0008's carried-frame discipline when the fixture's
   children enter the host fold under the instance transform.
+
+## Amendment 2026-07-18 — one cited intent-relative was mis-identified
+
+The Context section above names the sculpting lineage as "Dreams, MagicaCSG, normalMagic,
+Nijhoff's WebGPU editor". **normalMagic does not belong in that list.** It is a Blender
+add-on for mesh normal control (SpaghetMeNot, `normalmagic/2.0/`), not an SDF edit-list
+sculptor; its Boolean Pro replaces Blender's Boolean modifier to keep booleans from
+wrecking mesh shading. It was never among the systems the study actually examined — it
+was name-dropped into the lineage parenthetical and carried here.
+
+**The decision is unaffected.** The ordered-accumulator-within-a-scope convergence is
+established by Dreams, MagicaCSG, Nijhoff's editor and OpenSCAD independently; removing
+the fourth name changes no premise of Decisions 1–7. This amendment corrects the
+attribution rather than editing the record above.
+
+The study doc is corrected in place and now carries what normalMagic *is* worth reading
+for — per-cut **outset** as a borrowable authoring affordance, **slice mode** as an open
+question against the *junctions are parts* law. Neither is decided here.

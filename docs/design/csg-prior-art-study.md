@@ -63,7 +63,7 @@ Reinder Nijhoff's WebGPU SDF editor, MagicaCSG.
 
 **Findings, by lineage:**
 
-- **Dreams (closest intent-relative alongside MagicaCSG / normalMagic):** a sculpt is a
+- **Dreams (closest intent-relative alongside MagicaCSG):** a sculpt is a
   flat **ordered edit list** — "each edit only affects the edits made before it"; you
   protect geometry by placing it after the subtract. Pure ordered-accumulator, shipped
   at platform scale. Crucially, the scope is the **sculpt object**: a subtract in sculpt
@@ -112,3 +112,29 @@ accumulated before the instance), never a stored reference — no rehosting, no 
 voids, no operand UI. Sealed remains the default; the flag lives on the definition
 (being a fixture is what the part *is*); a fixture instance's own combine operation is
 inert.
+
+**Correction (2026-07-18) — normalMagic is not in this lineage.** Earlier revisions of
+this study and of ADR 0017 listed *normalMagic* among the SDF-sculptor intent-relatives.
+It is not one: normalMagic 2.0 is a **Blender add-on for mesh normal control**
+(SpaghetMeNot, `https://spaghetmenot.github.io/normalmagic/2.0/`), and its Boolean Pro is
+a Boolean-modifier replacement whose purpose is transferring custom normals so booleans
+do not wreck mesh shading. It was never one of the systems studied above, and the round-2
+ruling never rested on it — Dreams, MagicaCSG, Nijhoff's WebGPU editor and OpenSCAD carry
+that convergence on their own. Verified first-hand before removing the citation.
+
+It remains worth reading at the **authoring-affordance** level, where its boolean sugar
+is genuinely borrowable (mechanism is not — mesh-normal transfer has no voxel analogue):
+
+- **Outset** — expands the cutter mesh (with an even-thickness option) **per cut**, so one
+  cutter object is reused at different offsets across operations. The natural voxel
+  reading is a cutter dilated by N voxels before subtracting: clearance, tolerance, "cut
+  this but leave a 1-voxel lip". Composes onto the ordered fold without touching the
+  targeting law.
+- **Slice mode** — slices the source with the cutter, combining Intersect and Difference
+  into one output, with an **Inset** parameter offsetting the cutter inward on the
+  intersect half to leave a gap between the pieces. Open question, not a proposal: one
+  operation manufacturing a second body collides with *junctions are parts* and the
+  no-operand-targeting law — nothing in the current model names or owns the offspring.
+- **Boolean Extrude / Boolean Trim / Cut Groove** — named higher-level operations over the
+  boolean primitive; the same *primitives-as-sugar* pattern this project already applies
+  to the sketch→volume atom.
