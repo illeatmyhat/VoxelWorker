@@ -220,6 +220,76 @@ impl ShelfBinPack {
     }
 }
 
+/// Kani bounded-model-checking proof of [`ShelfBinPack::normalized_rect`]'s **half-texel inset
+/// invariant** — the sampling-correctness detail (module docs §"Gutter and half-texel inset"):
+/// for any valid placement the outer tile rect stays inside the unit square and the inset
+/// sampling window sits STRICTLY inside it and never inverts, so a `fract`-tiling consumer lands
+/// on texel centres and can never round out into the gutter (the bleed the whole gutter machinery
+/// exists to prevent). Proved over all small placements rather than the fixtures the unit test
+/// names.
+///
+/// The sibling [`ShelfBinPack::plan`] is deliberately NOT a Kani harness: it calls
+/// [`ShelfBinPack::tiles_per_shelf`], whose `f32::sqrt` is a foreign function CBMC cannot model,
+/// and it grows a `Vec` — the same bounded-model-checking limits that scope out the interval-set
+/// insert. `#[cfg(kani)]` keeps this inactive in ordinary builds. Run under WSL:
+/// `cargo kani -p substrate`.
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    /// A symbolic value in `1..=bound`.
+    fn positive_up_to(bound: u32) -> u32 {
+        let value: u32 = kani::any();
+        kani::assume(value >= 1 && value <= bound);
+        value
+    }
+
+    /// **The half-texel inset window sits strictly inside the outer tile rect, which itself lies
+    /// in the unit square.** For any tile that genuinely fits in the sheet (`inner + size <=
+    /// sheet` on each axis, `size >= 1`), `normalized_rect` yields `0 <= min <= max <= 1`,
+    /// `inset_min > min`, and `inset_max < max`, on both axes — the inset pulls in by a real
+    /// half-texel (`0.5/sheet >= 2^-11`, far above the `~2^-24` f32 ULP at these magnitudes, so the
+    /// strictness is robust to rounding). A consumer sampling the inset window therefore never
+    /// reads the outer edge, where interpolation could pull a texel out of the tile into its
+    /// gutter. (The window's non-inversion at a degenerate 1-px tile is left unasserted — there the
+    /// two inset edges collapse to within a rounding step, a case no real tile hits.)
+    ///
+    /// The sheet dimensions are the concrete powers of two `512 × 256` (the placement and tile
+    /// stay symbolic): dividing by a power of two is an EXACT f32 scaling, which keeps the SAT
+    /// solve fast — a symbolic sheet divisor is a general f32 divide and pushed the same proof past
+    /// 100 s. Two different axes guard against a u/v mix-up.
+    #[kani::proof]
+    fn normalized_rect_inset_stays_strictly_inside_the_unit_tile() {
+        const SHEET_WIDTH: u32 = 512;
+        const SHEET_HEIGHT: u32 = 256;
+        let tile_width = positive_up_to(SHEET_WIDTH);
+        let tile_height = positive_up_to(SHEET_HEIGHT);
+        let inner_x: u32 = kani::any();
+        let inner_y: u32 = kani::any();
+        // Bounded so the fit sums below cannot overflow u32.
+        kani::assume(inner_x <= SHEET_WIDTH && inner_y <= SHEET_HEIGHT);
+        // A placement that genuinely fits inside the sheet on each axis.
+        kani::assume(inner_x + tile_width <= SHEET_WIDTH);
+        kani::assume(inner_y + tile_height <= SHEET_HEIGHT);
+        let sheet_width = SHEET_WIDTH;
+        let sheet_height = SHEET_HEIGHT;
+        let placement = PackedTilePlacement { inner_x, inner_y };
+        let rect = ShelfBinPack::normalized_rect(
+            &placement,
+            tile_width,
+            tile_height,
+            sheet_width,
+            sheet_height,
+        );
+        // Outer bounds inside the unit square, non-inverted.
+        assert!(rect.min_u >= 0.0 && rect.min_u <= rect.max_u && rect.max_u <= 1.0);
+        assert!(rect.min_v >= 0.0 && rect.min_v <= rect.max_v && rect.max_v <= 1.0);
+        // The inset window sits strictly inside the outer rect (never touches the sampled edge).
+        assert!(rect.inset_min_u > rect.min_u && rect.inset_max_u < rect.max_u);
+        assert!(rect.inset_min_v > rect.min_v && rect.inset_max_v < rect.max_v);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

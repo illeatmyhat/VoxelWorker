@@ -128,6 +128,14 @@ block the extraction on proofs). Tool fit per component, matched to what each to
     and the check multiplies are constant-divisor circuits — a *symbolic* divisor blew the SAT
     time up past minutes; the search harness states its target as an already-packed key so no
     division enters it at all.
+  - **Landed 2026-07-17 (cont.):** `ShelfBinPack::normalized_rect` (`occupancy/shelf_bin_pack.rs`)
+    — the half-texel inset window sits strictly inside the outer tile rect, which itself lies in
+    the unit square, for every fitting placement/tile (the sampling-correctness invariant that
+    keeps a `fract`-tiling consumer off the gutter-bleeding edge). Same constant-divisor lesson:
+    the sheet is the concrete power-of-two `512×256` so each normalize is an EXACT f32 scaling
+    (0.23 s); a symbolic sheet divisor is a general f32 divide that ran >100 s. The sibling
+    `plan` is NOT a Kani target — `tiles_per_shelf`'s `f32::sqrt` is a foreign function CBMC can't
+    model, and `plan` grows a `Vec`; a code note records this at the module.
 - **Creusot or Verus** (deductive proofs on the real Rust) for stateful invariants:
   `DisjointRunList` (sorted ∧ disjoint ∧ non-touching after any insert; widest-run correctness),
   `SlotFreeList` (no double-allocation, stable indices), generation-supersede (newest-wins,
