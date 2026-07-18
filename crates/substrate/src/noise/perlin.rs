@@ -187,4 +187,85 @@ mod tests {
     fn permutation_is_seeded() {
         assert_ne!(PerlinNoise::new(1).permutation(), PerlinNoise::new(2).permutation());
     }
+
+    /// The PROVEN range bound (ADR 0021 Decision 1): `|noise| <= NOISE_BOUND`, and hence
+    /// `|fractal_noise| <= NOISE_BOUND` for every octave count, lacunarity and gain.
+    ///
+    /// The argument is four steps and needs no literature constant:
+    ///
+    /// 1. [`noise`](PerlinNoise::noise) is nested [`lerp`]s whose weights `u, v, w` are
+    ///    [`fade`] outputs in `[0, 1]`. `lerp(a, b, t) = a + t(b − a)` with `t ∈ [0,1]` is a
+    ///    convex combination, so the composed result is a convex combination of the eight
+    ///    corner [`grad`] values — never larger in magnitude than the largest of them.
+    /// 2. Each corner offset component is `f` or `f − 1` with `f ∈ [0, 1)`, so every
+    ///    component lies in `[-1, 1]`.
+    /// 3. [`grad`] returns `±u ± v` where `u` and `v` are each one of those components, so
+    ///    `|grad| <= 2`. With step 1, `|noise| <= 2`.
+    /// 4. [`fractal_noise`](PerlinNoise::fractal_noise) divides the octave sum by the sum of
+    ///    its amplitudes, making it a convex combination of `noise` samples — so it inherits
+    ///    the same bound, INDEPENDENT of octaves/lacunarity/gain.
+    ///
+    /// The bound is deliberately loose: step 3 ignores that a corner's fade weight goes to
+    /// zero exactly as its offset grows, which is why the observed maximum is far below 2
+    /// (see `observed_noise_extreme_is_well_inside_the_proven_bound`). A tighter PROVEN
+    /// constant would buy larger elided regions for displaced bodies; it is not needed for
+    /// soundness and is left as a follow-up.
+    #[test]
+    fn noise_and_fractal_noise_respect_the_proven_bound() {
+        const NOISE_BOUND: f32 = 2.0;
+        for seed in [0u32, 1, 7, 42, 9001] {
+            let noise = PerlinNoise::new(seed);
+            let mut point = Vec3::new(0.017, -0.033, 0.011);
+            for step in 0..40_000 {
+                // Walk irrationally so samples never repeat a lattice alignment, and
+                // deliberately cross negative coordinates and cell boundaries.
+                point += Vec3::new(0.2113, -0.1471, 0.3079);
+                if step % 997 == 0 {
+                    point = -point * 1.618;
+                }
+                let single = noise.noise(point);
+                assert!(
+                    single.abs() <= NOISE_BOUND,
+                    "noise({point:?}) = {single} exceeds the proven bound {NOISE_BOUND}"
+                );
+                // The fBm bound is octave-independent, so vary the shaping too.
+                for (octaves, lacunarity, gain) in
+                    [(1u32, 2.0f32, 0.5f32), (4, 2.0, 0.5), (8, 2.7, 0.9), (3, 1.3, 1.0)]
+                {
+                    let fractal = noise.fractal_noise(point, octaves, lacunarity, gain);
+                    assert!(
+                        fractal.abs() <= NOISE_BOUND,
+                        "fractal_noise({point:?}, {octaves}, {lacunarity}, {gain}) = {fractal} \
+                         exceeds the proven bound {NOISE_BOUND}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Records how much headroom the proven bound of 2 leaves, so a future tightening effort
+    /// knows what it is chasing. This is an OBSERVATION, not a guarantee: the asserted value
+    /// is a loose regression guard, NOT a bound anything may rely on. Only the constant in
+    /// `noise_and_fractal_noise_respect_the_proven_bound` is sound to build on.
+    #[test]
+    fn observed_noise_extreme_is_well_inside_the_proven_bound() {
+        let mut worst: f32 = 0.0;
+        for seed in [0u32, 1, 7, 42, 9001] {
+            let noise = PerlinNoise::new(seed);
+            let mut point = Vec3::new(0.017, -0.033, 0.011);
+            for _ in 0..60_000 {
+                point += Vec3::new(0.2113, -0.1471, 0.3079);
+                worst = worst.max(noise.noise(point).abs());
+            }
+        }
+        // Sampling finds ~0.87 (consistent with the sqrt(3)/2 figure usually quoted for 3D
+        // improved Perlin). Guard loosely so this records the observation without becoming
+        // a brittle exact-value test.
+        assert!(
+            worst < 1.0,
+            "observed noise extreme {worst} — if this ever exceeds 1.0, any code that assumed \
+             a bound below the proven 2.0 must be re-audited"
+        );
+        assert!(worst > 0.5, "sampling found only {worst}; the walk is not exploring the field");
+    }
 }

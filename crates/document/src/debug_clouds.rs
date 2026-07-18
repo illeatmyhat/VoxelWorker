@@ -1,8 +1,10 @@
 //! Debug cloud field: a [`VoxelProducer`] that fills the grid with several
 //! visually distinct, billowy cloud blobs separated by empty space. It exists to
-//! exercise the renderer and the onion-skin fog with richer content than the five
-//! parametric shapes — a single connected SDF can't show how the pipeline handles
-//! many disjoint objects scattered through a large, mostly-empty volume.
+//! exercise the renderer and the onion skin with richer content than the parametric
+//! shapes — a single connected SDF can't show how the pipeline handles many disjoint
+//! objects scattered through a large, mostly-empty volume. (The onion skin is now
+//! ghost-shaded clip-slab passes rather than the volumetric fog ADR 0012 deleted; the
+//! feature this exercises is live, only its implementation changed.)
 //!
 //! Recipe (the standard one for cloud-like volumes): each cloud is a soft RADIAL
 //! FALLOFF (so it stays a bounded, separate puff with gaps around it) whose
@@ -25,24 +27,36 @@ use substrate::noise::{PerlinNoise, SmallRng};
 
 /// How far past the radial edge the fBm displacement may push the surface, as a
 /// fraction of each cloud's radius. Keeps clouds bounded (so the gaps survive)
-/// while making the edges billow. < 1.0 guarantees a cloud never reaches more
-/// than `radius * (1 + this)` from its centre.
-///
-/// `pub` so the GPU view-resolve (ADR 0007) shares the EXACT same constant with its
-/// WGSL port (one source of truth — a drift would break the §6 exact-parity net).
-pub const CLOUD_EDGE_BILLOW: f32 = 0.42;
+/// while making the edges billow.
+const CLOUD_EDGE_BILLOW: f32 = 0.42;
 
 /// fBm octave count / shaping. Four octaves is plenty for a readable cloud at
-/// these grid sizes; more just adds sub-voxel detail. `pub`: shared with the GPU port.
-pub const CLOUD_NOISE_OCTAVES: u32 = 4;
-pub const CLOUD_NOISE_LACUNARITY: f32 = 2.0;
-pub const CLOUD_NOISE_GAIN: f32 = 0.5;
+/// these grid sizes; more just adds sub-voxel detail.
+const CLOUD_NOISE_OCTAVES: u32 = 4;
+const CLOUD_NOISE_LACUNARITY: f32 = 2.0;
+const CLOUD_NOISE_GAIN: f32 = 0.5;
 
 /// Noise wavelength as a fraction of a cloud's radius. ~0.6 puts a few billows
 /// across each cloud (wavelength a bit smaller than the cloud), which reads as
-/// fluffy rather than either smooth (too large) or noisy (too small). `pub`: shared
-/// with the GPU port.
-pub const CLOUD_NOISE_WAVELENGTH_FRACTION: f32 = 0.6;
+/// fluffy rather than either smooth (too large) or noisy (too small).
+const CLOUD_NOISE_WAVELENGTH_FRACTION: f32 = 0.6;
+
+/// The PROVEN bound on `|fractal_noise|`, from `substrate::noise::perlin` (ADR 0021
+/// Decision 1): noise is a convex combination of gradient dot-products each bounded by 2,
+/// and fBm normalises by its amplitude sum so it inherits the same bound for ANY octave
+/// count, lacunarity or gain. Deliberately loose — the observed extreme is around 0.87 —
+/// but sound without depending on an unproven literature constant. It sets only how deep a
+/// puff's provably-solid core reaches; the air side does not use it.
+const NOISE_RANGE_BOUND: f32 = 2.0;
+
+/// How far a puff can CLAIM, in units of `CLOUD_EDGE_BILLOW`, irrespective of the noise's
+/// true range. [`cloud_field_is_solid`]'s `radial < -CLOUD_EDGE_BILLOW` early-out is
+/// **semantics, not an optimisation**: a puff is skipped outright beyond that radius, so it
+/// can never claim a point past `radius * (1 + CLOUD_EDGE_BILLOW)` even if the noise were to
+/// exceed 1. That is what makes the AIR verdict exact and independent of
+/// [`NOISE_RANGE_BOUND`]. Deleting the early-out as "just a fast path" would both change the
+/// resolved geometry and make this classifier's air bound unsound.
+const NOISE_CLAIM_REACH: f32 = 1.0;
 
 /// A single cloud puff.
 #[derive(Debug, Clone, Copy)]
@@ -164,22 +178,137 @@ impl VoxelProducer for DebugCloudField {
             .collect();
     }
 
-    /// The cloud field is displaced by FRACTAL PERLIN NOISE (fBm), whose value over a
-    /// cell has no cheap conservative bracket — so this producer is UNBOUNDABLE and
-    /// returns `None` (ADR 0010 Decision 2). A `None` consumer treats every cell as
-    /// BOUNDARY and resolves it per-voxel: still EXACT, just unelided. (This is also the
-    /// trait default; the explicit override documents the intent at the producer.)
+    /// Conservative bracket on the cloud field over a block cell (ADR 0021).
+    ///
+    /// This producer was long documented as UNBOUNDABLE on the grounds that fBm "has no
+    /// cheap conservative bracket over a cell". That reasoning was wrong, and it cost real
+    /// interior elision. Bracketing the fBm *over a cell* is indeed hard; it is also never
+    /// needed. Only the noise's GLOBAL RANGE is required, after which the radial term does
+    /// all the work — so a cell is classified from puff geometry alone, with **no noise
+    /// evaluation at all**.
+    ///
+    /// Per puff, with `radial = 1 − d/R` and the solidity test `radial + BILLOW·fbm > 0`:
+    ///
+    /// * **AIR** when every puff's NEAREST approach exceeds `R(1 + BILLOW)`. Exact, and
+    ///   independent of the noise bound — see [`NOISE_CLAIM_REACH`].
+    /// * **COARSE-SOLID** when some puff's FARTHEST reach is within `R(1 − BILLOW·B)`, so
+    ///   even a worst-case negative billow cannot retract past the cell.
+    /// * **BOUNDARY** otherwise, resolved per-voxel — still exact, just unelided.
+    ///
+    /// Returned intervals are the genuine bracket on the field (negated, since this field is
+    /// POSITIVE inside while [`FieldInterval`] is negative-inside), never sentinel values.
+    ///
+    /// [`FieldInterval`]: crate::voxel::FieldInterval
     fn cell_field_interval(
         &self,
-        _cell_local_voxels: voxel_core::spatial_index::VoxelAabb,
+        cell_local_voxels: voxel_core::spatial_index::VoxelAabb,
         _voxels_per_block: u32,
     ) -> Option<crate::voxel::FieldInterval> {
-        None
+        let dimensions = self.dimensions;
+        // Clamp to the resolved index range: voxels outside `[0, full_dim)` are never
+        // written, so they are air and cannot make a cell solid.
+        let mut lo_index = [0i64; 3];
+        let mut hi_index = [0i64; 3];
+        for axis in 0..3 {
+            lo_index[axis] = cell_local_voxels.min[axis].max(0);
+            hi_index[axis] = cell_local_voxels.max[axis].min(dimensions[axis] as i64);
+            if lo_index[axis] >= hi_index[axis] {
+                // No resolvable voxel in this cell ⇒ provably AIR.
+                return Some(crate::voxel::FieldInterval::new(1.0, 2.0));
+            }
+        }
+        // A cell that pokes outside the extent holds clamped-away air, so it can never be
+        // claimed COARSE-SOLID however deep inside a puff it sits.
+        let fully_inside_extent = (0..3).all(|axis| {
+            cell_local_voxels.min[axis] >= 0
+                && cell_local_voxels.max[axis] <= dimensions[axis] as i64
+        });
+
+        // The resolve samples index `i` at `i + 0.5 − half` (see `resolve_into`), so the
+        // sampled points of this cell span the CLOSED box below — its exact convex hull,
+        // not the continuous cell. Bracketing over the samples is what classification needs.
+        let half = Vec3::new(
+            dimensions[0] as f32 / 2.0,
+            dimensions[1] as f32 / 2.0,
+            dimensions[2] as f32 / 2.0,
+        );
+        let sample_lo = Vec3::new(
+            lo_index[0] as f32 + 0.5 - half.x,
+            lo_index[1] as f32 + 0.5 - half.y,
+            lo_index[2] as f32 + 0.5 - half.z,
+        );
+        let sample_hi = Vec3::new(
+            hi_index[0] as f32 - 0.5 - half.x,
+            hi_index[1] as f32 - 0.5 - half.y,
+            hi_index[2] as f32 - 0.5 - half.z,
+        );
+
+        let extent = Vec3::new(
+            dimensions[0] as f32,
+            dimensions[1] as f32,
+            dimensions[2] as f32,
+        );
+        let clouds = scatter_cloud_puffs(self.seed, extent);
+
+        // Bracket `max over puffs of (radial + BILLOW·fbm)` — the value the resolve tests
+        // against zero. Seeded below any real contribution: with no puffs the field is
+        // everywhere unclaimed.
+        let mut strongest_lower = f32::NEG_INFINITY;
+        let mut strongest_upper = f32::NEG_INFINITY;
+        for cloud in &clouds {
+            if cloud.radius <= 0.0 {
+                continue;
+            }
+            let (nearest, farthest) = box_distance_bounds(cloud.center, sample_lo, sample_hi);
+            // Worst-case billow shrinks the puff; the reject caps how far it can grow.
+            let lower = 1.0 - farthest / cloud.radius - CLOUD_EDGE_BILLOW * NOISE_RANGE_BOUND;
+            let upper = 1.0 - nearest / cloud.radius + CLOUD_EDGE_BILLOW * NOISE_CLAIM_REACH;
+            strongest_lower = strongest_lower.max(lower);
+            strongest_upper = strongest_upper.max(upper);
+        }
+        if !strongest_lower.is_finite() || !strongest_upper.is_finite() {
+            // No puffs contribute ⇒ provably AIR.
+            return Some(crate::voxel::FieldInterval::new(1.0, 2.0));
+        }
+
+        // Negate into the negative-inside convention, rounding each endpoint OUTWARD (the
+        // never-narrower contract). The resolve is solid on `field > 0` STRICTLY while
+        // `classify` is inside on `field <= isolevel`, so a bracket that merely touches zero
+        // must not read as solid — the outward rounding on `maximum` guarantees that.
+        let mut minimum = (-strongest_upper).next_down();
+        let mut maximum = (-strongest_lower).next_up();
+        if !fully_inside_extent && maximum <= 0.0 {
+            // Clamped-away air forbids a solid verdict; keep the interval straddling.
+            maximum = 0.0f32.next_up();
+        }
+        if minimum > maximum {
+            minimum = maximum;
+        }
+        Some(crate::voxel::FieldInterval::new(minimum, maximum))
     }
 
     fn full_dimensions(&self, _voxels_per_block: u32) -> [u32; 3] {
         self.dimensions
     }
+}
+
+/// Nearest and farthest Euclidean distance from `point` to the closed axis-aligned box
+/// `[lo, hi]`. Used to bracket a puff's radial term over a whole cell without sampling it.
+///
+/// Nearest: per axis the excursion outside the slab (zero when the point is within it),
+/// combined as a length — the standard point-to-AABB distance. Farthest: per axis the larger
+/// of the two face gaps, which is attained at some corner, so the combined length is exact.
+fn box_distance_bounds(point: Vec3, lo: Vec3, hi: Vec3) -> (f32, f32) {
+    let mut nearest_squared = 0.0f32;
+    let mut farthest_squared = 0.0f32;
+    for axis in 0..3 {
+        let (p, l, h) = (point[axis], lo[axis], hi[axis]);
+        let outside = (l - p).max(p - h).max(0.0);
+        nearest_squared += outside * outside;
+        let widest = (p - l).abs().max((p - h).abs());
+        farthest_squared += widest * widest;
+    }
+    (nearest_squared.sqrt(), farthest_squared.sqrt())
 }
 
 /// Whether `point` lands inside any cloud puff. The field is the per-cloud radial

@@ -552,24 +552,51 @@ fn sketch_revolve_cell_interval_never_misclassifies() {
     );
 }
 
+/// The cloud field is BOUNDABLE (ADR 0021) — it was documented as unboundable on the
+/// mistaken grounds that fBm cannot be bracketed over a cell. Only the noise's global range
+/// is needed; the radial term supplies the rest, so cells classify from puff geometry with
+/// no noise evaluation.
+///
+/// Two things are asserted. Soundness: no coarse verdict may disagree with brute force,
+/// which is what would break if the noise range bound were wrong. And usefulness: the fuzz
+/// must actually produce AIR verdicts, since a bound that never decides anything would pass
+/// the soundness half while delivering exactly the elision the old `None` did.
 #[test]
-fn debug_cloud_field_is_unboundable() {
+fn debug_cloud_field_is_boundable_and_sound() {
     use document::debug_clouds::DebugCloudField;
-    let field = DebugCloudField {
-        dimensions: [48, 32, 48],
-        seed: 7,
-    };
-    let cells = fuzz_cells([48, 32, 48], 16, 0xC10D_u64);
     let mut cases = 0u64;
-    for &cell in &cells {
-        // Unboundable ⇒ always `None` (the safe BOUNDARY fallback). The shared
-        // assertion also tolerates `None`, but pin the contract explicitly here.
-        assert!(
-            field.cell_field_interval(cell, 16).is_none(),
-            "DebugCloudField must be unboundable (None) for every cell"
-        );
-        assert_cell_bound_exact(&field, cell, 16, "DebugCloudField");
-        cases += 1;
+    let mut air = 0u64;
+    let mut solid = 0u64;
+    let mut boundary = 0u64;
+    let mut unbounded = 0u64;
+
+    for seed in [7u32, 11, 23, 1009] {
+        let dimensions = [48u32, 32, 48];
+        let field = DebugCloudField { dimensions, seed };
+        let cells = fuzz_cells(dimensions, 16, 0xC10D_u64 ^ seed as u64);
+        for &cell in &cells {
+            // The over-claim police: any coarse verdict must match brute force EXACTLY.
+            assert_cell_bound_exact(&field, cell, 16, &format!("DebugCloudField seed {seed}"));
+            match field.cell_field_interval(cell, 16) {
+                None => unbounded += 1,
+                Some(interval) => match interval.classify(SURFACE_ISOLEVEL) {
+                    FieldClassification::Air => air += 1,
+                    FieldClassification::CoarseSolid => solid += 1,
+                    FieldClassification::Boundary => boundary += 1,
+                },
+            }
+            cases += 1;
+        }
     }
-    eprintln!("DebugCloudField parity: {cases} cells (all unboundable None)");
+
+    assert_eq!(unbounded, 0, "DebugCloudField should now bracket every cell");
+    assert!(
+        air > 0,
+        "cloud fuzz produced no AIR verdict — the bound decides nothing and elides nothing"
+    );
+    assert!(boundary > 0, "cloud fuzz never produced a BOUNDARY verdict; the fuzz misses puffs");
+    eprintln!(
+        "DebugCloudField parity: {cases} cells classified ({air} air, {solid} solid, \
+         {boundary} boundary)"
+    );
 }
