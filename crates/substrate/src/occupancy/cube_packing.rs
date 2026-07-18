@@ -144,6 +144,56 @@ impl CubeTilePacking {
     }
 }
 
+/// Kani bounded-model-checking proof of [`CubeTilePacking::tile_origin_cells`]'s **slot → tile
+/// bijection** — the addressing an atlas consumer trusts: two slots must never scatter to the
+/// same tile (aliased occupancy/payload), and every tile must land inside the packed cube. Proved
+/// over every slot of a representative grid and every tile edge `1..=64` (the density bound = the
+/// verification bound). The packing struct is built directly with a CONCRETE `tiles_per_axis`,
+/// which both keeps the slot-split divisions constant (cheap) and sidesteps
+/// [`CubeTilePacking::tiles_per_axis`], whose `f64::cbrt` is a foreign function CBMC cannot model
+/// (the sizing scalar is a separate, un-verified concern). `#[cfg(kani)]` keeps this inactive in
+/// ordinary builds. Run under WSL: `cargo kani -p substrate`.
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    /// **The linear slot → 3D tile-origin map is an injective, in-bounds bijection.** For a
+    /// representative `tiles_per_axis = 3` grid (a partial shell, `3³ = 27` slots) and every tile
+    /// edge `1..=64`: each slot's tile fits wholly inside the cube (`origin[axis] + edge <=
+    /// cube_dim`), and two slots share an origin IFF they are the same slot — the mixed-radix
+    /// (x-fastest) uniqueness that stops an atlas from scattering two tiles onto one another.
+    #[kani::proof]
+    fn tile_origin_is_an_injective_in_bounds_slot_map() {
+        const TILES_PER_AXIS: u32 = 3;
+        const SLOT_COUNT: u32 = TILES_PER_AXIS * TILES_PER_AXIS * TILES_PER_AXIS; // 27
+        let edge: u32 = {
+            let value: u32 = kani::any();
+            kani::assume(value >= 1 && value <= 64);
+            value
+        };
+        let packing = CubeTilePacking {
+            tiles_per_axis: TILES_PER_AXIS,
+            cube_dim_cells: TILES_PER_AXIS * edge,
+        };
+        let cube_dim = (TILES_PER_AXIS * edge) as usize;
+
+        let slot_a: u32 = kani::any();
+        let slot_b: u32 = kani::any();
+        kani::assume(slot_a < SLOT_COUNT && slot_b < SLOT_COUNT);
+        let origin_a = packing.tile_origin_cells(slot_a, edge);
+        let origin_b = packing.tile_origin_cells(slot_b, edge);
+
+        // In bounds: every slot's whole tile `[origin, origin + edge)` fits inside the cube.
+        let mut axis = 0;
+        while axis < 3 {
+            assert!(origin_a[axis] + edge as usize <= cube_dim);
+            axis += 1;
+        }
+        // Injective: distinct slots land at distinct origins (no atlas aliasing).
+        assert!((origin_a == origin_b) == (slot_a == slot_b));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -136,6 +136,18 @@ block the extraction on proofs). Tool fit per component, matched to what each to
     (0.23 s); a symbolic sheet divisor is a general f32 divide that ran >100 s. The sibling
     `plan` is NOT a Kani target — `tiles_per_shelf`'s `f32::sqrt` is a foreign function CBMC can't
     model, and `plan` grows a `Vec`; a code note records this at the module.
+  - **Landed 2026-07-17 (cont.) — the Kani list above is now COMPLETE:** `CubeTilePacking`
+    (`occupancy/cube_packing.rs`) — `tile_origin_cells`' linear-slot → 3D tile-origin map is an
+    injective, in-bounds bijection (two slots share an origin iff identical; every tile fits
+    inside the cube) over a representative `tiles_per_axis=3` grid and every edge `1..=64`. Built
+    the packing struct with a concrete `tiles_per_axis` — keeps the slot-split divisions constant
+    AND sidesteps `tiles_per_axis`'s `f64::cbrt` (a foreign function, the cbrt sibling of shelf's
+    sqrt). So decision-6's three named Kani targets — `LatticeKey`, `BitCube`, `CubeTilePacking`
+    — are all proved, plus the `raycast` `VoxelDda` and the `SparseMinMipPyramid` fold/search
+    beyond the original list. Recurring practical rule learned: **give CBMC a constant divisor**
+    (concrete edge/sheet/tiles-per-axis) — a symbolic `div`/`f32`-divide is the difference between
+    a sub-second solve and minutes-or-timeout — and keep `Vec`-mutating and `sqrt`/`cbrt` code
+    off the harness (those are the deductive/Lean tiers).
 - **Creusot or Verus** (deductive proofs on the real Rust) for stateful invariants:
   `DisjointRunList` (sorted ∧ disjoint ∧ non-touching after any insert; widest-run correctness),
   `SlotFreeList` (no double-allocation, stable indices), generation-supersede (newest-wins,
