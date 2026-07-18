@@ -169,4 +169,20 @@ impl VoxelProducer for SketchSolid {
     fn full_dimensions(&self, _voxels_per_block: u32) -> [u32; 3] {
         self.grid_dimensions()
     }
+
+    fn as_field(&self) -> Option<&dyn crate::voxel::Field> {
+        Some(self)
+    }
+}
+
+impl crate::voxel::Field for SketchSolid {
+    /// Density-independent: a sketch's geometry is authored in voxels outright, so unlike
+    /// `Tube`'s block-authored wall there is nothing here that density could change.
+    fn signed_distance(&self, point_local_voxels: [f32; 3], _voxels_per_block: u32) -> f32 {
+        SketchSolid::signed_distance(self, point_local_voxels)
+    }
+
+    fn metric(&self) -> substrate::geom2d::Metric {
+        self.field_metric()
+    }
 }
