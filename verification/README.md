@@ -51,17 +51,45 @@ MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu -- bash -lc \
 
 ## What is proved here so far
 
+**Verus (deductive) — the seed plus all three decision-6 stateful targets:**
+
 - **`verus/widest_span.rs`** — a model of `DisjointIntervalSet::widest_span`: the max stored width
-  over a sequence, discharged from a `while`-loop invariant. This establishes the loop-invariant
+  over a sequence, discharged from a `while`-loop invariant. Establishes the loop-invariant
   machinery the real stateful targets need.
+- **`verus/disjoint_interval_set_insert.rs`** — `DisjointIntervalSet::insert` preserves the
+  normalization invariant (non-empty ∧ strict gap between consecutive ⇒ sorted ∧ disjoint ∧
+  non-touching) across every path: the three O(1) fast paths and the general skip-left + merge
+  splice. THE target Kani couldn't reach (`Vec::splice` exploded BMC); the splice is modelled as an
+  explicit prefix ++ [merged] ++ suffix rebuild yielding the identical sequence.
+- **`verus/slot_free_list.rs`** — `SlotFreeList` safety: `allocate` never returns a slot still in
+  the free set (no double-allocation) and every allocated/free index is `< len` (no out-of-bounds
+  `slots[slot]`), from the strictly-increasing-and-in-range free-set invariant; `free` modelled as
+  the sorted-unique insert (the faithful model of `sort_unstable + dedup`).
+- **`verus/generation_supersede.rs`** — `GenerationTracker`: generations strictly increase,
+  acceptance is unique to the newest, a superseded generation is discarded (stale never swaps in over
+  fresher state), nothing is accepted before any dispatch — plus a burst tying the theorems to the
+  real API.
+
+**Lean (algebraic) — the seed plus the `Rational` floor/ceil + reduction targets, all core-only:**
+
 - **`lean/Fold.lean`** — the floor-division fold bound (`edge·(n/edge) ≤ n < edge·(n/edge)+edge`)
   for **every** `Int` at each pyramid edge {1,8,64,512} — the unbounded form of the Kani
   `fold_lands_in_the_containing_cell` harness, which could only sample bounded coordinates.
+- **`lean/RationalFloorCeil.lean`** — the shipping truncating sign-corrected `Rational::floor` /
+  `::ceil` equal the true `⌊·⌋` / `⌈·⌉` for **every** integer numerator, at a spread of literal
+  denominators (a symbolic denominator is nonlinear, out of `omega`'s reach — same concrete-edge
+  scoping as `Fold.lean`). Rust truncation is Lean's `Int.tdiv`/`Int.tmod`, bridged to Euclidean
+  `/`,`%` (which IS the true floor for a positive denominator) then `omega`-discharged.
+- **`lean/RationalReduce.lean`** — `Rational::new`'s gcd reduction yields canonical form: the Euclid
+  loop (proved `= Nat.gcd`) divides both magnitudes exactly, the reduced pair is coprime (⇒ equal
+  values have identical representations), and a non-zero denominator stays ≥ 1.
 
 ## Next targets (decision-6 tool assignment)
 
-- **Verus (deductive):** `DisjointRunList`/`DisjointIntervalSet` insert keeps sorted ∧ disjoint ∧
-  non-touching (the invariant Kani couldn't reach — `Vec::splice` exploded BMC); `SlotFreeList`
-  no-double-allocation; generation-supersede newest-wins.
-- **Lean (algebraic):** `Rational` field laws + `floor`/`ceil` (needs mathlib); the voxel-frame
-  algebra (ADR 0008) compose/invert laws; `SparseMinMipPyramid`'s conservative-superset theorem.
+All decision-6 Verus targets, and the `Rational` floor/ceil + reduction on the Lean side, are done.
+Remaining, all **mathlib territory** (a Lake project with `lake exe cache get` — floor/ceil and
+reduction did NOT need it, so mathlib stays unwired until one of these forces it):
+
+- **Lean (algebraic):** `Rational` field laws (times/plus assoc/comm/distrib against the canonical
+  `Rat` field); the voxel-frame algebra (ADR 0008) compose/invert laws; `SparseMinMipPyramid`'s
+  conservative-superset theorem; `FieldInterval` conservatism (Duff 1992).

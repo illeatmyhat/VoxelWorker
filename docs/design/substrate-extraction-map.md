@@ -163,8 +163,21 @@ block the extraction on proofs). Tool fit per component, matched to what each to
     prebuilt release bundling Z3 that installs entirely under `$HOME`. Verus 0.2026.07.12 is
     installed in WSL and green on a first proof — `verification/verus/widest_span.rs`, a
     loop-invariant model of `widest_span` establishing the machinery the insert proof needs. See
-    `verification/README.md`. Still to prove here: the interval insert invariant, `SlotFreeList`,
-    generation-supersede.
+    `verification/README.md`.
+  - **ALL THREE deductive targets PROVED 2026-07-17** (each green under Verus, on-demand in WSL):
+    - `verification/verus/disjoint_interval_set_insert.rs` — `DisjointIntervalSet::insert` preserves
+      the normalization invariant (non-empty ∧ strict-gap ⇒ sorted ∧ disjoint ∧ non-touching) across
+      ALL paths: the three O(1) fast paths and the general skip-left + merge splice. Rides loop
+      invariants; the `Vec::splice` rebuild is modelled as an explicit prefix ++ [merged] ++ suffix
+      that yields the identical sequence. THE target Kani could not reach.
+    - `verification/verus/slot_free_list.rs` — `SlotFreeList` safety: `allocate` never returns a slot
+      still in the free set (no double-allocation) and every allocated/free index is in-range (no OOB
+      `slots[slot]`), from the strictly-increasing-and-in-range free-set data invariant; `free` is
+      modelled as the sorted-unique insert (the faithful model of `sort_unstable + dedup`).
+    - `verification/verus/generation_supersede.rs` — `GenerationTracker`: generations strictly
+      increase, acceptance is unique to the newest, a superseded generation is discarded (stale never
+      swaps in over fresher state), nothing is accepted before any dispatch; plus a burst that ties
+      the theorems to the real `next_generation`/`accepts` API.
 - **Lean model** (proves the mathematics, linked to code by the existing parity oracles) for the
   two genuinely mathematical statements: `FieldInterval` conservatism (the interval algebra
   bounds the CSG field — the exact-classification theorem) and `SparseMinMipPyramid`'s
@@ -172,9 +185,21 @@ block the extraction on proofs). Tool fit per component, matched to what each to
   - **Stood up 2026-07-17:** Lean 4.32.0 via `elan` (WSL, under `$HOME`, no root), green on a
     first proof — `verification/lean/Fold.lean`, the floor-division fold bound over ALL `Int` at
     each pyramid edge (the unbounded form of the Kani fold harness, `omega`-discharged, core-only).
-    `mathlib` is not wired yet — it gets a Lake project when the `Rational` field-law proofs need
-    it. See `verification/README.md`. Still to prove here: `FieldInterval` conservatism, the
-    pyramid superset theorem, `Rational` field laws, the voxel-frame algebra (ADR 0008).
+  - **`Rational` floor/ceil + reduction PROVED 2026-07-17, core-only (no mathlib):**
+    - `verification/lean/RationalFloorCeil.lean` — the shipping truncating sign-corrected `floor`/
+      `ceil` equal the TRUE `⌊·⌋`/`⌈·⌉` (Lean's Euclidean `/` for a positive denominator) for EVERY
+      integer numerator. Modelled on `Int.tdiv`/`Int.tmod` (Rust truncates; Lean's `/`,`%` are
+      Euclidean), bridged to `/`,`%` then `omega`. Scope note: a symbolic denominator is nonlinear
+      (`f·den`) so it is out of `omega`'s reach — proved at a spread of literal denominators
+      (2,3,4,5,7,10,20,1), like `Fold.lean`'s concrete edges, but over all of `Int`.
+    - `verification/lean/RationalReduce.lean` — `Rational::new`'s gcd reduction yields CANONICAL
+      form: the Euclid loop (`euclid`, proved `= Nat.gcd`) divides both magnitudes exactly, the
+      reduced pair is coprime (unique representation ⇒ bit-for-bit `Eq`), and a non-zero denominator
+      stays ≥ 1. Core `Nat.gcd` lemmas; no mathlib.
+  - Still open (mathlib territory, deferred): `Rational` field laws (times/plus assoc/comm/distrib
+    vs the canonical `Rat` field), `FieldInterval` conservatism, the pyramid superset theorem, the
+    voxel-frame algebra (ADR 0008). These need a Lake project with a `mathlib` cache (`lake exe cache
+    get`); floor/ceil + reduction did NOT, so mathlib stays unwired until a field-law proof forces it.
 
 Standing limit (reaffirmed by the FXC X3500 episode): the GPU side is not a proof target — no
 source-level theorem catches a shader-compiler bug. Verification hardens substrate kernels; the
