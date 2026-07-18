@@ -49,6 +49,33 @@ MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu -- bash -lc \
    lean /mnt/c/Users/Kai_Yuu/Documents/VoxelWorker/verification/lean/Fold.lean'
 ```
 
+## Cadence: run the proof tiers at EPIC boundaries, not per commit
+
+None of these tiers belong in the per-commit gate. Measured 2026-07-17, the two `Rational`
+binary-operator Kani harnesses solve in **606 s and 666 s** (pure solve; the build was 1.4 s) —
+against a whole `substrate` unit suite of **117 tests in 0.02 s**. A multi-minute proof pass on every
+PR gets resented and then disabled, and nightly would burn runner minutes on days nothing in the
+proven crates moved. An **epic boundary** is the right trigger: it is this repo's unit of work, and it
+fires the pass exactly when the proven code has actually changed.
+
+The everyday `cargo` gate keeps its own job — a theorem verifies the mathematics, the gate verifies
+the shipping binary still implements it. The Kani harnesses are `#[cfg(kani)]` and the Verus/Lean
+proofs are models under `verification/`, so **none of them are visible to `cargo test`/`clippy`**;
+the unit tests remain the only always-on regression check and must not be deleted in favour of a
+proof that only runs on demand.
+
+When wiring a CI job:
+
+- **Kani** — `cargo kani -p substrate -j --output-format=terse`. `-j` verifies harnesses on parallel
+  threads and **requires** `--output-format=terse`; it cut the two expensive harnesses from ~21 min
+  serial to ~11 min wall-clock. Budget each harness a ceiling and tighten or cut anything that
+  blows it — cost scales with data-dependent LOOP CHAINS (each `Rational::new` gcd), not with the
+  symbolic bound, so widening a loop-free bound is nearly free while adding a loop is not.
+- Toolchain install dominates a cold run and should be **cached**: `cargo kani setup` fetches CBMC
+  plus a pinned nightly; Verus is a prebuilt zip needing rust 1.96.0; Lean comes via `elan`.
+- `CARGO_TARGET_DIR=$HOME/rc-kani-target` is a **WSL-only** workaround for the slow `/mnt/c` 9p
+  mount — irrelevant on a native Linux runner, so do not carry it into CI.
+
 ## What is proved here so far
 
 **Verus (deductive) — the seed plus all three decision-6 stateful targets:**

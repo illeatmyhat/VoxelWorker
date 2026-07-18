@@ -195,6 +195,119 @@ fn greatest_common_divisor(mut first: u128, mut second: u128) -> u128 {
     first.max(1)
 }
 
+/// Kani bounded-model-checking probes of the `i128` arithmetic — the overflow edge the deductive
+/// (Verus) and algebraic (Lean) tiers deliberately do NOT cover (exact `Rat` reasoning cannot see a
+/// limb overflow). Two questions: is the arithmetic overflow-free and correct across the INTENDED
+/// measurement domain (small exact ratios), and where exactly does the raw `i128` boundary bite?
+/// `#[cfg(kani)]` keeps them out of ordinary builds. Run under WSL: `cargo kani -p substrate`.
+///
+/// ## Runtime — read before wiring these into CI
+///
+/// Measured 2026-07-17 (solve time only; the build was 1.4 s):
+///
+/// | harness | solve |
+/// | --- | --- |
+/// | `new_overflows_at_i128_min_denominator` | seconds |
+/// | `new_is_overflow_free_and_reduced_in_the_measurement_domain` | seconds |
+/// | `times_is_commutative_and_reduced` | **606 s** |
+/// | `plus_is_commutative_and_reduced` | **666 s** |
+///
+/// The two binary-operator harnesses are expensive because each chains four to five
+/// DATA-DEPENDENT Euclid loops (`Rational::new`'s gcd, once per operand, once per result, once per
+/// the reduced-form assertion), and loop unwinding multiplies against the symbolic domain. Tightening
+/// the domain to `±8` did NOT tame it — the cost is intrinsic to the loop chain, not the bound, and
+/// not an artifact of the local `/mnt/c` build (that is a WSL-only concern; a native CI runner is
+/// unaffected). So: these belong in a proof job run **at EPIC boundaries, NOT per-commit** (an epic
+/// is this repo's unit of work, and it ties the pass to when the proven code actually changed —
+/// nightly would burn runner minutes on days nothing in `substrate` moved). For scale, the whole
+/// `substrate` unit suite is 117 tests in 0.02 s. Run the pass with
+/// `cargo kani -p substrate -j --output-format=terse` (`-j` verifies harnesses on parallel threads
+/// and REQUIRES terse output; it cut the two above from ~21 min serial to ~11 min wall-clock).
+///
+/// These proofs do not replace the unit tests below: they are `#[cfg(kani)]`, so they are invisible
+/// to `cargo test`/`clippy`/CI, and the tests remain the only always-on check that the shipping
+/// binary still implements what is proved here.
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    /// A reduced rational drawn from the intended measurement domain: small numerator, small
+    /// positive denominator. The bound is deliberately TIGHT — each `times`/`plus` harness unwinds
+    /// several of Euclid's loops symbolically, and the properties they check (commutativity,
+    /// canonical form) are structural, so a wider domain costs solver time without covering a new
+    /// case. Overflow-freedom is NOT the interesting claim at this bound (it is trivially true);
+    /// the real `i128` boundary is probed separately below.
+    fn measurement_rational() -> Rational {
+        let numerator: i128 = kani::any();
+        let denominator: i128 = kani::any();
+        kani::assume(numerator >= -8 && numerator <= 8);
+        kani::assume(denominator >= 1 && denominator <= 8);
+        Rational::new(numerator, denominator).unwrap()
+    }
+
+    /// `new` is overflow-free and produces canonical form (positive, gcd-reduced denominator) over
+    /// the whole measurement domain — the reduction proved abstractly in `RationalReduce.lean`, now
+    /// on the real `i128` code with the overflow checks live.
+    #[kani::proof]
+    #[kani::unwind(31)]
+    fn new_is_overflow_free_and_reduced_in_the_measurement_domain() {
+        let numerator: i128 = kani::any();
+        let denominator: i128 = kani::any();
+        kani::assume(numerator >= -200 && numerator <= 200);
+        kani::assume(denominator >= 1 && denominator <= 200);
+        let reduced = Rational::new(numerator, denominator).unwrap();
+        assert!(reduced.denominator() >= 1);
+        assert!(
+            greatest_common_divisor(
+                reduced.numerator().unsigned_abs(),
+                reduced.denominator().unsigned_abs()
+            ) == 1
+        );
+    }
+
+    /// `times` over the measurement domain is commutative and leaves the result in canonical form.
+    #[kani::proof]
+    #[kani::unwind(11)]
+    fn times_is_commutative_and_reduced() {
+        let a = measurement_rational();
+        let b = measurement_rational();
+        let ab = a.times(b);
+        assert!(ab == b.times(a)); // commutative
+        assert!(ab.denominator() >= 1);
+        assert!(
+            greatest_common_divisor(ab.numerator().unsigned_abs(), ab.denominator().unsigned_abs())
+                == 1
+        );
+    }
+
+    /// `plus` over the measurement domain is commutative and leaves the result in canonical form.
+    #[kani::proof]
+    #[kani::unwind(11)]
+    fn plus_is_commutative_and_reduced() {
+        let a = measurement_rational();
+        let b = measurement_rational();
+        let ab = a.plus(b);
+        assert!(ab == b.plus(a)); // commutative
+        assert!(ab.denominator() >= 1);
+        assert!(
+            greatest_common_divisor(ab.numerator().unsigned_abs(), ab.denominator().unsigned_abs())
+                == 1
+        );
+    }
+
+    /// The raw-boundary probe: `new` sign-normalizes with `numerator * sign` / `denominator * sign`,
+    /// and `i128::MIN * -1` is unrepresentable. So a denominator (or numerator) of `i128::MIN`
+    /// overflows BEFORE the `Option` guard can reject it — a reachable panic in a `pub fn` that
+    /// otherwise returns `None` for every un-representable input. This harness asserts that overflow
+    /// is reachable (expected-panic); the safety proofs above show the measurement domain is clear
+    /// of it.
+    #[kani::proof]
+    #[kani::should_panic]
+    fn new_overflows_at_i128_min_denominator() {
+        let _ = Rational::new(0, i128::MIN);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
