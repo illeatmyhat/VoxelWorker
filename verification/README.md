@@ -87,9 +87,18 @@ MSYS_NO_PATHCONV=1 wsl.exe -d Ubuntu -- bash -lc \
 ## Next targets (decision-6 tool assignment)
 
 All decision-6 Verus targets, and the `Rational` floor/ceil + reduction on the Lean side, are done.
-Remaining, all **mathlib territory** (a Lake project with `lake exe cache get` — floor/ceil and
-reduction did NOT need it, so mathlib stays unwired until one of these forces it):
 
-- **Lean (algebraic):** `Rational` field laws (times/plus assoc/comm/distrib against the canonical
-  `Rat` field); the voxel-frame algebra (ADR 0008) compose/invert laws; `SparseMinMipPyramid`'s
-  conservative-superset theorem; `FieldInterval` conservatism (Duff 1992).
+**`Rational` field laws — RULED OUT, not proved (2026-07-17).** The times/plus assoc/comm/distrib
+laws are properties of ℚ (a field by textbook), not of this code. A mathlib proof would be a
+*refinement* — our i128 cross-multiply-then-reduce agrees with mathlib's `Rat` — after which the
+laws fall out of mathlib's `Field Rat` instance. That re-derives school-book algebra and pulls in a
+multi-GB `mathlib` cache to anchor a property nobody doubts. The two things that could actually be
+wrong here are already covered elsewhere: **canonicalization** (equal values reduce to identical
+structs, so `==` is real value equality) is exactly `lean/RationalReduce.lean`'s coprime-reduction
+theorem, which `times`/`plus` inherit by routing through `new`; and **i128 overflow** is a BMC-shaped
+concern a field-law proof over exact `Rat` would not catch anyway, and is a documented accepted
+deviation in the source. So `mathlib` stays unwired.
+
+Remaining Lean targets that *would* still justify wiring `mathlib` (a Lake project +
+`lake exe cache get`) when tackled: the voxel-frame algebra (ADR 0008) compose/invert laws;
+`SparseMinMipPyramid`'s conservative-superset theorem; `FieldInterval` conservatism (Duff 1992).

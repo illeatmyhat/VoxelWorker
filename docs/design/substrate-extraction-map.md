@@ -196,10 +196,17 @@ block the extraction on proofs). Tool fit per component, matched to what each to
       form: the Euclid loop (`euclid`, proved `= Nat.gcd`) divides both magnitudes exactly, the
       reduced pair is coprime (unique representation ⇒ bit-for-bit `Eq`), and a non-zero denominator
       stays ≥ 1. Core `Nat.gcd` lemmas; no mathlib.
-  - Still open (mathlib territory, deferred): `Rational` field laws (times/plus assoc/comm/distrib
-    vs the canonical `Rat` field), `FieldInterval` conservatism, the pyramid superset theorem, the
-    voxel-frame algebra (ADR 0008). These need a Lake project with a `mathlib` cache (`lake exe cache
-    get`); floor/ceil + reduction did NOT, so mathlib stays unwired until a field-law proof forces it.
+  - **`Rational` field laws — ruled out 2026-07-17, NOT a proof target.** They are properties of ℚ
+    (a field by textbook), not of this code; a mathlib proof would be a refinement (our i128
+    cross-multiply-then-reduce == mathlib `Rat`) that then reads the laws off mathlib's `Field Rat`
+    instance — school-book algebra plus a multi-GB `mathlib` cache to anchor a property nobody
+    doubts. The only genuinely code-specific risks are covered elsewhere: canonicalization (equal
+    values ⇒ identical structs, so `==` is real value equality) IS `lean/RationalReduce.lean`'s
+    coprime-reduction theorem, inherited by `times`/`plus` via `new`; i128 overflow is a BMC-shaped
+    concern a field-law proof over exact `Rat` would miss anyway, and a documented accepted deviation.
+  - Still open, and these WOULD justify wiring `mathlib` (Lake project + `lake exe cache get`) when
+    taken: `FieldInterval` conservatism, the pyramid superset theorem, the voxel-frame algebra
+    (ADR 0008). mathlib stays unwired until one of THESE is tackled — the field laws never force it.
 
 Standing limit (reaffirmed by the FXC X3500 episode): the GPU side is not a proof target — no
 source-level theorem catches a shader-compiler bug. Verification hardens substrate kernels; the
