@@ -6,8 +6,9 @@ use super::produce::{revolve_box_within_sweep_arc, to_profile_points};
 /// A [`Sketch`] paired with an [`Operation`] that turns its 2D profile into a 3D
 /// volume — the 2a sketch→volume producer (ADR 0003 §3i, the "Sketch + Operation"
 /// model). Added **alongside** `SdfShape`; both implement [`VoxelProducer`](crate::voxel::VoxelProducer) and
-/// resolve through the same stamp / `CombineOp` / chunk path. The only operation
-/// today is [`Operation::Extrude`] (a prism); revolve / sweep are later commits.
+/// resolve through the same stamp / `CombineOp` / chunk path. [`Operation::Extrude`] (a
+/// prism) and [`Operation::Revolve`] (a solid of revolution) both ship; sweep is the
+/// reserved third lift.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SketchSolid {
     /// The closed 2D profile + its plane.
@@ -115,12 +116,22 @@ impl SketchSolid {
     /// falls back to a per-voxel resolve, so the ambiguity is decided by the predicate that
     /// owns it (ADR 0019 — predicates classify, fields measure).
     ///
-    /// **Revolve returns `None`** until its lift lands; this return type is transitional and
-    /// collapses to a plain `f32` when it does.
+    /// **Revolve is exact for a full turn, conservative for a partial one.** The map from a
+    /// 3D point to its `(axial, radius)` pair is 1-Lipschitz, and for a surface of revolution
+    /// the nearest surface point lies in the same meridian half-plane — so the 2D profile
+    /// distance evaluated there *is* the 3D distance. A partial turn additionally intersects
+    /// a wedge, and `max` of two fields under-estimates distance near the seam while keeping
+    /// the sign exact and the field 1-Lipschitz, which is all the classifier consumes (ADR
+    /// 0019 Decision 5; ADR 0017 Decision 6 already takes this posture for intersection).
+    ///
+    /// A degenerate producer — no profile, zero height, zero turn — is empty, so every point
+    /// is outside and the distance is `f32::INFINITY`.
     ///
     /// [`resolve_into`]: crate::voxel::VoxelProducer::resolve_into
-    pub fn signed_distance(&self, point_local_voxels: [f32; 3]) -> Option<f32> {
-        let (profile_min, _profile_max) = self.profile_bounds()?;
+    pub fn signed_distance(&self, point_local_voxels: [f32; 3]) -> f32 {
+        let Some((profile_min, _profile_max)) = self.profile_bounds() else {
+            return f32::INFINITY;
+        };
         match self.operation {
             Operation::Extrude { height_voxels } => {
                 let [in_plane_0, in_plane_1] = self.sketch.plane.in_plane_axes();
@@ -140,9 +151,86 @@ impl SketchSolid {
                 // spans `[0, height]` along the normal in this frame.
                 let along_normal = point_local_voxels[normal] as f64;
                 let to_slab = (-along_normal).max(along_normal - height_voxels as f64);
-                Some(to_profile.max(to_slab) as f32)
+                to_profile.max(to_slab) as f32
             }
-            Operation::Revolve { .. } => None,
+            Operation::Revolve { axis, sweep } => {
+                let dimensions = self.grid_dimensions();
+                let [in_plane_0, in_plane_1] = self.sketch.plane.in_plane_axes();
+                let normal = self.sketch.plane.normal_axis();
+                // Reinterpret the in-plane axes as (axial, radial), exactly as the resolve
+                // does — including the ascending sort that fixes which world axis is which.
+                let (axial_world_axis, axial_min, radial_in_plane_axis) = match axis {
+                    RevolveAxis::InPlane0 => (in_plane_0, profile_min[0], in_plane_1),
+                    RevolveAxis::InPlane1 => (in_plane_1, profile_min[1], in_plane_0),
+                };
+                let mut radial_world_axes = [radial_in_plane_axis, normal];
+                radial_world_axes.sort_unstable();
+                let [radial_a, radial_b] = radial_world_axes;
+
+                // The radial axes are CENTRED while the axial one is not — the same
+                // asymmetry the resolve carries. Mirror its f32 arithmetic so the two agree
+                // bit-for-bit on samples that land near the surface.
+                let half_a = dimensions[radial_a] as f32 / 2.0;
+                let half_b = dimensions[radial_b] as f32 / 2.0;
+                let centred_a = point_local_voxels[radial_a] - half_a;
+                let centred_b = point_local_voxels[radial_b] - half_b;
+                let radius = (centred_a * centred_a + centred_b * centred_b).sqrt() as f64;
+                let profile_axial =
+                    axial_min as f64 + point_local_voxels[axial_world_axis] as f64;
+
+                let profile_points = to_profile_points(&self.sketch.profile);
+                let distance_at = |signed_radius: f64| {
+                    let (sample_0, sample_1) = match axis {
+                        RevolveAxis::InPlane0 => (profile_axial, signed_radius),
+                        RevolveAxis::InPlane1 => (signed_radius, profile_axial),
+                    };
+                    substrate::geom2d::signed_distance_to_polygon(
+                        &profile_points,
+                        [sample_0, sample_1],
+                        substrate::geom2d::Metric::Euclidean,
+                    )
+                };
+
+                // A solid of revolution is symmetric about the axis, so a point is inside if
+                // the profile contains it at EITHER sign of radius — a union, hence `min`.
+                // Only meaningful when the profile actually reaches across radial 0; for the
+                // usual one-sided lathe profile the mirrored query is always outside, and the
+                // resolve skips it for the same reason.
+                let radial_profile_coord = match axis {
+                    RevolveAxis::InPlane0 => 1,
+                    RevolveAxis::InPlane1 => 0,
+                };
+                let profile_straddles_axis = self
+                    .sketch
+                    .profile
+                    .iter()
+                    .any(|point| point.offset_voxels[radial_profile_coord] < 0);
+                let mut distance = distance_at(radius);
+                if profile_straddles_axis {
+                    distance = distance.min(distance_at(-radius));
+                }
+
+                // PARTIAL turn: intersect with the swept wedge. The resolve keeps cells whose
+                // angle is at most `turn`, measuring from the +radial_a axis towards
+                // +radial_b. Up to a half turn that region is the INTERSECTION of two
+                // half-planes through the origin (`max`); beyond it, their UNION (`min`).
+                let turn_degrees = sweep.turn_degrees;
+                if turn_degrees < 360 {
+                    let turn = (turn_degrees as f64).to_radians();
+                    // Inside the first edge (angle 0) is the +radial_b side.
+                    let past_first_edge = -(centred_b as f64);
+                    // Inside the closing edge is the clockwise side of its direction vector.
+                    let past_closing_edge =
+                        turn.cos() * centred_b as f64 - turn.sin() * centred_a as f64;
+                    let to_wedge = if turn_degrees <= 180 {
+                        past_first_edge.max(past_closing_edge)
+                    } else {
+                        past_first_edge.min(past_closing_edge)
+                    };
+                    distance = distance.max(to_wedge);
+                }
+                distance as f32
+            }
         }
     }
 

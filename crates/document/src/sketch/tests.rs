@@ -717,8 +717,7 @@
                         let centre =
                             [x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5];
                         let distance = solid
-                            .signed_distance(centre)
-                            .expect("extrude has a field");
+                            .signed_distance(centre);
                         let field_says_solid = distance.is_sign_negative();
                         let resolve_says_solid =
                             occupied.contains(&[x as i32, y as i32, z as i32]);
@@ -762,11 +761,11 @@
                 for yi in -8..span(dimensions[1]) {
                     for zi in -8..span(dimensions[2]) {
                         let p = [xi as f32 * step, yi as f32 * step, zi as f32 * step];
-                        let here = solid.signed_distance(p).expect("extrude has a field");
+                        let here = solid.signed_distance(p);
                         for axis in 0..3 {
                             let mut q = p;
                             q[axis] += step;
-                            let there = solid.signed_distance(q).expect("extrude has a field");
+                            let there = solid.signed_distance(q);
                             worst = worst.max((there - here).abs() / step);
                         }
                     }
@@ -789,17 +788,115 @@
         let solid = SketchSolid::extrude(Sketch::rectangle(PlaneAxis::Z, 4, 4), 2);
         assert_eq!(solid.field_metric(), Metric::Chebyshev);
         // Diagonally off the (4,4) corner by (3,3): Chebyshev reads 3, not 3*sqrt(2).
-        let corner = solid.signed_distance([7.0, 7.0, 1.0]).unwrap();
+        let corner = solid.signed_distance([7.0, 7.0, 1.0]);
         assert!((corner - 3.0).abs() < 1e-4, "corner distance {corner}");
         // Straight out one face by 2.
-        let face = solid.signed_distance([6.0, 2.0, 1.0]).unwrap();
+        let face = solid.signed_distance([6.0, 2.0, 1.0]);
         assert!((face - 2.0).abs() < 1e-4, "face distance {face}");
         // Deepest interior point is 1 from the nearest face (the normal slab is thinnest).
-        let centre = solid.signed_distance([2.0, 2.0, 1.0]).unwrap();
+        let centre = solid.signed_distance([2.0, 2.0, 1.0]);
         assert!((centre + 1.0).abs() < 1e-4, "centre distance {centre}");
         // Revolve reports Euclidean instead — the lift decides the metric, not the profile.
         let revolved =
             SketchSolid::revolve(Sketch::rectangle(PlaneAxis::Z, 4, 4), RevolveAxis::InPlane0, 360);
         assert_eq!(revolved.field_metric(), Metric::Euclidean);
-        assert_eq!(revolved.signed_distance([1.0, 1.0, 1.0]), None);
+        // A degenerate producer is empty, so every point is outside it.
+        let degenerate = SketchSolid::extrude(Sketch::rectangle(PlaneAxis::Z, 4, 4), 0);
+        assert_eq!(degenerate.signed_distance([1.0, 1.0, 1.0]), f32::INFINITY);
+    }
+
+    /// Revolve cases covering both axis reinterpretations, a full turn and partial turns
+    /// either side of the half-turn split (where the wedge flips from an intersection of two
+    /// half-planes to a union), and a profile that straddles the axis so the mirrored query
+    /// actually matters.
+    fn revolve_field_cases() -> Vec<(&'static str, SketchSolid)> {
+        let lathe = vec![
+            SketchPoint::new(0, 2), SketchPoint::new(6, 2),
+            SketchPoint::new(6, 5), SketchPoint::new(0, 5),
+        ];
+        let straddling = vec![
+            SketchPoint::new(0, -4), SketchPoint::new(5, -4),
+            SketchPoint::new(5, 4), SketchPoint::new(0, 4),
+        ];
+        vec![
+            ("full/InPlane0", SketchSolid::revolve(
+                Sketch::new(PlaneAxis::Z, lathe.clone()), RevolveAxis::InPlane0, 360)),
+            ("full/InPlane1", SketchSolid::revolve(
+                Sketch::new(PlaneAxis::Y, lathe.clone()), RevolveAxis::InPlane1, 360)),
+            ("quarter", SketchSolid::revolve(
+                Sketch::new(PlaneAxis::Z, lathe.clone()), RevolveAxis::InPlane0, 90)),
+            ("half", SketchSolid::revolve(
+                Sketch::new(PlaneAxis::Z, lathe.clone()), RevolveAxis::InPlane0, 180)),
+            ("three-quarter", SketchSolid::revolve(
+                Sketch::new(PlaneAxis::Z, lathe), RevolveAxis::InPlane0, 270)),
+            ("straddling", SketchSolid::revolve(
+                Sketch::new(PlaneAxis::Z, straddling), RevolveAxis::InPlane0, 360)),
+        ]
+    }
+
+    /// The revolve field must agree with the revolve resolve over every voxel, exactly as the
+    /// extrude one does. Occupancy is read from the sign bit for the same reason.
+    #[test]
+    fn revolve_signed_distance_agrees_with_the_resolve() {
+        const DENSITY: u32 = 8;
+        for (label, solid) in revolve_field_cases() {
+            let mut grid = VoxelGrid::default();
+            solid.resolve(&mut grid, DENSITY);
+            let occupied: BTreeSet<[i32; 3]> =
+                grid.occupied.iter().map(|voxel| voxel.local_index).collect();
+            let dimensions = solid.grid_dimensions();
+            let mut inside = 0u32;
+            for x in 0..dimensions[0] {
+                for y in 0..dimensions[1] {
+                    for z in 0..dimensions[2] {
+                        let centre = [x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5];
+                        let distance = solid.signed_distance(centre);
+                        let field_says_solid = distance.is_sign_negative();
+                        let resolve_says_solid =
+                            occupied.contains(&[x as i32, y as i32, z as i32]);
+                        assert_eq!(
+                            field_says_solid, resolve_says_solid,
+                            "{label} at {centre:?}: field distance {distance} says \
+                             solid={field_says_solid}, resolve says {resolve_says_solid}"
+                        );
+                        inside += u32::from(field_says_solid);
+                    }
+                }
+            }
+            assert!(inside > 0, "{label}: nothing solid, the case proves nothing");
+        }
+    }
+
+    /// Revolve must be 1-Lipschitz in Euclidean — the property its cell bound will rest on.
+    /// Holds for the partial turns too: the wedge clip is a `max` of half-plane fields, each
+    /// unit-gradient, and `max` preserves the constant even though it stops being an exact
+    /// distance near the seam.
+    #[test]
+    fn revolve_signed_distance_is_one_lipschitz_in_euclidean() {
+        for (label, solid) in revolve_field_cases() {
+            let dimensions = solid.grid_dimensions();
+            let step = 0.25f32;
+            let mut worst: f32 = 0.0;
+            for xi in -6..(dimensions[0] as f32 / step) as i32 + 6 {
+                for yi in -6..(dimensions[1] as f32 / step) as i32 + 6 {
+                    for zi in -6..(dimensions[2] as f32 / step) as i32 + 6 {
+                        let p = [xi as f32 * step, yi as f32 * step, zi as f32 * step];
+                        let here = solid.signed_distance(p);
+                        if !here.is_finite() {
+                            continue;
+                        }
+                        for axis in 0..3 {
+                            let mut q = p;
+                            q[axis] += step;
+                            let there = solid.signed_distance(q);
+                            worst = worst.max((there - here).abs() / step);
+                        }
+                    }
+                }
+            }
+            assert!(
+                worst <= 1.0 + 1e-4,
+                "{label}: revolve field is not 1-Lipschitz in Euclidean (worst {worst})"
+            );
+        }
     }
