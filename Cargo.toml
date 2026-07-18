@@ -152,3 +152,36 @@ document = { path = "crates/document", features = ["oracle", "test-support"] }
 # `expand_resident_chunks_into_grid` oracle expander the `AppCore` grid-overlay test reaches
 # across the boundary. Dev-deps are absent from production `cargo build`.
 evaluation = { path = "crates/evaluation", features = ["oracle", "test-support"] }
+
+# Optimise DEBUG/TEST codegen. `debug_assertions` stay ON, so the gate keeps every
+# invariant check and its semantics are unchanged — this only changes how the code is
+# compiled, not what it asserts.
+#
+# Why: the gate is dominated by O(volume) oracle-parity tests that materialise dense voxel
+# sets and diff them against the streaming path. Unoptimised, those are pathological —
+# `streamed_vox_export_dissolves_6m_cap_on_large_solid` walks 800³ = 5.1e8 voxels and took
+# 277 s of a ~420 s workspace run on its own. Measured 2026-07-18:
+#
+#   warm `cargo test --workspace`   ~420 s  ->  25.4 s   (16.5x)
+#   that one test                    277 s  ->  22.7 s   (12.2x)
+#   full `interchange` suite         410 s  ->   1.7 s
+#
+# Cost is small and falls on incremental rebuilds: leaf-crate touch 0.7 s -> 0.9 s, a deep
+# `substrate -> interchange` chain 2.3 s -> 2.8 s (~+20%). opt-level 1 was also measured —
+# 29.9 s on the heavy test vs 22.7 s at level 2 — and level 2 won on runtime for
+# indistinguishable build cost.
+#
+# Deliberately NOT done: shrinking that test. At opt-level 2 it costs ~23 s, and cutting it
+# to 304³ saved only a further 5.7 s of gate time while weakening its claim from "85x past
+# the dense 6M cap" to "4.7x". The measurement is not worth the coverage.
+#
+# `[profile.dev]` also covers ordinary debug builds of the app itself, which is a side
+# benefit here: a voxel renderer at opt-level 0 is painful to actually run.
+[profile.dev]
+opt-level = 2
+
+# `cargo test` builds the crate UNDER TEST with this profile and its dependencies (including
+# workspace members) with `[profile.dev]` above — both are needed, since the hot loops live
+# in dependency crates (`evaluation`, `document`, `voxel_core`).
+[profile.test]
+opt-level = 2
