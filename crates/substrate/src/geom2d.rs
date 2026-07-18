@@ -33,6 +33,17 @@
 //!   the rectangle it holds no piece of the boundary, so it is wholly in or out,
 //!   and one interior sample (the centre) decides. Conservative on a grazing
 //!   edge (counts as crossing ⇒ not-inside, still exact).
+//!
+//! ## Predicates and measurements
+//!
+//! The primitives above are **predicates**: they answer yes/no, and they are exact.
+//! [`distance_point_to_segment`] and [`signed_distance_to_polygon`] are
+//! **measurements**: they answer how-far, in floating point, and cannot be exact in
+//! the same sense. The two coexist deliberately — a predicate classifies a region,
+//! a measurement gives it a geometry to be offset or displaced — and neither
+//! replaces the other. Measurements are taken in a caller-chosen [`Metric`]:
+//! `Euclidean` grows a shape by a disc and rounds its corners, `Chebyshev` grows it
+//! by a square and keeps them sharp, which is the natural choice on a lattice.
 
 /// The signed area of triangle `(a, b, c)` — twice the area, the determinant
 /// `(b − a) × (c − a)`. Positive ⇒ counter-clockwise (`c` left of `a → b`),
@@ -172,6 +183,123 @@ pub fn rectangle_inside_polygon(
     point_in_polygon(polygon, centre)
 }
 
+/// Which notion of distance a measurement is taken in.
+///
+/// The two agree on what is *inside* a shape and disagree on how far away things are, so a
+/// classification may use either while an offset must commit to one: `Euclidean` grows a
+/// shape by a disc and rounds its convex corners, `Chebyshev` grows it by a square and keeps
+/// them sharp.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Metric {
+    /// Straight-line distance, `sqrt(dx² + dy²)`. The L2 norm.
+    Euclidean,
+    /// Largest-axis distance, `max(|dx|, |dy|)`. The L∞ norm — the natural metric of a
+    /// square lattice, where it counts axis-aligned steps rather than diagonal reach.
+    Chebyshev,
+}
+
+impl Metric {
+    /// The length of the vector `delta` under this metric.
+    #[inline]
+    pub fn length(self, delta: [f64; 2]) -> f64 {
+        match self {
+            Metric::Euclidean => (delta[0] * delta[0] + delta[1] * delta[1]).sqrt(),
+            Metric::Chebyshev => delta[0].abs().max(delta[1].abs()),
+        }
+    }
+
+    /// The distance between two points under this metric.
+    #[inline]
+    pub fn distance(self, a: [f64; 2], b: [f64; 2]) -> f64 {
+        self.length([b[0] - a[0], b[1] - a[1]])
+    }
+}
+
+/// Distance from `point` to the closed segment `a → b`, under `metric`. Never negative; zero
+/// exactly on the segment.
+///
+/// **Euclidean** is the textbook projection: clamp the parameter of the perpendicular foot to
+/// `[0, 1]` and measure to that point (Ericson, *Real-Time Collision Detection* 2005,
+/// §5.1.2).
+///
+/// **Chebyshev** has no such closed form, but it does have an exact one. Writing the segment
+/// as `a + t·(b − a)`, the distance is
+///
+/// ```text
+/// f(t) = max(|gx(t)|, |gy(t)|)      gx(t) = px − ax − t·dx,  gy(t) = py − ay − t·dy
+/// ```
+///
+/// Each `|g|` is convex and piecewise linear in `t`, and the maximum of convex functions is
+/// convex — so `f` is convex piecewise linear, and its minimum over `[0, 1]` is attained at a
+/// breakpoint or an endpoint. The breakpoints are exactly where a term changes slope: where
+/// `gx = 0`, where `gy = 0`, and where the two swap dominance (`gx = ±gy`). Evaluating `f` at
+/// those four parameters plus both endpoints is therefore **exact**, not an approximation.
+///
+/// A degenerate (zero-length) segment reduces to the distance to its single point.
+pub fn distance_point_to_segment(a: [f64; 2], b: [f64; 2], point: [f64; 2], metric: Metric) -> f64 {
+    let delta = [b[0] - a[0], b[1] - a[1]];
+    let offset = [point[0] - a[0], point[1] - a[1]];
+    // Degenerate segment: the whole thing is the point `a`.
+    if delta[0] == 0.0 && delta[1] == 0.0 {
+        return metric.length(offset);
+    }
+    let at = |t: f64| {
+        let t = t.clamp(0.0, 1.0);
+        metric.length([offset[0] - t * delta[0], offset[1] - t * delta[1]])
+    };
+    match metric {
+        Metric::Euclidean => {
+            let length_squared = delta[0] * delta[0] + delta[1] * delta[1];
+            at((offset[0] * delta[0] + offset[1] * delta[1]) / length_squared)
+        }
+        Metric::Chebyshev => {
+            let mut best = at(0.0).min(at(1.0));
+            // Slope changes of |gx|, |gy|, and of the max between them.
+            let breakpoints = [
+                (offset[0], delta[0]),                     // gx = 0
+                (offset[1], delta[1]),                     // gy = 0
+                (offset[0] - offset[1], delta[0] - delta[1]), // gx = gy
+                (offset[0] + offset[1], delta[0] + delta[1]), // gx = -gy
+            ];
+            for (numerator, denominator) in breakpoints {
+                if denominator != 0.0 {
+                    best = best.min(at(numerator / denominator));
+                }
+            }
+            best
+        }
+    }
+}
+
+/// Signed distance from `point` to the polygon's boundary under `metric` — **negative
+/// inside**, positive outside, zero on the boundary. The polygon is implicitly closed (last
+/// vertex → first).
+///
+/// Magnitude is the distance to the nearest edge; the sign comes from [`point_in_polygon`].
+/// The two are decided independently, which is what makes this well behaved on inputs a
+/// distance function alone would choke on: the field stays continuous through a
+/// **self-intersection**, because the sign can only flip where the distance is zero. A
+/// self-intersecting or degenerate profile therefore needs no special handling — it gets the
+/// same treatment the even-odd rule already gives it.
+///
+/// Fewer than two vertices has no boundary to measure, and returns `f64::INFINITY`.
+pub fn signed_distance_to_polygon(polygon: &[[f64; 2]], point: [f64; 2], metric: Metric) -> f64 {
+    if polygon.len() < 2 {
+        return f64::INFINITY;
+    }
+    let mut nearest = f64::INFINITY;
+    let mut previous = polygon[polygon.len() - 1];
+    for &current in polygon {
+        nearest = nearest.min(distance_point_to_segment(previous, current, point, metric));
+        previous = current;
+    }
+    if point_in_polygon(polygon, point) {
+        -nearest
+    } else {
+        nearest
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -265,5 +393,149 @@ mod tests {
         assert!(rectangle_inside_polygon(&UNIT_SQUARE, [2.0, 2.0], [2.0, 2.0]));
         // Inverted rectangle rejected.
         assert!(!rectangle_inside_polygon(&UNIT_SQUARE, [3.0, 3.0], [1.0, 1.0]));
+    }
+
+    /// The Chebyshev segment distance is derived from a breakpoint argument rather than a
+    /// projection formula, so check it against brute force: densely sample the segment and
+    /// take the nearest sample. If the claim "a convex piecewise-linear minimum is attained
+    /// at a breakpoint" were wrong, the closed form would sit ABOVE the sampled minimum.
+    #[test]
+    fn chebyshev_segment_distance_matches_brute_force() {
+        let segments = [
+            ([0.0, 0.0], [4.0, 0.0]),   // axis-aligned
+            ([0.0, 0.0], [0.0, 3.0]),   // axis-aligned, other axis
+            ([0.0, 0.0], [4.0, 4.0]),   // 45°, where |gx| and |gy| swap
+            ([1.0, 5.0], [6.0, 2.0]),   // general slope
+            ([-3.0, 2.0], [2.0, -4.0]), // crossing the origin region
+            ([2.0, 2.0], [2.0, 2.0]),   // degenerate
+        ];
+        let probes = [
+            [0.0, 0.0], [1.0, 1.0], [5.0, 5.0], [-2.0, 3.0],
+            [2.5, -1.5], [7.0, 0.5], [0.5, 7.0], [3.3, 3.7],
+        ];
+        for (a, b) in segments {
+            for point in probes {
+                const STEPS: u32 = 20_000;
+                let closed_form = distance_point_to_segment(a, b, point, Metric::Chebyshev);
+                let mut sampled = f64::INFINITY;
+                for step in 0..=STEPS {
+                    let t = step as f64 / STEPS as f64;
+                    let on_segment = [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])];
+                    sampled = sampled.min(Metric::Chebyshev.distance(on_segment, point));
+                }
+                // The relationship is ONE-SIDED. The closed form is the exact minimum, so it
+                // can never exceed any sample; the sampler, stepping discretely, generally
+                // lands just above it. (Here the closed form finds 8/11 exactly where 20k
+                // samples get within 3e-5 of it.)
+                assert!(
+                    closed_form <= sampled + 1e-12,
+                    "segment {a:?}→{b:?} point {point:?}: closed form {closed_form} is ABOVE \
+                     the sampled minimum {sampled} — the breakpoint set is incomplete"
+                );
+                // And it must not be spuriously low: the sampler cannot miss the true minimum
+                // by more than one step's worth of travel, the field being 1-Lipschitz.
+                let step_travel = Metric::Chebyshev.length([b[0] - a[0], b[1] - a[1]])
+                    / STEPS as f64;
+                assert!(
+                    sampled - closed_form <= step_travel + 1e-12,
+                    "segment {a:?}→{b:?} point {point:?}: closed form {closed_form} is below \
+                     the sampled minimum {sampled} by more than one step ({step_travel})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn polygon_signed_distance_signs_and_values() {
+        for metric in [Metric::Euclidean, Metric::Chebyshev] {
+            // Centre of the 4×4 square is 2 from every edge in both metrics.
+            let centre = signed_distance_to_polygon(&UNIT_SQUARE, [2.0, 2.0], metric);
+            assert!((centre + 2.0).abs() < 1e-9, "{metric:?} centre = {centre}");
+            // On the boundary ⇒ zero.
+            let edge = signed_distance_to_polygon(&UNIT_SQUARE, [4.0, 2.0], metric);
+            assert!(edge.abs() < 1e-9, "{metric:?} edge = {edge}");
+            // Straight out from an edge: 1 away in both metrics.
+            let outside = signed_distance_to_polygon(&UNIT_SQUARE, [5.0, 2.0], metric);
+            assert!((outside - 1.0).abs() < 1e-9, "{metric:?} outside = {outside}");
+            // Inside is negative, outside positive.
+            assert!(signed_distance_to_polygon(&UNIT_SQUARE, [1.0, 1.0], metric) < 0.0);
+            assert!(signed_distance_to_polygon(&UNIT_SQUARE, [9.0, 9.0], metric) > 0.0);
+        }
+        // Diagonally off a corner is where the metrics part company: the corner (4,4) is
+        // (3,3) away, so Euclidean reads 3√2 while Chebyshev reads 3.
+        let corner = [7.0, 7.0];
+        let euclidean = signed_distance_to_polygon(&UNIT_SQUARE, corner, Metric::Euclidean);
+        let chebyshev = signed_distance_to_polygon(&UNIT_SQUARE, corner, Metric::Chebyshev);
+        assert!((euclidean - 18.0f64.sqrt()).abs() < 1e-9, "euclidean = {euclidean}");
+        assert!((chebyshev - 3.0).abs() < 1e-9, "chebyshev = {chebyshev}");
+    }
+
+    /// The property every cell bound rests on: the field must not change faster than
+    /// distance does, **in its own metric**. If this fails, classification built on it is
+    /// unsound.
+    #[test]
+    fn polygon_signed_distance_is_one_lipschitz_in_its_own_metric() {
+        // A deliberately awkward profile: reflex corner, a spike, and a self-intersection.
+        let profile = [
+            [0.0, 0.0], [6.0, 0.0], [6.0, 6.0], [3.0, 2.0],
+            [0.0, 6.0], [4.0, -1.0], [1.0, 4.0],
+        ];
+        for metric in [Metric::Euclidean, Metric::Chebyshev] {
+            let mut worst: f64 = 0.0;
+            let mut samples = 0u32;
+            for xi in -20..=80i32 {
+                for yi in -20..=80i32 {
+                    let p = [xi as f64 * 0.1, yi as f64 * 0.1];
+                    let here = signed_distance_to_polygon(&profile, p, metric);
+                    for delta in [[0.1, 0.0], [0.0, 0.1], [0.1, 0.1], [0.1, -0.1]] {
+                        let q = [p[0] + delta[0], p[1] + delta[1]];
+                        let there = signed_distance_to_polygon(&profile, q, metric);
+                        let ratio = (there - here).abs() / metric.length(delta);
+                        worst = worst.max(ratio);
+                        samples += 1;
+                    }
+                }
+            }
+            assert!(
+                worst <= 1.0 + 1e-9,
+                "{metric:?} field is not 1-Lipschitz: worst ratio {worst} over {samples} pairs"
+            );
+        }
+    }
+
+    /// The metrics bracket each other: `L∞ <= L2 <= sqrt(2)·L∞` in the plane. A useful
+    /// guard that neither implementation has drifted into computing the other.
+    #[test]
+    fn chebyshev_and_euclidean_bracket_each_other() {
+        let profile = [[0.0, 0.0], [5.0, 1.0], [3.0, 6.0], [-1.0, 4.0]];
+        for xi in -10..=15i32 {
+            for yi in -10..=15i32 {
+                let p = [xi as f64 * 0.5, yi as f64 * 0.5];
+                let chebyshev =
+                    signed_distance_to_polygon(&profile, p, Metric::Chebyshev).abs();
+                let euclidean =
+                    signed_distance_to_polygon(&profile, p, Metric::Euclidean).abs();
+                assert!(
+                    chebyshev <= euclidean + 1e-9,
+                    "at {p:?}: chebyshev {chebyshev} exceeds euclidean {euclidean}"
+                );
+                assert!(
+                    euclidean <= chebyshev * 2.0f64.sqrt() + 1e-9,
+                    "at {p:?}: euclidean {euclidean} exceeds sqrt(2)·chebyshev {chebyshev}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn degenerate_polygons_have_no_boundary() {
+        assert_eq!(
+            signed_distance_to_polygon(&[], [0.0, 0.0], Metric::Euclidean),
+            f64::INFINITY
+        );
+        assert_eq!(
+            signed_distance_to_polygon(&[[1.0, 1.0]], [0.0, 0.0], Metric::Chebyshev),
+            f64::INFINITY
+        );
     }
 }
