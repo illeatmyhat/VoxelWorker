@@ -74,6 +74,78 @@ impl SketchSolid {
     /// The resolved grid's voxel dimensions `[x, y, z]` (the prism's AABB), or
     /// `[0, 0, 0]` for a degenerate profile. The two in-plane axes get the
     /// profile's bounding-box span; the normal axis gets `height_voxels`.
+    /// The metric this body's field is exact in (ADR 0019 Decision 6).
+    ///
+    /// **The lift decides it, not the profile.** An extrusion is the product of the profile
+    /// region and a slab, and the L∞ norm of a product space is the max of its factors — so a
+    /// polygonal profile extrudes to an exactly-Chebyshev field, and outsets square. A
+    /// revolve introduces circular cross-sections, whose L∞ distance has no closed form, just
+    /// as for the curved primitives — so it is Euclidean, and outsets round.
+    ///
+    /// This REFINES ADR 0019 Decision 6, whose "boxes and every profile-lifted body outset
+    /// square" is too coarse: revolve is profile-lifted and does not.
+    pub fn field_metric(&self) -> substrate::geom2d::Metric {
+        match self.operation {
+            Operation::Extrude { .. } => substrate::geom2d::Metric::Chebyshev,
+            Operation::Revolve { .. } => substrate::geom2d::Metric::Euclidean,
+        }
+    }
+
+    /// Signed distance to the solid at `point_local_voxels`, a point in this producer's own
+    /// `[0, full_dim)` voxel frame (ADR 0008 — the frame is carried, never re-derived).
+    /// Negative inside, measured in whatever [`field_metric`](Self::field_metric) reports.
+    ///
+    /// **Extrude is exact.** The prism is the product of the profile region with the slab
+    /// `[0, height]` along the plane normal, and under Chebyshev the distance to a product is
+    /// the maximum of the per-factor distances — so `max(profile, slab)` IS the distance,
+    /// with no correction term. (Under Euclidean the same expression would be exact only
+    /// inside and on the faces, needing a `sqrt` term near the rim edge.)
+    ///
+    /// Consistency with [`resolve_into`] is what the classifier actually requires, and both
+    /// read the same profile through the same even-odd rule.
+    ///
+    /// **On the boundary the predicate is authoritative, not the sign comparison.** A sample
+    /// CAN land exactly on an edge — a diagonal between integer vertices passes through
+    /// half-integer points, e.g. the edge `(4,3)→(7,6)` contains the voxel centre
+    /// `(4.5, 3.5)` — and there the distance is zero with only its SIGN BIT carrying the
+    /// even-odd verdict (`-0.0` inside, `+0.0` outside). Occupancy derived from this field
+    /// must therefore test [`f32::is_sign_negative`], not `< 0.0`, which is false for `-0.0`.
+    ///
+    /// This costs the classifier nothing: a cell bracket that straddles zero is Boundary and
+    /// falls back to a per-voxel resolve, so the ambiguity is decided by the predicate that
+    /// owns it (ADR 0019 — predicates classify, fields measure).
+    ///
+    /// **Revolve returns `None`** until its lift lands; this return type is transitional and
+    /// collapses to a plain `f32` when it does.
+    ///
+    /// [`resolve_into`]: crate::voxel::VoxelProducer::resolve_into
+    pub fn signed_distance(&self, point_local_voxels: [f32; 3]) -> Option<f32> {
+        let (profile_min, _profile_max) = self.profile_bounds()?;
+        match self.operation {
+            Operation::Extrude { height_voxels } => {
+                let [in_plane_0, in_plane_1] = self.sketch.plane.in_plane_axes();
+                let normal = self.sketch.plane.normal_axis();
+                // The resolve tests the polygon at `profile_min + cell + 0.5`; a sample point
+                // is already `cell + 0.5`, so profile space is exactly `profile_min + point`.
+                let in_profile = [
+                    profile_min[0] as f64 + point_local_voxels[in_plane_0] as f64,
+                    profile_min[1] as f64 + point_local_voxels[in_plane_1] as f64,
+                ];
+                let to_profile = substrate::geom2d::signed_distance_to_polygon(
+                    &to_profile_points(&self.sketch.profile),
+                    in_profile,
+                    substrate::geom2d::Metric::Chebyshev,
+                );
+                // `grid_dimensions` sets `dimensions[normal] = height_voxels`, so the solid
+                // spans `[0, height]` along the normal in this frame.
+                let along_normal = point_local_voxels[normal] as f64;
+                let to_slab = (-along_normal).max(along_normal - height_voxels as f64);
+                Some(to_profile.max(to_slab) as f32)
+            }
+            Operation::Revolve { .. } => None,
+        }
+    }
+
     pub fn grid_dimensions(&self) -> [u32; 3] {
         let Some((min, max)) = self.profile_bounds() else {
             return [0, 0, 0];

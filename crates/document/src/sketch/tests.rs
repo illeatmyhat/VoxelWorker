@@ -665,3 +665,141 @@
         });
         assert!(!any_in_lower_half, "180° revolve leaked into the theta>180 half");
     }
+
+    /// A set of extrude profiles worth stressing: a plain rectangle, a concave L, one with a
+    /// reflex notch, and one that self-intersects. Each is paired with a plane so all three
+    /// axis mappings get exercised.
+    fn extrude_field_cases() -> Vec<(&'static str, SketchSolid)> {
+        let l_shape = vec![
+            SketchPoint::new(0, 0), SketchPoint::new(6, 0), SketchPoint::new(6, 2),
+            SketchPoint::new(2, 2), SketchPoint::new(2, 5), SketchPoint::new(0, 5),
+        ];
+        let notched = vec![
+            SketchPoint::new(0, 0), SketchPoint::new(7, 0), SketchPoint::new(7, 6),
+            SketchPoint::new(4, 3), SketchPoint::new(0, 6),
+        ];
+        let bowtie = vec![
+            SketchPoint::new(0, 0), SketchPoint::new(6, 6),
+            SketchPoint::new(0, 6), SketchPoint::new(6, 0),
+        ];
+        vec![
+            ("rectangle/Z", SketchSolid::extrude(Sketch::rectangle(PlaneAxis::Z, 5, 3), 4)),
+            ("L/X", SketchSolid::extrude(Sketch::new(PlaneAxis::X, l_shape), 3)),
+            ("notched/Y", SketchSolid::extrude(Sketch::new(PlaneAxis::Y, notched), 2)),
+            ("bowtie/Z", SketchSolid::extrude(Sketch::new(PlaneAxis::Z, bowtie), 3)),
+        ]
+    }
+
+    /// The contract the whole field layer rests on (ADR 0019 Decision 4): the field must
+    /// agree with the resolve, over EVERY voxel of the grid rather than a sample.
+    ///
+    /// Occupancy is read from the SIGN BIT, not `< 0.0`. A voxel centre can land exactly on a
+    /// profile edge — a diagonal between integer vertices passes through half-integer points,
+    /// which the notched case below actually hits at `(4.5, 3.5)` — and there the distance is
+    /// zero with only its sign carrying the even-odd verdict. `-0.0 < 0.0` is false, so a
+    /// naive comparison would report air where the resolve reports solid.
+    #[test]
+    fn extrude_signed_distance_agrees_with_the_resolve() {
+        const DENSITY: u32 = 8;
+        for (label, solid) in extrude_field_cases() {
+            let mut grid = VoxelGrid::default();
+            solid.resolve(&mut grid, DENSITY);
+            let occupied: BTreeSet<[i32; 3]> =
+                grid.occupied.iter().map(|voxel| voxel.local_index).collect();
+
+            let dimensions = solid.grid_dimensions();
+            let mut checked = 0u32;
+            let mut inside = 0u32;
+            let mut on_boundary = 0u32;
+            for x in 0..dimensions[0] {
+                for y in 0..dimensions[1] {
+                    for z in 0..dimensions[2] {
+                        let centre =
+                            [x as f32 + 0.5, y as f32 + 0.5, z as f32 + 0.5];
+                        let distance = solid
+                            .signed_distance(centre)
+                            .expect("extrude has a field");
+                        let field_says_solid = distance.is_sign_negative();
+                        let resolve_says_solid =
+                            occupied.contains(&[x as i32, y as i32, z as i32]);
+                        assert_eq!(
+                            field_says_solid, resolve_says_solid,
+                            "{label} at {centre:?}: field distance {distance} says \
+                             solid={field_says_solid}, resolve says {resolve_says_solid}"
+                        );
+                        if distance == 0.0 {
+                            on_boundary += 1;
+                        }
+                        checked += 1;
+                        inside += u32::from(field_says_solid);
+                    }
+                }
+            }
+            assert!(checked > 0, "{label}: empty grid, nothing verified");
+            assert!(inside > 0, "{label}: nothing solid, the case proves nothing");
+            if label == "notched/Y" {
+                assert!(
+                    on_boundary > 0,
+                    "the notched case is here BECAUSE its diagonal edge puts voxel centres \
+                     exactly on the boundary; if that stops happening this test no longer \
+                     guards the sign-bit contract"
+                );
+            }
+        }
+    }
+
+    /// The extrude field must be 1-Lipschitz in Chebyshev, which is what makes a cell bound
+    /// from a single sample sound. Sampled on a fine sub-voxel lattice extending outside the
+    /// grid, so the exterior and the rim edges are covered too.
+    #[test]
+    fn extrude_signed_distance_is_one_lipschitz_in_chebyshev() {
+        for (label, solid) in extrude_field_cases() {
+            let dimensions = solid.grid_dimensions();
+            let mut worst: f32 = 0.0;
+            let step = 0.25f32;
+            let span = |extent: u32| -> i32 { (extent as f32 / step) as i32 + 8 };
+            for xi in -8..span(dimensions[0]) {
+                for yi in -8..span(dimensions[1]) {
+                    for zi in -8..span(dimensions[2]) {
+                        let p = [xi as f32 * step, yi as f32 * step, zi as f32 * step];
+                        let here = solid.signed_distance(p).expect("extrude has a field");
+                        for axis in 0..3 {
+                            let mut q = p;
+                            q[axis] += step;
+                            let there = solid.signed_distance(q).expect("extrude has a field");
+                            worst = worst.max((there - here).abs() / step);
+                        }
+                    }
+                }
+            }
+            assert!(
+                worst <= 1.0 + 1e-5,
+                "{label}: extrude field is not 1-Lipschitz in Chebyshev (worst {worst})"
+            );
+        }
+    }
+
+    /// Chebyshev is the metric an extrusion is exact in, and a rectangular prism is where
+    /// that is checkable by hand: from a point diagonally off a corner, the distance is the
+    /// larger axis gap, not the hypotenuse.
+    #[test]
+    fn extrude_field_is_chebyshev_exact_on_a_prism() {
+        use substrate::geom2d::Metric;
+        // A 4x4 footprint on Z, extruded 2 — the solid spans [0,4]x[0,4]x[0,2].
+        let solid = SketchSolid::extrude(Sketch::rectangle(PlaneAxis::Z, 4, 4), 2);
+        assert_eq!(solid.field_metric(), Metric::Chebyshev);
+        // Diagonally off the (4,4) corner by (3,3): Chebyshev reads 3, not 3*sqrt(2).
+        let corner = solid.signed_distance([7.0, 7.0, 1.0]).unwrap();
+        assert!((corner - 3.0).abs() < 1e-4, "corner distance {corner}");
+        // Straight out one face by 2.
+        let face = solid.signed_distance([6.0, 2.0, 1.0]).unwrap();
+        assert!((face - 2.0).abs() < 1e-4, "face distance {face}");
+        // Deepest interior point is 1 from the nearest face (the normal slab is thinnest).
+        let centre = solid.signed_distance([2.0, 2.0, 1.0]).unwrap();
+        assert!((centre + 1.0).abs() < 1e-4, "centre distance {centre}");
+        // Revolve reports Euclidean instead — the lift decides the metric, not the profile.
+        let revolved =
+            SketchSolid::revolve(Sketch::rectangle(PlaneAxis::Z, 4, 4), RevolveAxis::InPlane0, 360);
+        assert_eq!(revolved.field_metric(), Metric::Euclidean);
+        assert_eq!(revolved.signed_distance([1.0, 1.0, 1.0]), None);
+    }

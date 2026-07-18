@@ -221,3 +221,34 @@ That question is settled here because the answer determines what a profile *is*.
 - **The ε-band error survives outset**, non-obviously: offsetting a flattened polygon is not
   the offset of the true curve, but Minkowski addition preserves Hausdorff distance, so the
   bound composes through the operation that motivated it.
+
+## Amendment 2026-07-18 — the lift decides the metric, and the boundary belongs to the predicate
+
+Two corrections found while implementing the extrude lift.
+
+**Decision 6's category rule is too coarse.** It says "boxes and every profile-lifted body
+outset square (they are polygonal once flattened)". The first half holds; the second does
+not. **The lift decides the metric, not the profile.** An extrusion is the product of the
+profile region with a slab, and the L∞ norm of a product space is the maximum of its factors
+— so a polygonal profile extrudes to an *exactly* Chebyshev field, and `max(profile, slab)`
+is the true distance with no correction term needed. A **revolve** introduces circular
+cross-sections, whose L∞ distance has no closed form for precisely the reason the curved
+primitives have none. Revolve is profile-lifted and outsets **round**.
+
+Read Decision 6 as splitting on the lift rather than on the authored geometry: extrude and
+box are Chebyshev; revolve and the curved primitives are Euclidean. The user-facing promise
+of Decision 6 — that an imperceptible data change never flips the outset shape — is
+untouched, since the lift is a deliberate authoring choice, not an accident of edge angles.
+
+**A field sample can land exactly on the boundary, and the sign comparison then fails.**
+Decision 5 stands, but an assumption made while implementing it was wrong: that voxel centres
+never sit on a profile edge because vertices are integers and centres are half-integers. A
+**diagonal** edge between integer vertices passes through half-integer points — the edge
+`(4,3)→(7,6)` contains the centre `(4.5, 3.5)`. There the distance is zero and only its SIGN
+BIT carries the even-odd verdict, so occupancy read from a field must test the sign bit, not
+`< 0.0`, which is false for `-0.0`.
+
+This costs the classifier nothing, and it is Decision 5's own rule playing out: a cell bracket
+straddling zero is Boundary and falls back to a per-voxel resolve, so the ambiguity is settled
+by the predicate that owns it. **Predicates classify, fields measure** — a measurement was
+never entitled to decide occupancy on a measure-zero set.
