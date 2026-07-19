@@ -55,11 +55,18 @@ fn non_producers_have_no_tile_glyph() {
 
 /// A tile glyph answers to the same noun as its rail twin — one name per idea across both
 /// families, so a reader looking for "the mark for a revolve" finds one entry, at two sizes.
+///
+/// `sculpt` is the single deliberate exception: the rail set has no generic sculpt, having
+/// split the verb into `sculpt-add` and `carve` so polarity is legible at 15 pt. Pinning the
+/// exception as a list means a SECOND divergence has to be argued for, not just added.
 #[test]
 fn a_tile_glyph_shares_its_rail_twins_name() {
-    for large in LargeIcon::ALL {
-        assert_eq!(large.name(), large.rail().name());
-    }
+    let divergent: Vec<&str> = LargeIcon::ALL
+        .iter()
+        .filter(|l| l.name() != l.rail().name())
+        .map(|l| l.name())
+        .collect();
+    assert_eq!(divergent, ["sculpt"]);
 }
 
 /// Every glyph paints without panicking, at both a tile size and a thumbnail size.

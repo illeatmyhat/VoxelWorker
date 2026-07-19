@@ -31,9 +31,11 @@ use super::{Icon, IconPainter};
 
 mod box_solid;
 mod cylinder;
+mod displace;
 mod extrude;
 mod half_space;
 mod revolve;
+mod sculpt;
 mod sketch;
 mod sphere;
 mod sweep;
@@ -45,10 +47,12 @@ pub const GRID: f32 = 26.0;
 /// large mark carries its weight through construction rather than through ink.
 pub const STROKE_WIDTH: f32 = 1.1;
 
-/// A producer drawn at tile size.
+/// A mark drawn at tile size.
 ///
-/// Only producers have tile glyphs: they are the closed verb set that earns a permanent
-/// rail, and they are the marks whose whole content is projection and depth.
+/// Mostly producers — the closed verb set that earns a permanent rail, and the marks whose
+/// whole content is projection and depth. Two field/tool marks join them because their
+/// construction is carried by OPACITY, which the rail cannot spend: `displace` needs its
+/// datum visible-but-subordinate, and `sculpt` needs a reach that is felt rather than drawn.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum LargeIcon {
     /// The authoring atom: a curve with two authored, grabbable endpoints.
@@ -67,6 +71,16 @@ pub enum LargeIcon {
     Cylinder,
     /// An unbounded plane; everything on one side is body.
     HalfSpace,
+    /// A brush: the core it writes, inside the reach it stops at.
+    ///
+    /// The rail set has no generic sculpt — it splits the verb into `sculpt-add` and
+    /// `carve`, because at 15 pt polarity has to be in the mark itself. At tile size the
+    /// brush is the thing being CHOSEN and polarity is stated elsewhere, so the generic
+    /// mark is the honest one. [`rail`](Self::rail) therefore answers `sculpt-add`, the
+    /// nearest twin, and this is the one place the two families do not share a name.
+    Sculpt,
+    /// A surface pushed by a field, over the datum it left.
+    Displace,
 }
 
 impl LargeIcon {
@@ -81,6 +95,8 @@ impl LargeIcon {
         LargeIcon::Sphere,
         LargeIcon::Cylinder,
         LargeIcon::HalfSpace,
+        LargeIcon::Sculpt,
+        LargeIcon::Displace,
     ];
 
     /// The tile glyph for a rail [`Icon`], if that noun has one.
@@ -98,6 +114,8 @@ impl LargeIcon {
             Icon::Sphere => LargeIcon::Sphere,
             Icon::Cylinder => LargeIcon::Cylinder,
             Icon::HalfSpace => LargeIcon::HalfSpace,
+            Icon::SculptAdd => LargeIcon::Sculpt,
+            Icon::Displace => LargeIcon::Displace,
             _ => return None,
         })
     }
@@ -113,6 +131,8 @@ impl LargeIcon {
             LargeIcon::Sphere => Icon::Sphere,
             LargeIcon::Cylinder => Icon::Cylinder,
             LargeIcon::HalfSpace => Icon::HalfSpace,
+            LargeIcon::Sculpt => Icon::SculptAdd,
+            LargeIcon::Displace => Icon::Displace,
         }
     }
 
@@ -128,12 +148,20 @@ impl LargeIcon {
             LargeIcon::Sphere => sphere::draw(&g),
             LargeIcon::Cylinder => cylinder::draw(&g),
             LargeIcon::HalfSpace => half_space::draw(&g),
+            LargeIcon::Sculpt => sculpt::draw(&g),
+            LargeIcon::Displace => displace::draw(&g),
         }
     }
 
-    /// The glyph's kebab-case name — the same noun its rail twin answers to.
+    /// The glyph's kebab-case name.
+    ///
+    /// Every tile mark answers to its rail twin's noun except [`Sculpt`](Self::Sculpt),
+    /// which is the generic brush the rail set does not have — see that variant.
     pub fn name(self) -> &'static str {
-        self.rail().name()
+        match self {
+            LargeIcon::Sculpt => "sculpt",
+            other => other.rail().name(),
+        }
     }
 
     /// What the tile carries that its rail twin cannot.
@@ -170,6 +198,14 @@ impl LargeIcon {
             LargeIcon::HalfSpace => {
                 "Neither line terminates inside the box, which is how the mark says unbounded \
                  without drawing a boundary."
+            }
+            LargeIcon::Sculpt => {
+                "A core inside the reach it stops at — the generic brush the rail set has to \
+                 split into add and carve, because at 15 pt polarity must be in the mark."
+            }
+            LargeIcon::Displace => {
+                "The datum stays visible but subordinate, so the mark says the surface MOVED \
+                 rather than that it is bumpy."
             }
         }
     }

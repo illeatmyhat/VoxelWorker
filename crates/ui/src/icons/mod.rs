@@ -205,23 +205,64 @@ impl<'a> IconPainter<'a> {
 
     /// Stroke a dashed segment on the grid (2.2 on, 1.8 off, in grid units).
     pub fn dashed_line(&self, a: (f32, f32), b: (f32, f32)) {
-        let (start, end) = (self.at(a.0, a.1), self.at(b.0, b.1));
-        let span = end - start;
-        let length = span.length();
-        if length <= f32::EPSILON {
+        self.dash_path(&[self.at(a.0, a.1), self.at(b.0, b.1)], self.stroke);
+    }
+
+    /// Stroke a dashed ellipse — a boundary that is felt rather than drawn (a brush's
+    /// falloff, a dilation envelope), sampled as a polyline and dashed by arc length so the
+    /// rhythm stays even the whole way round.
+    pub fn dashed_ellipse(&self, center: (f32, f32), rx: f32, ry: f32) {
+        self.dashed_ellipse_with(center, rx, ry, self.stroke);
+    }
+
+    /// Stroke a dashed ellipse in a given stroke.
+    pub fn dashed_ellipse_with(&self, center: (f32, f32), rx: f32, ry: f32, stroke: Stroke) {
+        let segments = ((self.rect.width() * 0.9) as usize).clamp(24, 96);
+        let points: Vec<Pos2> = (0..=segments)
+            .map(|i| {
+                let t = std::f32::consts::TAU * (i as f32 / segments as f32);
+                self.at(center.0 + rx * t.cos(), center.1 + ry * t.sin())
+            })
+            .collect();
+        self.dash_path(&points, stroke);
+    }
+
+    /// Walk a polyline in screen space, painting the set's dash rhythm along it.
+    ///
+    /// The phase carries across the segments of ONE call, which is what keeps a dashed
+    /// ellipse — sampled as dozens of short chords — from restarting its rhythm at every
+    /// sample. [`dashed_rect`](Self::dashed_rect) deliberately calls this once per side, so
+    /// each side still begins on a full dash and the corners stay square.
+    ///
+    /// The period is in the painter's own grid units, so it is the same visual rhythm
+    /// whichever family is drawing (the rail's 18-unit grid or the tile set's 26).
+    fn dash_path(&self, points: &[Pos2], stroke: Stroke) {
+        let period = (2.2 + 1.8) / self.grid * self.rect.width();
+        let on = 2.2 / self.grid * self.rect.width();
+        if period <= f32::EPSILON {
             return;
         }
-        let step = (2.2 + 1.8) / GRID * self.rect.width();
-        let on = 2.2 / GRID * self.rect.width();
-        let direction = span / length;
-        let mut travelled = 0.0;
-        while travelled < length {
-            let dash_end = (travelled + on).min(length);
-            self.painter.line_segment(
-                [start + direction * travelled, start + direction * dash_end],
-                self.stroke,
-            );
-            travelled += step;
+        let mut travelled = 0.0_f32;
+        for pair in points.windows(2) {
+            let span = pair[1] - pair[0];
+            let length = span.length();
+            if length <= f32::EPSILON {
+                continue;
+            }
+            let direction = span / length;
+            let mut along = 0.0_f32;
+            while along < length {
+                let phase = (travelled + along) % period;
+                if phase < on {
+                    let end = (along + (on - phase)).min(length);
+                    self.painter
+                        .line_segment([pair[0] + direction * along, pair[0] + direction * end], stroke);
+                    along = end;
+                } else {
+                    along += period - phase;
+                }
+            }
+            travelled += length;
         }
     }
 
