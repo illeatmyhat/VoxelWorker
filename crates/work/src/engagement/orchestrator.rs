@@ -36,13 +36,11 @@ use display::renderer::{LayerBand, RegionClip};
 use document::scene::Scene;
 use evaluation::two_layer_store::{TwoLayerChunk, TwoLayerResidentCache};
 use voxel_core::voxel::RecentreVoxels;
-// Consumed only by the GPU display-install paths (compiled out of a non-gpu build, where the
-// orchestrator maintains just the CPU brick mirror).
-#[cfg(feature = "gpu")]
+// Consumed by the GPU display-install paths (alongside the CPU brick mirror the
+// orchestrator maintains for every chunkable scene).
 use crate::engagement::routing::{
     brick_display_handover, brick_patch_in_place, BrickDisplayHandover,
 };
-#[cfg(feature = "gpu")]
 use display::brick::{pack_gpu_records, ClipmapPyramid};
 
 /// The per-refresh context the shell hands the orchestrator whenever a display-mesh
@@ -100,32 +98,29 @@ pub struct DisplayOrchestrator {
     /// inline-patched by an incremental edit (its buffers don't reflect the latest resolve);
     /// the next edit that needs the mesh — or [`Self::ensure_display_mesh_current`] on a
     /// debug-face / loaded-material transition — rebuilds it WHOLESALE. Composed into the C1
-    /// interlock via [`route_mesh_build`]. Always `false` on non-gpu builds (no brick sink).
+    /// interlock via [`route_mesh_build`].
     mesh_stale: bool,
     /// F1 (brick-display perf follow-up to epic #64): a DEFERRED brick-display handover is
     /// pending. When an edit drops brick representability while the replacement cuboid mesh
     /// builds ASYNC, the (now stale) brick field is KEPT drawing so the model never blanks for
     /// the seconds the worker takes — `clear_brick_field` is deferred to the mesh-install seam
     /// ([`Self::complete_brick_display_handover`], run from [`Self::finish_mesh_install`]).
-    /// `true` only while such a handover is outstanding; always `false` on non-gpu builds (the
-    /// reconcile that sets it is gpu-gated, so the brick can never be the display there).
-    #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
+    /// `true` only while such a handover is outstanding.
     brick_display_pending_clear: bool,
     /// ADR 0011 G1: the brick raymarch display sink. Created on first engagement
-    /// (a single ported-producer scene under `--features gpu`) and kept — per-edit
+    /// (any non-empty chunkable scene) and kept — per-edit
     /// work is `install_brick_field` (records + atlas swap, no pipeline rebuild).
     /// When it holds a field and no mesh-only mode is active (debug-faces, a loaded
     /// VS material), the frame's voxel model draws from the brick atlas INSTEAD of
     /// the cuboid mesh; the mesh keeps rebuilding as the fallback + A/B reference
-    /// (ADR 0011 Decision 6). `None` on default (no-GPU) builds, always.
+    /// (ADR 0011 Decision 6). `None` until the first engagement.
     brick_raymarch_renderer: Option<BrickRaymarchRenderer>,
     /// ADR 0011 G3: the PERSISTENT incremental brick field mirroring the boundary set —
     /// the CPU truth an incremental edit patches (dirty chunks re-evaluated, only their
     /// slots written) instead of rebuilding the whole field. `Some` for any chunkable
-    /// gpu-gated scene; reset from a wholesale `build_brick_field` on a wholesale edit,
+    /// scene; reset from a wholesale `build_brick_field` on a wholesale edit,
     /// patched in place on an incremental edit, and dropped when the scene leaves the
     /// gate / empties. `to_build()` always equals the resident atlas (ADR 0011 G3 gate).
-    #[cfg_attr(not(feature = "gpu"), allow(dead_code))]
     incremental_brick_field: Option<IncrementalBrickField>,
     /// Issue #60 (ADR 0003 §7): the background geometry-rebuild worker. A WHOLESALE
     /// rebuild whose covering-chunk count exceeds [`ASYNC_REBUILD_CHUNK_THRESHOLD`] —
@@ -154,8 +149,7 @@ pub struct DisplayOrchestrator {
     /// giant scene — is dispatched here (pure CPU, no GPU handles) instead of built inline.
     /// The main thread keeps drawing the CURRENT display (the stale brick field, or the
     /// mesh) until the artifacts arrive (`poll_brick_worker`), then installs them — only
-    /// the `install_brick_field` upload stays on the main thread. Exists on non-gpu builds
-    /// too (it maintains the CPU mirror there).
+    /// the `install_brick_field` upload stays on the main thread.
     brick_worker: BrickWorker,
     /// Supersede bookkeeping for `brick_worker` — the same [`GenerationTracker`] contract
     /// as the geometry and diameter workers: a result is accepted only when its generation
@@ -192,30 +186,25 @@ impl DisplayOrchestrator {
         density: u32,
         debug_face_orientation: bool,
     ) -> Self {
-        // Engage the brick raymarch from the FIRST frame for any non-empty chunkable scene
-        // (`--features gpu`). The representability gate is deleted (material atlas): per-record
+        // Engage the brick raymarch from the FIRST frame for any non-empty chunkable scene.
+        // The representability gate is deleted (material atlas): per-record
         // ids + overlay carry per-block detail and a mixed brick's per-voxel cell keys ride in
         // the side atlas, so mixed-material and overlay-disagreeing scenes engage too. Later
         // edits refresh it in `rebuild_geometry`.
-        #[cfg_attr(not(feature = "gpu"), allow(unused_mut))]
         let mut brick_raymarch_renderer: Option<BrickRaymarchRenderer> = None;
         // ADR 0011 G3: the persistent incremental field seeded from the startup wholesale
         // build (kept in lock-step with `brick_raymarch_renderer`).
-        #[cfg_attr(not(feature = "gpu"), allow(unused_mut))]
         let mut incremental_brick_field: Option<IncrementalBrickField> = None;
         // Perf follow-up to epic #64 (issue #60 pattern): the async brick-pipeline worker,
         // spawned BEFORE the startup brick decision so a giant persisted scene dispatches
         // its first wholesale build here instead of freezing the pre-first-frame startup
         // for the ~2s record build + pyramid + classify.
         let brick_worker = spawn_brick_worker();
-        #[cfg_attr(not(feature = "gpu"), allow(unused_mut))]
         let mut brick_generation = GenerationTracker::new();
-        #[cfg_attr(not(feature = "gpu"), allow(unused_mut))]
         let mut brick_async_outstanding = false;
         // The startup covering set is non-empty iff the scene is chunkable with geometry
         // (`resident_two_layer_chunks` yields nothing for a non-chunkable / VoxelBody-only scene),
         // so `!is_empty()` matches the old `has_chunkable_extent && !is_empty()` gate.
-        #[cfg(feature = "gpu")]
         if !two_layer_chunks.is_empty() {
             if two_layer_chunks.len() > ASYNC_REBUILD_CHUNK_THRESHOLD {
                 // A giant persisted scene: dispatch the wholesale brick build ASYNC so the
@@ -362,8 +351,8 @@ impl DisplayOrchestrator {
     /// raymarch shades solid hits per-face from the block's 6-layer D2Array by the SAME rule
     /// the merged mesh uses (`face_layer` + per-face UV + `fract`), with zero per-brick data.
     /// With the representability gate deleted (material atlas), the mesh is the fallback ONLY for
-    /// non-gpu builds and debug-face mode (it needs the mesh's per-vertex face colours) — every
-    /// non-empty gpu scene, mixed-material included, engages the brick display.
+    /// debug-face mode (it needs the mesh's per-vertex face colours) and for machines/scenes with
+    /// no live brick field — every non-empty scene otherwise engages the brick display.
     fn brick_display_engaged_predicate(
         has_live_brick_field: bool,
         debug_face_orientation: bool,
@@ -373,8 +362,8 @@ impl DisplayOrchestrator {
 
     /// The per-frame brick-display engagement gate against the LIVE renderer/panel state — the
     /// shared read used by BOTH the draw path and [`Self::ensure_display_mesh_current`], which
-    /// MUST agree term-for-term. Delegates to [`Self::brick_display_engaged_predicate`]. On
-    /// non-gpu builds `brick_raymarch_renderer` is always `None`, so this is always `false`.
+    /// MUST agree term-for-term. Delegates to [`Self::brick_display_engaged_predicate`]. `false`
+    /// whenever no brick renderer/field is live.
     pub fn brick_display_engaged(&self, debug_face_orientation: bool) -> bool {
         Self::brick_display_engaged_predicate(
             self.brick_raymarch_renderer
@@ -391,7 +380,6 @@ impl DisplayOrchestrator {
     /// so the mesh takes the frame. A no-op when no handover is pending.
     fn complete_brick_display_handover(&mut self) {
         if self.brick_display_pending_clear {
-            #[cfg(feature = "gpu")]
             if let Some(renderer) = &mut self.brick_raymarch_renderer {
                 renderer.clear_brick_field();
             }
@@ -404,9 +392,8 @@ impl DisplayOrchestrator {
     /// worker's `Empty` arrival. `KeepAsDisplay`/`ClearNow` cancel any
     /// pending deferred clear (and `ClearNow` also drops the live field this frame); `DeferUntilInstall`
     /// arms the deferred clear so the stale brick keeps drawing until the replacement mesh lands
-    /// ([`Self::complete_brick_display_handover`]). Gpu-only — `BrickDisplayHandover` and the field
-    /// clear are the gpu display's concern (on non-gpu the brick is never the display).
-    #[cfg(feature = "gpu")]
+    /// ([`Self::complete_brick_display_handover`]). `BrickDisplayHandover` and the field clear are
+    /// the brick display's concern; a no-op when no field is live.
     fn apply_brick_display_handover(&mut self, decision: BrickDisplayHandover) {
         match decision {
             BrickDisplayHandover::KeepAsDisplay => self.brick_display_pending_clear = false,
@@ -466,9 +453,8 @@ impl DisplayOrchestrator {
             density,
             recentre_voxels,
             // The display artifacts (classify + pyramid + GPU record pack) are consumed
-            // only by the gpu raymarch; a non-gpu build maintains just the CPU mirror,
-            // matching the synchronous path where the display block is compiled out.
-            build_display_artifacts: cfg!(feature = "gpu"),
+            // by the raymarch display, matching the synchronous path.
+            build_display_artifacts: true,
         });
     }
 
@@ -521,10 +507,9 @@ impl DisplayOrchestrator {
         debug_face_orientation: bool,
     ) {
         // The brick mirror (`incremental_brick_field`, plain CPU) is maintained for ANY
-        // chunkable scene. The DISPLAY raymarch keeps its stricter conditions inside the block
-        // (`--features gpu` + brick representability). ADR 0011 G2 — a loaded VS material no
-        // longer gates the display (it textures the raymarch per-face); ADR 0012 retired the
-        // onion fog occupancy, so a non-gpu build maintains the mirror without a consumer.
+        // chunkable scene. The DISPLAY raymarch keeps its stricter conditions inside the block.
+        // ADR 0011 G2 — a loaded VS material no longer gates the display (it textures the
+        // raymarch per-face); ADR 0012 retired the onion fog occupancy consumer of the mirror.
         let brick_gate = chunkable;
 
         // Issue #60 C1: classify the edit ONCE (shared by the brick sink and the mesh path).
@@ -565,13 +550,11 @@ impl DisplayOrchestrator {
         // the mesh fallback.
         //
         // The CPU brick MIRROR (`build`, `incremental_brick_field`) runs for ANY chunkable scene
-        // on ANY build (`brick_gate`). The gpu DISPLAY raymarch (installed in section (B) below)
-        // keeps its stricter `--features gpu` + `!loaded_material` + representability conditions;
-        // a mixed-material or textured scene meshes its display. The block YIELDS whether the
-        // brick DISPLAY was installed this rebuild — the mesh-skip decision below reads it
-        // (always `false` on non-gpu).
+        // (`brick_gate`). The DISPLAY raymarch (installed in section (B) below) keeps its stricter
+        // `!loaded_material` + representability conditions; a mixed-material or textured scene
+        // meshes its display. The block YIELDS whether the brick DISPLAY was installed this
+        // rebuild — the mesh-skip decision below reads it.
         let brick_display_installed = {
-            #[cfg_attr(not(feature = "gpu"), allow(unused_mut))]
             let mut brick_display_installed = false;
             if brick_gate && matches!(brick_route, BrickRebuildAction::WholesaleAsync) {
                 // Large wholesale (or a large edit while a brick build is outstanding — the
@@ -599,7 +582,6 @@ impl DisplayOrchestrator {
                 // NOTE: deliberately NOT predicted from `has_brick_field()` — a live field
                 // can be a stale F1 pending-clear placeholder, and treating that as "the
                 // display" would Skip-cancel the replacement mesh the handover waits on.
-                #[cfg(feature = "gpu")]
                 {
                     brick_display_installed = true;
                 }
@@ -609,15 +591,12 @@ impl DisplayOrchestrator {
                 // scene regardless of display representability. Patch iff the brick route is
                 // PatchInline (an incremental edit + a resident mirror + no brick build
                 // outstanding — `route_brick_rebuild` folds all three in). `update` (the GPU
-                // atlas-slot descriptor) is consumed only by the gpu display in (B); on a
-                // non-gpu build the in-place mirror patch is what matters and the descriptor
-                // is discarded.
+                // atlas-slot descriptor) is consumed by the display install in (B).
                 let patch_mirror = matches!(brick_route, BrickRebuildAction::PatchInline);
                 // `update` is the GPU atlas-slot descriptor (patch path); `wholesale_atlas` is
                 // the upload payload MOVED out of a wholesale build (item 9 — one copy of the
                 // field). The patch path reads records/geometry/dirty bytes from the resident
                 // mirror directly (no `to_build()`), so it produces no payload here.
-                #[cfg_attr(not(feature = "gpu"), allow(unused_variables))]
                 let (update, wholesale_atlas): (
                     Option<BrickFieldUpdate>,
                     Option<SculptedAtlasPayload>,
@@ -663,14 +642,13 @@ impl DisplayOrchestrator {
                     // The edit emptied the field — no display brick.
                     self.incremental_brick_field = None;
                 } else {
-                    // (B) DISPLAY: install/patch the GPU raymarch renderer ONLY under
-                    // `--features gpu`. The representability gate is DELETED (material atlas):
+                    // (B) DISPLAY: install/patch the GPU raymarch renderer.
+                    // The representability gate is DELETED (material atlas):
                     // EVERY non-empty scene engages the brick path, including mixed-material and
                     // overlay-disagreeing ones — the texel carries the overlay bit and records
                     // carry material + overlay per-record, and a mixed brick's per-voxel cell keys
                     // ride in the side atlas. ADR 0011 G2 — a loaded VS material does not skip the
                     // install either (the raymarch textures per-face from the block's D2Array).
-                    #[cfg(feature = "gpu")]
                     {
                             let pyramid = ClipmapPyramid::from_chunks(&two_layer_chunks);
                             // The single-owner mirror is the truth for records + atlas geometry;
@@ -755,10 +733,9 @@ impl DisplayOrchestrator {
                                 );
                             }
                             brick_display_installed = true;
-                    } // end `#[cfg(feature = "gpu")]` display-install block
-                    // `build` (this rebuild's boundary set) is consumed only by the gpu display
-                    // install above; ADR 0012 retired the fog occupancy consumer, so on a non-gpu
-                    // build the mirror is maintained (`incremental_brick_field`) but not drawn.
+                    } // end display-install block
+                    // `build` (this rebuild's boundary set) is consumed only by the display
+                    // install above; ADR 0012 retired the fog occupancy consumer.
                 }
                 // Inline install seam: the resident mirror/field now reflect THIS resolve;
                 // discard any superseded in-flight async brick result on arrival.
@@ -785,11 +762,10 @@ impl DisplayOrchestrator {
         // ADR 0011 G2 — a loaded VS material now KEEPS the brick display (it textures the
         // raymarch per-face), so it no longer forces the mesh; with the representability gate
         // deleted only an EMPTY scene (no field installed ⇒ `brick_display_installed` false)
-        // meshes on a gpu build. When engaged the mesh
+        // meshes. When engaged the mesh
         // is redundant → SKIP the build and mark it stale; the C1 interlock composes via
         // `route_mesh_build` (a stale mesh, like an outstanding async build, is never inline-
-        // patched — it rebuilds wholesale when next needed). On non-gpu builds
-        // `brick_display_installed` is always false → always Build.
+        // patched — it rebuilds wholesale when next needed).
         let brick_display_engaged = Self::brick_display_engaged_predicate(
             brick_display_installed,
             debug_face_orientation,
@@ -804,7 +780,6 @@ impl DisplayOrchestrator {
         // F1: does the mesh become CURRENT this frame (an inline build/patch), vs building async
         // (WholesaleAsync) or being skipped (brick still the display)? The brick-handover
         // reconcile below reads it to decide whether to clear the stale brick now or defer.
-        #[cfg_attr(not(feature = "gpu"), allow(unused_variables))]
         let mesh_became_current = matches!(
             mesh_route,
             MeshBuildRoute::Build(RebuildRoute::InlineIncremental)
@@ -892,8 +867,8 @@ impl DisplayOrchestrator {
             }
         }
 
-        // F1 brick-display handover reconcile (gpu-only; `brick_raymarch_renderer` is `None`
-        // otherwise). When brick did NOT install this rebuild, the display must hand back to the
+        // F1 brick-display handover reconcile (a no-op while `brick_raymarch_renderer` is
+        // `None`). When brick did NOT install this rebuild, the display must hand back to the
         // cuboid mesh. Clear the stale brick field NOW when the replacement mesh is already
         // current this frame (inline), OR the brick can't/needn't draw (a mesh-only mode is
         // active), OR no live field remains. But when a stale field is still live AND the
@@ -901,7 +876,6 @@ impl DisplayOrchestrator {
         // material), KEEP it drawing — clearing now blanks the model for the seconds the worker
         // takes. `finish_mesh_install` (via `complete_brick_display_handover`) clears it when the
         // fresh mesh lands. When brick DID install it is the display: cancel any pending handover.
-        #[cfg(feature = "gpu")]
         {
             let has_live_brick_field = self
                 .brick_raymarch_renderer
@@ -994,17 +968,15 @@ impl DisplayOrchestrator {
                 // mesh (trivially cheap for an empty scene) takes over via the per-frame
                 // `ensure_display_mesh_current` seam. The field-clear + pending-clear reset is
                 // exactly the `ClearNow` handover action (the mirror drop is the extra step
-                // this arm adds; on non-gpu `brick_display_pending_clear` is already false).
+                // this arm adds).
                 self.incremental_brick_field = None;
-                #[cfg(feature = "gpu")]
                 self.apply_brick_display_handover(BrickDisplayHandover::ClearNow);
             }
             BrickRebuildOutcome::MirrorOnly { mirror } => {
-                // A non-gpu build: only the CPU mirror is maintained (no display sink).
+                // The worker built no display artifacts: install the CPU mirror only.
                 self.incremental_brick_field = Some(mirror);
             }
             BrickRebuildOutcome::Display(install) => {
-                #[cfg(feature = "gpu")]
                 {
                     let crate::workers::brick::BrickDisplayInstall {
                         atlas,
@@ -1040,13 +1012,6 @@ impl DisplayOrchestrator {
                     );
                     // The brick is (again) the display: cancel any pending deferred clear.
                     self.brick_display_pending_clear = false;
-                }
-                #[cfg(not(feature = "gpu"))]
-                {
-                    // Unreachable in practice: a non-gpu dispatch never requests display
-                    // artifacts (`build_display_artifacts: false` ⇒ `MirrorOnly`). Keep the
-                    // mirror install so the arm stays total.
-                    self.incremental_brick_field = Some(install.mirror);
                 }
             }
         }

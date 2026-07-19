@@ -32,12 +32,7 @@ impl GpuContext {
         instance: wgpu::Instance,
         compatible_surface: Option<&wgpu::Surface<'_>>,
     ) -> Self {
-        let adapter = instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                force_fallback_adapter: false,
-                compatible_surface,
-            })
+        let adapter = Self::request_adapter(&instance, compatible_surface)
             .await
             .expect("no suitable GPU adapter found");
 
@@ -72,4 +67,37 @@ impl GpuContext {
             queue,
         }
     }
+
+    /// The single adapter-request the whole crate goes through, so
+    /// [`adapter_available`] probes exactly what [`GpuContext::new`] would get.
+    async fn request_adapter(
+        instance: &wgpu::Instance,
+        compatible_surface: Option<&wgpu::Surface<'_>>,
+    ) -> Option<wgpu::Adapter> {
+        instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                force_fallback_adapter: false,
+                compatible_surface,
+            })
+            .await
+            .ok()
+    }
+}
+
+/// Whether this machine can hand out a wgpu adapter at all.
+///
+/// This is the RUNTIME replacement for the deleted `gpu` Cargo feature. The
+/// device-dependent integration tests used to be compiled out behind
+/// `#![cfg(feature = "gpu")]`, which meant a GPU-less machine did not skip them
+/// — they silently vanished, and forgetting the flag made the golden suite pass
+/// vacuously. Now every such test is always compiled, calls this once, and
+/// skips LOUDLY (printing why) when it returns `false`.
+///
+/// Creates an instance and requests an adapter — no device, no surface, nothing
+/// retained — so it is cheap enough to call once per test binary.
+pub fn adapter_available() -> bool {
+    let instance =
+        wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+    pollster::block_on(GpuContext::request_adapter(&instance, None)).is_some()
 }

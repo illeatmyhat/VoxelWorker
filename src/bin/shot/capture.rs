@@ -526,7 +526,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     }
 
     // ADR 0011 G2: `--brick` sources the voxel display from the brick raymarch. The
-    // gate mirrors the live app's: `--features gpu`, a chunkable procedural scene
+    // gate mirrors the live app's: a chunkable procedural scene
     // (SDF / SketchSolid — the ADR 0007-ported set; DebugClouds is VoxelBody-only, so the
     // two-layer store has no boundary set for it), brick-representable (every rendered
     // block single-material + uniform overlay — per-record ids carry per-block materials,
@@ -535,11 +535,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     // (debug-faces, `--scan-vs` loaded VS textures).
     let mut brick_raymarch_renderer: Option<voxel_worker::BrickRaymarchRenderer> = None;
     if options.brick {
-        if !cfg!(feature = "gpu") {
-            println!("brick: --brick requires --features gpu — falling back to the mesh path");
-        } else if !scene.has_chunkable_extent(options.geometry.voxels_per_block)
-            || options.scan_vs
-        {
+        if !scene.has_chunkable_extent(options.geometry.voxels_per_block) || options.scan_vs {
             // NOTE: `--debug-faces` is NO LONGER a brick disqualifier — with `--brick` it
             // drives the brick raymarch's OWN diagnostic mode (`set_debug_mode` below), the
             // grazing-rim geometry-vs-shading discriminator. Without `--brick` it still means

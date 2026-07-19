@@ -145,8 +145,8 @@ impl winit::application::ApplicationHandler for App {
 
 ## Golden-image regression tests (issue #24 — E0 safety net for ADR 0002)
 
-`tests/golden.rs` is a GPU-gated integration test (`#![cfg(feature = "gpu")]`, skipped by the
-GPU-less CI runner). It renders 5 canonical cases through the real `shot` binary (found via
+`tests/golden.rs` is an integration test that is ALWAYS compiled; each case skips loudly at
+runtime (printing why) when `voxel_worker::gpu::adapter_available()` reports no adapter. It renders 5 canonical cases through the real `shot` binary (found via
 `CARGO_BIN_EXE_shot`) at a fixed `1280x720` + fixed orbit angles, then tolerance-compares each PNG
 against a committed reference under `tests/golden/`. This proves the cuboid-mesher renderer rewrite
 does not change the pixels. `shot` is the dense-oracle golden tool, so it carries

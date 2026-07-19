@@ -9,8 +9,7 @@
 //! (ADR 0012 retired the ADR 0007 gpu_resolve fog A/B tier that once lived here; the
 //! brick tier below is the surviving GPU parity net.)
 //!
-//! Run: `cargo test --features gpu --test gpu_parity`
-#![cfg(feature = "gpu")]
+//! Run: `cargo test --test gpu_parity` (skips loudly without a GPU adapter)
 
 use voxel_core::voxel::{ShapeKind};
 use document::voxel::{GeometryParams, SdfShape};
@@ -136,6 +135,9 @@ fn brick_slot_bytes(
 // `brick_surface_elision_hit_set_unchanged` (render).
 #[test]
 fn brick_field_build_matches_two_layer_boundary_set_byte_exactly() {
+    if skip_without_gpu("brick_field_build_matches_two_layer_boundary_set_byte_exactly") {
+        return;
+    }
     use voxel_core::core_geom::CHUNK_BLOCKS;
     use voxel_worker::{
         build_brick_field_all_blocks, read_back_brick_atlas, upload_brick_atlas, BrickPayload,
@@ -404,6 +406,9 @@ fn brick_field_build_matches_two_layer_boundary_set_byte_exactly() {
 /// rebuild the worker is actually dispatched for.
 #[test]
 fn worker_build_matches_sync_build_for_large_scene() {
+    if skip_without_gpu("worker_build_matches_sync_build_for_large_scene") {
+        return;
+    }
     use voxel_worker::{
         build_geometry, CuboidMeshRenderer, GeometryRebuildRequest, LayerBand, TwoLayerStore,
         ASYNC_REBUILD_CHUNK_THRESHOLD, COLOR_TARGET_FORMAT,
@@ -641,6 +646,9 @@ fn exact_occupancy_set(
 /// BUILD/frame bug; disagreeing with it isolates a SHADER bug.
 #[test]
 fn brick_raymarch_hit_set_matches_exact_evaluator() {
+    if skip_without_gpu("brick_raymarch_hit_set_matches_exact_evaluator") {
+        return;
+    }
     use voxel_worker::{
         build_brick_field, cpu_march_brick_field, cpu_march_exact_occupancy, pack_gpu_records,
         AppCore, BrickRaymarchRenderer, ClipmapPyramid, LayerBand,
@@ -794,6 +802,9 @@ fn brick_raymarch_hit_set_matches_exact_evaluator() {
 /// and the CPU centre ray agree on the hit) is used, NOT a cross-path byte compare.
 #[test]
 fn brick_loaded_material_hit_samples_mesh_rule_texel() {
+    if skip_without_gpu("brick_loaded_material_hit_samples_mesh_rule_texel") {
+        return;
+    }
     use voxel_worker::{
         build_brick_field, cpu_march_brick_field, pack_gpu_records,
         AppCore, BrickRaymarchRenderer, ClipmapPyramid, LayerBand, OrbitCamera, TwoLayerStore,
@@ -997,6 +1008,9 @@ fn brick_loaded_material_hit_samples_mesh_rule_texel() {
 /// half is `brick::build_emits_only_surface_records_of_a_solid_box`.
 #[test]
 fn brick_surface_elision_hit_set_unchanged() {
+    if skip_without_gpu("brick_surface_elision_hit_set_unchanged") {
+        return;
+    }
     use voxel_worker::{
         build_brick_field, build_brick_field_all_blocks,
         pack_gpu_records, AppCore, BrickRaymarchRenderer, ClipmapPyramid, LayerBand,
@@ -1115,6 +1129,9 @@ fn brick_surface_elision_hit_set_unchanged() {
 /// (a set bit + a record miss ⇒ the elided coarse cube) reproduces the oracle's records exactly.
 #[test]
 fn brick_surface_elision_band_clip_renders_interior() {
+    if skip_without_gpu("brick_surface_elision_band_clip_renders_interior") {
+        return;
+    }
     use voxel_worker::{
         build_brick_field, build_brick_field_all_blocks,
         pack_gpu_records, AppCore, BrickRaymarchRenderer, ClipmapPyramid, LayerBand, OrbitCamera,
@@ -1236,6 +1253,9 @@ fn brick_surface_elision_band_clip_renders_interior() {
 /// per-slot `write_texture` patch must render exactly as a dense wholesale install.
 #[test]
 fn brick_raymarch_incremental_patch_matches_wholesale_install() {
+    if skip_without_gpu("brick_raymarch_incremental_patch_matches_wholesale_install") {
+        return;
+    }
     use voxel_worker::{
         build_brick_field, pack_gpu_records, AppCore,
         BrickRaymarchRenderer, ClipmapPyramid, IncrementalBrickField, LayerBand, Node, NodeContent,
@@ -1413,6 +1433,9 @@ fn brick_raymarch_incremental_patch_matches_wholesale_install() {
 /// `brick::incremental_carve_across_chunk_boundary_flips_neighbour_occlusion`.
 #[test]
 fn brick_raymarch_incremental_carve_exposes_interior_across_chunk_boundary() {
+    if skip_without_gpu("brick_raymarch_incremental_carve_exposes_interior_across_chunk_boundary") {
+        return;
+    }
     use voxel_core::core_geom::CHUNK_BLOCKS;
     use voxel_worker::{
         build_brick_field, pack_gpu_records, AppCore,
@@ -1604,6 +1627,9 @@ fn brick_raymarch_incremental_carve_exposes_interior_across_chunk_boundary() {
 /// plug into.
 #[test]
 fn brick_raymarch_residency_miss_renders_coarse_form() {
+    if skip_without_gpu("brick_raymarch_residency_miss_renders_coarse_form") {
+        return;
+    }
     use voxel_worker::{
         build_brick_field, pack_gpu_records, AppCore,
         BrickRaymarchRenderer,
@@ -1741,6 +1767,9 @@ fn brick_raymarch_residency_miss_renders_coarse_form() {
 /// through provably-empty cells, so any hit it changes is a stride-overshoot bug.
 #[test]
 fn brick_raymarch_pyramid_on_equals_off() {
+    if skip_without_gpu("brick_raymarch_pyramid_on_equals_off") {
+        return;
+    }
     use voxel_worker::{
         build_brick_field, pack_gpu_records, AppCore,
         BrickRaymarchRenderer,
@@ -1864,7 +1893,7 @@ fn brick_raymarch_pyramid_on_equals_off() {
 /// (a hypothetical 4096-block level, EVALUATED here, not shipped) — reported as
 /// mean block-DDA steps per hitting ray (the CPU march's counted loop iterations,
 /// the same traversal the shader runs). `#[ignore]`d (measurement, not a gate); run
-/// with `cargo test --features gpu --release -- --ignored
+/// with `cargo test --release -- --ignored
 /// clipmap_scattered_scene_skips_empty_space --nocapture`.
 ///
 /// On L4: a 1024-block-spaced scatter (~2060-block extent) fits inside ONE
@@ -1876,6 +1905,9 @@ fn brick_raymarch_pyramid_on_equals_off() {
 #[test]
 #[ignore = "perf probe — run explicitly with --release --ignored --nocapture"]
 fn clipmap_scattered_scene_skips_empty_space() {
+    if skip_without_gpu("clipmap_scattered_scene_skips_empty_space") {
+        return;
+    }
     use voxel_worker::{
         build_brick_field, cpu_march_levels_counted, pack_gpu_records,
         AppCore, BrickRaymarchRenderer, ClipmapLevel, ClipmapPyramid, LayerBand, NodeTransform,
@@ -2047,6 +2079,9 @@ fn clipmap_scattered_scene_skips_empty_space() {
 /// untouched — no re-mesh, no atlas re-upload.
 #[test]
 fn onion_ghost_marches_only_the_onion_slabs() {
+    if skip_without_gpu("onion_ghost_marches_only_the_onion_slabs") {
+        return;
+    }
     use voxel_worker::{
         build_brick_field, pack_gpu_records, AppCore,
         BrickRaymarchRenderer, ClipmapPyramid, LayerBand, OrbitCamera, TwoLayerStore,
@@ -2209,6 +2244,9 @@ fn onion_ghost_marches_only_the_onion_slabs() {
 /// brick field is never re-installed (`record_count` / `has_brick_field` unchanged).
 #[test]
 fn onion_region_confines_the_band_to_the_selected_aabb() {
+    if skip_without_gpu("onion_region_confines_the_band_to_the_selected_aabb") {
+        return;
+    }
     use voxel_worker::{
         build_brick_field, pack_gpu_records, AppCore, BrickRaymarchRenderer, ClipmapPyramid,
         LayerBand, OrbitCamera, RegionClip, RegionRole, TwoLayerStore, COLOR_TARGET_FORMAT,
@@ -2392,6 +2430,9 @@ fn onion_region_confines_the_band_to_the_selected_aabb() {
 /// shade would mismatch: the test proves the shade is genuinely per-voxel.
 #[test]
 fn brick_mixed_material_matches_cpu_reference() {
+    if skip_without_gpu("brick_mixed_material_matches_cpu_reference") {
+        return;
+    }
     use std::collections::BTreeMap;
     use std::sync::Arc;
     use voxel_core::core_geom::{CellKey, CHUNK_BLOCKS};
@@ -2557,4 +2598,18 @@ fn brick_mixed_material_matches_cpu_reference() {
          {hit_disagreements} silhouette disagreements",
         distinct_materials.len()
     );
+}
+
+/// Runtime GPU-availability probe — the replacement for the deleted `gpu` Cargo feature.
+///
+/// These tests used to be compiled out entirely behind `#![cfg(feature = "gpu")]`, which
+/// meant a GPU-less machine did not skip them, it LOST them (and forgetting the flag made
+/// the suite pass vacuously). Now they always compile and skip loudly here instead.
+fn skip_without_gpu(test: &str) -> bool {
+    static ADAPTER: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *ADAPTER.get_or_init(voxel_worker::gpu::adapter_available) {
+        return false;
+    }
+    eprintln!("skipping {test}: no GPU adapter on this machine");
+    true
 }

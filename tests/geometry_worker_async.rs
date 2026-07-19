@@ -26,8 +26,7 @@
 //! it), so these tests reproduce the shell's exact decision without touching the window —
 //! no testability refactor was needed.
 //!
-//! Run: `cargo test --features gpu --test geometry_worker_async`
-#![cfg(feature = "gpu")]
+//! Run: `cargo test --test geometry_worker_async` (skips loudly without a GPU adapter)
 
 use std::time::{Duration, Instant};
 
@@ -92,6 +91,9 @@ fn large_request(generation: u64) -> GeometryRebuildRequest {
 /// the "the UI never freezes" guarantee: `dispatch` must not block for the ~3s build.
 #[test]
 fn dispatch_is_non_blocking_and_result_arrives_with_correct_generation() {
+    if skip_without_gpu("dispatch_is_non_blocking_and_result_arrives_with_correct_generation") {
+        return;
+    }
     let gpu = pollster::block_on(GpuContext::new(None));
     let worker = spawn_geometry_worker(gpu.device.clone(), gpu.queue.clone(), COLOR_TARGET_FORMAT);
 
@@ -156,6 +158,9 @@ fn dispatch_is_non_blocking_and_result_arrives_with_correct_generation() {
 /// path (not the pure tracker, which `workers::geometry`'s unit tests already cover).
 #[test]
 fn burst_supersede_accepts_only_newest_generation_under_real_threading() {
+    if skip_without_gpu("burst_supersede_accepts_only_newest_generation_under_real_threading") {
+        return;
+    }
     let gpu = pollster::block_on(GpuContext::new(None));
     let worker = spawn_geometry_worker(gpu.device.clone(), gpu.queue.clone(), COLOR_TARGET_FORMAT);
 
@@ -244,6 +249,9 @@ fn burst_supersede_accepts_only_newest_generation_under_real_threading() {
 /// neither wedges the loop nor poisons the channel.
 #[test]
 fn empty_request_does_not_hang_worker_and_it_survives_for_the_next() {
+    if skip_without_gpu("empty_request_does_not_hang_worker_and_it_survives_for_the_next") {
+        return;
+    }
     let gpu = pollster::block_on(GpuContext::new(None));
     let worker = spawn_geometry_worker(gpu.device.clone(), gpu.queue.clone(), COLOR_TARGET_FORMAT);
 
@@ -324,6 +332,9 @@ fn sync_full_build(gpu: &GpuContext, request: &GeometryRebuildRequest) -> Cuboid
 /// bottom).
 #[test]
 fn c1_outstanding_edit_reroutes_wholesale_no_frankenstein() {
+    if skip_without_gpu("c1_outstanding_edit_reroutes_wholesale_no_frankenstein") {
+        return;
+    }
     let gpu = pollster::block_on(GpuContext::new(None));
     let worker = spawn_geometry_worker(gpu.device.clone(), gpu.queue.clone(), COLOR_TARGET_FORMAT);
 
@@ -462,6 +473,9 @@ fn brick_build(blocks: u32, vpb: u32) -> BrickFieldBuild {
 /// modelled locally (see the honesty note at the bottom of this file).
 #[test]
 fn c1_brick_field_rebuilds_wholesale_while_outstanding_no_stale_patch() {
+    if skip_without_gpu("c1_brick_field_rebuilds_wholesale_while_outstanding_no_stale_patch") {
+        return;
+    }
     let vpb = 4u32;
     let s0 = brick_build(6, vpb);
     let s1 = brick_build(8, vpb);
@@ -543,3 +557,17 @@ fn c1_brick_field_rebuilds_wholesale_while_outstanding_no_stale_patch() {
 // The pure `route_geometry_rebuild` unit tests in `workers/geometry.rs` cover the decision
 // table exhaustively; this integration test proves the decision + worker + tracker compose
 // into a non-Frankenstein install.
+
+/// Runtime GPU-availability probe — the replacement for the deleted `gpu` Cargo feature.
+///
+/// These tests used to be compiled out entirely behind `#![cfg(feature = "gpu")]`, which
+/// meant a GPU-less machine did not skip them, it LOST them (and forgetting the flag made
+/// the suite pass vacuously). Now they always compile and skip loudly here instead.
+fn skip_without_gpu(test: &str) -> bool {
+    static ADAPTER: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *ADAPTER.get_or_init(voxel_worker::gpu::adapter_available) {
+        return false;
+    }
+    eprintln!("skipping {test}: no GPU adapter on this machine");
+    true
+}

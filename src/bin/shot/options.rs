@@ -256,7 +256,7 @@ pub(crate) struct ShotOptions {
     /// `--brick` (ADR 0011 G1): source the voxel display from the **brick raymarch**
     /// instead of the CPU cuboid mesh — build the two-layer boundary set, pack it into
     /// the G0 brick field (sorted records + R8 sculpted atlas) and render via the
-    /// fullscreen block-DDA pass. Engages only under `--features gpu` for a chunkable
+    /// fullscreen block-DDA pass. Engages for a chunkable
     /// single-producer scene with a uniform render cell (the G1 gate); otherwise it
     /// prints why and falls back to the mesh path. The mesh renderer is built EMPTY
     /// when bricks engage, so the PNG provably comes from the brick atlas.

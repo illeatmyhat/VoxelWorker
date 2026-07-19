@@ -16,7 +16,7 @@ use document::voxel::{GeometryParams};
 /// unchanged), air → nothing; records sorted strictly ascending. This is the CPU half
 /// of the ADR 0011 gate clause (a) for the record/atlas PACKING mechanics (which the
 /// surface-only live build shares); the surface-only record CONTRACT itself is gated by
-/// `build_emits_only_surface_records_of_a_solid_box`. The `--features gpu` parity test
+/// `build_emits_only_surface_records_of_a_solid_box`. The GPU parity test
 /// re-asserts the bytes through the texture round-trip.
 #[test]
 fn brick_records_map_two_layer_partition_one_to_one() {
@@ -109,7 +109,7 @@ fn brick_records_map_two_layer_partition_one_to_one() {
 /// block with ≥1 absent/air neighbour) of the interior-inclusive oracle build
 /// ([`build_brick_field_all_blocks`]) and omits the strictly-interior ones (all six
 /// neighbours present + solid) — checked against an independent neighbour-presence
-/// oracle over the FULL key set. The `--features gpu`
+/// oracle over the FULL key set. The GPU
 /// `brick_surface_elision_hit_set_unchanged` proves the surface-only build renders the
 /// same hit set as the oracle build.
 #[test]

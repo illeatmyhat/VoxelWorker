@@ -7,8 +7,7 @@
 //! mirror) on EVERY pixel. The split (algo vs shader) is retained so a regression is triaged
 //! at a glance: gpu==cpu_brick but != exact ⇒ raycast algorithm; gpu != cpu_brick ⇒ WGSL only.
 //!
-//! Run: cargo test --features "gpu,oracle" --test rim_diff -- --nocapture
-#![cfg(feature = "gpu")]
+//! Run: cargo test --test rim_diff -- --nocapture (skips loudly without a GPU adapter)
 
 use document::voxel::{GeometryParams, SdfShape};
 use voxel_core::voxel::ShapeKind;
@@ -45,6 +44,9 @@ fn exact_occupancy_set(
 
 #[test]
 fn brick_raymarch_matches_exact_at_grazing_rim() {
+    if skip_without_gpu("brick_raymarch_matches_exact_at_grazing_rim") {
+        return;
+    }
     let gpu = pollster::block_on(GpuContext::new(None));
     let width = 900u32;
     let height = 600u32;
@@ -185,4 +187,18 @@ fn brick_raymarch_matches_exact_at_grazing_rim() {
         gpu_vs_exact_disagree, 0,
         "GPU brick raymarch diverges from the exact evaluator on {gpu_vs_exact_disagree} px (algo={algo_bug}, shader={shader_bug})\n{report}"
     );
+}
+
+/// Runtime GPU-availability probe — the replacement for the deleted `gpu` Cargo feature.
+///
+/// These tests used to be compiled out entirely behind `#![cfg(feature = "gpu")]`, which
+/// meant a GPU-less machine did not skip them, it LOST them (and forgetting the flag made
+/// the suite pass vacuously). Now they always compile and skip loudly here instead.
+fn skip_without_gpu(test: &str) -> bool {
+    static ADAPTER: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *ADAPTER.get_or_init(voxel_worker::gpu::adapter_available) {
+        return false;
+    }
+    eprintln!("skipping {test}: no GPU adapter on this machine");
+    true
 }

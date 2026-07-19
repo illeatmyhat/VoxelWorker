@@ -1,8 +1,7 @@
 //! Regression guard for the windowed palette-click apply path (BUG 2).
 //!
 //! This whole test requires a real wgpu device (it builds GPU-backed palette
-//! tiles), so it is gated behind the off-by-default `gpu` feature. CI runners
-//! have no GPU; run locally with `cargo test --features gpu`.
+//! tiles), so it probes for an adapter at runtime and skips loudly without one.
 //!
 //! We cannot click the live window from a test, but egui's interaction is
 //! deterministic given a `RawInput` event stream. This test populates a real
@@ -16,7 +15,6 @@
 //! The tile rect is discovered by sweeping candidate points over the bottom-left
 //! palette dock (the dock height + tile size are layout details that should not
 //! be hard-coded), so the test stays robust to small layout tweaks.
-#![cfg(feature = "gpu")]
 
 use egui::{pos2, vec2, Event, PointerButton, Pos2, RawInput, Rect};
 
@@ -51,6 +49,9 @@ fn build_palette(gpu: &GpuContext, bridge: &mut EguiPaintBridge, count: usize) -
 
 #[test]
 fn windowed_palette_tile_click_reaches_apply_path() {
+    if skip_without_gpu("windowed_palette_tile_click_reaches_apply_path") {
+        return;
+    }
     let gpu = pollster::block_on(GpuContext::new(None));
     let mut bridge = EguiPaintBridge::new(&gpu.device, voxel_worker::COLOR_TARGET_FORMAT);
 
@@ -130,4 +131,18 @@ fn windowed_palette_tile_click_reaches_apply_path() {
         "a click on the palette dock must report a tile index out of build_panel \
          (the windowed apply path consumes `clicked_palette_tile`); none found",
     );
+}
+
+/// Runtime GPU-availability probe — the replacement for the deleted `gpu` Cargo feature.
+///
+/// These tests used to be compiled out entirely behind `#![cfg(feature = "gpu")]`, which
+/// meant a GPU-less machine did not skip them, it LOST them (and forgetting the flag made
+/// the suite pass vacuously). Now they always compile and skip loudly here instead.
+fn skip_without_gpu(test: &str) -> bool {
+    static ADAPTER: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *ADAPTER.get_or_init(voxel_worker::gpu::adapter_available) {
+        return false;
+    }
+    eprintln!("skipping {test}: no GPU adapter on this machine");
+    true
 }

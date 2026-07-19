@@ -18,11 +18,10 @@ edition = "2021"
 
 [features]
 default = []
-# Gates the orchestrator's GPU display-install paths (the device-dependent brick/mesh upload +
-# handover blocks). OFF by default so `cargo test -p work` is green on GPU-less CI runners; the
-# app's `gpu` feature forwards to this. Display itself links wgpu unconditionally — this feature
-# only toggles the work-layer code that drives a live device.
-gpu = []
+# NOTE: there is no `gpu` feature. The orchestrator's GPU display-install paths (brick/mesh
+# upload + handover) are compiled unconditionally — this crate links wgpu anyway, and the
+# paths only run when a live device was handed in. Device-dependent TESTS decide at runtime
+# via `voxel_worker::gpu::adapter_available()` instead of being compiled out.
 
 [dependencies]
 # The GPU display sinks this crate OWNS + drives off-thread: the cuboid mesher, the brick field

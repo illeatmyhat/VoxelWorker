@@ -9,13 +9,15 @@
 //! goldens prove the pixels did not change (or, if they intentionally did, the
 //! references are refreshed in one step).
 //!
-//! Run:    `cargo test --features gpu --test golden`
-//! Regen:  `UPDATE_GOLDENS=1 cargo test --features gpu --test golden`
+//! Run:    `cargo test --features oracle --test golden`
+//! Regen:  `UPDATE_GOLDENS=1 cargo test --features oracle --test golden`
 //!         (writes the reference PNGs instead of comparing — use after an
 //!         intended visual change, then VISUALLY sanity-check each PNG.)
 //!
-//! GPU-gated (`#![cfg(feature = "gpu")]`) so the GPU-less CI runner skips it; it
-//! runs locally and during the renderer rewrite where a real GPU is present.
+//! Always compiled: each case probes for a wgpu adapter at runtime and skips LOUDLY
+//! (printing why) when there is none, rather than vanishing at compile time.
+//! `--features oracle` is REQUIRED — `shot` carries `required-features = ["oracle"]`,
+//! and without it Cargo skips building the binary and the compare runs against a stale one.
 //!
 //! ## Tolerance model
 //! GPU rasterisation + MSAA resolve is not bit-exact across runs, so an exact
@@ -27,7 +29,6 @@
 //! repeated runs (observed << 0.1%). On a mismatch we write `<case>-actual.png` and
 //! `<case>-diff.png` next to the reference dir's sibling temp output and print the
 //! mismatch fraction so a regression is debuggable.
-#![cfg(feature = "gpu")]
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -612,6 +613,9 @@ fn load_rgba(path: &Path) -> RgbaImage {
 
 #[test]
 fn golden_images_match() {
+    if skip_without_gpu("golden_images_match") {
+        return;
+    }
     let update = std::env::var("UPDATE_GOLDENS").is_ok_and(|v| v == "1");
     let golden_dir = golden_dir();
     let out_dir = output_dir();
@@ -681,11 +685,14 @@ fn golden_images_match() {
 /// seam, never an observable change. Includes the OVERLAP scene (the E2 carry-over: an
 /// overlapping multi-material region must render identically to the dense path).
 ///
-/// Run: `cargo test --features gpu --test golden`. Read the actual PNGs on a mismatch (the
+/// Run: `cargo test --features oracle --test golden`. Read the actual PNGs on a mismatch (the
 /// large-solid `demo-village`/`demo-overlap` cases prove the one-box coarse path leaves no
 /// interior seam or hole).
 #[test]
 fn two_layer_golden_matches_dense() {
+    if skip_without_gpu("two_layer_golden_matches_dense") {
+        return;
+    }
     // Regeneration mode never targets the two-layer path (the references are the dense
     // goldens); skip cleanly so `UPDATE_GOLDENS=1` only refreshes the dense set.
     if std::env::var("UPDATE_GOLDENS").is_ok_and(|v| v == "1") {
@@ -753,11 +760,14 @@ fn two_layer_golden_matches_dense() {
 /// the same as over the mesh, so a byte-for-byte-equivalent render is the depth-compositing
 /// evidence (grill Q5 / the one integration point the ADR 0009 benchmark never exercised).
 ///
-/// Run: `cargo test --features gpu --test golden`. On a mismatch, read the `-brick-actual.png`
+/// Run: `cargo test --features oracle --test golden`. On a mismatch, read the `-brick-actual.png`
 /// and `-brick-diff.png` artifacts — a silhouette-only diff points at MSAA sample positions,
 /// an interior diff at the shading transcription.
 #[test]
 fn brick_golden_matches_dense() {
+    if skip_without_gpu("brick_golden_matches_dense") {
+        return;
+    }
     // Regeneration mode targets only the dense references; skip so `UPDATE_GOLDENS=1` never
     // writes a brick render as a reference.
     if std::env::var("UPDATE_GOLDENS").is_ok_and(|v| v == "1") {
@@ -832,6 +842,9 @@ fn brick_golden_matches_dense() {
 /// and mixed scenes engage the brick path.)
 #[test]
 fn brick_golden_multi_material_matches_mesh() {
+    if skip_without_gpu("brick_golden_multi_material_matches_mesh") {
+        return;
+    }
     if std::env::var("UPDATE_GOLDENS").is_ok_and(|v| v == "1") {
         return;
     }
@@ -884,6 +897,9 @@ fn brick_golden_multi_material_matches_mesh() {
 /// render proves the per-voxel cell-key shade reproduces the mesh's per-voxel materials.
 #[test]
 fn brick_golden_mixed_material_matches_mesh() {
+    if skip_without_gpu("brick_golden_mixed_material_matches_mesh") {
+        return;
+    }
     if std::env::var("UPDATE_GOLDENS").is_ok_and(|v| v == "1") {
         return;
     }
@@ -922,4 +938,18 @@ fn brick_golden_mixed_material_matches_mesh() {
         mesh_path.display(),
         diff_path.display()
     );
+}
+
+/// Runtime GPU-availability probe — the replacement for the deleted `gpu` Cargo feature.
+///
+/// These tests used to be compiled out entirely behind `#![cfg(feature = "gpu")]`, which
+/// meant a GPU-less machine did not skip them, it LOST them (and forgetting the flag made
+/// the suite pass vacuously). Now they always compile and skip loudly here instead.
+fn skip_without_gpu(test: &str) -> bool {
+    static ADAPTER: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *ADAPTER.get_or_init(voxel_worker::gpu::adapter_available) {
+        return false;
+    }
+    eprintln!("skipping {test}: no GPU adapter on this machine");
+    true
 }

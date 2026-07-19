@@ -10,8 +10,7 @@
 //! accessor-observable state: brick engagement, renderer presence, cuboid face count, poll
 //! return values).
 //!
-//! Run: `cargo test --features gpu --test display_orchestrator`
-#![cfg(feature = "gpu")]
+//! Run: `cargo test --test display_orchestrator` (skips loudly without a GPU adapter)
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -95,6 +94,9 @@ impl Fixture {
 /// engaged(false)` is true, and the cuboid mesh has zero faces (the ~333ms build was skipped).
 #[test]
 fn first_build_small_engages_brick_and_skips_mesh() {
+    if skip_without_gpu("first_build_small_engages_brick_and_skips_mesh") {
+        return;
+    }
     let gpu = pollster::block_on(GpuContext::new(None));
     let fixture = Fixture::new(SMALL_BLOCKS);
     let orchestrator = fixture.first_build(&gpu, false);
@@ -129,6 +131,9 @@ fn first_build_small_engages_brick_and_skips_mesh() {
 /// returns `needs_redraw = true`, a live renderer becomes resident, and the display engages.
 #[test]
 fn first_build_large_dispatches_async_then_installs_on_poll() {
+    if skip_without_gpu("first_build_large_dispatches_async_then_installs_on_poll") {
+        return;
+    }
     let gpu = pollster::block_on(GpuContext::new(None));
     let fixture = Fixture::new(LARGE_BLOCKS);
     assert!(
@@ -185,6 +190,9 @@ fn first_build_large_dispatches_async_then_installs_on_poll() {
 /// route is `Skip` — the fallback mesh is NOT built and stays empty (the per-edit ~333ms win).
 #[test]
 fn rebuild_keeps_brick_engaged_and_skips_mesh() {
+    if skip_without_gpu("rebuild_keeps_brick_engaged_and_skips_mesh") {
+        return;
+    }
     let gpu = pollster::block_on(GpuContext::new(None));
     let fixture = Fixture::new(SMALL_BLOCKS);
     let mut orchestrator = fixture.first_build(&gpu, false);
@@ -226,6 +234,9 @@ fn rebuild_keeps_brick_engaged_and_skips_mesh() {
 /// outstanding — the seam rebuilds the stale fallback mesh INLINE (now non-empty).
 #[test]
 fn ensure_display_mesh_current_noop_while_engaged_then_builds_on_debug_face() {
+    if skip_without_gpu("ensure_display_mesh_current_noop_while_engaged_then_builds_on_debug_face") {
+        return;
+    }
     let gpu = pollster::block_on(GpuContext::new(None));
     let fixture = Fixture::new(SMALL_BLOCKS);
     let mut orchestrator = fixture.first_build(&gpu, false);
@@ -261,6 +272,9 @@ fn ensure_display_mesh_current_noop_while_engaged_then_builds_on_debug_face() {
 /// mesh stays empty until the brick arrival decides the display.
 #[test]
 fn ensure_display_mesh_current_waits_while_brick_outstanding() {
+    if skip_without_gpu("ensure_display_mesh_current_waits_while_brick_outstanding") {
+        return;
+    }
     let gpu = pollster::block_on(GpuContext::new(None));
     let fixture = Fixture::new(LARGE_BLOCKS);
     let mut orchestrator = fixture.first_build(&gpu, false);
@@ -288,6 +302,9 @@ fn ensure_display_mesh_current_waits_while_brick_outstanding() {
 /// window-free poll contract the shell relies on (the shell requests the redraw on `true`).
 #[test]
 fn poll_geometry_worker_installs_async_fallback_mesh() {
+    if skip_without_gpu("poll_geometry_worker_installs_async_fallback_mesh") {
+        return;
+    }
     let gpu = pollster::block_on(GpuContext::new(None));
     let fixture = Fixture::new(LARGE_BLOCKS);
     let mut orchestrator = fixture.first_build(&gpu, false);
@@ -313,4 +330,18 @@ fn poll_geometry_worker_installs_async_fallback_mesh() {
         orchestrator.cuboid_mesh_renderer().face_count() > 0,
         "the installed async fallback mesh is non-empty (real geometry)"
     );
+}
+
+/// Runtime GPU-availability probe — the replacement for the deleted `gpu` Cargo feature.
+///
+/// These tests used to be compiled out entirely behind `#![cfg(feature = "gpu")]`, which
+/// meant a GPU-less machine did not skip them, it LOST them (and forgetting the flag made
+/// the suite pass vacuously). Now they always compile and skip loudly here instead.
+fn skip_without_gpu(test: &str) -> bool {
+    static ADAPTER: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *ADAPTER.get_or_init(voxel_worker::gpu::adapter_available) {
+        return false;
+    }
+    eprintln!("skipping {test}: no GPU adapter on this machine");
+    true
 }

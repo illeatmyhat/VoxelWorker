@@ -17,7 +17,7 @@
 //! copy) plus plain frame scalars. The worker calls the SAME pure builders the
 //! synchronous path calls ([`build_brick_rebuild`] is that shared entry), so the
 //! artifacts are byte-identical to an inline build. Everything is plain CPU data — no
-//! GPU handles — so the worker exists on non-gpu builds too and maintains the CPU
+//! GPU handles — so the worker can be asked for the mirror alone and maintains the CPU
 //! mirror there ([`BrickRebuildOutcome::MirrorOnly`]).
 //!
 //! ## Supersede / generation (drain-to-latest)
@@ -65,9 +65,8 @@ pub struct BrickRebuildRequest {
     /// THIS build was resolved at, never a re-derived one (the frame law).
     pub recentre_voxels: RecentreVoxels,
     /// Whether to build the DISPLAY artifacts (classify + pyramid + GPU record pack) on
-    /// top of the mirror. `true` on `--features gpu` (the raymarch consumes them);
-    /// `false` on a non-gpu build, which maintains only the CPU mirror — matching the
-    /// synchronous path, where the display block is compiled out.
+    /// top of the mirror. `true` for every display rebuild (the raymarch consumes them);
+    /// `false` asks for the CPU mirror alone.
     pub build_display_artifacts: bool,
 }
 
@@ -77,7 +76,7 @@ pub enum BrickRebuildOutcome {
     /// The scene emptied (no brick records). The shell drops the mirror and clears any
     /// live display field (the mesh — trivially cheap for an empty scene — takes over).
     Empty,
-    /// The request did not want display artifacts (a non-gpu build): only the CPU
+    /// The request did not want display artifacts: only the CPU
     /// mirror was (re)built. No classify ran — this says nothing about representability.
     MirrorOnly {
         /// The fresh incremental mirror, seeded from the wholesale build
@@ -86,8 +85,8 @@ pub enum BrickRebuildOutcome {
         mirror: IncrementalBrickField,
     },
     /// The full display install set, ready for the main-thread install upload. Boxed so the
-    /// enum stays small on the channel (the install set dwarfs the other variants). On a gpu
-    /// build every non-empty scene reaches this arm — the representability gate is deleted, so
+    /// enum stays small on the channel (the install set dwarfs the other variants). Every
+    /// non-empty scene reaches this arm — the representability gate is deleted, so
     /// mixed-material and overlay-disagreeing scenes engage the brick path too (ADR material
     /// atlas), carrying their per-voxel cell-key side atlas in `cell_key_atlas`.
     Display(Box<BrickDisplayInstall>),
@@ -147,8 +146,8 @@ pub fn build_brick_rebuild(request: &BrickRebuildRequest) -> BrickRebuildOutcome
     // atlas bytes move into the upload payload — one copy of the field, not a build plus a
     // mirror seeded from it). The build's freshly-rasterised occupancy tiles move straight into
     // the mirror's slots too, skipping the from-atlas-bytes re-derive. The mirror is the single
-    // owner; the payload is only used when display artifacts are wanted (a non-gpu MirrorOnly
-    // build simply drops it).
+    // owner; the payload is only used when display artifacts are wanted (a MirrorOnly build
+    // simply drops it).
     let (mirror, atlas) = IncrementalBrickField::from_wholesale_with_tiles(build, slot_tiles);
     if !request.build_display_artifacts {
         return BrickRebuildOutcome::MirrorOnly { mirror };
@@ -273,9 +272,7 @@ mod tests {
         );
     }
 
-    /// Without display artifacts (a non-gpu build) only the mirror is produced — no
-    /// classify runs, matching the synchronous path where the display block is
-    /// compiled out.
+    /// Without display artifacts only the mirror is produced — no classify runs.
     #[test]
     fn mirror_only_when_display_artifacts_not_wanted() {
         let vpb = 4u32;
