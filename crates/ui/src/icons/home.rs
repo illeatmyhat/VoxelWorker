@@ -2,12 +2,18 @@
 //!
 //! The body deliberately has no top edge; it tucks under the roof, which is what keeps the
 //! mark reading as a house rather than as a triangle stacked on a box at 15 pt.
+//!
+//! Sits on the set's dominant 2.5–15.5 box — the square `fit`, `part`, `density`, `material`
+//! and `outset` share — so it carries the same optical weight as the rest of the rail. It was
+//! previously drawn on a 12 × 11 box, smaller than every other mark in its own Navigation
+//! group, for no reason anyone had recorded. The body keeps the sheet's 3-to-4 ratio against
+//! the roof's span.
 
 use super::IconPainter;
 
 pub(super) fn draw(g: &IconPainter) {
     // Roof: left eave → apex → right eave.
-    g.line(&[(3.0, 8.5), (9.0, 3.5), (15.0, 8.5)]);
+    g.line(&[(2.5, 8.5), (9.0, 2.5), (15.5, 8.5)]);
     // Body: left wall down, floor, right wall up.
-    g.line(&[(5.0, 8.0), (5.0, 14.5), (13.0, 14.5), (13.0, 8.0)]);
+    g.line(&[(4.25, 8.0), (4.25, 15.5), (13.75, 15.5), (13.75, 8.0)]);
 }
