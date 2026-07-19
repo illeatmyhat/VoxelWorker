@@ -53,6 +53,7 @@ mod half_space;
 mod home;
 mod inset;
 mod intersect;
+mod link;
 mod material;
 mod measure;
 mod mode_booleans;
@@ -63,6 +64,7 @@ mod orbit;
 mod outset;
 mod pan;
 mod part;
+mod probe;
 mod revolve;
 mod root_part;
 mod rotate;
@@ -347,10 +349,12 @@ pub enum Icon {
     RootPart,
     FoldStack,
     FoldCursor,
+    Link,
     // Tools.
     SculptAdd,
     Carve,
     Measure,
+    Probe,
     Material,
     Rotate,
     Flip,
@@ -400,9 +404,11 @@ impl Icon {
         Icon::RootPart,
         Icon::FoldStack,
         Icon::FoldCursor,
+        Icon::Link,
         Icon::SculptAdd,
         Icon::Carve,
         Icon::Measure,
+        Icon::Probe,
         Icon::Material,
         Icon::Rotate,
         Icon::Flip,
@@ -452,9 +458,11 @@ impl Icon {
             Icon::RootPart => root_part::draw(&g),
             Icon::FoldStack => fold_stack::draw(&g),
             Icon::FoldCursor => fold_cursor::draw(&g),
+            Icon::Link => link::draw(&g),
             Icon::SculptAdd => sculpt_add::draw(&g),
             Icon::Carve => carve::draw(&g),
             Icon::Measure => measure::draw(&g),
+            Icon::Probe => probe::draw(&g),
             Icon::Material => material::draw(&g),
             Icon::Rotate => rotate::draw(&g),
             Icon::Flip => flip::draw(&g),
@@ -504,9 +512,11 @@ impl Icon {
             Icon::RootPart => "root-part",
             Icon::FoldStack => "fold-stack",
             Icon::FoldCursor => "fold-cursor",
+            Icon::Link => "link",
             Icon::SculptAdd => "sculpt-add",
             Icon::Carve => "carve",
             Icon::Measure => "measure",
+            Icon::Probe => "probe",
             Icon::Material => "material",
             Icon::Rotate => "rotate",
             Icon::Flip => "flip",
@@ -535,9 +545,9 @@ impl Icon {
             Icon::Sketch | Icon::Extrude | Icon::Revolve | Icon::Sweep | Icon::BoxSolid
             | Icon::Sphere | Icon::Cylinder | Icon::HalfSpace => Group::Producers,
             Icon::Part | Icon::ComposedPart | Icon::RootPart | Icon::FoldStack
-            | Icon::FoldCursor => Group::Structure,
-            Icon::SculptAdd | Icon::Carve | Icon::Measure | Icon::Material | Icon::Rotate
-            | Icon::Flip | Icon::Density => Group::Tools,
+            | Icon::FoldCursor | Icon::Link => Group::Structure,
+            Icon::SculptAdd | Icon::Carve | Icon::Measure | Icon::Probe | Icon::Material
+            | Icon::Rotate | Icon::Flip | Icon::Density => Group::Tools,
             Icon::ChevronRight | Icon::ChevronDown | Icon::Commit | Icon::Cancel | Icon::Drawer
             | Icon::Search => Group::Chrome,
         }
@@ -588,9 +598,17 @@ impl Icon {
             Icon::RootPart => "The root part: the scene's own container, selectable like any other.",
             Icon::FoldStack => "The ordered fold of the active scope. Later wins.",
             Icon::FoldCursor => "The insert cursor: where the next node lands. Later nodes drop out.",
+            Icon::Link => {
+                "A linked instance: edit the definition and every instance follows. \
+                 Make-unique is the deliberate way out."
+            }
             Icon::SculptAdd => "Sculpt: a stroke whose radius is a Measurement, quantised to voxels.",
             Icon::Carve => "Sculpt, removing: the same stroke folded under Subtract.",
             Icon::Measure => "Measure: answer a distance in blocks and voxels, exactly.",
+            Icon::Probe => {
+                "Why is this voxel like this? The authorship of one cell, in fold order, \
+                 with the losers struck through rather than hidden."
+            }
             Icon::Material => "Assign a material. Later wins governs the interior.",
             Icon::Rotate => "Rotate by a quarter turn — the lattice admits 24 orientations, no more.",
             Icon::Flip => "Mirror on an axis; like rotation, exact on the lattice.",
