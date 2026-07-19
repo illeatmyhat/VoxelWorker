@@ -180,9 +180,17 @@ impl<'a> IconPainter<'a> {
 
     /// Fill a convex polygon — used where a glyph states a *region* rather than an edge.
     pub fn fill(&self, points: &[(f32, f32)]) {
+        self.fill_with(points, self.stroke.color);
+    }
+
+    /// Fill a convex polygon in a given colour.
+    ///
+    /// Pair with [`faint`](Self::faint)`(f).color` to shade a face back: several faces of one
+    /// solid at descending weights read as a lit body, which is a thing no outline can say.
+    pub fn fill_with(&self, points: &[(f32, f32)], color: Color32) {
         let mapped: Vec<Pos2> = points.iter().map(|&(x, y)| self.at(x, y)).collect();
         self.painter
-            .add(Shape::convex_polygon(mapped, self.stroke.color, Stroke::NONE));
+            .add(Shape::convex_polygon(mapped, color, Stroke::NONE));
     }
 
     /// Stroke the axis-aligned rectangle spanned by two grid corners.
