@@ -16,6 +16,8 @@
 //! palette dock (the dock height + tile size are layout details that should not
 //! be hard-coded), so the test stays robust to small layout tweaks.
 
+mod common;
+
 use egui::{pos2, vec2, Event, PointerButton, Pos2, RawInput, Rect};
 
 use assets::BlockGroup;
@@ -52,7 +54,7 @@ fn windowed_palette_tile_click_reaches_apply_path() {
     if skip_without_gpu("windowed_palette_tile_click_reaches_apply_path") {
         return;
     }
-    let gpu = pollster::block_on(GpuContext::new(None));
+    let gpu = common::shared_gpu();
     let mut bridge = EguiPaintBridge::new(&gpu.device, voxel_worker::COLOR_TARGET_FORMAT);
 
     let palette = build_palette(&gpu, &mut bridge, 3);

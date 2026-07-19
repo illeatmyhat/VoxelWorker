@@ -97,7 +97,7 @@ fn first_build_small_engages_brick_and_skips_mesh() {
     if skip_without_gpu("first_build_small_engages_brick_and_skips_mesh") {
         return;
     }
-    let gpu = pollster::block_on(GpuContext::new(None));
+    let gpu = common::shared_gpu();
     let fixture = Fixture::new(SMALL_BLOCKS);
     let orchestrator = fixture.first_build(&gpu, false);
 
@@ -134,7 +134,7 @@ fn first_build_large_dispatches_async_then_installs_on_poll() {
     if skip_without_gpu("first_build_large_dispatches_async_then_installs_on_poll") {
         return;
     }
-    let gpu = pollster::block_on(GpuContext::new(None));
+    let gpu = common::shared_gpu();
     let fixture = Fixture::new(LARGE_BLOCKS);
     assert!(
         fixture.chunks.len() > voxel_worker::ASYNC_REBUILD_CHUNK_THRESHOLD,
@@ -193,7 +193,7 @@ fn rebuild_keeps_brick_engaged_and_skips_mesh() {
     if skip_without_gpu("rebuild_keeps_brick_engaged_and_skips_mesh") {
         return;
     }
-    let gpu = pollster::block_on(GpuContext::new(None));
+    let gpu = common::shared_gpu();
     let fixture = Fixture::new(SMALL_BLOCKS);
     let mut orchestrator = fixture.first_build(&gpu, false);
     assert!(orchestrator.brick_display_engaged(false));
@@ -237,7 +237,7 @@ fn ensure_display_mesh_current_noop_while_engaged_then_builds_on_debug_face() {
     if skip_without_gpu("ensure_display_mesh_current_noop_while_engaged_then_builds_on_debug_face") {
         return;
     }
-    let gpu = pollster::block_on(GpuContext::new(None));
+    let gpu = common::shared_gpu();
     let fixture = Fixture::new(SMALL_BLOCKS);
     let mut orchestrator = fixture.first_build(&gpu, false);
     assert_eq!(orchestrator.cuboid_mesh_renderer().face_count(), 0);
@@ -275,7 +275,7 @@ fn ensure_display_mesh_current_waits_while_brick_outstanding() {
     if skip_without_gpu("ensure_display_mesh_current_waits_while_brick_outstanding") {
         return;
     }
-    let gpu = pollster::block_on(GpuContext::new(None));
+    let gpu = common::shared_gpu();
     let fixture = Fixture::new(LARGE_BLOCKS);
     let mut orchestrator = fixture.first_build(&gpu, false);
     // Large first-build dispatched the brick async — no renderer yet, mesh predicted-skipped.
@@ -305,7 +305,7 @@ fn poll_geometry_worker_installs_async_fallback_mesh() {
     if skip_without_gpu("poll_geometry_worker_installs_async_fallback_mesh") {
         return;
     }
-    let gpu = pollster::block_on(GpuContext::new(None));
+    let gpu = common::shared_gpu();
     let fixture = Fixture::new(LARGE_BLOCKS);
     let mut orchestrator = fixture.first_build(&gpu, false);
 

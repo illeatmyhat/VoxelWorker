@@ -11,10 +11,12 @@
 //!
 //! Run: `cargo test --test gpu_parity` (skips loudly without a GPU adapter)
 
+mod common;
+
 use voxel_core::voxel::{ShapeKind};
 use document::voxel::{GeometryParams, SdfShape};
 use voxel_worker::{
-    GpuContext, MaterialChoice, Node, NodeContent, PlaneAxis, RevolveAxis, Scene, Sketch,
+    MaterialChoice, Node, NodeContent, PlaneAxis, RevolveAxis, Scene, Sketch,
     SketchPoint, SketchSolid,
 };
 
@@ -144,7 +146,7 @@ fn brick_field_build_matches_two_layer_boundary_set_byte_exactly() {
         NodeTransform, TwoLayerStore, Voxel,
     };
 
-    let gpu = pollster::block_on(GpuContext::new(None));
+    let gpu = common::shared_gpu();
 
     // The gated matrix: coarse-heavy SDF at d16, odd-extent box at a NON-16 density
     // (the block-denominated-granule ruling), the revolved vase at d4 (sketch tier),
@@ -414,7 +416,7 @@ fn worker_build_matches_sync_build_for_large_scene() {
         ASYNC_REBUILD_CHUNK_THRESHOLD, COLOR_TARGET_FORMAT,
     };
 
-    let gpu = pollster::block_on(GpuContext::new(None));
+    let gpu = common::shared_gpu();
 
     let vpb = 16u32;
     let size_blocks_per_axis = 24u32;
@@ -656,7 +658,7 @@ fn brick_raymarch_hit_set_matches_exact_evaluator() {
         TwoLayerStore, COLOR_TARGET_FORMAT,
     };
 
-    let gpu = pollster::block_on(GpuContext::new(None));
+    let gpu = common::shared_gpu();
     let width = 128u32;
     let height = 128u32;
     let mut failures: Vec<String> = Vec::new();
@@ -847,7 +849,7 @@ fn brick_loaded_material_hit_samples_mesh_rule_texel() {
         out
     }
 
-    let gpu = pollster::block_on(GpuContext::new(None));
+    let gpu = common::shared_gpu();
     let width = 96u32;
     let height = 96u32;
 
@@ -1017,7 +1019,7 @@ fn brick_surface_elision_hit_set_unchanged() {
         OrbitCamera, TwoLayerStore, COLOR_TARGET_FORMAT,
     };
 
-    let gpu = pollster::block_on(GpuContext::new(None));
+    let gpu = common::shared_gpu();
     let width = 128u32;
     let height = 128u32;
     let mut failures: Vec<String> = Vec::new();
@@ -1138,7 +1140,7 @@ fn brick_surface_elision_band_clip_renders_interior() {
         TwoLayerStore, COLOR_TARGET_FORMAT,
     };
 
-    let gpu = pollster::block_on(GpuContext::new(None));
+    let gpu = common::shared_gpu();
     let width = 128u32;
     let height = 128u32;
     let mut failures: Vec<String> = Vec::new();
@@ -1263,7 +1265,7 @@ fn brick_raymarch_incremental_patch_matches_wholesale_install() {
         COLOR_TARGET_FORMAT,
     };
 
-    let gpu = pollster::block_on(GpuContext::new(None));
+    let gpu = common::shared_gpu();
     let width = 128u32;
     let height = 128u32;
     let vpb = 8u32;
@@ -1444,7 +1446,7 @@ fn brick_raymarch_incremental_carve_exposes_interior_across_chunk_boundary() {
         TwoLayerResidentCache, COLOR_TARGET_FORMAT,
     };
 
-    let gpu = pollster::block_on(GpuContext::new(None));
+    let gpu = common::shared_gpu();
     let width = 128u32;
     let height = 128u32;
     let vpb = 4u32;
@@ -1636,7 +1638,7 @@ fn brick_raymarch_residency_miss_renders_coarse_form() {
         ClipmapPyramid, LayerBand, OrbitCamera, TwoLayerStore, COLOR_TARGET_FORMAT,
     };
 
-    let gpu = pollster::block_on(GpuContext::new(None));
+    let gpu = common::shared_gpu();
     let width = 128u32;
     let height = 128u32;
     let mut failures: Vec<String> = Vec::new();
@@ -1776,7 +1778,7 @@ fn brick_raymarch_pyramid_on_equals_off() {
         ClipmapPyramid, LayerBand, OrbitCamera, TwoLayerStore, COLOR_TARGET_FORMAT,
     };
 
-    let gpu = pollster::block_on(GpuContext::new(None));
+    let gpu = common::shared_gpu();
     let width = 128u32;
     let height = 128u32;
     let mut failures: Vec<String> = Vec::new();
@@ -1915,7 +1917,7 @@ fn clipmap_scattered_scene_skips_empty_space() {
         CLIPMAP_LEVEL_3_BLOCKS_PER_CELL, COLOR_TARGET_FORMAT,
     };
 
-    let gpu = pollster::block_on(GpuContext::new(None));
+    let gpu = common::shared_gpu();
     let width = 320u32;
     let height = 320u32;
     let vpb = 16u32;
@@ -2088,7 +2090,7 @@ fn onion_ghost_marches_only_the_onion_slabs() {
         COLOR_TARGET_FORMAT,
     };
 
-    let gpu = pollster::block_on(GpuContext::new(None));
+    let gpu = common::shared_gpu();
     let width = 128u32;
     let height = 128u32;
 
@@ -2252,7 +2254,7 @@ fn onion_region_confines_the_band_to_the_selected_aabb() {
         LayerBand, OrbitCamera, RegionClip, RegionRole, TwoLayerStore, COLOR_TARGET_FORMAT,
     };
 
-    let gpu = pollster::block_on(GpuContext::new(None));
+    let gpu = common::shared_gpu();
     let width = 128u32;
     let height = 128u32;
 
@@ -2443,7 +2445,7 @@ fn brick_mixed_material_matches_cpu_reference() {
         RecentreVoxels, SeamSolidity, TwoLayerChunk, COLOR_TARGET_FORMAT,
     };
 
-    let gpu = pollster::block_on(GpuContext::new(None));
+    let gpu = common::shared_gpu();
     let width = 128u32;
     let height = 128u32;
     let edge = 16u32; // voxels per block

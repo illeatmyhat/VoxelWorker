@@ -94,7 +94,7 @@ fn dispatch_is_non_blocking_and_result_arrives_with_correct_generation() {
     if skip_without_gpu("dispatch_is_non_blocking_and_result_arrives_with_correct_generation") {
         return;
     }
-    let gpu = pollster::block_on(GpuContext::new(None));
+    let gpu = common::shared_gpu();
     let worker = spawn_geometry_worker(gpu.device.clone(), gpu.queue.clone(), COLOR_TARGET_FORMAT);
 
     let generation = 1u64;
@@ -161,7 +161,7 @@ fn burst_supersede_accepts_only_newest_generation_under_real_threading() {
     if skip_without_gpu("burst_supersede_accepts_only_newest_generation_under_real_threading") {
         return;
     }
-    let gpu = pollster::block_on(GpuContext::new(None));
+    let gpu = common::shared_gpu();
     let worker = spawn_geometry_worker(gpu.device.clone(), gpu.queue.clone(), COLOR_TARGET_FORMAT);
 
     // The shell's generation bookkeeping — the SAME type the live app holds. We stamp each
@@ -252,7 +252,7 @@ fn empty_request_does_not_hang_worker_and_it_survives_for_the_next() {
     if skip_without_gpu("empty_request_does_not_hang_worker_and_it_survives_for_the_next") {
         return;
     }
-    let gpu = pollster::block_on(GpuContext::new(None));
+    let gpu = common::shared_gpu();
     let worker = spawn_geometry_worker(gpu.device.clone(), gpu.queue.clone(), COLOR_TARGET_FORMAT);
 
     // A request with NO covering chunks — the degenerate "empty scene / zero chunks" case.
@@ -335,7 +335,7 @@ fn c1_outstanding_edit_reroutes_wholesale_no_frankenstein() {
     if skip_without_gpu("c1_outstanding_edit_reroutes_wholesale_no_frankenstein") {
         return;
     }
-    let gpu = pollster::block_on(GpuContext::new(None));
+    let gpu = common::shared_gpu();
     let worker = spawn_geometry_worker(gpu.device.clone(), gpu.queue.clone(), COLOR_TARGET_FORMAT);
 
     // The shell's state we model: the installed renderer (S0), the generation tracker, and

@@ -12,12 +12,37 @@
 //! module-wide allow below is the standard `tests/common` remedy.
 #![allow(dead_code)]
 
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 use voxel_worker::{
-    GeometryParams, MaterialChoice, Scene, ShapeKind, TwoLayerChunk, TwoLayerStore, Worker,
+    GeometryParams, GpuContext, MaterialChoice, Scene, ShapeKind, TwoLayerChunk, TwoLayerStore,
+    Worker,
 };
+
+/// The ONE wgpu context per test process — every GPU test target shares it.
+///
+/// **This exists to keep the process from creating and destroying wgpu instances
+/// concurrently, which corrupts the heap under a software driver.** `cargo test` runs a
+/// target's tests on parallel threads, and each test used to build its own
+/// `GpuContext` — i.e. its own `wgpu::Instance`, adapter and device — so a target like
+/// `gpu_parity` stood up and tore down fourteen of them at once. On Linux CI that aborted
+/// the process with `double free or corruption (fasttop)` AFTER every test had reported
+/// `ok`; reproduced locally in WSL as an intermittent SIGSEGV (2/40 runs pinned to two
+/// cores, 0/30 with `--test-threads=1`).
+///
+/// The corruption is not ours — there is no `unsafe` anywhere in our GPU or worker code.
+/// It is the Mesa software driver's global teardown racing itself, which a real driver on
+/// Windows never exercised. Sharing one context removes the concurrency that provokes it,
+/// and is what wgpu expects anyway: `Device` and `Queue` are `Send + Sync` handles built
+/// to be used from many threads. Being a `static`, it is also never dropped, so the
+/// teardown path simply does not run.
+///
+/// Returns a `&'static GpuContext`; clone the `device`/`queue` handles off it as before.
+pub fn shared_gpu() -> &'static GpuContext {
+    static SHARED: OnceLock<GpuContext> = OnceLock::new();
+    SHARED.get_or_init(|| pollster::block_on(GpuContext::new(None)))
+}
 
 /// How long a NON-blocking `dispatch` is allowed to take before we call it "blocking". The
 /// full build is many milliseconds; dispatch is a single channel `send`, so this is a wide

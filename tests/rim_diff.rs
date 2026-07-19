@@ -9,11 +9,13 @@
 //!
 //! Run: cargo test --test rim_diff -- --nocapture (skips loudly without a GPU adapter)
 
+mod common;
+
 use document::voxel::{GeometryParams, SdfShape};
 use voxel_core::voxel::ShapeKind;
 use voxel_worker::{
     build_brick_field, cpu_march_brick_field, cpu_march_exact_occupancy, pack_gpu_records, AppCore,
-    BrickRaymarchRenderer, ClipmapPyramid, GpuContext, LayerBand, MaterialChoice, OrbitCamera,
+    BrickRaymarchRenderer, ClipmapPyramid, LayerBand, MaterialChoice, OrbitCamera,
     ProjectionMode, Scene, TwoLayerStore, COLOR_TARGET_FORMAT,
 };
 
@@ -47,7 +49,7 @@ fn brick_raymarch_matches_exact_at_grazing_rim() {
     if skip_without_gpu("brick_raymarch_matches_exact_at_grazing_rim") {
         return;
     }
-    let gpu = pollster::block_on(GpuContext::new(None));
+    let gpu = common::shared_gpu();
     let width = 900u32;
     let height = 600u32;
     let vpb = 16u32;
