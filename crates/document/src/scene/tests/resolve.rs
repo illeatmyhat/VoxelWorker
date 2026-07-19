@@ -605,3 +605,123 @@ use crate::voxel::SdfShape;
         let scene = scene_with_top_level_selected(scene, 0);
         assert_chunked_matches_monolithic(&scene, voxels_per_block, "outset-part");
     }
+
+    // ---- Emboss (ADR 0020 Decision 4) ---------------------------------------
+
+    /// **Emboss raises or recesses the accumulated surface within the cutter's footprint.**
+    ///
+    /// ```text
+    /// outward (N > 0)   A' = min(A, max(A − N, C))   ≡  A ∪ (dilate(A, N) ∩ C)
+    /// inward  (N < 0)   A' = max(A, min(A − N, −C))  ≡  A \ (dilate(¬A, |N|) ∩ C)
+    /// ```
+    ///
+    /// The three assertions that distinguish emboss from every operation we already have:
+    /// outward ADDS material, inward REMOVES it, and — the one that separates emboss from a
+    /// plain Union or Subtract of the cutter — the change is confined to the cutter's
+    /// FOOTPRINT and bounded by `N`, rather than being the whole cutter body.
+    #[test]
+    fn emboss_moves_the_surface_within_the_cutters_footprint() {
+        let voxels_per_block = 8;
+        let scene_with = |operation: CombineOp| {
+            let slab = {
+                let shape =
+                    SdfShape::from_blocks(ShapeKind::Box, [6, 2, 6], 1, voxels_per_block);
+                Node::new("Slab", NodeContent::Tool { shape, material: MaterialChoice::Stone })
+            };
+            // A stamp overlapping the slab's top face, narrower than the slab.
+            let stamp = {
+                let shape =
+                    SdfShape::from_blocks(ShapeKind::Box, [2, 4, 2], 1, voxels_per_block);
+                let mut node = Node::new(
+                    "Stamp",
+                    NodeContent::Tool { shape, material: MaterialChoice::Wood },
+                );
+                node.transform = NodeTransform::from_blocks([2, 1, 2], voxels_per_block);
+                node.operation = operation;
+                node
+            };
+            Scene::from_nodes(vec![NodeBuilder::group(
+                "Part",
+                vec![NodeBuilder::Leaf(slab), NodeBuilder::Leaf(stamp)],
+            )])
+        };
+        let occupancy = |scene: &Scene| {
+            scene
+                .resolve_region(scene.full_extent_blocks(voxels_per_block), voxels_per_block, 0)
+                .occupied_count() as i64
+        };
+
+        let emboss = |voxels: i64| {
+            CombineOp::Emboss { amount: voxel_core::units::Measurement::from_voxels(voxels) }
+        };
+        let flat = occupancy(&scene_with(emboss(0)));
+        let raised = occupancy(&scene_with(emboss(4)));
+        let recessed = occupancy(&scene_with(emboss(-4)));
+
+        assert!(
+            raised > flat,
+            "an OUTWARD emboss must add material ({raised} vs {flat})"
+        );
+        assert!(
+            recessed < flat,
+            "an INWARD emboss must remove material ({recessed} vs {flat})"
+        );
+
+        // The distinguishing property: emboss is NOT a union of the cutter. The stamp is
+        // 4 blocks tall and sits 1 block into the slab, so unioning it would add far more
+        // than raising the surface by 4 voxels within its 2×2-block footprint ever could.
+        let unioned = occupancy(&scene_with(CombineOp::Union));
+        assert!(
+            raised < unioned,
+            "emboss must move the SURFACE, not stamp the whole cutter body \
+             (embossed {raised}, unioned {unioned})"
+        );
+        // ...and the raise is bounded by N over the footprint: 4 voxels over a 2×2-block
+        // (16×16 voxel) footprint is at most 1024 added voxels.
+        assert!(
+            raised - flat <= 4 * 16 * 16,
+            "an outward emboss of 4 may add at most N × footprint voxels \
+             (added {}, bound {})",
+            raised - flat,
+            4 * 16 * 16
+        );
+    }
+
+    /// A TOP-LEVEL emboss must work too — not only one nested inside a Part.
+    ///
+    /// The walk visits `scene.roots` directly, without pushing a scope frame, so the root
+    /// spine needed the same pre-composition a Group gets. Without it a top-level emboss
+    /// reaches the voxel-set fold, which has no accumulated field to read, and no-ops.
+    #[test]
+    fn a_top_level_emboss_moves_the_surface() {
+        let voxels_per_block = 8;
+        let occupancy = |amount: i64| {
+            let slab = {
+                let shape = SdfShape::from_blocks(ShapeKind::Box, [6, 2, 6], 1, voxels_per_block);
+                Node::new("Slab", NodeContent::Tool { shape, material: MaterialChoice::Stone })
+            };
+            let stamp = {
+                let shape = SdfShape::from_blocks(ShapeKind::Box, [2, 4, 2], 1, voxels_per_block);
+                let mut node =
+                    Node::new("Stamp", NodeContent::Tool { shape, material: MaterialChoice::Wood });
+                node.transform = NodeTransform::from_blocks([2, 1, 2], voxels_per_block);
+                node.operation = CombineOp::Emboss {
+                    amount: voxel_core::units::Measurement::from_voxels(amount),
+                };
+                node
+            };
+            // NOTE: no Group — these are top-level siblings.
+            let scene = Scene::from_nodes(vec![slab, stamp]);
+            scene
+                .resolve_region(scene.full_extent_blocks(voxels_per_block), voxels_per_block, 0)
+                .occupied_count() as i64
+        };
+        assert!(
+            occupancy(4) > occupancy(0),
+            "a top-level outward emboss must add material"
+        );
+        assert!(
+            occupancy(-4) < occupancy(0),
+            "a top-level inward emboss must remove material"
+        );
+    }

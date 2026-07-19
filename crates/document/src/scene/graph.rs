@@ -104,7 +104,47 @@ pub enum CombineOp {
     /// accumulator (fold start) yields empty — predictable per the ordering law
     /// (Decision 2).
     Intersect,
+    /// Raise or recess the accumulated surface WITHIN the node's footprint (ADR 0020
+    /// Decision 4) — normalMagic's Boolean Extrude / Emboss, and the only one of its four
+    /// named booleans with content a field world does not already have.
+    ///
+    /// With the accumulator `A`, this node's body `C` and a signed amount `N`:
+    ///
+    /// ```text
+    /// outward (N > 0)   A' = min(A, max(A − N, C))   ≡  A ∪ (dilate(A, N) ∩ C)
+    /// inward  (N < 0)   A' = max(A, min(A − N, −C))  ≡  A \ (dilate(¬A, |N|) ∩ C)
+    /// ```
+    ///
+    /// **It cannot be sugar, which is why it is an arm.** `A` appears TWICE in both
+    /// formulas. No node may reference the accumulated result — that would BE operand
+    /// targeting, which ADR 0017's law admits no exception to — so this cannot decompose
+    /// into a sequence of existing fold steps. It stays law-compatible because, exactly like
+    /// `Subtract`, it reads "everything accumulated before it in this scope" and nothing
+    /// else.
+    ///
+    /// Like the other masks it never stamps material: an embossed surface keeps the material
+    /// it was raised from.
+    Emboss {
+        /// How far the surface moves: outward when positive, recessed when negative. A
+        /// [`Measurement`](voxel_core::units::Measurement) rather than a voxel count, for
+        /// the same reason an outset is one — it is authored geometry, not a derived count.
+        amount: voxel_core::units::Measurement,
+    },
     // future: Override, …
+}
+
+impl CombineOp {
+    /// Whether this operation needs the accumulated body as a FIELD rather than a voxel set.
+    ///
+    /// [`Emboss`](Self::Emboss) does, because `A − N` is only meaningful on a field: its
+    /// formulas measure the accumulator, they do not merely test membership of it. A scope
+    /// containing one is therefore pre-composed into a
+    /// [`CompositeProducer`](crate::voxel::CompositeProducer), which is the ONE
+    /// representation both folds can agree on — the same argument that made outset a
+    /// producer decorator instead of a second pair of fold arms.
+    pub fn needs_accumulated_field(self) -> bool {
+        matches!(self, CombineOp::Emboss { .. })
+    }
 }
 /// Per-node grid display settings (issue #29 grid rework, S1). Each grid type a
 /// node can show is gated by a scene-wide master ANDed with the node's own flag;

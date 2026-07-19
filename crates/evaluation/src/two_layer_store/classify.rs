@@ -107,6 +107,11 @@ fn cell_combine_role(operation: CombineOp) -> CellCombineOp {
         CombineOp::Union => CellCombineOp::Union,
         CombineOp::Subtract => CellCombineOp::Subtract,
         CombineOp::Intersect => CellCombineOp::Intersect,
+        // Unreachable: a scope containing an Emboss node is pre-composed into a single
+        // CompositeProducer leaf before classification, so the kernel never sees this arm.
+        // The role is irrelevant anyway — the caller forces such a leaf's interval to `None`,
+        // which makes the whole cell BOUNDARY (resolve per-voxel), the always-safe fallback.
+        CombineOp::Emboss { .. } => CellCombineOp::Union,
     }
 }
 
@@ -706,6 +711,9 @@ fn fold_closed_scope_into_region(
                     (CombineOp::Union, None)
                     | (CombineOp::Subtract, None)
                     | (CombineOp::Intersect, Some(_)) => {}
+                    // Unreachable: an Emboss scope is pre-composed (it needs the accumulated
+                    // FIELD, which a region of resolved cells no longer carries).
+                    (CombineOp::Emboss { .. }, _) => {}
                 }
             }
         }

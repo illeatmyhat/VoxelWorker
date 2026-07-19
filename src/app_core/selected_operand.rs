@@ -47,7 +47,11 @@ fn operand_ghost_style_for(operation: CombineOp) -> OperandGhostStyle {
     match operation {
         CombineOp::Subtract => OperandGhostStyle::Subtract,
         CombineOp::Intersect => OperandGhostStyle::Intersect,
-        CombineOp::Union => {
+        // `is_boolean_operand` (scene::operand_body) admits only Subtract and Intersect, so
+        // neither of these reaches the mapper. Emboss has a footprint and could plausibly
+        // earn an x-ray ghost of its own later, but it would need its own style rather than
+        // borrowing a mask's — it neither removes nor keeps, it MOVES the surface.
+        CombineOp::Union | CombineOp::Emboss { .. } => {
             unreachable!("the boolean-operand walk only emits Subtract/Intersect operands")
         }
     }

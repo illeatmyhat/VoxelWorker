@@ -131,18 +131,40 @@ impl CompositeProducer {
                 }
                 CombineOp::Subtract => distance = distance.max(-member_distance),
                 CombineOp::Intersect => distance = distance.max(member_distance),
+                // ADR 0020 Decision 4. `A` is the accumulator, `C` this member, `N` the
+                // signed amount; the accumulator appears TWICE, which is precisely why
+                // emboss cannot decompose into existing fold steps.
+                //
+                //   outward (N > 0)   A' = min(A, max(A − N, C))
+                //   inward  (N < 0)   A' = max(A, min(A − N, −C))
+                //
+                // Verified in the ADR against a set-theoretic ground truth over 64,000
+                // samples, and exactly 1-Lipschitz, so the cell classifier's bound survives.
+                CombineOp::Emboss { amount } => {
+                    let raise = amount.to_voxels(voxels_per_block).unwrap_or(0) as f32;
+                    distance = if raise >= 0.0 {
+                        distance.min((distance - raise).max(member_distance))
+                    } else {
+                        distance.max((distance - raise).min(-member_distance))
+                    };
+                }
             }
         }
         (distance, last_inside_material.or(nearest_material))
     }
 
-    /// Members that can GROW the composite's extent — only `Union` ones. A `Subtract` or
-    /// `Intersect` member's effect is contained in the accumulator (ADR 0020 Decision 3), so
-    /// it can never push the bounds outward.
-    fn union_members(&self) -> impl Iterator<Item = &CompositeMember> {
-        self.members
-            .iter()
-            .filter(|member| member.operation == CombineOp::Union)
+    /// Members that can GROW the composite's extent: `Union` and `Emboss` ones.
+    ///
+    /// A `Subtract` or `Intersect` member's effect is contained in the accumulator (ADR 0020
+    /// Decision 3), so it can never push the bounds outward. An OUTWARD `Emboss` can — it
+    /// raises the surface — but only within its own footprint, since
+    /// `A' = A ∪ (dilate(A, N) ∩ C) ⊆ A ∪ C`. So the member's own extent bounds it exactly
+    /// and no `N`-sized margin is needed. (An inward emboss only removes, so including it is
+    /// merely conservative.)
+    pub(super) fn extent_members(members: &[CompositeMember]) -> impl Iterator<Item = &CompositeMember> {
+        members.iter().filter(|member| {
+            matches!(member.operation, CombineOp::Union | CombineOp::Emboss { .. })
+        })
     }
 }
 
@@ -250,7 +272,7 @@ impl VoxelProducer for CompositeProducer {
     /// The union of the `Union` members' placed extents.
     fn full_dimensions(&self, voxels_per_block: u32) -> [u32; 3] {
         let mut high = [0i64; 3];
-        for member in self.union_members() {
+        for member in Self::extent_members(&self.members) {
             let dimensions = member.producer.full_dimensions(voxels_per_block);
             for axis in 0..3 {
                 high[axis] = high[axis].max(member.offset_voxels[axis] + dimensions[axis] as i64);

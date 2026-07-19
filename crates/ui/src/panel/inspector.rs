@@ -540,6 +540,7 @@ fn build_operation_section(
             CombineOp::Union => "Union",
             CombineOp::Subtract => "Subtract",
             CombineOp::Intersect => "Intersect",
+            CombineOp::Emboss { .. } => "Emboss",
         }
     }
 

@@ -899,3 +899,39 @@ use super::*;
             );
         }
     }
+
+    /// **The emboss parity gate** (ADR 0020 Decision 7): the two-layer classifier must agree
+    /// with the dense resolve for a scene containing an `Emboss` node.
+    ///
+    /// The ADR requires every new `CombineOp` arm to land in BOTH folds or they diverge
+    /// silently. Emboss satisfies that by being absorbed BEFORE either fold: `A − N` is only
+    /// meaningful on a field, and the voxel-set fold's accumulator is a set, so a scope
+    /// containing an emboss is pre-composed into one `CompositeProducer` and both folds see a
+    /// single ordinary leaf. This test is what proves the absorption is real — if an emboss
+    /// ever leaked into either fold, the two would part company here.
+    #[test]
+    fn an_emboss_classifies_as_the_dense_resolve_does() {
+        use document::scene::{CombineOp, NodeBuilder};
+        let density = 8u32;
+        for amount in [3i64, -3] {
+            let slab = {
+                let shape = SdfShape::from_blocks(ShapeKind::Box, [5, 2, 5], 1, density);
+                Node::new("Slab", NodeContent::Tool { shape, material: MaterialChoice::Stone })
+            };
+            let stamp = {
+                let shape = SdfShape::from_blocks(ShapeKind::Box, [2, 3, 2], 1, density);
+                let mut node =
+                    Node::new("Stamp", NodeContent::Tool { shape, material: MaterialChoice::Wood });
+                node.transform = NodeTransform::from_blocks([2, 1, 2], density);
+                node.operation = CombineOp::Emboss {
+                    amount: voxel_core::units::Measurement::from_voxels(amount),
+                };
+                node
+            };
+            let scene = Scene::from_nodes(vec![NodeBuilder::group(
+                "Part",
+                vec![NodeBuilder::Leaf(slab), NodeBuilder::Leaf(stamp)],
+            )]);
+            assert_two_layer_round_trip_matches_dense(&scene, density, &format!("emboss-{amount}"));
+        }
+    }

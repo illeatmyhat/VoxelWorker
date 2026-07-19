@@ -232,6 +232,29 @@ impl Scene {
     pub(super) fn for_each_leaf(&self, visitor: &mut LeafVisitor<'_>) {
         let mut def_path: Vec<DefId> = Vec::new();
         let mut scope_path: Vec<ScopeFrame> = Vec::new();
+        // The ROOT PART is a scope too (ADR 0018 Decision 2 makes it a field rather than an
+        // arena entry, but it is still the container the top-level nodes compose in). So it
+        // pre-composes on the same two triggers a Group does: its own outset dilates the
+        // whole scene, and a top-level Emboss needs the accumulated field its siblings form.
+        //
+        // Without this a top-level emboss reaches the voxel-set fold, which has no `A − N`
+        // to read, and no-ops — and most scenes put their nodes at the top level.
+        if let Some(composed) =
+            self.composed_scope_leaf(&self.root, &self.roots, [0, 0, 0], &mut def_path)
+        {
+            visitor(
+                composed.origin_voxels,
+                LeafBody::Composed {
+                    producer: composed.producer,
+                    fingerprint: composed.fingerprint,
+                },
+                self.root.grids.voxel_grid_on_faces,
+                CombineOp::Union,
+                self.root.outset,
+                &scope_path,
+            );
+            return;
+        }
         self.walk_nodes(&self.roots, [0, 0, 0], &mut def_path, &mut scope_path, visitor);
     }
 
@@ -293,7 +316,15 @@ impl Scene {
         world_offset_voxels: [i64; 3],
         def_path: &mut Vec<DefId>,
     ) -> Option<ComposedScope> {
-        if scope.outset == voxel_core::units::Measurement::default() {
+        // Two reasons to pre-compose: the scope is DILATED as a whole (ADR 0019 Decision 7),
+        // or one of its members EMBOSSES and so needs the accumulated body as a field rather
+        // than as a voxel set (ADR 0020 Decision 4).
+        let embosses = children.iter().any(|child| {
+            self.arena
+                .get(child)
+                .is_some_and(|node| node.operation.needs_accumulated_field())
+        });
+        if scope.outset == voxel_core::units::Measurement::default() && !embosses {
             return None;
         }
         let mut members = Vec::new();
@@ -758,6 +789,18 @@ impl Scene {
                     producer.as_ref(),
                     voxels_per_block,
                 ),
+                // Unreachable in practice: a scope containing an Emboss node is pre-composed
+                // into a CompositeProducer (`CombineOp::needs_accumulated_field`), which
+                // evaluates the formulas on the accumulated FIELD — the only representation
+                // the voxel-set fold and the interval fold can agree on. A voxel-set
+                // accumulator has no `A − N` to read. Skipping rather than falling back to
+                // Union keeps an unevaluable emboss VISIBLE as a missing feature instead of
+                // silently resolving as the wrong operation.
+                CombineOp::Emboss { .. } => {
+                    eprintln!(
+                        "scene: skipping an Emboss node whose scope could not be composed                          (an un-composable scope has no accumulated field to emboss)"
+                    );
+                }
                 CombineOp::Union => stamp_producer(
                     target,
                     region_dimensions,
@@ -1107,9 +1150,12 @@ pub(super) fn leaf_content_fingerprint(
     // the edit diff degrades to a wholesale clear instead of trusting the box union.
     let grid = if grid_on_faces { ":grid=1" } else { ":grid=0" };
     let op_token = |operation: CombineOp| match operation {
-        CombineOp::Union => "union",
-        CombineOp::Subtract => "subtract",
-        CombineOp::Intersect => "intersect",
+        CombineOp::Union => "union".to_string(),
+        CombineOp::Subtract => "subtract".to_string(),
+        CombineOp::Intersect => "intersect".to_string(),
+        // The AMOUNT is part of the key: changing how far a surface is embossed changes the
+        // resolved body, so it must dirty the leaf like any other geometry edit.
+        CombineOp::Emboss { amount } => format!("emboss({amount:?})"),
     };
     let op = format!(":op={}", op_token(operation));
     let scopes = {
@@ -1346,6 +1392,16 @@ fn sync_grid_scope_stack(
 ///   the substrate kernel's ∅ identity. Surviving voxels keep their material/overlay.
 fn fold_closed_scope_into(parent: &mut VoxelGrid, operation: CombineOp, closed: VoxelGrid) {
     match operation {
+        // A scope that folds under Emboss is pre-composed with its siblings into one
+        // CompositeProducer, so a composed body never arrives here needing to read the
+        // parent's field (`CombineOp::needs_accumulated_field`). Reaching this arm means the
+        // scope declined to compose — see the matching arm in the leaf fold.
+        CombineOp::Emboss { .. } => {
+            eprintln!(
+                "scene: skipping an Emboss scope close whose siblings could not be composed \
+                 (there is no accumulated field to emboss)"
+            );
+        }
         CombineOp::Union => parent.occupied.extend(closed.occupied),
         CombineOp::Subtract => {
             let carved: std::collections::HashSet<[i32; 3]> = closed
