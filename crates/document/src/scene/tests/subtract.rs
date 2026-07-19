@@ -59,7 +59,7 @@ use crate::voxel::SdfShape;
         );
         let cutter_low = DENSITY as i64; // block [1,1,1] at density 8 → voxel 8.
         let cutter_high = 2 * DENSITY as i64;
-        for ((index, material), _count) in &carved {
+        for (index, material) in carved.keys() {
             let inside_cutter = (0..3)
                 .all(|axis| index[axis] >= cutter_low && index[axis] < cutter_high);
             assert!(
@@ -120,7 +120,7 @@ use crate::voxel::SdfShape;
         for (key, count) in &carved {
             assert_eq!(
                 Some(count),
-                uncarved.get(key).as_deref(),
+                uncarved.get(key),
                 "surviving voxel {key:?} must keep its pre-carve material and multiplicity"
             );
         }

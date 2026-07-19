@@ -347,8 +347,8 @@ impl Scene {
             if member.operation != CombineOp::Union {
                 continue;
             }
-            for axis in 0..3 {
-                origin[axis] = origin[axis].min(member.offset_voxels[axis]);
+            for (lowest, member_offset) in origin.iter_mut().zip(member.offset_voxels) {
+                *lowest = (*lowest).min(member_offset);
             }
         }
         if origin[0] == i64::MAX {
@@ -489,8 +489,8 @@ impl Scene {
             if member.operation != CombineOp::Union {
                 continue;
             }
-            for axis in 0..3 {
-                origin[axis] = origin[axis].min(member.offset_voxels[axis]);
+            for (lowest, member_offset) in origin.iter_mut().zip(member.offset_voxels) {
+                *lowest = (*lowest).min(member_offset);
             }
         }
         if origin[0] == i64::MAX {
@@ -1061,10 +1061,10 @@ impl Scene {
     /// This loops over every chunk coordinate covering the composite AABB, calls
     /// [`resolve_chunk`](Self::resolve_chunk) for each, and unions the results. It
     /// proves the chunk decomposition reconstructs the whole scene; it is **not**
-    /// wired into rendering (the render path stays on [`resolve_region`], which
+    /// wired into rendering (the render path stays on `resolve_region`, which
     /// recentres — see issue #27 S0). The returned grid is sized to the full
     /// composite extent and its voxels keep their absolute composite positions;
-    /// compared against [`resolve_region`]'s output it differs only by the
+    /// compared against `resolve_region`'s output it differs only by the
     /// recentre offset.
     ///
     /// **Oracle — compile-gated.** A dense whole-region resolver kept only to prove the

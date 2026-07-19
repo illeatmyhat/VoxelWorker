@@ -90,8 +90,8 @@ fn locate_stem_png(stem: &str) -> Option<std::path::PathBuf> {
     None
 }
 
-/// Mint stable [`NodeId`]s for a freshly-built demo scene and select its first
-/// top-level node by id (ADR 0003 Phase B3: selection is keyed by [`NodeId`], so a
+/// Mint stable [`NodeId`](document::scene::NodeId)s for a freshly-built demo scene and select its first
+/// top-level node by id (ADR 0003 Phase B3: selection is keyed by [`NodeId`](document::scene::NodeId), so a
 /// demo built with positional intent ("select node 0") must resolve that to an id
 /// after minting). The later `ensure_node_ids` on the load path is idempotent.
 fn selecting_first_node(mut scene: Scene) -> Scene {
@@ -482,7 +482,7 @@ pub(crate) fn build_demo_mixed_material(voxels_per_block: u32) -> Scene {
 }
 
 /// Build the `--demo-village` (ADR 0001 step 4): an **instanced** scene that
-/// proves reuse-by-reference. One small "house" [`AssemblyDef`] (a Box body Tool
+/// proves reuse-by-reference. One small "house" [`AssemblyDef`](document::scene::AssemblyDef) (a Box body Tool
 /// with a Cylinder "chimney" Tool offset on top, as a `Group`) is stored ONCE in
 /// `definitions`; the top-level scene places it by FOUR [`NodeContent::Instance`]
 /// nodes at four different X/Z offsets. The four houses appear at four separated

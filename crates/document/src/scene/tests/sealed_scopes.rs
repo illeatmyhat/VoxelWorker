@@ -238,7 +238,7 @@ use crate::voxel::SdfShape;
         }
         // (b) The cutter DID act inside its own scope: no Wood cell anywhere in the
         // cutter's box…
-        for ((index, material), _count) in &resolved {
+        for (index, material) in resolved.keys() {
             let inside_cutter =
                 (0..3).all(|axis| index[axis] >= cutter_low && index[axis] < cutter_low + 2 * density);
             assert!(

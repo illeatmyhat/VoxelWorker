@@ -62,7 +62,7 @@ use crate::voxel::SdfShape;
             (DENSITY as usize).pow(3),
             "exactly the overlap block of voxels must survive the mask"
         );
-        for ((index, material), _count) in &survivors {
+        for (index, material) in survivors.keys() {
             let inside_overlap = (0..3)
                 .all(|axis| index[axis] >= overlap_low && index[axis] < overlap_high);
             assert!(
@@ -195,7 +195,7 @@ use crate::voxel::SdfShape;
             (2 * DENSITY as usize).pow(3),
             "exactly the group-covered cells must survive"
         );
-        for ((index, material), _count) in &survivors {
+        for (index, material) in survivors.keys() {
             assert!(
                 (0..3).all(|axis| index[axis] >= low && index[axis] < high),
                 "survivor {index:?} must lie inside the group's composed body"
@@ -227,7 +227,7 @@ use crate::voxel::SdfShape;
         let stone_cells = (2 * DENSITY as usize).pow(3);
         let wood_cells = (2 * DENSITY as usize).pow(3);
         assert_eq!(survivors.len(), stone_cells + wood_cells);
-        for ((index, material), _count) in &survivors {
+        for (index, material) in survivors.keys() {
             if *material == MaterialChoice::Wood.block_id().0 {
                 assert!(
                     (0..3).all(|axis| {

@@ -135,9 +135,13 @@ use crate::voxel::SdfShape;
         // The wall lost the opening but regained the frame's bottom row; the
         // cutter's Plain material appears nowhere and the frame's Wood does.
         let d = DENSITY as usize;
-        let wall_voxels = 8 * 1 * 6 * d.pow(3);
-        let opening_voxels = 3 * 1 * 3 * d.pow(3);
-        let frame_voxels = 3 * 1 * 1 * d.pow(3);
+        // Voxels in an x*y*z BLOCK box at this density. Named so the three extents
+        // (including the single-block Y thickness) stay visible as dimensions rather
+        // than collapsing into a bare product.
+        let block_box_voxels = |x: usize, y: usize, z: usize| x * y * z * d.pow(3);
+        let wall_voxels = block_box_voxels(8, 1, 6);
+        let opening_voxels = block_box_voxels(3, 1, 3);
+        let frame_voxels = block_box_voxels(3, 1, 1);
         assert_eq!(composed.len(), wall_voxels - opening_voxels + frame_voxels);
         assert!(
             composed

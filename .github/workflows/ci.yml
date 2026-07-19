@@ -58,6 +58,14 @@ jobs:
       # The substrate library is a separate workspace member with no features
       # and no domain dependencies; it carries its own gates so a regression in
       # the pure CS/math layer fails independently of the app crate.
+      # The `shot` golden reference tool is its own package (see the note at the top of
+      # this file). It is the ONE member that enables `document/oracle` +
+      # `evaluation/oracle`, so this is the only step that lints the dense reference
+      # resolvers at all — without it that code is never checked by anything. Its tests
+      # need a GPU and so do not run here; the build + lint do not.
+      - name: Clippy shot (deny warnings)
+        run: cargo clippy -p shot --all-targets -- -D warnings
+
       - name: Clippy substrate (deny warnings)
         run: cargo clippy -p substrate --all-targets -- -D warnings
 

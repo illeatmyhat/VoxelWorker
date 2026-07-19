@@ -26,7 +26,8 @@
 //! ## The value ⊥ producer split (ADR 0016)
 //!
 //! This is the **document-bound** producer half. It depends DOWNWARD on the
-//! foundational value vocabulary in the `voxel_core` crate (the resolved [`Voxel`],
+//! foundational value vocabulary in the `voxel_core` crate (the resolved
+//! [`Voxel`](voxel_core::voxel::Voxel),
 //! its [`VoxelGrid`], the frame-bearing recentre, the primitive-kind tag and the pure
 //! signed-distance functions) and on `voxel_core`'s `units` / `spatial_index`; the
 //! value crate never names anything here. That ⊥ is compile-enforced by the crate

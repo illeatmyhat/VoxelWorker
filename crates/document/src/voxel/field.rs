@@ -11,7 +11,8 @@
 /// *gradient* bound on the noise, where only a *range* bound is proven.
 ///
 /// The split is ADR 0019's own rule showing up in the type system. Cell bracketing is a
-/// **classification** capability and stays on [`VoxelProducer::cell_field_interval`], which
+/// **classification** capability and stays on
+/// [`VoxelProducer::cell_field_interval`](crate::voxel::VoxelProducer::cell_field_interval), which
 /// every producer may implement; a distance field is a **geometry** capability, and only a
 /// genuine field has one. Predicates classify, fields measure.
 ///

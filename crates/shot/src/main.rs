@@ -5,7 +5,10 @@
 //! writes a PNG. This is the self-verification harness for every later
 //! milestone: a milestone is "done" when its `shot` looks right.
 //!
-//! CLI:
+//! CLI (fenced as `text`: the `<u32>` / `<path>` placeholders are not HTML, and
+//! rustdoc's `-D warnings` doc gate parses unfenced angle brackets as tags):
+//!
+//! ```text
 //!   --out <path>     output PNG path        (default: shots/m1.png)
 //!   --width <u32>    capture width          (default: 1280)
 //!   --height <u32>   capture height         (default: 800)
@@ -19,6 +22,7 @@
 //!   --debug-faces                           face-orientation debug render (colour
 //!                                            by outward normal + back-face marker)
 //!   --theta/--phi/--dist                    orbit overrides (auto-framed dist)
+//! ```
 
 mod capture;
 mod demos;

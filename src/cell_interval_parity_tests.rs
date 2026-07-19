@@ -633,7 +633,7 @@ fn sketch_cell_interval_brackets_the_true_distance() {
     let mut widest_slack = f32::NEG_INFINITY;
     for (label, sketch) in [("rect", rectangle), ("L", l_shape)] {
         let producer = SketchSolid::extrude(sketch, 24);
-        let cells = fuzz_cells(producer.grid_dimensions(), density, 0x0175_E7u64);
+        let cells = fuzz_cells(producer.grid_dimensions(), density, 0x01_75_E7u64);
         for &cell in &cells {
             if cell.is_empty() {
                 continue;
@@ -710,10 +710,10 @@ fn outset_producer_cell_interval_never_misclassifies() {
         for (label, inner) in producers {
             let producer = OutsetProducer::wrap(inner, outset);
             let dimensions = producer.full_dimensions(density);
-            if dimensions.iter().any(|&d| d == 0) {
+            if dimensions.contains(&0) {
                 continue;
             }
-            for &cell in &fuzz_cells(dimensions, density, 0x0175_E7u64.wrapping_add_signed(outset))
+            for &cell in &fuzz_cells(dimensions, density, 0x01_75_E7u64.wrapping_add_signed(outset))
             {
                 assert_cell_bound_exact(producer.as_ref(), cell, density, &label);
                 if let Some(interval) = producer.cell_field_interval(cell, density) {

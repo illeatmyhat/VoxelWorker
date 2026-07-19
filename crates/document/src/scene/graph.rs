@@ -198,7 +198,8 @@ pub struct Node {
     /// level and this needs no new machinery. A NEGATIVE outset insets, shrinking the body —
     /// which is how a deliberate gap between chiselled pieces is authored.
     ///
-    /// It is a [`Measurement`], never an integer voxel count, so `"1/4 block"` survives a
+    /// It is a [`Measurement`](voxel_core::units::Measurement), never an integer voxel
+    /// count, so `"1/4 block"` survives a
     /// density change as the authored intent rather than as a stale derived number (ADR 0008
     /// — the frame is carried, never re-derived).
     ///
@@ -1347,20 +1348,23 @@ impl Scene {
         // dropping the `&mut node` arena borrow before any further `&mut self` use.
         enum Body {
             Donated(Vec<NodeId>),
-            Leaf(Node),
+            // Boxed: a `Node` is an order of magnitude larger than the donated id
+            // spine, and an unboxed variant would size this temporary to the larger
+            // of the two on every extraction (clippy::large_enum_variant).
+            Leaf(Box<Node>),
         }
         let body = {
             let node = self.node_by_id_mut(active_id)?;
             let body = match &mut node.content {
                 NodeContent::Group(children) => Body::Donated(std::mem::take(children)),
-                other => Body::Leaf(Node::new("Body", other.clone())),
+                other => Body::Leaf(Box::new(Node::new("Body", other.clone()))),
             };
             node.content = NodeContent::Instance(def_id);
             body
         };
         let child_ids: Vec<NodeId> = match body {
             Body::Donated(ids) => ids,
-            Body::Leaf(node) => vec![self.insert_subtree(node)],
+            Body::Leaf(node) => vec![self.insert_subtree(*node)],
         };
         self.definitions.push(AssemblyDef {
             id: def_id,
