@@ -215,6 +215,21 @@ impl<'a> IconPainter<'a> {
         self.dashed_ellipse_with(center, rx, ry, self.stroke);
     }
 
+    /// Stroke a dashed polyline through grid points.
+    ///
+    /// For paths the axis-aligned helpers cannot express — a TILTED ellipse, say, which the
+    /// kit has no rotation for. The caller supplies the points; the dash rhythm is walked by
+    /// arc length across the whole strip, so it stays even around a curve.
+    pub fn dashed_polyline(&self, points: &[(f32, f32)]) {
+        self.dashed_polyline_with(points, self.stroke);
+    }
+
+    /// Stroke a dashed polyline in a given stroke.
+    pub fn dashed_polyline_with(&self, points: &[(f32, f32)], stroke: Stroke) {
+        let mapped: Vec<Pos2> = points.iter().map(|&(x, y)| self.at(x, y)).collect();
+        self.dash_path(&mapped, stroke);
+    }
+
     /// Stroke a dashed ellipse in a given stroke.
     pub fn dashed_ellipse_with(&self, center: (f32, f32), rx: f32, ry: f32, stroke: Stroke) {
         let segments = ((self.rect.width() * 0.9) as usize).clamp(24, 96);
@@ -271,11 +286,12 @@ impl<'a> IconPainter<'a> {
         self.circle_with(center, radius, self.stroke);
     }
 
-    /// A SOLID disc — the tile set's grabbable-handle mark (a sketch's authored endpoints).
+    /// A SOLID disc — a mark too small to be a ring.
     ///
-    /// Deliberately absent from the rail vocabulary: at 15 pt a filled dot and a stroked ring
-    /// are the same three pixels, so the distinction that makes it worth drawing only exists
-    /// at tile size.
+    /// At 15 pt a two-pixel ring is mush where a two-pixel dot is crisp, so a disc is the
+    /// right choice for anything genuinely tiny (the `orbit` moon). What does NOT survive at
+    /// rail size is the *distinction* between a disc and a ring — which is why the tile
+    /// `sketch` can say "grabbable handle" with a filled endpoint and its rail twin cannot.
     pub fn filled_circle(&self, center: (f32, f32), radius: f32) {
         let scaled = (radius / self.grid) * self.rect.width();
         self.painter.circle_filled(

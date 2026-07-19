@@ -1,30 +1,51 @@
-//! `orbit` — a body at rest inside a dashed, tilted orbit ring.
+//! `orbit` — a planet with a moon on a tilted path: the camera travels, the body does not.
 //!
-//! The ring is dashed and tilted rather than a plain circle because the mark must say the
-//! *camera* travels while the body stays put: a solid ring at 15 pt reads as a rotating part,
-//! which is the opposite of what orbit does.
+//! The mark says the SUBJECT stays put while the eye moves around it, which is what a planet
+//! and its moon say and what the previous square-in-a-dashed-ring did not.
+//!
+//! ## The planet is painted OVER the path, and that is the whole trick
+//!
+//! A closed ellipse drawn concentrically around a body reads as an **eye** — at every ratio,
+//! however the radii are tuned. The way out is not tuning: it is occlusion. The planet is
+//! filled and painted after the path, and because both carry the same ink it simply swallows
+//! the part of the orbit behind it. What survives is the two outer wings, which is the shape
+//! the eye already knows from Saturn, and there is no ring left encircling the body for the
+//! iris reading to latch onto.
+//!
+//! Consequently the planet is LARGE — larger than the orbit's minor radius, deliberately, so
+//! that the path is cut rather than framed. The moon then does the rest: it is the one mark
+//! that says the path is travelled.
 
 use super::IconPainter;
 
+/// How far the orbital plane leans, in degrees.
+const TILT_DEGREES: f32 = -22.0;
+/// Where the moon sits on the path, in radians — high and to the right, clear of both wings.
+const MOON_ANGLE: f32 = -0.40;
+
 pub(super) fn draw(g: &IconPainter) {
-    // The body being orbited — it does not move.
-    g.rect((6.5, 6.5), (11.5, 11.5));
-    // The camera's path: an ellipse tilted −27°, dashed. The kit's ellipse is axis-aligned, so
-    // the tilt is applied here, one dash at a time.
-    let (cx, cy) = (9.0, 9.0);
-    let (rx, ry) = (8.0, 3.4);
-    let (sin, cos) = (-27.0f32).to_radians().sin_cos();
-    let dashes = 10;
-    let step = std::f32::consts::TAU / dashes as f32;
-    for dash in 0..dashes {
-        let start = dash as f32 * step;
-        let points: Vec<(f32, f32)> = (0..=4)
-            .map(|k| {
-                let t = start + step * 0.55 * (k as f32 / 4.0);
-                let (x, y) = (rx * t.cos(), ry * t.sin());
-                (cx + x * cos - y * sin, cy + x * sin + y * cos)
-            })
-            .collect();
-        g.line(&points);
-    }
+    let (center_x, center_y) = (9.0_f32, 9.0_f32);
+    let (radius_x, radius_y) = (7.6_f32, 3.0_f32);
+    let (sin_tilt, cos_tilt) = TILT_DEGREES.to_radians().sin_cos();
+
+    // A point at angle `t` on the tilted orbit.
+    let on_orbit = |t: f32| {
+        let (x, y) = (radius_x * t.cos(), radius_y * t.sin());
+        (
+            center_x + x * cos_tilt - y * sin_tilt,
+            center_y + x * sin_tilt + y * cos_tilt,
+        )
+    };
+
+    // The path, first — everything after this occludes it.
+    let path: Vec<(f32, f32)> = (0..=64)
+        .map(|step| on_orbit(std::f32::consts::TAU * step as f32 / 64.0))
+        .collect();
+    g.line(&path);
+
+    // The body being orbited. Filled and wide enough to cut the path down to its wings.
+    g.filled_circle((center_x, center_y), 4.6);
+
+    // The camera, out on the path.
+    g.filled_circle(on_orbit(MOON_ANGLE), 1.5);
 }
