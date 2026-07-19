@@ -46,6 +46,10 @@ surface reads as one instrument panel.
 | Boolean x-ray reds | quiet `#d94f4f`, loud `#e5533a` (ADR 0017/#78 vocabulary) |
 | Axis colours | X `#d9603f` · Y `#7dba6a` · Z `#9cb4d8` |
 
+This table owns the token *values*. What those tokens are permitted to *mean* — and why a
+new state should usually reach for a texture rather than a second hue — is covered in
+[Colour and channel vocabulary](colour-vocabulary.md).
+
 Typography: monospace (Cascadia/Consolas class), 10–11 px; section headers and labels
 UPPERCASE with ~2 px letter-spacing; counts and hints 9–9.5 px faint.
 

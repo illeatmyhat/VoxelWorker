@@ -33,6 +33,21 @@ empty" wrongly. Therefore classification is *occupancy-identical* to brute-force
 per-voxel evaluation — the fast path and the honest path agree everywhere, and the
 proof gates in [Proof](05-proof.md) hold them to it.
 
+A bound may come from an exact predicate or from a field, and the evaluator prefers the
+predicate wherever one exists. The reason is the geometry of a cell: a distance bound
+must cover a cube's corners, so it can only decide a cell whose centre is further from
+the boundary than the cell's half-diagonal, while an exact containment predicate decides
+any cell inside the profile however close to an edge. Levelling the two would cost a
+several-voxel shell of interior that currently elides. Where an exact square-metric field
+exists the covering ball *is* the cell, which tightens the bound further — one more
+reason the metric is tracked rather than assumed.
+
+**The fold is evaluated twice, over two different domains, and they are one semantics.**
+Once over voxel sets, once over intervals — the second is what makes classification
+cheap, and the two diverge silently if either learns an operation the other has not.
+Every combine operation therefore lands in both, and a parity fuzzer holds them to
+agreement; an operation added to only one is unlanded work, not a partial feature.
+
 This is where Law 2 ("memory follows the surface") is enforced. A mountain of solid
 stone is a lattice of coarse-solid block IDs; only its skin — the boundary blocks —
 ever becomes voxels.
@@ -63,7 +78,11 @@ Chunks live in a **resident cache**. An edit does not rebuild the world:
    scheme for keeping it consistent would, and statelessness eliminates the entire
    class of stale-index bugs.
 2. The edit's dirty region — the union of what changed — is intersected with the chunk
-   lattice, and only those chunks are evicted.
+   lattice, and only those chunks are evicted. The region is computed from a node's
+   *effective* reach, not its producer's: a node carrying an outset dirties its dilated
+   bounds, and an unbounded producer contributes the bounds of the accumulator its
+   operation is confined to. A dirty region derived from producer bounds alone would be
+   too small in exactly the cases that are hardest to notice.
 3. The next resident handout rebuilds exactly the missing chunks (in parallel; each
    chunk builds independently from the broadphase's candidate producers) and reuses
    every untouched resident verbatim.

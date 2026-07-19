@@ -118,13 +118,46 @@ is — keeps drawing until the replacement lands, and is dropped at the moment o
 installation. A stale display kept for this purpose is a *placeholder*: it may be
 looked at, never patched (see the staleness law in [Work](04-work.md)).
 
-## The onion skin
+## Viewer modes
 
-Layer inspection — scrubbing through horizontal slices of the model — is a display
-*clip*, not a geometry operation. The active layer band renders normally; material
-outside the band renders as a ghosted slab pass driven entirely by per-frame uniforms.
-Scrubbing therefore costs nothing proportional to the scene: no geometry is rebuilt, no
-occupancy is re-derived, and the same mechanism serves both display paths.
+The viewer is always in exactly one of three modes — **Normal**, **Onion**, and **Show
+booleans** — and the mode is *viewer state, never document state*. It is not saved with
+the scene, never enters undo history, and follows the active selection. Exclusivity is
+the point rather than a simplification: these treatments are all answers to "show me
+something other than the finished result", and allowing two at once produced displays
+that contradicted each other — a ghost drawn at full height over a scrubbed slice shows
+the user a body that the build will never pass through.
+
+**Normal** is the finished look: none of the three treatments applies, and the model
+renders as it will be built.
+
+The exclusivity governs *mode treatments*, not every mark on screen. **Selection feedback
+is orthogonal to all three modes** — showing what the selected operation acts on is a
+property of having selected it, not a way of displaying the document, and it survives in
+Normal. The distinction is worth holding precisely, because the retired always-on
+selection x-ray failed for the opposite reason: it was a mode treatment masquerading as
+selection feedback, drawn at full extent over a clipped slice, and it contradicted the
+mode the user had chosen. Feedback that describes the selection is welcome anywhere;
+feedback that redescribes the document belongs to a mode.
+
+**Onion** is layer inspection, and it is a display *clip* rather than a geometry
+operation. The active layer band renders normally; material outside it renders as a
+ghosted slab pass driven entirely by per-frame uniforms. Scrubbing therefore costs
+nothing proportional to the scene: no geometry is rebuilt, no occupancy is re-derived,
+and the same mechanism serves both display paths. The clip is **scoped to the selected
+object's placed bounds**, and what is shown inside that region is the *composed*
+geometry — carves by later cutters included — because those are the layers a person
+would actually build. The layer track spans the selected object's own extent, not the
+scene's.
+
+**Show booleans** x-rays the operand bodies in the selected subtree over the finished
+scene, with a depth split that distinguishes a cutter you could reach from one buried
+inside solid material. Selecting the root part x-rays every boolean in the scene, which
+is what makes whole-scene inspection a selection rather than a special mode.
+
+Because the modes are exclusive and both are scoped by selection, a whole class of
+composition bug is dissolved structurally rather than patched: a clip and an x-ray can
+never co-render, so they can never disagree about what the user is looking at.
 
 ## The camera and the shell
 

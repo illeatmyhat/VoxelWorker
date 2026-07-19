@@ -70,6 +70,9 @@ Everything else in this set is elaboration of these.
 │  Document        scene graph · producers · materials · units  │
 │                  the operation stack — the only truth         │
 ├──────────────────────────────────────────────────────────────┤
+│  Field           the signed meaning of a node; fold algebra   │
+│                  metrics, outset — where geometry attaches    │
+├──────────────────────────────────────────────────────────────┤
 │  Evaluation      one evaluator: interval bounds → two-layer   │
 │                  chunks; resident cache; targeted dirtying    │
 ├──────────────────────────────────────────────────────────────┤
@@ -101,9 +104,9 @@ client of the same intent door.
 
 | Document | What it owns |
 | --- | --- |
-| [01 — The Document](01-document.md) | Scene graph, producers, sketches, materials, units, intents, undo, persistence |
+| [01 — The Document](01-document.md) | Scene graph, parts, producers, sketches, the field layer, materials, units, intents, undo, persistence |
 | [02 — Evaluation](02-evaluation.md) | The evaluator, block classification, two-layer chunks, residency, invalidation, frames |
-| [03 — Display](03-display.md) | The brick field, the pyramid, the mesh understudy, engagement and handover, onion skin |
+| [03 — Display](03-display.md) | The brick field, the pyramid, the mesh understudy, engagement and handover, viewer modes |
 | [04 — Work](04-work.md) | Tempos, the worker pattern, generations, the staleness law |
 | [05 — Proof](05-proof.md) | Oracles, parity gates, goldens, probes — how exactness is kept |
 | [Data structures](data-structures.md) | The load-bearing structures and the quality each one buys |
