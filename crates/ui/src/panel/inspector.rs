@@ -4,12 +4,13 @@
 use super::palette::SHAPE_CHIPS;
 use super::{PanelResponse, PanelState};
 use crate::signal_theme;
+use crate::widgets::MeasurementField;
 use document::intent::Intent;
 use document::scene::{CombineOp, NodeContent, VoxelBody, ROOT_NODE_ID};
 use document::sketch::{Operation, PlaneAxis, RevolveAxis, Sketch, SketchSolid};
 use document::voxel::SdfShape;
 use voxel_core::core_geom::MaterialChoice;
-use voxel_core::units::{self, DisplayUnit, MeasurementError};
+use voxel_core::units;
 use voxel_core::voxel::ShapeKind;
 
 /// The inspector: switches on the active node. A **Tool** shows the shape chips,
@@ -560,23 +561,21 @@ fn build_operation_section(
     ui.separator();
 }
 
-/// Offset (placement) section (ADR 0003 §3f(0)): three per-axis text fields
-/// (X/Y/Z, signed) accepting blocks+voxels unit expressions (e.g. `"3 blocks 8
-/// voxels"`, `"-1b 4v"`, `"3.5 blocks"`). Each field is seeded from the canonical
-/// voxel offset formatted as blocks+voxels and, on commit (Enter or focus loss),
-/// parsed via [`units::parse`] and validated to land on a whole voxel at the
-/// document density; on success it emits a single `SetOffset` carrying the
-/// per-axis [`Measurement`](voxel_core::units::Measurement)s (the edited axis plus the
-/// two unchanged retained ones). A parse / non-landing error is shown inline (red)
-/// and NOTHING is emitted, so the canonical offset never moves on bad input.
+/// Offset (placement) section (ADR 0003 §3f(0)): three per-axis
+/// [`MeasurementField`]s (X/Y/Z) over the node's transform offset. The fields are
+/// SIGNED — an offset moves either way — so no minimum is set. The commit protocol
+/// (local buffer, `lost_focus()` as the single trigger, inline error, unfocused
+/// re-sync) belongs to [`MeasurementField`]; this section only decides what a commit
+/// MEANS.
+///
+/// A commit emits a single `SetOffset` carrying all three per-axis
+/// [`Measurement`](voxel_core::units::Measurement)s — the edited axis plus the two
+/// unchanged RETAINED ones, so a single-axis edit does not disturb the others. A
+/// rejected edit yields no commit, so the canonical offset never moves on bad input.
 ///
 /// Common to Tools and Parts — placement is on the node's transform, not the
 /// producer. A committed edit re-resolves + re-frames the composite (a node moving
 /// changes the composite extent), so it auto-frames the whole composited extent.
-///
-/// The in-progress text + last error live in egui temp memory (keyed per axis by a
-/// stable `Id`) so a partial edit and its error survive across frames; an unfocused
-/// field re-syncs to the canonical value, so undo / external moves reflect.
 fn build_offset_section(ui: &mut egui::Ui, state: &mut PanelState, response: &mut PanelResponse) {
     let Some(target) = state.scene.active else {
         return;
@@ -595,109 +594,20 @@ fn build_offset_section(ui: &mut egui::Ui, state: &mut PanelState, response: &mu
     signal_theme::section_heading(ui, "Offset (blocks + voxels)");
 
     for (axis_index, axis_label) in ["X", "Y", "Z"].iter().enumerate() {
-        // Per-axis stable ids for the in-progress text buffer and last error.
-        let text_id = egui::Id::new(("offset_axis_text", target, axis_index));
-        let error_id = egui::Id::new(("offset_axis_error", target, axis_index));
-        // The canonical seed: the current voxel offset as a blocks+voxels string.
-        let seed = units::format(offset_voxels[axis_index], density, DisplayUnit::BlocksAndVoxels);
-
-        // The text edit binds to a LOCAL buffer restored from temp memory; an
-        // UNFOCUSED field re-syncs to the canonical seed so undo / external moves
-        // and density changes reflect, while a focused field keeps the user's
-        // in-progress text untouched.
-        let mut buffer = ui
-            .memory(|memory| memory.data.get_temp::<String>(text_id))
-            .unwrap_or_else(|| seed.clone());
-
-        let widget = egui::TextEdit::singleline(&mut buffer)
-            .desired_width(142.0)
-            .hint_text("blocks + voxels");
-        let widget_response = ui.horizontal(|ui| {
-            ui.label(format!("{axis_label} "));
-            ui.add(widget)
-        });
-        let edit_response = widget_response.inner;
-
-        // Editing again clears any stale error from a prior failed commit, so the
-        // red message tracks the LAST committed attempt, not in-progress typing.
-        if edit_response.changed() {
-            ui.memory_mut(|memory| memory.data.remove::<String>(error_id));
-        }
-
-        // `lost_focus()` fires on Enter AND on click-away, so it is the single
-        // commit trigger; the typed `buffer` is still live here (the unfocused
-        // re-sync happens AFTER, so a commit reads the user's text, not the seed).
-        // Only attempt a parse when the text actually differs from the canonical
-        // seed (a focus loss with no edit is a no-op).
-        let committed = edit_response.lost_focus() && buffer.trim() != seed;
-        if committed {
-            match units::parse(&buffer) {
-                Ok(measurement) => match measurement.to_voxels(density) {
-                    Ok(landed_voxels) => {
-                        // Replace only this axis; the other two keep their retained
-                        // measurements so a single-axis edit is isolated.
-                        let mut next = retained_measurements;
-                        next[axis_index] = measurement;
-                        ui.memory_mut(|memory| memory.data.remove::<String>(error_id));
-                        response.emit_and_frame(Intent::SetOffset {
-                            target,
-                            offset_measurements: next,
-                        });
-                        // Settle the field on the canonical form of the applied value.
-                        buffer =
-                            units::format(landed_voxels, density, DisplayUnit::BlocksAndVoxels);
-                    }
-                    Err(error) => {
-                        ui.memory_mut(|memory| {
-                            memory.data.insert_temp(error_id, measurement_error_text(&error))
-                        });
-                    }
-                },
-                Err(error) => {
-                    ui.memory_mut(|memory| {
-                        memory.data.insert_temp(error_id, error.to_string())
-                    });
-                }
-            }
-        } else if !edit_response.has_focus() {
-            // Not being edited and not a commit. If a prior commit FAILED, an error
-            // is stored — keep the user's (rejected) text on screen alongside the
-            // error so they can see and fix it; do NOT silently revert. With no
-            // error, mirror the canonical value so undo / external moves / density
-            // changes reflect in the field.
-            let has_error = ui.memory(|memory| memory.data.get_temp::<String>(error_id).is_some());
-            if !has_error {
-                buffer = seed.clone();
-            }
-        }
-
-        // Persist the buffer for the next frame (the focused, in-progress text).
-        ui.memory_mut(|memory| memory.data.insert_temp(text_id, buffer));
-
-        // Inline error (red), cleared on the next successful commit.
-        if let Some(message) = ui.memory(|memory| memory.data.get_temp::<String>(error_id)) {
-            ui.colored_label(egui::Color32::from_rgb(220, 80, 80), message);
+        // Keyed on the node AND the axis, so re-selecting a node re-seeds rather than
+        // inheriting the previous node's half-typed text.
+        let id_base = egui::Id::new(("offset_axis", target, axis_index));
+        let field =
+            MeasurementField::new(id_base, axis_label, offset_voxels[axis_index], density);
+        if let Some(commit) = field.show(ui) {
+            // Replace only this axis; the other two keep their retained measurements.
+            let mut next = retained_measurements;
+            next[axis_index] = commit.measurement;
+            response.emit_and_frame(Intent::SetOffset { target, offset_measurements: next });
         }
     }
 
     ui.separator();
-}
-
-/// Render a [`MeasurementError`] for an inline unit-field error label (Offset and
-/// Size both use it). A non-landing block fraction reports the nearest representable
-/// voxel counts so the user can pick one instead of being silently rounded (ADR 0003
-/// §3f(0)).
-fn measurement_error_text(error: &MeasurementError) -> String {
-    match error {
-        MeasurementError::BlockTermNotWholeVoxels {
-            density,
-            nearest_floor_voxels,
-            nearest_ceil_voxels,
-        } => format!(
-            "doesn't land on a whole voxel at density {density}; nearest are {nearest_floor_voxels} or {nearest_ceil_voxels} voxels"
-        ),
-        MeasurementError::ZeroDensity => "density must be at least 1".to_string(),
-    }
 }
 
 /// Per-node grid toggles (issue #29 S3/S4): the active node's own
@@ -773,22 +683,17 @@ fn build_shape_section(ui: &mut egui::Ui, state: &mut PanelState) -> bool {
     changed
 }
 
-/// Size section (ADR 0003 §3f(0)): three per-axis text fields (X/Y/Z) accepting
-/// blocks+voxels unit expressions (e.g. `"5 blocks"`, `"5b 8v"`, `"83 voxels"`),
-/// mirroring [`build_offset_section`]. Each field is seeded from the canonical voxel
-/// size formatted as blocks+voxels and, on commit (Enter or focus loss), parsed via
-/// [`units::parse`] and validated to land on a whole voxel `>= 1` at the document
-/// density. On success it writes the edited axis's canonical voxels + retained
-/// measurement into the [`GeometryParams`](document::voxel::GeometryParams) mirror
-/// (the OTHER two axes keep their retained measurements — single-axis isolation) and
-/// returns `true`, so the inspector emits a `SetShape` (built via
-/// [`SdfShape::from_geometry`]) AND auto-frames. A parse / non-landing / sub-1 error
-/// is shown inline (red) and the size is NOT changed.
+/// Size section (ADR 0003 §3f(0)): three per-axis [`MeasurementField`]s (X/Y/Z) over
+/// the geometry buffer's size, mirroring [`build_offset_section`]. Unlike an offset a
+/// size is not signed, so each field carries a `>= 1 voxel` bound. The commit protocol
+/// itself belongs to [`MeasurementField`]; this section only decides what a commit
+/// MEANS.
 ///
-/// The in-progress text + last error live in egui temp memory (keyed per axis by a
-/// stable `Id`) so a partial edit and its error survive across frames; an unfocused
-/// field with no error re-syncs to the canonical value, so undo / external edits /
-/// density changes reflect.
+/// A commit writes the edited axis's canonical voxels + retained measurement into the
+/// [`GeometryParams`](document::voxel::GeometryParams) mirror (the OTHER two axes keep
+/// their retained measurements — single-axis isolation) and returns `true`, so the
+/// inspector emits a `SetShape` (built via [`SdfShape::from_geometry`]) AND
+/// auto-frames. A rejected edit yields no commit, so the size is NOT changed.
 fn build_size_section(ui: &mut egui::Ui, state: &mut PanelState) -> bool {
     ui.add_space(8.0);
     signal_theme::section_heading(ui, "Size (blocks + voxels)");
@@ -811,70 +716,17 @@ fn build_size_section(ui: &mut egui::Ui, state: &mut PanelState) -> bool {
     let key = state.scene.active;
 
     for (axis_index, axis_label) in ["X", "Y", "Z"].iter().enumerate() {
-        let text_id = egui::Id::new(("size_axis_text", key, axis_index));
-        let error_id = egui::Id::new(("size_axis_error", key, axis_index));
-        let seed = units::format(size_voxels[axis_index] as i64, density, DisplayUnit::BlocksAndVoxels);
-
-        let mut buffer = ui
-            .memory(|memory| memory.data.get_temp::<String>(text_id))
-            .unwrap_or_else(|| seed.clone());
-
-        let widget = egui::TextEdit::singleline(&mut buffer)
-            .desired_width(142.0)
-            .hint_text("blocks + voxels");
-        let widget_response = ui.horizontal(|ui| {
-            ui.label(format!("{axis_label} "));
-            ui.add(widget)
-        });
-        let edit_response = widget_response.inner;
-
-        if edit_response.changed() {
-            ui.memory_mut(|memory| memory.data.remove::<String>(error_id));
-        }
-
-        let committed = edit_response.lost_focus() && buffer.trim() != seed;
-        if committed {
-            match units::parse(&buffer) {
-                Ok(measurement) => match measurement.to_voxels(density) {
-                    Ok(landed_voxels) if landed_voxels >= 1 => {
-                        // Replace only this axis; the other two keep their retained
-                        // measurements so a single-axis edit is isolated.
-                        let mut next = retained_measurements;
-                        next[axis_index] = measurement;
-                        state.geometry.size_voxels[axis_index] = landed_voxels as u32;
-                        state.geometry.size_measurements = Some(Box::new(next));
-                        changed = true;
-                        ui.memory_mut(|memory| memory.data.remove::<String>(error_id));
-                        buffer = units::format(landed_voxels, density, DisplayUnit::BlocksAndVoxels);
-                    }
-                    Ok(_) => {
-                        ui.memory_mut(|memory| {
-                            memory
-                                .data
-                                .insert_temp(error_id, "size must be at least 1 voxel".to_string())
-                        });
-                    }
-                    Err(error) => {
-                        ui.memory_mut(|memory| {
-                            memory.data.insert_temp(error_id, measurement_error_text(&error))
-                        });
-                    }
-                },
-                Err(error) => {
-                    ui.memory_mut(|memory| memory.data.insert_temp(error_id, error.to_string()));
-                }
-            }
-        } else if !edit_response.has_focus() {
-            let has_error = ui.memory(|memory| memory.data.get_temp::<String>(error_id).is_some());
-            if !has_error {
-                buffer = seed.clone();
-            }
-        }
-
-        ui.memory_mut(|memory| memory.data.insert_temp(text_id, buffer));
-
-        if let Some(message) = ui.memory(|memory| memory.data.get_temp::<String>(error_id)) {
-            ui.colored_label(egui::Color32::from_rgb(220, 80, 80), message);
+        let id_base = egui::Id::new(("size_axis", key, axis_index));
+        let field =
+            MeasurementField::new(id_base, axis_label, size_voxels[axis_index] as i64, density)
+                .min_voxels(1, "size must be at least 1 voxel");
+        if let Some(commit) = field.show(ui) {
+            // Replace only this axis; the other two keep their retained measurements.
+            let mut next = retained_measurements;
+            next[axis_index] = commit.measurement;
+            state.geometry.size_voxels[axis_index] = commit.voxels as u32;
+            state.geometry.size_measurements = Some(Box::new(next));
+            changed = true;
         }
     }
 
