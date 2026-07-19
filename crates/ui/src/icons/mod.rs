@@ -53,6 +53,7 @@ mod half_space;
 mod home;
 mod inset;
 mod intersect;
+pub mod large;
 mod link;
 mod material;
 mod measure;
@@ -78,41 +79,64 @@ mod union;
 mod view_cube;
 mod zoom;
 
-/// The authoring grid every glyph is traced on: 18 × 18 units.
+/// The authoring grid every RAIL glyph is traced on: 18 × 18 units. The large tile family
+/// ([`large`]) is traced on its own coarser grid — see [`large::GRID`].
 pub const GRID: f32 = 18.0;
 
 /// The Signal glyph stroke, in design points.
 pub const STROKE_WIDTH: f32 = 1.25;
 
-/// Painting kit handed to a glyph: it owns the mapping from the 18-unit grid onto the
+/// Painting kit handed to a glyph: it owns the mapping from the authoring grid onto the
 /// on-screen box, so an icon file never does arithmetic on `Rect`s and cannot drift off the
 /// grid.
+///
+/// The grid is per-painter rather than a constant, because the two glyph families are drawn
+/// at different resolutions: the rail set on 18 units at a 1.25 stroke, the tile set on 26 at
+/// 1.1. They are separate DRAWINGS of the same nouns, not one asset scaled — so the kit has
+/// to be told which grid it is on.
 pub struct IconPainter<'a> {
     painter: &'a Painter,
     rect: Rect,
     stroke: Stroke,
+    grid: f32,
 }
 
 impl<'a> IconPainter<'a> {
-    /// Bind the kit to a box on screen. `rect` is the glyph's full 18-unit square; callers
-    /// that want padding shrink before calling.
+    /// Bind the kit to a box on screen for a RAIL glyph. `rect` is the glyph's full 18-unit
+    /// square; callers that want padding shrink before calling.
     pub fn new(painter: &'a Painter, rect: Rect, color: Color32) -> Self {
+        Self::new_on_grid(painter, rect, color, GRID, STROKE_WIDTH)
+    }
+
+    /// Bind the kit for a glyph traced on `grid` units at `stroke_width` design points.
+    ///
+    /// Only the two families' own modules should call this — [`new`](Self::new) for the rail
+    /// set, [`large`] for the tile set. A caller picking its own grid would be authoring a
+    /// third family by accident.
+    pub fn new_on_grid(
+        painter: &'a Painter,
+        rect: Rect,
+        color: Color32,
+        grid: f32,
+        stroke_width: f32,
+    ) -> Self {
         // The stroke scales with the glyph so a 44 pt tile is not drawn with a hairline meant
         // for a 15 pt rail button — the large-format sheet's own finding, that a large mark
         // rides a proportionally lighter stroke, is why this is a ratio and not a constant.
-        let scale = rect.width() / GRID;
+        let scale = rect.width() / grid;
         Self {
             painter,
             rect,
-            stroke: Stroke::new(STROKE_WIDTH * scale.max(0.55), color),
+            stroke: Stroke::new(stroke_width * scale.max(0.55), color),
+            grid,
         }
     }
 
-    /// Map a point on the 18-unit grid onto the glyph box.
+    /// Map a point on the authoring grid onto the glyph box.
     pub fn at(&self, x: f32, y: f32) -> Pos2 {
         Pos2::new(
-            self.rect.left() + (x / GRID) * self.rect.width(),
-            self.rect.top() + (y / GRID) * self.rect.height(),
+            self.rect.left() + (x / self.grid) * self.rect.width(),
+            self.rect.top() + (y / self.grid) * self.rect.height(),
         )
     }
 
@@ -204,6 +228,53 @@ impl<'a> IconPainter<'a> {
     /// Stroke a circle centred on a grid point.
     pub fn circle(&self, center: (f32, f32), radius: f32) {
         self.circle_with(center, radius, self.stroke);
+    }
+
+    /// A SOLID disc — the tile set's grabbable-handle mark (a sketch's authored endpoints).
+    ///
+    /// Deliberately absent from the rail vocabulary: at 15 pt a filled dot and a stroked ring
+    /// are the same three pixels, so the distinction that makes it worth drawing only exists
+    /// at tile size.
+    pub fn filled_circle(&self, center: (f32, f32), radius: f32) {
+        let scaled = (radius / self.grid) * self.rect.width();
+        self.painter.circle_filled(
+            self.at(center.0, center.1),
+            scaled,
+            self.stroke.color,
+        );
+    }
+
+    /// Trace a cubic Bézier through its four control points, sampled as a polyline.
+    ///
+    /// The sample count follows the on-screen size for the same reason [`arc`](Self::arc)'s
+    /// does: a 44 pt tile must not show facets and a 15 pt button must not pay for segments it
+    /// cannot resolve.
+    pub fn cubic(&self, p0: (f32, f32), p1: (f32, f32), p2: (f32, f32), p3: (f32, f32)) {
+        self.cubic_with(p0, p1, p2, p3, self.stroke);
+    }
+
+    /// Trace a cubic Bézier in a given stroke.
+    pub fn cubic_with(
+        &self,
+        p0: (f32, f32),
+        p1: (f32, f32),
+        p2: (f32, f32),
+        p3: (f32, f32),
+        stroke: Stroke,
+    ) {
+        let segments = ((self.rect.width() * 0.9) as usize).clamp(12, 64);
+        let points: Vec<(f32, f32)> = (0..=segments)
+            .map(|i| {
+                let t = i as f32 / segments as f32;
+                let u = 1.0 - t;
+                let (a, b, c, d) = (u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t);
+                (
+                    a * p0.0 + b * p1.0 + c * p2.0 + d * p3.0,
+                    a * p0.1 + b * p1.1 + c * p2.1 + d * p3.1,
+                )
+            })
+            .collect();
+        self.line_with(&points, stroke);
     }
 
     /// Stroke a circle in a given stroke.
