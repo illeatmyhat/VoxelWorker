@@ -195,13 +195,16 @@ impl ViewCubeRenderer {
             cube_uniform_bind_group(device, &uniform_buffer);
 
         // --- 6-layer face-label texture array ---
+        // Allocated with the shared padded layer count, not 6: this texture is square and
+        // single-sampled, so a 6-layer allocation trips wgpu's GL cubemap heuristic and
+        // samples black. See `FACE_MATERIAL_ARRAY_LAYERS`. Only the first 6 are written.
         let label_pixels = generate_face_label_textures();
         let label_texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("view cube label textures"),
             size: wgpu::Extent3d {
                 width: FACE_LABEL_TEXTURE_SIZE,
                 height: FACE_LABEL_TEXTURE_SIZE,
-                depth_or_array_layers: 6,
+                depth_or_array_layers: crate::renderer::FACE_MATERIAL_ARRAY_LAYERS,
             },
             mip_level_count: 1,
             sample_count: 1,

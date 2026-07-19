@@ -46,8 +46,9 @@ mod tests;
 pub use materials::{
     build_face_material_layout, grid_overlay_params, procedural_material_average_color,
     procedural_material_pixels, procedural_material_texture_size,
-    relative_material_base_colors_public, upload_face_material_texture, GridOverlayParams,
-    LayerBand, MaterialSource, RegionClip, RegionRole,
+    relative_material_base_colors_public, upload_face_material_texture,
+    FACE_MATERIAL_ARRAY_LAYERS, GridOverlayParams, LayerBand, MaterialSource, RegionClip,
+    RegionRole,
 };
 pub use background::BackgroundGradientRenderer;
 pub use view_cube::{

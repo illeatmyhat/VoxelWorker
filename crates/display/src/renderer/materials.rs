@@ -106,6 +106,30 @@ pub enum MaterialSource<'a> {
 /// (binding 0, one layer per cube face) + a sampler (binding 1). Both the
 /// procedural materials and a loaded VS block build a bind group of this shape,
 /// so the single voxel pipeline draws uniform and per-face materials alike.
+/// Array layers allocated for a six-face block material: SEVEN, of which the shader
+/// only ever samples layers 0..=5.
+///
+/// The seventh is a workaround for wgpu's GL backend, and it is not cosmetic. OpenGL
+/// fixes a texture's target at allocation, so wgpu-hal must GUESS from the descriptor
+/// whether a `D2` texture is an array or a cubemap, and its heuristic
+/// (`wgpu-hal/src/gles/mod.rs`, `get_info_from_desc`) picks `GL_TEXTURE_CUBE_MAP` for
+/// any square, single-sampled `D2` texture whose layer count is a multiple of six.
+/// A six-layer square block texture matches exactly. The uploads then land in cube
+/// faces, the `sampler2DArray` bound from our `D2Array` view reads a different (zero)
+/// object, and every sample returns BLACK — with no validation error, no device-lost,
+/// and a correct alpha, because GL has no descriptor-set indirection to catch it.
+///
+/// That is not hypothetical: real Vintage Story block textures are square (16×16,
+/// 32×32), so on GL EVERY loaded block rendered black, on both the brick and mesh
+/// paths. It surfaced as `gpu_parity`'s loaded-material test failing on CI, which
+/// reached the GL backend only because no Vulkan ICD was installed there (fixed in
+/// fcaf533 — CI now installs `mesa-vulkan-drivers` and runs on Vulkan).
+///
+/// Seven defeats the heuristic (`7 % 6 != 0`) at the cost of one unwritten layer of a
+/// tiny texture, and is inert on Vulkan/DX12/Metal. Upstream: gfx-rs/wgpu#7428, open
+/// as of wgpu 29. Do NOT "tidy" this back to six.
+pub const FACE_MATERIAL_ARRAY_LAYERS: u32 = 7;
+
 pub fn build_face_material_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
     device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("voxel face material bind group layout"),
@@ -134,6 +158,9 @@ pub fn build_face_material_layout(device: &wgpu::Device) -> wgpu::BindGroupLayou
 /// texture (nearest filter, clamp-to-edge, no mipmaps). Every layer must be the
 /// same `width`×`height`; callers that have per-face PNGs of differing sizes
 /// rescale to a common size first (see `block_texture::LoadedMaterial::from_faces`).
+///
+/// Allocates [`FACE_MATERIAL_ARRAY_LAYERS`] layers, one more than it fills — see
+/// that constant for why the padding layer is load-bearing.
 pub fn upload_face_material_texture(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -146,7 +173,7 @@ pub fn upload_face_material_texture(
     let size = wgpu::Extent3d {
         width,
         height,
-        depth_or_array_layers: 6,
+        depth_or_array_layers: FACE_MATERIAL_ARRAY_LAYERS,
     };
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("voxel face material texture"),
