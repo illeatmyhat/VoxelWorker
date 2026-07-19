@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use voxel_core::units::{ExactRational, Measurement};
 
-use super::producers::leaf_producer_grid_voxels;
+use super::producers::{leaf_producer_grid_voxels, outset_voxels_at};
 use super::*;
 use voxel_core::voxel::RecentreVoxels;
 
@@ -348,8 +348,16 @@ impl Scene {
             parent_offset_voxels,
             &mut def_path,
             &mut scope_path,
-            &mut |world_offset_voxels, content, _grid_on_faces, _operation, _scope_path| {
-                let Some(size_blocks) = leaf_size_blocks(content, voxels_per_block) else {
+            &mut |world_offset_voxels, content, _grid_on_faces, _operation, outset, _scope_path| {
+                let outset_voxels = outset_voxels_at(outset, voxels_per_block);
+            let world_offset_voxels: [i64; 3] =
+                std::array::from_fn(|axis| world_offset_voxels[axis] - outset_voxels);
+                // The dilated body's low corner sits `N` BELOW the producer's, so the extent
+                // must start there — growing the size alone would put a right-sized box in
+                // the wrong place (ADR 0008 — the frame is carried).
+                let world_offset_voxels: [i64; 3] =
+                    std::array::from_fn(|axis| world_offset_voxels[axis] - outset_voxels);
+                let Some(size_blocks) = leaf_size_blocks(content, voxels_per_block, outset_voxels) else {
                     return;
                 };
                 any = true;
@@ -417,8 +425,16 @@ impl Scene {
             parent_offset_voxels,
             &mut def_path,
             &mut scope_path,
-            &mut |world_offset_voxels, content, _grid_on_faces, _operation, _scope_path| {
-                let Some(grid_voxels) = leaf_producer_grid_voxels(content, voxels_per_block) else {
+            &mut |world_offset_voxels, content, _grid_on_faces, _operation, outset, _scope_path| {
+                let outset_voxels = outset_voxels_at(outset, voxels_per_block);
+            let world_offset_voxels: [i64; 3] =
+                std::array::from_fn(|axis| world_offset_voxels[axis] - outset_voxels);
+                // The dilated body's low corner sits `N` BELOW the producer's, so the extent
+                // must start there — growing the size alone would put a right-sized box in
+                // the wrong place (ADR 0008 — the frame is carried).
+                let world_offset_voxels: [i64; 3] =
+                    std::array::from_fn(|axis| world_offset_voxels[axis] - outset_voxels);
+                let Some(grid_voxels) = leaf_producer_grid_voxels(content, voxels_per_block, outset_voxels) else {
                     return;
                 };
                 any = true;
@@ -518,8 +534,11 @@ impl Scene {
         let mut min_corner = [i64::MAX; 3];
         let mut max_corner = [i64::MIN; 3];
         let mut any = false;
-        self.for_each_leaf(&mut |world_offset_voxels, content, _grid_on_faces, _operation, _scope_path| {
-            let Some(size_blocks) = leaf_size_blocks(content, voxels_per_block) else {
+        self.for_each_leaf(&mut |world_offset_voxels, content, _grid_on_faces, _operation, outset, _scope_path| {
+            let outset_voxels = outset_voxels_at(outset, voxels_per_block);
+            let world_offset_voxels: [i64; 3] =
+                std::array::from_fn(|axis| world_offset_voxels[axis] - outset_voxels);
+            let Some(size_blocks) = leaf_size_blocks(content, voxels_per_block, outset_voxels) else {
                 return;
             };
             any = true;
@@ -636,15 +655,29 @@ impl Scene {
 
 /// The whole-block extent of a leaf node's producer, or `None` for a non-leaf /
 /// not-yet-implemented content kind.
-fn leaf_size_blocks(content: &NodeContent, voxels_per_block: u32) -> Option<[u32; 3]> {
+/// The leaf's whole-block extent, GROWN by its outset (ADR 0019 Decision 7).
+///
+/// The region sizing must see the DILATED extent: an outset body reaches beyond its
+/// producer's own bounds, and a region sized to the undilated extent would clip the
+/// dilation away at the composite edge.
+fn leaf_size_blocks(
+    content: &NodeContent,
+    voxels_per_block: u32,
+    outset_voxels: i64,
+) -> Option<[u32; 3]> {
     let density = voxels_per_block.max(1);
+    // Grown by `N` on both sides of every axis, in VOXELS, before the round up to whole
+    // blocks — rounding first would lose a sub-block outset entirely.
+    let grow = |voxels: u32| {
+        (voxels as i64 + 2 * outset_voxels).max(0) as u32
+    };
     match content {
         // A Tool's size is now voxel-granular (ADR 0003 §3f(0)). The composite region
         // SIZING reports whole blocks, so round the exact voxel span UP to whole
         // blocks (a sub-block remainder still claims its block, exactly like a
         // SketchTool prism) — a whole-block size divides cleanly and is unchanged.
         NodeContent::Tool { shape, .. } => {
-            let ceil_blocks = |voxels: u32| voxels.div_ceil(density);
+            let ceil_blocks = |voxels: u32| grow(voxels).div_ceil(density);
             Some([
                 ceil_blocks(shape.size_voxels[0]),
                 ceil_blocks(shape.size_voxels[1]),
@@ -657,7 +690,7 @@ fn leaf_size_blocks(content: &NodeContent, voxels_per_block: u32) -> Option<[u32
         // producer voxel frame (`leaf_producer_grid_voxels`) instead.
         NodeContent::SketchTool { producer, .. } => {
             let [grid_x, grid_y, grid_z] = producer.grid_dimensions();
-            let ceil_blocks = |voxels: u32| voxels.div_ceil(density);
+            let ceil_blocks = |voxels: u32| grow(voxels).div_ceil(density);
             Some([
                 ceil_blocks(grid_x),
                 ceil_blocks(grid_y),

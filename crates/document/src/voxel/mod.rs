@@ -169,7 +169,9 @@ pub(crate) fn clamp_window_to_grid(
 }
 
 mod field;
+mod outset;
 mod sdf_shape;
 
 pub use field::Field;
+pub use outset::OutsetProducer;
 pub use sdf_shape::{GeometryParams, SdfShape};

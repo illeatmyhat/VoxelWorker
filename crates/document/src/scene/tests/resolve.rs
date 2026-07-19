@@ -330,3 +330,123 @@ use crate::voxel::SdfShape;
         assert_chunked_matches_monolithic(&scene, 8, "torus@8");
     }
 
+
+    // ---- Outset: the per-node dilation (ADR 0019 Decision 7) ------------------
+
+    /// A box with an outset of `N` resolves to the box grown by `N` on EVERY side.
+    ///
+    /// This is the whole feature in one assertion. A box is the case where the answer is
+    /// exact and countable: `SdfShape::Box` measures in Chebyshev, and a Chebyshev dilation
+    /// of a box IS a box, so `S³` voxels must become `(S + 2N)³` — no approximation to hide
+    /// an off-by-one in.
+    #[test]
+    fn outset_grows_a_box_by_the_outset_on_every_side() {
+        let voxels_per_block = 16;
+        let size_blocks = 2u32;
+        let side = size_blocks * voxels_per_block;
+
+        let resolved_side = |outset_voxels: i64| {
+            let shape =
+                SdfShape::from_blocks(ShapeKind::Box, [size_blocks; 3], 1, voxels_per_block);
+            let mut node =
+                Node::new("Box", NodeContent::Tool { shape, material: MaterialChoice::Stone });
+            node.outset = voxel_core::units::Measurement::from_voxels(outset_voxels);
+            let scene = Scene::from_nodes(vec![node]);
+            let grid =
+                scene.resolve_region(scene.full_extent_blocks(voxels_per_block), voxels_per_block, 0);
+            let count = grid.occupied_count() as f64;
+            // Cube-root back to a side length so a failure reads as "37 instead of 40"
+            // rather than as a six-digit voxel count.
+            count.cbrt().round() as i64
+        };
+
+        assert_eq!(resolved_side(0), side as i64, "an outset of 0 must not change the body");
+        assert_eq!(
+            resolved_side(4),
+            side as i64 + 8,
+            "an outset of 4 voxels must grow the box by 4 on each of the two sides per axis"
+        );
+        assert_eq!(
+            resolved_side(-4),
+            side as i64 - 8,
+            "a NEGATIVE outset must INSET, shrinking the box by 4 on each side (ADR 0019 \
+             Decision 7 — this is how a deliberate gap between chiselled pieces is authored)"
+        );
+    }
+
+    /// The chunked and monolithic resolves must agree under outset too.
+    ///
+    /// The chunked path skips leaves whose AABB misses the chunk, and that skip is only
+    /// bit-identical to stamping-then-clipping if the AABB it tests is the DILATED one. A
+    /// cutter whose outset reaches into a chunk its own bounds miss would otherwise be
+    /// skipped there and its mask silently lost — visible as geometry that survives in one
+    /// chunk and not its neighbour.
+    #[test]
+    fn chunked_resolve_matches_monolithic_under_outset() {
+        let voxels_per_block = 8;
+        let mut solid = Node::new(
+            "Solid",
+            NodeContent::Tool {
+                shape: SdfShape::from_blocks(ShapeKind::Box, [4, 4, 4], 1, voxels_per_block),
+                material: MaterialChoice::Stone,
+            },
+        );
+        solid.outset = voxel_core::units::Measurement::from_voxels(3);
+
+        // An outset SUBTRACT cutter: the dilation must carve MORE than the cutter's own
+        // bounds, in both paths, including across a chunk seam.
+        let mut cutter = Node::new(
+            "Cutter",
+            NodeContent::Tool {
+                shape: SdfShape::from_blocks(ShapeKind::Sphere, [2, 2, 2], 1, voxels_per_block),
+                material: MaterialChoice::Wood,
+            },
+        );
+        cutter.operation = CombineOp::Subtract;
+        cutter.outset = voxel_core::units::Measurement::from_voxels(2);
+        cutter.transform = NodeTransform::from_blocks([1, 0, 0], voxels_per_block);
+
+        let scene = scene_with_top_level_selected(Scene::from_nodes(vec![solid, cutter]), 0);
+        assert_chunked_matches_monolithic(&scene, voxels_per_block, "outset-union-and-subtract");
+    }
+
+    /// An outset SUBTRACT cutter removes strictly more than the same cutter without one.
+    ///
+    /// This is the authoring case outset exists for — clearance around a chiselled cut — and
+    /// it pins the DIRECTION of the dilation. A sign error would still round-trip between the
+    /// two resolve paths and still bracket soundly; only comparing against the undilated cut
+    /// catches it.
+    #[test]
+    fn an_outset_cutter_carves_more_than_an_undilated_one() {
+        let voxels_per_block = 8;
+        let carved_count = |outset_voxels: i64| {
+            let solid = Node::new(
+                "Solid",
+                NodeContent::Tool {
+                    shape: SdfShape::from_blocks(ShapeKind::Box, [4, 4, 4], 1, voxels_per_block),
+                    material: MaterialChoice::Stone,
+                },
+            );
+            let mut cutter = Node::new(
+                "Cutter",
+                NodeContent::Tool {
+                    shape: SdfShape::from_blocks(ShapeKind::Box, [1, 1, 1], 1, voxels_per_block),
+                    material: MaterialChoice::Wood,
+                },
+            );
+            cutter.operation = CombineOp::Subtract;
+            cutter.outset = voxel_core::units::Measurement::from_voxels(outset_voxels);
+            let scene = Scene::from_nodes(vec![solid, cutter]);
+            scene
+                .resolve_region(scene.full_extent_blocks(voxels_per_block), voxels_per_block, 0)
+                .occupied_count()
+        };
+
+        let plain = carved_count(0);
+        let dilated = carved_count(2);
+        assert!(
+            dilated < plain,
+            "an outset cutter must remove MORE than an undilated one \
+             (outset 2 left {dilated} voxels, outset 0 left {plain})"
+        );
+    }

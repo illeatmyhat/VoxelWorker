@@ -1,5 +1,5 @@
 use super::*;
-use crate::scene::producers::leaf_producer_grid_voxels;
+use crate::scene::producers::{leaf_producer_grid_voxels, outset_voxels_at};
 use voxel_core::core_geom::MaterialChoice;
 use voxel_core::spatial_index::VoxelAabb;
 use voxel_core::voxel::ShapeKind;
@@ -229,8 +229,11 @@ use crate::voxel::SdfShape;
         query: &voxel_core::spatial_index::VoxelAabb,
     ) -> Vec<voxel_core::spatial_index::VoxelAabb> {
         let mut matched = Vec::new();
-        scene.for_each_leaf(&mut |world_offset_voxels, content, _grid_on_faces, _operation, _scope_path| {
-            let Some(grid_voxels) = leaf_producer_grid_voxels(content, voxels_per_block) else {
+        scene.for_each_leaf(&mut |world_offset_voxels, content, _grid_on_faces, _operation, outset, _scope_path| {
+            let outset_voxels = outset_voxels_at(outset, voxels_per_block);
+            let world_offset_voxels: [i64; 3] =
+                std::array::from_fn(|axis| world_offset_voxels[axis] - outset_voxels);
+            let Some(grid_voxels) = leaf_producer_grid_voxels(content, voxels_per_block, outset_voxels) else {
                 return; // region-spanning leaf — not an AABB match.
             };
             let mut min = [0i64; 3];

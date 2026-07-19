@@ -664,3 +664,73 @@ fn sketch_cell_interval_brackets_the_true_distance() {
     assert!(checked > 0, "no cell was probed — the bracket test is vacuous");
     eprintln!("Sketch metric bracket: {checked} probes, widest bracket {widest_slack}");
 }
+
+/// **The outset parity gate** (ADR 0020 Decision 7).
+///
+/// The fold exists twice — over voxel sets in `document::scene::producers` and over intervals
+/// in `substrate::solids::cell_classification` — and the ADR warns they diverge SILENTLY if
+/// only one learns a new operation. Outset sidesteps that by being a producer decorator
+/// rather than a fold arm, so both folds consume one definition of it through the ordinary
+/// `VoxelProducer` interface. This test is what proves the two still agree: it runs the
+/// same interval-versus-brute-force oracle the other producers use, against an OUTSET
+/// producer, so a shifted interval that disagreed with the dilated resolve would fail here.
+///
+/// The interval side is the one that could go wrong quietly. A resolve that dilates wrongly
+/// shows up as visibly wrong geometry; an interval that claims AIR where the dilated body
+/// actually reaches produces a HOLE only at some densities and camera angles.
+#[test]
+fn outset_producer_cell_interval_never_misclassifies() {
+    use document::sketch::{PlaneAxis, Sketch, SketchSolid};
+    use document::voxel::OutsetProducer;
+
+    let density = 8u32;
+    let mut cases = 0u64;
+    let mut air = 0u64;
+    let mut solid = 0u64;
+    let mut boundary = 0u64;
+
+    // Both metrics and both signs. Chebyshev (box, extrude) dilates square; Euclidean
+    // (sphere) dilates round — ADR 0019 Decision 6, the shape of an offset follows the
+    // body's metric.
+    for outset in [-3i64, -1, 1, 4] {
+        let producers: Vec<(String, Box<dyn VoxelProducer>)> = vec![
+            (
+                format!("box outset {outset}"),
+                Box::new(SdfShape::from_blocks(ShapeKind::Box, [3, 2, 2], 1, density)),
+            ),
+            (
+                format!("sphere outset {outset}"),
+                Box::new(SdfShape::from_blocks(ShapeKind::Sphere, [3, 3, 3], 1, density)),
+            ),
+            (
+                format!("extrude outset {outset}"),
+                Box::new(SketchSolid::extrude(Sketch::rectangle(PlaneAxis::Z, 20, 12), 12)),
+            ),
+        ];
+        for (label, inner) in producers {
+            let producer = OutsetProducer::wrap(inner, outset);
+            let dimensions = producer.full_dimensions(density);
+            if dimensions.iter().any(|&d| d == 0) {
+                continue;
+            }
+            for &cell in &fuzz_cells(dimensions, density, 0x0175_E7u64.wrapping_add_signed(outset))
+            {
+                assert_cell_bound_exact(producer.as_ref(), cell, density, &label);
+                if let Some(interval) = producer.cell_field_interval(cell, density) {
+                    match interval.classify(SURFACE_ISOLEVEL) {
+                        FieldClassification::Air => air += 1,
+                        FieldClassification::CoarseSolid => solid += 1,
+                        FieldClassification::Boundary => boundary += 1,
+                    }
+                }
+                cases += 1;
+            }
+        }
+    }
+    assert!(air > 0, "outset fuzz never produced an AIR verdict");
+    assert!(solid > 0, "outset fuzz never produced a SOLID verdict (elision dead under outset)");
+    assert!(boundary > 0, "outset fuzz never produced a BOUNDARY verdict");
+    eprintln!(
+        "Outset parity: {cases} cells classified ({air} air, {solid} solid, {boundary} boundary)"
+    );
+}

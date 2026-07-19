@@ -150,6 +150,38 @@ pub struct Node {
     /// (Decision 3 — sealed composition scopes, issue #74).
     #[serde(default)]
     pub operation: CombineOp,
+    /// How far this node's body is DILATED before it folds (ADR 0019 Decision 7).
+    ///
+    /// It sits beside [`operation`](Self::operation) deliberately: a leaf, a `Group` and an
+    /// `Instance` may all carry one, so a composed cutter dilates **as a whole** rather than
+    /// member-by-member. The fold already yields a field, so `d − N` is meaningful at every
+    /// level and this needs no new machinery. A NEGATIVE outset insets, shrinking the body —
+    /// which is how a deliberate gap between chiselled pieces is authored.
+    ///
+    /// It is a [`Measurement`], never an integer voxel count, so `"1/4 block"` survives a
+    /// density change as the authored intent rather than as a stale derived number (ADR 0008
+    /// — the frame is carried, never re-derived).
+    ///
+    /// **The shape of the dilation follows the body's metric, not the outset's.** A group's
+    /// metric is the WEAKEST of its members', so a group mixing a box and a sphere outsets
+    /// round. That is predictable, but it is a rule the UI must not hide.
+    ///
+    /// Zero for a node whose producer has no field at all: ADR 0020 Decision 1 bars outset
+    /// there rather than fabricating a distance for it.
+    ///
+    /// # Not yet applied on a scope
+    ///
+    /// **Only a LEAF's outset is applied today.** An outset on a `Group` or an `Instance` is
+    /// currently ignored, and ADR 0019 Decision 7 explicitly rejects leaf-only outset as the
+    /// final design — a reusable composed cutter must be able to take clearance as a whole.
+    ///
+    /// The gap is not an oversight but a genuinely different algorithm. A leaf dilates by
+    /// shifting its field (`d − N`, exact and O(1) per sample). A scope has no field: it is a
+    /// composed voxel SET, so dilating it is a morphological dilation — a distance transform
+    /// over the accumulated body, at scope close. Nothing in the UI can set a scope outset
+    /// yet, so no authored document can hit this silently.
+    #[serde(default)]
+    pub outset: voxel_core::units::Measurement,
     /// Whether the node contributes to resolution (a hidden node stamps nothing).
     #[serde(default = "default_visible")]
     pub visible: bool,
@@ -178,6 +210,7 @@ impl Node {
             name: name.into(),
             transform: NodeTransform::identity(),
             operation: CombineOp::Union,
+            outset: voxel_core::units::Measurement::default(),
             visible: true,
             grids: NodeGrids::default(),
             content,

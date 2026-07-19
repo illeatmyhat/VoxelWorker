@@ -101,12 +101,25 @@ pub struct ScopeFrame {
 }
 
 /// The [`Scene::for_each_leaf`] / [`Scene::walk_nodes`] visitor callback: invoked once per
-/// visible leaf with `(world_offset_voxels, content, grid_on_faces, operation, scope_path)`
-/// — the accumulated world VOXEL offset, the leaf content, the node's on-face-grid flag
-/// (issue #29 S4), the node's own [`CombineOp`] role in the ordered fold (ADR 0017), and
-/// the chain of enclosing sealed scopes (outermost first — see [`ScopeFrame`]).
-pub(super) type LeafVisitor<'walk> =
-    dyn FnMut([i64; 3], &NodeContent, bool, CombineOp, &[ScopeFrame]) + 'walk;
+/// visible leaf with `(world_offset_voxels, content, grid_on_faces, operation, outset,
+/// scope_path)` — the accumulated world VOXEL offset, the leaf content, the node's
+/// on-face-grid flag (issue #29 S4), the node's own [`CombineOp`] role in the ordered fold
+/// (ADR 0017), the node's outset (ADR 0019 Decision 7), and the chain of enclosing sealed
+/// scopes (outermost first — see [`ScopeFrame`]).
+///
+/// The outset arrives as an unevaluated [`Measurement`] because the walk carries no density.
+/// Each consumer resolves it against its own `voxels_per_block`, which is what keeps the
+/// authored intent (`"1/4 block"`) rather than a number derived at the wrong moment.
+///
+/// [`Measurement`]: voxel_core::units::Measurement
+pub(super) type LeafVisitor<'walk> = dyn FnMut(
+        [i64; 3],
+        &NodeContent,
+        bool,
+        CombineOp,
+        voxel_core::units::Measurement,
+        &[ScopeFrame],
+    ) + 'walk;
 
 impl Scene {
     /// Walk the whole node tree depth-first, invoking
@@ -158,7 +171,7 @@ impl Scene {
     pub fn leaf_producers(&self, voxels_per_block: u32) -> Vec<LeafProducer> {
         let region_dimensions = self.placed_region_dimensions(voxels_per_block);
         let mut leaves = Vec::new();
-        self.for_each_leaf(&mut |world_offset_voxels, content, grid_on_faces, operation, scope_path| {
+        self.for_each_leaf(&mut |world_offset_voxels, content, grid_on_faces, operation, outset, scope_path| {
             let (material, producer): (Option<voxel_core::core_geom::BlockId>, Box<dyn VoxelProducer>) =
                 match content {
                     NodeContent::Tool { shape, material } => {
@@ -176,8 +189,19 @@ impl Scene {
                     ),
                     NodeContent::Group(_) | NodeContent::Instance(_) => return,
                 };
+            // ADR 0019 Decision 7: the outset dilates the body BEFORE it folds. Wrapping the
+            // producer (rather than teaching the fold a new arm) means the classifier's
+            // `cell_field_interval` call below and the voxel-set fold both see one definition
+            // of what outset means — see `OutsetProducer`.
+            let outset_voxels = outset_voxels_at(outset, voxels_per_block);
+            let producer = crate::voxel::OutsetProducer::wrap(producer, outset_voxels);
             leaves.push(LeafProducer {
-                world_offset_voxels,
+                // The dilated body grows on every side, so its low corner moves DOWN by the
+                // outset — the wrapper's frame origin sits `N` below the inner producer's
+                // (ADR 0008: the frame is carried, never re-derived).
+                world_offset_voxels: std::array::from_fn(|axis| {
+                    world_offset_voxels[axis] - outset_voxels
+                }),
                 producer,
                 material,
                 grid_overlay: grid_on_faces,
@@ -232,6 +256,7 @@ impl Scene {
                         &node.content,
                         node.grids.voxel_grid_on_faces,
                         node.operation,
+                        node.outset,
                         scope_path,
                     );
                 }
@@ -396,20 +421,24 @@ impl Scene {
         // the SCOPE's operation (`sync_grid_scope_stack`), so a boolean inside a scope can
         // never affect geometry outside it.
         let mut scope_stack: Vec<(ScopeFrame, VoxelGrid)> = Vec::new();
-        self.for_each_leaf(&mut |world_offset_voxels, content, grid_on_faces, operation, scope_path| {
+        self.for_each_leaf(&mut |world_offset_voxels, content, grid_on_faces, operation, outset, scope_path| {
             sync_grid_scope_stack(&mut scope_stack, &mut output, scope_path, region_dimensions);
             let target: &mut VoxelGrid = match scope_stack.last_mut() {
                 Some((_, scratch)) => scratch,
                 None => &mut output,
             };
+            let outset_voxels = outset_voxels_at(outset, voxels_per_block);
             // Every producer corner-anchors its grid at its world voxel offset (the low
             // corner); the recentre (from the producer-true voxel frame) symmetrises the
             // composite about the origin for ALL size·d parities, so no per-leaf lattice
             // shift is needed — a leaf simply sits at its world voxel offset.
+            //
+            // An outset body grows on every side, so its low corner moves DOWN by the outset
+            // (ADR 0008 — the frame is carried, never re-derived).
             let translation_voxels = [
-                world_offset_voxels[0] - recentre_voxels[0],
-                world_offset_voxels[1] - recentre_voxels[1],
-                world_offset_voxels[2] - recentre_voxels[2],
+                world_offset_voxels[0] - recentre_voxels[0] - outset_voxels,
+                world_offset_voxels[1] - recentre_voxels[1] - outset_voxels,
+                world_offset_voxels[2] - recentre_voxels[2] - outset_voxels,
             ];
             // ADR 0017: Subtract and Intersect leaves are occupancy-only masks — they
             // never stamp material, so they take a mask path instead of a stamp. A
@@ -417,88 +446,64 @@ impl Scene {
             // order, within its scope); an Intersect (issue #75) keeps ONLY the cells
             // its body covers, killing accumulated cells anywhere OUTSIDE its body —
             // including an empty result when nothing accumulated yet (fold start).
-            if operation == CombineOp::Subtract || operation == CombineOp::Intersect {
-                let producer: Box<dyn VoxelProducer> = match content {
-                    NodeContent::Tool { shape, .. } => Box::new(shape.clone()),
-                    NodeContent::SketchTool { producer, .. } => Box::new(producer.clone()),
-                    NodeContent::VoxelBody(VoxelBody::DebugClouds { seed }) => Box::new(DebugCloudField {
-                        dimensions: region_dimensions,
-                        seed: *seed,
-                    }),
-                    NodeContent::Group(_) | NodeContent::Instance(_) => return,
-                };
-                if operation == CombineOp::Subtract {
-                    carve_producer(
-                        target,
-                        region_dimensions,
-                        translation_voxels,
-                        producer.as_ref(),
-                        voxels_per_block,
-                    );
-                } else {
-                    intersect_producer(
-                        target,
-                        region_dimensions,
-                        translation_voxels,
-                        producer.as_ref(),
-                        voxels_per_block,
-                    );
-                }
-                return;
-            }
-            match content {
-                NodeContent::Tool { shape, material } => {
-                    stamp_producer(
-                        target,
-                        region_dimensions,
-                        translation_voxels,
-                        material_id_for(*material),
-                        // Issue #29 S4: OR the on-face-grid flag bit onto every
-                        // stamped voxel iff this node opted in, so the bit travels
-                        // with each voxel (and survives chunk bucketing).
-                        grid_on_faces,
-                        shape,
-                        voxels_per_block,
-                    );
-                }
-                NodeContent::SketchTool { producer, material } => {
+            // ONE producer serves both the mask and the stamp paths, so the outset wrapper
+            // applies at a single point (ADR 0019 Decision 7 — the outset dilates the body
+            // before it folds, whatever the fold role).
+            let (material, producer): (Option<voxel_core::core_geom::BlockId>, Box<dyn VoxelProducer>) =
+                match content {
+                    NodeContent::Tool { shape, material } => {
+                        (material_id_for(*material), Box::new(shape.clone()))
+                    }
                     // The sketch producer self-sizes its origin-centred grid exactly
                     // like SdfShape, so it stamps through the same path at the plain
                     // `translation_voxels` (world offset minus recentre, no shift).
-                    stamp_producer(
-                        target,
-                        region_dimensions,
-                        translation_voxels,
-                        material_id_for(*material),
-                        grid_on_faces,
-                        producer,
-                        voxels_per_block,
-                    );
-                }
-                NodeContent::VoxelBody(VoxelBody::DebugClouds { seed }) => {
-                    let producer = DebugCloudField {
-                        // The cloud field sizes itself from the region (today's
-                        // behaviour resolved it at the shape's grid dimensions).
-                        dimensions: region_dimensions,
-                        seed: *seed,
-                    };
-                    stamp_producer(
-                        target,
-                        region_dimensions,
-                        translation_voxels,
+                    NodeContent::SketchTool { producer, material } => {
+                        (material_id_for(*material), Box::new(producer.clone()))
+                    }
+                    NodeContent::VoxelBody(VoxelBody::DebugClouds { seed }) => (
                         // A VoxelBody brings its own per-voxel materials; today the
                         // cloud field emits material 0, so the stamp keeps that.
                         None,
-                        // Issue #29 S4: still OR the flag bit per-voxel when this
-                        // node wants the on-face grid (independent of material).
-                        grid_on_faces,
-                        &producer,
-                        voxels_per_block,
-                    );
-                }
-                // `for_each_leaf` only ever yields leaf content (Tool / SketchTool /
-                // VoxelBody); the interior kinds were already recursed through by the walk.
-                NodeContent::Group(_) | NodeContent::Instance(_) => {}
+                        Box::new(DebugCloudField {
+                            // The cloud field sizes itself from the region (today's
+                            // behaviour resolved it at the shape's grid dimensions).
+                            dimensions: region_dimensions,
+                            seed: *seed,
+                        }),
+                    ),
+                    NodeContent::Group(_) | NodeContent::Instance(_) => return,
+                };
+            let producer = crate::voxel::OutsetProducer::wrap(producer, outset_voxels);
+
+            // ADR 0017: Subtract and Intersect leaves are occupancy-only masks — they
+            // never stamp material, so they take a mask path instead of a stamp.
+            match operation {
+                CombineOp::Subtract => carve_producer(
+                    target,
+                    region_dimensions,
+                    translation_voxels,
+                    producer.as_ref(),
+                    voxels_per_block,
+                ),
+                CombineOp::Intersect => intersect_producer(
+                    target,
+                    region_dimensions,
+                    translation_voxels,
+                    producer.as_ref(),
+                    voxels_per_block,
+                ),
+                CombineOp::Union => stamp_producer(
+                    target,
+                    region_dimensions,
+                    translation_voxels,
+                    material,
+                    // Issue #29 S4: OR the on-face-grid flag bit onto every
+                    // stamped voxel iff this node opted in, so the bit travels
+                    // with each voxel (and survives chunk bucketing).
+                    grid_on_faces,
+                    producer.as_ref(),
+                    voxels_per_block,
+                ),
             }
         });
         // Close every scope still open after the last leaf (folding each composed
@@ -623,7 +628,13 @@ impl Scene {
         // Intersect-closing scope must open even here so its ∅-in-chunk body
         // annihilates the parent on close (see the skip guard below).
         let mut scope_stack: Vec<(ScopeFrame, VoxelGrid)> = Vec::new();
-        self.for_each_leaf(&mut |world_offset_voxels, content, grid_on_faces, operation, scope_path| {
+        self.for_each_leaf(&mut |world_offset_voxels, content, grid_on_faces, operation, outset, scope_path| {
+            let outset_voxels = outset_voxels_at(outset, voxels_per_block);
+            // An outset body grows on every side, so its low corner moves DOWN by the
+            // outset — and the skip AABB below must use the DILATED span, or a cutter whose
+            // dilation reaches into this chunk would be skipped and its mask silently lost.
+            let world_offset_voxels: [i64; 3] =
+                std::array::from_fn(|axis| world_offset_voxels[axis] - outset_voxels);
             // Issue #27 S3 optimisation: skip a leaf whose world-AABB doesn't touch
             // this chunk, so resolving one chunk costs ~the leaves that overlap it
             // (not the whole tree). This is BIT-IDENTICAL to stamping-then-clipping:
@@ -644,7 +655,9 @@ impl Scene {
             // carry the Intersect frame), so the ∅-body scope close annihilates the
             // parent here exactly as the monolithic fold does.
             if !operation_masks_beyond_bounds(operation, scope_path) {
-                if let Some(grid_voxels) = leaf_producer_grid_voxels(content, voxels_per_block) {
+                if let Some(grid_voxels) =
+                    leaf_producer_grid_voxels(content, voxels_per_block, outset_voxels)
+                {
                     let mut leaf_min = [0i64; 3];
                     let mut leaf_max = [0i64; 3];
                     for axis in 0..3 {
@@ -684,6 +697,8 @@ impl Scene {
                 ),
                 NodeContent::Group(_) | NodeContent::Instance(_) => return,
             };
+            // ADR 0019 Decision 7: dilate before folding, exactly as the dense path does.
+            let producer = crate::voxel::OutsetProducer::wrap(producer, outset_voxels);
             // The leaf overlaps the chunk: sync the scope stack to its path (closing /
             // opening scopes exactly where the depth-first fold does) and compose into
             // the innermost open scope's scratch grid — or `output` at root level.
@@ -961,21 +976,53 @@ pub fn operation_masks_beyond_bounds(operation: CombineOp, scope_path: &[ScopeFr
             .any(|frame| frame.operation == CombineOp::Intersect)
 }
 
-pub(super) fn leaf_producer_grid_voxels(content: &NodeContent, _voxels_per_block: u32) -> Option<[i64; 3]> {
+/// The leaf's emitted grid extent in voxels, GROWN by its outset (ADR 0019 Decision 7).
+///
+/// The outset belongs here rather than at the call sites because this one function feeds
+/// both the region sizing and — through [`Scene::build_leaf_spatial_index`] — the
+/// edit-broadphase AABB. ADR 0020's Consequences require the dirty region to be the OUTSET
+/// bounds, not the producer bounds: an outset cutter dirties more than its own extent, and
+/// invalidating only the undilated box would leave a stale rim behind after an edit.
+///
+/// [`Scene::build_leaf_spatial_index`]: crate::scene::Scene::build_leaf_spatial_index
+pub(super) fn leaf_producer_grid_voxels(
+    content: &NodeContent,
+    _voxels_per_block: u32,
+    outset_voxels: i64,
+) -> Option<[i64; 3]> {
+    let grown = |dimensions: [i64; 3]| {
+        // Grown by `N` on BOTH sides of every axis; an inset deeper than the half-extent
+        // erodes the body away, so the floor is zero rather than a negative extent.
+        Some(std::array::from_fn(|axis| {
+            (dimensions[axis] + 2 * outset_voxels).max(0)
+        }))
+    };
     match content {
         // The Tool's exact emitted grid is its canonical voxel size directly (ADR
         // 0003 §3f(0); `size_voxels` already IS `blocks · d` for a whole-block size).
-        NodeContent::Tool { shape, .. } => Some([
+        NodeContent::Tool { shape, .. } => grown([
             shape.size_voxels[0] as i64,
             shape.size_voxels[1] as i64,
             shape.size_voxels[2] as i64,
         ]),
         NodeContent::SketchTool { producer, .. } => {
             let [grid_x, grid_y, grid_z] = producer.grid_dimensions();
-            Some([grid_x as i64, grid_y as i64, grid_z as i64])
+            grown([grid_x as i64, grid_y as i64, grid_z as i64])
         }
         NodeContent::VoxelBody(_) | NodeContent::Group(_) | NodeContent::Instance(_) => None,
     }
+}
+
+/// The node's outset resolved to whole voxels at `voxels_per_block`, or `0` if it cannot be
+/// (a fractional-voxel block term, or a zero density).
+///
+/// Falling back to zero is the safe direction: an unresolvable outset leaves the body
+/// undilated rather than dilating it by a wrong amount.
+pub(super) fn outset_voxels_at(
+    outset: voxel_core::units::Measurement,
+    voxels_per_block: u32,
+) -> i64 {
+    outset.to_voxels(voxels_per_block).unwrap_or(0)
 }
 
 /// Sync the dense resolvers' **scope stack** to `target_path` — the stack-evaluated
