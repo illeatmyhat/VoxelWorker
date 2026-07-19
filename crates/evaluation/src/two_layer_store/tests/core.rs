@@ -451,13 +451,17 @@ use super::*;
             BlockClassification::Boundary,
             "the L reflex-corner block must stay boundary"
         );
-        // The removed top-right quadrant ([24,32)² in-plane) overlaps the producer AABB so
-        // it classifies BOUNDARY (resolves per-voxel to EMPTY) — crucially NOT coarse-solid,
-        // which is exactly what a naive bbox-solid claim would have wrongly returned.
+        // The removed top-right quadrant ([24,32)² in-plane) is EMPTY, and the metric cell
+        // bracket proves it outright: the block overlaps the producer AABB, but its distance
+        // to the L polygon is positive throughout, so the whole block elides to AIR without a
+        // per-voxel resolve. It was BOUNDARY while the bracket carried sentinels rather than
+        // distances — air could then only be claimed for a cell wholly outside the AABB, so a
+        // notch inside the AABB had to fall back to resolving. Crucially it is still NOT
+        // coarse-solid, which is what a naive bbox-solid claim would have wrongly returned.
         assert_eq!(
             classify_chunk_block(&leaves, VoxelAabb::new([24, 24, 8], [32, 32, 16]), density),
-            BlockClassification::Boundary,
-            "the removed L quadrant must NOT be coarse-solid (the polygon excludes it)"
+            BlockClassification::Air,
+            "the removed L quadrant must be AIR (the polygon excludes it), never coarse-solid"
         );
         let (coarse, _) = classify_scene(&scene);
         assert!(coarse > 0, "the L extrude must still elide its solid interior");

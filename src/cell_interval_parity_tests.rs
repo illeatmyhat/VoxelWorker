@@ -600,3 +600,67 @@ fn debug_cloud_field_is_boundable_and_sound() {
          {boundary} boundary)"
     );
 }
+
+/// The cell bracket must be **metric**, not merely sign-correct: it has to CONTAIN the true
+/// signed distance over the cell, so that shifting it by `−N` is a sound outset (ADR 0019
+/// Decision 7).
+///
+/// This is the guard for the trap ADR 0019 Decision 1 named. `SketchSolid` used to answer
+/// with sentinels — `(1,2)` air, `(-2,-1)` solid, `(-1,1)` boundary — carrying no distance
+/// at all. Under those, an outset of `N >= 2` turns air `(1,2)` into `(1−N, 2−N)` and
+/// classifies provably-empty space **solid**, with no type error to catch it. A bracket that
+/// contains the real distance cannot fail that way: air more than `N` from the body stays
+/// air because its lower bound really is its clearance.
+#[test]
+fn sketch_cell_interval_brackets_the_true_distance() {
+    use document::sketch::{PlaneAxis, Sketch, SketchSolid};
+    use document::voxel::Field;
+    let density = 16u32;
+    let rectangle = Sketch::rectangle(PlaneAxis::Z, 40, 24);
+    let l_shape = Sketch::new(
+        PlaneAxis::Z,
+        vec![
+            document::sketch::SketchPoint::new(0, 0),
+            document::sketch::SketchPoint::new(40, 0),
+            document::sketch::SketchPoint::new(40, 16),
+            document::sketch::SketchPoint::new(16, 16),
+            document::sketch::SketchPoint::new(16, 40),
+            document::sketch::SketchPoint::new(0, 40),
+        ],
+    );
+
+    let mut checked = 0u64;
+    let mut widest_slack = f32::NEG_INFINITY;
+    for (label, sketch) in [("rect", rectangle), ("L", l_shape)] {
+        let producer = SketchSolid::extrude(sketch, 24);
+        let cells = fuzz_cells(producer.grid_dimensions(), density, 0x0175_E7u64);
+        for &cell in &cells {
+            if cell.is_empty() {
+                continue;
+            }
+            let Some(interval) = producer.cell_field_interval(cell, density) else {
+                continue;
+            };
+            // Voxel centres sit at index + 0.5, so the cell's sample region spans
+            // `[min + 0.5, max − 0.5]` on each axis. Probe its corners and its centre.
+            for corner in 0..8u32 {
+                let point = std::array::from_fn(|axis| {
+                    let lo = cell.min[axis] as f32 + 0.5;
+                    let hi = (cell.max[axis] - 1) as f32 + 0.5;
+                    if corner >> axis & 1 == 0 { lo } else { hi }
+                });
+                let distance = Field::signed_distance(&producer, point, density);
+                assert!(
+                    distance >= interval.minimum && distance <= interval.maximum,
+                    "{label}: cell bracket {interval:?} does NOT contain the true distance \
+                     {distance} at {point:?} — the bracket is not metric, so an outset shift \
+                     of it would be unsound (cell={cell:?})"
+                );
+                widest_slack = widest_slack.max(interval.maximum - interval.minimum);
+                checked += 1;
+            }
+        }
+    }
+    assert!(checked > 0, "no cell was probed — the bracket test is vacuous");
+    eprintln!("Sketch metric bracket: {checked} probes, widest bracket {widest_slack}");
+}
