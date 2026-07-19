@@ -334,11 +334,29 @@ fn camera_ray(pixel: vec2<f32>) -> Ray {
     ray.origin = near_world + uniforms.grid_half_extent + shift;
     ray.direction = direction;
     ray.safe_direction = vec3<f32>(
-        select(direction.x, 1e-20, abs(direction.x) < 1e-20),
-        select(direction.y, 1e-20, abs(direction.y) < 1e-20),
-        select(direction.z, 1e-20, abs(direction.z) < 1e-20),
+        guard_direction_component(direction.x),
+        guard_direction_component(direction.y),
+        guard_direction_component(direction.z),
     );
     return ray;
+}
+
+// MIRROR of `substrate::spatial::guarded_direction` (crates/substrate/src/spatial/ray.rs).
+// Nudge a near-zero direction component out to the slab guard PRESERVING ITS SIGN, so the
+// reciprocal stays finite without ever flipping which way the axis runs.
+//
+// Sign preservation is load-bearing: the DDA's per-axis step is taken from
+// `sign(safe_direction)` and its boundary parameters from `1 / safe_direction`, so if the
+// guard forced a positive magnitude the two would disagree for any component in
+// [-1e-20, 0] — and the anchored `t_max` (no `abs` anywhere) would then march that axis
+// backwards forever, where the old `t_delta` form re-corrected after one step.
+//
+// Tests the SIGN BIT rather than `c < 0.0` or `sign(c)`: `-0.0 < 0.0` is false and
+// `sign(-0.0)` is 0, yet Rust's `signum(-0.0)` is -1, so only the bit test matches the
+// CPU on the exactly-negative-zero component an axis-aligned view produces.
+fn guard_direction_component(c: f32) -> f32 {
+    let negative = (bitcast<u32>(c) & 0x80000000u) != 0u;
+    return select(c, select(1e-20, -1e-20, negative), abs(c) < 1e-20);
 }
 
 // Binary-search the sorted records for a (hi, lo) key. Returns the index or -1.
@@ -531,7 +549,7 @@ fn clipmap_try_skip(ray: Ray, edge: f32, cell_box: CellBox, current_block_cell: 
     let jump_t = cell_exit + CLIPMAP_JUMP_EPSILON;
     let jump_position = ray.origin + ray.direction * jump_t;
     let new_block = vec3<i32>(floor(jump_position / edge));
-    let block_step = vec3<i32>(sign(ray.direction));
+    let block_step = vec3<i32>(sign(ray.safe_direction));
     var out: DdaJump;
     out.advanced = any(new_block != current_block_cell);
     out.block_cell = new_block;
@@ -708,7 +726,7 @@ fn march_brick_field(ray: Ray) -> MarchHit {
     // Seed the block DDA a hair inside the traversal AABB.
     let entry_position = ray.origin + ray.direction * (t_enter + 1e-4);
     var block_cell = vec3<i32>(floor(entry_position / edge));
-    let block_step = vec3<i32>(sign(ray.direction));
+    let block_step = vec3<i32>(sign(ray.safe_direction));
     var t_max = anchored_t_max(ray, edge, block_cell, block_step);
     var t_block_enter = t_enter;
 
@@ -879,7 +897,7 @@ fn march_brick_field(ray: Ray) -> MarchHit {
                         block_min_voxel,
                         block_max_voxel - vec3<i32>(1),
                     );
-                    let voxel_step = vec3<i32>(sign(ray.direction));
+                    let voxel_step = vec3<i32>(sign(ray.safe_direction));
                     var voxel_t_max = anchored_t_max(ray, 1.0, voxel_cell, voxel_step);
                     // The in-band voxel-Z range of this block (the band clip). Region-inactive:
                     // clamped to the band (the pre-S5 hard Z bound). Region-active: opened to the
@@ -1319,7 +1337,7 @@ fn march_brick_haze(ray: Ray) -> HazeResult {
 
     let entry_position = ray.origin + ray.direction * (t_enter + 1e-4);
     var block_cell = vec3<i32>(floor(entry_position / edge));
-    let block_step = vec3<i32>(sign(ray.direction));
+    let block_step = vec3<i32>(sign(ray.safe_direction));
     var t_max = anchored_t_max(ray, edge, block_cell, block_step);
     var t_block_enter = t_enter;
 
@@ -1425,7 +1443,7 @@ fn march_brick_haze(ray: Ray) -> HazeResult {
                             block_min_voxel,
                             block_max_voxel - vec3<i32>(1),
                         );
-                        let voxel_step = vec3<i32>(sign(ray.direction));
+                        let voxel_step = vec3<i32>(sign(ray.safe_direction));
                         var voxel_t_max = anchored_t_max(ray, 1.0, voxel_cell, voxel_step);
                         let band_z_lo = max(block_min_voxel.z, uniforms.band_voxel_sv.x);
                         let band_z_hi = min(block_max_voxel.z, uniforms.band_voxel_sv.y);

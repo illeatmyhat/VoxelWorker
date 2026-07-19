@@ -34,8 +34,11 @@
 //! This implementation follows the variant its GPU shader mirror uses (see the
 //! ray–volume traversal chapter of `docs/architecture`): rather than form true
 //! infinities and special-case the `NaN`, it **nudges any near-zero direction
-//! component to a tiny positive magnitude** ([`SLAB_ZERO_DIRECTION_GUARD`]) before
-//! taking the reciprocal. The reciprocal is then a large but finite number, so
+//! component out to a tiny magnitude of the SAME SIGN**
+//! ([`SLAB_ZERO_DIRECTION_GUARD`], applied by [`guarded_direction`]) before taking
+//! the reciprocal. Sign-preserving, not "positive": a consumer that also derives a
+//! step direction from the ray would otherwise disagree with this arithmetic about
+//! which way the axis runs. The reciprocal is then a large but finite number, so
 //! `(corner - origin) · huge_finite` stays finite for every origin: a ray parallel
 //! to a slab and *outside* it yields a huge-magnitude interval of the correct sign
 //! that forces `t_exit < t_enter` (a miss), while one parallel and *inside* the
@@ -55,6 +58,44 @@ use crate::spatial::aabb::RealAabb;
 /// `0 · inf = NaN` when the origin lies on a slab plane). See the module docs for
 /// why the guard is preferred over the true-infinity Williams et al. variant.
 pub const SLAB_ZERO_DIRECTION_GUARD: f32 = 1e-20;
+
+/// The direction a traversal actually divides by: every component whose magnitude is
+/// below [`SLAB_ZERO_DIRECTION_GUARD`] nudged out to that guard, **preserving its
+/// sign**. The ONE definition, shared by the slab test ([`Ray::slab_inverse_direction`])
+/// and by the DDA traversal that reuses its reciprocal.
+///
+/// Sign preservation matters because this vector decides which way an axis RUNS, not just
+/// how fast. A consumer derives both a step direction and a boundary parameter from the
+/// ray; if the guard may return a positive magnitude for a negative component — anything
+/// in `[-GUARD, 0]`, including `-0.0`, which an axis-aligned camera (the view cube's
+/// snapped views) produces readily — then a ray aimed very slightly, or exactly, down an
+/// axis comes back pointing the other way. The traversal then walks that axis backwards
+/// relative to the ray the caller actually cast.
+///
+/// A `raycast` DDA is insulated from that by construction: it takes its step from THIS
+/// vector rather than from the raw direction, so its step and its reciprocal always agree
+/// whatever the guard does. That is a property of the consumer, though, and not something
+/// this function may assume — anything deriving a direction from the raw ray while
+/// dividing by the guarded one needs the two to point the same way.
+///
+/// History worth keeping: a sign-dropping guard here, combined with a DDA that took its
+/// step from the RAW direction, produced exactly that disagreement. It stayed latent while
+/// the DDA stepped by an absolute `t_delta`, whose `abs()` re-corrected the axis after one
+/// step; once `t_max` became anchored (re-derived from the ray, no `abs` anywhere) such an
+/// axis marched backwards indefinitely. Kani surfaced it as a monotonicity violation in
+/// `raycast`'s `advance_is_monotone_in_t_and_preserves_the_invariant` — no differential
+/// render did, because it takes an exactly-axis-aligned ray to bite.
+pub fn guarded_direction(direction: Vec3) -> Vec3 {
+    let guard = |component: f32| -> f32 {
+        if component.abs() < SLAB_ZERO_DIRECTION_GUARD {
+            // `copysign`, not a `<` test: it carries the sign of `-0.0`.
+            SLAB_ZERO_DIRECTION_GUARD.copysign(component)
+        } else {
+            component
+        }
+    };
+    Vec3::new(guard(direction.x), guard(direction.y), guard(direction.z))
+}
 
 /// A parametric ray `p(t) = origin + t · direction`. The direction is stored as
 /// handed in (callers that need a unit ray normalize before constructing); the
@@ -86,24 +127,12 @@ impl Ray {
     }
 
     /// The componentwise reciprocal of the direction, with any component whose
-    /// magnitude is below [`SLAB_ZERO_DIRECTION_GUARD`] first nudged up to that
+    /// magnitude is below [`SLAB_ZERO_DIRECTION_GUARD`] first nudged out to that
     /// guard so the reciprocal stays finite (see the module docs). Exposed so a
     /// traversal that reuses the same reciprocal for its stepping seeds derives it
     /// identically to the slab test.
     pub fn slab_inverse_direction(&self) -> Vec3 {
-        let guard = |component: f32| -> f32 {
-            if component.abs() < SLAB_ZERO_DIRECTION_GUARD {
-                SLAB_ZERO_DIRECTION_GUARD
-            } else {
-                component
-            }
-        };
-        Vec3::new(
-            guard(self.direction.x),
-            guard(self.direction.y),
-            guard(self.direction.z),
-        )
-        .recip()
+        guarded_direction(self.direction).recip()
     }
 
     /// Intersect the ray with the closed axis-aligned box `[aabb.min, aabb.max]`
@@ -136,6 +165,56 @@ mod tests {
         min: Vec3::ZERO,
         max: Vec3::ONE,
     };
+
+    /// **The guard never changes which way an axis points**, and always leaves a magnitude
+    /// the reciprocal can survive.
+    ///
+    /// The interesting inputs are the ones BELOW the guard, where it substitutes a value of
+    /// its own: a negative sub-guard component, and `-0.0`. An earlier version returned a
+    /// positive magnitude for both, so a ray aimed very slightly (or exactly) down an axis
+    /// came back pointing the other way. Checked on the SIGN BIT — `-0.0 < 0.0` is false and
+    /// `signum` is the only ordinary operator that treats `-0.0` as negative, so a naive
+    /// comparison here would pass while the property was violated.
+    #[test]
+    fn guarded_direction_preserves_sign_and_escapes_zero() {
+        let inputs = [
+            1.0f32,
+            -1.0,
+            0.37,
+            -0.37,
+            f32::MIN_POSITIVE,
+            -f32::MIN_POSITIVE,
+            1e-30,
+            -1e-30,
+            SLAB_ZERO_DIRECTION_GUARD,
+            -SLAB_ZERO_DIRECTION_GUARD,
+            0.0,
+            -0.0,
+        ];
+        for &input in &inputs {
+            let guarded = guarded_direction(Vec3::new(input, input, input));
+            for axis in 0..3 {
+                let out = guarded[axis];
+                assert_eq!(
+                    out.is_sign_negative(),
+                    input.is_sign_negative(),
+                    "guard flipped the sign of {input} to {out}"
+                );
+                assert!(
+                    out.abs() >= SLAB_ZERO_DIRECTION_GUARD,
+                    "guard left {input} as {out}, below the guard magnitude"
+                );
+                assert!(out.recip().is_finite(), "reciprocal of {out} is not finite");
+                // The property the DDA actually consumes: the step sign it derives from the
+                // guarded direction agrees with the raw direction the caller aimed.
+                assert_eq!(
+                    out.signum(),
+                    if input.is_sign_negative() { -1.0 } else { 1.0 },
+                    "guarded signum disagrees with the input's sign for {input}"
+                );
+            }
+        }
+    }
 
     /// A ray fired straight through the middle of the unit box enters at the near
     /// face and exits at the far face, both parameters finite and ordered.

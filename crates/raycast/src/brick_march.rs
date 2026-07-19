@@ -34,7 +34,7 @@
 //! budgets are all load-bearing. Reproduce the exact ops; never "simplify".
 
 use glam::{IVec3, Vec3};
-use substrate::spatial::{Ray, RealAabb};
+use substrate::spatial::{guarded_direction, Ray, RealAabb};
 
 use crate::voxel_dda::VoxelDda;
 
@@ -125,21 +125,6 @@ pub fn entry_face_normal(axis: usize, direction: Vec3) -> [i32; 3] {
     let mut normal = [0i32; 3];
     normal[axis] = if direction[axis] > 0.0 { -1 } else { 1 };
     normal
-}
-
-/// The ray direction with any component whose magnitude is below the slab guard nudged
-/// to `+guard`, so the reciprocal used for the slab entry and every DDA seed stays finite
-/// (the shared arithmetic the shader mirror pins). Identical guard to
-/// [`substrate::spatial::Ray::slab_inverse_direction`], applied to the direction itself.
-fn guarded_direction(direction: Vec3) -> Vec3 {
-    let guard = |component: f32| -> f32 {
-        if component.abs() < substrate::spatial::SLAB_ZERO_DIRECTION_GUARD {
-            substrate::spatial::SLAB_ZERO_DIRECTION_GUARD
-        } else {
-            component
-        }
-    };
-    Vec3::new(guard(direction.x), guard(direction.y), guard(direction.z))
 }
 
 /// The clamped-box entry: the ray's entry parameter, entry-face axis (x → y → z ties),
@@ -237,7 +222,7 @@ where
     let t_exit = entry.t_exit;
 
     let entry_position = origin + direction * (t_enter + ENTRY_NUDGE);
-    let mut block_dda = VoxelDda::seed(origin, direction, safe, entry_position, t_enter, edge, 0);
+    let mut block_dda = VoxelDda::seed(origin, safe, entry_position, t_enter, edge, 0);
 
     let mut steps = 0u32;
     'march: for _ in 0..MAX_BLOCK_STEPS {
@@ -262,7 +247,7 @@ where
                 blocks_per_cell.max(1),
             );
             let jump_position = origin + direction * jump_t;
-            let reseeded = VoxelDda::seed(origin, direction, safe, jump_position, jump_t, edge, 0);
+            let reseeded = VoxelDda::seed(origin, safe, jump_position, jump_t, edge, 0);
             if reseeded.cell != block_dda.cell {
                 if jump_t > t_exit {
                     break 'march;
@@ -324,7 +309,6 @@ where
                             // block that holds the surface (the grazing-rim bug, 2026-07-17).
                             let mut voxel_dda = VoxelDda::seed_in_box(
                                 origin,
-                                direction,
                                 safe,
                                 voxel_entry,
                                 box_enter,
@@ -423,7 +407,6 @@ where
     };
     let mut dda = VoxelDda::seed(
         origin,
-        direction,
         safe,
         entry_position,
         t_enter,

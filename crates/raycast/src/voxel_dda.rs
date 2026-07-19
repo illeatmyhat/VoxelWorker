@@ -93,9 +93,11 @@ impl VoxelDda {
     /// Seed a cursor for a ray entering a lattice of cell edge `cell_edge` at world point
     /// `entry_point`, whose parameter along the ray is `entry_t`.
     ///
-    /// `direction` is the ray direction (its per-axis sign gives the step); `safe_direction`
-    /// is the same direction with any near-zero component nudged away from zero (see
-    /// [`crate::brick_march`]), used as the divisor so the seeds stay finite.
+    /// `safe_direction` is the ray direction with any near-zero component nudged away from
+    /// zero, sign intact ([`substrate::spatial::guarded_direction`]). It is the ONLY
+    /// direction the cursor sees: both the per-axis step sign and the boundary parameters
+    /// come from it, so the two cannot disagree about which way an axis runs. Passing the
+    /// raw direction alongside it — as this used to — is what allowed that disagreement.
     ///
     /// `entry_point` and `entry_t` locate the ray's ENTRY into this lattice: the starting
     /// cell is `floor(entry_point / cell_edge)` and `t_cell_enter` starts at `entry_t`.
@@ -111,14 +113,13 @@ impl VoxelDda {
     #[allow(clippy::too_many_arguments)]
     pub fn seed(
         origin: Vec3,
-        direction: Vec3,
         safe_direction: Vec3,
         entry_point: Vec3,
         entry_t: f32,
         cell_edge: f32,
         initial_entry_axis: usize,
     ) -> Self {
-        let step = Self::step_of(direction);
+        let step = Self::step_of(safe_direction);
         let cell = (entry_point / cell_edge).floor().as_ivec3();
         Self::at(
             origin,
@@ -143,7 +144,6 @@ impl VoxelDda {
     #[allow(clippy::too_many_arguments)]
     pub fn seed_in_box(
         origin: Vec3,
-        direction: Vec3,
         safe_direction: Vec3,
         entry_point: Vec3,
         entry_t: f32,
@@ -152,7 +152,7 @@ impl VoxelDda {
         cell_min: IVec3,
         cell_max: IVec3,
     ) -> Self {
-        let step = Self::step_of(direction);
+        let step = Self::step_of(safe_direction);
         let cell = (entry_point / cell_edge)
             .floor()
             .as_ivec3()
@@ -168,12 +168,19 @@ impl VoxelDda {
         )
     }
 
-    /// The per-axis step sign of a ray direction.
-    fn step_of(direction: Vec3) -> IVec3 {
+    /// The per-axis step sign, taken from the GUARDED direction.
+    ///
+    /// Deliberately not the raw direction. `step` and `t_max` must agree about which way
+    /// each axis runs, and `t_max` is built from `1 / safe_direction`; deriving `step`
+    /// from a different vector is how they can disagree. The guarded direction is never
+    /// zero and carries the raw direction's sign (`substrate::spatial::guarded_direction`
+    /// preserves it), so `signum` here is always ±1 and always matches the reciprocal —
+    /// by construction, for every input, including `±0.0`.
+    fn step_of(safe_direction: Vec3) -> IVec3 {
         IVec3::new(
-            direction.x.signum() as i32,
-            direction.y.signum() as i32,
-            direction.z.signum() as i32,
+            safe_direction.x.signum() as i32,
+            safe_direction.y.signum() as i32,
+            safe_direction.z.signum() as i32,
         )
     }
 
@@ -286,13 +293,12 @@ mod kani_proofs {
         kani::assume(axis < 3);
         let dir = Vec3::new(finite_f32(1e3), finite_f32(1e3), finite_f32(1e3));
         // The march guards near-zero components up to a floor before dividing (SLAB guard).
-        let g = |d: f32| if d.abs() < 1e-20 { 1e-20 } else { d };
-        let safe = Vec3::new(g(dir.x), g(dir.y), g(dir.z));
+        let safe = substrate::spatial::guarded_direction(dir);
         let entry = Vec3::new(finite_f32(1e3), finite_f32(1e3), finite_f32(1e3));
         let entry_t = finite_f32(1e6);
         let origin = Vec3::new(finite_f32(1e3), finite_f32(1e3), finite_f32(1e3));
         let dda =
-            VoxelDda::seed_in_box(origin, dir, safe, entry, entry_t, 1.0, axis, cell_min, cell_max);
+            VoxelDda::seed_in_box(origin, safe, entry, entry_t, 1.0, axis, cell_min, cell_max);
         assert!(dda.cell.x >= cell_min.x && dda.cell.x <= cell_max.x);
         assert!(dda.cell.y >= cell_min.y && dda.cell.y <= cell_max.y);
         assert!(dda.cell.z >= cell_min.z && dda.cell.z <= cell_max.z);
@@ -314,14 +320,9 @@ mod kani_proofs {
         let dy = finite_f32(1e3);
         let dz = finite_f32(1e3);
         kani::assume(dz < -1e-6); // descending into the box through the top
-        let safe = Vec3::new(
-            if dx.abs() < 1e-20 { 1e-20 } else { dx },
-            if dy.abs() < 1e-20 { 1e-20 } else { dy },
-            dz,
-        );
+        let safe = substrate::spatial::guarded_direction(Vec3::new(dx, dy, dz));
         let dda = VoxelDda::seed_in_box(
             entry,
-            Vec3::new(dx, dy, dz),
             safe,
             entry,
             0.0,
@@ -352,11 +353,14 @@ mod kani_proofs {
             kani::assume(value >= -(1 << 24) && value <= (1 << 24));
             value
         };
-        let direction = Vec3::new(finite_f32(1e3), finite_f32(1e3), finite_f32(1e3));
-        // The march guards near-zero components up to a floor before dividing (SLAB guard);
-        // the guard preserves sign, so `step` and `inverse` stay consistent per axis.
-        let g = |d: f32| if d.abs() < 1e-20 { 1e-20 } else { d };
-        let safe = Vec3::new(g(direction.x), g(direction.y), g(direction.z));
+        // The REAL guard, not a hand-written model of it. Modelling it here is what let the
+        // proof assume a sign-preserving guard while production shipped one that flipped
+        // `-0.0` to `+1e-20`; calling the production function makes that impossible.
+        let safe = substrate::spatial::guarded_direction(Vec3::new(
+            finite_f32(1e3),
+            finite_f32(1e3),
+            finite_f32(1e3),
+        ));
         let origin = Vec3::new(finite_f32(1e3), finite_f32(1e3), finite_f32(1e3));
         let cell_edge = {
             let value = finite_f32(1e3);
@@ -367,7 +371,7 @@ mod kani_proofs {
             origin,
             safe,
             IVec3::new(bounded_cell(), bounded_cell(), bounded_cell()),
-            VoxelDda::step_of(direction),
+            VoxelDda::step_of(safe),
             cell_edge,
             finite_f32(1e18),
             0,
@@ -395,38 +399,21 @@ mod kani_proofs {
         }
     }
 
-    /// **`advance` never moves the ray backward, and it preserves the DDA's ordering invariant.**
-    /// Precondition — the invariant every seeded cursor satisfies: each axis's next-boundary
-    /// parameter is at or ahead of the current cell-entry parameter. Then after one advance the
-    /// new cell-entry parameter is ≥ the old one (`t` is monotone non-decreasing — the march only
-    /// ever moves forward), AND the same invariant holds again. Because the step preserves the
-    /// invariant, induction extends the monotonicity to the entire walk, however many cells it
-    /// crosses — the "each pierced cell is entered once, in increasing `t`" half of Amanatides &
-    /// Woo, discharged as a one-step obligation.
+    /// **NOT a Kani harness — see [`super::tests::advance_is_monotone_and_preserves_the_invariant`].**
     ///
-    /// The old `t_delta >= 0` precondition is gone with `t_delta` itself. Monotonicity now rests
-    /// on the anchored formula instead: stepping moves that axis's boundary plane one cell edge
-    /// FURTHER ALONG the ray, and `(plane − origin) · inverse` is monotone in `plane` because
-    /// `step` and `inverse` share the axis's sign (guaranteed by construction — see
-    /// `arbitrary_cursor`). f32 multiply and subtract are correctly rounded and therefore
-    /// order-preserving, so the property survives the float, non-strictly.
-    #[kani::proof]
-    fn advance_is_monotone_in_t_and_preserves_the_invariant() {
-        let mut dda = arbitrary_cursor();
-        kani::assume(
-            dda.t_max.x >= dda.t_cell_enter
-                && dda.t_max.y >= dda.t_cell_enter
-                && dda.t_max.z >= dda.t_cell_enter,
-        );
-        let entry_before = dda.t_cell_enter;
-        dda.advance();
-        assert!(dda.t_cell_enter >= entry_before);
-        assert!(
-            dda.t_max.x >= dda.t_cell_enter
-                && dda.t_max.y >= dda.t_cell_enter
-                && dda.t_max.z >= dda.t_cell_enter
-        );
-    }
+    /// `advance` re-derives `t_max` from the ray, so any property about its RESULT drags the
+    /// anchored float arithmetic into the solver. Kani discharges the two structural
+    /// properties above — which axis moves, and which axis is selected — because those turn
+    /// on comparisons and integer updates. The forward-progress property additionally needs
+    /// float multiply to be order-preserving, and that is the part the bundled bit-blasting
+    /// CaDiCaL cannot close: it ran past 36 minutes unterminated, and still exceeded a
+    /// 3-minute bound after the per-axis lemma was supplied as a hypothesis (the hypothesis
+    /// constrains the value but does not remove the arithmetic).
+    ///
+    /// Covered by a deterministic sweep instead. Note this is a bound on the SOLVER, not a
+    /// gap in the property: the same argument the harness encoded still holds, and the two
+    /// structural halves that BMC can check are still checked here.
+    fn _monotonicity_is_proved_by_sweep_not_bmc() {}
 
     /// **The advance selects the axis of minimum `t_max`, breaking ties x → y → z, and records
     /// that axis in `entry_axis`.** This pins the load-bearing tie order (module docs) as a
@@ -455,11 +442,12 @@ mod tests {
     /// in ascending x order, one per step, and never moves off the x axis.
     #[test]
     fn axis_aligned_ray_walks_one_cell_per_step() {
-        let direction = Vec3::new(1.0, 0.0, 0.0);
-        let safe = Vec3::new(1.0, 1e-20, 1e-20);
+        // Through the real guard, not a hand-written stand-in: the DDA's step is derived
+        // from this vector, so a test that fabricates it would not exercise the agreement
+        // between `step` and `1 / safe`.
+        let safe = substrate::spatial::guarded_direction(Vec3::new(1.0, 0.0, 0.0));
         let mut dda = VoxelDda::seed(
             Vec3::new(0.5, 0.5, 0.5),
-            direction,
             safe,
             Vec3::new(0.5, 0.5, 0.5),
             0.0,
@@ -472,6 +460,140 @@ mod tests {
         assert_eq!(dda.entry_axis, 0);
         dda.advance();
         assert_eq!(dda.cell, IVec3::new(2, 0, 0));
+    }
+
+    /// **The per-axis lemma the DDA's forward-progress invariant rests on: stepping an axis
+    /// never pulls its boundary parameter backwards.**
+    ///
+    /// `advance` sets `t_cell_enter` to the crossed boundary and re-derives `t_max` for the new
+    /// cell. For the walk to move forward, the stepped axis's new `t_max` must be at or ahead
+    /// of the one just consumed. That holds because stepping moves the boundary plane one cell
+    /// edge FURTHER along the ray, and `(plane − origin) · inverse` is monotone in `plane` —
+    /// *provided* `step` and `inverse` share the axis's sign. That proviso is exactly what
+    /// [`substrate::spatial::guarded_direction`]'s sign preservation buys: a guard that forced
+    /// a positive magnitude broke it for any component in `[-GUARD, 0]`, and with `t_max`
+    /// anchored (no `abs` anywhere to re-correct it) such an axis marched backwards forever.
+    ///
+    /// A sweep rather than a Kani proof because the property is float multiplication over a
+    /// symbolic `i32 → f32` conversion, which the available bit-blasting solver cannot
+    /// discharge — see `kani_proofs::_anchored_t_max_lemma_is_proved_by_sweep_not_bmc`. The
+    /// direction list covers both signs at ordinary magnitude AND both signs BELOW the guard,
+    /// including `-0.0`, which is the case that regressed.
+    #[test]
+    fn anchored_t_max_does_not_decrease_along_the_step() {
+        let directions = [
+            1.0f32, -1.0, 0.37, -0.37, 1e-3, -1e-3, 1e-30, -1e-30, 0.0, -0.0,
+        ];
+        let edges = [1.0f32, 8.0, 16.0, 32.0];
+        let origins = [-1234.5f32, -7.25, -0.5, 0.0, 0.5, 7.25, 1234.5, 65536.0];
+        let cells = [-1048576i32, -4096, -17, -1, 0, 1, 17, 4096, 1048576];
+        let mut cases = 0u32;
+        for &d in &directions {
+            // Through the production guard: the sign agreement under test is ITS job.
+            let safe = substrate::spatial::guarded_direction(Vec3::new(d, 1.0, 1.0));
+            let step = VoxelDda::step_of(safe);
+            // `step` comes from `safe`, so its agreement with `1 / safe` is structural, not
+            // something this sweep could falsify — that is the point of deriving it from the
+            // guarded vector. Whether `safe` still points the way the CALLER aimed is the
+            // guard's own contract, covered by
+            // `substrate`'s `guarded_direction_preserves_sign_and_escapes_zero`.
+            assert!(step.x == 1 || step.x == -1, "step must be ±1 for d={d}");
+            for &edge in &edges {
+                for &origin_x in &origins {
+                    for &cell_x in &cells {
+                        let origin = Vec3::new(origin_x, 0.0, 0.0);
+                        let before =
+                            VoxelDda::at(origin, safe, IVec3::new(cell_x, 0, 0), step, edge, 0.0, 0);
+                        let after = VoxelDda::at(
+                            origin,
+                            safe,
+                            IVec3::new(cell_x + step.x, 0, 0),
+                            step,
+                            edge,
+                            0.0,
+                            0,
+                        );
+                        assert!(
+                            after.t_max.x >= before.t_max.x,
+                            "stepping pulled t_max backwards: d={d} edge={edge} \
+                             origin={origin_x} cell={cell_x} before={} after={}",
+                            before.t_max.x,
+                            after.t_max.x
+                        );
+                        cases += 1;
+                    }
+                }
+            }
+        }
+        assert!(cases >= 2000, "sweep unexpectedly small: {cases}");
+    }
+
+    /// **A walk only ever moves forward, and every step re-establishes the DDA's ordering
+    /// invariant** (`t_max >= t_cell_enter` on all three axes).
+    ///
+    /// This is the "each pierced cell is entered once, in increasing `t`" half of Amanatides
+    /// & Woo. It is checked over whole WALKS rather than a single step, so a violation that
+    /// only appears after the cursor has moved — the failure mode an anchored `t_max` is
+    /// meant to rule out, and the one an accumulating `t_max` produced — is in scope.
+    ///
+    /// A sweep and not a Kani harness: see
+    /// `kani_proofs::_monotonicity_is_proved_by_sweep_not_bmc`. Kani still proves the two
+    /// structural halves (which axis moves, which axis is selected) symbolically.
+    #[test]
+    fn advance_is_monotone_and_preserves_the_invariant() {
+        let directions = [
+            Vec3::new(1.0, 0.0, 0.0),
+            Vec3::new(-1.0, 0.0, -0.0),
+            Vec3::new(0.7, -0.5, 0.3),
+            Vec3::new(-0.2, 0.9, -0.4),
+            Vec3::new(1.0, 1.0, 1.0),
+            Vec3::new(-1.0, -1.0, -1.0),
+            Vec3::new(1e-30, 1.0, -1e-30),
+            Vec3::new(-0.0, -0.0, 1.0),
+        ];
+        let edges = [1.0f32, 16.0];
+        let origins = [
+            Vec3::new(0.5, 0.5, 0.5),
+            Vec3::new(-13.25, 7.5, 101.0),
+            Vec3::new(1024.0, -1024.0, 0.0),
+        ];
+        let mut steps_checked = 0u32;
+        for direction in directions {
+            let safe = substrate::spatial::guarded_direction(direction);
+            for &edge in &edges {
+                for origin in origins {
+                    let mut dda = VoxelDda::seed(origin, safe, origin, 0.0, edge, 0);
+                    // The invariant must hold at the seed, or the walk starts out of contract.
+                    assert!(
+                        dda.t_max.x >= dda.t_cell_enter
+                            && dda.t_max.y >= dda.t_cell_enter
+                            && dda.t_max.z >= dda.t_cell_enter,
+                        "seed violated the invariant: dir={direction:?} edge={edge} origin={origin:?}"
+                    );
+                    for _ in 0..64 {
+                        let entry_before = dda.t_cell_enter;
+                        dda.advance();
+                        assert!(
+                            dda.t_cell_enter >= entry_before,
+                            "walk moved BACKWARD: dir={direction:?} edge={edge} origin={origin:?} \
+                             {entry_before} -> {}",
+                            dda.t_cell_enter
+                        );
+                        assert!(
+                            dda.t_max.x >= dda.t_cell_enter
+                                && dda.t_max.y >= dda.t_cell_enter
+                                && dda.t_max.z >= dda.t_cell_enter,
+                            "step broke the invariant: dir={direction:?} edge={edge} \
+                             origin={origin:?} t_max={:?} enter={}",
+                            dda.t_max,
+                            dda.t_cell_enter
+                        );
+                        steps_checked += 1;
+                    }
+                }
+            }
+        }
+        assert!(steps_checked >= 2000, "sweep unexpectedly small: {steps_checked}");
     }
 
     fn in_box(cell: IVec3, lo: IVec3, hi_inclusive: IVec3) -> bool {
@@ -498,7 +620,6 @@ mod tests {
         let edge = 16.0f32;
         let cell_min = IVec3::splat(0);
         let cell_max = IVec3::splat(15); // inclusive: box cells [0,15]^3 for a 16-voxel block
-        let guard = |d: f32| if d.abs() < 1e-20 { 1e-20 } else { d };
         let perp_positions = [0.3f32, 2.5, 7.5, 12.5, 15.7];
         let along_small = [0.03f32, 0.2, 1.0, 3.0]; // includes grazing (near-parallel) incidence
         let perp_dirs = [-3.0f32, -1.0, -0.2, 0.2, 1.0, 3.0];
@@ -524,11 +645,11 @@ mod tests {
                                     dir[b] = db;
                                     dir[c] = dc;
                                     let dir = Vec3::from_array(dir).normalize();
-                                    let safe = Vec3::new(guard(dir.x), guard(dir.y), guard(dir.z));
+                                    let safe = substrate::spatial::guarded_direction(dir);
 
                                     // Box-confined seed: MUST land inside the box.
                                     let confined =
-                                        VoxelDda::seed_in_box(entry, dir, safe, entry, 0.0, 1.0, axis, cell_min, cell_max);
+                                        VoxelDda::seed_in_box(entry, safe, entry, 0.0, 1.0, axis, cell_min, cell_max);
                                     assert!(
                                         in_box(confined.cell, cell_min, cell_max),
                                         "seed_in_box left the box: cell={:?} entry={entry:?} dir={dir:?}",
@@ -536,7 +657,7 @@ mod tests {
                                     );
 
                                     // Reference: the unconfined flat DDA skipped forward to the box.
-                                    let mut flat = VoxelDda::seed(entry, dir, safe, entry, 0.0, 1.0, axis);
+                                    let mut flat = VoxelDda::seed(entry, safe, entry, 0.0, 1.0, axis);
                                     let mut steps = 0;
                                     while !in_box(flat.cell, cell_min, cell_max) && steps < 64 {
                                         flat.advance();
@@ -570,7 +691,6 @@ mod tests {
         // Entry at the origin corner: the first boundary on every axis is at the same t.
         let mut dda = VoxelDda::seed(
             Vec3::new(0.01, 0.01, 0.01),
-            direction,
             safe,
             Vec3::new(0.01, 0.01, 0.01),
             0.0,
@@ -592,11 +712,12 @@ mod tests {
     /// advances the integer cell by one and `t_cell_enter` by ~8 along a unit-x ray.
     #[test]
     fn cell_edge_scales_the_step_span() {
-        let direction = Vec3::new(1.0, 0.0, 0.0);
-        let safe = Vec3::new(1.0, 1e-20, 1e-20);
+        // Through the real guard, not a hand-written stand-in: the DDA's step is derived
+        // from this vector, so a test that fabricates it would not exercise the agreement
+        // between `step` and `1 / safe`.
+        let safe = substrate::spatial::guarded_direction(Vec3::new(1.0, 0.0, 0.0));
         let mut dda = VoxelDda::seed(
             Vec3::new(0.0, 0.5, 0.5),
-            direction,
             safe,
             Vec3::new(0.0, 0.5, 0.5),
             0.0,

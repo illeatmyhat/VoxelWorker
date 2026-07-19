@@ -22,6 +22,8 @@
 #   KANI_TARGET_DIR     CARGO_TARGET_DIR for the Kani tier. Set this under WSL to a Linux-FS path
 #                       (e.g. $HOME/rc-kani-target) — building on /mnt/c is slow. Leave UNSET on a
 #                       native Linux CI runner, where it buys nothing.
+#   KANI_HARNESS_TIMEOUT  per-harness wall-clock bound (default 3m). A harness that exceeds it is
+#                       reported as a timeout instead of hanging the tier — see the Kani block.
 
 set -uo pipefail
 
@@ -99,7 +101,16 @@ if [ "$run_kani" = 1 ]; then
     for crate in "${KANI_CRATES[@]}"; do
         start=$SECONDS
         # -j verifies harnesses on parallel threads and REQUIRES terse output.
-        output="$(cargo kani -p "$crate" -j --output-format=terse 2>&1)"
+        #
+        # PER-HARNESS TIMEOUT. A bounded model checker has no natural runtime bound: an
+        # unprovable-in-practice property does not fail, it runs forever. A float-heavy
+        # harness here burned 36 minutes before being killed by hand while the other four
+        # finished in seconds. `--harness-timeout` bounds each harness individually rather
+        # than the batch, so ONE runaway is reported as a timeout and the rest still get
+        # verified. Raise KANI_HARNESS_TIMEOUT deliberately for a known-slow harness; do not
+        # remove the bound.
+        output="$(cargo kani -p "$crate" -j --output-format=terse \
+            -Z unstable-options --harness-timeout "${KANI_HARNESS_TIMEOUT:-3m}" 2>&1)"
         status=$?
         detail="$(echo "$output" | grep -E 'Complete -' | tail -1)"
         if [ $status -eq 0 ]; then
