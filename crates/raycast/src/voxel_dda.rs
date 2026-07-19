@@ -11,12 +11,36 @@
 //!
 //! Amanatides & Woo, *A Fast Voxel Traversal Algorithm for Ray Tracing* (Eurographics
 //! 1987). The ray is `p(t) = origin + t · direction`. For each axis the traversal keeps
-//! `t_max` — the ray parameter at which it crosses into the next cell along that axis —
-//! and `t_delta` — the parameter span of one whole cell along that axis. Each step
-//! advances along the axis whose `t_max` is smallest (the nearest upcoming cell
-//! boundary), increments that cell coordinate by the sign of the direction, and adds
-//! `t_delta` to that axis's `t_max`. The seeds are `t_delta = |cell_edge / direction|`
-//! and, per axis, the parameter to the first boundary ahead of the entry point.
+//! `t_max` — the ray parameter at which it crosses into the next cell along that axis.
+//! Each step advances along the axis whose `t_max` is smallest (the nearest upcoming
+//! cell boundary) and increments that cell coordinate by the sign of the direction.
+//!
+//! ## `t_max` is ANCHORED, not accumulated
+//!
+//! The paper advances `t_max` by adding a whole-cell span `t_delta` per step. We do NOT.
+//! `t_max` is recomputed from the ray and the current cell every step:
+//!
+//! ```text
+//! t_max[a] = (boundary_plane(cell[a], step[a]) · cell_edge − origin[a]) · inverse[a]
+//! ```
+//!
+//! Algebraically the two are identical; in f32 they are not. Accumulation drifts — it is
+//! a running sum, so error grows with the step count — while the anchored form has the
+//! same short lever arm at step 200 as at step 1. That drift was a real bug: the flat
+//! reference march seeds ONCE and accumulated ~11 ULP by the time it reached a surface,
+//! while the brick march re-seeds at every block entry and barely drifted. On a ray
+//! passing within a few ULP of a voxel EDGE the two disagreed about which of two
+//! near-equal boundary crossings came first, stepped different axes, and reported hit
+//! voxels one apart — `rim_diff` on Linux, where `sin`/`cos` in the camera basis differ
+//! by an ULP from the MSVC CRT's and so select different near-degenerate rays.
+//!
+//! Anchoring makes `t_max` a pure function of `(origin, inverse, cell_edge, cell, step)`,
+//! so ANY two cursors over the same ray agree bit-for-bit on the same cell no matter
+//! where they were seeded or how many steps it took to get there. That is the property
+//! `rim_diff` and `gpu_parity` actually need, and it holds by construction rather than
+//! by luck. It is also strictly more accurate: checked in f64, the anchored values are
+//! the ones near truth. `t_delta` is deliberately GONE rather than left unused — keeping
+//! it is an open invitation to reintroduce the accumulating step.
 //!
 //! ## The tie order is load-bearing
 //!
@@ -32,26 +56,37 @@ use glam::{IVec3, Vec3};
 
 /// One Amanatides & Woo voxel-traversal cursor over a uniform cell lattice: the current
 /// integer cell, the per-axis step sign, the per-axis distance-to-next-boundary
-/// [`t_max`](Self::t_max) and whole-cell span [`t_delta`](Self::t_delta), the parameter
-/// at which the ray entered the current cell ([`t_cell_enter`](Self::t_cell_enter)), and
-/// the axis of the face last crossed ([`entry_axis`](Self::entry_axis), which the entry-
-/// face normal reads).
+/// [`t_max`](Self::t_max), the parameter at which the ray entered the current cell
+/// ([`t_cell_enter`](Self::t_cell_enter)), and the axis of the face last crossed
+/// ([`entry_axis`](Self::entry_axis), which the entry-face normal reads).
+///
+/// The cursor carries the ray it walks ([`origin`](Self::origin), [`inverse`](Self::inverse))
+/// and its [`cell_edge`](Self::cell_edge) so [`advance`](Self::advance) can recompute
+/// `t_max` from the cell rather than accumulate it — see the module docs.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct VoxelDda {
     /// The current cell's integer lattice coordinate.
     pub cell: IVec3,
     /// The per-axis step direction (`±1`), the sign of the ray direction on that axis.
     pub step: IVec3,
-    /// The per-axis parameter of the next cell boundary ahead along the ray.
+    /// The per-axis parameter of the next cell boundary ahead along the ray. A pure
+    /// function of the fields below plus [`cell`](Self::cell) — never accumulated.
     pub t_max: Vec3,
-    /// The per-axis parameter span of one whole cell (`|cell_edge / direction|`).
-    pub t_delta: Vec3,
     /// The ray parameter at which the ray entered the current cell (seeded to the
     /// entry `t`; updated to the crossed boundary's `t` on each [`advance`](Self::advance)).
     pub t_cell_enter: f32,
     /// The axis (0=x, 1=y, 2=z) of the cell face the ray last crossed to reach the
     /// current cell — the entry-face normal's axis.
     pub entry_axis: usize,
+    /// The ray origin every `t_max` is measured from. Held so `t_max` can be re-derived
+    /// at any cell instead of stepped forward.
+    pub origin: Vec3,
+    /// Per-axis reciprocal of the guarded direction (`1.0 / safe_direction`), the same
+    /// value the slab entry and `clamped_box_entry` divide by, so the DDA's boundary
+    /// parameters and the box-entry parameters are the same arithmetic.
+    pub inverse: Vec3,
+    /// The lattice cell edge (the brick edge for the block march, `1.0` for a voxel march).
+    pub cell_edge: f32,
 }
 
 impl VoxelDda {
@@ -60,13 +95,22 @@ impl VoxelDda {
     ///
     /// `direction` is the ray direction (its per-axis sign gives the step); `safe_direction`
     /// is the same direction with any near-zero component nudged away from zero (see
-    /// [`crate::brick_march`]), used as the divisor so the seeds stay finite. The current
-    /// cell is `floor(entry_point / cell_edge)`; each axis's `t_max` is the parameter from
-    /// the entry point to the first cell boundary ahead of it, offset by `entry_t` so the
-    /// cursor's parameters are absolute along the ray. `initial_entry_axis` records the face
-    /// the ray entered the lattice through (the block march passes the traversal-box entry
-    /// axis; the flat march passes the slab entry axis).
+    /// [`crate::brick_march`]), used as the divisor so the seeds stay finite.
+    ///
+    /// `entry_point` and `entry_t` locate the ray's ENTRY into this lattice: the starting
+    /// cell is `floor(entry_point / cell_edge)` and `t_cell_enter` starts at `entry_t`.
+    /// `t_max`, by contrast, is measured from `origin` and does not consult either — see
+    /// the module docs. That separation is deliberate and it matters: callers deliberately
+    /// nudge `entry_point` forward off a face (`entry_t + ENTRY_NUDGE`) to land the floor
+    /// inside the intended cell while passing the UN-nudged `entry_t`. Under the old
+    /// entry-relative arithmetic that inconsistency leaked into `t_max` as a systematic
+    /// one-nudge skew; anchoring on `origin` makes the seed exact regardless.
+    ///
+    /// `initial_entry_axis` records the face the ray entered the lattice through (the
+    /// block march passes the traversal-box entry axis; the flat march the slab entry axis).
+    #[allow(clippy::too_many_arguments)]
     pub fn seed(
+        origin: Vec3,
         direction: Vec3,
         safe_direction: Vec3,
         entry_point: Vec3,
@@ -74,22 +118,17 @@ impl VoxelDda {
         cell_edge: f32,
         initial_entry_axis: usize,
     ) -> Self {
-        let step = IVec3::new(
-            direction.x.signum() as i32,
-            direction.y.signum() as i32,
-            direction.z.signum() as i32,
-        );
-        let t_delta = (Vec3::splat(cell_edge) / safe_direction).abs();
+        let step = Self::step_of(direction);
         let cell = (entry_point / cell_edge).floor().as_ivec3();
-        let t_max = Self::seed_t_max(cell, step, entry_point, entry_t, cell_edge, safe_direction);
-        VoxelDda {
+        Self::at(
+            origin,
+            safe_direction,
             cell,
             step,
-            t_max,
-            t_delta,
-            t_cell_enter: entry_t,
-            entry_axis: initial_entry_axis,
-        }
+            cell_edge,
+            entry_t,
+            initial_entry_axis,
+        )
     }
 
     /// Like [`seed`](Self::seed), but the entry cell is CLAMPED into the inclusive box
@@ -103,6 +142,7 @@ impl VoxelDda {
     /// correctly. MUST stay mirrored by the WGSL inner voxel-DDA seed (`gpu_parity`).
     #[allow(clippy::too_many_arguments)]
     pub fn seed_in_box(
+        origin: Vec3,
         direction: Vec3,
         safe_direction: Vec3,
         entry_point: Vec3,
@@ -112,49 +152,78 @@ impl VoxelDda {
         cell_min: IVec3,
         cell_max: IVec3,
     ) -> Self {
-        let step = IVec3::new(
-            direction.x.signum() as i32,
-            direction.y.signum() as i32,
-            direction.z.signum() as i32,
-        );
-        let t_delta = (Vec3::splat(cell_edge) / safe_direction).abs();
+        let step = Self::step_of(direction);
         let cell = (entry_point / cell_edge)
             .floor()
             .as_ivec3()
             .clamp(cell_min, cell_max);
-        let t_max = Self::seed_t_max(cell, step, entry_point, entry_t, cell_edge, safe_direction);
+        Self::at(
+            origin,
+            safe_direction,
+            cell,
+            step,
+            cell_edge,
+            entry_t,
+            initial_entry_axis,
+        )
+    }
+
+    /// The per-axis step sign of a ray direction.
+    fn step_of(direction: Vec3) -> IVec3 {
+        IVec3::new(
+            direction.x.signum() as i32,
+            direction.y.signum() as i32,
+            direction.z.signum() as i32,
+        )
+    }
+
+    /// Build a cursor sitting in `cell`, with `t_max` derived from the ray. The ONE place
+    /// a `VoxelDda` is constructed, so every seed and every step share one `t_max` rule.
+    #[allow(clippy::too_many_arguments)]
+    fn at(
+        origin: Vec3,
+        safe_direction: Vec3,
+        cell: IVec3,
+        step: IVec3,
+        cell_edge: f32,
+        t_cell_enter: f32,
+        entry_axis: usize,
+    ) -> Self {
+        let inverse = Vec3::ONE / safe_direction;
         VoxelDda {
             cell,
             step,
-            t_max,
-            t_delta,
-            t_cell_enter: entry_t,
-            entry_axis: initial_entry_axis,
+            t_max: Self::anchored_t_max(origin, inverse, cell_edge, cell, step),
+            t_cell_enter,
+            entry_axis,
+            origin,
+            inverse,
+            cell_edge,
         }
     }
 
-    /// The per-axis `t_max` seed: the ray parameter from `entry_point` to the first cell
-    /// boundary ahead of `cell` — the FAR face (`cell + 1`) when stepping positive, the NEAR
-    /// face (`cell`) otherwise — offset by `entry_t` so the cursor's parameters are absolute.
-    fn seed_t_max(
-        cell: IVec3,
-        step: IVec3,
-        entry_point: Vec3,
-        entry_t: f32,
-        cell_edge: f32,
-        safe_direction: Vec3,
-    ) -> Vec3 {
-        let seed_axis = |cell_coord: i32, step_axis: i32, entry_axis: f32, safe_axis: f32| -> f32 {
-            if step_axis > 0 {
-                ((cell_coord + 1) as f32 * cell_edge - entry_axis) / safe_axis
+    /// The per-axis parameter at which the ray leaves `cell` — the FAR face (`cell + 1`)
+    /// when stepping positive, the NEAR face (`cell`) otherwise.
+    ///
+    /// Depends ONLY on the ray and the cell: no entry point, no running total, no step
+    /// count. That is what makes two cursors over one ray agree bit-for-bit on a shared
+    /// cell (module docs). Multiplies by `inverse` rather than dividing by
+    /// `safe_direction` so it is the same operation `clamped_box_entry` and the slab
+    /// entry perform — one arithmetic definition of "where does this ray cross that
+    /// plane", not two that agree only by rounding luck.
+    fn anchored_t_max(origin: Vec3, inverse: Vec3, cell_edge: f32, cell: IVec3, step: IVec3) -> Vec3 {
+        let axis = |cell_coord: i32, step_axis: i32, origin_axis: f32, inverse_axis: f32| -> f32 {
+            let boundary = if step_axis > 0 {
+                (cell_coord + 1) as f32
             } else {
-                (cell_coord as f32 * cell_edge - entry_axis) / safe_axis
-            }
+                cell_coord as f32
+            };
+            (boundary * cell_edge - origin_axis) * inverse_axis
         };
         Vec3::new(
-            seed_axis(cell.x, step.x, entry_point.x, safe_direction.x) + entry_t,
-            seed_axis(cell.y, step.y, entry_point.y, safe_direction.y) + entry_t,
-            seed_axis(cell.z, step.z, entry_point.z, safe_direction.z) + entry_t,
+            axis(cell.x, step.x, origin.x, inverse.x),
+            axis(cell.y, step.y, origin.y, inverse.y),
+            axis(cell.z, step.z, origin.z, inverse.z),
         )
     }
 
@@ -162,24 +231,28 @@ impl VoxelDda {
     /// smallest (ties broken x → y → z, see the module docs), move that cell coordinate
     /// by its step, record the crossed boundary's parameter in
     /// [`t_cell_enter`](Self::t_cell_enter) and the axis in [`entry_axis`](Self::entry_axis),
-    /// and push that axis's `t_max` forward by one whole cell.
+    /// then RE-DERIVE `t_max` for the cell just entered.
+    ///
+    /// Re-deriving all three axes, not just the stepped one, is deliberate: `t_max` is a
+    /// pure function of the cell, and the two unstepped axes' cell coordinates did not
+    /// change, so their values are bit-identical either way. Recomputing the whole vector
+    /// leaves no path by which a component could carry accumulated error.
     pub fn advance(&mut self) {
         if self.t_max.x <= self.t_max.y && self.t_max.x <= self.t_max.z {
             self.cell.x += self.step.x;
             self.t_cell_enter = self.t_max.x;
-            self.t_max.x += self.t_delta.x;
             self.entry_axis = 0;
         } else if self.t_max.y <= self.t_max.z {
             self.cell.y += self.step.y;
             self.t_cell_enter = self.t_max.y;
-            self.t_max.y += self.t_delta.y;
             self.entry_axis = 1;
         } else {
             self.cell.z += self.step.z;
             self.t_cell_enter = self.t_max.z;
-            self.t_max.z += self.t_delta.z;
             self.entry_axis = 2;
         }
+        self.t_max =
+            Self::anchored_t_max(self.origin, self.inverse, self.cell_edge, self.cell, self.step);
     }
 }
 
@@ -217,7 +290,9 @@ mod kani_proofs {
         let safe = Vec3::new(g(dir.x), g(dir.y), g(dir.z));
         let entry = Vec3::new(finite_f32(1e3), finite_f32(1e3), finite_f32(1e3));
         let entry_t = finite_f32(1e6);
-        let dda = VoxelDda::seed_in_box(dir, safe, entry, entry_t, 1.0, axis, cell_min, cell_max);
+        let origin = Vec3::new(finite_f32(1e3), finite_f32(1e3), finite_f32(1e3));
+        let dda =
+            VoxelDda::seed_in_box(origin, dir, safe, entry, entry_t, 1.0, axis, cell_min, cell_max);
         assert!(dda.cell.x >= cell_min.x && dda.cell.x <= cell_max.x);
         assert!(dda.cell.y >= cell_min.y && dda.cell.y <= cell_max.y);
         assert!(dda.cell.z >= cell_min.z && dda.cell.z <= cell_max.z);
@@ -244,36 +319,59 @@ mod kani_proofs {
             if dy.abs() < 1e-20 { 1e-20 } else { dy },
             dz,
         );
-        let dda = VoxelDda::seed_in_box(Vec3::new(dx, dy, dz), safe, entry, 0.0, 1.0, 2, cell_min, cell_max);
+        let dda = VoxelDda::seed_in_box(
+            entry,
+            Vec3::new(dx, dy, dz),
+            safe,
+            entry,
+            0.0,
+            1.0,
+            2,
+            cell_min,
+            cell_max,
+        );
         assert!(dda.cell.z == 3, "max-face entry must land on the last in-box layer, not one past");
         assert!(dda.cell.x >= 0 && dda.cell.x <= 3);
         assert!(dda.cell.y >= 0 && dda.cell.y <= 3);
     }
 
-    /// A symbolic DDA cursor with finite, magnitude-bounded float parameters, a signum step
-    /// (`-1..=1`, what [`VoxelDda::seed`] derives from the ray direction), and a lattice cell far
-    /// from `i32` saturation — the general pre-state for reasoning about a single
-    /// [`advance`](VoxelDda::advance). The bounds keep the solver on the real geometric domain
-    /// and away from float/overflow corners no seeded cursor can reach.
+    /// A symbolic DDA cursor over a symbolic ray, at a symbolic lattice cell far from `i32`
+    /// saturation — the general pre-state for reasoning about a single
+    /// [`advance`](VoxelDda::advance).
+    ///
+    /// Built through [`VoxelDda::at`], NOT by filling the fields independently. Since
+    /// `t_max` became a pure function of `(origin, inverse, cell_edge, cell, step)`, a
+    /// cursor whose `t_max` is free-floating is not a state any seed or step can produce,
+    /// and proving things about it would prove nothing about the real march. Constructing
+    /// through `at` also ties `step` to `sign(direction)` and `inverse` to `1/safe`, which
+    /// is exactly the relation the monotonicity proof below needs and which independent
+    /// symbolic fields silently broke.
     fn arbitrary_cursor() -> VoxelDda {
         let bounded_cell = || -> i32 {
             let value: i32 = kani::any();
             kani::assume(value >= -(1 << 24) && value <= (1 << 24));
             value
         };
-        let signum_step = || -> i32 {
-            let value: i32 = kani::any();
-            kani::assume((-1..=1).contains(&value));
+        let direction = Vec3::new(finite_f32(1e3), finite_f32(1e3), finite_f32(1e3));
+        // The march guards near-zero components up to a floor before dividing (SLAB guard);
+        // the guard preserves sign, so `step` and `inverse` stay consistent per axis.
+        let g = |d: f32| if d.abs() < 1e-20 { 1e-20 } else { d };
+        let safe = Vec3::new(g(direction.x), g(direction.y), g(direction.z));
+        let origin = Vec3::new(finite_f32(1e3), finite_f32(1e3), finite_f32(1e3));
+        let cell_edge = {
+            let value = finite_f32(1e3);
+            kani::assume(value > 0.0);
             value
         };
-        VoxelDda {
-            cell: IVec3::new(bounded_cell(), bounded_cell(), bounded_cell()),
-            step: IVec3::new(signum_step(), signum_step(), signum_step()),
-            t_max: Vec3::new(finite_f32(1e18), finite_f32(1e18), finite_f32(1e18)),
-            t_delta: Vec3::new(finite_f32(1e18), finite_f32(1e18), finite_f32(1e18)),
-            t_cell_enter: finite_f32(1e18),
-            entry_axis: 0,
-        }
+        VoxelDda::at(
+            origin,
+            safe,
+            IVec3::new(bounded_cell(), bounded_cell(), bounded_cell()),
+            VoxelDda::step_of(direction),
+            cell_edge,
+            finite_f32(1e18),
+            0,
+        )
     }
 
     /// **Each `advance` moves exactly one cell axis, by that axis's step, leaving the other two
@@ -299,16 +397,22 @@ mod kani_proofs {
 
     /// **`advance` never moves the ray backward, and it preserves the DDA's ordering invariant.**
     /// Precondition — the invariant every seeded cursor satisfies: each axis's next-boundary
-    /// parameter is at or ahead of the current cell-entry parameter, and the whole-cell spans are
-    /// non-negative. Then after one advance the new cell-entry parameter is ≥ the old one (`t` is
-    /// monotone non-decreasing — the march only ever moves forward), AND the same invariant holds
-    /// again. Because the step preserves the invariant, induction extends the monotonicity to the
-    /// entire walk, however many cells it crosses — the "each pierced cell is entered once, in
-    /// increasing `t`" half of Amanatides & Woo, discharged as a one-step obligation.
+    /// parameter is at or ahead of the current cell-entry parameter. Then after one advance the
+    /// new cell-entry parameter is ≥ the old one (`t` is monotone non-decreasing — the march only
+    /// ever moves forward), AND the same invariant holds again. Because the step preserves the
+    /// invariant, induction extends the monotonicity to the entire walk, however many cells it
+    /// crosses — the "each pierced cell is entered once, in increasing `t`" half of Amanatides &
+    /// Woo, discharged as a one-step obligation.
+    ///
+    /// The old `t_delta >= 0` precondition is gone with `t_delta` itself. Monotonicity now rests
+    /// on the anchored formula instead: stepping moves that axis's boundary plane one cell edge
+    /// FURTHER ALONG the ray, and `(plane − origin) · inverse` is monotone in `plane` because
+    /// `step` and `inverse` share the axis's sign (guaranteed by construction — see
+    /// `arbitrary_cursor`). f32 multiply and subtract are correctly rounded and therefore
+    /// order-preserving, so the property survives the float, non-strictly.
     #[kani::proof]
     fn advance_is_monotone_in_t_and_preserves_the_invariant() {
         let mut dda = arbitrary_cursor();
-        kani::assume(dda.t_delta.x >= 0.0 && dda.t_delta.y >= 0.0 && dda.t_delta.z >= 0.0);
         kani::assume(
             dda.t_max.x >= dda.t_cell_enter
                 && dda.t_max.y >= dda.t_cell_enter
@@ -353,7 +457,15 @@ mod tests {
     fn axis_aligned_ray_walks_one_cell_per_step() {
         let direction = Vec3::new(1.0, 0.0, 0.0);
         let safe = Vec3::new(1.0, 1e-20, 1e-20);
-        let mut dda = VoxelDda::seed(direction, safe, Vec3::new(0.5, 0.5, 0.5), 0.0, 1.0, 0);
+        let mut dda = VoxelDda::seed(
+            Vec3::new(0.5, 0.5, 0.5),
+            direction,
+            safe,
+            Vec3::new(0.5, 0.5, 0.5),
+            0.0,
+            1.0,
+            0,
+        );
         assert_eq!(dda.cell, IVec3::new(0, 0, 0));
         dda.advance();
         assert_eq!(dda.cell, IVec3::new(1, 0, 0));
@@ -416,7 +528,7 @@ mod tests {
 
                                     // Box-confined seed: MUST land inside the box.
                                     let confined =
-                                        VoxelDda::seed_in_box(dir, safe, entry, 0.0, 1.0, axis, cell_min, cell_max);
+                                        VoxelDda::seed_in_box(entry, dir, safe, entry, 0.0, 1.0, axis, cell_min, cell_max);
                                     assert!(
                                         in_box(confined.cell, cell_min, cell_max),
                                         "seed_in_box left the box: cell={:?} entry={entry:?} dir={dir:?}",
@@ -424,7 +536,7 @@ mod tests {
                                     );
 
                                     // Reference: the unconfined flat DDA skipped forward to the box.
-                                    let mut flat = VoxelDda::seed(dir, safe, entry, 0.0, 1.0, axis);
+                                    let mut flat = VoxelDda::seed(entry, dir, safe, entry, 0.0, 1.0, axis);
                                     let mut steps = 0;
                                     while !in_box(flat.cell, cell_min, cell_max) && steps < 64 {
                                         flat.advance();
@@ -456,7 +568,15 @@ mod tests {
         let direction = Vec3::new(1.0, 1.0, 1.0).normalize();
         let safe = direction;
         // Entry at the origin corner: the first boundary on every axis is at the same t.
-        let mut dda = VoxelDda::seed(direction, safe, Vec3::new(0.01, 0.01, 0.01), 0.0, 1.0, 0);
+        let mut dda = VoxelDda::seed(
+            Vec3::new(0.01, 0.01, 0.01),
+            direction,
+            safe,
+            Vec3::new(0.01, 0.01, 0.01),
+            0.0,
+            1.0,
+            0,
+        );
         dda.advance();
         assert_eq!(dda.cell, IVec3::new(1, 0, 0), "x wins the first tie");
         assert_eq!(dda.entry_axis, 0);
@@ -474,7 +594,15 @@ mod tests {
     fn cell_edge_scales_the_step_span() {
         let direction = Vec3::new(1.0, 0.0, 0.0);
         let safe = Vec3::new(1.0, 1e-20, 1e-20);
-        let mut dda = VoxelDda::seed(direction, safe, Vec3::new(0.0, 0.5, 0.5), 0.0, 8.0, 0);
+        let mut dda = VoxelDda::seed(
+            Vec3::new(0.0, 0.5, 0.5),
+            direction,
+            safe,
+            Vec3::new(0.0, 0.5, 0.5),
+            0.0,
+            8.0,
+            0,
+        );
         assert_eq!(dda.cell, IVec3::new(0, 0, 0));
         dda.advance();
         assert_eq!(dda.cell, IVec3::new(1, 0, 0));

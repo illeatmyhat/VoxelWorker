@@ -487,6 +487,29 @@ fn clipmap_cell_box(cell: vec3<i32>, blocks_per_cell: i32, edge: i32) -> CellBox
     return out;
 }
 
+// The per-axis parameter at which the ray leaves `cell` — the FAR face (`cell + 1`) when
+// stepping positive, the NEAR face (`cell`) otherwise.
+//
+// MIRROR of `VoxelDda::anchored_t_max` (crates/raycast/src/voxel_dda.rs), and the ONLY
+// place this shader computes a `t_max`: every DDA seed, every hierarchical re-seed and
+// every step calls it. A pure function of the ray and the cell — no entry point, no
+// running total, no step count — so a cursor's `t_max` cannot depend on how it got to a
+// cell. The shader previously inlined the entry-relative form at six sites AND stepped by
+// adding `t_delta`; both are gone deliberately. See the Rust module docs for why (the
+// accumulating form drifted ~11 ULP and split hit voxels on edge-grazing rays).
+//
+// Multiplies by `inverse` rather than dividing by `safe_direction` to match the CPU
+// exactly, and because `clamped_box_entry`/the slab entry already use that reciprocal.
+fn anchored_t_max(ray: Ray, cell_edge: f32, cell: vec3<i32>, step: vec3<i32>) -> vec3<f32> {
+    let inverse = 1.0 / ray.safe_direction;
+    let boundary = vec3<f32>(
+        select(f32(cell.x), f32(cell.x + 1), step.x > 0),
+        select(f32(cell.y), f32(cell.y + 1), step.y > 0),
+        select(f32(cell.z), f32(cell.z + 1), step.z > 0),
+    );
+    return (boundary * cell_edge - ray.origin) * inverse;
+}
+
 // The result of a hierarchical skip: whether it advanced past the current block
 // (else the caller falls through to the per-block step, guaranteeing progress),
 // and the re-seeded block DDA state at the cell's exit.
@@ -513,23 +536,7 @@ fn clipmap_try_skip(ray: Ray, edge: f32, cell_box: CellBox, current_block_cell: 
     out.advanced = any(new_block != current_block_cell);
     out.block_cell = new_block;
     out.t_block_enter = jump_t;
-    out.t_max = vec3<f32>(
-        select(
-            (f32(new_block.x) * edge - jump_position.x) / ray.safe_direction.x,
-            (f32(new_block.x + 1) * edge - jump_position.x) / ray.safe_direction.x,
-            block_step.x > 0,
-        ) + jump_t,
-        select(
-            (f32(new_block.y) * edge - jump_position.y) / ray.safe_direction.y,
-            (f32(new_block.y + 1) * edge - jump_position.y) / ray.safe_direction.y,
-            block_step.y > 0,
-        ) + jump_t,
-        select(
-            (f32(new_block.z) * edge - jump_position.z) / ray.safe_direction.z,
-            (f32(new_block.z + 1) * edge - jump_position.z) / ray.safe_direction.z,
-            block_step.z > 0,
-        ) + jump_t,
-    );
+    out.t_max = anchored_t_max(ray, edge, new_block, block_step);
     return out;
 }
 
@@ -702,24 +709,7 @@ fn march_brick_field(ray: Ray) -> MarchHit {
     let entry_position = ray.origin + ray.direction * (t_enter + 1e-4);
     var block_cell = vec3<i32>(floor(entry_position / edge));
     let block_step = vec3<i32>(sign(ray.direction));
-    let t_delta = abs(vec3<f32>(edge) / ray.safe_direction);
-    var t_max = vec3<f32>(
-        select(
-            (f32(block_cell.x) * edge - entry_position.x) / ray.safe_direction.x,
-            (f32(block_cell.x + 1) * edge - entry_position.x) / ray.safe_direction.x,
-            block_step.x > 0,
-        ) + t_enter,
-        select(
-            (f32(block_cell.y) * edge - entry_position.y) / ray.safe_direction.y,
-            (f32(block_cell.y + 1) * edge - entry_position.y) / ray.safe_direction.y,
-            block_step.y > 0,
-        ) + t_enter,
-        select(
-            (f32(block_cell.z) * edge - entry_position.z) / ray.safe_direction.z,
-            (f32(block_cell.z + 1) * edge - entry_position.z) / ray.safe_direction.z,
-            block_step.z > 0,
-        ) + t_enter,
-    );
+    var t_max = anchored_t_max(ray, edge, block_cell, block_step);
     var t_block_enter = t_enter;
 
     for (var step = 0; step < MAX_BLOCK_STEPS; step = step + 1) {
@@ -890,24 +880,7 @@ fn march_brick_field(ray: Ray) -> MarchHit {
                         block_max_voxel - vec3<i32>(1),
                     );
                     let voxel_step = vec3<i32>(sign(ray.direction));
-                    let voxel_t_delta = abs(1.0 / ray.safe_direction);
-                    var voxel_t_max = vec3<f32>(
-                        select(
-                            (f32(voxel_cell.x) - voxel_entry_position.x) / ray.safe_direction.x,
-                            (f32(voxel_cell.x + 1) - voxel_entry_position.x) / ray.safe_direction.x,
-                            voxel_step.x > 0,
-                        ) + entry.t_enter,
-                        select(
-                            (f32(voxel_cell.y) - voxel_entry_position.y) / ray.safe_direction.y,
-                            (f32(voxel_cell.y + 1) - voxel_entry_position.y) / ray.safe_direction.y,
-                            voxel_step.y > 0,
-                        ) + entry.t_enter,
-                        select(
-                            (f32(voxel_cell.z) - voxel_entry_position.z) / ray.safe_direction.z,
-                            (f32(voxel_cell.z + 1) - voxel_entry_position.z) / ray.safe_direction.z,
-                            voxel_step.z > 0,
-                        ) + entry.t_enter,
-                    );
+                    var voxel_t_max = anchored_t_max(ray, 1.0, voxel_cell, voxel_step);
                     // The in-band voxel-Z range of this block (the band clip). Region-inactive:
                     // clamped to the band (the pre-S5 hard Z bound). Region-active: opened to the
                     // whole block — the band is a per-voxel `voxel_meshed` test instead, so a
@@ -983,19 +956,17 @@ fn march_brick_field(ray: Ray) -> MarchHit {
                         if (voxel_t_max.x <= voxel_t_max.y && voxel_t_max.x <= voxel_t_max.z) {
                             t_voxel_enter = voxel_t_max.x;
                             voxel_cell.x = voxel_cell.x + voxel_step.x;
-                            voxel_t_max.x = voxel_t_max.x + voxel_t_delta.x;
                             voxel_entry_axis = 0;
                         } else if (voxel_t_max.y <= voxel_t_max.z) {
                             t_voxel_enter = voxel_t_max.y;
                             voxel_cell.y = voxel_cell.y + voxel_step.y;
-                            voxel_t_max.y = voxel_t_max.y + voxel_t_delta.y;
                             voxel_entry_axis = 1;
                         } else {
                             t_voxel_enter = voxel_t_max.z;
                             voxel_cell.z = voxel_cell.z + voxel_step.z;
-                            voxel_t_max.z = voxel_t_max.z + voxel_t_delta.z;
                             voxel_entry_axis = 2;
                         }
+                        voxel_t_max = anchored_t_max(ray, 1.0, voxel_cell, voxel_step);
                     }
                 }
             }
@@ -1007,16 +978,14 @@ fn march_brick_field(ray: Ray) -> MarchHit {
         if (t_max.x <= t_max.y && t_max.x <= t_max.z) {
             block_cell.x = block_cell.x + block_step.x;
             t_block_enter = t_max.x;
-            t_max.x = t_max.x + t_delta.x;
         } else if (t_max.y <= t_max.z) {
             block_cell.y = block_cell.y + block_step.y;
             t_block_enter = t_max.y;
-            t_max.y = t_max.y + t_delta.y;
         } else {
             block_cell.z = block_cell.z + block_step.z;
             t_block_enter = t_max.z;
-            t_max.z = t_max.z + t_delta.z;
         }
+        t_max = anchored_t_max(ray, edge, block_cell, block_step);
     }
 
     return miss;
@@ -1351,24 +1320,7 @@ fn march_brick_haze(ray: Ray) -> HazeResult {
     let entry_position = ray.origin + ray.direction * (t_enter + 1e-4);
     var block_cell = vec3<i32>(floor(entry_position / edge));
     let block_step = vec3<i32>(sign(ray.direction));
-    let t_delta = abs(vec3<f32>(edge) / ray.safe_direction);
-    var t_max = vec3<f32>(
-        select(
-            (f32(block_cell.x) * edge - entry_position.x) / ray.safe_direction.x,
-            (f32(block_cell.x + 1) * edge - entry_position.x) / ray.safe_direction.x,
-            block_step.x > 0,
-        ) + t_enter,
-        select(
-            (f32(block_cell.y) * edge - entry_position.y) / ray.safe_direction.y,
-            (f32(block_cell.y + 1) * edge - entry_position.y) / ray.safe_direction.y,
-            block_step.y > 0,
-        ) + t_enter,
-        select(
-            (f32(block_cell.z) * edge - entry_position.z) / ray.safe_direction.z,
-            (f32(block_cell.z + 1) * edge - entry_position.z) / ray.safe_direction.z,
-            block_step.z > 0,
-        ) + t_enter,
-    );
+    var t_max = anchored_t_max(ray, edge, block_cell, block_step);
     var t_block_enter = t_enter;
 
     for (var step = 0; step < MAX_BLOCK_STEPS; step = step + 1) {
@@ -1474,24 +1426,7 @@ fn march_brick_haze(ray: Ray) -> HazeResult {
                             block_max_voxel - vec3<i32>(1),
                         );
                         let voxel_step = vec3<i32>(sign(ray.direction));
-                        let voxel_t_delta = abs(1.0 / ray.safe_direction);
-                        var voxel_t_max = vec3<f32>(
-                            select(
-                                (f32(voxel_cell.x) - voxel_entry_position.x) / ray.safe_direction.x,
-                                (f32(voxel_cell.x + 1) - voxel_entry_position.x) / ray.safe_direction.x,
-                                voxel_step.x > 0,
-                            ) + entry.t_enter,
-                            select(
-                                (f32(voxel_cell.y) - voxel_entry_position.y) / ray.safe_direction.y,
-                                (f32(voxel_cell.y + 1) - voxel_entry_position.y) / ray.safe_direction.y,
-                                voxel_step.y > 0,
-                            ) + entry.t_enter,
-                            select(
-                                (f32(voxel_cell.z) - voxel_entry_position.z) / ray.safe_direction.z,
-                                (f32(voxel_cell.z + 1) - voxel_entry_position.z) / ray.safe_direction.z,
-                                voxel_step.z > 0,
-                            ) + entry.t_enter,
-                        );
+                        var voxel_t_max = anchored_t_max(ray, 1.0, voxel_cell, voxel_step);
                         let band_z_lo = max(block_min_voxel.z, uniforms.band_voxel_sv.x);
                         let band_z_hi = min(block_max_voxel.z, uniforms.band_voxel_sv.y);
                         var t_voxel_enter = entry.t_enter;
@@ -1521,16 +1456,14 @@ fn march_brick_haze(ray: Ray) -> HazeResult {
                             if (voxel_t_max.x <= voxel_t_max.y && voxel_t_max.x <= voxel_t_max.z) {
                                 t_voxel_enter = voxel_t_max.x;
                                 voxel_cell.x = voxel_cell.x + voxel_step.x;
-                                voxel_t_max.x = voxel_t_max.x + voxel_t_delta.x;
                             } else if (voxel_t_max.y <= voxel_t_max.z) {
                                 t_voxel_enter = voxel_t_max.y;
                                 voxel_cell.y = voxel_cell.y + voxel_step.y;
-                                voxel_t_max.y = voxel_t_max.y + voxel_t_delta.y;
                             } else {
                                 t_voxel_enter = voxel_t_max.z;
                                 voxel_cell.z = voxel_cell.z + voxel_step.z;
-                                voxel_t_max.z = voxel_t_max.z + voxel_t_delta.z;
                             }
+                            voxel_t_max = anchored_t_max(ray, 1.0, voxel_cell, voxel_step);
                         }
                     }
                     // Saturation early-out: below one 8-bit level of remaining
@@ -1549,16 +1482,14 @@ fn march_brick_haze(ray: Ray) -> HazeResult {
         if (t_max.x <= t_max.y && t_max.x <= t_max.z) {
             block_cell.x = block_cell.x + block_step.x;
             t_block_enter = t_max.x;
-            t_max.x = t_max.x + t_delta.x;
         } else if (t_max.y <= t_max.z) {
             block_cell.y = block_cell.y + block_step.y;
             t_block_enter = t_max.y;
-            t_max.y = t_max.y + t_delta.y;
         } else {
             block_cell.z = block_cell.z + block_step.z;
             t_block_enter = t_max.z;
-            t_max.z = t_max.z + t_delta.z;
         }
+        t_max = anchored_t_max(ray, edge, block_cell, block_step);
     }
 
     return result;

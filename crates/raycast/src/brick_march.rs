@@ -237,7 +237,7 @@ where
     let t_exit = entry.t_exit;
 
     let entry_position = origin + direction * (t_enter + ENTRY_NUDGE);
-    let mut block_dda = VoxelDda::seed(direction, safe, entry_position, t_enter, edge, 0);
+    let mut block_dda = VoxelDda::seed(origin, direction, safe, entry_position, t_enter, edge, 0);
 
     let mut steps = 0u32;
     'march: for _ in 0..MAX_BLOCK_STEPS {
@@ -262,7 +262,7 @@ where
                 blocks_per_cell.max(1),
             );
             let jump_position = origin + direction * jump_t;
-            let reseeded = VoxelDda::seed(direction, safe, jump_position, jump_t, edge, 0);
+            let reseeded = VoxelDda::seed(origin, direction, safe, jump_position, jump_t, edge, 0);
             if reseeded.cell != block_dda.cell {
                 if jump_t > t_exit {
                     break 'march;
@@ -323,6 +323,7 @@ where
                             // check below would break before testing a single voxel — skipping the
                             // block that holds the surface (the grazing-rim bug, 2026-07-17).
                             let mut voxel_dda = VoxelDda::seed_in_box(
+                                origin,
                                 direction,
                                 safe,
                                 voxel_entry,
@@ -420,7 +421,15 @@ where
     } else {
         2
     };
-    let mut dda = VoxelDda::seed(direction, safe, entry_position, t_enter, 1.0, initial_entry_axis);
+    let mut dda = VoxelDda::seed(
+        origin,
+        direction,
+        safe,
+        entry_position,
+        t_enter,
+        1.0,
+        initial_entry_axis,
+    );
 
     for _ in 0..MAX_EXACT_VOXEL_STEPS {
         // Band clip per voxel (the traversal AABB already bounds Z; the integer check keeps
