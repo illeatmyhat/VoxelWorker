@@ -120,7 +120,7 @@ fn layer_scrubber(
         let x = layer_to_x(boundary);
         painter.line_segment(
             [egui::pos2(x, track_top), egui::pos2(x, track_bottom)],
-            egui::Stroke::new(1.0, egui::Color32::from_rgb(0x3a, 0x5f, 0x57)),
+            egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x3a, 0x5f, 0x57)),
         );
         if boundary == grid_z {
             break;
@@ -131,7 +131,7 @@ fn layer_scrubber(
             let x = layer_to_x(grid_z);
             painter.line_segment(
                 [egui::pos2(x, track_top), egui::pos2(x, track_bottom)],
-                egui::Stroke::new(1.0, egui::Color32::from_rgb(0x3a, 0x5f, 0x57)),
+                egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x3a, 0x5f, 0x57)),
             );
             break;
         }
@@ -194,7 +194,7 @@ fn layer_scrubber(
         painter.rect_stroke(
             handle_rect,
             2.0,
-            egui::Stroke::new(1.0, egui::Color32::from_rgb(0x10, 0x0c, 0x08)),
+            egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x10, 0x0c, 0x08)),
             egui::StrokeKind::Inside,
         );
     }

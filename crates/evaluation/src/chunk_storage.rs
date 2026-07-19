@@ -352,7 +352,7 @@ pub fn decompress(compressed: &CompressedChunk) -> VoxelGrid {
         } else {
             (linear / span_x as u64) % span_y as u64
         };
-        let local_z = if span_xy == 0 { 0 } else { linear / span_xy };
+        let local_z = linear.checked_div(span_xy).unwrap_or(0);
         [
             (min_corner[0] + local_x as i64) as i32,
             (min_corner[1] + local_y as i64) as i32,

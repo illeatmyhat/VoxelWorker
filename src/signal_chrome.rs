@@ -137,7 +137,7 @@ pub fn icon_rail(
                     Pos2::new(rail_rect.left(), button_rect.top()),
                     Pos2::new(rail_rect.right(), button_rect.top()),
                 ],
-                Stroke::new(1.0, SEPARATOR),
+                Stroke::new(1.0_f32, SEPARATOR),
             );
         }
         // Lit mode: a 2 px accent inset bar on the leading (left) edge.
@@ -170,7 +170,7 @@ pub fn icon_rail(
     }
 
     // Outer hairline border on top of the button fills.
-    painter.rect_stroke(rail_rect, 0.0, Stroke::new(1.0, BORDER), StrokeKind::Inside);
+    painter.rect_stroke(rail_rect, 0.0, Stroke::new(1.0_f32, BORDER), StrokeKind::Inside);
 
     click
 }

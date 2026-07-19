@@ -103,7 +103,7 @@ fn apply_widget_visuals(v: &mut Visuals) {
     // text: `button_style` paints the selected text/tick in `selection.stroke.color`, so
     // this is what makes a lit cell read dark-on-accent.
     v.selection.bg_fill = ACCENT;
-    v.selection.stroke = Stroke::new(1.0, ACCENT_TEXT);
+    v.selection.stroke = Stroke::new(1.0_f32, ACCENT_TEXT);
     v.hyperlink_color = ACCENT;
 
     // Flat + aligned everywhere: zero radius, zero expansion (hover/active must not grow).
@@ -123,30 +123,30 @@ fn apply_widget_visuals(v: &mut Visuals) {
     let ni = &mut v.widgets.noninteractive;
     ni.bg_fill = Color32::TRANSPARENT;
     ni.weak_bg_fill = Color32::TRANSPARENT;
-    ni.bg_stroke = Stroke::new(1.0, RULE);
-    ni.fg_stroke = Stroke::new(1.0, TEXT_MUTED);
+    ni.bg_stroke = Stroke::new(1.0_f32, RULE);
+    ni.fg_stroke = Stroke::new(1.0_f32, TEXT_MUTED);
 
     // inactive — idle interactables at rest (buttons, chips, text boxes, combos, checkbox
     // boxes). Hairline frame, hover-fill interior, muted idle text.
     let ia = &mut v.widgets.inactive;
     ia.bg_fill = HOVER_BG;
     ia.weak_bg_fill = HOVER_BG;
-    ia.bg_stroke = Stroke::new(1.0, BORDER);
-    ia.fg_stroke = Stroke::new(1.0, TEXT_MUTED);
+    ia.bg_stroke = Stroke::new(1.0_f32, BORDER);
+    ia.fg_stroke = Stroke::new(1.0_f32, TEXT_MUTED);
 
     // hovered — accent outline on the hover fill, brightened text.
     let hv = &mut v.widgets.hovered;
     hv.bg_fill = HOVER_BG;
     hv.weak_bg_fill = HOVER_BG;
-    hv.bg_stroke = Stroke::new(1.0, ACCENT);
-    hv.fg_stroke = Stroke::new(1.0, TEXT_HOVER);
+    hv.bg_stroke = Stroke::new(1.0_f32, ACCENT);
+    hv.fg_stroke = Stroke::new(1.0_f32, TEXT_HOVER);
 
     // active — pressed: accent outline on the deeper active fill, primary text.
     let ac = &mut v.widgets.active;
     ac.bg_fill = ACTIVE_BG;
     ac.weak_bg_fill = ACTIVE_BG;
-    ac.bg_stroke = Stroke::new(1.0, ACCENT);
-    ac.fg_stroke = Stroke::new(1.0, TEXT_PRIMARY);
+    ac.bg_stroke = Stroke::new(1.0_f32, ACCENT);
+    ac.fg_stroke = Stroke::new(1.0_f32, TEXT_PRIMARY);
 
     // open — an open combo/menu button. egui leaves this the brightest default
     // (`gray(210)` text on a `gray(60)` outline); pin it to the hairline frame + primary
@@ -154,8 +154,8 @@ fn apply_widget_visuals(v: &mut Visuals) {
     let op = &mut v.widgets.open;
     op.bg_fill = ACTIVE_BG;
     op.weak_bg_fill = ACTIVE_BG;
-    op.bg_stroke = Stroke::new(1.0, BORDER);
-    op.fg_stroke = Stroke::new(1.0, TEXT_PRIMARY);
+    op.bg_stroke = Stroke::new(1.0_f32, BORDER);
+    op.fg_stroke = Stroke::new(1.0_f32, TEXT_PRIMARY);
 }
 
 /// The app-wide Signal [`Style`] — applied once per frame to the egui context so the
@@ -186,7 +186,7 @@ pub fn apply_app_style(style: &mut Style) {
     // Near-black instrument surfaces.
     v.panel_fill = BG;
     v.window_fill = BG;
-    v.window_stroke = Stroke::new(1.0, BORDER);
+    v.window_stroke = Stroke::new(1.0_f32, BORDER);
     v.extreme_bg_color = HOVER_BG; // text-edit / drag-value inset cells
     v.faint_bg_color = HOVER_BG; // striped rows
     apply_widget_visuals(v);
@@ -197,7 +197,7 @@ pub fn apply_app_style(style: &mut Style) {
     // blocks+voxels VALUE readouts, DragValues and action buttons live) is raised to the
     // primary tier so those readouts stay bright while selected cells still resolve dark.
     v.weak_text_color = Some(TEXT_MUTED);
-    v.widgets.inactive.fg_stroke = Stroke::new(1.0, TEXT_PRIMARY);
+    v.widgets.inactive.fg_stroke = Stroke::new(1.0_f32, TEXT_PRIMARY);
 }
 
 /// The DISPLAY stack's scoped Signal style (`panel::signal_stack`). REPLACES the scoped

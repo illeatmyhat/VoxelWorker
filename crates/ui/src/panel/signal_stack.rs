@@ -126,7 +126,7 @@ fn build_expanded_stack(
 ) {
     egui::Frame::new()
         .fill(BG)
-        .stroke(Stroke::new(1.0, BORDER))
+        .stroke(Stroke::new(1.0_f32, BORDER))
         .corner_radius(CornerRadius::ZERO)
         .inner_margin(Margin::ZERO)
         .show(ui, |ui| {
@@ -301,7 +301,7 @@ fn edge_tab(ui: &mut egui::Ui, caption: &str, expander: bool) -> bool {
     let hovered = resp.hovered();
     ui.painter().rect_filled(rect, 0.0, if hovered { HOVER_BG } else { BG });
     ui.painter()
-        .rect_stroke(rect, 0.0, Stroke::new(1.0, BORDER), StrokeKind::Inside);
+        .rect_stroke(rect, 0.0, Stroke::new(1.0_f32, BORDER), StrokeKind::Inside);
 
     let color = if hovered { TEXT_HOVER } else { TEXT_MUTED };
     let galley = signal_theme::letter_spaced(ui, caption, color, size, spacing);
@@ -327,7 +327,7 @@ fn hairline(ui: &egui::Ui, y: f32) {
     let rect = ui.max_rect();
     ui.painter().line_segment(
         [Pos2::new(rect.left(), y), Pos2::new(rect.left() + STACK_WIDTH, y)],
-        Stroke::new(1.0, RULE),
+        Stroke::new(1.0_f32, RULE),
     );
 }
 

@@ -97,7 +97,7 @@ impl Sheet {
                 painter.rect_stroke(
                     rect,
                     0.0,
-                    Stroke::new(1.0, tokens::BORDER),
+                    Stroke::new(1.0_f32, tokens::BORDER),
                     egui::StrokeKind::Inside,
                 );
                 painter.text(
@@ -146,7 +146,7 @@ impl Sheet {
             painter.rect_stroke(
                 swatch,
                 0.0,
-                Stroke::new(1.0, tokens::BORDER),
+                Stroke::new(1.0_f32, tokens::BORDER),
                 egui::StrokeKind::Inside,
             );
             painter.text(
@@ -362,7 +362,7 @@ impl Sheet {
         );
         painter.line_segment(
             [rect.left_bottom(), rect.right_bottom()],
-            Stroke::new(1.0, tokens::RULE),
+            Stroke::new(1.0_f32, tokens::RULE),
         );
     }
 
@@ -409,7 +409,7 @@ fn section(ui: &mut Ui, title: &str, subtitle: &str) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width().min(CONTENT_WIDTH), 1.0), Sense::hover());
     ui.painter_at(rect).line_segment(
         [rect.left_top(), rect.right_top()],
-        Stroke::new(1.0, tokens::BORDER),
+        Stroke::new(1.0_f32, tokens::BORDER),
     );
     ui.add_space(8.0);
 }
