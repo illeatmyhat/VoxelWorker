@@ -10,9 +10,13 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # GitHub runners have NO GPU. Building never needs one; the GPU-dependent
-  # integration tests are always compiled and skip LOUDLY at runtime when no adapter
-  # is present, so the default `cargo test` is green here. The `shot` binary needs a
+  # GitHub runners have no HARDWARE GPU, but they DO hand out a software adapter, so
+  # the GPU-dependent integration tests run here rather than skipping — the older claim
+  # that they all skip was simply false. What matters is WHICH BACKEND answers: with no
+  # Vulkan ICD installed, wgpu silently falls back to the GL backend, whose D2Array
+  # sampling returns black and failed `gpu_parity` for weeks. `mesa-vulkan-drivers`
+  # (lavapipe) is therefore a TEST-CORRECTNESS dependency, not an optimisation: it puts
+  # CI on Vulkan, the same backend the app actually ships on. The `shot` binary needs a
   # GPU at run time, so we build it but never execute it. `shot` is the dense-oracle
   # golden tool and now its OWN workspace package (`crates/shot`), which enables the
   # `document/oracle` + `evaluation/oracle` features itself — so `--workspace` builds
@@ -26,7 +30,7 @@ jobs:
       - name: Install Linux build deps (egui/winit/wgpu)
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libxkbcommon-dev
+          sudo apt-get install -y libgtk-3-dev libxkbcommon-dev mesa-vulkan-drivers
 
       # `rust-toolchain.toml` is the single source of truth for the version AND the
       # components; `rustup show` installs exactly what it names. Deliberately NOT

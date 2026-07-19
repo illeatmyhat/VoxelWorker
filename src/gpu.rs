@@ -97,7 +97,34 @@ impl GpuContext {
 /// Creates an instance and requests an adapter — no device, no surface, nothing
 /// retained — so it is cheap enough to call once per test binary.
 pub fn adapter_available() -> bool {
+    match adapter_report() {
+        Some(report) => {
+            // Print the identity, not just the yes/no. Which adapter answered is
+            // load-bearing: CI's own premise was that a GitHub runner hands out NONE
+            // (so every GPU test skips), and that premise is false — it hands out a
+            // software rasterizer, whose results differ from a hardware adapter's.
+            // Nothing anywhere logged this, so a device-dependent CI failure could
+            // not be attributed without a round-trip. Now every test binary says so.
+            eprintln!("GPU adapter: {report}");
+            true
+        }
+        None => false,
+    }
+}
+
+/// One-line identity of the adapter [`adapter_available`] would hand out, or
+/// `None` when this machine has none.
+///
+/// Separate from the boolean so a caller that needs to REASON about the adapter
+/// (hardware vs software) reads the same probe the skip decision uses, rather
+/// than opening a second instance that could resolve differently.
+pub fn adapter_report() -> Option<String> {
     let instance =
         wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
-    pollster::block_on(GpuContext::request_adapter(&instance, None)).is_some()
+    let adapter = pollster::block_on(GpuContext::request_adapter(&instance, None))?;
+    let info = adapter.get_info();
+    Some(format!(
+        "{} | backend={:?} | device_type={:?} | driver={:?} {:?}",
+        info.name, info.backend, info.device_type, info.driver, info.driver_info
+    ))
 }
