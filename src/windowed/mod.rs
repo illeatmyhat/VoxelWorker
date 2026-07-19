@@ -311,7 +311,7 @@ impl WindowedState {
         );
 
         // Resolve the panel geometry into the grid, then build the renderer's
-        // instance buffer FROM the grid (REPRESENTATION.md seam). The view cube +
+        // instance buffer FROM the grid (the resolved-grid seam, `docs/adr/0006`). The view cube +
         // block lattice are ON by default; the persisted config overrides them.
         let mut panel_state = match &config {
             Some(config) => config.to_panel_state(),

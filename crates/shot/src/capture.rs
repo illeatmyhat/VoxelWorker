@@ -82,8 +82,8 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         create_msaa_color_view(&gpu.device, options.width, options.height, COLOR_TARGET_FORMAT);
 
     // Resolve the requested geometry into the grid, then build the renderer's
-    // instance buffer FROM the grid (REPRESENTATION.md seam). The voxel cap
-    // (ARCHITECTURE.md §7) guards against an enormous CLI request.
+    // instance buffer FROM the grid (the resolved-grid seam, `docs/adr/0006`). The voxel cap
+    // (the stability cap) guards against an enormous CLI request.
     let shape = SdfShape::from_geometry(options.geometry.clone());
     // Z-up: layers are Z-slices, so the layer track spans the Z dimension (index 2).
     let grid_z = shape.grid_dimensions(options.geometry.voxels_per_block)[2];

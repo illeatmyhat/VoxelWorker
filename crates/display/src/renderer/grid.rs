@@ -23,8 +23,7 @@ const FLOOR_ALPHA: f32 = 0.55;
 /// scheme (`POINT_PLANE_MINOR_ALPHA` vs `POINT_PLANE_MAJOR_ALPHA`).
 const FLOOR_VOXEL_ALPHA: f32 = 0.16;
 
-/// The per-object block lattice and floor grid (ARCHITECTURE.md §6 / prototype
-/// `buildGrids`), drawn through the shared alpha-blended, depth-tested line
+/// The per-object block lattice and floor grid (the prototype's `buildGrids`), drawn through the shared alpha-blended, depth-tested line
 /// pipeline in the MSAA pass.
 ///
 /// Issue #29 S3: this is no longer ONE whole-region lattice. Each frame the caller

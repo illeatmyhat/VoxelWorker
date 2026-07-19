@@ -22,7 +22,7 @@ rfd 0.17.2 (m6) · walkdir 2.5 (m6) · serde 1 + serde_json 1 (m7)
   `voxels_per_block`, not `D`; `semi_axis_x`, not `AX`; `block_local_coord`, not `iLocal`.
   The only allowed short names are loop counters `i, j, k` in the voxel sampling triple-loop.
 - Sizes are in **whole blocks**; `density` (voxels_per_block) is fineness ONLY — never changes
-  object size or texture scale. See ARCHITECTURE.md "Units & the density bug".
+  object size or texture scale. See `docs/architecture/01-document.md` (the units model).
 - `isolevel` is a CPU-only `const SURFACE_ISOLEVEL: f32 = 0.0;` — NOT a uniform, NOT a UI slider.
 - Renderer must be **render-target-agnostic**: it draws into a `&wgpu::TextureView`, so the same
   code paints the windowed surface AND the headless capture texture. No winit knowledge in render.
@@ -179,7 +179,7 @@ to the temp dir and the mismatch fraction is printed. The 5 references live unde
 1. `cargo build --workspace --bins` (every bin, `shot` included — no flags) must succeed
    with no errors. Warnings: fix or justify.
 2. `cargo run -p shot -- <args> --out shots/mN.png` produces a PNG.
-3. Compare against the prototype behavior described in ARCHITECTURE.md / DATA.md.
+3. Compare against the current behaviour recorded in `docs/architecture/` and the golden references.
 4. Report: files touched, build status, screenshot path, deviations from spec (+why), blockers,
    what the next milestone needs. Keep the report concise — the orchestrator reads the PNG.
 

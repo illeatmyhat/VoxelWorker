@@ -1,7 +1,7 @@
 //! Vintage Story install detection + scanning (the first [`BlockSource`]).
 //!
 //! [`VintageStoryDetector`] locates VS installs on this OS with no user action
-//! (DATA.md "VS install locations"): the Windows `%APPDATA%\Vintagestory\assets`
+//!: the Windows `%APPDATA%\Vintagestory\assets`
 //! path is the one actually testable here; the Linux / Flatpak / macOS paths are
 //! probed best-effort so the same binary auto-detects on those platforms too.
 //!
@@ -25,7 +25,7 @@ use super::{
 /// Safety cap on the number of blocktype JSONs parsed when building the index.
 const MAX_BLOCKTYPES_PARSED: usize = 8000;
 
-/// Asset domains scanned, in priority order (DATA.md: `survival` has the bulk).
+/// Asset domains scanned, in priority order (`survival` has the bulk).
 const ASSET_DOMAINS: &[&str] = &["survival", "game", "creative"];
 
 /// Detector for Vintage Story installs.
@@ -49,7 +49,7 @@ impl SourceDetector for VintageStoryDetector {
 /// All plausible `…/Vintagestory/assets` roots on this OS that actually exist.
 ///
 /// Windows is the only path testable in this environment; the others are probed
-/// best-effort (DATA.md) so the auto-detect works unchanged on Linux/macOS.
+/// best-effort so the auto-detect works unchanged on Linux/macOS.
 fn candidate_assets_roots() -> Vec<PathBuf> {
     let mut roots: Vec<PathBuf> = Vec::new();
     let mut push_if_exists = |path: PathBuf| {

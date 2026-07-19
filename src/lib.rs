@@ -10,7 +10,7 @@
 //!     capture texture — guaranteeing the screenshot matches the window.
 //!   * A single egui panel builder ([`build_panel`]) used by both paths so the
 //!     captured frame is identical to the live one.
-//!   * The colour identity from ARCHITECTURE.md §8 (warm-dark workshop).
+//!   * The warm-dark "workshop" colour identity (`docs/design/colour-vocabulary.md`).
 
 // A public item's doc may link to a private helper to explain how the two relate; that
 // cross-reference is deliberate and stays a navigable link under `--document-private-items`.
@@ -159,7 +159,7 @@ pub use voxel_core::voxel::{
 /// texture keeps the screenshot identical to the window (Hard requirement #9).
 pub const COLOR_TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 
-/// The warm-dark "workshop" clear colour (ARCHITECTURE.md §8).
+/// The warm-dark "workshop" clear colour (`docs/design/colour-vocabulary.md`).
 ///
 /// These are *linear* component values handed to wgpu; with an sRGB render
 /// target the GPU encodes them back to sRGB on write, so the perceived colour is
@@ -812,14 +812,14 @@ pub fn render_frame(
         }
 
         // Origin gizmo: same MSAA pass, after the voxels, depth-test OFF so it
-        // shows through the solid model (ARCHITECTURE.md §5/§6).
+        // shows through the solid model.
         if let Some(gizmo) = overlays.gizmo {
             gizmo.draw(&mut voxel_pass);
         }
     }
 
     // === Pass 1b: view cube into a scissored top-left corner (its own depth).
-    // Drawn after the 3D resolve, before egui (ARCHITECTURE.md §6 layering).
+    // Drawn after the 3D resolve, before egui (render layering).
     if let Some(view_cube) = overlays.view_cube {
         view_cube.draw(
             device,

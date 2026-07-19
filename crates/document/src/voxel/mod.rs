@@ -13,7 +13,7 @@
 //! band is a Z-range, and the `.vox` export writes our Z straight to vox-Z with
 //! NO axis swap (MagicaVoxel is itself Z-up).
 //!
-//! ## The producer seam (`REPRESENTATION.md`)
+//! ## The producer seam (`docs/adr/0006-authoring-truth-and-gpu-boundary.md`)
 //!
 //! This module implements the architectural seam **the renderer never calls the SDF
 //! directly**: instead a [`VoxelProducer`] resolves a parametric shape (or, later, a
@@ -21,7 +21,7 @@
 //! layer-range diameter readout (issue #12) and the `.vox` export all read the grid,
 //! so adding a second producer touches nothing downstream. The first (and, in M2,
 //! only) implementor is [`SdfShape`], which runs the sampling triple-loop transcribed
-//! from `ARCHITECTURE.md` §1/§2.
+//! from the original prototype.
 //!
 //! ## The value ⊥ producer split (ADR 0016)
 //!
@@ -51,8 +51,8 @@ pub use substrate::interval::{FieldClassification, FieldInterval};
 /// Anything that can resolve itself into the shared [`VoxelGrid`].
 ///
 /// v1 has a single implementor ([`SdfShape`]); the trait exists so a sculpt
-/// overlay (REPRESENTATION.md option 2) can be added later without changing the
-/// renderer.
+/// overlay (the sparse-override option, `docs/adr/0003` §3g) can be added later
+/// without changing the renderer.
 // `Send + Sync`: every implementor ([`SdfShape`], the sketch producer, [`DebugCloudField`])
 // is plain immutable data, so a boxed producer can be SHARED read-only across rayon threads.
 // The #63 hoisted two-layer build computes the leaf list ONCE and shares the boxed producers

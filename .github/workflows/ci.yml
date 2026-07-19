@@ -28,10 +28,12 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libgtk-3-dev libxkbcommon-dev
 
-      - name: Install stable Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
+      # `rust-toolchain.toml` is the single source of truth for the version AND the
+      # components; `rustup show` installs exactly what it names. Deliberately NOT
+      # `dtolnay/rust-toolchain@stable`: a floating `stable` here is what let CI drift
+      # five minor versions ahead of the local gate (see rust-toolchain.toml).
+      - name: Install the pinned toolchain (rust-toolchain.toml)
+        run: rustup show
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
@@ -200,8 +202,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install stable Rust
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install the pinned toolchain (rust-toolchain.toml)
+        run: rustup show
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2

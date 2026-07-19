@@ -29,7 +29,7 @@ use super::{clamp_window_to_grid, Field, FieldInterval, VoxelProducer};
 /// (ADR 0003 Â§3f(0)), so this field is mirrored from / written to the scene via
 /// [`Intent::SetDensity`](crate::intent::Intent::SetDensity) and is NOT copied onto
 /// the produced [`SdfShape`]. Fineness only â€” it never changes the object's physical
-/// size (DATA.md "the density bug").
+/// size (the density bug — see `docs/architecture/01-document.md`).
 ///
 /// [`size_voxels`]: GeometryParams::size_voxels
 /// [`size_measurements`]: GeometryParams::size_measurements
@@ -303,7 +303,7 @@ impl SdfShape {
     }
 
     /// Whether this shape's sampling grid exceeds [`MAX_GRID_VOXELS`] and so the
-    /// 3D rebuild should be skipped (ARCHITECTURE.md Â§7).
+    /// 3D rebuild should be skipped (the stability cap).
     pub fn exceeds_voxel_cap(&self, voxels_per_block: u32) -> bool {
         self.grid_voxel_count(voxels_per_block) > MAX_GRID_VOXELS
     }

@@ -7,7 +7,7 @@
 //!
 //! This module resolves a scanned [`BlockGroup`](super::BlockGroup) to a
 //! [`FaceTextures`]: a PNG path for each of the six cube faces. It is the
-//! native-only upgrade DATA.md calls "the main reason the port exists".
+//! native-only upgrade that is the main reason the port exists.
 //!
 //! ## What is handled
 //!
@@ -41,7 +41,7 @@ use std::path::{Path, PathBuf};
 /// the VERTICAL axis is Z, so `up` = +Z and `down` = -Z; the four horizontals are
 /// `east` = +X, `west` = -X, `south` = -Y (the front face — front looks along +Y),
 /// `north` = +Y (back). Exact compass orientation of the sides is not critical
-/// (DATA.md); top-vs-side correctness — the `up` PNG on the +Z top, not a wall — is
+/// Top-vs-side correctness — the `up` PNG on the +Z top, not a wall — is
 /// what matters, and that is now correct under Z-up.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CubeFaceSlot {

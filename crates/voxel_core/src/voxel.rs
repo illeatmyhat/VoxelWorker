@@ -17,7 +17,7 @@ use glam::Vec3;
 /// at or below this level. NOT a uniform and NOT a UI slider (DEV_NOTES).
 pub const SURFACE_ISOLEVEL: f32 = 0.0;
 
-/// Stability cap on the sampling grid volume (ARCHITECTURE.md §7). If
+/// Stability cap on the sampling grid volume. If
 /// `grid_x * grid_y * grid_z` exceeds this, the 3D rebuild is skipped (the panel
 /// shows a warning) so dragging a sphere to 16×16×16 @32 can't freeze the app.
 ///
@@ -51,7 +51,7 @@ pub fn chunk_extent_exceeds_bound(voxels_per_block: u32) -> bool {
     extent.saturating_mul(extent).saturating_mul(extent) > MAX_CHUNK_VOXELS
 }
 
-/// The parametric primitive kinds (ARCHITECTURE.md §2 dispatcher).
+/// The parametric primitive kinds (the shape dispatcher).
 ///
 /// Milestone 2 only renders [`ShapeKind::Cylinder`], but the full set is
 /// implemented now because M3 needs them and the cost is trivial.
@@ -253,7 +253,7 @@ impl VoxelGrid {
     /// measure the old 2D slice reported, but taken over the active band instead of
     /// the mid-vertical layer.
     ///
-    /// Reads the RESOLVED grid — NOT the SDF — per REPRESENTATION.md. Cheap: one
+    /// Reads the RESOLVED grid — NOT the SDF — per `docs/adr/0006-authoring-truth-and-gpu-boundary.md`. Cheap: one
     /// pass over the sparse occupied list bucketed into per-(z,y)-row bitsets.
     pub fn widest_run_in_band(&self, band_min: u32, band_max: u32) -> u32 {
         let [grid_x, grid_y, grid_z] = self.dimensions;
@@ -391,7 +391,7 @@ pub fn widest_run_in_band_over_chunks<'grid>(
 
 /// Signed distance to an axis-aligned box with half-extents `box_half`.
 ///
-/// `sdBox` in ARCHITECTURE.md §2, descriptive names.
+/// `sdBox`, with descriptive names.
 pub fn signed_distance_box(point: Vec3, box_half: Vec3) -> f32 {
     let q = point.abs() - box_half;
     q.max(Vec3::ZERO).length() + q.x.max(q.y.max(q.z)).min(0.0)
@@ -399,7 +399,7 @@ pub fn signed_distance_box(point: Vec3, box_half: Vec3) -> f32 {
 
 /// Signed distance to an inscribed ellipsoid (IQ approximation).
 ///
-/// `sdEllipsoid` in ARCHITECTURE.md §2.
+/// `sdEllipsoid`.
 pub fn signed_distance_ellipsoid(point: Vec3, semi_axes: Vec3) -> f32 {
     let scaled = point / semi_axes;
     let distance_to_unit = scaled.length();
@@ -413,7 +413,7 @@ pub fn signed_distance_ellipsoid(point: Vec3, semi_axes: Vec3) -> f32 {
 
 /// Signed distance to an elliptical cylinder with its axis along Z (Z-up).
 ///
-/// `sdCylE(p, ax, ay, az)` in ARCHITECTURE.md §2: `semi_axis_x`/`semi_axis_y`
+/// `sdCylE(p, ax, ay, az)`: `semi_axis_x`/`semi_axis_y`
 /// are the cross-section radii (the cylinder's circular cross-section lies in the
 /// XY ground plane), `half_height` is the Z (vertical) half-extent.
 pub fn signed_distance_elliptical_cylinder(
@@ -429,7 +429,7 @@ pub fn signed_distance_elliptical_cylinder(
         + glam::Vec2::new(radial.max(0.0), vertical.max(0.0)).length()
 }
 
-/// Dispatch to the right SDF for a shape kind (ARCHITECTURE.md §2 `sdf(p)`).
+/// Dispatch to the right SDF for a shape kind (the `sdf(p)` dispatcher).
 ///
 /// `semi_axes` are the inscribed half-extents `(AX, AY, AZ)`; `wall_voxels` is
 /// `wall * density` (Tube only).

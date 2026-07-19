@@ -1,0 +1,16 @@
+# The toolchain BOTH the local gate and CI run. Single source of truth.
+#
+# Why pin: on 2026-07-19 the local gate was clean on 1.92.0 while CI's floating
+# `stable` had reached 1.97.1 — five minor versions of new lints that no local run
+# could see. `cargo clippy -- -D warnings` passed here and failed there, which makes
+# a local gate worse than no gate: it reports confidence it has not earned.
+#
+# Bumping is deliberate: raise `channel`, run
+#   cargo clippy --workspace --all-targets -- -D warnings
+#   RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+#   cargo test --workspace
+# and fix the new lints in that commit, rather than discovering them in CI on an
+# unrelated change. rustup installs this automatically on the first cargo command.
+[toolchain]
+channel = "1.97.1"
+components = ["clippy", "rustfmt"]

@@ -2,7 +2,7 @@
 //!
 //! Serialises a resolved [`VoxelGrid`] to a MagicaVoxel
 //! `.vox` file so the result can be ingested by the **Automatic Chiselling
-//! REBORN** Vintage Story mod (DATA.md §".vox export"). The chunked binary is
+//! REBORN** Vintage Story mod. The chunked binary is
 //! hand-written (no crate dependency) — it is a `VOX ` magic + version 150
 //! header followed by one `MAIN` chunk that contains, per model, a `SIZE` and an
 //! `XYZI` chunk, plus a single trailing `RGBA` palette chunk.

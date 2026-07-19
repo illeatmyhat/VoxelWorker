@@ -100,7 +100,7 @@ pub trait SourceDetector {
 }
 
 /// The chiselable ALLOW list — lowercase substrings matched against the texture
-/// path (DATA.md "Scanning for chiselable blocks" / prototype `CHISEL_NAMES`).
+/// path (the prototype's `CHISEL_NAMES` list).
 /// All vanilla rock types plus the worked-stone / plank families.
 pub const ALLOW_SUBSTRINGS: &[&str] = &[
     "granite",

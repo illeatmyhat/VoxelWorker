@@ -1,5 +1,5 @@
 //! View cube (Milestone 5; restyled to the "Signal" language, issue #86 / ADR 0018
-//! Decision 8) — ARCHITECTURE.md §4 + `docs/design/viewport-chrome-signal.md`.
+//! Decision 8) — see `docs/design/viewport-chrome-signal.md`.
 //!
 //! The cube is a near-black instrument-panel widget in the **top-right** of the 3D
 //! viewport (industry norm): translucent flat face fills within `#10141a`–`#1b2126`,
@@ -129,7 +129,7 @@ fn expand_thick_lines(segments: &[LineVertex]) -> Vec<ThickLineVertex> {
 }
 
 /// The corner view cube: a labelled cube mirroring the main camera, plus a teal
-/// edge wireframe (ARCHITECTURE.md §4). Rendered into a scissored top-left
+/// edge wireframe . Rendered into a scissored top-left
 /// viewport in its own pass (depth cleared there first).
 pub struct ViewCubeRenderer {
     face_pipeline: wgpu::RenderPipeline,

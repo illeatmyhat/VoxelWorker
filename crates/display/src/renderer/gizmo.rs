@@ -1,5 +1,4 @@
-//! Transform gizmo (Milestone 5 origin gizmo, repurposed in issue #29 S2) —
-//! ARCHITECTURE.md §5.
+//! Transform gizmo (Milestone 5 origin gizmo, repurposed in issue #29 S2).
 
 use super::*;
 
@@ -14,8 +13,7 @@ const GIZMO_SQUARE_HEX: u32 = 0xbd_b3_9a;
 
 /// The transform gizmo (issue #29 S2): three coloured axis lines and three
 /// perpendicular square line-loops, drawn with **depth-test disabled** so it
-/// shows through a solid model (correct manipulator behavior — ARCHITECTURE.md
-/// §5). Drawn in the MSAA pass, after the voxels. Unlike the old origin gizmo it
+/// shows through a solid model (correct manipulator behavior). Drawn in the MSAA pass, after the voxels. Unlike the old origin gizmo it
 /// FOLLOWS the selected node: its pivot translation is baked into the uploaded
 /// view-projection (`view_projection · translate(pivot)`) so it sits ON the
 /// object, and it is sized from the selected node's own extent. The axis-triad
