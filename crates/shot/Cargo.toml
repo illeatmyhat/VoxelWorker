@@ -1,0 +1,63 @@
+[package]
+name = "shot"
+version = "0.1.0"
+edition = "2021"
+
+# The `shot` GOLDEN REFERENCE TOOL, in its own package.
+#
+# WHY A PACKAGE AND NOT A `[[bin]]` IN THE ROOT: `shot` renders through the dense
+# whole-region resolvers, so it must enable `document/oracle` + `evaluation/oracle`.
+# As a bin in the root package the only way to say that was `required-features =
+# ["oracle"]` on the bin plus an `oracle` feature on the app crate — and that
+# arrangement had a trap. `required-features` makes a plain `cargo test` SKIP building
+# `shot` rather than fail, while `tests/golden.rs` locates the binary through the
+# COMPILE-TIME `env!("CARGO_BIN_EXE_shot")`. The env var still resolved to a path, a
+# stale `shot.exe` from an earlier flagged build still sat at that path, and the golden
+# suite passed 5/5 against a binary nobody had rebuilt. It was green vacuously.
+#
+# Owning the package removes the special case instead of guarding it. `shot` names the
+# oracle features as ORDINARY dependency features, so there is no bin-level feature gate
+# and nothing to remember to pass. Cargo always builds a package's own bins before
+# running that package's integration tests, so `tests/golden.rs` living HERE means the
+# suite can only ever run against a freshly built `shot`. The stale-binary trap is now
+# structurally impossible rather than documented.
+#
+# THE DENSE WALL IS UNCHANGED FOR SHIPPED BUILDS: the app is `cargo build -p
+# voxel_worker`, which does not include this package, so the O(volume) resolvers stay
+# out of it. Only a build that includes `shot` compiles them — which is exactly what
+# `--features oracle` used to mean, minus the flag.
+
+[dependencies]
+# The app crate: `shot` drives the real thing rather than a parallel harness —
+# `build_brick_field`, `pack_gpu_records`, `default_replay_seed_scene` and
+# `replay_intent_script` are the app's own entry points. This is the one edge that
+# points UP the layer stack, and it is why `shot` is a leaf nothing else depends on.
+voxel_worker = { path = "../.." }
+
+# The authored TRUTH, with the dense scene oracle switched ON. An ordinary dependency
+# feature now: no `required-features`, no root-package `oracle` feature forwarding.
+document = { path = "../document", features = ["oracle"] }
+# The EVALUATOR, with the dense `Store::resolve_region` / `resolve_region_two_layer`
+# oracles switched on for the same reason.
+evaluation = { path = "../evaluation", features = ["oracle"] }
+
+# The value vocabulary the resolved grids are expressed in.
+voxel_core = { path = "../voxel_core" }
+# The GPU sinks `shot` renders through (cuboid mesh, brick raymarch) — the pipelines
+# whose pixels the goldens pin.
+display = { path = "../display" }
+# The async worker pool / engagement orchestrator `shot` drives headlessly.
+work = { path = "../work" }
+# Block-texture sourcing for the material atlas the render cases exercise.
+assets = { path = "../assets" }
+# The orbit rig + projection `shot`'s auto-frame and `--from-config` replay use.
+camera = { path = "../camera" }
+
+wgpu = "29.0.3"
+egui = "0.34.3"
+glam = "0.33.1"
+pollster = "0.4"
+serde_json = "1"
+# PNG encode for the rendered output, and — because Cargo hands a package's normal
+# dependencies to its test targets too — the decode side `tests/golden.rs` compares with.
+image = "0.25"

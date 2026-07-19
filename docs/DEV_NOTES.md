@@ -148,19 +148,26 @@ impl winit::application::ApplicationHandler for App {
 `tests/golden.rs` is an integration test that is ALWAYS compiled; each case skips loudly at
 runtime (printing why) when `voxel_worker::gpu::adapter_available()` reports no adapter. It renders 5 canonical cases through the real `shot` binary (found via
 `CARGO_BIN_EXE_shot`) at a fixed `1280x720` + fixed orbit angles, then tolerance-compares each PNG
-against a committed reference under `tests/golden/`. This proves the cuboid-mesher renderer rewrite
-does not change the pixels. `shot` is the dense-oracle golden tool, so it carries
-`required-features = ["oracle"]`; the `oracle` feature must be enabled or Cargo skips building
-`shot` and `CARGO_BIN_EXE_shot` is undefined.
+against a committed reference under `crates/shot/tests/golden/`. This proves the cuboid-mesher
+renderer rewrite does not change the pixels. `shot` is the dense-oracle golden tool and is its OWN
+workspace package (`crates/shot`), which names `document/oracle` + `evaluation/oracle` as ordinary
+dependency features — so THERE ARE NO FLAGS TO PASS, and Cargo always builds the binary before
+running the test that invokes it.
+
+That last point is load-bearing. `shot` used to be a bin in the root package carrying
+`required-features = ["oracle"]`: a plain `cargo test` silently skipped BUILDING it while the
+compile-time `env!("CARGO_BIN_EXE_shot")` still resolved to the path of a stale `shot.exe`, so the
+suite passed 5/5 against a binary nobody had rebuilt. Cargo builds a package's own bins before its
+integration tests, so keeping `golden.rs` beside `shot` makes that failure mode impossible.
 
 ```bash
-# Run the golden comparison (needs a real GPU; `oracle` builds the `shot` binary):
-cargo test --features "gpu,oracle" --test golden
+# Run the golden comparison (needs a real GPU; no feature flags):
+cargo test -p shot --test golden
 
 # Regenerate the references after an INTENDED visual change, then visually check each PNG:
-UPDATE_GOLDENS=1 cargo test --features "gpu,oracle" --test golden
+UPDATE_GOLDENS=1 cargo test -p shot --test golden
 ```
-(PowerShell: `$env:UPDATE_GOLDENS = "1"; cargo test --features "gpu,oracle" --test golden`.)
+(PowerShell: `$env:UPDATE_GOLDENS = "1"; cargo test -p shot --test golden`.)
 
 Tolerance: a pixel "differs" when its max per-channel abs diff exceeds 8/255; the test fails when
 more than 0.5% of pixels differ. On a mismatch, `<case>-actual.png` + `<case>-diff.png` are written
@@ -169,9 +176,9 @@ to the temp dir and the mismatch fraction is printed. The 5 references live unde
 
 ## Verification protocol for each milestone
 
-1. `cargo build --features oracle` (both bins — `oracle` is required to build `shot`) must succeed
+1. `cargo build --workspace --bins` (every bin, `shot` included — no flags) must succeed
    with no errors. Warnings: fix or justify.
-2. `cargo run --bin shot --features oracle -- <args> --out shots/mN.png` produces a PNG.
+2. `cargo run -p shot -- <args> --out shots/mN.png` produces a PNG.
 3. Compare against the prototype behavior described in ARCHITECTURE.md / DATA.md.
 4. Report: files touched, build status, screenshot path, deviations from spec (+why), blockers,
    what the next milestone needs. Keep the report concise — the orchestrator reads the PNG.

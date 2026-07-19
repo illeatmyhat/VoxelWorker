@@ -135,7 +135,10 @@ pub use evaluation::two_layer_store::{
 };
 // The dense whole-region resolve oracle is compile-gated out of production builds
 // (see the proof chapter's "Oracles" section, `docs/architecture/05-proof.md`).
-#[cfg(any(test, feature = "oracle"))]
+// `cfg(test)` only: this crate has no `oracle` feature since `shot` became its own
+// package, and `shot` reaches the resolver through `evaluation` directly rather than
+// through this re-export. The dev-dependency on `evaluation` supplies the feature.
+#[cfg(test)]
 pub use evaluation::two_layer_store::resolve_region_two_layer;
 pub use document::sketch::{Operation, PlaneAxis, RevolveAxis, Sketch, SketchPoint, SketchSolid};
 pub use voxel_core::spatial_index::{LeafEntry, LeafFingerprint, LeafSpatialIndex, VoxelAabb};

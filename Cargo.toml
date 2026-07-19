@@ -13,7 +13,7 @@ edition = "2021"
 # (the "Substrate" section) and docs/design/per-layer-crates-extraction-map.md for the
 # boundary law.
 [workspace]
-members = [".", "crates/substrate", "crates/camera", "crates/raycast", "crates/voxel_core", "crates/document", "crates/evaluation", "crates/assets", "crates/display", "crates/interchange", "crates/work", "crates/ui"]
+members = [".", "crates/substrate", "crates/camera", "crates/raycast", "crates/voxel_core", "crates/document", "crates/evaluation", "crates/assets", "crates/display", "crates/interchange", "crates/work", "crates/ui", "crates/shot"]
 
 [lib]
 name = "voxel_worker"
@@ -33,15 +33,6 @@ path = "src/bin/design_reference/main.rs"
 # needs no feature gate and stays buildable on a GPU-less checkout of the tree
 # (it does want a presentable adapter to RUN, like the app itself).
 
-[[bin]]
-name = "shot"
-path = "src/bin/shot/main.rs"
-# `shot` is the golden DENSE REFERENCE ORACLE: it resolves through the dense
-# whole-region resolvers, which are compile-gated behind the `oracle` feature.
-# Requiring the feature here means a plain `cargo build --bins` SKIPS `shot`
-# rather than failing, and building it opts the oracle surface in.
-required-features = ["oracle"]
-
 [features]
 default = []
 # NOTE: there is no `gpu` feature. The GPU-device-dependent integration tests are ALWAYS
@@ -49,14 +40,15 @@ default = []
 # loudly on a machine without an adapter. A test that skips loudly beats one that
 # disappears at compile time — the old feature made the golden suite pass vacuously
 # whenever someone ran it without the flag.
-# Enables the dense whole-region resolve oracles (the O(volume) reference
-# resolvers the parity tests and the `shot` golden tool cross-check the sparse
-# runtime path against). Never on in production builds: `cargo test` sees them
-# via `cfg(test)`, and the `shot` binary opts in via `required-features`. Forwards
-# to `document/oracle` (the scene resolve oracle) and `evaluation/oracle` (the dense
-# `Store::resolve_region` + `resolve_region_two_layer` oracles) so the `shot` bin can
-# reach the whole-region resolvers now living in those crates.
-oracle = ["document/oracle", "evaluation/oracle"]
+#
+# NOTE: there is no `oracle` feature either, and no `shot` bin. `shot` is its own package
+# (`crates/shot`) that names `document/oracle` + `evaluation/oracle` as ORDINARY dependency
+# features. It moved for the same reason the `gpu` feature died: as a bin here it needed
+# `required-features = ["oracle"]`, which made a plain `cargo test` SKIP building it while
+# `golden.rs` still found a stale `shot.exe` via the compile-time `CARGO_BIN_EXE_shot` — so
+# the golden suite passed vacuously. Cargo always builds a package's own bins before its
+# integration tests, so `golden.rs` living beside `shot` makes that trap impossible. This
+# crate's own tests still reach the dense oracles through the dev-dependencies below.
 # Opt-in CPU frame profiling via the Tracy backend (zones + frame marks).
 # OFF by default: with the feature absent the `profiling` facade compiles to
 # no-ops and `tracy-client` (and its C/C++ `tracy-client-sys`) is NOT pulled in.

@@ -9,15 +9,22 @@
 //! goldens prove the pixels did not change (or, if they intentionally did, the
 //! references are refreshed in one step).
 //!
-//! Run:    `cargo test --features oracle --test golden`
-//! Regen:  `UPDATE_GOLDENS=1 cargo test --features oracle --test golden`
+//! Run:    `cargo test -p shot --test golden`
+//! Regen:  `UPDATE_GOLDENS=1 cargo test -p shot --test golden`
 //!         (writes the reference PNGs instead of comparing — use after an
 //!         intended visual change, then VISUALLY sanity-check each PNG.)
 //!
 //! Always compiled: each case probes for a wgpu adapter at runtime and skips LOUDLY
 //! (printing why) when there is none, rather than vanishing at compile time.
-//! `--features oracle` is REQUIRED — `shot` carries `required-features = ["oracle"]`,
-//! and without it Cargo skips building the binary and the compare runs against a stale one.
+//!
+//! NO FLAGS ARE REQUIRED, and that is load-bearing. This test lives in `shot`'s OWN
+//! package, so Cargo builds the `shot` binary before running it — `CARGO_BIN_EXE_shot`
+//! can only point at a freshly built one. Previously `shot` was a bin in the root
+//! package carrying `required-features = ["oracle"]`: a plain `cargo test` silently
+//! skipped BUILDING it, while this compile-time `env!` still resolved to the path of a
+//! stale `shot.exe` left by an earlier flagged build, and the suite passed 5/5 against
+//! a binary nobody had rebuilt. If you are ever tempted to move this test back up to
+//! the root package or reintroduce a feature gate on the binary, that trap comes back.
 //!
 //! ## Tolerance model
 //! GPU rasterisation + MSAA resolve is not bit-exact across runs, so an exact
@@ -685,7 +692,7 @@ fn golden_images_match() {
 /// seam, never an observable change. Includes the OVERLAP scene (the E2 carry-over: an
 /// overlapping multi-material region must render identically to the dense path).
 ///
-/// Run: `cargo test --features oracle --test golden`. Read the actual PNGs on a mismatch (the
+/// Run: `cargo test -p shot --test golden`. Read the actual PNGs on a mismatch (the
 /// large-solid `demo-village`/`demo-overlap` cases prove the one-box coarse path leaves no
 /// interior seam or hole).
 #[test]
@@ -760,7 +767,7 @@ fn two_layer_golden_matches_dense() {
 /// the same as over the mesh, so a byte-for-byte-equivalent render is the depth-compositing
 /// evidence (grill Q5 / the one integration point the ADR 0009 benchmark never exercised).
 ///
-/// Run: `cargo test --features oracle --test golden`. On a mismatch, read the `-brick-actual.png`
+/// Run: `cargo test -p shot --test golden`. On a mismatch, read the `-brick-actual.png`
 /// and `-brick-diff.png` artifacts — a silhouette-only diff points at MSAA sample positions,
 /// an interior diff at the shading transcription.
 #[test]
