@@ -5,8 +5,7 @@
 use voxel_core::spatial_index::{LeafEntry, LeafFingerprint, LeafSpatialIndex, VoxelAabb};
 
 use super::producers::{
-    leaf_content_fingerprint, leaf_producer_grid_voxels, operation_masks_beyond_bounds,
-    outset_voxels_at,
+    leaf_content_fingerprint, operation_masks_beyond_bounds, outset_voxels_at,
 };
 use super::*;
 
@@ -36,11 +35,11 @@ impl Scene {
         let mut min_corner = [i64::MAX; 3];
         let mut max_corner = [i64::MIN; 3];
         let mut any = false;
-        self.for_each_leaf(&mut |world_offset_voxels, content, _grid_on_faces, _operation, outset, _scope_path| {
+        self.for_each_leaf(&mut |world_offset_voxels, body, _grid_on_faces, _operation, outset, _scope_path| {
             let outset_voxels = outset_voxels_at(outset, voxels_per_block);
             let world_offset_voxels: [i64; 3] =
                 std::array::from_fn(|axis| world_offset_voxels[axis] - outset_voxels);
-            let Some(grid_voxels) = leaf_producer_grid_voxels(content, voxels_per_block, outset_voxels) else {
+            let Some(grid_voxels) = body.grid_voxels(voxels_per_block, outset_voxels) else {
                 return;
             };
             any = true;
@@ -125,14 +124,14 @@ impl Scene {
     pub fn build_leaf_spatial_index(&self, voxels_per_block: u32) -> LeafSpatialIndex {
         let mut entries: Vec<LeafEntry> = Vec::new();
         let mut has_region_spanning_leaf = false;
-        self.for_each_leaf(&mut |world_offset_voxels, content, grid_on_faces, operation, outset, scope_path| {
+        self.for_each_leaf(&mut |world_offset_voxels, body, grid_on_faces, operation, outset, scope_path| {
             // ADR 0020 Consequences: the edit-broadphase AABB must be the OUTSET bounds, not
             // the producer bounds — an outset cutter dirties a larger region than its own
             // extent, and invalidating only the undilated box leaves a stale rim behind.
             let outset_voxels = outset_voxels_at(outset, voxels_per_block);
             let world_offset_voxels: [i64; 3] =
                 std::array::from_fn(|axis| world_offset_voxels[axis] - outset_voxels);
-            match leaf_producer_grid_voxels(content, voxels_per_block, outset_voxels) {
+            match body.grid_voxels(voxels_per_block, outset_voxels) {
                 Some(grid_voxels) => {
                     // The producer-true emitted grid (`size·d` for an SDF Tool, the
                     // exact prism AABB for a SketchTool), corner-anchored: its world
@@ -148,7 +147,7 @@ impl Scene {
                     }
                     let payload = leaf_content_fingerprint(
                         world_offset_voxels,
-                        content,
+                        &body,
                         grid_on_faces,
                         operation,
                         scope_path,
@@ -178,7 +177,7 @@ impl Scene {
                         world_aabb: VoxelAabb::new([0; 3], [0; 3]),
                         fingerprint: LeafFingerprint::RegionSpanning(leaf_content_fingerprint(
                             world_offset_voxels,
-                            content,
+                            &body,
                             grid_on_faces,
                             operation,
                             scope_path,

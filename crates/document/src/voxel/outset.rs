@@ -123,7 +123,16 @@ impl VoxelProducer for OutsetProducer {
                                 (j % voxels_per_block as i64) as u8,
                                 (k % voxels_per_block as i64) as u8,
                             ],
-                            block_id: BlockId::DEFAULT,
+                            // A composed Part carries per-voxel materials, and the dilated
+                            // shell must inherit the material of the surface it grew from
+                            // rather than flattening the Part to one colour — so the
+                            // material is sampled at the SAME inner point as the distance.
+                            // A single-material producer answers `None` here and its leaf
+                            // override stamps instead, exactly as before.
+                            block_id: self
+                                .inner
+                                .material_at(centre, voxels_per_block)
+                                .unwrap_or(BlockId::DEFAULT),
                             attrs: BlockAttrs::DEFAULT,
                             grid_overlay: false,
                         });
@@ -187,6 +196,17 @@ impl VoxelProducer for OutsetProducer {
             self.signed_distance(centre, voxels_per_block),
             circumradius,
         ))
+    }
+
+    /// Delegated at the corresponding inner point, so a dilated Part's materials line up
+    /// with its undilated ones.
+    fn material_at(
+        &self,
+        point_local_voxels: [f32; 3],
+        voxels_per_block: u32,
+    ) -> Option<voxel_core::core_geom::BlockId> {
+        self.inner
+            .material_at(self.to_inner_point(point_local_voxels), voxels_per_block)
     }
 
     fn as_field(&self) -> Option<&dyn Field> {

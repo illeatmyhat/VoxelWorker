@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use voxel_core::units::{ExactRational, Measurement};
 
-use super::producers::{leaf_producer_grid_voxels, outset_voxels_at};
+use super::producers::{outset_voxels_at, LeafBody};
 use super::*;
 use voxel_core::voxel::RecentreVoxels;
 
@@ -348,7 +348,7 @@ impl Scene {
             parent_offset_voxels,
             &mut def_path,
             &mut scope_path,
-            &mut |world_offset_voxels, content, _grid_on_faces, _operation, outset, _scope_path| {
+            &mut |world_offset_voxels, body, _grid_on_faces, _operation, outset, _scope_path| {
                 let outset_voxels = outset_voxels_at(outset, voxels_per_block);
             let world_offset_voxels: [i64; 3] =
                 std::array::from_fn(|axis| world_offset_voxels[axis] - outset_voxels);
@@ -357,7 +357,7 @@ impl Scene {
                 // the wrong place (ADR 0008 — the frame is carried).
                 let world_offset_voxels: [i64; 3] =
                     std::array::from_fn(|axis| world_offset_voxels[axis] - outset_voxels);
-                let Some(size_blocks) = leaf_size_blocks(content, voxels_per_block, outset_voxels) else {
+                let Some(size_blocks) = leaf_size_blocks(&body, voxels_per_block, outset_voxels) else {
                     return;
                 };
                 any = true;
@@ -425,7 +425,7 @@ impl Scene {
             parent_offset_voxels,
             &mut def_path,
             &mut scope_path,
-            &mut |world_offset_voxels, content, _grid_on_faces, _operation, outset, _scope_path| {
+            &mut |world_offset_voxels, body, _grid_on_faces, _operation, outset, _scope_path| {
                 let outset_voxels = outset_voxels_at(outset, voxels_per_block);
             let world_offset_voxels: [i64; 3] =
                 std::array::from_fn(|axis| world_offset_voxels[axis] - outset_voxels);
@@ -434,7 +434,7 @@ impl Scene {
                 // the wrong place (ADR 0008 — the frame is carried).
                 let world_offset_voxels: [i64; 3] =
                     std::array::from_fn(|axis| world_offset_voxels[axis] - outset_voxels);
-                let Some(grid_voxels) = leaf_producer_grid_voxels(content, voxels_per_block, outset_voxels) else {
+                let Some(grid_voxels) = body.grid_voxels(voxels_per_block, outset_voxels) else {
                     return;
                 };
                 any = true;
@@ -534,11 +534,11 @@ impl Scene {
         let mut min_corner = [i64::MAX; 3];
         let mut max_corner = [i64::MIN; 3];
         let mut any = false;
-        self.for_each_leaf(&mut |world_offset_voxels, content, _grid_on_faces, _operation, outset, _scope_path| {
+        self.for_each_leaf(&mut |world_offset_voxels, body, _grid_on_faces, _operation, outset, _scope_path| {
             let outset_voxels = outset_voxels_at(outset, voxels_per_block);
             let world_offset_voxels: [i64; 3] =
                 std::array::from_fn(|axis| world_offset_voxels[axis] - outset_voxels);
-            let Some(size_blocks) = leaf_size_blocks(content, voxels_per_block, outset_voxels) else {
+            let Some(size_blocks) = leaf_size_blocks(&body, voxels_per_block, outset_voxels) else {
                 return;
             };
             any = true;
@@ -661,11 +661,21 @@ impl Scene {
 /// producer's own bounds, and a region sized to the undilated extent would clip the
 /// dilation away at the composite edge.
 fn leaf_size_blocks(
-    content: &NodeContent,
+    body: &LeafBody<'_>,
     voxels_per_block: u32,
     outset_voxels: i64,
 ) -> Option<[u32; 3]> {
     let density = voxels_per_block.max(1);
+    // A pre-composed scope reports the extent of its composed body (ADR 0019 Decision 7).
+    let content = match body {
+        LeafBody::Content(content) => *content,
+        LeafBody::Composed { .. } => {
+            let grid_voxels = body.grid_voxels(voxels_per_block, outset_voxels)?;
+            return Some(std::array::from_fn(|axis| {
+                (grid_voxels[axis].max(0) as u32).div_ceil(density)
+            }));
+        }
+    };
     // Grown by `N` on both sides of every axis, in VOXELS, before the round up to whole
     // blocks — rounding first would lose a sub-block outset entirely.
     let grow = |voxels: u32| {

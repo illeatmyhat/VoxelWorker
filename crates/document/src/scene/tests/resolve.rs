@@ -450,3 +450,158 @@ use crate::voxel::SdfShape;
              (outset 2 left {dilated} voxels, outset 0 left {plain})"
         );
     }
+
+    /// **An outset on a Part dilates the Part's COMPOSED body** (ADR 0019 Decision 7).
+    ///
+    /// A Part (`NodeContent::Group` — ADR 0018 Decision 1 names the composition container
+    /// "Part") is a sealed scope: it pre-composes its children into one body. Its outset must
+    /// therefore dilate that composed body, not each member separately. ADR 0019 Decision 7
+    /// rejects leaf-only outset precisely so a reusable composed cutter can be given
+    /// clearance as a whole.
+    ///
+    /// The two are NOT interchangeable. Dilation distributes over union, so for a
+    /// pure-union Part the per-member and per-Part answers agree — but a Part with an
+    /// internal `Subtract` diverges sharply: dilating members individually makes the inner
+    /// cutter carve MORE, while dilating the composed Part grows the finished body and
+    /// partly closes that cut. This test uses the union case for the baseline and the
+    /// carved case for the distinction.
+    #[test]
+    fn an_outset_on_a_part_dilates_the_parts_composed_body() {
+        let voxels_per_block = 8;
+        let part_scene = |outset_voxels: i64, with_internal_cut: bool| {
+            let mut children = vec![NodeBuilder::Leaf({
+                let shape =
+                    SdfShape::from_blocks(ShapeKind::Box, [4, 4, 4], 1, voxels_per_block);
+                Node::new("Body", NodeContent::Tool { shape, material: MaterialChoice::Stone })
+            })];
+            if with_internal_cut {
+                children.push(NodeBuilder::Leaf({
+                    let shape =
+                        SdfShape::from_blocks(ShapeKind::Box, [2, 2, 2], 1, voxels_per_block);
+                    let mut node = Node::new(
+                        "Cut",
+                        NodeContent::Tool { shape, material: MaterialChoice::Wood },
+                    );
+                    node.operation = CombineOp::Subtract;
+                    node.transform = NodeTransform::from_blocks([3, 3, 3], voxels_per_block);
+                    node
+                }));
+            }
+            let mut scene = Scene::from_nodes(vec![NodeBuilder::group("Part", children)]);
+            // The Part is the only top-level node, so path [0] is the group itself.
+            let path = crate::scene::NodePath::from_indices(vec![0]);
+            scene
+                .node_at_path_mut(&path)
+                .expect("the Part resolves at path [0]")
+                .outset = voxel_core::units::Measurement::from_voxels(outset_voxels);
+            scene
+        };
+
+        let occupancy = |scene: &Scene| {
+            scene
+                .resolve_region(scene.full_extent_blocks(voxels_per_block), voxels_per_block, 0)
+                .occupied_count()
+        };
+
+        // A Part wrapping ONE box must dilate exactly like the box would: 32³ → 40³.
+        let plain = occupancy(&part_scene(0, false));
+        let dilated = occupancy(&part_scene(4, false));
+        assert_eq!(plain, 32 * 32 * 32, "the undilated Part is a plain 4-block box");
+        assert_eq!(
+            dilated,
+            40 * 40 * 40,
+            "a Part with an outset of 4 must grow its composed body by 4 on every side"
+        );
+
+        // With an internal cut, dilating the COMPOSED body must partly close the notch, so
+        // the result exceeds what dilating the members separately would leave.
+        let carved_plain = occupancy(&part_scene(0, true));
+        let carved_dilated = occupancy(&part_scene(4, true));
+        assert!(
+            carved_dilated > carved_plain,
+            "an outset Part with an internal cut must still grow overall \
+             ({carved_dilated} vs {carved_plain})"
+        );
+    }
+
+    /// The outset shell of a mixed-material Part inherits the NEAREST member's material.
+    ///
+    /// Inside the body the later Union member still wins on overlap (ADR 0017), so an outset
+    /// Part's interior is coloured exactly as the same Part at outset zero. Outside it there
+    /// is no "later" to appeal to — no member contains the point — so the shell takes the
+    /// material of the surface it grew from. Flattening the Part to one material would
+    /// visibly recolour it the moment a user typed a clearance.
+    #[test]
+    fn an_outset_shell_takes_the_nearest_members_material() {
+        let voxels_per_block = 8;
+        let stone = {
+            let shape = SdfShape::from_blocks(ShapeKind::Box, [2, 2, 2], 1, voxels_per_block);
+            Node::new("Stone", NodeContent::Tool { shape, material: MaterialChoice::Stone })
+        };
+        let wood = {
+            let shape = SdfShape::from_blocks(ShapeKind::Box, [2, 2, 2], 1, voxels_per_block);
+            let mut node =
+                Node::new("Wood", NodeContent::Tool { shape, material: MaterialChoice::Wood });
+            node.transform = NodeTransform::from_blocks([6, 0, 0], voxels_per_block);
+            node
+        };
+        let mut scene = Scene::from_nodes(vec![NodeBuilder::group(
+            "Part",
+            vec![NodeBuilder::Leaf(stone), NodeBuilder::Leaf(wood)],
+        )]);
+        let path = crate::scene::NodePath::from_indices(vec![0]);
+        scene
+            .node_at_path_mut(&path)
+            .expect("the Part resolves at path [0]")
+            .outset = voxel_core::units::Measurement::from_voxels(2);
+
+        let grid =
+            scene.resolve_region(scene.full_extent_blocks(voxels_per_block), voxels_per_block, 0);
+        let stone_id = MaterialChoice::Stone.block_id();
+        let wood_id = MaterialChoice::Wood.block_id();
+        let stone_count = grid.occupied.iter().filter(|v| v.block_id == stone_id).count();
+        let wood_count = grid.occupied.iter().filter(|v| v.block_id == wood_id).count();
+
+        // Both materials must survive the dilation — a single-material Part would show one.
+        assert!(stone_count > 0, "the dilated Part kept no Stone voxels");
+        assert!(wood_count > 0, "the dilated Part kept no Wood voxels");
+        // The two boxes are identical and symmetric about the gap, so their dilated shells
+        // are too: neither material may dominate.
+        let ratio = stone_count as f64 / wood_count as f64;
+        assert!(
+            (0.9..1.1).contains(&ratio),
+            "symmetric members must dilate symmetrically \
+             (stone {stone_count} vs wood {wood_count})"
+        );
+    }
+
+    /// The chunked and monolithic resolves agree on a Part outset too.
+    ///
+    /// A composed scope arrives at the chunked path as a single leaf whose AABB is the
+    /// composed-then-dilated box. If that box were wrong, the chunk-skip would drop the Part
+    /// in chunks its members reach — the same seam bug per-leaf outset could have had, one
+    /// level up.
+    #[test]
+    fn chunked_resolve_matches_monolithic_for_an_outset_part() {
+        let voxels_per_block = 8;
+        let member = |offset_blocks: [i64; 3], material| {
+            let shape = SdfShape::from_blocks(ShapeKind::Box, [3, 2, 2], 1, voxels_per_block);
+            let mut node = Node::new("M", NodeContent::Tool { shape, material });
+            node.transform = NodeTransform::from_blocks(offset_blocks, voxels_per_block);
+            NodeBuilder::Leaf(node)
+        };
+        let mut scene = Scene::from_nodes(vec![NodeBuilder::group(
+            "Part",
+            vec![
+                member([0, 0, 0], MaterialChoice::Stone),
+                member([4, 1, 0], MaterialChoice::Wood),
+            ],
+        )]);
+        let path = crate::scene::NodePath::from_indices(vec![0]);
+        scene
+            .node_at_path_mut(&path)
+            .expect("the Part resolves at path [0]")
+            .outset = voxel_core::units::Measurement::from_voxels(3);
+        let scene = scene_with_top_level_selected(scene, 0);
+        assert_chunked_matches_monolithic(&scene, voxels_per_block, "outset-part");
+    }

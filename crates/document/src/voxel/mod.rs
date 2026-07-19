@@ -124,6 +124,25 @@ pub trait VoxelProducer: Send + Sync {
         None
     }
 
+    /// The material this producer stamps at a point in its own `[0, full_dim)` voxel frame,
+    /// for a producer that carries per-voxel materials rather than one override.
+    ///
+    /// The default `None` means "I have no opinion" — the leaf's single-material override
+    /// answers instead, which is the case for every Tool and sketch solid. A
+    /// [`CompositeProducer`] overrides it because a composed Part's material varies across
+    /// the body, and an outset shell has to inherit the material of the surface it grew from
+    /// rather than flattening the Part to one colour.
+    ///
+    /// [`CompositeProducer`]: crate::voxel::CompositeProducer
+    fn material_at(
+        &self,
+        point_local_voxels: [f32; 3],
+        voxels_per_block: u32,
+    ) -> Option<voxel_core::core_geom::BlockId> {
+        let _ = (point_local_voxels, voxels_per_block);
+        None
+    }
+
     /// This producer's signed distance field, when it has one (ADR 0020 Decision 1).
     ///
     /// `None` is not a failure — it is the honest answer for a producer whose occupancy is
@@ -168,10 +187,12 @@ pub(crate) fn clamp_window_to_grid(
     bounds
 }
 
+mod composite;
 mod field;
 mod outset;
 mod sdf_shape;
 
+pub use composite::{CompositeMember, CompositeProducer};
 pub use field::Field;
 pub use outset::OutsetProducer;
 pub use sdf_shape::{GeometryParams, SdfShape};

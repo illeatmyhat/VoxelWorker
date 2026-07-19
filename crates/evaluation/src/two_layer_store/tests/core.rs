@@ -855,3 +855,47 @@ use super::*;
         assert!(stream_vox_occupancy(&store, &scene, 16, |_| {}).is_none());
     }
 
+
+    /// **The scope-outset parity gate**: the two-layer classifier must agree with the dense
+    /// resolve for a Part carrying an outset (ADR 0019 Decision 7, ADR 0020 Decision 7).
+    ///
+    /// This is the composed-scope analogue of the per-leaf outset gate. The two paths reach
+    /// the dilated Part by different routes — the dense one resolves the composed field's
+    /// sign per voxel, the two-layer one classifies whole blocks from the composed field's
+    /// Lipschitz bracket and only resolves the straddling ones. A bracket that claimed AIR
+    /// or COARSE-SOLID anywhere the composed body disagrees would show up here as a
+    /// mismatch, and nowhere else until it reached a user's screen as a hole.
+    #[test]
+    fn an_outset_part_classifies_as_the_dense_resolve_does() {
+        use document::scene::{CombineOp, NodeBuilder, NodePath};
+        let density = 8u32;
+        let member = |size: [u32; 3], offset: [i64; 3], material, operation| {
+            let shape = SdfShape::from_blocks(ShapeKind::Box, size, 1, density);
+            let mut node = Node::new("M", NodeContent::Tool { shape, material });
+            node.transform = NodeTransform::from_blocks(offset, density);
+            node.operation = operation;
+            NodeBuilder::Leaf(node)
+        };
+
+        for outset_voxels in [3i64, -2] {
+            // A Part with an INTERNAL cut, so the composed field exercises `max(a, −b)` and
+            // not just the exact `min` of a union.
+            let mut scene = Scene::from_nodes(vec![NodeBuilder::group(
+                "Part",
+                vec![
+                    member([4, 3, 3], [0, 0, 0], MaterialChoice::Stone, CombineOp::Union),
+                    member([3, 3, 3], [3, 1, 0], MaterialChoice::Wood, CombineOp::Union),
+                    member([2, 2, 2], [1, 1, 1], MaterialChoice::Plain, CombineOp::Subtract),
+                ],
+            )]);
+            scene
+                .node_at_path_mut(&NodePath::from_indices(vec![0]))
+                .expect("the Part resolves at path [0]")
+                .outset = voxel_core::units::Measurement::from_voxels(outset_voxels);
+            assert_two_layer_round_trip_matches_dense(
+                &scene,
+                density,
+                &format!("outset-part-{outset_voxels}"),
+            );
+        }
+    }

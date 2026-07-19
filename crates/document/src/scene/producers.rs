@@ -114,12 +114,90 @@ pub struct ScopeFrame {
 /// [`Measurement`]: voxel_core::units::Measurement
 pub(super) type LeafVisitor<'walk> = dyn FnMut(
         [i64; 3],
-        &NodeContent,
+        LeafBody<'_>,
         bool,
         CombineOp,
         voxel_core::units::Measurement,
         &[ScopeFrame],
     ) + 'walk;
+
+/// What a visited leaf actually IS: ordinary document content, or a sealed scope that has
+/// been pre-composed into one producer because it carries an outset.
+///
+/// The second arm exists because ADR 0019 Decision 7 puts an outset on a **scope** — a Part
+/// (ADR 0018 Decision 1) or a sealed definition body — and requires it to dilate the scope's
+/// COMPOSED body. A scope is already defined as "pre-compose the children into one body"
+/// (ADR 0017 Decision 3), so the walk hands it over as a single leaf and every consumer
+/// treats it like any other producer. There is no `NodeContent` for it: it is a derived
+/// runtime body, never document data.
+pub(super) enum LeafBody<'walk> {
+    Content(&'walk NodeContent),
+    Composed {
+        producer: crate::voxel::CompositeProducer,
+        /// The composed subtree's cache key. A scope has no `NodeContent` to fingerprint, so
+        /// this is built from its members' fingerprints at compose time.
+        fingerprint: String,
+    },
+}
+
+/// A sealed scope pre-composed into one producer, with the world offset of its low corner.
+pub(super) struct ComposedScope {
+    pub origin_voxels: [i64; 3],
+    pub fingerprint: String,
+    pub producer: crate::voxel::CompositeProducer,
+}
+
+impl LeafBody<'_> {
+    /// The producer this leaf resolves through, plus its single-material override (`None`
+    /// for a body carrying its own per-voxel materials).
+    ///
+    /// This is the ONE place content maps to a producer. It used to be an identical `match`
+    /// repeated in `leaf_producers`, `resolve_region` and `resolve_chunk`, which is exactly
+    /// the shape of duplication a new body kind would have had to be added to three times.
+    pub(super) fn into_producer(
+        self,
+        region_dimensions: [u32; 3],
+        voxels_per_block: u32,
+        outset_voxels: i64,
+    ) -> Option<(Option<voxel_core::core_geom::BlockId>, Box<dyn VoxelProducer>)> {
+        let _ = voxels_per_block;
+        let (material, producer): (Option<voxel_core::core_geom::BlockId>, Box<dyn VoxelProducer>) =
+            match self {
+                LeafBody::Content(NodeContent::Tool { shape, material }) => {
+                    (material_id_for(*material), Box::new(shape.clone()))
+                }
+                LeafBody::Content(NodeContent::SketchTool { producer, material }) => {
+                    (material_id_for(*material), Box::new(producer.clone()))
+                }
+                LeafBody::Content(NodeContent::VoxelBody(VoxelBody::DebugClouds { seed })) => (
+                    // A VoxelBody brings its own per-voxel materials; today the cloud field
+                    // emits material 0, so the stamp keeps that.
+                    None,
+                    Box::new(DebugCloudField { dimensions: region_dimensions, seed: *seed }),
+                ),
+                LeafBody::Content(NodeContent::Group(_) | NodeContent::Instance(_)) => return None,
+                // A composed scope's materials vary across its body, so it stamps per-voxel
+                // rather than through a single override.
+                LeafBody::Composed { producer, .. } => (None, Box::new(producer)),
+            };
+        // ADR 0019 Decision 7: the outset dilates the body BEFORE it folds.
+        Some((material, crate::voxel::OutsetProducer::wrap(producer, outset_voxels)))
+    }
+
+    /// The leaf's emitted grid extent in voxels, grown by its outset — `None` for a body with
+    /// no localisable extent.
+    pub(super) fn grid_voxels(&self, voxels_per_block: u32, outset_voxels: i64) -> Option<[i64; 3]> {
+        let dimensions = match self {
+            LeafBody::Content(content) => {
+                return leaf_producer_grid_voxels(content, voxels_per_block, outset_voxels)
+            }
+            LeafBody::Composed { producer, .. } => producer.full_dimensions(voxels_per_block),
+        };
+        Some(std::array::from_fn(|axis| {
+            (dimensions[axis] as i64 + 2 * outset_voxels).max(0)
+        }))
+    }
+}
 
 impl Scene {
     /// Walk the whole node tree depth-first, invoking
@@ -171,30 +249,17 @@ impl Scene {
     pub fn leaf_producers(&self, voxels_per_block: u32) -> Vec<LeafProducer> {
         let region_dimensions = self.placed_region_dimensions(voxels_per_block);
         let mut leaves = Vec::new();
-        self.for_each_leaf(&mut |world_offset_voxels, content, grid_on_faces, operation, outset, scope_path| {
-            let (material, producer): (Option<voxel_core::core_geom::BlockId>, Box<dyn VoxelProducer>) =
-                match content {
-                    NodeContent::Tool { shape, material } => {
-                        (material_id_for(*material), Box::new(shape.clone()))
-                    }
-                    NodeContent::SketchTool { producer, material } => {
-                        (material_id_for(*material), Box::new(producer.clone()))
-                    }
-                    NodeContent::VoxelBody(VoxelBody::DebugClouds { seed }) => (
-                        None,
-                        Box::new(DebugCloudField {
-                            dimensions: region_dimensions,
-                            seed: *seed,
-                        }),
-                    ),
-                    NodeContent::Group(_) | NodeContent::Instance(_) => return,
-                };
+        self.for_each_leaf(&mut |world_offset_voxels, body, grid_on_faces, operation, outset, scope_path| {
             // ADR 0019 Decision 7: the outset dilates the body BEFORE it folds. Wrapping the
             // producer (rather than teaching the fold a new arm) means the classifier's
             // `cell_field_interval` call below and the voxel-set fold both see one definition
             // of what outset means — see `OutsetProducer`.
             let outset_voxels = outset_voxels_at(outset, voxels_per_block);
-            let producer = crate::voxel::OutsetProducer::wrap(producer, outset_voxels);
+            let Some((material, producer)) =
+                body.into_producer(region_dimensions, voxels_per_block, outset_voxels)
+            else {
+                return;
+            };
             leaves.push(LeafProducer {
                 // The dilated body grows on every side, so its low corner moves DOWN by the
                 // outset — the wrapper's frame origin sits `N` below the inner producer's
@@ -210,6 +275,205 @@ impl Scene {
             });
         });
         leaves
+    }
+
+    /// Pre-compose a sealed scope into ONE producer, when it carries an outset and can be
+    /// composed. Returns the composed body and the world offset of its low corner.
+    ///
+    /// `None` means "walk it normally": either the scope carries no outset (the overwhelming
+    /// common case — nothing to dilate, so nothing to change) or its subtree contains a body
+    /// that cannot participate. A `VoxelBody` is the latter: the cloud field sizes itself
+    /// from the region, which a scope has no notion of, and it is fieldless anyway — so a
+    /// Part containing one could not be outset even if it were composed (ADR 0020 Decision
+    /// 1). Declining leaves that Part's existing behaviour exactly as it was.
+    fn composed_scope_leaf(
+        &self,
+        scope: &Node,
+        children: &[NodeId],
+        world_offset_voxels: [i64; 3],
+        def_path: &mut Vec<DefId>,
+    ) -> Option<ComposedScope> {
+        if scope.outset == voxel_core::units::Measurement::default() {
+            return None;
+        }
+        let mut members = Vec::new();
+        let mut fingerprints = Vec::new();
+        self.collect_composite_members(
+            children,
+            world_offset_voxels,
+            def_path,
+            &mut members,
+            &mut fingerprints,
+        )?;
+        if members.is_empty() {
+            return None;
+        }
+        // The composite's frame origin is the low corner of its UNION members — the only
+        // ones that can bound the body (ADR 0020 Decision 3). Offsets are voxel-valued, so
+        // this is density-independent and the members rebase onto it exactly (ADR 0008).
+        let mut origin = [i64::MAX; 3];
+        for member in &members {
+            if member.operation != CombineOp::Union {
+                continue;
+            }
+            for axis in 0..3 {
+                origin[axis] = origin[axis].min(member.offset_voxels[axis]);
+            }
+        }
+        if origin[0] == i64::MAX {
+            // No union member ⇒ the scope composes to nothing it could dilate.
+            return None;
+        }
+        for member in &mut members {
+            member.offset_voxels =
+                std::array::from_fn(|axis| member.offset_voxels[axis] - origin[axis]);
+        }
+        Some(ComposedScope {
+            origin_voxels: origin,
+            fingerprint: format!(":composed[{}]={}", scope.id.0, fingerprints.join("|")),
+            producer: crate::voxel::CompositeProducer::new(members),
+        })
+    }
+
+    /// Collect a scope's members in document order, mirroring [`walk_nodes`]'s expansion
+    /// rules exactly — nested Groups and sealed definition bodies become nested composites,
+    /// a FIXTURE definition splices its children inline (ADR 0017 Decision 4), and the cycle
+    /// guard is the same. `None` aborts the whole composition (see
+    /// [`composed_scope_leaf`](Self::composed_scope_leaf)).
+    ///
+    /// [`walk_nodes`]: Self::walk_nodes
+    fn collect_composite_members(
+        &self,
+        spine: &[NodeId],
+        parent_offset: [i64; 3],
+        def_path: &mut Vec<DefId>,
+        members: &mut Vec<crate::voxel::CompositeMember>,
+        fingerprints: &mut Vec<String>,
+    ) -> Option<()> {
+        for &node_id in spine {
+            let Some(node) = self.arena.get(&node_id) else {
+                continue;
+            };
+            if !node.visible {
+                continue;
+            }
+            let world_offset_voxels: [i64; 3] =
+                std::array::from_fn(|axis| parent_offset[axis] + node.transform.offset_voxels[axis]);
+            match &node.content {
+                // A fieldless / region-sized body cannot compose (see the caller).
+                NodeContent::VoxelBody(_) => return None,
+                NodeContent::Tool { .. } | NodeContent::SketchTool { .. } => {
+                    let (material, producer) = LeafBody::Content(&node.content).into_producer(
+                        [0, 0, 0],
+                        0,
+                        // A member's OWN outset still applies inside the scope: it dilates
+                        // that member before the scope's fold sees it, and the scope's outset
+                        // then dilates the composed result.
+                        node.outset.to_voxels(1).unwrap_or(0),
+                    )?;
+                    fingerprints.push(format!("{}", node.id.0));
+                    members.push(crate::voxel::CompositeMember {
+                        offset_voxels: world_offset_voxels,
+                        operation: node.operation,
+                        material,
+                        producer,
+                    });
+                }
+                NodeContent::Group(children) => {
+                    let nested = self.composed_subtree(children, world_offset_voxels, def_path)?;
+                    fingerprints.push(format!("{}({})", node.id.0, nested.fingerprint));
+                    members.push(crate::voxel::CompositeMember {
+                        offset_voxels: nested.origin_voxels,
+                        operation: node.operation,
+                        material: None,
+                        producer: crate::voxel::OutsetProducer::wrap(
+                            Box::new(nested.producer),
+                            node.outset.to_voxels(1).unwrap_or(0),
+                        ),
+                    });
+                }
+                NodeContent::Instance(def_id) => {
+                    if def_path.contains(def_id) {
+                        continue;
+                    }
+                    let def = self.def_by_id(*def_id)?;
+                    def_path.push(*def_id);
+                    let outcome = if def.fixture {
+                        // ADR 0017 Decision 4: a fixture does NOT pre-compose — its children
+                        // splice into the hosting scope's fold under their own operations.
+                        self.collect_composite_members(
+                            &def.children,
+                            world_offset_voxels,
+                            def_path,
+                            members,
+                            fingerprints,
+                        )
+                    } else {
+                        self.composed_subtree(&def.children, world_offset_voxels, def_path)
+                            .map(|nested| {
+                                fingerprints.push(format!("{}[{}]", node.id.0, nested.fingerprint));
+                                members.push(crate::voxel::CompositeMember {
+                                    offset_voxels: nested.origin_voxels,
+                                    operation: node.operation,
+                                    material: None,
+                                    producer: crate::voxel::OutsetProducer::wrap(
+                                        Box::new(nested.producer),
+                                        node.outset.to_voxels(1).unwrap_or(0),
+                                    ),
+                                });
+                            })
+                    };
+                    def_path.pop();
+                    outcome?;
+                }
+            }
+        }
+        Some(())
+    }
+
+    /// Compose a sub-scope unconditionally (its outset is applied by the CALLER, which owns
+    /// the member entry) — the recursive half of [`composed_scope_leaf`].
+    ///
+    /// [`composed_scope_leaf`]: Self::composed_scope_leaf
+    fn composed_subtree(
+        &self,
+        children: &[NodeId],
+        world_offset_voxels: [i64; 3],
+        def_path: &mut Vec<DefId>,
+    ) -> Option<ComposedScope> {
+        let mut members = Vec::new();
+        let mut fingerprints = Vec::new();
+        self.collect_composite_members(
+            children,
+            world_offset_voxels,
+            def_path,
+            &mut members,
+            &mut fingerprints,
+        )?;
+        if members.is_empty() {
+            return None;
+        }
+        let mut origin = [i64::MAX; 3];
+        for member in &members {
+            if member.operation != CombineOp::Union {
+                continue;
+            }
+            for axis in 0..3 {
+                origin[axis] = origin[axis].min(member.offset_voxels[axis]);
+            }
+        }
+        if origin[0] == i64::MAX {
+            return None;
+        }
+        for member in &mut members {
+            member.offset_voxels =
+                std::array::from_fn(|axis| member.offset_voxels[axis] - origin[axis]);
+        }
+        Some(ComposedScope {
+            origin_voxels: origin,
+            fingerprint: fingerprints.join("|"),
+            producer: crate::voxel::CompositeProducer::new(members),
+        })
     }
 
     /// Recursive worker for [`for_each_leaf`](Self::for_each_leaf). `parent_offset`
@@ -253,7 +517,7 @@ impl Scene {
                     // walk — consumers reconstruct the scoped fold from the paths.
                     visitor(
                         world_offset_voxels,
-                        &node.content,
+                        LeafBody::Content(&node.content),
                         node.grids.voxel_grid_on_faces,
                         node.operation,
                         node.outset,
@@ -261,6 +525,28 @@ impl Scene {
                     );
                 }
                 NodeContent::Group(children) => {
+                    // ADR 0019 Decision 7: an outset on a SCOPE dilates the scope's COMPOSED
+                    // body, so the scope is evaluated as one producer and handed to the
+                    // visitor as a single leaf rather than recursed into. Per-member
+                    // dilation is a different operation and the ADR rejects it: it would
+                    // make an internal Subtract cutter carve MORE, where dilating the
+                    // composed Part grows the finished body and partly closes that cut.
+                    if let Some(composed) =
+                        self.composed_scope_leaf(node, children, world_offset_voxels, def_path)
+                    {
+                        visitor(
+                            composed.origin_voxels,
+                            LeafBody::Composed {
+                                producer: composed.producer,
+                                fingerprint: composed.fingerprint,
+                            },
+                            node.grids.voxel_grid_on_faces,
+                            node.operation,
+                            node.outset,
+                            scope_path,
+                        );
+                        continue;
+                    }
                     // ADR 0017 Decision 3 (issue #74): a Group is a SEALED
                     // composition scope — its frame (identity + the GROUP node's own
                     // operation) encloses every leaf below it, so the group's
@@ -421,7 +707,7 @@ impl Scene {
         // the SCOPE's operation (`sync_grid_scope_stack`), so a boolean inside a scope can
         // never affect geometry outside it.
         let mut scope_stack: Vec<(ScopeFrame, VoxelGrid)> = Vec::new();
-        self.for_each_leaf(&mut |world_offset_voxels, content, grid_on_faces, operation, outset, scope_path| {
+        self.for_each_leaf(&mut |world_offset_voxels, body, grid_on_faces, operation, outset, scope_path| {
             sync_grid_scope_stack(&mut scope_stack, &mut output, scope_path, region_dimensions);
             let target: &mut VoxelGrid = match scope_stack.last_mut() {
                 Some((_, scratch)) => scratch,
@@ -449,31 +735,11 @@ impl Scene {
             // ONE producer serves both the mask and the stamp paths, so the outset wrapper
             // applies at a single point (ADR 0019 Decision 7 — the outset dilates the body
             // before it folds, whatever the fold role).
-            let (material, producer): (Option<voxel_core::core_geom::BlockId>, Box<dyn VoxelProducer>) =
-                match content {
-                    NodeContent::Tool { shape, material } => {
-                        (material_id_for(*material), Box::new(shape.clone()))
-                    }
-                    // The sketch producer self-sizes its origin-centred grid exactly
-                    // like SdfShape, so it stamps through the same path at the plain
-                    // `translation_voxels` (world offset minus recentre, no shift).
-                    NodeContent::SketchTool { producer, material } => {
-                        (material_id_for(*material), Box::new(producer.clone()))
-                    }
-                    NodeContent::VoxelBody(VoxelBody::DebugClouds { seed }) => (
-                        // A VoxelBody brings its own per-voxel materials; today the
-                        // cloud field emits material 0, so the stamp keeps that.
-                        None,
-                        Box::new(DebugCloudField {
-                            // The cloud field sizes itself from the region (today's
-                            // behaviour resolved it at the shape's grid dimensions).
-                            dimensions: region_dimensions,
-                            seed: *seed,
-                        }),
-                    ),
-                    NodeContent::Group(_) | NodeContent::Instance(_) => return,
-                };
-            let producer = crate::voxel::OutsetProducer::wrap(producer, outset_voxels);
+            let Some((material, producer)) =
+                body.into_producer(region_dimensions, voxels_per_block, outset_voxels)
+            else {
+                return;
+            };
 
             // ADR 0017: Subtract and Intersect leaves are occupancy-only masks — they
             // never stamp material, so they take a mask path instead of a stamp.
@@ -628,7 +894,7 @@ impl Scene {
         // Intersect-closing scope must open even here so its ∅-in-chunk body
         // annihilates the parent on close (see the skip guard below).
         let mut scope_stack: Vec<(ScopeFrame, VoxelGrid)> = Vec::new();
-        self.for_each_leaf(&mut |world_offset_voxels, content, grid_on_faces, operation, outset, scope_path| {
+        self.for_each_leaf(&mut |world_offset_voxels, body, grid_on_faces, operation, outset, scope_path| {
             let outset_voxels = outset_voxels_at(outset, voxels_per_block);
             // An outset body grows on every side, so its low corner moves DOWN by the
             // outset — and the skip AABB below must use the DILATED span, or a cutter whose
@@ -655,9 +921,7 @@ impl Scene {
             // carry the Intersect frame), so the ∅-body scope close annihilates the
             // parent here exactly as the monolithic fold does.
             if !operation_masks_beyond_bounds(operation, scope_path) {
-                if let Some(grid_voxels) =
-                    leaf_producer_grid_voxels(content, voxels_per_block, outset_voxels)
-                {
+                if let Some(grid_voxels) = body.grid_voxels(voxels_per_block, outset_voxels) {
                     let mut leaf_min = [0i64; 3];
                     let mut leaf_max = [0i64; 3];
                     for axis in 0..3 {
@@ -675,30 +939,12 @@ impl Scene {
                 }
             }
             let translation_voxels = world_offset_voxels;
-            let (material_override, producer): (
-                Option<voxel_core::core_geom::BlockId>,
-                Box<dyn VoxelProducer>,
-            ) = match content
-            {
-                NodeContent::Tool { shape, material } => {
-                    // `SdfShape` is no longer `Copy` (owns an optional boxed retained
-                    // size); clone it into the producer box.
-                    (material_id_for(*material), Box::new(shape.clone()))
-                }
-                NodeContent::SketchTool { producer, material } => {
-                    (material_id_for(*material), Box::new(producer.clone()))
-                }
-                NodeContent::VoxelBody(VoxelBody::DebugClouds { seed }) => (
-                    None,
-                    Box::new(DebugCloudField {
-                        dimensions: region_dimensions,
-                        seed: *seed,
-                    }),
-                ),
-                NodeContent::Group(_) | NodeContent::Instance(_) => return,
-            };
             // ADR 0019 Decision 7: dilate before folding, exactly as the dense path does.
-            let producer = crate::voxel::OutsetProducer::wrap(producer, outset_voxels);
+            let Some((material_override, producer)) =
+                body.into_producer(region_dimensions, voxels_per_block, outset_voxels)
+            else {
+                return;
+            };
             // The leaf overlaps the chunk: sync the scope stack to its path (closing /
             // opening scopes exactly where the depth-first fold does) and compose into
             // the innermost open scope's scratch grid — or `output` at root level.
@@ -818,7 +1064,7 @@ impl Scene {
 /// happens to coincide with another's still reads as distinct.
 pub(super) fn leaf_content_fingerprint(
     world_offset_voxels: [i64; 3],
-    content: &NodeContent,
+    body: &LeafBody<'_>,
     grid_on_faces: bool,
     operation: CombineOp,
     scope_path: &[ScopeFrame],
@@ -876,6 +1122,16 @@ pub(super) fn leaf_content_fingerprint(
         }
         token.push(']');
         token
+    };
+    let content = match body {
+        LeafBody::Content(content) => *content,
+        // A composed scope has no `NodeContent` to hash. Its key is built at compose time
+        // from its members' ids and their own keys, so any edit inside the scope — a member
+        // moving, changing shape, or changing its own outset — changes it, exactly as an
+        // edit to an ordinary leaf changes that leaf's.
+        LeafBody::Composed { fingerprint, .. } => {
+            return format!("Composed@{world_offset_voxels:?}{fingerprint}{grid}{op}{scopes}")
+        }
     };
     match content {
         NodeContent::Tool { shape, material } => {

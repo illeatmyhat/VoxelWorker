@@ -169,17 +169,22 @@ pub struct Node {
     /// Zero for a node whose producer has no field at all: ADR 0020 Decision 1 bars outset
     /// there rather than fabricating a distance for it.
     ///
-    /// # Not yet applied on a scope
+    /// # On a scope, it dilates the COMPOSED body
     ///
-    /// **Only a LEAF's outset is applied today.** An outset on a `Group` or an `Instance` is
-    /// currently ignored, and ADR 0019 Decision 7 explicitly rejects leaf-only outset as the
-    /// final design — a reusable composed cutter must be able to take clearance as a whole.
+    /// A Part (`Group`) or a sealed `Instance` body pre-composes its children into one body
+    /// (ADR 0017 Decision 3), and its outset dilates THAT — not each member separately. The
+    /// walk hands such a scope to the fold as a single
+    /// [`CompositeProducer`](crate::voxel::CompositeProducer) leaf.
     ///
-    /// The gap is not an oversight but a genuinely different algorithm. A leaf dilates by
-    /// shifting its field (`d − N`, exact and O(1) per sample). A scope has no field: it is a
-    /// composed voxel SET, so dilating it is a morphological dilation — a distance transform
-    /// over the accumulated body, at scope close. Nothing in the UI can set a scope outset
-    /// yet, so no authored document can hit this silently.
+    /// The distinction is not cosmetic. Dilation distributes over union, so a pure-union
+    /// Part gives the same answer either way — but a Part with an internal `Subtract`
+    /// diverges sharply: dilating members individually makes the inner cutter carve MORE,
+    /// while dilating the composed Part grows the finished body and partly closes that cut.
+    /// Only the latter is what "give this Part clearance" means.
+    ///
+    /// A scope whose subtree contains a `VoxelBody` declines to compose and keeps its
+    /// members' behaviour unchanged — such a body is fieldless, so it could not be outset
+    /// anyway (ADR 0020 Decision 1).
     #[serde(default)]
     pub outset: voxel_core::units::Measurement,
     /// Whether the node contributes to resolution (a hidden node stamps nothing).
