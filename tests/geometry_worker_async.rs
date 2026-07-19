@@ -354,15 +354,15 @@ fn c1_outstanding_edit_reroutes_wholesale_no_frankenstein() {
             "{name} must exceed the async threshold to be representative"
         );
     }
-    let s2_truth = sync_full_build(&gpu, &s2).face_count();
-    let s0_face = sync_full_build(&gpu, &s0).face_count();
+    let s2_truth = sync_full_build(gpu, &s2).face_count();
+    let s0_face = sync_full_build(gpu, &s0).face_count();
     assert_ne!(
         s0_face, s2_truth,
         "the fixtures must differ so a Frankenstein (S0-derived) install would be DETECTABLE"
     );
 
     // The installed renderer starts as S0.
-    let mut installed = sync_full_build(&gpu, &s0);
+    let mut installed = sync_full_build(gpu, &s0);
     assert_eq!(installed.face_count(), s0_face);
 
     // --- Edit 1: a large wholesale edit → S1 dispatched async (the #60 case). ---

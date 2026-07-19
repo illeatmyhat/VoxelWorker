@@ -99,7 +99,7 @@ fn first_build_small_engages_brick_and_skips_mesh() {
     }
     let gpu = common::shared_gpu();
     let fixture = Fixture::new(SMALL_BLOCKS);
-    let orchestrator = fixture.first_build(&gpu, false);
+    let orchestrator = fixture.first_build(gpu, false);
 
     assert!(
         orchestrator.brick_raymarch_renderer().is_some(),
@@ -141,7 +141,7 @@ fn first_build_large_dispatches_async_then_installs_on_poll() {
         "the large fixture must exceed the async threshold to be representative ({} chunks)",
         fixture.chunks.len()
     );
-    let mut orchestrator = fixture.first_build(&gpu, false);
+    let mut orchestrator = fixture.first_build(gpu, false);
 
     // Before the async field lands: no renderer, not engaged, mesh empty (predicted skip).
     assert!(
@@ -195,7 +195,7 @@ fn rebuild_keeps_brick_engaged_and_skips_mesh() {
     }
     let gpu = common::shared_gpu();
     let fixture = Fixture::new(SMALL_BLOCKS);
-    let mut orchestrator = fixture.first_build(&gpu, false);
+    let mut orchestrator = fixture.first_build(gpu, false);
     assert!(orchestrator.brick_display_engaged(false));
     assert_eq!(orchestrator.cuboid_mesh_renderer().face_count(), 0);
 
@@ -239,7 +239,7 @@ fn ensure_display_mesh_current_noop_while_engaged_then_builds_on_debug_face() {
     }
     let gpu = common::shared_gpu();
     let fixture = Fixture::new(SMALL_BLOCKS);
-    let mut orchestrator = fixture.first_build(&gpu, false);
+    let mut orchestrator = fixture.first_build(gpu, false);
     assert_eq!(orchestrator.cuboid_mesh_renderer().face_count(), 0);
 
     let mut cache = TwoLayerResidentCache::enabled();
@@ -277,7 +277,7 @@ fn ensure_display_mesh_current_waits_while_brick_outstanding() {
     }
     let gpu = common::shared_gpu();
     let fixture = Fixture::new(LARGE_BLOCKS);
-    let mut orchestrator = fixture.first_build(&gpu, false);
+    let mut orchestrator = fixture.first_build(gpu, false);
     // Large first-build dispatched the brick async — no renderer yet, mesh predicted-skipped.
     assert!(orchestrator.brick_raymarch_renderer().is_none());
     assert_eq!(orchestrator.cuboid_mesh_renderer().face_count(), 0);
@@ -307,7 +307,7 @@ fn poll_geometry_worker_installs_async_fallback_mesh() {
     }
     let gpu = common::shared_gpu();
     let fixture = Fixture::new(LARGE_BLOCKS);
-    let mut orchestrator = fixture.first_build(&gpu, false);
+    let mut orchestrator = fixture.first_build(gpu, false);
 
     // Force the fallback mesh to be the display (debug-face) while it is stale + large: the seam
     // dispatches the rebuild to the geometry worker (nothing built inline this frame).

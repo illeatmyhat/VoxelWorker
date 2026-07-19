@@ -57,7 +57,7 @@ fn windowed_palette_tile_click_reaches_apply_path() {
     let gpu = common::shared_gpu();
     let mut bridge = EguiPaintBridge::new(&gpu.device, voxel_worker::COLOR_TARGET_FORMAT);
 
-    let palette = build_palette(&gpu, &mut bridge, 3);
+    let palette = build_palette(gpu, &mut bridge, 3);
     assert_eq!(palette.ui.tiles.len(), 3, "three GPU tiles should be registered");
 
     let mut panel_state = PanelState::with_view_cube_default();
