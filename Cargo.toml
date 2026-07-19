@@ -24,6 +24,16 @@ name = "voxel_worker"
 path = "src/main.rs"
 
 [[bin]]
+name = "design_reference"
+path = "src/bin/design_reference/main.rs"
+# The Signal style guide, painted by the shipping tokens and glyphs rather than
+# restated: the palette comes from `ui::signal_theme`, the icons from `ui::icons`,
+# and the widgets through the app's own `egui::Style`. It links no document, no
+# evaluator and no 3D pipeline — one window, one surface, one egui pass — so it
+# needs no feature gate and stays buildable on a GPU-less checkout of the tree
+# (it does want a presentable adapter to RUN, like the app itself).
+
+[[bin]]
 name = "shot"
 path = "src/bin/shot/main.rs"
 # `shot` is the golden DENSE REFERENCE ORACLE: it resolves through the dense

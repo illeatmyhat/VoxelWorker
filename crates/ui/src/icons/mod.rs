@@ -1,0 +1,606 @@
+//! The **Signal** icon set, painted with `egui` strokes rather than shipped as textures.
+//!
+//! Every glyph is authored on an **18-unit grid** at a **1.25 pt stroke**, square caps, miter
+//! joins, zero rounding — the rules in `docs/design/viewport-chrome-signal.md` §Icon set. A
+//! glyph is a `fn(&IconPainter)` that traces its path through [`IconPainter::at`], so the same
+//! source draws at a 15 pt rail button and at a 44 pt palette tile with no second asset and no
+//! resampling. Colour is never baked in: the host passes it, which is what lets one glyph be
+//! idle, hovered and accent without three copies.
+//!
+//! **One glyph per file**, under `icons/`. The file is the unit a designer edits, the module
+//! name is the glyph name, and [`Icon`] is the only index — a glyph that is not in the enum
+//! does not exist, so the set cannot grow a shadow member that the reference binary never
+//! shows.
+//!
+//! The catalogue carries a one-line [`Icon::note`] per glyph in the project's own vocabulary
+//! (ordered fold, composed body, Measurement, later-wins). That note is not decoration: it is
+//! what the `design_reference` binary displays, and it is the difference between an icon sheet
+//! and a set of shapes nobody can assign a meaning to.
+//!
+//! Two glyphs deliberately depart from the harvested sheet, and the reasons are rulings:
+//!
+//!   * there is no `sealed_part` — every part is a sealed scope, so the word carries no
+//!     information in an interface (`docs/design/colour-vocabulary.md` reasons about the same
+//!     scarcity for colour). The glyph that survives is [`Icon::ComposedPart`], which says the
+//!     thing a user can verify: a part folds in as ONE body.
+//!   * there is no `emboss_ridge`. Emboss moves an accumulated surface within a footprint, and
+//!     a ridge glyph would lie the moment the amount goes negative, so the footprint mark is
+//!     the primary and [`Icon::EmbossRecess`] is its negative-amount variant.
+
+use egui::{Color32, Painter, Pos2, Rect, Shape, Stroke};
+
+mod array;
+mod axes_gizmo;
+mod box_solid;
+mod cancel;
+mod carve;
+mod chevron_down;
+mod chevron_right;
+mod commit;
+mod composed_part;
+mod cylinder;
+mod density;
+mod displace;
+mod drawer;
+mod emboss;
+mod emboss_recess;
+mod extrude;
+mod fit;
+mod flip;
+mod fold_cursor;
+mod fold_stack;
+mod half_space;
+mod home;
+mod inset;
+mod intersect;
+mod material;
+mod measure;
+mod mode_booleans;
+mod mode_normal;
+mod mode_onion;
+mod onion_scrub;
+mod orbit;
+mod outset;
+mod pan;
+mod part;
+mod revolve;
+mod root_part;
+mod rotate;
+mod sculpt_add;
+mod search;
+mod sketch;
+mod sphere;
+mod subtract;
+mod sweep;
+mod union;
+mod view_cube;
+mod zoom;
+
+/// The authoring grid every glyph is traced on: 18 × 18 units.
+pub const GRID: f32 = 18.0;
+
+/// The Signal glyph stroke, in design points.
+pub const STROKE_WIDTH: f32 = 1.25;
+
+/// Painting kit handed to a glyph: it owns the mapping from the 18-unit grid onto the
+/// on-screen box, so an icon file never does arithmetic on `Rect`s and cannot drift off the
+/// grid.
+pub struct IconPainter<'a> {
+    painter: &'a Painter,
+    rect: Rect,
+    stroke: Stroke,
+}
+
+impl<'a> IconPainter<'a> {
+    /// Bind the kit to a box on screen. `rect` is the glyph's full 18-unit square; callers
+    /// that want padding shrink before calling.
+    pub fn new(painter: &'a Painter, rect: Rect, color: Color32) -> Self {
+        // The stroke scales with the glyph so a 44 pt tile is not drawn with a hairline meant
+        // for a 15 pt rail button — the large-format sheet's own finding, that a large mark
+        // rides a proportionally lighter stroke, is why this is a ratio and not a constant.
+        let scale = rect.width() / GRID;
+        Self {
+            painter,
+            rect,
+            stroke: Stroke::new(STROKE_WIDTH * scale.max(0.55), color),
+        }
+    }
+
+    /// Map a point on the 18-unit grid onto the glyph box.
+    pub fn at(&self, x: f32, y: f32) -> Pos2 {
+        Pos2::new(
+            self.rect.left() + (x / GRID) * self.rect.width(),
+            self.rect.top() + (y / GRID) * self.rect.height(),
+        )
+    }
+
+    /// The glyph's stroke.
+    pub fn stroke(&self) -> Stroke {
+        self.stroke
+    }
+
+    /// The stroke dimmed to `factor` — the set's one legitimate use of opacity, for a receding
+    /// edge or a datum line that must not compete with the subject.
+    pub fn faint(&self, factor: f32) -> Stroke {
+        Stroke::new(self.stroke.width, self.stroke.color.gamma_multiply(factor))
+    }
+
+    /// Trace a polyline through grid points.
+    pub fn line(&self, points: &[(f32, f32)]) {
+        self.line_with(points, self.stroke);
+    }
+
+    /// Trace a polyline in a given stroke.
+    pub fn line_with(&self, points: &[(f32, f32)], stroke: Stroke) {
+        let mapped: Vec<Pos2> = points.iter().map(|&(x, y)| self.at(x, y)).collect();
+        for pair in mapped.windows(2) {
+            self.painter.line_segment([pair[0], pair[1]], stroke);
+        }
+    }
+
+    /// Trace a closed polygon outline.
+    pub fn closed(&self, points: &[(f32, f32)]) {
+        self.closed_with(points, self.stroke);
+    }
+
+    /// Trace a closed polygon outline in a given stroke.
+    pub fn closed_with(&self, points: &[(f32, f32)], stroke: Stroke) {
+        let mut looped: Vec<(f32, f32)> = points.to_vec();
+        if let Some(&first) = points.first() {
+            looped.push(first);
+        }
+        self.line_with(&looped, stroke);
+    }
+
+    /// Fill a convex polygon — used where a glyph states a *region* rather than an edge.
+    pub fn fill(&self, points: &[(f32, f32)]) {
+        let mapped: Vec<Pos2> = points.iter().map(|&(x, y)| self.at(x, y)).collect();
+        self.painter
+            .add(Shape::convex_polygon(mapped, self.stroke.color, Stroke::NONE));
+    }
+
+    /// Stroke the axis-aligned rectangle spanned by two grid corners.
+    pub fn rect(&self, a: (f32, f32), b: (f32, f32)) {
+        self.rect_with(a, b, self.stroke);
+    }
+
+    /// Stroke a rectangle in a given stroke.
+    pub fn rect_with(&self, a: (f32, f32), b: (f32, f32), stroke: Stroke) {
+        self.closed_with(&[a, (b.0, a.1), b, (a.0, b.1)], stroke);
+    }
+
+    /// Stroke a dashed rectangle — the set's mark for "an operand", the thing a boolean reads.
+    pub fn dashed_rect(&self, a: (f32, f32), b: (f32, f32)) {
+        self.dashed_line(a, (b.0, a.1));
+        self.dashed_line((b.0, a.1), b);
+        self.dashed_line(b, (a.0, b.1));
+        self.dashed_line((a.0, b.1), a);
+    }
+
+    /// Stroke a dashed segment on the grid (2.2 on, 1.8 off, in grid units).
+    pub fn dashed_line(&self, a: (f32, f32), b: (f32, f32)) {
+        let (start, end) = (self.at(a.0, a.1), self.at(b.0, b.1));
+        let span = end - start;
+        let length = span.length();
+        if length <= f32::EPSILON {
+            return;
+        }
+        let step = (2.2 + 1.8) / GRID * self.rect.width();
+        let on = 2.2 / GRID * self.rect.width();
+        let direction = span / length;
+        let mut travelled = 0.0;
+        while travelled < length {
+            let dash_end = (travelled + on).min(length);
+            self.painter.line_segment(
+                [start + direction * travelled, start + direction * dash_end],
+                self.stroke,
+            );
+            travelled += step;
+        }
+    }
+
+    /// Stroke a circle centred on a grid point.
+    pub fn circle(&self, center: (f32, f32), radius: f32) {
+        self.circle_with(center, radius, self.stroke);
+    }
+
+    /// Stroke a circle in a given stroke.
+    pub fn circle_with(&self, center: (f32, f32), radius: f32, stroke: Stroke) {
+        self.ellipse_with(center, radius, radius, stroke);
+    }
+
+    /// Stroke an axis-aligned ellipse in grid units — the set's roundness mark (a sphere's
+    /// equator, a cylinder's cap), sampled as a polyline so it inherits the same stroke.
+    pub fn ellipse(&self, center: (f32, f32), rx: f32, ry: f32) {
+        self.ellipse_with(center, rx, ry, self.stroke);
+    }
+
+    /// Stroke an ellipse in a given stroke.
+    pub fn ellipse_with(&self, center: (f32, f32), rx: f32, ry: f32, stroke: Stroke) {
+        self.arc_with(center, rx, ry, 0.0, std::f32::consts::TAU, stroke);
+    }
+
+    /// Stroke an elliptical arc, angles in radians, clockwise from +x on the grid (y grows
+    /// downward, matching the SVG the set was authored in).
+    pub fn arc(&self, center: (f32, f32), rx: f32, ry: f32, from: f32, to: f32) {
+        self.arc_with(center, rx, ry, from, to, self.stroke);
+    }
+
+    /// Stroke an arc in a given stroke.
+    pub fn arc_with(
+        &self,
+        center: (f32, f32),
+        rx: f32,
+        ry: f32,
+        from: f32,
+        to: f32,
+        stroke: Stroke,
+    ) {
+        // Segment count follows the on-screen size, so a 44 pt tile does not show facets and a
+        // 15 pt button does not pay for 64 segments it cannot resolve.
+        let segments = ((self.rect.width() * 0.9) as usize).clamp(12, 64);
+        let points: Vec<(f32, f32)> = (0..=segments)
+            .map(|i| {
+                let t = from + (to - from) * (i as f32 / segments as f32);
+                (center.0 + rx * t.cos(), center.1 + ry * t.sin())
+            })
+            .collect();
+        self.line_with(&points, stroke);
+    }
+}
+
+/// Which shelf of the set a glyph belongs to. The grouping is the vocabulary's own, not a
+/// visual one: a reader looking for "the mark for a subtract" looks under [`Group::Combine`].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Group {
+    /// Camera verbs — the rail beneath the view cube.
+    Navigation,
+    /// The three exclusive viewer modes, plus the layer scrub.
+    ViewerModes,
+    /// The `CombineOp` a node carries in the ordered fold.
+    Combine,
+    /// Field decorators: what measures rather than classifies.
+    Fields,
+    /// What makes a body — the sketch→volume atom and its sugar.
+    Producers,
+    /// Document structure: parts, the root, the fold itself.
+    Structure,
+    /// Authoring tools.
+    Tools,
+    /// Interface furniture.
+    Chrome,
+}
+
+impl Group {
+    /// The shelf's display name.
+    pub fn title(self) -> &'static str {
+        match self {
+            Group::Navigation => "Viewport · navigation",
+            Group::ViewerModes => "Viewer modes",
+            Group::Combine => "Combine ops",
+            Group::Fields => "Fields",
+            Group::Producers => "Producers",
+            Group::Structure => "Structure",
+            Group::Tools => "Tools",
+            Group::Chrome => "Chrome",
+        }
+    }
+
+    /// A faint subtitle: what the shelf is *for*, in the project's vocabulary.
+    pub fn subtitle(self) -> &'static str {
+        match self {
+            Group::Navigation => "camera verbs on the rail under the view cube",
+            Group::ViewerModes => "exclusive — one mode at a time; the lit one carries the accent",
+            Group::Combine => "the CombineOp on a node in the ordered fold",
+            Group::Fields => "decorators that measure: outset is a Measurement, and signed",
+            Group::Producers => "sketch→volume is the atom; primitives are sugar over it",
+            Group::Structure => "parts, the root part, and the fold itself",
+            Group::Tools => "what the pointer is currently doing",
+            Group::Chrome => "furniture: disclosure, commit, drawer, search",
+        }
+    }
+}
+
+/// One glyph in the set.
+///
+/// The enum is the index: [`Icon::ALL`] is what the `design_reference` binary walks, so a glyph
+/// added to `icons/` without a variant here is invisible and a variant without a file does not
+/// compile.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Icon {
+    // Navigation.
+    Home,
+    Fit,
+    Orbit,
+    Pan,
+    Zoom,
+    AxesGizmo,
+    ViewCube,
+    // Viewer modes.
+    ModeNormal,
+    ModeOnion,
+    ModeBooleans,
+    OnionScrub,
+    // Combine ops.
+    Union,
+    Subtract,
+    Intersect,
+    Emboss,
+    EmbossRecess,
+    // Fields.
+    Outset,
+    Inset,
+    Displace,
+    Array,
+    // Producers.
+    Sketch,
+    Extrude,
+    Revolve,
+    Sweep,
+    BoxSolid,
+    Sphere,
+    Cylinder,
+    HalfSpace,
+    // Structure.
+    Part,
+    ComposedPart,
+    RootPart,
+    FoldStack,
+    FoldCursor,
+    // Tools.
+    SculptAdd,
+    Carve,
+    Measure,
+    Material,
+    Rotate,
+    Flip,
+    Density,
+    // Chrome.
+    ChevronRight,
+    ChevronDown,
+    Commit,
+    Cancel,
+    Drawer,
+    Search,
+}
+
+impl Icon {
+    /// Every glyph, in catalogue order.
+    pub const ALL: &'static [Icon] = &[
+        Icon::Home,
+        Icon::Fit,
+        Icon::Orbit,
+        Icon::Pan,
+        Icon::Zoom,
+        Icon::AxesGizmo,
+        Icon::ViewCube,
+        Icon::ModeNormal,
+        Icon::ModeOnion,
+        Icon::ModeBooleans,
+        Icon::OnionScrub,
+        Icon::Union,
+        Icon::Subtract,
+        Icon::Intersect,
+        Icon::Emboss,
+        Icon::EmbossRecess,
+        Icon::Outset,
+        Icon::Inset,
+        Icon::Displace,
+        Icon::Array,
+        Icon::Sketch,
+        Icon::Extrude,
+        Icon::Revolve,
+        Icon::Sweep,
+        Icon::BoxSolid,
+        Icon::Sphere,
+        Icon::Cylinder,
+        Icon::HalfSpace,
+        Icon::Part,
+        Icon::ComposedPart,
+        Icon::RootPart,
+        Icon::FoldStack,
+        Icon::FoldCursor,
+        Icon::SculptAdd,
+        Icon::Carve,
+        Icon::Measure,
+        Icon::Material,
+        Icon::Rotate,
+        Icon::Flip,
+        Icon::Density,
+        Icon::ChevronRight,
+        Icon::ChevronDown,
+        Icon::Commit,
+        Icon::Cancel,
+        Icon::Drawer,
+        Icon::Search,
+    ];
+
+    /// Paint the glyph into `rect` in `color`.
+    pub fn draw(self, painter: &Painter, rect: Rect, color: Color32) {
+        let g = IconPainter::new(painter, rect, color);
+        match self {
+            Icon::Home => home::draw(&g),
+            Icon::Fit => fit::draw(&g),
+            Icon::Orbit => orbit::draw(&g),
+            Icon::Pan => pan::draw(&g),
+            Icon::Zoom => zoom::draw(&g),
+            Icon::AxesGizmo => axes_gizmo::draw(&g),
+            Icon::ViewCube => view_cube::draw(&g),
+            Icon::ModeNormal => mode_normal::draw(&g),
+            Icon::ModeOnion => mode_onion::draw(&g),
+            Icon::ModeBooleans => mode_booleans::draw(&g),
+            Icon::OnionScrub => onion_scrub::draw(&g),
+            Icon::Union => union::draw(&g),
+            Icon::Subtract => subtract::draw(&g),
+            Icon::Intersect => intersect::draw(&g),
+            Icon::Emboss => emboss::draw(&g),
+            Icon::EmbossRecess => emboss_recess::draw(&g),
+            Icon::Outset => outset::draw(&g),
+            Icon::Inset => inset::draw(&g),
+            Icon::Displace => displace::draw(&g),
+            Icon::Array => array::draw(&g),
+            Icon::Sketch => sketch::draw(&g),
+            Icon::Extrude => extrude::draw(&g),
+            Icon::Revolve => revolve::draw(&g),
+            Icon::Sweep => sweep::draw(&g),
+            Icon::BoxSolid => box_solid::draw(&g),
+            Icon::Sphere => sphere::draw(&g),
+            Icon::Cylinder => cylinder::draw(&g),
+            Icon::HalfSpace => half_space::draw(&g),
+            Icon::Part => part::draw(&g),
+            Icon::ComposedPart => composed_part::draw(&g),
+            Icon::RootPart => root_part::draw(&g),
+            Icon::FoldStack => fold_stack::draw(&g),
+            Icon::FoldCursor => fold_cursor::draw(&g),
+            Icon::SculptAdd => sculpt_add::draw(&g),
+            Icon::Carve => carve::draw(&g),
+            Icon::Measure => measure::draw(&g),
+            Icon::Material => material::draw(&g),
+            Icon::Rotate => rotate::draw(&g),
+            Icon::Flip => flip::draw(&g),
+            Icon::Density => density::draw(&g),
+            Icon::ChevronRight => chevron_right::draw(&g),
+            Icon::ChevronDown => chevron_down::draw(&g),
+            Icon::Commit => commit::draw(&g),
+            Icon::Cancel => cancel::draw(&g),
+            Icon::Drawer => drawer::draw(&g),
+            Icon::Search => search::draw(&g),
+        }
+    }
+
+    /// The glyph's kebab-case name — what a designer calls it.
+    pub fn name(self) -> &'static str {
+        match self {
+            Icon::Home => "home",
+            Icon::Fit => "fit",
+            Icon::Orbit => "orbit",
+            Icon::Pan => "pan",
+            Icon::Zoom => "zoom",
+            Icon::AxesGizmo => "axes-gizmo",
+            Icon::ViewCube => "view-cube",
+            Icon::ModeNormal => "mode-normal",
+            Icon::ModeOnion => "mode-onion",
+            Icon::ModeBooleans => "mode-booleans",
+            Icon::OnionScrub => "onion-scrub",
+            Icon::Union => "union",
+            Icon::Subtract => "subtract",
+            Icon::Intersect => "intersect",
+            Icon::Emboss => "emboss",
+            Icon::EmbossRecess => "emboss-recess",
+            Icon::Outset => "outset",
+            Icon::Inset => "inset",
+            Icon::Displace => "displace",
+            Icon::Array => "array",
+            Icon::Sketch => "sketch",
+            Icon::Extrude => "extrude",
+            Icon::Revolve => "revolve",
+            Icon::Sweep => "sweep",
+            Icon::BoxSolid => "box",
+            Icon::Sphere => "sphere",
+            Icon::Cylinder => "cylinder",
+            Icon::HalfSpace => "half-space",
+            Icon::Part => "part",
+            Icon::ComposedPart => "composed-part",
+            Icon::RootPart => "root-part",
+            Icon::FoldStack => "fold-stack",
+            Icon::FoldCursor => "fold-cursor",
+            Icon::SculptAdd => "sculpt-add",
+            Icon::Carve => "carve",
+            Icon::Measure => "measure",
+            Icon::Material => "material",
+            Icon::Rotate => "rotate",
+            Icon::Flip => "flip",
+            Icon::Density => "density",
+            Icon::ChevronRight => "chevron-right",
+            Icon::ChevronDown => "chevron-down",
+            Icon::Commit => "commit",
+            Icon::Cancel => "cancel",
+            Icon::Drawer => "drawer",
+            Icon::Search => "search",
+        }
+    }
+
+    /// Which shelf the glyph sits on.
+    pub fn group(self) -> Group {
+        match self {
+            Icon::Home | Icon::Fit | Icon::Orbit | Icon::Pan | Icon::Zoom | Icon::AxesGizmo
+            | Icon::ViewCube => Group::Navigation,
+            Icon::ModeNormal | Icon::ModeOnion | Icon::ModeBooleans | Icon::OnionScrub => {
+                Group::ViewerModes
+            }
+            Icon::Union | Icon::Subtract | Icon::Intersect | Icon::Emboss | Icon::EmbossRecess => {
+                Group::Combine
+            }
+            Icon::Outset | Icon::Inset | Icon::Displace | Icon::Array => Group::Fields,
+            Icon::Sketch | Icon::Extrude | Icon::Revolve | Icon::Sweep | Icon::BoxSolid
+            | Icon::Sphere | Icon::Cylinder | Icon::HalfSpace => Group::Producers,
+            Icon::Part | Icon::ComposedPart | Icon::RootPart | Icon::FoldStack
+            | Icon::FoldCursor => Group::Structure,
+            Icon::SculptAdd | Icon::Carve | Icon::Measure | Icon::Material | Icon::Rotate
+            | Icon::Flip | Icon::Density => Group::Tools,
+            Icon::ChevronRight | Icon::ChevronDown | Icon::Commit | Icon::Cancel | Icon::Drawer
+            | Icon::Search => Group::Chrome,
+        }
+    }
+
+    /// What the glyph means, in the project's vocabulary. Shown beside it in the reference
+    /// binary — a mark whose meaning has to be guessed is a mark that will be misused.
+    pub fn note(self) -> &'static str {
+        match self {
+            Icon::Home => "Snap the camera back to the authored home framing of the root part.",
+            Icon::Fit => "Frame the selection — or the whole fold when nothing is selected.",
+            Icon::Orbit => "Tumble the camera about the pan target; the body stays put.",
+            Icon::Pan => "Slide the pan target across the ground plane; the orbit is unchanged.",
+            Icon::Zoom => "Dolly in and out. The readout stays in blocks and voxels, never pixels.",
+            Icon::AxesGizmo => "The Z-up triad: vertical is +Z, ground is XY, front is −Y.",
+            Icon::ViewCube => "The 26-zone cube: faces, edges and corners are all camera stations.",
+            Icon::ModeNormal => "Normal: the finished look, as the build will be.",
+            Icon::ModeOnion => "Onion: ghost-shaded clip slabs lift the layers apart for scrubbing.",
+            Icon::ModeBooleans => "Show booleans: operand bodies x-ray over the folded result.",
+            Icon::OnionScrub => "Scrub the layer band — O(1) per step, the clip is uniform-driven.",
+            Icon::Union => "Union: the later node adds its body, and carries material.",
+            Icon::Subtract => "Subtract: an occupancy-only mask; survivors keep their material.",
+            Icon::Intersect => "Intersect: only where both bodies agree survives the fold.",
+            Icon::Emboss => {
+                "Emboss: within the cutter's footprint the accumulated surface MOVES — \
+                 it is not a new body."
+            }
+            Icon::EmbossRecess => "Emboss with a negative amount: the surface sinks into the body.",
+            Icon::Outset => "Outset: dilate a body by a Measurement. Any node may carry one.",
+            Icon::Inset => "The same field, signed: a negative outset shrinks, authoring a gap.",
+            Icon::Displace => "Displace: a bounded field pushes the surface along its normal.",
+            Icon::Array => "Array: one authored node, repeated placements, one entry in the fold.",
+            Icon::Sketch => "The authoring atom: a profile, flattened to a polygon at 1/256 block.",
+            Icon::Extrude => "Sketch → volume along an axis. An extruded polygon measures SQUARE.",
+            Icon::Revolve => "Sketch → volume about an axis. A revolve measures ROUND.",
+            Icon::Sweep => "The reserved third lift: a profile carried along a path.",
+            Icon::BoxSolid => "Box primitive — sugar over a rectangular sketch, extruded.",
+            Icon::Sphere => "Sphere primitive; at low density it reads as the stepped shell it is.",
+            Icon::Cylinder => "Cylinder primitive — a circular sketch extruded along +Z.",
+            Icon::HalfSpace => {
+                "Half-space: an unbounded plane. Plane + Subtract replaces a whole trim tool."
+            }
+            Icon::Part => "A part: the container an assembly is made of.",
+            Icon::ComposedPart => {
+                "A part folds into its parent as ONE composed body — which is why an outset on \
+                 it dilates the whole, and the weakest member's metric wins."
+            }
+            Icon::RootPart => "The root part: the scene's own container, selectable like any other.",
+            Icon::FoldStack => "The ordered fold of the active scope. Later wins.",
+            Icon::FoldCursor => "The insert cursor: where the next node lands. Later nodes drop out.",
+            Icon::SculptAdd => "Sculpt: a stroke whose radius is a Measurement, quantised to voxels.",
+            Icon::Carve => "Sculpt, removing: the same stroke folded under Subtract.",
+            Icon::Measure => "Measure: answer a distance in blocks and voxels, exactly.",
+            Icon::Material => "Assign a material. Later wins governs the interior.",
+            Icon::Rotate => "Rotate by a quarter turn — the lattice admits 24 orientations, no more.",
+            Icon::Flip => "Mirror on an axis; like rotation, exact on the lattice.",
+            Icon::Density => "Density: voxels per block, bounded 1..=64. Fineness, never size.",
+            Icon::ChevronRight => "Disclosure, closed.",
+            Icon::ChevronDown => "Disclosure, open.",
+            Icon::Commit => "Accept: the edit lands in the fold as a node.",
+            Icon::Cancel => "Cancel: nothing is written to the document.",
+            Icon::Drawer => "The asset drawer — open sets browse; closed sets stay pinned.",
+            Icon::Search => "Filter by name.",
+        }
+    }
+}

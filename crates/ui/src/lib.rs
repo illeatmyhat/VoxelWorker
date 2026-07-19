@@ -29,6 +29,7 @@
 // The CI doc gate denies broken and redundant links but permits these.
 #![allow(rustdoc::private_intra_doc_links)]
 
+pub mod icons;
 pub mod palette;
 pub mod panel;
 pub mod signal_theme;
