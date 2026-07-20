@@ -935,3 +935,94 @@ use super::*;
             assert_two_layer_round_trip_matches_dense(&scene, density, &format!("emboss-{amount}"));
         }
     }
+
+    /// The POINT occupancy query ([`TwoLayerChunk::voxel_occupied`]) agrees with the BULK one
+    /// ([`TwoLayerChunk::expand_occupancy_into`]) at **every voxel of every covering chunk**.
+    ///
+    /// This is the differential that matters, because the two answer the same question by
+    /// different routes: the expansion walks blocks and fills, while the point query divides
+    /// into a block and tests cuboids. A disagreement is either a coarse/boundary mix-up or an
+    /// off-by-one in the block-local remainder, and both are exactly the bugs that would make a
+    /// cursor pick select the wrong voxel — silently, and only near a surface, which is the
+    /// only place a pick ever lands.
+    ///
+    /// Exhaustive rather than sampled: a chunk is `CHUNK_BLOCKS · density` voxels per axis, so
+    /// at the densities used here the full sweep is cheap, and sampling would be most likely to
+    /// miss precisely the boundary blocks this is checking.
+    #[test]
+    fn point_occupancy_matches_the_expansion_at_every_voxel() {
+        use document::scene::NodeBuilder;
+
+        fn assert_agrees(scene: &Scene, density: u32, label: &str) {
+            let leaves = scene.leaf_producers(density);
+            let leaves: Vec<&LeafProducer> = leaves.iter().collect();
+            let Some((min_chunk, max_chunk)) = scene.covering_chunk_range(density) else {
+                return;
+            };
+            let chunk_extent = CHUNK_BLOCKS * density;
+            let mut checked_solid = 0u64;
+            for cz in min_chunk[2]..=max_chunk[2] {
+                for cy in min_chunk[1]..=max_chunk[1] {
+                    for cx in min_chunk[0]..=max_chunk[0] {
+                        let coord = [cx, cy, cz];
+                        let chunk = build_two_layer_chunk_from_leaves(coord, &leaves, density);
+
+                        // The oracle: expand at chunk-local indices and collect the solid set.
+                        let mut expanded = Vec::new();
+                        chunk.expand_occupancy_into(&mut expanded, [0, 0, 0]);
+                        let solid: std::collections::BTreeSet<[u32; 3]> = expanded
+                            .iter()
+                            .map(|voxel| {
+                                [
+                                    voxel.local_index[0] as u32,
+                                    voxel.local_index[1] as u32,
+                                    voxel.local_index[2] as u32,
+                                ]
+                            })
+                            .collect();
+                        checked_solid += solid.len() as u64;
+
+                        for z in 0..chunk_extent {
+                            for y in 0..chunk_extent {
+                                for x in 0..chunk_extent {
+                                    let voxel = [x, y, z];
+                                    assert_eq!(
+                                        chunk.voxel_occupied(voxel),
+                                        solid.contains(&voxel),
+                                        "[{label}] chunk {coord:?} voxel {voxel:?}: the point \
+                                         query and the expansion must agree"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            eprintln!("[{label}] point==expansion over all chunks ({checked_solid} solid voxels)");
+        }
+
+        let density = 4u32;
+
+        // A sphere: every chunk arm at once — coarse interior, boundary shell, and air.
+        let sphere = SdfShape::from_blocks(ShapeKind::Sphere, [6, 6, 6], 1, density);
+        assert_agrees(
+            &Scene::from_nodes(vec![NodeBuilder::Leaf(Node::new(
+                "Sphere",
+                NodeContent::Tool { shape: sphere, material: MaterialChoice::Stone },
+            ))]),
+            density,
+            "sphere",
+        );
+
+        // A tube: thin walls, so nearly every block is boundary and the cuboid path carries
+        // the whole answer — the case where the coarse layer cannot mask a mistake.
+        let tube = SdfShape::from_blocks(ShapeKind::Tube, [6, 3, 6], 1, density);
+        assert_agrees(
+            &Scene::from_nodes(vec![NodeBuilder::Leaf(Node::new(
+                "Tube",
+                NodeContent::Tool { shape: tube, material: MaterialChoice::Stone },
+            ))]),
+            density,
+            "tube",
+        );
+    }

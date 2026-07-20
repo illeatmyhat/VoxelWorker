@@ -148,6 +148,49 @@ impl TwoLayerChunk {
         self.coarse.iter().any(Option::is_some) || !self.microblocks.is_empty()
     }
 
+    /// Whether the chunk-local voxel `voxel` is solid — the POINT occupancy question.
+    ///
+    /// Both layers answer it directly, which is the whole reason the two-layer form is worth
+    /// having here: a coarse-solid block is solid at every voxel without storing any, and a
+    /// boundary block tests its cuboids, of which there are a handful. Neither path
+    /// materialises a voxel.
+    ///
+    /// This is the query a **cursor pick** runs (`docs/design/direct-manipulation.md`): the
+    /// march needs `occupied(voxel)` thousands of times along one ray, and the only existing
+    /// occupancy surface was [`expand_occupancy_into`](Self::expand_occupancy_into), which
+    /// streams the whole chunk. Expanding a chunk to learn one bit would cost the volume per
+    /// step and rebuild the dense grid the architecture exists to avoid — so picking gets a
+    /// point query rather than the ray getting a grid.
+    ///
+    /// `voxel` is in the chunk's own `[0, CHUNK_BLOCKS * voxels_per_block)` frame (ADR 0008);
+    /// out-of-range coordinates read as air rather than panicking, because a march clipped to
+    /// a traversal box still probes cells at the boundary.
+    pub fn voxel_occupied(&self, voxel: [u32; 3]) -> bool {
+        let density = self.voxels_per_block.max(1);
+        let chunk_extent = CHUNK_BLOCKS * density;
+        if voxel.iter().any(|&component| component >= chunk_extent) {
+            return false;
+        }
+        let block = voxel.map(|component| component / density);
+        // The coarse layer is the cheap half: solid everywhere, storing nothing.
+        if self.coarse_block(block).is_some() {
+            return true;
+        }
+        // Otherwise the block is air or boundary. Air has no entry at all, so a missing key
+        // is a negative answer, not a fallback to a slower path.
+        match self.microblocks.get(&block) {
+            None => false,
+            Some(geometry) => {
+                let block_local = [
+                    voxel[0] % density,
+                    voxel[1] % density,
+                    voxel[2] % density,
+                ];
+                geometry.cuboids.iter().any(|cuboid| cuboid.contains(block_local))
+            }
+        }
+    }
+
     /// The TOTAL voxel count this chunk STORES — the sum of every boundary block's
     /// decomposed cuboid voxels. A coarse-solid block contributes ZERO (interior
     /// elision); this is the measured "surface-only" residency the ADR demands (an

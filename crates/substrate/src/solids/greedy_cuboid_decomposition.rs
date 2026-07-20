@@ -69,6 +69,18 @@ impl<T> Cuboid<T> {
         let dz = (self.max[2] - self.min[2] + 1) as u64;
         dx * dy * dz
     }
+
+    /// Whether `cell` lies inside this cuboid — the POINT question, as against
+    /// [`cell_count`](Self::cell_count)'s bulk one.
+    ///
+    /// Both bounds are inclusive, so this is `min[axis] <= cell[axis] <= max[axis]` on every
+    /// axis and nothing more. It exists because a decomposition is a perfectly good spatial
+    /// index for asking "is this one cell solid" — answering that by expanding the cuboids
+    /// back to cells would cost the volume to learn one bit, which is exactly what the
+    /// decomposition was chosen to avoid.
+    pub fn contains(&self, cell: [u32; 3]) -> bool {
+        (0..3).all(|axis| cell[axis] >= self.min[axis] && cell[axis] <= self.max[axis])
+    }
 }
 
 /// A dense, bounded 3D grid of optionally-labeled cells — `Some(label)` is a
