@@ -26,6 +26,10 @@ pub mod app_core;
 // — the egui-facing palette state + the inspector panel moved to the `ui` crate).
 pub mod block_palette;
 pub mod gpu;
+// The three persistence artifacts (ADR 0022) and the exhaustive captures that carry
+// classified state into them. Separate from `settings` on purpose: that module holds the
+// classified state record, this one holds where it goes and enforces that it gets there.
+pub mod artifacts;
 pub mod settings;
 // The Signal viewport chrome that renders in egui (ADR 0018 Decision 8): the icon rail
 // under the view cube + the bottom-left status line. Built inside `run_egui_frame` so
@@ -128,6 +132,7 @@ pub use document::scene::{
     AssemblyDef, CombineOp, DefId, Node, NodeBuilder, NodeContent, NodeId, NodePath, NodeTransform,
     VoxelBody, Point, RegionBlocks, Scene, ROOT_NODE_ID,
 };
+pub use artifacts::{DocumentArtifact, Dump, SettingsArtifact, ViewArtifact};
 pub use settings::AppConfig;
 pub use evaluation::two_layer_store::{
     stream_vox_occupancy, streamed_widest_run_in_band, BlockClassification, MicroblockGeometry,

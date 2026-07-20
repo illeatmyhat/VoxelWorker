@@ -203,16 +203,73 @@ First classification pass: **zero `transient`**, two `derived`, both meeting ADR
 admission test literally. That the unfalsifiable hatch went unused on the first real struct is
 the healthiest available early signal, and it is the number to watch over time.
 
+
+## Amendment 2026-07-20 — the artifact split, and where the guarantee stops
+
+**Status: the split is implemented.** `src/artifacts.rs` holds `DocumentArtifact`,
+`SettingsArtifact` and `Dump`, and every capture in it destructures `AppConfig` with no
+`..` rest pattern. Adding a field to that struct now fails the build with
+`error[E0027]: pattern does not mention field` until somebody routes it, which is the
+mechanism decision 4 named. `crates/snapshot/tests/compile_fail/capture_misses_a_classified_field.rs`
+pins that error, so a refactor that reaches for `..` to get things building deletes a test
+rather than deleting the guarantee silently.
+
+Two shapes the implementation took, and one thing it revealed.
+
+**The dump is the only file, and that is not a compromise.** F9 writes one, and exit writes
+one, because restoring a session needs the scene *and* the preferences *and* the camera
+pose — which is the dump's field set exactly, not the document's. The document and the
+settings are real types that a dump is composed of; giving either its own path is a
+save/open workflow, which is a product decision this ADR does not make. The on-disk JSON
+stays flat (the three parts are merged into one object) so that every repro file already
+written still replays, verified by rendering the same pre-split repro through
+`shot --from-config` before and after: byte-identical PNGs.
+
+**`#[serde(flatten)]` cannot be used for that merge.** It buffers the whole object through
+serde's internal `Content` type, and the scene's id-keyed node arena does not survive the
+trip. Recorded because the failure is a runtime `i128 is not supported` on load, not a
+compile error, and the tests that caught it are the scene round-trips rather than anything
+about persistence shape.
+
+### What is still overstated: the guarantee holds at one seam only
+
+Decision 4 reads as a property of classified state generally. It is now a property of
+**`AppConfig`** specifically, because that is the struct the artifacts destructure.
+`PanelState` is equally classified and **nothing captures it exhaustively** —
+`AppConfig::capture` reads it field by field, by hand, in precisely the shape of the
+capture that lost the pan target. So on that seam the compiler still checks only that every
+field is *decided*, never that the decision is *honoured*.
+
+That is not hypothetical. Four `PanelState` fields are classified `view` — which the
+derive's own error text defines as reaching the dump — and reach nothing:
+`debug_face_orientation`, `debug_brick_faces`, `view_mode`, `stack`. The last two were
+deliberately excluded from persistence by ADR 0018 decision 3 and issue #88, so this is not
+a bug to fix quietly; it is **two decisions contradicting each other**. Either those fields
+are misclassified, or the dump is not capturing what its category promises.
+
+A second, subtler version of the same gap: the amendment above says "a classified object is
+saved whole". That holds where the object is what gets serialized, and `PanelState`'s are
+not — `geometry` and `layer_range` are each classified as one view object and each reaches
+the dump as a hand-picked subset of its fields. The band bounds are a defensible omission
+(they re-derive against the live grid); the problem is that nothing distinguishes a
+defensible omission from the pan-target kind. Both gaps are pinned by tests in
+`tests/state_classification.rs` so they cannot widen unnoticed.
+
+The honest statement of what is now true: **a field of `AppConfig` cannot fail to reach an
+artifact. A field of `PanelState` still can, and four currently do.**
+
 ## Open
 
-- **The artifact split**, which is what turns classification into the compile-time reachability
-  guarantee Decision 4 describes. Until then the guarantee is "every field is decided", not
-  "every decision is honoured".
+- **Extending the guarantee to the `PanelState` → `AppConfig` seam**, which is where the
+  reachability promise currently stops (see the amendment above). Blocked on an owner ruling:
+  `view_mode` and `stack` are classified `view` but were deliberately excluded from
+  persistence, and those two positions cannot both stand.
 - The **static / thread-local / GPU audit** this ADR says is owed. Nothing built so far narrows
   it.
 - Whether a display-only **hidden** — distinct from `enabled` — is worth adding. In a fold
   model, "show me this cutter without its cut" may not be a meaningful request; it is currently
   not expressible at all, which is a fact rather than a decision.
 - The category list beyond settings / document / view, and which artifacts each reaches.
-- Whether the classification is a derive macro or a reviewed convention over hand-written
-  exhaustive destructuring.
+- Whether the **document** ever earns a file of its own, which is the point at which it needs
+  the versioning decision 1 promises it. Nothing in the split forecloses it; nothing yet
+  requires it.

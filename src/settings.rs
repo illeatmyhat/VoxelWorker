@@ -1,25 +1,22 @@
-//! Config persistence (Milestone 8).
+//! Config persistence (Milestone 8) — the **classified state record**.
 //!
-//! Serialises the user-facing state — geometry, projection, material choice, the
-//! display toggles, the applied-block label, the camera orbit + projection, and
-//! the window size — to a JSON file under the platform config dir. On Windows
-//! that is `%APPDATA%\VoxelWorker\config.json`.
+//! [`AppConfig`] is a flat, self-contained mirror of everything the application
+//! persists, captured from the live render-coupled `PanelState` rather than derived on
+//! it. That indirection is what keeps internal struct churn away from anything durable,
+//! and it is why every field can carry a `#[snapshot(...)]` category (ADR 0022) in one
+//! readable column.
 //!
-//! Design notes:
-//!   * [`AppConfig`] is a *flat, self-contained* mirror of the persisted fields,
-//!     not a `#[derive(Serialize)]` on the live render-coupled `PanelState`. This
-//!     keeps the on-disk format stable and decoupled from internal struct churn,
-//!     and lets every field be `#[serde(default)]` so an older/newer config never
-//!     fails to parse (a missing field falls back to its default).
-//!   * Loading never panics: a missing file, an unreadable file, or invalid JSON
-//!     all yield `None`, and the caller uses its built-in defaults.
-//!   * The applied VS block is persisted only as its *label* (a string). Re-
-//!     resolving its texture on load is heavy (needs a folder scan + JSON
-//!     resolution), so the label is restored best-effort for display and the
-//!     material reverts to procedural until the user re-applies. Documented here
-//!     because it is an intentional, lazy re-apply.
-
-use serde::{Deserialize, Serialize};
+//! What this type is *not*, since 2026-07-20, is an on-disk format. It has no serde
+//! derive at all. The artifacts it is carried into — the document, the settings, and the
+//! dump that is their superset — live in [`crate::artifacts`], and every one of them
+//! destructures this struct exhaustively. That is the whole mechanism: the category on a
+//! field records where it should go, and the destructuring next door refuses to compile
+//! if it does not get there. A struct that both classified its fields and serialized
+//! itself would have no place for that second check to live, which is how `orbit_target`
+//! went missing from the F9 dump in the first place.
+//!
+//! Loading still never panics: a missing file, an unreadable file, or invalid JSON all
+//! yield `None`, and the caller uses its built-in defaults.
 
 use camera::{HomeView, OrbitCamera, ProjectionMode};
 use voxel_core::core_geom::MaterialChoice;
@@ -27,39 +24,29 @@ use ui::panel::{LayerRange, PanelState, ViewMode};
 use document::scene::Scene;
 use document::voxel::GeometryParams;
 
-/// serde remote-derive shim for the `camera` crate's [`ProjectionMode`], which
-/// carries no serde dependency of its own (the graphics-crate boundary law keeps it
-/// to glam + substrate). It mirrors the enum's two unit variants so [`AppConfig`]
-/// can persist the projection choice via `#[serde(with = "ProjectionModeConfig")]`.
-/// The on-disk representation ("Perspective" / "Orthographic") is unchanged.
-#[derive(Serialize, Deserialize)]
-#[serde(remote = "ProjectionMode")]
-enum ProjectionModeConfig {
-    Perspective,
-    Orthographic,
-}
+use crate::artifacts::{
+    default_density, default_distance, default_onion_depth, default_phi, default_theta,
+    default_window_size, Dump,
+};
 
-/// The whole persisted configuration. Every field is `#[serde(default)]` so a
-/// partial or older config still loads.
+/// The whole persisted application state, one field per decision, each classified.
 ///
-/// It is also, today, the *only* persistence artifact: `save_config` (on exit) and
-/// `export_repro` (F9) both build one of these, so the config file, the project and the
-/// debug dump are one structure wearing three hats. ADR 0022 separates them; the
-/// `#[snapshot(...)]` category on each field below records which artifact it will belong
-/// to when they part, so the split becomes a matter of reading the annotations rather
-/// than re-litigating every field. Nothing written to disk changes here. What does change
-/// is that a flat mirror struct now has a place where an omission shows — which is
-/// exactly what it lacked when `orbit_target` went missing from the dump.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, snapshot::Snapshot)]
+/// It used to be the single persistence artifact as well — config file, project and debug
+/// repro all at once — which is the arrangement ADR 0022 unpicked. It is now the *source*
+/// the artifacts are captured from and the *target* a loaded dump is restored into, which
+/// leaves it doing exactly one job: being the complete, reviewable list of what the
+/// application considers durable state.
+#[derive(Debug, Clone, PartialEq, snapshot::Snapshot)]
 pub struct AppConfig {
     // --- scene (ADR 0001 step 8: full scene persistence) ---
     // The whole assembly (node tree + reusable definitions + the active
-    // selection) is persisted here. `#[serde(default)]` means an OLD config with
-    // no `scene` field deserialises to `None`, which loads the default seed scene
-    // in `to_panel_state` (the same one a brand-new config gets). A malformed/partial
-    // `scene` value can never reach this field as garbage: serde tolerates missing
-    // inner fields (every scene field is `#[serde(default)]`), and an outright
-    // unparseable config is rejected wholesale by `load()` → defaults. Density
+    // selection) is persisted here. It is the ONE `#[snapshot(document)]` field, so
+    // `DocumentArtifact` is built from it alone. An absent `scene` key on disk
+    // deserialises to `None`, which loads the default seed scene in `to_panel_state`
+    // (the same one a brand-new config gets). A malformed/partial `scene` value can
+    // never reach this field as garbage: serde tolerates missing inner fields (every
+    // scene field is `#[serde(default)]`), and an outright unparseable config is
+    // rejected wholesale by `load()` → defaults. Density
     // (`voxels_per_block`) is now a document-level attribute on the `scene` (ADR 0003
     // §3f(0)); the app-level field below persists the inspector slider's transient
     // mirror value, kept in sync with `scene.voxels_per_block` via `SetDensity`.
@@ -75,7 +62,6 @@ pub struct AppConfig {
     // regional export: deferred to the chunking milestone (ADR 0001 step 8's
     // "regional/streamed .vox export" sub-part — meaningless until chunking; the
     // current full-grid `.vox` export already covers bounded scenes).
-    #[serde(default)]
     #[snapshot(document)]
     pub scene: Option<Scene>,
 
@@ -83,18 +69,15 @@ pub struct AppConfig {
     // `scene.voxels_per_block`, ADR 0003 §3f(0)) ---
     // View, not document: the truth is `scene.voxels_per_block`, and a mirror of document
     // truth is where you are working rather than what the model is.
-    #[serde(default = "default_density")]
     #[snapshot(view)]
     pub voxels_per_block: u32,
 
     // --- display / material ---
     // `ProjectionMode` lives in the wgpu-free `camera` crate, which carries no serde
     // dependency (its boundary law keeps it to glam + substrate), so it is persisted
-    // through the `ProjectionModeConfig` remote-derive shim below.
-    #[serde(default, with = "ProjectionModeConfig")]
+    // through the `ProjectionModeConfig` remote-derive shim in `crate::artifacts`.
     #[snapshot(settings)]
     pub projection_mode: ProjectionMode,
-    #[serde(default)]
     #[snapshot(settings)]
     pub material: MaterialChoice,
     // Issue #31: the three legacy grid `show_*` mirror fields
@@ -103,7 +86,6 @@ pub struct AppConfig {
     // field (`scene.master_voxel_grid` / `master_block_lattice` / `master_floor_grid`).
     // No `deny_unknown_fields`, so an OLD config still carrying those keys loads fine
     // (serde ignores the now-unknown keys); the scene's own masters are authoritative.
-    #[serde(default = "default_true")]
     #[snapshot(settings)]
     pub show_view_cube: bool,
     // NOTE: the legacy `show_origin_gizmo` field was removed in the issue #29 S6
@@ -112,7 +94,6 @@ pub struct AppConfig {
     // `deny_unknown_fields`, so an OLD config still carrying `"show_origin_gizmo"`
     // continues to deserialize cleanly (serde ignores the now-unknown key).
     /// Best-effort applied-block label (re-applied lazily; see module docs).
-    #[serde(default)]
     #[snapshot(settings)]
     pub applied_block_label: Option<String>,
 
@@ -124,85 +105,50 @@ pub struct AppConfig {
     // The flattened mirror of `PanelState::layer_range`, classified there as one view
     // object; view here too so the two agree. A collaborator should not inherit the band
     // someone else was working in.
-    #[serde(default = "default_true")]
     #[snapshot(view)]
     pub snap_to_blocks: bool,
-    #[serde(default)]
     #[snapshot(view)]
     pub onion_skin: bool,
-    #[serde(default = "default_onion_depth")]
     #[snapshot(view)]
     pub onion_depth: u32,
 
     // --- camera ---
     // The live camera pose: view state. `orbit_target` below is the field that went
     // missing from the dump, and the reason this scheme exists.
-    #[serde(default = "default_theta")]
     #[snapshot(view)]
     pub orbit_theta: f32,
-    #[serde(default = "default_phi")]
     #[snapshot(view)]
     pub orbit_phi: f32,
-    #[serde(default = "default_distance")]
     #[snapshot(view)]
     pub orbit_distance: f32,
     /// The orbit TARGET (the world point the camera looks at / orbits). Panning moves it off
     /// the origin, so without it a repro reframes on the origin and misses a panned view (the
-    /// F9 `--from-config` flow). `#[serde(default)]` = `[0,0,0]` for an old config, matching the
-    /// pre-field behaviour (target defaulted to the origin).
-    #[serde(default)]
+    /// F9 `--from-config` flow). A dump written without the key restores `[0,0,0]`, matching
+    /// the pre-field behaviour (target defaulted to the origin).
     #[snapshot(view)]
     pub orbit_target: [f32; 3],
 
     // --- view-cube home view (#13) ---
-    // The Home button's saved view. New fields: `#[serde(default)]` so an OLD
-    // config without them loads with the camera defaults — serde fills each missing
-    // key from its default fn, which derive from `OrbitCamera::default()` so the
-    // config default can never drift from the live camera default.
+    // The Home button's saved view. A dump missing these keys loads the camera
+    // defaults — the artifact's per-field default fns derive from
+    // `OrbitCamera::default()`, so a persisted default can never drift from the live one.
     // Settings, unlike the orbit fields above: a Home view is a viewpoint the user chose
     // to KEEP, so it outlives any one project rather than describing this session.
-    #[serde(default = "default_theta")]
     #[snapshot(settings)]
     pub home_theta: f32,
-    #[serde(default = "default_phi")]
     #[snapshot(settings)]
     pub home_phi: f32,
-    #[serde(default = "default_distance")]
     #[snapshot(settings)]
     pub home_distance: f32,
     /// #13 Step 6.4: was the home view explicitly captured by the user? When
     /// `false` (the default), the Home button re-frames the model instead of using
     /// `home_distance`, so a default home never zooms in too close.
-    #[serde(default)]
     #[snapshot(settings)]
     pub home_explicit: bool,
 
     // --- window ---
-    #[serde(default = "default_window_size")]
     #[snapshot(settings)]
     pub window_size: [u32; 2],
-}
-
-fn default_density() -> u32 {
-    16
-}
-fn default_true() -> bool {
-    true
-}
-fn default_theta() -> f32 {
-    OrbitCamera::default().orbit_theta
-}
-fn default_phi() -> f32 {
-    OrbitCamera::default().orbit_phi
-}
-fn default_distance() -> f32 {
-    OrbitCamera::default().orbit_distance
-}
-fn default_window_size() -> [u32; 2] {
-    [1280, 800]
-}
-fn default_onion_depth() -> u32 {
-    2
 }
 
 impl Default for AppConfig {
@@ -409,7 +355,7 @@ impl AppConfig {
     pub fn load() -> Option<Self> {
         let path = Self::config_path()?;
         let text = std::fs::read_to_string(&path).ok()?;
-        match serde_json::from_str::<Self>(&text) {
+        match Self::from_dump_json(&text) {
             Ok(config) => Some(config),
             Err(error) => {
                 eprintln!("config: ignoring invalid {}: {error}", path.display());
@@ -425,11 +371,34 @@ impl AppConfig {
     pub fn load_from(path: &std::path::Path) -> Result<Self, String> {
         let text = std::fs::read_to_string(path)
             .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-        serde_json::from_str::<Self>(&text)
+        Self::from_dump_json(&text)
             .map_err(|e| format!("invalid config {}: {e}", path.display()))
     }
 
-    /// Save the config to the platform path (pretty JSON), creating parent dirs.
+    /// Restore the state a dump's JSON describes.
+    ///
+    /// Both on-disk artifacts are dumps, so both loads land here. Keeping the parse in one
+    /// place is what stops the F9 file and the config file from drifting into two formats
+    /// that happen to look alike — the failure this ADR's whole split is about.
+    pub fn from_dump_json(text: &str) -> Result<Self, serde_json::Error> {
+        Dump::from_json(text).map(Dump::into_state)
+    }
+
+    /// Serialize this state as a **dump** — the superset artifact, from which a scene must
+    /// be completely reproducible.
+    ///
+    /// It is what F9 writes and what exit writes, for the same reason: restoring a session
+    /// needs the scene, the preferences and the camera pose together, which is the dump's
+    /// field set and not the document's. The document and settings projections
+    /// ([`DocumentArtifact`](crate::artifacts::DocumentArtifact),
+    /// [`SettingsArtifact`](crate::artifacts::SettingsArtifact)) are the parts this is
+    /// composed of; giving either its own file would be a save/open workflow, which is a
+    /// product decision and not this one.
+    pub fn to_dump_json(&self) -> Result<String, String> {
+        Dump::from_state(self).to_json()
+    }
+
+    /// Save the state to the platform path as a dump (pretty JSON), creating parent dirs.
     /// Errors are reported but not fatal — a failed save must not crash exit.
     pub fn save(&self) {
         let Some(path) = Self::config_path() else {
@@ -442,7 +411,7 @@ impl AppConfig {
                 return;
             }
         }
-        match serde_json::to_string_pretty(self) {
+        match self.to_dump_json() {
             Ok(json) => {
                 if let Err(error) = std::fs::write(&path, json) {
                     eprintln!("config: could not write {}: {error}", path.display());
@@ -457,6 +426,14 @@ impl AppConfig {
 mod tests {
     use super::*;
     use voxel_core::voxel::ShapeKind;
+
+    /// Save and reload through the on-disk artifact, which since the ADR 0022 split is
+    /// the dump rather than this struct. Most tests below care about what survives a
+    /// save/load, not about which type spells the JSON, so they go through here.
+    fn save_and_reload(config: &AppConfig) -> AppConfig {
+        let json = config.to_dump_json().expect("serialise");
+        AppConfig::from_dump_json(&json).expect("deserialise")
+    }
 
     #[test]
     fn config_round_trips_through_json() {
@@ -481,8 +458,7 @@ mod tests {
             window_size: [1600, 900],
         };
 
-        let json = serde_json::to_string_pretty(&config).expect("serialise");
-        let restored: AppConfig = serde_json::from_str(&json).expect("deserialise");
+        let restored = save_and_reload(&config);
         assert_eq!(config, restored);
     }
 
@@ -497,8 +473,7 @@ mod tests {
         let home = HomeView { theta: 2.5, phi: 0.6, distance: 33.0, explicitly_set: true };
         let config = AppConfig::capture(&panel, &camera, home, [1280, 800]);
 
-        let json = serde_json::to_string_pretty(&config).expect("serialise");
-        let restored: AppConfig = serde_json::from_str(&json).expect("deserialise");
+        let restored = save_and_reload(&config);
         let restored_home = restored.home_view();
         assert!((restored_home.theta - 2.5).abs() < 1e-5);
         assert!((restored_home.phi - 0.6).abs() < 1e-5);
@@ -506,8 +481,7 @@ mod tests {
 
         // An old config with no home_* keys loads with the camera defaults.
         let old_json = r#"{ "voxels_per_block": 8 }"#;
-        let old: AppConfig =
-            serde_json::from_str(old_json).expect("old config without home_* parses");
+        let old = AppConfig::from_dump_json(old_json).expect("old config without home_* parses");
         let old_home = old.home_view();
         let defaults = HomeView::default();
         assert!((old_home.theta - defaults.theta).abs() < 1e-5);
@@ -548,8 +522,7 @@ mod tests {
         let config = AppConfig::capture(&panel, &camera, HomeView::default(), [1280, 800]);
         assert!(config.scene.is_some(), "capture persists the scene");
 
-        let json = serde_json::to_string_pretty(&config).expect("serialise");
-        let restored: AppConfig = serde_json::from_str(&json).expect("deserialise");
+        let restored = save_and_reload(&config);
         let restored_panel = restored.to_panel_state();
 
         assert_eq!(restored_panel.scene.roots.len(), 2, "both nodes survive the reload");
@@ -572,12 +545,12 @@ mod tests {
     #[test]
     fn bad_json_falls_back_without_panicking() {
         // An empty object still parses thanks to the per-field defaults.
-        let restored: AppConfig = serde_json::from_str("{}").expect("empty object parses");
+        let restored = AppConfig::from_dump_json("{}").expect("empty object parses");
         assert_eq!(restored, AppConfig::default());
 
         // Outright invalid JSON must be a clean Err (the caller turns it into a
         // defaults fallback), never a panic.
-        assert!(serde_json::from_str::<AppConfig>("not json at all}{").is_err());
+        assert!(AppConfig::from_dump_json("not json at all}{").is_err());
     }
 
     /// issue #31 + #32: the legacy grid `show_*` mirror fields (`show_grid_overlay` /
@@ -600,7 +573,7 @@ mod tests {
             "show_floor_grid": true,
             "show_origin_gizmo": true
         }"#;
-        let config: AppConfig = serde_json::from_str(old_json)
+        let config = AppConfig::from_dump_json(old_json)
             .expect("old config with removed keys still parses");
         assert!(config.scene.is_none());
         // The app-level density key is the one flat field still read.
@@ -633,8 +606,7 @@ mod tests {
             "debug_clouds": true,
             "material": "Wood"
         }"#;
-        let restored: AppConfig =
-            serde_json::from_str(old_json).expect("old config (with debug_clouds) must still parse");
+        let restored = AppConfig::from_dump_json(old_json).expect("old config (with debug_clouds) must still parse");
         // The flat geometry keys are ignored; only density + material survive.
         assert_eq!(restored.voxels_per_block, 20);
         assert_eq!(restored.material, MaterialChoice::Wood);
@@ -680,7 +652,7 @@ mod tests {
             "mesher": "Instanced",
             "material": "Stone"
         }"#;
-        let restored: AppConfig = serde_json::from_str(old_json)
+        let restored = AppConfig::from_dump_json(old_json)
             .expect("old config (with mesher) must still parse");
         // The flat geometry keys are ignored (issue #32); density + material survive.
         assert_eq!(restored.voxels_per_block, 8);
@@ -765,8 +737,7 @@ mod tests {
         let config = AppConfig::capture(&panel, &camera, HomeView::default(), [1280, 800]);
         assert!(config.scene.is_some(), "capture persists the full scene");
 
-        let json = serde_json::to_string_pretty(&config).expect("serialise");
-        let restored: AppConfig = serde_json::from_str(&json).expect("deserialise");
+        let restored = save_and_reload(&config);
         let restored_panel = restored.to_panel_state();
 
         // Structural equality: same node tree, definitions, and active selection.
@@ -827,8 +798,7 @@ mod tests {
             "voxels_per_block": 12,
             "wall_blocks": 1
         }"#;
-        let restored: AppConfig =
-            serde_json::from_str(partial).expect("a partial scene object still parses");
+        let restored = AppConfig::from_dump_json(partial).expect("a partial scene object still parses");
         let panel = restored.to_panel_state();
         assert_eq!(
             panel.scene.roots.len(),
@@ -843,7 +813,7 @@ mod tests {
         // there — a stray legacy `"nodes"` key would simply be ignored by serde.)
         let broken = r#"{ "scene": { "roots": [1], "arena": { "1": { "content": "NotAVariant" } } } }"#;
         assert!(
-            serde_json::from_str::<AppConfig>(broken).is_err(),
+            AppConfig::from_dump_json(broken).is_err(),
             "a structurally broken scene is a clean Err (load → defaults), never a panic"
         );
     }
@@ -887,17 +857,23 @@ mod tests {
         panel.scene = scene;
         let camera = OrbitCamera::default();
         let config = AppConfig::capture(&panel, &camera, HomeView::default(), [1280, 800]);
-        let json = serde_json::to_string(&config).expect("serialise");
+        let json = config.to_dump_json().expect("serialise");
 
         // Sanity: the persisted offset really is a bare JSON integer (no width), the
-        // exact condition the widening relies on.
-        assert!(
-            json.contains("\"offset_voxels\":[40,0,0]"),
+        // exact condition the widening relies on. Checked against the parsed value rather
+        // than the text, because a dump is written pretty and the whitespace between the
+        // array elements is not the property under test.
+        let written: serde_json::Value = serde_json::from_str(&json).expect("re-parse");
+        assert_eq!(
+            written["scene"]["arena"]
+                .as_object()
+                .and_then(|arena| arena.values().next())
+                .map(|node| &node["transform"]["offset_voxels"]),
+            Some(&serde_json::json!([40, 0, 0])),
             "the offset persists as plain JSON integers (no width): {json}"
         );
 
-        let restored: AppConfig =
-            serde_json::from_str(&json).expect("an i32-range-offset scene must parse");
+        let restored = AppConfig::from_dump_json(&json).expect("an i32-range-offset scene must parse");
         let panel = restored.to_panel_state();
         assert_eq!(panel.scene.roots.len(), 1, "the node survives the widening");
         // The i32-range offset widened into the i64 field intact.
@@ -946,8 +922,7 @@ mod tests {
         let camera = OrbitCamera::default();
         let config = AppConfig::capture(&panel, &camera, HomeView::default(), [1280, 800]);
 
-        let json = serde_json::to_string_pretty(&config).expect("serialise");
-        let restored: AppConfig = serde_json::from_str(&json).expect("deserialise");
+        let restored = save_and_reload(&config);
         let restored_panel = restored.to_panel_state();
 
         assert_eq!(
@@ -1008,7 +983,7 @@ mod tests {
             "show_block_lattice": false,
             "show_floor_grid": true
         }"#;
-        let config: AppConfig = serde_json::from_str(old_json).expect("old config parses");
+        let config = AppConfig::from_dump_json(old_json).expect("old config parses");
         assert!(config.scene.is_none(), "an old flat config carries no scene");
 
         let panel = config.to_panel_state();
@@ -1058,8 +1033,7 @@ mod tests {
         let camera = OrbitCamera::default();
         let config = AppConfig::capture(&panel, &camera, HomeView::default(), [1280, 800]);
 
-        let json = serde_json::to_string_pretty(&config).expect("serialise");
-        let restored: AppConfig = serde_json::from_str(&json).expect("deserialise");
+        let restored = save_and_reload(&config);
         let restored_panel = restored.to_panel_state();
 
         // The scene's own masters survive (NOT overwritten by the legacy show_*).
@@ -1111,7 +1085,9 @@ mod tests {
         panel.scene = scene;
         let camera = OrbitCamera::default();
         let config = AppConfig::capture(&panel, &camera, HomeView::default(), [1280, 800]);
-        let mut config_value = serde_json::to_value(&config).expect("serialise");
+        let dump_json = config.to_dump_json().expect("serialise");
+        let mut config_value: serde_json::Value =
+            serde_json::from_str(&dump_json).expect("re-parse the dump");
         // Forge a stale counter: the nodes carry real ids, but `next_node_id` sits at 0
         // (as a save written before the counter was persisted/advanced would).
         *config_value
@@ -1120,7 +1096,7 @@ mod tests {
             .expect("the persisted scene carries a counter") = serde_json::json!(0);
 
         let json = serde_json::to_string_pretty(&config_value).expect("re-serialise");
-        let restored: AppConfig = serde_json::from_str(&json).expect("deserialise");
+        let restored = AppConfig::from_dump_json(&json).expect("deserialise");
         let loaded = restored.to_panel_state();
 
         // Every node carries a real id, and the counter now sits past all of them.

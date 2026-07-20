@@ -1,0 +1,18 @@
+error[E0027]: pattern does not mention field `orbit_target`
+  --> tests/compile_fail/capture_misses_a_classified_field.rs:36:13
+   |
+36 |         let SessionState { window_size } = state;
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^ missing field `orbit_target`
+   |
+help: include the missing field in the pattern
+   |
+36 |         let SessionState { window_size, orbit_target } = state;
+   |                                       ++++++++++++++
+help: if you don't care about this missing field, you can explicitly ignore it
+   |
+36 |         let SessionState { window_size, orbit_target: _ } = state;
+   |                                       +++++++++++++++++
+help: or always ignore missing fields here
+   |
+36 |         let SessionState { window_size, .. } = state;
+   |                                       ++++

@@ -106,3 +106,77 @@ fn the_pan_target_that_started_this_is_classified() {
         .expect("classified above")
         .reaches_dump());
 }
+
+/// The reachability guarantee holds at one seam and not at the other, and this pins the
+/// gap so that it is a tracked fact rather than a discovery waiting to happen.
+///
+/// `src/artifacts.rs` destructures `AppConfig` exhaustively, so a classified field there
+/// cannot fail to reach an artifact. Nothing does the same for `PanelState`:
+/// `AppConfig::capture` reads the panel field by field, by hand, exactly the way the
+/// capture that lost the pan target did. So `PanelState` classification is presently a
+/// *statement of intent* — the compiler checks that every field is decided, and nothing
+/// checks that the decision is honoured.
+///
+/// The four fields below are the live consequence. Each is classified `view`, which by
+/// the derive's own error text means it reaches the dump; each is hard-coded to a default
+/// in `to_panel_state` and captured by nobody. Two of them (`view_mode`, `stack`) were
+/// deliberately excluded from persistence by ADR 0018 Decision 3 and issue #88 — so this
+/// is not a bug to fix quietly, it is a contradiction between two decisions that needs an
+/// owner ruling: either those fields are not `view`, or the dump is not capturing what it
+/// claims to.
+#[test]
+fn panel_state_classification_is_not_yet_enforced_by_any_capture() {
+    // Fields whose category promises the dump, and whose value the dump has no route to.
+    let unreached = ["debug_face_orientation", "debug_brick_faces", "view_mode", "stack"];
+    for name in unreached {
+        assert_eq!(
+            PanelState::category_of(name).map(|category| category.reaches_dump()),
+            Some(true),
+            "`{name}` is expected to be classified as reaching the dump"
+        );
+        assert!(
+            AppConfig::category_of(name).is_none(),
+            "`{name}` gained a route into the dump — delete it from this list and from the \
+             gap recorded in ADR 0022"
+        );
+    }
+}
+
+/// The other half of the same gap, and the more surprising one.
+///
+/// ADR 0022's amendment states that "a classified object is saved whole", on the grounds
+/// that serialization carries every field inside it. That holds only where the object
+/// itself is what gets serialized. `PanelState::geometry` and `PanelState::layer_range`
+/// are each classified as ONE view object, and each is carried into `AppConfig` as a
+/// hand-picked subset of its fields — the density out of `GeometryParams`, the three
+/// sticky preferences out of `LayerRange`. Whatever else those types hold does not travel,
+/// and no destructuring anywhere says so.
+///
+/// The band bounds are a defensible omission (they re-derive against the live grid). The
+/// point is that nothing distinguishes a defensible omission from the pan-target kind.
+#[test]
+fn classified_panel_objects_are_carried_as_subsets_not_whole() {
+    for (object, carried) in [
+        ("geometry", &["voxels_per_block"][..]),
+        (
+            "layer_range",
+            &["snap_to_blocks", "onion_skin", "onion_depth"][..],
+        ),
+    ] {
+        assert_eq!(
+            PanelState::category_of(object),
+            Some(StateCategory::View),
+            "`{object}` is classified as one view object"
+        );
+        assert!(
+            AppConfig::category_of(object).is_none(),
+            "`{object}` now travels whole — this gap has closed, update ADR 0022"
+        );
+        for field in carried {
+            assert!(
+                AppConfig::category_of(field).is_some(),
+                "`{field}` is the piece of `{object}` that actually reaches the dump"
+            );
+        }
+    }
+}

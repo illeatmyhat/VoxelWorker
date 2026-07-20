@@ -251,6 +251,10 @@ op-stack field (see `docs/adr/0011`; generalizes the ADR 0007 fog atlas).
   omits (a **rollback** position, a **view mode**). A superset of the document rather than a
   variant of it. Unversioned — it is read by the version that wrote it.
 
+- **Settings** — user preference that outlives any one project: window size, projection mode,
+  the saved Home view. Reaches the dump but never the document, because a preference travelling
+  inside a shared file would impose one person's setup on everyone who opened it.
+
 - **Classified state** — every piece of application state carries a category (settings,
   document, view, …) naming which artifacts it reaches. State that is classified but reaches
   neither the document nor the dump is a compile error, so nothing can be forgotten silently.

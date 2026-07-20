@@ -583,8 +583,12 @@ impl WindowedState {
         let config =
             AppConfig::capture(&self.panel_state, &self.app_core.camera, self.home_view, window_size);
         let path = std::env::temp_dir().join("voxelworker-repro.json");
-        match serde_json::to_string_pretty(&config)
-            .map_err(|e| e.to_string())
+        // The DUMP, explicitly (ADR 0022): the superset artifact, from which a scene must be
+        // completely reproducible. The document projection would be the wrong choice here by
+        // construction — it deliberately drops the camera, which is the one thing a repro of a
+        // visual bug cannot do without.
+        match config
+            .to_dump_json()
             .and_then(|json| std::fs::write(&path, json).map_err(|e| e.to_string()))
         {
             Ok(()) => eprintln!("repro: wrote current scene + camera to {}", path.display()),
