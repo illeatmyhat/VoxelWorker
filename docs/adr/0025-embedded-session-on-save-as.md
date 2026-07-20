@@ -137,10 +137,33 @@ therefore the behaviour ADR 0022 mandated unconditionally. That is worth stating
 because it is what makes the reversal small rather than a change of philosophy: **the old
 decision is now this feature's fallback.**
 
-A consequence follows for the writer: the embedded cursor must be expressible without a stable
-node identity surviving arbitrary edits, and must be *validated on load rather than trusted*.
-An implementation that resolves the cursor optimistically and panics on a stale index has
-violated this law even if the file parses.
+A consequence follows for the writer: the embedded cursor must be *validated on load rather than
+trusted*. An implementation that resolves the cursor optimistically and panics on a stale
+reference has violated this law even if the file parses.
+
+**And that constrains how the cursor names its position.** A first draft of this ADR worried
+about "stable node identity"; the code does not have that problem. `NodeId` is a plain `u64`
+minted from a monotonic counter with **no slotmap generations** — the counter alone prevents
+stale-id aliasing (`crates/document/src/scene/graph.rs:37`) — the arena is a `BTreeMap` keyed by
+id that serializes with the document, and `ensure_node_ids` preserves loaded ids verbatim,
+minting only for the `NodeId(0)` sentinel (`graph.rs:586`). An id written into the same document
+it refers to survives the round trip intact.
+
+The real exposure is **referential integrity, not identity**: the referent can be deleted while
+the id stays perfectly valid. And because decision 2 keeps the cursor **per scope**, both halves
+can dangle — the scope node can be removed, and so can the node the cursor sits at inside it.
+
+That decides the representation, and it decides it against the cheaper-looking option:
+
+* **An index into the spine stays plausible when it is wrong.** Delete a node above the cursor
+  and index 5 still resolves — to a different node. The failure is silent and undetectable.
+* **A `NodeId` fails detectably.** It is either present in the arena, under the named scope, or
+  it is not.
+
+**Law A is only enforceable if a stale reference is detectable, so the embedded cursor names the
+`NodeId` it is rolled back to** — resolved by locating that id in the scope's spine, and dropping
+to the end of the fold when the lookup misses. An index would satisfy the letter of "advisory"
+while making the advisory check impossible to write.
 
 ### 4. Law B — the choice belongs on the writer, not the reader
 
@@ -264,11 +287,15 @@ cursor themselves, which costs one gesture.
 - **Whether a handover wants to carry a selection**, which is the honest form of the need
   decision 2 declined to serve with `stack`. Not forced by anything; worth re-asking if
   handover becomes a workflow rather than an occasional courtesy.
-- **What the Save As checkbox is called.** "Embed session state" is implementation vocabulary
-  and would fail the same test "sealed" failed. It should say what the reader gets — the author's
-  view — and the wording is not settled here.
-- **Whether the sticky flag is visible anywhere outside Save As.** A file that silently keeps
-  embedding a view is the same class of surprise as a file that silently keeps a rollback, and
-  the fold-strip precedent says such things earn chrome. Deferred to the save/open flow's design.
+- ~~What the Save As checkbox is called.~~ **Settled by the owner, 2026-07-20: "Save viewer
+  state".** It names what is saved in the vocabulary the product already uses for viewer modes,
+  rather than naming the mechanism. Note that it deliberately does not say *whose* view or
+  promise the reader anything — Law A means the advice may be dropped, so a name that promised
+  the reader a view would overclaim.
+- ~~Whether the sticky flag is visible anywhere outside Save As.~~ **Settled by the owner,
+  2026-07-20: it appears in a Document Properties window.** That is the right home precisely
+  because the flag is document state and not session state (see Consequences) — it is a property
+  of the file, so it belongs with the file's other properties rather than in viewport chrome.
+  The window does not exist yet; this records where the control lands when it does.
 - **The static / thread-local / GPU audit** owed since ADR 0022 remains open. Nothing here
   narrows it.
