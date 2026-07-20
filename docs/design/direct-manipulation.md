@@ -149,10 +149,34 @@ last rebuild was cheap, fall back to a ghost when it was not. The gesture still 
 one intent on release regardless — undoing a move one voxel at a time would be a worse tool
 than no undo.
 
-Two caveats the numbers do not cover, both worth knowing before quoting them:
+**This is the rebuild only.** The brick sink rebuilds on its own worker and does not block the
+frame, so this is what the user waits for — but see the seam caveat below, which is sharper
+than it first looked.
 
-* **The drag stays inside existing geometry.** A node moved past the scene's current extent
-  shifts the floating origin, and a shift reframes every baked buffer — a wholesale re-mesh,
-  not an incremental one. Dragging a node out into empty space is a different, costlier path.
-* **This is the rebuild only.** The brick sink rebuilds on its own worker and does not block
-  the frame, so this is what the user waits for, not the total work done.
+### Leaving the extent costs nothing to resolve — and that is not the reassurance it sounds like
+
+A node dragged past the composite's current bound grows the region, which moves the floating
+origin, which makes `rebuild` withhold its incremental hint — so every baked vertex buffer has
+to be re-meshed. That looked like a second, costlier path worth measuring, and the third probe
+measured it.
+
+The result is that **the origin shift costs `rebuild` nothing measurable.** Holding region
+growth constant and splitting a single outward drag on whether the extent midpoint actually
+moved, the two regimes are indistinguishable (2.4/2.4, 1.9/1.8, 4.8/5.1, 2.0/2.0 ms). The
+reason is mechanical: withholding the hint is a *branch*, not work. `invalidate_aabb` has
+already run and already localised — the resident cache is frame-independent — so a reframing
+rebuild re-classifies exactly the same handful of chunks and then sets a flag.
+
+The honest conclusion is therefore **not** "extent-growing drags are free". It is that *the
+cost is not at this seam*. The wholesale re-mesh is real, and it lands entirely downstream in
+the shell, which `AppCore::rebuild` returns before ever reaching. Every number in this document
+is a lower bound on what a drag step costs the user, and the extent-growing figures are the
+loosest of them. **Measuring the re-mesh requires a probe where the mesher runs, not here.**
+That is the open number now, and it is the one that decides whether the adaptive rule needs a
+second trigger for "this drag left the extent".
+
+A smaller surprise from the same table: outward steps are often *cheaper* than inside ones
+(1.9 ms vs 5.3 ms on the medium scene). A node dragged out into empty space has a dirty AABB
+that touches fewer occupied chunks than the same node nudged through dense geometry. At this
+layer, cost tracks **locality**, not extent — the same conclusion the locality probe reached,
+arrived at from the opposite direction.
