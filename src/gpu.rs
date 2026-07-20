@@ -36,13 +36,15 @@ impl GpuContext {
             .await
             .expect("no suitable GPU adapter found");
 
-        // The GPU fog atlas (ADR 0007) packs a large single-producer scene's covering
-        // chunks into one storage buffer before `copy_buffer_to_texture`. A 50×10×50-block
-        // cylinder's atlas is ~200 MiB — over the DEFAULT 128 MiB storage-buffer binding
-        // limit, which would validation-error the bind group (#56). Raise the storage-buffer
-        // and total-buffer size limits to whatever the adapter actually supports (desktop
-        // GPUs report GiBs) so large scenes stay on the GPU path instead of falling back to
-        // the 26s CPU densify. Everything else keeps the conservative defaults.
+        // The GPU brick atlas (ADR 0011; the fog atlas ADR 0007 first raised this limit for
+        // was retired by ADR 0012, but the brick atlas that replaced it inherits the same
+        // ceiling) packs a large scene's covering chunks into one storage buffer before
+        // `copy_buffer_to_texture`. A 50×10×50-block cylinder's atlas is ~200 MiB — over the
+        // DEFAULT 128 MiB storage-buffer binding limit, which would validation-error the
+        // bind group (#56). Raise the storage-buffer and total-buffer size limits to whatever
+        // the adapter actually supports (desktop GPUs report GiBs) so large scenes stay on
+        // the GPU path instead of falling back to the 26s CPU densify. Everything else keeps
+        // the conservative defaults.
         let adapter_limits = adapter.limits();
         let required_limits = wgpu::Limits {
             max_storage_buffer_binding_size: adapter_limits.max_storage_buffer_binding_size,

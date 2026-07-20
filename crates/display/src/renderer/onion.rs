@@ -22,21 +22,26 @@ pub struct OnionFogParams {
 }
 
 /// The onion tint hue (cool blue-grey), matching the retired volumetric fog haze so
-/// the crisp ghost reads as the same "context around the band" the fog conveyed.
+/// the ghost reads as the same "context around the band" the fog conveyed.
 const ONION_FOG_COLOR_HEX: u32 = 0x9c_b4_d8;
 
-/// ADR 0012 (H1) — the **onion ghost tint**: the flat translucent colour both display
-/// paths (brick raymarch + cuboid mesh) shade the onion-slab ghost voxels with. The hue
-/// matches the retired volumetric fog haze ([`ONION_FOG_COLOR_HEX`]) so the crisp ghost
-/// reads as the same "context around the band" the fog conveyed; the alpha is the src-alpha
-/// the ghost pass blends with (depth-tested `Less`, depth write ON — see the ghost
-/// pipelines in `brick/raymarch.rs` / `mesh/pipeline.rs`). Linear-space RGB, matching the
-/// linear shading both cuboid + brick shaders work in.
+/// ADR 0012 (H1) — the onion ghost's fixed alpha, used as the flat translucent
+/// blend the CUBOID MESH path shades its onion-slab ghost with (depth-tested `Less`,
+/// depth write ON — the ghost pipeline in `mesh/pipeline.rs`). The BRICK RAYMARCH
+/// path shades its ghost differently since the ADR 0012 H1.5 Beer-Lambert haze spike:
+/// `fragment_ghost_haze` (`brick/raymarch.rs`) computes its own opacity from the ray's
+/// accumulated in-solid thickness and ignores this constant outright, reading only the
+/// tint's RGB below (depth write OFF there — the haze march folds a whole slab into one
+/// fragment, so there is no intra-slab overlap for a depth write to disambiguate).
+/// Linear-space, matching the linear shading both cuboid + brick shaders work in.
 const ONION_GHOST_ALPHA: f32 = 0.5;
 
 /// The onion ghost tint as linear `[r, g, b, a]` (ADR 0012 H1). Both display paths read
-/// this ONE constant so the raymarch ghost and the mesh ghost tint identically — the
-/// cross-path golden parity (`brick_golden_matches_dense`) depends on it.
+/// this ONE constant, so the raymarch haze and the mesh ghost always share the same hue
+/// — but NOT the same alpha (the raymarch path discards `a` for its own computed haze
+/// opacity, see `ONION_GHOST_ALPHA`'s doc above), so the two paths' onion aesthetics
+/// legitimately differ (haze vs crisp). The cross-path golden parity
+/// (`brick_golden_matches_dense`) depends only on the shared hue, not on identical tinting.
 pub fn onion_ghost_tint() -> [f32; 4] {
     let [r, g, b] = srgb_hex_to_linear(ONION_FOG_COLOR_HEX);
     [r, g, b, ONION_GHOST_ALPHA]

@@ -26,7 +26,7 @@ pub const VIEW_CUBE_VIEWPORT_MARGIN: u32 = 16;
 /// function so the drawn cube and the pick rect always coincide. Returns `None` when
 /// the viewport is smaller than the cube + margin on either axis — the **minimum
 /// on-screen size** rule that keeps the 68 %-centre slice lines' 16 % edge strips
-/// (≈ `0.16 · 128 ≈ 20 px`) comfortably hittable; below it the cube is not drawn.
+/// (≈ `0.16 · 144 ≈ 23 px`) comfortably hittable; below it the cube is not drawn.
 pub fn view_cube_corner(viewport: [u32; 4], right_inset_px: u32) -> Option<(u32, u32)> {
     let [viewport_x, viewport_y, viewport_width, viewport_height] = viewport;
     let margin = VIEW_CUBE_VIEWPORT_MARGIN;
@@ -128,9 +128,10 @@ fn expand_thick_lines(segments: &[LineVertex]) -> Vec<ThickLineVertex> {
     out
 }
 
-/// The corner view cube: a labelled cube mirroring the main camera, plus a teal
-/// edge wireframe . Rendered into a scissored top-left
-/// viewport in its own pass (depth cleared there first).
+/// The corner view cube: a labelled cube mirroring the main camera's orientation, plus
+/// a silhouette + axis-coloured edge wireframe (Signal style, see the module doc).
+/// Rendered into a scissored top-right viewport in its own pass (depth cleared there
+/// first).
 pub struct ViewCubeRenderer {
     face_pipeline: wgpu::RenderPipeline,
     /// The anti-aliased screen-space thick-line pipeline (issue #91 item 3): silhouette,
@@ -313,10 +314,11 @@ impl ViewCubeRenderer {
             fragment: Some(wgpu::FragmentState {
                 module: &cube_shader,
                 entry_point: Some("fragment_main"),
-                // Signal: the faces are TRANSLUCENT flat fills (~80 %) over the
-                // resolved scene, so the pipeline alpha-blends. Back faces are culled
-                // and the three visible faces never overlap in screen space, so no
-                // per-face depth sorting is needed.
+                // Signal: the faces are FULLY OPAQUE flat fills (issue #91 item 6), reading
+                // solid over the scene; the pipeline still alpha-blends, but only for the
+                // AA slice-line feathering. Back faces are culled and the three visible
+                // faces never overlap in screen space, so no per-face depth sorting is
+                // needed.
                 targets: &[Some(wgpu::ColorTargetState {
                     format: color_format,
                     blend: Some(wgpu::BlendState::ALPHA_BLENDING),

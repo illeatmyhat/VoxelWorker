@@ -1,14 +1,16 @@
 //! Selected-operand ghost styles (issue #78; the tint-constant voice of the ADR 0012
 //! onion ghost in `onion.rs`).
 //!
-//! When the active selection is a node, the shell renders that node's OWN body as an
-//! operation-coded x-ray ghost over the composed scene ("a Subtract cutter is invisible
-//! by success"). Each ghost body draws TWICE with the same mesh (the two-pass depth
-//! split, `mesh/selected_operand.rs`): the depth-pass fragments (the directly visible
-//! operand surface) in the QUIET translucent tint, and the depth-FAIL fragments (the
-//! operand surface occluded by scene geometry) in the LOUDER tint — so an entirely
-//! internal cutter renders wholly loud, deliberately more obvious than Fusion's
-//! invisible internal voids.
+//! In "Show booleans" mode (one of three exclusive viewer modes — it and onion clip can
+//! never co-render), the shell renders every boolean operand body in the SELECTED
+//! SUBTREE as an operation-coded x-ray ghost over the composed scene ("a Subtract cutter
+//! is invisible by success"); selecting the root part x-rays every boolean in the whole
+//! scene. Each ghost body draws TWICE with the same mesh (the two-pass depth split,
+//! `mesh/selected_operand.rs`): the depth-pass fragments (the directly visible operand
+//! surface) in the QUIET translucent tint, and the depth-FAIL fragments (the operand
+//! surface occluded by scene geometry) in the LOUDER tint — so an entirely internal
+//! cutter renders wholly loud, deliberately more obvious than Fusion's invisible internal
+//! voids.
 
 use super::*;
 

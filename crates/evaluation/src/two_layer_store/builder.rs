@@ -11,13 +11,17 @@ use voxel_core::spatial_index::{EditBroadphaseBvh, VoxelAabb};
 #[allow(unused_imports)]
 use super::*;
 
-/// The OFF-by-default capability that builds the [`TwoLayerChunk`] display cache from the
-/// one evaluator (ADR 0010 Decision 3 / 6). When the capability is OFF the live store
-/// stays on the dense [`crate::store::Store`] path; this type is only constructed when a
-/// caller opts in (the parity gate, and — later — E3's mesher).
+/// The capability that builds the [`TwoLayerChunk`] display cache from the one evaluator
+/// (ADR 0010 Decision 3 / 6). Every live caller constructs it via [`enabled`](Self::enabled)
+/// — E3's mesher, the export/diameter workers, and `shot` — because ADR 0010 E5 landed the
+/// two-layer path as the SOLE runtime display path; the dense [`crate::store::Store`] path
+/// is retired to a test-and-golden oracle (see the module docs' "Status" section). The
+/// `Default`-constructed, disabled instance survives for the tests that pin the
+/// off-behaviour ([`build_chunk`](Self::build_chunk) returning `None`).
 ///
-/// It is a thin, stateless builder (no resident cache of its own in this slice — the
-/// dense `Store` remains the live cache); a chunk is built on demand from the scene.
+/// It is a thin, stateless builder (no resident cache of its own — every call
+/// re-classifies a chunk from the scene; `TwoLayerResidentCache` is the incremental
+/// resident cache built on top); a chunk is built on demand from the scene.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TwoLayerStore {
     /// The capability flag (ADR 0010 Decision 6). `false` (the default) means the

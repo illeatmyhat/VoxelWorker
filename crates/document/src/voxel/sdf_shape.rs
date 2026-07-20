@@ -66,7 +66,9 @@ impl Default for GeometryParams {
     }
 }
 
-/// A single parametric SDF primitive: the first (and, in M2, only) producer.
+/// A single parametric SDF primitive — the original producer; the document layer now
+/// also resolves `SketchSolid` (sketch→extrude/revolve) and `DebugCloudField`, composed
+/// through `CompositeProducer` / `OutsetProducer`.
 ///
 /// **Size is voxel-granular** (ADR 0003 Â§3f(0)): the canonical [`size_voxels`] is
 /// the bounding-box span in VOXELS at the document density. Density

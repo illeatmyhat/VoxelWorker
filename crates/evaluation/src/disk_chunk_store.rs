@@ -9,13 +9,15 @@
 //! later [`get`](DiskChunkStore::get) for an evicted key transparently reloads it
 //! from disk back into RAM (and counts as a use, refreshing its LRU position).
 //!
-//! ## Standalone (NOT yet wired into the live path)
+//! ## Wired into the live path via `Store`'s resident cap
 //!
-//! This is a self-contained, thoroughly-tested component. It is **not** wired into
-//! the live resolve/render path — that integration is S6c, when the
-//! monolithic-grid bridge is removed and the floating-origin/rebasing coupling is
-//! reworked (see the module note at the bottom). The render path is untouched, so
-//! the goldens are trivially unaffected.
+//! This is a self-contained, thoroughly-tested component, and it IS wired into the
+//! live resolve/render path: `Store::with_resident_cap` (in `crate::store::cache`)
+//! constructs one as the backing cold storage for its least-recently-used spill
+//! (issue #20 Step 3). The public chunk-fetch API and the data returned are
+//! unchanged by spilling — a chunk fetched after a spill+reload is byte-identical to
+//! one that stayed resident — so the goldens are unaffected even though the
+//! resident set is now bounded.
 //!
 //! ## Capacity model: resident chunk COUNT (not a byte budget)
 //!

@@ -45,9 +45,10 @@ impl CuboidMesh {
     }
 }
 
-/// Build the exposed-face mesh for a whole [`VoxelGrid`], partitioned into the
-/// same render chunks the instanced path uses (so the chunk world-AABBs frustum-
-/// cull identically).
+/// Build the exposed-face mesh for a whole [`VoxelGrid`] as ONE flat vertex/index
+/// list with no chunk partition — this is the per-chunk apron mesher's structural
+/// REFERENCE (see `CuboidMesh`'s doc above), not a render path in its own right;
+/// the live GPU path chunks via [`build_chunk_meshes_with_apron`] instead.
 ///
 /// Exposed-face culling: the grid is decomposed into single-material boxes, then
 /// for each box face we emit a quad only when the voxel cell on the far side of
@@ -343,29 +344,9 @@ pub(crate) fn global_occupancy_from_chunks(chunk_grids: &[([i32; 3], &VoxelGrid)
     }
 }
 
-/// Apron-aware per-chunk cuboid meshing (issue #20 S6c-2d) — the DEFAULT render
-/// path, meshed one chunk at a time instead of densifying + greedy-decomposing the
-/// WHOLE region.
-///
-/// For each `(coord, &grid)` chunk:
-/// 1. Densify the chunk's OWN voxels into an interior region anchored on the global
-///    cloud (so emitted world positions are byte-identical to the whole-region
-///    mesher → pixel parity).
-/// 2. Build a co-located APRON region of the same extent whose every cell — interior
-///    AND the 1-voxel border — is filled from the GLOBAL occupancy. The apron is
-///    used ONLY for [`face_is_exposed`] (no apron geometry is emitted), so a seam
-///    face between two solid chunks is correctly culled and the chunk's exposed-face
-///    SET equals the whole-region mesher's.
-/// 3. Apply the layer-range band clip to the interior region per chunk (absolute
-///    layers; the band edge synthesises real cap faces inside the chunk).
-/// 4. `decompose_into_boxes` on the INTERIOR region (apron cells are air for
-///    decomposition, so no box ever spans into the apron), then `emit_box_faces`
-///    with exposure tested against the APRON region.
-///
-/// `grid_dimensions` is the whole composite grid's voxel dims; Z-up: only the Z half
-/// is used (to map an absolute layer to the global region-local Z for the band clip,
-/// since layers are Z-slices). Chunks that mesh to zero faces are omitted.
-/// The apron-aware incremental rebuild plan for the cuboid mesher (issue #40).
+/// Which chunks the cuboid mesher must re-mesh or evict for an edit (issue #40) —
+/// see [`build_chunk_meshes_with_apron`]'s doc for the apron-aware per-chunk mesh
+/// this plan drives.
 pub struct CuboidRebuildPlan {
     /// Chunk coords to re-mesh + re-upload (occupied, and either changed or a
     /// neighbour-of-changed).
@@ -444,6 +425,31 @@ pub fn cuboid_incremental_plan(
     CuboidRebuildPlan { rebuild, evict }
 }
 
+/// Apron-aware per-chunk cuboid meshing (issue #20 S6c-2d), meshed one chunk at a
+/// time instead of densifying + greedy-decomposing the WHOLE region. This dense
+/// (`VoxelGrid`-keyed) path now backs only the shot/test oracle — the live app builds
+/// exclusively through the two-layer analogue in `two_layer.rs`
+/// (`new_from_two_layer_chunks`); `CuboidMeshRenderer::new_from_chunks`, which calls
+/// into this function, has no production caller.
+///
+/// For each `(coord, &grid)` chunk:
+/// 1. Densify the chunk's OWN voxels into an interior region anchored on the global
+///    cloud (so emitted world positions are byte-identical to the whole-region
+///    mesher → pixel parity).
+/// 2. Build a co-located APRON region of the same extent whose every cell — interior
+///    AND the 1-voxel border — is filled from the GLOBAL occupancy. The apron is
+///    used ONLY for [`face_is_exposed`] (no apron geometry is emitted), so a seam
+///    face between two solid chunks is correctly culled and the chunk's exposed-face
+///    SET equals the whole-region mesher's.
+/// 3. Apply the layer-range band clip to the interior region per chunk (absolute
+///    layers; the band edge synthesises real cap faces inside the chunk).
+/// 4. `decompose_into_boxes` on the INTERIOR region (apron cells are air for
+///    decomposition, so no box ever spans into the apron), then `emit_box_faces`
+///    with exposure tested against the APRON region.
+///
+/// `grid_dimensions` is the whole composite grid's voxel dims; Z-up: only the Z half
+/// is used (to map an absolute layer to the global region-local Z for the band clip,
+/// since layers are Z-slices). Chunks that mesh to zero faces are omitted.
 pub(crate) fn build_chunk_meshes_with_apron(
     chunk_grids: &[([i32; 3], &VoxelGrid)],
     grid_dimensions: [u32; 3],

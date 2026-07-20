@@ -353,8 +353,9 @@ pub(crate) fn lattice_vertices_into(vertices: &mut Vec<LineVertex>, min: [f32; 3
 /// frame and their lines coincide at the base plane. Z-up: the base plane is the
 /// node's bottom EXACTLY (`z = min[2]`), an XY-plane grid, so the floor's block
 /// lines meet the block lattice's bottom edges with no vertical gap; z-fighting
-/// against the model's coincident bottom face is avoided by the floor pipeline's
-/// depth bias ([`SceneGridRenderer::floor_pipeline`]) rather than a geometric drop.
+/// against the model's coincident bottom face is avoided by the floor's own
+/// depth-biased uniform buffer (the SAME line pipeline as the lattice draw, not a
+/// separate one) rather than a geometric drop.
 pub(crate) fn floor_vertices_into(vertices: &mut Vec<LineVertex>, min: [f32; 3], max: [f32; 3], step: u32) {
     let voxel_color = with_alpha(srgb_hex_to_linear(FLOOR_COLOR_HEX), FLOOR_VOXEL_ALPHA);
     let block_color = with_alpha(srgb_hex_to_linear(FLOOR_COLOR_HEX), FLOOR_ALPHA);

@@ -8,9 +8,9 @@
 //! to) froze the UI for the whole export. This module moves it onto the shared background
 //! [`Worker`]: the shell dispatches an owned [`Scene`] clone plus
 //! the already-chosen path, keeps drawing, and reads a per-chunk progress counter until
-//! the finished [`VoxExportResult`] lands. See the display chapter
-//! (`docs/architecture/03-display.md`) for the worker plumbing and the two-layer chapter
-//! (`docs/architecture/04-storage.md`) for the streaming export source.
+//! the finished [`VoxExportResult`] lands. See the work chapter
+//! (`docs/architecture/04-work.md`) for the worker plumbing and the evaluation chapter
+//! (`docs/architecture/02-evaluation.md`) for the two-layer streaming export source.
 //!
 //! ## No supersede generation — the shell serialises instead (a deliberate divergence)
 //!

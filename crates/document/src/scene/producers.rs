@@ -29,12 +29,13 @@ pub enum VoxelBody {
     // future: SavedBody(VoxelBlob), ImportedVox(...).
 }
 
-/// What a node *is*: a leaf producer (Tool or VoxelBody) or an interior assembly
-/// (Group or Instance).
+/// What a node *is*: a leaf producer (Tool, SketchTool or VoxelBody) or an interior
+/// assembly (Group or Instance).
 ///
-/// Step 1 resolves only the two leaf kinds; `Group` / `Instance` are present as
-/// types but unimplemented in `Scene::resolve_region` (recursion + instancing
-/// arrive in step 4).
+/// Every arm resolves: a leaf stamps its own producer, a `Group` folds its children
+/// under its own `CombineOp` (ADR 0017), and an `Instance` resolves the referenced
+/// definition under its transform (recursion + instancing, ADR 0001's original
+/// "step 4" goal) — see `Scene::walk_nodes` / `Scene::for_each_leaf`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum NodeContent {
     /// A parametric producer (an [`SdfShape`]) plus the single material the Tool
@@ -69,9 +70,12 @@ pub enum NodeContent {
     /// children by **identity** — the ordered spine of child [`NodeId`]s — while the
     /// child `Node`s themselves live in the scene-wide [`Scene::arena`]. The `Vec`
     /// order IS document order (resolved later-wins on overlap); the arena is fetched
-    /// from but never iterated to produce a walk. **Not resolved in step 1** (step 4).
+    /// from but never iterated to produce a walk. Resolved by `Scene::walk_nodes`,
+    /// which folds the children under the Group's own `CombineOp` (ADR 0017).
     Group(Vec<NodeId>),
-    /// A reuse-by-reference of a definition. **Not resolved in step 1** (step 4).
+    /// A reuse-by-reference of a definition. Resolved by `Scene::walk_nodes`, which
+    /// expands the referenced `AssemblyDef`'s children under the instance's transform
+    /// (the cycle guard bars an Instance from re-entering an ancestor definition).
     Instance(DefId),
 }
 
@@ -826,9 +830,12 @@ impl Scene {
     /// **absolute (non-recentred) composite voxel coordinates**.
     ///
     /// This is the chunk-addressable counterpart to `resolve_region` required by
-    /// issue #27 (deep chunked resolve). It is **additive**: the live render path
-    /// still goes through `resolve_region` (which recentres the composite on the
-    /// origin); this path does **not** recentre, so its voxel positions are the
+    /// issue #27 (deep chunked resolve). `resolve_region` is now the test/oracle-only
+    /// dense measuring stick (ADR 0010 boundary residency retired it from the live
+    /// render path; it is compile-gated behind `cfg(test)`/`oracle`) — the two-layer
+    /// store (`evaluation::two_layer_store`) is the sole runtime path, and it calls
+    /// THIS resolver per chunk. `resolve_region` recentres the composite on the
+    /// origin; this path does **not** recentre, so its voxel positions are the
     /// scene's true composite coordinates. The two frames differ by exactly the
     /// recentre offset `resolve_region` subtracts (see
     /// `recentre_voxels`).

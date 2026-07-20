@@ -48,8 +48,10 @@ pub fn create_depth_view(device: &wgpu::Device, width: u32, height: u32) -> wgpu
         sample_count: MSAA_SAMPLE_COUNT,
         dimension: wgpu::TextureDimension::D2,
         format: DEPTH_FORMAT,
-        // TEXTURE_BINDING so the onion fog pass can sample this MSAA depth (sample 0)
-        // to occlude the haze behind the displayed opaque slice.
+        // TEXTURE_BINDING dates from the retired volumetric fog pass (ADR 0012), which
+        // sampled this MSAA depth as a texture to occlude its march. The current onion
+        // and operand ghosts occlude by depth-TESTING (`Less`/fail) against this same
+        // attachment inside the shared MSAA pass instead, so nothing samples it today.
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
         view_formats: &[],
     });

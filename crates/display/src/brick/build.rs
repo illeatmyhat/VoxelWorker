@@ -95,7 +95,7 @@ pub fn build_brick_field_with_tiles(
                             }
                         }
                         // A boundary (sculpted) block is surface by definition here: its
-                        // record — and thus the atlas + fog tile set — is NEVER elided,
+                        // record — and thus its occupancy atlas tile — is NEVER elided,
                         // so sculpted slot numbering matches the interior-inclusive
                         // oracle build tile-for-tile.
                         BlockBrick::Sculpted {
@@ -250,7 +250,7 @@ pub fn build_brick_field_all_blocks(
         "brick keys must be unique (each world block appears in exactly one chunk)"
     );
 
-    // Tile geometry mirrors `upload_grid_per_chunk`: a cubic-ish slot grid bounded by
+    // Tile geometry follows the ADR 0007 tile-cube layout: a cubic-ish slot grid bounded by
     // the SCULPTED count (coarse records consume none of it), then scatter each tile.
     let (bricks_per_axis, atlas_dim_voxels, sculpted_atlas_bytes) =
         pack_sculpted_atlas(&sculpted_brick_tiles, brick_edge_voxels);

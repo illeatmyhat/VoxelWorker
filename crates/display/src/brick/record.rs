@@ -100,8 +100,8 @@ pub struct BrickRecord {
 
 /// The built brick field: the sorted record array + the sculpted-brick occupancy atlas
 /// bytes in the ADR 0007 tile-cube layout (`bricks_per_axis³` slots of `edge³` texels,
-/// linear slot index → 3D tile coord exactly as `upload_grid_per_chunk` packs fog
-/// tiles). [`upload_brick_atlas`] lands the bytes in an R8 3D texture.
+/// linear slot index → 3D tile coord, x-fastest). [`upload_brick_atlas`] lands the bytes
+/// in an R8 3D texture.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BrickFieldBuild {
     /// Every non-air block's record, sorted strictly ascending by
@@ -115,9 +115,10 @@ pub struct BrickFieldBuild {
     /// scene whose every sculpted block is uniform — the sparse-side-atlas contract: only a
     /// block that mixes cell keys pays per-voxel material cost.
     ///
-    /// Unlike the occupancy atlas, these are **not** packed to a byte blob here: the material
-    /// side atlas has no GPU pool yet, so the CPU mirror is the only consumer and the tiles
-    /// travel as tiles (the single-owner tile law — moved into
+    /// Unlike the occupancy atlas, these are **not** packed to a byte blob here: packing is
+    /// deferred to the install/patch seam (`cell_key_atlas_payload` / `pack_cell_key_atlas_payload`),
+    /// which is also where the GPU side atlas is (re)built, so a build with no mixed brick pays
+    /// zero packing cost and the tiles travel as tiles (the single-owner tile law — moved into
     /// [`IncrementalBrickField`], never cloned per edit).
     pub cell_key_tiles: Vec<BrickCellKeyTile>,
     /// The brick edge in voxels — `voxels_per_block`, the ONE-BLOCK granule
@@ -229,7 +230,7 @@ pub(crate) fn pack_cell_key_atlas(
     CubeTilePacking::pack_u16_value_cubes(slot_tiles, brick_edge_voxels)
 }
 
-/// The occupancy byte a solid voxel packs to — the fog atlas's 0/255 R8 convention. Injected
+/// The occupancy byte a solid voxel packs to — the sculpted atlas's 0/255 R8 convention. Injected
 /// into [`BrickOccupancyTile::expand_to_bytes`] / [`CubeTilePacking::pack_bit_cubes`] at the
 /// atlas seam (substrate names no such byte — a set bit reads as whatever the caller passes).
 pub(crate) const SCULPTED_BRICK_OCCUPIED: u8 = 255;
@@ -300,7 +301,7 @@ impl BrickFieldBuild {
     }
 
     /// The low-corner texel of `atlas_slot`'s tile in the atlas cube (linear slot →
-    /// 3D tile coord, x-fastest — the `upload_grid_per_chunk` tile layout).
+    /// 3D tile coord, x-fastest — the ADR 0007 tile-cube layout).
     fn atlas_slot_origin_texels(&self, atlas_slot: u32) -> [usize; 3] {
         let tiles = self.bricks_per_axis.max(1);
         let tile = [

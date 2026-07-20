@@ -41,7 +41,9 @@ pub struct BrickFieldUpdate {
 /// parity gate proves: after any edit, every LIVE record's slot bytes equal a from-scratch
 /// [`build_brick_field`] of the same scene (free slots may hold garbage — they are
 /// unreachable). The pyramid is REBUILT (not patched) from the merged record keys per
-/// edit (a cheap pure function; incremental pyramid patching is deferred to G4).
+/// edit (a cheap pure function; ADR 0011's G0-G5 slices shipped a 3rd clip-map level and
+/// off-screen residency eviction under the "G4" name instead — incremental pyramid
+/// patching itself was never scheduled and stays an open, unscheduled optimisation).
 #[derive(Debug, Clone)]
 pub struct IncrementalBrickField {
     /// The brick edge in voxels (`voxels_per_block`, the ONE-BLOCK granule) — fixed for
@@ -169,7 +171,9 @@ impl IncrementalBrickField {
     }
 
     /// One MIXED brick's per-voxel cell-key tile by its record's `cell_key_slot` — the CPU
-    /// read of the material side atlas (the sink that samples it on the GPU is a later slice).
+    /// read of the material side atlas the GPU raymarch already samples per-voxel for MIXED
+    /// bricks (`mixed_voxel_cell_key` in the WGSL); this accessor is the test/inspection twin
+    /// of that sampled data, not a production render-path call.
     /// A freed/dead slot yields its stale tile (unreachable from any live record).
     pub fn cell_key_tile(&self, cell_key_slot: u32) -> &BrickCellKeyTile {
         &self.cell_key_tiles[cell_key_slot]

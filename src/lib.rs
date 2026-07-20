@@ -1,8 +1,8 @@
 //! VoxelWorker — native Rust port of the Vintage Story chiseling planner.
 //!
-//! Milestone 1 establishes the rendering foundation shared by both the windowed
-//! application (`src/main.rs`) and the headless screenshot harness
-//! (`src/bin/shot.rs`):
+//! This crate is the rendering foundation shared by both the windowed application
+//! (`src/main.rs`) and the headless screenshot harness, which is now its own package
+//! at `crates/shot/`:
 //!
 //!   * A render-target-agnostic frame function ([`render_frame`]) that paints
 //!     into any [`wgpu::TextureView`]. It knows nothing about winit or surfaces,

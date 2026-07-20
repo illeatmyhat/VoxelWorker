@@ -1,8 +1,11 @@
 // Flat coloured-line shader (Milestone 5).
 //
-// Shared by the origin gizmo and the view-cube edge wireframe. Each vertex
-// carries a world-space position and a linear RGB colour; the only uniform is
-// the view-projection matrix.
+// Shared by the origin gizmo, the block lattice / floor grid, and Points. Each
+// vertex carries a world-space position and a linear RGB colour; the only
+// uniform is the view-projection matrix. The view-cube edge wireframe used to
+// share this pipeline too, but moved to its own constant-screen-space-width
+// shader (`viewcube_lines.wgsl`, issue #91 item 3) because hardware `LineList`
+// can't hold a constant pixel width at every orbit angle.
 
 struct LineUniforms {
     view_projection: mat4x4<f32>,
@@ -12,7 +15,7 @@ struct LineUniforms {
     // toward the camera (smaller NDC z) so it wins the `Less` depth test against
     // the model's coincident bottom face — letting the floor draw at the EXACT
     // base plane with no z-fight and no geometric vertical drop. Zero for every
-    // other line pass (gizmo, lattice, view-cube edges, Points). `.yzw` pad to
+    // other line pass on this shader (gizmo, lattice, Points). `.yzw` pad to
     // keep the 16-byte std140 alignment after the mat4.
     depth_bias: vec4<f32>,
 };
@@ -22,8 +25,8 @@ var<uniform> uniforms: LineUniforms;
 
 struct VertexInput {
     @location(0) position: vec3<f32>,
-    // Linear RGBA. Alpha is 1.0 for the gizmo / view-cube edges and < 1.0 for the
-    // M8 block lattice / fine floor grid (alpha-blended at low opacity).
+    // Linear RGBA. Alpha is 1.0 for the gizmo and < 1.0 for the M8 block lattice /
+    // fine floor grid and Points' axis lines (all alpha-blended at reduced opacity).
     @location(1) color: vec4<f32>,
 };
 

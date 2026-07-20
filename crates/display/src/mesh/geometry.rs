@@ -20,8 +20,9 @@ pub(crate) struct CuboidVertex {
 /// The six cube-face directions, each with its outward normal and the four
 /// corner offsets (in voxel units, relative to the box's min corner, scaled by
 /// the box's extent) wound COUNTER-CLOCKWISE when viewed from OUTSIDE — so
-/// `front_face: Ccw` + `cull_mode: Back` keeps the outward faces (matching the
-/// instanced cube's winding convention in `renderer::unit_cube_geometry`).
+/// `front_face: Ccw` + `cull_mode: Back` keeps the outward faces (this matched the
+/// winding convention of the instanced per-voxel-cube renderer, since removed with
+/// the legacy mesher — #20).
 ///
 /// Each corner is `[x, y, z]` in {0,1}: 0 = the box's min-corner plane on that
 /// axis, 1 = its max-corner plane. The mesh builder maps 0→`min` and

@@ -263,9 +263,10 @@ pub(crate) fn upload_atlas_texture(
 }
 
 /// One render chunk's GPU buffers for the cuboid path (issue #20 S6c-2d): its own
-/// vertex + index buffer, the index count, and the world AABB for frustum culling.
-/// Mirrors the instanced [`crate::renderer::InstancedChunkBuffers`]. A chunk that
-/// meshes to zero faces is never stored (no buffer allocated).
+/// vertex + index buffer, the index count, and the world AABB for frustum culling
+/// (mirrored the equivalent struct on the legacy instanced renderer, since removed,
+/// part of #20). A chunk that meshes to zero faces is never stored (no buffer
+/// allocated).
 pub(crate) struct CuboidChunkBuffers {
     vertex_buffer: wgpu::Buffer,
     /// One index buffer holding the overlay-OFF run followed by the overlay-ON run (ADR
@@ -303,8 +304,9 @@ impl CuboidChunkBuffers {
     }
 }
 
-/// All GPU resources for drawing the cuboid mesh (DEFAULT render path; per-chunk
-/// buffers since issue #20 S6c-2d).
+/// All GPU resources for drawing the cuboid mesh — the understudy render path and
+/// pixel oracle (the brick raymarch is the primary display, ADR 0011); per-chunk
+/// buffers since issue #20 S6c-2d.
 pub struct CuboidMeshRenderer {
     pipeline: wgpu::RenderPipeline,
     /// Face-orientation debug pipeline: identical to `pipeline` except
@@ -419,11 +421,11 @@ pub struct CuboidMeshRenderer {
 impl CuboidMeshRenderer {
     /// Build the cuboid renderer from a WHOLE grid (the wrapper kept for `shot.rs`
     /// and tests that have a monolithic grid). Buckets the grid into per-chunk
-    /// sub-grids by `floor(world_position / chunk_extent)` — the SAME key the
-    /// instanced `crate::renderer::VoxelRenderer::rebuild_instances` wrapper uses —
-    /// then meshes per chunk with an apron via [`Self::new_from_chunks`]. So a build
-    /// from the whole grid is byte-identical to a build from the resolve cache's
-    /// per-chunk accessor.
+    /// sub-grids by `floor(world_position / chunk_extent)` — the same chunking key
+    /// the resolve cache's per-chunk accessor uses (the legacy instanced renderer
+    /// this key once also matched was removed, part of #20) — then meshes per chunk
+    /// with an apron via [`Self::new_from_chunks`]. So a build from the whole grid
+    /// is byte-identical to a build from the resolve cache's per-chunk accessor.
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -563,8 +565,9 @@ impl CuboidMeshRenderer {
     /// Shared GPU-resource assembly for both the dense ([`new_from_chunks`]) and two-layer
     /// ([`new_from_two_layer_chunks`]) builders: upload the per-chunk meshes, build the
     /// uniform / per-draw-overlay / atlas / loaded bind groups + pipelines, and assemble
-    /// the renderer. `source_chunk_grids` is retained for the band reclip (empty on the
-    /// two-layer path, which stays FULL-band until E5).
+    /// the renderer. `source_chunk_grids` is retained for the band reclip on the dense
+    /// path (empty on the two-layer path, which reclips instead from its own retained
+    /// `source_two_layer_chunks` — wired since ADR 0010 E5).
     fn assemble(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -1587,11 +1590,12 @@ pub(crate) fn upload_chunk_meshes(
 }
 
 /// Bucket a whole [`VoxelGrid`] into per-chunk sub-grids keyed by integer chunk
-/// coord `floor(world_position / chunk_extent)` (issue #20 S6c-2d) — the SAME key
-/// [`crate::renderer::VoxelRenderer::rebuild_instances`] uses, so the cuboid `new`
-/// wrapper's chunk partition matches the instanced one and the resolve cache's
-/// per-chunk accessor. A sub-grid carries only the occupied voxels (its `dimensions`
-/// is unused by the apron mesher, which keys off `world_position`).
+/// coord `floor(world_position / chunk_extent)` (issue #20 S6c-2d) — the same key
+/// the resolve cache's per-chunk accessor uses (the legacy instanced renderer this
+/// key once also matched was removed, part of #20), so the cuboid `new` wrapper's
+/// chunk partition matches the resolve cache's. A sub-grid carries only the occupied
+/// voxels (its `dimensions` is unused by the apron mesher, which keys off
+/// `world_position`).
 pub(crate) fn bucket_grid_into_chunk_grids(
     grid: &VoxelGrid,
     voxels_per_block: u32,

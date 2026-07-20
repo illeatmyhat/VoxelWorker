@@ -1,12 +1,13 @@
 // View-cube shader (Milestone 5; restyled to the "Signal" language, #86).
 //
 // Draws the small orientation cube in the top-right corner viewport. Each face is a
-// FLAT translucent near-black fill sampled from its own label texture (a 6-layer 2D
-// array, layer = materialIndex order +X,-X,+Y,-Y,+Z,-Z) — no lighting, per the Signal
-// "flat fills" rule. On hover, an element's across-the-fold facets are tinted with the
-// onion-haze accent, decided GEOMETRICALLY from the fragment's cube-space position and
-// the hovered element's per-axis sign selector (so an edge lights a thin strip cell on
-// each of its two faces, a corner a corner cell on each of three).
+// FLAT, FULLY OPAQUE near-black fill (issue #91 item 6) sampled from its own label
+// texture (a 6-layer 2D array, layer = materialIndex order +X,-X,+Y,-Y,+Z,-Z) — no
+// lighting, per the Signal "flat fills" rule. On hover, an element's across-the-fold
+// facets are tinted with the onion-haze accent, decided GEOMETRICALLY from the
+// fragment's cube-space position and the hovered element's per-axis sign selector
+// (so an edge lights a thin strip cell on each of its two faces, a corner a corner
+// cell on each of three).
 
 struct CubeUniforms {
     view_projection: mat4x4<f32>,

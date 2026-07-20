@@ -6,7 +6,7 @@ use voxel_core::voxel::{ShapeKind, Voxel};
 use document::voxel::{GeometryParams};
 
 // The bit-packed occupancy tile IS substrate's `BitCube`; its expand↔pack byte-parity and
-// full-word run-set-mask oracles moved with it (see `crates/substrate/src/bit_cube.rs`,
+// full-word run-set-mask oracles moved with it (see `crates/substrate/src/occupancy/bit_cube.rs`,
 // renamed to substrate vocabulary). The tests below exercise the DOMAIN mapping that
 // consumes it (record partition, atlas packing, incremental==wholesale parity).
 

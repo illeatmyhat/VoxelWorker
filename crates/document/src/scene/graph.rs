@@ -12,8 +12,10 @@ use crate::voxel::{GeometryParams, SdfShape};
 use super::*;
 
 /// A reusable identifier for a [`Tool`-or-`VoxelBody`](NodeContent) definition that an
-/// [`NodeContent::Instance`] points at (ADR 0001: reuse by reference). Step 1
-/// never constructs an Instance, so this is a forward-declared type only.
+/// [`NodeContent::Instance`] points at (ADR 0001: reuse by reference). Definitions and
+/// instances are fully live: `Scene::add_definition` / `Scene::make_definition_from_active`
+/// mint them and `Scene::add_instance` places references to them (the
+/// village-of-reused-houses case).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct DefId(pub u32);
 
@@ -24,9 +26,11 @@ pub struct DefId(pub u32);
 /// freshly-constructed [`Node`] carries until [`Scene::ensure_node_ids`] mints it a
 /// real id on the load/normalization path; real ids start at `1`.
 ///
-/// **Phase B1 is scaffolding only:** the id is minted + persisted but NOT yet the
-/// identity of record — `NodePath` still is — so nothing reads it yet (B2/B3 move
-/// selection + commands onto it).
+/// **Phase B1 was scaffolding only; B2–B5 landed on top of it.** The id is now the
+/// identity of record: selection (`Scene::active`), the structural edit ops, and
+/// the `Intent`/`Command` boundary all key on it, while `NodePath` has been
+/// demoted to an ephemeral render/UI projection derived on demand (see its own
+/// doc below).
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default, Serialize, Deserialize,
 )]
@@ -146,15 +150,18 @@ impl CombineOp {
         matches!(self, CombineOp::Emboss { .. })
     }
 }
-/// Per-node grid display settings (issue #29 grid rework, S1). Each grid type a
+/// Per-node grid display settings (issue #29 grid rework). Each grid type a
 /// node can show is gated by a scene-wide master ANDed with the node's own flag;
 /// these are the per-node flags. All default **off** — a freshly-added object
 /// carries no grids until the user turns them on (the spec's "default OFF for new
 /// objects"). The scene-wide masters live on [`Scene`] (`master_*`).
 ///
-/// **S1 is data-model only:** these fields are persisted and tested but NOT yet
-/// read by any renderer (that wiring is S3/S4). The existing
-/// `PanelState.show_*` toggles keep driving the current renderers unchanged.
+/// **S3/S4 landed on top of the original S1 data model:** `voxel_grid_on_faces`
+/// reaches the resolve (it ORs the on-face-grid bit into the leaf's stamped
+/// material id, so it travels with each voxel through chunk bucketing — see
+/// `Scene::for_each_leaf`), and `block_lattice` drives the per-object lattice
+/// extent (`Scene::node_block_lattice_box_recentred`) the renderer draws from.
+/// The old scene-wide `AppConfig.show_*` toggles these replaced were deleted in #31.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct NodeGrids {
     /// Whether the on-face voxel grid overlay shows on this node (S4).
@@ -173,8 +180,9 @@ pub struct NodeGrids {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Node {
     /// Process-stable identity (ADR 0003 Phase B), minted by
-    /// [`Scene::ensure_node_ids`]. `NodeId(0)` (the default) until minted. NOT yet
-    /// the identity of record — `NodePath` still is — so nothing reads this in B1.
+    /// [`Scene::ensure_node_ids`]. `NodeId(0)` (the default) until minted. This IS
+    /// the identity of record (Phase B2–B5): selection, the edit ops and the
+    /// `Intent`/`Command` boundary all key on it.
     #[serde(default)]
     pub id: NodeId,
     /// Human-readable name (for the future node-list UI).
@@ -329,8 +337,10 @@ impl From<Node> for NodeBuilder {
 }
 
 /// A reusable sub-assembly (e.g. "house") placed by [`NodeContent::Instance`]
-/// (ADR 0001). Step 1 never constructs or resolves one; it exists so the model is
-/// complete. The top-level assembly is also an `AssemblyDef` (its `root`).
+/// (ADR 0001). Definitions are fully live: `Scene::add_definition` /
+/// `Scene::make_definition_from_active` mint one and `Scene::add_instance` places a
+/// reference to it, so the same definition placed by N instances is visited N times
+/// at resolve (the village-of-reused-houses case).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AssemblyDef {
     /// The definition's identifier (referenced by an `Instance`).
@@ -364,8 +374,9 @@ pub struct AssemblyDef {
 /// on load ([`Scene::ensure_origin_point`]); it is undeletable but hideable. Users
 /// may add further Points.
 ///
-/// **S1 is data-model only:** Points are persisted and tested but NOT yet rendered
-/// (that is S5).
+/// Points are rendered as a camera-relative overlay (S5), rebuilt every frame from
+/// this list — a hidden/shown Point or a plane/axis toggle takes effect immediately,
+/// with no re-resolve.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Point {
     /// Human-readable name (e.g. "Origin").

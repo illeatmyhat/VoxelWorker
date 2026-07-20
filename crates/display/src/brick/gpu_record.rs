@@ -106,8 +106,8 @@ pub struct BrickGpuRecord {
 /// and the uploaded buffer is ∝ surface, not volume, for a large solid. Hit-identity of the
 /// surface-only set vs the interior-inclusive oracle build is gated in
 /// `tests/gpu_parity.rs::brick_surface_elision_hit_set_unchanged`; interiors stay
-/// queryable through the two-layer chunks (the clip-map derives from the chunks, the fog
-/// box-fills coarse occupancy from the chunks).
+/// queryable through the two-layer chunks (the clip-map derives from the chunks, and the
+/// block-occupancy map box-fills coarse occupancy from the chunks).
 ///
 /// `non_resident` marks sculpted slots to upload as [`NON_RESIDENT_ATLAS_SLOT`] — the
 /// residency-miss test's forced-miss hook (and G4's future eviction seam); pass

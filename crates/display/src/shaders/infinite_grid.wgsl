@@ -63,7 +63,8 @@ struct VsOut {
 
 @vertex
 fn vertex_main(@builtin(vertex_index) vertex_index: u32) -> VsOut {
-    // A single oversized triangle covering the viewport (same trick as the fog).
+    // A single oversized triangle covering the viewport (the same trick the background
+    // gradient and brick raymarch fullscreen passes use).
     var positions = array<vec2<f32>, 3>(
         vec2<f32>(-1.0, -3.0),
         vec2<f32>(-1.0, 1.0),

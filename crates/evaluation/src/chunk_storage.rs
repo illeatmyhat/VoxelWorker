@@ -5,9 +5,12 @@
 //! caches). A resolved chunk is almost always **mostly air** with only a handful of
 //! distinct materials, so the dense `dimensions³ × (position + material)` form a
 //! `VoxelGrid` carries in RAM is hugely wasteful as a storage shape. This module is
-//! that storage shape — and **only** the data structure plus its lossless
-//! round-trip proof. It is NOT yet wired into the live resolve/render path (that
-//! store integration is a later S6 step); goldens are untouched.
+//! that storage shape — the data structure plus its lossless round-trip proof — and
+//! it IS wired into the live resolve path: `Store`'s out-of-core spill (in
+//! `crate::store::cache`, backed by `crate::disk_chunk_store`) compresses an evicted
+//! resident chunk through `compress` before writing it to disk and restores it through
+//! `decompress` on the next access. The round-trip is lossless, so no golden is
+//! affected by a chunk having spilled and reloaded.
 //!
 //! ## Why this is lossless (ADR 0003 §3a — the payload is already integer)
 //!

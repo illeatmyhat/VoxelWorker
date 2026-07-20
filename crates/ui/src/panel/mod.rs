@@ -4,14 +4,16 @@
 //! screenshot harness (Hard requirement #3), so the captured frame is identical
 //! to the live one.
 //!
-//! Milestone 3 makes the panel functional: shape chips, size/density/wall
-//! sliders, the camera projection toggle, and an inert material selector. The
-//! parameters are split by *consumer* (Milestone 3 hard requirement #3):
+//! The inspector's [`GeometryParams`](document::voxel::GeometryParams) (shape, size,
+//! density, wall) are split from display/camera params (projection, material selection) by
+//! *consumer*, a split going back to the panel's original Milestone 3 hard requirement #3:
 //!
-//!   * [`GeometryParams`](document::voxel::GeometryParams) (shape, size, density,
-//!     wall) drive a **rebuild-dirty** flag. Changing them re-resolves the voxel grid.
-//!   * Display/camera params (projection, material selection) live in
-//!     [`PanelState`] directly and never trigger a voxel rebuild.
+//!   * [`GeometryParams`](document::voxel::GeometryParams) drives a **rebuild-dirty** flag.
+//!     Changing it re-resolves the voxel grid.
+//!   * Display/camera params live in [`PanelState`] directly and never trigger a voxel
+//!     rebuild. (The camera projection toggle itself is no longer built here — it moved to
+//!     the floating Signal display stack, issue #88 — but `projection_mode` is still a
+//!     `PanelState` display field on this same no-rebuild side of the split.)
 //!
 //! This split is what enforces the regression guards: selecting a shape only
 //! sets [`GeometryParams::shape`](document::voxel::GeometryParams::shape) (never

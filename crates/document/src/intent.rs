@@ -2,21 +2,23 @@
 //! (ADR 0003 Phase C, slice C1).
 //!
 //! ADR 0003 Phase B made identity / selection / edit-ops / storage all key on a
-//! stable [`NodeId`]. Phase C introduces `Intent` as the one
-//! **serializable** description of every document mutation, so the live flow
-//! becomes `ui → AppCore::apply_intent(Intent) → (later) Command`. An `Intent` is a
+//! stable [`NodeId`]. Phase C introduced `Intent` as the one
+//! **serializable** description of every document mutation: the live flow is
+//! `ui → AppCore::apply_intent(Intent) → CommandStack`. An `Intent` is a
 //! pure value: it names WHAT to change (by stable id / index), never HOW the panel
 //! reached the change, so it survives serialization, scripting (`shot --replay`,
 //! C3) and undo (`CommandStack`, C2).
 //!
-//! **C1 is additive only.** This module + `AppCore::apply_intent` sit ALONGSIDE
-//! the current panel-mutates-`Scene`-directly flow; nothing in the live path calls
-//! `apply_intent` yet (only the lib tests do), so the goldens stay byte-identical.
+//! **C1 shipped, and C2/C4a landed on top of it.** This module + `AppCore::apply_intent`
+//! REPLACED the old panel-mutates-`Scene`-directly flow: the panel now describes each
+//! frame's mutations as a `Vec<Intent>`, and the shell drains it through `apply_intent`
+//! in the live frame loop (C4a), so every edit passes through this one door.
 //! `apply_intent` dispatches each variant to the SAME [`Scene`](crate::scene::Scene)
-//! edit op / field write the panel uses today and returns an [`IntentEffect`] — the
+//! edit op / field write the panel used before and returns an [`IntentEffect`] — the
 //! typed successor of `PanelResponse`'s effect
-//! booleans — so a later slice (C4) can drop it in for the panel's flag bag. No
-//! `CommandStack` / undo yet (that is C2): `apply_intent` just dispatches + reports.
+//! booleans — which the caller folds into its own re-resolve / re-frame decisions.
+//! Every non-selection intent is also captured with its inverse and pushed onto the
+//! `CommandStack` (C2), so `undo`/`redo` reverse it exactly.
 
 use serde::{Deserialize, Serialize};
 

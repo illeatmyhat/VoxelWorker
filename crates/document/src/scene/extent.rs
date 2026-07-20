@@ -12,9 +12,10 @@ use super::*;
 use voxel_core::voxel::RecentreVoxels;
 
 /// The working volume the scene resolves into, expressed in **whole blocks**
-/// (ADR 0001 "Scale": the canvas is the user-set stock / build volume). Step 1
-/// always resolves the whole extent as a single region, so this equals the lone
-/// node's block extent.
+/// (ADR 0001 "Scale": the canvas is the user-set stock / build volume). The whole
+/// extent always resolves as a single region — for a multi-node scene this is the
+/// union of every placed leaf's block extent (`Scene::full_extent_blocks`), not
+/// just a lone node's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RegionBlocks {
     /// Size of the region in whole blocks (X, Y, Z).
@@ -27,10 +28,11 @@ impl RegionBlocks {
         Self { size_blocks }
     }
 }
-/// A node's LOCAL placement. v1 exposes integer block translation only, but the
-/// type targets a full affine (translation + rotation + scale) so rotation /
-/// scale (with voxel resampling) slot in later without a rewrite (ADR 0001
-/// decision 3). In step 1 the offset is always `[0, 0, 0]`.
+/// A node's LOCAL placement. v1 exposes translation only, but the type targets a
+/// full affine (translation + rotation + scale) so rotation / scale (with voxel
+/// resampling) slot in later without a rewrite (ADR 0001 decision 3). The offset
+/// is the live placement field every node authors through (`SetOffset`,
+/// `NodeTransform::from_blocks` / `from_measurements`) — nothing pins it to zero.
 ///
 /// NOT `Copy`: it owns an optional boxed retained-measurement expression (the
 /// parametric units layer, ADR 0003 §3f(0)), so it is `Clone` only. The canonical

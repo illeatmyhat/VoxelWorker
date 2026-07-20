@@ -374,7 +374,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
             // Render an EMPTY grid + (below) an empty mesh — NO resolve at the
             // pathological density. This matches the windowed app, where
             // `AppCore::rebuild` returns `DensityRejected` and resolves nothing; it
-            // also makes shot's mesh consistent with the empty fog grid + the
+            // also makes shot's mesh consistent with the empty `grid` above + the
             // "rendering empty grid" message (the pre-A3 cuboid path keyed on
             // `has_chunkable_extent` and resolved per-chunk anyway, risking the very
             // huge-allocation/hang the cap exists to prevent).

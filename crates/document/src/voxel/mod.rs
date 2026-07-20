@@ -16,12 +16,13 @@
 //! ## The producer seam (`docs/adr/0006-authoring-truth-and-gpu-boundary.md`)
 //!
 //! This module implements the architectural seam **the renderer never calls the SDF
-//! directly**: instead a [`VoxelProducer`] resolves a parametric shape (or, later, a
-//! sculpt overlay) into a [`VoxelGrid`] — the one consumed truth. The renderer, the
-//! layer-range diameter readout (issue #12) and the `.vox` export all read the grid,
-//! so adding a second producer touches nothing downstream. The first (and, in M2,
-//! only) implementor is [`SdfShape`], which runs the sampling triple-loop transcribed
-//! from the original prototype.
+//! directly**: instead a [`VoxelProducer`] resolves a parametric shape (or a sub-assembly,
+//! or a sketch, or a sculpt overlay) into a [`VoxelGrid`] — the one consumed truth. The
+//! renderer, the layer-range diameter readout (issue #12) and the `.vox` export all read
+//! the grid, so adding a second producer touched nothing downstream — proven out since:
+//! [`SdfShape`] (which runs the sampling triple-loop transcribed from the original
+//! prototype) was the first implementor, and `SketchSolid`, `DebugCloudField`,
+//! `CompositeProducer` and `OutsetProducer` have since joined it.
 //!
 //! ## The value ⊥ producer split (ADR 0016)
 //!

@@ -1,24 +1,25 @@
-//! The scene (assembly) model — ADR 0001, sequence step 1.
+//! The scene (assembly) model — ADR 0001.
 //!
-//! Today the app has exactly one producer, smuggled in through
-//! [`GeometryParams`](crate::voxel::GeometryParams) (the SDF shape) plus a
-//! `debug_clouds: bool` selector. ADR 0001 replaces that single-producer
-//! assumption with a **Scene**: an assembly graph of **nodes**, each wrapping a
-//! producer plus a placement. This module introduces that model and routes ALL
-//! voxel resolution through it.
+//! ADR 0001 replaced the old single-producer setup — a lone
+//! [`GeometryParams`](crate::voxel::GeometryParams) SDF shape plus a
+//! `debug_clouds: bool` selector — with a **Scene**: an assembly graph of **nodes**,
+//! each wrapping a producer plus a placement. This module implements that model and
+//! routes ALL voxel resolution through it.
 //!
-//! **Step 1 scope (this file):** the data model exists in full (so later steps
-//! are data changes, not rewrites), but only the two leaves that exist today are
-//! actually resolved:
+//! **Every `NodeContent` leaf resolves, including recursion and reuse:**
 //!
 //!   * [`NodeContent::Tool`] — a *parametric* producer (`SdfShape`) that carries
 //!     the Tool's single `MaterialChoice`.
+//!   * `NodeContent::SketchTool` — the sketch→extrude/revolve producer (ADR 0003 §3i).
 //!   * [`NodeContent::VoxelBody`] — a *static* voxel body; today the only variant is
 //!     [`VoxelBody::DebugClouds`].
 //!
-//! [`NodeContent::Group`] and [`NodeContent::Instance`] (recursion + reuse) exist
-//! as types but are intentionally not resolved yet — see the `// step 4` markers
-//! in `Scene::resolve_region`.
+//! [`NodeContent::Group`] and [`NodeContent::Instance`] (recursion + reuse by
+//! reference, ADR 0001's original "step 4" goal) are fully wired: a Group folds its
+//! children under its own `CombineOp` (ADR 0017), and an Instance resolves the
+//! referenced definition under its transform, so the same definition placed by N
+//! instances is visited N times (the village-of-reused-houses case) — see
+//! `Scene::walk_nodes` / `Scene::for_each_leaf`.
 //!
 //! ## Identical-behaviour guarantee
 //!
@@ -66,7 +67,7 @@ fn default_master_grid() -> bool {
 /// The scene (assembly): a list of placed nodes resolved into the shared
 /// `VoxelGrid` truth. ADR 0001's full model carries reusable `definitions` too;
 /// step 2 added the flat node list plus the `active` selection that drives the
-/// inspector. **Step 4** wires up `definitions` so a [`NodeContent::Instance`]
+/// inspector. `definitions` is wired up so a [`NodeContent::Instance`]
 /// resolves the referenced [`AssemblyDef`] under its transform (reuse by
 /// reference: a village of identical houses is one definition placed by N
 /// instances).

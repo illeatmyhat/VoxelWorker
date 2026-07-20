@@ -109,7 +109,9 @@ use crate::voxel::SdfShape;
         // Cross-check: the ABSOLUTE chunk path and the RECENTRED render path agree
         // on the box's SHAPE — they differ ONLY by the recentre offset, which is
         // exactly the far placement. This pins that the render recentre is what maps
-        // the far box home (and is the exact thing S4 will remove), while the
+        // the far box home; S4b generalised it into the `floating_origin_voxels`
+        // parameter (`resolve_chunk_rebased`) rather than removing it — the live
+        // render path still passes the composite recentre as that origin — while the
         // absolute path keeps it far.
         let recentre = scene.recentre_voxels(voxels_per_block);
         assert_eq!(
@@ -117,7 +119,8 @@ use crate::voxel::SdfShape;
             offset_blocks * voxels_per_block as i64 + 2 * voxels_per_block as i64,
             "CORNER-ANCHORING: the recentre is the box's geometric CENTRE `off·d + 2·d` \
              (corner `off·d` + half the 4-block extent) — it is what hides the far \
-             offset from the live render today (S4 removes it)"
+             offset from the live render today (S4b carries it as the floating origin, \
+             not removes it)"
         );
         let monolithic = scene.resolve_region(
             scene.full_extent_blocks(voxels_per_block),

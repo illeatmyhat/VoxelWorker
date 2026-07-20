@@ -89,7 +89,9 @@ impl RegionClip {
 }
 
 // (The instanced `VoxelRenderer` + its per-chunk GPU instance cache were removed
-// with the legacy mesher — part of #20. The cuboid path is the sole renderer.)
+// with the legacy mesher — part of #20. The cuboid path was the sole renderer
+// until the brick raymarch path (ADR 0011) landed; it is now the always-present,
+// no-GPU-capable fallback beside brick raymarch's primary display.)
 
 /// Which texture the voxel pass binds for the active material.
 ///
@@ -105,7 +107,9 @@ pub enum MaterialSource<'a> {
 /// Build the 6-layer face-material bind-group layout (M7): a `D2Array` texture
 /// (binding 0, one layer per cube face) + a sampler (binding 1). Both the
 /// procedural materials and a loaded VS block build a bind group of this shape,
-/// so the single voxel pipeline draws uniform and per-face materials alike.
+/// so every pipeline that samples it — the cuboid mesh pass and the brick
+/// raymarch pass alike (ADR 0011 G2) — draws uniform and per-face materials
+/// the same way.
 /// Array layers allocated for a six-face block material: SEVEN, of which the shader
 /// only ever samples layers 0..=5.
 ///
@@ -371,10 +375,11 @@ pub fn relative_material_base_colors_public(
     relative_material_base_colors(bound)
 }
 
-/// The grid-overlay tuning the instanced voxel pass uses, exposed so the
-/// flag-gated cuboid mesh path (ADR 0002 E3b-2) draws the position-based grid
-/// overlay with the EXACT same colours/half-widths/alphas — keeping the merged
-/// box faces phase-aligned to the same per-voxel/per-block lines.
+/// The grid-overlay tuning, originally authored for the instanced voxel pass
+/// (removed with the legacy mesher, #20) and now shared: both the cuboid mesh
+/// path (ADR 0002 E3b-2) and the brick raymarch path draw the position-based
+/// grid overlay with the EXACT same colours/half-widths/alphas — keeping the
+/// merged box faces phase-aligned to the same per-voxel/per-block lines.
 #[derive(Debug, Clone, Copy)]
 pub struct GridOverlayParams {
     pub voxel_line_color: [f32; 3],
@@ -385,8 +390,9 @@ pub struct GridOverlayParams {
     pub block_line_alpha: f32,
 }
 
-/// The instanced path's grid-overlay parameters (colours in LINEAR space, the
-/// same the voxel shader receives), for the cuboid path to reuse verbatim.
+/// The shared grid-overlay parameters (colours in LINEAR space, the same the
+/// voxel shader receives) — originally the instanced pass's, now reused
+/// verbatim by both the cuboid mesh path and the brick raymarch path.
 pub fn grid_overlay_params() -> GridOverlayParams {
     GridOverlayParams {
         voxel_line_color: srgb_hex_to_linear(VOXEL_LINE_COLOR_HEX),
@@ -399,8 +405,9 @@ pub fn grid_overlay_params() -> GridOverlayParams {
 }
 
 /// Generate the three procedural material textures (Stone/Wood/Plain) as RGBA8
-/// sRGB pixel buffers, in `MaterialChoice` order, so the cuboid path (E3b-2) can
-/// upload the SAME procedural textures the instanced path binds.
+/// sRGB pixel buffers, in `MaterialChoice` order, so the cuboid path's atlas
+/// packer (`texture_atlas::MaterialAtlas`) packs the SAME procedural textures
+/// the instanced path once bound directly (removed with the legacy mesher, #20).
 pub fn procedural_material_pixels() -> [Vec<u8>; 3] {
     [
         generate_stone_texture(),

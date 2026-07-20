@@ -1,11 +1,16 @@
-// Cuboid mesh shader (ADR 0002 E3b-2, part of #18) — flag-gated alternate path.
+// Cuboid mesh shader (ADR 0002 E3b-2, part of #18) — one of the two live display
+// paths (the brick raymarch, ADR 0011, is the primary sink; this mesher is its
+// A/B parity oracle and understudy, per `mesh/mod.rs`). It started as a flag-gated
+// alternative to an instanced per-voxel-cube renderer; that renderer and its flag
+// were removed with the legacy mesher (#20), leaving this the sole mesh render path.
 //
 // Draws the exposed-face triangle mesh built by `cuboid_mesh.rs`: each vertex
 // carries a WORLD position, the face's outward normal, and the box's material_id.
 //
 // E3b-1 rendered SHAPE + per-box material colour + lighting only (FLAT). E3b-2
 // adds the two per-voxel surface features that make a MERGED box face read as a
-// stack of per-voxel cubes, matching the instanced path (`shaders/voxel.wgsl`):
+// stack of per-voxel cubes, matching the look of the since-removed instanced path
+// (it lived in `shaders/voxel.wgsl` before #20 deleted it with the legacy mesher):
 //
 //   * PER-VOXEL TEXTURE SLICE — the block texture tiles once per voxel across a
 //     merged face. The UV is the fragment's ABSOLUTE voxel position (world +
@@ -134,9 +139,10 @@ fn coord_component(a: f32, sign: f32) -> f32 {
     return base + select(1.0 - frac, frac, sign > 0.0);
 }
 
-// Map an outward normal to a signed-axis debug colour — IDENTICAL to the
-// instanced `debug_face_color` in voxel.wgsl so the cuboid debug-faces output
-// matches the instanced reference:
+// Map an outward normal to a signed-axis debug colour — reproduces the signed-axis
+// palette the since-removed instanced `debug_face_color` (voxel.wgsl, deleted with
+// the legacy mesher, #20) used to render, so the cuboid debug-faces output still
+// matches that reference:
 //   +X red, -X cyan; +Y green, -Y magenta; +Z blue, -Z yellow.
 fn debug_face_color(face_normal: vec3<f32>) -> vec3<f32> {
     let axis_magnitude = abs(face_normal);
@@ -276,7 +282,8 @@ fn fragment_main(
     let atlas_uv = atlas_rect.xy + tile_uv * atlas_rect.zw;
     let sampled = textureSample(material_texture, material_sampler, atlas_uv).rgb;
 
-    // Directional + ambient lighting — identical constants to voxel.wgsl.
+    // Directional + ambient lighting — constants carried over from the
+    // since-removed instanced path (voxel.wgsl, deleted with the legacy mesher, #20).
     let light_direction = normalize(vec3<f32>(0.4, 0.9, 0.5));
     let normal = normalize(input.world_normal);
     let diffuse = max(dot(normal, light_direction), 0.0);
@@ -292,8 +299,9 @@ fn fragment_main(
     }
 
     // --- Position-based grid overlay (BUG 2 parity) ---
-    // Identical maths/constants to voxel.wgsl: lines from the absolute voxel
-    // position (not UVs), with the block line winning over the voxel line.
+    // Maths/constants carried over from the since-removed instanced path
+    // (voxel.wgsl, deleted with the legacy mesher, #20): lines from the absolute
+    // voxel position (not UVs), with the block line winning over the voxel line.
     // Per-object (issue #29 S4): master uniform ANDed with this face's flag bit.
     if (on_face_grid_enabled()) {
         let in_plane = step(abs(input.world_normal), vec3<f32>(0.5));

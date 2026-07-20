@@ -19,8 +19,10 @@ pub enum ViewMode {
     #[default]
     Normal,
     /// Onion fog: the selected object clips to the layer band with ghost haze outside it
-    /// (ADR 0018 Decision 5). The per-object clip lands in a later slice; for now the
-    /// band/onion controls keep their scene-wide meaning.
+    /// (ADR 0018 Decision 5). The scrubber's `lower`/`upper` are object-relative over the
+    /// selected object's Z extent (the shell's `AppCore::mesh_clip` derives the region-scoped
+    /// clip from them); selecting the root part recovers the pre-Decision-5 scene-wide
+    /// meaning.
     OnionFog,
     /// Show booleans: every Subtract/Intersect operand in the selected subtree x-rays
     /// over the finished scene (ADR 0018 Decision 6). Selecting the root part covers the

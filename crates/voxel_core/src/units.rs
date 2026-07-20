@@ -22,8 +22,9 @@
 //! values reported — never silently rounded.
 //!
 //! This module is pure logic: it has no UI wiring and depends on nothing else in
-//! the crate. It feeds sketch dimensions and `SetOffset` (the placement Intents)
-//! in a later slice.
+//! the crate. It feeds `SetOffset` (the placement Intent, now landed as
+//! `NodeTransform::from_measurements`); sketch dimensions do not retain a
+//! `Measurement` yet and stay plain voxel-granular integers.
 
 use std::fmt;
 

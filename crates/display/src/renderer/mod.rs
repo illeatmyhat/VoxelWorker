@@ -1,9 +1,11 @@
 //! Shared render infrastructure for the voxel workshop.
 //!
-//! The voxel grid itself is drawn by the cuboid mesh path
-//! ([`crate::mesh::CuboidMeshRenderer`]); the legacy instanced cube renderer
-//! that once lived here was removed (part of #20). This module now owns the SHARED
-//! GPU pieces that path (and the rest of the app) builds on:
+//! The voxel grid is drawn by two display paths: the brick raymarch path (the
+//! primary GPU-capable display sink) and the cuboid mesh path
+//! ([`crate::mesh::CuboidMeshRenderer`], the always-present no-GPU-capable
+//! fallback); the legacy instanced cube renderer that once lived here was removed
+//! (part of #20). This module now owns the SHARED GPU pieces both paths (and the
+//! rest of the app) build on:
 //!   * The procedural material textures (Stone/Wood/Plain) + the loaded-VS-block
 //!     material bind-group layout ([`build_face_material_layout`]) and helpers.
 //!   * The position-based grid-overlay parameters ([`grid_overlay_params`]).

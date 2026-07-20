@@ -10,8 +10,9 @@ use crate::voxel::SdfShape;
     // These tests prove the ADDITIVE chunked resolve path reconstructs EXACTLY
     // what the monolithic `resolve_region` produces, after normalising for the
     // recentre offset that `resolve_region` applies and the chunk path does not.
-    // The render path (`resolve_region`) is untouched; only these new functions
-    // are exercised.
+    // `resolve_region` has SINCE become the test/oracle-only dense measuring stick
+    // (ADR 0010 retired it from the render path); these tests still hold the chunk
+    // path against it as the ground truth.
 
 
     /// Assert the chunk-reassembled occupied set EXACTLY equals the monolithic

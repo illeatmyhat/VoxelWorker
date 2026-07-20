@@ -3,9 +3,10 @@
 //! Vintage Story packs every block texture into ONE atlas and emits atlas UVs per
 //! vertex, so a whole chunk of mixed-material geometry becomes a SINGLE mesh = a
 //! single draw call regardless of how many materials it contains. This module is
-//! the CPU side of that for the flag-gated cuboid mesher: it lays each material's
-//! texture into one atlas image and records, per material, the UV sub-rectangle it
-//! occupies. The cuboid mesher then maps each face's `material_id` to its sub-rect
+//! the CPU side of that for the cuboid mesher (the sole runtime mesh path since
+//! ADR 0010, no longer behind a flag): it lays each material's texture into one
+//! atlas image and records, per material, the UV sub-rectangle it occupies. The
+//! cuboid mesher then maps each face's `material_id` to its sub-rect
 //! and emits atlas UVs (`cuboid_mesh.rs`); the cuboid shader samples the one atlas
 //! (`shaders/cuboid.wgsl`).
 //!

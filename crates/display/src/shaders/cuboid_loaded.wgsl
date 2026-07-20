@@ -1,13 +1,13 @@
 // Cuboid mesh shader — LOADED VS BLOCK variant (part of #20).
 //
-// This is the cuboid path's counterpart to the instanced loaded-block path
-// (`shaders/voxel.wgsl` with a `MaterialSource::Loaded` 6-layer D2Array). The
-// default `cuboid.wgsl` samples a packed PROCEDURAL atlas (Stone/Wood/Plain) and
-// cannot show a runtime-loaded block texture. When a VS block is applied, the
-// renderer selects THIS pipeline instead: it binds the block's 6-layer D2Array
-// (one PNG per cube face) and selects the per-face layer FROM THE FACE NORMAL,
-// exactly like the instanced path — so the cuboid path shows the SAME texture the
-// instanced path shows (per-face parity).
+// This is the cuboid path's `MaterialSource::Loaded` counterpart to `cuboid.wgsl`:
+// it binds a 6-layer D2Array (one PNG per cube face, `MaterialSource::Loaded`) and
+// selects the per-face layer FROM THE FACE NORMAL, reproducing the per-face layer
+// selection the since-removed instanced path (`shaders/voxel.wgsl`, deleted with the
+// legacy mesher, #20) used to do for a loaded block. The default `cuboid.wgsl`
+// samples a packed PROCEDURAL atlas (Stone/Wood/Plain) and cannot show a runtime-
+// loaded block texture; when a VS block is applied, the renderer selects THIS
+// pipeline instead.
 //
 // Everything else — the per-voxel texture slice (absolute-position UV ÷ density),
 // lighting, the position-based grid overlay, the band clip done at mesh-build time,
@@ -92,7 +92,8 @@ fn coord_component(a: f32, sign: f32) -> f32 {
     return base + select(1.0 - frac, frac, sign > 0.0);
 }
 
-// Signed-axis debug colour, identical to cuboid.wgsl / voxel.wgsl.
+// Signed-axis debug colour, identical to cuboid.wgsl (both carried it over from
+// the since-removed instanced voxel.wgsl, deleted with the legacy mesher, #20).
 fn debug_face_color(face_normal: vec3<f32>) -> vec3<f32> {
     let axis_magnitude = abs(face_normal);
     if (axis_magnitude.x > axis_magnitude.y && axis_magnitude.x > axis_magnitude.z) {
@@ -183,7 +184,9 @@ fn fragment_main(
     let tile_uv = fract(texture_coord);
     let sampled = textureSample(material_texture, material_sampler, tile_uv, layer).rgb;
 
-    // Directional + ambient lighting — identical constants to cuboid.wgsl / voxel.wgsl.
+    // Directional + ambient lighting — identical constants to cuboid.wgsl (both
+    // carried over from the since-removed instanced voxel.wgsl, deleted with the
+    // legacy mesher, #20).
     let light_direction = normalize(vec3<f32>(0.4, 0.9, 0.5));
     let normal = normalize(input.world_normal);
     let diffuse = max(dot(normal, light_direction), 0.0);

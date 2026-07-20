@@ -7,11 +7,11 @@ pub(crate) fn sculpted_atlas_bricks_per_axis(slot_count: usize) -> u32 {
     CubeTilePacking::tiles_per_axis(slot_count)
 }
 
-/// Land the sculpted-brick atlas bytes in an R8Unorm 3D texture — the shipped fog-atlas
-/// upload mechanic (`upload_grid_per_chunk`'s `write_texture`, no row padding needed).
-/// `COPY_SRC` is set so the parity net can read the texture back; a build with no
-/// sculpted brick returns a 1³ placeholder (nothing samples it — every record is
-/// coarse/air).
+/// Land the sculpted-brick atlas bytes in an R8Unorm 3D texture via a plain `write_texture`
+/// upload — no row-padding requirement (unlike `copy_texture_to_buffer`'s 256-byte alignment,
+/// see `read_back_brick_atlas` below). `COPY_SRC` is set so the parity net can read the texture
+/// back; a build with no sculpted brick returns a 1³ placeholder (nothing samples it — every
+/// record is coarse/air).
 pub fn upload_brick_atlas(
     device: &wgpu::Device,
     queue: &wgpu::Queue,

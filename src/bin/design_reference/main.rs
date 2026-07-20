@@ -1,10 +1,12 @@
 //! `design_reference` — the Signal design language, rendered by the app's own code.
 //!
 //! A printed style guide drifts the moment someone edits a constant. This binary cannot: it
-//! paints the palette straight out of [`ui::signal_theme`]'s tokens, the glyphs straight out of
-//! [`ui::icons`], and the widgets through the same [`egui::Style`] the application installs. If
-//! a token changes, this window changes with it; if a glyph is illegible at 15 pt, it is
-//! illegible here first.
+//! paints the palette straight out of [`ui::signal_theme`]'s tokens, and the widgets through
+//! the same [`egui::Style`] the application installs — if a token changes, this window changes
+//! with it. The glyphs are [`ui::icons`]' data-driven `Mark`s, which is a SEPARATE authoring
+//! from the live rail's own hand-painted glyphs in `signal_chrome.rs`; the two are meant to
+//! agree with the same design mock but are not the same code, so a glyph illegible here is not
+//! proof the live rail draws the same shape (check `signal_chrome.rs` too).
 //!
 //! It is deliberately a *separate* binary rather than a debug panel inside the app. The
 //! reference wants a scene of its own — every glyph, every size, every state at once — which is

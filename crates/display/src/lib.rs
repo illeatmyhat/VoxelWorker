@@ -56,6 +56,8 @@
 //! * [`texture_atlas`] — the packed material atlas ([`texture_atlas::MaterialAtlas`]) the sinks sample.
 //! * [`block_texture`] — the runtime-loaded scene block material + its bind-group layout (pure wgpu).
 //! * [`assets`] — the asset-pack decode + registry (custom packs, VS packs, face textures).
+//!   A sibling dependency crate, not a module of this one; it earns its place in this list
+//!   because `block_texture` above builds its materials out of it.
 
 // A public item's doc may link to a private helper to explain how the two relate; that
 // cross-reference stays a navigable link under `--document-private-items`. The CI doc gate
