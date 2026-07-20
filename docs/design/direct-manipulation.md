@@ -81,7 +81,10 @@ Every tool is the same three-part shape. Only the middle part differs.
 ```
 
 **The picked point** is the nearer of the ray's hit on existing geometry and its hit on the
-ground plane. Hitting geometry also yields the face normal, which tools may use for
+ground plane. **This premise is under challenge** — `docs/design/placement-prior-art.md` finds
+that no mature tool places against a fixed ground plane, and that Blender avoids the grazing
+case entirely by using the *view axis* as its picking plane normal, so the ray-plane denominator
+can never vanish. Decide that before wiring placement into the viewport. Hitting geometry also yields the face normal, which tools may use for
 orientation. This is one primitive, shared by every tool, and it is the same march the display
 path already runs — driven by the cursor ray instead of a pixel ray.
 
