@@ -140,6 +140,30 @@ at the field, where a reader will look; the destructuring forces the decision to
   nodes is bounded by re-meshing, not by re-resolving, and should be treated like any other
   gesture that dirties a large volume.
 
+## Amendment 2026-07-20 — the derive macro, and classification does not recurse
+
+Two owner rulings that close the two questions this ADR left open about the mechanism.
+
+**The classification is a derive macro.** Not because it is safer — hand-written exhaustive
+destructuring catches an unclassified field just as well — but because `#[snapshot(transient)]`
+sitting on the field is **visible in review**, where a `skipped:` line inside a `classify`
+function is not. This ADR named review as the only thing keeping `transient` honest; the macro
+is what makes that review possible. The cost is the workspace's first proc-macro crate.
+
+**Classification applies to whole objects and does not recurse into their fields.** The
+destructuring says which category an object belongs to; the object is then saved **entire, and
+recursively**, by serialization. Nested fields are not annotated.
+
+This corrects a concern raised during the grill — that a classified `camera: OrbitCamera` says
+nothing about whether every field *inside* `OrbitCamera` made the trip, so the pan-target bug
+could recur one level down. It cannot, and the reasoning was wrong: serialization already
+carries every field of a saved object. The historical bug was never "a field was added and not
+serialized" — it was that the *state itself was not reached* by the capture. That is exactly
+what top-level exhaustive destructuring prevents.
+
+Annotating nested fields would be enormous and would buy nothing. The guarantee is: **every
+object is classified, and a classified object is saved whole.**
+
 ## Open
 
 - Whether a display-only **hidden** — distinct from `enabled` — is worth adding. In a fold

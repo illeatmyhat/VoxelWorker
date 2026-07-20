@@ -166,10 +166,15 @@ chunk-granular, and the brick raymarch walks one world-fixed lattice. So a previ
 "the committed geometry, moved or scaled". There is no seam to move it by.
 
 That is an argument *for* the analytic-SDF preview rather than against it: a dedicated pass with
-its own uniforms is cheap precisely because it owns nothing and reuses nothing. It also names
-the one gap in the grammar — **a fieldless producer has no SDF to render**, so a baked
-`VoxelBody` or a linked instance's cached body has no preview under this design. That case is
-open.
+its own uniforms is cheap precisely because it owns nothing and reuses nothing.
+
+**There is no fieldless-producer gap** — a concern raised here in an earlier draft and withdrawn.
+`SdfShape` and `SketchSolid` both carry fields, a `Composite` carries one when its members do,
+and `Outset` delegates. The only `None` comes from the trait default, which the cloud currently
+inherits and which **ADR 0021 explicitly overturns**: the cloud is boundable, and the `Option`
+on `as_field` rests on freehand sculpt instead. Sculpt is not a counterexample either, because
+there is nothing to preview for a sculpt stroke — it is either represented or it is not. So
+every producer a drag can place has a field to render, and the preview covers the grammar.
 
 ### Noted for later: an SDF viewer mode
 
