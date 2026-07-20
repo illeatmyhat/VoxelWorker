@@ -166,7 +166,11 @@ chunk-granular, and the brick raymarch walks one world-fixed lattice. So a previ
 "the committed geometry, moved or scaled". There is no seam to move it by.
 
 That is an argument *for* the analytic-SDF preview rather than against it: a dedicated pass with
-its own uniforms is cheap precisely because it owns nothing and reuses nothing.
+its own uniforms is cheap precisely because it owns nothing and reuses nothing. **How cheap was
+then measured** — `docs/design/wgsl-sdf-spike.md`. 61 lines of WGSL cover all five shapes, zero
+voxels disagree with the CPU resolve, and the objection that it would duplicate every shape's
+definition is wrong: the `Field` trait already unifies them, so the GPU side is one dispatcher.
+The real cost is the frame work and the ongoing per-producer obligation, not the field math.
 
 **There is no fieldless-producer gap** — a concern raised here in an earlier draft and withdrawn.
 `SdfShape` and `SketchSolid` both carry fields, a `Composite` carries one when its members do,
