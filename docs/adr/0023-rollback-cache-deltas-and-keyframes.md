@@ -88,6 +88,22 @@ load faster, never more faithful.
   store (ADR 0010) rather than inventing a parallel sparse format, but whether a delta is a set
   of dirty chunks, a chunk-granular diff, or something narrower is open.
 
+## Amendment 2026-07-20 — build deltas first, keyframes deferred
+
+Keyframes are **not in the first implementation**. Deltas alone are enough to build, and none
+of the questions below can be answered until something exists to measure — the keyframe
+interval in particular is meaningless without a delta replay cost to weigh it against.
+
+This is a sequencing decision, not a reversal: the delta representation must **leave keyframes
+open** rather than foreclose them. Concretely, a keyframe is a full state standing in for a
+replay prefix, so the seek path should be written as "find a starting point, replay forward
+from it" even while the only starting point is the beginning. That way adding keyframes later
+inserts starting points rather than restructuring the seek.
+
+The cost of deferring is a known one: seek time is O(fold length) until keyframes land, so a
+long fold will scrub slowly. That is acceptable for a first implementation and is exactly the
+measurement that will justify the interval.
+
 ## Open
 
 - The keyframe interval, and whether it is uniform or cost-weighted.
