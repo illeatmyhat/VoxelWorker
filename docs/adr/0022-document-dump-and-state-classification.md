@@ -1,0 +1,150 @@
+# ADR 0022 — The document, the dump, and classified state
+
+- **Status:** Accepted (2026-07-20 — design grill; **implementation not started**). Introduces
+  the rollback cursor as classified view state, and the classification scheme that places it.
+  Relates to ADR 0017 (the ordered fold this rolls back), ADR 0016 (crate structure — the
+  derive would be a new crate kind), and ADR 0018 (viewer modes, the existing precedent for
+  display state that never enters the document).
+- **Date:** 2026-07-20
+- **Layer:** document/shell boundary — what persists, into which artifact, and how that is
+  enforced.
+
+## Context
+
+Three things collided in one grill and turn out to be the same decision.
+
+**The insert cursor needed a home.** The direct-manipulation grammar
+(`docs/design/direct-manipulation.md`) says a drop "commits one `AddNode` at the insert
+cursor", but `Scene::add_node` appends to `roots`. The cursor is the Fusion 360 rollback bar:
+a per-scope position in the ordered fold, where new nodes land, and past which nodes do not
+evaluate. `crates/ui/src/workspace/fold_strip.rs` deliberately refused to implement it,
+recording in its own module doc that adding it silently would be deciding an architecture
+question inside a widget. That refusal was correct.
+
+**The flag it would have been built on was lying.** `Node.visible` decided whether a node
+contributes to the *composed geometry* — `producers.rs` pruned it from the op-stack walk
+before evaluation, so disabling a `Subtract` filled the hole back in. It was renamed to
+`enabled` (2026-07-20). The audit that accompanied the rename found no site treating it as
+display visibility, which establishes a fact this ADR depends on: **the document has no
+display-only hide at all.** "Show me this cutter without its cut" is not a question the fold
+can presently answer.
+
+**And there is exactly one persistence artifact today.** `AppConfig::capture` is called by
+both `save_config` (on exit) and `export_repro` (F9), and the whole `Scene` lives inside it.
+So the config file, the project, and the debug repro are one thing wearing three hats. The
+camera pan target was once missing from the repro — not because anyone decided it did not
+matter, but because nothing forced the question to be asked.
+
+## Decisions
+
+### 1. The document and the dump are different artifacts with different jobs
+
+- **The document** is the project: the thing a user saves, shares, and reopens. It carries what
+  the model *is*. It is not geared toward reproducing faults, and it needs versioning because
+  it travels between people and across releases.
+- **The dump** is the debugging artifact: *a scene must be completely reproducible from it.*
+  Every setting, every input, every piece of view state is in it. It needs no versioning — it
+  is read by the version that wrote it.
+
+The dump is therefore a superset of the document, not a variant of it. These are different
+questions and conflating them is what let the pan target go missing.
+
+### 2. The rollback cursor is view state, and per scope
+
+The cursor position is where *you* are working, not what the model *is*. It goes in the dump
+and stays out of the document. Reopening a project therefore always shows the complete model,
+and a rollback left set is not what a collaborator sees.
+
+**This is a deliberate divergence from Fusion 360**, which stores its timeline marker in the
+document. The reasoning: a shared file should mean the same thing to everyone who opens it,
+and a fold that silently evaluates only its first three nodes because of where someone else's
+cursor was parked is a trap, not a feature.
+
+There is one cursor **per composition scope**, not one globally. Descending into a part,
+rolling back inside it, and coming back out must leave the outer scope's cursor where it was —
+a rollback bar that does not stay put is not doing its job. Because it is view state, it is
+stored as a side map keyed by scope, never as a field on the scope node: a field on the node
+would ride along inside the `Scene` and land in the document, on the wrong side of decision 1
+by construction.
+
+### 3. Suppression and disabling stay separate concepts
+
+A node is absent from the evaluation for either of two independent reasons, and they must not
+be implemented in terms of each other:
+
+```
+skip the node when   !enabled  ||  past_the_scope's_rollback
+```
+
+`enabled` is **per-node, sticky, authored** — "I turned this off." Rollback is **positional and
+derived** — "everything after here, because of where I am working." Implementing the second by
+setting the first destroys the distinction: moving the cursor back would have to restore each
+node's prior state from somewhere, which is the separate state again, built badly; and any node
+the user disabled by hand while the cursor was parked would be silently re-enabled when it
+moved.
+
+The consequence is a UI obligation: "why is this node not in my model?" now has two answers, so
+a disabled card and a rolled-past card must not look the same.
+
+### 4. Every piece of state is classified, and the compiler enforces it
+
+Each field of application state carries a category — **settings**, **document**, **view**, and
+whatever further categories prove necessary. Each persistence artifact handles the categories
+it is defined to carry. **A field that is classified but reaches neither the document nor the
+dump is a compile error.**
+
+The enforcement mechanism is **exhaustive destructuring**: an artifact's capture function
+destructures the state with no `..` rest pattern, so adding a field fails to compile until
+someone handles it. This is the part that delivers the guarantee. A trait or attribute alone
+would not: it classifies a *type*, and says nothing about whether every *field* made the trip —
+which is precisely how the pan target was lost, inside a camera that was already "captured".
+
+Classification and completeness are two mechanisms, not one. The category records the decision
+at the field, where a reader will look; the destructuring forces the decision to exist.
+
+## Consequences
+
+- **`AppConfig` splits.** One structure currently serves as config, project, and repro. Under
+  decision 1 it becomes at least a document and a dump, with settings distinguished from both.
+  This is the largest implementation cost here and it touches persistence for every feature.
+
+- **A category that means "neither" must be explicit and rare.** Some state is genuinely
+  transient (whether the mouse is currently held mid-drag). That must be a stated, justified
+  category subject to the same compile-time pressure — never the default. The moment
+  "unclassified" silently means "transient", the guarantee is gone. This is the most likely
+  way for the scheme to rot: people route around friction, and marking a field transient will
+  always be the cheapest way to make the compiler stop complaining. Whether it stays honest
+  depends on review, not on the type system.
+
+- **A derive macro means a new crate kind.** The workspace has no proc-macro crate
+  (ADR 0016 cut it into layer crates, all ordinary libraries). A proc-macro crate is build-time
+  and orthogonal to the layer stack, so it does not violate the downward-only flow law, but it
+  is a new kind of member and should be recognised as such rather than appearing by accident.
+  **Exhaustive destructuring alone needs no macro and delivers the completeness guarantee** —
+  the macro buys the *classification*, which is reviewability rather than safety. Whether that
+  is worth a proc-macro crate is not settled here.
+
+- **State the derive cannot see is still invisible.** Anything living in a `static`, a
+  thread-local, or on the GPU is outside any struct the scheme covers. The guarantee is
+  "no field of a classified struct is forgotten", not "nothing is forgotten". An explicit audit
+  for such state is owed, and the scheme's coverage should not be assumed total.
+
+- **Deleted scopes leave dangling cursor entries.** A per-scope side map outlives the scopes it
+  keys. Harmless for lookup (a missing entry reads as "no rollback"), but it grows without a
+  sweep, and it grows inside the dump.
+
+- **Rollback interacts with cost, favourably.** A rollback changes which nodes evaluate, so
+  moving it is a document-shaped edit in everything but persistence. Measured per-edit costs
+  (`tests/edit_cost_probe.rs`, `tests/remesh_cost_probe.rs`) show the resolve is flat in scene
+  size while a wholesale re-mesh is linear in resident chunks — so a cursor drag across many
+  nodes is bounded by re-meshing, not by re-resolving, and should be treated like any other
+  gesture that dirties a large volume.
+
+## Open
+
+- Whether a display-only **hidden** — distinct from `enabled` — is worth adding. In a fold
+  model, "show me this cutter without its cut" may not be a meaningful request; it is currently
+  not expressible at all, which is a fact rather than a decision.
+- The category list beyond settings / document / view, and which artifacts each reaches.
+- Whether the classification is a derive macro or a reviewed convention over hand-written
+  exhaustive destructuring.

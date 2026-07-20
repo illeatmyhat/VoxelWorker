@@ -142,6 +142,16 @@ op-stack field (see `docs/adr/0011`; generalizes the ADR 0007 fog atlas).
 - **Cutter** — a part placed under a subtract operation; it carves the accumulated
   result. Cutters are ordinary parts (reusable via definitions), not a special node kind.
 
+- **Enabled** — whether a node participates in the composed geometry. **Not a display
+  flag**: a disabled node is pruned before evaluation, so disabling a cutter fills its hole
+  back in rather than hiding the cutter. Per-node, authored, and sticky — "I turned this
+  off", as distinct from **rolled past**. The document has no display-only *hidden*.
+
+- **Rollback** — a position in a scope's ordered fold, past which nodes do not evaluate,
+  and at which a new node lands when it is created. One per composition scope. Positional
+  and derived ("everything after here"), never a property of a node — which is what
+  separates it from **enabled**. Borrowed from the Fusion 360 timeline marker.
+
 - **Junction** — a corner/meeting piece where instanced parts adjoin (walls at a bastion,
   roads at an intersection). A junction is **a part built to suit the situation** —
   authored and placed like any other (possibly as a fixture) — never a world-frame patch
@@ -229,6 +239,21 @@ op-stack field (see `docs/adr/0011`; generalizes the ADR 0007 fog atlas).
   is not saved with the scene, and never enters undo history. Selecting the root part
   applies the mode scene-wide; with nothing selected a mode has no target and the scene
   renders finished.
+
+## Persistence
+
+- **Document** — the project artifact: what a user saves, shares, and reopens. Carries what
+  the model **is**. Travels between people and across releases, so it is versioned. It is not
+  geared toward reproducing faults.
+
+- **Dump** — the debugging artifact: a scene is **completely reproducible** from it. Every
+  setting, input, and piece of view state is in it, including state the document deliberately
+  omits (a **rollback** position, a **view mode**). A superset of the document rather than a
+  variant of it. Unversioned — it is read by the version that wrote it.
+
+- **Classified state** — every piece of application state carries a category (settings,
+  document, view, …) naming which artifacts it reaches. State that is classified but reaches
+  neither the document nor the dump is a compile error, so nothing can be forgotten silently.
 
 ## Authoring truth
 
