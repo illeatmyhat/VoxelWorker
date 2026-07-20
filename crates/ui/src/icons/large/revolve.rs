@@ -4,13 +4,26 @@
 //! c-palette original's equator ellipse, so the two sizes read as the same verb. What the
 //! tile adds is room for the profile to be a real closed body instead of a hint.
 
-use crate::icons::IconPainter;
+use crate::icons::{Ink, Mark};
 
-pub(super) fn draw(g: &IconPainter) {
+pub(super) const DRAW: &[Mark] = &[
     // The axis, subordinate to what spins about it.
-    g.line_with(&[(13.0, 2.0), (13.0, 24.0)], g.faint(0.5));
+    Mark::Line {
+        points: &[(13.0, 2.0), (13.0, 24.0)],
+        ink: Ink::faint(0.5),
+    },
     // The sweep.
-    g.cubic((13.0, 5.0), (21.0, 8.0), (21.0, 18.0), (13.0, 21.0));
+    Mark::Cubic {
+        p0: (13.0, 5.0),
+        p1: (21.0, 8.0),
+        p2: (21.0, 18.0),
+        p3: (13.0, 21.0),
+        ink: Ink::SOLID,
+    },
     // The profile being revolved.
-    g.rect((5.0, 7.0), (9.5, 19.0));
-}
+    Mark::Rect {
+        a: (5.0, 7.0),
+        b: (9.5, 19.0),
+        ink: Ink::SOLID,
+    },
+];

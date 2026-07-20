@@ -1,8 +1,14 @@
 //! `cancel` — a cross: nothing is written to the document.
 
-use super::IconPainter;
+use super::{Ink, Mark};
 
-pub(super) fn draw(g: &IconPainter) {
-    g.line(&[(3.5, 3.5), (14.5, 14.5)]);
-    g.line(&[(14.5, 3.5), (3.5, 14.5)]);
-}
+pub(super) const DRAW: &[Mark] = &[
+    Mark::Line {
+        points: &[(3.5, 3.5), (14.5, 14.5)],
+        ink: Ink::SOLID,
+    },
+    Mark::Line {
+        points: &[(14.5, 3.5), (3.5, 14.5)],
+        ink: Ink::SOLID,
+    },
+];

@@ -2,10 +2,21 @@
 //!
 //! Every glyph is authored on an **18-unit grid** at a **1.25 pt stroke**, square caps, miter
 //! joins, zero rounding — the rules in `docs/design/viewport-chrome-signal.md` §Icon set. A
-//! glyph is a `fn(&IconPainter)` that traces its path through [`IconPainter::at`], so the same
+//! glyph is a `&'static [`[`Mark`]`]` — DATA, painted through [`IconPainter::at`] — so the same
 //! source draws at a 15 pt rail button and at a 44 pt palette tile with no second asset and no
 //! resampling. Colour is never baked in: the host passes it, which is what lets one glyph be
 //! idle, hovered and accent without three copies.
+//!
+//! Glyphs were once `fn(&IconPainter)`, and the change is not cosmetic: executable glyphs can
+//! fail to terminate, and one did — a float-accumulating dash walk hung the reference binary on
+//! a white window. Data cannot loop, so the property becomes a fact about the type rather than
+//! something anyone has to remember.
+//!
+//! Two glyphs are not yet data and still trace imperatively: `orbit`, whose path is a TILTED
+//! ellipse the kit has no rotation for, and `sweep`, which hand-samples its cubic at a fixed 16
+//! steps. Both can be expressed as [`Mark`]s only by moving them onto the kit's size-adaptive
+//! sampling, which changes what they render — a decision about the drawings, not about this
+//! module. Until they are converted the no-control-flow property holds for 54 of 56 glyphs.
 //!
 //! **One glyph per file**, under `icons/`. The file is the unit a designer edits, the module
 //! name is the glyph name, and [`Icon`] is the only index — a glyph that is not in the enum
@@ -55,6 +66,7 @@ mod inset;
 mod intersect;
 pub mod large;
 mod link;
+mod mark;
 mod material;
 mod measure;
 mod mode_booleans;
@@ -78,6 +90,8 @@ mod sweep;
 mod union;
 mod view_cube;
 mod zoom;
+
+pub use mark::{Ink, Mark};
 
 /// The authoring grid every RAIL glyph is traced on: 18 × 18 units. The large tile family
 /// ([`large`]) is traced on its own coarser grid — see [`large::GRID`].
@@ -205,10 +219,22 @@ impl<'a> IconPainter<'a> {
 
     /// Stroke a dashed rectangle — the set's mark for "an operand", the thing a boolean reads.
     pub fn dashed_rect(&self, a: (f32, f32), b: (f32, f32)) {
-        self.dashed_line(a, (b.0, a.1));
-        self.dashed_line((b.0, a.1), b);
-        self.dashed_line(b, (a.0, b.1));
-        self.dashed_line((a.0, b.1), a);
+        self.dashed_rect_with(a, b, self.stroke);
+    }
+
+    /// Stroke a dashed rectangle in a given stroke.
+    ///
+    /// Dashed once per SIDE rather than once around the outline, so every side begins on a full
+    /// dash and the corners stay square.
+    pub fn dashed_rect_with(&self, a: (f32, f32), b: (f32, f32), stroke: Stroke) {
+        for side in [
+            [a, (b.0, a.1)],
+            [(b.0, a.1), b],
+            [b, (a.0, b.1)],
+            [(a.0, b.1), a],
+        ] {
+            self.dashed_polyline_with(&side, stroke);
+        }
     }
 
     /// Stroke a dashed segment on the grid (2.2 on, 1.8 off, in grid units).
@@ -339,8 +365,20 @@ impl<'a> IconPainter<'a> {
         p3: (f32, f32),
         stroke: Stroke,
     ) {
+        self.line_with(&self.cubic_points(p0, p1, p2, p3), stroke);
+    }
+
+    /// Sample a cubic Bézier into grid-space points, at the same size-adaptive count an arc
+    /// uses.
+    fn cubic_points(
+        &self,
+        p0: (f32, f32),
+        p1: (f32, f32),
+        p2: (f32, f32),
+        p3: (f32, f32),
+    ) -> Vec<(f32, f32)> {
         let segments = ((self.rect.width() * 0.9) as usize).clamp(12, 64);
-        let points: Vec<(f32, f32)> = (0..=segments)
+        (0..=segments)
             .map(|i| {
                 let t = i as f32 / segments as f32;
                 let u = 1.0 - t;
@@ -350,8 +388,7 @@ impl<'a> IconPainter<'a> {
                     a * p0.1 + b * p1.1 + c * p2.1 + d * p3.1,
                 )
             })
-            .collect();
-        self.line_with(&points, stroke);
+            .collect()
     }
 
     /// Stroke a circle in a given stroke.
@@ -386,16 +423,28 @@ impl<'a> IconPainter<'a> {
         to: f32,
         stroke: Stroke,
     ) {
-        // Segment count follows the on-screen size, so a 44 pt tile does not show facets and a
-        // 15 pt button does not pay for 64 segments it cannot resolve.
+        self.line_with(&self.arc_points(center, rx, ry, from, to), stroke);
+    }
+
+    /// Sample an arc into grid-space points.
+    ///
+    /// Segment count follows the on-screen size, so a 44 pt tile does not show facets and a
+    /// 15 pt button does not pay for 64 segments it cannot resolve.
+    fn arc_points(
+        &self,
+        center: (f32, f32),
+        rx: f32,
+        ry: f32,
+        from: f32,
+        to: f32,
+    ) -> Vec<(f32, f32)> {
         let segments = ((self.rect.width() * 0.9) as usize).clamp(12, 64);
-        let points: Vec<(f32, f32)> = (0..=segments)
+        (0..=segments)
             .map(|i| {
                 let t = from + (to - from) * (i as f32 / segments as f32);
                 (center.0 + rx * t.cos(), center.1 + ry * t.sin())
             })
-            .collect();
-        self.line_with(&points, stroke);
+            .collect()
     }
 }
 
@@ -573,54 +622,54 @@ impl Icon {
     pub fn draw(self, painter: &Painter, rect: Rect, color: Color32) {
         let g = IconPainter::new(painter, rect, color);
         match self {
-            Icon::Home => home::draw(&g),
-            Icon::Fit => fit::draw(&g),
+            Icon::Home => g.marks(home::DRAW),
+            Icon::Fit => g.marks(fit::DRAW),
             Icon::Orbit => orbit::draw(&g),
-            Icon::Pan => pan::draw(&g),
-            Icon::Zoom => zoom::draw(&g),
-            Icon::AxesGizmo => axes_gizmo::draw(&g),
-            Icon::ViewCube => view_cube::draw(&g),
-            Icon::ModeNormal => mode_normal::draw(&g),
-            Icon::ModeOnion => mode_onion::draw(&g),
-            Icon::ModeBooleans => mode_booleans::draw(&g),
-            Icon::OnionScrub => onion_scrub::draw(&g),
-            Icon::Union => union::draw(&g),
-            Icon::Subtract => subtract::draw(&g),
-            Icon::Intersect => intersect::draw(&g),
-            Icon::Emboss => emboss::draw(&g),
-            Icon::EmbossRecess => emboss_recess::draw(&g),
-            Icon::Outset => outset::draw(&g),
-            Icon::Inset => inset::draw(&g),
-            Icon::Displace => displace::draw(&g),
-            Icon::Array => array::draw(&g),
-            Icon::Sketch => sketch::draw(&g),
-            Icon::Extrude => extrude::draw(&g),
-            Icon::Revolve => revolve::draw(&g),
+            Icon::Pan => g.marks(pan::DRAW),
+            Icon::Zoom => g.marks(zoom::DRAW),
+            Icon::AxesGizmo => g.marks(axes_gizmo::DRAW),
+            Icon::ViewCube => g.marks(view_cube::DRAW),
+            Icon::ModeNormal => g.marks(mode_normal::DRAW),
+            Icon::ModeOnion => g.marks(mode_onion::DRAW),
+            Icon::ModeBooleans => g.marks(mode_booleans::DRAW),
+            Icon::OnionScrub => g.marks(onion_scrub::DRAW),
+            Icon::Union => g.marks(union::DRAW),
+            Icon::Subtract => g.marks(subtract::DRAW),
+            Icon::Intersect => g.marks(intersect::DRAW),
+            Icon::Emboss => g.marks(emboss::DRAW),
+            Icon::EmbossRecess => g.marks(emboss_recess::DRAW),
+            Icon::Outset => g.marks(outset::DRAW),
+            Icon::Inset => g.marks(inset::DRAW),
+            Icon::Displace => g.marks(displace::DRAW),
+            Icon::Array => g.marks(array::DRAW),
+            Icon::Sketch => g.marks(sketch::DRAW),
+            Icon::Extrude => g.marks(extrude::DRAW),
+            Icon::Revolve => g.marks(revolve::DRAW),
             Icon::Sweep => sweep::draw(&g),
-            Icon::BoxSolid => box_solid::draw(&g),
-            Icon::Sphere => sphere::draw(&g),
-            Icon::Cylinder => cylinder::draw(&g),
-            Icon::HalfSpace => half_space::draw(&g),
-            Icon::Part => part::draw(&g),
-            Icon::ComposedPart => composed_part::draw(&g),
-            Icon::RootPart => root_part::draw(&g),
-            Icon::FoldStack => fold_stack::draw(&g),
-            Icon::FoldCursor => fold_cursor::draw(&g),
-            Icon::Link => link::draw(&g),
-            Icon::SculptAdd => sculpt_add::draw(&g),
-            Icon::Carve => carve::draw(&g),
-            Icon::Measure => measure::draw(&g),
-            Icon::Probe => probe::draw(&g),
-            Icon::Material => material::draw(&g),
-            Icon::Rotate => rotate::draw(&g),
-            Icon::Flip => flip::draw(&g),
-            Icon::Density => density::draw(&g),
-            Icon::ChevronRight => chevron_right::draw(&g),
-            Icon::ChevronDown => chevron_down::draw(&g),
-            Icon::Commit => commit::draw(&g),
-            Icon::Cancel => cancel::draw(&g),
-            Icon::Drawer => drawer::draw(&g),
-            Icon::Search => search::draw(&g),
+            Icon::BoxSolid => g.marks(box_solid::DRAW),
+            Icon::Sphere => g.marks(sphere::DRAW),
+            Icon::Cylinder => g.marks(cylinder::DRAW),
+            Icon::HalfSpace => g.marks(half_space::DRAW),
+            Icon::Part => g.marks(part::DRAW),
+            Icon::ComposedPart => g.marks(composed_part::DRAW),
+            Icon::RootPart => g.marks(root_part::DRAW),
+            Icon::FoldStack => g.marks(fold_stack::DRAW),
+            Icon::FoldCursor => g.marks(fold_cursor::DRAW),
+            Icon::Link => g.marks(link::DRAW),
+            Icon::SculptAdd => g.marks(sculpt_add::DRAW),
+            Icon::Carve => g.marks(carve::DRAW),
+            Icon::Measure => g.marks(measure::DRAW),
+            Icon::Probe => g.marks(probe::DRAW),
+            Icon::Material => g.marks(material::DRAW),
+            Icon::Rotate => g.marks(rotate::DRAW),
+            Icon::Flip => g.marks(flip::DRAW),
+            Icon::Density => g.marks(density::DRAW),
+            Icon::ChevronRight => g.marks(chevron_right::DRAW),
+            Icon::ChevronDown => g.marks(chevron_down::DRAW),
+            Icon::Commit => g.marks(commit::DRAW),
+            Icon::Cancel => g.marks(cancel::DRAW),
+            Icon::Drawer => g.marks(drawer::DRAW),
+            Icon::Search => g.marks(search::DRAW),
         }
     }
 

@@ -3,14 +3,26 @@
 //! The vertical arm is drawn longest on purpose. The world is Z-up, and a triad whose three
 //! arms are equal leaves the reader to guess which one is vertical.
 
-use super::IconPainter;
+use super::{Ink, Mark};
 
-pub(super) fn draw(g: &IconPainter) {
+pub(super) const DRAW: &[Mark] = &[
     // +Z: vertical, and the dominant arm.
-    g.line(&[(9.0, 10.5), (9.0, 2.5)]);
+    Mark::Line {
+        points: &[(9.0, 10.5), (9.0, 2.5)],
+        ink: Ink::SOLID,
+    },
     // The ground plane, XY.
-    g.line(&[(9.0, 10.5), (15.5, 14.0)]);
-    g.line(&[(9.0, 10.5), (2.5, 14.0)]);
+    Mark::Line {
+        points: &[(9.0, 10.5), (15.5, 14.0)],
+        ink: Ink::SOLID,
+    },
+    Mark::Line {
+        points: &[(9.0, 10.5), (2.5, 14.0)],
+        ink: Ink::SOLID,
+    },
     // The stub toward the viewer: front is −Y.
-    g.line(&[(9.0, 10.5), (9.0, 12.5)]);
-}
+    Mark::Line {
+        points: &[(9.0, 10.5), (9.0, 12.5)],
+        ink: Ink::SOLID,
+    },
+];

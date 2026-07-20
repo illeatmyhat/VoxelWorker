@@ -3,13 +3,28 @@
 //! The dashed row is dropped from this evaluation, not deleted, and dashing rather than
 //! omitting it is what carries that distinction.
 
-use super::IconPainter;
+use super::{Ink, Mark};
 
-pub(super) fn draw(g: &IconPainter) {
-    g.rect((4.0, 2.5), (16.0, 5.5));
-    g.rect((4.0, 7.5), (16.0, 10.5));
+pub(super) const DRAW: &[Mark] = &[
+    Mark::Rect {
+        a: (4.0, 2.5),
+        b: (16.0, 5.5),
+        ink: Ink::SOLID,
+    },
+    Mark::Rect {
+        a: (4.0, 7.5),
+        b: (16.0, 10.5),
+        ink: Ink::SOLID,
+    },
     // Past the cursor: still authored, not evaluated.
-    g.dashed_rect((4.0, 12.5), (16.0, 15.5));
+    Mark::Rect {
+        a: (4.0, 12.5),
+        b: (16.0, 15.5),
+        ink: Ink::DASHED,
+    },
     // The insert caret.
-    g.closed(&[(0.5, 9.5), (3.0, 11.5), (0.5, 13.5)]);
-}
+    Mark::Closed {
+        points: &[(0.5, 9.5), (3.0, 11.5), (0.5, 13.5)],
+        ink: Ink::SOLID,
+    },
+];

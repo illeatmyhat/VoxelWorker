@@ -1,7 +1,8 @@
 //! `chevron-down` — disclosure, open.
 
-use super::IconPainter;
+use super::{Ink, Mark};
 
-pub(super) fn draw(g: &IconPainter) {
-    g.line(&[(3.0, 6.5), (9.0, 12.5), (15.0, 6.5)]);
-}
+pub(super) const DRAW: &[Mark] = &[Mark::Line {
+    points: &[(3.0, 6.5), (9.0, 12.5), (15.0, 6.5)],
+    ink: Ink::SOLID,
+}];

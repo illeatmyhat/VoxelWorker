@@ -3,14 +3,28 @@
 //! The dashed rectangle is the sketch and the solid one the swept result, so the mark shows
 //! the transformation rather than just the outcome.
 
-use super::IconPainter;
+use super::{Ink, Mark};
 
-pub(super) fn draw(g: &IconPainter) {
+pub(super) const DRAW: &[Mark] = &[
     // The resulting body.
-    g.rect((2.5, 11.0), (9.5, 14.5));
+    Mark::Rect {
+        a: (2.5, 11.0),
+        b: (9.5, 14.5),
+        ink: Ink::SOLID,
+    },
     // The profile it came from.
-    g.dashed_rect((2.5, 3.5), (9.5, 7.0));
+    Mark::Rect {
+        a: (2.5, 3.5),
+        b: (9.5, 7.0),
+        ink: Ink::DASHED,
+    },
     // The lift.
-    g.line(&[(13.5, 14.5), (13.5, 4.0)]);
-    g.line(&[(11.9, 5.6), (13.5, 4.0), (15.1, 5.6)]);
-}
+    Mark::Line {
+        points: &[(13.5, 14.5), (13.5, 4.0)],
+        ink: Ink::SOLID,
+    },
+    Mark::Line {
+        points: &[(11.9, 5.6), (13.5, 4.0), (15.1, 5.6)],
+        ink: Ink::SOLID,
+    },
+];

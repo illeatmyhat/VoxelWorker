@@ -4,11 +4,19 @@
 //! operands stay visible as x-ray ghosts *alongside* the folded result, rather than being
 //! consumed by it.
 
-use super::IconPainter;
+use super::{Ink, Mark};
 
-pub(super) fn draw(g: &IconPainter) {
+pub(super) const DRAW: &[Mark] = &[
     // The folded result.
-    g.rect((2.5, 2.5), (10.5, 10.5));
+    Mark::Rect {
+        a: (2.5, 2.5),
+        b: (10.5, 10.5),
+        ink: Ink::SOLID,
+    },
     // The operand ghost.
-    g.dashed_rect((7.5, 7.5), (15.5, 15.5));
-}
+    Mark::Rect {
+        a: (7.5, 7.5),
+        b: (15.5, 15.5),
+        ink: Ink::DASHED,
+    },
+];

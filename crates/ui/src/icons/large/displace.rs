@@ -9,12 +9,27 @@
 //! the reflection of the first's second control about the join, which is what keeps the
 //! crest continuous rather than kinked.
 
-use crate::icons::IconPainter;
+use crate::icons::{Ink, Mark};
 
-pub(super) fn draw(g: &IconPainter) {
+pub(super) const DRAW: &[Mark] = &[
     // The displaced surface: up over the crest, then down past it.
-    g.cubic((4.0, 18.0), (8.0, 17.0), (8.0, 11.0), (12.0, 11.0));
-    g.cubic((12.0, 11.0), (16.0, 11.0), (16.0, 17.0), (22.0, 15.0));
+    Mark::Cubic {
+        p0: (4.0, 18.0),
+        p1: (8.0, 17.0),
+        p2: (8.0, 11.0),
+        p3: (12.0, 11.0),
+        ink: Ink::SOLID,
+    },
+    Mark::Cubic {
+        p0: (12.0, 11.0),
+        p1: (16.0, 11.0),
+        p2: (16.0, 17.0),
+        p3: (22.0, 15.0),
+        ink: Ink::SOLID,
+    },
     // The undisturbed datum.
-    g.line_with(&[(4.0, 22.0), (22.0, 22.0)], g.faint(0.4));
-}
+    Mark::Line {
+        points: &[(4.0, 22.0), (22.0, 22.0)],
+        ink: Ink::faint(0.4),
+    },
+];

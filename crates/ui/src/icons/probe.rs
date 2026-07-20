@@ -12,15 +12,28 @@
 //! Distinct from `search` (a magnifier, which filters names) and from `measure` (a ruler,
 //! which answers distances). This one answers provenance.
 
-use super::IconPainter;
+use super::{Ink, Mark};
 
-pub(super) fn draw(g: &IconPainter) {
+pub(super) const DRAW: &[Mark] = &[
     // The interrogated cell.
-    g.rect((2.0, 12.0), (6.5, 16.5));
+    Mark::Rect {
+        a: (2.0, 12.0),
+        b: (6.5, 16.5),
+        ink: Ink::SOLID,
+    },
     // The leader, out of the cell and up to the readout.
-    g.line(&[(6.5, 12.0), (10.0, 8.5)]);
+    Mark::Line {
+        points: &[(6.5, 12.0), (10.0, 8.5)],
+        ink: Ink::SOLID,
+    },
     // The winner: what this voxel actually is.
-    g.line(&[(10.0, 4.0), (16.5, 4.0)]);
+    Mark::Line {
+        points: &[(10.0, 4.0), (16.5, 4.0)],
+        ink: Ink::SOLID,
+    },
     // A loser, kept visible and struck through.
-    g.dashed_line((10.0, 8.5), (14.5, 8.5));
-}
+    Mark::Line {
+        points: &[(10.0, 8.5), (14.5, 8.5)],
+        ink: Ink::DASHED,
+    },
+];

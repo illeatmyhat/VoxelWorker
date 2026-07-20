@@ -4,11 +4,27 @@
 //! and belongs to the browser, so the glyph states *assignment* — some cells carry a material,
 //! some do not — rather than trying to depict a material.
 
-use super::IconPainter;
+use super::{Ink, Mark};
 
-pub(super) fn draw(g: &IconPainter) {
-    g.rect((2.5, 2.5), (8.5, 8.5));
-    g.dashed_rect((9.5, 2.5), (15.5, 8.5));
-    g.dashed_rect((2.5, 9.5), (8.5, 15.5));
-    g.rect((9.5, 9.5), (15.5, 15.5));
-}
+pub(super) const DRAW: &[Mark] = &[
+    Mark::Rect {
+        a: (2.5, 2.5),
+        b: (8.5, 8.5),
+        ink: Ink::SOLID,
+    },
+    Mark::Rect {
+        a: (9.5, 2.5),
+        b: (15.5, 8.5),
+        ink: Ink::DASHED,
+    },
+    Mark::Rect {
+        a: (2.5, 9.5),
+        b: (8.5, 15.5),
+        ink: Ink::DASHED,
+    },
+    Mark::Rect {
+        a: (9.5, 9.5),
+        b: (15.5, 15.5),
+        ink: Ink::SOLID,
+    },
+];

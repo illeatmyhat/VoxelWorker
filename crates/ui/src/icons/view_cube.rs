@@ -9,22 +9,34 @@
 //! and left it indistinct from the plain `box` cube; a measured pass found this glyph 82%
 //! overlapping both `box` and `mode-normal`. A filled cell survives where rules do not.
 
-use super::IconPainter;
+use super::{Ink, Mark};
 
-pub(super) fn draw(g: &IconPainter) {
+pub(super) const DRAW: &[Mark] = &[
     // The silhouette.
-    g.closed(&[
-        (9.0, 1.5),
-        (16.0, 5.5),
-        (16.0, 12.5),
-        (9.0, 16.5),
-        (2.0, 12.5),
-        (2.0, 5.5),
-    ]);
+    Mark::Closed {
+        points: &[
+            (9.0, 1.5),
+            (16.0, 5.5),
+            (16.0, 12.5),
+            (9.0, 16.5),
+            (2.0, 12.5),
+            (2.0, 5.5),
+        ],
+        ink: Ink::SOLID,
+    },
     // The three visible faces.
-    g.line(&[(2.0, 5.5), (9.0, 9.5), (16.0, 5.5)]);
-    g.line(&[(9.0, 9.5), (9.0, 16.5)]);
+    Mark::Line {
+        points: &[(2.0, 5.5), (9.0, 9.5), (16.0, 5.5)],
+        ink: Ink::SOLID,
+    },
+    Mark::Line {
+        points: &[(9.0, 9.5), (9.0, 16.5)],
+        ink: Ink::SOLID,
+    },
     // The origin corner, lit: half of each edge of the near-right face taken from the bottom
     // vertex — big enough to hold at 15 pt, where a ruled cell would not.
-    g.fill(&[(9.0, 16.5), (12.5, 14.5), (12.5, 11.0), (9.0, 13.0)]);
-}
+    Mark::Fill {
+        points: &[(9.0, 16.5), (12.5, 14.5), (12.5, 11.0), (9.0, 13.0)],
+        opacity: 1.0,
+    },
+];

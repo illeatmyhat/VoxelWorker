@@ -9,13 +9,24 @@
 //! every operand mark. The tie between them is what separates this from `array`: two
 //! bodies in a reference relationship, not three repeats of one.
 
-use super::IconPainter;
+use super::{Ink, Mark};
 
-pub(super) fn draw(g: &IconPainter) {
+pub(super) const DRAW: &[Mark] = &[
     // The definition: the body that is actually authored.
-    g.rect((1.5, 6.5), (7.0, 11.5));
+    Mark::Rect {
+        a: (1.5, 6.5),
+        b: (7.0, 11.5),
+        ink: Ink::SOLID,
+    },
     // An instance of it — a reference, carrying no body of its own.
-    g.dashed_rect((11.0, 6.5), (16.5, 11.5));
+    Mark::Rect {
+        a: (11.0, 6.5),
+        b: (16.5, 11.5),
+        ink: Ink::DASHED,
+    },
     // The link itself.
-    g.line(&[(7.0, 9.0), (11.0, 9.0)]);
-}
+    Mark::Line {
+        points: &[(7.0, 9.0), (11.0, 9.0)],
+        ink: Ink::SOLID,
+    },
+];

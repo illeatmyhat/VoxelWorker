@@ -4,12 +4,25 @@
 //! separates them; the two never appear on the same rail, so the shared body is a saving
 //! rather than a collision.
 
-use super::IconPainter;
+use super::{Ink, Mark};
 
-pub(super) fn draw(g: &IconPainter) {
-    g.circle((7.5, 7.5), 5.0);
-    g.line(&[(11.2, 11.2), (15.8, 15.8)]);
+pub(super) const DRAW: &[Mark] = &[
+    Mark::Circle {
+        center: (7.5, 7.5),
+        radius: 5.0,
+        ink: Ink::SOLID,
+    },
+    Mark::Line {
+        points: &[(11.2, 11.2), (15.8, 15.8)],
+        ink: Ink::SOLID,
+    },
     // The plus inside the lens.
-    g.line(&[(5.2, 7.5), (9.8, 7.5)]);
-    g.line(&[(7.5, 5.2), (7.5, 9.8)]);
-}
+    Mark::Line {
+        points: &[(5.2, 7.5), (9.8, 7.5)],
+        ink: Ink::SOLID,
+    },
+    Mark::Line {
+        points: &[(7.5, 5.2), (7.5, 9.8)],
+        ink: Ink::SOLID,
+    },
+];

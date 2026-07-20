@@ -140,16 +140,16 @@ impl LargeIcon {
     pub fn draw(self, painter: &Painter, rect: Rect, color: Color32) {
         let g = IconPainter::new_on_grid(painter, rect, color, GRID, STROKE_WIDTH);
         match self {
-            LargeIcon::Sketch => sketch::draw(&g),
-            LargeIcon::Extrude => extrude::draw(&g),
-            LargeIcon::Revolve => revolve::draw(&g),
-            LargeIcon::Sweep => sweep::draw(&g),
-            LargeIcon::BoxSolid => box_solid::draw(&g),
-            LargeIcon::Sphere => sphere::draw(&g),
-            LargeIcon::Cylinder => cylinder::draw(&g),
-            LargeIcon::HalfSpace => half_space::draw(&g),
-            LargeIcon::Sculpt => sculpt::draw(&g),
-            LargeIcon::Displace => displace::draw(&g),
+            LargeIcon::Sketch => g.marks(sketch::DRAW),
+            LargeIcon::Extrude => g.marks(extrude::DRAW),
+            LargeIcon::Revolve => g.marks(revolve::DRAW),
+            LargeIcon::Sweep => g.marks(sweep::DRAW),
+            LargeIcon::BoxSolid => g.marks(box_solid::DRAW),
+            LargeIcon::Sphere => g.marks(sphere::DRAW),
+            LargeIcon::Cylinder => g.marks(cylinder::DRAW),
+            LargeIcon::HalfSpace => g.marks(half_space::DRAW),
+            LargeIcon::Sculpt => g.marks(sculpt::DRAW),
+            LargeIcon::Displace => g.marks(displace::DRAW),
         }
     }
 

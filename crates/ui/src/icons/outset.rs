@@ -4,14 +4,28 @@
 //! squares are ambiguous — they could equally read as a part containing a child — and the
 //! direction of the field is the whole content of the mark.
 
-use super::IconPainter;
+use super::{Ink, Mark};
 
-pub(super) fn draw(g: &IconPainter) {
+pub(super) const DRAW: &[Mark] = &[
     // The authored body.
-    g.rect((6.0, 6.0), (12.0, 12.0));
+    Mark::Rect {
+        a: (6.0, 6.0),
+        b: (12.0, 12.0),
+        ink: Ink::SOLID,
+    },
     // The dilated envelope.
-    g.dashed_rect((2.5, 2.5), (15.5, 15.5));
+    Mark::Rect {
+        a: (2.5, 2.5),
+        b: (15.5, 15.5),
+        ink: Ink::DASHED,
+    },
     // Which way the field moves.
-    g.line(&[(12.0, 6.0), (15.5, 2.5)]);
-    g.line(&[(6.0, 12.0), (2.5, 15.5)]);
-}
+    Mark::Line {
+        points: &[(12.0, 6.0), (15.5, 2.5)],
+        ink: Ink::SOLID,
+    },
+    Mark::Line {
+        points: &[(6.0, 12.0), (2.5, 15.5)],
+        ink: Ink::SOLID,
+    },
+];

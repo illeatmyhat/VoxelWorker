@@ -1,9 +1,21 @@
 //! `fold-stack` — three stacked rows: the ordered fold of the active scope.
 
-use super::IconPainter;
+use super::{Ink, Mark};
 
-pub(super) fn draw(g: &IconPainter) {
-    g.rect((2.0, 2.5), (16.0, 5.5));
-    g.rect((2.0, 7.5), (16.0, 10.5));
-    g.rect((2.0, 12.5), (16.0, 15.5));
-}
+pub(super) const DRAW: &[Mark] = &[
+    Mark::Rect {
+        a: (2.0, 2.5),
+        b: (16.0, 5.5),
+        ink: Ink::SOLID,
+    },
+    Mark::Rect {
+        a: (2.0, 7.5),
+        b: (16.0, 10.5),
+        ink: Ink::SOLID,
+    },
+    Mark::Rect {
+        a: (2.0, 12.5),
+        b: (16.0, 15.5),
+        ink: Ink::SOLID,
+    },
+];

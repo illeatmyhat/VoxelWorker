@@ -6,23 +6,33 @@
 //! between — the one place in the set where opacity carries meaning rather than depth, because
 //! "the band you are standing on" is precisely a contrast statement.
 
-use super::IconPainter;
+use super::{Ink, Mark};
 
-pub(super) fn draw(g: &IconPainter) {
-    let faint = g.faint(0.45);
-    let mid = g.faint(0.7);
+pub(super) const DRAW: &[Mark] = &[
     // Carets above: the layers already passed.
-    g.line_with(&[(3.0, 5.0), (9.0, 2.5), (15.0, 5.0)], faint);
-    g.line_with(&[(3.0, 8.0), (9.0, 5.5), (15.0, 8.0)], mid);
+    Mark::Line {
+        points: &[(3.0, 5.0), (9.0, 2.5), (15.0, 5.0)],
+        ink: Ink::faint(0.45),
+    },
+    Mark::Line {
+        points: &[(3.0, 8.0), (9.0, 5.5), (15.0, 8.0)],
+        ink: Ink::faint(0.7),
+    },
     // The active band — a thin hexagonal slab, filled.
-    g.fill(&[
-        (9.0, 8.8),
-        (15.0, 11.2),
-        (15.0, 11.4),
-        (9.0, 13.9),
-        (3.0, 11.4),
-        (3.0, 11.2),
-    ]);
+    Mark::Fill {
+        points: &[
+            (9.0, 8.8),
+            (15.0, 11.2),
+            (15.0, 11.4),
+            (9.0, 13.9),
+            (3.0, 11.4),
+            (3.0, 11.2),
+        ],
+        opacity: 1.0,
+    },
     // The caret below: what is still to come.
-    g.line_with(&[(3.0, 14.5), (9.0, 17.0), (15.0, 14.5)], faint);
-}
+    Mark::Line {
+        points: &[(3.0, 14.5), (9.0, 17.0), (15.0, 14.5)],
+        ink: Ink::faint(0.45),
+    },
+];

@@ -3,14 +3,30 @@
 //! The outer square never changes size between states of this mark: density is voxels per
 //! block, fineness and never extent, and only the interior ruling would differ.
 
-use super::IconPainter;
+use super::{Ink, Mark};
 
-pub(super) fn draw(g: &IconPainter) {
+pub(super) const DRAW: &[Mark] = &[
     // The block.
-    g.rect((2.5, 2.5), (15.5, 15.5));
+    Mark::Rect {
+        a: (2.5, 2.5),
+        b: (15.5, 15.5),
+        ink: Ink::SOLID,
+    },
     // Its voxels.
-    g.line(&[(6.83, 2.5), (6.83, 15.5)]);
-    g.line(&[(11.17, 2.5), (11.17, 15.5)]);
-    g.line(&[(2.5, 6.83), (15.5, 6.83)]);
-    g.line(&[(2.5, 11.17), (15.5, 11.17)]);
-}
+    Mark::Line {
+        points: &[(6.83, 2.5), (6.83, 15.5)],
+        ink: Ink::SOLID,
+    },
+    Mark::Line {
+        points: &[(11.17, 2.5), (11.17, 15.5)],
+        ink: Ink::SOLID,
+    },
+    Mark::Line {
+        points: &[(2.5, 6.83), (15.5, 6.83)],
+        ink: Ink::SOLID,
+    },
+    Mark::Line {
+        points: &[(2.5, 11.17), (15.5, 11.17)],
+        ink: Ink::SOLID,
+    },
+];

@@ -7,20 +7,27 @@
 //! So the interior is drawn as the merged union outline — seamless, exactly like the `union`
 //! glyph — sitting inside the part's boundary.
 
-use super::IconPainter;
+use super::{Ink, Mark};
 
-pub(super) fn draw(g: &IconPainter) {
+pub(super) const DRAW: &[Mark] = &[
     // The part's boundary.
-    g.rect((2.0, 2.0), (16.0, 16.0));
+    Mark::Rect {
+        a: (2.0, 2.0),
+        b: (16.0, 16.0),
+        ink: Ink::SOLID,
+    },
     // Its children, already folded into one composed body — no interior seam.
-    g.closed(&[
-        (5.0, 5.0),
-        (9.9, 5.0),
-        (9.9, 8.1),
-        (13.0, 8.1),
-        (13.0, 13.0),
-        (8.1, 13.0),
-        (8.1, 9.9),
-        (5.0, 9.9),
-    ]);
-}
+    Mark::Closed {
+        points: &[
+            (5.0, 5.0),
+            (9.9, 5.0),
+            (9.9, 8.1),
+            (13.0, 8.1),
+            (13.0, 13.0),
+            (8.1, 13.0),
+            (8.1, 9.9),
+            (5.0, 9.9),
+        ],
+        ink: Ink::SOLID,
+    },
+];

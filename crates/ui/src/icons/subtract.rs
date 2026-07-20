@@ -3,18 +3,25 @@
 //! The operand stays drawn because subtract is an occupancy-only mask: the thing that was
 //! removed is a shape the user authored, not an absence.
 
-use super::IconPainter;
+use super::{Ink, Mark};
 
-pub(super) fn draw(g: &IconPainter) {
+pub(super) const DRAW: &[Mark] = &[
     // What survives the fold.
-    g.closed(&[
-        (2.5, 2.5),
-        (10.5, 2.5),
-        (10.5, 7.5),
-        (7.5, 7.5),
-        (7.5, 10.5),
-        (2.5, 10.5),
-    ]);
+    Mark::Closed {
+        points: &[
+            (2.5, 2.5),
+            (10.5, 2.5),
+            (10.5, 7.5),
+            (7.5, 7.5),
+            (7.5, 10.5),
+            (2.5, 10.5),
+        ],
+        ink: Ink::SOLID,
+    },
     // The cutter.
-    g.dashed_rect((7.5, 7.5), (15.5, 15.5));
-}
+    Mark::Rect {
+        a: (7.5, 7.5),
+        b: (15.5, 15.5),
+        ink: Ink::DASHED,
+    },
+];

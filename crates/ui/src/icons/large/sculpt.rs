@@ -9,11 +9,20 @@
 //! original's airier 2/3. A second dash rhythm inside one family reads as an inconsistency,
 //! not as a distinction — the ring's meaning is carried by being dashed at all.
 
-use crate::icons::IconPainter;
+use crate::icons::{Ink, Mark};
 
-pub(super) fn draw(g: &IconPainter) {
+pub(super) const DRAW: &[Mark] = &[
     // The core the brush actually writes.
-    g.circle((13.0, 13.0), 6.0);
+    Mark::Circle {
+        center: (13.0, 13.0),
+        radius: 6.0,
+        ink: Ink::SOLID,
+    },
     // How far it reaches.
-    g.dashed_ellipse_with((13.0, 13.0), 9.5, 9.5, g.faint(0.4));
-}
+    Mark::Ellipse {
+        center: (13.0, 13.0),
+        rx: 9.5,
+        ry: 9.5,
+        ink: Ink::faint_dashed(0.4),
+    },
+];

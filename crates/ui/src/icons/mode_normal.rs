@@ -11,7 +11,7 @@
 //! decorative: the fill does structural work (solid versus wireframe), which is the only kind
 //! of fill that survives rail size.
 
-use super::IconPainter;
+use super::{Ink, Mark};
 
 /// The top face, lit.
 const TOP: [(f32, f32); 4] = [(9.0, 1.5), (16.0, 5.5), (9.0, 9.5), (2.0, 5.5)];
@@ -20,18 +20,30 @@ const RIGHT: [(f32, f32); 4] = [(16.0, 5.5), (16.0, 12.5), (9.0, 16.5), (9.0, 9.
 /// The near-left face, furthest from the light.
 const LEFT: [(f32, f32); 4] = [(2.0, 5.5), (9.0, 9.5), (9.0, 16.5), (2.0, 12.5)];
 
-pub(super) fn draw(g: &IconPainter) {
+pub(super) const DRAW: &[Mark] = &[
     // Lit from above: the top face full, the sides falling away.
-    g.fill(&TOP);
-    g.fill_with(&RIGHT, g.faint(0.55).color);
-    g.fill_with(&LEFT, g.faint(0.3).color);
+    Mark::Fill {
+        points: &TOP,
+        opacity: 1.0,
+    },
+    Mark::Fill {
+        points: &RIGHT,
+        opacity: 0.55,
+    },
+    Mark::Fill {
+        points: &LEFT,
+        opacity: 0.3,
+    },
     // The silhouette last, so the outer edge stays crisp against the fills.
-    g.closed(&[
-        (9.0, 1.5),
-        (16.0, 5.5),
-        (16.0, 12.5),
-        (9.0, 16.5),
-        (2.0, 12.5),
-        (2.0, 5.5),
-    ]);
-}
+    Mark::Closed {
+        points: &[
+            (9.0, 1.5),
+            (16.0, 5.5),
+            (16.0, 12.5),
+            (9.0, 16.5),
+            (2.0, 12.5),
+            (2.0, 5.5),
+        ],
+        ink: Ink::SOLID,
+    },
+];

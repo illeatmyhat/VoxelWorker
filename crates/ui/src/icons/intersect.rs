@@ -9,13 +9,24 @@
 //! The operands are dashed for the same reason they are in `subtract`: a dashed body is an
 //! operand the fold reads, not material that ends up in the result.
 
-use super::IconPainter;
+use super::{Ink, Mark};
 
-pub(super) fn draw(g: &IconPainter) {
+pub(super) const DRAW: &[Mark] = &[
     // The two operands, overlapping generously so their agreement is the mark's subject
     // rather than a detail caught between two frames.
-    g.dashed_rect((2.5, 2.5), (12.0, 12.0));
-    g.dashed_rect((6.0, 6.0), (15.5, 15.5));
+    Mark::Rect {
+        a: (2.5, 2.5),
+        b: (12.0, 12.0),
+        ink: Ink::DASHED,
+    },
+    Mark::Rect {
+        a: (6.0, 6.0),
+        b: (15.5, 15.5),
+        ink: Ink::DASHED,
+    },
     // Their agreement — the only thing that survives the fold.
-    g.fill(&[(6.0, 6.0), (12.0, 6.0), (12.0, 12.0), (6.0, 12.0)]);
-}
+    Mark::Fill {
+        points: &[(6.0, 6.0), (12.0, 6.0), (12.0, 12.0), (6.0, 12.0)],
+        opacity: 1.0,
+    },
+];
