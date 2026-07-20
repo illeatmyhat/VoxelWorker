@@ -12,11 +12,13 @@
 //! a white window. Data cannot loop, so the property becomes a fact about the type rather than
 //! something anyone has to remember.
 //!
-//! Two glyphs are not yet data and still trace imperatively: `orbit`, whose path is a TILTED
-//! ellipse the kit has no rotation for, and `sweep`, which hand-samples its cubic at a fixed 16
-//! steps. Both can be expressed as [`Mark`]s only by moving them onto the kit's size-adaptive
-//! sampling, which changes what they render — a decision about the drawings, not about this
-//! module. Until they are converted the no-control-flow property holds for 54 of 56 glyphs.
+//! **`orbit` is the one exception**, and it is a principled one rather than unfinished work.
+//! Its path is a TILTED ellipse the kit has no rotation for, and its moon sits at
+//! `on_orbit(MOON_ANGLE)` — a trigonometric position. `f32::cos` is not a `const fn`, so the
+//! only way to make `orbit` data is to freeze that position as a literal, which would decouple
+//! the number from the `MOON_ANGLE` this module explains. A glyph whose constants no longer
+//! match its own reasoning is worse than a glyph that traces. It carries no unbounded loop: its
+//! sampling is a fixed `0..=32`.
 //!
 //! **One glyph per file**, under `icons/`. The file is the unit a designer edits, the module
 //! name is the glyph name, and [`Icon`] is the only index — a glyph that is not in the enum
@@ -645,7 +647,7 @@ impl Icon {
             Icon::Sketch => g.marks(sketch::DRAW),
             Icon::Extrude => g.marks(extrude::DRAW),
             Icon::Revolve => g.marks(revolve::DRAW),
-            Icon::Sweep => sweep::draw(&g),
+            Icon::Sweep => g.marks(sweep::DRAW),
             Icon::BoxSolid => g.marks(box_solid::DRAW),
             Icon::Sphere => g.marks(sphere::DRAW),
             Icon::Cylinder => g.marks(cylinder::DRAW),
