@@ -1,7 +1,14 @@
 # ADR 0022 — The document, the dump, and classified state
 
-- **Status:** Accepted (2026-07-20 — design grill; **implementation not started**). Introduces
-  the rollback cursor as classified view state, and the classification scheme that places it.
+- **Status:** Accepted (2026-07-20 — design grill; **implementation not started**).
+  **Decision 2 is superseded in part by [ADR 0025](0025-embedded-session-on-save-as.md)**: the
+  rollback cursor is **session** state (ADR 0024's category) and *may* travel inside the
+  document, as an author-chosen opt-in on Save As. Decision 2's per-scope requirement and its
+  side-map storage stand; only "stays out of the document" is reversed, and it survives as ADR
+  0025's fallback — an embedded cursor that cannot be resolved drops to the end of its fold, so
+  a document that cannot honour the advice opens complete, exactly as decision 2 required.
+  Introduces the rollback cursor as classified view state, and the classification scheme that
+  places it.
   Relates to ADR 0017 (the ordered fold this rolls back), ADR 0016 (crate structure — the
   derive would be a new crate kind), and ADR 0018 (viewer modes, the existing precedent for
   display state that never enters the document).

@@ -231,9 +231,9 @@ different questions at the field, where whoever adds the next field will be read
   is versioned and treated with the care of a file format.
 - **Settings** — what the user *chose* and would want in every project: the projection,
   the window size, the Home view they pressed a button to keep.
-- **Session** — how the workspace was *left*: the viewer mode, the folded panels, the
-  diagnostic overlays. The browser's bargain — close it, open it, and your tabs come
-  back. Restored across relaunch, never inside a shared file.
+- **Session** — how the workspace was *left*: the viewer mode, the rollback cursor, the
+  folded panels, the diagnostic overlays. The browser's bargain — close it, open it, and
+  your tabs come back. Restored across relaunch from a store held outside the file.
 - **View** — where the author was *looking from*: the camera pose, the layer band.
 
 The last three carry no design intent and no compatibility promise; a stale one is
@@ -253,3 +253,35 @@ stops the build until somebody says where it goes. A category alone would classi
 type and say nothing about whether each field made the trip — which is exactly how a
 camera pan target once went missing from a repro while sitting inside a camera that was
 already "captured".
+
+### Where a session lives
+
+A project is **one file, not a directory**, so there is no sidecar to hide state beside and
+nothing that deletes itself when a project is deleted. A session therefore lives in a keyed
+store in application data, keyed by a generated id whose path mapping lives in that store's
+index and never in the shared file. That store is capped and evicts by insertion order,
+skipping open documents — an unbounded keyed store is the one part of this design that other
+tools skipped and regretted.
+
+**A document may also carry a session of its own, and the author decides.** Save As offers the
+choice, and the choice is written into the file and honoured by every later save without asking
+again — the writer knows whether they are keeping a working file or handing something over, and
+the reader, who has not opened the file yet, cannot know. Only the two fields that describe the
+*model* travel this way: the viewer mode and the rollback cursor, which together say "look at it
+like this." The panel layout and the renderer diagnostics describe the *workspace* and never
+leave the keyed store; a reader did not ask to inherit somebody's folded panels or somebody's
+debug overlay.
+
+**An embedded session is advisory and never load-bearing.** Absent, unparseable, or naming a
+mode, scope or node that no longer exists, it is dropped in silence and the document opens with
+defaults; a cursor that cannot be resolved drops to the end of its scope's fold, so the reader
+sees the complete model. This is the constraint that makes the feature affordable at all:
+embedded interface state is a schema that every interface refactor must survive, and a loader
+entitled to *require* it would turn a stale UI into a document that appears corrupt. No refactor
+may ever make a document fail to open.
+
+**The embedded session seeds; the local session then wins.** It is used exactly when the keyed
+store holds no entry for this document — on a project you have not opened here, the author's
+view is both the best answer available and the one they meant you to see. Once an entry exists,
+reopening your own project restores what *you* were last doing. Saving with the choice on writes
+the current local session back into the file.
