@@ -142,12 +142,73 @@ The lesson for costing any future work here: **budget the frame work, not the SD
 `SketchSolid`, multi-leaf frame plumbing, the CSG fold, the parity suite and the viewer-mode UI.
 **~1 day per new producer thereafter**, most of it the parity fixture.
 
-## Open
+## Generating the WGSL from the Rust: built, and rejected
 
-Whether the WGSL can be **generated from the Rust** rather than transliterated by hand. The
-mapping is mechanical, and this repo already owns a precedent for the trick (the icon-parity work
-transpiles Rust painters to SVG and diffs segment sets). If it works, drift becomes
-*structurally impossible* rather than merely tested and the ongoing cost collapses. The decisive
-question is not whether a generator can be written but **what it does when it meets Rust it
-cannot handle** — silent mistranslation would be worse than hand-duplication, which at least
-makes someone look at both sides.
+The obvious follow-up was to generate the WGSL rather than transliterate it, making drift
+structurally impossible. It was spiked (2026-07-20, second worktree). **The generator works. Do
+not ship it.**
+
+**It works.** A `#[wgsl_mirror]` proc-macro attribute re-emits the annotated `fn` verbatim and
+adds a `WGSL_<NAME>` string constant. The four production bodies were annotated with **zero
+edits** — four added attribute lines. An attribute macro over an ordinary `fn` avoids the usual
+macro objection (that bodies must be written in the macro's subset and the Rust gets worse to
+read): the subset is enforced by *rejection*, not by syntax. It runs inside `rustc`, so "the WGSL
+is out of date" is not a reachable state — unlike a build-time extractor, which can be skipped or
+left unwired.
+
+**The inventory confirms the mapping is mechanical** — the four bodies use only `let` bindings,
+arithmetic, field access, a whitelist of methods, one guard, one `match`, and float literals. No
+loops, no `mut`, no casts, no indexing, no closures. With **one catch the first spike missed**:
+`q.max(Vec3::ZERO)` and `q.x.max(q.y)` are the same *syntax* and different *functions*
+(component-wise versus scalar). A purely syntactic rewrite is correct only because WGSL happens
+to overload `max`/`min`/`abs`/`length` the way glam does. That is luck, so the translator carries
+a small type environment and resolves each method against its receiver.
+
+**It fails loudly** — five deliberate unsupported constructs, five spanned compile errors at the
+exact token, each naming a remedy. Structurally, every translation path returns `Result` and the
+only fallback arm is `Err`: there is no pass-through-and-hope branch.
+
+### But the catastrophic case exists, one level up
+
+The spike then hunted for silent mistranslation and found it — **not in the body translation, in
+the whitelist table**:
+
+```
+f32::signum → sign        // one line, reads obviously correct, compiles, and is WRONG
+```
+
+Rust's `signum` returns ±1.0 at zero; WGSL's `sign` returns 0.0. A voxel centre minus a
+half-integer semi-axis lands on exact zero, so this is not a contrived input — 1 in 9 samples
+disagreed on the GPU.
+
+**So the generator does not eliminate the trust, it relocates it** — from N function bodies to
+one table of ~15 entries. That is a large, real reduction. It is not zero, and what remains is
+caught only behaviourally. Drift becomes structurally impossible **for the bodies** and merely
+tested **for the table**, which is weaker than the headline claim and should not be reported as
+the headline claim.
+
+### Why it is still the wrong trade here
+
+1. **It buys down a risk that is not the risk.** The generator pays off for a new `ShapeKind`
+   primitive. The named upcoming producer — `Sweep` — is a `SketchSolid::Operation` arm, living
+   in the polygon kernel the generator **cannot touch**: `geom2d.rs` uses slices, `len()`,
+   `for` loops, indexing, `let mut` and value-producing `if`/`else`, and **WGSL has no f64 at
+   all**, so its precision cannot be mirrored, only approximated. The generator does nothing for
+   the one producer the whole objection was about.
+2. **The parity test is non-negotiable either way** (the `signum` finding proves it). With that
+   test mandatory, the macro's marginal value reduces to "you don't hand-write 61 lines of
+   obvious WGSL" — against ~600 lines of macro plus a proc-macro dependency added to
+   `voxel_core`, a foundational crate. A poor trade at today's N.
+
+**Revisit if the primitive count roughly doubles.**
+
+### What to take from it instead
+
+* **The parity harness.** Its compute-dispatch shape — an arbitrary sample buffer, all kinds in
+  one pass, ~400k points in 0.7 s — is strictly better than the first spike's `Rgba32Float`
+  plane probe: no viewport or frame reasoning, off-lattice points covered, trivially extended.
+  Measured 397,510 samples, worst drift 5.2e−6, **zero voxels disagreeing on the zero set**.
+* **A discriminant-order guard.** `declared_discriminants_match_shape_kind_order` asserts the
+  kind-tag ordering matches `ShapeKind`'s declaration order. **This is the one place a
+  hand-written mirror drifts without any distance ever being wrong**, and it is currently
+  unguarded. Worth lifting immediately, independent of everything above.
