@@ -420,16 +420,29 @@ or scroll at all**. GIMP matches: `PROP_ACTIVE_LAYER` in the XCF, no zoom proper
 **Three independent raster editors put selection in the document and the camera outside it.** Our
 `view`/`session`/`document` boundary is the field's boundary.
 
+## THE DECIDING QUESTION IS ANSWERED: single file (2026-07-20)
+
+Owner ruling, taken immediately on reading this report. **A VoxelWorker project is a single file,
+not a project directory.**
+
+That closes item 1 below by choosing the branch this report warned was the harder one:
+
+* **The sidecar consensus is unavailable to us.** We do not get correct lifecycle for free. There
+  is no folder to hide state in and nothing self-deletes when a project is deleted.
+* **A keyed store in app data is the only remaining option** for session state that is not
+  embedded, which puts us in the Krita / VS Code row of the table above.
+* **Therefore the LRU is mandatory, not optional.** It is precisely the part VS Code skipped, and
+  microsoft/vscode#142972 is what skipping it looks like at 2 GB. Cap at 50 following JetBrains,
+  insertion-order eviction skipping open documents.
+* **Key by generated id, path→id mapped in the app-data index** (item 3 below), never in the
+  shared document. Copies collide, renames survive — that is the failure we are choosing, and it
+  is chosen deliberately.
+
 ## What to do with this
 
-1. **Do not build the `sessions/` directory yet.** ADR 0024's Open item asks whether `session`
-   needs its own file; the answer depends on a feature that does not exist (a project open/save
-   flow), and every tool's design was determined by its document shape. Decide the document shape
-   first — **single file, or project directory?** — because that choice, not the session
-   question, determines the answer.
-2. **If the document stays a single file, the sidecar consensus is unavailable and the keyed
-   store is the only option left.** Then the LRU is mandatory, not optional: it is the exact part
-   VS Code skipped, and #142972 is what skipping it looks like at 2 GB.
+1. ~~Decide the document shape first.~~ **Decided above: single file.**
+2. **The keyed store is now the only option, so the LRU is mandatory, not optional** — the exact
+   part VS Code skipped, and #142972 is what skipping it looks like at 2 GB.
 3. **Copy JetBrains' key, not VS Code's.** Generate a stable id; store the path→id map in the
    app-data index beside recent-files; never put the id in the shared document. Accept that copies
    collide and say so, or salt with something (VS Code's `birthtime` trick) and accept that
