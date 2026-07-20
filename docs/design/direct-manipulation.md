@@ -153,6 +153,15 @@ than no undo.
 frame, so this is what the user waits for — but see the seam caveat below, which is sharper
 than it first looked.
 
+### Noted for later: an SDF viewer mode
+
+If the drag preview renders the parametric field directly, the machinery for *seeing the SDF
+instead of the voxels* exists as a side effect. That is worth having as a viewer mode in its
+own right — a way to look at what the document actually means, before voxelisation, with the
+lattice out of the way. It would join the exclusive viewer modes of `docs/adr/0018` rather than
+being a toggle bolted onto one tool. Not scoped, not scheduled; recorded so the preview work
+does not accidentally foreclose it.
+
 ### Leaving the extent costs nothing to resolve — and that is not the reassurance it sounds like
 
 A node dragged past the composite's current bound grows the region, which moves the floating
