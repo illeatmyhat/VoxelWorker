@@ -43,10 +43,18 @@
 //!   Crassin et al. 2009 / Museth 2013 hierarchical empty-space skip; the per-block
 //!   inner voxel DDA) and the flat exact-occupancy reference march.
 //! * [`view_cube_pick`] — the ViewCube element picker's ray-slab-with-entry-axis test.
+//! * [`gizmo_pick`] — the translate gizmo's handle picking and drag read, as the closest
+//!   approach of two skew lines (Eberly; Ericson §5.1.8), plus the lattice snap that turns a
+//!   continuous gesture into an exact voxel count.
 
 pub mod brick_march;
+pub mod gizmo_pick;
 pub mod view_cube_pick;
 pub mod voxel_dda;
+
+pub use gizmo_pick::{
+    drag_distance_along_axis, pick_gizmo_axis, snap_voxels, GizmoAxis,
+};
 
 pub use brick_march::{
     entry_face_normal, march_brick_hierarchy, march_exact_occupancy, BlockContents,
