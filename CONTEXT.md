@@ -255,6 +255,11 @@ op-stack field (see `docs/adr/0011`; generalizes the ADR 0007 fog atlas).
   document, view, …) naming which artifacts it reaches. State that is classified but reaches
   neither the document nor the dump is a compile error, so nothing can be forgotten silently.
 
+- **Derived** — a state category whose admission test is that the value is **reconstructible
+  from classified state alone**: dropping it changes how long something takes and nothing else.
+  Derived state reaches neither the document nor the dump. The test is deliberately falsifiable
+  — a cache that cannot be rebuilt is not derived, it is undeclared truth.
+
 ## Authoring truth
 
 - **Operation stack** — the ordered list of authoring operations for a part's geometry: parametric
