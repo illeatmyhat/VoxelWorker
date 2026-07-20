@@ -329,11 +329,26 @@ mod tests {
     }
 }
 
-/// Kani bounded-model-checking proof that [`anchor_plane_hit`] is **total**: for any camera ray
-/// and any anchor it returns a finite point lying on the plane. That is the claim the deleted
-/// `NoSurface` state used to hedge against, and the unit sweep above only samples it — this
-/// verifies it over the whole bounded input space. `#[cfg(kani)]` keeps it out of ordinary
-/// builds/tests. Run under WSL: `cargo kani -p raycast`.
+/// Kani bounded-model-checking harness *stating* that [`anchor_plane_hit`] is **total**: for any
+/// camera ray and any anchor it returns a finite point lying on the plane. That is the claim the
+/// deleted `NoSurface` state used to hedge against, and the unit sweep above samples it.
+///
+/// **Status: FAILING — Kani reports `SATISFIABLE`, i.e. a counterexample exists.** The harness is
+/// committed as an executable statement of the claim, not as a discharged proof. **Do not cite it
+/// as verification, and do not weaken an assertion to make it pass.** Under investigation: whether
+/// the counterexample is a bounds/tolerance artifact of the harness (the inputs range to ±1e3 with
+/// an unnormalised direction, so the on-plane tolerance may simply be smaller than f32 spacing at
+/// the resulting magnitude) or a real defect in [`anchor_plane_hit`]. If it is the latter, totality
+/// is false and the deleted `NoSurface` state has to come back — that is the stake.
+///
+/// The evidence currently backing totality is the algebraic argument in [`anchor_plane_hit`]'s own
+/// docs plus the sampled sweep above, neither of which this result contradicts yet.
+///
+/// Note for future Kani work: the first run was misread as "not converging" because it took ten
+/// minutes. It solved in **0.19 s** — the ten minutes was WSL compiling across the `/mnt/c`
+/// boundary. Wall time here is not solver time.
+///
+/// `#[cfg(kani)]` keeps it out of ordinary builds/tests. Run under WSL: `cargo kani -p raycast`.
 #[cfg(kani)]
 mod kani_proofs {
     use super::*;
