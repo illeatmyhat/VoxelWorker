@@ -5,7 +5,7 @@
 //! hundreds of blocks from anything. The bound also gives the viewport an honest "you are too
 //! far out to place anything" state, which a purely relative rule could never produce.
 //!
-//! ## The bound is perceptual, and the pixel cancels out
+//! ## The bound is perceptual, not pixel-based
 //!
 //! The naive form — "a block must cover N pixels" — is not invariant: the same scene on a 4K
 //! 27-inch monitor and a 1080p laptop would bound differently, though a block *looks* the same
@@ -18,16 +18,27 @@
 //!    600 mm is ~31°, a 14-inch laptop at 500 mm is ~20°).
 //! 2. A block needs roughly **0.3°** (~18 arcminutes) to be worth authoring against — far above
 //!    the ~1 arcminute acuity limit, and about the angular size of a small UI target.
-//! 3. Their ratio, `0.3 / 25`, is [`MIN_BLOCK_SCREEN_FRACTION`] — **and the 25° cancels**.
+//! 3. Their ratio, `0.3 / 25`, is [`MIN_BLOCK_SCREEN_FRACTION`].
 //!
-//! So the implementable rule carries no pixels, no monitor size, and no viewing distance: *a
-//! block must span at least 1/80 of the viewport's height*. A higher-resolution display gives
-//! the same bound, correctly — the block is sharper, not bigger.
+//! So the implementable rule carries no pixels: *a block must span at least 1/80 of the
+//! viewport's height*. A higher-resolution display gives the same bound, correctly — the block
+//! is sharper, not bigger.
 //!
-//! The residue of the assumption is that 1/80 was derived for a typical desktop setup, because
-//! nothing can measure the actual display or how far away the viewer sits. Someone on a
-//! projector three metres back gets a bound tuned for a monitor — but that is true of every
-//! UI-sizing decision ever made, so it is the standard assumption rather than a new one.
+//! **Two honest caveats, because an earlier draft of this comment overstated the result.**
+//!
+//! The 25° does not *cancel* — it is **absorbed into a nominal constant**, exactly as the W3C
+//! reference pixel absorbs its own nominal 28-inch viewing distance (`1px` is *defined* as a
+//! visual angle of 0.0213°, which is the standardised version of this whole argument). Across a
+//! laptop-to-27-inch spread the real figure runs 20–30°, so 1/80 is really 1/65 to 1/100. The
+//! rule is display-*independent* only in the sense that it fixes an assumption rather than
+//! measuring one.
+//!
+//! And **0.3° is a chosen floor, not a derived one**. It is ~14 CSS pixels — below every
+//! published accessibility minimum (WCAG 2.5.8 is 24 CSS px ≈ 0.51°, i.e. 1/50 of viewport
+//! height) and about six times above the ~3 arcminute point where mouse pointing measurably
+//! degrades (Hourcade & Bullock-Rest, CHI 2012). It is defensible as "you can still author
+//! against this", not as "this is comfortable". If a citable number is ever wanted instead,
+//! WCAG's 1/50 is the one to take. See `docs/design/placement-prior-art.md`.
 //!
 //! ## One rule covers both projections
 //!
@@ -51,9 +62,10 @@ use crate::{OrbitCamera, ProjectionMode};
 
 /// The fraction of the viewport's height a block must span to be worth authoring against.
 ///
-/// `1/80`, derived in the module docs from a ~0.3° block against a ~25° display. Deliberately
-/// a bare fraction: it is what survives after the perceptual argument cancels the display's
-/// angular size, and it is therefore free of pixels, resolution and monitor dimensions.
+/// `1/80`, from a ~0.3° block against a nominal ~25° display (see the module docs, which also
+/// record that both figures are chosen rather than derived). A bare fraction because the
+/// display's angular size is absorbed into it, which is what frees it of pixels and resolution
+/// — the same move the W3C reference pixel makes with its nominal viewing distance.
 pub const MIN_BLOCK_SCREEN_FRACTION: f32 = 1.0 / 80.0;
 
 /// The half-height factor the projection uses at `orbit_distance`, per mode — the `k` in
