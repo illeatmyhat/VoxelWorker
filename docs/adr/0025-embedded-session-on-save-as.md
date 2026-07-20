@@ -284,9 +284,23 @@ cursor themselves, which costs one gesture.
 
 ## Open
 
-- **Whether a handover wants to carry a selection**, which is the honest form of the need
-  decision 2 declined to serve with `stack`. Not forced by anything; worth re-asking if
-  handover becomes a workflow rather than an occasional courtesy.
+- ~~Whether a handover wants to carry a selection.~~ **Settled by the owner, 2026-07-20: no.**
+  And the question turned out to be already answered by the code — `Scene.active` is an
+  `Option<NodeId>` carried with `#[serde(default)]` and no skip, so **selection is serialized
+  into the document today**, unconditionally and outside this checkbox.
+
+  That is not an oversight to correct. It is the field's boundary: the prior-art report found
+  Krita storing `selected="true"` per layer in `.kra`, Photoshop's image resource **1024** being
+  "the index of target layer", and GIMP's `PROP_ACTIVE_LAYER` in the XCF — while none of the
+  three stores zoom, pan or rotation in the document at all. **Three independent raster editors
+  put selection inside the document and the camera outside it.** Selection is therefore
+  *document* state, not session state, which is exactly why it needs neither the checkbox nor a
+  handover mechanism.
+
+  Worth noting for the implementation: `active`'s own contract is that a stale id "simply
+  resolves to `None`". That is Law A, already shipped, for the same class of dangling `NodeId`
+  reference the embedded cursor will carry — so the cursor's fallback has a working precedent in
+  the codebase rather than being novel.
 - ~~What the Save As checkbox is called.~~ **Settled by the owner, 2026-07-20: "Save viewer
   state".** It names what is saved in the vocabulary the product already uses for viewer modes,
   rather than naming the mechanism. Note that it deliberately does not say *whose* view or
