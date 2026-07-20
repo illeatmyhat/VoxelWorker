@@ -105,7 +105,7 @@ pub struct ScopeFrame {
 }
 
 /// The [`Scene::for_each_leaf`] / [`Scene::walk_nodes`] visitor callback: invoked once per
-/// visible leaf with `(world_offset_voxels, content, grid_on_faces, operation, outset,
+/// enabled leaf with `(world_offset_voxels, content, grid_on_faces, operation, outset,
 /// scope_path)` — the accumulated world VOXEL offset, the leaf content, the node's
 /// on-face-grid flag (issue #29 S4), the node's own [`CombineOp`] role in the ordered fold
 /// (ADR 0017), the node's outset (ADR 0019 Decision 7), and the chain of enclosing sealed
@@ -205,7 +205,7 @@ impl LeafBody<'_> {
 
 impl Scene {
     /// Walk the whole node tree depth-first, invoking
-    /// `visitor(world_offset_voxels, leaf)` once for every **visible leaf** (`Tool`
+    /// `visitor(world_offset_voxels, leaf)` once for every **enabled leaf** (`Tool`
     /// / `VoxelBody`) with its accumulated **world** VOXEL offset (`parent_offset +
     /// node.offset_voxels`, summed down the tree — translation-only composition,
     /// ADR 0001 step 4; voxels at the document density, ADR 0003 §3f(0)).
@@ -217,7 +217,7 @@ impl Scene {
     /// reference an ancestor definition) lives in [`walk_nodes`].
     ///
     /// [`walk_nodes`]: Self::walk_nodes
-    /// The visitor receives, per visible leaf: its accumulated world VOXEL
+    /// The visitor receives, per enabled leaf: its accumulated world VOXEL
     /// offset, its content, its own `grids.voxel_grid_on_faces` flag (issue
     /// #29 S4 — the resolver ORs [`crate::voxel::GRID_OVERLAY_BIT`] into the
     /// leaf's stamped `material_id` when this is set, so the on-face voxel grid
@@ -263,7 +263,7 @@ impl Scene {
     }
 
 
-    /// Collect every visible leaf as a [`LeafProducer`] (ADR 0010 E2): its world voxel
+    /// Collect every enabled leaf as a [`LeafProducer`] (ADR 0010 E2): its world voxel
     /// offset, a boxed [`VoxelProducer`], and its single-material override id. This is the
     /// op-stack the two-layer classifier / boundary-resolve evaluate over — the SAME
     /// leaves [`resolve_chunk_rebased`](Self::resolve_chunk_rebased) stamps, in the SAME
@@ -389,7 +389,7 @@ impl Scene {
             let Some(node) = self.arena.get(&node_id) else {
                 continue;
             };
-            if !node.visible {
+            if !node.enabled {
                 continue;
             }
             let world_offset_voxels: [i64; 3] =
@@ -535,7 +535,7 @@ impl Scene {
             let Some(node) = self.arena.get(&node_id) else {
                 continue;
             };
-            if !node.visible {
+            if !node.enabled {
                 continue;
             }
             let world_offset_voxels = [
@@ -665,7 +665,7 @@ impl Scene {
     }
 
     /// Resolve `region` into a fresh [`VoxelGrid`] by a union tree-walk: each
-    /// visible leaf producer is resolved into its own local grid and **stamped**
+    /// enabled leaf producer is resolved into its own local grid and **stamped**
     /// into the output under the node's transform.
     ///
     /// `voxels_per_block` is the application density (ADR 0001 "Density": a global
@@ -1214,7 +1214,7 @@ pub(super) fn leaf_content_fingerprint(
 /// sub-block sketch's voxels are never dropped by a too-small cover.
 ///
 /// [`SketchTool`]: NodeContent::SketchTool
-/// One visible leaf of the op-stack as a resolvable producer (ADR 0010 E2). The
+/// One enabled leaf of the op-stack as a resolvable producer (ADR 0010 E2). The
 /// two-layer classifier + boundary-resolve evaluate this list (in document order, Union
 /// on overlap) exactly as [`Scene::resolve_chunk_rebased`] stamps it. Yielded by
 /// [`Scene::leaf_producers`].

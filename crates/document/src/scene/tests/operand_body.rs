@@ -6,7 +6,7 @@ use crate::voxel::SdfShape;
     // ---- ADR 0018 Decision 6: the "Show booleans" mode's document-side derivation ----
     //
     // `boolean_operand_body_slices` walks the ACTIVE selection's subtree and collects the
-    // standalone body slice of EVERY visible Subtract/Intersect operand inside it (the
+    // standalone body slice of EVERY enabled Subtract/Intersect operand inside it (the
     // selected node included when it is a boolean): absolute placement is kept (ancestor
     // Group offsets bake into the slice root — ADR 0008 carried frames), each emitted
     // body's own operation is neutralised to Union (a Subtract root at fold start would
@@ -58,10 +58,10 @@ use crate::voxel::SdfShape;
         scene
             .node_by_id_mut(cutter_id)
             .expect("cutter resolves")
-            .visible = false;
+            .enabled = false;
         assert!(
             scene.boolean_operand_body_slices().is_empty(),
-            "a hidden node contributes no body — no ghost"
+            "a disabled node contributes no body — no ghost"
         );
     }
 
@@ -241,11 +241,11 @@ use crate::voxel::SdfShape;
         );
     }
 
-    /// A hidden operand (or a whole hidden subtree) contributes nothing: a hidden node
-    /// stamps nothing into the composition, so there is no invisible-by-success body to
-    /// reveal.
+    /// A disabled operand (or a whole disabled subtree) contributes nothing: a disabled
+    /// node stamps nothing into the composition, so there is no invisible-by-success body
+    /// to reveal.
     #[test]
-    fn hidden_operands_contribute_nothing() {
+    fn disabled_operands_contribute_nothing() {
         let mut scene = Scene::from_nodes(vec![NodeBuilder::group(
             "Assembly",
             vec![
@@ -258,7 +258,7 @@ use crate::voxel::SdfShape;
         let cutter_id = scene
             .id_at_path(&NodePath::from_indices(vec![0, 1]))
             .expect("cutter resolves");
-        scene.node_by_id_mut(cutter_id).expect("cutter resolves").visible = false;
+        scene.node_by_id_mut(cutter_id).expect("cutter resolves").enabled = false;
         scene.active = Some(scene.roots[0]);
         assert!(scene.boolean_operand_body_slices().is_empty());
     }

@@ -188,14 +188,14 @@
     // === Node field writes ===
 
     #[test]
-    fn set_visible_dispatches() {
+    fn set_enabled_dispatches() {
         let scene = two_tool_scene();
         let target = root_id(&scene, 0);
         assert_dispatch_matches(
             &scene,
-            Intent::SetVisible { target, visible: false },
+            Intent::SetEnabled { target, enabled: false },
             |s| {
-                s.set_node_visible(target, false);
+                s.set_node_enabled(target, false);
             },
         );
     }
@@ -666,7 +666,7 @@
             Intent::MakeDefinition { target: NodeId(3), name: "House".to_string() },
             Intent::AddInstance { def: DefId(2) },
             Intent::RemoveNode { target: NodeId(5) },
-            Intent::SetVisible { target: NodeId(1), visible: false },
+            Intent::SetEnabled { target: NodeId(1), enabled: false },
             Intent::SetShape { target: NodeId(1), shape },
             Intent::SetSketch { target: NodeId(1), producer: box_sketch([2, 3, 4]) },
             Intent::SetMaterial { target: NodeId(1), material: MaterialChoice::Stone },

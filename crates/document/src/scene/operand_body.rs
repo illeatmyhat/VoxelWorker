@@ -108,7 +108,7 @@ impl Scene {
     }
 
     /// The recursive walk behind [`boolean_operand_body_slices`](Self::boolean_operand_body_slices):
-    /// collect the `(operation, slice)` of every visible Subtract/Intersect operand in
+    /// collect the `(operation, slice)` of every enabled Subtract/Intersect operand in
     /// `siblings` and their descendants. `ancestor_offset_voxels` is the accumulated world
     /// offset of the siblings' parent (baked into each emitted slice root — ADR 0008
     /// carried frames).
@@ -122,8 +122,8 @@ impl Scene {
             let Some(node) = self.arena.get(&node_id) else {
                 continue;
             };
-            if !node.visible {
-                // A hidden subtree contributes no body to the composition — no ghost.
+            if !node.enabled {
+                // A disabled subtree contributes no body to the composition — no ghost.
                 continue;
             }
             let emit_own_body = operation_is_boolean_mask(node.operation);

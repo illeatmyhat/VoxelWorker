@@ -55,7 +55,7 @@ pub(super) fn build_node_list_section(
 
     let mut select: Option<NodeId> = None;
     let mut delete: Option<NodeId> = None;
-    let mut set_visible: Option<(NodeId, bool)> = None;
+    let mut set_enabled: Option<(NodeId, bool)> = None;
     // The camera "Focus" view action (right-click a row → frame that node). Deferred
     // like the others and carried out on the `PanelResponse` (a VIEW action, not an
     // undoable document intent).
@@ -89,21 +89,21 @@ pub(super) fn build_node_list_section(
             });
             continue;
         }
-        // Read the node by id; mutate visibility via a deferred op (a separate
+        // Read the node by id; mutate the enabled flag via a deferred op (a separate
         // lookup) so the borrow of `nodes` does not span the whole row.
-        let (label, visible) = match state.scene.node_by_id(*id) {
-            Some(node) => (node_row_label(node), node.visible),
+        let (label, enabled) = match state.scene.node_by_id(*id) {
+            Some(node) => (node_row_label(node), node.enabled),
             None => continue,
         };
         ui.horizontal(|ui| {
             ui.add_space(*depth as f32 * 14.0);
-            let mut visible = visible;
+            let mut enabled = enabled;
             if ui
-                .checkbox(&mut visible, "")
-                .on_hover_text("Visible")
+                .checkbox(&mut enabled, "")
+                .on_hover_text("Contributes to the composed geometry")
                 .changed()
             {
-                set_visible = Some((*id, visible));
+                set_enabled = Some((*id, enabled));
             }
             let row_response = ui.selectable_label(is_active, label);
             if row_response.clicked() {
@@ -126,11 +126,12 @@ pub(super) fn build_node_list_section(
         });
     }
 
-    // ADR 0003 Phase C C4a: a visibility toggle is now described as a `SetVisible`
-    // intent (the loop applies it), not a direct `set_node_visible`. It re-resolves +
-    // auto-frames exactly as before (the old `scene_changed`).
-    if let Some((id, visible)) = set_visible {
-        response.emit_and_frame(Intent::SetVisible { target: id, visible });
+    // ADR 0003 Phase C C4a: the toggle is described as a `SetEnabled` intent (the loop
+    // applies it), not a direct `set_node_enabled`. It re-resolves + auto-frames exactly
+    // as before (the old `scene_changed`) — the flag gates participation in the fold, so
+    // a re-resolve is not optional polish, it is what makes the edit visible at all.
+    if let Some((id, enabled)) = set_enabled {
+        response.emit_and_frame(Intent::SetEnabled { target: id, enabled });
     }
 
     // Carry a right-click Focus request to the loop (a view action; the loop sets the

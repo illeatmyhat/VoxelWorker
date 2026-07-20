@@ -155,13 +155,17 @@ pub enum Intent {
     },
 
     // --- Node field writes ---
-    /// Set the `visible` flag of `target`
-    /// ([`Scene::set_node_visible`](crate::scene::Scene::set_node_visible)).
-    SetVisible {
+    /// Set the `enabled` flag of `target`
+    /// ([`Scene::set_node_enabled`](crate::scene::Scene::set_node_enabled)).
+    ///
+    /// This withdraws the node from the composition rather than hiding it: a disabled
+    /// node is pruned before evaluation, so disabling a cutter restores the material it
+    /// was removing. Applying it changes geometry and demands a re-resolve.
+    SetEnabled {
         /// The node to retarget.
         target: NodeId,
-        /// The new visibility.
-        visible: bool,
+        /// Whether the node participates in the composed geometry.
+        enabled: bool,
     },
     /// Set the [`SdfShape`] of the Tool node `target` (a no-op for a non-Tool node).
     SetShape {

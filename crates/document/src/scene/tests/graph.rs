@@ -537,7 +537,7 @@ use crate::voxel::VoxelProducer;
                 material: MaterialChoice::Stone,
             },
         );
-        node.visible = false;
+        node.enabled = false;
         let scene = Scene::single_node(node);
         let resolved = scene.resolve_region(RegionBlocks::new([2, 2, 2]), 8, 0);
         assert_eq!(resolved.occupied_count(), 0);

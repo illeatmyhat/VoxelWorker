@@ -107,7 +107,7 @@ impl Scene {
     /// Build a [`LeafSpatialIndex`] over the
     /// scene's leaves at `voxels_per_block` (issue #27 S3).
     ///
-    /// One `for_each_leaf` walk records, per visible leaf, its world-AABB in the
+    /// One `for_each_leaf` walk records, per enabled leaf, its world-AABB in the
     /// **absolute-voxel producer-true frame** — the SAME frame
     /// [`resolve_chunk`](Self::resolve_chunk) and `placed_extent_voxels` use, so a
     /// chunk derived from a leaf's index AABB is exactly a chunk that leaf's voxels

@@ -236,9 +236,13 @@ pub struct Node {
     /// anyway (ADR 0020 Decision 1).
     #[serde(default)]
     pub outset: voxel_core::units::Measurement,
-    /// Whether the node contributes to resolution (a hidden node stamps nothing).
-    #[serde(default = "default_visible")]
-    pub visible: bool,
+    /// Whether the node participates in the composed geometry. This is NOT a display
+    /// flag: a disabled node is pruned from the op-stack walk *before* evaluation, so it
+    /// stamps nothing and its operation never runs. Disabling a `Subtract` therefore
+    /// fills the hole back in rather than merely hiding a cutter — the body you get is
+    /// the body the fold would have produced had the node never been authored.
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
     /// Per-node grid display settings (issue #29). Defaults all-off; an older
     /// config without this field deserialises to the all-off default.
     #[serde(default)]
@@ -247,14 +251,16 @@ pub struct Node {
     pub content: NodeContent,
 }
 
-/// A node missing its `visible` flag in an older/partial config defaults to
-/// visible (the common case — a hidden node is the exception, explicitly set).
-fn default_visible() -> bool {
+/// A node missing its `enabled` flag in an older/partial config defaults to enabled.
+/// Authoring a node is itself the statement that it belongs in the composition, so
+/// participation is the common case and withdrawing a node is the exception a config
+/// has to say out loud.
+fn default_enabled() -> bool {
     true
 }
 
 impl Node {
-    /// A visible, identity-placed, union node wrapping `content`. A new node
+    /// An enabled, identity-placed, union node wrapping `content`. A new node
     /// carries NO grids (issue #29: grids default OFF for new objects).
     pub fn new(name: impl Into<String>, content: NodeContent) -> Self {
         Self {
@@ -265,7 +271,7 @@ impl Node {
             transform: NodeTransform::identity(),
             operation: CombineOp::Union,
             outset: voxel_core::units::Measurement::default(),
-            visible: true,
+            enabled: true,
             grids: NodeGrids::default(),
             content,
         }
@@ -293,8 +299,8 @@ pub enum NodeBuilder {
         name: String,
         /// The Group node's local transform (offset etc.).
         transform: NodeTransform,
-        /// Whether the Group is visible.
-        visible: bool,
+        /// Whether the Group participates in the composed geometry (see [`Node::enabled`]).
+        enabled: bool,
         /// The Group's children, in document order.
         children: Vec<NodeBuilder>,
     },
@@ -306,7 +312,7 @@ impl NodeBuilder {
         NodeBuilder::Group {
             name: name.into(),
             transform: NodeTransform::identity(),
-            visible: true,
+            enabled: true,
             children,
         }
     }
@@ -324,7 +330,7 @@ impl NodeBuilder {
         NodeBuilder::Group {
             name: name.into(),
             transform: NodeTransform::from_blocks(offset_blocks, voxels_per_block),
-            visible: true,
+            enabled: true,
             children,
         }
     }
@@ -505,14 +511,14 @@ impl Scene {
             NodeBuilder::Group {
                 name,
                 transform,
-                visible,
+                enabled,
                 children,
             } => {
                 let child_ids: Vec<NodeId> =
                     children.into_iter().map(|child| self.insert_builder(child)).collect();
                 let mut group = Node::new(name, NodeContent::Group(child_ids));
                 group.transform = transform;
-                group.visible = visible;
+                group.enabled = enabled;
                 self.insert_subtree(group)
             }
         }
@@ -809,13 +815,15 @@ impl Scene {
         self.arena.get_mut(&id)
     }
 
-    /// Set the `visible` flag of the node identified by `id` (ADR 0003 Phase B4),
+    /// Set the `enabled` flag of the node identified by `id` (ADR 0003 Phase B4),
     /// returning whether the id resolved to a node. A NodeId-typed edit op so the
-    /// panel's visibility checkbox can mutate by identity rather than by path.
-    pub fn set_node_visible(&mut self, id: NodeId, visible: bool) -> bool {
+    /// panel's checkbox can mutate by identity rather than by path. Because the flag
+    /// gates participation rather than display, flipping it changes the composed body
+    /// and the caller must re-resolve.
+    pub fn set_node_enabled(&mut self, id: NodeId, enabled: bool) -> bool {
         match self.node_by_id_mut(id) {
             Some(node) => {
-                node.visible = visible;
+                node.enabled = enabled;
                 true
             }
             None => false,

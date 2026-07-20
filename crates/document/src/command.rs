@@ -34,7 +34,7 @@ use crate::scene::{DefId, Node, NodeContent, NodeId, Point};
 /// them under their ORIGINAL ids (safe — the monotonic counter never reuses an id,
 /// and `undo` rewinds the counter so a later `redo` re-mints the same ids).
 pub enum Inverse {
-    /// Reverse a field-set intent (SetVisible / SetShape / SetMaterial / SetOffset /
+    /// Reverse a field-set intent (SetEnabled / SetShape / SetMaterial / SetOffset /
     /// SetName / SetCloudSeed / SetNodeGrids / SetDensity /
     /// SetGridMasters and the point
     /// field-sets SetPointHidden / SetPointPlanes / SetPointAxes / SetPointPosition) by

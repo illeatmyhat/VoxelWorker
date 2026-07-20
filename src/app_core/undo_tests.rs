@@ -247,10 +247,10 @@
     // === Field-set inverses ===
 
     #[test]
-    fn set_visible_round_trips() {
+    fn set_enabled_round_trips() {
         let mut scene = two_tool_scene();
         let target = scene.roots[0];
-        assert_round_trips(&mut scene, Intent::SetVisible { target, visible: false });
+        assert_round_trips(&mut scene, Intent::SetEnabled { target, enabled: false });
     }
 
     #[test]

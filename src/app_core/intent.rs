@@ -141,10 +141,10 @@ impl AppCore {
             },
 
             // --- Node field writes (inverse = same intent carrying the prior value) ---
-            Intent::SetVisible { target, .. } => match scene.node_by_id(*target) {
-                Some(node) => Inverse::Field(Intent::SetVisible {
+            Intent::SetEnabled { target, .. } => match scene.node_by_id(*target) {
+                Some(node) => Inverse::Field(Intent::SetEnabled {
                     target: *target,
-                    visible: node.visible,
+                    enabled: node.enabled,
                 }),
                 None => Inverse::NoOp,
             },
@@ -384,7 +384,7 @@ impl AppCore {
             | Intent::MakeDefinition { .. }
             | Intent::AddInstance { .. }
             | Intent::RemoveNode { .. }
-            | Intent::SetVisible { .. }
+            | Intent::SetEnabled { .. }
             | Intent::SetShape { .. }
             | Intent::SetSketch { .. }
             | Intent::SetMaterial { .. }
@@ -457,8 +457,8 @@ impl AppCore {
             }
 
             // --- Node field writes ---
-            Intent::SetVisible { target, visible } => {
-                let applied = scene.set_node_visible(target, visible);
+            Intent::SetEnabled { target, enabled } => {
+                let applied = scene.set_node_enabled(target, enabled);
                 (if applied { full_effect } else { none }, None)
             }
             Intent::SetShape { target, shape } => {

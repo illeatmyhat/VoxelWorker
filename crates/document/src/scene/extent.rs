@@ -263,7 +263,7 @@ impl Scene {
     /// `(min_corner, max_corner)` in voxels.
     ///
     /// The box is the node's block-aligned voxel AABB **expanded out to enclosing
-    /// whole blocks** — i.e. the union of every visible leaf under the node, each
+    /// whole blocks** — i.e. the union of every enabled leaf under the node, each
     /// leaf snapped to the whole-block range `[off − floor(size/2), … + size)` (the
     /// same split `node_subtree_extent_blocks` forms), then scaled by `density`
     /// and shifted by `− recentre_voxels_for_resolve`. Because the corners are taken
@@ -295,7 +295,7 @@ impl Scene {
     }
 
     /// The block-aligned AABB (`min_corner, max_corner`, whole blocks) of the
-    /// subtree rooted at `path` — the union of every visible leaf under that node,
+    /// subtree rooted at `path` — the union of every enabled leaf under that node,
     /// each leaf spanning `[off − floor(size/2), off − floor(size/2) + size)` (the
     /// same split [`placed_extent_blocks`] uses scene-wide). The accumulated world
     /// offset down to `path` seeds the walk so a Group/Instance child is measured at
@@ -331,7 +331,7 @@ impl Scene {
             }
         }
         let target = target?;
-        if !target.visible {
+        if !target.enabled {
             return None;
         }
         let target_id = target.id;
@@ -379,7 +379,7 @@ impl Scene {
     }
 
     /// The PRODUCER-TRUE voxel AABB (`min_corner, max_corner`, in voxels) of the
-    /// subtree rooted at `path` — the union of every visible leaf under that node,
+    /// subtree rooted at `path` — the union of every enabled leaf under that node,
     /// each leaf spanning the center-emitted `[off·d − grid/2, off·d + grid/2)` (the
     /// exact frame [`placed_extent_voxels`] forms scene-wide). This is the frame the
     /// composite recentre and the resolved voxels live in, so the gizmo pivot derived
@@ -412,7 +412,7 @@ impl Scene {
             }
         }
         let target = target?;
-        if !target.visible {
+        if !target.enabled {
             return None;
         }
         let target_id = target.id;

@@ -25,7 +25,7 @@
 //!
 //! The producer trait (`VoxelProducer`) does **not** change: producers still
 //! emit content centred at the origin. The Scene's new job is **compositing** —
-//! walk the node tree, resolve each visible leaf into its own local grid, and
+//! walk the node tree, resolve each enabled leaf into its own local grid, and
 //! **stamp** it (under the node's transform) into the output grid. For a one-node
 //! scene whose region is the node's full extent with a zero offset, the stamp is
 //! the identity, so the resulting `VoxelGrid` is bit-for-bit what
