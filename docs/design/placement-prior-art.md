@@ -181,15 +181,75 @@ WCAG 2.5.8's 24 CSS px is **0.51°**, which works out to **1/50 of viewport heig
 be arbitrary either way, it may as well be arbitrary in a direction someone else has already
 argued for.
 
+## The decision (2026-07-20): view-aligned plane at a movable anchor
+
+Taken by the owner after the finding above. **The fixed infinite ground plane is abandoned.**
+
+The question that made the choice easy was "how does that mesh with placing objects on top of
+surfaces?" — and the answer is that it does not have to, because the two are not the same
+question:
+
+* *Surface placement* answers **the ray hit something; where and how does the object sit against
+  it?**
+* *The picking plane* answers **the ray hit nothing; what depth do I invent?**
+
+Blender ships exactly this separation and names it in the interface — `Depth: Surface | Cursor
+Plane` and `Orientation: Surface | Default` are two independent dropdowns. Conflating them is
+what makes the ground plane look load-bearing when it is not.
+
+### Resolution order
+
+1. **The ray hits geometry.** Place against the hit face, offset along its normal,
+   lattice-snapped. This is the dominant case and it is *entirely unaffected* by the plane
+   question.
+2. **The ray hits nothing.** Intersect a plane perpendicular to the view axis, through a movable
+   depth anchor.
+3. **The ground plane is not special.** It is a surface if something is there, and nothing if not.
+
+### Why this is cheaper for us than for Blender
+
+Blender's surfaces are arbitrary triangles, so "on top of" needs a normal, a tangent frame, and a
+tie-break for the remaining degree of freedom. **Ours are axis-aligned block faces.** The hit
+normal is one of six axes and the result snaps to the lattice, so the orientation problem largely
+evaporates. What remains is Minecraft's question — *which side of the hit face* — and the face
+normal already answers it.
+
+### The anchor is what makes this one system rather than two modes
+
+**A surface hit updates the depth anchor.** Place against a face, and the fallback plane now sits
+at that depth; drag off the edge into empty space and the next placement continues at the depth
+you were just working at, rather than snapping back to the orbit pivot. Blender's 3D cursor
+behaves this way when snapped to a surface, and it is the reason the fallback does not feel like
+a separate mode.
+
+Anchor precedence, most recent wins: last placement → orbit pivot. There is no world-origin term.
+
+### What this costs the four cursor states
+
+`TooFar` is **not** eliminated, contrary to the first reading of the finding above.
+
+* On the **empty-space** path it dies. Depth is bounded by the anchor, so the ray cannot fly to a
+  horizon, and the state cannot arise.
+* On the **geometry** path it survives. A block face 500 blocks out is still sub-pixel and still
+  not worth authoring at, so the angular rule keeps a job — a smaller one, on one path instead of
+  two.
+
+`NoSurface` narrows correspondingly: it now means *nothing was hit and the anchor plane is also
+unusable*, which is close to unreachable. Confirm that before building an affordance for it.
+
 ## What to do with this
 
-1. **Decide the picking-plane question first** — fixed ground plane versus view-aligned plane at
-   a movable depth. Everything else here is downstream of it.
-2. Keep the four cursor states; they are the one place this design leads.
+1. ~~Decide the picking-plane question first.~~ **Decided above.**
+2. Keep the four cursor states, but re-derive their reachability against the resolution order —
+   two of the four have materially changed meaning and one may now be dead.
 3. Keep the orthographic derivation; it is the majority practice.
 4. Keep the angular framing, but **restate 1/80 as a chosen floor**, note it is below WCAG
-   minimums, and expect to tune it by feel.
-5. If a plane fallback survives the first decision, switch its guard to an **angle before
-   projection**, and substitute a plane rather than clamping, so there is no dead zone.
+   minimums, and expect to tune it by feel. The owner has ruled the exact fraction unimportant.
+5. The distance clamp in `crates/raycast/src/placement.rs` should be **deleted rather than
+   repaired**. It exists to tame a fixed ground plane that no longer exists, and its dead zone
+   was the symptom. If any guard survives, it is an **angle before projection**, not a distance
+   after it.
 
-Not settled here; recorded so the decision is taken deliberately rather than by default.
+The decision is recorded here rather than as an ADR because nothing has landed in code yet. It
+warrants an ADR when the viewport wiring lands, since it supersedes the picked-point definition
+in `direct-manipulation.md`.

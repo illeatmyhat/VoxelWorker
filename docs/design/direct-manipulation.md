@@ -80,12 +80,12 @@ Every tool is the same three-part shape. Only the middle part differs.
   SELECTED       the node's manipulators are live, and STAY live
 ```
 
-**The picked point** is the nearer of the ray's hit on existing geometry and its hit on the
-ground plane. **This premise is under challenge** — `docs/design/placement-prior-art.md` finds
-that no mature tool places against a fixed ground plane, and that Blender avoids the grazing
-case entirely by using the *view axis* as its picking plane normal, so the ray-plane denominator
-can never vanish. Decide that before wiring placement into the viewport. Hitting geometry also yields the face normal, which tools may use for
-orientation. This is one primitive, shared by every tool, and it is the same march the display
+**The picked point** is the ray's hit on existing geometry; failing that, its hit on a plane
+perpendicular to the view axis through a movable depth anchor (the last placement, else the orbit
+pivot). **The fixed ground plane is gone** — decided 2026-07-20, reasoning and prior art in
+`docs/design/placement-prior-art.md`. A surface hit *updates* the anchor, which is what keeps the
+two cases one primitive rather than two modes. Hitting geometry also yields the face normal,
+which tools may use for orientation. This is one primitive, shared by every tool, and it is the same march the display
 path already runs — driven by the cursor ray instead of a pixel ray.
 
 **Manipulators belong to the selection, not to placement.** There is no "adjust phase" to
@@ -98,7 +98,7 @@ into existence already selected.
 | Tool | Preview while armed | What the drop creates | Manipulators when selected |
 | --- | --- | --- | --- |
 | Box / Sphere / Cylinder / Tube / Torus | the solid at default size, at the picked point | a Tool node | position (3 axis handles) · the shape's own dimensions · **continuous** rotation (it is a field) |
-| Sketch | the sketch plane, **aligned to the picked face normal**, falling back to the ground plane | a sketch node on that plane | the plane's anchor · its orientation · the profile itself |
+| Sketch | the sketch plane, **aligned to the picked face normal**, falling back to the view-aligned anchor plane | a sketch node on that plane | the plane's anchor · its orientation · the profile itself |
 | Sculpt · add / carve | the brush core inside its reach, at the picked point | a stroke in the live session | brush radius · metric · flow |
 | Measure | the measurement's first anchor | nothing in the document | the two anchors |
 
