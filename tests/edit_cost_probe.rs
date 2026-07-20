@@ -16,13 +16,13 @@
 use std::time::Instant;
 
 use camera::OrbitCamera;
-use document::intent::Intent;
-use document::scene::Scene;
+use document::intent::{Intent, NodeSpec};
+use document::scene::{NodeId, Scene};
 use document::voxel::{GeometryParams, SdfShape};
 use voxel_core::core_geom::MaterialChoice;
 use voxel_core::units::Measurement;
 use voxel_core::voxel::ShapeKind;
-use voxel_worker::AppCore;
+use voxel_worker::{AppCore, RebuildOutcome};
 
 /// Voxels per block — the document default.
 const DENSITY: u32 = 16;
@@ -117,5 +117,130 @@ fn one_edit_rebuild_cost_by_scene_size() {
     println!(
         "\n'live ok' = a committed node can move under the cursor at 60fps.\n\
          'GHOST'   = the drag must preview and commit on release.\n"
+    );
+}
+
+/// The blocks-extent of the node a manipulator actually drags in a real scene: small, and
+/// entirely inside the backdrop it sits in. The point of the second probe is that this node
+/// is NOT the scene, so its dirty AABB is a fraction of the covering set.
+const DRAGGED_BLOCKS: [u32; 3] = [2, 2, 2];
+
+/// Add a small Tool node to `scene` through the same intent the add-flow will emit, and
+/// return its minted id (`add_node` selects what it adds, so `scene.active` names it).
+fn add_dragged_node(scene: &mut Scene, app_core: &mut AppCore) -> NodeId {
+    let shape = SdfShape::from_blocks(ShapeKind::Box, DRAGGED_BLOCKS, 1, DENSITY);
+    app_core.apply_intent(
+        scene,
+        Intent::AddNode {
+            content: NodeSpec::Tool {
+                shape,
+                material: MaterialChoice::Stone,
+            },
+        },
+    );
+    scene.active.expect("add_node selects the node it mints")
+}
+
+/// Time one `SetOffset` + rebuild, reporting the milliseconds and the rebuild's
+/// `incremental_dirty_chunks` hint — `Some(n)` = the edit localised to `n` evicted chunks and
+/// the resident buffers stayed in frame. `None` covers BOTH non-local outcomes (a wholesale
+/// cache clear, and a localised edit whose floating-origin shift reframed every baked buffer);
+/// `rebuild` does not distinguish them to its caller, so neither does this probe.
+fn timed_offset(
+    scene: &mut Scene,
+    app_core: &mut AppCore,
+    target: NodeId,
+    offset_voxels: [i64; 3],
+) -> (f64, Option<usize>) {
+    app_core.apply_intent(
+        scene,
+        Intent::SetOffset {
+            target,
+            offset_measurements: offset_voxels.map(Measurement::from_voxels),
+        },
+    );
+    let started = Instant::now();
+    let localised = match app_core.rebuild(scene, DENSITY) {
+        RebuildOutcome::Built(output) => output.incremental_dirty_chunks.map(|dirty| dirty.len()),
+        RebuildOutcome::DensityRejected { .. } => panic!("the probe's density is in bounds"),
+    };
+    (started.elapsed().as_secs_f64() * 1000.0, localised)
+}
+
+/// **The case the first probe does not measure, and the one that decides the interaction
+/// model.** Every scene above holds exactly ONE node, which therefore IS the whole scene, so
+/// moving it dirties everything — the worst case. What a manipulator actually drags is a small
+/// node inside a big scene, where the dirty AABB is a fraction of the covering set.
+///
+/// Both columns are measured on the SAME multi-node scene, so the contrast is the edit's
+/// locality and nothing else: dragging the small node against dragging the backdrop it sits in.
+///
+/// The dragged node stays well inside the backdrop's bounds on purpose. A node that moved the
+/// scene's overall extent would shift the floating origin, and `rebuild` reframes every baked
+/// buffer on a shift — a different (and much more expensive) path than the one a drag inside
+/// existing geometry takes. That path is worth measuring too, but it is not this number.
+#[test]
+#[ignore = "perf probe — run in release with --ignored --nocapture"]
+fn one_edit_rebuild_cost_by_edit_locality() {
+    println!(
+        "\n{:<22} {:>10} {:>14} {:>8} {:>14} {:>8}",
+        "backdrop", "voxels", "small (ms)", "chunks", "backdrop (ms)", "chunks"
+    );
+    println!("{}", "-".repeat(82));
+
+    for (label, kind, blocks) in [
+        ("small  5x1x5", ShapeKind::Cylinder, [5u32, 1, 5]),
+        ("medium 20x8x20", ShapeKind::Cylinder, [20, 8, 20]),
+        ("large  50x10x50", ShapeKind::Tube, [50, 10, 50]),
+        ("huge   100x20x100", ShapeKind::Tube, [100, 20, 100]),
+    ] {
+        let mut scene = scene_of(kind, blocks);
+        let mut app_core = AppCore::new(OrbitCamera::default());
+        let backdrop = *scene.roots.first().expect("seeded scene has a root node");
+        let dragged = add_dragged_node(&mut scene, &mut app_core);
+
+        // Park the dragged node near the backdrop's centre, so the whole gesture happens
+        // inside existing geometry and the scene's extent never grows.
+        let centre = blocks.map(|b| (b as i64 / 2) * DENSITY as i64);
+        let _ = app_core.rebuild(&scene, DENSITY);
+        let _ = timed_offset(&mut scene, &mut app_core, dragged, centre);
+
+        // The drag that matters: nudge the SMALL node one voxel at a time.
+        let mut small_samples = Vec::with_capacity(SAMPLES);
+        let mut small_chunks = None;
+        for step in 1..=SAMPLES as i64 {
+            let offset = [centre[0] + step, centre[1], centre[2]];
+            let (ms, localised) = timed_offset(&mut scene, &mut app_core, dragged, offset);
+            small_samples.push(ms);
+            small_chunks = localised;
+        }
+
+        // The same gesture on the BACKDROP, for the contrast — this is the first probe's
+        // case, re-measured here so both numbers come off one scene.
+        let mut backdrop_samples = Vec::with_capacity(SAMPLES);
+        let mut backdrop_chunks = None;
+        for step in 1..=SAMPLES as i64 {
+            let (ms, localised) = timed_offset(&mut scene, &mut app_core, backdrop, [step, 0, 0]);
+            backdrop_samples.push(ms);
+            backdrop_chunks = localised;
+        }
+
+        let voxels: u64 = blocks.iter().map(|b| (*b * DENSITY) as u64).product();
+        let show = |chunks: Option<usize>| match chunks {
+            Some(count) => count.to_string(),
+            None => "none".to_string(),
+        };
+        println!(
+            "{label:<22} {voxels:>10} {:>14.1} {:>8} {:>14.1} {:>8}",
+            median(small_samples),
+            show(small_chunks),
+            median(backdrop_samples),
+            show(backdrop_chunks),
+        );
+    }
+    println!(
+        "\n'chunks' = how many chunks the edit's dirty AABB evicted, keeping every other chunk\n\
+         resident. 'none' = no incremental hint: the rebuild either cleared wholesale or shifted\n\
+         the floating origin, which reframes every baked buffer.\n"
     );
 }

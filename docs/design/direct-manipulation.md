@@ -117,17 +117,42 @@ it already returns.
   BAKED body that would silently resample it — but a parametric producer's rotation and scale
   are field parameters and are fair game.
 
-## Open: what a drag costs on a committed node
+## What a drag costs on a committed node — measured
 
-A preview is free, but a *committed* node's move changes the composed geometry — other nodes
-boolean against it — so something recomposes. That leaves two shapes, and the choice should be
-made with a measurement rather than a preference:
+A preview is free, but a *committed* node's move changes the composed geometry, so something
+recomposes. The choice was between moving **live per snap step** (truest to the premise, but it
+recomposes on every step) and **ghosting during the drag** (one clean intent, but the object
+does not move until release). It was left to a measurement rather than a preference.
 
-* **Live per snap step.** The object itself moves under the cursor. Truest to the premise, but
-  it recomposes on every step, and one gesture must still collapse to one undo entry.
-* **Ghost during the drag, commit on release.** One clean intent, no recompose storm, but the
-  object does not move until release — a preview does.
+`tests/edit_cost_probe.rs` measures both. The answer is that **the drag can be live**, and the
+reason is not that rebuilds are fast — it is that *the cost tracks the dirtied volume, not the
+scene*.
 
-The number that decides it is the cost of one `SetOffset` apply plus its rebuild on a
-representative scene, post-async-brick. The last figure on record (~592 ms per edit) predates
-the deletion of the subsystem that dominated it, so it is not evidence about today.
+| backdrop | voxels | drag a small node inside it | drag the backdrop itself |
+| --- | --- | --- | --- |
+| 5×1×5 | 102 K | 3.5 ms · 2 chunks | 3.0 ms |
+| 20×8×20 | 13 M | 4.0 ms · 2 chunks | 23.7 ms |
+| 50×10×50 | 102 M | 2.5 ms · 1 chunk | 121.9 ms |
+| 100×20×100 | 819 M | **1.7 ms** · 2 chunks | 501.9 ms |
+
+Dragging a small node is **flat in scene size** — about 2–4 ms whether the scene holds a
+hundred thousand voxels or eight hundred million. Targeted invalidation evicts one or two
+chunks and every other resident chunk survives as a refcount bump, so an 819 M-voxel scene
+costs *less* than a small one whose single node is proportionally larger.
+
+The right-hand column is the earlier probe's case, and it is the one that grows: there the
+moved node **is** the whole scene, so its dirty AABB covers everything. That is a real case
+(a first node in an empty document) but it is not what a manipulator usually drags.
+
+So the honest design is **adaptive**, not one behaviour for every scene: move live while the
+last rebuild was cheap, fall back to a ghost when it was not. The gesture still collapses to
+one intent on release regardless — undoing a move one voxel at a time would be a worse tool
+than no undo.
+
+Two caveats the numbers do not cover, both worth knowing before quoting them:
+
+* **The drag stays inside existing geometry.** A node moved past the scene's current extent
+  shifts the floating origin, and a shift reframes every baked buffer — a wholesale re-mesh,
+  not an incremental one. Dragging a node out into empty space is a different, costlier path.
+* **This is the rebuild only.** The brick sink rebuilds on its own worker and does not block
+  the frame, so this is what the user waits for, not the total work done.
