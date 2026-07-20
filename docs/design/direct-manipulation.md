@@ -153,6 +153,24 @@ than no undo.
 frame, so this is what the user waits for — but see the seam caveat below, which is sharper
 than it first looked.
 
+### The preview is its own pass, because nothing else can carry it
+
+Prebuild-and-downscale — build large once, show reduced versions while dragging — was measured
+and rejected; `docs/design/prebuild-downscale-probe.md` has the numbers. Resampling the sparse
+form costs 4–8× more than simply rebuilding, and it loses structurally: re-deriving the cuboid
+decomposition *is* the work a rebuild does.
+
+The part that constrains this document is the incidental finding. **No pipeline carries a
+per-object transform** — the mesher bakes world position into each vertex and its buffers are
+chunk-granular, and the brick raymarch walks one world-fixed lattice. So a preview can never be
+"the committed geometry, moved or scaled". There is no seam to move it by.
+
+That is an argument *for* the analytic-SDF preview rather than against it: a dedicated pass with
+its own uniforms is cheap precisely because it owns nothing and reuses nothing. It also names
+the one gap in the grammar — **a fieldless producer has no SDF to render**, so a baked
+`VoxelBody` or a linked instance's cached body has no preview under this design. That case is
+open.
+
 ### Noted for later: an SDF viewer mode
 
 If the drag preview renders the parametric field directly, the machinery for *seeing the SDF
