@@ -39,12 +39,14 @@
 //!   AABB culling (2005), over substrate's closed continuous [`substrate::spatial::RealAabb`]
 //!   (co-located there beside its half-open integer twin [`substrate::spatial::LatticeAabb`]).
 
+pub mod authorable;
 pub mod frustum;
 pub mod orbit;
 pub mod projection;
 pub mod tween;
 pub mod view_cube;
 
+pub use authorable::MIN_BLOCK_SCREEN_FRACTION;
 pub use frustum::{Frustum, RealAabb};
 pub use orbit::{HomeView, OrbitCamera, ProjectionMode, POLE_EPSILON};
 pub use projection::unproject_screen_point_to_ray;
