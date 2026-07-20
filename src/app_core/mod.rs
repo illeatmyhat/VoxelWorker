@@ -25,6 +25,8 @@ use evaluation::two_layer_store::{TwoLayerChunk, TwoLayerResidentCache};
 use voxel_core::voxel::RecentreVoxels;
 
 mod intent;
+mod picking;
+pub use picking::VoxelPick;
 mod queries;
 pub use queries::MeshClip;
 mod rebuild;
