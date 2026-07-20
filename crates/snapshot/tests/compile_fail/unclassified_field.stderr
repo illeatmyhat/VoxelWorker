@@ -1,0 +1,17 @@
+error: field `cursor_is_held` is not classified: every field of application state must say which persistence artifacts it reaches, so that nothing is ever left out silently.
+
+       Add one of:
+
+           #[snapshot(settings)]  — a user preference outliving any one project; reaches the dump, not the document
+           #[snapshot(document)]  — what the model IS; reaches the document, and so also the dump
+           #[snapshot(view)]      — where you are working rather than what the model is; reaches the dump, not the document
+           #[snapshot(transient)] — genuinely momentary; reaches neither artifact — justify it in review
+           #[snapshot(derived)]   — reconstructible from classified state alone; reaches neither artifact
+
+       `transient` and `derived` reach neither artifact and are the two ways to get this error to go away without deciding anything, so they are the ones review looks at. `derived` at least makes a checkable claim: dropping the field must change how long something takes and NOTHING else.
+
+       The category describes this field's WHOLE object and does not recurse into it — serialization already carries what is inside. See docs/adr/0022.
+  --> tests/compile_fail/unclassified_field.rs:12:5
+   |
+12 |     cursor_is_held: bool,
+   |     ^^^^^^^^^^^^^^

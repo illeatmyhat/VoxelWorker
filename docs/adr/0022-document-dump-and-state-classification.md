@@ -164,8 +164,52 @@ what top-level exhaustive destructuring prevents.
 Annotating nested fields would be enormous and would buy nothing. The guarantee is: **every
 object is classified, and a classified object is saved whole.**
 
+## Amendment 2026-07-20 — what the derive actually guarantees
+
+**Status: partially implemented.** `crates/snapshot` + `crates/snapshot_derive` exist, and
+`PanelState` and `AppConfig` are classified (31 fields). The artifact split is not done.
+
+Landing it exposed an **overstatement in Decision 4 above**, which is corrected here rather
+than quietly left standing. That decision says:
+
+> A field that is classified but reaches neither the document nor the dump is a compile error.
+
+**A derive cannot deliver that, and this one does not.** The derive proves a field is
+*classified*. Whether a classified field *reaches an artifact* is a property of the capture
+function, and that guarantee comes from exhaustive destructuring against the split artifacts —
+which do not exist yet. What exists now is the classification table those artifacts will be
+built against (`document_fields()` / `dump_fields()`), plus the fact that producing it forced
+every field to be decided.
+
+The two halves are still the two halves this ADR always described — classification records the
+decision at the field, destructuring forces the decision to exist. The error was in implying a
+single mechanism delivers both. **Only the first half is built.**
+
+Two consequences of the shape it took, neither surprising but both worth recording:
+
+* **It is two crates, and that is forced.** A proc-macro crate can export nothing but macros,
+  so the trait and category enum the generated code refers to cannot live inside it — the same
+  split `serde`/`serde_derive` uses. `crates/snapshot_derive` is build-time and orthogonal to
+  the layer stack (no data flows through it at all), so ADR 0016's downward-only law has
+  nothing to say about it; `crates/snapshot` is a true leaf beside `substrate`, naming no
+  domain type, so any layer may import it.
+* **Every unclassified field reports in one build**, not one per recompile. Retrofitting onto a
+  twenty-field struct one error at a time would be miserable enough to discourage classifying
+  anything, and a mechanism people avoid guarantees nothing. The message is pinned by
+  `trybuild` fixtures, so a regression in it fails a test — the error text is the feature's real
+  interface, not incidental output.
+
+First classification pass: **zero `transient`**, two `derived`, both meeting ADR 0023's
+admission test literally. That the unfalsifiable hatch went unused on the first real struct is
+the healthiest available early signal, and it is the number to watch over time.
+
 ## Open
 
+- **The artifact split**, which is what turns classification into the compile-time reachability
+  guarantee Decision 4 describes. Until then the guarantee is "every field is decided", not
+  "every decision is honoured".
+- The **static / thread-local / GPU audit** this ADR says is owed. Nothing built so far narrows
+  it.
 - Whether a display-only **hidden** — distinct from `enabled` — is worth adding. In a fold
   model, "show me this cutter without its cut" may not be a meaningful request; it is currently
   not expressible at all, which is a fact rather than a decision.

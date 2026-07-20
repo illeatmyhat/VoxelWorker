@@ -12,8 +12,15 @@ edition = "2021"
 # other) is compile-enforced by the crate split. See docs/architecture/data-structures.md
 # (the "Substrate" section) and docs/design/per-layer-crates-extraction-map.md for the
 # boundary law.
+#
+# `crates/snapshot_derive` is the odd member out and the workspace's first proc-macro
+# crate (ADR 0022). It is build-time — it runs inside the compiler and links into no
+# binary — so it sits outside the layer stack rather than at some level of it, and the
+# downward-only flow law has nothing to say about it. Its companion `crates/snapshot`
+# holds the vocabulary the derive names (a proc-macro crate can export only macros) and
+# is a leaf beside `substrate`: it depends on nothing and names no domain type.
 [workspace]
-members = [".", "crates/substrate", "crates/camera", "crates/raycast", "crates/voxel_core", "crates/document", "crates/evaluation", "crates/assets", "crates/display", "crates/interchange", "crates/work", "crates/ui", "crates/shot"]
+members = [".", "crates/snapshot", "crates/snapshot_derive", "crates/substrate", "crates/camera", "crates/raycast", "crates/voxel_core", "crates/document", "crates/evaluation", "crates/assets", "crates/display", "crates/interchange", "crates/work", "crates/ui", "crates/shot"]
 
 [lib]
 name = "voxel_worker"
@@ -117,6 +124,11 @@ raycast = { path = "crates/raycast" }
 # the shell hands in. The GPU/asset half of the palette stays in the shell's PaletteHost. See
 # docs/architecture/README.md (the Shell layer, laws 3 + 4).
 ui = { path = "crates/ui" }
+# The state-classification vocabulary (ADR 0022). `AppConfig` is the one persistence
+# artifact the shell writes today — config, project and repro dump wearing three hats — so
+# each of its fields declares which of those artifacts it will belong to once they are
+# separated, and a field that declares nothing does not compile.
+snapshot = { path = "crates/snapshot" }
 winit = "0.30.13"
 wgpu = "29.0.3"
 egui = "0.34.3"

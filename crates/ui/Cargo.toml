@@ -35,3 +35,8 @@ document = { path = "../document" }
 voxel_core = { path = "../voxel_core" }
 # The viewing library: the ProjectionMode the camera-section toggle drives.
 camera = { path = "../camera" }
+# The state-classification vocabulary (ADR 0022). `PanelState` is the live view state the
+# persistence artifacts capture, so every one of its fields declares which artifacts it
+# reaches; the derive makes an unclassified field a compile error here rather than a
+# silent omission discovered later in a repro that cannot reproduce anything.
+snapshot = { path = "../snapshot" }

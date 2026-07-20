@@ -1,0 +1,22 @@
+[package]
+name = "snapshot_derive"
+version = "0.1.0"
+edition = "2021"
+
+# The workspace's first proc-macro crate (ADR 0022 named this as a consequence).
+# It is a BUILD-TIME crate: it runs in the compiler, produces tokens, and links into
+# no binary, so it is orthogonal to the eight-layer stack rather than a member of it.
+# That orthogonality is why it does not violate ADR 0016's downward-only flow law —
+# there is no data flow through it at all.
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }
+
+# The tests live in `crates/snapshot`, not here: exercising the derive means naming the
+# `snapshot` vocabulary it generates references to, and this crate cannot depend on the
+# crate that depends on it. The compile-fail fixtures that pin this derive's diagnostics
+# are `crates/snapshot/tests/compile_fail/`.

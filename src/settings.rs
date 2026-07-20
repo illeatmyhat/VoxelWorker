@@ -41,7 +41,16 @@ enum ProjectionModeConfig {
 
 /// The whole persisted configuration. Every field is `#[serde(default)]` so a
 /// partial or older config still loads.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// It is also, today, the *only* persistence artifact: `save_config` (on exit) and
+/// `export_repro` (F9) both build one of these, so the config file, the project and the
+/// debug dump are one structure wearing three hats. ADR 0022 separates them; the
+/// `#[snapshot(...)]` category on each field below records which artifact it will belong
+/// to when they part, so the split becomes a matter of reading the annotations rather
+/// than re-litigating every field. Nothing written to disk changes here. What does change
+/// is that a flat mirror struct now has a place where an omission shows — which is
+/// exactly what it lacked when `orbit_target` went missing from the dump.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, snapshot::Snapshot)]
 pub struct AppConfig {
     // --- scene (ADR 0001 step 8: full scene persistence) ---
     // The whole assembly (node tree + reusable definitions + the active
@@ -67,11 +76,15 @@ pub struct AppConfig {
     // "regional/streamed .vox export" sub-part — meaningless until chunking; the
     // current full-grid `.vox` export already covers bounded scenes).
     #[serde(default)]
+    #[snapshot(document)]
     pub scene: Option<Scene>,
 
     // --- density (the inspector slider's persisted mirror; the document truth is
     // `scene.voxels_per_block`, ADR 0003 §3f(0)) ---
+    // View, not document: the truth is `scene.voxels_per_block`, and a mirror of document
+    // truth is where you are working rather than what the model is.
     #[serde(default = "default_density")]
+    #[snapshot(view)]
     pub voxels_per_block: u32,
 
     // --- display / material ---
@@ -79,8 +92,10 @@ pub struct AppConfig {
     // dependency (its boundary law keeps it to glam + substrate), so it is persisted
     // through the `ProjectionModeConfig` remote-derive shim below.
     #[serde(default, with = "ProjectionModeConfig")]
+    #[snapshot(settings)]
     pub projection_mode: ProjectionMode,
     #[serde(default)]
+    #[snapshot(settings)]
     pub material: MaterialChoice,
     // Issue #31: the three legacy grid `show_*` mirror fields
     // (`show_grid_overlay` / `show_block_lattice` / `show_floor_grid`) were deleted.
@@ -89,6 +104,7 @@ pub struct AppConfig {
     // No `deny_unknown_fields`, so an OLD config still carrying those keys loads fine
     // (serde ignores the now-unknown keys); the scene's own masters are authoritative.
     #[serde(default = "default_true")]
+    #[snapshot(settings)]
     pub show_view_cube: bool,
     // NOTE: the legacy `show_origin_gizmo` field was removed in the issue #29 S6
     // cleanup. The old origin-gizmo Display toggle was replaced by the
@@ -97,6 +113,7 @@ pub struct AppConfig {
     // continues to deserialize cleanly (serde ignores the now-unknown key).
     /// Best-effort applied-block label (re-applied lazily; see module docs).
     #[serde(default)]
+    #[snapshot(settings)]
     pub applied_block_label: Option<String>,
 
     // --- layer-range scrubber (issue #12) ---
@@ -104,25 +121,37 @@ pub struct AppConfig {
     // they are NOT persisted
     // (they always re-derive to the full range on load); only the sticky control
     // preferences are saved here.
+    // The flattened mirror of `PanelState::layer_range`, classified there as one view
+    // object; view here too so the two agree. A collaborator should not inherit the band
+    // someone else was working in.
     #[serde(default = "default_true")]
+    #[snapshot(view)]
     pub snap_to_blocks: bool,
     #[serde(default)]
+    #[snapshot(view)]
     pub onion_skin: bool,
     #[serde(default = "default_onion_depth")]
+    #[snapshot(view)]
     pub onion_depth: u32,
 
     // --- camera ---
+    // The live camera pose: view state. `orbit_target` below is the field that went
+    // missing from the dump, and the reason this scheme exists.
     #[serde(default = "default_theta")]
+    #[snapshot(view)]
     pub orbit_theta: f32,
     #[serde(default = "default_phi")]
+    #[snapshot(view)]
     pub orbit_phi: f32,
     #[serde(default = "default_distance")]
+    #[snapshot(view)]
     pub orbit_distance: f32,
     /// The orbit TARGET (the world point the camera looks at / orbits). Panning moves it off
     /// the origin, so without it a repro reframes on the origin and misses a panned view (the
     /// F9 `--from-config` flow). `#[serde(default)]` = `[0,0,0]` for an old config, matching the
     /// pre-field behaviour (target defaulted to the origin).
     #[serde(default)]
+    #[snapshot(view)]
     pub orbit_target: [f32; 3],
 
     // --- view-cube home view (#13) ---
@@ -130,20 +159,27 @@ pub struct AppConfig {
     // config without them loads with the camera defaults — serde fills each missing
     // key from its default fn, which derive from `OrbitCamera::default()` so the
     // config default can never drift from the live camera default.
+    // Settings, unlike the orbit fields above: a Home view is a viewpoint the user chose
+    // to KEEP, so it outlives any one project rather than describing this session.
     #[serde(default = "default_theta")]
+    #[snapshot(settings)]
     pub home_theta: f32,
     #[serde(default = "default_phi")]
+    #[snapshot(settings)]
     pub home_phi: f32,
     #[serde(default = "default_distance")]
+    #[snapshot(settings)]
     pub home_distance: f32,
     /// #13 Step 6.4: was the home view explicitly captured by the user? When
     /// `false` (the default), the Home button re-frames the model instead of using
     /// `home_distance`, so a default home never zooms in too close.
     #[serde(default)]
+    #[snapshot(settings)]
     pub home_explicit: bool,
 
     // --- window ---
     #[serde(default = "default_window_size")]
+    #[snapshot(settings)]
     pub window_size: [u32; 2],
 }
 

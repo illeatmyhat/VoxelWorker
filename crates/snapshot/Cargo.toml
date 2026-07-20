@@ -1,0 +1,23 @@
+[package]
+name = "snapshot"
+version = "0.1.0"
+edition = "2021"
+
+# The vocabulary half of the state-classification pair (ADR 0022). A proc-macro crate
+# can export nothing but macros, so the `StateCategory` enum, the `ClassifiedField`
+# record and the `Snapshot` trait the derive targets have to live in an ordinary
+# library; this is the same split serde/serde_derive and thiserror/thiserror-impl use.
+# Depending on this crate is depending on a vocabulary, not on a layer: it names no
+# scene, no producer and no GPU handle, so it sits beside `substrate` at the bottom of
+# the stack and every layer above may import it without bending ADR 0016's
+# downward-only flow law.
+[dependencies]
+snapshot_derive = { path = "../snapshot_derive" }
+
+# trybuild runs the compile-FAIL half of the suite. The diagnostic a developer sees when
+# they forget to classify a field IS this feature's user interface, so it is pinned as a
+# fixture (`tests/compile_fail/*.stderr`) rather than left to drift: a message that
+# quietly stops naming the field, or stops listing the categories, is a real regression
+# and nothing else would catch it.
+[dev-dependencies]
+trybuild = "1"

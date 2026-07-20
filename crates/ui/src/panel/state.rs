@@ -177,7 +177,15 @@ impl LayerRange {
 /// Holds the geometry params (rebuild-driving) and the display/camera params
 /// (no rebuild). The binaries own one of these and feed it to the panel each
 /// frame; [`PanelResponse`] tells them what changed.
-#[derive(Debug, Clone, Default)]
+///
+/// Every field is **classified** (ADR 0022): it declares which persistence artifacts it
+/// reaches, and a new field that declares nothing does not compile. This struct is where
+/// the scheme earns its keep, because it is the one the shell hands to `AppConfig::capture`
+/// — the exact seam at which the camera's pan target once went quietly missing from a repro.
+/// Each category applies to the whole object and does not recurse: `layer_range` is view
+/// state entire, and nothing inside [`LayerRange`] is annotated, because serialization
+/// already carries what is inside a saved object.
+#[derive(Debug, Clone, Default, snapshot::Snapshot)]
 pub struct PanelState {
     /// The scene (ADR 0001): the flat node list that is now the panel's source of
     /// truth. The node list section adds/selects/deletes nodes; the inspector
@@ -185,49 +193,91 @@ pub struct PanelState {
     /// are the inspector's working mirror of the active Tool node (synced both
     /// ways) so the renderer/export call sites that read voxel dims + density keep
     /// working unchanged.
+    #[snapshot(document)]
     pub scene: Scene,
     /// Rebuild-driving geometry params — the inspector's editing surface, mirrored
     /// onto the active Tool node (and re-read from it when the selection changes).
+    ///
+    /// Classified **view**, not document: the truth is the node the mirror was synced
+    /// from ([`sync_mirror_from_active`](Self::sync_mirror_from_active)). It is not
+    /// `derived` either, and the distinction is worth being exact about — a half-typed
+    /// size sitting here has not reached any node yet, so dropping it would lose an
+    /// edit in progress rather than merely cost a recomputation.
+    #[snapshot(view)]
     pub geometry: GeometryParams,
-    /// Camera projection (display-only: no rebuild).
+    /// Camera projection (display-only: no rebuild). A preference that outlives any one
+    /// project, so it is settings rather than view.
+    #[snapshot(settings)]
     pub projection_mode: ProjectionMode,
     /// Material selection (display-only: selects the M4 procedural texture).
+    ///
+    /// Settings, because this field is the *picker's* current value and persists across
+    /// projects; the document's copy of a material lives on the node the pick was applied
+    /// to, and travels in the scene.
+    #[snapshot(settings)]
     pub material: MaterialChoice,
     /// Whether the corner view cube is drawn (M5 Display toggle, ON by default).
+    #[snapshot(settings)]
     pub show_view_cube: bool,
     /// Whether the voxel cubes render in face-orientation debug mode (colour by
     /// outward face normal + a back-facing marker, cull off). Display toggle, OFF
     /// by default; the standard way to verify face winding/culling.
+    ///
+    /// View state, on the same footing as [`view_mode`](Self::view_mode): it decides what
+    /// the viewer shows and nothing about what the model is. It is not written to the
+    /// config today, which is a separate question from where it belongs — a debug mode a
+    /// fault was observed under is precisely the sort of thing a dump must carry.
+    #[snapshot(view)]
     pub debug_face_orientation: bool,
     /// Grazing-rim DIAGNOSTIC for the BRICK raymarch (`set_debug_mode`): shade every hit
     /// by its face axis + a per-voxel UV checkerboard, so a wrong first-hit voxel/face
     /// shows as a face-colour break and a UV smear. Unlike `debug_face_orientation` (which
     /// drops to the mesh path), this keeps the brick path ENGAGED — it IS the path under
     /// investigation. Display toggle, OFF by default; never serialized.
+    #[snapshot(view)]
     pub debug_brick_faces: bool,
     /// When `Some`, the 3D rebuild was skipped because the grid exceeds the
     /// voxel cap; the panel shows a warning. Set by the caller after it decides
     /// whether to rebuild. Value is the would-be voxel count (in millions).
+    ///
+    /// **Derived**, and it passes ADR 0023's admission test literally: the value is a
+    /// function of the scene and its density, both classified, recomputed by the caller at
+    /// every rebuild. Dropping it costs one more count and changes nothing else.
+    #[snapshot(derived)]
     pub voxel_cap_warning_millions: Option<f32>,
     /// When `Some`, a loaded VS block (M6) is the active material; the value is
     /// its label, shown under the Material selector. `None` = a procedural
     /// material is active.
+    ///
+    /// Settings, and deliberately NOT derived: it cannot be recomputed, because the
+    /// texture it names is re-resolved lazily and best-effort (see the `settings` module
+    /// header) — the label is the only surviving record of the pick.
+    #[snapshot(settings)]
     pub applied_block_label: Option<String>,
     /// The viewer's exclusive rendering mode (ADR 0018 Decision 3): Normal / Onion fog /
     /// Show booleans. Display-only viewer state (no rebuild, never serialized, never in
     /// undo). Sticky across selection changes; defaults to Normal.
+    #[snapshot(view)]
     pub view_mode: ViewMode,
     /// The floating Signal display stack's viewer state (issue #88): folded-to-edge-tabs
     /// and per-section open/closed. Display-only viewer state (never serialized / undone),
-    /// like [`view_mode`](Self::view_mode).
+    /// like [`view_mode`](Self::view_mode). Classified as one object — the four section
+    /// flags inside it are not annotated, and do not need to be.
+    #[snapshot(view)]
     pub stack: SignalStackState,
     /// Layer-range scrubber state (issue #12): the visible band along Z (Z-up: layers
     /// are Z-slices) plus the snap/onion controls. Bounds clamped/rescaled on rebuild.
+    #[snapshot(view)]
     pub layer_range: LayerRange,
     /// Where **+ Add Point** drops a new Point (issue #29 S5), in whole world blocks.
     /// The caller refreshes it each frame from the camera target (rounded to blocks)
     /// so a new Point lands where the user is looking; it defaults to the world origin
     /// (`[0, 0, 0]`) when the caller does not set it (e.g. the headless harness).
+    ///
+    /// **Derived**: the camera target rounded to blocks, and the camera is classified view
+    /// state. Dropping it means recomputing the rounding, and nothing else — which is the
+    /// admission test, met exactly.
+    #[snapshot(derived)]
     pub point_add_position_blocks: [i64; 3],
 }
 
