@@ -17,6 +17,7 @@
 //! composes with the panel layout and tooltips.
 
 use egui::{Color32, FontId, Id, LayerId, Order, Pos2, Rect, Sense, Stroke, StrokeKind, TextFormat, Vec2};
+use ui::icons::Icon;
 
 use crate::ViewMode;
 
@@ -47,10 +48,10 @@ const RAIL_WIDTH: f32 = 34.0;
 const BUTTON_HEIGHT: f32 = 32.0;
 /// Gap (points) between the cube's bottom edge and the rail's top.
 const RAIL_GAP: f32 = 6.0;
-/// Icon inset within a button so the glyph sits on an 18-unit grid inside 32 px.
-const ICON_INSET: f32 = 7.0;
-/// Signal glyph stroke width (design points; §Icon set: 1.25 px).
-const STROKE_WIDTH: f32 = 1.25;
+/// The centred square a rail glyph is drawn into (design points). 18 pt = one unit per
+/// grid unit of the rail set's 18-unit authoring grid, which makes `IconPainter`'s scale
+/// exactly 1 and so lands the stroke on the design's 1.25 pt without restating it here.
+const GLYPH_BOX: f32 = 18.0;
 
 /// A rail button the user clicked this frame. The caller maps [`Home`](Self::Home) /
 /// [`Fit`](Self::Fit) onto the SAME [`ChromeClickAction`](camera::ChromeClickAction)s
@@ -227,160 +228,36 @@ pub fn status_line(
     painter.galley(pos, galley, STATUS_FAINT);
 }
 
-/// Map an `(u, v)` in `[0, 1]²` onto the icon's inset box within `button_rect`.
-fn icon_point(button_rect: Rect, u: f32, v: f32) -> Pos2 {
-    let icon = button_rect.shrink(ICON_INSET);
-    Pos2::new(icon.left() + u * icon.width(), icon.top() + v * icon.height())
-}
-
-/// Map a point on the mock's **18-unit** icon grid onto the button's inset box, so the
-/// egui glyphs trace the mock's exact SVG paths (issue #91 item 2;
-/// `design/chrome/d-signal/icons.html`).
-fn mock_point(button_rect: Rect, x: f32, y: f32) -> Pos2 {
-    icon_point(button_rect, x / 18.0, y / 18.0)
+/// The glyph box inside a rail button: a CENTRED SQUARE, because the rail set is authored
+/// on a square 18-unit grid and a non-square box would stretch every mark horizontally.
+/// Side 18 pt keeps the vertical extent the inset used to give and makes
+/// `IconPainter`'s scale exactly 1, so the stroke lands on the design's 1.25 pt.
+fn glyph_box(button_rect: Rect) -> Rect {
+    Rect::from_center_size(button_rect.center(), Vec2::splat(GLYPH_BOX))
 }
 
 /// Draw the glyph for rail button `index` (0 Home, 1 Fit, 2 viewport-mode) in `color`.
 /// The mode glyph depends on `view_mode`: a solid cube (Normal), lifted layer slices
 /// (Onion fog), or a solid-∩-dashed square pair (Show booleans).
+///
+/// The marks come from `ui::icons`, which is the ONE authoring of the rail set — the same
+/// data the `design_reference` gallery paints. This file used to trace its own copies of
+/// the five, and they had already drifted: `home` was regridded onto the 2.5–15.5 house box
+/// and `mode-normal` was redrawn as a shaded cube, neither of which reached the shipped
+/// rail. A glyph the design sheet shows and the app does not draw is worse than no sheet,
+/// so the rail reads the set rather than mirroring it.
 fn draw_glyph(painter: &egui::Painter, button_rect: Rect, index: usize, view_mode: ViewMode, color: Color32) {
-    let stroke = Stroke::new(STROKE_WIDTH, color);
-    match index {
-        0 => draw_home(painter, button_rect, stroke),
-        1 => draw_fit(painter, button_rect, stroke),
+    let icon = match index {
+        0 => Icon::Home,
+        1 => Icon::Fit,
         _ => match view_mode {
-            ViewMode::Normal => draw_cube(painter, button_rect, stroke),
-            ViewMode::OnionFog => draw_layers(painter, button_rect, stroke),
-            ViewMode::ShowBooleans => draw_booleans(painter, button_rect, stroke),
+            ViewMode::Normal => Icon::ModeNormal,
+            ViewMode::OnionFog => Icon::ModeOnion,
+            ViewMode::ShowBooleans => Icon::ModeBooleans,
         },
-    }
+    };
+    icon.draw(painter, glyph_box(button_rect), color);
 }
 
-/// A house silhouette — the mock HOME glyph: a full-width roof over a body open at the
-/// top (`M 3 8.5 L 9 3.5 L 15 8.5` + `M 5 8 V 14.5 H 13 V 8`).
-fn draw_home(painter: &egui::Painter, rect: Rect, stroke: Stroke) {
-    let p = |x: f32, y: f32| mock_point(rect, x, y);
-    // Roof (left eave -> apex -> right eave).
-    polyline(painter, &[p(3.0, 8.5), p(9.0, 3.5), p(15.0, 8.5)], stroke);
-    // Body: left wall down, floor, right wall up — no top edge (tucked under the roof).
-    polyline(painter, &[p(5.0, 8.0), p(5.0, 14.5), p(13.0, 14.5), p(13.0, 8.0)], stroke);
-}
-
-/// A "fit to view" mark — the mock FIT glyph: four corner brackets + a centre square
-/// (`x=6.5 y=6.5 w=5 h=5`).
-fn draw_fit(painter: &egui::Painter, rect: Rect, stroke: Stroke) {
-    let p = |x: f32, y: f32| mock_point(rect, x, y);
-    // Corner brackets (each an L: two segments meeting at the corner).
-    polyline(painter, &[p(2.5, 6.0), p(2.5, 2.5), p(6.0, 2.5)], stroke); // TL
-    polyline(painter, &[p(12.0, 2.5), p(15.5, 2.5), p(15.5, 6.0)], stroke); // TR
-    polyline(painter, &[p(15.5, 12.0), p(15.5, 15.5), p(12.0, 15.5)], stroke); // BR
-    polyline(painter, &[p(6.0, 15.5), p(2.5, 15.5), p(2.5, 12.0)], stroke); // BL
-    // Centre square.
-    stroke_rect(painter, p(6.5, 6.5), p(11.5, 11.5), stroke);
-}
-
-/// A solid cube — the mock NORM glyph: an isometric hexagon outline with the three
-/// top edges + the near vertical (`M 9 2.5 L 15 5.5 V 12.5 L 9 15.5 L 3 12.5 V 5.5 Z`
-/// + `M 3 5.5 L 9 8.5 L 15 5.5` + `M 9 8.5 V 15.5`).
-fn draw_cube(painter: &egui::Painter, rect: Rect, stroke: Stroke) {
-    let p = |x: f32, y: f32| mock_point(rect, x, y);
-    // Hexagon silhouette (closed).
-    polyline(
-        painter,
-        &[
-            p(9.0, 2.5),
-            p(15.0, 5.5),
-            p(15.0, 12.5),
-            p(9.0, 15.5),
-            p(3.0, 12.5),
-            p(3.0, 5.5),
-            p(9.0, 2.5),
-        ],
-        stroke,
-    );
-    // The two top edges meeting at the near-top vertex, and the near vertical edge.
-    polyline(painter, &[p(3.0, 5.5), p(9.0, 8.5), p(15.0, 5.5)], stroke);
-    painter.line_segment([p(9.0, 8.5), p(9.0, 15.5)], stroke);
-}
-
-/// Lifted layer slices — the mock ONION glyph: two faint carets, a SOLID filled band,
-/// and a faint bottom caret. Opacity variations dim the carets (0.45 / 0.7 / 0.45).
-fn draw_layers(painter: &egui::Painter, rect: Rect, stroke: Stroke) {
-    let p = |x: f32, y: f32| mock_point(rect, x, y);
-    let faint = Stroke::new(stroke.width, stroke.color.gamma_multiply(0.45));
-    let mid = Stroke::new(stroke.width, stroke.color.gamma_multiply(0.7));
-    // Top carets (up-pointing chevrons).
-    polyline(painter, &[p(3.0, 5.0), p(9.0, 2.5), p(15.0, 5.0)], faint);
-    polyline(painter, &[p(3.0, 8.0), p(9.0, 5.5), p(15.0, 8.0)], mid);
-    // The solid filled band (a thin hexagonal slab), the active layer.
-    painter.add(egui::Shape::convex_polygon(
-        vec![
-            p(9.0, 8.8),
-            p(15.0, 11.2),
-            p(15.0, 11.4),
-            p(9.0, 13.9),
-            p(3.0, 11.4),
-            p(3.0, 11.2),
-        ],
-        stroke.color,
-        Stroke::NONE,
-    ));
-    // Bottom caret.
-    polyline(painter, &[p(3.0, 14.5), p(9.0, 17.0), p(15.0, 14.5)], faint);
-}
-
-/// A solid square intersecting a dashed square — the mock BOOL glyph
-/// (`x=2.5 y=2.5 w=9 h=9` solid, `x=6.5 y=6.5 w=9 h=9` dashed 2.2/1.8).
-fn draw_booleans(painter: &egui::Painter, rect: Rect, stroke: Stroke) {
-    let p = |x: f32, y: f32| mock_point(rect, x, y);
-    // Solid square (the kept body).
-    stroke_rect(painter, p(2.5, 2.5), p(11.5, 11.5), stroke);
-    // Dashed square (the boolean operand), overlapping the first.
-    dashed_rect(painter, p(6.5, 6.5), p(15.5, 15.5), stroke);
-}
-
-/// Stroke the axis-aligned rectangle spanned by two opposite corners.
-fn stroke_rect(painter: &egui::Painter, a: Pos2, b: Pos2, stroke: Stroke) {
-    let rect = Rect::from_two_pos(a, b);
-    painter.rect_stroke(rect, 0.0, stroke, StrokeKind::Middle);
-}
-
-/// Draw a connected polyline through `points`.
-fn polyline(painter: &egui::Painter, points: &[Pos2], stroke: Stroke) {
-    for pair in points.windows(2) {
-        painter.line_segment([pair[0], pair[1]], stroke);
-    }
-}
-
-/// Stroke a rectangle's outline as dashes (short segments with gaps) along each edge.
-fn dashed_rect(painter: &egui::Painter, a: Pos2, b: Pos2, stroke: Stroke) {
-    let rect = Rect::from_two_pos(a, b);
-    let corners = [
-        rect.left_top(),
-        rect.right_top(),
-        rect.right_bottom(),
-        rect.left_bottom(),
-    ];
-    for i in 0..4 {
-        dashed_line(painter, corners[i], corners[(i + 1) % 4], stroke);
-    }
-}
-
-/// Draw a dashed segment from `a` to `b` (dash 2.2 pt, gap 1.8 pt).
-fn dashed_line(painter: &egui::Painter, a: Pos2, b: Pos2, stroke: Stroke) {
-    const DASH: f32 = 2.2;
-    const GAP: f32 = 1.8;
-    let delta = b - a;
-    let length = delta.length();
-    if length <= f32::EPSILON {
-        return;
-    }
-    let direction = delta / length;
-    let mut travelled = 0.0;
-    while travelled < length {
-        let start = a + direction * travelled;
-        let end = a + direction * (travelled + DASH).min(length);
-        painter.line_segment([start, end], stroke);
-        travelled += DASH + GAP;
-    }
-}
+// The five glyph painters that used to live here (home, fit, cube, layers, booleans) are
+// gone: `ui::icons` owns those drawings now. See `draw_glyph` above for why.
