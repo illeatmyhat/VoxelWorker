@@ -67,8 +67,8 @@ impl CompositeProducer {
         self.members.is_empty()
     }
 
-    /// The member's own field distance at a composite-frame point, or `None` if it has no
-    /// field — which makes the WHOLE composite fieldless (see [`Self::as_field`]).
+    /// The member's own field distance at a composite-frame point, or `None` if its geometry
+    /// is not a distance — which makes the WHOLE composite fieldless (see [`Self::as_field`]).
     fn member_distance(
         &self,
         member: &CompositeMember,
@@ -258,9 +258,15 @@ impl VoxelProducer for CompositeProducer {
         ))
     }
 
-    /// The composite has a field only if EVERY member does — one fieldless member (the
-    /// cloud) leaves the fold with nothing to compose, and ADR 0020 Decision 1 says answer
-    /// honestly rather than fabricate a distance. Such a Part simply cannot be outset.
+    /// The composite has a field only if EVERY member does — one fieldless member leaves the
+    /// fold with nothing to compose, and ADR 0020 Decision 1 says answer honestly rather than
+    /// fabricate a distance. Such a Part simply cannot be outset.
+    ///
+    /// **Not because of the cloud.** ADR 0021 withdrew that justification: the cloud is
+    /// boundable (`cell_field_interval` classifies a cell from puff geometry alone). It still
+    /// answers `None` here, but on the narrower ground that its geometry is not a *distance* —
+    /// `radial + BILLOW·fbm` has the right zero set and the wrong magnitude away from it. The
+    /// `Option` itself rests on freehand sculpt, which is occupancy-native (ADR 0021 §5).
     fn as_field(&self) -> Option<&dyn Field> {
         if self.members.iter().all(|member| member.producer.as_field().is_some()) {
             Some(self)

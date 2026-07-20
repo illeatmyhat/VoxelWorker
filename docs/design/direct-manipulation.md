@@ -170,11 +170,22 @@ its own uniforms is cheap precisely because it owns nothing and reuses nothing.
 
 **There is no fieldless-producer gap** — a concern raised here in an earlier draft and withdrawn.
 `SdfShape` and `SketchSolid` both carry fields, a `Composite` carries one when its members do,
-and `Outset` delegates. The only `None` comes from the trait default, which the cloud currently
-inherits and which **ADR 0021 explicitly overturns**: the cloud is boundable, and the `Option`
-on `as_field` rests on freehand sculpt instead. Sculpt is not a counterexample either, because
-there is nothing to preview for a sculpt stroke — it is either represented or it is not. So
-every producer a drag can place has a field to render, and the preview covers the grammar.
+and `Outset` delegates. **Every producer a tool can place has a field to render**, so the
+preview covers the grammar.
+
+Two producers legitimately answer `None`, and neither is a counterexample:
+
+* **Freehand sculpt** is occupancy-native — a sparse voxel delta has no analytic field. It is
+  also not previewable in the first place: a stroke is either represented or it is not, so
+  there is nothing for a preview to show. ADR 0021 Decision 5 rests the `Option` on exactly
+  this case.
+* **The cloud** answers `None` because its geometry *is not a distance*. ADR 0021 established
+  that it is **boundable** — `cell_field_interval` classifies a cell from puff geometry with no
+  noise evaluation, and that is implemented — but boundable and metric are different claims.
+  `radial + BILLOW·fbm` has the right zero set and the wrong magnitude everywhere else, so
+  exposing it through `Field::signed_distance` would make outset and emboss lie. The trait's own
+  doc already states the test: `None` is the honest answer for a producer whose occupancy is
+  real but whose geometry is not a distance.
 
 ### Noted for later: an SDF viewer mode
 
