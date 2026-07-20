@@ -68,11 +68,24 @@ pub enum StateCategory {
     /// the document, and therefore also the dump, the dump being a superset rather
     /// than a variant.
     Document,
-    /// Where *you* are working rather than what the model is: the viewer mode, the
-    /// layer scrubber, the rollback cursor, the camera. Reaches the dump and stays out
-    /// of the document, so reopening a project always shows the complete model and a
-    /// rollback someone else left set is never what a collaborator sees.
+    /// Where *you* are working rather than what the model is: the layer scrubber, the
+    /// rollback cursor, the camera. Reaches the dump and stays out of the document, so
+    /// reopening a project always shows the complete model and a rollback someone else
+    /// left set is never what a collaborator sees.
     View,
+    /// How the workspace was arranged when you left it: which viewer mode was active,
+    /// which panels were folded, which diagnostic overlays were on. Reaches the dump and
+    /// stays out of the document, the same destinations [`View`](Self::View) has — the
+    /// distinction is meaning, not routing, and it is the same kind of distinction that
+    /// already separates [`Settings`](Self::Settings) from `View`.
+    ///
+    /// The line against `View` is *what the state is about*: view state answers "where
+    /// was the camera", session state answers "what was the workspace doing". The line
+    /// against `Settings` is **preference versus circumstance** — a setting is something
+    /// the user chose and would want honoured in every project, whereas session state is
+    /// merely where they happened to leave things. Restoring a session is the browser's
+    /// bargain (ADR 0024): your tabs come back, and nobody calls that a preference.
+    Session,
     /// Reaches neither artifact, on the grounds that it is genuinely momentary —
     /// whether the mouse is currently held mid-drag, a warning computed fresh each
     /// frame. **The unfalsifiable escape hatch.** It must be justified in review and
@@ -96,6 +109,7 @@ impl StateCategory {
             StateCategory::Settings => "settings",
             StateCategory::Document => "document",
             StateCategory::View => "view",
+            StateCategory::Session => "session",
             StateCategory::Transient => "transient",
             StateCategory::Derived => "derived",
         }
@@ -109,11 +123,14 @@ impl StateCategory {
 
     /// Whether state in this category is written to the **dump** — the unversioned
     /// debugging artifact from which a scene must be completely reproducible. Settings,
-    /// document and view state all are; the two escape hatches are not.
+    /// document, view and session state all are; the two escape hatches are not.
     pub const fn reaches_dump(self) -> bool {
         matches!(
             self,
-            StateCategory::Settings | StateCategory::Document | StateCategory::View
+            StateCategory::Settings
+                | StateCategory::Document
+                | StateCategory::View
+                | StateCategory::Session
         )
     }
 }

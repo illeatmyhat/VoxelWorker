@@ -1,4 +1,4 @@
-error: `cache` is not a state category. Valid: `settings`, `document`, `view`, `transient`, `derived`
+error: `cache` is not a state category. Valid: `settings`, `document`, `view`, `session`, `transient`, `derived`
  --> tests/compile_fail/unknown_category.rs:9:16
   |
 9 |     #[snapshot(cache)]

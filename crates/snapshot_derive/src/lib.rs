@@ -52,6 +52,11 @@ const CATEGORIES: &[(&str, &str, &str)] = &[
         "where you are working rather than what the model is; reaches the dump, not the document",
     ),
     (
+        "session",
+        "Session",
+        "how the workspace was left, not what the user prefers; reaches the dump, not the document",
+    ),
+    (
         "transient",
         "Transient",
         "genuinely momentary; reaches neither artifact — justify it in review",

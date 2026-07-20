@@ -5,6 +5,7 @@ error: field `cursor_is_held` is not classified: every field of application stat
            #[snapshot(settings)]  — a user preference outliving any one project; reaches the dump, not the document
            #[snapshot(document)]  — what the model IS; reaches the document, and so also the dump
            #[snapshot(view)]      — where you are working rather than what the model is; reaches the dump, not the document
+           #[snapshot(session)]   — how the workspace was left, not what the user prefers; reaches the dump, not the document
            #[snapshot(transient)] — genuinely momentary; reaches neither artifact — justify it in review
            #[snapshot(derived)]   — reconstructible from classified state alone; reaches neither artifact
 

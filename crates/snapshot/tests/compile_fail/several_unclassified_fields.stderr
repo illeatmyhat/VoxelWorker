@@ -5,6 +5,7 @@ error: field `orbit_target` is not classified: every field of application state 
            #[snapshot(settings)]  — a user preference outliving any one project; reaches the dump, not the document
            #[snapshot(document)]  — what the model IS; reaches the document, and so also the dump
            #[snapshot(view)]      — where you are working rather than what the model is; reaches the dump, not the document
+           #[snapshot(session)]   — how the workspace was left, not what the user prefers; reaches the dump, not the document
            #[snapshot(transient)] — genuinely momentary; reaches neither artifact — justify it in review
            #[snapshot(derived)]   — reconstructible from classified state alone; reaches neither artifact
 
@@ -23,6 +24,7 @@ error: field `view_mode` is not classified: every field of application state mus
            #[snapshot(settings)]  — a user preference outliving any one project; reaches the dump, not the document
            #[snapshot(document)]  — what the model IS; reaches the document, and so also the dump
            #[snapshot(view)]      — where you are working rather than what the model is; reaches the dump, not the document
+           #[snapshot(session)]   — how the workspace was left, not what the user prefers; reaches the dump, not the document
            #[snapshot(transient)] — genuinely momentary; reaches neither artifact — justify it in review
            #[snapshot(derived)]   — reconstructible from classified state alone; reaches neither artifact
 

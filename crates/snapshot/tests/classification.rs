@@ -100,6 +100,7 @@ fn category_vocabulary_matches_the_derive() {
         StateCategory::Settings,
         StateCategory::Document,
         StateCategory::View,
+        StateCategory::Session,
         StateCategory::Transient,
         StateCategory::Derived,
     ]
@@ -108,7 +109,7 @@ fn category_vocabulary_matches_the_derive() {
     .collect();
     assert_eq!(
         spellings,
-        ["settings", "document", "view", "transient", "derived"]
+        ["settings", "document", "view", "session", "transient", "derived"]
     );
     // Each spelling round-trips through the derive: if the derive did not accept one of
     // these words, the `ExampleState` above would not have compiled.
