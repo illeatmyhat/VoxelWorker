@@ -9,10 +9,14 @@ use document::voxel::GeometryParams;
 use voxel_core::core_geom::MaterialChoice;
 
 /// The viewer's exclusive rendering mode (ADR 0018 Decision 3). The viewer is always in
-/// exactly one of these three; the mode is **viewer state, never document state** — it
-/// follows the active selection, is not saved with the scene, and never enters undo
-/// history (the [`PanelState`] display-param precedent, like [`ProjectionMode`]). Sticky
-/// across selection changes; default [`Normal`](Self::Normal).
+/// exactly one of these three; the mode is **never document state** — it follows the
+/// active selection, is not saved with the scene, and never enters undo history (the
+/// [`PanelState`] display-param precedent, like [`ProjectionMode`]). Sticky across
+/// selection changes; default [`Normal`](Self::Normal).
+///
+/// It **is** restored across relaunch, as *session* state (ADR 0024): out of the document,
+/// into the dump. ADR 0018 Decision 3 said "not saved with the scene" and the code read
+/// that as "not saved at all", which is the narrower claim it never made.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum ViewMode {
     /// The finished look: no ghosts, no band clip, anywhere (ADR 0018 Decision 4).
@@ -60,8 +64,10 @@ impl ViewMode {
 ///
 /// The stack is the near-black instrument panel that floats top-right of the 3D viewport
 /// (the cube + rail slide left of it). Whether it is folded to edge tabs, and which
-/// sections are open, are **viewer state, never document state** — like [`ViewMode`], they
-/// follow the session, are not saved with the scene, and never enter undo history.
+/// sections are open, are **never document state** — like [`ViewMode`], they are not saved
+/// with the scene and never enter undo history. They follow the *session*, and since
+/// ADR 0024 that is a category with a route rather than a figure of speech: the fold state
+/// is restored on relaunch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SignalStackState {
     /// When `true` the whole stack is collapsed to vertical edge tabs hugging the
@@ -223,18 +229,24 @@ pub struct PanelState {
     /// outward face normal + a back-facing marker, cull off). Display toggle, OFF
     /// by default; the standard way to verify face winding/culling.
     ///
-    /// View state, on the same footing as [`view_mode`](Self::view_mode): it decides what
-    /// the viewer shows and nothing about what the model is. It is not written to the
-    /// config today, which is a separate question from where it belongs — a debug mode a
-    /// fault was observed under is precisely the sort of thing a dump must carry.
-    #[snapshot(view)]
+    /// **Session** state, on the same footing as [`view_mode`](Self::view_mode): it
+    /// describes what the workspace was doing, not what the model is and not what the
+    /// user prefers. The note that used to sit here — "a debug mode a fault was observed
+    /// under is precisely the sort of thing a dump must carry" — was right, and ADR 0024
+    /// is where it stopped being an observation and became a route.
+    #[snapshot(session)]
     pub debug_face_orientation: bool,
     /// Grazing-rim DIAGNOSTIC for the BRICK raymarch (`set_debug_mode`): shade every hit
     /// by its face axis + a per-voxel UV checkerboard, so a wrong first-hit voxel/face
     /// shows as a face-colour break and a UV smear. Unlike `debug_face_orientation` (which
     /// drops to the mesh path), this keeps the brick path ENGAGED — it IS the path under
-    /// investigation. Display toggle, OFF by default; never serialized.
-    #[snapshot(view)]
+    /// investigation. Display toggle, OFF by default.
+    ///
+    /// **Session** state (ADR 0024). This one makes the argument by itself: the diagnostic
+    /// exists to be on while a rendering fault is being chased, so an F9 dump taken during
+    /// that chase and replayed without it reproduces the wrong picture — the pan-target
+    /// bug wearing a different hat.
+    #[snapshot(session)]
     pub debug_brick_faces: bool,
     /// When `Some`, the 3D rebuild was skipped because the grid exceeds the
     /// voxel cap; the panel shows a warning. Set by the caller after it decides
@@ -254,16 +266,24 @@ pub struct PanelState {
     /// header) — the label is the only surviving record of the pick.
     #[snapshot(settings)]
     pub applied_block_label: Option<String>,
-    /// The viewer's exclusive rendering mode (ADR 0018 Decision 3): Normal / Onion fog /
-    /// Show booleans. Display-only viewer state (no rebuild, never serialized, never in
-    /// undo). Sticky across selection changes; defaults to Normal.
-    #[snapshot(view)]
+    /// The viewer's exclusive rendering mode: Normal / Onion fog / Show booleans. No
+    /// rebuild, never in undo, sticky across selection changes; defaults to Normal.
+    ///
+    /// **Session** state, and the field the category was named for (ADR 0024, superseding
+    /// ADR 0018 Decision 3). It stays out of the document exactly as Decision 3 required —
+    /// what changed is that "not document state" was being read as "not persisted at all",
+    /// and those are different claims. Leaving the app in Onion fog and finding it in
+    /// Normal on relaunch is losing work, in the small.
+    #[snapshot(session)]
     pub view_mode: ViewMode,
-    /// The floating Signal display stack's viewer state (issue #88): folded-to-edge-tabs
-    /// and per-section open/closed. Display-only viewer state (never serialized / undone),
-    /// like [`view_mode`](Self::view_mode). Classified as one object — the four section
-    /// flags inside it are not annotated, and do not need to be.
-    #[snapshot(view)]
+    /// The floating Signal display stack's state (issue #88): folded-to-edge-tabs and
+    /// per-section open/closed.
+    ///
+    /// **Session** state alongside [`view_mode`](Self::view_mode) — where the furniture
+    /// was left, which is not a preference the user would want imposed on a project and
+    /// not something the model is. Classified as one object; the four section flags inside
+    /// it are not annotated, and do not need to be.
+    #[snapshot(session)]
     pub stack: SignalStackState,
     /// Layer-range scrubber state (issue #12): the visible band along Z (Z-up: layers
     /// are Z-slices) plus the snap/onion controls. Bounds clamped/rescaled on rebuild.

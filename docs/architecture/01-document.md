@@ -222,13 +222,34 @@ The payoff for this austerity:
 
 ## Persistence
 
-Two things persist, and they are not the same thing:
+Every field of application state is **classified**, and a field that classifies itself as
+nothing does not compile. There are four destinations, and only the first is a routing
+decision — the rest all reach the debug dump, and are distinct because they answer
+different questions at the field, where whoever adds the next field will be reading:
 
-- **The document** — the scene graph and its operations. This is the user's work; its
-  format is versioned and treated with the care of a file format.
-- **Preferences** — camera, window, panel state, last-used paths. These are
-  conveniences; they carry no design intent and no compatibility promise. A stale
-  preference is deleted, not migrated.
+- **Document** — the scene graph and its operations. This is the user's work; its format
+  is versioned and treated with the care of a file format.
+- **Settings** — what the user *chose* and would want in every project: the projection,
+  the window size, the Home view they pressed a button to keep.
+- **Session** — how the workspace was *left*: the viewer mode, the folded panels, the
+  diagnostic overlays. The browser's bargain — close it, open it, and your tabs come
+  back. Restored across relaunch, never inside a shared file.
+- **View** — where the author was *looking from*: the camera pose, the layer band.
 
-The discipline is to never let a convenience leak into the document format, and never
-to let document data hide in preferences.
+The last three carry no design intent and no compatibility promise; a stale one is
+deleted, not migrated. The discipline is to never let any of them leak into the document
+format, and never to let document data hide in one of them.
+
+Two artifacts consume those categories. **The document** carries what the model is.
+**The dump** is the superset — every category — because its defining property is that a
+scene must be completely reproducible from it; it needs no versioning, being read by the
+build that wrote it. Both the exit save and the F9 repro write a dump, since restoring a
+session needs the scene *and* the preferences *and* the camera pose.
+
+The guarantee has two halves, deliberately not one mechanism. **Classification** is
+recorded at the field, in review-visible form. **Completeness** comes from exhaustive
+destructuring: every capture binds every field with no rest pattern, so adding a field
+stops the build until somebody says where it goes. A category alone would classify a
+type and say nothing about whether each field made the trip — which is exactly how a
+camera pan target once went missing from a repro while sitting inside a camera that was
+already "captured".

@@ -260,16 +260,24 @@ artifact. A field of `PanelState` still can, and four currently do.**
 
 ## Open
 
-- **Extending the guarantee to the `PanelState` → `AppConfig` seam**, which is where the
+- ~~**Extending the guarantee to the `PanelState` → `AppConfig` seam**, which is where the
   reachability promise currently stops (see the amendment above). Blocked on an owner ruling:
   `view_mode` and `stack` are classified `view` but were deliberately excluded from
-  persistence, and those two positions cannot both stand.
+  persistence, and those two positions cannot both stand.~~ **Closed by
+  [ADR 0024](0024-session-state.md) (2026-07-20).** The owner ruled: the four fields are
+  **session** state — a third top-level category — and they now route through
+  `SessionArtifact`. The seam gets a test rather than a compiler (`PanelState` is read by hand
+  on purpose), and the subset carriers the amendment above called subtler are now declared by
+  name in `tests/state_classification.rs` instead of being merely true.
 - The **static / thread-local / GPU audit** this ADR says is owed. Nothing built so far narrows
   it.
 - Whether a display-only **hidden** — distinct from `enabled` — is worth adding. In a fold
   model, "show me this cutter without its cut" may not be a meaningful request; it is currently
   not expressible at all, which is a fact rather than a decision.
-- The category list beyond settings / document / view, and which artifacts each reaches.
+- ~~The category list beyond settings / document / view, and which artifacts each reaches.~~
+  Two answers so far: **derived** (ADR 0023) and **session** (ADR 0024), which also records
+  the general shape — only `document` is a routing decision, every other category reaches the
+  dump and exists to make the *reason* legible at the field.
 - Whether the **document** ever earns a file of its own, which is the point at which it needs
   the versioning decision 1 promises it. Nothing in the split forecloses it; nothing yet
   requires it.

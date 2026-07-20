@@ -5,6 +5,10 @@
   display paths, the #78/#79 overlay-surface retirement, and the Signal chrome (view cube / rail / status
   line / folding display stack per `docs/design/viewport-chrome-signal.md`). Supersedes the display
   surfaces of issues #78/#79 and amends ADR 0012's scene-wide onion clip to a per-object, mode-gated one.
+  **Decision 3 partly superseded by [ADR 0024](0024-session-state.md) (2026-07-20):** the viewer mode
+  remains out of the document and out of undo, exactly as decision 3 requires, but "is not saved with the
+  scene" had been implemented as "is not saved at all" — a wider claim decision 3 never made. The mode is
+  now **session** state and is restored across relaunch. The rest of this record stands.
 - **Date:** 2026-07-16
 - **Layer:** DISPLAY + UI + document vocabulary. Governed by [ADR 0006](0006-authoring-truth-and-gpu-boundary.md)
   (display is never truth) and [ADR 0017](0017-composition-beyond-union.md) (sealed scopes, ordered fold —

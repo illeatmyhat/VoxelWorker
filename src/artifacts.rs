@@ -1,4 +1,4 @@
-//! # The three persistence artifacts (ADR 0022)
+//! # The persistence artifacts (ADR 0022, extended by ADR 0024)
 //!
 //! One structure used to serve as config, project and debug repro at once, and the cost
 //! of that was concrete: the camera's orbit target went missing from the F9 dump for a
@@ -8,13 +8,21 @@
 //! reaches; what follows is the code that actually carries it there, written so that the
 //! compiler refuses a field nobody routed.
 //!
-//! ## Why three, and what each one is for
+//! ## What each one is for
 //!
 //! * [`DocumentArtifact`] is what the model **is** — today, the scene and nothing else.
 //!   It is the thing that would be shared and reopened, so a preference or a scrubber
 //!   position travelling inside it would impose one person's session on everyone.
 //! * [`SettingsArtifact`] is preference that outlives any one project: the window size,
 //!   the projection, the Home view the user deliberately kept.
+//! * [`ViewArtifact`] is where the author was looking from: the camera pose, the layer
+//!   band, the density mirror.
+//! * [`SessionArtifact`] is how they had the workspace arranged while looking (ADR 0024):
+//!   the viewer mode, the folded panels, the diagnostic overlays. It shares the view's
+//!   destinations exactly — dump yes, document no — and is a separate type because the
+//!   *question* differs, which is the same reason settings and view are separate types
+//!   despite also routing identically. Categories here record meaning; only the document
+//!   boundary is a routing decision.
 //! * [`Dump`] is the **superset** — every setting, every input, every piece of view
 //!   state, because its defining property is that a scene is completely reproducible
 //!   from it. It is what F9 writes and what `shot --from-config` replays.
@@ -62,6 +70,7 @@ use serde::{Deserialize, Serialize};
 
 use camera::ProjectionMode;
 use document::scene::Scene;
+use ui::panel::{SignalStackState, ViewMode};
 use voxel_core::core_geom::MaterialChoice;
 
 use crate::settings::AppConfig;
@@ -76,6 +85,32 @@ use crate::settings::AppConfig;
 enum ProjectionModeConfig {
     Perspective,
     Orthographic,
+}
+
+/// The same shim for the `ui` crate's [`ViewMode`]. `ui` links egui and the domain crates
+/// and no serde (ADR 0016's crate law), so the viewer mode is persisted from out here,
+/// exactly as the projection is. Mirrors all three variants; a dump naming a variant this
+/// build does not have fails its part's deserialize and falls back to the default, which
+/// is the same tolerance every other key gets.
+#[derive(Serialize, Deserialize)]
+#[serde(remote = "ViewMode")]
+enum ViewModeConfig {
+    Normal,
+    OnionFog,
+    ShowBooleans,
+}
+
+/// And for the Signal display stack's fold state. A struct rather than an enum, which
+/// changes nothing about why the shim is needed: the type lives in a crate that cannot
+/// name serde, and the four flags are what "classified as one object, saved whole" means
+/// in practice — none of them is annotated, and all four travel.
+#[derive(Serialize, Deserialize)]
+#[serde(remote = "SignalStackState")]
+struct SignalStackStateConfig {
+    folded: bool,
+    viewport_open: bool,
+    onion_open: bool,
+    grids_open: bool,
 }
 
 /// What the model **is**: the project a user would save, share and reopen.
@@ -183,6 +218,45 @@ pub struct ViewArtifact {
     pub orbit_target: [f32; 3],
 }
 
+/// How the workspace was left, which is neither what the model is nor what the user
+/// prefers.
+///
+/// The browser bargain (ADR 0024): close it, open it, and your tabs come back — nobody
+/// files that under preferences, and nobody expects it inside a document they share. The
+/// membership test that separates this from [`SettingsArtifact`] next door is **chosen
+/// versus left**: a Home view is a viewpoint the user pressed a button to keep, whereas a
+/// viewer mode is simply the one they were last in.
+///
+/// Every field here was classified as reaching the dump and reached nothing, for a
+/// release — hard-coded to a default in `AppConfig::to_panel_state` and captured by
+/// nobody. That is the same shape as the pan-target bug the whole scheme was built
+/// around, and it survived because `PanelState` had no exhaustive capture. This struct is
+/// the route those four fields were promised; `tests/state_classification.rs` is what
+/// stops the promise being broken again.
+/// Its `Default` derives, where [`SettingsArtifact`]'s and [`ViewArtifact`]'s are written
+/// out — the session's defaults are each type's own (Normal, the expanded stack, both
+/// diagnostics off), so there is nothing to state that the field types do not already say.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct SessionArtifact {
+    /// The viewer's exclusive rendering mode. ADR 0018 decision 3 kept it out of the
+    /// document and the implementation read that as out of persistence entirely;
+    /// ADR 0024 supersedes that half.
+    #[serde(default, with = "ViewModeConfig")]
+    pub view_mode: ViewMode,
+    /// The floating Signal display stack: folded to edge tabs, and which sections are
+    /// open. Saved whole, per ADR 0022's amendment — all four flags, not a subset.
+    #[serde(default = "default_signal_stack", with = "SignalStackStateConfig")]
+    pub stack: SignalStackState,
+    /// The face-orientation debug shading (colour by outward normal, cull off).
+    #[serde(default)]
+    pub debug_face_orientation: bool,
+    /// The brick-raymarch grazing-rim diagnostic. A dump taken while chasing a rendering
+    /// fault has to replay with the diagnostic that was revealing it, or it replays a
+    /// different picture than the one the bug was seen in.
+    #[serde(default)]
+    pub debug_brick_faces: bool,
+}
+
 /// The debugging artifact, and the superset: **a scene must be completely reproducible
 /// from it.**
 ///
@@ -208,6 +282,8 @@ pub struct Dump {
     pub settings: SettingsArtifact,
     /// Where the author was working and looking from.
     pub view: ViewArtifact,
+    /// How their workspace was arranged while they were.
+    pub session: SessionArtifact,
 }
 
 impl DocumentArtifact {
@@ -232,6 +308,13 @@ impl DocumentArtifact {
             orbit_phi: _,
             orbit_distance: _,
             orbit_target: _,
+            // Declined — session state. Which viewer mode somebody was in, and which
+            // panels they had folded, is the most obviously personal thing here: it is
+            // not even a preference they chose, merely where they stopped.
+            view_mode: _,
+            stack: _,
+            debug_face_orientation: _,
+            debug_brick_faces: _,
             // Declined — settings. A preference inside a shared file would impose one
             // person's setup on everyone who opened it.
             projection_mode: _,
@@ -280,6 +363,10 @@ impl Dump {
             home_distance,
             home_explicit,
             window_size,
+            view_mode,
+            stack,
+            debug_face_orientation,
+            debug_brick_faces,
         } = state;
         Self {
             document: DocumentArtifact {
@@ -306,6 +393,12 @@ impl Dump {
                 orbit_distance: *orbit_distance,
                 orbit_target: *orbit_target,
             },
+            session: SessionArtifact {
+                view_mode: *view_mode,
+                stack: *stack,
+                debug_face_orientation: *debug_face_orientation,
+                debug_brick_faces: *debug_brick_faces,
+            },
         }
     }
 
@@ -322,6 +415,7 @@ impl Dump {
             document,
             settings,
             view,
+            session,
         } = self;
         AppConfig {
             scene: document.scene,
@@ -342,6 +436,10 @@ impl Dump {
             home_distance: settings.home_distance,
             home_explicit: settings.home_explicit,
             window_size: settings.window_size,
+            view_mode: session.view_mode,
+            stack: session.stack,
+            debug_face_orientation: session.debug_face_orientation,
+            debug_brick_faces: session.debug_brick_faces,
         }
     }
 
@@ -357,6 +455,7 @@ impl Dump {
             serde_json::to_value(&self.document),
             serde_json::to_value(&self.settings),
             serde_json::to_value(&self.view),
+            serde_json::to_value(&self.session),
         ] {
             let part = part.map_err(|error| error.to_string())?;
             let serde_json::Value::Object(fields) = part else {
@@ -383,6 +482,7 @@ impl Dump {
             document: DocumentArtifact::deserialize(&value)?,
             settings: SettingsArtifact::deserialize(&value)?,
             view: ViewArtifact::deserialize(&value)?,
+            session: SessionArtifact::deserialize(&value)?,
         })
     }
 }
@@ -444,6 +544,12 @@ pub(crate) fn default_window_size() -> [u32; 2] {
 pub(crate) fn default_onion_depth() -> u32 {
     2
 }
+/// The stack's own default (expanded, every section open), not a second copy of it — a
+/// persisted default can never drift from the live one, the same reason the camera
+/// defaults above delegate to `OrbitCamera::default()`.
+pub(crate) fn default_signal_stack() -> SignalStackState {
+    SignalStackState::default()
+}
 
 #[cfg(test)]
 mod tests {
@@ -472,6 +578,18 @@ mod tests {
             home_distance: 18.0,
             home_explicit: true,
             window_size: [1600, 900],
+            // Every session field off its default too, for the same reason as the rest:
+            // a capture that dropped one would otherwise coincide with what a default
+            // restore produces, and pass.
+            view_mode: ViewMode::ShowBooleans,
+            stack: SignalStackState {
+                folded: true,
+                viewport_open: false,
+                onion_open: true,
+                grids_open: false,
+            },
+            debug_face_orientation: true,
+            debug_brick_faces: true,
         }
     }
 

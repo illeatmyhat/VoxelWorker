@@ -40,6 +40,12 @@ pub(crate) struct ShotOptions {
     /// the selected subtree's boolean operands; Onion-fog keeps its scene-wide band meaning
     /// this slice.
     pub(crate) view_mode: ViewMode,
+    /// Was `--view-mode` actually passed? Since ADR 0024 a dump carries the viewer mode,
+    /// so `--from-config` has one to adopt — and the two sources need an order. An
+    /// explicit flag wins; silence lets the dump speak. Without this marker the default
+    /// `Normal` would be indistinguishable from a chosen `Normal` and would quietly
+    /// override every repro.
+    pub(crate) view_mode_explicit: bool,
     /// `--stack-folded` (issue #88): start the floating Signal display stack FOLDED to its
     /// vertical edge tabs (the cube + rail slide right toward the edge). There is no pointer
     /// input on the single `shot` frame, so this flag is how the folded-state golden is
@@ -300,6 +306,7 @@ impl Default for ShotOptions {
             select_node: None,
             select_root: false,
             view_mode: ViewMode::Normal,
+            view_mode_explicit: false,
             stack_folded: false,
             show_block_lattice: false,
             show_floor_grid: false,
@@ -580,6 +587,7 @@ pub(crate) fn parse_options() -> ShotOptions {
             "--view-mode" => {
                 options.view_mode =
                     parse_view_mode(&args.next().expect("--view-mode requires a value"));
+                options.view_mode_explicit = true;
             }
             "--stack-folded" => {
                 options.stack_folded = true;

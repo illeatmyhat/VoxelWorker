@@ -10,6 +10,13 @@
 //! compiler stop complaining without deciding anything, and ADR 0022 says plainly that
 //! whether they stay honest depends on review. A test that names each one by hand is how
 //! a new one gets noticed — adding an escape hatch should cost a deliberate edit here.
+//!
+//! Since ADR 0024 there is a third, and it is the one with a scar behind it: that every
+//! field classified as reaching the dump has an actual route into it. The compiler
+//! delivers that on `AppConfig`, whose captures destructure exhaustively, and cannot
+//! deliver it on `PanelState`, which is read by hand — so four panel fields spent a
+//! release promising the dump and reaching nothing. That gap is now a test rather than an
+//! amendment describing a gap.
 
 use snapshot::{Snapshot, StateCategory};
 use ui::panel::PanelState;
@@ -107,76 +114,138 @@ fn the_pan_target_that_started_this_is_classified() {
         .reaches_dump());
 }
 
-/// The reachability guarantee holds at one seam and not at the other, and this pins the
-/// gap so that it is a tracked fact rather than a discovery waiting to happen.
+/// The two objects that are classified whole and carried as a hand-picked subset, named
+/// so that being a subset stays a deliberate act.
+///
+/// `PanelState::geometry` and `PanelState::layer_range` are each classified as ONE view
+/// object, and each reaches `AppConfig` as some of its fields — the density out of
+/// `GeometryParams`, the three sticky preferences out of `LayerRange`. The band bounds are
+/// a defensible omission (they re-derive against the live grid); the density mirror's
+/// siblings are the inspector's in-progress edit, which is genuinely momentary. The point
+/// is not that these calls are wrong, it is that a subset must be *declared* — otherwise
+/// nothing distinguishes a defensible omission from the pan-target kind.
+const CARRIED_AS_A_SUBSET: &[(&str, &[&str])] = &[
+    ("geometry", &["voxels_per_block"]),
+    (
+        "layer_range",
+        &["snap_to_blocks", "onion_skin", "onion_depth"],
+    ),
+];
+
+/// **The seam that lost four fields for a release.**
 ///
 /// `src/artifacts.rs` destructures `AppConfig` exhaustively, so a classified field there
-/// cannot fail to reach an artifact. Nothing does the same for `PanelState`:
-/// `AppConfig::capture` reads the panel field by field, by hand, exactly the way the
-/// capture that lost the pan target did. So `PanelState` classification is presently a
-/// *statement of intent* — the compiler checks that every field is decided, and nothing
-/// checks that the decision is honoured.
+/// cannot fail to reach an artifact — that is a compile error. Nothing gives `PanelState`
+/// the same treatment: `AppConfig::capture` reads the panel field by field, by hand,
+/// exactly the way the capture that lost the pan target did. The compiler can only check
+/// that a panel field is *decided*; whether the decision is *honoured* is this test's job,
+/// and before ADR 0024 nothing did it at all.
 ///
-/// The four fields below are the live consequence. Each is classified `view`, which by
-/// the derive's own error text means it reaches the dump; each is hard-coded to a default
-/// in `to_panel_state` and captured by nobody. Two of them (`view_mode`, `stack`) were
-/// deliberately excluded from persistence by ADR 0018 Decision 3 and issue #88 — so this
-/// is not a bug to fix quietly, it is a contradiction between two decisions that needs an
-/// owner ruling: either those fields are not `view`, or the dump is not capturing what it
-/// claims to.
+/// What that cost: `view_mode`, `stack`, `debug_face_orientation` and `debug_brick_faces`
+/// were classified `view` — which by the derive's own error text means they reach the dump
+/// — and were hard-coded to defaults in `to_panel_state`, captured by nobody. A category
+/// promising one thing while the code did another, silently, because no test asked.
+///
+/// So this asks. Every `PanelState` field whose category reaches the dump must have a
+/// route there: a same-named `AppConfig` field, or membership in
+/// [`CARRIED_AS_A_SUBSET`] above. Adding a dump-reaching panel field without one now fails
+/// here rather than in somebody's unreproducible repro.
 #[test]
-fn panel_state_classification_is_not_yet_enforced_by_any_capture() {
-    // Fields whose category promises the dump, and whose value the dump has no route to.
-    let unreached = ["debug_face_orientation", "debug_brick_faces", "view_mode", "stack"];
-    for name in unreached {
-        assert_eq!(
-            PanelState::category_of(name).map(|category| category.reaches_dump()),
-            Some(true),
-            "`{name}` is expected to be classified as reaching the dump"
-        );
+fn every_dump_reaching_panel_field_has_a_route_into_the_dump() {
+    for field in PanelState::CLASSIFIED_FIELDS {
+        if !field.category.reaches_dump() {
+            continue;
+        }
+        if let Some((_, carried)) = CARRIED_AS_A_SUBSET
+            .iter()
+            .find(|(object, _)| *object == field.name)
+        {
+            for piece in *carried {
+                assert!(
+                    AppConfig::category_of(piece).is_some(),
+                    "`{piece}` is declared as the piece of `{}` that reaches the dump, but \
+                     `AppConfig` has no such field",
+                    field.name
+                );
+            }
+            continue;
+        }
         assert!(
-            AppConfig::category_of(name).is_none(),
-            "`{name}` gained a route into the dump — delete it from this list and from the \
-             gap recorded in ADR 0022"
+            AppConfig::category_of(field.name).is_some(),
+            "`{}` is classified {:?}, which reaches the dump, but `AppConfig` carries no \
+             field of that name and it is not declared as carried in a subset. This is the \
+             defect ADR 0024 closed, recurring: either route the field, or declare the \
+             subset in `CARRIED_AS_A_SUBSET`, or classify it as something that does not \
+             claim to persist",
+            field.name,
+            field.category
         );
     }
 }
 
-/// The other half of the same gap, and the more surprising one.
-///
-/// ADR 0022's amendment states that "a classified object is saved whole", on the grounds
-/// that serialization carries every field inside it. That holds only where the object
-/// itself is what gets serialized. `PanelState::geometry` and `PanelState::layer_range`
-/// are each classified as ONE view object, and each is carried into `AppConfig` as a
-/// hand-picked subset of its fields — the density out of `GeometryParams`, the three
-/// sticky preferences out of `LayerRange`. Whatever else those types hold does not travel,
-/// and no destructuring anywhere says so.
-///
-/// The band bounds are a defensible omission (they re-derive against the live grid). The
-/// point is that nothing distinguishes a defensible omission from the pan-target kind.
+/// The categories agree across the seam. A field routed under one name must not be view
+/// state on one side and settings on the other — the two structs would then disagree about
+/// what a shared project file may contain, which is the one boundary that is a routing
+/// decision rather than a matter of meaning.
 #[test]
-fn classified_panel_objects_are_carried_as_subsets_not_whole() {
-    for (object, carried) in [
-        ("geometry", &["voxels_per_block"][..]),
-        (
-            "layer_range",
-            &["snap_to_blocks", "onion_skin", "onion_depth"][..],
-        ),
-    ] {
+fn a_field_carried_across_the_seam_keeps_its_category() {
+    for field in PanelState::CLASSIFIED_FIELDS {
+        let Some(config_category) = AppConfig::category_of(field.name) else {
+            continue;
+        };
         assert_eq!(
-            PanelState::category_of(object),
-            Some(StateCategory::View),
-            "`{object}` is classified as one view object"
+            config_category, field.category,
+            "`{}` is classified {:?} on `PanelState` and {:?} on `AppConfig`",
+            field.name, field.category, config_category
         );
-        assert!(
-            AppConfig::category_of(object).is_none(),
-            "`{object}` now travels whole — this gap has closed, update ADR 0022"
-        );
-        for field in carried {
-            assert!(
-                AppConfig::category_of(field).is_some(),
-                "`{field}` is the piece of `{object}` that actually reaches the dump"
-            );
-        }
     }
+}
+
+/// The session category (ADR 0024), pinned the way the document set is: by naming its
+/// membership, so that a field joining or leaving it costs a deliberate edit here.
+///
+/// These four are the ones ADR 0018 decision 3 and issue #88 kept out of persistence
+/// entirely, on a reading of "not document state" that the owner has since narrowed back
+/// to what it says. They are in the dump and out of the document — the browser's bargain,
+/// which is the whole content of the category.
+#[test]
+fn the_session_is_the_workspace_and_nothing_else() {
+    let session_fields: Vec<&str> = AppConfig::CLASSIFIED_FIELDS
+        .iter()
+        .filter(|field| field.category == StateCategory::Session)
+        .map(|field| field.name)
+        .collect();
+    assert_eq!(
+        session_fields,
+        [
+            "view_mode",
+            "stack",
+            "debug_face_orientation",
+            "debug_brick_faces"
+        ],
+        "the session set changed: a field joining it now survives relaunch, and a field \
+         leaving it stops surviving one"
+    );
+
+    // The same four, classified the same way on the struct they are captured from. The
+    // preceding test proves they have a route; this proves both ends call it the same
+    // thing.
+    for name in session_fields {
+        assert_eq!(
+            PanelState::category_of(name),
+            Some(StateCategory::Session),
+            "`{name}` is session state on `AppConfig` but not on `PanelState`"
+        );
+    }
+}
+
+/// Session state reaches the dump and never the document. Stated against the category
+/// itself rather than against the field list, because this is the property that makes it a
+/// sibling of `view` rather than of `document` — a viewer mode inside a shared project file
+/// would impose one person's session on everyone who opened it, which is precisely what
+/// ADR 0018 decision 3 was protecting and what ADR 0024 leaves untouched.
+#[test]
+fn session_state_is_dumped_and_never_documented() {
+    assert!(StateCategory::Session.reaches_dump());
+    assert!(!StateCategory::Session.reaches_document());
 }

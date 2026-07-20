@@ -20,7 +20,7 @@
 
 use camera::{HomeView, OrbitCamera, ProjectionMode};
 use voxel_core::core_geom::MaterialChoice;
-use ui::panel::{LayerRange, PanelState, ViewMode};
+use ui::panel::{LayerRange, PanelState, SignalStackState, ViewMode};
 use document::scene::Scene;
 use document::voxel::GeometryParams;
 
@@ -149,6 +149,35 @@ pub struct AppConfig {
     // --- window ---
     #[snapshot(settings)]
     pub window_size: [u32; 2],
+
+    // --- session: how the workspace was left (ADR 0024) ---
+    // These four were classified on `PanelState` as reaching the dump and reached
+    // nothing: `to_panel_state` hard-coded every one of them to a default, and no field
+    // here carried them. That is the pan-target bug exactly — a decision recorded at the
+    // field and never honoured by a capture — and it survived because the
+    // `PanelState` -> `AppConfig` seam is hand-written, which is the gap ADR 0022's third
+    // amendment recorded. These fields are that seam being closed.
+    //
+    // Session rather than view: they say how the workspace was arranged, not where the
+    // camera was. Session rather than settings: nobody chose them, they are merely where
+    // the user stopped, and a preference is something you would want honoured in every
+    // project.
+    /// The viewer's exclusive rendering mode. ADR 0018 decision 3 ruled it out of the
+    /// document, which stands; ADR 0024 supersedes the part where that was implemented as
+    /// out of persistence altogether.
+    #[snapshot(session)]
+    pub view_mode: ViewMode,
+    /// The Signal display stack's fold + per-section open state (issue #88), carried
+    /// whole rather than as a hand-picked subset.
+    #[snapshot(session)]
+    pub stack: SignalStackState,
+    /// Face-orientation debug shading.
+    #[snapshot(session)]
+    pub debug_face_orientation: bool,
+    /// The brick-raymarch grazing-rim diagnostic. A repro of a rendering fault that drops
+    /// the diagnostic the fault was visible under is not a repro.
+    #[snapshot(session)]
+    pub debug_brick_faces: bool,
 }
 
 impl Default for AppConfig {
@@ -172,6 +201,10 @@ impl Default for AppConfig {
             home_distance: default_distance(),
             home_explicit: false,
             window_size: default_window_size(),
+            view_mode: ViewMode::default(),
+            stack: SignalStackState::default(),
+            debug_face_orientation: false,
+            debug_brick_faces: false,
         }
     }
 }
@@ -211,6 +244,13 @@ impl AppConfig {
             home_distance: home_view.distance,
             home_explicit: home_view.explicitly_set,
             window_size,
+            // ADR 0024: the session fields. Read straight off the panel, which is all
+            // they ever needed — the omission was never subtle, it was simply never
+            // forced to be noticed.
+            view_mode: panel.view_mode,
+            stack: panel.stack,
+            debug_face_orientation: panel.debug_face_orientation,
+            debug_brick_faces: panel.debug_brick_faces,
         }
     }
 
@@ -264,11 +304,13 @@ impl AppConfig {
             projection_mode: self.projection_mode,
             material: self.material,
             show_view_cube: self.show_view_cube,
-            // Face-orientation debug is a transient verification mode; it is not
-            // persisted, so it always starts off.
-            debug_face_orientation: false,
-            // Brick-faces diagnostic is likewise transient (never persisted).
-            debug_brick_faces: false,
+            // ADR 0024: the debug verification modes are session state and are restored,
+            // not reset. They used to be hard-coded to `false` here while classified as
+            // reaching the dump — a category promising one thing and the code doing
+            // another, which is the failure mode the classification exists to make
+            // visible rather than one it is allowed to have.
+            debug_face_orientation: self.debug_face_orientation,
+            debug_brick_faces: self.debug_brick_faces,
             voxel_cap_warning_millions: None,
             // Re-applied lazily/best-effort: only the label is restored (for the
             // panel readout); the material itself reverts to procedural.
@@ -282,12 +324,13 @@ impl AppConfig {
                 onion_skin: self.onion_skin,
                 onion_depth: self.onion_depth.clamp(1, 8),
             },
-            // ADR 0018 Decision 3: the viewer mode is transient view state (never
-            // persisted), so it always starts Normal (the finished look).
-            view_mode: ViewMode::Normal,
-            // Issue #88: the Signal display stack's fold / section-open state is likewise
-            // transient viewer state (never persisted) — it starts expanded, all open.
-            stack: crate::SignalStackState::default(),
+            // ADR 0024, superseding ADR 0018 decision 3: the viewer mode stays out of the
+            // document and is restored across relaunch. Decision 3 said "not saved with
+            // the scene"; this always honoured that, and the reset was the wider claim
+            // nobody made.
+            view_mode: self.view_mode,
+            // Issue #88's stack state travels with it, for the same reason and whole.
+            stack: self.stack,
             // Restored just below: the persisted full scene, or — for an old
             // config without one — the default seed scene.
             scene: Scene::default(),
@@ -456,10 +499,66 @@ mod tests {
             home_distance: 18.0,
             home_explicit: true,
             window_size: [1600, 900],
+            view_mode: ViewMode::OnionFog,
+            stack: SignalStackState {
+                folded: true,
+                viewport_open: false,
+                onion_open: true,
+                grids_open: false,
+            },
+            debug_face_orientation: true,
+            debug_brick_faces: true,
         };
 
         let restored = save_and_reload(&config);
         assert_eq!(config, restored);
+    }
+
+    /// ADR 0024: the session state survives the full live round trip —
+    /// `PanelState → capture → JSON → load → to_panel_state` — which is the leg that was
+    /// broken. Each of these four was classified as reaching the dump and was hard-coded
+    /// to a default on the way back, so a test asserting only that `AppConfig` round-trips
+    /// would have passed throughout. The assertion has to start and end at the panel.
+    #[test]
+    fn the_session_survives_a_relaunch_through_the_panel_and_back() {
+        let mut panel = PanelState::with_view_cube_default();
+        panel.view_mode = ViewMode::OnionFog;
+        panel.stack = SignalStackState {
+            folded: true,
+            viewport_open: false,
+            onion_open: true,
+            grids_open: false,
+        };
+        panel.debug_face_orientation = true;
+        panel.debug_brick_faces = true;
+
+        let config = AppConfig::capture(
+            &panel,
+            &OrbitCamera::default(),
+            HomeView::default(),
+            [1280, 800],
+        );
+        let restored = save_and_reload(&config).to_panel_state();
+
+        assert_eq!(restored.view_mode, ViewMode::OnionFog);
+        assert_eq!(restored.stack, panel.stack);
+        assert!(restored.debug_face_orientation);
+        assert!(restored.debug_brick_faces);
+    }
+
+    /// The other direction of the same promise: a dump written before the session category
+    /// existed carries none of these keys, and must load as the finished look rather than
+    /// failing. Every session field has a serde default, so an old repro still replays —
+    /// which is the reason the dump tolerates missing keys at all.
+    #[test]
+    fn a_dump_without_session_keys_loads_the_finished_look() {
+        let panel = AppConfig::from_dump_json(r#"{"voxels_per_block": 8}"#)
+            .expect("a pre-session dump parses")
+            .to_panel_state();
+        assert_eq!(panel.view_mode, ViewMode::Normal);
+        assert_eq!(panel.stack, SignalStackState::default());
+        assert!(!panel.debug_face_orientation);
+        assert!(!panel.debug_brick_faces);
     }
 
     /// #13: the home-view fields persist through capture→JSON→load, and an OLD

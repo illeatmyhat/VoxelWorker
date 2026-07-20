@@ -149,6 +149,22 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         panel_state.material = restored.material;
         panel_state.projection_mode = config.projection_mode;
         panel_state.applied_block_label = restored.applied_block_label;
+        // ADR 0024: the session state a dump now carries. A repro that replays the scene
+        // and the camera but resets the viewer mode renders a different picture than the
+        // one the fault was reported in, which is the whole failure this category was
+        // added to end. The CLI still wins where it spoke: `--view-mode` when actually
+        // passed, and the two set-only bool flags, which can express `true` and have no
+        // way to say `false` — so an explicit flag ORs on top rather than being erased.
+        if !options.view_mode_explicit {
+            panel_state.view_mode = restored.view_mode;
+        }
+        panel_state.stack = restored.stack;
+        if options.stack_folded {
+            panel_state.stack.folded = true;
+        }
+        panel_state.debug_face_orientation =
+            restored.debug_face_orientation || options.debug_face_orientation;
+        panel_state.debug_brick_faces = restored.debug_brick_faces;
     }
 
     let mut scene = if from_config.is_some() {
