@@ -1,7 +1,7 @@
 use voxel_core::voxel::{Voxel, VoxelGrid, MAX_GRID_VOXELS, SURFACE_ISOLEVEL};
 use rayon::prelude::*;
 use super::*;
-use super::produce::{revolve_box_within_sweep_arc, to_profile_points};
+use super::produce::{revolve_box_within_sweep_arc, to_profile_points, to_profile_points_measured};
 
 /// The revolve field, with every per-solid constant hoisted out of the per-voxel loop.
 ///
@@ -28,7 +28,7 @@ use super::produce::{revolve_box_within_sweep_arc, to_profile_points};
 /// SURFACE_ISOLEVEL` over one field function. This brings the sketch producer to the same
 /// discipline.
 pub(super) struct RevolveField {
-    profile_points: Vec<[f64; 2]>,
+    profile_points: Vec<[f32; 2]>,
     axis: RevolveAxis,
     turn_degrees: u32,
     /// World axis carrying the profile's AXIAL coordinate (un-centred, profile-space).
@@ -52,14 +52,14 @@ impl RevolveField {
     /// The signed distance at a point in the producer's own `[0, full_dim)` voxel frame.
     /// Negative/zero is inside (occupancy is `field <= SURFACE_ISOLEVEL`).
     pub(super) fn signed_distance_at(&self, point_local_voxels: [f32; 3]) -> f32 {
-        // f32 for the centred radial arithmetic, matching the sample the resolve forms.
+        // f32 throughout — the width of the sample the resolve forms, of the geom2d
+        // measurement half, and of the WGSL preview that mirrors this field.
         let centred_a = point_local_voxels[self.radial_a] - self.half_a;
         let centred_b = point_local_voxels[self.radial_b] - self.half_b;
-        let radius = (centred_a * centred_a + centred_b * centred_b).sqrt() as f64;
-        let profile_axial =
-            self.axial_min as f64 + point_local_voxels[self.axial_world_axis] as f64;
+        let radius = (centred_a * centred_a + centred_b * centred_b).sqrt();
+        let profile_axial = self.axial_min as f32 + point_local_voxels[self.axial_world_axis];
 
-        let distance_at = |signed_radius: f64| {
+        let distance_at = |signed_radius: f32| {
             let (sample_0, sample_1) = match self.axis {
                 RevolveAxis::InPlane0 => (profile_axial, signed_radius),
                 RevolveAxis::InPlane1 => (signed_radius, profile_axial),
@@ -81,12 +81,19 @@ impl RevolveField {
         // is the INTERSECTION of two half-planes through the origin (`max`); beyond it,
         // their UNION (`min`).
         if self.turn_degrees < 360 {
-            let turn = (self.turn_degrees as f64).to_radians();
+            let turn = (self.turn_degrees as f32).to_radians();
             // Inside the first edge (angle 0) is the +radial_b side.
-            let past_first_edge = -(centred_b as f64);
+            let past_first_edge = -centred_b;
             // Inside the closing edge is the clockwise side of its direction vector.
-            let past_closing_edge =
-                turn.cos() * centred_b as f64 - turn.sin() * centred_a as f64;
+            //
+            // The width matters here, and narrowing REPAIRS a seam. At turn = 135°
+            // `cos = −sin`, so this collapses to `−k·(centred_a + centred_b)` — exactly
+            // zero along the anti-diagonal, where half-integer lattice sites land precisely
+            // ON the closing edge. True value 0 ⇒ on-boundary ⇒ occupied. In f64 the
+            // libm `cos`/`sin` pair does not cancel and this returns ≈ +4.4e−16, a hair
+            // outside, and the voxel is dropped; in f32 the two round to exact negatives of
+            // each other and it returns +0.0, keeping the voxel. See the flip measurement.
+            let past_closing_edge = turn.cos() * centred_b - turn.sin() * centred_a;
             let to_wedge = if self.turn_degrees <= 180 {
                 past_first_edge.max(past_closing_edge)
             } else {
@@ -94,7 +101,7 @@ impl RevolveField {
             };
             distance = distance.max(to_wedge);
         }
-        distance as f32
+        distance
     }
 
     /// Cheap conservative reject used by the resolve: a sample farther from the axis than
@@ -270,7 +277,7 @@ impl SketchSolid {
         }
 
         Some(RevolveField {
-            profile_points: to_profile_points(&self.sketch.profile),
+            profile_points: to_profile_points_measured(&self.sketch.profile),
             axis,
             turn_degrees: sweep.turn_degrees,
             axial_world_axis,
@@ -295,19 +302,19 @@ impl SketchSolid {
                 // The resolve tests the polygon at `profile_min + cell + 0.5`; a sample point
                 // is already `cell + 0.5`, so profile space is exactly `profile_min + point`.
                 let in_profile = [
-                    profile_min[0] as f64 + point_local_voxels[in_plane_0] as f64,
-                    profile_min[1] as f64 + point_local_voxels[in_plane_1] as f64,
+                    profile_min[0] as f32 + point_local_voxels[in_plane_0],
+                    profile_min[1] as f32 + point_local_voxels[in_plane_1],
                 ];
                 let to_profile = substrate::geom2d::signed_distance_to_polygon(
-                    &to_profile_points(&self.sketch.profile),
+                    &to_profile_points_measured(&self.sketch.profile),
                     in_profile,
                     substrate::geom2d::Metric::Chebyshev,
                 );
                 // `grid_dimensions` sets `dimensions[normal] = height_voxels`, so the solid
                 // spans `[0, height]` along the normal in this frame.
-                let along_normal = point_local_voxels[normal] as f64;
-                let to_slab = (-along_normal).max(along_normal - height_voxels as f64);
-                to_profile.max(to_slab) as f32
+                let along_normal = point_local_voxels[normal];
+                let to_slab = (-along_normal).max(along_normal - height_voxels as f32);
+                to_profile.max(to_slab)
             }
             Operation::Revolve { axis, sweep } => {
                 // ONE evaluation, shared with the resolve — see [`RevolveField`]. The
@@ -600,12 +607,12 @@ impl SketchSolid {
         // centre — §3i). The polygon test is on `min + cell`, which is FULL-derived;
         // only the iterated cell range narrows.
         let _ = (in_plane_span_0, in_plane_span_1);
-        let profile_points = to_profile_points(&self.sketch.profile);
+        let profile_points = to_profile_points_measured(&self.sketch.profile);
         let mut filled_in_plane: Vec<[u32; 2]> = Vec::new();
         for cell_1 in cell_1_lo..cell_1_hi {
-            let sample_1 = min[1] as f64 + cell_1 as f64 + 0.5;
+            let sample_1 = min[1] as f32 + cell_1 as f32 + 0.5;
             for cell_0 in cell_0_lo..cell_0_hi {
-                let sample_0 = min[0] as f64 + cell_0 as f64 + 0.5;
+                let sample_0 = min[0] as f32 + cell_0 as f32 + 0.5;
                 if substrate::geom2d::point_in_polygon(&profile_points, [sample_0, sample_1]) {
                     filled_in_plane.push([cell_0, cell_1]);
                 }

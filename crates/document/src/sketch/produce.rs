@@ -3,12 +3,29 @@ use crate::voxel::VoxelProducer;
 use voxel_core::voxel::VoxelGrid;
 
 /// The profile's vertices as plain `[f64; 2]` points in its native `(c0, c1)` voxel space —
-/// the polygon the [`substrate::geom2d`] predicates consume. Converted ONCE per resolve and
-/// reused across every per-voxel sample, so the hot loops never re-allocate.
+/// the polygon the [`substrate::geom2d`] **predicate** half consumes (the coarse-solid cell
+/// classifier, which needs exact orientation signs well past `f32`'s range). Converted ONCE
+/// per resolve and reused across every per-voxel sample, so the hot loops never re-allocate.
 pub(super) fn to_profile_points(profile: &[SketchPoint]) -> Vec<[f64; 2]> {
     profile
         .iter()
         .map(|point| [point.offset_voxels[0] as f64, point.offset_voxels[1] as f64])
+        .collect()
+}
+
+/// The same profile as `[f32; 2]` points — the polygon the [`substrate::geom2d`]
+/// **measurement** half consumes (distances, and the `point_in_polygon` sign), which is
+/// `f32` because a WGSL preview mirrors it and WGSL has no `f64`.
+///
+/// This converts from the `i64` whole-voxel source DIRECTLY, never by narrowing the `f64`
+/// vector above. Rounding `i64 → f64 → f32` can land a vertex on a different `f32` than
+/// `i64 → f32` does, and a double-rounded vertex would reintroduce precisely the CPU/GPU
+/// divergence the narrowing exists to remove. Two conversions from one integer truth, not
+/// one conversion and a cast.
+pub(super) fn to_profile_points_measured(profile: &[SketchPoint]) -> Vec<[f32; 2]> {
+    profile
+        .iter()
+        .map(|point| [point.offset_voxels[0] as f32, point.offset_voxels[1] as f32])
         .collect()
 }
 

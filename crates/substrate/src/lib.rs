@@ -47,11 +47,15 @@
 //!   [`lattice_key`](spatial::lattice_key) packing codec, the [`Ray`](spatial::Ray) primitive
 //!   with its slab-method box test, and the [`SparseMinMipPyramid`](spatial::SparseMinMipPyramid)
 //!   occupancy fold.
-//! - [`geom2d`] — the planar computational-geometry predicates:
+//! - [`geom2d`] — planar computational geometry, split across two float widths on purpose
+//!   (see its module docs before touching either half). The exact `f64` **predicates**
 //!   [`orient2d`](geom2d::orient2d), [`segments_intersect`](geom2d::segments_intersect),
-//!   [`segment_intersects_rect`](geom2d::segment_intersects_rect),
-//!   [`point_in_polygon`](geom2d::point_in_polygon), and
-//!   [`rectangle_inside_polygon`](geom2d::rectangle_inside_polygon).
+//!   [`segment_intersects_rect`](geom2d::segment_intersects_rect) and
+//!   [`rectangle_inside_polygon`](geom2d::rectangle_inside_polygon); the `f32`
+//!   **measurements** [`Metric`](geom2d::Metric),
+//!   [`distance_point_to_segment`](geom2d::distance_point_to_segment),
+//!   [`signed_distance_to_polygon`](geom2d::signed_distance_to_polygon) and
+//!   [`point_in_polygon`](geom2d::point_in_polygon), which a WGSL preview mirrors.
 //! - [`noise`] — a procedural-generation kit: the [`SmallRng`](noise::SmallRng) LCG and
 //!   [`PerlinNoise`](noise::PerlinNoise) gradient noise with fBm.
 //! - [`interval`] — [`FieldInterval`](interval::FieldInterval),

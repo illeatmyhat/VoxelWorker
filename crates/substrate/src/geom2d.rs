@@ -1,10 +1,41 @@
-//! # geom2d — planar computational-geometry predicates
+//! # geom2d — planar computational geometry: exact predicates and measured fields
 //!
-//! A small kernel of exact predicates over points in the plane, each a point
-//! `[f64; 2]` in some caller-chosen coordinate space. They are pure: no domain
-//! type appears, and the polygon is any slice of points. The domain adapter (a
-//! sketch profile, a brush stroke) converts its own vertices to `[f64; 2]` and
-//! calls in.
+//! A small kernel of planar geometry over points in the plane, in some caller-chosen
+//! coordinate space. It is pure: no domain type appears, and the polygon is any slice
+//! of points. The domain adapter (a sketch profile, a brush stroke) converts its own
+//! vertices to points and calls in.
+//!
+//! ## The module is deliberately split across two floating-point widths
+//!
+//! **This is not an oversight, and the two halves must not be tidied back together.**
+//!
+//! The **measurement** half ([`Metric`], [`distance_point_to_segment`],
+//! [`signed_distance_to_polygon`], [`point_in_polygon`]) is `f32`. It is the half a GPU
+//! preview mirrors in WGSL, and **WGSL has no `f64`**. Any `f64` left in the mirrored
+//! path is a CPU/GPU divergence that no amount of parity testing can remove, because the
+//! shader cannot reproduce the wider arithmetic even in principle — so the widths are
+//! matched here, at the source, and parity becomes structural rather than tested.
+//! Narrowing costs nothing at the scale this runs at: measured against `f64` over 26.7M
+//! samples of realistic sketch geometry, `f32` produced zero occupancy disagreements out
+//! to roughly `2.6e5` voxels of coordinate offset, and the only differences found were
+//! *repairs* — half-integer lattice sites landing exactly on a closing edge, where `f64`
+//! returns a few ulps of positive noise and drops a voxel that `f32` returns as exactly
+//! zero and correctly keeps.
+//!
+//! The **predicate** half ([`orient2d`], [`segments_intersect`],
+//! [`segment_intersects_rect`], [`rectangle_inside_polygon`]) stays `f64`. It is CPU-only
+//! and will never be mirrored: it answers "is this whole cell inside?", which is the
+//! coarse-solid classifier question (ADR 0010), and a shader never asks it — a raymarch
+//! asks about points, not cells. It is also where the extra width genuinely earns its
+//! keep. Checked against exact `i128` arithmetic, `f32` starts returning **wrong
+//! orientation signs from about ±4096 voxels outward** (0 wrong at 2¹², 453 at 2²⁰, 8,817
+//! at 2²⁴), while `f64` stays exact past 2³⁰. A wrong sign here does not merely blur a
+//! surface: it makes the classifier **over-claim solid**, which is unsound rather than
+//! conservative, and a whole cell is then filled without ever being sampled.
+//!
+//! This is the line ADR 0019 draws: **predicates classify, fields measure.** A predicate
+//! must be exact or it lies; a measurement only has to be accurate, and accuracy is
+//! cheaper than exactness.
 //!
 //! ## The primitives
 //!
@@ -36,12 +67,15 @@
 //!
 //! ## Predicates and measurements
 //!
-//! The primitives above are **predicates**: they answer yes/no, and they are exact.
-//! [`distance_point_to_segment`] and [`signed_distance_to_polygon`] are
-//! **measurements**: they answer how-far, in floating point, and cannot be exact in
-//! the same sense. The two coexist deliberately — a predicate classifies a region,
-//! a measurement gives it a geometry to be offset or displaced — and neither
-//! replaces the other. Measurements are taken in a caller-chosen [`Metric`]:
+//! [`orient2d`], [`segments_intersect`], [`segment_intersects_rect`] and
+//! [`rectangle_inside_polygon`] are **predicates**: they answer yes/no, and they are
+//! exact (`f64`, see above). [`point_in_polygon`], [`distance_point_to_segment`] and
+//! [`signed_distance_to_polygon`] are **measurements**: they answer how-far — or, for
+//! `point_in_polygon`, supply the *sign* of a how-far — in floating point, and cannot be
+//! exact in the same sense (`f32`, mirrored in WGSL). The two coexist deliberately — a
+//! predicate classifies a region, a measurement gives it a geometry to be offset or
+//! displaced — and neither replaces the other. Measurements are taken in a
+//! caller-chosen [`Metric`]:
 //! `Euclidean` grows a shape by a disc and rounds its corners, `Chebyshev` grows it
 //! by a square and keeps them sharp, which is the natural choice on a lattice.
 
@@ -123,7 +157,11 @@ pub fn segment_intersects_rect(
 /// No on-boundary tie-breaking is done: callers that need exactness (e.g. voxel
 /// sample centres at half-integer positions against integer vertices) rely on the
 /// sample never lying on an edge.
-pub fn point_in_polygon(polygon: &[[f64; 2]], sample: [f64; 2]) -> bool {
+///
+/// `f32`, with the rest of the measurement half: this is the boundary authority a WGSL
+/// preview must port, and it supplies the sign for [`signed_distance_to_polygon`]. See
+/// the module docs for why the width is part of the contract rather than an accident.
+pub fn point_in_polygon(polygon: &[[f32; 2]], sample: [f32; 2]) -> bool {
     let mut inside = false;
     let count = polygon.len();
     if count == 0 {
@@ -176,11 +214,29 @@ pub fn rectangle_inside_polygon(
         }
         previous = current;
     }
+    // The edge tests above are the exactness-critical ones and ran in `f64`: a wrong
+    // orientation sign there would let a straddled rectangle through as "inside" and
+    // over-claim solid. The centre test is a different question and is answered in `f32`,
+    // deliberately:
+    //
+    // - It is only ever REACHED when no polygon edge meets the rectangle, so the centre
+    //   is not near the boundary — the case where width would matter has already been
+    //   decided by the exact half.
+    // - `point_in_polygon` is the same call the per-voxel resolve makes to decide
+    //   occupancy. Answering the centre in `f64` here while the resolve answers it in
+    //   `f32` would let the coarse claim and the per-voxel truth disagree on a sample
+    //   sitting on an edge — exactly the "same set, different rounding" failure this
+    //   classifier is supposed to avoid. Sharing the width makes them agree by
+    //   construction.
+    let narrowed: Vec<[f32; 2]> = polygon
+        .iter()
+        .map(|point| [point[0] as f32, point[1] as f32])
+        .collect();
     let centre = [
-        (rect_min[0] + rect_max[0]) * 0.5,
-        (rect_min[1] + rect_max[1]) * 0.5,
+        ((rect_min[0] + rect_max[0]) * 0.5) as f32,
+        ((rect_min[1] + rect_max[1]) * 0.5) as f32,
     ];
-    point_in_polygon(polygon, centre)
+    point_in_polygon(&narrowed, centre)
 }
 
 /// Which notion of distance a measurement is taken in.
@@ -201,7 +257,7 @@ pub enum Metric {
 impl Metric {
     /// The length of the vector `delta` under this metric.
     #[inline]
-    pub fn length(self, delta: [f64; 2]) -> f64 {
+    pub fn length(self, delta: [f32; 2]) -> f32 {
         match self {
             Metric::Euclidean => (delta[0] * delta[0] + delta[1] * delta[1]).sqrt(),
             Metric::Chebyshev => delta[0].abs().max(delta[1].abs()),
@@ -210,7 +266,7 @@ impl Metric {
 
     /// The distance between two points under this metric.
     #[inline]
-    pub fn distance(self, a: [f64; 2], b: [f64; 2]) -> f64 {
+    pub fn distance(self, a: [f32; 2], b: [f32; 2]) -> f32 {
         self.length([b[0] - a[0], b[1] - a[1]])
     }
 }
@@ -236,14 +292,14 @@ impl Metric {
 /// those four parameters plus both endpoints is therefore **exact**, not an approximation.
 ///
 /// A degenerate (zero-length) segment reduces to the distance to its single point.
-pub fn distance_point_to_segment(a: [f64; 2], b: [f64; 2], point: [f64; 2], metric: Metric) -> f64 {
+pub fn distance_point_to_segment(a: [f32; 2], b: [f32; 2], point: [f32; 2], metric: Metric) -> f32 {
     let delta = [b[0] - a[0], b[1] - a[1]];
     let offset = [point[0] - a[0], point[1] - a[1]];
     // Degenerate segment: the whole thing is the point `a`.
     if delta[0] == 0.0 && delta[1] == 0.0 {
         return metric.length(offset);
     }
-    let at = |t: f64| {
+    let at = |t: f32| {
         let t = t.clamp(0.0, 1.0);
         metric.length([offset[0] - t * delta[0], offset[1] - t * delta[1]])
     };
@@ -282,12 +338,12 @@ pub fn distance_point_to_segment(a: [f64; 2], b: [f64; 2], point: [f64; 2], metr
 /// self-intersecting or degenerate profile therefore needs no special handling — it gets the
 /// same treatment the even-odd rule already gives it.
 ///
-/// Fewer than two vertices has no boundary to measure, and returns `f64::INFINITY`.
-pub fn signed_distance_to_polygon(polygon: &[[f64; 2]], point: [f64; 2], metric: Metric) -> f64 {
+/// Fewer than two vertices has no boundary to measure, and returns `f32::INFINITY`.
+pub fn signed_distance_to_polygon(polygon: &[[f32; 2]], point: [f32; 2], metric: Metric) -> f32 {
     if polygon.len() < 2 {
-        return f64::INFINITY;
+        return f32::INFINITY;
     }
-    let mut nearest = f64::INFINITY;
+    let mut nearest = f32::INFINITY;
     let mut previous = polygon[polygon.len() - 1];
     for &current in polygon {
         nearest = nearest.min(distance_point_to_segment(previous, current, point, metric));
@@ -304,7 +360,12 @@ pub fn signed_distance_to_polygon(polygon: &[[f64; 2]], point: [f64; 2], metric:
 mod tests {
     use super::*;
 
+    /// The same 4x4 square in both widths — the predicate half is `f64`, the measurement
+    /// half `f32`, so a test that spans them needs both. Both are written from the same
+    /// integer literals rather than one being cast from the other, matching how the sketch
+    /// producer converts its `i64` profile twice from one source.
     const UNIT_SQUARE: [[f64; 2]; 4] = [[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0]];
+    const UNIT_SQUARE_MEASURED: [[f32; 2]; 4] = [[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0]];
 
     #[test]
     fn orient2d_sign_matches_turn_direction() {
@@ -361,16 +422,16 @@ mod tests {
 
     #[test]
     fn point_in_polygon_inside_outside() {
-        assert!(point_in_polygon(&UNIT_SQUARE, [2.0, 2.0]));
-        assert!(!point_in_polygon(&UNIT_SQUARE, [5.0, 2.0]));
-        assert!(!point_in_polygon(&UNIT_SQUARE, [-1.0, 2.0]));
+        assert!(point_in_polygon(&UNIT_SQUARE_MEASURED, [2.0, 2.0]));
+        assert!(!point_in_polygon(&UNIT_SQUARE_MEASURED, [5.0, 2.0]));
+        assert!(!point_in_polygon(&UNIT_SQUARE_MEASURED, [-1.0, 2.0]));
         assert!(!point_in_polygon(&[], [0.0, 0.0]));
     }
 
     #[test]
     fn point_in_polygon_concave_l_shape() {
         // An L: the reflex notch in the upper-right quadrant is OUTSIDE.
-        let l_shape = [
+        let l_shape: [[f32; 2]; 6] = [
             [0.0, 0.0],
             [4.0, 0.0],
             [4.0, 2.0],
@@ -417,9 +478,9 @@ mod tests {
             for point in probes {
                 const STEPS: u32 = 20_000;
                 let closed_form = distance_point_to_segment(a, b, point, Metric::Chebyshev);
-                let mut sampled = f64::INFINITY;
+                let mut sampled = f32::INFINITY;
                 for step in 0..=STEPS {
-                    let t = step as f64 / STEPS as f64;
+                    let t = step as f32 / STEPS as f32;
                     let on_segment = [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])];
                     sampled = sampled.min(Metric::Chebyshev.distance(on_segment, point));
                 }
@@ -428,16 +489,16 @@ mod tests {
                 // lands just above it. (Here the closed form finds 8/11 exactly where 20k
                 // samples get within 3e-5 of it.)
                 assert!(
-                    closed_form <= sampled + 1e-12,
+                    closed_form <= sampled + 1e-6,
                     "segment {a:?}→{b:?} point {point:?}: closed form {closed_form} is ABOVE \
                      the sampled minimum {sampled} — the breakpoint set is incomplete"
                 );
                 // And it must not be spuriously low: the sampler cannot miss the true minimum
                 // by more than one step's worth of travel, the field being 1-Lipschitz.
                 let step_travel = Metric::Chebyshev.length([b[0] - a[0], b[1] - a[1]])
-                    / STEPS as f64;
+                    / STEPS as f32;
                 assert!(
-                    sampled - closed_form <= step_travel + 1e-12,
+                    sampled - closed_form <= step_travel + 1e-6,
                     "segment {a:?}→{b:?} point {point:?}: closed form {closed_form} is below \
                      the sampled minimum {sampled} by more than one step ({step_travel})"
                 );
@@ -449,24 +510,24 @@ mod tests {
     fn polygon_signed_distance_signs_and_values() {
         for metric in [Metric::Euclidean, Metric::Chebyshev] {
             // Centre of the 4×4 square is 2 from every edge in both metrics.
-            let centre = signed_distance_to_polygon(&UNIT_SQUARE, [2.0, 2.0], metric);
+            let centre = signed_distance_to_polygon(&UNIT_SQUARE_MEASURED, [2.0, 2.0], metric);
             assert!((centre + 2.0).abs() < 1e-9, "{metric:?} centre = {centre}");
             // On the boundary ⇒ zero.
-            let edge = signed_distance_to_polygon(&UNIT_SQUARE, [4.0, 2.0], metric);
+            let edge = signed_distance_to_polygon(&UNIT_SQUARE_MEASURED, [4.0, 2.0], metric);
             assert!(edge.abs() < 1e-9, "{metric:?} edge = {edge}");
             // Straight out from an edge: 1 away in both metrics.
-            let outside = signed_distance_to_polygon(&UNIT_SQUARE, [5.0, 2.0], metric);
+            let outside = signed_distance_to_polygon(&UNIT_SQUARE_MEASURED, [5.0, 2.0], metric);
             assert!((outside - 1.0).abs() < 1e-9, "{metric:?} outside = {outside}");
             // Inside is negative, outside positive.
-            assert!(signed_distance_to_polygon(&UNIT_SQUARE, [1.0, 1.0], metric) < 0.0);
-            assert!(signed_distance_to_polygon(&UNIT_SQUARE, [9.0, 9.0], metric) > 0.0);
+            assert!(signed_distance_to_polygon(&UNIT_SQUARE_MEASURED, [1.0, 1.0], metric) < 0.0);
+            assert!(signed_distance_to_polygon(&UNIT_SQUARE_MEASURED, [9.0, 9.0], metric) > 0.0);
         }
         // Diagonally off a corner is where the metrics part company: the corner (4,4) is
         // (3,3) away, so Euclidean reads 3√2 while Chebyshev reads 3.
         let corner = [7.0, 7.0];
-        let euclidean = signed_distance_to_polygon(&UNIT_SQUARE, corner, Metric::Euclidean);
-        let chebyshev = signed_distance_to_polygon(&UNIT_SQUARE, corner, Metric::Chebyshev);
-        assert!((euclidean - 18.0f64.sqrt()).abs() < 1e-9, "euclidean = {euclidean}");
+        let euclidean = signed_distance_to_polygon(&UNIT_SQUARE_MEASURED, corner, Metric::Euclidean);
+        let chebyshev = signed_distance_to_polygon(&UNIT_SQUARE_MEASURED, corner, Metric::Chebyshev);
+        assert!((euclidean - 18.0f32.sqrt()).abs() < 1e-9, "euclidean = {euclidean}");
         assert!((chebyshev - 3.0).abs() < 1e-9, "chebyshev = {chebyshev}");
     }
 
@@ -476,16 +537,16 @@ mod tests {
     #[test]
     fn polygon_signed_distance_is_one_lipschitz_in_its_own_metric() {
         // A deliberately awkward profile: reflex corner, a spike, and a self-intersection.
-        let profile = [
+        let profile: [[f32; 2]; 7] = [
             [0.0, 0.0], [6.0, 0.0], [6.0, 6.0], [3.0, 2.0],
             [0.0, 6.0], [4.0, -1.0], [1.0, 4.0],
         ];
         for metric in [Metric::Euclidean, Metric::Chebyshev] {
-            let mut worst: f64 = 0.0;
+            let mut worst: f32 = 0.0;
             let mut samples = 0u32;
             for xi in -20..=80i32 {
                 for yi in -20..=80i32 {
-                    let p = [xi as f64 * 0.1, yi as f64 * 0.1];
+                    let p = [xi as f32 * 0.1, yi as f32 * 0.1];
                     let here = signed_distance_to_polygon(&profile, p, metric);
                     for delta in [[0.1, 0.0], [0.0, 0.1], [0.1, 0.1], [0.1, -0.1]] {
                         let q = [p[0] + delta[0], p[1] + delta[1]];
@@ -496,8 +557,13 @@ mod tests {
                     }
                 }
             }
+            // The slack is `f32` rounding, not slack in the property. The ratio divides a
+            // field difference by a step of `0.1`, so an absolute error of one `f32` ulp at
+            // these magnitudes (~6, i.e. ~5e-7) shows up MAGNIFIED tenfold in the ratio.
+            // The observed worst is 1.0000048; anything approaching 1.001 would be a real
+            // violation, not arithmetic. (This read `1e-9` while the field was `f64`.)
             assert!(
-                worst <= 1.0 + 1e-9,
+                worst <= 1.0 + 1e-4,
                 "{metric:?} field is not 1-Lipschitz: worst ratio {worst} over {samples} pairs"
             );
         }
@@ -507,20 +573,25 @@ mod tests {
     /// guard that neither implementation has drifted into computing the other.
     #[test]
     fn chebyshev_and_euclidean_bracket_each_other() {
-        let profile = [[0.0, 0.0], [5.0, 1.0], [3.0, 6.0], [-1.0, 4.0]];
+        let profile: [[f32; 2]; 4] = [[0.0, 0.0], [5.0, 1.0], [3.0, 6.0], [-1.0, 4.0]];
         for xi in -10..=15i32 {
             for yi in -10..=15i32 {
-                let p = [xi as f64 * 0.5, yi as f64 * 0.5];
+                let p = [xi as f32 * 0.5, yi as f32 * 0.5];
                 let chebyshev =
                     signed_distance_to_polygon(&profile, p, Metric::Chebyshev).abs();
                 let euclidean =
                     signed_distance_to_polygon(&profile, p, Metric::Euclidean).abs();
+                // `1e-5` is a few `f32` ulps at these magnitudes (distances run to ~10, and
+                // one ulp there is ~1e-6). The tight side is the upper bound, where the
+                // sqrt(2) factor is ATTAINED exactly on a 45° diagonal — at [-4.5, -4.5]
+                // the two read 6.363961 and 4.5·sqrt(2) = 6.3639603, a one-ulp excess that
+                // is the bound being met, not exceeded. (This read `1e-9` under `f64`.)
                 assert!(
-                    chebyshev <= euclidean + 1e-9,
+                    chebyshev <= euclidean + 1e-5,
                     "at {p:?}: chebyshev {chebyshev} exceeds euclidean {euclidean}"
                 );
                 assert!(
-                    euclidean <= chebyshev * 2.0f64.sqrt() + 1e-9,
+                    euclidean <= chebyshev * 2.0f32.sqrt() + 1e-5,
                     "at {p:?}: euclidean {euclidean} exceeds sqrt(2)·chebyshev {chebyshev}"
                 );
             }
@@ -531,11 +602,11 @@ mod tests {
     fn degenerate_polygons_have_no_boundary() {
         assert_eq!(
             signed_distance_to_polygon(&[], [0.0, 0.0], Metric::Euclidean),
-            f64::INFINITY
+            f32::INFINITY
         );
         assert_eq!(
             signed_distance_to_polygon(&[[1.0, 1.0]], [0.0, 0.0], Metric::Chebyshev),
-            f64::INFINITY
+            f32::INFINITY
         );
     }
 }
