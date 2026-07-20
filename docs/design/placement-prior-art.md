@@ -237,18 +237,36 @@ Anchor precedence, most recent wins: last placement → orbit pivot. There is no
 `NoSurface` narrows correspondingly: it now means *nothing was hit and the anchor plane is also
 unusable*, which is close to unreachable. Confirm that before building an affordance for it.
 
+**Confirmed unreachable, and deleted.** With the view axis as the plane's normal the ray-plane
+denominator is `dot(ray_direction, view_direction)`, which a perspective frustum bounds well away
+from zero and which orthographic pins at exactly 1. The only input with no intersection is a ray
+exactly perpendicular to the view axis, which no camera can produce. `anchor_plane_hit` is
+therefore **total** and `PlacementTarget` has three variants, not four.
+
+One precondition falls out of it and belongs to the anchor policy rather than to placement: a
+last-placement anchor can end up *behind* the eye after an orbit, and a plane behind the eye puts
+the preview behind the viewer. Placement cannot detect this — under orthographic the ray origin
+sits on an arbitrary near plane, so the sign of the depth says nothing about the viewer — so
+whatever selects the anchor owes the check, falling back to the pivot (which satisfies it by
+construction).
+
+`TooFar` moved rather than shrank: it is now asked **per hit**, at whichever depth the answer
+landed at, through an injected `depth_is_authorable` predicate. At the orbit pivot's depth that
+predicate is identically `can_author_at_all`, so the old camera-level question is the anchor-path
+special case of the new one rather than a separate guard asked before the ray.
+
 ## What to do with this
 
 1. ~~Decide the picking-plane question first.~~ **Decided above.**
-2. Keep the four cursor states, but re-derive their reachability against the resolution order —
-   two of the four have materially changed meaning and one may now be dead.
+2. ~~Keep the four cursor states, but re-derive their reachability against the resolution
+   order.~~ **Done.** Three survive: `OnSurface`, `OnAnchorPlane`, `TooFar`. `NoSurface` was the
+   dead one.
 3. Keep the orthographic derivation; it is the majority practice.
 4. Keep the angular framing, but **restate 1/80 as a chosen floor**, note it is below WCAG
    minimums, and expect to tune it by feel. The owner has ruled the exact fraction unimportant.
-5. The distance clamp in `crates/raycast/src/placement.rs` should be **deleted rather than
-   repaired**. It exists to tame a fixed ground plane that no longer exists, and its dead zone
-   was the symptom. If any guard survives, it is an **angle before projection**, not a distance
-   after it.
+5. ~~The distance clamp in `crates/raycast/src/placement.rs` should be **deleted rather than
+   repaired**.~~ **Deleted.** No guard survived it, not even the angular one: the angle it would
+   have tested is the frustum half-angle, which is bounded by construction.
 
 The decision is recorded here rather than as an ADR because nothing has landed in code yet. It
 warrants an ADR when the viewport wiring lands, since it supersedes the picked-point definition
