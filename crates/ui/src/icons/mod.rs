@@ -53,6 +53,8 @@ mod commit;
 mod composed_part;
 mod cylinder;
 mod density;
+mod torus;
+mod tube;
 mod displace;
 mod drawer;
 mod emboss;
@@ -541,6 +543,8 @@ pub enum Icon {
     BoxSolid,
     Sphere,
     Cylinder,
+    Tube,
+    Torus,
     HalfSpace,
     // Structure.
     Part,
@@ -597,6 +601,8 @@ impl Icon {
         Icon::BoxSolid,
         Icon::Sphere,
         Icon::Cylinder,
+        Icon::Tube,
+        Icon::Torus,
         Icon::HalfSpace,
         Icon::Part,
         Icon::ComposedPart,
@@ -651,6 +657,8 @@ impl Icon {
             Icon::BoxSolid => g.marks(box_solid::DRAW),
             Icon::Sphere => g.marks(sphere::DRAW),
             Icon::Cylinder => g.marks(cylinder::DRAW),
+            Icon::Tube => g.marks(tube::DRAW),
+            Icon::Torus => g.marks(torus::DRAW),
             Icon::HalfSpace => g.marks(half_space::DRAW),
             Icon::Part => g.marks(part::DRAW),
             Icon::ComposedPart => g.marks(composed_part::DRAW),
@@ -705,6 +713,8 @@ impl Icon {
             Icon::BoxSolid => "box",
             Icon::Sphere => "sphere",
             Icon::Cylinder => "cylinder",
+            Icon::Tube => "tube",
+            Icon::Torus => "torus",
             Icon::HalfSpace => "half-space",
             Icon::Part => "part",
             Icon::ComposedPart => "composed-part",
@@ -742,7 +752,9 @@ impl Icon {
             }
             Icon::Outset | Icon::Inset | Icon::Displace | Icon::Array => Group::Fields,
             Icon::Sketch | Icon::Extrude | Icon::Revolve | Icon::Sweep | Icon::BoxSolid
-            | Icon::Sphere | Icon::Cylinder | Icon::HalfSpace => Group::Producers,
+            | Icon::Sphere | Icon::Cylinder | Icon::Tube | Icon::Torus | Icon::HalfSpace => {
+                Group::Producers
+            }
             Icon::Part | Icon::ComposedPart | Icon::RootPart | Icon::FoldStack
             | Icon::FoldCursor | Icon::Link => Group::Structure,
             Icon::SculptAdd | Icon::Carve | Icon::Measure | Icon::Probe | Icon::Material
@@ -786,6 +798,12 @@ impl Icon {
             Icon::BoxSolid => "Box primitive — sugar over a rectangular sketch, extruded.",
             Icon::Sphere => "Sphere primitive; at low density it reads as the stepped shell it is.",
             Icon::Cylinder => "Cylinder primitive — a circular sketch extruded along +Z.",
+            Icon::Tube => "Tube primitive — the cylinder with a bore; an annular sketch, extruded.",
+            Icon::Torus => {
+                "Torus primitive — a circular sketch revolved about an offset axis. Drawn in \
+                 three-quarter view with the bore set high, because a concentric ring reads as \
+                 an eye at every ratio."
+            }
             Icon::HalfSpace => {
                 "Half-space: an unbounded plane. Plane + Subtract replaces a whole trim tool."
             }

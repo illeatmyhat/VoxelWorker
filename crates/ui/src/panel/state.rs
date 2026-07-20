@@ -345,7 +345,7 @@ pub struct PanelResponse {
 impl PanelResponse {
     /// Push a mutation the user described this frame (ADR 0003 Phase C C4a). The loop
     /// applies it through `AppCore::apply_intent`; the panel never mutates the scene.
-    pub(super) fn emit(&mut self, intent: Intent) {
+    pub(crate) fn emit(&mut self, intent: Intent) {
         self.intents.push(intent);
     }
 
@@ -353,7 +353,7 @@ impl PanelResponse {
     /// old `scene_changed` / `size_or_density_changed` behaviour). Used for structural
     /// edits and size/density edits — everything that re-frames; a shape-chip switch
     /// and a material pick use [`emit`](Self::emit) instead so the camera stays put.
-    pub(super) fn emit_and_frame(&mut self, intent: Intent) {
+    pub(crate) fn emit_and_frame(&mut self, intent: Intent) {
         self.frame_after_apply = true;
         self.intents.push(intent);
     }

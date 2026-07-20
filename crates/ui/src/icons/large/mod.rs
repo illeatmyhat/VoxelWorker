@@ -39,6 +39,8 @@ mod sculpt;
 mod sketch;
 mod sphere;
 mod sweep;
+mod torus;
+mod tube;
 
 /// The authoring grid every tile glyph is traced on: 26 × 26 units.
 pub const GRID: f32 = 26.0;
@@ -69,6 +71,10 @@ pub enum LargeIcon {
     Sphere,
     /// The cylinder primitive.
     Cylinder,
+    /// The cylinder, opened by a bore.
+    Tube,
+    /// A ring solid, drawn in three-quarter view so it never reads as an eye.
+    Torus,
     /// An unbounded plane; everything on one side is body.
     HalfSpace,
     /// A brush: the core it writes, inside the reach it stops at.
@@ -94,6 +100,8 @@ impl LargeIcon {
         LargeIcon::BoxSolid,
         LargeIcon::Sphere,
         LargeIcon::Cylinder,
+        LargeIcon::Tube,
+        LargeIcon::Torus,
         LargeIcon::HalfSpace,
         LargeIcon::Sculpt,
         LargeIcon::Displace,
@@ -113,6 +121,8 @@ impl LargeIcon {
             Icon::BoxSolid => LargeIcon::BoxSolid,
             Icon::Sphere => LargeIcon::Sphere,
             Icon::Cylinder => LargeIcon::Cylinder,
+            Icon::Tube => LargeIcon::Tube,
+            Icon::Torus => LargeIcon::Torus,
             Icon::HalfSpace => LargeIcon::HalfSpace,
             Icon::SculptAdd => LargeIcon::Sculpt,
             Icon::Displace => LargeIcon::Displace,
@@ -130,6 +140,8 @@ impl LargeIcon {
             LargeIcon::BoxSolid => Icon::BoxSolid,
             LargeIcon::Sphere => Icon::Sphere,
             LargeIcon::Cylinder => Icon::Cylinder,
+            LargeIcon::Tube => Icon::Tube,
+            LargeIcon::Torus => Icon::Torus,
             LargeIcon::HalfSpace => Icon::HalfSpace,
             LargeIcon::Sculpt => Icon::SculptAdd,
             LargeIcon::Displace => Icon::Displace,
@@ -147,6 +159,8 @@ impl LargeIcon {
             LargeIcon::BoxSolid => g.marks(box_solid::DRAW),
             LargeIcon::Sphere => g.marks(sphere::DRAW),
             LargeIcon::Cylinder => g.marks(cylinder::DRAW),
+            LargeIcon::Tube => g.marks(tube::DRAW),
+            LargeIcon::Torus => g.marks(torus::DRAW),
             LargeIcon::HalfSpace => g.marks(half_space::DRAW),
             LargeIcon::Sculpt => g.marks(sculpt::DRAW),
             LargeIcon::Displace => g.marks(displace::DRAW),
@@ -194,6 +208,15 @@ impl LargeIcon {
             }
             LargeIcon::Cylinder => {
                 "Both caps whole, the far one faded — a lathe body seen through, not a can."
+            }
+            LargeIcon::Tube => {
+                "The cylinder's own cap and walls, opened by a bore whose near walls fade as \
+                 they drop — so the two marks read as neighbours and only the hole differs."
+            }
+            LargeIcon::Torus => {
+                "The bore sits ABOVE centre and its far half recedes. Concentric would read as \
+                 an eye at every ratio, which is the trap orbit fell into eight times; the fix \
+                 is the construction, never the radii."
             }
             LargeIcon::HalfSpace => {
                 "Neither line terminates inside the box, which is how the mark says unbounded \

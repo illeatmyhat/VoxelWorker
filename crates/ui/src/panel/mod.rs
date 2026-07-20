@@ -52,6 +52,23 @@ use crate::signal_theme;
 /// ([`build_signal_stack`], issue #88), which the shell renders separately with the
 /// layer-track length + measured diameter. Returns a [`PanelResponse`] describing what the
 /// user changed.
+/// The sidebar's section stack, independent of which column hosts it.
+///
+/// Factored out so the [`workspace`](crate::workspace) inspector column can host the same
+/// sections while the new information architecture is proved, rather than the sections being
+/// duplicated into it and then drifting apart — the failure the rail's glyphs already had.
+pub(crate) fn build_sidebar_sections(
+    ui: &mut egui::Ui,
+    state: &mut PanelState,
+    export: ExportPanelState,
+    response: &mut PanelResponse,
+) {
+    nodes::build_node_list_section(ui, state, response);
+    points::build_points_section(ui, state, response);
+    inspector::build_inspector_section(ui, state, response);
+    controls::build_export_section(ui, response, export);
+}
+
 pub fn build_panel(
     root_ui: &mut egui::Ui,
     state: &mut PanelState,
@@ -96,10 +113,7 @@ pub fn build_panel(
                     // sidebar for the floating Signal display stack (issue #88,
                     // `panel::signal_stack`, rendered by `run_egui_frame`). The sidebar keeps
                     // the scene tree, points, inspector and export.
-                    nodes::build_node_list_section(ui, state, &mut response);
-                    points::build_points_section(ui, state, &mut response);
-                    inspector::build_inspector_section(ui, state, &mut response);
-                    controls::build_export_section(ui, &mut response, export);
+                    build_sidebar_sections(ui, state, export, &mut response);
 
                     if let Some(millions) = state.voxel_cap_warning_millions {
                         ui.add_space(8.0);

@@ -325,7 +325,7 @@ pub fn run_egui_frame(
         .context
         .all_styles_mut(ui::signal_theme::apply_app_style);
     let full_output = bridge.context.run_ui(raw_input, |ui| {
-        panel_response = build_panel(ui, panel_state, export, palette);
+        panel_response = ui::workspace::build_workspace(ui, panel_state, export, palette);
         // After both panels have been shown inside the root ui, the remaining
         // space is the central viewport.
         central_rect_points = ui.available_rect_before_wrap();
