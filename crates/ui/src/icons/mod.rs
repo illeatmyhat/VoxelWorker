@@ -262,10 +262,17 @@ impl<'a> IconPainter<'a> {
     fn dash_path(&self, points: &[Pos2], stroke: Stroke) {
         let period = (2.2 + 1.8) / self.grid * self.rect.width();
         let on = 2.2 / self.grid * self.rect.width();
-        if period <= f32::EPSILON {
+        // Below about half a pixel the rhythm cannot resolve on screen — a solid line is what
+        // it would read as anyway — and refusing it keeps the dash count below bounded.
+        if period < 0.5 {
+            for pair in points.windows(2) {
+                self.painter.line_segment([pair[0], pair[1]], stroke);
+            }
             return;
         }
-        let mut travelled = 0.0_f32;
+        // How far into the rhythm this segment begins, wrapped into one period so the
+        // arithmetic stays exact however long the path is.
+        let mut phase_at_segment_start = 0.0_f32;
         for pair in points.windows(2) {
             let span = pair[1] - pair[0];
             let length = span.length();
@@ -273,19 +280,24 @@ impl<'a> IconPainter<'a> {
                 continue;
             }
             let direction = span / length;
-            let mut along = 0.0_f32;
-            while along < length {
-                let phase = (travelled + along) % period;
-                if phase < on {
-                    let end = (along + (on - phase)).min(length);
-                    self.painter
-                        .line_segment([pair[0] + direction * along, pair[0] + direction * end], stroke);
-                    along = end;
-                } else {
-                    along += period - phase;
+            // Dashes are placed by INDEX, never by advancing a cursor. The cursor form landed
+            // exactly on a dash boundary every step, so whenever rounding put it one ULP short
+            // the next advance (~1e-7) was smaller than the cursor's own precision: the cursor
+            // did not move and the walk span forever. A hang, not a cosmetic error — it hung
+            // `design_reference` on a plain 18 pt dashed line.
+            let dashes = ((length + phase_at_segment_start) / period).floor() as i64 + 1;
+            for dash_index in 0..dashes {
+                let dash_start = dash_index as f32 * period - phase_at_segment_start;
+                let start = dash_start.max(0.0);
+                let end = (dash_start + on).min(length);
+                if end > start {
+                    self.painter.line_segment(
+                        [pair[0] + direction * start, pair[0] + direction * end],
+                        stroke,
+                    );
                 }
             }
-            travelled += length;
+            phase_at_segment_start = (phase_at_segment_start + length) % period;
         }
     }
 
@@ -758,3 +770,6 @@ impl Icon {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
