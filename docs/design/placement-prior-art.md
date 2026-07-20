@@ -137,6 +137,50 @@ a side view. Nobody resolves the edge-on pick: they reorient the view or decline
 
 **A "look at the plane" nudge may be worth more than any clamp.**
 
+## Three consequences that only appear once you take the finding seriously
+
+### "Too far to author" may be an artifact of the design we are leaving
+
+If the picking plane is **view-anchored**, depth is bounded by the pivot rather than by the
+horizon — so the state may simply not arise. **Two of the four cursor states could be artifacts
+of the fixed-ground-plane world.** Do not build a four-state vocabulary for a premise that is
+under review; settle the plane question first, then see which states survive.
+
+### In orthographic the failure is the ray ORIGIN, not the denominator
+
+Blender's ortho branch performs no intersection at all — `lambda = ray_point_factor_v3(...)`, a
+dot product. The known bug there (Blender #101347, curve-draw picking a random Z in ortho) has a
+root cause worth internalising: **edge-on in ortho, every ray grazes simultaneously, and what is
+ill-defined is where the ray starts.** A distance clamp cannot fix that, because it is not a
+distance problem.
+
+Blender's actual behaviour: clicking empty space in Front Ortho leaves the 3D cursor's Y
+*unchanged* — it reuses the cursor's own prior position as the depth reference, falling back to
+`rv3d->ofs`, the orbit pivot. The manual's prescription is not to solve the invisible axis at
+all, but to use two perpendicular views.
+
+### `ED_view3d_pixel_size` is one branchless expression, and that is the point
+
+```c
+return mul_project_m4_v3_zfac(rv3d->persmat, co) * rv3d->pixsize * U.pixelsize;
+```
+
+**No `is_persp` branch.** In orthographic the perspective-divide factor is identically 1 and it
+collapses to the constant `dist * sensor / lens` — so **ortho pixel size equals perspective pixel
+size evaluated at the orbit pivot.** That identity is what makes our "one rule covers both
+projections" claim rigorous rather than coincidental, and it means every screen-space threshold
+(the 1/80 rule, gizmo hit radii, snap tolerances) can come from a single function.
+
+Two guards to copy with it: clamp `zfac` to 1.0 when the reference point is within ±1e-6 of the
+view plane, and flip sign for points behind the camera.
+
+## A citable alternative to 1/80
+
+WCAG 2.5.8's 24 CSS px is **0.51°**, which works out to **1/50 of viewport height** — roughly
+1.6× our figure, and defensible by citation rather than by assertion. If the constant is going to
+be arbitrary either way, it may as well be arbitrary in a direction someone else has already
+argued for.
+
 ## What to do with this
 
 1. **Decide the picking-plane question first** — fixed ground plane versus view-aligned plane at
