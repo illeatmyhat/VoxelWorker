@@ -43,23 +43,30 @@ use super::AppCore;
 /// `raycast::select_world_plane`).
 const MIN_GROUND_FACING: f32 = 0.342_f32;
 
-/// Turn a placement POINT (the absolute voxel the cursor resolved to) into the
-/// corner-anchored `offset_voxels` that puts the object's **bottom-centre** there: centre
-/// the two ground axes (X, Y) under the point and bottom-align the vertical axis (Z-up,
-/// index 2). This is the UX the owner asked for — a click drops the object standing under
-/// the cursor — distinct from the raw corner the frame math emits.
+/// Turn a placement POINT (the absolute neighbour voxel the cursor resolved to) and the
+/// FACE it was entered through into the corner-anchored `offset_voxels` that seats the
+/// object flush against that face, centred on it. The object is anchored along the face's
+/// NORMAL axis (its facing side touches the surface) and centred on the other two — so a
+/// box on a wall sits flush against the wall centred on the click, not half-buried, and a
+/// box on a top face (or the ground, normal `+Z`) stands on it centred under the cursor.
 ///
 /// Producers are corner-anchored (`[offset, offset + grid)`, [`placed_extent_voxels`]), so
-/// bottom-align is exactly `offset_z = point_z` (the low corner IS the bottom) and centring
-/// subtracts half the size in the two ground axes. On the ground the object stands on
-/// `z = 0` centred under the cursor; on a top face it stands on that face centred on the
-/// hit — the two cases the owner specified.
-fn bottom_centre_offset(point: [i64; 3], size_voxels: [u32; 3]) -> [i64; 3] {
-    [
-        point[0] - (size_voxels[0] / 2) as i64,
-        point[1] - (size_voxels[1] / 2) as i64,
-        point[2],
-    ]
+/// on the anchored axis a `+` face seats the object's LOW face at the neighbour
+/// (`offset[axis] = point[axis]`) and a `-` face seats its HIGH face there
+/// (`offset[axis] = point[axis] - (size[axis] - 1)`); the other two axes centre
+/// (`offset = point - size/2`). This replaces the old Z-only bottom-centre (which is
+/// exactly the `+Z` case here) so a side face no longer mis-centres the object into the wall.
+fn face_anchored_offset(point: [i64; 3], size_voxels: [u32; 3], face_normal: [i32; 3]) -> [i64; 3] {
+    std::array::from_fn(|axis| {
+        let size = size_voxels[axis] as i64;
+        match face_normal[axis] {
+            // The anchored axis: seat the object's facing side flush at the neighbour.
+            n if n > 0 => point[axis],
+            n if n < 0 => point[axis] - (size - 1),
+            // A perpendicular axis: centre the object on the click.
+            _ => point[axis] - size / 2,
+        }
+    })
 }
 
 /// The result of [`AppCore::place_primitive`]: the resolved [`PlacementTarget`] AND
@@ -122,7 +129,7 @@ impl AppCore {
                 pick.absolute_voxel[axis] + pick.face_normal[axis] as i64
             });
             // `target.point` stays the surface hit (the cursor location) for the
-            // affordance; only the emitted `offset_voxels` is bottom-centred.
+            // affordance; only the emitted `offset_voxels` is face-anchored.
             let point = Vec3::new(
                 placement_voxel[0] as f32,
                 placement_voxel[1] as f32,
@@ -133,7 +140,11 @@ impl AppCore {
                     point,
                     face_normal: pick.face_normal,
                 },
-                intent: Some(place_node(bottom_centre_offset(placement_voxel, shape.size_voxels))),
+                intent: Some(place_node(face_anchored_offset(
+                    placement_voxel,
+                    shape.size_voxels,
+                    pick.face_normal,
+                ))),
             };
         }
 
@@ -218,11 +229,13 @@ impl AppCore {
         };
 
         let intent = match target {
-            // Bottom-centred on the world-plane hit (centre X/Y, bottom-align Z): the object
-            // stands on the ground under the cursor, not by its low corner.
-            PlacementTarget::OnWorldPlane { point, .. } => Some(place_node(bottom_centre_offset(
+            // The world planes never orient (they only ever position, standing the object
+            // upright — the design's "world-vertical" rule). The ground is a `+Z` face, so
+            // the object stands bottom-centred on the hit under the cursor.
+            PlacementTarget::OnWorldPlane { point, plane } => Some(place_node(face_anchored_offset(
                 [point.x.floor() as i64, point.y.floor() as i64, point.z.floor() as i64],
                 shape.size_voxels,
+                plane.normal().to_array().map(|n| n as i32),
             ))),
             // A geometry face cannot come back from a `None` surface, and the two
             // negative answers place nothing.
@@ -338,21 +351,46 @@ mod tests {
     }
 
     /// **Geometry tier + bottom-centre drop.** A cursor over the existing solid resolves to
-    /// the OUTER side of the entered face — `absolute_voxel + face_normal` — and the node is
-    /// dropped BOTTOM-CENTRED on that voxel: centred in the two ground axes, bottom-aligned
-    /// vertically (Z-up). So `offset_voxels = surface_voxel − [sx/2, sy/2, 0]`, and the
-    /// surface voxel itself (the cursor point) is the object's bottom-centre — still solid
-    /// once dropped, since a grid-filling Box occupies `[offset, offset + grid)` and the
-    /// bottom-centre lies inside that span.
+    /// **The face-anchor rule, per normal.** Anchor along the normal axis (the object's
+    /// facing side flush at the neighbour), centre on the other two — and the neighbour
+    /// voxel always lands inside the placed span `[offset, offset + size)`.
     #[test]
-    fn a_cursor_on_geometry_places_a_node_bottom_centred_on_the_entered_face() {
+    fn face_anchored_offset_seats_flush_per_normal() {
+        let point = [10i64, 20, 30];
+        let size = [4u32, 6, 8];
+        // +Z (a top face / the ground): stand on it, centred — the old bottom-centre.
+        assert_eq!(face_anchored_offset(point, size, [0, 0, 1]), [8, 17, 30]);
+        // -Z (a bottom face): hang under it, the object's TOP flush at the neighbour.
+        assert_eq!(face_anchored_offset(point, size, [0, 0, -1]), [8, 17, 30 - (8 - 1)]);
+        // +X (a side wall): the object's -X face flush against it, centred in Y and Z.
+        assert_eq!(face_anchored_offset(point, size, [1, 0, 0]), [10, 17, 26]);
+        // -X (the opposite wall): the object's +X face flush.
+        assert_eq!(face_anchored_offset(point, size, [-1, 0, 0]), [10 - (4 - 1), 17, 26]);
+
+        // Invariant: the neighbour voxel is inside the placed span for every axis face.
+        for normal in [[0, 0, 1], [0, 0, -1], [1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0]] {
+            let off = face_anchored_offset(point, size, normal);
+            for axis in 0..3 {
+                let inside = point[axis] >= off[axis] && point[axis] < off[axis] + size[axis] as i64;
+                assert!(inside, "neighbour {point:?} outside span for normal {normal:?} on axis {axis}");
+            }
+        }
+    }
+
+    /// the OUTER side of the entered face — `absolute_voxel + face_normal` — and the node is
+    /// seated FLUSH against that face: anchored along the face's normal axis (its facing
+    /// side touches the surface) and centred on the other two. The surface voxel (the cursor
+    /// point) always lies inside the placed span `[offset, offset + grid)`, so it is solid
+    /// once dropped.
+    #[test]
+    fn a_cursor_on_geometry_places_a_node_anchored_flush_to_the_entered_face() {
         let mut fixture = placement_fixture(OrbitCamera::default());
         // The default iso view centres the Box under the screen centre, so a centre
         // cursor is a guaranteed geometry hit (the picking net proves this framing).
         let cursor = [640.0, 360.0];
 
         // Independent expectation: pick the same cursor, step along the face, then apply the
-        // bottom-centre transform the placement is specified to use.
+        // face-anchor rule (anchor along the normal axis, centre on the rest).
         let pick = fixture
             .app_core
             .pick_voxel(cursor, VIEWPORT, &fixture.frame())
@@ -360,11 +398,14 @@ mod tests {
         let surface_voxel: [i64; 3] =
             std::array::from_fn(|axis| pick.absolute_voxel[axis] + pick.face_normal[axis] as i64);
         let size = tool_shape().size_voxels;
-        let expected_offset = [
-            surface_voxel[0] - (size[0] / 2) as i64,
-            surface_voxel[1] - (size[1] / 2) as i64,
-            surface_voxel[2],
-        ];
+        let expected_offset: [i64; 3] = std::array::from_fn(|axis| {
+            let s = size[axis] as i64;
+            match pick.face_normal[axis] {
+                n if n > 0 => surface_voxel[axis],
+                n if n < 0 => surface_voxel[axis] - (s - 1),
+                _ => surface_voxel[axis] - s / 2,
+            }
+        });
 
         let outcome =
             fixture
@@ -381,19 +422,19 @@ mod tests {
         };
         assert_eq!(
             offset_voxels, expected_offset,
-            "the node drops bottom-centred on the outer side of the entered face"
+            "the node seats flush against the entered face"
         );
 
-        // Applying + rebuilding must make the CURSOR point (the object's bottom-centre)
-        // occupied — proving both the bottom-centre transform and that `offset_voxels` lines
-        // up with the resident chunks' frame.
+        // Applying + rebuilding must make the CURSOR point (inside the seated span) occupied
+        // — proving both the anchor transform and that `offset_voxels` lines up with the
+        // resident chunks' frame.
         fixture.apply_and_rebuild(Intent::PlaceNode {
             content: NodeSpec::Tool { shape: tool_shape(), material: MaterialChoice::Stone },
             offset_voxels,
         });
         assert!(
             absolute_voxel_is_solid(&fixture.chunks, surface_voxel),
-            "the dropped node's bottom-centre must occupy the cursor voxel {surface_voxel:?}"
+            "the dropped node must occupy the cursor voxel {surface_voxel:?}"
         );
     }
 
