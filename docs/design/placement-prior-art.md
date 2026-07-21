@@ -255,9 +255,76 @@ landed at, through an injected `depth_is_authorable` predicate. At the orbit piv
 predicate is identically `can_author_at_all`, so the old camera-level question is the anchor-path
 special case of the new one rather than a separate guard asked before the ray.
 
+## Superseded 2026-07-20 (same day): three world planes, not one view-aligned plane
+
+The view-aligned plane above was reconsidered the same day and **replaced**, after two further
+prior-art passes the CAD study had not covered:
+
+* `voxel-placement-prior-art.md` — the block-*game* shelf. Mass-market builders are
+  face-or-nothing; only the tools that removed the ground (Space Engineers, Dreams) reinvented a
+  movable view-ray depth.
+* `orbit-editor-placement-prior-art.md` — the block-*editor* shelf. The flagship (Blockbench)
+  does not raycast to create at all; the one genuine invention (Crocotile3D) **snaps the draw
+  plane to the axis-aligned plane the camera faces most squarely**, so it can never graze.
+
+The owner's decisive reframing: this app authors architectural assets **for block worlds that
+have a ground**, so a ground plane is authoring *in context*, not a CAD relic — and the view-
+aligned plane's wandering normal was the thing that felt unpredictable. The synthesis keeps the
+ground and kills grazing without a wandering normal.
+
+### Position — the picked point, resolved in order
+
+1. **Geometry hit** → place against the face (unchanged).
+2. **A custom (user-created) plane the ray faces** → place on it. **If a custom plane is coplanar
+   with a world plane, the custom plane wins** — it carries orientation that the world plane does
+   not (see below).
+3. **The three built-in world-origin planes**, ground-privileged: use the **ground** (`+Z`, we are
+   Z-up) unless the ray grazes it past a threshold; then defer to whichever **vertical** plane
+   (`+X` or `+Y`) the ray faces more squarely. Not "best-faced always wins" — the ground has
+   priority and the verticals are only a grazing fallback.
+
+### Why this is provably total, and never grazes
+
+A unit ray direction cannot have all three components small: `max(|d.x|, |d.y|, |d.z|) >= 1/√3
+≈ 0.577`. So the best-faced of three orthogonal planes always has a healthy denominator (worst
+case ~54.7°, the body diagonal) — **you can never graze all three at once.** The view-aligned
+plane dodged grazing with a wandering normal; the three fixed normals plus a selection kill it
+outright, which is the predictability the ground plane was wanted for. The totality proof moves
+up from the single plane to the *selection*, and gets stronger: it becomes the max-component
+bound, not a frustum-half-angle argument.
+
+### Orientation — separate from position, and world-fixed for the built-ins
+
+**Verticality is a product value, so the built-in planes are a *positioning* device only — they
+never rotate the placed object.** A block located via the vertical grazing-fallback still stands
+upright. This is Blender's `Orientation` axis set to **Default** for the built-ins:
+
+* Geometry hit → orient to the **face normal** (`Orientation: Surface`).
+* Custom plane → orient **normal to that plane**, camera picks the side (`Orientation: Surface`).
+* Built-in world plane → **world-vertical**, never the plane's own normal (`Orientation: Default`).
+
+### Still open (feel knobs, not blockers)
+
+* **The ground's grazing threshold** — how oblique before it hands to a vertical. Start ~20°, tune.
+* **The vertical fallback's locus** — the three built-ins are at the **world origin** (owner's
+  words), the provisional default; the wrinkle is that a grazing fallback then lands on `x=0`/`y=0`,
+  possibly far from a structure built off-origin. Accepted for now because once the first course is
+  down the geometry path dominates and the fallback is a bootstrap edge case; revisit (verticals
+  through the cursor's ground point) only if detached far-from-origin placement becomes common.
+
+### What this costs the code already written
+
+`crates/raycast/src/placement.rs` is not wired to anything, so revising it is cheap. The
+`anchor_plane_hit` ray-plane primitive survives; what changes is the caller — `AnchorPlane`'s
+`view_direction` normal becomes one of three fixed axis normals chosen by the selection, the
+movable `anchor_point`/behind-the-eye concern evaporates (planes are at the origin), and the Kani
+totality harness is restated as the max-component bound. The `OnAnchorPlane` variant should be
+renamed to name a world plane, and orientation must be carried out of `resolve_placement` (it now
+depends on which plane won, not just where the point is).
+
 ## What to do with this
 
-1. ~~Decide the picking-plane question first.~~ **Decided above.**
+1. ~~Decide the picking-plane question first.~~ **Decided, then superseded — see above.**
 2. ~~Keep the four cursor states, but re-derive their reachability against the resolution
    order.~~ **Done.** Three survive: `OnSurface`, `OnAnchorPlane`, `TooFar`. `NoSurface` was the
    dead one.
