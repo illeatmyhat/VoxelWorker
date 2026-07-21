@@ -50,6 +50,7 @@
 pub mod brick_march;
 pub mod gizmo_pick;
 pub mod placement;
+pub mod surface_raycast;
 pub mod view_cube_pick;
 pub mod voxel_dda;
 
@@ -67,5 +68,9 @@ pub use view_cube_pick::{
 };
 pub use placement::{
     resolve_placement, select_world_plane, world_plane_hit, PlacementTarget, WorldPlane,
+};
+pub use surface_raycast::{
+    gradient_normal, project_to_surface, raymarch, snap_slide_to_normal,
+    snap_to_lattice_then_reproject, MarchParams, SurfaceHit,
 };
 pub use voxel_dda::VoxelDda;
