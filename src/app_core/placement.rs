@@ -43,6 +43,25 @@ use super::AppCore;
 /// `raycast::select_world_plane`).
 const MIN_GROUND_FACING: f32 = 0.342_f32;
 
+/// Turn a placement POINT (the absolute voxel the cursor resolved to) into the
+/// corner-anchored `offset_voxels` that puts the object's **bottom-centre** there: centre
+/// the two ground axes (X, Y) under the point and bottom-align the vertical axis (Z-up,
+/// index 2). This is the UX the owner asked for — a click drops the object standing under
+/// the cursor — distinct from the raw corner the frame math emits.
+///
+/// Producers are corner-anchored (`[offset, offset + grid)`, [`placed_extent_voxels`]), so
+/// bottom-align is exactly `offset_z = point_z` (the low corner IS the bottom) and centring
+/// subtracts half the size in the two ground axes. On the ground the object stands on
+/// `z = 0` centred under the cursor; on a top face it stands on that face centred on the
+/// hit — the two cases the owner specified.
+fn bottom_centre_offset(point: [i64; 3], size_voxels: [u32; 3]) -> [i64; 3] {
+    [
+        point[0] - (size_voxels[0] / 2) as i64,
+        point[1] - (size_voxels[1] / 2) as i64,
+        point[2],
+    ]
+}
+
 /// The result of [`AppCore::place_primitive`]: the resolved [`PlacementTarget`] AND
 /// the intent that places a node there, if any.
 ///
@@ -95,11 +114,15 @@ impl AppCore {
         // Tier 1 — geometry. A picked surface is unambiguous; the node lands on the
         // OUTER side of the entered face (the empty neighbour), so the placement voxel
         // is the hit voxel stepped one unit along its outward face normal. Both are in
-        // the absolute lattice (ADR 0008), so this is exact integer arithmetic.
+        // the absolute lattice (ADR 0008), so this is exact integer arithmetic. The node
+        // is then dropped BOTTOM-CENTRED on that voxel (centre X/Y, bottom-align Z), so it
+        // stands on the face under the cursor rather than hanging by its low corner.
         if let Some(pick) = self.pick_voxel(cursor, viewport, frame) {
             let placement_voxel = std::array::from_fn(|axis| {
                 pick.absolute_voxel[axis] + pick.face_normal[axis] as i64
             });
+            // `target.point` stays the surface hit (the cursor location) for the
+            // affordance; only the emitted `offset_voxels` is bottom-centred.
             let point = Vec3::new(
                 placement_voxel[0] as f32,
                 placement_voxel[1] as f32,
@@ -110,7 +133,7 @@ impl AppCore {
                     point,
                     face_normal: pick.face_normal,
                 },
-                intent: Some(place_node(placement_voxel)),
+                intent: Some(place_node(bottom_centre_offset(placement_voxel, shape.size_voxels))),
             };
         }
 
@@ -195,11 +218,12 @@ impl AppCore {
         };
 
         let intent = match target {
-            PlacementTarget::OnWorldPlane { point, .. } => Some(place_node([
-                point.x.floor() as i64,
-                point.y.floor() as i64,
-                point.z.floor() as i64,
-            ])),
+            // Bottom-centred on the world-plane hit (centre X/Y, bottom-align Z): the object
+            // stands on the ground under the cursor, not by its low corner.
+            PlacementTarget::OnWorldPlane { point, .. } => Some(place_node(bottom_centre_offset(
+                [point.x.floor() as i64, point.y.floor() as i64, point.z.floor() as i64],
+                shape.size_voxels,
+            ))),
             // A geometry face cannot come back from a `None` surface, and the two
             // negative answers place nothing.
             PlacementTarget::OnSurface { .. }
@@ -313,31 +337,34 @@ mod tests {
         SdfShape::from_blocks(ShapeKind::Box, [2, 2, 2], 1, DENSITY)
     }
 
-    /// **Geometry tier.** A cursor over the existing solid places a node on the OUTER
-    /// side of the entered face — `absolute_voxel + face_normal` — and the dropped Box
-    /// occupies that voxel once applied and rebuilt.
-    ///
-    /// **Empirical centre-vs-corner (the briefing's open question).** The producer is
-    /// CORNER-anchored: a node with `offset_voxels = V` occupies absolute
-    /// `[V, V + grid)`, so `V` itself is solid for a grid-filling Box and NO
-    /// `size/2` subtraction is applied. This test would fail (the placed voxel would
-    /// be air, off by half the node's size) if the producer centre-emitted; it passes,
-    /// confirming corner emission — consistent with `placed_extent_voxels`' documented
-    /// `[off, off + grid)` span.
+    /// **Geometry tier + bottom-centre drop.** A cursor over the existing solid resolves to
+    /// the OUTER side of the entered face — `absolute_voxel + face_normal` — and the node is
+    /// dropped BOTTOM-CENTRED on that voxel: centred in the two ground axes, bottom-aligned
+    /// vertically (Z-up). So `offset_voxels = surface_voxel − [sx/2, sy/2, 0]`, and the
+    /// surface voxel itself (the cursor point) is the object's bottom-centre — still solid
+    /// once dropped, since a grid-filling Box occupies `[offset, offset + grid)` and the
+    /// bottom-centre lies inside that span.
     #[test]
-    fn a_cursor_on_geometry_places_a_node_against_the_entered_face() {
+    fn a_cursor_on_geometry_places_a_node_bottom_centred_on_the_entered_face() {
         let mut fixture = placement_fixture(OrbitCamera::default());
         // The default iso view centres the Box under the screen centre, so a centre
         // cursor is a guaranteed geometry hit (the picking net proves this framing).
         let cursor = [640.0, 360.0];
 
-        // Independent expectation: pick the same cursor and step along the face.
+        // Independent expectation: pick the same cursor, step along the face, then apply the
+        // bottom-centre transform the placement is specified to use.
         let pick = fixture
             .app_core
             .pick_voxel(cursor, VIEWPORT, &fixture.frame())
             .expect("the centre cursor hits the Box");
-        let expected_voxel: [i64; 3] =
+        let surface_voxel: [i64; 3] =
             std::array::from_fn(|axis| pick.absolute_voxel[axis] + pick.face_normal[axis] as i64);
+        let size = tool_shape().size_voxels;
+        let expected_offset = [
+            surface_voxel[0] - (size[0] / 2) as i64,
+            surface_voxel[1] - (size[1] / 2) as i64,
+            surface_voxel[2],
+        ];
 
         let outcome =
             fixture
@@ -353,20 +380,20 @@ mod tests {
             panic!("a geometry hit produces a PlaceNode, got {:?}", outcome.intent);
         };
         assert_eq!(
-            offset_voxels, expected_voxel,
-            "the node lands on the outer side of the entered face"
+            offset_voxels, expected_offset,
+            "the node drops bottom-centred on the outer side of the entered face"
         );
 
-        // The placed Box is solid at its low corner (grid-filling), so applying the
-        // intent and rebuilding must make the dropped voxel occupied — proving the
-        // absolute `offset_voxels` frame lines up with the resident chunks' frame.
+        // Applying + rebuilding must make the CURSOR point (the object's bottom-centre)
+        // occupied — proving both the bottom-centre transform and that `offset_voxels` lines
+        // up with the resident chunks' frame.
         fixture.apply_and_rebuild(Intent::PlaceNode {
             content: NodeSpec::Tool { shape: tool_shape(), material: MaterialChoice::Stone },
             offset_voxels,
         });
         assert!(
-            absolute_voxel_is_solid(&fixture.chunks, expected_voxel),
-            "the dropped node must occupy the placed voxel {expected_voxel:?}"
+            absolute_voxel_is_solid(&fixture.chunks, surface_voxel),
+            "the dropped node's bottom-centre must occupy the cursor voxel {surface_voxel:?}"
         );
     }
 
@@ -412,10 +439,19 @@ mod tests {
         let t = -absolute_origin.z / direction.z;
         assert!(t > 0.0, "the ground must be in front of the ray (t = {t})");
         let ground_point = absolute_origin + direction * t;
-        let expected_voxel = [
+        let ground_voxel = [
             ground_point.x.floor() as i64,
             ground_point.y.floor() as i64,
             ground_point.z.floor() as i64,
+        ];
+        // The node drops BOTTOM-CENTRED on the ground point: centre X/Y, bottom-align Z. So
+        // its corner offset is `ground_voxel − [sx/2, sy/2, 0]`, and the ground point itself
+        // is the bottom-centre (still solid, inside `[offset, offset + grid)`).
+        let size = tool_shape().size_voxels;
+        let expected_offset = [
+            ground_voxel[0] - (size[0] / 2) as i64,
+            ground_voxel[1] - (size[1] / 2) as i64,
+            ground_voxel[2],
         ];
 
         let mut fixture = fixture;
@@ -439,17 +475,17 @@ mod tests {
             panic!("a world-plane hit produces a PlaceNode, got {:?}", outcome.intent);
         };
         assert_eq!(
-            offset_voxels, expected_voxel,
-            "the ground placement must match the independently-derived absolute voxel — \
-             a wrong recentre term fails here"
+            offset_voxels, expected_offset,
+            "the ground placement must be bottom-centred on the independently-derived ground \
+             voxel — a wrong recentre term (or a lost centre offset) fails here"
         );
 
-        // Applying + rebuilding leaves BOTH bodies present: the original Box at the
-        // origin and the new Box straddling the ground point.
+        // Applying + rebuilding leaves BOTH bodies present: the original Box at the origin
+        // and the new Box standing bottom-centred on the ground point.
         fixture.apply_and_rebuild(outcome.intent.unwrap());
         assert!(
-            absolute_voxel_is_solid(&fixture.chunks, expected_voxel),
-            "the dropped ground node occupies the clicked point {expected_voxel:?}"
+            absolute_voxel_is_solid(&fixture.chunks, ground_voxel),
+            "the dropped ground node's bottom-centre occupies the clicked point {ground_voxel:?}"
         );
         assert!(
             absolute_voxel_is_solid(&fixture.chunks, [16, 16, 16]),
