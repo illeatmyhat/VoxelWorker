@@ -140,16 +140,22 @@ impl AppCore {
                 placement_voxel[1] as f32,
                 placement_voxel[2] as f32,
             );
+            // ADR 0026: the entered face SETS orientation — the node's local +Z turns to the
+            // face normal, so a cylinder on a side wall lies on its side poking out along the
+            // normal. The anchor then seats the object's TURNED extent flush against the face
+            // (a side-lying cylinder is `turn_extent` long along the normal), not the upright
+            // extent — otherwise it would seat by the wrong dimension and half-bury.
+            let orientation =
+                substrate::spatial::LatticeOrientation::from_face_normal(pick.face_normal);
+            let turned_size = orientation.turn_extent(shape.size_voxels);
             return PlacementOutcome {
                 target: PlacementTarget::OnSurface {
                     point,
                     face_normal: pick.face_normal,
                 },
                 intent: Some(place_node(
-                    face_anchored_offset(placement_voxel, shape.size_voxels, pick.face_normal),
-                    // Orientation from the face lands in the next slice; identity here keeps
-                    // the current upright behaviour unchanged.
-                    substrate::spatial::LatticeOrientation::IDENTITY,
+                    face_anchored_offset(placement_voxel, turned_size, pick.face_normal),
+                    orientation,
                 )),
             };
         }
@@ -347,6 +353,48 @@ mod tests {
         );
         // The turn is REAL, not a no-op: the shape is asymmetric in Z, so its cells move.
         assert_ne!(on_its_side, upright, "a tall cylinder turned onto +X must move its cells");
+    }
+
+    /// **place_primitive wires the face turn (ADR 0026).** Whatever face the cursor enters,
+    /// the emitted intent's orientation is `from_face_normal(face)` and its offset anchors the
+    /// TURNED extent — so a tall cylinder on a side wall lies along the normal, flush and
+    /// centred, rather than staying upright and half-buried. (The turn's occupancy correctness
+    /// is proven by `an_oriented_leaf_occupies_the_turned_cells_of_the_upright_one`; this pins
+    /// the placement wiring that feeds it.)
+    #[test]
+    fn a_placed_primitive_is_oriented_and_anchored_to_the_entered_face() {
+        use substrate::spatial::LatticeOrientation;
+        let fixture = placement_fixture(OrbitCamera::default());
+        let cursor = [640.0, 360.0];
+        // A tall (asymmetric) armed tool, so the turned extent differs from the upright one.
+        let shape = SdfShape::from_blocks(ShapeKind::Cylinder, [1, 1, 3], 1, DENSITY);
+
+        // Independent expectation from the pick: turn by the entered face, anchor the turned size.
+        let pick = fixture
+            .app_core
+            .pick_voxel(cursor, VIEWPORT, &fixture.frame())
+            .expect("the centre cursor hits the Box");
+        let placement_voxel: [i64; 3] =
+            std::array::from_fn(|axis| pick.absolute_voxel[axis] + pick.face_normal[axis] as i64);
+        let expected_orientation = LatticeOrientation::from_face_normal(pick.face_normal);
+        let expected_offset = face_anchored_offset(
+            placement_voxel,
+            expected_orientation.turn_extent(shape.size_voxels),
+            pick.face_normal,
+        );
+
+        let outcome = fixture.app_core.place_primitive(
+            cursor,
+            VIEWPORT,
+            &fixture.frame(),
+            shape.clone(),
+            MaterialChoice::Stone,
+        );
+        let Some(Intent::PlaceNode { offset_voxels, orientation, .. }) = outcome.intent else {
+            panic!("a geometry hit produces a PlaceNode, got {:?}", outcome.intent);
+        };
+        assert_eq!(orientation, expected_orientation, "oriented by the entered face");
+        assert_eq!(offset_voxels, expected_offset, "seated flush by the turned extent");
     }
 
     const DENSITY: u32 = 8;
