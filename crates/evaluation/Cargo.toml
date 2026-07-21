@@ -32,6 +32,10 @@ voxel_core = { path = "../voxel_core" }
 # black/white/grey cell-classification kernel, and the greedy cuboid decomposition the
 # boundary geometry is stored as.
 substrate = { path = "../substrate" }
+# The vector/quaternion algebra the ADR 0027 continuous-rotation classifier maps voxels
+# through (the leaf's `glam::Quat` rotation + the inverse-affine gather resample); matched
+# to the workspace version so a `Quat`/`Vec3` crosses the document boundary without conversion.
+glam = "0.33.1"
 # Data-parallel per-chunk classification (the covering-chunk build runs under rayon).
 rayon = "1"
 # Derive Serialize/Deserialize for the persisted sparse chunk codec (CompressedChunk).

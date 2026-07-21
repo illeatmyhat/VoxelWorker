@@ -5,6 +5,7 @@ use substrate::solids::{
     CellCombineOp, CellContribution, ScopedCellClassification, ScopedCellEvent,
 };
 
+use glam::{Quat, Vec3};
 use voxel_core::core_geom::{BlockId, CellKey};
 use crate::cuboid::{decompose_into_boxes, VoxelRegion};
 use document::scene::{CombineOp, LeafProducer, ScopeFrame};
@@ -201,9 +202,10 @@ pub(crate) fn classify_chunk_block(
             }
             ScopedLeafStep::Leaf(leaf) => {
                 // Map the absolute block box into THIS leaf's producer-local voxel-index
-                // frame `[0, full)` — subtract the world offset AND un-turn the leaf's
-                // orientation (ADR 0026), the exact frame `cell_field_interval` expects
-                // (ADR 0008: the frame is carried, never re-derived).
+                // frame `[0, full)` via the inverse affine (ADR 0027) — the exact frame
+                // `cell_field_interval` expects (ADR 0008: the frame is carried, never
+                // re-derived). Exact for the axis-aligned leaves; a conservative enclosing
+                // box for a genuine rotation (the isometry keeps the interval bound sound).
                 let cell_local =
                     abs_box_to_producer_local(leaf, block_abs_voxels, voxels_per_block);
                 ScopedCellEvent::Contribution(CellContribution {
@@ -258,57 +260,212 @@ pub(crate) fn classify_chunk_block(
     }
 }
 
-/// The leaf's grid AABB in the SCENE's absolute voxel frame: `[off, off + turned_grid)`,
-/// corner-anchored at its `world_offset_voxels`. The single box construction shared by the
-/// classify / overlap / whole-chunk paths (they must all test the SAME leaf extent).
+/// The ADR 0027 continuous placement **affine** mapping a leaf's producer-LOCAL voxel
+/// coordinate to its ABSOLUTE voxel coordinate, and back. It generalizes the ADR 0026 discrete
+/// [`LatticeOrientation`](substrate::spatial::LatticeOrientation) permutation to an arbitrary
+/// [`Quat`] rotation plus a float offset — the single frame map every classify / resolve
+/// function in this module routes through.
 ///
-/// ADR 0026: an oriented leaf occupies its **turned** grid in the world — the producer's
-/// local `[0, full)` box is turned into world axes (`turn_extent`), still corner-anchored at
-/// the world offset (the turn re-anchors the low corner to the origin, see
-/// [`LatticeOrientation::turn_point_in_box`]).
-pub(crate) fn leaf_world_box(leaf: &LeafProducer, voxels_per_block: u32) -> VoxelAabb {
-    let grid_dimensions = leaf.orientation.turn_extent(leaf.producer.full_dimensions(voxels_per_block));
-    VoxelAabb::new(
-        leaf.world_offset_voxels,
-        [
-            leaf.world_offset_voxels[0] + grid_dimensions[0] as i64,
-            leaf.world_offset_voxels[1] + grid_dimensions[1] as i64,
-            leaf.world_offset_voxels[2] + grid_dimensions[2] as i64,
-        ],
-    )
+/// **Corner-anchored.** The producer's local box `[0, full]` is rotated by the leaf's
+/// `rotation`, and its rotated min-corner is re-anchored to the leaf's world offset. For an
+/// AXIS-ALIGNED rotation (any of the 24 lattice turns, bridged to a `Quat` by
+/// `quat_from_lattice`) this reproduces the pre-0027 lattice `turn_point_in_box + offset`
+/// EXACTLY — see [`producer_local_voxel_to_abs`] for the `+0.5`/`floor` centre-sampling identity
+/// that reconciles the corner anchor with the lattice's `ext−1−l` axis reversal — and a
+/// continuous rotation extends it smoothly (ADR 0027 §4: a rotation is an isometry, so per-voxel
+/// occupancy stays exact; only the coarse cell-interval bound loosens).
+///
+/// The `full`, `min_rotated_corner` and `world_offset` are all in VOXELS.
+struct LeafAffine {
+    /// The leaf's continuous rotation (`quat_from_lattice(orientation) · authored`, ADR 0027).
+    rotation: Quat,
+    /// Componentwise min of `rotation · corner` over the 8 corners of the local box
+    /// `[0, full]` — the rotated box's low corner, subtracted to re-anchor it to the origin
+    /// before the world offset lands it (the float analogue of the lattice `ext−1−l` reversal).
+    min_rotated_corner: Vec3,
+    /// The leaf's continuous world offset: the integer `world_offset_voxels` plus the float
+    /// `offset_local_voxels` slide (ADR 0027 — the wandering-origin integer frame carries the
+    /// bulk of the position, the float carries the sub-voxel remainder).
+    world_offset: Vec3,
+    /// The producer's FULL local dimensions in voxels (`[0, full]` is the local box).
+    full: Vec3,
 }
 
-/// Map an absolute voxel box into the leaf's **producer-local** `[0, full)` frame (ADR 0026):
-/// subtract the world offset (into the leaf's own turned frame), then un-turn into the
-/// producer's unturned frame. This is the frame `cell_field_interval` / `resolve_into` expect
-/// — the producer never learns the leaf is turned. Identity-oriented leaves get the plain
-/// `abs − world_offset` this replaced. The box may fall partly outside `[0, full)` (a block
-/// straddling the leaf edge); the producer bounds/clamps it exactly as before.
+impl LeafAffine {
+    /// Build the affine for `leaf` at the document's `voxels_per_block`.
+    fn of(leaf: &LeafProducer, voxels_per_block: u32) -> Self {
+        let full_dimensions = leaf.producer.full_dimensions(voxels_per_block);
+        let full = Vec3::new(
+            full_dimensions[0] as f32,
+            full_dimensions[1] as f32,
+            full_dimensions[2] as f32,
+        );
+        let rotation = leaf.rotation;
+        let mut min_rotated_corner = Vec3::splat(f32::INFINITY);
+        for corner in box_corners(full) {
+            min_rotated_corner = min_rotated_corner.min(rotation * corner);
+        }
+        let world_offset = Vec3::new(
+            leaf.world_offset_voxels[0] as f32,
+            leaf.world_offset_voxels[1] as f32,
+            leaf.world_offset_voxels[2] as f32,
+        ) + Vec3::from_array(leaf.offset_local_voxels);
+        Self { rotation, min_rotated_corner, world_offset, full }
+    }
+
+    /// A producer-LOCAL voxel coordinate mapped to its ABSOLUTE voxel coordinate.
+    fn world_of(&self, local: Vec3) -> Vec3 {
+        self.rotation * local - self.min_rotated_corner + self.world_offset
+    }
+
+    /// The inverse: an ABSOLUTE voxel coordinate mapped back to the producer-LOCAL frame.
+    /// `local_of(world_of(p)) ≈ p` for every `p` (a rotation's inverse is exact up to float
+    /// round-off — the classifier's `+0.5` centre-sample margins absorb it, see
+    /// [`producer_local_voxel_to_abs`]).
+    fn local_of(&self, world: Vec3) -> Vec3 {
+        self.rotation.inverse() * (world - self.world_offset + self.min_rotated_corner)
+    }
+}
+
+/// The 8 corners of the local box `[0, full]` (the two endpoints on each axis).
+fn box_corners(full: Vec3) -> [Vec3; 8] {
+    [
+        Vec3::new(0.0, 0.0, 0.0),
+        Vec3::new(full.x, 0.0, 0.0),
+        Vec3::new(0.0, full.y, 0.0),
+        Vec3::new(full.x, full.y, 0.0),
+        Vec3::new(0.0, 0.0, full.z),
+        Vec3::new(full.x, 0.0, full.z),
+        Vec3::new(0.0, full.y, full.z),
+        Vec3::new(full.x, full.y, full.z),
+    ]
+}
+
+/// Round each component to the nearest integer voxel index — used where the affine is KNOWN to
+/// land on integer coordinates (an axis-aligned leaf) so float round-off never grows the box by
+/// a voxel.
+fn round_to_i64(vector: Vec3) -> [i64; 3] {
+    [vector.x.round() as i64, vector.y.round() as i64, vector.z.round() as i64]
+}
+
+/// Whether `rotation` is one of the 24 axis-aligned lattice turns (to a `1e-4` tolerance):
+/// each of `rotation · {X, Y, Z}` lands on a signed unit axis (exactly one component `≈ ±1`, the
+/// other two `≈ 0`). An axis-aligned leaf takes the EXACT integer paths (byte-identical to the
+/// ADR 0026 permutation — this is the whole existing golden suite); a genuinely-rotated one
+/// resamples (ADR 0027 §4).
+fn is_axis_aligned(rotation: Quat) -> bool {
+    const TOLERANCE: f32 = 1e-4;
+    [Vec3::X, Vec3::Y, Vec3::Z].into_iter().all(|axis| {
+        let image = rotation * axis;
+        let near_unit = image
+            .to_array()
+            .iter()
+            .filter(|component| (component.abs() - 1.0).abs() <= TOLERANCE)
+            .count();
+        let near_zero = image
+            .to_array()
+            .iter()
+            .filter(|component| component.abs() <= TOLERANCE)
+            .count();
+        near_unit == 1 && near_zero == 2
+    })
+}
+
+/// The leaf's grid AABB in the SCENE's absolute voxel frame — the integer enclosing box of the
+/// [`LeafAffine`] applied to the 8 corners of the producer's local `[0, full]` box (ADR 0027).
+/// The single box construction shared by the classify / overlap / whole-chunk paths (they must
+/// all test the SAME leaf extent).
+///
+/// For an AXIS-ALIGNED rotation this equals the pre-0027 `[off, off + turn_extent(full))`
+/// EXACTLY: the affine sends the corners to integer world positions, so rounding to nearest
+/// recovers them bit-for-bit (the `an_oriented_leaf_occupies_the_turned_cells_of_the_upright_one`
+/// golden pins it). For a genuine rotation the corners land off-lattice, so the min is FLOORED and
+/// the max CEILED to conservatively enclose the rotated box (SOUND: the true occupied set ⊆ this
+/// AABB, ADR 0027 §4).
+pub(crate) fn leaf_world_box(leaf: &LeafProducer, voxels_per_block: u32) -> VoxelAabb {
+    let affine = LeafAffine::of(leaf, voxels_per_block);
+    let mut world_min = Vec3::splat(f32::INFINITY);
+    let mut world_max = Vec3::splat(f32::NEG_INFINITY);
+    for corner in box_corners(affine.full) {
+        let world = affine.world_of(corner);
+        world_min = world_min.min(world);
+        world_max = world_max.max(world);
+    }
+    if is_axis_aligned(affine.rotation) {
+        VoxelAabb::new(round_to_i64(world_min), round_to_i64(world_max))
+    } else {
+        VoxelAabb::new(
+            [world_min.x.floor() as i64, world_min.y.floor() as i64, world_min.z.floor() as i64],
+            [world_max.x.ceil() as i64, world_max.y.ceil() as i64, world_max.z.ceil() as i64],
+        )
+    }
+}
+
+/// Map an absolute voxel box into the leaf's **producer-local** `[0, full)` frame — the integer
+/// enclosing box of the inverse [`LeafAffine::local_of`] applied to the 8 corners of `abs` (ADR
+/// 0027). This is the frame `cell_field_interval` / `resolve_into` expect (the producer never
+/// learns the leaf is turned).
+///
+/// For an AXIS-ALIGNED rotation this equals the pre-0027 `unturn_box` EXACTLY (the corners map to
+/// integer local coordinates, recovered by rounding to nearest). For a genuine rotation the mapped
+/// box is a ROTATED box in the local frame; flooring the min and ceiling the max conservatively
+/// encloses it — SOUND because the true region ⊆ this AABB, so `cell_field_interval` over it still
+/// brackets the field (the isometry keeps the cell radius invariant, ADR 0027 §4). The box may
+/// fall partly outside `[0, full)` (a block straddling the leaf edge); the producer bounds/clamps
+/// it exactly as before.
 pub(crate) fn abs_box_to_producer_local(
     leaf: &LeafProducer,
     abs: VoxelAabb,
     voxels_per_block: u32,
 ) -> VoxelAabb {
-    let extent = leaf.producer.full_dimensions(voxels_per_block);
-    let rel_min = std::array::from_fn(|axis| abs.min[axis] - leaf.world_offset_voxels[axis]);
-    let rel_max = std::array::from_fn(|axis| abs.max[axis] - leaf.world_offset_voxels[axis]);
-    let (local_min, local_max) = leaf.orientation.unturn_box(rel_min, rel_max, extent);
-    VoxelAabb::new(local_min, local_max)
+    let affine = LeafAffine::of(leaf, voxels_per_block);
+    let abs_origin = Vec3::new(abs.min[0] as f32, abs.min[1] as f32, abs.min[2] as f32);
+    let abs_full = Vec3::new(
+        (abs.max[0] - abs.min[0]) as f32,
+        (abs.max[1] - abs.min[1]) as f32,
+        (abs.max[2] - abs.min[2]) as f32,
+    );
+    let mut local_min = Vec3::splat(f32::INFINITY);
+    let mut local_max = Vec3::splat(f32::NEG_INFINITY);
+    for corner in box_corners(abs_full) {
+        let local = affine.local_of(abs_origin + corner);
+        local_min = local_min.min(local);
+        local_max = local_max.max(local);
+    }
+    if is_axis_aligned(affine.rotation) {
+        VoxelAabb::new(round_to_i64(local_min), round_to_i64(local_max))
+    } else {
+        VoxelAabb::new(
+            [local_min.x.floor() as i64, local_min.y.floor() as i64, local_min.z.floor() as i64],
+            [local_max.x.ceil() as i64, local_max.y.ceil() as i64, local_max.z.ceil() as i64],
+        )
+    }
 }
 
-/// Map a **producer-local** voxel index back to its absolute voxel index (ADR 0026): turn the
-/// local cell into the leaf's world frame (corner-anchored), then add the world offset. The
-/// inverse of [`abs_box_to_producer_local`] for a single cell — the emission direction.
+/// Map a **producer-local** voxel index to its absolute voxel index (ADR 0027): the absolute
+/// cell the local cell's CENTRE lands in, `world_of(index + 0.5).floor()`. The inverse of
+/// [`abs_box_to_producer_local`] for a single cell — the forward-emit direction.
+///
+/// **Why `+0.5`/`floor` reproduces the lattice byte-for-byte.** For a positive-sign lattice axis
+/// the affine's `world_of` already equals `local + offset`, and `floor(local + 0.5 + offset) =
+/// local + offset`. For a NEGATED axis the corner-anchored affine gives `full − local + offset`
+/// while the lattice `turn_point_in_box` gives `full − 1 − local + offset`; the centre sample makes
+/// the affine value `full − local − 0.5 + offset`, whose `floor` is `full − 1 − local + offset` —
+/// exactly the lattice. So every axis-aligned turn emits into the identical absolute cells the ADR
+/// 0026 permutation did, and the half-unit margin absorbs the `Quat` round-off.
 pub(crate) fn producer_local_voxel_to_abs(
     leaf: &LeafProducer,
     local_index: [i32; 3],
     voxels_per_block: u32,
 ) -> [i64; 3] {
-    let extent = leaf.producer.full_dimensions(voxels_per_block);
-    let world_in_leaf = leaf
-        .orientation
-        .turn_point_in_box(local_index.map(|c| c as i64), extent);
-    std::array::from_fn(|axis| world_in_leaf[axis] + leaf.world_offset_voxels[axis])
+    let affine = LeafAffine::of(leaf, voxels_per_block);
+    let centre = Vec3::new(
+        local_index[0] as f32 + 0.5,
+        local_index[1] as f32 + 0.5,
+        local_index[2] as f32 + 0.5,
+    );
+    let world = affine.world_of(centre);
+    [world.x.floor() as i64, world.y.floor() as i64, world.z.floor() as i64]
 }
 
 /// The FIRST **purely additive** leaf (see [`leaf_is_purely_additive`]) whose grid AABB
@@ -609,8 +766,24 @@ fn compose_leaf_into_region(
     density: u32,
     voxels_per_block: u32,
 ) {
+    // ADR 0027: a genuinely-rotated FIELD producer cannot be emitted by the forward affine
+    // (its `[0, full)` cells no longer land one-per-abs-cell), so resample it by INVERSE
+    // GATHER instead. Every axis-aligned leaf (all of today's placements) and every fieldless
+    // producer (cloud / VoxelBody, which is NEVER continuously rotated) takes the exact
+    // forward-emit path below — byte-identical to ADR 0026.
+    let axis_aligned = is_axis_aligned(leaf.rotation);
+    if !axis_aligned && leaf.producer.as_field().is_some() {
+        gather_rotated_leaf_into_region(region, leaf, block_min_abs, density, voxels_per_block);
+        return;
+    }
+    debug_assert!(
+        axis_aligned,
+        "a continuously-rotated fieldless producer cannot reach the forward-emit path (ADR 0027)"
+    );
+
     // Resolve JUST this block's window in the leaf's producer-local voxel-index frame
-    // (ADR 0026: subtract the world offset and un-turn the orientation).
+    // (ADR 0027: the inverse affine `abs_box_to_producer_local`, exact for the axis-aligned
+    // leaves that reach here).
     let block_abs = VoxelAabb::new(
         block_min_abs,
         [
@@ -634,8 +807,8 @@ fn compose_leaf_into_region(
         let mut body_covers: std::collections::HashSet<[i64; 3]> =
             std::collections::HashSet::with_capacity(local.occupied.len());
         for voxel in &local.occupied {
-            // ADR 0026: the voxel's index is in the producer's UNTURNED frame; turn it into
-            // absolute (orientation + offset) before rebasing to block-local.
+            // ADR 0027: the voxel's index is in the producer's local frame; map it to absolute
+            // via the forward affine (exact for an axis-aligned leaf) before rebasing to block-local.
             let abs = producer_local_voxel_to_abs(leaf, voxel.local_index, voxels_per_block);
             let block_local: [i64; 3] = std::array::from_fn(|axis| abs[axis] - block_min_abs[axis]);
             if block_local.iter().any(|&c| c < 0 || c >= density as i64) {
@@ -662,7 +835,7 @@ fn compose_leaf_into_region(
     // local index is in the LEAF's frame, so shift back to block-local by adding the
     // leaf offset and subtracting the block's absolute low corner.
     for voxel in &local.occupied {
-        // ADR 0026: turn the producer-local index into absolute (orientation + offset), then
+        // ADR 0027: map the producer-local index into absolute via the forward affine, then
         // rebase to block-local. Identity leaves reproduce the old `index + offset − block`.
         let abs = producer_local_voxel_to_abs(leaf, voxel.local_index, voxels_per_block);
         let block_local: [i64; 3] = std::array::from_fn(|axis| abs[axis] - block_min_abs[axis]);
@@ -699,6 +872,100 @@ fn compose_leaf_into_region(
             block_local[2] as u32,
             Some(render_key),
         );
+    }
+}
+
+/// The ADR 0027 **inverse-resample gather** for a genuinely-rotated field producer: for each
+/// absolute voxel in the block window, inverse-map its CENTRE into the producer-local frame and
+/// test the field, applying the SAME per-operation logic the forward emit does (Union stamps,
+/// Subtract clears, Intersect keeps-only-covered). Only a FIELD producer (an SDF Tool, a sketch
+/// solid, a composed Part) reaches here — a fieldless producer is never continuously rotated
+/// (ADR 0027), so [`compose_leaf_into_region`] routes it to the forward-emit path.
+///
+/// Occupancy is exact per voxel (a rotation is an isometry, ADR 0027 §4): `local_if_covered`
+/// samples the field the producer resolves, so the gathered set equals the forward-emitted turn
+/// wherever the rotation IS axis-aligned (proven by the gather-vs-permutation oracle test) and
+/// extends it smoothly to off-axis rotations.
+fn gather_rotated_leaf_into_region(
+    region: &mut VoxelRegion,
+    leaf: &LeafProducer,
+    block_min_abs: [i64; 3],
+    density: u32,
+    voxels_per_block: u32,
+) {
+    let affine = LeafAffine::of(leaf, voxels_per_block);
+    let field = leaf
+        .producer
+        .as_field()
+        .expect("the caller gathers only field producers (ADR 0027)");
+
+    // The producer-local coordinate of a block-local voxel's CENTRE, returned only when the
+    // field classifies that centre inside-or-on the surface. The `[f32; 3]` is handed to
+    // `material_at` for a per-voxel-material producer.
+    let local_if_covered = |x: u32, y: u32, z: u32| -> Option<[f32; 3]> {
+        let abs_centre = Vec3::new(
+            (block_min_abs[0] + x as i64) as f32 + 0.5,
+            (block_min_abs[1] + y as i64) as f32 + 0.5,
+            (block_min_abs[2] + z as i64) as f32 + 0.5,
+        );
+        let local = affine.local_of(abs_centre).to_array();
+        (field.signed_distance(local, voxels_per_block) <= SURFACE_ISOLEVEL).then_some(local)
+    };
+
+    // ADR 0017 (#75): an Intersect leaf keeps ONLY the accumulator cells its body also covers.
+    // Build the body-covers set from the gather, then reuse the exact clearing sweep the forward
+    // path uses (surviving cells keep their render key; the mask never stamps). A body that
+    // covers nothing clears the whole block — the block-local reading of `A ∩ ∅ = ∅`.
+    if leaf.operation == CombineOp::Intersect {
+        let mut body_covers: std::collections::HashSet<[u32; 3]> =
+            std::collections::HashSet::new();
+        for z in 0..density {
+            for y in 0..density {
+                for x in 0..density {
+                    if local_if_covered(x, y, z).is_some() {
+                        body_covers.insert([x, y, z]);
+                    }
+                }
+            }
+        }
+        for z in 0..density {
+            for y in 0..density {
+                for x in 0..density {
+                    if region.cell_at(x, y, z).is_some() && !body_covers.contains(&[x, y, z]) {
+                        region.set(x, y, z, None);
+                    }
+                }
+            }
+        }
+        return;
+    }
+
+    for z in 0..density {
+        for y in 0..density {
+            for x in 0..density {
+                let Some(local) = local_if_covered(x, y, z) else {
+                    continue;
+                };
+                // ADR 0017: a Subtract leaf is an occupancy-only mask — clear every covered cell.
+                if leaf.operation == CombineOp::Subtract {
+                    region.set(x, y, z, None);
+                    continue;
+                }
+                // Union: stamp the render key. Material precedence mirrors the forward path — the
+                // leaf's single-material override, else the producer's per-voxel material, else the
+                // default id.
+                let block_id = match leaf.material {
+                    Some(id) => id.0,
+                    None => leaf
+                        .producer
+                        .material_at(local, voxels_per_block)
+                        .map(|id| id.0)
+                        .unwrap_or(BlockId::DEFAULT.0),
+                };
+                let render_key = CellKey::compose(block_id, leaf.grid_overlay).raw();
+                region.set(x, y, z, Some(render_key));
+            }
+        }
     }
 }
 
@@ -797,5 +1064,187 @@ pub(crate) fn compute_seam_solidity(region: &VoxelRegion) -> SeamSolidity {
     }
 
     SeamSolidity { solid }
+}
+
+/// ADR 0027 affine oracle tests. The unified affine has NO golden of its own for the GATHER
+/// path (a genuine rotation resamples where nothing did before), so these build oracles: the
+/// gather must reproduce the exact permutation for an axis-aligned turn, an isotropic sphere
+/// must survive rotation, and the affine's inverse must round-trip.
+#[cfg(test)]
+mod affine_oracle_tests {
+    use super::*;
+    use document::scene::Scene;
+    use document::voxel::GeometryParams;
+    use glam::Quat;
+    use std::collections::BTreeSet;
+    use std::f32::consts::FRAC_PI_2;
+    use voxel_core::core_geom::MaterialChoice;
+    use voxel_core::voxel::ShapeKind;
+
+    const DENSITY: u32 = 8;
+
+    /// The single geometry leaf of a one-shape scene, sized `size_voxels` per axis. Placed at
+    /// the scene's own (small) world offset — modest coordinates keep the `f32` affine exact.
+    fn single_leaf(kind: ShapeKind, size_voxels: [u32; 3]) -> LeafProducer {
+        let scene = Scene::from_geometry(
+            GeometryParams {
+                shape: kind,
+                size_voxels,
+                size_measurements: None,
+                voxels_per_block: DENSITY,
+                wall_blocks: 1,
+            },
+            MaterialChoice::Stone,
+        );
+        scene
+            .leaf_producers(DENSITY)
+            .into_iter()
+            .next()
+            .expect("the single-geometry scene has one leaf")
+    }
+
+    /// The occupied block-local cells of a resolved region.
+    fn occupied_cells(region: &VoxelRegion) -> BTreeSet<[u32; 3]> {
+        let [width, height, depth] = region.extent;
+        let mut cells = BTreeSet::new();
+        for z in 0..depth {
+            for y in 0..height {
+                for x in 0..width {
+                    if region.cell_at(x, y, z).is_some() {
+                        cells.insert([x, y, z]);
+                    }
+                }
+            }
+        }
+        cells
+    }
+
+    /// A block window (low corner + cubic edge) that generously encloses a leaf's world box.
+    fn enclosing_window(leaf: &LeafProducer) -> ([i64; 3], u32) {
+        let world_box = leaf_world_box(leaf, DENSITY);
+        let pad = 3i64;
+        let edge = (0..3)
+            .map(|axis| world_box.max[axis] - world_box.min[axis])
+            .max()
+            .unwrap()
+            + 2 * pad;
+        let min = std::array::from_fn(|axis| world_box.min[axis] - pad);
+        (min, edge as u32)
+    }
+
+    /// **Gather-vs-permutation oracle on a cube.** A cube (equal dims) turned 90° about Z is an
+    /// AXIS-ALIGNED rotation, so the forward-emit permutation and the inverse-resample gather
+    /// must produce the IDENTICAL occupied set — the proof that the gather reproduces the exact
+    /// turn the classifier has always emitted.
+    #[test]
+    fn gather_reproduces_the_axis_aligned_permutation_on_a_cube() {
+        let mut leaf = single_leaf(ShapeKind::Box, [DENSITY, DENSITY, DENSITY]);
+        leaf.rotation = Quat::from_rotation_z(FRAC_PI_2);
+        assert!(
+            is_axis_aligned(leaf.rotation),
+            "a 90° turn is one of the 24 lattice rotations"
+        );
+
+        let (block_min, edge) = enclosing_window(&leaf);
+
+        // Forward-emit (the permutation path: `compose_leaf_into_region` routes an axis-aligned
+        // leaf through `producer_local_voxel_to_abs`).
+        let mut forward = VoxelRegion::new_empty([edge; 3]);
+        compose_leaf_into_region(&mut forward, &leaf, block_min, edge, DENSITY);
+
+        // The gather path, forced directly.
+        let mut gathered = VoxelRegion::new_empty([edge; 3]);
+        gather_rotated_leaf_into_region(&mut gathered, &leaf, block_min, edge, DENSITY);
+
+        let forward_cells = occupied_cells(&forward);
+        let gathered_cells = occupied_cells(&gathered);
+        assert!(!forward_cells.is_empty(), "the cube must occupy cells");
+        assert_eq!(
+            gathered_cells, forward_cells,
+            "the gather must reproduce the exact turned cells the permutation emits"
+        );
+    }
+
+    /// **Rotated-sphere sanity.** An isotropic sphere rotated by an arbitrary angle occupies
+    /// essentially the same cells as the unrotated one at the same centre: the occupied count
+    /// matches within a few boundary voxels, and the gathered set is centro-symmetric.
+    #[test]
+    fn a_rotated_sphere_stays_the_same_sphere() {
+        let size = [2 * DENSITY, 2 * DENSITY, 2 * DENSITY];
+        let upright = single_leaf(ShapeKind::Sphere, size);
+        let (block_min, edge) = enclosing_window(&upright);
+
+        // The upright occupancy through the forward-emit path.
+        let mut upright_region = VoxelRegion::new_empty([edge; 3]);
+        compose_leaf_into_region(&mut upright_region, &upright, block_min, edge, DENSITY);
+        let upright_cells = occupied_cells(&upright_region);
+        assert!(!upright_cells.is_empty(), "the sphere must occupy cells");
+
+        // The same sphere rotated by 0.6 rad about Z, resolved by the gather.
+        let mut rotated = single_leaf(ShapeKind::Sphere, size);
+        rotated.rotation = Quat::from_rotation_z(0.6);
+        assert!(!is_axis_aligned(rotated.rotation), "0.6 rad is genuinely off-axis");
+        let mut rotated_region = VoxelRegion::new_empty([edge; 3]);
+        gather_rotated_leaf_into_region(&mut rotated_region, &rotated, block_min, edge, DENSITY);
+        let rotated_cells = occupied_cells(&rotated_region);
+
+        // Count matches within a thin voxelization boundary (a sphere is rotation-invariant).
+        let upright_count = upright_cells.len() as i64;
+        let rotated_count = rotated_cells.len() as i64;
+        let tolerance = (upright_count / 20).max(8); // ~5%, floor of a few voxels
+        assert!(
+            (upright_count - rotated_count).abs() <= tolerance,
+            "rotated sphere occupancy {rotated_count} must match upright {upright_count} within {tolerance}"
+        );
+
+        // Centro-symmetry: reflect every cell through `2·centroid` (integer for a symmetric
+        // set) and count how many mirrors land back in the set. A rotated sphere's centre
+        // generally does NOT sit on a half-integer of the ABSOLUTE lattice, so its voxelization
+        // is only APPROXIMATELY cell-reflection-symmetric — a thin boundary rim breaks exact
+        // reflection. Require the overwhelming majority (a grossly-wrong gather — sheared or
+        // truncated — would fail badly), tolerating that rim.
+        let sum = rotated_cells.iter().fold([0i64; 3], |acc, cell| {
+            std::array::from_fn(|axis| acc[axis] + cell[axis] as i64)
+        });
+        let twice_centroid: [i64; 3] = std::array::from_fn(|axis| {
+            let doubled = 2 * sum[axis];
+            (doubled as f64 / rotated_count as f64).round() as i64
+        });
+        let mirrored = rotated_cells
+            .iter()
+            .filter(|cell| {
+                let reflected: [u32; 3] =
+                    std::array::from_fn(|axis| (twice_centroid[axis] - cell[axis] as i64) as u32);
+                rotated_cells.contains(&reflected)
+            })
+            .count();
+        let mirror_fraction = mirrored as f64 / rotated_count as f64;
+        assert!(
+            mirror_fraction >= 0.9,
+            "rotated sphere must be near-centro-symmetric: only {mirror_fraction:.3} of \
+             {rotated_count} cells have their mirror"
+        );
+    }
+
+    /// **The affine's inverse round-trips** for a genuinely non-axis-aligned rotation:
+    /// `local_of(world_of(p)) ≈ p` for arbitrary local points.
+    #[test]
+    fn local_of_inverts_world_of_for_a_tilted_rotation() {
+        let mut leaf = single_leaf(ShapeKind::Box, [DENSITY, 2 * DENSITY, 3 * DENSITY]);
+        leaf.rotation = Quat::from_rotation_z(0.6) * Quat::from_rotation_x(0.3);
+        let affine = LeafAffine::of(&leaf, DENSITY);
+        for point in [
+            Vec3::new(0.0, 0.0, 0.0),
+            Vec3::new(3.5, 9.0, 21.5),
+            Vec3::new(7.0, 15.0, 23.0),
+            Vec3::new(-2.0, 4.0, 12.0),
+        ] {
+            let round_tripped = affine.local_of(affine.world_of(point));
+            assert!(
+                (round_tripped - point).length() < 1e-3,
+                "local_of(world_of({point:?})) = {round_tripped:?} must round-trip"
+            );
+        }
+    }
 }
 
