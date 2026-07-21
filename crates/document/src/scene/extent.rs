@@ -3,7 +3,7 @@
 //! §3f(0)), and the block/voxel bounding-box derivations that drive extent,
 //! recentring and region sizing.
 
-use glam::Quat;
+use glam::{Quat, Vec3};
 use serde::{Deserialize, Serialize};
 use substrate::spatial::LatticeOrientation;
 
@@ -379,6 +379,79 @@ fn world_block_corner_floor(world_offset_voxels: [i64; 3], voxels_per_block: u32
     ]
 }
 
+/// The world-axis span of a corner-anchored local box `[0, extent]` after the continuous
+/// rotation `rotation` (ADR 0027) — the enclosing AABB extent, per axis, as a float.
+///
+/// The leaf's low rotated corner is anchored back at its world offset (the classifier's
+/// `LeafAffine::world_of` convention: `rotation·local − min_rotated_corner + world_offset`, so
+/// the min corner lands exactly at `world_offset`). Every extent walk therefore spans
+/// `[world_offset, world_offset + this_span)`, mirroring `classify::leaf_world_box` — the
+/// coverage/broadphase extent must enclose the SAME rotated box the classifier resamples, or a
+/// tilted leaf's protruding tip falls in a chunk that is never built (the ADR 0027 clip bug).
+fn rotated_extent_span(rotation: Quat, extent: [f32; 3]) -> Vec3 {
+    let full = Vec3::from_array(extent);
+    let mut min = Vec3::splat(f32::INFINITY);
+    let mut max = Vec3::splat(f32::NEG_INFINITY);
+    for corner_x in [0.0, full.x] {
+        for corner_y in [0.0, full.y] {
+            for corner_z in [0.0, full.z] {
+                let rotated = rotation * Vec3::new(corner_x, corner_y, corner_z);
+                min = min.min(rotated);
+                max = max.max(rotated);
+            }
+        }
+    }
+    max - min
+}
+
+/// Whether `rotation` is one of the 24 axis-aligned lattice turns (a `1e-4` tolerance):
+/// each of `rotation·{X, Y, Z}` lands on a signed unit axis. Mirrors
+/// `classify::is_axis_aligned` — an axis-aligned leaf's extent takes the EXACT integer path
+/// (byte-identical to the pre-0027 `turn_extent` permutation, so every existing golden holds);
+/// a genuinely-rotated one ceils its span to conservatively enclose the rotated box.
+fn is_axis_aligned_rotation(rotation: Quat) -> bool {
+    const TOLERANCE: f32 = 1e-4;
+    [Vec3::X, Vec3::Y, Vec3::Z].into_iter().all(|axis| {
+        let image = (rotation * axis).to_array();
+        let near_unit =
+            image.iter().filter(|component| (component.abs() - 1.0).abs() <= TOLERANCE).count();
+        let near_zero = image.iter().filter(|component| component.abs() <= TOLERANCE).count();
+        near_unit == 1 && near_zero == 2
+    })
+}
+
+/// The world-axis **voxel** extent of a leaf's corner-anchored local grid `[0, grid_voxels)`
+/// after the continuous rotation `rotation` (ADR 0027). Axis-aligned rotations round (bit-exact
+/// with the pre-0027 `LatticeOrientation::turn_extent_i64`, so a `90°` lattice turn keeps its
+/// integer extent); a genuine rotation ceils to conservatively enclose the rotated box (SOUND:
+/// the true occupied set ⊆ this AABB, ADR 0027 §4). Replaces the rotation-blind
+/// `orientation.turn_extent_i64` in the voxel-frame coverage walks.
+pub(super) fn rotated_grid_extent_voxels(rotation: Quat, grid_voxels: [i64; 3]) -> [i64; 3] {
+    let span =
+        rotated_extent_span(rotation, [grid_voxels[0] as f32, grid_voxels[1] as f32, grid_voxels[2] as f32]);
+    if is_axis_aligned_rotation(rotation) {
+        [span.x.round() as i64, span.y.round() as i64, span.z.round() as i64]
+    } else {
+        [span.x.ceil() as i64, span.y.ceil() as i64, span.z.ceil() as i64]
+    }
+}
+
+/// The world-axis **block** extent of a leaf's corner-anchored local block box `[0, size_blocks)`
+/// after the continuous rotation `rotation` (ADR 0027) — the block-frame twin of
+/// [`rotated_grid_extent_voxels`], for the whole-block size readouts. Axis-aligned rotations round
+/// (bit-exact with `LatticeOrientation::turn_extent`); a genuine rotation ceils. The block bound
+/// is a coarser conservative view (rotation is linear, so the span scales; ceiling in block units
+/// still encloses the rotated body).
+pub(super) fn rotated_grid_extent_blocks(rotation: Quat, size_blocks: [u32; 3]) -> [u32; 3] {
+    let span =
+        rotated_extent_span(rotation, [size_blocks[0] as f32, size_blocks[1] as f32, size_blocks[2] as f32]);
+    if is_axis_aligned_rotation(rotation) {
+        [span.x.round() as u32, span.y.round() as u32, span.z.round() as u32]
+    } else {
+        [span.x.ceil() as u32, span.y.ceil() as u32, span.z.ceil() as u32]
+    }
+}
+
 impl Scene {
     /// The per-object **block lattice box** for the node at `path`, in the SAME
     /// recentred render frame the resolved voxels live in (issue #29 S3). Returns
@@ -473,7 +546,7 @@ impl Scene {
             [0.0, 0.0, 0.0],
             &mut def_path,
             &mut scope_path,
-            &mut |world_offset_voxels, _offset_local_voxels, orientation, _rotation, body, _grid_on_faces, _operation, outset, _scope_path| {
+            &mut |world_offset_voxels, _offset_local_voxels, _orientation, rotation, body, _grid_on_faces, _operation, outset, _scope_path| {
                 let outset_voxels = outset_voxels_at(outset, voxels_per_block);
             let world_offset_voxels: [i64; 3] =
                 std::array::from_fn(|axis| world_offset_voxels[axis] - outset_voxels);
@@ -486,7 +559,7 @@ impl Scene {
                     return;
                 };
                 // ADR 0026: turn the block extent into world axes for an oriented leaf.
-                let size_blocks = orientation.turn_extent(size_blocks);
+                let size_blocks = rotated_grid_extent_blocks(rotation, size_blocks);
                 any = true;
                 // The leaf's whole-block offset, via the single floor rule.
                 let world_blocks = world_block_corner_floor(world_offset_voxels, voxels_per_block);
@@ -553,7 +626,7 @@ impl Scene {
             [0.0, 0.0, 0.0],
             &mut def_path,
             &mut scope_path,
-            &mut |world_offset_voxels, _offset_local_voxels, orientation, _rotation, body, _grid_on_faces, _operation, outset, _scope_path| {
+            &mut |world_offset_voxels, _offset_local_voxels, _orientation, rotation, body, _grid_on_faces, _operation, outset, _scope_path| {
                 let outset_voxels = outset_voxels_at(outset, voxels_per_block);
             let world_offset_voxels: [i64; 3] =
                 std::array::from_fn(|axis| world_offset_voxels[axis] - outset_voxels);
@@ -566,7 +639,7 @@ impl Scene {
                     return;
                 };
                 // ADR 0026: turn the grid into world axes for an oriented leaf.
-                let grid_voxels = orientation.turn_extent_i64(grid_voxels);
+                let grid_voxels = rotated_grid_extent_voxels(rotation, grid_voxels);
                 any = true;
                 for axis in 0..3 {
                     // Corner-anchored span `[off, off + grid)` (offset is the low corner).
@@ -664,7 +737,7 @@ impl Scene {
         let mut min_corner = [i64::MAX; 3];
         let mut max_corner = [i64::MIN; 3];
         let mut any = false;
-        self.for_each_leaf(&mut |world_offset_voxels, _offset_local_voxels, orientation, _rotation, body, _grid_on_faces, _operation, outset, _scope_path| {
+        self.for_each_leaf(&mut |world_offset_voxels, _offset_local_voxels, _orientation, rotation, body, _grid_on_faces, _operation, outset, _scope_path| {
             let outset_voxels = outset_voxels_at(outset, voxels_per_block);
             let world_offset_voxels: [i64; 3] =
                 std::array::from_fn(|axis| world_offset_voxels[axis] - outset_voxels);
@@ -673,7 +746,7 @@ impl Scene {
             };
             // ADR 0026: turn the block extent into world axes, so an oriented leaf's block
             // readout spans the axes it actually occupies.
-            let size_blocks = orientation.turn_extent(size_blocks);
+            let size_blocks = rotated_grid_extent_blocks(rotation, size_blocks);
             any = true;
             // The leaf's whole-block offset, via the single floor rule.
             let world_blocks = world_block_corner_floor(world_offset_voxels, voxels_per_block);

@@ -4,6 +4,7 @@
 
 use voxel_core::spatial_index::{LeafEntry, LeafFingerprint, LeafSpatialIndex, VoxelAabb};
 
+use super::extent::rotated_grid_extent_voxels;
 use super::producers::{
     leaf_content_fingerprint, operation_masks_beyond_bounds, outset_voxels_at,
 };
@@ -35,7 +36,7 @@ impl Scene {
         let mut min_corner = [i64::MAX; 3];
         let mut max_corner = [i64::MIN; 3];
         let mut any = false;
-        self.for_each_leaf(&mut |world_offset_voxels, _offset_local_voxels, orientation, _rotation, body, _grid_on_faces, _operation, outset, _scope_path| {
+        self.for_each_leaf(&mut |world_offset_voxels, _offset_local_voxels, _orientation, rotation, body, _grid_on_faces, _operation, outset, _scope_path| {
             let outset_voxels = outset_voxels_at(outset, voxels_per_block);
             let world_offset_voxels: [i64; 3] =
                 std::array::from_fn(|axis| world_offset_voxels[axis] - outset_voxels);
@@ -45,7 +46,7 @@ impl Scene {
             // ADR 0026: an oriented leaf occupies its TURNED grid in the world (a 4×4×20
             // cylinder stood on a +X wall spans 20×4×4), still corner-anchored at its world
             // offset. Turn the local extent into world axes before the span.
-            let grid_voxels = orientation.turn_extent_i64(grid_voxels);
+            let grid_voxels = rotated_grid_extent_voxels(rotation, grid_voxels);
             any = true;
             for axis in 0..3 {
                 // The producer-true emitted grid (`size·d` for an SDF Tool, the exact
@@ -128,7 +129,7 @@ impl Scene {
     pub fn build_leaf_spatial_index(&self, voxels_per_block: u32) -> LeafSpatialIndex {
         let mut entries: Vec<LeafEntry> = Vec::new();
         let mut has_region_spanning_leaf = false;
-        self.for_each_leaf(&mut |world_offset_voxels, _offset_local_voxels, orientation, _rotation, body, grid_on_faces, operation, outset, scope_path| {
+        self.for_each_leaf(&mut |world_offset_voxels, _offset_local_voxels, _orientation, rotation, body, grid_on_faces, operation, outset, scope_path| {
             // ADR 0020 Consequences: the edit-broadphase AABB must be the OUTSET bounds, not
             // the producer bounds — an outset cutter dirties a larger region than its own
             // extent, and invalidating only the undilated box leaves a stale rim behind.
@@ -139,7 +140,7 @@ impl Scene {
                 Some(grid_voxels) => {
                     // ADR 0026: the leaf's world box is its TURNED grid, corner-anchored at its
                     // world offset — so the broadphase covers the axes it actually occupies.
-                    let grid_voxels = orientation.turn_extent_i64(grid_voxels);
+                    let grid_voxels = rotated_grid_extent_voxels(rotation, grid_voxels);
                     // The producer-true emitted grid (`size·d` for an SDF Tool, the
                     // exact prism AABB for a SketchTool), corner-anchored: its world
                     // voxel offset is the LOW corner, so the span per axis is
