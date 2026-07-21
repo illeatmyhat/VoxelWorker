@@ -412,6 +412,52 @@ mod tests {
         );
     }
 
+    /// **The empty scene still places on the ground.** With NO resident chunks, tier 1
+    /// (`pick_voxel`) misses and the cursor falls through to the world-plane tier — so an
+    /// armed tool previews and drops on the ground before anything is built. This guards
+    /// the regression the shell had (a `!resident_chunks.is_empty()` gate suppressed the
+    /// ghost on an empty scene); the logic core never needed chunks for the ground tier,
+    /// and this pins that so no future gate can re-hide it.
+    #[test]
+    fn a_cursor_over_the_ground_of_an_empty_scene_places_a_node() {
+        // Same top-down ortho framing as the populated ground test, so the ray meets the
+        // ground plane in front of it — the only difference is an EMPTY resident set.
+        let camera = OrbitCamera {
+            target: Vec3::ZERO,
+            orbit_theta: -std::f32::consts::FRAC_PI_2,
+            orbit_phi: 0.0,
+            orbit_distance: 60.0,
+            roll: 0.0,
+            projection_mode: ProjectionMode::Orthographic,
+        };
+        let fixture = placement_fixture(camera);
+        // Reuse the fixture's frame geometry (region dims + recentre) but strip the
+        // chunks: the tool is armed on a scene with nothing resident.
+        let empty_frame = PickFrame { chunks: &[], ..fixture.frame() };
+
+        let outcome = fixture.app_core.place_primitive(
+            [1200.0, 360.0],
+            VIEWPORT,
+            &empty_frame,
+            tool_shape(),
+            MaterialChoice::Stone,
+        );
+
+        assert!(
+            matches!(
+                outcome.target,
+                PlacementTarget::OnWorldPlane { plane: raycast::WorldPlane::Ground, .. }
+            ),
+            "an empty-scene cursor over the ground lands on it, got {:?}",
+            outcome.target
+        );
+        assert!(
+            matches!(outcome.intent, Some(Intent::PlaceNode { .. })),
+            "the empty-scene ground placement still produces a PlaceNode, got {:?}",
+            outcome.intent
+        );
+    }
+
     /// **Looking at the sky is `NoSurface`, no intent.** A camera aimed straight up has
     /// the ground plane behind the ray, so there is nothing in front to place on — the
     /// honest answer, with no node dropped.

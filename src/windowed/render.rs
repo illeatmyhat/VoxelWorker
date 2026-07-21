@@ -512,15 +512,16 @@ impl WindowedState {
             self.app_core.camera.eye().to_array(),
         );
         // ADR 0022 live placement: while a tool is armed and the cursor is over the
-        // viewport with resident geometry, resolve where it would drop (via the headless
-        // `place_primitive`) and arm the ghost + the pending click intent. Anything else
-        // — nothing armed, a non-Tool spec, no cursor, or no geometry yet — clears both,
-        // so a stale preview never lingers. This runs before the ghost's uniform upload
-        // below, which reads `self.panel_state.placement_ghost`.
+        // viewport, resolve where it would drop (via the headless `place_primitive`) and
+        // arm the ghost + the pending click intent. Anything else — nothing armed, a
+        // non-Tool spec, or no cursor — clears both, so a stale preview never lingers.
+        // NO resident-geometry guard: `place_primitive`'s tier 1 (`pick_voxel`) returns
+        // `None` on an empty scene and falls through to the world-plane tier, which needs
+        // no chunks — so the ghost must preview on an empty scene (the ground plane), not
+        // only once something is built. This runs before the ghost's uniform upload below,
+        // which reads `self.panel_state.placement_ghost`.
         match (&self.armed_tool, self.last_cursor_position) {
-            (Some(NodeSpec::Tool { shape, material }), Some((cursor_x, cursor_y)))
-                if !self.resident_chunks.is_empty() =>
-            {
+            (Some(NodeSpec::Tool { shape, material }), Some((cursor_x, cursor_y))) => {
                 let shape = shape.clone();
                 let material = *material;
                 let vp = prepared.viewport_px;
