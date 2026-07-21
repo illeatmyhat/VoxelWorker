@@ -537,7 +537,14 @@ impl WindowedState {
                 };
                 let outcome =
                     self.app_core
-                        .place_primitive(cursor, viewport, &frame, shape.clone(), material);
+                        .place_primitive(
+                            cursor,
+                            viewport,
+                            &frame,
+                            shape.clone(),
+                            material,
+                            self.panel_state.scene.master_floor_grid,
+                        );
                 self.pending_placement = outcome.intent.clone();
                 self.panel_state.placement_ghost = match &outcome.intent {
                     Some(crate::Intent::PlaceNode { offset_voxels, orientation, .. }) => {

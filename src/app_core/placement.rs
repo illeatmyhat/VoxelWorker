@@ -109,6 +109,7 @@ impl AppCore {
         frame: &PickFrame<'_>,
         shape: SdfShape,
         material: MaterialChoice,
+        ground_plane_visible: bool,
     ) -> PlacementOutcome {
         // ADR 0026: orientation is derived from the entered face in the geometry tier below;
         // a world-plane drop stays identity (world-vertical). Defaulted here, set per-tier.
@@ -238,6 +239,29 @@ impl AppCore {
                     PlacementTarget::OnWorldPlane { point, plane }
                 }
             }
+        };
+
+        // Only place on a world plane the user can SEE (owner ruling 2026-07-21): the two
+        // vertical planes are never visualized, so they are never a placement target — a
+        // grazing ray that would fall back to one reports NoSurface ("point at a surface")
+        // instead of dropping a node, vertical and centred, on an invisible plane far away.
+        // The ground plane is a target only when its floor grid is shown.
+        let target = match target {
+            PlacementTarget::OnWorldPlane { plane, .. } => {
+                let plane_visible = match plane {
+                    raycast::WorldPlane::Ground => ground_plane_visible,
+                    // The x=0 / y=0 verticals have no visualization, so they are always hidden.
+                    raycast::WorldPlane::VerticalFacingX | raycast::WorldPlane::VerticalFacingY => {
+                        false
+                    }
+                };
+                if plane_visible {
+                    target
+                } else {
+                    PlacementTarget::NoSurface
+                }
+            }
+            other => other,
         };
 
         let intent = match target {
@@ -389,6 +413,7 @@ mod tests {
             &fixture.frame(),
             shape.clone(),
             MaterialChoice::Stone,
+            true,
         );
         let Some(Intent::PlaceNode { offset_voxels, orientation, .. }) = outcome.intent else {
             panic!("a geometry hit produces a PlaceNode, got {:?}", outcome.intent);
@@ -545,7 +570,7 @@ mod tests {
         let outcome =
             fixture
                 .app_core
-                .place_primitive(cursor, VIEWPORT, &fixture.frame(), tool_shape(), MaterialChoice::Stone);
+                .place_primitive(cursor, VIEWPORT, &fixture.frame(), tool_shape(), MaterialChoice::Stone, true);
 
         assert!(
             matches!(outcome.target, PlacementTarget::OnSurface { .. }),
@@ -638,6 +663,7 @@ mod tests {
             &fixture.frame(),
             tool_shape(),
             MaterialChoice::Stone,
+            true,
         );
 
         assert!(
@@ -699,6 +725,7 @@ mod tests {
             &empty_frame,
             tool_shape(),
             MaterialChoice::Stone,
+            true,
         );
 
         assert!(
@@ -730,13 +757,20 @@ mod tests {
     /// at a distance far enough that the pre-fix near-plane point sank below the ground
     /// (the exact condition of the bug), and asserts not one cursor over a ground-facing
     /// view returns `NoSurface`, and that real placements happen.
+    ///
+    /// **STEEP views only (updated 2026-07-21).** Since the invisible vertical planes are no
+    /// longer a placement target, a SHALLOW view's corner rays — which graze the ground and
+    /// used to fall back to a vertical — now correctly report `NoSurface`. The bug-6 guard is
+    /// about the ground being reachable across the foreground where the view *faces it*, so
+    /// this now sweeps steep pitches (the ground well-faced everywhere on screen); the shallow
+    /// grazing case is covered by `a_grazing_ray_no_longer_places_on_an_invisible_vertical_plane`.
     #[test]
     fn a_downward_cursor_over_ground_never_misses_in_either_projection() {
         for projection_mode in [ProjectionMode::Perspective, ProjectionMode::Orthographic] {
-            // A spread of DOWNWARD views: phi is the polar angle from the top pole, so
-            // 0.30..1.25 rad runs from a steep near-top-down look to a ~20°-below-horizon
-            // tilt — every one of them faces the ground, so none may report NoSurface.
-            for &orbit_phi in &[0.30_f32, 0.60, 0.90, 1.25] {
+            // STEEP downward views: phi is the polar angle from the top pole, so 0.15..0.45 rad
+            // is a near-top-down look where the ground is well-faced across the WHOLE screen —
+            // none may report NoSurface (the near-plane-origin regression).
+            for &orbit_phi in &[0.15_f32, 0.30, 0.45] {
                 let camera = OrbitCamera {
                     target: Vec3::ZERO,
                     orbit_theta: 0.6,
@@ -759,7 +793,7 @@ mod tests {
                         ];
                         let target = fixture
                             .app_core
-                            .place_primitive(cursor, VIEWPORT, &fixture.frame(), tool_shape(), MaterialChoice::Stone)
+                            .place_primitive(cursor, VIEWPORT, &fixture.frame(), tool_shape(), MaterialChoice::Stone, true)
                             .target;
                         assert_ne!(
                             target,
@@ -778,6 +812,73 @@ mod tests {
                 assert!(
                     placements > 0,
                     "{projection_mode:?} phi={orbit_phi}: a ground-facing view must actually place"
+                );
+            }
+        }
+    }
+
+    /// **An invisible world plane is not a placement target (owner ruling 2026-07-21).** The
+    /// same top-down cursor that lands on the ground when its floor grid is shown reports
+    /// `NoSurface` (no intent) when it is hidden — a hidden plane can't be placed on.
+    #[test]
+    fn a_hidden_ground_plane_places_nothing() {
+        let camera = OrbitCamera {
+            target: Vec3::ZERO,
+            orbit_theta: -std::f32::consts::FRAC_PI_2,
+            orbit_phi: 0.0, // straight down
+            orbit_distance: 60.0,
+            roll: 0.0,
+            projection_mode: ProjectionMode::Orthographic,
+        };
+        let fixture = placement_fixture(camera);
+        let cursor = [1200.0, 360.0]; // off the box, onto the ground
+        // Visible → lands on the ground.
+        let visible = fixture.app_core.place_primitive(
+            cursor, VIEWPORT, &fixture.frame(), tool_shape(), MaterialChoice::Stone, true,
+        );
+        assert!(
+            matches!(visible.target, PlacementTarget::OnWorldPlane { plane: raycast::WorldPlane::Ground, .. }),
+            "ground visible ⇒ places on it, got {:?}", visible.target
+        );
+        // Hidden → nothing to place on.
+        let hidden = fixture.app_core.place_primitive(
+            cursor, VIEWPORT, &fixture.frame(), tool_shape(), MaterialChoice::Stone, false,
+        );
+        assert_eq!(hidden.target, PlacementTarget::NoSurface, "hidden ground ⇒ NoSurface");
+        assert_eq!(hidden.intent, None, "hidden ground drops no node");
+    }
+
+    /// **A grazing ray no longer drops a node on an invisible vertical plane.** The two
+    /// vertical world planes are never visualized, so a near-horizontal view that used to
+    /// fall back to one (dropping a node vertical and centred on a far invisible plane —
+    /// the 2026-07-21 bug) now reports `NoSurface`, even with the ground's floor grid on.
+    #[test]
+    fn a_grazing_ray_no_longer_places_on_an_invisible_vertical_plane() {
+        // Near-horizontal orthographic view: the ground grazes, so `select_world_plane`
+        // would choose a vertical — which is invisible, hence not a target.
+        let camera = OrbitCamera {
+            target: Vec3::ZERO,
+            orbit_theta: 0.3,
+            orbit_phi: 1.49, // ~85° — nearly horizontal, the dump's pose
+            orbit_distance: 120.0,
+            roll: 0.0,
+            projection_mode: ProjectionMode::Orthographic,
+        };
+        let fixture = placement_fixture(camera);
+        let empty = PickFrame { chunks: &[], ..fixture.frame() };
+        // Sweep the viewport; with the verticals suppressed, NONE may drop on a world plane.
+        for row in 0..8 {
+            for col in 0..8 {
+                let cursor = [VIEWPORT[2] * (col as f32 + 0.5) / 8.0, VIEWPORT[3] * (row as f32 + 0.5) / 8.0];
+                let outcome = fixture.app_core.place_primitive(
+                    cursor, VIEWPORT, &empty, tool_shape(), MaterialChoice::Stone, true,
+                );
+                assert!(
+                    !matches!(
+                        outcome.target,
+                        PlacementTarget::OnWorldPlane { plane: raycast::WorldPlane::VerticalFacingX | raycast::WorldPlane::VerticalFacingY, .. }
+                    ),
+                    "a grazing ray placed on an invisible vertical plane: {:?}", outcome.target
                 );
             }
         }
@@ -808,6 +909,7 @@ mod tests {
             &fixture.frame(),
             tool_shape(),
             MaterialChoice::Stone,
+            true,
         );
         assert_eq!(
             outcome.target,
@@ -846,7 +948,7 @@ mod tests {
                     VIEWPORT[3] * (row as f32 + 0.5) / 8.0,
                 ];
                 let outcome = fixture.app_core.place_primitive(
-                    cursor, VIEWPORT, &empty_frame, tool_shape(), MaterialChoice::Stone,
+                    cursor, VIEWPORT, &empty_frame, tool_shape(), MaterialChoice::Stone, true,
                 );
                 assert_eq!(
                     outcome.target,
