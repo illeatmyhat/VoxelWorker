@@ -28,6 +28,7 @@
 //! assembler that lays them out. Every previously-public item is re-exported
 //! here so `ui::panel::…` paths resolve unchanged.
 
+mod add_shape_dialog;
 mod controls;
 mod inspector;
 mod layers;
@@ -37,6 +38,7 @@ mod points;
 mod signal_stack;
 mod state;
 
+pub use add_shape_dialog::build_add_shape_dialog;
 pub use signal_stack::{build_signal_stack, cube_right_inset_points};
 pub use state::{
     ExportPanelState, LayerRange, OrientationSnap, PanelResponse, PanelState, PlacementGhost,

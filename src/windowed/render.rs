@@ -162,6 +162,11 @@ impl WindowedState {
                 self.hovered_cube_zone
                     .and_then(camera::view_cube_zone_readout)
                     .as_deref(),
+                // The armed primitive's kind → the "Add <shape>" dialog (owner 2026-07-21).
+                self.armed_tool.as_ref().and_then(|spec| match spec {
+                    document::intent::NodeSpec::Tool { shape, .. } => Some(shape.kind),
+                    _ => None,
+                }),
             )
         };
 

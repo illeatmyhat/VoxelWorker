@@ -117,8 +117,9 @@ pub use gpu::GpuContext;
 pub use document::intent::{Intent, IntentEffect, NodeSpec};
 pub use voxel_core::core_geom::MaterialChoice;
 pub use ui::panel::{
-    build_panel, build_signal_stack, cube_right_inset_points, ExportPanelState, LayerRange,
-    PanelResponse, PanelState, PlacementGhost, SignalStackState, ViewMode,
+    build_add_shape_dialog, build_panel, build_signal_stack, cube_right_inset_points,
+    ExportPanelState, LayerRange, PanelResponse, PanelState, PlacementGhost, SignalStackState,
+    ViewMode,
 };
 pub use assets::{CubeFaceSlot, FaceProvenance, FaceTextures};
 pub use display::renderer::{
@@ -298,6 +299,9 @@ pub fn run_egui_frame(
     // faint readout line under the cube. `None` when nothing is hovered — and always
     // `None` on the headless `shot` path, so the goldens stay pure cube geometry.
     view_cube_zone_readout: Option<&str>,
+    // Owner ruling 2026-07-21: the armed primitive's kind, or `None` when nothing is armed.
+    // `Some` draws the floating `Add <shape>` dialog with the placement-snap sliders.
+    armed_shape: Option<voxel_core::voxel::ShapeKind>,
 ) -> PreparedEguiFrame {
     let mut panel_response = PanelResponse::default();
     let mut cube_menu_request: Option<ViewCubeMenuRequest> = None;
@@ -420,6 +424,15 @@ pub fn run_egui_frame(
             &mut panel_response,
         );
         chrome_rects_points.push(stack_rect_points);
+
+        // Owner ruling 2026-07-21: the armed-tool `Add <shape>` dialog, pinned top-left of the
+        // central viewport while a primitive is armed. Same absolute-child idiom as the stack,
+        // so it renders on the shot capture and counts as chrome (its clicks don't orbit).
+        if let Some(kind) = armed_shape {
+            let dialog_rect =
+                build_add_shape_dialog(ui, panel_state, central_rect_points, kind);
+            chrome_rects_points.push(dialog_rect);
+        }
 
         // Signal (ADR 0018 Decision 8): the cube's on-screen anchors in egui points
         // (shared by the readout, icon rail, and status line so they track the cube as

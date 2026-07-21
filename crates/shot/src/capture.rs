@@ -1013,6 +1013,9 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         loaded_material = Some(material);
     }
 
+    // The armed "Add <shape>" dialog shows when a ghost is armed; read the kind before the
+    // call borrows `panel_state` mutably.
+    let armed_shape = panel_state.placement_ghost.as_ref().map(|ghost| ghost.shape.kind);
     let prepared = run_egui_frame(
         &mut egui_bridge,
         &gpu.device,
@@ -1034,6 +1037,9 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         // the cube itself; the readout is a windowed-only overlay. Keeps every golden
         // diff to the two cube corners.
         None,
+        // The "Add <shape>" dialog shows when a ghost is armed (the `--placement-ghost`
+        // headless verification path); otherwise off, so the goldens are unchanged.
+        armed_shape,
     );
 
     // Issue #25: now that egui has laid out its panels, derive the camera aspect
