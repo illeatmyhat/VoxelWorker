@@ -7,7 +7,7 @@ use crate::signal_theme;
 use document::intent::{Intent, NodeSpec};
 use document::scene::{DefId, Node, NodeContent, NodeId, VoxelBody, ROOT_NODE_ID};
 use document::sketch::{PlaneAxis, Sketch, SketchSolid};
-use document::voxel::{GeometryParams, SdfShape};
+use document::voxel::SdfShape;
 use voxel_core::voxel::ShapeKind;
 
 /// A label for a node row, switching on its content kind. Falls back to the
@@ -167,15 +167,22 @@ pub(super) fn build_node_list_section(
     ui.separator();
 }
 
-/// A [`NodeSpec`] for a fresh Tool node of the given shape, inheriting the current
-/// size/density/wall + material so it renders immediately (ADR 0003 Phase C C4a). The
-/// spec's `into_node` names the node after the shape kind — identical to the old
-/// `new_tool_node` label, since the [`SHAPE_CHIPS`] labels ARE the kind's Debug names.
+/// A [`NodeSpec`] for a fresh Tool node of the given shape, sized to that KIND's own
+/// sensible default ([`ShapeKind::default_size_blocks`]) rather than the one shared size —
+/// a Sphere is a round ball, a Cylinder a pillar, a Torus a flat donut, instead of every
+/// kind squashed to the current slab. Density, wall, and material still come from the
+/// current state so it renders immediately (ADR 0003 Phase C C4a). The spec's `into_node`
+/// names the node after the shape kind.
 fn tool_node_spec(kind: ShapeKind, state: &PanelState) -> NodeSpec {
     NodeSpec::Tool {
-        // Build through `from_geometry` so the canonical `size_voxels` + retained
-        // measurements (and the ≥1 clamp) are applied in one owner.
-        shape: SdfShape::from_geometry(GeometryParams { shape: kind, ..state.geometry.clone() }),
+        // `from_blocks` applies the per-kind default (in blocks) at the current density,
+        // retaining whole-block measurements and the ≥1 clamp in one owner.
+        shape: SdfShape::from_blocks(
+            kind,
+            kind.default_size_blocks(),
+            state.geometry.wall_blocks,
+            state.geometry.voxels_per_block,
+        ),
         material: state.material,
     }
 }

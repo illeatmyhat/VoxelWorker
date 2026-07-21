@@ -64,6 +64,27 @@ pub enum ShapeKind {
     Box,
 }
 
+impl ShapeKind {
+    /// A sensible default bounding box for a freshly-armed primitive of this kind, in whole
+    /// BLOCKS `[X, Y, Z]` (Z-up). A single shared default squashes every kind to one shape;
+    /// each kind instead wants bounds matching its SDF's axis roles (see
+    /// [`Self::signed_distance`]):
+    /// * **Box / Sphere** are symmetric — a cube of bounds reads as a plain box / a round ball.
+    /// * **Cylinder / Tube** take their long axis on Z (the SDF's half-height), so a round
+    ///   cross-section (X = Y) taller than it is wide reads as a pillar / pipe.
+    /// * **Torus** sweeps its ring in the XY ground plane about +Z with `tube_radius` on Z, so
+    ///   it wants wide X/Y and a small Z — a flat donut.
+    pub const fn default_size_blocks(self) -> [u32; 3] {
+        match self {
+            ShapeKind::Box => [4, 4, 4],
+            ShapeKind::Sphere => [4, 4, 4],
+            ShapeKind::Cylinder => [4, 4, 6],
+            ShapeKind::Tube => [4, 4, 6],
+            ShapeKind::Torus => [6, 6, 2],
+        }
+    }
+}
+
 pub use crate::core_geom::{BlockAttrs, BlockId};
 
 /// The composite floating-origin recentre, in voxels — the frame value every display
@@ -470,6 +491,32 @@ pub fn signed_distance(
             glam::Vec2::new(radial, point.z).length() - tube_radius
         }
         ShapeKind::Box => signed_distance_box(point, semi_axes),
+    }
+}
+
+#[cfg(test)]
+mod default_size_tests {
+    use super::*;
+
+    /// The per-kind default bounds read as the RIGHT shape, not one shared slab: box and
+    /// sphere cubic, cylinder/tube taller than wide (a pillar on Z), torus flat and wide
+    /// (a donut in the XY plane). Pins the intent by RELATIONSHIP, not by literal numbers,
+    /// so retuning the sizes stays free while a kind that regresses to a wrong proportion
+    /// (a flat sphere, a tall torus) fails here.
+    #[test]
+    fn each_kind_defaults_to_its_own_proportion() {
+        let [bx, by, bz] = ShapeKind::Box.default_size_blocks();
+        assert!(bx == by && by == bz, "a box default is a cube, got {bx}×{by}×{bz}");
+        let [sx, sy, sz] = ShapeKind::Sphere.default_size_blocks();
+        assert!(sx == sy && sy == sz, "a sphere default is cubic, got {sx}×{sy}×{sz}");
+        for kind in [ShapeKind::Cylinder, ShapeKind::Tube] {
+            let [x, y, z] = kind.default_size_blocks();
+            assert_eq!(x, y, "{kind:?} has a round cross-section (X == Y)");
+            assert!(z > x, "{kind:?} stands taller than wide (Z > X), got {x}×{y}×{z}");
+        }
+        let [tx, ty, tz] = ShapeKind::Torus.default_size_blocks();
+        assert_eq!(tx, ty, "a torus ring is round in the XY plane (X == Y)");
+        assert!(tz < tx, "a torus is flat (Z < X), got {tx}×{ty}×{tz}");
     }
 }
 
