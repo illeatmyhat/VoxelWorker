@@ -280,3 +280,13 @@ op-stack field (see `docs/adr/0011`; generalizes the ADR 0007 fog atlas).
 - **Recentre** — the integer voxel offset a producer's grid was placed at. A placed Tool is
   recentred onto the origin by `floor(dim/2)`; a corner-anchored Part (e.g. `DebugClouds`) has
   recentre `[0,0,0]`. **Carried on the grid, never re-derived** (ADR 0008).
+
+- **Orientation** — how a node is turned in the lattice: one of the 24 **axis-aligned cube
+  rotations**, a signed axis permutation. Distinct from **rotation** — reserved for a future
+  *continuous* affine turn that would resample voxels. An orientation is lattice-exact: it relabels
+  and flips axes, so it never resamples, preserves a field's Lipschitz bound, and keeps
+  classification occupancy-identical to brute force. It rides on the node's placement (part of
+  [`NodeTransform`], beside the offset) and composes down the tree as a rigid transform (a child's
+  offset turns by its parent's orientation). A geometry **face** sets it at placement — the node's
+  local up-axis turns to the face normal; the built-in **world planes** never do (they leave the
+  node world-vertical, i.e. identity orientation). See `docs/adr/0026`.
