@@ -150,13 +150,18 @@ impl PlacementGhostRenderer {
                 polygon_mode: wgpu::PolygonMode::Fill,
                 conservative: false,
             },
-            // Drawn INSIDE the MSAA pass: depth-tested `LessEqual` against the voxels'
-            // depth (written via `frag_depth`) so opaque voxels in front occlude the
-            // ghost. Depth WRITE off — a translucent shell that occludes is a lie.
+            // Drawn INSIDE the MSAA pass. Depth compare `Always` — the ghost is a PLACEMENT
+            // AFFORDANCE, not scene geometry: it previews what will drop under the cursor,
+            // so it must show in full even where it overlaps the object it is being placed
+            // ON. Depth-testing it `LessEqual` against the voxels let that object's silhouette
+            // clip the ghost (the owner's "cut off at an upper corner over another object"),
+            // hiding exactly the contact footprint the user is judging. Depth WRITE stays off
+            // — a translucent shell must never occlude real geometry, and with no write the
+            // ghost still draws over whatever is behind it without corrupting the depth buffer.
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: DEPTH_FORMAT,
                 depth_write_enabled: Some(false),
-                depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                depth_compare: Some(wgpu::CompareFunction::Always),
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
