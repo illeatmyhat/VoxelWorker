@@ -434,14 +434,21 @@ impl AppCore {
                 let minted = scene.roots.get(index).copied();
                 (full_effect, minted)
             }
-            Intent::PlaceNode { content, offset_voxels, orientation } => {
+            Intent::PlaceNode { content, offset_voxels, orientation, rotation_quaternion } => {
                 // Build the node exactly as AddNode, then override its identity
-                // transform with the picked placement (ADR 0008 absolute voxel frame)
-                // AND its orientation (ADR 0026: the turn that sits it against the face)
-                // before the same add op mints its id.
+                // transform with the picked placement (ADR 0008 absolute voxel frame),
+                // its lattice orientation (ADR 0026: the discrete turn), AND — when a
+                // curved-surface drop supplied one — its continuous rotation (ADR 0027:
+                // the exact tilt to the gradient normal), before the same add op mints
+                // its id. The two rotations compose at the leaf; surface placement writes
+                // the whole tilt into the quaternion and leaves the orientation identity.
                 let mut node = content.into_node();
-                node.transform =
+                let mut transform =
                     NodeTransform::from_offset_voxels(offset_voxels).with_orientation(orientation);
+                if let Some(quaternion) = rotation_quaternion {
+                    transform = transform.with_rotation(glam::Quat::from_array(quaternion));
+                }
+                node.transform = transform;
                 let index = scene.add_node(node);
                 let minted = scene.roots.get(index).copied();
                 (full_effect, minted)

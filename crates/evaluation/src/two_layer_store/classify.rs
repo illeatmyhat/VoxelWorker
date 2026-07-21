@@ -332,6 +332,25 @@ impl LeafAffine {
     }
 }
 
+/// The world offset (in ABSOLUTE voxels) that seats a producer of local dimensions `full`,
+/// rotated by `rotation`, so its local CENTRE `full/2` lands at world `target_centre` under the
+/// SAME corner-anchored [`LeafAffine`] the classifier folds through (ADR 0027 §5 placement).
+///
+/// It is the inverse of [`LeafAffine::of`]`(..).world_of(full/2) == target_centre`: placement
+/// picks a rotation and a surface contact, and this returns the `world_offset` (⇒ a node's
+/// `offset_voxels` `+` `offset_local_voxels`) that makes the classifier resolve the producer with
+/// its centre exactly there. Sharing [`box_corners`] and the `min_rotated_corner` anchor with
+/// [`LeafAffine`] keeps ONE definition of the corner anchor — the placement seat and the
+/// classifier read the same map, so a dropped node resolves where it previewed (no "two impls of
+/// one predicate" drift).
+pub fn seat_centre_at(rotation: Quat, full: Vec3, target_centre: Vec3) -> Vec3 {
+    let mut min_rotated_corner = Vec3::splat(f32::INFINITY);
+    for corner in box_corners(full) {
+        min_rotated_corner = min_rotated_corner.min(rotation * corner);
+    }
+    target_centre - rotation * (full * 0.5) + min_rotated_corner
+}
+
 /// The 8 corners of the local box `[0, full]` (the two endpoints on each axis).
 fn box_corners(full: Vec3) -> [Vec3; 8] {
     [

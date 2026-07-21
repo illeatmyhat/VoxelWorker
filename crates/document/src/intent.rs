@@ -139,6 +139,16 @@ pub enum Intent {
         /// [`NodeTransform::with_orientation`](crate::scene::NodeTransform::with_orientation).
         #[serde(default, with = "crate::orientation_serde")]
         orientation: substrate::spatial::LatticeOrientation,
+        /// The node's **continuous** rotation (ADR 0027) — an arbitrary quaternion (`xyzw`)
+        /// that seats it flush against a *curved* surface, tilting to the true gradient normal
+        /// rather than snapping to the nearest of the 24 lattice turns (a tube on a cylinder's
+        /// curved side tilts to the radial normal). `None` for an upright / world-plane drop.
+        /// Composes with the discrete `orientation` above at the leaf
+        /// (`leaf.rotation = quat_from_lattice(orientation) · quaternion`); surface placement
+        /// writes the whole rotation here and leaves `orientation` identity. Applied via
+        /// [`NodeTransform::with_rotation`](crate::scene::NodeTransform::with_rotation).
+        #[serde(default)]
+        rotation_quaternion: Option<[f32; 4]>,
     },
     /// Add a child built from `content` into the Group identified by `group`
     /// ([`Scene::add_child_to_group`](crate::scene::Scene::add_child_to_group)).

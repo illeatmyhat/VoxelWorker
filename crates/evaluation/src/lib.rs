@@ -70,3 +70,4 @@ pub mod two_layer_store;
 /// world point, for the CPU continuous-placement surface-raycast. Re-exported at the crate
 /// root so the app crate calls `evaluation::composed_field_at`.
 pub use two_layer_store::composed_field_at;
+pub use two_layer_store::seat_centre_at;

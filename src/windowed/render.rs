@@ -546,6 +546,7 @@ impl WindowedState {
                             cursor,
                             viewport,
                             &frame,
+                            &self.panel_state.scene,
                             shape.clone(),
                             material,
                             self.panel_state.scene.master_floor_grid,

@@ -25,11 +25,12 @@
 //! (`absolute = render + recentre`), the same frame chain `pick_voxel` documents.
 
 use camera::{unproject_screen_point_to_ray, ProjectionMode};
-use glam::Vec3;
+use glam::{Quat, Vec3};
 use raycast::{resolve_placement, select_world_plane, world_plane_hit, PlacementTarget};
 use substrate::spatial::Ray;
 
 use document::intent::{Intent, NodeSpec};
+use document::scene::{LeafProducer, Scene};
 use document::voxel::SdfShape;
 use ui::panel::{OrientationSnap, PlacementSnap, PositionSnap};
 use voxel_core::core_geom::MaterialChoice;
@@ -127,64 +128,96 @@ impl AppCore {
         cursor: [f32; 2],
         viewport: [f32; 4],
         frame: &PickFrame<'_>,
+        scene: &Scene,
         shape: SdfShape,
         material: MaterialChoice,
         ground_plane_visible: bool,
         snap: PlacementSnap,
     ) -> PlacementOutcome {
-        // ADR 0026: orientation is derived from the entered face in the geometry tier below;
-        // a world-plane drop stays identity (world-vertical). Defaulted here, set per-tier.
-        let place_node = |offset_voxels: [i64; 3], orientation: substrate::spatial::LatticeOrientation| {
+        // A drop's rotation is written as a CONTINUOUS quaternion (ADR 0027) — surface placement
+        // tilts the node's local +Z to the true gradient normal; a world-plane / upright drop
+        // leaves it `None`. The lattice `orientation` (ADR 0026) is now always identity from
+        // placement — the whole tilt lives in the quaternion, which the classifier resolves for
+        // any angle (a tube on a cylinder's curved side seats to the radial normal, not the
+        // nearest of the 24 turns). Defaulted here, set per-tier.
+        let place_node = |offset_voxels: [i64; 3], rotation_quaternion: Option<[f32; 4]>| {
             Intent::PlaceNode {
                 content: NodeSpec::Tool {
                     shape: shape.clone(),
                     material,
                 },
                 offset_voxels,
-                orientation,
+                orientation: substrate::spatial::LatticeOrientation::IDENTITY,
+                rotation_quaternion,
             }
         };
 
-        // Tier 1 — geometry. A picked surface is unambiguous; the node lands on the
-        // OUTER side of the entered face (the empty neighbour), so the placement voxel
-        // is the hit voxel stepped one unit along its outward face normal. Both are in
-        // the absolute lattice (ADR 0008), so this is exact integer arithmetic. The node
-        // is then dropped BOTTOM-CENTRED on that voxel (centre X/Y, bottom-align Z), so it
-        // stands on the face under the cursor rather than hanging by its low corner.
+        // Tier 1 — geometry. A picked surface is unambiguous, but the picked voxel FACE is an
+        // axis-aligned staircase approximation of the true surface (a cylinder's curved side
+        // reads as +X/+Y steps). ADR 0027 seats CONTINUOUSLY instead: build the scene's composed
+        // signed-distance field, project the pick onto the real surface, read the exact gradient
+        // normal there, and tilt the node's local +Z to it — so a tube on a cylinder's curved
+        // side lies along the radial normal, not the nearest lattice turn. (Only tier 1 needs the
+        // field; the world-plane tier below is flat, upright by rule.)
         if let Some(pick) = self.pick_voxel(cursor, viewport, frame) {
-            let placement_voxel = std::array::from_fn(|axis| {
-                pick.absolute_voxel[axis] + pick.face_normal[axis] as i64
-            });
-            // `target.point` stays the surface hit (the cursor location) for the
-            // affordance; only the emitted `offset_voxels` is face-anchored.
-            let point = Vec3::new(
-                placement_voxel[0] as f32,
-                placement_voxel[1] as f32,
-                placement_voxel[2] as f32,
+            // The composed field over the scene's op-stack — the SAME fold the classifier resolves
+            // (`evaluation::composed_field_at`), so the surface the node seats on is the surface it
+            // will occupy once dropped. Built lazily here (a geometry hit only), not per hover frame.
+            let leaves = scene.leaf_producers(frame.density);
+            let leaf_refs: Vec<&LeafProducer> = leaves.iter().collect();
+            let field = |probe: Vec3| evaluation::composed_field_at(&leaf_refs, probe, frame.density);
+
+            // Seed the surface solve at the entered face (the boundary between the solid voxel and
+            // its empty neighbour) and let damped Newton settle onto the composed surface under the
+            // cursor (`raycast::project_to_surface`, ADR 0027 §5).
+            let seed = Vec3::new(
+                pick.absolute_voxel[0] as f32 + 0.5 + pick.face_normal[0] as f32 * 0.5,
+                pick.absolute_voxel[1] as f32 + 0.5 + pick.face_normal[1] as f32 * 0.5,
+                pick.absolute_voxel[2] as f32 + 0.5 + pick.face_normal[2] as f32 * 0.5,
             );
-            // ADR 0026 + owner ruling 2026-07-21: the entered face sets orientation ONLY when
-            // the armed tool asks to snap to the surface — then the node's local +Z turns to the
-            // face normal (a cylinder on a wall lies on its side, seated flush by its TURNED
-            // extent). With orientation snap off, the node stays upright (identity) and seats by
-            // its un-turned extent.
-            let orientation = match snap.orientation {
+            let hit = raycast::project_to_surface(seed, field);
+
+            // Orientation snap ON → tilt local +Z to the true outward normal; OFF → stand upright.
+            // The node's axis (the direction its base rises) is that rotated +Z.
+            let rotation = match snap.orientation {
                 OrientationSnap::Surface => {
-                    substrate::spatial::LatticeOrientation::from_face_normal(pick.face_normal)
+                    let normal = raycast::gradient_normal(hit, field);
+                    Quat::from_rotation_arc(Vec3::Z, normal)
                 }
-                OrientationSnap::NoSnap => substrate::spatial::LatticeOrientation::IDENTITY,
+                OrientationSnap::NoSnap => Quat::IDENTITY,
             };
-            let turned_size = orientation.turn_extent(shape.size_voxels);
+            let axis = rotation * Vec3::Z;
+
+            // Seat it flush: lift the producer CENTRE half its local height along its axis so its
+            // base rests on the hit, then invert the classifier's corner-anchored affine
+            // (`evaluation::seat_centre_at` — ONE definition of the anchor) to the world offset
+            // that lands the centre exactly there. Position stays voxel-snapped for now (the
+            // sub-voxel float slide is a later tuning pass).
+            let full = Vec3::new(
+                shape.size_voxels[0] as f32,
+                shape.size_voxels[1] as f32,
+                shape.size_voxels[2] as f32,
+            );
+            let centre = hit + axis * (shape.size_voxels[2] as f32 * 0.5);
+            let world_offset = evaluation::seat_centre_at(rotation, full, centre);
             let offset = snap_offset(
-                face_anchored_offset(placement_voxel, turned_size, pick.face_normal),
+                [
+                    world_offset.x.round() as i64,
+                    world_offset.y.round() as i64,
+                    world_offset.z.round() as i64,
+                ],
                 snap.position,
                 frame.density,
             );
+            // Surface snap carries the continuous rotation; upright drops carry none.
+            let rotation_quaternion = match snap.orientation {
+                OrientationSnap::Surface => Some(rotation.to_array()),
+                OrientationSnap::NoSnap => None,
+            };
             return PlacementOutcome {
-                target: PlacementTarget::OnSurface {
-                    point,
-                    face_normal: pick.face_normal,
-                },
-                intent: Some(place_node(offset, orientation)),
+                // `point` is the surface hit (the cursor location) for the affordance.
+                target: PlacementTarget::OnSurface { point: hit, face_normal: pick.face_normal },
+                intent: Some(place_node(offset, rotation_quaternion)),
             };
         }
 
@@ -305,8 +338,9 @@ impl AppCore {
                     snap.position,
                     frame.density,
                 ),
-                // The world planes never orient (ADR 0026): the node stays world-vertical.
-                substrate::spatial::LatticeOrientation::IDENTITY,
+                // The world planes never orient (ADR 0027): the node stays world-vertical
+                // (no continuous rotation either).
+                None,
             )),
             // A geometry face cannot come back from a `None` surface, and the two
             // negative answers place nothing.
@@ -364,6 +398,9 @@ mod tests {
                     },
                     offset_voxels: offset,
                     orientation,
+                    // This test drives the DISCRETE lattice-orientation path directly (no
+                    // continuous tilt) — the classifier's turned-occupancy proof.
+                    rotation_quaternion: None,
                 },
             );
             let RebuildOutcome::Built(output) = app_core.rebuild(&scene, DENSITY) else {
@@ -410,48 +447,58 @@ mod tests {
         assert_ne!(on_its_side, upright, "a tall cylinder turned onto +X must move its cells");
     }
 
-    /// **place_primitive wires the face turn (ADR 0026).** Whatever face the cursor enters,
-    /// the emitted intent's orientation is `from_face_normal(face)` and its offset anchors the
-    /// TURNED extent — so a tall cylinder on a side wall lies along the normal, flush and
-    /// centred, rather than staying upright and half-buried. (The turn's occupancy correctness
-    /// is proven by `an_oriented_leaf_occupies_the_turned_cells_of_the_upright_one`; this pins
-    /// the placement wiring that feeds it.)
+    /// **place_primitive seats CONTINUOUSLY to the surface normal (ADR 0027).** On a flat box
+    /// face the composed-field gradient normal equals the entered face normal, so the emitted
+    /// intent carries a continuous `rotation_quaternion` that tilts the node's local +Z to that
+    /// normal. Since the whole tilt lives in the quaternion now, the lattice `orientation` stays
+    /// identity — placement no longer writes a discrete turn. (The occupancy correctness of an
+    /// arbitrary rotation is proven by the classifier's own tests; this pins the placement wiring
+    /// that writes the quaternion.)
     #[test]
-    fn a_placed_primitive_is_oriented_and_anchored_to_the_entered_face() {
+    fn a_placed_primitive_tilts_to_the_entered_surface_normal() {
         use substrate::spatial::LatticeOrientation;
         let fixture = placement_fixture(OrbitCamera::default());
         let cursor = [640.0, 360.0];
-        // A tall (asymmetric) armed tool, so the turned extent differs from the upright one.
+        // A tall (asymmetric) armed tool, so a tilt is observable.
         let shape = SdfShape::from_blocks(ShapeKind::Cylinder, [1, 1, 3], 1, DENSITY);
 
-        // Independent expectation from the pick: turn by the entered face, anchor the turned size.
+        // The entered face normal — the direction the continuous seat must tilt local +Z toward.
         let pick = fixture
             .app_core
             .pick_voxel(cursor, VIEWPORT, &fixture.frame())
             .expect("the centre cursor hits the Box");
-        let placement_voxel: [i64; 3] =
-            std::array::from_fn(|axis| pick.absolute_voxel[axis] + pick.face_normal[axis] as i64);
-        let expected_orientation = LatticeOrientation::from_face_normal(pick.face_normal);
-        let expected_offset = face_anchored_offset(
-            placement_voxel,
-            expected_orientation.turn_extent(shape.size_voxels),
-            pick.face_normal,
+        let face_normal = Vec3::new(
+            pick.face_normal[0] as f32,
+            pick.face_normal[1] as f32,
+            pick.face_normal[2] as f32,
         );
 
         let outcome = fixture.app_core.place_primitive(
             cursor,
             VIEWPORT,
             &fixture.frame(),
+            &fixture.scene,
             shape.clone(),
             MaterialChoice::Stone,
             true,
             PlacementSnap::default(),
         );
-        let Some(Intent::PlaceNode { offset_voxels, orientation, .. }) = outcome.intent else {
+        let Some(Intent::PlaceNode { orientation, rotation_quaternion, .. }) = outcome.intent else {
             panic!("a geometry hit produces a PlaceNode, got {:?}", outcome.intent);
         };
-        assert_eq!(orientation, expected_orientation, "oriented by the entered face");
-        assert_eq!(offset_voxels, expected_offset, "seated flush by the turned extent");
+        // The whole tilt lives in the quaternion; the lattice orientation is left identity.
+        assert_eq!(
+            orientation,
+            LatticeOrientation::IDENTITY,
+            "placement no longer writes a discrete lattice turn"
+        );
+        let quaternion = rotation_quaternion.expect("surface snap carries a continuous rotation");
+        let axis = Quat::from_array(quaternion) * Vec3::Z;
+        // On a flat box face the gradient normal IS the face normal, so the node's axis tilts to it.
+        assert!(
+            axis.dot(face_normal) > 0.99,
+            "the node's +Z axis {axis:?} must tilt to the entered face normal {face_normal:?}"
+        );
     }
 
     const DENSITY: u32 = 8;
@@ -575,59 +622,42 @@ mod tests {
     /// point) always lies inside the placed span `[offset, offset + grid)`, so it is solid
     /// once dropped.
     #[test]
-    fn a_cursor_on_geometry_places_a_node_anchored_flush_to_the_entered_face() {
+    fn a_cursor_on_geometry_places_a_node_seated_on_the_entered_face() {
         let mut fixture = placement_fixture(OrbitCamera::default());
         // The default iso view centres the Box under the screen centre, so a centre
         // cursor is a guaranteed geometry hit (the picking net proves this framing).
         let cursor = [640.0, 360.0];
 
-        // Independent expectation: pick the same cursor, step along the face, then apply the
-        // face-anchor rule (anchor along the normal axis, centre on the rest).
+        // The first empty voxel just outside the entered face — where the seated node's base
+        // must land (continuous seat: base on the surface `hit`, extending outward along the
+        // normal, ADR 0027).
         let pick = fixture
             .app_core
             .pick_voxel(cursor, VIEWPORT, &fixture.frame())
             .expect("the centre cursor hits the Box");
         let surface_voxel: [i64; 3] =
             std::array::from_fn(|axis| pick.absolute_voxel[axis] + pick.face_normal[axis] as i64);
-        let size = tool_shape().size_voxels;
-        let expected_offset: [i64; 3] = std::array::from_fn(|axis| {
-            let s = size[axis] as i64;
-            match pick.face_normal[axis] {
-                n if n > 0 => surface_voxel[axis],
-                n if n < 0 => surface_voxel[axis] - (s - 1),
-                _ => surface_voxel[axis] - s / 2,
-            }
-        });
 
         let outcome =
             fixture
                 .app_core
-                .place_primitive(cursor, VIEWPORT, &fixture.frame(), tool_shape(), MaterialChoice::Stone, true, PlacementSnap::default());
+                .place_primitive(cursor, VIEWPORT, &fixture.frame(), &fixture.scene, tool_shape(), MaterialChoice::Stone, true, PlacementSnap::default());
 
         assert!(
             matches!(outcome.target, PlacementTarget::OnSurface { .. }),
             "a geometry hit is OnSurface, got {:?}",
             outcome.target
         );
-        let Some(Intent::PlaceNode { offset_voxels, .. }) = outcome.intent else {
-            panic!("a geometry hit produces a PlaceNode, got {:?}", outcome.intent);
-        };
-        assert_eq!(
-            offset_voxels, expected_offset,
-            "the node seats flush against the entered face"
-        );
+        let intent = outcome.intent.expect("a geometry hit produces a PlaceNode");
 
-        // Applying + rebuilding must make the CURSOR point (inside the seated span) occupied
-        // — proving both the anchor transform and that `offset_voxels` lines up with the
-        // resident chunks' frame.
-        fixture.apply_and_rebuild(Intent::PlaceNode {
-            content: NodeSpec::Tool { shape: tool_shape(), material: MaterialChoice::Stone },
-            offset_voxels,
-            orientation: substrate::spatial::LatticeOrientation::IDENTITY,
-        });
+        // Apply the ACTUAL returned intent (rotation and all) and rebuild — the end-to-end
+        // frame check: the seated node must occupy the empty neighbour just outside the entered
+        // face, proving both the corner-anchored seat and that its `offset_voxels` lines up with
+        // the resident chunks' frame (a wrong seat or a lost recentre term misses this voxel).
+        fixture.apply_and_rebuild(intent);
         assert!(
             absolute_voxel_is_solid(&fixture.chunks, surface_voxel),
-            "the dropped node must occupy the cursor voxel {surface_voxel:?}"
+            "the dropped node must occupy the neighbour voxel just outside the face {surface_voxel:?}"
         );
     }
 
@@ -693,6 +723,7 @@ mod tests {
             cursor,
             VIEWPORT,
             &fixture.frame(),
+            &fixture.scene,
             tool_shape(),
             MaterialChoice::Stone,
             true,
@@ -756,6 +787,7 @@ mod tests {
             [1200.0, 360.0],
             VIEWPORT,
             &empty_frame,
+            &fixture.scene,
             tool_shape(),
             MaterialChoice::Stone,
             true,
@@ -827,7 +859,7 @@ mod tests {
                         ];
                         let target = fixture
                             .app_core
-                            .place_primitive(cursor, VIEWPORT, &fixture.frame(), tool_shape(), MaterialChoice::Stone, true, PlacementSnap::default())
+                            .place_primitive(cursor, VIEWPORT, &fixture.frame(), &fixture.scene, tool_shape(), MaterialChoice::Stone, true, PlacementSnap::default())
                             .target;
                         assert_ne!(
                             target,
@@ -851,38 +883,39 @@ mod tests {
         }
     }
 
-    /// **Orientation snap governs the face turn (owner ruling 2026-07-21).** With orientation
-    /// snap OFF the placed node is upright (identity) whatever face it entered; with it on it
-    /// orients to that face (ADR 0026). Position snap is Voxel (finest) for both.
+    /// **Orientation snap governs the continuous tilt (ADR 0027).** With orientation snap OFF the
+    /// placed node carries NO rotation (upright, `rotation_quaternion == None`) whatever face it
+    /// entered; with it on it carries a continuous quaternion tilting local +Z to the surface
+    /// normal (the entered face normal on this flat box). Position snap is Voxel (finest) for both.
     #[test]
-    fn orientation_snap_toggles_the_face_turn() {
-        use substrate::spatial::LatticeOrientation;
+    fn orientation_snap_toggles_the_continuous_tilt() {
         let fixture = placement_fixture(OrbitCamera::default());
         let cursor = [640.0, 360.0];
         let shape = SdfShape::from_blocks(ShapeKind::Cylinder, [1, 1, 3], 1, DENSITY);
 
         let upright = fixture.app_core.place_primitive(
-            cursor, VIEWPORT, &fixture.frame(), shape.clone(), MaterialChoice::Stone, true,
+            cursor, VIEWPORT, &fixture.frame(), &fixture.scene, shape.clone(), MaterialChoice::Stone, true,
             PlacementSnap { position: PositionSnap::Voxel, orientation: OrientationSnap::NoSnap },
         );
-        let Some(Intent::PlaceNode { orientation, .. }) = upright.intent else {
+        let Some(Intent::PlaceNode { rotation_quaternion, .. }) = upright.intent else {
             panic!("a geometry hit places, got {:?}", upright.intent);
         };
-        assert!(orientation.is_identity(), "orientation snap off ⇒ node stays upright");
+        assert_eq!(rotation_quaternion, None, "orientation snap off ⇒ node stays upright (no rotation)");
 
         let oriented = fixture.app_core.place_primitive(
-            cursor, VIEWPORT, &fixture.frame(), shape.clone(), MaterialChoice::Stone, true,
+            cursor, VIEWPORT, &fixture.frame(), &fixture.scene, shape.clone(), MaterialChoice::Stone, true,
             PlacementSnap { position: PositionSnap::Voxel, orientation: OrientationSnap::Surface },
         );
-        let (PlacementTarget::OnSurface { face_normal, .. }, Some(Intent::PlaceNode { orientation, .. })) =
+        let (PlacementTarget::OnSurface { face_normal, .. }, Some(Intent::PlaceNode { rotation_quaternion, .. })) =
             (oriented.target, oriented.intent)
         else {
             panic!("expected an oriented surface placement");
         };
-        assert_eq!(
-            orientation,
-            LatticeOrientation::from_face_normal(face_normal),
-            "orientation snap on ⇒ node turns to the entered face"
+        let normal = Vec3::new(face_normal[0] as f32, face_normal[1] as f32, face_normal[2] as f32);
+        let axis = Quat::from_array(rotation_quaternion.expect("surface snap tilts")) * Vec3::Z;
+        assert!(
+            axis.dot(normal) > 0.99,
+            "orientation snap on ⇒ node's +Z axis {axis:?} tilts to the entered face normal {normal:?}"
         );
     }
 
@@ -915,7 +948,7 @@ mod tests {
         let cursor = [1200.0, 360.0]; // off the box, onto the ground
         // Visible → lands on the ground.
         let visible = fixture.app_core.place_primitive(
-            cursor, VIEWPORT, &fixture.frame(), tool_shape(), MaterialChoice::Stone, true, PlacementSnap::default(),
+            cursor, VIEWPORT, &fixture.frame(), &fixture.scene, tool_shape(), MaterialChoice::Stone, true, PlacementSnap::default(),
         );
         assert!(
             matches!(visible.target, PlacementTarget::OnWorldPlane { plane: raycast::WorldPlane::Ground, .. }),
@@ -923,7 +956,7 @@ mod tests {
         );
         // Hidden → nothing to place on.
         let hidden = fixture.app_core.place_primitive(
-            cursor, VIEWPORT, &fixture.frame(), tool_shape(), MaterialChoice::Stone, false, PlacementSnap::default(),
+            cursor, VIEWPORT, &fixture.frame(), &fixture.scene, tool_shape(), MaterialChoice::Stone, false, PlacementSnap::default(),
         );
         assert_eq!(hidden.target, PlacementTarget::NoSurface, "hidden ground ⇒ NoSurface");
         assert_eq!(hidden.intent, None, "hidden ground drops no node");
@@ -952,7 +985,7 @@ mod tests {
             for col in 0..8 {
                 let cursor = [VIEWPORT[2] * (col as f32 + 0.5) / 8.0, VIEWPORT[3] * (row as f32 + 0.5) / 8.0];
                 let outcome = fixture.app_core.place_primitive(
-                    cursor, VIEWPORT, &empty, tool_shape(), MaterialChoice::Stone, true, PlacementSnap::default(),
+                    cursor, VIEWPORT, &empty, &fixture.scene, tool_shape(), MaterialChoice::Stone, true, PlacementSnap::default(),
                 );
                 assert!(
                     !matches!(
@@ -988,6 +1021,7 @@ mod tests {
             [640.0, 360.0],
             VIEWPORT,
             &fixture.frame(),
+            &fixture.scene,
             tool_shape(),
             MaterialChoice::Stone,
             true,
@@ -1030,7 +1064,7 @@ mod tests {
                     VIEWPORT[3] * (row as f32 + 0.5) / 8.0,
                 ];
                 let outcome = fixture.app_core.place_primitive(
-                    cursor, VIEWPORT, &empty_frame, tool_shape(), MaterialChoice::Stone, true, PlacementSnap::default(),
+                    cursor, VIEWPORT, &empty_frame, &fixture.scene, tool_shape(), MaterialChoice::Stone, true, PlacementSnap::default(),
                 );
                 assert_eq!(
                     outcome.target,
