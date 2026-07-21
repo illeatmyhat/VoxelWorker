@@ -198,7 +198,15 @@ fn bounds_interval(ray: Ray) -> vec2<f32> {
     let t1 = (half - origin) * inverse;
     let t_low = min(t0, t1);
     let t_high = max(t0, t1);
-    let t_enter = max(max(t_low.x, t_low.y), max(t_low.z, 0.0));
+    // Enter at the AABB slab, NOT clamped to the near plane (no `max(..., 0.0)`). The
+    // near plane is sized around the scene at the world origin, so once the camera pans
+    // away the ghost sits BEHIND it; clamping the entry to 0 then made the march start
+    // past the shape and miss, so the ghost only drew in the band where it fell in front
+    // of the near plane. A placement ghost is an overlay affordance, not scene geometry —
+    // it must march its own bounding box wherever it lands, so a negative entry (the shape
+    // behind the near-plane ray origin) is allowed. `t_exit > 0` still rejects a shape
+    // fully behind the ray.
+    let t_enter = max(t_low.x, max(t_low.y, t_low.z));
     let t_exit = min(t_high.x, min(t_high.y, t_high.z));
     return vec2<f32>(t_enter, t_exit);
 }
@@ -209,11 +217,19 @@ const MAX_TRACE_STEPS: u32 = 192u;
 // factor at which every fixture traces cleanly.
 const STEP_RELAXATION: f32 = 0.7;
 
-// Sphere-trace the field. Returns t of the surface hit, or -1.0 on a miss.
+// A miss sentinel that CANNOT collide with a real hit `t`. The entry `t` may now be
+// NEGATIVE (the shape can sit behind the near-plane ray origin once the camera pans away
+// from the origin-sized near plane — see `bounds_interval`), so `-1.0` is no longer a safe
+// "no hit" marker: a genuine hit can be negative. A huge positive value never overlaps any
+// real interval `t`.
+const TRACE_MISS: f32 = 1.0e30;
+
+// Sphere-trace the field. Returns `t` of the surface hit (possibly NEGATIVE), or
+// [`TRACE_MISS`] on a miss.
 fn trace(ray: Ray) -> f32 {
     let interval = bounds_interval(ray);
     if (interval.x > interval.y) {
-        return -1.0;
+        return TRACE_MISS;
     }
     // Scale the hit tolerance with the shape so a 1280-voxel shape is not traced to
     // sub-micron precision (and a 4-voxel one still resolves).
@@ -223,7 +239,7 @@ fn trace(ray: Ray) -> f32 {
     var t = interval.x;
     for (var step = 0u; step < MAX_TRACE_STEPS; step = step + 1u) {
         if (t > interval.y) {
-            return -1.0;
+            return TRACE_MISS;
         }
         let distance = field_at_world(ray.origin + ray.direction * t) - uniforms.params.x;
         if (distance < tolerance) {
@@ -231,15 +247,15 @@ fn trace(ray: Ray) -> f32 {
         }
         t = t + max(distance * STEP_RELAXATION, tolerance);
     }
-    return -1.0;
+    return TRACE_MISS;
 }
 
-// The field's gradient by central differences. NOT `fwidth` — this pass runs in
-// non-uniform control flow, the same constraint the brick shader carries.
-fn field_normal(world_point: vec3<f32>) -> vec3<f32> {
-    let scale = max(max(uniforms.semi_axes_and_wall.x, uniforms.semi_axes_and_wall.y),
-                    uniforms.semi_axes_and_wall.z);
-    let epsilon = max(scale * 1e-3, 1e-3);
+// The field's gradient by central differences at a CHOSEN epsilon. NOT `fwidth` — this
+// pass runs in non-uniform control flow, the same constraint the brick shader carries.
+// The epsilon is a parameter because the outline reads the surface at two scales: a fine
+// probe for the true shading normal, and a coarse one that averages across a hard edge (a
+// crease shows as the two disagreeing).
+fn field_normal_eps(world_point: vec3<f32>, epsilon: f32) -> vec3<f32> {
     let dx = vec3<f32>(epsilon, 0.0, 0.0);
     let dy = vec3<f32>(0.0, epsilon, 0.0);
     let dz = vec3<f32>(0.0, 0.0, epsilon);
@@ -255,6 +271,17 @@ fn field_normal(world_point: vec3<f32>) -> vec3<f32> {
     return gradient / magnitude;
 }
 
+// The shape's overall scale (largest semi-axis) — sizes the epsilons and tolerances.
+fn shape_scale() -> f32 {
+    return max(max(uniforms.semi_axes_and_wall.x, uniforms.semi_axes_and_wall.y),
+               uniforms.semi_axes_and_wall.z);
+}
+
+// The fine shading normal.
+fn field_normal(world_point: vec3<f32>) -> vec3<f32> {
+    return field_normal_eps(world_point, max(shape_scale() * 1e-3, 1e-3));
+}
+
 struct FragmentOutput {
     @location(0) color: vec4<f32>,
     @builtin(frag_depth) depth: f32,
@@ -264,7 +291,9 @@ struct FragmentOutput {
 fn fragment_main(@builtin(position) position: vec4<f32>) -> FragmentOutput {
     let ray = camera_ray(position.xy);
     let t = trace(ray);
-    if (t < 0.0) {
+    // A real hit `t` may be negative (the shape behind the near-plane ray origin after a
+    // pan), so miss is the sentinel, NOT `t < 0`.
+    if (t >= TRACE_MISS) {
         discard;
     }
     let hit_world = ray.origin + ray.direction * t;
@@ -284,7 +313,12 @@ fn fragment_main(@builtin(position) position: vec4<f32>) -> FragmentOutput {
 
     var output: FragmentOutput;
     output.color = vec4<f32>(uniforms.tint.rgb * lit * alpha, alpha);
-    output.depth = clip.z / clip.w;
+    // Clamp into the depth range. The scene's near/far are sized around the geometry at
+    // the world origin, so once the camera pans away the ghost's true clip depth falls
+    // OUTSIDE [0, 1] and the fragment is depth-clipped — the ghost vanished across most of
+    // the screen. It is an overlay affordance (depth compare Always, depth write off), so
+    // clamping keeps it in range and always visible without disturbing the depth buffer.
+    output.depth = clamp(clip.z / clip.w, 0.0, 1.0);
     return output;
 }
 
