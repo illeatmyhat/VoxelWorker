@@ -3,6 +3,7 @@
 //! §3f(0)), and the block/voxel bounding-box derivations that drive extent,
 //! recentring and region sizing.
 
+use glam::Quat;
 use serde::{Deserialize, Serialize};
 use substrate::spatial::LatticeOrientation;
 
@@ -39,7 +40,11 @@ impl RegionBlocks {
 /// parametric units layer, ADR 0003 §3f(0)), so it is `Clone` only. The canonical
 /// `offset_voxels` is read by-field everywhere; the few sites that moved a whole
 /// transform out of a `&Node` now `.clone()` it.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+// ADR 0027: the continuous rotation (a `Quat`) and the float local offset make this
+// type float-bearing, so it can no longer derive `Eq` (only `PartialEq`). Every type
+// that contains a `NodeTransform` and derived `Eq` loses it too — none are used as hash
+// keys, so this is a marker-trait removal with no behavioural effect.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct NodeTransform {
     /// Translation in **voxels** at the document's density `d`
     /// ([`Scene::voxels_per_block`]) — the single canonical placement field
@@ -72,6 +77,42 @@ pub struct NodeTransform {
     /// gather codec.
     #[serde(default, with = "crate::orientation_serde")]
     pub orientation: LatticeOrientation,
+
+    /// The **continuous local position**, in voxels, relative to the integer
+    /// [`offset_voxels`](Self::offset_voxels) wandering origin (ADR 0027). The field's
+    /// world position is `offset_voxels + offset_local_voxels` per axis — the integer
+    /// part is the far-world-safe anchor (ADR 0008's carried frame), the float part is
+    /// the sub-voxel / continuous slide a NoSnap placement authors. Zero for every
+    /// voxel-snapped placement (the default), so a snapped scene resolves exactly as an
+    /// integer offset does.
+    ///
+    /// **Wandering origin (deferred):** when this grows past a rebase threshold it folds
+    /// into `offset_voxels` so the float never holds a large magnitude far from origin;
+    /// v1 scenes are small enough that the fold is not yet wired.
+    ///
+    /// Reaches the document, so it is versioned: an old scene without the field loads as
+    /// `[0.0, 0.0, 0.0]` (`serde(default)`), byte-identical to a pure integer placement.
+    #[serde(default)]
+    pub offset_local_voxels: [f32; 3],
+
+    /// The node's **continuous rotation** (ADR 0027), stored as a quaternion `[x, y, z, w]`.
+    /// `None` = identity (the node stands unturned), which keeps the common case
+    /// pointer-small and loads an old document — predating the field — as upright.
+    ///
+    /// This is the general affine rotation ADR 0001 decision 3 reserved and ADR 0026
+    /// deferred behind the word *rotation*; it **subsumes** the discrete
+    /// [`orientation`](Self::orientation) (a lattice turn is just a rotation that lands on
+    /// the exact classifier path). During the ADR 0027 migration both fields coexist —
+    /// `orientation` is retired once every consumer reads the quaternion. Because a
+    /// rotation is an isometry it preserves a field's Lipschitz bound, so per-voxel
+    /// occupancy stays exact under it; only a non-axis turn loosens the block interval
+    /// bound.
+    ///
+    /// glam's `serde` feature is off in this crate (its math stays serde-free, the
+    /// boundary law), so the quaternion travels as a plain `[f32; 4]`; read it as a
+    /// [`Quat`] via [`rotation`](Self::rotation).
+    #[serde(default)]
+    pub rotation_quaternion: Option<[f32; 4]>,
 
     /// The RETAINED authored unit expression per axis (ADR 0003 §3f(0)).
     ///
@@ -129,7 +170,7 @@ impl NodeTransform {
         Self {
             offset_voxels,
             offset_measurements: Self::retained_or_none(measurements, offset_voxels),
-            orientation: LatticeOrientation::IDENTITY,
+            ..Default::default()
         }
     }
 
@@ -148,7 +189,7 @@ impl NodeTransform {
         Self {
             offset_voxels,
             offset_measurements: None,
-            orientation: LatticeOrientation::IDENTITY,
+            ..Default::default()
         }
     }
 
@@ -159,6 +200,35 @@ impl NodeTransform {
     pub fn with_orientation(mut self, orientation: LatticeOrientation) -> Self {
         self.orientation = orientation;
         self
+    }
+
+    /// This node's continuous rotation as a [`Quat`] (ADR 0027) — identity when the
+    /// stored quaternion is `None` (an unturned node, or an old document predating the
+    /// field). The document-side read of the serde-free `[f32; 4]` storage.
+    pub fn rotation(&self) -> Quat {
+        self.rotation_quaternion
+            .map(Quat::from_array)
+            .unwrap_or(Quat::IDENTITY)
+    }
+
+    /// This transform with its continuous [`rotation`](Self::rotation) replaced
+    /// (ADR 0027). The quaternion is normalised before storage; a rotation within `f32`
+    /// epsilon of identity is stored as `None`, keeping an unturned placement in the
+    /// canonical (old-document-identical) form so apply→undo→apply is byte-stable.
+    pub fn with_rotation(mut self, rotation: Quat) -> Self {
+        let rotation = rotation.normalize();
+        self.rotation_quaternion =
+            (!is_identity_rotation(rotation)).then(|| rotation.to_array());
+        self
+    }
+
+    /// The field's **world position in voxels** as a continuous value (ADR 0027): the
+    /// integer [`offset_voxels`](Self::offset_voxels) wandering origin plus the float
+    /// [`offset_local_voxels`](Self::offset_local_voxels) local slide, per axis. The
+    /// integer part is added first (far-world-safe), then the small float — so precision
+    /// is spent near the origin, never on a large magnitude.
+    pub fn world_field_position_voxels(&self) -> [f32; 3] {
+        std::array::from_fn(|axis| self.offset_voxels[axis] as f32 + self.offset_local_voxels[axis])
     }
 
     /// Build a transform from a per-axis authored [`Measurement`] at density
@@ -204,7 +274,7 @@ impl NodeTransform {
         Self {
             offset_voxels,
             offset_measurements: Self::retained_or_none(retained, offset_voxels),
-            orientation: LatticeOrientation::IDENTITY,
+            ..Default::default()
         }
     }
 
@@ -279,6 +349,14 @@ impl NodeTransform {
         let density = voxels_per_block.max(1) as i64;
         self.offset_voxels.iter().all(|&v| v.rem_euclid(density) == 0)
     }
+}
+
+/// Whether a unit quaternion is (within `f32` epsilon) the identity rotation
+/// (ADR 0027). A quaternion and its negation denote the *same* rotation, so the test
+/// compares `|dot(rotation, identity)|` to 1 rather than the raw components — `−IDENTITY`
+/// is identity too. Used to keep an unturned placement's stored quaternion `None`.
+fn is_identity_rotation(rotation: Quat) -> bool {
+    rotation.dot(Quat::IDENTITY).abs() >= 1.0 - 1e-6
 }
 
 /// The whole-**block** corner of a world VOXEL offset: `floor(offset_voxels / d)`
@@ -772,5 +850,57 @@ fn leaf_size_blocks(
             None
         }
         NodeContent::Group(_) | NodeContent::Instance(_) => None,
+    }
+}
+
+#[cfg(test)]
+mod continuity_schema_tests {
+    //! ADR 0027 schema migration: the continuous rotation + local offset must default
+    //! to identity so an old (pre-0027) document loads byte-identical to a pure integer
+    //! placement, and a rotated placement must survive a JSON round-trip.
+    use super::*;
+
+    #[test]
+    fn old_document_without_continuity_fields_loads_upright_and_unslid() {
+        // A NodeTransform serialised before ADR 0027 carries neither the local offset
+        // nor the quaternion. It must deserialise to identity rotation + zero slide.
+        let old_json = r#"{ "offset_voxels": [4, -2, 7] }"#;
+        let transform: NodeTransform = serde_json::from_str(old_json).unwrap();
+        assert_eq!(transform.offset_voxels, [4, -2, 7]);
+        assert_eq!(transform.offset_local_voxels, [0.0, 0.0, 0.0]);
+        assert_eq!(transform.rotation_quaternion, None);
+        assert_eq!(transform.rotation(), Quat::IDENTITY);
+        // The pure-integer placement reads back through the continuous accessor exactly.
+        assert_eq!(transform.world_field_position_voxels(), [4.0, -2.0, 7.0]);
+    }
+
+    #[test]
+    fn identity_rotation_is_stored_as_none() {
+        // Setting the rotation to identity (or its negation) keeps the canonical `None`
+        // form, so an unturned placement never grows a redundant quaternion husk.
+        let upright = NodeTransform::from_offset_voxels([0, 0, 0]).with_rotation(Quat::IDENTITY);
+        assert_eq!(upright.rotation_quaternion, None);
+        let also_upright =
+            NodeTransform::from_offset_voxels([0, 0, 0]).with_rotation(-Quat::IDENTITY);
+        assert_eq!(also_upright.rotation_quaternion, None);
+    }
+
+    #[test]
+    fn a_rotated_placement_survives_json_round_trip() {
+        let turn = Quat::from_rotation_z(std::f32::consts::FRAC_PI_3); // 60° about +Z
+        let transform = NodeTransform::from_offset_voxels([1, 0, 0])
+            .with_rotation(turn);
+        assert!(transform.rotation_quaternion.is_some());
+        let json = serde_json::to_string(&transform).unwrap();
+        let restored: NodeTransform = serde_json::from_str(&json).unwrap();
+        // Quaternions compare up to sign; the restored rotation is the same turn.
+        assert!(restored.rotation().abs_diff_eq(turn, 1e-5) || restored.rotation().abs_diff_eq(-turn, 1e-5));
+    }
+
+    #[test]
+    fn a_sub_voxel_slide_reads_back_continuously() {
+        let mut transform = NodeTransform::from_offset_voxels([10, 0, 0]);
+        transform.offset_local_voxels = [0.25, -0.5, 0.0];
+        assert_eq!(transform.world_field_position_voxels(), [10.25, -0.5, 0.0]);
     }
 }
