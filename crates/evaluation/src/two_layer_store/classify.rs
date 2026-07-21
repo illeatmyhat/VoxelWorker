@@ -276,7 +276,12 @@ pub(crate) fn classify_chunk_block(
 /// occupancy stays exact; only the coarse cell-interval bound loosens).
 ///
 /// The `full`, `min_rotated_corner` and `world_offset` are all in VOXELS.
-struct LeafAffine {
+///
+/// `pub(crate)` (with its [`of`](LeafAffine::of) / [`local_of`](LeafAffine::local_of)
+/// constructors) so the composed-field point-eval ([`super::composed_field_at`], ADR 0027
+/// §5) reuses the SAME absolute→local map the classifier folds through — the field probe
+/// must not re-derive the affine (the "two impls of one predicate" trap).
+pub(crate) struct LeafAffine {
     /// The leaf's continuous rotation (`quat_from_lattice(orientation) · authored`, ADR 0027).
     rotation: Quat,
     /// Componentwise min of `rotation · corner` over the 8 corners of the local box
@@ -293,7 +298,7 @@ struct LeafAffine {
 
 impl LeafAffine {
     /// Build the affine for `leaf` at the document's `voxels_per_block`.
-    fn of(leaf: &LeafProducer, voxels_per_block: u32) -> Self {
+    pub(crate) fn of(leaf: &LeafProducer, voxels_per_block: u32) -> Self {
         let full_dimensions = leaf.producer.full_dimensions(voxels_per_block);
         let full = Vec3::new(
             full_dimensions[0] as f32,
@@ -322,7 +327,7 @@ impl LeafAffine {
     /// `local_of(world_of(p)) ≈ p` for every `p` (a rotation's inverse is exact up to float
     /// round-off — the classifier's `+0.5` centre-sample margins absorb it, see
     /// [`producer_local_voxel_to_abs`]).
-    fn local_of(&self, world: Vec3) -> Vec3 {
+    pub(crate) fn local_of(&self, world: Vec3) -> Vec3 {
         self.rotation.inverse() * (world - self.world_offset + self.min_rotated_corner)
     }
 }

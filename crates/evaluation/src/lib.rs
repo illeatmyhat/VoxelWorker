@@ -65,3 +65,8 @@ pub mod cuboid;
 pub mod disk_chunk_store;
 pub mod store;
 pub mod two_layer_store;
+
+/// The composed-field point-eval (ADR 0027 §5): the scene's composed signed distance at a
+/// world point, for the CPU continuous-placement surface-raycast. Re-exported at the crate
+/// root so the app crate calls `evaluation::composed_field_at`.
+pub use two_layer_store::composed_field_at;

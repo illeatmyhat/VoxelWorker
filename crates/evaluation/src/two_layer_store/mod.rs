@@ -57,6 +57,7 @@
 mod builder;
 mod chunk;
 mod classify;
+mod field_probe;
 mod resident_cache;
 mod stream;
 #[cfg(test)]
@@ -72,6 +73,7 @@ pub(crate) use classify::*;
 // The public ADR 0010 E2 boundary-residency surface.
 pub use builder::TwoLayerStore;
 pub use chunk::{BlockClassification, MicroblockGeometry, SeamSolidity, TwoLayerChunk};
+pub use field_probe::composed_field_at;
 pub use resident_cache::TwoLayerResidentCache;
 pub use stream::{stream_vox_occupancy, streamed_widest_run_in_band};
 
