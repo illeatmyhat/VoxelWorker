@@ -171,6 +171,73 @@ pub fn resolve_placement(
     }
 }
 
+// ============================================================================================
+// Three-world-plane model (2026-07-20, `placement-prior-art.md` "Superseded" section).
+//
+// The view-aligned `AnchorPlane` above is being replaced by three axis-aligned world planes,
+// the ground privileged. This block carries the piece that is settled and depends only on the
+// ray *direction* — which plane the empty-space placement lands on. The intersection, the
+// orientation split, and the behind-the-eye/"nothing in front" residual case are wired into a
+// new `resolve_placement` once those decisions land, at which point the `AnchorPlane` path above
+// is deleted, not kept.
+// ============================================================================================
+
+/// One of the three axis-aligned planes through the world origin — the built-in placement planes.
+///
+/// They are a **positioning device only**: a node located via any of them keeps its world-vertical
+/// orientation, so the fallback that catches a grazing ground ray never tips what is placed. That
+/// is what preserves verticality (a product value). Only a geometry face or a user-created plane
+/// sets orientation; these do not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorldPlane {
+    /// `z = 0`, normal `+Z`. The ground — we are Z-up. Privileged: chosen across the whole cone
+    /// where the ray faces it well enough, not merely when it is the best-faced of the three.
+    Ground,
+    /// `x = 0`, normal `+X`. A vertical fallback, taken when the ground grazes and the ray faces
+    /// this plane more squarely than the other vertical.
+    VerticalFacingX,
+    /// `y = 0`, normal `+Y`. The other vertical fallback.
+    VerticalFacingY,
+}
+
+impl WorldPlane {
+    /// The plane's unit outward normal.
+    pub fn normal(self) -> Vec3 {
+        match self {
+            WorldPlane::Ground => Vec3::Z,
+            WorldPlane::VerticalFacingX => Vec3::X,
+            WorldPlane::VerticalFacingY => Vec3::Y,
+        }
+    }
+}
+
+/// Choose which world plane an empty-space placement lands on: the **ground**, unless the ray
+/// grazes it more shallowly than `min_ground_facing`, in which case whichever **vertical** the ray
+/// faces more squarely.
+///
+/// `min_ground_facing` is `sin(grazing angle)` — the smallest `|ray·Ẑ|` at which the ground is
+/// still worth placing on. The ground keeps priority: it is chosen on the entire cone
+/// `|ray·Ẑ| >= min_ground_facing`, not merely when it is best-faced. Ties between the two verticals
+/// break toward `VerticalFacingX`; the choice is immaterial (their facings are equal at the tie).
+///
+/// **The invariant this exists to guarantee** (swept by the `the_selected_world_plane_is_always_well_faced`
+/// test): for any unit `ray_direction` and any `min_ground_facing` in `[0, 1/√3]`, the returned plane's normal has
+/// `|ray_direction · normal| >= min_ground_facing`. So the ray-plane denominator is bounded away
+/// from zero by the threshold itself, the intersection is always well-conditioned, and there is no
+/// grazing case to clamp — the property the wandering view-aligned normal used to provide, now from
+/// three *fixed* normals. The bound holds because a unit vector cannot have all three components
+/// small: when the ground is rejected (`|z| < m`), `x² + y² > 1 − m²`, so the larger of `|x|, |y|`
+/// is at least `√((1−m²)/2) >= m` exactly when `m <= 1/√3`.
+pub fn select_world_plane(ray_direction: Vec3, min_ground_facing: f32) -> WorldPlane {
+    if ray_direction.z.abs() >= min_ground_facing {
+        WorldPlane::Ground
+    } else if ray_direction.x.abs() >= ray_direction.y.abs() {
+        WorldPlane::VerticalFacingX
+    } else {
+        WorldPlane::VerticalFacingY
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -347,6 +414,60 @@ mod tests {
             origin_y += 13.3;
         }
         assert!(worst < 1e-3, "depth residue grew to {worst} at ±1e3");
+    }
+
+    /// **The three-plane totality invariant, swept.** For any view direction and any grazing
+    /// threshold up to `1/√3`, the plane `select_world_plane` returns is faced by at least the
+    /// threshold — so the ray-plane denominator can never collapse and there is no grazing case to
+    /// clamp. This is the property that lets three *fixed* normals replace the wandering
+    /// view-aligned one. Swept over a fine grid of unit directions; the algebra is in
+    /// `select_world_plane`'s docs. (A Kani harness would state it over the whole sphere, but the
+    /// bound is a squares-only algebraic fact and the sweep is decisive and in-gate.)
+    #[test]
+    fn the_selected_world_plane_is_always_well_faced() {
+        // 1/√3 is the largest threshold the guarantee holds for; test at and below it.
+        for &min_ground_facing in &[0.1_f32, 0.342, 0.5, 0.577] {
+            let mut worst_facing = f32::INFINITY;
+            for yaw_step in 0..360 {
+                for pitch_step in -89..=89 {
+                    let yaw = (yaw_step as f32).to_radians();
+                    let pitch = (pitch_step as f32).to_radians();
+                    let direction = Vec3::new(
+                        pitch.cos() * yaw.cos(),
+                        pitch.cos() * yaw.sin(),
+                        pitch.sin(),
+                    )
+                    .normalize();
+                    let chosen = select_world_plane(direction, min_ground_facing);
+                    let facing = direction.dot(chosen.normal()).abs();
+                    worst_facing = worst_facing.min(facing);
+                    assert!(
+                        facing >= min_ground_facing - 1e-6,
+                        "plane {chosen:?} faced only {facing} at yaw {yaw_step} pitch {pitch_step}, \
+                         threshold {min_ground_facing}"
+                    );
+                }
+            }
+            // And the guarantee is tight: some direction sits right at the threshold.
+            assert!(
+                worst_facing <= min_ground_facing + 0.02,
+                "bound is looser than claimed: worst {worst_facing} vs {min_ground_facing}"
+            );
+        }
+    }
+
+    /// The ground is **privileged**, not merely best-faced: a ray that faces a vertical more
+    /// squarely than the ground still lands on the ground as long as the ground is not grazing.
+    #[test]
+    fn the_ground_wins_whenever_it_is_not_grazing() {
+        // Looking down fairly steeply but with a strong sideways component: |z| beats the
+        // threshold though |x| is larger. Ground must still win.
+        let direction = Vec3::new(0.8, 0.0, -0.4).normalize();
+        assert!(direction.x.abs() > direction.z.abs(), "set up so a vertical is better-faced");
+        assert_eq!(select_world_plane(direction, 0.342), WorldPlane::Ground);
+        // Now graze the ground (nearly horizontal): a vertical must take over.
+        let grazing = Vec3::new(0.98, 0.1, -0.05).normalize();
+        assert_eq!(select_world_plane(grazing, 0.342), WorldPlane::VerticalFacingX);
     }
 
     /// **The distinction the viewport hangs on.** Too-far draws no preview and a placement
