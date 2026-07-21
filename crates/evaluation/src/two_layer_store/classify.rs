@@ -1127,6 +1127,38 @@ mod affine_oracle_tests {
             .expect("the single-geometry scene has one leaf")
     }
 
+    /// **Regression (ADR 0027): the builder broadphase box must equal the classifier's rotated
+    /// box.** `builder::leaf_world_aabb` once computed its extent from the discrete lattice
+    /// `orientation.turn_extent`, blind to the continuous quaternion — so a leaf with an IDENTITY
+    /// lattice orientation but a non-identity `rotation` (a tube seated on a curved surface)
+    /// reserved an UPRIGHT box. The edit broadphase then dropped that leaf from every chunk its
+    /// tilted body occupied beyond the upright box, classifying them to air and TRUNCATING the
+    /// tube (the "tubes render upright" bug). The two extents share ONE definition now; this pins
+    /// that they never diverge under a genuine (lattice-identity) rotation, and that the box
+    /// actually reflects the tilt rather than staying the axis-aligned lattice box.
+    #[test]
+    fn the_broadphase_box_equals_the_rotated_classifier_box() {
+        let mut leaf = single_leaf(ShapeKind::Cylinder, [16, 16, 48]);
+        // Identity lattice orientation (as `leaf_producers` builds it) but a genuine off-axis
+        // tilt — exactly the seated-on-a-curve case the bug truncated.
+        leaf.rotation = glam::Quat::from_rotation_x(0.7);
+        let broadphase = super::super::builder::leaf_world_aabb(&leaf, DENSITY);
+        let classifier = leaf_world_box(&leaf, DENSITY);
+        assert_eq!(
+            broadphase, classifier,
+            "the broadphase AABB must enclose the SAME rotated box the classifier folds through"
+        );
+        // And it must NOT be the upright axis-aligned box the old lattice path returned: a 48-tall
+        // cylinder tilted about X spreads in Y and shrinks in Z, so its extent differs from the
+        // untilted [16,16,48].
+        let extent = [
+            classifier.max[0] - classifier.min[0],
+            classifier.max[1] - classifier.min[1],
+            classifier.max[2] - classifier.min[2],
+        ];
+        assert_ne!(extent, [16, 16, 48], "a genuine rotation must change the extent from the upright box");
+    }
+
     /// The occupied block-local cells of a resolved region.
     fn occupied_cells(region: &VoxelRegion) -> BTreeSet<[u32; 3]> {
         let [width, height, depth] = region.extent;

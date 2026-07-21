@@ -133,25 +133,20 @@ pub(crate) fn enumerate_covering_chunk_coords(min_chunk: [i32; 3], max_chunk: [i
     coords
 }
 
-/// The leaf's world-AABB in absolute voxels: `[world_offset, world_offset + turned_grid)`,
-/// corner-anchored — the SAME box [`classify_chunk_block`] / [`resolve_boundary_block`] test
-/// each block against. A region-spanning VoxelBody (the cloud field) reports its composite-region
-/// `full_dimensions`, so its box correctly spans every chunk it fills.
+/// The leaf's world-AABB in absolute voxels, corner-anchored — the SAME box
+/// [`classify_chunk_block`] / [`resolve_boundary_block`] test each block against. A
+/// region-spanning VoxelBody (the cloud field) reports its composite-region `full_dimensions`, so
+/// its box correctly spans every chunk it fills.
 ///
-/// ADR 0026: an oriented leaf's world extent is its **turned** grid (`turn_extent`) — the same
-/// rule as [`classify::leaf_world_box`](super::classify::leaf_world_box), which this must agree
-/// with box-for-box.
+/// ADR 0027: an oriented leaf's world extent must enclose its **continuously rotated** grid, not
+/// just the discrete lattice turn — so this delegates to [`leaf_world_box`](super::classify::leaf_world_box),
+/// the ONE rotation-aware extent the classifier folds through. (It formerly used the lattice
+/// `orientation.turn_extent`, which is blind to the ADR 0027 quaternion: a leaf with an identity
+/// lattice orientation but a non-identity continuous rotation — a tube seated on a curved surface —
+/// reserved an UPRIGHT box, so the edit broadphase dropped it from every chunk its tilted body
+/// occupied beyond that box, truncating the tube. The two must agree box-for-box, and now do.)
 pub(crate) fn leaf_world_aabb(leaf: &LeafProducer, voxels_per_block: u32) -> VoxelAabb {
-    let grid_dimensions =
-        leaf.orientation.turn_extent(leaf.producer.full_dimensions(voxels_per_block));
-    VoxelAabb::new(
-        leaf.world_offset_voxels,
-        [
-            leaf.world_offset_voxels[0] + grid_dimensions[0] as i64,
-            leaf.world_offset_voxels[1] + grid_dimensions[1] as i64,
-            leaf.world_offset_voxels[2] + grid_dimensions[2] as i64,
-        ],
-    )
+    super::classify::leaf_world_box(leaf, voxels_per_block)
 }
 
 /// **The edit broadphase over a scene's leaves (#66, ADR 0011 Decision 4b).** Build the
