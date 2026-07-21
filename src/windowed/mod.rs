@@ -541,7 +541,13 @@ impl WindowedState {
             hovered_cube_zone: None,
             // ADR 0022 live placement: nothing armed until the user picks a "+ Add" chip.
             armed_tool: None,
-            resident_chunks: Vec::new(),
+            // Seed the placement pick-set from the STARTUP covering set — the same chunks the
+            // display's `first_build` drew (below). Without this, `resident_chunks` stayed empty
+            // until the first edit ran `rebuild_geometry`, so on a fresh launch a pick found no
+            // geometry to march and an armed tool could not drop onto the already-loaded scene
+            // (adding a node rebuilt and "fixed" it). FULL band = mask nothing, matching a
+            // fresh launch's un-clipped view.
+            resident_chunks: startup_two_layer_chunks.clone(),
             last_pick_band: LayerBand::FULL,
             pending_placement: None,
             armed_press: false,
