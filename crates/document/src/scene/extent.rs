@@ -4,6 +4,7 @@
 //! recentring and region sizing.
 
 use serde::{Deserialize, Serialize};
+use substrate::spatial::LatticeOrientation;
 
 use voxel_core::units::{ExactRational, Measurement};
 
@@ -58,6 +59,19 @@ pub struct NodeTransform {
     /// [`block_aligned`]: NodeTransform::block_aligned
     #[serde(default)]
     pub offset_voxels: [i64; 3],
+
+    /// The node's **lattice orientation** (ADR 0026) — one of the 24 axis-aligned cube
+    /// rotations, how the node is turned in its parent's frame. Identity for every node until
+    /// placement stands one against a geometry face (a cylinder on a wall lies on its side).
+    /// The discrete, lattice-exact first half of the affine ADR 0001 reserved; a continuous
+    /// *rotation* (with resampling) is the deferred second half.
+    ///
+    /// Reaches the document, so it is versioned: an old scene without the field loads as
+    /// identity (`serde(default)`). Substrate is serde-free (its boundary law), so the on-disk
+    /// form travels through the domain [`orientation_serde`](crate::orientation_serde) adapter over the type's stable
+    /// gather codec.
+    #[serde(default, with = "crate::orientation_serde")]
+    pub orientation: LatticeOrientation,
 
     /// The RETAINED authored unit expression per axis (ADR 0003 §3f(0)).
     ///
@@ -115,6 +129,7 @@ impl NodeTransform {
         Self {
             offset_voxels,
             offset_measurements: Self::retained_or_none(measurements, offset_voxels),
+            orientation: LatticeOrientation::IDENTITY,
         }
     }
 
@@ -133,7 +148,17 @@ impl NodeTransform {
         Self {
             offset_voxels,
             offset_measurements: None,
+            orientation: LatticeOrientation::IDENTITY,
         }
+    }
+
+    /// This transform with its **orientation** replaced (ADR 0026). The placement door
+    /// (`Intent::PlaceNode`) calls this to stand a node against the face it was dropped on,
+    /// leaving the offset it was built with. Chainable after
+    /// [`from_offset_voxels`](Self::from_offset_voxels).
+    pub fn with_orientation(mut self, orientation: LatticeOrientation) -> Self {
+        self.orientation = orientation;
+        self
     }
 
     /// Build a transform from a per-axis authored [`Measurement`] at density
@@ -179,6 +204,7 @@ impl NodeTransform {
         Self {
             offset_voxels,
             offset_measurements: Self::retained_or_none(retained, offset_voxels),
+            orientation: LatticeOrientation::IDENTITY,
         }
     }
 
@@ -368,7 +394,7 @@ impl Scene {
             parent_offset_voxels,
             &mut def_path,
             &mut scope_path,
-            &mut |world_offset_voxels, body, _grid_on_faces, _operation, outset, _scope_path| {
+            &mut |world_offset_voxels, orientation, body, _grid_on_faces, _operation, outset, _scope_path| {
                 let outset_voxels = outset_voxels_at(outset, voxels_per_block);
             let world_offset_voxels: [i64; 3] =
                 std::array::from_fn(|axis| world_offset_voxels[axis] - outset_voxels);
@@ -380,6 +406,8 @@ impl Scene {
                 let Some(size_blocks) = leaf_size_blocks(&body, voxels_per_block, outset_voxels) else {
                     return;
                 };
+                // ADR 0026: turn the block extent into world axes for an oriented leaf.
+                let size_blocks = orientation.turn_extent(size_blocks);
                 any = true;
                 // The leaf's whole-block offset, via the single floor rule.
                 let world_blocks = world_block_corner_floor(world_offset_voxels, voxels_per_block);
@@ -445,7 +473,7 @@ impl Scene {
             parent_offset_voxels,
             &mut def_path,
             &mut scope_path,
-            &mut |world_offset_voxels, body, _grid_on_faces, _operation, outset, _scope_path| {
+            &mut |world_offset_voxels, orientation, body, _grid_on_faces, _operation, outset, _scope_path| {
                 let outset_voxels = outset_voxels_at(outset, voxels_per_block);
             let world_offset_voxels: [i64; 3] =
                 std::array::from_fn(|axis| world_offset_voxels[axis] - outset_voxels);
@@ -457,6 +485,8 @@ impl Scene {
                 let Some(grid_voxels) = body.grid_voxels(voxels_per_block, outset_voxels) else {
                     return;
                 };
+                // ADR 0026: turn the grid into world axes for an oriented leaf.
+                let grid_voxels = orientation.turn_extent_i64(grid_voxels);
                 any = true;
                 for axis in 0..3 {
                     // Corner-anchored span `[off, off + grid)` (offset is the low corner).
@@ -554,13 +584,16 @@ impl Scene {
         let mut min_corner = [i64::MAX; 3];
         let mut max_corner = [i64::MIN; 3];
         let mut any = false;
-        self.for_each_leaf(&mut |world_offset_voxels, body, _grid_on_faces, _operation, outset, _scope_path| {
+        self.for_each_leaf(&mut |world_offset_voxels, orientation, body, _grid_on_faces, _operation, outset, _scope_path| {
             let outset_voxels = outset_voxels_at(outset, voxels_per_block);
             let world_offset_voxels: [i64; 3] =
                 std::array::from_fn(|axis| world_offset_voxels[axis] - outset_voxels);
             let Some(size_blocks) = leaf_size_blocks(&body, voxels_per_block, outset_voxels) else {
                 return;
             };
+            // ADR 0026: turn the block extent into world axes, so an oriented leaf's block
+            // readout spans the axes it actually occupies.
+            let size_blocks = orientation.turn_extent(size_blocks);
             any = true;
             // The leaf's whole-block offset, via the single floor rule.
             let world_blocks = world_block_corner_floor(world_offset_voxels, voxels_per_block);

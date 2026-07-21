@@ -110,12 +110,17 @@ impl AppCore {
         shape: SdfShape,
         material: MaterialChoice,
     ) -> PlacementOutcome {
-        let place_node = |offset_voxels: [i64; 3]| Intent::PlaceNode {
-            content: NodeSpec::Tool {
-                shape: shape.clone(),
-                material,
-            },
-            offset_voxels,
+        // ADR 0026: orientation is derived from the entered face in the geometry tier below;
+        // a world-plane drop stays identity (world-vertical). Defaulted here, set per-tier.
+        let place_node = |offset_voxels: [i64; 3], orientation: substrate::spatial::LatticeOrientation| {
+            Intent::PlaceNode {
+                content: NodeSpec::Tool {
+                    shape: shape.clone(),
+                    material,
+                },
+                offset_voxels,
+                orientation,
+            }
         };
 
         // Tier 1 — geometry. A picked surface is unambiguous; the node lands on the
@@ -140,11 +145,12 @@ impl AppCore {
                     point,
                     face_normal: pick.face_normal,
                 },
-                intent: Some(place_node(face_anchored_offset(
-                    placement_voxel,
-                    shape.size_voxels,
-                    pick.face_normal,
-                ))),
+                intent: Some(place_node(
+                    face_anchored_offset(placement_voxel, shape.size_voxels, pick.face_normal),
+                    // Orientation from the face lands in the next slice; identity here keeps
+                    // the current upright behaviour unchanged.
+                    substrate::spatial::LatticeOrientation::IDENTITY,
+                )),
             };
         }
 
@@ -232,11 +238,15 @@ impl AppCore {
             // The world planes never orient (they only ever position, standing the object
             // upright — the design's "world-vertical" rule). The ground is a `+Z` face, so
             // the object stands bottom-centred on the hit under the cursor.
-            PlacementTarget::OnWorldPlane { point, plane } => Some(place_node(face_anchored_offset(
-                [point.x.floor() as i64, point.y.floor() as i64, point.z.floor() as i64],
-                shape.size_voxels,
-                plane.normal().to_array().map(|n| n as i32),
-            ))),
+            PlacementTarget::OnWorldPlane { point, plane } => Some(place_node(
+                face_anchored_offset(
+                    [point.x.floor() as i64, point.y.floor() as i64, point.z.floor() as i64],
+                    shape.size_voxels,
+                    plane.normal().to_array().map(|n| n as i32),
+                ),
+                // The world planes never orient (ADR 0026): the node stays world-vertical.
+                substrate::spatial::LatticeOrientation::IDENTITY,
+            )),
             // A geometry face cannot come back from a `None` surface, and the two
             // negative answers place nothing.
             PlacementTarget::OnSurface { .. }
@@ -261,6 +271,83 @@ mod tests {
 
     use super::*;
     use crate::{AppCore, RebuildOutcome};
+
+    /// **An oriented leaf's occupancy is the TURNED occupancy of the un-oriented one**
+    /// (ADR 0026) — the definitive classifier proof. A tall Cylinder (axis-locked to local Z)
+    /// turned onto +X must occupy exactly what the upright cylinder occupies after each voxel
+    /// is turned by the same rotation. This exercises the whole evaluation path: the turned
+    /// world extent, the INVERSE-permuted SDF sample (so the curved *field* turns, not merely
+    /// its bounding box), and the forward-permuted voxel emission.
+    #[test]
+    fn an_oriented_leaf_occupies_the_turned_cells_of_the_upright_one() {
+        use std::collections::HashSet;
+        use substrate::spatial::LatticeOrientation;
+
+        // A tall cylinder: radius in XY, axis (height) along local Z — asymmetric, so a turn is
+        // observable. Small so the occupancy scan below is cheap.
+        let shape = SdfShape::from_blocks(ShapeKind::Cylinder, [1, 1, 3], 1, DENSITY);
+        let size = shape.size_voxels; // the producer-local extent
+        let offset = [8i64, 8, 8]; // away from the origin, to catch offset bugs
+
+        // Place one cylinder with `orientation` on a fresh scene; collect its solid ABSOLUTE
+        // voxels within a box that covers the upright AND any turned extent.
+        let occupied = |orientation: LatticeOrientation| -> HashSet<[i64; 3]> {
+            let mut scene = Scene::default();
+            let mut app_core = AppCore::new(OrbitCamera::default());
+            app_core.apply_intent(
+                &mut scene,
+                Intent::PlaceNode {
+                    content: NodeSpec::Tool {
+                        shape: shape.clone(),
+                        material: MaterialChoice::Stone,
+                    },
+                    offset_voxels: offset,
+                    orientation,
+                },
+            );
+            let RebuildOutcome::Built(output) = app_core.rebuild(&scene, DENSITY) else {
+                panic!("the density is in bounds");
+            };
+            let chunks = output.two_layer_chunks;
+            let span = *size.iter().max().unwrap() as i64;
+            let mut solids = HashSet::new();
+            for x in -1..=span {
+                for y in -1..=span {
+                    for z in -1..=span {
+                        let v = [offset[0] + x, offset[1] + y, offset[2] + z];
+                        if absolute_voxel_is_solid(&chunks, v) {
+                            solids.insert(v);
+                        }
+                    }
+                }
+            }
+            solids
+        };
+
+        let upright = occupied(LatticeOrientation::IDENTITY);
+        assert!(!upright.is_empty(), "the upright cylinder must occupy something");
+
+        // +Z -> +X: the cylinder lies on its side, poking out along +X.
+        let turn = LatticeOrientation::from_face_normal([1, 0, 0]);
+        let on_its_side = occupied(turn);
+
+        // Expected: each upright cell turned about the leaf's corner-anchored box.
+        let expected: HashSet<[i64; 3]> = upright
+            .iter()
+            .map(|v| {
+                let local = [v[0] - offset[0], v[1] - offset[1], v[2] - offset[2]];
+                let turned = turn.turn_point_in_box(local, size);
+                [offset[0] + turned[0], offset[1] + turned[1], offset[2] + turned[2]]
+            })
+            .collect();
+
+        assert_eq!(
+            on_its_side, expected,
+            "the oriented cylinder must occupy exactly the turned cells of the upright one"
+        );
+        // The turn is REAL, not a no-op: the shape is asymmetric in Z, so its cells move.
+        assert_ne!(on_its_side, upright, "a tall cylinder turned onto +X must move its cells");
+    }
 
     const DENSITY: u32 = 8;
     const VIEWPORT: [f32; 4] = [0.0, 0.0, 1280.0, 720.0];
@@ -431,6 +518,7 @@ mod tests {
         fixture.apply_and_rebuild(Intent::PlaceNode {
             content: NodeSpec::Tool { shape: tool_shape(), material: MaterialChoice::Stone },
             offset_voxels,
+            orientation: substrate::spatial::LatticeOrientation::IDENTITY,
         });
         assert!(
             absolute_voxel_is_solid(&fixture.chunks, surface_voxel),

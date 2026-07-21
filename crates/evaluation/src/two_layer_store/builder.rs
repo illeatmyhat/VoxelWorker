@@ -133,12 +133,17 @@ pub(crate) fn enumerate_covering_chunk_coords(min_chunk: [i32; 3], max_chunk: [i
     coords
 }
 
-/// The leaf's world-AABB in absolute voxels: `[world_offset, world_offset + full_dimensions)`,
+/// The leaf's world-AABB in absolute voxels: `[world_offset, world_offset + turned_grid)`,
 /// corner-anchored — the SAME box [`classify_chunk_block`] / [`resolve_boundary_block`] test
 /// each block against. A region-spanning VoxelBody (the cloud field) reports its composite-region
 /// `full_dimensions`, so its box correctly spans every chunk it fills.
+///
+/// ADR 0026: an oriented leaf's world extent is its **turned** grid (`turn_extent`) — the same
+/// rule as [`classify::leaf_world_box`](super::classify::leaf_world_box), which this must agree
+/// with box-for-box.
 pub(crate) fn leaf_world_aabb(leaf: &LeafProducer, voxels_per_block: u32) -> VoxelAabb {
-    let grid_dimensions = leaf.producer.full_dimensions(voxels_per_block);
+    let grid_dimensions =
+        leaf.orientation.turn_extent(leaf.producer.full_dimensions(voxels_per_block));
     VoxelAabb::new(
         leaf.world_offset_voxels,
         [

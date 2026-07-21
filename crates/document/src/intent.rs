@@ -132,6 +132,13 @@ pub enum Intent {
         /// The node's placement, a raw canonical voxel offset in the absolute frame
         /// (ADR 0008), applied via `NodeTransform::from_offset_voxels`.
         offset_voxels: [i64; 3],
+        /// The node's **lattice orientation** (ADR 0026) — how it is turned to sit against
+        /// the surface it was dropped on. [`IDENTITY`](substrate::spatial::LatticeOrientation::IDENTITY)
+        /// for a world-plane or `+Z`-face drop (world-vertical); a signed axis permutation for a
+        /// side/bottom face (a cylinder lies on its side). Applied via
+        /// [`NodeTransform::with_orientation`](crate::scene::NodeTransform::with_orientation).
+        #[serde(default, with = "crate::orientation_serde")]
+        orientation: substrate::spatial::LatticeOrientation,
     },
     /// Add a child built from `content` into the Group identified by `group`
     /// ([`Scene::add_child_to_group`](crate::scene::Scene::add_child_to_group)).

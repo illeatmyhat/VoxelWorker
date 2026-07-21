@@ -48,12 +48,18 @@ Four things follow:
    parity gate stays green for free. The two-layer store is the single source the mesh *and* the GPU
    brick raymarch read, so both display paths inherit orientation with no further work.
 
-4. **Orientation composes down the tree as a rigid transform.** `world_orientation = parent ∘ node`,
-   and a child's offset turns by its parent's world-orientation before it sums —
-   `world_offset = parent_offset + parent_orientation · node_offset`. This is pivot-free integer
-   work (an offset is a vector, not a point), so it is written fully correct rather than
-   leaf-restricted, and nesting an oriented parent is sound even though only placement sets a
-   non-identity orientation today.
+4. **Orientation is applied per leaf now; ancestor composition is deferred behind a guard.**
+   The field is general (any node can hold one — the transform is uniform), but the only author
+   of a non-identity orientation today is leaf placement, and a placed Tool is a top-level node.
+   So every ancestor is identity-oriented, which makes the full rigid composition
+   (`world_orientation = parent ∘ node`, child offset turned by the parent —
+   `world_offset = parent_offset + parent_orientation · node_offset`) collapse to: a leaf's world
+   orientation is simply its own, and offsets sum unturned exactly as today. The walk therefore
+   carries **only the leaf's own orientation** to the classifier, and **asserts a non-leaf (or a
+   composed-scope member) is identity-oriented** so the unhandled parent-turns-child case can
+   never silently produce wrong geometry. The general composition lands with the general
+   orient-any-node gizmo, not speculatively ahead of it — the CSG composite path (`CompositeMember`)
+   would otherwise grow an orientation it has no author for.
 
 **Derivation at placement:** a geometry face turns the node's local **+Z to the face normal** by
 the shortest-arc swing (zero twist; the −Z face takes a canonical flip). The curved primitives are

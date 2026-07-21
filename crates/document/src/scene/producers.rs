@@ -118,6 +118,7 @@ pub struct ScopeFrame {
 /// [`Measurement`]: voxel_core::units::Measurement
 pub(super) type LeafVisitor<'walk> = dyn FnMut(
         [i64; 3],
+        substrate::spatial::LatticeOrientation,
         LeafBody<'_>,
         bool,
         CombineOp,
@@ -248,6 +249,10 @@ impl Scene {
         {
             visitor(
                 composed.origin_voxels,
+                // A composed scope bakes its members at identity orientation (ADR 0026:
+                // orientation is applied per leaf; composed-scope members are guarded
+                // identity, so the composite carries no turn of its own).
+                substrate::spatial::LatticeOrientation::IDENTITY,
                 LeafBody::Composed {
                     producer: composed.producer,
                     fingerprint: composed.fingerprint,
@@ -276,7 +281,7 @@ impl Scene {
     pub fn leaf_producers(&self, voxels_per_block: u32) -> Vec<LeafProducer> {
         let region_dimensions = self.placed_region_dimensions(voxels_per_block);
         let mut leaves = Vec::new();
-        self.for_each_leaf(&mut |world_offset_voxels, body, grid_on_faces, operation, outset, scope_path| {
+        self.for_each_leaf(&mut |world_offset_voxels, orientation, body, grid_on_faces, operation, outset, scope_path| {
             // ADR 0019 Decision 7: the outset dilates the body BEFORE it folds. Wrapping the
             // producer (rather than teaching the fold a new arm) means the classifier's
             // `cell_field_interval` call below and the voxel-set fold both see one definition
@@ -294,6 +299,7 @@ impl Scene {
                 world_offset_voxels: std::array::from_fn(|axis| {
                     world_offset_voxels[axis] - outset_voxels
                 }),
+                orientation,
                 producer,
                 material,
                 grid_overlay: grid_on_faces,
@@ -392,6 +398,13 @@ impl Scene {
             if !node.enabled {
                 continue;
             }
+            // ADR 0026: composed-scope members bake at identity orientation. A member with a
+            // non-identity turn would silently lose it here (the composite has no orientation);
+            // guard so the deferred compositional case can't slip through unnoticed.
+            debug_assert!(
+                node.transform.orientation.is_identity(),
+                "composed-scope member orientation is not yet baked (ADR 0026)"
+            );
             let world_offset_voxels: [i64; 3] =
                 std::array::from_fn(|axis| parent_offset[axis] + node.transform.offset_voxels[axis]);
             match &node.content {
@@ -552,6 +565,11 @@ impl Scene {
                     // walk — consumers reconstruct the scoped fold from the paths.
                     visitor(
                         world_offset_voxels,
+                        // ADR 0026: the leaf carries its OWN orientation. Every ancestor is
+                        // guaranteed identity-oriented (asserted on the Group/Instance arms
+                        // below), so this leaf's world orientation is exactly its own — no
+                        // accumulator, offsets sum unturned.
+                        node.transform.orientation,
                         LeafBody::Content(&node.content),
                         node.grids.voxel_grid_on_faces,
                         node.operation,
@@ -566,11 +584,19 @@ impl Scene {
                     // dilation is a different operation and the ADR rejects it: it would
                     // make an internal Subtract cutter carve MORE, where dilating the
                     // composed Part grows the finished body and partly closes that cut.
+                    // ADR 0026 guard: a non-leaf orientation would need the deferred
+                    // parent-turns-child composition. Nothing authors it today; assert so a
+                    // future orient-any-node gizmo can't silently drop the turn here.
+                    debug_assert!(
+                        node.transform.orientation.is_identity(),
+                        "non-leaf (Group) orientation is not yet composed (ADR 0026)"
+                    );
                     if let Some(composed) =
                         self.composed_scope_leaf(node, children, world_offset_voxels, def_path)
                     {
                         visitor(
                             composed.origin_voxels,
+                            substrate::spatial::LatticeOrientation::IDENTITY,
                             LeafBody::Composed {
                                 producer: composed.producer,
                                 fingerprint: composed.fingerprint,
@@ -595,6 +621,12 @@ impl Scene {
                     scope_path.pop();
                 }
                 NodeContent::Instance(def_id) => {
+                    // ADR 0026 guard: as for a Group, an oriented Instance would need the
+                    // deferred ancestor composition. Unauthored today; assert it stays identity.
+                    debug_assert!(
+                        node.transform.orientation.is_identity(),
+                        "non-leaf (Instance) orientation is not yet composed (ADR 0026)"
+                    );
                     // Cycle guard: an Instance may not reference an ancestor
                     // definition. If this id is already being expanded on the
                     // current path, skip it (never recurse into a cycle).
@@ -742,7 +774,12 @@ impl Scene {
         // the SCOPE's operation (`sync_grid_scope_stack`), so a boolean inside a scope can
         // never affect geometry outside it.
         let mut scope_stack: Vec<(ScopeFrame, VoxelGrid)> = Vec::new();
-        self.for_each_leaf(&mut |world_offset_voxels, body, grid_on_faces, operation, outset, scope_path| {
+        // ADR 0026: the dense resolve is the vestigial test oracle (two-layer is the runtime
+        // path). It does NOT yet apply leaf orientation, so it is a faithful oracle only for
+        // identity-oriented scenes — which is every scene the parity gate feeds it. An oriented
+        // leaf is exercised through the two-layer classifier, checked against a hand-derived
+        // expectation, not against this path.
+        self.for_each_leaf(&mut |world_offset_voxels, _orientation, body, grid_on_faces, operation, outset, scope_path| {
             sync_grid_scope_stack(&mut scope_stack, &mut output, scope_path, region_dimensions);
             let target: &mut VoxelGrid = match scope_stack.last_mut() {
                 Some((_, scratch)) => scratch,
@@ -944,7 +981,9 @@ impl Scene {
         // Intersect-closing scope must open even here so its ∅-in-chunk body
         // annihilates the parent on close (see the skip guard below).
         let mut scope_stack: Vec<(ScopeFrame, VoxelGrid)> = Vec::new();
-        self.for_each_leaf(&mut |world_offset_voxels, body, grid_on_faces, operation, outset, scope_path| {
+        // ADR 0026: dense oracle path — orientation is not applied here (see the sibling
+        // resolve above); valid for identity scenes, which is all the gate feeds it.
+        self.for_each_leaf(&mut |world_offset_voxels, _orientation, body, grid_on_faces, operation, outset, scope_path| {
             let outset_voxels = outset_voxels_at(outset, voxels_per_block);
             // An outset body grows on every side, so its low corner moves DOWN by the
             // outset — and the skip AABB below must use the DILATED span, or a cutter whose
@@ -1221,8 +1260,15 @@ pub(super) fn leaf_content_fingerprint(
 pub struct LeafProducer {
     /// The leaf's accumulated WORLD voxel offset (its corner-anchored low corner in the
     /// scene's absolute voxel frame). A local cell `idx` has absolute index
-    /// `world_offset_voxels + idx` (ADR 0008 — the frame is carried).
+    /// `world_offset_voxels + orientation·idx` (ADR 0008 — the frame is carried; the turn
+    /// too, see [`orientation`](Self::orientation)).
     pub world_offset_voxels: [i64; 3],
+    /// The leaf's lattice orientation (ADR 0026): how its producer-local `[0, full_dim)` frame
+    /// is turned into the world frame. Identity for every leaf placed on a world plane or a
+    /// `+Z` face; a signed axis permutation for a leaf stood against a side/bottom face. The
+    /// classifier applies its inverse to map a world voxel back into the producer's unturned
+    /// local frame (the producer never learns the turn).
+    pub orientation: substrate::spatial::LatticeOrientation,
     /// The boxed producer that resolves / bounds this leaf in its own `[0, full_dim)`
     /// local voxel-index frame.
     pub producer: Box<dyn VoxelProducer>,

@@ -68,7 +68,7 @@ impl ShapeKind {
     /// A sensible default bounding box for a freshly-armed primitive of this kind, in whole
     /// BLOCKS `[X, Y, Z]` (Z-up). A single shared default squashes every kind to one shape;
     /// each kind instead wants bounds matching its SDF's axis roles (see
-    /// [`Self::signed_distance`]):
+    /// [`signed_distance`]):
     /// * **Box / Sphere** are symmetric — a cube of bounds reads as a plain box / a round ball.
     /// * **Cylinder / Tube** take their long axis on Z (the SDF's half-height), so a round
     ///   cross-section (X = Y) taller than it is wide reads as a pillar / pipe.

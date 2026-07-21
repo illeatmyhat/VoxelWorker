@@ -434,12 +434,14 @@ impl AppCore {
                 let minted = scene.roots.get(index).copied();
                 (full_effect, minted)
             }
-            Intent::PlaceNode { content, offset_voxels } => {
+            Intent::PlaceNode { content, offset_voxels, orientation } => {
                 // Build the node exactly as AddNode, then override its identity
                 // transform with the picked placement (ADR 0008 absolute voxel frame)
+                // AND its orientation (ADR 0026: the turn that sits it against the face)
                 // before the same add op mints its id.
                 let mut node = content.into_node();
-                node.transform = NodeTransform::from_offset_voxels(offset_voxels);
+                node.transform =
+                    NodeTransform::from_offset_voxels(offset_voxels).with_orientation(orientation);
                 let index = scene.add_node(node);
                 let minted = scene.roots.get(index).copied();
                 (full_effect, minted)

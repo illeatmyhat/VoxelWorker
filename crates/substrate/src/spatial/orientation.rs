@@ -101,9 +101,57 @@ impl LatticeOrientation {
 
     /// Permute a non-negative **extent** (grid dimensions) by the turn, ignoring sign — a
     /// box's side lengths are orientation-invariant in magnitude, only relabelled. `out[o]`
-    /// is the input extent along the axis that lands on output `o`.
+    /// is the input extent along the axis that lands on output `o`. This is the world span of
+    /// a turned producer grid, still corner-anchored at its world offset.
     pub fn turn_extent(&self, extent: [u32; 3]) -> [u32; 3] {
         std::array::from_fn(|o| extent[self.source[o] as usize])
+    }
+
+    /// [`turn_extent`](Self::turn_extent) for an `i64` span — the domain carries grid extents
+    /// as `i64` for its offset arithmetic (ADR 0008); the values are magnitudes, so this is
+    /// the same sign-ignoring permutation.
+    pub fn turn_extent_i64(&self, extent: [i64; 3]) -> [i64; 3] {
+        std::array::from_fn(|o| extent[self.source[o] as usize])
+    }
+
+    /// Turn a **local cell index** in the corner-anchored box `[0, extent)` to its cell index
+    /// in the turned box `[0, turn_extent(extent))`, re-anchored so the low corner stays at the
+    /// origin. A positive axis passes through; a negated axis is **reversed in place**
+    /// (`ext−1−l`) rather than sent negative — which is what keeps a turned producer grid
+    /// corner-anchored at its world offset, exactly like an un-turned one (ADR 0008 frame).
+    pub fn turn_point_in_box(&self, local: [i64; 3], extent: [u32; 3]) -> [i64; 3] {
+        std::array::from_fn(|o| {
+            let s = self.source[o] as usize;
+            if self.sign[o] > 0 { local[s] } else { extent[s] as i64 - 1 - local[s] }
+        })
+    }
+
+    /// The inverse of [`turn_point_in_box`](Self::turn_point_in_box) on a **half-open AABB**:
+    /// map a world-frame voxel box `[world_min, world_max)` (lying within the turned box) back
+    /// into the producer's local half-open box, given the producer's LOCAL `extent`. A negated
+    /// axis reverses the interval — `[lo, hi)` becomes `[ext−hi, ext−lo)` — so the result is a
+    /// proper half-open box the producer can bound. This is the map the classifier applies to
+    /// send a world block/voxel cell into the producer's unturned frame.
+    pub fn unturn_box(
+        &self,
+        world_min: [i64; 3],
+        world_max: [i64; 3],
+        extent: [u32; 3],
+    ) -> ([i64; 3], [i64; 3]) {
+        let mut local_min = [0i64; 3];
+        let mut local_max = [0i64; 3];
+        for o in 0..3 {
+            let s = self.source[o] as usize;
+            let (wlo, whi) = (world_min[o], world_max[o]);
+            let (lo, hi) = if self.sign[o] > 0 {
+                (wlo, whi)
+            } else {
+                (extent[s] as i64 - whi, extent[s] as i64 - wlo)
+            };
+            local_min[s] = lo;
+            local_max[s] = hi;
+        }
+        (local_min, local_max)
     }
 
     /// The composition `self ∘ other` — the turn that applies `other` first, then `self`
@@ -262,6 +310,57 @@ mod tests {
         }
         // +Z is the identity (an on-top / ground placement stays upright).
         assert!(LatticeOrientation::from_face_normal([0, 0, 1]).is_identity());
+    }
+
+    /// **The corner-anchored cell turn stays inside the turned box, bijectively.** Every
+    /// local cell of `[0, extent)` maps to a distinct cell of `[0, turn_extent(extent))` — a
+    /// turned producer grid tiles its world box with no gap or overlap.
+    #[test]
+    fn turn_point_in_box_is_a_bijection_onto_the_turned_box() {
+        let extent = [3u32, 4, 2];
+        for orientation in all_proper() {
+            let turned = orientation.turn_extent(extent);
+            let mut seen = std::collections::HashSet::new();
+            for x in 0..extent[0] as i64 {
+                for y in 0..extent[1] as i64 {
+                    for z in 0..extent[2] as i64 {
+                        let w = orientation.turn_point_in_box([x, y, z], extent);
+                        for axis in 0..3 {
+                            assert!(
+                                w[axis] >= 0 && w[axis] < turned[axis] as i64,
+                                "{orientation:?}: cell {:?} left the turned box at axis {axis}",
+                                [x, y, z]
+                            );
+                        }
+                        assert!(seen.insert(w), "{orientation:?}: collision at {w:?}");
+                    }
+                }
+            }
+            assert_eq!(seen.len(), (extent[0] * extent[1] * extent[2]) as usize);
+        }
+    }
+
+    /// **`unturn_box` inverts the cell turn on a half-open sub-box.** A world sub-box maps back
+    /// to exactly the local cells that turn into it — the classifier's world→local remap.
+    #[test]
+    fn unturn_box_recovers_the_local_cells() {
+        let extent = [4u32, 3, 5];
+        for orientation in all_proper() {
+            // A world sub-box: one turned cell (a 1³ block) at a chosen world position.
+            for x in 0..extent[0] as i64 {
+                for y in 0..extent[1] as i64 {
+                    for z in 0..extent[2] as i64 {
+                        let local = [x, y, z];
+                        let w = orientation.turn_point_in_box(local, extent);
+                        let world_min = w;
+                        let world_max = [w[0] + 1, w[1] + 1, w[2] + 1];
+                        let (lmin, lmax) = orientation.unturn_box(world_min, world_max, extent);
+                        assert_eq!(lmin, local, "{orientation:?}: unturn min");
+                        assert_eq!(lmax, [x + 1, y + 1, z + 1], "{orientation:?}: unturn max");
+                    }
+                }
+            }
+        }
     }
 
     /// `to_matrix` agrees with `apply`: `M · v == apply(v)`.

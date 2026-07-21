@@ -200,22 +200,12 @@ pub(crate) fn classify_chunk_block(
                 ScopedCellEvent::CloseScope(cell_combine_role(operation))
             }
             ScopedLeafStep::Leaf(leaf) => {
-                // Map the absolute block box into THIS leaf's local voxel-index frame
-                // `[0, full)` by subtracting its world offset — the exact frame
-                // `cell_field_interval` expects (ADR 0008: the frame is carried,
-                // never re-derived).
-                let cell_local = VoxelAabb::new(
-                    [
-                        block_abs_voxels.min[0] - leaf.world_offset_voxels[0],
-                        block_abs_voxels.min[1] - leaf.world_offset_voxels[1],
-                        block_abs_voxels.min[2] - leaf.world_offset_voxels[2],
-                    ],
-                    [
-                        block_abs_voxels.max[0] - leaf.world_offset_voxels[0],
-                        block_abs_voxels.max[1] - leaf.world_offset_voxels[1],
-                        block_abs_voxels.max[2] - leaf.world_offset_voxels[2],
-                    ],
-                );
+                // Map the absolute block box into THIS leaf's producer-local voxel-index
+                // frame `[0, full)` — subtract the world offset AND un-turn the leaf's
+                // orientation (ADR 0026), the exact frame `cell_field_interval` expects
+                // (ADR 0008: the frame is carried, never re-derived).
+                let cell_local =
+                    abs_box_to_producer_local(leaf, block_abs_voxels, voxels_per_block);
                 ScopedCellEvent::Contribution(CellContribution {
                     field_interval: leaf
                         .producer
@@ -268,11 +258,16 @@ pub(crate) fn classify_chunk_block(
     }
 }
 
-/// The leaf's grid AABB in the SCENE's absolute voxel frame: `[off, off + grid)`,
+/// The leaf's grid AABB in the SCENE's absolute voxel frame: `[off, off + turned_grid)`,
 /// corner-anchored at its `world_offset_voxels`. The single box construction shared by the
 /// classify / overlap / whole-chunk paths (they must all test the SAME leaf extent).
+///
+/// ADR 0026: an oriented leaf occupies its **turned** grid in the world — the producer's
+/// local `[0, full)` box is turned into world axes (`turn_extent`), still corner-anchored at
+/// the world offset (the turn re-anchors the low corner to the origin, see
+/// [`LatticeOrientation::turn_point_in_box`]).
 pub(crate) fn leaf_world_box(leaf: &LeafProducer, voxels_per_block: u32) -> VoxelAabb {
-    let grid_dimensions = leaf.producer.full_dimensions(voxels_per_block);
+    let grid_dimensions = leaf.orientation.turn_extent(leaf.producer.full_dimensions(voxels_per_block));
     VoxelAabb::new(
         leaf.world_offset_voxels,
         [
@@ -281,6 +276,39 @@ pub(crate) fn leaf_world_box(leaf: &LeafProducer, voxels_per_block: u32) -> Voxe
             leaf.world_offset_voxels[2] + grid_dimensions[2] as i64,
         ],
     )
+}
+
+/// Map an absolute voxel box into the leaf's **producer-local** `[0, full)` frame (ADR 0026):
+/// subtract the world offset (into the leaf's own turned frame), then un-turn into the
+/// producer's unturned frame. This is the frame `cell_field_interval` / `resolve_into` expect
+/// — the producer never learns the leaf is turned. Identity-oriented leaves get the plain
+/// `abs − world_offset` this replaced. The box may fall partly outside `[0, full)` (a block
+/// straddling the leaf edge); the producer bounds/clamps it exactly as before.
+pub(crate) fn abs_box_to_producer_local(
+    leaf: &LeafProducer,
+    abs: VoxelAabb,
+    voxels_per_block: u32,
+) -> VoxelAabb {
+    let extent = leaf.producer.full_dimensions(voxels_per_block);
+    let rel_min = std::array::from_fn(|axis| abs.min[axis] - leaf.world_offset_voxels[axis]);
+    let rel_max = std::array::from_fn(|axis| abs.max[axis] - leaf.world_offset_voxels[axis]);
+    let (local_min, local_max) = leaf.orientation.unturn_box(rel_min, rel_max, extent);
+    VoxelAabb::new(local_min, local_max)
+}
+
+/// Map a **producer-local** voxel index back to its absolute voxel index (ADR 0026): turn the
+/// local cell into the leaf's world frame (corner-anchored), then add the world offset. The
+/// inverse of [`abs_box_to_producer_local`] for a single cell — the emission direction.
+pub(crate) fn producer_local_voxel_to_abs(
+    leaf: &LeafProducer,
+    local_index: [i32; 3],
+    voxels_per_block: u32,
+) -> [i64; 3] {
+    let extent = leaf.producer.full_dimensions(voxels_per_block);
+    let world_in_leaf = leaf
+        .orientation
+        .turn_point_in_box(local_index.map(|c| c as i64), extent);
+    std::array::from_fn(|axis| world_in_leaf[axis] + leaf.world_offset_voxels[axis])
 }
 
 /// The FIRST **purely additive** leaf (see [`leaf_is_purely_additive`]) whose grid AABB
@@ -581,19 +609,17 @@ fn compose_leaf_into_region(
     density: u32,
     voxels_per_block: u32,
 ) {
-    // Resolve JUST this block's window in the leaf's local voxel-index frame.
-    let window_local = VoxelAabb::new(
+    // Resolve JUST this block's window in the leaf's producer-local voxel-index frame
+    // (ADR 0026: subtract the world offset and un-turn the orientation).
+    let block_abs = VoxelAabb::new(
+        block_min_abs,
         [
-            block_min_abs[0] - leaf.world_offset_voxels[0],
-            block_min_abs[1] - leaf.world_offset_voxels[1],
-            block_min_abs[2] - leaf.world_offset_voxels[2],
-        ],
-        [
-            block_min_abs[0] + density as i64 - leaf.world_offset_voxels[0],
-            block_min_abs[1] + density as i64 - leaf.world_offset_voxels[1],
-            block_min_abs[2] + density as i64 - leaf.world_offset_voxels[2],
+            block_min_abs[0] + density as i64,
+            block_min_abs[1] + density as i64,
+            block_min_abs[2] + density as i64,
         ],
     );
+    let window_local = abs_box_to_producer_local(leaf, block_abs, voxels_per_block);
     let mut local = VoxelGrid::default();
     leaf.producer
         .resolve_into(&mut local, voxels_per_block, window_local);
@@ -608,11 +634,10 @@ fn compose_leaf_into_region(
         let mut body_covers: std::collections::HashSet<[i64; 3]> =
             std::collections::HashSet::with_capacity(local.occupied.len());
         for voxel in &local.occupied {
-            let block_local = [
-                voxel.local_index[0] as i64 + leaf.world_offset_voxels[0] - block_min_abs[0],
-                voxel.local_index[1] as i64 + leaf.world_offset_voxels[1] - block_min_abs[1],
-                voxel.local_index[2] as i64 + leaf.world_offset_voxels[2] - block_min_abs[2],
-            ];
+            // ADR 0026: the voxel's index is in the producer's UNTURNED frame; turn it into
+            // absolute (orientation + offset) before rebasing to block-local.
+            let abs = producer_local_voxel_to_abs(leaf, voxel.local_index, voxels_per_block);
+            let block_local: [i64; 3] = std::array::from_fn(|axis| abs[axis] - block_min_abs[axis]);
             if block_local.iter().any(|&c| c < 0 || c >= density as i64) {
                 continue; // Outside this block (the window clamps, but guard anyway).
             }
@@ -637,11 +662,10 @@ fn compose_leaf_into_region(
     // local index is in the LEAF's frame, so shift back to block-local by adding the
     // leaf offset and subtracting the block's absolute low corner.
     for voxel in &local.occupied {
-        let block_local = [
-            voxel.local_index[0] as i64 + leaf.world_offset_voxels[0] - block_min_abs[0],
-            voxel.local_index[1] as i64 + leaf.world_offset_voxels[1] - block_min_abs[1],
-            voxel.local_index[2] as i64 + leaf.world_offset_voxels[2] - block_min_abs[2],
-        ];
+        // ADR 0026: turn the producer-local index into absolute (orientation + offset), then
+        // rebase to block-local. Identity leaves reproduce the old `index + offset − block`.
+        let abs = producer_local_voxel_to_abs(leaf, voxel.local_index, voxels_per_block);
+        let block_local: [i64; 3] = std::array::from_fn(|axis| abs[axis] - block_min_abs[axis]);
         if block_local.iter().any(|&c| c < 0 || c >= density as i64) {
             continue; // Outside this block (the window clamps, but guard anyway).
         }
