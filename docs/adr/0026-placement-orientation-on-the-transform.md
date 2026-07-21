@@ -1,6 +1,9 @@
 # ADR 0026 — Placement orientation: a lattice-exact turn on the node transform
 
-- **Status:** Accepted
+- **Status:** Superseded by [ADR 0027](0027-placement-continuity.md) — the discrete
+  `LatticeOrientation` is subsumed into a *continuous* rotation (the 24 axis-aligned turns become the
+  rotations that land on the exact path). The *home* decision below still stands: orientation/rotation
+  lives on the `NodeTransform`, not the shape.
 - **Date:** 2026-07-21
 - **Relates to:** [ADR 0001](0001-scene-graph-parts-and-tools.md) (decision 3 — `NodeTransform`
   targets a full affine; this fills the *rotation* slot with its discrete, lattice-preserving

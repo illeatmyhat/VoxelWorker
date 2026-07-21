@@ -281,12 +281,36 @@ op-stack field (see `docs/adr/0011`; generalizes the ADR 0007 fog atlas).
   recentred onto the origin by `floor(dim/2)`; a corner-anchored Part (e.g. `DebugClouds`) has
   recentre `[0,0,0]`. **Carried on the grid, never re-derived** (ADR 0008).
 
-- **Orientation** — how a node is turned in the lattice: one of the 24 **axis-aligned cube
-  rotations**, a signed axis permutation. Distinct from **rotation** — reserved for a future
-  *continuous* affine turn that would resample voxels. An orientation is lattice-exact: it relabels
-  and flips axes, so it never resamples, preserves a field's Lipschitz bound, and keeps
-  classification occupancy-identical to brute force. It rides on the node's placement (part of
-  [`NodeTransform`], beside the offset) and composes down the tree as a rigid transform (a child's
-  offset turns by its parent's orientation). A geometry **face** sets it at placement — the node's
-  local up-axis turns to the face normal; the built-in **world planes** never do (they leave the
-  node world-vertical, i.e. identity orientation). See `docs/adr/0026`.
+- **Field position vs voxel position** — a **field**'s position is **continuous** (a float on the
+  node transform, the authoring truth); a **voxel**'s position is **integer** (the quantized
+  occupancy it resolves to). Both carry a **wandering origin** so far-from-origin placement stays
+  precise in either representation (ADR 0008's i64 rebase is the integer side; the float side rebases
+  its local origin the same way).
+
+- **Rotation** — how a node is turned in space: a **continuous** affine rotation to any angle,
+  stored on [`NodeTransform`] beside the float offset. It composes down the tree as a rigid transform
+  (a child's offset turns by its parent's rotation). Because a rotation is an isometry it preserves a
+  field's Lipschitz bound, so per-voxel classification stays occupancy-identical to brute force; only
+  the block-cell **interval bound** loosens under a non-axis turn (a performance cost, not a
+  correctness one — straddling cells fall to exact per-voxel evaluation). The 24 axis-aligned turns
+  are the special case that resamples exactly. **Supersedes the discrete `LatticeOrientation` of
+  `docs/adr/0026`** (subsumed — the discrete orientation is just a rotation that lands on the exact
+  path). See `docs/adr/0027`.
+
+- **Seated placement** — a node dropped on a surface **contacts** it with a consistent normal; the
+  contact point and the rotation are two views of **one** degree of freedom (where the contact slides
+  on the surface), so snapping one re-solves the other.
+
+- **Surface normal (placement)** — the direction a seated node's up-axis aligns to, taken from the
+  **most continuous surface available** at the hit, degrading gracefully: the composed **field**'s
+  gradient normal, else a producer's **SDF** normal, else the resolved **voxel** occupancy gradient.
+  The built-in **world planes** stand the node world-vertical (identity rotation), never seated.
+
+- **Position snap** — quantizes a placement's contact point: **None** (the raw continuous hit),
+  **Voxel** (the default), or **Block**.
+
+- **Angle snap** — quantizes a seated placement's rotation, **each angular degree of freedom
+  independently** (tilt, azimuth, twist), to **15° increments** (24 per turn). **Position-dominant**:
+  when position is snapped the contact is fixed and the rotation takes the nearest reachable angle;
+  when position is None the angle snap **slides the contact** to where that angle occurs on the
+  surface. See `docs/adr/0027`.
