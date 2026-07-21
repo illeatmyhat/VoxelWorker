@@ -27,6 +27,8 @@ use voxel_core::voxel::RecentreVoxels;
 mod intent;
 mod picking;
 pub use picking::VoxelPick;
+mod placement;
+pub use placement::PlacementOutcome;
 mod queries;
 pub use queries::MeshClip;
 mod rebuild;

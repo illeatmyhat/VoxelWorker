@@ -118,6 +118,24 @@ impl NodeTransform {
         }
     }
 
+    /// Build a transform from a raw canonical **voxel** offset (ADR 0008), retaining
+    /// NO parametric block expression — the placement door for a picked cursor drop
+    /// (`Intent::PlaceNode`), a drag gizmo, or any path whose offset is a whole-voxel
+    /// count with no authored `blocks` term.
+    ///
+    /// The retained measurement is left `None`: a pure-voxel offset synthesises its
+    /// own measurement back from `offset_voxels` (see
+    /// [`offset_measurements`](Self::offset_measurements)), so storing one would be a
+    /// redundant husk. This normalises the all-zero case to a fresh identity exactly
+    /// as [`from_blocks`](Self::from_blocks) does — a placement at `[0, 0, 0]` is
+    /// byte-identical to [`identity`](Self::identity).
+    pub fn from_offset_voxels(offset_voxels: [i64; 3]) -> Self {
+        Self {
+            offset_voxels,
+            offset_measurements: None,
+        }
+    }
+
     /// Build a transform from a per-axis authored [`Measurement`] at density
     /// `voxels_per_block` (ADR 0003 §3f(0)). The canonical voxel offset is DERIVED
     /// via [`Measurement::to_voxels`]; the measurements are RETAINED for lossless

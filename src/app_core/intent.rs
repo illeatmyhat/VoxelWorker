@@ -81,7 +81,11 @@ impl AppCore {
             // target mints nothing — but `dispatch` then returns `None`, and the
             // unpatched placeholder is never used because no node was added; we guard by
             // checking the minted id in the caller, so a `NoOp` here is cleaner.)
-            Intent::AddNode { .. } => Inverse::RemoveAdded { id: NodeId(0) },
+            // PlaceNode is AddNode with a placement — same single-node mint, same
+            // RemoveAdded inverse patched with dispatch's minted id.
+            Intent::AddNode { .. } | Intent::PlaceNode { .. } => {
+                Inverse::RemoveAdded { id: NodeId(0) }
+            }
             Intent::AddChild { group, .. } => {
                 if matches!(
                     scene.node_by_id(*group).map(|node| &node.content),
@@ -379,6 +383,7 @@ impl AppCore {
         match intent {
             // Structural + node field writes + global density → re-resolve.
             Intent::AddNode { .. }
+            | Intent::PlaceNode { .. }
             | Intent::AddChild { .. }
             | Intent::GroupNode { .. }
             | Intent::MakeDefinition { .. }
@@ -426,6 +431,16 @@ impl AppCore {
             // --- Structural ---
             Intent::AddNode { content } => {
                 let index = scene.add_node(content.into_node());
+                let minted = scene.roots.get(index).copied();
+                (full_effect, minted)
+            }
+            Intent::PlaceNode { content, offset_voxels } => {
+                // Build the node exactly as AddNode, then override its identity
+                // transform with the picked placement (ADR 0008 absolute voxel frame)
+                // before the same add op mints its id.
+                let mut node = content.into_node();
+                node.transform = NodeTransform::from_offset_voxels(offset_voxels);
+                let index = scene.add_node(node);
                 let minted = scene.roots.get(index).copied();
                 (full_effect, minted)
             }

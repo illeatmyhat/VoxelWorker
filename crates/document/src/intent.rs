@@ -117,6 +117,22 @@ pub enum Intent {
         /// The node to add, by value.
         content: NodeSpec,
     },
+    /// Add a top-level node built from `content` at a **placed** voxel offset — the
+    /// picked-cursor drop (the three-world-plane placement model,
+    /// `crates/raycast/src/placement.rs`). It is [`AddNode`](Self::AddNode) with a
+    /// placement: `content.into_node()` is built identically, then its transform is
+    /// set to [`NodeTransform::from_offset_voxels`](crate::scene::NodeTransform::from_offset_voxels)
+    /// (`offset_voxels` is the ABSOLUTE/producer voxel frame, ADR 0008 — the corner
+    /// the producer emits from). A separate variant, rather than a field on `AddNode`,
+    /// so the ~20 `AddNode` construction sites are untouched; it captures / replays /
+    /// inverts exactly as `AddNode` does (its inverse is the same `RemoveAdded`).
+    PlaceNode {
+        /// The node to add, by value (built exactly as [`AddNode`](Self::AddNode)).
+        content: NodeSpec,
+        /// The node's placement, a raw canonical voxel offset in the absolute frame
+        /// (ADR 0008), applied via `NodeTransform::from_offset_voxels`.
+        offset_voxels: [i64; 3],
+    },
     /// Add a child built from `content` into the Group identified by `group`
     /// ([`Scene::add_child_to_group`](crate::scene::Scene::add_child_to_group)).
     AddChild {
