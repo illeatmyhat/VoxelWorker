@@ -57,7 +57,7 @@ mod windowed_resolve_tests;
 mod cell_interval_parity_tests;
 
 pub use app_core::{
-    default_replay_seed_scene, replay_intent_script, AppCore, MeshClip, RebuildOutcome,
+    default_replay_seed_scene, replay_intent_script, AppCore, MeshClip, PickFrame, RebuildOutcome,
     RebuildOutput, SelectedOperandGhost,
 };
 pub use evaluation::store::{ChunkCacheKey, ChunkResolveCache, Store};

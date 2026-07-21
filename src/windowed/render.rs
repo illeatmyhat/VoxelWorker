@@ -251,7 +251,16 @@ impl WindowedState {
         // the camera now (startup fit, the ViewCube Home/Fit buttons, and the
         // right-click "Focus" action below). Take the intents out of `prepared`
         // (leaving it otherwise intact for the `render_frame` call below).
-        let intents = std::mem::take(&mut prepared.panel_response.intents);
+        // ADR 0022 live placement: adopt a tool the panel armed this frame (a VIEW
+        // action carried on the response, like `focus_node`, not a document Intent).
+        if let Some(spec) = prepared.panel_response.armed_tool.take() {
+            self.armed_tool = Some(spec);
+        }
+        let mut intents = std::mem::take(&mut prepared.panel_response.intents);
+        // ADR 0022 live placement: a viewport click's drop intent is applied through the
+        // SAME door as the panel's edits (taken BEFORE the borrow of `prepared` ends), so
+        // a placement re-resolves + rebuilds identically to a panel-driven add.
+        intents.extend(std::mem::take(&mut self.viewport_intents));
         let mut merged_effect = crate::IntentEffect::none();
         for intent in intents {
             let effect = self
@@ -502,11 +511,51 @@ impl WindowedState {
             view_projection,
             self.app_core.camera.eye().to_array(),
         );
+        // ADR 0022 live placement: while a tool is armed and the cursor is over the
+        // viewport with resident geometry, resolve where it would drop (via the headless
+        // `place_primitive`) and arm the ghost + the pending click intent. Anything else
+        // — nothing armed, a non-Tool spec, no cursor, or no geometry yet — clears both,
+        // so a stale preview never lingers. This runs before the ghost's uniform upload
+        // below, which reads `self.panel_state.placement_ghost`.
+        match (&self.armed_tool, self.last_cursor_position) {
+            (Some(NodeSpec::Tool { shape, material }), Some((cursor_x, cursor_y)))
+                if !self.resident_chunks.is_empty() =>
+            {
+                let shape = shape.clone();
+                let material = *material;
+                let vp = prepared.viewport_px;
+                // Same physical-pixel viewport/cursor space `pick_voxel` marches in.
+                let viewport = [vp[0] as f32, vp[1] as f32, vp[2] as f32, vp[3] as f32];
+                let cursor = [cursor_x as f32, cursor_y as f32];
+                let frame = crate::PickFrame {
+                    region_dimensions: self.region_dimensions,
+                    recentre_voxels: self.recentre_voxels.voxels(),
+                    density: self.panel_state.geometry.voxels_per_block,
+                    chunks: &self.resident_chunks,
+                    band: self.last_pick_band,
+                };
+                let outcome =
+                    self.app_core
+                        .place_primitive(cursor, viewport, &frame, shape.clone(), material);
+                self.pending_placement = outcome.intent.clone();
+                self.panel_state.placement_ghost = match &outcome.intent {
+                    Some(crate::Intent::PlaceNode { offset_voxels, .. }) => {
+                        Some(crate::PlacementGhost { shape, offset_voxels: *offset_voxels })
+                    }
+                    // NoSurface / TooFar carry no intent → no ghost, and a click there
+                    // does nothing (the pending intent is None).
+                    _ => None,
+                };
+            }
+            _ => {
+                self.pending_placement = None;
+                self.panel_state.placement_ghost = None;
+            }
+        }
         // ADR 0022: the armed-tool placement ghost. Arm it from `PanelState::placement_ghost`
-        // (populated from a loaded config this phase; the live cursor arming is a later
-        // slice), resolving the render-frame field centre from THIS rebuild's recentre so
-        // the ghost sits in the exact frame the solid voxels are drawn in (ADR 0008).
-        // Disarmed when nothing is armed → the pass is a no-op.
+        // (populated live above, or from a loaded config F9 repro), resolving the
+        // render-frame field centre from THIS rebuild's recentre so the ghost sits in the
+        // exact frame the solid voxels are drawn in (ADR 0008). Disarmed → the pass is a no-op.
         if let Some(ghost) = &self.panel_state.placement_ghost {
             let voxels_per_block = self.panel_state.geometry.voxels_per_block;
             let recentre = self.recentre_voxels.voxels();

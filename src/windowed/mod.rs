@@ -34,7 +34,7 @@ use crate::{
     TransformGizmoRenderer,
     GpuContext, InfiniteGridRenderer, LayerBand, MaterialSource, PointsRenderer,
     SceneGridRenderer,
-    HomeView, OrbitCamera, PanelState, SdfShape, SnapTween, ViewCubeElement,
+    HomeView, NodeSpec, OrbitCamera, PanelState, SdfShape, SnapTween, ViewCubeElement,
     ViewCubeMenuRequest,
     ViewCubeRenderer, COLOR_TARGET_FORMAT,
     view_cube_corner, VIEW_CUBE_VIEWPORT_PIXELS,
@@ -246,6 +246,30 @@ struct WindowedState {
     /// when egui consumed the move. The cube body never highlights (we skip its
     /// raycast for hover), so a body hover is treated as `None`.
     hovered_cube_zone: Option<CubeChromeZone>,
+    /// ADR 0022 live placement: the tool the user armed from "+ Add", or `None`. While
+    /// `Some`, each frame resolves the placement ghost under the cursor and a stationary
+    /// left click drops the node — it STAYS armed so several can be placed; Escape or a
+    /// right-click disarms. A VIEW/session concern (mirroring the panel's `armed_tool`),
+    /// never a document Intent.
+    armed_tool: Option<NodeSpec>,
+    /// The last rebuild's resident two-layer chunks, kept so the per-frame placement
+    /// resolve has a `PickFrame` to march against (Arc refcount bumps — cheap).
+    /// Refreshed in `rebuild_geometry` before the chunks move into the display.
+    resident_chunks: Vec<([i32; 3], Arc<crate::TwoLayerChunk>)>,
+    /// The band the last rebuild drew with, carried into the placement `PickFrame` so a
+    /// pick cannot select geometry the viewer mode is not drawing.
+    last_pick_band: LayerBand,
+    /// The placement intent the armed tool would drop at the current cursor, refreshed
+    /// each frame alongside the ghost. `Some` only over a valid drop; a stationary left
+    /// click moves it onto `viewport_intents`.
+    pending_placement: Option<crate::Intent>,
+    /// Whether the current left-press began a placement (armed, on the viewport, not on
+    /// egui/cube/chrome). A stationary release with this set drops the pending node; a
+    /// drag leaves it and orbits instead (only a stationary click places).
+    armed_press: bool,
+    /// Placement intents produced by a viewport click this frame, drained into the SAME
+    /// apply loop as the panel intents so a drop goes through `apply_intent` + rebuild.
+    viewport_intents: Vec<crate::Intent>,
 }
 
 #[derive(Default)]
@@ -515,6 +539,13 @@ impl WindowedState {
             last_chrome_rects_px: Vec::new(),
             context_menu_open_at: None,
             hovered_cube_zone: None,
+            // ADR 0022 live placement: nothing armed until the user picks a "+ Add" chip.
+            armed_tool: None,
+            resident_chunks: Vec::new(),
+            last_pick_band: LayerBand::FULL,
+            pending_placement: None,
+            armed_press: false,
+            viewport_intents: Vec::new(),
         }
     }
 
@@ -605,6 +636,16 @@ impl WindowedState {
             Ok(()) => eprintln!("repro: wrote current scene + camera to {}", path.display()),
             Err(error) => eprintln!("repro: failed to write {}: {error}", path.display()),
         }
+    }
+
+    /// ADR 0022 live placement: cancel any armed tool — clear the arm, the pending drop,
+    /// the ghost preview, and the press latch. Escape and a viewport right-click both call
+    /// this; the ghost vanishes on the next frame (nothing armed ⇒ the pass is a no-op).
+    fn disarm_placement(&mut self) {
+        self.armed_tool = None;
+        self.pending_placement = None;
+        self.panel_state.placement_ghost = None;
+        self.armed_press = false;
     }
 
     /// The shared shutdown sequence: persist config, then exit the loop. Called from both

@@ -3,7 +3,7 @@
 //! section builders.
 
 use camera::ProjectionMode;
-use document::intent::Intent;
+use document::intent::{Intent, NodeSpec};
 use document::scene::{NodeContent, NodeId, Scene};
 use document::voxel::{GeometryParams, SdfShape};
 use voxel_core::core_geom::MaterialChoice;
@@ -473,6 +473,12 @@ pub struct PanelResponse {
     /// is not undoable), so it rides on the response rather than `intents`. `None`
     /// when no Focus was requested.
     pub focus_node: Option<NodeId>,
+    /// The tool the user armed from "+ Add" this frame → the shell starts the live
+    /// placement flow (a translucent ghost follows the cursor, a stationary click drops
+    /// the node). A VIEW action, NOT a document `Intent` (arming places nothing until a
+    /// click), so it rides on the response rather than `intents`. `None` when nothing
+    /// was armed this frame.
+    pub armed_tool: Option<NodeSpec>,
 }
 
 impl PanelResponse {

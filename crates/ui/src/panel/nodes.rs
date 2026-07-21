@@ -231,9 +231,11 @@ fn build_node_actions(ui: &mut egui::Ui, state: &mut PanelState, response: &mut 
         ui.menu_button("+ Add", |ui| {
             for (kind, label) in SHAPE_CHIPS {
                 if ui.button(*label).clicked() {
-                    response.emit_and_frame(Intent::AddNode {
-                        content: tool_node_spec(*kind, state),
-                    });
+                    // Live placement (ADR 0022): a primitive chip ARMS the tool rather
+                    // than adding immediately — the shell then follows the cursor with a
+                    // ghost and drops the node on a click. Sketch/Clouds below stay
+                    // immediate (they have no cursor-snap placement yet).
+                    response.armed_tool = Some(tool_node_spec(*kind, state));
                     ui.close();
                 }
             }

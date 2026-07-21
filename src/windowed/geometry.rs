@@ -45,6 +45,12 @@ impl WindowedState {
         // The async worker builds the mesh already clipped to this band so the swap frame's
         // `rebuild_for_band` is a no-op (no full main-thread re-mesh — the hitch #60 removed).
         let clip = self.current_mesh_clip(grid_dimensions[2]);
+        // ADR 0022 live placement: keep this rebuild's resident chunks (and the band
+        // they were drawn at) so the per-frame placement resolve has a `PickFrame` to
+        // march. The clone is Arc refcount bumps; the originals move into the display
+        // orchestrator below.
+        self.resident_chunks = two_layer_chunks.clone();
+        self.last_pick_band = clip.band;
         // Map item 2: delegate the display-artifact rebuild (the brick sink + the fallback
         // cuboid mesh + the F1 brick-display handover reconcile) to the orchestrator. The shell
         // keeps the camera recentre-shift compensation, the layer-band rescale, and the region /

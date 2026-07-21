@@ -61,6 +61,14 @@ impl ApplicationHandler for App {
                 {
                     state.export_repro();
                 }
+                // ADR 0022 live placement: Escape disarms an armed tool (the ghost
+                // vanishes). A no-op when nothing is armed.
+                if key_event.state == ElementState::Pressed
+                    && key_event.physical_key
+                        == winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::Escape)
+                {
+                    state.disarm_placement();
+                }
             }
             WindowEvent::MouseInput {
                 state: button_state,
@@ -87,6 +95,12 @@ impl ApplicationHandler for App {
                         .map(|(x, y)| state.position_in_signal_chrome(x, y))
                         .unwrap_or(false);
                     state.left_button_held = !egui_consumed && !in_cube && !in_chrome;
+                    // ADR 0022 live placement: this press begins a placement when a tool
+                    // is armed and it landed on the live viewport (not egui / cube /
+                    // chrome). `left_button_held` still gates orbit, so a DRAG orbits and
+                    // only a stationary release (below) drops the node.
+                    state.armed_press =
+                        state.armed_tool.is_some() && !egui_consumed && !in_cube && !in_chrome;
                 } else {
                     // Release: a press that started in the cube and DIDN'T become a
                     // drag (stayed within the threshold) selects the picked hot-zone
@@ -132,6 +146,26 @@ impl ApplicationHandler for App {
                             }
                         }
                     }
+                    // ADR 0022 live placement: a STATIONARY armed release drops the
+                    // pending node (a drag orbited instead — the same threshold the cube
+                    // uses to tell a click from a drag). The tool STAYS armed so several
+                    // can be placed; the ghost keeps following. NoSurface/TooFar left
+                    // `pending_placement` None, so a click there does nothing.
+                    if state.armed_press && state.pending_placement.is_some() {
+                        if let (Some((down_x, down_y)), Some((up_x, up_y))) =
+                            (state.press_position, state.last_cursor_position)
+                        {
+                            let stationary = (up_x - down_x).abs()
+                                < VIEW_CUBE_DRAG_THRESHOLD_PIXELS
+                                && (up_y - down_y).abs() < VIEW_CUBE_DRAG_THRESHOLD_PIXELS;
+                            if stationary {
+                                if let Some(intent) = state.pending_placement.take() {
+                                    state.viewport_intents.push(intent);
+                                }
+                            }
+                        }
+                    }
+                    state.armed_press = false;
                     state.left_button_held = false;
                     state.last_cursor_position = None;
                     state.press_in_view_cube = false;
@@ -159,6 +193,16 @@ impl ApplicationHandler for App {
                 button: MouseButton::Right,
                 ..
             } => {
+                // ADR 0022 live placement: a right-press while a tool is armed disarms it
+                // (the ghost vanishes) instead of opening the cube menu — done first so
+                // the cube-menu logic below never runs during placement.
+                if button_state == ElementState::Pressed
+                    && !egui_consumed
+                    && state.armed_tool.is_some()
+                {
+                    state.disarm_placement();
+                    return;
+                }
                 // #13 Step 3: a right-press inside the cube rect (not on egui) opens
                 // the ViewCube context menu at the cursor. The menu itself is drawn
                 // by egui in `run_egui_frame`; egui swallows its own clicks, so the
