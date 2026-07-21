@@ -24,9 +24,9 @@
 //! forms the absolute ray by shifting the render-frame cursor ray by `recentre_voxels`
 //! (`absolute = render + recentre`), the same frame chain `pick_voxel` documents.
 
-use camera::unproject_screen_point_to_ray;
+use camera::{unproject_screen_point_to_ray, ProjectionMode};
 use glam::Vec3;
-use raycast::{resolve_placement, PlacementTarget};
+use raycast::{resolve_placement, select_world_plane, world_plane_hit, PlacementTarget};
 use substrate::spatial::Ray;
 
 use document::intent::{Intent, NodeSpec};
@@ -132,22 +132,67 @@ impl AppCore {
             return PlacementOutcome { target: PlacementTarget::NoSurface, intent: None };
         };
 
-        // Precision caveat (ADR 0008): `recentre_voxels as f32` loses integer
-        // precision past ~16M voxels. Correct for the small scenes this placement
-        // slice targets; the eventual fix is the i64 origin-rebase, not a fudge here.
+        // `unproject_screen_point_to_ray` returns the NEAR-PLANE point as the origin.
+        // Whether a world plane is "in front" of that point is the crux, and it is NOT the
+        // same question for the two projections — so the ray's reachability is resolved per
+        // projection.
+        //
+        // Precision caveat (ADR 0008): `recentre_voxels as f32` loses integer precision
+        // past ~16M voxels. Correct for the small scenes this placement slice targets; the
+        // eventual fix is the i64 origin-rebase, not a fudge here.
         let recentre = frame.recentre_voxels;
-        let absolute_ray = Ray::new(
-            render_ray.origin
-                + Vec3::new(recentre[0] as f32, recentre[1] as f32, recentre[2] as f32),
-            render_ray.direction,
-        );
-
-        // A block spans `density` voxels in this frame, so the authorability limit is
-        // asked in voxel units with the density as the block size.
+        let recentre_vec = Vec3::new(recentre[0] as f32, recentre[1] as f32, recentre[2] as f32);
+        let unit_direction = render_ray.direction.normalize();
+        // A block spans `density` voxels in this frame, so the authorability limit is asked
+        // in voxel units with the density as the block size.
         let block_size = frame.density.max(1) as f32;
-        let target = resolve_placement(None, absolute_ray, MIN_GROUND_FACING, |depth| {
-            self.camera.depth_is_authorable(depth, block_size)
-        });
+
+        let target = match self.camera.projection_mode {
+            // Perspective — cast from the EYE (the centre of projection). The near-plane
+            // point is wrong here: it grows with `orbit_distance` and at a far zoom its
+            // lower half dips BELOW the ground, so a downward cursor ray whose near-plane
+            // origin already sits under the ground reports the ground as *behind* it
+            // (`NoSurface`) even while the eye is far above it — placement silently died
+            // across the foreground half of the screen. The eye lies on the same ray line,
+            // sits where the camera actually is, and gives the true eye-distance the
+            // authorability check wants. A perspective view genuinely straddles ground and
+            // sky, so reachability is legitimately per-pixel — exactly `resolve_placement`'s
+            // `t > 0` test from the eye.
+            ProjectionMode::Perspective => {
+                let eye_ray = Ray::new(self.camera.eye() + recentre_vec, unit_direction);
+                resolve_placement(None, eye_ray, MIN_GROUND_FACING, |depth| {
+                    self.camera.depth_is_authorable(depth, block_size)
+                })
+            }
+            // Orthographic — rays are PARALLEL, so there is no eye on the ray and no
+            // per-pixel near/far truth: reachability is a property of the whole VIEW,
+            // uniform across the screen. Any origin-based `t`-sign test would split the
+            // screen along the plane's intersection line (the bug that made the foreground
+            // half report `NoSurface`). Instead, select the plane on the shared direction
+            // and ask the directional question: the plane is reachable iff the eye sits on
+            // its FRONT side while the view looks TOWARD it — `sign(eye·n)` opposes
+            // `sign(dir·n)`. The hit POINT still comes from the pixel's own parallel line
+            // (each strikes a different spot). Depth does not enter ortho authorability (it
+            // keys off `orbit_distance`), so the limit is asked once.
+            ProjectionMode::Orthographic => {
+                let plane = select_world_plane(unit_direction, MIN_GROUND_FACING);
+                let normal = plane.normal();
+                let eye_abs = self.camera.eye() + recentre_vec;
+                let reachable = eye_abs.dot(normal) * unit_direction.dot(normal) < 0.0;
+                if !reachable {
+                    PlacementTarget::NoSurface
+                } else if !self
+                    .camera
+                    .depth_is_authorable(self.camera.orbit_distance, block_size)
+                {
+                    PlacementTarget::TooFar
+                } else {
+                    let line = Ray::new(render_ray.origin + recentre_vec, unit_direction);
+                    let (point, _t) = world_plane_hit(line, plane);
+                    PlacementTarget::OnWorldPlane { point, plane }
+                }
+            }
+        };
 
         let intent = match target {
             PlacementTarget::OnWorldPlane { point, .. } => Some(place_node([
@@ -458,17 +503,83 @@ mod tests {
         );
     }
 
+    /// **A downward cursor over visible ground never spuriously misses (bug 6),
+    /// on BOTH projections at every angle.** The unprojected cursor ray's near-plane
+    /// point sweeps a wide z-range at a far zoom and its lower half can sit past the
+    /// ground plane; judging "in front" from that point made a downward foreground ray
+    /// report `NoSurface` ("point toward the ground") even while the camera looked
+    /// straight at the ground — placement silently died across the lower half of the
+    /// screen. `place_primitive` now resolves reachability correctly per projection
+    /// (perspective casts from the eye; orthographic asks the uniform directional
+    /// question), so a view that faces the ground places across the WHOLE viewport.
+    ///
+    /// This sweeps the viewport for both projections across a spread of downward pitches,
+    /// at a distance far enough that the pre-fix near-plane point sank below the ground
+    /// (the exact condition of the bug), and asserts not one cursor over a ground-facing
+    /// view returns `NoSurface`, and that real placements happen.
+    #[test]
+    fn a_downward_cursor_over_ground_never_misses_in_either_projection() {
+        for projection_mode in [ProjectionMode::Perspective, ProjectionMode::Orthographic] {
+            // A spread of DOWNWARD views: phi is the polar angle from the top pole, so
+            // 0.30..1.25 rad runs from a steep near-top-down look to a ~20°-below-horizon
+            // tilt — every one of them faces the ground, so none may report NoSurface.
+            for &orbit_phi in &[0.30_f32, 0.60, 0.90, 1.25] {
+                let camera = OrbitCamera {
+                    target: Vec3::ZERO,
+                    orbit_theta: 0.6,
+                    orbit_phi,
+                    // Far enough that the near plane (`orbit_distance - scene_radius -
+                    // margin`) dips below the ground for the foreground — the pre-fix bug's
+                    // trigger — while the near foreground stays inside the authorable limit
+                    // (density 8 ⇒ ~772) so the fixed path yields real placements.
+                    orbit_distance: 500.0,
+                    roll: 0.0,
+                    projection_mode,
+                };
+                let fixture = placement_fixture(camera);
+                let mut placements = 0;
+                for row in 0..20 {
+                    for col in 0..20 {
+                        let cursor = [
+                            VIEWPORT[0] + VIEWPORT[2] * (col as f32 + 0.5) / 20.0,
+                            VIEWPORT[1] + VIEWPORT[3] * (row as f32 + 0.5) / 20.0,
+                        ];
+                        let target = fixture
+                            .app_core
+                            .place_primitive(cursor, VIEWPORT, &fixture.frame(), tool_shape(), MaterialChoice::Stone)
+                            .target;
+                        assert_ne!(
+                            target,
+                            PlacementTarget::NoSurface,
+                            "{projection_mode:?} phi={orbit_phi}: cursor {cursor:?} faces the \
+                             ground but reported NoSurface"
+                        );
+                        if matches!(
+                            target,
+                            PlacementTarget::OnWorldPlane { .. } | PlacementTarget::OnSurface { .. }
+                        ) {
+                            placements += 1;
+                        }
+                    }
+                }
+                assert!(
+                    placements > 0,
+                    "{projection_mode:?} phi={orbit_phi}: a ground-facing view must actually place"
+                );
+            }
+        }
+    }
+
     /// **Looking at the sky is `NoSurface`, no intent.** A camera aimed straight up has
     /// the ground plane behind the ray, so there is nothing in front to place on — the
     /// honest answer, with no node dropped.
     #[test]
     fn a_cursor_at_the_sky_places_nothing() {
         // Eye ABOVE the object looking straight UP (+Z): phi = π gives direction
-        // (0,0,−1), so forward = −direction = +Z. With target above the eye and a
-        // perspective near plane at the eye, the cursor ray starts above the ground and
-        // travels up — the ground plane is behind it, and the object sits below the eye
-        // so a centre cursor also clears it. (Orthographic fails here: its near plane is
-        // on the −Z side, putting the ray origin below the ground.)
+        // (0,0,−1), so forward = −direction = +Z. Casting from the eye, the ground plane
+        // is behind the ray, and the object sits below the eye so a centre cursor clears
+        // it. (The orthographic counterpart is `an_orthographic_skyward_cursor_places_nothing`,
+        // which the directional reachability test now answers correctly too.)
         let camera = OrbitCamera {
             target: Vec3::new(0.0, 0.0, 50.0),
             orbit_theta: 0.0,
@@ -491,5 +602,45 @@ mod tests {
             "a skyward cursor has no surface to place on"
         );
         assert_eq!(outcome.intent, None, "NoSurface drops no node");
+    }
+
+    /// **Orthographic looking up is `NoSurface` too — the directional reachability test.**
+    /// The old ortho path judged "in front" from the near-plane point and got this wrong
+    /// (it would place on the ground behind the view); the fix asks the uniform directional
+    /// question — the eye must sit on the plane's front side while looking toward it — so an
+    /// upward orthographic view correctly finds nothing to place on. Uses an EMPTY scene so
+    /// no geometry can mask the world-plane answer.
+    #[test]
+    fn an_orthographic_skyward_cursor_places_nothing() {
+        // Eye above the ground looking straight UP (+Z), orthographic. The ground is behind
+        // the view, so every parallel ray faces away from it.
+        let camera = OrbitCamera {
+            target: Vec3::new(0.0, 0.0, 50.0),
+            orbit_theta: 0.0,
+            orbit_phi: std::f32::consts::PI,
+            orbit_distance: 20.0,
+            roll: 0.0,
+            projection_mode: ProjectionMode::Orthographic,
+        };
+        let fixture = placement_fixture(camera);
+        // Empty resident set: tier 1 (geometry) misses, isolating the world-plane tier.
+        let empty_frame = PickFrame { chunks: &[], ..fixture.frame() };
+        // Sweep the whole viewport — the directional answer is uniform, so NONE may place.
+        for row in 0..8 {
+            for col in 0..8 {
+                let cursor = [
+                    VIEWPORT[2] * (col as f32 + 0.5) / 8.0,
+                    VIEWPORT[3] * (row as f32 + 0.5) / 8.0,
+                ];
+                let outcome = fixture.app_core.place_primitive(
+                    cursor, VIEWPORT, &empty_frame, tool_shape(), MaterialChoice::Stone,
+                );
+                assert_eq!(
+                    outcome.target,
+                    PlacementTarget::NoSurface,
+                    "an orthographic skyward cursor {cursor:?} must find no surface"
+                );
+            }
+        }
     }
 }
