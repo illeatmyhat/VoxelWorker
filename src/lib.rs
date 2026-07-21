@@ -118,14 +118,14 @@ pub use document::intent::{Intent, IntentEffect, NodeSpec};
 pub use voxel_core::core_geom::MaterialChoice;
 pub use ui::panel::{
     build_panel, build_signal_stack, cube_right_inset_points, ExportPanelState, LayerRange,
-    PanelResponse, PanelState, SignalStackState, ViewMode,
+    PanelResponse, PanelState, PlacementGhost, SignalStackState, ViewMode,
 };
 pub use assets::{CubeFaceSlot, FaceProvenance, FaceTextures};
 pub use display::renderer::{
     create_depth_view, create_msaa_color_view, view_cube_corner, InfiniteGridRenderer, LayerBand,
-    MaterialSource, OnionFogParams, PointsRenderer, RegionClip, RegionRole, SceneGridRenderer,
-    TransformGizmoRenderer, ViewCubeRenderer, DEPTH_FORMAT, MSAA_SAMPLE_COUNT,
-    VIEW_CUBE_VIEWPORT_PIXELS,
+    MaterialSource, OnionFogParams, PlacementGhostRenderer, PointsRenderer, RegionClip, RegionRole,
+    SceneGridRenderer, TransformGizmoRenderer, ViewCubeRenderer, DEPTH_FORMAT, MSAA_SAMPLE_COUNT,
+    PLACEMENT_GHOST_TINT, VIEW_CUBE_VIEWPORT_PIXELS,
 };
 pub use display::renderer::procedural_material_average_color;
 pub use document::scene::{
@@ -648,6 +648,13 @@ pub struct FrameOverlays<'a> {
     /// ghost is empty outside Show-booleans mode); `None` skips it entirely (the
     /// debug-faces diagnostic mode, which suppresses every ghost).
     pub selected_operand_ghost: Option<&'a display::mesh::SelectedOperandGhostRenderer>,
+    /// ADR 0022: the armed-tool PLACEMENT GHOST — a translucent analytic SDF drawn where
+    /// the armed primitive's voxels will land ("nothing recomposes during the gesture,
+    /// render a coloured transparent SDF where the voxels will be"). Drawn immediately
+    /// after the operand ghost inside the shared MSAA pass so it depth-tests against and
+    /// blends over the solid voxels on BOTH display paths. Self-gating (disarmed → no
+    /// draw); `None` skips it entirely (nothing armed — the default for every golden).
+    pub placement_ghost: Option<&'a display::renderer::PlacementGhostRenderer>,
     /// The cuboid mesh renderer — the CPU voxel render path (part of #20; the legacy
     /// instanced mesher was removed). Draws the voxels as a box-decomposed mesh; its
     /// uniforms must already be uploaded via `CuboidMeshRenderer::update_uniforms`.
@@ -791,6 +798,16 @@ pub fn render_frame(
         // depth; empty outside the mode, so this is a no-op then.
         if let Some(selected_operand_ghost) = overlays.selected_operand_ghost {
             selected_operand_ghost.draw(&mut voxel_pass);
+        }
+
+        // ADR 0022 — the armed-tool PLACEMENT GHOST. Drawn immediately after the operand
+        // ghost, in the SAME MSAA pass, so it depth-tests against the solid voxels already
+        // in the attachment (both display paths wrote their ray-hit / mesh depth) and
+        // blends over them: the ghost's translucent SDF shows exactly where a drop lands,
+        // occluded where solid geometry is in front. Self-gating (disarmed → no draw);
+        // `None` skips it (nothing armed).
+        if let Some(placement_ghost) = overlays.placement_ghost {
+            placement_ghost.draw(&mut voxel_pass);
         }
 
         // Per-object block lattice + floor grid (issue #29 S3): same MSAA pass,

@@ -105,6 +105,12 @@ struct WindowedState {
     /// visible Point's enabled PLANES, drawn as fullscreen ray-plane passes. Replaces
     /// the old finite tiled-line ground plane.
     infinite_grid_renderer: InfiniteGridRenderer,
+    /// ADR 0022: the armed-tool placement ghost — a translucent analytic SDF drawn where
+    /// the armed primitive's voxels would land. Held permanently and armed per-frame from
+    /// `PanelState::placement_ghost`; disarmed (no draw) when nothing is armed. The live
+    /// cursor/click arming is a later slice — for now it renders whatever a loaded config
+    /// (F9 repro) armed.
+    placement_ghost_renderer: crate::PlacementGhostRenderer,
     view_cube_renderer: ViewCubeRenderer,
     /// The Signal viewport background gradient (issue #91): a fullscreen radial field
     /// painted first in the 3D pass so the scene composites over it.
@@ -406,6 +412,10 @@ impl WindowedState {
         // axes. Its batch is rebuilt per frame from the scene + camera, so empty here.
         let points_renderer = PointsRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
         let infinite_grid_renderer = InfiniteGridRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
+        // ADR 0022: the armed-tool placement ghost, held permanently (disarmed until a
+        // frame arms it from `PanelState::placement_ghost`).
+        let placement_ghost_renderer =
+            crate::PlacementGhostRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
         let view_cube_renderer =
             ViewCubeRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
         let background_gradient_renderer =
@@ -462,6 +472,7 @@ impl WindowedState {
             scene_grid_renderer,
             points_renderer,
             infinite_grid_renderer,
+            placement_ghost_renderer,
             view_cube_renderer,
             background_gradient_renderer,
             palette,

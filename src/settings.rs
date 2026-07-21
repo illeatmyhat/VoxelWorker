@@ -20,9 +20,58 @@
 
 use camera::{HomeView, OrbitCamera, ProjectionMode};
 use voxel_core::core_geom::MaterialChoice;
-use ui::panel::{LayerRange, PanelState, SignalStackState, ViewMode};
+use voxel_core::voxel::ShapeKind;
+use ui::panel::{LayerRange, PanelState, PlacementGhost, SignalStackState, ViewMode};
 use document::scene::Scene;
-use document::voxel::GeometryParams;
+use document::voxel::{GeometryParams, SdfShape};
+
+/// The serde-able mirror of the armed-tool [`PlacementGhost`] (ADR 0022), carried in the
+/// session dump so a repro taken mid-gesture replays the pending drop.
+///
+/// [`PlacementGhost`] lives in the `ui` crate, which links no serde (ADR 0016's crate
+/// law), so — like [`ViewMode`] and the Signal stack — it is persisted from out here. It
+/// stores the armed primitive's kind/size/wall plus the ABSOLUTE corner-anchored offset
+/// the node would take (`Intent::PlaceNode`'s frame); the render-frame centre is re-derived
+/// from the live recentre at draw time, never stored.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct PlacementGhostConfig {
+    /// The armed primitive kind (`ShapeKind` carries its own serde).
+    pub shape_kind: ShapeKind,
+    /// Bounding-box size in voxels at the document density.
+    pub size_voxels: [u32; 3],
+    /// Tube wall thickness in whole blocks (Tube only).
+    #[serde(default = "default_wall_blocks")]
+    pub wall_blocks: u32,
+    /// Absolute, corner-anchored voxel offset the node would drop at.
+    pub offset_voxels: [i64; 3],
+}
+
+/// Default wall thickness for a partial config missing the key (mirrors `SdfShape`'s).
+fn default_wall_blocks() -> u32 {
+    1
+}
+
+impl PlacementGhostConfig {
+    /// Capture the config mirror from the live [`PlacementGhost`].
+    pub fn from_ghost(ghost: &PlacementGhost) -> Self {
+        Self {
+            shape_kind: ghost.shape.kind,
+            size_voxels: ghost.shape.size_voxels,
+            wall_blocks: ghost.shape.wall_blocks,
+            offset_voxels: ghost.offset_voxels,
+        }
+    }
+
+    /// Rebuild the runtime [`PlacementGhost`] this config describes. The shape is rebuilt
+    /// from pure voxels (a ghost is a geometry preview; the authored size expression is
+    /// not needed to trace its surface).
+    pub fn to_ghost(&self) -> PlacementGhost {
+        PlacementGhost {
+            shape: SdfShape::from_voxels(self.shape_kind, self.size_voxels, self.wall_blocks),
+            offset_voxels: self.offset_voxels,
+        }
+    }
+}
 
 use crate::artifacts::{
     default_density, default_distance, default_onion_depth, default_phi, default_theta,
@@ -178,6 +227,13 @@ pub struct AppConfig {
     /// the diagnostic the fault was visible under is not a repro.
     #[snapshot(session)]
     pub debug_brick_faces: bool,
+    /// The armed-tool placement ghost (ADR 0022), `None` when no tool is armed. Session
+    /// state on the same footing as [`view_mode`](Self::view_mode): an armed drop is how
+    /// the workspace was left, so a mid-gesture dump replays it. Named `placement_ghost` to
+    /// match the [`PanelState`] field it routes to (the ADR 0024 seam guard keys on the
+    /// name).
+    #[snapshot(session)]
+    pub placement_ghost: Option<PlacementGhostConfig>,
 }
 
 impl Default for AppConfig {
@@ -205,6 +261,7 @@ impl Default for AppConfig {
             stack: SignalStackState::default(),
             debug_face_orientation: false,
             debug_brick_faces: false,
+            placement_ghost: None,
         }
     }
 }
@@ -251,6 +308,9 @@ impl AppConfig {
             stack: panel.stack,
             debug_face_orientation: panel.debug_face_orientation,
             debug_brick_faces: panel.debug_brick_faces,
+            // ADR 0022: the armed placement ghost, captured as its serde-able mirror so a
+            // mid-gesture dump replays the pending drop.
+            placement_ghost: panel.placement_ghost.as_ref().map(PlacementGhostConfig::from_ghost),
         }
     }
 
@@ -337,6 +397,9 @@ impl AppConfig {
             // Issue #29 S5: refreshed each frame from the camera target by the windowed
             // caller; defaults to the world origin (the headless harness keeps it 0).
             point_add_position_blocks: [0, 0, 0],
+            // ADR 0022: restore the armed placement ghost (session state), so a mid-gesture
+            // repro replays the pending drop rather than resetting to no armed tool.
+            placement_ghost: self.placement_ghost.as_ref().map(PlacementGhostConfig::to_ghost),
         };
         // step 8: restore the persisted full scene when present and non-empty;
         // otherwise (a scene-less old config, or a `Some(scene)` with no nodes — a
@@ -508,6 +571,12 @@ mod tests {
             },
             debug_face_orientation: true,
             debug_brick_faces: true,
+            placement_ghost: Some(PlacementGhostConfig {
+                shape_kind: ShapeKind::Sphere,
+                size_voxels: [24, 16, 32],
+                wall_blocks: 2,
+                offset_voxels: [40, -8, 12],
+            }),
         };
 
         let restored = save_and_reload(&config);

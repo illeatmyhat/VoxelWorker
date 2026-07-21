@@ -8,9 +8,10 @@ use voxel_worker::{
     create_depth_view, create_msaa_color_view, procedural_material_average_color, render_frame,
     run_egui_frame, AppCore, CuboidMeshRenderer, EguiPaintBridge, FrameOverlays, GpuContext,
     InfiniteGridRenderer, LayerBand, LayerRange, MaterialSource, Node, NodeContent, NodePath,
-    OrbitCamera, PanelState, VoxelBody, Point, PointsRenderer, RegionBlocks, Scene, SceneGridRenderer,
-    SdfShape, SelectedOperandGhostRenderer, TransformGizmoRenderer, ViewCubeRenderer, ViewMode,
-    VoxExport, VoxelGrid, COLOR_TARGET_FORMAT,
+    OrbitCamera, PanelState, PlacementGhost, PlacementGhostRenderer, VoxelBody, Point,
+    PointsRenderer, RegionBlocks, Scene, SceneGridRenderer, SdfShape, SelectedOperandGhostRenderer,
+    TransformGizmoRenderer, ViewCubeRenderer, ViewMode, VoxExport, VoxelGrid,
+    COLOR_TARGET_FORMAT, PLACEMENT_GHOST_TINT,
 };
 
 use crate::demos::{
@@ -165,6 +166,9 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         panel_state.debug_face_orientation =
             restored.debug_face_orientation || options.debug_face_orientation;
         panel_state.debug_brick_faces = restored.debug_brick_faces;
+        // ADR 0022: adopt the armed placement ghost the dump carried (session state), so a
+        // mid-gesture F9 repro renders the pending drop.
+        panel_state.placement_ghost = restored.placement_ghost;
     }
 
     let mut scene = if from_config.is_some() {
@@ -303,6 +307,17 @@ pub(crate) async fn run_capture(options: ShotOptions) {
             node.grids.voxel_grid_on_faces = true;
         }
         panel_state.scene = scene.clone();
+    }
+    // ADR 0022: `--placement-ghost` arms the translucent SDF ghost of the current
+    // `--shape`/`--size`/`--density` geometry at `--ghost-offset` (default the origin) —
+    // the headless verification path for the placement ghost (does it render, and does it
+    // COINCIDE with an equivalent solid node at the same offset?). Overrides any ghost a
+    // `--from-config` dump adopted above.
+    if options.placement_ghost {
+        panel_state.placement_ghost = Some(PlacementGhost {
+            shape: SdfShape::from_geometry(options.geometry.clone()),
+            offset_voxels: options.ghost_offset,
+        });
     }
     // The resolve region: for a placed multi-node scene this is the whole
     // composite extent (per-axis box over all node offsets ± sizes); for a single
@@ -756,6 +771,11 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     // enabled planes. SUPPRESSED by default with the rest of Points; `--points` enables
     // it. Built below from `scene.points` + the camera once the view matrix is known.
     let mut infinite_grid_renderer = InfiniteGridRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
+    // ADR 0022: the armed-tool placement ghost. Held disarmed; armed below (after the
+    // camera matrix is known) from `panel_state.placement_ghost` in the grid's recentre —
+    // the EXACT frame the solid voxels above were resolved in (ADR 0008).
+    let mut placement_ghost_renderer =
+        PlacementGhostRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
     let view_cube_renderer = ViewCubeRenderer::new(&gpu.device, &gpu.queue, COLOR_TARGET_FORMAT);
     // Issue #91 (item 1): the Signal viewport background gradient (always on).
     let background_gradient_renderer =
@@ -1052,6 +1072,31 @@ pub(crate) async fn run_capture(options: ShotOptions) {
             app_core.camera.eye().to_array(),
         );
     }
+    // ADR 0022: arm the placement ghost from `panel_state.placement_ghost`. The
+    // render-frame field centre is resolved from THIS grid's recentre (`grid.recentre_voxels`)
+    // via the frame law — the same recentre the solid voxels were resolved in — so a ghost
+    // at offset P coincides with a solid node at P (the frame-error guard the shot verifies).
+    if let Some(ghost) = &panel_state.placement_ghost {
+        let voxels_per_block = options.geometry.voxels_per_block;
+        let recentre = grid.recentre_voxels;
+        let center_world = ghost.center_world(recentre, voxels_per_block);
+        let semi_axes = ghost.semi_axes(voxels_per_block);
+        println!(
+            "placement ghost: {:?} offset={:?} centre_world={:?} semi_axes={:?} recentre={:?}",
+            ghost.shape.kind, ghost.offset_voxels, center_world, semi_axes, recentre
+        );
+        placement_ghost_renderer.update_uniforms(
+            &gpu.queue,
+            view_projection,
+            view_projection.inverse(),
+            prepared.viewport_px,
+            glam::Vec3::from_array(center_world),
+            ghost.shape.kind,
+            glam::Vec3::from_array(semi_axes),
+            ghost.wall_voxels(voxels_per_block),
+            PLACEMENT_GHOST_TINT,
+        );
+    }
     // ADR 0018 Decision 6: the boolean-operand ghost's camera + tint upload (mesh was
     // built at derivation above).
     selected_operand_ghost_renderer.update_uniforms(&gpu.queue, view_projection);
@@ -1167,6 +1212,11 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         // it).
         selected_operand_ghost: (!options.debug_face_orientation)
             .then_some(&selected_operand_ghost_renderer),
+        // ADR 0022: the armed-tool placement ghost (self-gates on being armed).
+        placement_ghost: panel_state
+            .placement_ghost
+            .as_ref()
+            .map(|_| &placement_ghost_renderer),
         cuboid_mesh: &cuboid_mesh_renderer,
         // ADR 0011 G1: when engaged, the brick raymarch takes the voxel-model draw
         // (the mesh renderer above was built empty); everything else is unchanged.

@@ -282,6 +282,15 @@ pub(crate) struct ShotOptions {
     /// (`--proj`, `--theta`, `--phi`, `--dist`, ...) still apply. `None` keeps the
     /// existing demo/shape behaviour, byte-identical to today.
     pub(crate) replay_path: Option<PathBuf>,
+    /// `--placement-ghost` (ADR 0022): arm the translucent placement ghost of the current
+    /// `--shape`/`--size`/`--density` geometry at `--ghost-offset` (default the origin), so
+    /// a headless capture can render the ghost and check it COINCIDES with an equivalent
+    /// solid node at the same offset (the frame-error guard). Default OFF.
+    pub(crate) placement_ghost: bool,
+    /// `--ghost-offset X Y Z` (ADR 0022): the ABSOLUTE, corner-anchored voxel offset the
+    /// armed placement ghost drops at (the `Intent::PlaceNode` frame). Only meaningful with
+    /// `--placement-ghost`; default `[0, 0, 0]`.
+    pub(crate) ghost_offset: [i64; 3],
     /// `--from-config <path>` (2026-07-17 repro flow): load the EXACT scene AND camera from an
     /// `AppConfig` JSON — either the app's persisted `config.json` or an F9 `export_repro` dump.
     /// Reproduces a live-app view headlessly byte-for-byte (scene tree + density + material +
@@ -355,6 +364,8 @@ impl Default for ShotOptions {
             brick: false,
             brick_force_miss: false,
             replay_path: None,
+            placement_ghost: false,
+            ghost_offset: [0, 0, 0],
             from_config: None,
         }
     }
@@ -695,6 +706,18 @@ pub(crate) fn parse_options() -> ShotOptions {
                 options.from_config = Some(PathBuf::from(
                     args.next().expect("--from-config requires a path argument"),
                 ));
+            }
+            "--placement-ghost" => {
+                options.placement_ghost = true;
+            }
+            "--ghost-offset" => {
+                let x = args.next().expect("--ghost-offset requires X Y Z").parse()
+                    .expect("--ghost-offset X must be an integer");
+                let y = args.next().expect("--ghost-offset requires X Y Z").parse()
+                    .expect("--ghost-offset Y must be an integer");
+                let z = args.next().expect("--ghost-offset requires X Y Z").parse()
+                    .expect("--ghost-offset Z must be an integer");
+                options.ghost_offset = [x, y, z];
             }
             "--demo-far-offset" => {
                 options.far_offset = true;

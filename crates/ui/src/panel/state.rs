@@ -5,8 +5,59 @@
 use camera::ProjectionMode;
 use document::intent::Intent;
 use document::scene::{NodeContent, NodeId, Scene};
-use document::voxel::GeometryParams;
+use document::voxel::{GeometryParams, SdfShape};
 use voxel_core::core_geom::MaterialChoice;
+
+/// The armed-tool **placement ghost** (ADR 0022): the translucent analytic-SDF preview of
+/// where a primitive's voxels will land, drawn without recomposing the scene ("render a
+/// coloured transparent SDF where the voxels will be"). `PanelState::placement_ghost` is
+/// `Some` while a tool is armed and pointed at a valid drop, `None` otherwise.
+///
+/// It carries the armed [`SdfShape`] and the ABSOLUTE, corner-anchored voxel offset the
+/// node would take — the SAME frame `Intent::PlaceNode { offset_voxels }` uses
+/// (`src/app_core/placement.rs`). The render-frame field centre the shader needs is
+/// DERIVED at draw time from the live resolve's recentre via [`center_world`], keeping the
+/// frame law (ADR 0008) in one place rather than baked into stored state that a later
+/// rebuild would stale.
+///
+/// [`center_world`]: PlacementGhost::center_world
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlacementGhost {
+    /// The armed primitive whose surface the ghost traces.
+    pub shape: SdfShape,
+    /// The absolute, corner-anchored voxel offset where the node would drop — a node with
+    /// `offset_voxels = V` occupies absolute `[V, V + grid)` (the placement frame,
+    /// `src/app_core/placement.rs`).
+    pub offset_voxels: [i64; 3],
+}
+
+impl PlacementGhost {
+    /// The field centre in the display's render frame:
+    /// `center_world = offset_voxels + grid/2 - recentre` (ADR 0008; the frame note atop
+    /// `crates/display/src/shaders/placement_ghost.wgsl` derives it). `grid/2` is the EXACT
+    /// half (a half-integer on odd axes); `recentre` is the FLOORED half — the difference
+    /// is the half-voxel term a naive "the shape is at the origin" assumption drops.
+    pub fn center_world(&self, recentre_voxels: [i64; 3], voxels_per_block: u32) -> [f32; 3] {
+        let grid = self.shape.grid_dimensions(voxels_per_block);
+        std::array::from_fn(|axis| {
+            (self.offset_voxels[axis] - recentre_voxels[axis]) as f32 + grid[axis] as f32 / 2.0
+        })
+    }
+
+    /// The inscribed semi-axes in voxels (`grid/2` per axis, EXACT half) the SDF is
+    /// evaluated against.
+    pub fn semi_axes(&self, voxels_per_block: u32) -> [f32; 3] {
+        self.shape
+            .grid_dimensions(voxels_per_block)
+            .map(|axis| axis as f32 / 2.0)
+    }
+
+    /// `wall_blocks * density`, in voxels — the Tube wall thickness the SDF needs (ignored
+    /// by every other kind).
+    pub fn wall_voxels(&self, voxels_per_block: u32) -> f32 {
+        (self.shape.wall_blocks * voxels_per_block) as f32
+    }
+}
 
 /// The viewer's exclusive rendering mode (ADR 0018 Decision 3). The viewer is always in
 /// exactly one of these three; the mode is **never document state** — it follows the
@@ -299,6 +350,18 @@ pub struct PanelState {
     /// admission test, met exactly.
     #[snapshot(derived)]
     pub point_add_position_blocks: [i64; 3],
+    /// The armed-tool placement ghost (ADR 0022): the translucent SDF preview of where a
+    /// primitive would drop, or `None` when no tool is armed. The renderer draws it when
+    /// `Some` and nothing when `None`.
+    ///
+    /// **Session** state, on the same footing as [`view_mode`](Self::view_mode): an armed
+    /// tool is how the workspace was left, not what the model is and not a preference. A
+    /// dump taken mid-gesture and replayed must show the same pending drop — so the ghost
+    /// travels into the dump (and never the shared document), the ADR 0024 route the
+    /// viewer mode blazed. This phase populates it from config; the live cursor/click
+    /// arming is a later slice.
+    #[snapshot(session)]
+    pub placement_ghost: Option<PlacementGhost>,
 }
 
 impl PanelState {

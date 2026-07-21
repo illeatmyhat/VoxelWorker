@@ -73,7 +73,7 @@ use document::scene::Scene;
 use ui::panel::{SignalStackState, ViewMode};
 use voxel_core::core_geom::MaterialChoice;
 
-use crate::settings::AppConfig;
+use crate::settings::{AppConfig, PlacementGhostConfig};
 
 /// serde remote-derive shim for the `camera` crate's [`ProjectionMode`], which carries no
 /// serde dependency of its own (the graphics-crate boundary law keeps it to glam +
@@ -255,6 +255,11 @@ pub struct SessionArtifact {
     /// different picture than the one the bug was seen in.
     #[serde(default)]
     pub debug_brick_faces: bool,
+    /// The armed-tool placement ghost (ADR 0022), `None` when nothing is armed. A dump
+    /// taken mid-gesture replays the pending drop; `PlacementGhostConfig` derives its own
+    /// serde (it lives in a serde-aware crate), so no remote shim is needed here.
+    #[serde(default)]
+    pub placement_ghost: Option<PlacementGhostConfig>,
 }
 
 /// The debugging artifact, and the superset: **a scene must be completely reproducible
@@ -315,6 +320,9 @@ impl DocumentArtifact {
             stack: _,
             debug_face_orientation: _,
             debug_brick_faces: _,
+            // Declined — session state. An armed drop is where somebody stopped, not part
+            // of the model a collaborator would open.
+            placement_ghost: _,
             // Declined — settings. A preference inside a shared file would impose one
             // person's setup on everyone who opened it.
             projection_mode: _,
@@ -367,6 +375,7 @@ impl Dump {
             stack,
             debug_face_orientation,
             debug_brick_faces,
+            placement_ghost,
         } = state;
         Self {
             document: DocumentArtifact {
@@ -398,6 +407,7 @@ impl Dump {
                 stack: *stack,
                 debug_face_orientation: *debug_face_orientation,
                 debug_brick_faces: *debug_brick_faces,
+                placement_ghost: placement_ghost.clone(),
             },
         }
     }
@@ -440,6 +450,7 @@ impl Dump {
             stack: session.stack,
             debug_face_orientation: session.debug_face_orientation,
             debug_brick_faces: session.debug_brick_faces,
+            placement_ghost: session.placement_ghost,
         }
     }
 
@@ -590,6 +601,14 @@ mod tests {
             },
             debug_face_orientation: true,
             debug_brick_faces: true,
+            // Off its default (Some, not None) so a capture that dropped it fails the
+            // round-trip rather than coinciding with a default restore.
+            placement_ghost: Some(PlacementGhostConfig {
+                shape_kind: voxel_core::voxel::ShapeKind::Box,
+                size_voxels: [16, 16, 16],
+                wall_blocks: 1,
+                offset_voxels: [7, -3, 5],
+            }),
         }
     }
 

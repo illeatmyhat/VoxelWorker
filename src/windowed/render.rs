@@ -502,6 +502,28 @@ impl WindowedState {
             view_projection,
             self.app_core.camera.eye().to_array(),
         );
+        // ADR 0022: the armed-tool placement ghost. Arm it from `PanelState::placement_ghost`
+        // (populated from a loaded config this phase; the live cursor arming is a later
+        // slice), resolving the render-frame field centre from THIS rebuild's recentre so
+        // the ghost sits in the exact frame the solid voxels are drawn in (ADR 0008).
+        // Disarmed when nothing is armed → the pass is a no-op.
+        if let Some(ghost) = &self.panel_state.placement_ghost {
+            let voxels_per_block = self.panel_state.geometry.voxels_per_block;
+            let recentre = self.recentre_voxels.voxels();
+            self.placement_ghost_renderer.update_uniforms(
+                &self.gpu.queue,
+                view_projection,
+                view_projection.inverse(),
+                prepared.viewport_px,
+                glam::Vec3::from_array(ghost.center_world(recentre, voxels_per_block)),
+                ghost.shape.kind,
+                glam::Vec3::from_array(ghost.semi_axes(voxels_per_block)),
+                ghost.wall_voxels(voxels_per_block),
+                crate::PLACEMENT_GHOST_TINT,
+            );
+        } else {
+            self.placement_ghost_renderer.disarm();
+        }
         // ADR 0018 Decision 6: the boolean-operand ghost's per-frame camera + tint upload
         // (the meshes were derived at the selection/geometry/mode seam above, never here).
         self.selected_operand_ghost_renderer
@@ -550,6 +572,13 @@ impl WindowedState {
             // empty ghost (Normal / Onion-fog mode, or no covered boolean).
             selected_operand_ghost: (!self.panel_state.debug_face_orientation)
                 .then_some(&self.selected_operand_ghost_renderer),
+            // ADR 0022: the armed-tool placement ghost draws over both display paths; the
+            // renderer self-gates on being armed, so pass it whenever a tool is armed.
+            placement_ghost: self
+                .panel_state
+                .placement_ghost
+                .as_ref()
+                .map(|_| &self.placement_ghost_renderer),
             cuboid_mesh: self.display.cuboid_mesh_renderer(),
             // ADR 0011 G1: when engaged (field installed, no mesh-only mode), the
             // brick raymarch replaces the cuboid-mesh DRAW for this frame; the mesh

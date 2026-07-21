@@ -39,7 +39,8 @@ mod state;
 
 pub use signal_stack::{build_signal_stack, cube_right_inset_points};
 pub use state::{
-    ExportPanelState, LayerRange, PanelResponse, PanelState, SignalStackState, ViewMode,
+    ExportPanelState, LayerRange, PanelResponse, PanelState, PlacementGhost, SignalStackState,
+    ViewMode,
 };
 
 use crate::palette::BlockPalette;
