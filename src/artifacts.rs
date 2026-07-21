@@ -622,7 +622,7 @@ mod tests {
             // Off its default so a dropped capture fails the round-trip.
             placement_snap: ui::panel::PlacementSnap {
                 position: ui::panel::PositionSnap::NoSnap,
-                orientation: ui::panel::OrientationSnap::NoSnap,
+                angle: ui::panel::AngleSnap::Deg15,
             },
         }
     }

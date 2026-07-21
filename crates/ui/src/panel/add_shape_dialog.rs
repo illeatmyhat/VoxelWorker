@@ -1,6 +1,6 @@
 //! The armed-tool **`Add <shape>` dialog** (owner ruling 2026-07-21): a small floating panel
 //! pinned to the top-left of the viewport while a primitive is armed, carrying the two
-//! session-durable placement snap settings ([`PositionSnap`], [`OrientationSnap`]).
+//! session-durable placement snap settings ([`PositionSnap`], [`AngleSnap`]).
 //!
 //! Drawn with the same **absolute-rect immediate-mode child** idiom as the Signal stack
 //! (`signal_stack.rs`) — `root_ui.new_child(..)` at a corner of the central rect, background
@@ -11,7 +11,7 @@
 use egui::{CornerRadius, Margin, Pos2, Rect, Stroke, UiBuilder, Vec2};
 use voxel_core::voxel::ShapeKind;
 
-use super::state::{OrientationSnap, PanelState, PositionSnap};
+use super::state::{AngleSnap, PanelState, PositionSnap};
 
 /// Margin from the central-viewport corner, matching the Signal stack's inset.
 const DIALOG_MARGIN: f32 = 12.0;
@@ -65,10 +65,10 @@ pub fn build_add_shape_dialog(
             });
             ui.add_space(6.0);
 
-            ui.label("Orientation");
+            ui.label("Angle");
             ui.horizontal(|ui| {
-                ui.selectable_value(&mut state.placement_snap.orientation, OrientationSnap::NoSnap, "No snap");
-                ui.selectable_value(&mut state.placement_snap.orientation, OrientationSnap::Surface, "Surface");
+                ui.selectable_value(&mut state.placement_snap.angle, AngleSnap::Continuous, "Continuous");
+                ui.selectable_value(&mut state.placement_snap.angle, AngleSnap::Deg15, "15°");
             });
         });
 

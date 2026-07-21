@@ -594,7 +594,7 @@ mod tests {
             // Non-default so the round-trip actually exercises persistence.
             placement_snap: PlacementSnap {
                 position: ui::panel::PositionSnap::Block,
-                orientation: ui::panel::OrientationSnap::NoSnap,
+                angle: ui::panel::AngleSnap::Deg15,
             },
         };
 
@@ -621,7 +621,7 @@ mod tests {
         panel.debug_brick_faces = true;
         panel.placement_snap = PlacementSnap {
             position: ui::panel::PositionSnap::Block,
-            orientation: ui::panel::OrientationSnap::NoSnap,
+            angle: ui::panel::AngleSnap::Deg15,
         };
 
         let config = AppConfig::capture(

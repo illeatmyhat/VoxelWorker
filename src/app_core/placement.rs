@@ -61,32 +61,6 @@ fn snap_offset(offset: [i64; 3], position: PositionSnap, density: u32) -> [i64; 
 /// `raycast::select_world_plane`).
 const MIN_GROUND_FACING: f32 = 0.342_f32;
 
-/// Turn a placement POINT (the absolute neighbour voxel the cursor resolved to) and the
-/// FACE it was entered through into the corner-anchored `offset_voxels` that seats the
-/// object flush against that face, centred on it. The object is anchored along the face's
-/// NORMAL axis (its facing side touches the surface) and centred on the other two — so a
-/// box on a wall sits flush against the wall centred on the click, not half-buried, and a
-/// box on a top face (or the ground, normal `+Z`) stands on it centred under the cursor.
-///
-/// Producers are corner-anchored (`[offset, offset + grid)`, [`placed_extent_voxels`]), so
-/// on the anchored axis a `+` face seats the object's LOW face at the neighbour
-/// (`offset[axis] = point[axis]`) and a `-` face seats its HIGH face there
-/// (`offset[axis] = point[axis] - (size[axis] - 1)`); the other two axes centre
-/// (`offset = point - size/2`). This replaces the old Z-only bottom-centre (which is
-/// exactly the `+Z` case here) so a side face no longer mis-centres the object into the wall.
-fn face_anchored_offset(point: [i64; 3], size_voxels: [u32; 3], face_normal: [i32; 3]) -> [i64; 3] {
-    std::array::from_fn(|axis| {
-        let size = size_voxels[axis] as i64;
-        match face_normal[axis] {
-            // The anchored axis: seat the object's facing side flush at the neighbour.
-            n if n > 0 => point[axis],
-            n if n < 0 => point[axis] - (size - 1),
-            // A perpendicular axis: centre the object on the click.
-            _ => point[axis] - size / 2,
-        }
-    })
-}
-
 /// The result of [`AppCore::place_primitive`]: the resolved [`PlacementTarget`] AND
 /// the intent that places a node there, if any.
 ///
@@ -140,16 +114,66 @@ impl AppCore {
         // placement — the whole tilt lives in the quaternion, which the classifier resolves for
         // any angle (a tube on a cylinder's curved side seats to the radial normal, not the
         // nearest of the 24 turns). Defaulted here, set per-tier.
-        let place_node = |offset_voxels: [i64; 3], rotation_quaternion: Option<[f32; 4]>| {
-            Intent::PlaceNode {
-                content: NodeSpec::Tool {
-                    shape: shape.clone(),
-                    material,
-                },
-                offset_voxels,
-                orientation: substrate::spatial::LatticeOrientation::IDENTITY,
-                rotation_quaternion,
-            }
+        let place_node =
+            |offset_voxels: [i64; 3], offset_local: [f32; 3], rotation_quaternion: Option<[f32; 4]>| {
+                Intent::PlaceNode {
+                    content: NodeSpec::Tool {
+                        shape: shape.clone(),
+                        material,
+                    },
+                    offset_voxels,
+                    offset_local,
+                    orientation: substrate::spatial::LatticeOrientation::IDENTITY,
+                    rotation_quaternion,
+                }
+            };
+
+        // Seat a node at `contact` with its local +Z turned to `surface_normal` — the ONE seating
+        // definition, shared by the geometry tier and the world-plane tier (owner ruling
+        // 2026-07-21: there is NO upright mode; every drop orients to the surface it lands on). The
+        // authoring PIVOT is the object's bottom-centre — its base rests on the contact, its
+        // centroid half its local height out along the normal — and `seat_centre_at` (the
+        // classifier's corner anchor) lands the corner-anchored offset there. The pivot is
+        // CONTINUOUS: a `NoSnap` drop keeps the sub-voxel remainder (origin integer part in
+        // `offset_voxels`, pivot fraction in `offset_local`), while Voxel/Block snap quantizes the
+        // corner to the lattice and drops the fraction. Returns the integer offset, the sub-voxel
+        // remainder, and the rotation, so the caller carries all three into the intent.
+        let seat_at = |contact: Vec3, surface_normal: Vec3| -> ([i64; 3], [f32; 3], Quat) {
+            let rotation = Quat::from_rotation_arc(Vec3::Z, surface_normal);
+            let full = Vec3::new(
+                shape.size_voxels[0] as f32,
+                shape.size_voxels[1] as f32,
+                shape.size_voxels[2] as f32,
+            );
+            let centre = contact + surface_normal * (shape.size_voxels[2] as f32 * 0.5);
+            let world_offset = evaluation::seat_centre_at(rotation, full, centre);
+            let (offset_voxels, offset_local) = match snap.position {
+                // Continuous placement (ADR 0027): keep the pivot exactly under the cursor by
+                // carrying its sub-voxel fraction. The integer floor is the far-world-safe origin;
+                // the remainder is always in `[0, 1)` per axis.
+                PositionSnap::NoSnap => {
+                    let floor = world_offset.floor();
+                    (
+                        [floor.x as i64, floor.y as i64, floor.z as i64],
+                        (world_offset - floor).to_array(),
+                    )
+                }
+                // Voxel / Block snap: quantize the corner to the lattice (round to nearest voxel,
+                // then `snap_offset` coarsens to a block multiple for Block) — no sub-voxel part.
+                position => (
+                    snap_offset(
+                        [
+                            world_offset.x.round() as i64,
+                            world_offset.y.round() as i64,
+                            world_offset.z.round() as i64,
+                        ],
+                        position,
+                        frame.density,
+                    ),
+                    [0.0, 0.0, 0.0],
+                ),
+            };
+            (offset_voxels, offset_local, rotation)
         };
 
         // Tier 1 — geometry. A picked surface is unambiguous, and a node dropped on a geometry
@@ -161,7 +185,7 @@ impl AppCore {
         // surface: build the composed SDF, project the pick onto it, and turn the node's local +Z
         // to the exact gradient normal, so a tube on a curved side lies along the radial normal.
         //
-        // (The `snap.orientation` setting will select the ANGLE-snap granularity — continuous vs
+        // (The `snap.angle` setting will select the ANGLE-snap granularity — continuous vs
         // 15° increments, ADR 0027 §2 — once slice 6 wires it; today every geometry drop seats to
         // the continuous normal regardless. It never means "upright on geometry".)
         if let Some(pick) = self.pick_voxel(cursor, viewport, frame) {
@@ -183,31 +207,13 @@ impl AppCore {
             );
             let hit = raycast::project_to_surface(seed, field);
             let normal = raycast::gradient_normal(hit, field);
-            let rotation = Quat::from_rotation_arc(Vec3::Z, normal);
-
-            // Seat flush: the node's base (local −Z end) rests on the hit, so its centre is half
-            // its local height out along the normal (= rotated +Z). `seat_centre_at` (the
-            // classifier's corner anchor — ONE definition) then lands the centre there.
-            let full = Vec3::new(
-                shape.size_voxels[0] as f32,
-                shape.size_voxels[1] as f32,
-                shape.size_voxels[2] as f32,
-            );
-            let centre = hit + normal * (shape.size_voxels[2] as f32 * 0.5);
-            let world_offset = evaluation::seat_centre_at(rotation, full, centre);
-            let offset = snap_offset(
-                [
-                    world_offset.x.round() as i64,
-                    world_offset.y.round() as i64,
-                    world_offset.z.round() as i64,
-                ],
-                snap.position,
-                frame.density,
-            );
+            // Seat flush to the continuous gradient normal (ADR 0027) — one definition, shared
+            // with the world-plane tier below.
+            let (offset, offset_local, rotation) = seat_at(hit, normal);
             return PlacementOutcome {
                 // `point` is the surface hit (the cursor location) for the affordance.
                 target: PlacementTarget::OnSurface { point: hit, face_normal: pick.face_normal },
-                intent: Some(place_node(offset, Some(rotation.to_array()))),
+                intent: Some(place_node(offset, offset_local, Some(rotation.to_array()))),
             };
         }
 
@@ -315,23 +321,21 @@ impl AppCore {
         };
 
         let intent = match target {
-            // The world planes never orient (they only ever position, standing the object
-            // upright — the design's "world-vertical" rule). The ground is a `+Z` face, so
-            // the object stands bottom-centred on the hit under the cursor.
-            PlacementTarget::OnWorldPlane { point, plane } => Some(place_node(
-                snap_offset(
-                    face_anchored_offset(
-                        [point.x.floor() as i64, point.y.floor() as i64, point.z.floor() as i64],
-                        shape.size_voxels,
-                        plane.normal().to_array().map(|n| n as i32),
-                    ),
-                    snap.position,
-                    frame.density,
-                ),
-                // The world planes never orient (ADR 0027): the node stays world-vertical
-                // (no continuous rotation either).
-                None,
-            )),
+            // A world plane seats exactly like a geometry surface (owner ruling 2026-07-21): the
+            // node orients to the plane normal facing the side it is placed FROM, so a drop on the
+            // ground's UNDERSIDE hangs it upside down. `-sign(dir·n)` selects the approach-facing
+            // normal — identity rotation for the ground seen from above (upright), a 180° flip from
+            // below. The old face-anchored "world-vertical" rule is retired.
+            PlacementTarget::OnWorldPlane { point, plane } => {
+                let plane_normal = plane.normal();
+                let facing_normal = if unit_direction.dot(plane_normal) > 0.0 {
+                    -plane_normal
+                } else {
+                    plane_normal
+                };
+                let (offset, offset_local, rotation) = seat_at(point, facing_normal);
+                Some(place_node(offset, offset_local, Some(rotation.to_array())))
+            }
             // A geometry face cannot come back from a `None` surface, and the two
             // negative answers place nothing.
             PlacementTarget::OnSurface { .. }
@@ -358,7 +362,7 @@ mod tests {
     use crate::{AppCore, RebuildOutcome};
     // The orientation-snap toggle is exercised only by the tests now (a geometry drop always
     // seats regardless of it; slice 6 will make it select the angle-snap granularity).
-    use ui::panel::OrientationSnap;
+    use ui::panel::AngleSnap;
 
     /// **An oriented leaf's occupancy is the TURNED occupancy of the un-oriented one**
     /// (ADR 0026) — the definitive classifier proof. A tall Cylinder (axis-locked to local Z)
@@ -390,6 +394,7 @@ mod tests {
                         material: MaterialChoice::Stone,
                     },
                     offset_voxels: offset,
+                    offset_local: [0.0, 0.0, 0.0],
                     orientation,
                     // This test drives the DISCRETE lattice-orientation path directly (no
                     // continuous tilt) — the classifier's turned-occupancy proof.
@@ -583,32 +588,6 @@ mod tests {
     }
 
     /// **Geometry tier + bottom-centre drop.** A cursor over the existing solid resolves to
-    /// **The face-anchor rule, per normal.** Anchor along the normal axis (the object's
-    /// facing side flush at the neighbour), centre on the other two — and the neighbour
-    /// voxel always lands inside the placed span `[offset, offset + size)`.
-    #[test]
-    fn face_anchored_offset_seats_flush_per_normal() {
-        let point = [10i64, 20, 30];
-        let size = [4u32, 6, 8];
-        // +Z (a top face / the ground): stand on it, centred — the old bottom-centre.
-        assert_eq!(face_anchored_offset(point, size, [0, 0, 1]), [8, 17, 30]);
-        // -Z (a bottom face): hang under it, the object's TOP flush at the neighbour.
-        assert_eq!(face_anchored_offset(point, size, [0, 0, -1]), [8, 17, 30 - (8 - 1)]);
-        // +X (a side wall): the object's -X face flush against it, centred in Y and Z.
-        assert_eq!(face_anchored_offset(point, size, [1, 0, 0]), [10, 17, 26]);
-        // -X (the opposite wall): the object's +X face flush.
-        assert_eq!(face_anchored_offset(point, size, [-1, 0, 0]), [10 - (4 - 1), 17, 26]);
-
-        // Invariant: the neighbour voxel is inside the placed span for every axis face.
-        for normal in [[0, 0, 1], [0, 0, -1], [1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0]] {
-            let off = face_anchored_offset(point, size, normal);
-            for axis in 0..3 {
-                let inside = point[axis] >= off[axis] && point[axis] < off[axis] + size[axis] as i64;
-                assert!(inside, "neighbour {point:?} outside span for normal {normal:?} on axis {axis}");
-            }
-        }
-    }
-
     /// the OUTER side of the entered face — `absolute_voxel + face_normal` — and the node is
     /// seated FLUSH against that face: anchored along the face's normal axis (its facing
     /// side touches the surface) and centred on the other two. The surface voxel (the cursor
@@ -696,19 +675,16 @@ mod tests {
         let t = -absolute_origin.z / direction.z;
         assert!(t > 0.0, "the ground must be in front of the ray (t = {t})");
         let ground_point = absolute_origin + direction * t;
-        let ground_voxel = [
-            ground_point.x.floor() as i64,
-            ground_point.y.floor() as i64,
-            ground_point.z.floor() as i64,
-        ];
-        // The node drops BOTTOM-CENTRED on the ground point: centre X/Y, bottom-align Z. So
-        // its corner offset is `ground_voxel − [sx/2, sy/2, 0]`, and the ground point itself
-        // is the bottom-centre (still solid, inside `[offset, offset + grid)`).
+        // The node drops BOTTOM-CENTRED on the ground point (ADR 0027 continuous seat): the
+        // authoring pivot (base centre) lands on the ground point, so the corner offset is the
+        // pivot minus half the footprint in X/Y, base-aligned in Z — Voxel-snapped to the NEAREST
+        // lattice corner (round, not the old floor). The ground point stays inside
+        // `[offset, offset + grid)`, so it is solid once dropped.
         let size = tool_shape().size_voxels;
         let expected_offset = [
-            ground_voxel[0] - (size[0] / 2) as i64,
-            ground_voxel[1] - (size[1] / 2) as i64,
-            ground_voxel[2],
+            (ground_point.x - size[0] as f32 * 0.5).round() as i64,
+            (ground_point.y - size[1] as f32 * 0.5).round() as i64,
+            ground_point.z.round() as i64,
         ];
 
         let mut fixture = fixture;
@@ -741,11 +717,17 @@ mod tests {
         );
 
         // Applying + rebuilding leaves BOTH bodies present: the original Box at the origin
-        // and the new Box standing bottom-centred on the ground point.
+        // and the new Box standing bottom-centred on the ground point. The voxel CONTAINING the
+        // clicked point (its floor) must be solid — the pivot sits inside the placed footprint.
+        let clicked_voxel = [
+            ground_point.x.floor() as i64,
+            ground_point.y.floor() as i64,
+            ground_point.z.floor() as i64,
+        ];
         fixture.apply_and_rebuild(outcome.intent.unwrap());
         assert!(
-            absolute_voxel_is_solid(&fixture.chunks, ground_voxel),
-            "the dropped ground node's bottom-centre occupies the clicked point {ground_voxel:?}"
+            absolute_voxel_is_solid(&fixture.chunks, clicked_voxel),
+            "the dropped ground node's bottom-centre occupies the clicked point {clicked_voxel:?}"
         );
         assert!(
             absolute_voxel_is_solid(&fixture.chunks, [16, 16, 16]),
@@ -889,21 +871,21 @@ mod tests {
         let cursor = [640.0, 360.0];
         let shape = SdfShape::from_blocks(ShapeKind::Cylinder, [1, 1, 3], 1, DENSITY);
 
-        for orientation in [OrientationSnap::NoSnap, OrientationSnap::Surface] {
+        for angle in [AngleSnap::Continuous, AngleSnap::Deg15] {
             let outcome = fixture.app_core.place_primitive(
                 cursor, VIEWPORT, &fixture.frame(), &fixture.scene, shape.clone(), MaterialChoice::Stone, true,
-                PlacementSnap { position: PositionSnap::Voxel, orientation },
+                PlacementSnap { position: PositionSnap::Voxel, angle },
             );
             let (PlacementTarget::OnSurface { face_normal, .. }, Some(Intent::PlaceNode { rotation_quaternion, .. })) =
                 (outcome.target, outcome.intent)
             else {
-                panic!("{orientation:?}: a geometry hit seats OnSurface with a PlaceNode");
+                panic!("{angle:?}: a geometry hit seats OnSurface with a PlaceNode");
             };
             let normal = Vec3::new(face_normal[0] as f32, face_normal[1] as f32, face_normal[2] as f32);
             let axis = Quat::from_array(rotation_quaternion.expect("a seated drop carries the tilt")) * Vec3::Z;
             assert!(
                 axis.dot(normal) > 0.99,
-                "{orientation:?}: a geometry drop must seat — its +Z axis {axis:?} tilts to the surface normal {normal:?}"
+                "{angle:?}: a geometry drop must seat — its +Z axis {axis:?} tilts to the surface normal {normal:?}"
             );
         }
     }

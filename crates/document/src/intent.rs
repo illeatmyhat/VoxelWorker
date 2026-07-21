@@ -130,8 +130,19 @@ pub enum Intent {
         /// The node to add, by value (built exactly as [`AddNode`](Self::AddNode)).
         content: NodeSpec,
         /// The node's placement, a raw canonical voxel offset in the absolute frame
-        /// (ADR 0008), applied via `NodeTransform::from_offset_voxels`.
+        /// (ADR 0008), applied via `NodeTransform::from_offset_voxels`. The INTEGER wandering
+        /// origin; the sub-voxel remainder rides [`offset_local`](Self::PlaceNode::offset_local).
         offset_voxels: [i64; 3],
+        /// The node's **sub-voxel** placement remainder, in voxels (ADR 0027 continuous
+        /// placement). A `PositionSnap::NoSnap` drop lands the authoring PIVOT exactly under the
+        /// cursor — generally off the integer lattice — so the fractional part is carried here and
+        /// applied to [`NodeTransform::offset_local_voxels`](crate::scene::NodeTransform::offset_local_voxels); the field's world position is
+        /// `offset_voxels + offset_local` per axis. `[0.0; 3]` for a Voxel/Block-snapped drop (the
+        /// pivot quantizes to the lattice), keeping a snapped placement byte-identical to a pure
+        /// integer offset. The origin (integer corner) and the pivot (continuous handle) are
+        /// distinct: this carries the pivot's sub-voxel part, never the corner's.
+        #[serde(default)]
+        offset_local: [f32; 3],
         /// The node's **lattice orientation** (ADR 0026) — how it is turned to sit against
         /// the surface it was dropped on. [`IDENTITY`](substrate::spatial::LatticeOrientation::IDENTITY)
         /// for a world-plane or `+Z`-face drop (world-vertical); a signed axis permutation for a

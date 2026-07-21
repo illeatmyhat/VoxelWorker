@@ -128,17 +128,18 @@ pub enum PositionSnap {
     Voxel,
 }
 
-/// Whether a placed node **orients** to the surface it was dropped on (owner ruling
-/// 2026-07-21). A **session** setting like [`PositionSnap`]. Governs the ADR 0026 face turn.
+/// How a placed node's **seated rotation** snaps in angle (owner ruling 2026-07-21, ADR 0027
+/// slice 6). A **session** setting like [`PositionSnap`]. The node ALWAYS seats to the surface
+/// normal — that part is not a choice — this only picks the angle granularity of that seated
+/// rotation: exact (any angle) or quantized to 15° steps. The quantization itself is applied by
+/// the placement spine (`place_primitive`), not here; this enum only names the choice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
-pub enum OrientationSnap {
-    /// Keep the node **upright** (identity orientation) regardless of the face — a cylinder
-    /// dropped on a wall stays vertical.
-    NoSnap,
-    /// **Orient to the surface**: the node's local +Z turns to the face normal (ADR 0026), so a
-    /// cylinder on a wall lies on its side. The default.
+pub enum AngleSnap {
+    /// Use the seated rotation exactly, at any angle. The default.
     #[default]
-    Surface,
+    Continuous,
+    /// Quantize the seated rotation's angle to 15° steps (position-dominant, ADR 0027 §2).
+    Deg15,
 }
 
 /// The armed-tool placement snap settings, read by `place_primitive` and edited by the
@@ -148,8 +149,8 @@ pub enum OrientationSnap {
 pub struct PlacementSnap {
     /// How the drop point snaps to the lattice.
     pub position: PositionSnap,
-    /// Whether the node orients to the surface.
-    pub orientation: OrientationSnap,
+    /// How the seated rotation snaps in angle.
+    pub angle: AngleSnap,
 }
 
 /// The viewer's exclusive rendering mode (ADR 0018 Decision 3). The viewer is always in
