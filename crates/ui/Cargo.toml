@@ -35,6 +35,9 @@ document = { path = "../document" }
 voxel_core = { path = "../voxel_core" }
 # The pure CS/math substrate: LatticeOrientation, the placement ghost's turn (ADR 0026).
 substrate = { path = "../substrate" }
+# Serde derive for the session-durable placement snap settings (ADR 0024 / 0026), which the
+# app's AppConfig serializes directly rather than through a mirror shim.
+serde = { version = "1", features = ["derive"] }
 # The viewing library: the ProjectionMode the camera-section toggle drives.
 camera = { path = "../camera" }
 # The state-classification vocabulary (ADR 0022). `PanelState` is the live view state the

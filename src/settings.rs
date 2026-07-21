@@ -21,7 +21,7 @@
 use camera::{HomeView, OrbitCamera, ProjectionMode};
 use voxel_core::core_geom::MaterialChoice;
 use voxel_core::voxel::ShapeKind;
-use ui::panel::{LayerRange, PanelState, PlacementGhost, SignalStackState, ViewMode};
+use ui::panel::{LayerRange, PanelState, PlacementGhost, PlacementSnap, SignalStackState, ViewMode};
 use document::scene::Scene;
 use document::voxel::{GeometryParams, SdfShape};
 
@@ -238,6 +238,13 @@ pub struct AppConfig {
     /// name).
     #[snapshot(session)]
     pub placement_ghost: Option<PlacementGhostConfig>,
+
+    /// The armed-tool placement snap settings (owner ruling 2026-07-21): position (no snap /
+    /// block / voxel) and orientation (no snap / surface). Session state — durable across adds
+    /// and relaunch. The `SessionArtifact` serde default degrades to the finished defaults
+    /// (voxel + surface) for a dump written before the field existed.
+    #[snapshot(session)]
+    pub placement_snap: PlacementSnap,
 }
 
 impl Default for AppConfig {
@@ -262,6 +269,7 @@ impl Default for AppConfig {
             home_explicit: false,
             window_size: default_window_size(),
             view_mode: ViewMode::default(),
+            placement_snap: PlacementSnap::default(),
             stack: SignalStackState::default(),
             debug_face_orientation: false,
             debug_brick_faces: false,
@@ -309,6 +317,7 @@ impl AppConfig {
             // they ever needed — the omission was never subtle, it was simply never
             // forced to be noticed.
             view_mode: panel.view_mode,
+            placement_snap: panel.placement_snap,
             stack: panel.stack,
             debug_face_orientation: panel.debug_face_orientation,
             debug_brick_faces: panel.debug_brick_faces,
@@ -393,6 +402,7 @@ impl AppConfig {
             // the scene"; this always honoured that, and the reset was the wider claim
             // nobody made.
             view_mode: self.view_mode,
+            placement_snap: self.placement_snap,
             // Issue #88's stack state travels with it, for the same reason and whole.
             stack: self.stack,
             // Restored just below: the persisted full scene, or — for an old
@@ -581,6 +591,11 @@ mod tests {
                 wall_blocks: 2,
                 offset_voxels: [40, -8, 12],
             }),
+            // Non-default so the round-trip actually exercises persistence.
+            placement_snap: PlacementSnap {
+                position: ui::panel::PositionSnap::Block,
+                orientation: ui::panel::OrientationSnap::NoSnap,
+            },
         };
 
         let restored = save_and_reload(&config);
@@ -604,6 +619,10 @@ mod tests {
         };
         panel.debug_face_orientation = true;
         panel.debug_brick_faces = true;
+        panel.placement_snap = PlacementSnap {
+            position: ui::panel::PositionSnap::Block,
+            orientation: ui::panel::OrientationSnap::NoSnap,
+        };
 
         let config = AppConfig::capture(
             &panel,
@@ -617,6 +636,7 @@ mod tests {
         assert_eq!(restored.stack, panel.stack);
         assert!(restored.debug_face_orientation);
         assert!(restored.debug_brick_faces);
+        assert_eq!(restored.placement_snap, panel.placement_snap, "snap settings survive relaunch");
     }
 
     /// The other direction of the same promise: a dump written before the session category

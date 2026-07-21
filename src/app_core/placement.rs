@@ -31,10 +31,27 @@ use substrate::spatial::Ray;
 
 use document::intent::{Intent, NodeSpec};
 use document::voxel::SdfShape;
+use ui::panel::{OrientationSnap, PlacementSnap, PositionSnap};
 use voxel_core::core_geom::MaterialChoice;
 
 use super::picking::PickFrame;
 use super::AppCore;
+
+/// Snap a corner-anchored voxel offset to the grain the armed tool requests (owner ruling
+/// 2026-07-21): whole **voxels** (the finest, no change) or whole **blocks** (offset a
+/// multiple of the density, for clean inter-part mating). `NoSnap` is voxel-granular for now —
+/// the freest placement the voxel document can store.
+fn snap_offset(offset: [i64; 3], position: PositionSnap, density: u32) -> [i64; 3] {
+    match position {
+        PositionSnap::NoSnap | PositionSnap::Voxel => offset,
+        PositionSnap::Block => {
+            let d = density.max(1) as i64;
+            // Round each axis to the nearest block boundary (round-half-up, symmetric enough
+            // for placement; div_euclid keeps it consistent across the sign boundary).
+            offset.map(|c| (c + d / 2).div_euclid(d) * d)
+        }
+    }
+}
 
 /// The grazing threshold [`resolve_placement`] selects a world plane by:
 /// `sin(20°) ≈ 0.342`, the smallest `|ray·plane_normal|` at which a plane is still
@@ -102,6 +119,9 @@ impl AppCore {
     /// built-in world planes ([`resolve_placement`]). The negative answers
     /// ([`NoSurface`](PlacementTarget::NoSurface) /
     /// [`TooFar`](PlacementTarget::TooFar)) carry no intent.
+    #[allow(clippy::too_many_arguments)] // a cohesive placement entry point: cursor + viewport +
+    // frame + the armed tool (shape/material) + the two environment facts (ground visibility,
+    // snap). Bundling them would just relocate the list without clarifying it.
     pub fn place_primitive(
         &self,
         cursor: [f32; 2],
@@ -110,6 +130,7 @@ impl AppCore {
         shape: SdfShape,
         material: MaterialChoice,
         ground_plane_visible: bool,
+        snap: PlacementSnap,
     ) -> PlacementOutcome {
         // ADR 0026: orientation is derived from the entered face in the geometry tier below;
         // a world-plane drop stays identity (world-vertical). Defaulted here, set per-tier.
@@ -141,23 +162,29 @@ impl AppCore {
                 placement_voxel[1] as f32,
                 placement_voxel[2] as f32,
             );
-            // ADR 0026: the entered face SETS orientation — the node's local +Z turns to the
-            // face normal, so a cylinder on a side wall lies on its side poking out along the
-            // normal. The anchor then seats the object's TURNED extent flush against the face
-            // (a side-lying cylinder is `turn_extent` long along the normal), not the upright
-            // extent — otherwise it would seat by the wrong dimension and half-bury.
-            let orientation =
-                substrate::spatial::LatticeOrientation::from_face_normal(pick.face_normal);
+            // ADR 0026 + owner ruling 2026-07-21: the entered face sets orientation ONLY when
+            // the armed tool asks to snap to the surface — then the node's local +Z turns to the
+            // face normal (a cylinder on a wall lies on its side, seated flush by its TURNED
+            // extent). With orientation snap off, the node stays upright (identity) and seats by
+            // its un-turned extent.
+            let orientation = match snap.orientation {
+                OrientationSnap::Surface => {
+                    substrate::spatial::LatticeOrientation::from_face_normal(pick.face_normal)
+                }
+                OrientationSnap::NoSnap => substrate::spatial::LatticeOrientation::IDENTITY,
+            };
             let turned_size = orientation.turn_extent(shape.size_voxels);
+            let offset = snap_offset(
+                face_anchored_offset(placement_voxel, turned_size, pick.face_normal),
+                snap.position,
+                frame.density,
+            );
             return PlacementOutcome {
                 target: PlacementTarget::OnSurface {
                     point,
                     face_normal: pick.face_normal,
                 },
-                intent: Some(place_node(
-                    face_anchored_offset(placement_voxel, turned_size, pick.face_normal),
-                    orientation,
-                )),
+                intent: Some(place_node(offset, orientation)),
             };
         }
 
@@ -269,10 +296,14 @@ impl AppCore {
             // upright — the design's "world-vertical" rule). The ground is a `+Z` face, so
             // the object stands bottom-centred on the hit under the cursor.
             PlacementTarget::OnWorldPlane { point, plane } => Some(place_node(
-                face_anchored_offset(
-                    [point.x.floor() as i64, point.y.floor() as i64, point.z.floor() as i64],
-                    shape.size_voxels,
-                    plane.normal().to_array().map(|n| n as i32),
+                snap_offset(
+                    face_anchored_offset(
+                        [point.x.floor() as i64, point.y.floor() as i64, point.z.floor() as i64],
+                        shape.size_voxels,
+                        plane.normal().to_array().map(|n| n as i32),
+                    ),
+                    snap.position,
+                    frame.density,
                 ),
                 // The world planes never orient (ADR 0026): the node stays world-vertical.
                 substrate::spatial::LatticeOrientation::IDENTITY,
@@ -414,6 +445,7 @@ mod tests {
             shape.clone(),
             MaterialChoice::Stone,
             true,
+            PlacementSnap::default(),
         );
         let Some(Intent::PlaceNode { offset_voxels, orientation, .. }) = outcome.intent else {
             panic!("a geometry hit produces a PlaceNode, got {:?}", outcome.intent);
@@ -570,7 +602,7 @@ mod tests {
         let outcome =
             fixture
                 .app_core
-                .place_primitive(cursor, VIEWPORT, &fixture.frame(), tool_shape(), MaterialChoice::Stone, true);
+                .place_primitive(cursor, VIEWPORT, &fixture.frame(), tool_shape(), MaterialChoice::Stone, true, PlacementSnap::default());
 
         assert!(
             matches!(outcome.target, PlacementTarget::OnSurface { .. }),
@@ -664,6 +696,7 @@ mod tests {
             tool_shape(),
             MaterialChoice::Stone,
             true,
+            PlacementSnap::default(),
         );
 
         assert!(
@@ -726,6 +759,7 @@ mod tests {
             tool_shape(),
             MaterialChoice::Stone,
             true,
+            PlacementSnap::default(),
         );
 
         assert!(
@@ -793,7 +827,7 @@ mod tests {
                         ];
                         let target = fixture
                             .app_core
-                            .place_primitive(cursor, VIEWPORT, &fixture.frame(), tool_shape(), MaterialChoice::Stone, true)
+                            .place_primitive(cursor, VIEWPORT, &fixture.frame(), tool_shape(), MaterialChoice::Stone, true, PlacementSnap::default())
                             .target;
                         assert_ne!(
                             target,
@@ -817,6 +851,53 @@ mod tests {
         }
     }
 
+    /// **Orientation snap governs the face turn (owner ruling 2026-07-21).** With orientation
+    /// snap OFF the placed node is upright (identity) whatever face it entered; with it on it
+    /// orients to that face (ADR 0026). Position snap is Voxel (finest) for both.
+    #[test]
+    fn orientation_snap_toggles_the_face_turn() {
+        use substrate::spatial::LatticeOrientation;
+        let fixture = placement_fixture(OrbitCamera::default());
+        let cursor = [640.0, 360.0];
+        let shape = SdfShape::from_blocks(ShapeKind::Cylinder, [1, 1, 3], 1, DENSITY);
+
+        let upright = fixture.app_core.place_primitive(
+            cursor, VIEWPORT, &fixture.frame(), shape.clone(), MaterialChoice::Stone, true,
+            PlacementSnap { position: PositionSnap::Voxel, orientation: OrientationSnap::NoSnap },
+        );
+        let Some(Intent::PlaceNode { orientation, .. }) = upright.intent else {
+            panic!("a geometry hit places, got {:?}", upright.intent);
+        };
+        assert!(orientation.is_identity(), "orientation snap off ⇒ node stays upright");
+
+        let oriented = fixture.app_core.place_primitive(
+            cursor, VIEWPORT, &fixture.frame(), shape.clone(), MaterialChoice::Stone, true,
+            PlacementSnap { position: PositionSnap::Voxel, orientation: OrientationSnap::Surface },
+        );
+        let (PlacementTarget::OnSurface { face_normal, .. }, Some(Intent::PlaceNode { orientation, .. })) =
+            (oriented.target, oriented.intent)
+        else {
+            panic!("expected an oriented surface placement");
+        };
+        assert_eq!(
+            orientation,
+            LatticeOrientation::from_face_normal(face_normal),
+            "orientation snap on ⇒ node turns to the entered face"
+        );
+    }
+
+    /// **Block position snap rounds the drop to block boundaries; voxel / no-snap keep the
+    /// finest offset.** The offset math directly (owner ruling 2026-07-21).
+    #[test]
+    fn block_snap_rounds_the_offset_to_block_boundaries() {
+        // Density 8: each axis rounds to the nearest multiple of 8 (round-half via +d/2).
+        assert_eq!(snap_offset([3, 12, -5], PositionSnap::Block, 8), [0, 16, -8]);
+        assert_eq!(snap_offset([3, 12, -5], PositionSnap::Voxel, 8), [3, 12, -5]);
+        assert_eq!(snap_offset([3, 12, -5], PositionSnap::NoSnap, 8), [3, 12, -5]);
+        // Already block-aligned stays put.
+        assert_eq!(snap_offset([16, -8, 0], PositionSnap::Block, 8), [16, -8, 0]);
+    }
+
     /// **An invisible world plane is not a placement target (owner ruling 2026-07-21).** The
     /// same top-down cursor that lands on the ground when its floor grid is shown reports
     /// `NoSurface` (no intent) when it is hidden — a hidden plane can't be placed on.
@@ -834,7 +915,7 @@ mod tests {
         let cursor = [1200.0, 360.0]; // off the box, onto the ground
         // Visible → lands on the ground.
         let visible = fixture.app_core.place_primitive(
-            cursor, VIEWPORT, &fixture.frame(), tool_shape(), MaterialChoice::Stone, true,
+            cursor, VIEWPORT, &fixture.frame(), tool_shape(), MaterialChoice::Stone, true, PlacementSnap::default(),
         );
         assert!(
             matches!(visible.target, PlacementTarget::OnWorldPlane { plane: raycast::WorldPlane::Ground, .. }),
@@ -842,7 +923,7 @@ mod tests {
         );
         // Hidden → nothing to place on.
         let hidden = fixture.app_core.place_primitive(
-            cursor, VIEWPORT, &fixture.frame(), tool_shape(), MaterialChoice::Stone, false,
+            cursor, VIEWPORT, &fixture.frame(), tool_shape(), MaterialChoice::Stone, false, PlacementSnap::default(),
         );
         assert_eq!(hidden.target, PlacementTarget::NoSurface, "hidden ground ⇒ NoSurface");
         assert_eq!(hidden.intent, None, "hidden ground drops no node");
@@ -871,7 +952,7 @@ mod tests {
             for col in 0..8 {
                 let cursor = [VIEWPORT[2] * (col as f32 + 0.5) / 8.0, VIEWPORT[3] * (row as f32 + 0.5) / 8.0];
                 let outcome = fixture.app_core.place_primitive(
-                    cursor, VIEWPORT, &empty, tool_shape(), MaterialChoice::Stone, true,
+                    cursor, VIEWPORT, &empty, tool_shape(), MaterialChoice::Stone, true, PlacementSnap::default(),
                 );
                 assert!(
                     !matches!(
@@ -910,6 +991,7 @@ mod tests {
             tool_shape(),
             MaterialChoice::Stone,
             true,
+            PlacementSnap::default(),
         );
         assert_eq!(
             outcome.target,
@@ -948,7 +1030,7 @@ mod tests {
                     VIEWPORT[3] * (row as f32 + 0.5) / 8.0,
                 ];
                 let outcome = fixture.app_core.place_primitive(
-                    cursor, VIEWPORT, &empty_frame, tool_shape(), MaterialChoice::Stone, true,
+                    cursor, VIEWPORT, &empty_frame, tool_shape(), MaterialChoice::Stone, true, PlacementSnap::default(),
                 );
                 assert_eq!(
                     outcome.target,

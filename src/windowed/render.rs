@@ -544,6 +544,7 @@ impl WindowedState {
                             shape.clone(),
                             material,
                             self.panel_state.scene.master_floor_grid,
+                            self.panel_state.placement_snap,
                         );
                 self.pending_placement = outcome.intent.clone();
                 self.panel_state.placement_ghost = match &outcome.intent {

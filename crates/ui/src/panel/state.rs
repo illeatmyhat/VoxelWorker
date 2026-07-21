@@ -86,6 +86,46 @@ impl PlacementGhost {
     }
 }
 
+/// How a placed node's **position** snaps to the lattice (owner ruling 2026-07-21). A
+/// **session** setting, durable across adds and relaunch (ADR 0024), set from the armed-tool
+/// `Add <shape>` dialog. Progressively coarsens the drop point from the raycast hit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum PositionSnap {
+    /// Drop at the raycast surface hit itself, at the finest (voxel) granularity — the freest
+    /// placement, the object seated exactly where the cursor points.
+    NoSnap,
+    /// Snap the drop so the object's grid aligns to **block** boundaries (offset a multiple of
+    /// the density) — clean inter-part mating.
+    Block,
+    /// Snap the drop to the **voxel** lattice (whole-voxel offset). The default.
+    #[default]
+    Voxel,
+}
+
+/// Whether a placed node **orients** to the surface it was dropped on (owner ruling
+/// 2026-07-21). A **session** setting like [`PositionSnap`]. Governs the ADR 0026 face turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum OrientationSnap {
+    /// Keep the node **upright** (identity orientation) regardless of the face — a cylinder
+    /// dropped on a wall stays vertical.
+    NoSnap,
+    /// **Orient to the surface**: the node's local +Z turns to the face normal (ADR 0026), so a
+    /// cylinder on a wall lies on its side. The default.
+    #[default]
+    Surface,
+}
+
+/// The armed-tool placement snap settings, read by `place_primitive` and edited by the
+/// `Add <shape>` dialog. Grouped so the one seam threads a single value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct PlacementSnap {
+    /// How the drop point snaps to the lattice.
+    pub position: PositionSnap,
+    /// Whether the node orients to the surface.
+    pub orientation: OrientationSnap,
+}
+
 /// The viewer's exclusive rendering mode (ADR 0018 Decision 3). The viewer is always in
 /// exactly one of these three; the mode is **never document state** — it follows the
 /// active selection, is not saved with the scene, and never enters undo history (the
@@ -389,6 +429,12 @@ pub struct PanelState {
     /// arming is a later slice.
     #[snapshot(session)]
     pub placement_ghost: Option<PlacementGhost>,
+    /// The armed-tool placement snap settings (owner ruling 2026-07-21): position (no snap /
+    /// block / voxel) and orientation (no snap / surface). **Session** state — durable across
+    /// adds and relaunch (ADR 0024), edited in the `Add <shape>` dialog, read by
+    /// `place_primitive`.
+    #[snapshot(session)]
+    pub placement_snap: PlacementSnap,
 }
 
 impl PanelState {

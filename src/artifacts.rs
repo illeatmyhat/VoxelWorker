@@ -260,6 +260,10 @@ pub struct SessionArtifact {
     /// serde (it lives in a serde-aware crate), so no remote shim is needed here.
     #[serde(default)]
     pub placement_ghost: Option<PlacementGhostConfig>,
+    /// The armed-tool placement snap settings (position + orientation, owner ruling
+    /// 2026-07-21). Durable across adds and relaunch; `PlacementSnap` derives its own serde.
+    #[serde(default)]
+    pub placement_snap: ui::panel::PlacementSnap,
 }
 
 /// The debugging artifact, and the superset: **a scene must be completely reproducible
@@ -323,6 +327,9 @@ impl DocumentArtifact {
             // Declined — session state. An armed drop is where somebody stopped, not part
             // of the model a collaborator would open.
             placement_ghost: _,
+            // Declined — session/settings. One person's snap preference must not ride into a
+            // shared document.
+            placement_snap: _,
             // Declined — settings. A preference inside a shared file would impose one
             // person's setup on everyone who opened it.
             projection_mode: _,
@@ -376,6 +383,7 @@ impl Dump {
             debug_face_orientation,
             debug_brick_faces,
             placement_ghost,
+            placement_snap,
         } = state;
         Self {
             document: DocumentArtifact {
@@ -408,6 +416,7 @@ impl Dump {
                 debug_face_orientation: *debug_face_orientation,
                 debug_brick_faces: *debug_brick_faces,
                 placement_ghost: placement_ghost.clone(),
+                placement_snap: *placement_snap,
             },
         }
     }
@@ -451,6 +460,7 @@ impl Dump {
             debug_face_orientation: session.debug_face_orientation,
             debug_brick_faces: session.debug_brick_faces,
             placement_ghost: session.placement_ghost,
+            placement_snap: session.placement_snap,
         }
     }
 
@@ -609,6 +619,11 @@ mod tests {
                 wall_blocks: 1,
                 offset_voxels: [7, -3, 5],
             }),
+            // Off its default so a dropped capture fails the round-trip.
+            placement_snap: ui::panel::PlacementSnap {
+                position: ui::panel::PositionSnap::NoSnap,
+                orientation: ui::panel::OrientationSnap::NoSnap,
+            },
         }
     }
 

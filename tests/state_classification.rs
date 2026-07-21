@@ -223,7 +223,9 @@ fn the_session_is_the_workspace_and_nothing_else() {
             "debug_face_orientation",
             "debug_brick_faces",
             // ADR 0022: the armed-tool placement ghost survives a mid-gesture relaunch.
-            "placement_ghost"
+            "placement_ghost",
+            // ADR 0024/0026: the armed-tool snap settings persist across adds and relaunch.
+            "placement_snap"
         ],
         "the session set changed: a field joining it now survives relaunch, and a field \
          leaving it stops surviving one"
