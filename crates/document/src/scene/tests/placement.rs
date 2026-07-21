@@ -232,7 +232,7 @@ use crate::voxel::SdfShape;
         query: &voxel_core::spatial_index::VoxelAabb,
     ) -> Vec<voxel_core::spatial_index::VoxelAabb> {
         let mut matched = Vec::new();
-        scene.for_each_leaf(&mut |world_offset_voxels, _orientation, body, _grid_on_faces, _operation, outset, _scope_path| {
+        scene.for_each_leaf(&mut |world_offset_voxels, _offset_local_voxels, _orientation, _rotation, body, _grid_on_faces, _operation, outset, _scope_path| {
             let outset_voxels = outset_voxels_at(outset, voxels_per_block);
             let world_offset_voxels: [i64; 3] =
                 std::array::from_fn(|axis| world_offset_voxels[axis] - outset_voxels);
@@ -885,6 +885,55 @@ use crate::voxel::SdfShape;
                          translate on axis {moved_axis} by exactly d voxels (0 elsewhere)"
                     );
                 }
+            }
+        }
+    }
+
+    // ===== ADR 0027 slice 2a: the continuous rotation bridge ====================
+
+    /// The continuous `LeafProducer.rotation` a leaf carries is the faithful `Quat` image of
+    /// its discrete [`LatticeOrientation`] (ADR 0027 §4): it acts on every basis axis exactly
+    /// as `orientation.apply_f32` does. This proves `quat_from_lattice` — the discrete→
+    /// continuous bridge — is exact for the six placement face-normal turns, which is what
+    /// lets the ADR 0027 pipeline carry the quaternion while the classifier still reads the
+    /// lattice turn (so occupancy stays byte-identical). A voxel-snapped placement also
+    /// carries a zero `offset_local_voxels`, the default that resolves as a pure integer
+    /// offset.
+    #[test]
+    fn leaf_producer_rotation_mirrors_the_lattice_orientation() {
+        let density = 16u32;
+        // Every face-normal turn (five non-identity + the identity +Z), so the bridge is
+        // checked across the placement-reachable set, not one lucky orientation.
+        for normal in [[0, 0, 1], [0, 0, -1], [1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0]] {
+            let orientation = substrate::spatial::LatticeOrientation::from_face_normal(normal);
+            let shape = SdfShape::from_blocks(ShapeKind::Box, [2, 2, 6], 1, density);
+            let mut node = Node::new(
+                format!("Turned {normal:?}"),
+                NodeContent::Tool { shape, material: MaterialChoice::Stone },
+            );
+            node.transform =
+                NodeTransform::from_offset_voxels([0, 0, 0]).with_orientation(orientation);
+            let scene = Scene::single_node(node);
+
+            let leaves = scene.leaf_producers(density);
+            assert_eq!(leaves.len(), 1, "one leaf for face normal {normal:?}");
+            let leaf = &leaves[0];
+            assert_eq!(
+                leaf.offset_local_voxels, [0.0, 0.0, 0.0],
+                "a voxel-snapped placement carries a zero continuous offset (normal {normal:?})"
+            );
+
+            // The leaf's quaternion must send each basis axis where the discrete turn does.
+            for axis in 0..3 {
+                let mut unit = [0.0f32; 3];
+                unit[axis] = 1.0;
+                let expected = glam::Vec3::from_array(orientation.apply_f32(unit));
+                let got = leaf.rotation * glam::Vec3::from_array(unit);
+                assert!(
+                    (got - expected).length() < 1e-5,
+                    "normal {normal:?} axis {axis}: quat image {got:?} != lattice image \
+                     {expected:?}"
+                );
             }
         }
     }

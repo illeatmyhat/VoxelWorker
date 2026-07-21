@@ -470,9 +470,10 @@ impl Scene {
         self.walk_nodes(
             &[target_id],
             parent_offset_voxels,
+            [0.0, 0.0, 0.0],
             &mut def_path,
             &mut scope_path,
-            &mut |world_offset_voxels, orientation, body, _grid_on_faces, _operation, outset, _scope_path| {
+            &mut |world_offset_voxels, _offset_local_voxels, orientation, _rotation, body, _grid_on_faces, _operation, outset, _scope_path| {
                 let outset_voxels = outset_voxels_at(outset, voxels_per_block);
             let world_offset_voxels: [i64; 3] =
                 std::array::from_fn(|axis| world_offset_voxels[axis] - outset_voxels);
@@ -549,9 +550,10 @@ impl Scene {
         self.walk_nodes(
             &[target_id],
             parent_offset_voxels,
+            [0.0, 0.0, 0.0],
             &mut def_path,
             &mut scope_path,
-            &mut |world_offset_voxels, orientation, body, _grid_on_faces, _operation, outset, _scope_path| {
+            &mut |world_offset_voxels, _offset_local_voxels, orientation, _rotation, body, _grid_on_faces, _operation, outset, _scope_path| {
                 let outset_voxels = outset_voxels_at(outset, voxels_per_block);
             let world_offset_voxels: [i64; 3] =
                 std::array::from_fn(|axis| world_offset_voxels[axis] - outset_voxels);
@@ -662,7 +664,7 @@ impl Scene {
         let mut min_corner = [i64::MAX; 3];
         let mut max_corner = [i64::MIN; 3];
         let mut any = false;
-        self.for_each_leaf(&mut |world_offset_voxels, orientation, body, _grid_on_faces, _operation, outset, _scope_path| {
+        self.for_each_leaf(&mut |world_offset_voxels, _offset_local_voxels, orientation, _rotation, body, _grid_on_faces, _operation, outset, _scope_path| {
             let outset_voxels = outset_voxels_at(outset, voxels_per_block);
             let world_offset_voxels: [i64; 3] =
                 std::array::from_fn(|axis| world_offset_voxels[axis] - outset_voxels);
