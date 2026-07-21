@@ -127,12 +127,18 @@ impl AppCore {
             )
         };
 
-        // The band is scene-absolute Z layers; the march wants march-frame Z. A layer index `b`
-        // spans absolute `[b, b+1)`, and march-frame Z is absolute Z minus the bias.
+        // The band is REGION-LOCAL Z layers (`queries.rs` clamps `band_min`/`band_max` to
+        // `[0, scene_grid_z]`), and the march voxel frame is ALSO region-local — `march_voxel =
+        // absolute − shading_to_absolute`, and `shading_to_absolute` IS the region's absolute base
+        // (`recentre − half`), so the two frames coincide. The band therefore needs NO conversion:
+        // `band_low = band_min`, half-open `[band_min, band_max + 1)`. (The brick raymarch, the
+        // working reference, likewise takes `band_min` directly, only adding its block-align
+        // `lattice_shift`, which a pick does not have.) An earlier `− shading_to_absolute[2] +
+        // half[2]` here added a spurious `half[2]` floor — for a centred scene it clipped every
+        // voxel below the region mid-plane, making the LOWER HALF of any object unpickable.
         let clamp_to_i32 = |value: i64| value.clamp(i32::MIN as i64 + 1, i32::MAX as i64 - 1) as i32;
-        let band_low = clamp_to_i32(band.band_min as i64 - shading_to_absolute[2] + half[2]);
-        let band_high =
-            clamp_to_i32(band.band_max as i64 + 1 - shading_to_absolute[2] + half[2]);
+        let band_low = clamp_to_i32(band.band_min as i64);
+        let band_high = clamp_to_i32(band.band_max as i64 + 1);
 
         let params = raycast::ExactMarchParams {
             traversal_lo: to_march_frame(lo),
@@ -335,6 +341,65 @@ mod tests {
         assert_ne!(
             clipped, full,
             "a one-layer band must not return the same hit as an unclipped march"
+        );
+    }
+
+    /// **The LOWER half of a centred object is pickable under a FULL band (2026-07-21
+    /// regression).** The band→march conversion once added a spurious `half_z` floor
+    /// (`band_min − shading_to_absolute + half`), clipping every voxel below the region
+    /// mid-plane — so a pick could never name a voxel in an object's lower half even under a
+    /// FULL (mask-nothing) band. The owner hit this trying to place a tube on the bottom half of
+    /// a tall cylinder. This sweeps a tall box and asserts a hit lands BELOW the region mid.
+    #[test]
+    fn the_lower_half_of_a_centred_object_is_pickable() {
+        // A tall box viewed SIDE-ON (horizontal orthographic), so its whole near face — top to
+        // bottom — is on screen and reachable; the default iso view looks down and cannot see a
+        // tall object's lower half at all, which would mask the bug rather than expose it.
+        let shape = SdfShape::from_blocks(ShapeKind::Box, [2, 2, 8], 1, DENSITY); // [16,16,64]
+        let scene = Scene::from_geometry(
+            GeometryParams {
+                shape: ShapeKind::Box,
+                size_voxels: shape.size_voxels,
+                size_measurements: None,
+                voxels_per_block: DENSITY,
+                wall_blocks: 1,
+            },
+            MaterialChoice::Stone,
+        );
+        let camera = OrbitCamera {
+            target: glam::Vec3::new(8.0, 8.0, 32.0), // the box centre (it fills [0,16)²×[0,64))
+            orbit_theta: 0.4,
+            orbit_phi: std::f32::consts::FRAC_PI_2, // horizontal — the tall face side-on
+            orbit_distance: 160.0,
+            roll: 0.0,
+            projection_mode: camera::ProjectionMode::Orthographic,
+        };
+        let mut app_core = AppCore::new(camera);
+        let RebuildOutcome::Built(output) = app_core.rebuild(&scene, DENSITY) else {
+            panic!("the fixture's density is in bounds");
+        };
+        let recentre_voxels = output.recentre_voxels.voxels();
+        let chunks = output.two_layer_chunks.clone();
+        let frame = PickFrame {
+            region_dimensions: output.region_dimensions,
+            recentre_voxels,
+            density: DENSITY,
+            chunks: &chunks,
+            band: LayerBand::FULL,
+        };
+
+        let mid_layer = recentre_voxels[2]; // region mid-plane in absolute Z
+        let mut lowest_hit_z = i64::MAX;
+        for row in 0..40 {
+            let cursor = [VIEWPORT[2] * 0.5, VIEWPORT[3] * (row as f32 + 0.5) / 40.0];
+            if let Some(pick) = app_core.pick_voxel(cursor, VIEWPORT, &frame) {
+                lowest_hit_z = lowest_hit_z.min(pick.absolute_voxel[2]);
+            }
+        }
+        assert!(
+            lowest_hit_z < mid_layer,
+            "a FULL-band pick must reach BELOW the region mid-plane {mid_layer} (lowest hit was \
+             {lowest_hit_z}) — the spurious half-Z band floor made the lower half unpickable"
         );
     }
 }
