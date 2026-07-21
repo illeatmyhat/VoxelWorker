@@ -31,6 +31,11 @@ struct PlacementGhostUniforms {
     /// x: iso level (`SURFACE_ISOLEVEL`). y: shade flag (1 = display). z/w: value-probe
     /// only, unused by the display pass.
     params: [f32; 4],
+    /// The INVERSE lattice orientation (ADR 0026), column-major, as three `vec4` columns
+    /// (std140 `mat3x3` stride; the `w` lane is padding). The shader maps a world sample back
+    /// into the shape's un-turned SDF frame with this, so a side-placed cylinder's ghost lies
+    /// on its side. Identity for an upright drop.
+    orientation_inverse: [[f32; 4]; 3],
 }
 
 /// The `ShapeKind` discriminant the shader switches on. **MUST match `ShapeKind`'s
@@ -203,6 +208,7 @@ impl PlacementGhostRenderer {
         semi_axes: glam::Vec3,
         wall_voxels: f32,
         tint: [f32; 4],
+        orientation_inverse: [[f32; 4]; 3],
     ) {
         let uniforms = PlacementGhostUniforms {
             view_projection: view_projection.to_cols_array_2d(),
@@ -222,6 +228,7 @@ impl PlacementGhostRenderer {
             semi_axes_and_wall: [semi_axes.x, semi_axes.y, semi_axes.z, wall_voxels],
             tint,
             params: [voxel_core::voxel::SURFACE_ISOLEVEL, 1.0, 0.0, 0.0],
+            orientation_inverse,
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
         self.armed = true;
@@ -265,10 +272,11 @@ mod tests {
 
     /// The Rust twin's size is a multiple of 16 bytes (std140 uniform alignment) and
     /// matches the blocks the WGSL struct declares: two mat4 (128) + five vec4 (viewport,
-    /// center_and_kind, semi_axes_and_wall, tint, params = 80) = 208 bytes.
+    /// center_and_kind, semi_axes_and_wall, tint, params = 80) + a mat3x3 (three padded vec4
+    /// columns = 48, the ADR 0026 inverse orientation) = 256 bytes.
     #[test]
     fn uniform_layout_is_std140_sized() {
-        assert_eq!(std::mem::size_of::<PlacementGhostUniforms>(), 208);
+        assert_eq!(std::mem::size_of::<PlacementGhostUniforms>(), 256);
         assert_eq!(std::mem::size_of::<PlacementGhostUniforms>() % 16, 0);
     }
 }

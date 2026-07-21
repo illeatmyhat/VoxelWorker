@@ -291,6 +291,11 @@ pub(crate) struct ShotOptions {
     /// armed placement ghost drops at (the `Intent::PlaceNode` frame). Only meaningful with
     /// `--placement-ghost`; default `[0, 0, 0]`.
     pub(crate) ghost_offset: [i64; 3],
+    /// `--ghost-face X Y Z` (ADR 0026): the entered face normal (an axis vector) the armed
+    /// ghost is oriented against — the node's local +Z turns to it, so a cylinder on `1 0 0`
+    /// lies on its side. Only meaningful with `--placement-ghost`; default `None` = the
+    /// upright identity orientation of a world-plane / `+Z`-face drop.
+    pub(crate) ghost_face: Option<[i32; 3]>,
     /// `--from-config <path>` (2026-07-17 repro flow): load the EXACT scene AND camera from an
     /// `AppConfig` JSON — either the app's persisted `config.json` or an F9 `export_repro` dump.
     /// Reproduces a live-app view headlessly byte-for-byte (scene tree + density + material +
@@ -366,6 +371,7 @@ impl Default for ShotOptions {
             replay_path: None,
             placement_ghost: false,
             ghost_offset: [0, 0, 0],
+            ghost_face: None,
             from_config: None,
         }
     }
@@ -718,6 +724,15 @@ pub(crate) fn parse_options() -> ShotOptions {
                 let z = args.next().expect("--ghost-offset requires X Y Z").parse()
                     .expect("--ghost-offset Z must be an integer");
                 options.ghost_offset = [x, y, z];
+            }
+            "--ghost-face" => {
+                let x = args.next().expect("--ghost-face requires X Y Z").parse()
+                    .expect("--ghost-face X must be an integer");
+                let y = args.next().expect("--ghost-face requires X Y Z").parse()
+                    .expect("--ghost-face Y must be an integer");
+                let z = args.next().expect("--ghost-face requires X Y Z").parse()
+                    .expect("--ghost-face Z must be an integer");
+                options.ghost_face = Some([x, y, z]);
             }
             "--demo-far-offset" => {
                 options.far_offset = true;

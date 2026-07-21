@@ -3008,6 +3008,7 @@ dependencies = [
  "image",
  "pollster",
  "serde_json",
+ "substrate",
  "voxel_core",
  "voxel_worker",
  "wgpu",
@@ -3506,6 +3507,7 @@ dependencies = [
  "document",
  "egui",
  "snapshot",
+ "substrate",
  "voxel_core",
 ]
 

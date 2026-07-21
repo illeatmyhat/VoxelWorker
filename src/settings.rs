@@ -69,6 +69,10 @@ impl PlacementGhostConfig {
         PlacementGhost {
             shape: SdfShape::from_voxels(self.shape_kind, self.size_voxels, self.wall_blocks),
             offset_voxels: self.offset_voxels,
+            // The persisted ghost config does not yet carry orientation (ADR 0026); an F9 repro
+            // of an armed oriented ghost previews it upright. The placed nodes it captures are
+            // fully oriented in the scene tree — only the transient armed-ghost turn is dropped.
+            orientation: substrate::spatial::LatticeOrientation::IDENTITY,
         }
     }
 }

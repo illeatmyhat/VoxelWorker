@@ -33,6 +33,8 @@ document = { path = "../document" }
 # The foundational value vocabulary: MaterialChoice / BlockId (the palette resolver + material
 # selector) and the ShapeKind / units the inspector edits.
 voxel_core = { path = "../voxel_core" }
+# The pure CS/math substrate: LatticeOrientation, the placement ghost's turn (ADR 0026).
+substrate = { path = "../substrate" }
 # The viewing library: the ProjectionMode the camera-section toggle drives.
 camera = { path = "../camera" }
 # The state-classification vocabulary (ADR 0022). `PanelState` is the live view state the

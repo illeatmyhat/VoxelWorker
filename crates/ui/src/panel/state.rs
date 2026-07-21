@@ -26,30 +26,57 @@ pub struct PlacementGhost {
     /// The armed primitive whose surface the ghost traces.
     pub shape: SdfShape,
     /// The absolute, corner-anchored voxel offset where the node would drop — a node with
-    /// `offset_voxels = V` occupies absolute `[V, V + grid)` (the placement frame,
-    /// `src/app_core/placement.rs`).
+    /// `offset_voxels = V` occupies absolute `[V, V + turn_extent(grid))` (the placement
+    /// frame, `src/app_core/placement.rs`).
     pub offset_voxels: [i64; 3],
+    /// The node's lattice orientation (ADR 0026) — the turn the drop would apply, so the
+    /// ghost previews the shape the way it will actually land (a cylinder on its side, not
+    /// upright). Identity for a world-plane or `+Z`-face drop.
+    pub orientation: substrate::spatial::LatticeOrientation,
 }
 
 impl PlacementGhost {
     /// The field centre in the display's render frame:
-    /// `center_world = offset_voxels + grid/2 - recentre` (ADR 0008; the frame note atop
-    /// `crates/display/src/shaders/placement_ghost.wgsl` derives it). `grid/2` is the EXACT
-    /// half (a half-integer on odd axes); `recentre` is the FLOORED half — the difference
-    /// is the half-voxel term a naive "the shape is at the origin" assumption drops.
+    /// `center_world = offset_voxels + turn_extent(grid)/2 - recentre` (ADR 0008 + ADR 0026;
+    /// the frame note atop `crates/display/src/shaders/placement_ghost.wgsl` derives it). The
+    /// node occupies the **turned** grid in the world, so the centre uses the turned extent;
+    /// `grid/2` is the EXACT half (a half-integer on odd axes), `recentre` the FLOORED half —
+    /// the difference is the half-voxel term a naive "the shape is at the origin" drops.
     pub fn center_world(&self, recentre_voxels: [i64; 3], voxels_per_block: u32) -> [f32; 3] {
-        let grid = self.shape.grid_dimensions(voxels_per_block);
+        let grid = self.orientation.turn_extent(self.shape.grid_dimensions(voxels_per_block));
         std::array::from_fn(|axis| {
             (self.offset_voxels[axis] - recentre_voxels[axis]) as f32 + grid[axis] as f32 / 2.0
         })
     }
 
     /// The inscribed semi-axes in voxels (`grid/2` per axis, EXACT half) the SDF is
-    /// evaluated against.
+    /// evaluated against. These are the shape's OWN (un-turned) half-extents — the shader
+    /// evaluates the field in the shape's local frame after un-turning the sample point
+    /// ([`orientation_inverse_columns`](Self::orientation_inverse_columns)), so the semi-axes
+    /// never turn (only the sample point does).
     pub fn semi_axes(&self, voxels_per_block: u32) -> [f32; 3] {
         self.shape
             .grid_dimensions(voxels_per_block)
             .map(|axis| axis as f32 / 2.0)
+    }
+
+    /// The **inverse** orientation as column-major `f32` columns for the shader's
+    /// `mat3x3<f32>` uniform (ADR 0026). The ghost stores the forward turn; the shader maps a
+    /// world sample back into the shape's local frame with its inverse, so
+    /// `orientation_inverse · (world − centre)` lands in the un-turned SDF frame. Each column
+    /// is padded to a `vec4` (std140 mat3 stride); the `w` lane is unused.
+    pub fn orientation_inverse_columns(&self) -> [[f32; 4]; 3] {
+        // Row-major integer matrix of the inverse turn; column `j` of the matrix becomes the
+        // shader's column `j` (WGSL `m * v = Σ col[j]·v[j]`).
+        let inverse = self.orientation.inverse().to_matrix();
+        std::array::from_fn(|column| {
+            [
+                inverse[0][column] as f32,
+                inverse[1][column] as f32,
+                inverse[2][column] as f32,
+                0.0,
+            ]
+        })
     }
 
     /// `wall_blocks * density`, in voxels — the Tube wall thickness the SDF needs (ignored

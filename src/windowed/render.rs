@@ -540,8 +540,14 @@ impl WindowedState {
                         .place_primitive(cursor, viewport, &frame, shape.clone(), material);
                 self.pending_placement = outcome.intent.clone();
                 self.panel_state.placement_ghost = match &outcome.intent {
-                    Some(crate::Intent::PlaceNode { offset_voxels, .. }) => {
-                        Some(crate::PlacementGhost { shape, offset_voxels: *offset_voxels })
+                    Some(crate::Intent::PlaceNode { offset_voxels, orientation, .. }) => {
+                        // ADR 0026: the ghost previews the node as it WILL land — turned to the
+                        // face — so carry the same orientation the intent would apply.
+                        Some(crate::PlacementGhost {
+                            shape,
+                            offset_voxels: *offset_voxels,
+                            orientation: *orientation,
+                        })
                     }
                     // NoSurface / TooFar carry no intent → no ghost, and a click there
                     // does nothing (the pending intent is None).
@@ -570,6 +576,7 @@ impl WindowedState {
                 glam::Vec3::from_array(ghost.semi_axes(voxels_per_block)),
                 ghost.wall_voxels(voxels_per_block),
                 crate::PLACEMENT_GHOST_TINT,
+                ghost.orientation_inverse_columns(),
             );
         } else {
             self.placement_ghost_renderer.disarm();

@@ -45,6 +45,11 @@ struct PlacementGhostUniforms {
     // surface, 0 when it is the value probe. z: the value-probe plane's constant
     // coordinate. w: the value-probe world extent per axis.
     params: vec4<f32>,
+    // The INVERSE lattice orientation (ADR 0026): maps a world sample (relative to the field
+    // centre) back into the shape's UN-TURNED local SDF frame. Identity for an upright drop; a
+    // signed axis permutation for a side/bottom-face drop, so the ghost lies the way the node
+    // will land. The `value_main` probe ignores it (it samples the un-turned field for parity).
+    orientation_inverse: mat3x3<f32>,
 };
 
 @group(0) @binding(0)
@@ -132,10 +137,13 @@ fn signed_distance(kind: u32, point: vec3<f32>, semi_axes: vec3<f32>, wall_voxel
     return signed_distance_box(point, semi_axes);
 }
 
-// The field in the shader's own sample frame: world point -> producer sample point.
+// The field in the shader's own sample frame: world point -> producer sample point. ADR 0026:
+// un-turn the world offset from the field centre into the shape's local SDF frame, so an
+// oriented node's ghost traces the turned shape (the semi-axes stay un-turned — only the
+// sample point turns, exactly as the classifier un-turns a query cell).
 fn field_at_world(world_point: vec3<f32>) -> f32 {
     let kind = u32(uniforms.center_and_kind.w);
-    let sample = world_point - uniforms.center_and_kind.xyz;
+    let sample = uniforms.orientation_inverse * (world_point - uniforms.center_and_kind.xyz);
     return signed_distance(
         kind, sample, uniforms.semi_axes_and_wall.xyz, uniforms.semi_axes_and_wall.w);
 }
@@ -186,10 +194,13 @@ fn camera_ray(pixel: vec2<f32>) -> Ray {
 // frame. Returns (t_enter, t_exit); a miss has t_enter > t_exit.
 fn bounds_interval(ray: Ray) -> vec2<f32> {
     let half = uniforms.semi_axes_and_wall.xyz + vec3<f32>(2.0);
-    let origin = ray.origin - uniforms.center_and_kind.xyz;
+    // ADR 0026: test the ray against the shape's UN-TURNED local box by un-turning the ray
+    // into the local frame. The inverse orientation is a rotation, so `t` is preserved (the
+    // direction stays unit) and matches the world `t` `field_at_world` re-derives at.
+    let origin = uniforms.orientation_inverse * (ray.origin - uniforms.center_and_kind.xyz);
     // Guard zero components without changing sign (the direction-guard law).
     let guard = 1e-8;
-    var safe = ray.direction;
+    var safe = uniforms.orientation_inverse * ray.direction;
     safe.x = select(safe.x, guard * sign(safe.x + 1e-30), abs(safe.x) < guard);
     safe.y = select(safe.y, guard * sign(safe.y + 1e-30), abs(safe.y) < guard);
     safe.z = select(safe.z, guard * sign(safe.z + 1e-30), abs(safe.z) < guard);

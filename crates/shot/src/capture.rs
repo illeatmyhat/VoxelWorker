@@ -317,6 +317,12 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         panel_state.placement_ghost = Some(PlacementGhost {
             shape: SdfShape::from_geometry(options.geometry.clone()),
             offset_voxels: options.ghost_offset,
+            // ADR 0026: `--ghost-face N` orients the ghost against that face (local +Z → N);
+            // absent, the upright identity of a world-plane / +Z-face drop.
+            orientation: options
+                .ghost_face
+                .map(substrate::spatial::LatticeOrientation::from_face_normal)
+                .unwrap_or_default(),
         });
     }
     // The resolve region: for a placed multi-node scene this is the whole
@@ -1095,6 +1101,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
             glam::Vec3::from_array(semi_axes),
             ghost.wall_voxels(voxels_per_block),
             PLACEMENT_GHOST_TINT,
+            ghost.orientation_inverse_columns(),
         );
     }
     // ADR 0018 Decision 6: the boolean-operand ghost's camera + tint upload (mesh was
