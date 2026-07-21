@@ -1394,7 +1394,11 @@ impl LeafProducer {
 /// matrix.
 ///
 /// [`LatticeOrientation`]: substrate::spatial::LatticeOrientation
-fn quat_from_lattice(orientation: substrate::spatial::LatticeOrientation) -> glam::Quat {
+///
+/// `pub` — the discrete→continuous bridge (ADR 0027) any caller holding a
+/// [`LatticeOrientation`] uses to obtain the equivalent [`glam::Quat`] the ghost / classifier
+/// speak (e.g. `shot --ghost-face`).
+pub fn quat_from_lattice(orientation: substrate::spatial::LatticeOrientation) -> glam::Quat {
     let matrix = glam::Mat3::from_cols(
         orientation.apply_f32([1.0, 0.0, 0.0]).into(),
         orientation.apply_f32([0.0, 1.0, 0.0]).into(),

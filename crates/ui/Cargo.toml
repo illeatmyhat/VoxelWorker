@@ -35,6 +35,9 @@ document = { path = "../document" }
 voxel_core = { path = "../voxel_core" }
 # The pure CS/math substrate: LatticeOrientation, the placement ghost's turn (ADR 0026).
 substrate = { path = "../substrate" }
+# The vector algebra the placement ghost's continuous rotation is expressed in (ADR 0027): the
+# `Quat` it previews and the `Mat3` it hands the ghost shader as an inverse-rotation uniform.
+glam = "0.33.1"
 # Serde derive for the session-durable placement snap settings (ADR 0024 / 0026), which the
 # app's AppConfig serializes directly rather than through a mirror shim.
 serde = { version = "1", features = ["derive"] }

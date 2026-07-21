@@ -29,30 +29,42 @@ pub struct PlacementGhost {
     /// `offset_voxels = V` occupies absolute `[V, V + turn_extent(grid))` (the placement
     /// frame, `src/app_core/placement.rs`).
     pub offset_voxels: [i64; 3],
-    /// The node's lattice orientation (ADR 0026) — the turn the drop would apply, so the
-    /// ghost previews the shape the way it will actually land (a cylinder on its side, not
-    /// upright). Identity for a world-plane or `+Z`-face drop.
-    pub orientation: substrate::spatial::LatticeOrientation,
+    /// The node's **continuous** rotation (ADR 0027) — the exact tilt the drop would apply, so
+    /// the ghost previews the shape the way it will actually land (a tube tilted to a cylinder's
+    /// curved radial normal, not merely the nearest of the 24 lattice turns). Identity for a
+    /// world-plane or upright drop.
+    pub rotation: glam::Quat,
 }
 
 impl PlacementGhost {
     /// The field centre in the display's render frame:
-    /// `center_world = offset_voxels + turn_extent(grid)/2 - recentre` (ADR 0008 + ADR 0026;
-    /// the frame note atop `crates/display/src/shaders/placement_ghost.wgsl` derives it). The
-    /// node occupies the **turned** grid in the world, so the centre uses the turned extent;
-    /// `grid/2` is the EXACT half (a half-integer on odd axes), `recentre` the FLOORED half —
-    /// the difference is the half-voxel term a naive "the shape is at the origin" drops.
+    /// `center_world = offset_voxels - recentre + [rotation·(full/2) - min_rotated_corner]`
+    /// (ADR 0008 + ADR 0027; the frame note atop
+    /// `crates/display/src/shaders/placement_ghost.wgsl` derives it). The bracketed term is the
+    /// corner-anchored box centre — rotate the local centre `full/2`, then re-anchor by the
+    /// rotated box's low corner, the SAME anchor the classifier's `LeafAffine` /
+    /// `evaluation::seat_centre_at` fold through, so the ghost coincides with the solid drop. For
+    /// an axis-aligned turn it equals the pre-0027 `turn_extent(grid)/2`; a continuous rotation
+    /// extends it smoothly. `full` is the EXACT grid (a half-integer half on odd axes),
+    /// `recentre` the FLOORED half — the difference is the half-voxel term a naive "the shape is
+    /// at the origin" drops.
     pub fn center_world(&self, recentre_voxels: [i64; 3], voxels_per_block: u32) -> [f32; 3] {
-        let grid = self.orientation.turn_extent(self.shape.grid_dimensions(voxels_per_block));
-        std::array::from_fn(|axis| {
-            (self.offset_voxels[axis] - recentre_voxels[axis]) as f32 + grid[axis] as f32 / 2.0
-        })
+        let grid = self.shape.grid_dimensions(voxels_per_block);
+        let full = glam::Vec3::new(grid[0] as f32, grid[1] as f32, grid[2] as f32);
+        let centre_from_corner =
+            self.rotation * (full * 0.5) - min_rotated_corner(self.rotation, full);
+        let offset = glam::Vec3::new(
+            (self.offset_voxels[0] - recentre_voxels[0]) as f32,
+            (self.offset_voxels[1] - recentre_voxels[1]) as f32,
+            (self.offset_voxels[2] - recentre_voxels[2]) as f32,
+        );
+        (offset + centre_from_corner).to_array()
     }
 
     /// The inscribed semi-axes in voxels (`grid/2` per axis, EXACT half) the SDF is
     /// evaluated against. These are the shape's OWN (un-turned) half-extents — the shader
     /// evaluates the field in the shape's local frame after un-turning the sample point
-    /// ([`orientation_inverse_columns`](Self::orientation_inverse_columns)), so the semi-axes
+    /// ([`rotation_inverse_columns`](Self::rotation_inverse_columns)), so the semi-axes
     /// never turn (only the sample point does).
     pub fn semi_axes(&self, voxels_per_block: u32) -> [f32; 3] {
         self.shape
@@ -60,22 +72,18 @@ impl PlacementGhost {
             .map(|axis| axis as f32 / 2.0)
     }
 
-    /// The **inverse** orientation as column-major `f32` columns for the shader's
-    /// `mat3x3<f32>` uniform (ADR 0026). The ghost stores the forward turn; the shader maps a
-    /// world sample back into the shape's local frame with its inverse, so
-    /// `orientation_inverse · (world − centre)` lands in the un-turned SDF frame. Each column
-    /// is padded to a `vec4` (std140 mat3 stride); the `w` lane is unused.
-    pub fn orientation_inverse_columns(&self) -> [[f32; 4]; 3] {
-        // Row-major integer matrix of the inverse turn; column `j` of the matrix becomes the
-        // shader's column `j` (WGSL `m * v = Σ col[j]·v[j]`).
-        let inverse = self.orientation.inverse().to_matrix();
+    /// The **inverse** rotation as column-major `f32` columns for the shader's `mat3x3<f32>`
+    /// uniform (ADR 0027). The ghost stores the forward rotation; the shader maps a world sample
+    /// back into the shape's local frame with its inverse, so `rotation_inverse · (world − centre)`
+    /// lands in the un-turned SDF frame. Each column is padded to a `vec4` (std140 mat3 stride);
+    /// the `w` lane is unused.
+    pub fn rotation_inverse_columns(&self) -> [[f32; 4]; 3] {
+        // glam `Mat3` is column-major and WGSL `m * v = Σ col[j]·v[j]` is too, so column `j`
+        // passes straight through. `Mat3::from_quat(rotation.inverse())` is the inverse rotation.
+        let inverse = glam::Mat3::from_quat(self.rotation.inverse());
         std::array::from_fn(|column| {
-            [
-                inverse[0][column] as f32,
-                inverse[1][column] as f32,
-                inverse[2][column] as f32,
-                0.0,
-            ]
+            let col = inverse.col(column);
+            [col.x, col.y, col.z, 0.0]
         })
     }
 
@@ -84,6 +92,24 @@ impl PlacementGhost {
     pub fn wall_voxels(&self, voxels_per_block: u32) -> f32 {
         (self.shape.wall_blocks * voxels_per_block) as f32
     }
+}
+
+/// Componentwise min of `rotation · corner` over the 8 corners of the local box `[0, full]` —
+/// the rotated box's low corner, the anchor [`PlacementGhost::center_world`] subtracts to
+/// re-seat the rotated box on `offset_voxels`. It matches the classifier's `LeafAffine` /
+/// `evaluation::seat_centre_at` corner anchor (ADR 0027), kept in step by the headless
+/// `shot --placement-ghost` verification (the ghost must coincide with the solid drop).
+fn min_rotated_corner(rotation: glam::Quat, full: glam::Vec3) -> glam::Vec3 {
+    let mut corner_min = glam::Vec3::splat(f32::INFINITY);
+    for selector in 0..8u8 {
+        let corner = glam::Vec3::new(
+            if selector & 1 == 0 { 0.0 } else { full.x },
+            if selector & 2 == 0 { 0.0 } else { full.y },
+            if selector & 4 == 0 { 0.0 } else { full.z },
+        );
+        corner_min = corner_min.min(rotation * corner);
+    }
+    corner_min
 }
 
 /// How a placed node's **position** snaps to the lattice (owner ruling 2026-07-21). A

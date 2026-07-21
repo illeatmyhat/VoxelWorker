@@ -554,13 +554,17 @@ impl WindowedState {
                         );
                 self.pending_placement = outcome.intent.clone();
                 self.panel_state.placement_ghost = match &outcome.intent {
-                    Some(crate::Intent::PlaceNode { offset_voxels, orientation, .. }) => {
-                        // ADR 0026: the ghost previews the node as it WILL land — turned to the
-                        // face — so carry the same orientation the intent would apply.
+                    Some(crate::Intent::PlaceNode { offset_voxels, rotation_quaternion, .. }) => {
+                        // ADR 0027: the ghost previews the node as it WILL land — tilted to the
+                        // surface normal — so carry the same continuous rotation the intent would
+                        // apply (placement writes the whole tilt into the quaternion, so a `None`
+                        // is an upright drop).
                         Some(crate::PlacementGhost {
                             shape,
                             offset_voxels: *offset_voxels,
-                            orientation: *orientation,
+                            rotation: rotation_quaternion
+                                .map(glam::Quat::from_array)
+                                .unwrap_or(glam::Quat::IDENTITY),
                         })
                     }
                     // NoSurface / TooFar carry no intent → no ghost, and a click there
@@ -590,7 +594,7 @@ impl WindowedState {
                 glam::Vec3::from_array(ghost.semi_axes(voxels_per_block)),
                 ghost.wall_voxels(voxels_per_block),
                 crate::PLACEMENT_GHOST_TINT,
-                ghost.orientation_inverse_columns(),
+                ghost.rotation_inverse_columns(),
             );
         } else {
             self.placement_ghost_renderer.disarm();

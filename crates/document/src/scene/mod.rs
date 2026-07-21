@@ -50,7 +50,7 @@ pub use graph::{
     ROOT_NODE_ID,
 };
 pub use producers::{NodeContent, VoxelBody};
-pub use producers::{operation_masks_beyond_bounds, LeafProducer, ScopeFrame};
+pub use producers::{operation_masks_beyond_bounds, quat_from_lattice, LeafProducer, ScopeFrame};
 
 /// Default +X spacing (in blocks) between successive instances of the same
 /// definition added via [`Scene::add_instance`], so a freshly-placed village

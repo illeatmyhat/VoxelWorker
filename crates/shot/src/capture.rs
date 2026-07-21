@@ -317,12 +317,18 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         panel_state.placement_ghost = Some(PlacementGhost {
             shape: SdfShape::from_geometry(options.geometry.clone()),
             offset_voxels: options.ghost_offset,
-            // ADR 0026: `--ghost-face N` orients the ghost against that face (local +Z → N);
-            // absent, the upright identity of a world-plane / +Z-face drop.
-            orientation: options
+            // ADR 0027: `--ghost-face N` tilts the ghost against that face (local +Z → N) as the
+            // continuous rotation the classifier resolves; absent, the upright identity of a
+            // world-plane / +Z-face drop. The lattice turn is bridged to a `Quat` by
+            // `quat_from_lattice` — the same discrete→continuous map the leaf composes.
+            rotation: options
                 .ghost_face
-                .map(substrate::spatial::LatticeOrientation::from_face_normal)
-                .unwrap_or_default(),
+                .map(|face| {
+                    document::scene::quat_from_lattice(
+                        substrate::spatial::LatticeOrientation::from_face_normal(face),
+                    )
+                })
+                .unwrap_or(glam::Quat::IDENTITY),
         });
     }
     // The resolve region: for a placed multi-node scene this is the whole
@@ -1107,7 +1113,7 @@ pub(crate) async fn run_capture(options: ShotOptions) {
             glam::Vec3::from_array(semi_axes),
             ghost.wall_voxels(voxels_per_block),
             PLACEMENT_GHOST_TINT,
-            ghost.orientation_inverse_columns(),
+            ghost.rotation_inverse_columns(),
         );
     }
     // ADR 0018 Decision 6: the boolean-operand ghost's camera + tint upload (mesh was
