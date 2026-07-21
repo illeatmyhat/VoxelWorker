@@ -303,14 +303,25 @@ upright. This is Blender's `Orientation` axis set to **Default** for the built-i
 * Custom plane → orient **normal to that plane**, camera picks the side (`Orientation: Surface`).
 * Built-in world plane → **world-vertical**, never the plane's own normal (`Orientation: Default`).
 
-### Still open (feel knobs, not blockers)
+### Resolved rulings (2026-07-20)
 
-* **The ground's grazing threshold** — how oblique before it hands to a vertical. Start ~20°, tune.
-* **The vertical fallback's locus** — the three built-ins are at the **world origin** (owner's
-  words), the provisional default; the wrinkle is that a grazing fallback then lands on `x=0`/`y=0`,
-  possibly far from a structure built off-origin. Accepted for now because once the first course is
-  down the geometry path dominates and the fallback is a bootstrap edge case; revisit (verticals
-  through the cursor's ground point) only if detached far-from-origin placement becomes common.
+* **The "nothing in front" case is `NoSurface`, not an invented depth (owner: option A).** When no
+  geometry, no custom plane, and the selected world plane sits behind the eye (pointing at the sky),
+  placement reports `NoSurface` — "point toward the ground." This reverses the view-aligned model's
+  deletion of that state; the totality proof narrows from "always a placement" to "always a
+  placement *when a plane is in front*," which is honest. The cursor for it is logged in
+  `gizmos-and-cursors.md`.
+* **The three planes are pinned at the world origin, not movable (owner).** "Users expect `0,0,0`
+  to mean `0,0,0`; if they want their own reference planes, they'll make some." So the built-in
+  planes never carry a position, and the grazing fallback lands on `x=0`/`y=0` by design. A
+  user-created reference plane is the separate custom-plane tier, which *does* carry position and
+  orientation — and wins any tie where it is coplanar with a built-in.
+
+### Still open (a feel knob, not a blocker)
+
+* **The ground's grazing threshold** (`min_ground_facing`) — how oblique before the ground hands
+  off to a vertical. `select_world_plane` takes it as a parameter; start ~20° (`sin ≈ 0.342`) and
+  tune. Must stay `<= 1/√3` for the totality invariant to hold.
 
 ### What this costs the code already written
 
