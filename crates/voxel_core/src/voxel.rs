@@ -238,55 +238,75 @@ impl VoxelGrid {
     /// the mid-vertical layer.
     ///
     /// Reads the RESOLVED grid — NOT the SDF — per `docs/adr/0006-authoring-truth-and-gpu-boundary.md`. Cheap: one
-    /// pass over the sparse occupied list bucketed into per-(z,y)-row bitsets.
+    /// pass over the sparse occupied list bucketed into per-(z,y)-row bitsets (the
+    /// shared [`widest_run_over`] kernel, fed this grid's own `occupied` list).
     pub fn widest_run_in_band(&self, band_min: u32, band_max: u32) -> u32 {
-        let [grid_x, grid_y, grid_z] = self.dimensions;
-        if grid_x == 0 || grid_y == 0 || grid_z == 0 {
-            return 0;
-        }
-        let width = grid_x as usize;
-        // Corner-anchoring decode: the grid's low corner in the recentred frame is
-        // `−floor(dim/2)`, so `idx = round(world − region_low − 0.5) = round(world +
-        // floor(dim/2) − 0.5)`. Use FLOORED half (`dim/2` integer division), NOT
-        // `dim/2.0`, so the decode is exact for an ODD dim too (world is half-integer).
-        let half_x = (grid_x / 2) as f32;
-        let half_y = (grid_y / 2) as f32;
-        let half_z = (grid_z / 2) as f32;
-
-        // One occupancy row (length grid_x) per (z, y) row that touches the band.
-        // Keyed by a flat (z, y) index; built sparsely so an empty grid is cheap.
-        // Z-up: the band is a Z-layer (index 2) range; `k` (Z) is the layer scan.
-        let mut rows: std::collections::HashMap<u64, Vec<bool>> = std::collections::HashMap::new();
-        for voxel in &self.occupied {
-            let position = voxel.world_position();
-            let k = (position[2] + half_z - 0.5).round() as i64;
-            if k < band_min as i64 || k > band_max as i64 {
-                continue;
-            }
-            let i = (position[0] + half_x - 0.5).round() as i64;
-            let j = (position[1] + half_y - 0.5).round() as i64;
-            if i < 0 || i >= width as i64 || j < 0 || j >= grid_y as i64 {
-                continue;
-            }
-            let key = (k as u64) << 32 | (j as u64);
-            let row = rows.entry(key).or_insert_with(|| vec![false; width]);
-            row[i as usize] = true;
-        }
-
-        let mut widest = 0u32;
-        for row in rows.values() {
-            let mut run = 0u32;
-            for &occupied in row {
-                if occupied {
-                    run += 1;
-                    widest = widest.max(run);
-                } else {
-                    run = 0;
-                }
-            }
-        }
-        widest
+        widest_run_over(self.occupied.iter(), self.dimensions, band_min, band_max)
     }
+}
+
+/// Shared kernel for the two diameter readouts (issue #12 / #20 S6d): bucket every
+/// voxel in `voxels` into ONE occupancy row per `(z, y)`, keyed by its GLOBAL X index
+/// so a run crossing a chunk seam stays a single contiguous span in the same bitset,
+/// then return the widest contiguous X run within the Z-band `[band_min, band_max]`
+/// (inclusive). Z-up: the band is a Z-layer range; `k` (Z) is the layer scan.
+///
+/// `dimensions` (`[grid_x, grid_y, grid_z]`) gives the row width and the FLOORED
+/// half-extents used to decode a voxel's centred `world_position` to integer grid
+/// indices: the grid's low corner in the recentred frame is `−floor(dim/2)`, so
+/// `idx = round(world + floor(dim/2) − 0.5)`. FLOORED half (`dim/2` integer division,
+/// NOT `dim/2.0`) keeps the decode exact for an ODD dim too (world is half-integer).
+///
+/// Both [`VoxelGrid::widest_run_in_band`] (one grid's `occupied`) and
+/// [`widest_run_in_band_over_chunks`] (many chunk grids' `occupied` lists flattened)
+/// are thin sources over this same bucket-and-scan arithmetic — one definition, so the
+/// seam-stitching decode can never drift between them.
+fn widest_run_over<'voxel>(
+    voxels: impl Iterator<Item = &'voxel Voxel>,
+    dimensions: [u32; 3],
+    band_min: u32,
+    band_max: u32,
+) -> u32 {
+    let [grid_x, grid_y, grid_z] = dimensions;
+    if grid_x == 0 || grid_y == 0 || grid_z == 0 {
+        return 0;
+    }
+    let width = grid_x as usize;
+    let half_x = (grid_x / 2) as f32;
+    let half_y = (grid_y / 2) as f32;
+    let half_z = (grid_z / 2) as f32;
+
+    // Sparse (z, y)-keyed rows, built lazily so an empty band is cheap.
+    let mut rows: std::collections::HashMap<u64, Vec<bool>> = std::collections::HashMap::new();
+    for voxel in voxels {
+        let position = voxel.world_position();
+        let k = (position[2] + half_z - 0.5).round() as i64;
+        if k < band_min as i64 || k > band_max as i64 {
+            continue;
+        }
+        let i = (position[0] + half_x - 0.5).round() as i64;
+        let j = (position[1] + half_y - 0.5).round() as i64;
+        if i < 0 || i >= width as i64 || j < 0 || j >= grid_y as i64 {
+            continue;
+        }
+        let key = (k as u64) << 32 | (j as u64);
+        let row = rows.entry(key).or_insert_with(|| vec![false; width]);
+        row[i as usize] = true;
+    }
+
+    let mut widest = 0u32;
+    for row in rows.values() {
+        let mut run = 0u32;
+        for &occupied in row {
+            if occupied {
+                run += 1;
+                widest = widest.max(run);
+            } else {
+                run = 0;
+            }
+        }
+    }
+    widest
 }
 
 /// **Region-scoped diameter readout (issue #20 S6d).** Compute the SAME value as
@@ -317,60 +337,23 @@ impl VoxelGrid {
 /// computation by construction: the set of bucketed voxels is the union of the
 /// chunk occupied sets (= the monolithic occupied set), and the bucketing /
 /// run-scan arithmetic is byte-for-byte the same as
-/// [`VoxelGrid::widest_run_in_band`].
+/// [`VoxelGrid::widest_run_in_band`] — because it IS the same code: both funnel their
+/// voxels through the shared [`widest_run_over`] kernel.
 pub fn widest_run_in_band_over_chunks<'grid>(
     region_dimensions: [u32; 3],
     chunk_grids: impl IntoIterator<Item = &'grid VoxelGrid>,
     band_min: u32,
     band_max: u32,
 ) -> u32 {
-    let [grid_x, grid_y, grid_z] = region_dimensions;
-    if grid_x == 0 || grid_y == 0 || grid_z == 0 {
-        return 0;
-    }
-    let width = grid_x as usize;
-    // Corner-anchoring decode: FLOORED half (`dim/2` integer division), exact for an
-    // odd dim — see `widest_run_in_band`.
-    let half_x = (grid_x / 2) as f32;
-    let half_y = (grid_y / 2) as f32;
-    let half_z = (grid_z / 2) as f32;
-
-    // ONE shared occupancy row (length grid_x) per (z, y) row that touches the
-    // band — shared across ALL chunks, so a run spanning a chunk seam is one
-    // contiguous span in the same bitset. Keyed by a flat (z, y) index, built
-    // sparsely so an empty band is cheap. Z-up: the band is a Z-layer range.
-    let mut rows: std::collections::HashMap<u64, Vec<bool>> = std::collections::HashMap::new();
-    for grid in chunk_grids {
-        for voxel in &grid.occupied {
-            let position = voxel.world_position();
-            let k = (position[2] + half_z - 0.5).round() as i64;
-            if k < band_min as i64 || k > band_max as i64 {
-                continue;
-            }
-            let i = (position[0] + half_x - 0.5).round() as i64;
-            let j = (position[1] + half_y - 0.5).round() as i64;
-            if i < 0 || i >= width as i64 || j < 0 || j >= grid_y as i64 {
-                continue;
-            }
-            let key = (k as u64) << 32 | (j as u64);
-            let row = rows.entry(key).or_insert_with(|| vec![false; width]);
-            row[i as usize] = true;
-        }
-    }
-
-    let mut widest = 0u32;
-    for row in rows.values() {
-        let mut run = 0u32;
-        for &occupied in row {
-            if occupied {
-                run += 1;
-                widest = widest.max(run);
-            } else {
-                run = 0;
-            }
-        }
-    }
-    widest
+    // Flatten every chunk's occupied list into one voxel stream: the kernel buckets
+    // them into a SINGLE shared row per (z, y) keyed by GLOBAL X, so a run straddling
+    // a chunk seam lands as adjacent bits in the same bitset — the seam vanishes.
+    widest_run_over(
+        chunk_grids.into_iter().flat_map(|grid| grid.occupied.iter()),
+        region_dimensions,
+        band_min,
+        band_max,
+    )
 }
 
 /// Signed distance to an axis-aligned box with half-extents `box_half`.
