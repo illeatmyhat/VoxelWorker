@@ -497,8 +497,6 @@ impl Scene {
             &mut scope_path,
             &mut |world_offset_voxels, _offset_local_voxels, _orientation, rotation, body, _grid_on_faces, _operation, outset, _scope_path| {
                 let outset_voxels = outset_voxels_at(outset, voxels_per_block);
-            let world_offset_voxels: [i64; 3] =
-                std::array::from_fn(|axis| world_offset_voxels[axis] - outset_voxels);
                 // The dilated body's low corner sits `N` BELOW the producer's, so the extent
                 // must start there — growing the size alone would put a right-sized box in
                 // the wrong place (ADR 0008 — the frame is carried).
@@ -589,8 +587,6 @@ impl Scene {
             &mut scope_path,
             &mut |world_offset_voxels, _offset_local_voxels, _orientation, rotation, body, _grid_on_faces, _operation, outset, _scope_path| {
                 let outset_voxels = outset_voxels_at(outset, voxels_per_block);
-            let world_offset_voxels: [i64; 3] =
-                std::array::from_fn(|axis| world_offset_voxels[axis] - outset_voxels);
                 // The dilated body's low corner sits `N` BELOW the producer's, so the extent
                 // must start there — growing the size alone would put a right-sized box in
                 // the wrong place (ADR 0008 — the frame is carried).
@@ -709,12 +705,21 @@ impl Scene {
             // readout spans the axes it actually occupies.
             let size_blocks = rotated_grid_extent_blocks(rotation, size_blocks);
             any = true;
-            // The leaf's whole-block offset, via the single floor rule.
+            let density = voxels_per_block.max(1) as i64;
+            // The leaf's whole-block low corner, via the single floor rule.
             let world_blocks = world_block_corner_floor(world_offset_voxels, voxels_per_block);
             for axis in 0..3 {
-                // Corner-anchored: the offset block IS the low corner.
+                // Corner-anchored ENCLOSING-block box: floor the low voxel to its block
+                // and CEIL the high voxel to its block INDEPENDENTLY. An off-block leaf
+                // touches one more block than its block size — `low + size_blocks` would
+                // slide the box toward the low corner and under-report the high side (the
+                // same clip fixed in `node_subtree_extent_blocks`). Block-aligned leaves
+                // have no remainder, so `high == low + size_blocks` exactly.
                 let low = world_blocks[axis];
-                let high = low + size_blocks[axis] as i64;
+                let high_voxel = world_offset_voxels[axis] + size_blocks[axis] as i64 * density;
+                // Ceil to a whole block (signed `div_ceil` is unstable): `ceil(a/d) ==
+                // −((−a).div_euclid(d))` for a positive divisor.
+                let high = -((-high_voxel).div_euclid(density));
                 min_corner[axis] = min_corner[axis].min(low);
                 max_corner[axis] = max_corner[axis].max(high);
             }
