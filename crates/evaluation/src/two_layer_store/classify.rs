@@ -666,19 +666,28 @@ fn compose_leaf_into_region(
     density: u32,
     voxels_per_block: u32,
 ) {
-    // ADR 0027: a genuinely-rotated FIELD producer cannot be emitted by the forward affine
-    // (its `[0, full)` cells no longer land one-per-abs-cell), so resample it by INVERSE
-    // GATHER instead. Every axis-aligned leaf (all of today's placements) and every fieldless
-    // producer (cloud / VoxelBody, which is NEVER continuously rotated) takes the exact
-    // forward-emit path below — byte-identical to ADR 0026.
+    // ADR 0027: a FIELD producer whose producer-local lattice is OUT OF PHASE with the abs
+    // lattice cannot be emitted by the forward affine (its `[0, full)` cells no longer land
+    // one-per-abs-cell), so resample it by INVERSE GATHER instead. Two things throw it out of
+    // phase: a genuine rotation, OR a fractional `offset_local_voxels` (a sub-voxel seat under
+    // ADR 0027 continuous placement). A fractional TRANSLATION dephases the lattice exactly like
+    // a rotation — `abs_box_to_producer_local`'s round-to-nearest then disagrees with the
+    // floor-based per-cell emit and drops the boundary-voxel layer at every block seam (a
+    // one-block-thick tube wall grids into fragments). Every whole-phase leaf (integer offset,
+    // no rotation — most placements) and every fieldless producer (cloud / VoxelBody, which is
+    // NEVER continuously rotated) takes the exact forward-emit path below — byte-identical to
+    // ADR 0026.
     let axis_aligned = substrate::spatial::is_axis_aligned(leaf.rotation);
-    if !axis_aligned && leaf.producer.as_field().is_some() {
+    let integer_offset = leaf.offset_local_voxels.iter().all(|f| f.fract() == 0.0);
+    let in_phase = axis_aligned && integer_offset;
+    if !in_phase && leaf.producer.as_field().is_some() {
         gather_rotated_leaf_into_region(region, leaf, block_min_abs, density, voxels_per_block);
         return;
     }
     debug_assert!(
-        axis_aligned,
-        "a continuously-rotated fieldless producer cannot reach the forward-emit path (ADR 0027)"
+        in_phase,
+        "an out-of-phase (rotated or sub-voxel-seated) fieldless producer cannot reach the \
+         forward-emit path (ADR 0027)"
     );
 
     // Resolve JUST this block's window in the leaf's producer-local voxel-index frame
