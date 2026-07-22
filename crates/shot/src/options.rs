@@ -251,7 +251,13 @@ pub(crate) struct ShotOptions {
     /// the case the deleted representability gate routed to the mesh. Now engages the brick sink
     /// (per-voxel cell-key shading). Overrides --shape/--size/--density.
     pub(crate) demo_mixed_material: bool,
-    /// `--two-layer` (ADR 0010 E3 / #50): render the voxel mesh THROUGH the two-layer
+    /// `--two-layer` (ADR 0010 E3 / #50): now the **DEFAULT** mesh path — this flag is a
+    /// kept-for-compat no-op (the golden cross-checks still pass it explicitly). shot renders
+    /// through the two-layer path the LIVE APP drives, so a headless render matches what the
+    /// window shows — including the ADR 0027 continuous rotation the dense oracle drops. Opt OUT
+    /// with [`dense`](Self::dense) for the A/B parity oracle.
+    ///
+    /// Historically: render the voxel mesh THROUGH the two-layer
     /// path — build each covering chunk's [`evaluation::two_layer_store::TwoLayerChunk`]
     /// (coarse one-box + microblock cuboids + seam-solidity flags) and mesh from it via
     /// [`voxel_worker::CuboidMeshRenderer::new_from_two_layer_chunks`], instead of the dense per-chunk
@@ -259,6 +265,12 @@ pub(crate) struct ShotOptions {
     /// (the E3 golden gate). DEFAULT OFF — the live renderer stays on the dense path until
     /// E5. Only the voxel MESH source changes; fog / overlays / export are unaffected.
     pub(crate) two_layer: bool,
+    /// `--dense`: opt OUT of the (now default) two-layer path and mesh through the retired dense
+    /// reference `Store` (`stamp_producer_into_chunk`) — the A/B parity oracle. NOTE the dense
+    /// stamp applies only translation, NOT the ADR 0027 continuous rotation, so a `--dense` render
+    /// of a seated (rotated) leaf is deliberately upright; it exists to cross-check the two-layer
+    /// path on axis-aligned scenes, not to display rotation.
+    pub(crate) dense: bool,
     /// `--brick` (ADR 0011 G1): source the voxel display from the **brick raymarch**
     /// instead of the CPU cuboid mesh — build the two-layer boundary set, pack it into
     /// the G0 brick field (sorted records + R8 sculpted atlas) and render via the
@@ -366,6 +378,7 @@ impl Default for ShotOptions {
             demo_two_material: false,
             demo_mixed_material: false,
             two_layer: false,
+            dense: false,
             brick: false,
             brick_force_miss: false,
             replay_path: None,
@@ -664,7 +677,12 @@ pub(crate) fn parse_options() -> ShotOptions {
                 options.synthetic_block = true;
             }
             "--two-layer" => {
+                // Now the DEFAULT path (kept as an accepted no-op so the golden harness's
+                // explicit `--two-layer` cross-check invocations still parse).
                 options.two_layer = true;
+            }
+            "--dense" => {
+                options.dense = true;
             }
             "--brick" => {
                 options.brick = true;

@@ -671,8 +671,11 @@ pub(crate) async fn run_capture(options: ShotOptions) {
             &VoxelGrid::new(grid_dimensions),
             options.geometry.voxels_per_block,
         )
-    } else if options.two_layer && scene.has_chunkable_extent(options.geometry.voxels_per_block) {
-        // ADR 0010 E3 / #50: mesh THROUGH the two-layer path — build each covering chunk's
+    } else if !options.dense && scene.has_chunkable_extent(options.geometry.voxels_per_block) {
+        // ADR 0010 E3 / #50: mesh THROUGH the two-layer path — now the DEFAULT (the live-app
+        // path), so a headless render matches the window, INCLUDING the ADR 0027 continuous
+        // rotation the dense oracle drops. `--dense` opts back to the parity oracle below. Build
+        // each covering chunk's [`evaluation::two_layer_store::TwoLayerChunk`]
         // `TwoLayerChunk` (coarse one-box + microblock cuboids + seam flags) and mesh from
         // it. PROVES pixel-identity to the dense path (the E3 golden gate). The render-chunk
         // borrow is dropped first (the two-layer build reads the SCENE evaluator, not the
