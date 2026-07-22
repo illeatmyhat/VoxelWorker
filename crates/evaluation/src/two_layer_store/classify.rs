@@ -660,6 +660,27 @@ pub(crate) fn resolve_boundary_block(
 /// of the accumulator, including the whole block when its body misses it (`A ∩ ∅ = ∅`).
 /// Both booleans are occupancy-only (ADR 0017 Decision 1 — they never write a render key,
 /// so the material of every surviving cell is untouched).
+/// Clear every accumulator cell in the block-local `[0, density)³` extent that the
+/// mask's `body_covers` set MISSES — the Intersect clearing sweep shared by
+/// [`compose_leaf_into_region`] (forward emit) and [`gather_rotated_leaf_into_region`]
+/// (inverse gather). Surviving cells keep the render key they already carry (the mask
+/// never stamps); a body covering nothing clears the whole block (`A ∩ ∅ = ∅`).
+fn clear_uncovered_cells(
+    region: &mut VoxelRegion,
+    density: u32,
+    body_covers: &std::collections::HashSet<[u32; 3]>,
+) {
+    for z in 0..density {
+        for y in 0..density {
+            for x in 0..density {
+                if region.cell_at(x, y, z).is_some() && !body_covers.contains(&[x, y, z]) {
+                    region.set(x, y, z, None);
+                }
+            }
+        }
+    }
+}
+
 fn compose_leaf_into_region(
     region: &mut VoxelRegion,
     leaf: &LeafProducer,
@@ -714,7 +735,7 @@ fn compose_leaf_into_region(
     // misses the block resolves an EMPTY window, so the sweep clears everything: the
     // block-local reading of `A ∩ ∅ = ∅`.
     if leaf.operation == CombineOp::Intersect {
-        let mut body_covers: std::collections::HashSet<[i64; 3]> =
+        let mut body_covers: std::collections::HashSet<[u32; 3]> =
             std::collections::HashSet::with_capacity(local.occupied.len());
         for voxel in &local.occupied {
             // ADR 0027: the voxel's index is in the producer's local frame; map it to absolute
@@ -724,19 +745,9 @@ fn compose_leaf_into_region(
             if block_local.iter().any(|&c| c < 0 || c >= density as i64) {
                 continue; // Outside this block (the window clamps, but guard anyway).
             }
-            body_covers.insert(block_local);
+            body_covers.insert(std::array::from_fn(|axis| block_local[axis] as u32));
         }
-        for z in 0..density {
-            for y in 0..density {
-                for x in 0..density {
-                    if region.cell_at(x, y, z).is_some()
-                        && !body_covers.contains(&[x as i64, y as i64, z as i64])
-                    {
-                        region.set(x, y, z, None);
-                    }
-                }
-            }
-        }
+        clear_uncovered_cells(region, density, &body_covers);
         return;
     }
 
@@ -838,15 +849,7 @@ fn gather_rotated_leaf_into_region(
                 }
             }
         }
-        for z in 0..density {
-            for y in 0..density {
-                for x in 0..density {
-                    if region.cell_at(x, y, z).is_some() && !body_covers.contains(&[x, y, z]) {
-                        region.set(x, y, z, None);
-                    }
-                }
-            }
-        }
+        clear_uncovered_cells(region, density, &body_covers);
         return;
     }
 
