@@ -4,7 +4,7 @@
 
 use voxel_core::spatial_index::{LeafEntry, LeafFingerprint, LeafSpatialIndex, VoxelAabb};
 
-use super::extent::rotated_grid_extent_voxels;
+use super::extent::{fold_leaf_boxes, leaf_placed_voxel_box, rotated_grid_extent_voxels};
 use super::producers::{
     leaf_content_fingerprint, operation_masks_beyond_bounds, outset_voxels_at,
 };
@@ -33,33 +33,12 @@ impl Scene {
     /// chunk_extent)`) lives in — distinct from [`placed_extent_blocks`] (the
     /// whole-block size readout). `None` when no leaf has an intrinsic size.
     pub(super) fn placed_extent_voxels(&self, voxels_per_block: u32) -> Option<([i64; 3], [i64; 3])> {
-        let mut min_corner = [i64::MAX; 3];
-        let mut max_corner = [i64::MIN; 3];
-        let mut any = false;
-        self.for_each_leaf(&mut |world_offset_voxels, _offset_local_voxels, _orientation, rotation, body, _grid_on_faces, _operation, outset, _scope_path| {
-            let outset_voxels = outset_voxels_at(outset, voxels_per_block);
-            let world_offset_voxels: [i64; 3] =
-                std::array::from_fn(|axis| world_offset_voxels[axis] - outset_voxels);
-            let Some(grid_voxels) = body.grid_voxels(voxels_per_block, outset_voxels) else {
-                return;
-            };
-            // ADR 0026: an oriented leaf occupies its TURNED grid in the world (a 4×4×20
-            // cylinder stood on a +X wall spans 20×4×4), still corner-anchored at its world
-            // offset. Turn the local extent into world axes before the span.
-            let grid_voxels = rotated_grid_extent_voxels(rotation, grid_voxels);
-            any = true;
-            for axis in 0..3 {
-                // The producer-true emitted grid (`size·d` for an SDF Tool, the exact
-                // prism AABB for a SketchTool), corner-anchored so its world offset is
-                // the LOW corner: it spans `[off, off + grid)`.
-                let grid = grid_voxels[axis];
-                let low = world_offset_voxels[axis];
-                let high = low + grid;
-                min_corner[axis] = min_corner[axis].min(low);
-                max_corner[axis] = max_corner[axis].max(high);
-            }
-        });
-        any.then_some((min_corner, max_corner))
+        // The producer-true corner-anchored voxel box `[off, off + rotated_grid)` per leaf
+        // (leaf_placed_voxel_box, shared with the subtree-scoped extent), folded into their
+        // union by the shared fold_leaf_boxes over the scene-wide leaf walk.
+        fold_leaf_boxes(voxels_per_block, leaf_placed_voxel_box, |sink| {
+            self.walk_scene_leaves(sink)
+        })
     }
 
     /// The inclusive range of chunk coordinates `[min_chunk, max_chunk]` whose
