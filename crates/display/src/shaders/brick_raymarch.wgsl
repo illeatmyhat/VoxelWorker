@@ -1107,11 +1107,19 @@ fn shade_cuboid_surface(absolute: vec3<f32>, world_normal: vec3<f32>, material_i
     // overlay bit. (Before the representability gate's deletion this was one scene-wide bool;
     // a representable scene had a uniform overlay, so per-hit == scene-wide for it — byte-identical.)
     if (uniforms.grid_overlay_enabled > 0.5 && overlay != 0u) {
+        // Anchor the overlay to the TRUE world block lattice, mirroring the cuboid
+        // path's `overlay_world_offset` fix. `absolute` here is the shading-absolute
+        // frame (`world + half`); the true world voxel is `absolute + (recentre − half)`,
+        // whose mod-edge part is the already-packed `lattice_shift` (its block-multiple
+        // remainder `voxel_bias` is a no-op for both the voxel and block line periods).
+        // Without this the block lines sit at the render-local phase and drift off the
+        // world lattice (and the per-object cage) for any off-block scene.
+        let world_voxel = absolute + vec3<f32>(uniforms.lattice_shift_and_edge.xyz);
         let in_plane = step(abs(world_normal), vec3<f32>(0.5));
-        let voxel_distance = abs(absolute - floor(absolute + 0.5));
+        let voxel_distance = abs(world_voxel - floor(world_voxel + 0.5));
         let density = uniforms.voxels_per_block;
         let block_distance =
-            abs(absolute / density - floor(absolute / density + 0.5)) * density;
+            abs(world_voxel / density - floor(world_voxel / density + 0.5)) * density;
 
         // Screen-space-aware line coverage — identical maths/constants to
         // `cuboid.wgsl` (see the comment there): minimum pixel half-width,
