@@ -1,5 +1,36 @@
 use super::*;
 
+/// Push one merged face quad for `face` — 4 vertices then the two CCW triangles of
+/// the instanced winding scheme (`base,+1,+2, base,+2,+3`) — spanning the box
+/// `[lo, hi]` in WORLD space (corner axis `0` → `lo`, `1` → `hi`) with `material_id`.
+/// The shared inner loop of [`emit_coarse_block_box`] and [`emit_box_faces`]; each
+/// caller keeps its own per-face exposure test and its own index sink, and folds any
+/// world offset into `lo`/`hi` before calling, so only the varying terms stay at the
+/// call site while the winding/normal/attribute wiring lives once.
+fn emit_face_quad(
+    face: &FaceTemplate,
+    lo: [f32; 3],
+    hi: [f32; 3],
+    material_id: u32,
+    vertices: &mut Vec<CuboidVertex>,
+    sink: &mut Vec<u32>,
+) {
+    let base = vertices.len() as u32;
+    for corner in &face.corners {
+        let world = [
+            if corner[0] == 0 { lo[0] } else { hi[0] },
+            if corner[1] == 0 { lo[1] } else { hi[1] },
+            if corner[2] == 0 { lo[2] } else { hi[2] },
+        ];
+        vertices.push(CuboidVertex {
+            position: world,
+            normal: face.normal,
+            material_id,
+        });
+    }
+    sink.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+}
+
 /// Emit a COARSE-SOLID block as ONE box (ADR 0010 Decision 4): the whole `density³` block
 /// at `block_id`, culling each of its 6 block faces when the neighbour block's matching
 /// face is fully solid (seam-flag culling — no densified apron, no per-voxel decompose of
@@ -51,20 +82,7 @@ pub(crate) fn emit_coarse_block_box(
         if neighbour_face_solid {
             continue;
         }
-        let base = vertices.len() as u32;
-        for corner in &face.corners {
-            let world = [
-                if corner[0] == 0 { lo[0] } else { hi[0] },
-                if corner[1] == 0 { lo[1] } else { hi[1] },
-                if corner[2] == 0 { lo[2] } else { hi[2] },
-            ];
-            vertices.push(CuboidVertex {
-                position: world,
-                normal: face.normal,
-                material_id: clean_material,
-            });
-        }
-        sink.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+        emit_face_quad(face, lo, hi, clean_material, vertices, sink);
     }
 }
 
@@ -413,17 +431,22 @@ pub(crate) fn emit_box_faces(
 ) {
     let [min_x, min_y, min_z] = voxel_box.min;
     let [max_x, max_y, max_z] = voxel_box.max;
-    // Inclusive box → the far plane is at max + 1.
-    let lo = [min_x as f32, min_y as f32, min_z as f32];
+    // Inclusive box → the far plane is at max + 1; fold the world offset straight into
+    // the lo/hi planes so the shared quad emitter sees final world corners.
+    let lo = [
+        min_x as f32 + world_offset[0],
+        min_y as f32 + world_offset[1],
+        min_z as f32 + world_offset[2],
+    ];
     let hi = [
-        (max_x + 1) as f32,
-        (max_y + 1) as f32,
-        (max_z + 1) as f32,
+        (max_x + 1) as f32 + world_offset[0],
+        (max_y + 1) as f32 + world_offset[1],
+        (max_z + 1) as f32 + world_offset[2],
     ];
 
-    // Expand the chunk AABB to this box's world extent (local index + offset).
-    aabb.expand(glam::Vec3::new(lo[0] + world_offset[0], lo[1] + world_offset[1], lo[2] + world_offset[2]));
-    aabb.expand(glam::Vec3::new(hi[0] + world_offset[0], hi[1] + world_offset[1], hi[2] + world_offset[2]));
+    // Expand the chunk AABB to this box's world extent.
+    aabb.expand(glam::Vec3::new(lo[0], lo[1], lo[2]));
+    aabb.expand(glam::Vec3::new(hi[0], hi[1], hi[2]));
 
     // The clean colour index (ADR 0003 §3c): the box's on-face-grid flag is NOT a vertex
     // attribute — the caller routed this box to the overlay-on or overlay-off index run by
@@ -435,22 +458,7 @@ pub(crate) fn emit_box_faces(
         if !face_is_exposed(voxel_box, region, face.neighbor_delta) {
             continue;
         }
-        let base = vertices.len() as u32;
-        for corner in &face.corners {
-            // 0 → min plane (lo), 1 → max+1 plane (hi); shift into world space.
-            let world = [
-                (if corner[0] == 0 { lo[0] } else { hi[0] }) + world_offset[0],
-                (if corner[1] == 0 { lo[1] } else { hi[1] }) + world_offset[1],
-                (if corner[2] == 0 { lo[2] } else { hi[2] }) + world_offset[2],
-            ];
-            vertices.push(CuboidVertex {
-                position: world,
-                normal: face.normal,
-                material_id,
-            });
-        }
-        // Two CCW triangles per quad (matching the instanced winding scheme).
-        indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+        emit_face_quad(face, lo, hi, material_id, vertices, indices);
     }
 }
 
