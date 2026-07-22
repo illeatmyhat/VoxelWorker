@@ -49,9 +49,11 @@ mod cancel;
 mod carve;
 mod chevron_down;
 mod chevron_right;
+mod close_loop;
 mod commit;
 mod composed_part;
 mod cylinder;
+mod delete_vertex;
 mod density;
 mod torus;
 mod tube;
@@ -81,13 +83,19 @@ mod orbit;
 mod outset;
 mod pan;
 mod part;
+mod polyline;
 mod probe;
+mod rectangle;
 mod revolve;
 mod root_part;
 mod rotate;
 mod sculpt_add;
 mod search;
+mod select_vertex;
 mod sketch;
+mod snap_block;
+mod snap_none;
+mod snap_voxel;
 mod sphere;
 mod subtract;
 mod sweep;
@@ -470,6 +478,8 @@ pub enum Group {
     Structure,
     /// Authoring tools.
     Tools,
+    /// The sketch-mode rail: the profile-vertex tools and their position snap (ADR 0028).
+    Sketch,
     /// Interface furniture.
     Chrome,
 }
@@ -485,6 +495,7 @@ impl Group {
             Group::Producers => "Producers",
             Group::Structure => "Structure",
             Group::Tools => "Tools",
+            Group::Sketch => "Sketch mode",
             Group::Chrome => "Chrome",
         }
     }
@@ -499,6 +510,7 @@ impl Group {
             Group::Producers => "sketch→volume is the atom; primitives are sugar over it",
             Group::Structure => "parts, the root part, and the fold itself",
             Group::Tools => "what the pointer is currently doing",
+            Group::Sketch => "the sketch scope's rail: vertex tools + profile position snap (extrude/revolve reuse Producers)",
             Group::Chrome => "furniture: disclosure, commit, drawer, search",
         }
     }
@@ -562,6 +574,15 @@ pub enum Icon {
     Rotate,
     Flip,
     Density,
+    // Sketch mode.
+    SelectVertex,
+    Polyline,
+    Rectangle,
+    DeleteVertex,
+    CloseLoop,
+    SnapNone,
+    SnapVoxel,
+    SnapBlock,
     // Chrome.
     ChevronRight,
     ChevronDown,
@@ -618,6 +639,14 @@ impl Icon {
         Icon::Rotate,
         Icon::Flip,
         Icon::Density,
+        Icon::SelectVertex,
+        Icon::Polyline,
+        Icon::Rectangle,
+        Icon::DeleteVertex,
+        Icon::CloseLoop,
+        Icon::SnapNone,
+        Icon::SnapVoxel,
+        Icon::SnapBlock,
         Icon::ChevronRight,
         Icon::ChevronDown,
         Icon::Commit,
@@ -674,6 +703,14 @@ impl Icon {
             Icon::Rotate => g.marks(rotate::DRAW),
             Icon::Flip => g.marks(flip::DRAW),
             Icon::Density => g.marks(density::DRAW),
+            Icon::SelectVertex => g.marks(select_vertex::DRAW),
+            Icon::Polyline => g.marks(polyline::DRAW),
+            Icon::Rectangle => g.marks(rectangle::DRAW),
+            Icon::DeleteVertex => g.marks(delete_vertex::DRAW),
+            Icon::CloseLoop => g.marks(close_loop::DRAW),
+            Icon::SnapNone => g.marks(snap_none::DRAW),
+            Icon::SnapVoxel => g.marks(snap_voxel::DRAW),
+            Icon::SnapBlock => g.marks(snap_block::DRAW),
             Icon::ChevronRight => g.marks(chevron_right::DRAW),
             Icon::ChevronDown => g.marks(chevron_down::DRAW),
             Icon::Commit => g.marks(commit::DRAW),
@@ -730,6 +767,14 @@ impl Icon {
             Icon::Rotate => "rotate",
             Icon::Flip => "flip",
             Icon::Density => "density",
+            Icon::SelectVertex => "select-vertex",
+            Icon::Polyline => "polyline",
+            Icon::Rectangle => "rectangle",
+            Icon::DeleteVertex => "delete-vertex",
+            Icon::CloseLoop => "close-loop",
+            Icon::SnapNone => "snap-none",
+            Icon::SnapVoxel => "snap-voxel",
+            Icon::SnapBlock => "snap-block",
             Icon::ChevronRight => "chevron-right",
             Icon::ChevronDown => "chevron-down",
             Icon::Commit => "commit",
@@ -759,6 +804,8 @@ impl Icon {
             | Icon::FoldCursor | Icon::Link => Group::Structure,
             Icon::SculptAdd | Icon::Carve | Icon::Measure | Icon::Probe | Icon::Material
             | Icon::Rotate | Icon::Flip | Icon::Density => Group::Tools,
+            Icon::SelectVertex | Icon::Polyline | Icon::Rectangle | Icon::DeleteVertex
+            | Icon::CloseLoop | Icon::SnapNone | Icon::SnapVoxel | Icon::SnapBlock => Group::Sketch,
             Icon::ChevronRight | Icon::ChevronDown | Icon::Commit | Icon::Cancel | Icon::Drawer
             | Icon::Search => Group::Chrome,
         }
@@ -830,6 +877,23 @@ impl Icon {
             Icon::Rotate => "Rotate by a quarter turn — the lattice admits 24 orientations, no more.",
             Icon::Flip => "Mirror on an axis; like rotation, exact on the lattice.",
             Icon::Density => "Density: voxels per block, bounded 1..=64. Fineness, never size.",
+            Icon::SelectVertex => {
+                "Sketch: the default arrow — pick and drag a profile vertex. The node at the tip \
+                 says 'a point', not a whole body."
+            }
+            Icon::Polyline => "Sketch: click to place connected profile points — arbitrary organic outlines.",
+            Icon::Rectangle => "Sketch: drag a box into a four-point profile — the box-drag sugar, inside the mode.",
+            Icon::DeleteVertex => "Sketch: remove a profile point — the inverse of place, not a boolean subtract.",
+            Icon::CloseLoop => {
+                "Sketch: join the open polyline back to its start vertex; the closing run is dashed \
+                 until the click commits it."
+            }
+            Icon::SnapNone => {
+                "Sketch position snap — none: the vertex rides sub-voxel under the cursor, the \
+                 fraction on offset_local (ADR 0027 reuse)."
+            }
+            Icon::SnapVoxel => "Sketch position snap — voxel: the vertex locks to the fine lattice crossing. The default.",
+            Icon::SnapBlock => "Sketch position snap — block: the vertex locks to block boundaries, for clean inter-part mating.",
             Icon::ChevronRight => "Disclosure, closed.",
             Icon::ChevronDown => "Disclosure, open.",
             Icon::Commit => "Accept: the edit lands in the fold as a node.",

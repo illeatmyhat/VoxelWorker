@@ -284,6 +284,7 @@ impl Sheet {
             Group::Producers,
             Group::Structure,
             Group::Tools,
+            Group::Sketch,
             Group::Chrome,
         ];
         for group in groups {
