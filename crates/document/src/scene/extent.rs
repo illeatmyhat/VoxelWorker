@@ -379,77 +379,25 @@ fn world_block_corner_floor(world_offset_voxels: [i64; 3], voxels_per_block: u32
     ]
 }
 
-/// The world-axis span of a corner-anchored local box `[0, extent]` after the continuous
-/// rotation `rotation` (ADR 0027) — the enclosing AABB extent, per axis, as a float.
-///
-/// The leaf's low rotated corner is anchored back at its world offset (the classifier's
-/// `LeafAffine::world_of` convention: `rotation·local − min_rotated_corner + world_offset`, so
-/// the min corner lands exactly at `world_offset`). Every extent walk therefore spans
-/// `[world_offset, world_offset + this_span)`, mirroring `classify::leaf_world_box` — the
-/// coverage/broadphase extent must enclose the SAME rotated box the classifier resamples, or a
-/// tilted leaf's protruding tip falls in a chunk that is never built (the ADR 0027 clip bug).
-fn rotated_extent_span(rotation: Quat, extent: [f32; 3]) -> Vec3 {
-    let full = Vec3::from_array(extent);
-    let mut min = Vec3::splat(f32::INFINITY);
-    let mut max = Vec3::splat(f32::NEG_INFINITY);
-    for corner_x in [0.0, full.x] {
-        for corner_y in [0.0, full.y] {
-            for corner_z in [0.0, full.z] {
-                let rotated = rotation * Vec3::new(corner_x, corner_y, corner_z);
-                min = min.min(rotated);
-                max = max.max(rotated);
-            }
-        }
-    }
-    max - min
-}
-
-/// Whether `rotation` is one of the 24 axis-aligned lattice turns (a `1e-4` tolerance):
-/// each of `rotation·{X, Y, Z}` lands on a signed unit axis. Mirrors
-/// `classify::is_axis_aligned` — an axis-aligned leaf's extent takes the EXACT integer path
-/// (byte-identical to the pre-0027 `turn_extent` permutation, so every existing golden holds);
-/// a genuinely-rotated one ceils its span to conservatively enclose the rotated box.
-fn is_axis_aligned_rotation(rotation: Quat) -> bool {
-    const TOLERANCE: f32 = 1e-4;
-    [Vec3::X, Vec3::Y, Vec3::Z].into_iter().all(|axis| {
-        let image = (rotation * axis).to_array();
-        let near_unit =
-            image.iter().filter(|component| (component.abs() - 1.0).abs() <= TOLERANCE).count();
-        let near_zero = image.iter().filter(|component| component.abs() <= TOLERANCE).count();
-        near_unit == 1 && near_zero == 2
-    })
-}
-
-/// The world-axis **voxel** extent of a leaf's corner-anchored local grid `[0, grid_voxels)`
-/// after the continuous rotation `rotation` (ADR 0027). Axis-aligned rotations round (bit-exact
-/// with the pre-0027 `LatticeOrientation::turn_extent_i64`, so a `90°` lattice turn keeps its
-/// integer extent); a genuine rotation ceils to conservatively enclose the rotated box (SOUND:
-/// the true occupied set ⊆ this AABB, ADR 0027 §4). Replaces the rotation-blind
-/// `orientation.turn_extent_i64` in the voxel-frame coverage walks.
+/// The world-axis **voxel** extent of a leaf's corner-anchored local grid `[0, grid_voxels)` after
+/// the continuous rotation `rotation` (ADR 0027) — the span the coverage/broadphase walks anchor at
+/// each leaf's world offset (`[world_offset, world_offset + this)`). Delegates to
+/// [`substrate::spatial::LeafPlacement`] built at world-offset zero (so its AABB is `[0, span)`) —
+/// the ONE placement definition the classifier and the dense oracle fold through, so the reserved
+/// extent can never diverge from the resampled body (the tube-truncation bug). Axis-aligned rounds
+/// (bit-exact with the pre-0027 `turn_extent`); a genuine rotation ceils to conservatively enclose
+/// (ADR 0027 §4).
 pub(super) fn rotated_grid_extent_voxels(rotation: Quat, grid_voxels: [i64; 3]) -> [i64; 3] {
-    let span =
-        rotated_extent_span(rotation, [grid_voxels[0] as f32, grid_voxels[1] as f32, grid_voxels[2] as f32]);
-    if is_axis_aligned_rotation(rotation) {
-        [span.x.round() as i64, span.y.round() as i64, span.z.round() as i64]
-    } else {
-        [span.x.ceil() as i64, span.y.ceil() as i64, span.z.ceil() as i64]
-    }
+    let full = Vec3::new(grid_voxels[0] as f32, grid_voxels[1] as f32, grid_voxels[2] as f32);
+    substrate::spatial::LeafPlacement::new(rotation, full, Vec3::ZERO).world_aabb().1
 }
 
-/// The world-axis **block** extent of a leaf's corner-anchored local block box `[0, size_blocks)`
-/// after the continuous rotation `rotation` (ADR 0027) — the block-frame twin of
-/// [`rotated_grid_extent_voxels`], for the whole-block size readouts. Axis-aligned rotations round
-/// (bit-exact with `LatticeOrientation::turn_extent`); a genuine rotation ceils. The block bound
-/// is a coarser conservative view (rotation is linear, so the span scales; ceiling in block units
-/// still encloses the rotated body).
+/// The world-axis **block** extent, the block-frame twin of [`rotated_grid_extent_voxels`] for the
+/// whole-block size readouts — the same substrate placement, cast to block units.
 pub(super) fn rotated_grid_extent_blocks(rotation: Quat, size_blocks: [u32; 3]) -> [u32; 3] {
-    let span =
-        rotated_extent_span(rotation, [size_blocks[0] as f32, size_blocks[1] as f32, size_blocks[2] as f32]);
-    if is_axis_aligned_rotation(rotation) {
-        [span.x.round() as u32, span.y.round() as u32, span.z.round() as u32]
-    } else {
-        [span.x.ceil() as u32, span.y.ceil() as u32, span.z.ceil() as u32]
-    }
+    let full = Vec3::new(size_blocks[0] as f32, size_blocks[1] as f32, size_blocks[2] as f32);
+    let max = substrate::spatial::LeafPlacement::new(rotation, full, Vec3::ZERO).world_aabb().1;
+    [max[0] as u32, max[1] as u32, max[2] as u32]
 }
 
 impl Scene {

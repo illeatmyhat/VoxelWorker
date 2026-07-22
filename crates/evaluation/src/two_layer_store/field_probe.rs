@@ -35,7 +35,7 @@ use glam::Vec3;
 
 use document::scene::{CombineOp, LeafProducer};
 
-use super::{scoped_leaf_steps, LeafAffine, ScopedLeafStep};
+use super::{leaf_affine, scoped_leaf_steps, ScopedLeafStep};
 
 /// Fold one `operand` field value into a scope `accumulator` under `operation` — the
 /// pointwise CSG algebra (Duff 1992) whose sign matches the classifier's occupancy
@@ -109,7 +109,7 @@ pub fn composed_field_at(
                 // Map the absolute world point into THIS leaf's producer-local voxel frame
                 // via the classifier's own inverse affine (ADR 0027 — the frame is carried,
                 // never re-derived), then read the producer's signed distance there.
-                let affine = LeafAffine::of(leaf, voxels_per_block);
+                let affine = leaf_affine(leaf, voxels_per_block);
                 let local = affine.local_of(world_point);
                 let value = field.signed_distance(local.to_array(), voxels_per_block);
                 let accumulator = accumulators
