@@ -595,6 +595,7 @@ mod tests {
             placement_snap: PlacementSnap {
                 position: ui::panel::PositionSnap::Block,
                 angle: ui::panel::AngleSnap::Deg15,
+                pivot: ui::panel::PlacementPivot::VolumetricCenter,
             },
         };
 
@@ -622,6 +623,7 @@ mod tests {
         panel.placement_snap = PlacementSnap {
             position: ui::panel::PositionSnap::Block,
             angle: ui::panel::AngleSnap::Deg15,
+            pivot: ui::panel::PlacementPivot::VolumetricCenter,
         };
 
         let config = AppConfig::capture(

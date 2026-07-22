@@ -32,7 +32,7 @@ use substrate::spatial::Ray;
 use document::intent::{Intent, NodeSpec};
 use document::scene::{LeafProducer, Scene};
 use document::voxel::SdfShape;
-use ui::panel::{PlacementSnap, PositionSnap};
+use ui::panel::{PlacementPivot, PlacementSnap, PositionSnap};
 use voxel_core::core_geom::MaterialChoice;
 
 use super::picking::PickFrame;
@@ -143,7 +143,14 @@ impl AppCore {
                 shape.size_voxels[1] as f32,
                 shape.size_voxels[2] as f32,
             );
-            let centre = contact + surface_normal * (shape.size_voxels[2] as f32 * 0.5);
+            // `seat_centre_at` lands the object's local CENTRE (`full/2`) at `centre`, so the pivot
+            // choice is just where that centroid goes: Base pushes it half the local HEIGHT out
+            // along the normal (base on the contact), VolumetricCenter puts the centroid ON the
+            // contact (object straddles the surface). Both seat to the same `surface_normal`.
+            let centre = match snap.pivot {
+                PlacementPivot::Base => contact + surface_normal * (shape.size_voxels[2] as f32 * 0.5),
+                PlacementPivot::VolumetricCenter => contact,
+            };
             let world_offset = evaluation::seat_centre_at(rotation, full, centre);
             let (offset_voxels, offset_local) = match snap.position {
                 // Continuous placement (ADR 0027): keep the pivot exactly under the cursor by
@@ -784,7 +791,7 @@ mod tests {
         for angle in [AngleSnap::Continuous, AngleSnap::Deg15] {
             let outcome = fixture.app_core.place_primitive(
                 cursor, VIEWPORT, &fixture.frame(), &fixture.scene, shape.clone(), MaterialChoice::Stone, true,
-                PlacementSnap { position: PositionSnap::Voxel, angle },
+                PlacementSnap { position: PositionSnap::Voxel, angle, ..PlacementSnap::default() },
             );
             let (PlacementTarget::OnSurface { face_normal, .. }, Some(Intent::PlaceNode { rotation_quaternion, .. })) =
                 (outcome.target, outcome.intent)

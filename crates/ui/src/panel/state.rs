@@ -142,6 +142,22 @@ pub enum AngleSnap {
     Deg15,
 }
 
+/// Which authoring **pivot** a placed node seats by (owner ruling 2026-07-21) — the continuous
+/// handle the drop lands at and rotates about. A **session** setting like [`PositionSnap`]. The
+/// node ALWAYS seats to the surface normal — that part is not a choice — this only picks which
+/// point of the object touches the contact. Centering yields a FRACTIONAL sub-voxel offset that
+/// the placement spine (`place_primitive`) carries; it is never rounded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum PlacementPivot {
+    /// Bottom-centre: the object's base rests on the contact and its centroid rides half its
+    /// local height out along the normal. The default.
+    #[default]
+    Base,
+    /// Volumetric centre: the object's centroid sits on the contact, so it straddles the surface
+    /// half in / half out.
+    VolumetricCenter,
+}
+
 /// The armed-tool placement snap settings, read by `place_primitive` and edited by the
 /// `Add <shape>` dialog. Grouped so the one seam threads a single value.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
@@ -151,6 +167,8 @@ pub struct PlacementSnap {
     pub position: PositionSnap,
     /// How the seated rotation snaps in angle.
     pub angle: AngleSnap,
+    /// Which authoring pivot the drop seats by.
+    pub pivot: PlacementPivot,
 }
 
 /// The viewer's exclusive rendering mode (ADR 0018 Decision 3). The viewer is always in

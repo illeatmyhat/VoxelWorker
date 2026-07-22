@@ -42,7 +42,7 @@ pub use add_shape_dialog::build_add_shape_dialog;
 pub use signal_stack::{build_signal_stack, cube_right_inset_points};
 pub use state::{
     AngleSnap, ExportPanelState, LayerRange, PanelResponse, PanelState, PlacementGhost,
-    PlacementSnap, PositionSnap, SignalStackState, ViewMode,
+    PlacementPivot, PlacementSnap, PositionSnap, SignalStackState, ViewMode,
 };
 
 use crate::palette::BlockPalette;

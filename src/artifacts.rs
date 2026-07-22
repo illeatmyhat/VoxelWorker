@@ -623,6 +623,7 @@ mod tests {
             placement_snap: ui::panel::PlacementSnap {
                 position: ui::panel::PositionSnap::NoSnap,
                 angle: ui::panel::AngleSnap::Deg15,
+                pivot: ui::panel::PlacementPivot::VolumetricCenter,
             },
         }
     }

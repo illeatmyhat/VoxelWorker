@@ -11,7 +11,7 @@
 use egui::{CornerRadius, Margin, Pos2, Rect, Stroke, UiBuilder, Vec2};
 use voxel_core::voxel::ShapeKind;
 
-use super::state::{AngleSnap, PanelState, PositionSnap};
+use super::state::{AngleSnap, PanelState, PlacementPivot, PositionSnap};
 
 /// Margin from the central-viewport corner, matching the Signal stack's inset.
 const DIALOG_MARGIN: f32 = 12.0;
@@ -69,6 +69,13 @@ pub fn build_add_shape_dialog(
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut state.placement_snap.angle, AngleSnap::Continuous, "Continuous");
                 ui.selectable_value(&mut state.placement_snap.angle, AngleSnap::Deg15, "15°");
+            });
+            ui.add_space(6.0);
+
+            ui.label("Pivot");
+            ui.horizontal(|ui| {
+                ui.selectable_value(&mut state.placement_snap.pivot, PlacementPivot::Base, "Base");
+                ui.selectable_value(&mut state.placement_snap.pivot, PlacementPivot::VolumetricCenter, "Center");
             });
         });
 
