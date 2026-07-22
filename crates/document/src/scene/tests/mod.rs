@@ -99,3 +99,59 @@ pub(super) fn resolved_absolute_multiset(
     let grid = scene.resolve_region(scene.full_extent_blocks(DENSITY), DENSITY, 0);
     occupied_multiset(&grid, scene.recentre_voxels(DENSITY))
 }
+
+/// The `--demo-scene` shape: a Sphere + an offset Box + an offset Torus, three
+/// materials, top-level node 0 selected. Was rebuilt inline in resolve.rs and named in
+/// placement.rs — one definition now.
+pub(super) fn demo_three_tool_scene(voxels_per_block: u32) -> Scene {
+    let make_tool = |kind, offset: [i64; 3], material| {
+        let shape = SdfShape::from_blocks(kind, [5, 5, 5], 1, voxels_per_block);
+        let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
+        node.transform = NodeTransform::from_blocks(offset, voxels_per_block);
+        node
+    };
+    let mut scene = scene_with_top_level_selected(
+        Scene::from_nodes(vec![
+            make_tool(ShapeKind::Sphere, [0, 0, 0], MaterialChoice::Stone),
+            make_tool(ShapeKind::Box, [8, 0, 0], MaterialChoice::Wood),
+            make_tool(ShapeKind::Torus, [0, 0, 6], MaterialChoice::Plain),
+        ]),
+        0,
+    );
+    scene.voxels_per_block = voxels_per_block;
+    scene
+}
+
+/// The `--demo-village` scene: four `Instance`s of one `House` definition (a Box body +
+/// a Cylinder chimney), top-level node 0 selected — proves instance/group transform
+/// composition (reuse-by-reference). One definition, shared by resolve.rs + placement.rs.
+pub(super) fn demo_village_scene(voxels_per_block: u32) -> Scene {
+    let house_def_id = DefId(1);
+    let tool = |kind, size: [u32; 3], offset: [i64; 3], material| {
+        let shape = SdfShape::from_blocks(kind, size, 1, voxels_per_block);
+        let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
+        node.transform = NodeTransform::from_blocks(offset, voxels_per_block);
+        node
+    };
+    let instance = |name: &str, offset: [i64; 3]| {
+        let mut node = Node::new(name, NodeContent::Instance(house_def_id));
+        node.transform = NodeTransform::from_blocks(offset, voxels_per_block);
+        node
+    };
+    let mut scene = Scene::from_nodes(vec![
+        instance("House 1", [0, 0, 0]),
+        instance("House 2", [6, 0, 0]),
+        instance("House 3", [12, 0, 0]),
+        instance("House 4", [18, 0, 0]),
+    ]);
+    scene.add_definition(
+        house_def_id,
+        "House".to_string(),
+        vec![
+            tool(ShapeKind::Box, [2, 2, 2], [0, 0, 0], MaterialChoice::Stone),
+            tool(ShapeKind::Cylinder, [1, 2, 1], [0, 2, 0], MaterialChoice::Wood),
+        ],
+    );
+    scene.voxels_per_block = voxels_per_block;
+    scene_with_top_level_selected(scene, 0)
+}

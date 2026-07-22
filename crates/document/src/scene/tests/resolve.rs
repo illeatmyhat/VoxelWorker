@@ -117,20 +117,7 @@ use crate::voxel::SdfShape;
     #[test]
     fn chunked_resolve_matches_monolithic_for_demo_scene() {
         let voxels_per_block = 16;
-        let make_tool = |kind, offset: [i64; 3], material| {
-            let shape = SdfShape::from_blocks(kind, [5, 5, 5], 1, voxels_per_block);
-            let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
-            node.transform = NodeTransform::from_blocks(offset, voxels_per_block);
-            node
-        };
-        let scene = scene_with_top_level_selected(
-            Scene::from_nodes(vec![
-                make_tool(ShapeKind::Sphere, [0, 0, 0], MaterialChoice::Stone),
-                make_tool(ShapeKind::Box, [8, 0, 0], MaterialChoice::Wood),
-                make_tool(ShapeKind::Torus, [0, 0, 6], MaterialChoice::Plain),
-            ]),
-            0,
-        );
+        let scene = demo_three_tool_scene(voxels_per_block);
         assert_chunked_matches_monolithic(&scene, voxels_per_block, "demo-scene");
     }
 
@@ -140,33 +127,7 @@ use crate::voxel::SdfShape;
     #[test]
     fn chunked_resolve_matches_monolithic_for_demo_village() {
         let voxels_per_block = 16;
-        let house_def_id = DefId(1);
-        let tool = |kind, size: [u32; 3], offset: [i64; 3], material| {
-            let shape = SdfShape::from_blocks(kind, size, 1, voxels_per_block);
-            let mut node = Node::new(format!("{kind:?}"), NodeContent::Tool { shape, material });
-            node.transform = NodeTransform::from_blocks(offset, voxels_per_block);
-            node
-        };
-        let instance = |name: &str, offset: [i64; 3]| {
-            let mut node = Node::new(name, NodeContent::Instance(house_def_id));
-            node.transform = NodeTransform::from_blocks(offset, voxels_per_block);
-            node
-        };
-        let mut scene_build = Scene::from_nodes(vec![
-            instance("House 1", [0, 0, 0]),
-            instance("House 2", [6, 0, 0]),
-            instance("House 3", [12, 0, 0]),
-            instance("House 4", [18, 0, 0]),
-        ]);
-        scene_build.add_definition(
-            house_def_id,
-            "House".to_string(),
-            vec![
-                tool(ShapeKind::Box, [2, 2, 2], [0, 0, 0], MaterialChoice::Stone),
-                tool(ShapeKind::Cylinder, [1, 2, 1], [0, 2, 0], MaterialChoice::Wood),
-            ],
-        );
-        let scene = scene_with_top_level_selected(scene_build, 0);
+        let scene = demo_village_scene(voxels_per_block);
         assert_chunked_matches_monolithic(&scene, voxels_per_block, "demo-village");
     }
 
