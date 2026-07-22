@@ -1,5 +1,7 @@
 use super::*;
-use voxel_core::voxel::VoxelGrid;
+use voxel_core::core_geom::MaterialChoice;
+use voxel_core::voxel::{ShapeKind, VoxelGrid};
+use crate::voxel::SdfShape;
 
 mod graph;
 mod resolve;
@@ -49,4 +51,51 @@ pub(super) fn occupied_multiset(
         *multiset.entry((key, voxel.color_index())).or_insert(0) += 1;
     }
     multiset
+}
+
+/// The default authoring density the CSG-fixture scenes are built at (whole-block
+/// boxes at density 8). Shared by the fixtures below; a child test module may still
+/// declare its own `DENSITY` for scenes it builds at a different granularity.
+pub(super) const DENSITY: u32 = 8;
+
+/// A whole-block Box Tool of `size_blocks` at `offset_blocks` carrying `material` and
+/// `operation` — the shared CSG fixture (axis-aligned boxes, so the expected occupied
+/// set is exact). Was copy-pasted verbatim across the subtract / intersect / sealed /
+/// cutter / fixture test modules; one definition now.
+pub(super) fn box_tool(
+    size_blocks: [u32; 3],
+    offset_blocks: [i64; 3],
+    material: MaterialChoice,
+    operation: CombineOp,
+) -> Node {
+    let shape = SdfShape::from_blocks(ShapeKind::Box, size_blocks, 1, DENSITY);
+    let mut node = Node::new("Box", NodeContent::Tool { shape, material });
+    node.transform = NodeTransform::from_blocks(offset_blocks, DENSITY);
+    node.operation = operation;
+    node
+}
+
+/// An [`NodeContent::Instance`] of `def_id` named `name`, at `offset_blocks` carrying
+/// `operation` — the shared instance fixture (was duplicated in the cutter / fixture
+/// definition test modules).
+pub(super) fn instance_node(
+    def_id: DefId,
+    offset_blocks: [i64; 3],
+    operation: CombineOp,
+    name: &str,
+) -> Node {
+    let mut node = Node::new(name, NodeContent::Instance(def_id));
+    node.transform = NodeTransform::from_blocks(offset_blocks, DENSITY);
+    node.operation = operation;
+    node
+}
+
+/// Resolve `scene` through the dense oracle and return its occupancy multiset in
+/// ABSOLUTE voxel space (recentre-normalised), keyed `(index, material)`. The shared
+/// resolve-and-canonicalise fixture (was duplicated across the CSG test modules).
+pub(super) fn resolved_absolute_multiset(
+    scene: &Scene,
+) -> std::collections::BTreeMap<([i64; 3], u16), usize> {
+    let grid = scene.resolve_region(scene.full_extent_blocks(DENSITY), DENSITY, 0);
+    occupied_multiset(&grid, scene.recentre_voxels(DENSITY))
 }

@@ -1,8 +1,6 @@
 use super::*;
 use voxel_core::core_geom::MaterialChoice;
 use voxel_core::spatial_index::LeafFingerprint;
-use voxel_core::voxel::ShapeKind;
-use crate::voxel::SdfShape;
 
     // ---- ADR 0017 (#75): CombineOp::Intersect — the ordered document-order fold ----
     //
@@ -16,29 +14,8 @@ use crate::voxel::SdfShape;
 
     const DENSITY: u32 = 8;
 
-    /// A whole-block Box Tool at `offset_blocks` carrying `operation` — the intersect
-    /// fixtures are all axis-aligned boxes so the expected surviving set is exact.
-    fn box_tool(
-        size_blocks: [u32; 3],
-        offset_blocks: [i64; 3],
-        material: MaterialChoice,
-        operation: CombineOp,
-    ) -> Node {
-        let shape = SdfShape::from_blocks(ShapeKind::Box, size_blocks, 1, DENSITY);
-        let mut node = Node::new("Box", NodeContent::Tool { shape, material });
-        node.transform = NodeTransform::from_blocks(offset_blocks, DENSITY);
-        node.operation = operation;
-        node
-    }
-
-    /// Resolve `scene` through the dense oracle and return its occupancy multiset in
-    /// ABSOLUTE voxel space (recentre-normalised), keyed `(index, material)`.
-    fn resolved_absolute_multiset(
-        scene: &Scene,
-    ) -> std::collections::BTreeMap<([i64; 3], u16), usize> {
-        let grid = scene.resolve_region(scene.full_extent_blocks(DENSITY), DENSITY, 0);
-        occupied_multiset(&grid, scene.recentre_voxels(DENSITY))
-    }
+    // `box_tool` / `resolved_absolute_multiset` are the shared CSG fixtures in
+    // `super` (tests/mod.rs), reached via `use super::*`.
 
     /// A mask placed AFTER a solid keeps exactly the overlap: the resolved occupancy
     /// is the body's voxels INSIDE the mask's box — every body voxel outside the mask

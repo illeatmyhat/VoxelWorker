@@ -1,7 +1,5 @@
 use super::*;
 use voxel_core::core_geom::MaterialChoice;
-use voxel_core::voxel::ShapeKind;
-use crate::voxel::SdfShape;
 
     // ---- ADR 0017 Decision 3 (#74): sealed composition scopes — the dense oracle ----
     //
@@ -14,28 +12,8 @@ use crate::voxel::SdfShape;
 
     const DENSITY: u32 = 8;
 
-    /// A whole-block Box Tool at `offset_blocks` carrying `operation`.
-    fn box_tool(
-        size_blocks: [u32; 3],
-        offset_blocks: [i64; 3],
-        material: MaterialChoice,
-        operation: CombineOp,
-    ) -> Node {
-        let shape = SdfShape::from_blocks(ShapeKind::Box, size_blocks, 1, DENSITY);
-        let mut node = Node::new("Box", NodeContent::Tool { shape, material });
-        node.transform = NodeTransform::from_blocks(offset_blocks, DENSITY);
-        node.operation = operation;
-        node
-    }
-
-    /// Resolve `scene` through the dense oracle and return its occupancy multiset in
-    /// ABSOLUTE voxel space (recentre-normalised), keyed `(index, material)`.
-    fn resolved_absolute_multiset(
-        scene: &Scene,
-    ) -> std::collections::BTreeMap<([i64; 3], u16), usize> {
-        let grid = scene.resolve_region(scene.full_extent_blocks(DENSITY), DENSITY, 0);
-        occupied_multiset(&grid, scene.recentre_voxels(DENSITY))
-    }
+    // `box_tool` / `resolved_absolute_multiset` are the shared CSG fixtures in
+    // `super` (tests/mod.rs), reached via `use super::*`.
 
     /// The golden scene's shape (acceptance #1): a cutter INSIDE a Group carves only
     /// within the Group; a sibling OUTSIDE the group — placed BEFORE it in document

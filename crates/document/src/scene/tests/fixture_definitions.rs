@@ -1,7 +1,5 @@
 use super::*;
 use voxel_core::core_geom::MaterialChoice;
-use voxel_core::voxel::ShapeKind;
-use crate::voxel::SdfShape;
 
     // ---- ADR 0017 Decision 4 / #77: fixture definitions — the dense oracle ----
     //
@@ -19,32 +17,8 @@ use crate::voxel::SdfShape;
     /// The window definition's id in every fixture scene below.
     const WINDOW_DEF: DefId = DefId(1);
 
-    /// A whole-block Box Tool at `offset_blocks` carrying `operation`.
-    fn box_tool(
-        size_blocks: [u32; 3],
-        offset_blocks: [i64; 3],
-        material: MaterialChoice,
-        operation: CombineOp,
-    ) -> Node {
-        let shape = SdfShape::from_blocks(ShapeKind::Box, size_blocks, 1, DENSITY);
-        let mut node = Node::new("Box", NodeContent::Tool { shape, material });
-        node.transform = NodeTransform::from_blocks(offset_blocks, DENSITY);
-        node.operation = operation;
-        node
-    }
-
-    /// An `Instance(def_id)` node at `offset_blocks` carrying `operation`.
-    fn instance_node(
-        def_id: DefId,
-        offset_blocks: [i64; 3],
-        operation: CombineOp,
-        name: &str,
-    ) -> Node {
-        let mut node = Node::new(name, NodeContent::Instance(def_id));
-        node.transform = NodeTransform::from_blocks(offset_blocks, DENSITY);
-        node.operation = operation;
-        node
-    }
+    // `box_tool` / `instance_node` / `resolved_absolute_multiset` are the shared CSG
+    // fixtures in `super` (tests/mod.rs), reached via `use super::*`.
 
     /// Register the WINDOW fixture on `scene`: [opening cutter `Subtract`
     /// (`opening_blocks`³ footprint through the 1-block wall thickness), Wood frame
@@ -92,15 +66,6 @@ use crate::voxel::SdfShape;
                 CombineOp::Union,
             ),
         ]
-    }
-
-    /// Resolve `scene` through the dense oracle and return its occupancy multiset in
-    /// ABSOLUTE voxel space (recentre-normalised), keyed `(index, material)`.
-    fn resolved_absolute_multiset(
-        scene: &Scene,
-    ) -> std::collections::BTreeMap<([i64; 3], u16), usize> {
-        let grid = scene.resolve_region(scene.full_extent_blocks(DENSITY), DENSITY, 0);
-        occupied_multiset(&grid, scene.recentre_voxels(DENSITY))
     }
 
     /// A Stone wall standing in the XZ plane (Z-up): 8 blocks wide, 1 thick, 6 tall.
