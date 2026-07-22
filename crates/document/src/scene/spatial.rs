@@ -4,7 +4,7 @@
 
 use voxel_core::spatial_index::{LeafEntry, LeafFingerprint, LeafSpatialIndex, VoxelAabb};
 
-use super::extent::{leaf_placed_voxel_box, rotated_grid_extent_voxels};
+use super::extent::{fold_leaf_boxes, leaf_placed_voxel_box, rotated_grid_extent_voxels};
 use super::producers::{
     leaf_content_fingerprint, operation_masks_beyond_bounds, outset_voxels_at,
 };
@@ -33,24 +33,12 @@ impl Scene {
     /// chunk_extent)`) lives in — distinct from [`placed_extent_blocks`] (the
     /// whole-block size readout). `None` when no leaf has an intrinsic size.
     pub(super) fn placed_extent_voxels(&self, voxels_per_block: u32) -> Option<([i64; 3], [i64; 3])> {
-        let mut min_corner = [i64::MAX; 3];
-        let mut max_corner = [i64::MIN; 3];
-        let mut any = false;
-        self.for_each_leaf(&mut |world_offset_voxels, _offset_local_voxels, _orientation, rotation, body, _grid_on_faces, _operation, outset, _scope_path| {
-            // The producer-true corner-anchored voxel box `[off, off + rotated_grid)` — the
-            // ONE per-leaf voxel-box definition shared with the subtree-scoped extent.
-            let Some((low_corner, high_corner)) =
-                leaf_placed_voxel_box(world_offset_voxels, rotation, &body, outset, voxels_per_block)
-            else {
-                return;
-            };
-            any = true;
-            for axis in 0..3 {
-                min_corner[axis] = min_corner[axis].min(low_corner[axis]);
-                max_corner[axis] = max_corner[axis].max(high_corner[axis]);
-            }
-        });
-        any.then_some((min_corner, max_corner))
+        // The producer-true corner-anchored voxel box `[off, off + rotated_grid)` per leaf
+        // (leaf_placed_voxel_box, shared with the subtree-scoped extent), folded into their
+        // union by the shared fold_leaf_boxes over the scene-wide leaf walk.
+        fold_leaf_boxes(voxels_per_block, leaf_placed_voxel_box, |sink| {
+            self.walk_scene_leaves(sink)
+        })
     }
 
     /// The inclusive range of chunk coordinates `[min_chunk, max_chunk]` whose
