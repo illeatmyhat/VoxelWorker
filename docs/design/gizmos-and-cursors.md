@@ -116,13 +116,21 @@ first; nothing here is designed yet.
 
 ### Mode chrome — "you are editing this sketch"
 
+**RESOLVED 2026-07-22 (owner review of the design mocks — base = the minimal "C" prototype).** No
+banner, no "editing sketch / sealed scope" prose, no held-fold ribbon, no right-side entity panel. The
+mode is signalled by two things and nothing more: **the rail changes** and a **CANCEL | FINISH SKETCH**
+button appears. Everything the mode needs sits on the **left rail** plus a **contextual floating
+tool-settings box** on the canvas.
+
 | element | means | why it is needed | when it arose |
 | --- | --- | --- | --- |
-| **mode banner / editing badge** | an unmistakable "editing sketch" state that colours the whole viewport frame | Fusion's blue sketch environment is the model — the mode must be impossible to miss or you edit the wrong thing; the definition-editing-chrome parallel ([[asset-drawer-linked-instances]]) | ADR 0028 |
-| **rail swap** | the left tool rail shows the sketch toolset in place of the normal tool grammar | the mode's tools are different; showing 3D ops here invites the errors "disable non-sketch ops" exists to prevent | ADR 0028 |
-| **disabled-ops treatment** | non-sketch operations greyed / withdrawn while in the mode | avoids applying a 3D op mid-sketch (Fusion greys the solid ribbon); must read as *scoped*, not *broken* | ADR 0028 |
-| **Finish / Cancel** | commit the undo group as one main-history entry / roll it back | the mode's exit; Cancel is "discard this session" = undo the open group (ADR 0028, no second stack) | ADR 0028 |
-| **working-plane display** | the sketch plane shown as a bounded grid while in the mode | the author needs to see the surface they draw on; also carries the position-snap lattice visually | ADR 0028 |
+| **rail "SKETCH" label** | a highlighted `SKETCH` label at the top of the swapped left rail — the whole mode indicator | owner ruling: a full explainer banner is "too much"; the rail change + the Cancel/Finish button already tell you where you are | ADR 0028, owner review 2026-07-22 |
+| **rail swap** | the left rail shows the sketch tools **and the set-operation picker** (Extrude / Revolve / Sweep) in place of the normal tool grammar | the mode's tools are different; the operation the fused sketch feeds lives here too (owner moved it off the deleted right panel) | ADR 0028 |
+| **CANCEL \| FINISH SKETCH** | commit the undo group as one main-history entry / roll it back — **and** a primary mode signal | the mode's exit; its mere presence tells you you're in a mode (owner: "people will know once the rail changes and this button appears") | ADR 0028 |
+| **contextual tool-settings box** | a small floating box on the canvas showing the **active tool's** settings — for the vertex/line/rectangle tools that includes **position snap** (none / voxel / block) | owner reworked C's floating readout ("useless… nowhere to change the snap") into the place tool settings live; replaces the deleted right panel as snap's home | ADR 0028, owner review 2026-07-22 |
+| **disabled non-sketch ops** | non-sketch operations **withdrawn** while in the mode (C's treatment, not dim+hatch) | avoids applying a 3D op mid-sketch; the minimal read the owner preferred — gone, not greyed | ADR 0028, owner review 2026-07-22 |
+| **working-plane display** | the sketch plane shown as a bounded grid, with C's subtle environment tint | the author needs to see the surface they draw on; also carries the position-snap lattice visually | ADR 0028 |
+| *deleted by review* | ~~explainer banner~~ · ~~"sealed scope" prose~~ · ~~held-fold ribbon~~ · ~~right-side vertex/edge/object list~~ · ~~"live solid result" readout box~~ | owner: none earn their space in sketch mode | owner review 2026-07-22 |
 
 ### Sketch rail tools (icons) — one family, must read as a set
 
@@ -132,8 +140,8 @@ first; nothing here is designed yet.
 | **line / polyline** | click to place connected profile points | the organic value prop — arbitrary profiles; ADR 0028 slice 3 |
 | **rectangle** | drag a box → a 4-point profile | the box-drag sugar, now inside the mode; ADR 0028 slice 3 |
 | **delete vertex** | remove a profile point | inverse of place; ADR 0028 slice 2 |
-| **position snap: none / voxel / block** | reuse the placement snap glyphs (above) — the profile vertex's lattice quantization | ADR 0027 snap reused for 2D (ADR 0028); lattice snapping stands in for a constraint solver |
-| **operation: extrude / revolve / (sweep)** | the lift the fused sketch feeds (a property of the same node, not a separate feature) | Extrude + Revolve ship; Sweep is the reserved arm |
+| **position snap: none / voxel / block** | reuse the placement snap glyphs (above) — the profile vertex's lattice quantization; **lives in the contextual tool-settings box, not on the rail** (owner review 2026-07-22) | ADR 0027 snap reused for 2D (ADR 0028); lattice snapping stands in for a constraint solver |
+| **operation: extrude / revolve / (sweep)** | the lift the fused sketch feeds — **the set-operation picker, on the left rail** (a property of the same node, not a separate feature) | Extrude + Revolve ship; Sweep is the reserved arm |
 | *circle / arc / Bézier (deferred)* | curved profile segments | the glossary's Profile admits arcs/Béziers → flatten to the polygon; ADR 0028 slice 5 |
 | *NO constraint tools* | — | deliberate absence: lattice snapping delivers axis-alignment / equal-length / coincidence as a by-product of quantization (glossary *Lattice snapping*), so there is no constraint entity to draw |
 
