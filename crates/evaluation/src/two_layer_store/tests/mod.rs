@@ -19,6 +19,7 @@ use voxel_core::voxel::VoxelGrid;
     use voxel_core::voxel::{ShapeKind};
     use document::voxel::{GeometryParams, SdfShape};
 
+mod affine_oracle;
 mod core;
 mod streaming;
 mod incremental;
