@@ -48,6 +48,49 @@ pub(super) struct RevolveField {
     radial_max: f64,
 }
 
+/// Reinterpret the sketch's two in-plane axes as (axial, radial) per `RevolveAxis`,
+/// returning `(axial_world_axis, axial_min, radial_a, radial_b)` with the two radial
+/// world axes in ASCENDING index (the sort that fixes which world axis is which).
+/// `axial_min_by_coord` is the per-in-plane-coord axial minimum — `revolve_field`
+/// passes the profile bounds min, `revolve_cell_is_solid` the sample bbox min; both
+/// select the same coord from it. One definition so the two stay in lockstep (the cell
+/// test's own comment already says "matching resolve_revolve").
+fn revolve_axes(
+    axis: RevolveAxis,
+    in_plane_0: usize,
+    in_plane_1: usize,
+    normal: usize,
+    axial_min_by_coord: [i64; 2],
+) -> (usize, i64, usize, usize) {
+    let (axial_world_axis, axial_min, radial_in_plane_axis) = match axis {
+        RevolveAxis::InPlane0 => (in_plane_0, axial_min_by_coord[0], in_plane_1),
+        RevolveAxis::InPlane1 => (in_plane_1, axial_min_by_coord[1], in_plane_0),
+    };
+    let mut radial_world_axes = [radial_in_plane_axis, normal];
+    radial_world_axes.sort_unstable();
+    let [radial_a, radial_b] = radial_world_axes;
+    (axial_world_axis, axial_min, radial_a, radial_b)
+}
+
+/// The default-material occupied [`Voxel`] at grid `index`, corner-anchored, with its
+/// block-local coord as `index % density`. The leaf struct both `resolve_extrude` and
+/// `resolve_revolve` build once they've decided a cell is solid — one definition (their
+/// surrounding loop shapes stay distinct: extrude precomputes a 2D fill, revolve tests
+/// each cell radially).
+fn build_voxel(index: [u32; 3], density: u32) -> Voxel {
+    Voxel {
+        local_index: [index[0] as i32, index[1] as i32, index[2] as i32],
+        block_local_coord: [
+            (index[0] % density) as u8,
+            (index[1] % density) as u8,
+            (index[2] % density) as u8,
+        ],
+        block_id: voxel_core::core_geom::BlockId::DEFAULT,
+        attrs: voxel_core::core_geom::BlockAttrs::DEFAULT,
+        grid_overlay: false,
+    }
+}
+
 impl RevolveField {
     /// The signed distance at a point in the producer's own `[0, full_dim)` voxel frame.
     /// Negative/zero is inside (occupancy is `field <= SURFACE_ISOLEVEL`).
@@ -252,15 +295,9 @@ impl SketchSolid {
         let dimensions = self.grid_dimensions();
         let [in_plane_0, in_plane_1] = self.sketch.plane.in_plane_axes();
         let normal = self.sketch.plane.normal_axis();
-        // Reinterpret the in-plane axes as (axial, radial) per `RevolveAxis`, including
-        // the ascending sort that fixes which world axis is which.
-        let (axial_world_axis, axial_min, radial_in_plane_axis) = match axis {
-            RevolveAxis::InPlane0 => (in_plane_0, profile_min[0], in_plane_1),
-            RevolveAxis::InPlane1 => (in_plane_1, profile_min[1], in_plane_0),
-        };
-        let mut radial_world_axes = [radial_in_plane_axis, normal];
-        radial_world_axes.sort_unstable();
-        let [radial_a, radial_b] = radial_world_axes;
+        // Reinterpret the in-plane axes as (axial, radial) per `RevolveAxis` (shared).
+        let (axial_world_axis, axial_min, radial_a, radial_b) =
+            revolve_axes(axis, in_plane_0, in_plane_1, normal, [profile_min[0], profile_min[1]]);
 
         let radial_profile_coord = match axis {
             RevolveAxis::InPlane0 => 1,
@@ -498,14 +535,10 @@ impl SketchSolid {
         };
         let [in_plane_0, in_plane_1] = self.sketch.plane.in_plane_axes();
         let normal = self.sketch.plane.normal_axis();
-        let (axial_world_axis, axial_min, radial_in_plane_axis) = match axis {
-            RevolveAxis::InPlane0 => (in_plane_0, min[0], in_plane_1),
-            RevolveAxis::InPlane1 => (in_plane_1, min[1], in_plane_0),
-        };
-        // The two radial world axes in ASCENDING index, matching `resolve_revolve`.
-        let mut radial_world_axes = [radial_in_plane_axis, normal];
-        radial_world_axes.sort_unstable();
-        let [radial_a, radial_b] = radial_world_axes;
+        // (axial, radial) reinterpretation + ascending radial sort (shared, matching
+        // `resolve_revolve`).
+        let (axial_world_axis, axial_min, radial_a, radial_b) =
+            revolve_axes(axis, in_plane_0, in_plane_1, normal, [min[0], min[1]]);
 
         let half = [
             dimensions[0] as f64 / 2.0,
@@ -640,21 +673,7 @@ impl SketchSolid {
                     index[in_plane_0] = cell_0;
                     index[in_plane_1] = cell_1;
                     index[normal] = layer;
-                    Voxel {
-                        local_index: [
-                            index[0] as i32,
-                            index[1] as i32,
-                            index[2] as i32,
-                        ],
-                        block_local_coord: [
-                            (index[0] % density) as u8,
-                            (index[1] % density) as u8,
-                            (index[2] % density) as u8,
-                        ],
-                        block_id: voxel_core::core_geom::BlockId::DEFAULT,
-                        attrs: voxel_core::core_geom::BlockAttrs::DEFAULT,
-                        grid_overlay: false,
-                    }
+                    build_voxel(index, density)
                 })
             })
             .collect();
@@ -774,21 +793,7 @@ impl SketchSolid {
                             continue;
                         }
 
-                        local.push(Voxel {
-                            local_index: [
-                                index[0] as i32,
-                                index[1] as i32,
-                                index[2] as i32,
-                            ],
-                            block_local_coord: [
-                                (index[0] % density) as u8,
-                                (index[1] % density) as u8,
-                                (index[2] % density) as u8,
-                            ],
-                            block_id: voxel_core::core_geom::BlockId::DEFAULT,
-                            attrs: voxel_core::core_geom::BlockAttrs::DEFAULT,
-                            grid_overlay: false,
-                        });
+                        local.push(build_voxel(index, density));
                     }
                 }
                 local
