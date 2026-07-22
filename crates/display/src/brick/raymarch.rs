@@ -531,7 +531,10 @@ impl BrickRaymarchRenderer {
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("brick raymarch shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/brick_raymarch.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(
+                crate::shaders::with_grid_overlay(include_str!("../shaders/brick_raymarch.wgsl"))
+                    .into(),
+            ),
         });
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("brick raymarch pipeline layout"),

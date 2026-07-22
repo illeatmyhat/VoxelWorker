@@ -677,7 +677,9 @@ impl CuboidMeshRenderer {
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("cuboid shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/cuboid.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(
+                crate::shaders::with_grid_overlay(include_str!("../shaders/cuboid.wgsl")).into(),
+            ),
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -848,7 +850,10 @@ impl CuboidMeshRenderer {
         });
         let loaded_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("cuboid loaded-block shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/cuboid_loaded.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(
+                crate::shaders::with_grid_overlay(include_str!("../shaders/cuboid_loaded.wgsl"))
+                    .into(),
+            ),
         });
         let loaded_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {

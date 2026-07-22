@@ -68,4 +68,5 @@ pub mod block_texture;
 pub mod brick;
 pub mod mesh;
 pub mod renderer;
+mod shaders;
 pub mod texture_atlas;
