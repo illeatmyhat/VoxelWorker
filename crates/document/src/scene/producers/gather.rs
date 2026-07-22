@@ -34,15 +34,13 @@ pub(super) fn dense_leaf_placement(
         full_dimensions[1] as f32,
         full_dimensions[2] as f32,
     );
-    let world_offset = glam::Vec3::new(
-        leaf_abs_low_voxels[0] as f32,
-        leaf_abs_low_voxels[1] as f32,
-        leaf_abs_low_voxels[2] as f32,
-    ) + glam::Vec3::from_array(offset_local_voxels);
-    substrate::spatial::LeafPlacement::new(
+    // ADR 0027 §1 wandering origin: hand the integer low corner and the fractional slide to
+    // substrate SPLIT, so the far-out translation stays exact in i64 (never collapsed to f32 here).
+    substrate::spatial::LeafPlacement::from_origin_and_local(
         rotation,
         full,
-        substrate::spatial::TrueWorldVoxelPoint::from_voxels(world_offset),
+        leaf_abs_low_voxels,
+        offset_local_voxels,
     )
 }
 
@@ -123,15 +121,15 @@ pub(super) fn gather_placed_field_into_grid(
         for y in lo[1]..hi[1] {
             for x in lo[0]..hi[0] {
                 let output_index = [x, y, z];
-                let abs_centre = glam::Vec3::new(
-                    (output_index[0] + output_origin_abs[0]) as f32 + 0.5,
-                    (output_index[1] + output_origin_abs[1]) as f32 + 0.5,
-                    (output_index[2] + output_origin_abs[2]) as f32 + 0.5,
-                );
-                let local = placement
-                    .local_of(substrate::spatial::TrueWorldVoxelPoint::from_voxels(abs_centre))
-                    .voxels()
-                    .to_array();
+                // ADR 0027 §1 wandering origin: rebase the absolute cell against the leaf origin in
+                // i64 (inside `local_of_abs_cell_centre`) before the rotation, so a far-out cell
+                // keeps full precision — no huge f32 `abs_centre − world_offset` cancellation.
+                let abs_cell = [
+                    output_index[0] + output_origin_abs[0],
+                    output_index[1] + output_origin_abs[1],
+                    output_index[2] + output_origin_abs[2],
+                ];
+                let local = placement.local_of_abs_cell_centre(abs_cell).voxels().to_array();
                 if field.signed_distance(local, voxels_per_block) <= SURFACE_ISOLEVEL {
                     let block_id = material_override
                         .or_else(|| producer.material_at(local, voxels_per_block))

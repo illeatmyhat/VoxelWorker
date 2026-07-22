@@ -178,15 +178,13 @@ impl Scene {
                             grid_voxels[1] as f32,
                             grid_voxels[2] as f32,
                         );
-                        let world_offset = glam::Vec3::new(
-                            world_offset_voxels[0] as f32,
-                            world_offset_voxels[1] as f32,
-                            world_offset_voxels[2] as f32,
-                        ) + glam::Vec3::from_array(offset_local_voxels);
-                        let (min, max) = substrate::spatial::LeafPlacement::new(
+                        // ADR 0027 §1 wandering origin: keep the integer offset and fractional
+                        // slide SPLIT so the skip-AABB stays exact for a far-out tilted leaf.
+                        let (min, max) = substrate::spatial::LeafPlacement::from_origin_and_local(
                             rotation,
                             full,
-                            substrate::spatial::TrueWorldVoxelPoint::from_voxels(world_offset),
+                            world_offset_voxels,
+                            offset_local_voxels,
                         )
                         .world_aabb();
                         VoxelAabb::new(min, max)

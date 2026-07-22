@@ -4,8 +4,6 @@
 use substrate::solids::{
     CellCombineOp, CellContribution, ScopedCellClassification, ScopedCellEvent,
 };
-use substrate::spatial::{ProducerLocalVoxelPoint, TrueWorldVoxelPoint};
-
 use glam::{Quat, Vec3};
 use voxel_core::core_geom::{BlockId, CellKey};
 use crate::cuboid::{decompose_into_boxes, VoxelRegion};
@@ -284,12 +282,15 @@ pub(crate) fn leaf_affine(leaf: &LeafProducer, voxels_per_block: u32) -> LeafAff
         full_dimensions[1] as f32,
         full_dimensions[2] as f32,
     );
-    let world_offset = Vec3::new(
-        leaf.world_offset_voxels[0] as f32,
-        leaf.world_offset_voxels[1] as f32,
-        leaf.world_offset_voxels[2] as f32,
-    ) + Vec3::from_array(leaf.offset_local_voxels);
-    LeafAffine::new(leaf.rotation, full, TrueWorldVoxelPoint::from_voxels(world_offset))
+    // ADR 0027 §1 wandering origin: keep the integer `world_offset_voxels` and the fractional
+    // `offset_local_voxels` SPLIT into substrate, so a far-out leaf's translation stays exact in
+    // i64 rather than collapsing to a precision-losing f32 sum here (the ADR 0008 (c)-violation).
+    LeafAffine::from_origin_and_local(
+        leaf.rotation,
+        full,
+        leaf.world_offset_voxels,
+        leaf.offset_local_voxels,
+    )
 }
 
 /// The world offset (in ABSOLUTE voxels) that seats a producer of local dimensions `full`,
@@ -359,14 +360,9 @@ pub(crate) fn producer_local_voxel_to_abs(
     local_index: [i32; 3],
     voxels_per_block: u32,
 ) -> [i64; 3] {
-    let affine = leaf_affine(leaf, voxels_per_block);
-    let centre = Vec3::new(
-        local_index[0] as f32 + 0.5,
-        local_index[1] as f32 + 0.5,
-        local_index[2] as f32 + 0.5,
-    );
-    let world = affine.world_of(ProducerLocalVoxelPoint::from_voxels(centre)).voxels();
-    [world.x.floor() as i64, world.y.floor() as i64, world.z.floor() as i64]
+    // ADR 0027 §1 wandering origin: `world_cell_of_local_centre` re-adds the integer origin in i64
+    // after flooring the small origin-relative image, so a far-out leaf's cells stay exact.
+    leaf_affine(leaf, voxels_per_block).world_cell_of_local_centre(local_index)
 }
 
 /// The FIRST **purely additive** leaf (see [`leaf_is_purely_additive`]) whose grid AABB
@@ -822,12 +818,11 @@ pub(crate) fn gather_rotated_leaf_into_region(
     // field classifies that centre inside-or-on the surface. The `[f32; 3]` is handed to
     // `material_at` for a per-voxel-material producer.
     let local_if_covered = |x: u32, y: u32, z: u32| -> Option<[f32; 3]> {
-        let abs_centre = Vec3::new(
-            (block_min_abs[0] + x as i64) as f32 + 0.5,
-            (block_min_abs[1] + y as i64) as f32 + 0.5,
-            (block_min_abs[2] + z as i64) as f32 + 0.5,
-        );
-        let local = affine.local_of(TrueWorldVoxelPoint::from_voxels(abs_centre)).voxels().to_array();
+        // ADR 0027 §1 wandering origin: rebase the absolute cell against the leaf origin in i64
+        // before the inverse rotation, so a far-out block keeps full sub-voxel precision.
+        let abs_cell =
+            [block_min_abs[0] + x as i64, block_min_abs[1] + y as i64, block_min_abs[2] + z as i64];
+        let local = affine.local_of_abs_cell_centre(abs_cell).voxels().to_array();
         (field.signed_distance(local, voxels_per_block) <= SURFACE_ISOLEVEL).then_some(local)
     };
 
