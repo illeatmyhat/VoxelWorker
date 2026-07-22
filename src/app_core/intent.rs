@@ -7,10 +7,67 @@
 
 use document::command::{Command, Inverse};
 use document::intent::{Intent, IntentEffect};
-use document::scene::{NodeContent, NodeId, NodeTransform, VoxelBody, Scene};
+use document::scene::{Node, NodeContent, NodeId, NodeTransform, Point, VoxelBody, Scene};
 use document::voxel::SdfShape;
 
 use super::AppCore;
+
+/// Dispatch helper for a per-node field write: apply `write` to the addressed node
+/// (returning whether it landed), reporting `full_effect` on success and
+/// [`IntentEffect::none`] on a missing id / kind-mismatch. Collapses the identical
+/// `match node_by_id_mut { Some => {..; true}, None => false }` skeleton the node
+/// field-set arms all share (their real content is which field `write` touches).
+fn node_write(
+    scene: &mut Scene,
+    target: NodeId,
+    full_effect: IntentEffect,
+    write: impl FnOnce(&mut Node) -> bool,
+) -> (IntentEffect, Option<NodeId>) {
+    let applied = scene.node_by_id_mut(target).map(write).unwrap_or(false);
+    (if applied { full_effect } else { IntentEffect::none() }, None)
+}
+
+/// Dispatch helper for a per-point field write — the `scene.points` sibling of
+/// [`node_write`].
+fn point_write(
+    scene: &mut Scene,
+    index: usize,
+    full_effect: IntentEffect,
+    write: impl FnOnce(&mut Point) -> bool,
+) -> (IntentEffect, Option<NodeId>) {
+    let applied = scene.points.get_mut(index).map(write).unwrap_or(false);
+    (if applied { full_effect } else { IntentEffect::none() }, None)
+}
+
+/// Capture helper: read the addressed node's prior value via `prior` (which returns
+/// the reconstructed field-set [`Intent`], or `None` on a kind-mismatch) and wrap it as
+/// an [`Inverse::Field`]; a missing id / mismatch yields [`Inverse::NoOp`]. Collapses
+/// the identical `match node_by_id { Some => Field(SetX{prior}), None => NoOp }`
+/// skeleton the node field-set inverses all share.
+fn node_field_inverse(
+    scene: &Scene,
+    target: NodeId,
+    prior: impl FnOnce(&Node) -> Option<Intent>,
+) -> Inverse {
+    match scene.node_by_id(target).and_then(prior) {
+        Some(intent) => Inverse::Field(intent),
+        None => Inverse::NoOp,
+    }
+}
+
+/// Capture helper for a per-point field inverse — the `scene.points` sibling of
+/// [`node_field_inverse`]. A Point always yields a field-set when present (no inner
+/// kind-match), so `prior` returns the [`Intent`] directly.
+fn point_field_inverse(
+    scene: &Scene,
+    index: usize,
+    prior: impl FnOnce(&Point) -> Intent,
+) -> Inverse {
+    match scene.points.get(index) {
+        Some(point) => Inverse::Field(prior(point)),
+        None => Inverse::NoOp,
+    }
+}
 
 impl AppCore {
     /// **The single serializable mutation boundary (ADR 0003 Phase C, slice C1).**
@@ -145,66 +202,48 @@ impl AppCore {
             },
 
             // --- Node field writes (inverse = same intent carrying the prior value) ---
-            Intent::SetEnabled { target, .. } => match scene.node_by_id(*target) {
-                Some(node) => Inverse::Field(Intent::SetEnabled {
-                    target: *target,
-                    enabled: node.enabled,
-                }),
-                None => Inverse::NoOp,
-            },
-            Intent::SetShape { target, .. } => match scene.node_by_id(*target) {
-                Some(node) => match &node.content {
-                    NodeContent::Tool { shape, .. } => Inverse::Field(Intent::SetShape {
-                        target: *target,
-                        // `SdfShape` is no longer `Copy` (it owns an optional boxed
-                        // retained-size expression), so clone the prior shape so undo
-                        // replays the EXACT authored size (ADR 0003 §3f(0)).
-                        shape: shape.clone(),
-                    }),
-                    _ => Inverse::NoOp,
-                },
-                None => Inverse::NoOp,
-            },
-            Intent::SetSketch { target, .. } => match scene.node_by_id(*target) {
-                Some(node) => match &node.content {
-                    NodeContent::SketchTool { producer, .. } => Inverse::Field(Intent::SetSketch {
-                        target: *target,
-                        // Clone the prior producer so undo replays the EXACT sketch +
-                        // extrude span (ADR 0003 §3i).
-                        producer: producer.clone(),
-                    }),
-                    _ => Inverse::NoOp,
-                },
-                None => Inverse::NoOp,
-            },
-            Intent::SetMaterial { target, .. } => match scene.node_by_id(*target) {
-                Some(node) => match &node.content {
-                    NodeContent::Tool { material, .. } => Inverse::Field(Intent::SetMaterial {
-                        target: *target,
-                        material: *material,
-                    }),
+            Intent::SetEnabled { target, .. } => node_field_inverse(scene, *target, |node| {
+                Some(Intent::SetEnabled { target: *target, enabled: node.enabled })
+            }),
+            Intent::SetShape { target, .. } => node_field_inverse(scene, *target, |node| {
+                match &node.content {
+                    // `SdfShape` is no longer `Copy` (it owns an optional boxed
+                    // retained-size expression), so clone the prior shape so undo
+                    // replays the EXACT authored size (ADR 0003 §3f(0)).
+                    NodeContent::Tool { shape, .. } => {
+                        Some(Intent::SetShape { target: *target, shape: shape.clone() })
+                    }
+                    _ => None,
+                }
+            }),
+            Intent::SetSketch { target, .. } => node_field_inverse(scene, *target, |node| {
+                match &node.content {
+                    // Clone the prior producer so undo replays the EXACT sketch +
+                    // extrude span (ADR 0003 §3i).
+                    NodeContent::SketchTool { producer, .. } => {
+                        Some(Intent::SetSketch { target: *target, producer: producer.clone() })
+                    }
+                    _ => None,
+                }
+            }),
+            Intent::SetMaterial { target, .. } => node_field_inverse(scene, *target, |node| {
+                match &node.content {
                     // Sketch nodes share the material field; capture their prior
                     // material too so the shared material edit is undoable.
-                    NodeContent::SketchTool { material, .. } => Inverse::Field(Intent::SetMaterial {
-                        target: *target,
-                        material: *material,
-                    }),
-                    _ => Inverse::NoOp,
-                },
-                None => Inverse::NoOp,
-            },
-            Intent::SetOperation { target, .. } => match scene.node_by_id(*target) {
-                // The operation is meaningful on EVERY node kind (ADR 0017): a leaf
-                // folds its own body, a Group its sealed composed body (Decision 3,
-                // issue #74), and an Instance the referenced definition's finished
-                // body — the reusable cutter (issue #76). All capture the same
-                // field inverse.
-                Some(node) => Inverse::Field(Intent::SetOperation {
-                    target: *target,
-                    operation: node.operation,
-                }),
-                None => Inverse::NoOp,
-            },
+                    NodeContent::Tool { material, .. }
+                    | NodeContent::SketchTool { material, .. } => {
+                        Some(Intent::SetMaterial { target: *target, material: *material })
+                    }
+                    _ => None,
+                }
+            }),
+            // The operation is meaningful on EVERY node kind (ADR 0017): a leaf folds
+            // its own body, a Group its sealed composed body (Decision 3, issue #74),
+            // and an Instance the referenced definition's finished body — the reusable
+            // cutter (issue #76). All capture the same field inverse.
+            Intent::SetOperation { target, .. } => node_field_inverse(scene, *target, |node| {
+                Some(Intent::SetOperation { target: *target, operation: node.operation })
+            }),
             Intent::SetDefinitionFixture { def, .. } => match scene.def_by_id(*def) {
                 // A DEFINITION field write (ADR 0017 Decision 4, issue #77): the
                 // fixture flag lives on the AssemblyDef, so the inverse captures the
@@ -216,42 +255,29 @@ impl AppCore {
                 }),
                 None => Inverse::NoOp,
             },
-            Intent::SetOffset { target, .. } => match scene.node_by_id(*target) {
-                Some(node) => Inverse::Field(Intent::SetOffset {
+            Intent::SetOffset { target, .. } => node_field_inverse(scene, *target, |node| {
+                // Capture the node's RETAINED per-axis measurements so undo replays the
+                // EXACT authored expression — voxel-granular and parametric, not the
+                // floored block view (ADR 0003 §3f(0)).
+                Some(Intent::SetOffset {
                     target: *target,
-                    // Capture the node's RETAINED per-axis measurements so undo
-                    // replays the EXACT authored expression — voxel-granular and
-                    // parametric, not the floored block view (ADR 0003 §3f(0)).
                     offset_measurements: node.transform.offset_measurements(),
-                }),
-                None => Inverse::NoOp,
-            },
-            Intent::SetName { target, .. } => match scene.node_by_id(*target) {
-                Some(node) => Inverse::Field(Intent::SetName {
-                    target: *target,
-                    name: node.name.clone(),
-                }),
-                None => Inverse::NoOp,
-            },
-            Intent::SetCloudSeed { target, .. } => match scene.node_by_id(*target) {
-                Some(node) => match &node.content {
+                })
+            }),
+            Intent::SetName { target, .. } => node_field_inverse(scene, *target, |node| {
+                Some(Intent::SetName { target: *target, name: node.name.clone() })
+            }),
+            Intent::SetCloudSeed { target, .. } => node_field_inverse(scene, *target, |node| {
+                match &node.content {
                     NodeContent::VoxelBody(VoxelBody::DebugClouds { seed }) => {
-                        Inverse::Field(Intent::SetCloudSeed {
-                            target: *target,
-                            seed: *seed,
-                        })
+                        Some(Intent::SetCloudSeed { target: *target, seed: *seed })
                     }
-                    _ => Inverse::NoOp,
-                },
-                None => Inverse::NoOp,
-            },
-            Intent::SetNodeGrids { target, .. } => match scene.node_by_id(*target) {
-                Some(node) => Inverse::Field(Intent::SetNodeGrids {
-                    target: *target,
-                    grids: node.grids,
-                }),
-                None => Inverse::NoOp,
-            },
+                    _ => None,
+                }
+            }),
+            Intent::SetNodeGrids { target, .. } => node_field_inverse(scene, *target, |node| {
+                Some(Intent::SetNodeGrids { target: *target, grids: node.grids })
+            }),
 
             // --- Global ---
             // Density is a single document-level field (ADR 0003 §3f(0)), so the
@@ -279,38 +305,28 @@ impl AppCore {
                 },
                 _ => Inverse::NoOp,
             },
-            Intent::SetPointHidden { index, .. } => match scene.points.get(*index) {
-                Some(point) => Inverse::Field(Intent::SetPointHidden {
-                    index: *index,
-                    hidden: point.hidden,
-                }),
-                None => Inverse::NoOp,
-            },
-            Intent::SetPointPlanes { index, .. } => match scene.points.get(*index) {
-                Some(point) => Inverse::Field(Intent::SetPointPlanes {
+            Intent::SetPointHidden { index, .. } => point_field_inverse(scene, *index, |point| {
+                Intent::SetPointHidden { index: *index, hidden: point.hidden }
+            }),
+            Intent::SetPointPlanes { index, .. } => point_field_inverse(scene, *index, |point| {
+                Intent::SetPointPlanes {
                     index: *index,
                     xz: point.plane_xz,
                     xy: point.plane_xy,
                     yz: point.plane_yz,
-                }),
-                None => Inverse::NoOp,
-            },
-            Intent::SetPointAxes { index, .. } => match scene.points.get(*index) {
-                Some(point) => Inverse::Field(Intent::SetPointAxes {
+                }
+            }),
+            Intent::SetPointAxes { index, .. } => point_field_inverse(scene, *index, |point| {
+                Intent::SetPointAxes {
                     index: *index,
                     x: point.axis_x,
                     y: point.axis_y,
                     z: point.axis_z,
-                }),
-                None => Inverse::NoOp,
-            },
-            Intent::SetPointPosition { index, .. } => match scene.points.get(*index) {
-                Some(point) => Inverse::Field(Intent::SetPointPosition {
-                    index: *index,
-                    position_blocks: point.position_blocks,
-                }),
-                None => Inverse::NoOp,
-            },
+                }
+            }),
+            Intent::SetPointPosition { index, .. } => point_field_inverse(scene, *index, |point| {
+                Intent::SetPointPosition { index: *index, position_blocks: point.position_blocks }
+            }),
 
             // Selection-only intents never reach here (handled + returned above).
             Intent::SelectNode { .. } | Intent::SelectPoint { .. } => Inverse::NoOp,
@@ -488,49 +504,34 @@ impl AppCore {
                 (if applied { full_effect } else { none }, None)
             }
             Intent::SetShape { target, shape } => {
-                let applied = match scene.node_by_id_mut(target) {
-                    Some(node) => match &mut node.content {
-                        NodeContent::Tool { shape: node_shape, .. } => {
-                            *node_shape = shape;
-                            true
-                        }
-                        _ => false,
-                    },
-                    None => false,
-                };
-                (if applied { full_effect } else { none }, None)
+                node_write(scene, target, full_effect, |node| match &mut node.content {
+                    NodeContent::Tool { shape: node_shape, .. } => {
+                        *node_shape = shape;
+                        true
+                    }
+                    _ => false,
+                })
             }
             Intent::SetSketch { target, producer } => {
-                let applied = match scene.node_by_id_mut(target) {
-                    Some(node) => match &mut node.content {
-                        NodeContent::SketchTool { producer: node_producer, .. } => {
-                            *node_producer = producer;
-                            true
-                        }
-                        _ => false,
-                    },
-                    None => false,
-                };
-                (if applied { full_effect } else { none }, None)
+                node_write(scene, target, full_effect, |node| match &mut node.content {
+                    NodeContent::SketchTool { producer: node_producer, .. } => {
+                        *node_producer = producer;
+                        true
+                    }
+                    _ => false,
+                })
             }
             Intent::SetMaterial { target, material } => {
-                let applied = match scene.node_by_id_mut(target) {
-                    Some(node) => match &mut node.content {
-                        NodeContent::Tool { material: node_material, .. } => {
-                            *node_material = material;
-                            true
-                        }
-                        // Sketch nodes carry the same shared material field, so the
-                        // material edit applies to them too (ADR 0003 §3i).
-                        NodeContent::SketchTool { material: node_material, .. } => {
-                            *node_material = material;
-                            true
-                        }
-                        _ => false,
-                    },
-                    None => false,
-                };
-                (if applied { full_effect } else { none }, None)
+                // Sketch nodes carry the same shared material field, so the material
+                // edit applies to them too (ADR 0003 §3i).
+                node_write(scene, target, full_effect, |node| match &mut node.content {
+                    NodeContent::Tool { material: node_material, .. }
+                    | NodeContent::SketchTool { material: node_material, .. } => {
+                        *node_material = material;
+                        true
+                    }
+                    _ => false,
+                })
             }
             Intent::SetOperation { target, operation } => {
                 // ADR 0017: the combine operation applies to EVERY node kind — a
@@ -539,14 +540,10 @@ impl AppCore {
                 // definition's finished body: a definition instanced with Subtract
                 // is the reusable cutter (issue #76). The resolver honoured the
                 // Instance operation since #74; this is its edit surface.
-                let applied = match scene.node_by_id_mut(target) {
-                    Some(node) => {
-                        node.operation = operation;
-                        true
-                    }
-                    None => false,
-                };
-                (if applied { full_effect } else { none }, None)
+                node_write(scene, target, full_effect, |node| {
+                    node.operation = operation;
+                    true
+                })
             }
             Intent::SetDefinitionFixture { def, fixture } => {
                 // ADR 0017 Decision 4 (issue #77): sealed↔spliced is what the part
@@ -564,49 +561,28 @@ impl AppCore {
                 // owner in `NodeTransform::from_measurements`. The inspector
                 // validated each axis lands on a whole voxel before emitting.
                 let density = scene.voxels_per_block;
-                let applied = match scene.node_by_id_mut(target) {
-                    Some(node) => {
-                        node.transform =
-                            NodeTransform::from_measurements(offset_measurements, density);
-                        true
-                    }
-                    None => false,
-                };
-                (if applied { full_effect } else { none }, None)
+                node_write(scene, target, full_effect, |node| {
+                    node.transform = NodeTransform::from_measurements(offset_measurements, density);
+                    true
+                })
             }
-            Intent::SetName { target, name } => {
-                let applied = match scene.node_by_id_mut(target) {
-                    Some(node) => {
-                        node.name = name;
-                        true
-                    }
-                    None => false,
-                };
-                (if applied { full_effect } else { none }, None)
-            }
+            Intent::SetName { target, name } => node_write(scene, target, full_effect, |node| {
+                node.name = name;
+                true
+            }),
             Intent::SetCloudSeed { target, seed } => {
-                let applied = match scene.node_by_id_mut(target) {
-                    Some(node) => match &mut node.content {
-                        NodeContent::VoxelBody(VoxelBody::DebugClouds { seed: node_seed }) => {
-                            *node_seed = seed;
-                            true
-                        }
-                        _ => false,
-                    },
-                    None => false,
-                };
-                (if applied { full_effect } else { none }, None)
-            }
-            Intent::SetNodeGrids { target, grids } => {
-                let applied = match scene.node_by_id_mut(target) {
-                    Some(node) => {
-                        node.grids = grids;
+                node_write(scene, target, full_effect, |node| match &mut node.content {
+                    NodeContent::VoxelBody(VoxelBody::DebugClouds { seed: node_seed }) => {
+                        *node_seed = seed;
                         true
                     }
-                    None => false,
-                };
-                (if applied { full_effect } else { none }, None)
+                    _ => false,
+                })
             }
+            Intent::SetNodeGrids { target, grids } => node_write(scene, target, full_effect, |node| {
+                node.grids = grids;
+                true
+            }),
             // --- Global ---
             Intent::SetDensity { voxels_per_block } => {
                 // Density is a document-level attribute (ADR 0003 §3f(0)): one field
@@ -715,48 +691,32 @@ impl AppCore {
                 (full_effect, None)
             }
             Intent::SetPointHidden { index, hidden } => {
-                let applied = match scene.points.get_mut(index) {
-                    Some(point) => {
-                        point.hidden = hidden;
-                        true
-                    }
-                    None => false,
-                };
-                (if applied { full_effect } else { none }, None)
+                point_write(scene, index, full_effect, |point| {
+                    point.hidden = hidden;
+                    true
+                })
             }
             Intent::SetPointPlanes { index, xz, xy, yz } => {
-                let applied = match scene.points.get_mut(index) {
-                    Some(point) => {
-                        point.plane_xz = xz;
-                        point.plane_xy = xy;
-                        point.plane_yz = yz;
-                        true
-                    }
-                    None => false,
-                };
-                (if applied { full_effect } else { none }, None)
+                point_write(scene, index, full_effect, |point| {
+                    point.plane_xz = xz;
+                    point.plane_xy = xy;
+                    point.plane_yz = yz;
+                    true
+                })
             }
             Intent::SetPointAxes { index, x, y, z } => {
-                let applied = match scene.points.get_mut(index) {
-                    Some(point) => {
-                        point.axis_x = x;
-                        point.axis_y = y;
-                        point.axis_z = z;
-                        true
-                    }
-                    None => false,
-                };
-                (if applied { full_effect } else { none }, None)
+                point_write(scene, index, full_effect, |point| {
+                    point.axis_x = x;
+                    point.axis_y = y;
+                    point.axis_z = z;
+                    true
+                })
             }
             Intent::SetPointPosition { index, position_blocks } => {
-                let applied = match scene.points.get_mut(index) {
-                    Some(point) => {
-                        point.position_blocks = position_blocks;
-                        true
-                    }
-                    None => false,
-                };
-                (if applied { full_effect } else { none }, None)
+                point_write(scene, index, full_effect, |point| {
+                    point.position_blocks = position_blocks;
+                    true
+                })
             }
         }
     }
