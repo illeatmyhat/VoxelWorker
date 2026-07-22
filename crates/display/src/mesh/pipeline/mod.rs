@@ -1,5 +1,16 @@
 use super::*;
 
+mod uniforms;
+mod bindings;
+mod chunk_upload;
+
+// Re-export the carved-out helpers so every prior `pipeline::X` / `mesh::X` path still
+// resolves — including the `pub(crate)` bind-group/atlas helpers the brick raymarch
+// reaches via `crate::mesh::…` (`mesh/mod.rs` does `pub(crate) use pipeline::*`).
+pub(crate) use bindings::*;
+pub(crate) use chunk_upload::*;
+pub(crate) use uniforms::*;
+
 /// The region clip as the SOLID pass reads it: the band is CONFINED to the region, so
 /// every voxel outside the selected object's AABB renders finished (ADR 0018 Decision 5).
 /// The renderer stores the selection region role-agnostically; the two build passes stamp
@@ -21,254 +32,6 @@ fn ghost_region(region: Option<RegionClip>) -> Option<RegionClip> {
         role: RegionRole::ClipToRegion,
         ..r
     })
-}
-
-/// std140-safe uniform block for the cuboid pass (ADR 0002 E3b-2). Carries the
-/// camera matrix, the grid half-extent and density (driving the per-voxel texture
-/// slice and the position-based grid overlay), the grid-overlay parameters, and
-/// the per-material base colours (reused from the instanced step-3b modulation).
-/// Every `vec3` is followed by a scalar so it never straddles a 16-byte boundary;
-/// the four grid-line scalars then fill the slot before the `vec4` array (which
-/// must be 16-aligned). Field order matches the WGSL `CuboidUniforms` exactly.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, Pod, Zeroable)]
-pub(crate) struct CuboidUniforms {
-    view_projection: [[f32; 4]; 4],
-    grid_half_extent: [f32; 3],
-    voxels_per_block: f32,
-    voxel_line_color: [f32; 3],
-    grid_overlay_enabled: f32,
-    block_line_color: [f32; 3],
-    material_modulation_enabled: f32,
-    voxel_line_half_width: f32,
-    block_line_half_width: f32,
-    voxel_line_alpha: f32,
-    block_line_alpha: f32,
-    // Layer-range band clip (issue #12 parity) + debug-faces flag. The two band
-    // bounds plus the debug flag plus a pad fill one 16-byte slot, so the colour
-    // array below stays 16-aligned (matching the WGSL `CuboidUniforms`).
-    band_min: f32,
-    band_max: f32,
-    debug_face_mode: f32,
-    /// ADR 0012 (H1): the onion GHOST flag (0 = normal solid render, 1 = flat
-    /// translucent ghost tint). Occupies the former `_band_pad` slot; `0.0` for the
-    /// solid draw keeps the solid uniform bytes identical (non-onion goldens byte-green).
-    ghost_mode: f32,
-    material_base_colors: [[f32; 4]; MaterialChoice::MATERIAL_COUNT],
-    /// Per-material atlas sub-rect (ADR 0002 E3c-1 / O8), indexed by `material_id`:
-    /// `[inset_min_u, inset_min_v, inset_size_u, inset_size_v]`. The shader maps the
-    /// per-voxel slice's `fract`-tiled UV into this window of the single atlas, so a
-    /// chunk of mixed materials is ONE mesh = ONE draw (no per-material texture
-    /// bind). Each `vec4` is naturally 16-aligned.
-    material_atlas_rects: [[f32; 4]; MaterialChoice::MATERIAL_COUNT],
-    /// ADR 0012 (H1): the onion ghost tint (linear RGB + src alpha), read only when
-    /// `ghost_mode > 0.5`. Appended so the solid draw's uniform layout is unchanged.
-    ghost_tint: [f32; 4],
-    /// Added to `voxel_absolute_position` INSIDE the on-face grid overlay to recover
-    /// the TRUE world voxel frame (`= recentre − grid_half_extent`), so the overlay's
-    /// voxel and block lines anchor to the world block lattice — the SAME lattice the
-    /// per-object block-lattice cage draws on — instead of the render grid's local
-    /// half-extent frame (which is out of block phase whenever `recentre` is not a
-    /// whole block). Only the overlay reads it; the texture/UV slice keeps `absolute`,
-    /// so material tiling is unchanged (goldens byte-green while the overlay is off).
-    overlay_world_offset: [f32; 3],
-    _overlay_pad: f32,
-}
-
-/// Convert a packed [`MaterialAtlas`]'s per-material sub-rects into the uniform
-/// array layout `[inset_min_u, inset_min_v, inset_size_u, inset_size_v]` the shader
-/// indexes by `material_id`. Materials without a packed sub-rect (should not happen
-/// for the procedural set) fall back to the WHOLE atlas (`[0,0,1,1]`), so a missing
-/// id degrades to "sample the atlas" rather than panicking.
-pub(crate) fn atlas_rects_from(atlas: &MaterialAtlas) -> [[f32; 4]; MaterialChoice::MATERIAL_COUNT] {
-    let mut rects = [[0.0, 0.0, 1.0, 1.0]; MaterialChoice::MATERIAL_COUNT];
-    for (slot, sub_rect) in rects.iter_mut().zip(atlas.sub_rects.iter()) {
-        let [size_u, size_v] = sub_rect.inset_size();
-        *slot = [sub_rect.inset_min_u, sub_rect.inset_min_v, size_u, size_v];
-    }
-    rects
-}
-
-/// Build a ghost-only [`CuboidUniforms`] block (issue #78 — the selected-operand ghost
-/// passes; ADR 0012 H1 is the ghost-branch precedent): `ghost_mode = 1` + `ghost_tint`,
-/// with the camera + frame scalars the vertex stage reads. The `cuboid.wgsl` ghost branch
-/// returns the flat tint before any texture / material / overlay / band read, so every
-/// other field is filled with inert values (overlay + modulation off, band FULL).
-pub(crate) fn flat_ghost_uniforms(
-    view_projection: glam::Mat4,
-    grid_dimensions: [u32; 3],
-    voxels_per_block: u32,
-    ghost_tint: [f32; 4],
-) -> CuboidUniforms {
-    let overlay = crate::renderer::grid_overlay_params();
-    CuboidUniforms {
-        view_projection: view_projection.to_cols_array_2d(),
-        // FLOORED half, matching the solid draw's corner-anchoring (an odd dim's
-        // `dim/2.0` would sit half a voxel off — see `update_uniforms`).
-        grid_half_extent: substrate::spatial::GridHalfExtent::of_grid_dimensions(grid_dimensions)
-            .voxels(),
-        voxels_per_block: voxels_per_block.max(1) as f32,
-        voxel_line_color: overlay.voxel_line_color,
-        grid_overlay_enabled: 0.0,
-        block_line_color: overlay.block_line_color,
-        material_modulation_enabled: 0.0,
-        voxel_line_half_width: overlay.voxel_line_half_width,
-        block_line_half_width: overlay.block_line_half_width,
-        voxel_line_alpha: overlay.voxel_line_alpha,
-        block_line_alpha: overlay.block_line_alpha,
-        band_min: 0.0,
-        band_max: u32::MAX as f32,
-        debug_face_mode: 0.0,
-        ghost_mode: 1.0,
-        material_base_colors: [[1.0, 1.0, 1.0, 0.0]; MaterialChoice::MATERIAL_COUNT],
-        material_atlas_rects: [[0.0, 0.0, 1.0, 1.0]; MaterialChoice::MATERIAL_COUNT],
-        ghost_tint,
-        // The ghost branch returns before the overlay, so the anchor is inert here.
-        overlay_world_offset: [0.0; 3],
-        _overlay_pad: 0.0,
-    }
-}
-
-/// The group(0) camera/frame uniform bind-group layout every cuboid-shader pipeline binds
-/// (the solid/ghost draws in [`CuboidMeshRenderer::assemble`] and the selected-operand
-/// ghost passes, issue #78). ONE builder so the layouts stay bind-compatible.
-pub(crate) fn cuboid_uniform_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
-    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("cuboid uniform bind group layout"),
-        entries: &[wgpu::BindGroupLayoutEntry {
-            binding: 0,
-            visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Uniform,
-                has_dynamic_offset: false,
-                min_binding_size: None,
-            },
-            count: None,
-        }],
-    })
-}
-
-/// The per-draw on-face-grid overlay-active bind-group layout (group 2, ADR 0003 §3c / ADR
-/// 0010 E3): one `u32` uniform read with a DYNAMIC OFFSET, so the overlay-off and overlay-on
-/// draws of a chunk select `0` / `1` from a two-entry buffer without a per-vertex flag.
-pub(crate) fn overlay_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
-    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("cuboid overlay-active bind group layout"),
-        entries: &[wgpu::BindGroupLayoutEntry {
-            binding: 0,
-            visibility: wgpu::ShaderStages::FRAGMENT,
-            ty: wgpu::BindingType::Buffer {
-                ty: wgpu::BufferBindingType::Uniform,
-                has_dynamic_offset: true,
-                min_binding_size: std::num::NonZeroU64::new(std::mem::size_of::<u32>() as u64),
-            },
-            count: None,
-        }],
-    })
-}
-
-/// Build the two-entry per-draw overlay-active uniform buffer + its dynamic-offset bind
-/// group (ADR 0003 §3c). Entry 0 = `0` (overlay off), entry 1 (at the device's
-/// `min_uniform_buffer_offset_alignment`) = `1` (overlay on). Returns the bind group and
-/// the stride to pass as the dynamic offset for the overlay-on draw.
-pub(crate) fn build_overlay_bind_group(
-    device: &wgpu::Device,
-    layout: &wgpu::BindGroupLayout,
-) -> (wgpu::BindGroup, u32) {
-    let stride = device
-        .limits()
-        .min_uniform_buffer_offset_alignment
-        .max(std::mem::size_of::<u32>() as u32);
-    // Two `u32` entries, each at a `stride`-aligned offset (the rest is padding).
-    let mut bytes = vec![0u8; (stride as usize) + std::mem::size_of::<u32>()];
-    bytes[0..4].copy_from_slice(&0u32.to_ne_bytes()); // entry 0: overlay OFF
-    bytes[stride as usize..stride as usize + 4].copy_from_slice(&1u32.to_ne_bytes()); // entry 1: overlay ON
-    let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("cuboid overlay-active uniform"),
-        contents: &bytes,
-        usage: wgpu::BufferUsages::UNIFORM,
-    });
-    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("cuboid overlay-active bind group"),
-        layout,
-        entries: &[wgpu::BindGroupEntry {
-            binding: 0,
-            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                buffer: &buffer,
-                offset: 0,
-                size: std::num::NonZeroU64::new(std::mem::size_of::<u32>() as u64),
-            }),
-        }],
-    });
-    (bind_group, stride)
-}
-
-/// The cuboid atlas bind-group layout: a single 2D texture (binding 0) + sampler
-/// (binding 1). One atlas for ALL materials replaces the former per-material
-/// D2Array binds (ADR 0002 O8).
-pub(crate) fn build_atlas_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
-    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-        label: Some("cuboid atlas bind group layout"),
-        entries: &[
-            wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
-                },
-                count: None,
-            },
-            wgpu::BindGroupLayoutEntry {
-                binding: 1,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                count: None,
-            },
-        ],
-    })
-}
-
-/// Upload a packed [`MaterialAtlas`] image as a single RGBA8 sRGB 2D texture
-/// (Nearest, no mipmaps), matching the instanced path's sRGB decode so lighting +
-/// overlay run in linear space and the sRGB target re-encodes on write.
-pub(crate) fn upload_atlas_texture(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    atlas: &MaterialAtlas,
-) -> wgpu::Texture {
-    let size = wgpu::Extent3d {
-        width: atlas.width.max(1),
-        height: atlas.height.max(1),
-        depth_or_array_layers: 1,
-    };
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("cuboid material atlas"),
-        size,
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8UnormSrgb,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats: &[],
-    });
-    queue.write_texture(
-        wgpu::TexelCopyTextureInfo {
-            texture: &texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        &atlas.pixels,
-        wgpu::TexelCopyBufferLayout {
-            offset: 0,
-            bytes_per_row: Some(4 * atlas.width.max(1)),
-            rows_per_image: Some(atlas.height.max(1)),
-        },
-        size,
-    );
-    texture
 }
 
 /// One render chunk's GPU buffers for the cuboid path (issue #20 S6c-2d): its own
@@ -675,7 +438,7 @@ impl CuboidMeshRenderer {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("cuboid shader"),
             source: wgpu::ShaderSource::Wgsl(
-                crate::shaders::with_shared_shading(include_str!("../shaders/cuboid.wgsl")).into(),
+                crate::shaders::with_shared_shading(include_str!("../../shaders/cuboid.wgsl")).into(),
             ),
         });
 
@@ -848,7 +611,7 @@ impl CuboidMeshRenderer {
         let loaded_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("cuboid loaded-block shader"),
             source: wgpu::ShaderSource::Wgsl(
-                crate::shaders::with_shared_shading(include_str!("../shaders/cuboid_loaded.wgsl"))
+                crate::shaders::with_shared_shading(include_str!("../../shaders/cuboid_loaded.wgsl"))
                     .into(),
             ),
         });
@@ -1572,76 +1335,4 @@ impl CuboidMeshRenderer {
             }
         }
     }
-}
-
-/// Upload built per-chunk meshes into GPU buffers, one [`CuboidChunkBuffers`] per
-/// non-empty chunk (issue #20 S6c-2d).
-pub(crate) fn upload_chunk_meshes(
-    device: &wgpu::Device,
-    chunk_meshes: &[CuboidChunkMesh],
-) -> std::collections::HashMap<[i32; 3], CuboidChunkBuffers> {
-    let mut buffers = std::collections::HashMap::new();
-    for mesh in chunk_meshes {
-        if mesh.indices.is_empty() && mesh.indices_overlay.is_empty() {
-            continue;
-        }
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("cuboid chunk vertices"),
-            contents: bytemuck::cast_slice(&mesh.vertices),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
-        // One index buffer = overlay-OFF run then overlay-ON run (ADR 0003 §3c); the two
-        // draws slice it by count + offset.
-        let mut all_indices = mesh.indices.clone();
-        all_indices.extend_from_slice(&mesh.indices_overlay);
-        let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("cuboid chunk indices"),
-            contents: bytemuck::cast_slice(&all_indices),
-            usage: wgpu::BufferUsages::INDEX,
-        });
-        buffers.insert(
-            mesh.coord,
-            CuboidChunkBuffers {
-                vertex_buffer,
-                index_buffer,
-                index_count: mesh.indices.len() as u32,
-                index_count_overlay: mesh.indices_overlay.len() as u32,
-                aabb: mesh.aabb,
-                box_count: mesh.box_count,
-            },
-        );
-    }
-    buffers
-}
-
-/// Bucket a whole [`VoxelGrid`] into per-chunk sub-grids keyed by integer chunk
-/// coord `floor(world_position / chunk_extent)` (issue #20 S6c-2d) — the same key
-/// the resolve cache's per-chunk accessor uses (the legacy instanced renderer this
-/// key once also matched was removed, part of #20), so the cuboid `new` wrapper's
-/// chunk partition matches the resolve cache's. A sub-grid carries only the occupied
-/// voxels (its `dimensions` is unused by the apron mesher, which keys off
-/// `world_position`).
-pub(crate) fn bucket_grid_into_chunk_grids(
-    grid: &VoxelGrid,
-    voxels_per_block: u32,
-) -> Vec<([i32; 3], VoxelGrid)> {
-    use std::collections::HashMap;
-    let chunk_extent = (voxel_core::core_geom::CHUNK_BLOCKS * voxels_per_block.max(1)) as f32;
-    let mut buckets: HashMap<[i32; 3], VoxelGrid> = HashMap::new();
-    for voxel in &grid.occupied {
-        let position = voxel.world_position();
-        let key = [
-            (position[0] / chunk_extent).floor() as i32,
-            (position[1] / chunk_extent).floor() as i32,
-            (position[2] / chunk_extent).floor() as i32,
-        ];
-        buckets
-            .entry(key)
-            .or_insert_with(|| VoxelGrid::new([0, 0, 0]))
-            .occupied
-            .push(*voxel);
-    }
-    let mut out: Vec<([i32; 3], VoxelGrid)> = buckets.into_iter().collect();
-    out.sort_unstable_by_key(|(coord, _)| *coord);
-    out
 }
