@@ -10,8 +10,22 @@
 //! front-bottom-right corner. Hovering a zone lights every across-the-fold facet of
 //! the 26-element in the `#9cb4d8` accent (computed geometrically in the shader from
 //! the element's [`camera::ViewCubeElement::axis_selectors`]).
+//!
+//! This module owns the GPU renderer + its pipelines; the pure-CPU asset generation
+//! lives in two coupling-free sinks: [`geometry`] (mesh + wireframe → `Vec`s) and
+//! [`labels`] (face-label textures + bitmap font → RGBA8 bytes).
 
 use super::*;
+
+mod geometry;
+mod labels;
+
+// The CPU asset generators used by `ViewCubeRenderer::new`. `view_cube_geometry` is
+// re-exported `pub(crate)` so the renderer-module glob still hands it to the unit
+// tests (`renderer::tests`); the other two are internal to the GPU half.
+pub(crate) use geometry::view_cube_geometry;
+use geometry::{expand_thick_lines, view_cube_edges};
+use labels::generate_face_label_textures;
 
 /// Edge length (pixels) of the corner view-cube viewport (top-right). Bumped 128 → 144
 /// (issue #91 item 3) for a modestly larger cube; the 16 px margin is unchanged and the
@@ -99,34 +113,6 @@ struct CubeLineUniforms {
 /// Core half-width (px) of the cube linework → a ~1.4 px line, plus a 1 px feather.
 const CUBE_LINE_HALF_WIDTH_PX: f32 = 0.7;
 const CUBE_LINE_FEATHER_PX: f32 = 1.0;
-
-/// Expand a `LineList` vertex stream (consecutive `a, b` pairs) into thick-line quad
-/// vertices (6 per segment). Both endpoints of a cube edge share a colour, so the quad
-/// takes the pair's first colour.
-fn expand_thick_lines(segments: &[LineVertex]) -> Vec<ThickLineVertex> {
-    // (side, end) for the two triangles of the quad.
-    const CORNERS: [(f32, f32); 6] = [
-        (-1.0, 0.0),
-        (-1.0, 1.0),
-        (1.0, 0.0),
-        (1.0, 0.0),
-        (-1.0, 1.0),
-        (1.0, 1.0),
-    ];
-    let mut out = Vec::with_capacity(segments.len() / 2 * 6);
-    for pair in segments.chunks_exact(2) {
-        let (a, b) = (pair[0], pair[1]);
-        for (side, end) in CORNERS {
-            out.push(ThickLineVertex {
-                position_a: a.position,
-                position_b: b.position,
-                color: a.color,
-                side_end: [side, end],
-            });
-        }
-    }
-    out
-}
 
 /// The corner view cube: a labelled cube mirroring the main camera's orientation, plus
 /// a silhouette + axis-coloured edge wireframe (Signal style, see the module doc).
@@ -283,7 +269,7 @@ impl ViewCubeRenderer {
         // --- Face pipeline (textured cube) ---
         let cube_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("view cube shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/viewcube.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(include_str!("../../shaders/viewcube.wgsl").into()),
         });
         let face_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("view cube face pipeline layout"),
@@ -684,7 +670,7 @@ fn build_cube_line_pipeline(
 ) -> wgpu::RenderPipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("view cube line shader"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/viewcube_lines.wgsl").into()),
+        source: wgpu::ShaderSource::Wgsl(include_str!("../../shaders/viewcube_lines.wgsl").into()),
     });
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("view cube line pipeline layout"),
@@ -753,7 +739,7 @@ fn build_cube_composite_pipeline(
 ) -> wgpu::RenderPipeline {
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("view cube composite shader"),
-        source: wgpu::ShaderSource::Wgsl(include_str!("../shaders/viewcube_composite.wgsl").into()),
+        source: wgpu::ShaderSource::Wgsl(include_str!("../../shaders/viewcube_composite.wgsl").into()),
     });
     let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
         label: Some("view cube composite pipeline layout"),
@@ -805,296 +791,4 @@ fn build_cube_composite_pipeline(
         multiview_mask: None,
         cache: None,
     })
-}
-
-/// Build the labelled-cube geometry (side 1.4, centred on origin). Face order +X,
-/// -X, +Y, -Y, +Z, -Z (matches `materialIndex` / `CubeFace`).
-pub(crate) fn view_cube_geometry() -> (Vec<CubeLabelVertex>, Vec<u16>) {
-    const HALF: f32 = 0.7; // side 1.4
-    const UVS: [[f32; 2]; 4] = [[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]];
-    let faces: [([f32; 3], [[f32; 3]; 4]); 6] = [
-        ([1.0, 0.0, 0.0], [[HALF, -HALF, HALF], [HALF, -HALF, -HALF], [HALF, HALF, -HALF], [HALF, HALF, HALF]]),
-        ([-1.0, 0.0, 0.0], [[-HALF, -HALF, -HALF], [-HALF, -HALF, HALF], [-HALF, HALF, HALF], [-HALF, HALF, -HALF]]),
-        ([0.0, 1.0, 0.0], [[-HALF, HALF, HALF], [HALF, HALF, HALF], [HALF, HALF, -HALF], [-HALF, HALF, -HALF]]),
-        ([0.0, -1.0, 0.0], [[-HALF, -HALF, -HALF], [HALF, -HALF, -HALF], [HALF, -HALF, HALF], [-HALF, -HALF, HALF]]),
-        ([0.0, 0.0, 1.0], [[-HALF, -HALF, HALF], [HALF, -HALF, HALF], [HALF, HALF, HALF], [-HALF, HALF, HALF]]),
-        ([0.0, 0.0, -1.0], [[HALF, -HALF, -HALF], [-HALF, -HALF, -HALF], [-HALF, HALF, -HALF], [HALF, HALF, -HALF]]),
-    ];
-    let mut vertices = Vec::with_capacity(24);
-    let mut indices = Vec::with_capacity(36);
-    for (layer, (normal, corners)) in faces.iter().enumerate() {
-        let base = vertices.len() as u16;
-        // Z-up: the BACK (+Y, layer 2) and BOTTOM (−Z, layer 5) faces wind such that
-        // the shared UV table maps their label upside-down. Rotate just those two
-        // faces' UVs 180° (corner_index + 2) so every label reads upright — the fix
-        // lives in the unwrap, keeping the label textures themselves canonical.
-        let uv_rotated = layer == 2 || layer == 5;
-        for (corner_index, corner) in corners.iter().enumerate() {
-            let uv_index = if uv_rotated { (corner_index + 2) % 4 } else { corner_index };
-            vertices.push(CubeLabelVertex {
-                position: *corner,
-                normal: *normal,
-                uv: UVS[uv_index],
-                layer: layer as u32,
-            });
-        }
-        indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
-    }
-    (vertices, indices)
-}
-
-/// The Signal cube wireframe: the 12 silhouette edges (`#59636d`), the three
-/// axis-coloured edges emanating from the front-bottom-right corner
-/// (`(+HALF, −HALF, −HALF)` = right/front/bottom), and small projected X/Y/Z letter
-/// glyphs at the far ends of those edges. All drawn by the shared line pipeline
-/// (per-vertex colour, cube VP transform), so the axis triad foreshortens WITH the
-/// cube — never a screen-space approximation.
-///
-/// Z-up world mapping (front = −Y): from the shared corner, X (`#d9603f`) runs along
-/// the bottom-front edge toward −X, Y (`#7dba6a`) up the receding right-bottom edge
-/// toward +Y, and Z (`#9cb4d8`) up the front-right vertical toward +Z.
-fn view_cube_edges() -> Vec<LineVertex> {
-    const HALF: f32 = 0.705; // a hair outside the faces so the edges read crisply
-    let silhouette = with_alpha(srgb_hex_to_linear(SILHOUETTE_HEX), 1.0);
-    let axis_x = with_alpha(srgb_hex_to_linear(AXIS_X_HEX), 1.0);
-    let axis_y = with_alpha(srgb_hex_to_linear(AXIS_Y_HEX), 1.0);
-    let axis_z = with_alpha(srgb_hex_to_linear(AXIS_Z_HEX), 1.0);
-
-    // The three axis edges share the front-bottom-right corner `(+HALF, −HALF, −HALF)`;
-    // these are their FAR endpoints (where the letter glyphs sit).
-    let x_far = [-HALF, -HALF, -HALF]; // along the bottom-front edge (−X)
-    let y_far = [HALF, HALF, -HALF]; //  up the receding right-bottom edge (+Y)
-    let z_far = [HALF, -HALF, HALF]; //  up the front-right vertical (+Z)
-
-    let corners = [
-        [-HALF, -HALF, -HALF], [HALF, -HALF, -HALF], [HALF, HALF, -HALF], [-HALF, HALF, -HALF],
-        [-HALF, -HALF, HALF], [HALF, -HALF, HALF], [HALF, HALF, HALF], [-HALF, HALF, HALF],
-    ];
-    // The 12 edges as index pairs; the three axis edges are tagged with their colour.
-    let edges: [((usize, usize), [f32; 4]); 12] = [
-        ((0, 1), axis_x),       // bottom-front (varies X): the X axis edge
-        ((1, 2), axis_y),       // right-bottom (varies Y): the Y axis edge
-        ((2, 3), silhouette),
-        ((3, 0), silhouette),
-        ((4, 5), silhouette),
-        ((5, 6), silhouette),
-        ((6, 7), silhouette),
-        ((7, 4), silhouette),
-        ((0, 4), silhouette),
-        ((1, 5), axis_z),       // front-right vertical (varies Z): the Z axis edge
-        ((2, 6), silhouette),
-        ((3, 7), silhouette),
-    ];
-    let mut vertices = Vec::with_capacity(edges.len() * 2 + 24);
-    for ((a, b), color) in edges {
-        vertices.push(LineVertex { position: corners[a], color });
-        vertices.push(LineVertex { position: corners[b], color });
-    }
-
-    // Axis letter glyphs at the FAR ends (offset a touch outward from the corner so
-    // they read past the silhouette). Each glyph is drawn in a cube-space plane
-    // (right/up unit vectors) and projected with the cube.
-    const GLYPH: f32 = 0.20; // glyph box side, cube units
-    const OUT: f32 = 0.10; // outward nudge from the endpoint
-    // X: on the bottom-front edge; stand it in the XZ plane (right = +X, up = +Z),
-    // nudged down/forward so it sits just outside the front-bottom edge.
-    push_line_letter(
-        &mut vertices,
-        'X',
-        [x_far[0] - OUT, x_far[1] - OUT, x_far[2] - OUT],
-        [1.0, 0.0, 0.0],
-        [0.0, 0.0, 1.0],
-        GLYPH,
-        axis_x,
-    );
-    // Y: on the receding right-bottom edge; plane (right = +Y, up = +Z).
-    push_line_letter(
-        &mut vertices,
-        'Y',
-        [y_far[0] + OUT, y_far[1] + OUT, y_far[2] - OUT],
-        [0.0, 1.0, 0.0],
-        [0.0, 0.0, 1.0],
-        GLYPH,
-        axis_y,
-    );
-    // Z: on the front-right vertical; plane (right = +X, up = +Z).
-    push_line_letter(
-        &mut vertices,
-        'Z',
-        [z_far[0] + OUT, z_far[1] - OUT, z_far[2] + OUT],
-        [1.0, 0.0, 0.0],
-        [0.0, 0.0, 1.0],
-        GLYPH,
-        axis_z,
-    );
-    vertices
-}
-
-/// One letter stroke in the unit `[-0.5, 0.5]²` glyph cell: a `(u, v)` start/end pair.
-type LetterStroke = ((f32, f32), (f32, f32));
-
-/// Append the line segments of a single axis letter (`X`/`Y`/`Z`) to `vertices`,
-/// centred at `center` in the cube-space plane spanned by unit vectors `right` and
-/// `up`, with box side `scale` and colour `color`. Strokes are defined in a unit
-/// `[-0.5, 0.5]²` cell (u along `right`, v along `up`) and mapped into cube space, so
-/// the glyph foreshortens with the cube under the shared VP.
-fn push_line_letter(
-    vertices: &mut Vec<LineVertex>,
-    letter: char,
-    center: [f32; 3],
-    right: [f32; 3],
-    up: [f32; 3],
-    scale: f32,
-    color: [f32; 4],
-) {
-    // Unit-cell strokes (u, v) → (u, v) endpoint pairs per letter.
-    let strokes: &[LetterStroke] = match letter {
-        'X' => &[((-0.5, -0.5), (0.5, 0.5)), ((-0.5, 0.5), (0.5, -0.5))],
-        'Y' => &[
-            ((-0.5, 0.5), (0.0, 0.0)),
-            ((0.5, 0.5), (0.0, 0.0)),
-            ((0.0, 0.0), (0.0, -0.5)),
-        ],
-        'Z' => &[
-            ((-0.5, 0.5), (0.5, 0.5)),
-            ((0.5, 0.5), (-0.5, -0.5)),
-            ((-0.5, -0.5), (0.5, -0.5)),
-        ],
-        _ => &[],
-    };
-    let map = |u: f32, v: f32| {
-        [
-            center[0] + (right[0] * u + up[0] * v) * scale,
-            center[1] + (right[1] * u + up[1] * v) * scale,
-            center[2] + (right[2] * u + up[2] * v) * scale,
-        ]
-    };
-    for ((u0, v0), (u1, v1)) in strokes {
-        vertices.push(LineVertex { position: map(*u0, *v0), color });
-        vertices.push(LineVertex { position: map(*u1, *v1), color });
-    }
-}
-
-/// A sRGB hex → RGBA8 (opaque) texel; the label textures are `Rgba8UnormSrgb`, so the
-/// sRGB byte values are written straight through.
-fn hex_texel(hex: u32) -> [u8; 4] {
-    [((hex >> 16) & 0xff) as u8, ((hex >> 8) & 0xff) as u8, (hex & 0xff) as u8, 0xff]
-}
-
-/// The flat Signal fill of face `layer` (GEOMETRIC order +X,-X,+Y,-Y,+Z,-Z =
-/// Right,Left,Back,Front,Top,Bottom) — distinct near-black values within
-/// `#10141a`–`#1b2126` so the three visible faces (TOP lightest, FRONT mid, RIGHT
-/// darker) read apart under the flat (unlit) shading.
-fn face_fill_hex(layer: usize) -> u32 {
-    match layer {
-        0 => 0x13_18_20, // Right
-        1 => 0x0f_13_18, // Left
-        2 => 0x12_16_1b, // Back
-        3 => 0x16_1c_22, // Front
-        4 => 0x1b_21_26, // Top
-        _ => 0x10_14_19, // Bottom
-    }
-}
-
-/// Render the six face-label textures into one stacked RGBA8 buffer (6 layers, in
-/// GEOMETRIC `materialIndex` order +X,-X,+Y,-Y,+Z,-Z). Z-up labels each geometric
-/// face: +Y = BACK, −Y = FRONT, +Z = TOP, −Z = BOTTOM. Signal style: a flat
-/// near-black fill (per-face, [`face_fill_hex`]), hairline `#2b3238` slice lines at
-/// the 68 %-centre partition, and a monospace `#aeb9c4` label in the centre patch.
-fn generate_face_label_textures() -> Vec<u8> {
-    const LABELS: [&str; 6] = ["RIGHT", "LEFT", "BACK", "FRONT", "TOP", "BOTTOM"];
-    let size = FACE_LABEL_TEXTURE_SIZE as usize;
-    let mut all = Vec::with_capacity(size * size * 4 * 6);
-    for (layer, label) in LABELS.iter().enumerate() {
-        all.extend_from_slice(&render_face_label(label, face_fill_hex(layer)));
-    }
-    all
-}
-
-/// Render one Signal face-label texture (RGBA8, `FACE_LABEL_TEXTURE_SIZE` square):
-/// flat `fill_hex` background and the monospace label. The 3×3 slice lines are NOT baked
-/// here anymore (issue #91 item 3): they render as a constant-width anti-aliased SDF in
-/// `viewcube.wgsl` (screen-space, so glancing angles never thin them), leaving this
-/// texture as just the flat fill + centred label.
-fn render_face_label(label: &str, fill_hex: u32) -> Vec<u8> {
-    let size = FACE_LABEL_TEXTURE_SIZE as usize;
-    let background = hex_texel(fill_hex);
-    let text = hex_texel(FACE_LABEL_HEX);
-
-    let mut pixels = vec![0u8; size * size * 4];
-    for pixel in pixels.chunks_exact_mut(4) {
-        pixel.copy_from_slice(&background);
-    }
-
-    // Monospace label, sized to sit inside the 68 % centre patch.
-    draw_centered_label(&mut pixels, size, label, text);
-    pixels
-}
-
-/// Draw `label` centred using the built-in 5×7 bitmap font, scaled to fill the
-/// face, into the RGBA8 `pixels` buffer.
-fn draw_centered_label(pixels: &mut [u8], size: usize, label: &str, color: [u8; 4]) {
-    let glyph_width = 5usize;
-    let glyph_height = 7usize;
-    let spacing = 1usize;
-    let count = label.chars().count().max(1);
-    let text_cells_wide = count * glyph_width + (count - 1) * spacing;
-    // Choose an integer scale that keeps the label inside the 68 % centre patch
-    // (~60% of the face width, ~34% of its height), clear of the slice lines.
-    let max_scale_w = (size * 6 / 10) / text_cells_wide.max(1);
-    let max_scale_h = (size * 34 / 100) / glyph_height;
-    let scale = max_scale_w.min(max_scale_h).max(1);
-
-    let text_pixel_width = text_cells_wide * scale;
-    let text_pixel_height = glyph_height * scale;
-    let origin_x = (size.saturating_sub(text_pixel_width)) / 2;
-    let origin_y = (size.saturating_sub(text_pixel_height)) / 2;
-
-    let mut cursor_x = origin_x;
-    for ch in label.chars() {
-        let glyph = glyph_bitmap(ch);
-        for (row, bits) in glyph.iter().enumerate() {
-            for col in 0..glyph_width {
-                if (bits >> (glyph_width - 1 - col)) & 1 == 1 {
-                    // Filled cell → scale×scale block.
-                    for dy in 0..scale {
-                        for dx in 0..scale {
-                            let x = cursor_x + col * scale + dx;
-                            let y = origin_y + row * scale + dy;
-                            if x < size && y < size {
-                                let index = (y * size + x) * 4;
-                                pixels[index..index + 4].copy_from_slice(&color);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        cursor_x += (glyph_width + spacing) * scale;
-    }
-}
-
-/// A 5×7 bitmap (7 rows of 5-bit masks) for the uppercase letters used by the
-/// face labels. Unknown characters render blank.
-fn glyph_bitmap(ch: char) -> [u8; 7] {
-    match ch {
-        'A' => [0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
-        'B' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10001, 0b10001, 0b11110],
-        'C' => [0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110],
-        'D' => [0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110],
-        'E' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111],
-        'F' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b10000],
-        'G' => [0b01110, 0b10001, 0b10000, 0b10111, 0b10001, 0b10001, 0b01110],
-        'H' => [0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
-        'I' => [0b01110, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
-        'K' => [0b10001, 0b10010, 0b10100, 0b11000, 0b10100, 0b10010, 0b10001],
-        'L' => [0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111],
-        'M' => [0b10001, 0b11011, 0b10101, 0b10101, 0b10001, 0b10001, 0b10001],
-        'N' => [0b10001, 0b11001, 0b10101, 0b10011, 0b10001, 0b10001, 0b10001],
-        'O' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
-        'P' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10000, 0b10000, 0b10000],
-        'R' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001],
-        'T' => [0b11111, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100],
-        _ => [0; 7],
-    }
 }
