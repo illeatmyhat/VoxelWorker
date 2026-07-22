@@ -1059,43 +1059,40 @@ impl Scene {
     /// back to the removed node's parent (so a Group's last child deletion selects
     /// the Group), or to a surviving top-level node, or `None` when the scene
     /// empties. A stale id (no longer in the tree) is ignored.
-    pub fn remove_node(&mut self, target_id: NodeId) {
-        // ADR 0003 Phase B4/B5: resolve the target NodeId to its positional path (the
-        // removal + fallback logic reason in indices). A stale id → no-op.
-        let Some(path) = self.path_of(target_id) else {
-            return;
+    /// Detach `id` from its parent spine and purge its WHOLE subtree from the arena,
+    /// WITHOUT touching `active` (ADR 0003 Phase B4/B5). Resolves the id to its
+    /// positional path, splices it out of its parent spine (top-level `roots` or a
+    /// Group's `Vec<NodeId>`), then drops the removed node + every descendant (a
+    /// shared-borrow DFS into a `Vec` so no arena borrow is held during removal —
+    /// leaving any behind would orphan it). Returns the removed node's former slot
+    /// `(parent_indices, last_index)` so [`remove_node`](Self::remove_node) can
+    /// re-derive a selection there; a stale id / already-detached slot → `None`.
+    fn detach_and_purge_subtree(&mut self, id: NodeId) -> Option<(Vec<usize>, usize)> {
+        let path = self.path_of(id)?;
+        let (&last_index, parent_indices) = path.indices.split_last()?;
+        let parent_path = NodePath::from_indices(parent_indices.to_vec());
+        let removed_id = match self.siblings_mut(&parent_path) {
+            Some(spine) if last_index < spine.len() => spine.remove(last_index),
+            _ => return None,
         };
-        let Some((&last_index, parent_indices)) = path.indices.split_last() else {
-            return;
-        };
-        // Splice the target's id out of its parent spine (top-level `roots` or a
-        // Group's `Vec<NodeId>`), capturing the removed id.
-        let removed_id = {
-            let parent_path = NodePath::from_indices(parent_indices.to_vec());
-            match self.siblings_mut(&parent_path) {
-                Some(spine) if last_index < spine.len() => Some(spine.remove(last_index)),
-                _ => None,
-            }
-        };
-        let Some(removed_id) = removed_id else {
-            return;
-        };
-        // B5: the spine splice only detached the id; the `Node`s still live in the
-        // arena. Gather the WHOLE detached subtree's ids (the removed node + every
-        // descendant, via a shared-borrow DFS into a `Vec` so no arena borrow is held
-        // during removal), then drop each from the arena. Leaving any behind would
-        // orphan it (a round-trip / count test would catch it).
         let mut to_remove = Vec::new();
         self.collect_subtree_ids(removed_id, &mut to_remove);
-        for id in to_remove {
-            self.arena.remove(&id);
+        for descendant in to_remove {
+            self.arena.remove(&descendant);
         }
+        Some((parent_indices.to_vec(), last_index))
+    }
+
+    pub fn remove_node(&mut self, target_id: NodeId) {
+        let Some((parent_indices, last_index)) = self.detach_and_purge_subtree(target_id) else {
+            return;
+        };
         // Re-derive a valid selection. Prefer the sibling now occupying the removed
         // slot (a Group, or the scene root → a surviving top-level node); fall back
         // to the parent Group, then None when empty. ADR 0003 Phase B3: the fallback
         // yields a NodePath, which we resolve to the surviving node's stable id.
         self.active = self
-            .fallback_selection_after_remove(parent_indices, last_index)
+            .fallback_selection_after_remove(&parent_indices, last_index)
             .and_then(|path| self.id_at_path(&path));
     }
 
@@ -1138,22 +1135,9 @@ impl Scene {
     /// touch `active`. Used to reverse a single-node mint (`Inverse::RemoveAdded`). A
     /// stale id is a no-op.
     pub fn remove_node_exact(&mut self, id: NodeId) {
-        let Some(path) = self.path_of(id) else {
-            return;
-        };
-        let Some((&last_index, parent_indices)) = path.indices.split_last() else {
-            return;
-        };
-        let parent_path = NodePath::from_indices(parent_indices.to_vec());
-        let removed_id = match self.siblings_mut(&parent_path) {
-            Some(spine) if last_index < spine.len() => spine.remove(last_index),
-            _ => return,
-        };
-        let mut to_remove = Vec::new();
-        self.collect_subtree_ids(removed_id, &mut to_remove);
-        for descendant in to_remove {
-            self.arena.remove(&descendant);
-        }
+        // Same detach + purge as `remove_node`, but drop the returned slot — the undo
+        // path restores selection from the command's captured `selection_before`.
+        self.detach_and_purge_subtree(id);
     }
 
     /// Reverse [`group_active`](Self::group_active) (ADR 0003 Phase C C2): the fresh
