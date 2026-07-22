@@ -105,11 +105,12 @@ impl LeafPlacement {
     /// `world_offset` (a [`TrueWorldVoxelPoint`] — the absolute voxel frame). `min_rotated_corner`
     /// is derived so the low rotated corner anchors on `world_offset`.
     pub fn new(rotation: Quat, full: Vec3, world_offset: TrueWorldVoxelPoint) -> Self {
-        let mut min_rotated_corner = Vec3::splat(f32::INFINITY);
-        for corner in box_corners(full) {
-            min_rotated_corner = min_rotated_corner.min(rotation * corner);
+        Self {
+            rotation,
+            min_rotated_corner: min_rotated_corner(rotation, full),
+            world_offset: world_offset.voxels(),
+            full,
         }
-        Self { rotation, min_rotated_corner, world_offset: world_offset.voxels(), full }
     }
 
     /// The leaf's rotation.
@@ -148,21 +149,9 @@ impl LeafPlacement {
     /// min and ceils the max to conservatively enclose the rotated box (SOUND: the true occupied set
     /// ⊆ this AABB, ADR 0027 §4).
     pub fn world_aabb(&self) -> ([i64; 3], [i64; 3]) {
-        let mut world_min = Vec3::splat(f32::INFINITY);
-        let mut world_max = Vec3::splat(f32::NEG_INFINITY);
-        for corner in box_corners(self.full) {
-            let world = self.world_of(ProducerLocalVoxelPoint::from_voxels(corner)).voxels();
-            world_min = world_min.min(world);
-            world_max = world_max.max(world);
-        }
-        if is_axis_aligned(self.rotation) {
-            conservative_box(world_min, world_max)
-        } else {
-            (
-                [world_min.x.floor() as i64, world_min.y.floor() as i64, world_min.z.floor() as i64],
-                [world_max.x.ceil() as i64, world_max.y.ceil() as i64, world_max.z.ceil() as i64],
-            )
-        }
+        enclosing_box(self.rotation, box_corners(self.full), |corner| {
+            self.world_of(ProducerLocalVoxelPoint::from_voxels(corner)).voxels()
+        })
     }
 
     /// The producer-LOCAL integer box `[min, max)` enclosing the inverse image of an absolute voxel
@@ -180,22 +169,50 @@ impl LeafPlacement {
             (abs_max[1] - abs_min[1]) as f32,
             (abs_max[2] - abs_min[2]) as f32,
         );
-        let mut local_min = Vec3::splat(f32::INFINITY);
-        let mut local_max = Vec3::splat(f32::NEG_INFINITY);
-        for corner in box_corners(abs_full) {
-            let local =
-                self.local_of(TrueWorldVoxelPoint::from_voxels(abs_origin + corner)).voxels();
-            local_min = local_min.min(local);
-            local_max = local_max.max(local);
-        }
-        if is_axis_aligned(self.rotation) {
-            conservative_box(local_min, local_max)
-        } else {
-            (
-                [local_min.x.floor() as i64, local_min.y.floor() as i64, local_min.z.floor() as i64],
-                [local_max.x.ceil() as i64, local_max.y.ceil() as i64, local_max.z.ceil() as i64],
-            )
-        }
+        enclosing_box(self.rotation, box_corners(abs_full), |corner| {
+            self.local_of(TrueWorldVoxelPoint::from_voxels(abs_origin + corner)).voxels()
+        })
+    }
+}
+
+/// The low corner of the box `[0, full]` after `rotation` — the anchoring term the
+/// whole corner-anchor convention depends on (module docs call it load-bearing), so
+/// [`LeafPlacement::new`] and [`seat_centre_at`] read it from ONE definition rather
+/// than each re-running the fold.
+fn min_rotated_corner(rotation: Quat, full: Vec3) -> Vec3 {
+    let mut low = Vec3::splat(f32::INFINITY);
+    for corner in box_corners(full) {
+        low = low.min(rotation * corner);
+    }
+    low
+}
+
+/// Fold the eight `corners` through `transform`, then snap the enclosing float box to
+/// an integer `[min, max)`: an axis-aligned `rotation` recovers exact integers (a
+/// whole-phase leaf) or half-integer widens via [`conservative_box`]; a genuine
+/// rotation floors the min and ceils the max to conservatively enclose the box (SOUND,
+/// ADR 0027 §4). The shared skeleton of [`LeafPlacement::world_aabb`] (forward
+/// transform) and [`LeafPlacement::local_aabb`] (inverse) — the floor/ceil-vs-
+/// `conservative_box` dispatch most at risk of silent drift now lives once.
+fn enclosing_box(
+    rotation: Quat,
+    corners: [Vec3; 8],
+    transform: impl Fn(Vec3) -> Vec3,
+) -> ([i64; 3], [i64; 3]) {
+    let mut low = Vec3::splat(f32::INFINITY);
+    let mut high = Vec3::splat(f32::NEG_INFINITY);
+    for corner in corners {
+        let mapped = transform(corner);
+        low = low.min(mapped);
+        high = high.max(mapped);
+    }
+    if is_axis_aligned(rotation) {
+        conservative_box(low, high)
+    } else {
+        (
+            [low.x.floor() as i64, low.y.floor() as i64, low.z.floor() as i64],
+            [high.x.ceil() as i64, high.y.ceil() as i64, high.z.ceil() as i64],
+        )
     }
 }
 
@@ -204,9 +221,5 @@ impl LeafPlacement {
 /// corner-anchored [`LeafPlacement`] the classifier folds through (ADR 0027 §5 placement). It is
 /// the inverse of [`LeafPlacement::new`]`(rotation, full, result).world_of(full/2) == target_centre`.
 pub fn seat_centre_at(rotation: Quat, full: Vec3, target_centre: Vec3) -> Vec3 {
-    let mut min_rotated_corner = Vec3::splat(f32::INFINITY);
-    for corner in box_corners(full) {
-        min_rotated_corner = min_rotated_corner.min(rotation * corner);
-    }
-    target_centre - rotation * (full * 0.5) + min_rotated_corner
+    target_centre - rotation * (full * 0.5) + min_rotated_corner(rotation, full)
 }
