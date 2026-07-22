@@ -344,6 +344,44 @@ impl Scene {
     /// from the region, which a scope has no notion of, and it is fieldless anyway — so a
     /// Part containing one could not be outset even if it were composed (ADR 0020 Decision
     /// 1). Declining leaves that Part's existing behaviour exactly as it was.
+    /// The shared tail of [`composed_scope_leaf`](Self::composed_scope_leaf) and
+    /// [`composed_subtree`](Self::composed_subtree): given the collected `members` and a
+    /// caller-built `fingerprint`, derive the composite's frame origin as the low corner
+    /// of its UNION members (the only ones that can bound the body, ADR 0020 Decision 3 —
+    /// voxel-valued so density-independent), rebase every member onto it (ADR 0008), and
+    /// wrap it in a [`ComposedScope`]. `None` when there are no members, or no union
+    /// member (the scope composes to nothing it could dilate). One definition of how a
+    /// composite's origin is derived; the two callers differ only in the fingerprint.
+    fn finish_composite(
+        mut members: Vec<crate::voxel::CompositeMember>,
+        fingerprint: String,
+    ) -> Option<ComposedScope> {
+        if members.is_empty() {
+            return None;
+        }
+        let mut origin = [i64::MAX; 3];
+        for member in &members {
+            if member.operation != CombineOp::Union {
+                continue;
+            }
+            for (lowest, member_offset) in origin.iter_mut().zip(member.offset_voxels) {
+                *lowest = (*lowest).min(member_offset);
+            }
+        }
+        if origin[0] == i64::MAX {
+            return None;
+        }
+        for member in &mut members {
+            member.offset_voxels =
+                std::array::from_fn(|axis| member.offset_voxels[axis] - origin[axis]);
+        }
+        Some(ComposedScope {
+            origin_voxels: origin,
+            fingerprint,
+            producer: crate::voxel::CompositeProducer::new(members),
+        })
+    }
+
     fn composed_scope_leaf(
         &self,
         scope: &Node,
@@ -371,34 +409,10 @@ impl Scene {
             &mut members,
             &mut fingerprints,
         )?;
-        if members.is_empty() {
-            return None;
-        }
-        // The composite's frame origin is the low corner of its UNION members — the only
-        // ones that can bound the body (ADR 0020 Decision 3). Offsets are voxel-valued, so
-        // this is density-independent and the members rebase onto it exactly (ADR 0008).
-        let mut origin = [i64::MAX; 3];
-        for member in &members {
-            if member.operation != CombineOp::Union {
-                continue;
-            }
-            for (lowest, member_offset) in origin.iter_mut().zip(member.offset_voxels) {
-                *lowest = (*lowest).min(member_offset);
-            }
-        }
-        if origin[0] == i64::MAX {
-            // No union member ⇒ the scope composes to nothing it could dilate.
-            return None;
-        }
-        for member in &mut members {
-            member.offset_voxels =
-                std::array::from_fn(|axis| member.offset_voxels[axis] - origin[axis]);
-        }
-        Some(ComposedScope {
-            origin_voxels: origin,
-            fingerprint: format!(":composed[{}]={}", scope.id.0, fingerprints.join("|")),
-            producer: crate::voxel::CompositeProducer::new(members),
-        })
+        Self::finish_composite(
+            members,
+            format!(":composed[{}]={}", scope.id.0, fingerprints.join("|")),
+        )
     }
 
     /// Collect a scope's members in document order, mirroring [`walk_nodes`]'s expansion
@@ -523,30 +537,7 @@ impl Scene {
             &mut members,
             &mut fingerprints,
         )?;
-        if members.is_empty() {
-            return None;
-        }
-        let mut origin = [i64::MAX; 3];
-        for member in &members {
-            if member.operation != CombineOp::Union {
-                continue;
-            }
-            for (lowest, member_offset) in origin.iter_mut().zip(member.offset_voxels) {
-                *lowest = (*lowest).min(member_offset);
-            }
-        }
-        if origin[0] == i64::MAX {
-            return None;
-        }
-        for member in &mut members {
-            member.offset_voxels =
-                std::array::from_fn(|axis| member.offset_voxels[axis] - origin[axis]);
-        }
-        Some(ComposedScope {
-            origin_voxels: origin,
-            fingerprint: fingerprints.join("|"),
-            producer: crate::voxel::CompositeProducer::new(members),
-        })
+        Self::finish_composite(members, fingerprints.join("|"))
     }
 
     /// Recursive worker for [`for_each_leaf`](Self::for_each_leaf). `parent_offset`
