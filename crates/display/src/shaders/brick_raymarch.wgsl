@@ -558,6 +558,46 @@ fn clipmap_try_skip(ray: Ray, edge: f32, cell_box: CellBox, current_block_cell: 
     return out;
 }
 
+// G2/G4 hierarchical DDA empty-space skip: check the coarsest clip-map level covering
+// `absolute_block`; an EMPTY cell returns a `clipmap_try_skip` jump to its exit in one
+// stride, descending L3 → L2 → L1. A zero count = level off (never skip). Only the
+// coarsest empty level is attempted (the else-if chain the CPU march loop mirrors).
+// When no level is empty — or the jump wouldn't move — returns a non-advancing
+// `DdaJump` so the caller falls through to a normal per-block step (guaranteed
+// progress). Extracted so `march_brick_field` and `march_brick_haze` share ONE copy of
+// the (formerly byte-identical) selection instead of two kept in sync by hand.
+fn hierarchical_skip(
+    ray: Ray,
+    edge: f32,
+    edge_i: i32,
+    absolute_block: vec3<i32>,
+    block_cell: vec3<i32>,
+) -> DdaJump {
+    let clipmap = uniforms.clipmap_blocks_and_counts;
+    let clipmap_hi = uniforms.clipmap_blocks_and_counts_hi;
+    let l3_blocks = i32(clipmap_hi.x);
+    let l2_blocks = i32(clipmap.z);
+    let l1_blocks = i32(clipmap.x);
+    let cell_3 = clipmap_cell_of(absolute_block, l3_blocks);
+    let cell_2 = clipmap_cell_of(absolute_block, l2_blocks);
+    let cell_1 = clipmap_cell_of(absolute_block, l1_blocks);
+    let key_3 = pack_world_block_key_split(cell_3);
+    let key_2 = pack_world_block_key_split(cell_2);
+    let key_1 = pack_world_block_key_split(cell_1);
+    let level_3_empty = clipmap_hi.y > 0u && !clipmap_level_3_contains(key_3.x, key_3.y, clipmap_hi.y);
+    let level_2_empty = clipmap.w > 0u && !clipmap_level_2_contains(key_2.x, key_2.y, clipmap.w);
+    let level_1_empty = clipmap.y > 0u && !clipmap_level_1_contains(key_1.x, key_1.y, clipmap.y);
+    if (level_3_empty) {
+        return clipmap_try_skip(ray, edge, clipmap_cell_box(cell_3, l3_blocks, edge_i), block_cell);
+    } else if (level_2_empty) {
+        return clipmap_try_skip(ray, edge, clipmap_cell_box(cell_2, l2_blocks, edge_i), block_cell);
+    } else if (level_1_empty) {
+        return clipmap_try_skip(ray, edge, clipmap_cell_box(cell_1, l1_blocks, edge_i), block_cell);
+    }
+    // No empty level: a non-advancing jump so the caller takes a per-block step.
+    return DdaJump(false, block_cell, vec3<f32>(0.0), 0.0);
+}
+
 // Is a voxel of a sculpted brick occupied? Exact textureLoad of the R8 atlas.
 fn sculpted_voxel_occupied(atlas_slot: u32, brick_local_voxel: vec3<i32>) -> bool {
     let tiles = u32(uniforms.block_bias_and_tiles.w);
@@ -733,53 +773,16 @@ fn march_brick_field(ray: Ray) -> MarchHit {
     for (var step = 0; step < MAX_BLOCK_STEPS; step = step + 1) {
         let absolute_block = block_cell + uniforms.block_bias_and_tiles.xyz;
 
-        // G2/G4 hierarchical DDA: check the coarsest level covering this block; an
-        // empty cell jumps the ray to its exit in ONE stride, descending
-        // L3 → L2 → L1 → per-block. A zero count = level off (never skip). The jump
-        // falls through to a normal per-block step when it wouldn't advance
-        // (grazing / eps) — guaranteed progress. Only the coarsest EMPTY level is
-        // attempted each step (the else-if chain the CPU march loop mirrors).
-        let clipmap = uniforms.clipmap_blocks_and_counts;
-        let clipmap_hi = uniforms.clipmap_blocks_and_counts_hi;
-        let l3_blocks = i32(clipmap_hi.x);
-        let l2_blocks = i32(clipmap.z);
-        let l1_blocks = i32(clipmap.x);
-        let cell_3 = clipmap_cell_of(absolute_block, l3_blocks);
-        let cell_2 = clipmap_cell_of(absolute_block, l2_blocks);
-        let cell_1 = clipmap_cell_of(absolute_block, l1_blocks);
-        let key_3 = pack_world_block_key_split(cell_3);
-        let key_2 = pack_world_block_key_split(cell_2);
-        let key_1 = pack_world_block_key_split(cell_1);
-        let level_3_empty = clipmap_hi.y > 0u && !clipmap_level_3_contains(key_3.x, key_3.y, clipmap_hi.y);
-        let level_2_empty = clipmap.w > 0u && !clipmap_level_2_contains(key_2.x, key_2.y, clipmap.w);
-        let level_1_empty = clipmap.y > 0u && !clipmap_level_1_contains(key_1.x, key_1.y, clipmap.y);
-        if (level_3_empty) {
-            let jump = clipmap_try_skip(ray, edge, clipmap_cell_box(cell_3, l3_blocks, edge_i), block_cell);
-            if (jump.advanced) {
-                if (jump.t_block_enter > t_exit) { break; }
-                block_cell = jump.block_cell;
-                t_max = jump.t_max;
-                t_block_enter = jump.t_block_enter;
-                continue;
-            }
-        } else if (level_2_empty) {
-            let jump = clipmap_try_skip(ray, edge, clipmap_cell_box(cell_2, l2_blocks, edge_i), block_cell);
-            if (jump.advanced) {
-                if (jump.t_block_enter > t_exit) { break; }
-                block_cell = jump.block_cell;
-                t_max = jump.t_max;
-                t_block_enter = jump.t_block_enter;
-                continue;
-            }
-        } else if (level_1_empty) {
-            let jump = clipmap_try_skip(ray, edge, clipmap_cell_box(cell_1, l1_blocks, edge_i), block_cell);
-            if (jump.advanced) {
-                if (jump.t_block_enter > t_exit) { break; }
-                block_cell = jump.block_cell;
-                t_max = jump.t_max;
-                t_block_enter = jump.t_block_enter;
-                continue;
-            }
+        // G2/G4 hierarchical DDA empty-space skip (shared with the haze march): an
+        // empty coarse cell jumps the ray to its exit in ONE stride; a non-advancing
+        // result falls through to the normal per-block step below — guaranteed progress.
+        let jump = hierarchical_skip(ray, edge, edge_i, absolute_block, block_cell);
+        if (jump.advanced) {
+            if (jump.t_block_enter > t_exit) { break; }
+            block_cell = jump.block_cell;
+            t_max = jump.t_max;
+            t_block_enter = jump.t_block_enter;
+            continue;
         }
 
         // The block's sv voxel span + its relation to the region clip (S5). Computed once so
@@ -1332,48 +1335,14 @@ fn march_brick_haze(ray: Ray) -> HazeResult {
     for (var step = 0; step < MAX_BLOCK_STEPS; step = step + 1) {
         let absolute_block = block_cell + uniforms.block_bias_and_tiles.xyz;
 
-        // Identical hierarchical empty-space skip to the solid march.
-        let clipmap = uniforms.clipmap_blocks_and_counts;
-        let clipmap_hi = uniforms.clipmap_blocks_and_counts_hi;
-        let l3_blocks = i32(clipmap_hi.x);
-        let l2_blocks = i32(clipmap.z);
-        let l1_blocks = i32(clipmap.x);
-        let cell_3 = clipmap_cell_of(absolute_block, l3_blocks);
-        let cell_2 = clipmap_cell_of(absolute_block, l2_blocks);
-        let cell_1 = clipmap_cell_of(absolute_block, l1_blocks);
-        let key_3 = pack_world_block_key_split(cell_3);
-        let key_2 = pack_world_block_key_split(cell_2);
-        let key_1 = pack_world_block_key_split(cell_1);
-        let level_3_empty = clipmap_hi.y > 0u && !clipmap_level_3_contains(key_3.x, key_3.y, clipmap_hi.y);
-        let level_2_empty = clipmap.w > 0u && !clipmap_level_2_contains(key_2.x, key_2.y, clipmap.w);
-        let level_1_empty = clipmap.y > 0u && !clipmap_level_1_contains(key_1.x, key_1.y, clipmap.y);
-        if (level_3_empty) {
-            let jump = clipmap_try_skip(ray, edge, clipmap_cell_box(cell_3, l3_blocks, edge_i), block_cell);
-            if (jump.advanced) {
-                if (jump.t_block_enter > t_exit) { break; }
-                block_cell = jump.block_cell;
-                t_max = jump.t_max;
-                t_block_enter = jump.t_block_enter;
-                continue;
-            }
-        } else if (level_2_empty) {
-            let jump = clipmap_try_skip(ray, edge, clipmap_cell_box(cell_2, l2_blocks, edge_i), block_cell);
-            if (jump.advanced) {
-                if (jump.t_block_enter > t_exit) { break; }
-                block_cell = jump.block_cell;
-                t_max = jump.t_max;
-                t_block_enter = jump.t_block_enter;
-                continue;
-            }
-        } else if (level_1_empty) {
-            let jump = clipmap_try_skip(ray, edge, clipmap_cell_box(cell_1, l1_blocks, edge_i), block_cell);
-            if (jump.advanced) {
-                if (jump.t_block_enter > t_exit) { break; }
-                block_cell = jump.block_cell;
-                t_max = jump.t_max;
-                t_block_enter = jump.t_block_enter;
-                continue;
-            }
+        // Identical hierarchical empty-space skip to the solid march (shared fn).
+        let jump = hierarchical_skip(ray, edge, edge_i, absolute_block, block_cell);
+        if (jump.advanced) {
+            if (jump.t_block_enter > t_exit) { break; }
+            block_cell = jump.block_cell;
+            t_max = jump.t_max;
+            t_block_enter = jump.t_block_enter;
+            continue;
         }
 
         let key = pack_world_block_key_split(absolute_block);
