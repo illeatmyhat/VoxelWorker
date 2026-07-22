@@ -132,51 +132,34 @@ impl Scene {
                 ancestor_offset_voxels[1] + node.transform.offset_voxels[1],
                 ancestor_offset_voxels[2] + node.transform.offset_voxels[2],
             ];
+            // A fixture instance's own operation is INERT (issue #77): its definition
+            // children splice into the host fold, so it never emits its own body even
+            // under a boolean operation — it only contributes via descent below.
+            let is_fixture_instance = matches!(&node.content, NodeContent::Instance(def_id)
+                if self.def_by_id(*def_id).is_some_and(|def| def.fixture));
+            // The one operand-body emit: a boolean Group's sealed composed body, or a
+            // sealed-definition Instance's finished body (issue #76, the reusable
+            // cutter), or a leaf producer's body — all the SAME push, gated identically.
+            if emit_own_body && !is_fixture_instance {
+                slices.push((
+                    node.operation,
+                    self.operand_body_slice(node.id, ancestor_offset_voxels),
+                ));
+            }
+            // Descend into subtree operands: a Group's children (whether or not the
+            // Group itself is a boolean), or a fixture instance's spliced definition
+            // children under the instance's transform. A sealed Instance / leaf has no
+            // subtree operands to descend into.
             match &node.content {
                 NodeContent::Group(children) => {
-                    if emit_own_body {
-                        // A boolean Group's own operand body: its sealed composed
-                        // (internally-carved) body.
-                        slices.push((
-                            node.operation,
-                            self.operand_body_slice(node.id, ancestor_offset_voxels),
-                        ));
-                    }
-                    // Always descend: a Group's children are subtree operands whether
-                    // or not the Group itself is a boolean.
                     self.collect_boolean_operands(children, offset_under_node, slices);
                 }
-                NodeContent::Instance(def_id) => {
-                    if self.def_by_id(*def_id).is_some_and(|def| def.fixture) {
-                        // A fixture instance's own operation is inert (issue #77): its
-                        // definition children splice into the host fold, so descend into
-                        // them under the instance's transform.
-                        if let Some(def) = self.def_by_id(*def_id) {
-                            self.collect_boolean_operands(
-                                &def.children,
-                                offset_under_node,
-                                slices,
-                            );
-                        }
-                    } else if emit_own_body {
-                        // A sealed-definition Instance is a leaf operand: it folds the
-                        // definition's FINISHED body under its own operation (issue
-                        // #76 — the reusable cutter), so that whole body is the ghost.
-                        slices.push((
-                            node.operation,
-                            self.operand_body_slice(node.id, ancestor_offset_voxels),
-                        ));
+                NodeContent::Instance(def_id) if is_fixture_instance => {
+                    if let Some(def) = self.def_by_id(*def_id) {
+                        self.collect_boolean_operands(&def.children, offset_under_node, slices);
                     }
                 }
-                _ => {
-                    // Leaf producers (Tool / SketchTool / VoxelBody).
-                    if emit_own_body {
-                        slices.push((
-                            node.operation,
-                            self.operand_body_slice(node.id, ancestor_offset_voxels),
-                        ));
-                    }
-                }
+                _ => {}
             }
         }
     }
