@@ -829,12 +829,15 @@ impl Scene {
         // the SCOPE's operation (`sync_grid_scope_stack`), so a boolean inside a scope can
         // never affect geometry outside it.
         let mut scope_stack: Vec<(ScopeFrame, VoxelGrid)> = Vec::new();
-        // ADR 0026: the dense resolve is the vestigial test oracle (two-layer is the runtime
-        // path). It does NOT yet apply leaf orientation, so it is a faithful oracle only for
-        // identity-oriented scenes — which is every scene the parity gate feeds it. An oriented
-        // leaf is exercised through the two-layer classifier, checked against a hand-derived
-        // expectation, not against this path.
-        self.for_each_leaf(&mut |world_offset_voxels, _offset_local_voxels, _orientation, _rotation, body, grid_on_faces, operation, outset, scope_path| {
+        // ADR 0026: the discrete lattice `orientation` is still not applied here (an oriented
+        // leaf is checked through the two-layer classifier against a hand-derived expectation, not
+        // against this oracle) — every parity-gate scene is lattice-identity. ADR 0027 "Step 2":
+        // the CONTINUOUS `rotation` quaternion and the fractional `offset_local_voxels` ARE now
+        // applied, by routing a genuinely out-of-phase FIELD leaf through the shared inverse-gather
+        // ([`gather_placed_field_into_grid`], substrate's ONE placement affine) so the dense
+        // reference agrees with the live path on rotated / sub-voxel seats. A whole-phase leaf
+        // (integer offset, axis-aligned rotation) keeps the exact translate-and-stamp path below.
+        self.for_each_leaf(&mut |world_offset_voxels, offset_local_voxels, _orientation, rotation, body, grid_on_faces, operation, outset, scope_path| {
             sync_grid_scope_stack(&mut scope_stack, &mut output, scope_path, region_dimensions);
             let target: &mut VoxelGrid = match scope_stack.last_mut() {
                 Some((_, scratch)) => scratch,
@@ -867,6 +870,38 @@ impl Scene {
             else {
                 return;
             };
+
+            // ADR 0027 "Step 2": a genuinely out-of-phase FIELD leaf (a continuous rotation or a
+            // fractional sub-voxel seat) cannot be emitted one-cell-per-abs-cell by the integer
+            // translation below, so resample it by inverse gather through substrate's shared
+            // placement affine — the SAME map (and the same per-cell field test) the two-layer
+            // classifier folds through, so the dense oracle agrees with the live path. The output
+            // grid index `oi` denotes absolute cell `oi + recentre_voxels`, and the leaf's low
+            // corner in the absolute frame is `world_offset_voxels − outset` (matching the
+            // two-layer leaf's `world_offset_voxels`).
+            if leaf_is_out_of_phase(rotation, offset_local_voxels) && producer.as_field().is_some() {
+                let leaf_abs_low: [i64; 3] =
+                    std::array::from_fn(|axis| world_offset_voxels[axis] - outset_voxels);
+                let placement = dense_leaf_placement(
+                    rotation,
+                    offset_local_voxels,
+                    leaf_abs_low,
+                    producer.as_ref(),
+                    voxels_per_block,
+                );
+                gather_placed_field_into_grid(
+                    target,
+                    &placement,
+                    producer.as_ref(),
+                    material,
+                    grid_on_faces,
+                    operation,
+                    recentre_voxels,
+                    None,
+                    voxels_per_block,
+                );
+                return;
+            }
 
             // ADR 0017: Subtract and Intersect leaves are occupancy-only masks — they
             // never stamp material, so they take a mask path instead of a stamp.
@@ -1036,9 +1071,13 @@ impl Scene {
         // Intersect-closing scope must open even here so its ∅-in-chunk body
         // annihilates the parent on close (see the skip guard below).
         let mut scope_stack: Vec<(ScopeFrame, VoxelGrid)> = Vec::new();
-        // ADR 0026: dense oracle path — orientation is not applied here (see the sibling
-        // resolve above); valid for identity scenes, which is all the gate feeds it.
-        self.for_each_leaf(&mut |world_offset_voxels, _offset_local_voxels, _orientation, _rotation, body, grid_on_faces, operation, outset, scope_path| {
+        // ADR 0026: the discrete lattice `orientation` is still not applied here (identity for
+        // every gate scene). ADR 0027 "Step 2": the CONTINUOUS `rotation` and the fractional
+        // `offset_local_voxels` ARE applied — a genuinely out-of-phase FIELD leaf is resampled by
+        // the shared inverse-gather ([`gather_placed_field_into_grid`]) AND its chunk-skip AABB is
+        // taken from the ROTATED world box (the placement affine), so a tilted body is neither
+        // truncated by the upright skip nor stamped upright.
+        self.for_each_leaf(&mut |world_offset_voxels, offset_local_voxels, _orientation, rotation, body, grid_on_faces, operation, outset, scope_path| {
             let outset_voxels = outset_voxels_at(outset, voxels_per_block);
             // An outset body grows on every side, so its low corner moves DOWN by the
             // outset — and the skip AABB below must use the DILATED span, or a cutter whose
@@ -1066,18 +1105,35 @@ impl Scene {
             // parent here exactly as the monolithic fold does.
             if !operation_masks_beyond_bounds(operation, scope_path) {
                 if let Some(grid_voxels) = body.grid_voxels(voxels_per_block, outset_voxels) {
-                    let mut leaf_min = [0i64; 3];
-                    let mut leaf_max = [0i64; 3];
-                    for axis in 0..3 {
-                        // The producer corner-anchors its grid, so placed at the world
-                        // voxel offset (its low corner) it spans `[off, off + grid)`. Using
-                        // the producer-true grid (exact emitted voxels, NOT block-rounded)
-                        // keeps the skip AABB bit-identical to stamping-then-clipping.
-                        let grid = grid_voxels[axis];
-                        leaf_min[axis] = world_offset_voxels[axis];
-                        leaf_max[axis] = leaf_min[axis] + grid;
-                    }
-                    if !VoxelAabb::new(leaf_min, leaf_max).intersects(&chunk_box) {
+                    // The leaf's true footprint in the absolute frame. For a whole-phase leaf
+                    // (axis-aligned rotation, integer offset — every gate scene) the producer
+                    // corner-anchors its grid, so this is `[off, off + grid)`, bit-identical to
+                    // stamping-then-clipping. ADR 0027: a genuinely rotated / sub-voxel-seated
+                    // leaf's footprint is the ROTATED box, so it is taken from the SAME placement
+                    // affine the gather stamps through — otherwise the upright box would skip the
+                    // chunks the tilted body occupies and TRUNCATE it (the tubes-render-upright bug).
+                    let leaf_box = if leaf_is_out_of_phase(rotation, offset_local_voxels) {
+                        let full = glam::Vec3::new(
+                            grid_voxels[0] as f32,
+                            grid_voxels[1] as f32,
+                            grid_voxels[2] as f32,
+                        );
+                        let world_offset = glam::Vec3::new(
+                            world_offset_voxels[0] as f32,
+                            world_offset_voxels[1] as f32,
+                            world_offset_voxels[2] as f32,
+                        ) + glam::Vec3::from_array(offset_local_voxels);
+                        let (min, max) =
+                            substrate::spatial::LeafPlacement::new(rotation, full, world_offset)
+                                .world_aabb();
+                        VoxelAabb::new(min, max)
+                    } else {
+                        let leaf_min = world_offset_voxels;
+                        let leaf_max: [i64; 3] =
+                            std::array::from_fn(|axis| leaf_min[axis] + grid_voxels[axis]);
+                        VoxelAabb::new(leaf_min, leaf_max)
+                    };
+                    if !leaf_box.intersects(&chunk_box) {
                         return;
                     }
                 }
@@ -1097,6 +1153,34 @@ impl Scene {
                 Some((_, scratch)) => scratch,
                 None => &mut output,
             };
+            // ADR 0027 "Step 2": a genuinely out-of-phase FIELD leaf is resampled by the shared
+            // inverse-gather through substrate's placement affine — the SAME map (and per-cell
+            // field test) the two-layer classifier folds through, so the dense chunk oracle agrees
+            // with the live path on rotated / sub-voxel seats. Here the output grid holds ABSOLUTE
+            // positions (floating origin `[0,0,0]` for the bare `resolve_chunk`, the recentre for
+            // the rebased render path), so `oi` denotes absolute cell `oi + floating_origin_voxels`,
+            // and the chunk membership clip keeps only cells in `[chunk_min, chunk_max)`.
+            if leaf_is_out_of_phase(rotation, offset_local_voxels) && producer.as_field().is_some() {
+                let placement = dense_leaf_placement(
+                    rotation,
+                    offset_local_voxels,
+                    world_offset_voxels,
+                    producer.as_ref(),
+                    voxels_per_block,
+                );
+                gather_placed_field_into_grid(
+                    target,
+                    &placement,
+                    producer.as_ref(),
+                    material_override,
+                    grid_on_faces,
+                    operation,
+                    floating_origin_voxels,
+                    Some(chunk_box),
+                    voxels_per_block,
+                );
+                return;
+            }
             // ADR 0017: a Subtract leaf carves its body's cells OUT of the voxels
             // stamped so far in this chunk WITHIN ITS SCOPE (occupancy-only — no
             // material, no stamp). A leaf whose AABB missed the chunk was already
@@ -1581,6 +1665,175 @@ fn fold_closed_scope_into(parent: &mut VoxelGrid, operation: CombineOp, closed: 
 /// distinct materials. Stone = 0, Wood = 1, Plain = 2 (see [`MaterialChoice::block_id`]).
 fn material_id_for(material: MaterialChoice) -> Option<voxel_core::core_geom::BlockId> {
     Some(material.block_id())
+}
+
+/// Build the ADR 0027 continuous placement [`substrate::spatial::LeafPlacement`] for a leaf the
+/// dense oracle is stamping — the SAME corner-anchored world↔producer-local affine the
+/// two-layer classifier folds through (its evaluation-layer `leaf_affine` constructs an
+/// identical `LeafPlacement`). Sharing substrate's ONE map — rather than the dense path's old
+/// translation-only copy — is what stops the reference oracle silently disagreeing with the
+/// live path on where a rotated / sub-voxel-seated producer's cells land (the deferred "Step 2").
+///
+/// `leaf_abs_low_voxels` is the OUTSET producer's low corner in the scene's ABSOLUTE voxel frame
+/// (the visitor's `world_offset_voxels` minus the outset), matching the two-layer leaf's
+/// `world_offset_voxels`; `offset_local_voxels` is the ADR 0027 continuous sub-voxel slide added
+/// on top. `producer` is the same boxed producer the stamp resolves, so `full_dimensions` matches.
+fn dense_leaf_placement(
+    rotation: glam::Quat,
+    offset_local_voxels: [f32; 3],
+    leaf_abs_low_voxels: [i64; 3],
+    producer: &dyn VoxelProducer,
+    voxels_per_block: u32,
+) -> substrate::spatial::LeafPlacement {
+    let full_dimensions = producer.full_dimensions(voxels_per_block);
+    let full = glam::Vec3::new(
+        full_dimensions[0] as f32,
+        full_dimensions[1] as f32,
+        full_dimensions[2] as f32,
+    );
+    let world_offset = glam::Vec3::new(
+        leaf_abs_low_voxels[0] as f32,
+        leaf_abs_low_voxels[1] as f32,
+        leaf_abs_low_voxels[2] as f32,
+    ) + glam::Vec3::from_array(offset_local_voxels);
+    substrate::spatial::LeafPlacement::new(rotation, full, world_offset)
+}
+
+/// Whether a leaf is OUT OF PHASE with the absolute voxel lattice (ADR 0027): a genuine
+/// (non-axis-aligned) rotation, OR a fractional `offset_local_voxels` sub-voxel seat. An
+/// out-of-phase FIELD leaf cannot be emitted one-cell-per-abs-cell by a translation, so the dense
+/// oracle resamples it by inverse gather ([`gather_placed_field_into_grid`]) — mirroring the
+/// two-layer classifier's `gather_rotated_leaf_into_region`. A whole-phase leaf (integer offset,
+/// axis-aligned rotation — every gate scene) keeps the exact translate-and-stamp path, so the
+/// existing goldens stay byte-identical.
+fn leaf_is_out_of_phase(rotation: glam::Quat, offset_local_voxels: [f32; 3]) -> bool {
+    let axis_aligned = substrate::spatial::is_axis_aligned(rotation);
+    let integer_offset = offset_local_voxels.iter().all(|slide| slide.fract() == 0.0);
+    !(axis_aligned && integer_offset)
+}
+
+/// The ADR 0027 **inverse-resample gather** for a genuinely out-of-phase (rotated or sub-voxel-
+/// seated) FIELD leaf, writing into the dense oracle's output [`VoxelGrid`]. The single-leaf
+/// occupancy definition BOTH dense paths ([`Scene::resolve_region`] and
+/// [`Scene::resolve_chunk_rebased`]) share, and the exact `VoxelGrid` mirror of the two-layer
+/// classifier's `gather_rotated_leaf_into_region` — both fold through substrate's ONE
+/// [`substrate::spatial::LeafPlacement`], so the dense reference can no longer drop the rotation
+/// the live path applies.
+///
+/// For every output cell in the placed box, its centre is inverse-mapped into the producer-local
+/// frame and the field is sampled: inside-or-on-surface cells are covered. The leaf's `operation`
+/// is then applied to `output` exactly as the forward stamp path does — `Union` stamps the covered
+/// cells (later document-order write wins on overlap), `Subtract` clears every covered cell, and
+/// `Intersect` keeps ONLY the covered cells (killing accumulated cells anywhere outside the body,
+/// including the whole grid when the body covers nothing — `A ∩ ∅ = ∅`).
+///
+/// `output_origin_abs` is the absolute voxel the output grid's index `[0,0,0]` denotes (the
+/// recentre for `resolve_region`; the floating origin for `resolve_chunk_rebased`), so output
+/// index `oi` denotes absolute cell `oi + output_origin_abs`. `clip_abs`, when `Some`, keeps only
+/// cells whose absolute index lies in the half-open box (the chunk membership clip — the voxel
+/// centre `+0.5` cancels on integer chunk edges exactly as the forward chunk stamp derives).
+#[allow(clippy::too_many_arguments)]
+fn gather_placed_field_into_grid(
+    output: &mut VoxelGrid,
+    placement: &substrate::spatial::LeafPlacement,
+    producer: &dyn VoxelProducer,
+    material_override: Option<voxel_core::core_geom::BlockId>,
+    grid_overlay: bool,
+    operation: CombineOp,
+    output_origin_abs: [i64; 3],
+    clip_abs: Option<VoxelAabb>,
+    voxels_per_block: u32,
+) {
+    use voxel_core::voxel::{BlockAttrs, Voxel, SURFACE_ISOLEVEL};
+
+    let field = producer
+        .as_field()
+        .expect("the dense gather is only reached for field producers (ADR 0027)");
+    let (world_min, world_max) = placement.world_aabb();
+
+    // The output-index box the leaf can touch: its absolute world AABB rebased to the output
+    // frame (`abs − output_origin_abs`), intersected with the optional absolute clip box. Both the
+    // world box and the clip are half-open, so the per-axis min/max of their rebased edges is the
+    // exact overlap. The result is NOT clamped to the grid dimensions: a recentred dense grid
+    // stores `i32` indices whose origin sits at a negative position (see `Voxel::local_index`), so
+    // the stamp path never bounds the index to `[0, dimensions)`, and neither may the gather.
+    let mut lo = [0i64; 3];
+    let mut hi = [0i64; 3];
+    for axis in 0..3 {
+        let mut min_index = world_min[axis] - output_origin_abs[axis];
+        let mut max_index = world_max[axis] - output_origin_abs[axis];
+        if let Some(clip) = clip_abs {
+            min_index = min_index.max(clip.min[axis] - output_origin_abs[axis]);
+            max_index = max_index.min(clip.max[axis] - output_origin_abs[axis]);
+        }
+        lo[axis] = min_index;
+        hi[axis] = max_index.max(min_index);
+    }
+
+    // Sample the field at every candidate cell centre, collecting the covered output cells and
+    // the material each takes (the leaf's single-material override, else the producer's per-voxel
+    // material, else the default id — the same precedence the forward stamp uses).
+    let mut covered: Vec<([i32; 3], voxel_core::core_geom::BlockId)> = Vec::new();
+    for z in lo[2]..hi[2] {
+        for y in lo[1]..hi[1] {
+            for x in lo[0]..hi[0] {
+                let output_index = [x, y, z];
+                let abs_centre = glam::Vec3::new(
+                    (output_index[0] + output_origin_abs[0]) as f32 + 0.5,
+                    (output_index[1] + output_origin_abs[1]) as f32 + 0.5,
+                    (output_index[2] + output_origin_abs[2]) as f32 + 0.5,
+                );
+                let local = placement.local_of(abs_centre).to_array();
+                if field.signed_distance(local, voxels_per_block) <= SURFACE_ISOLEVEL {
+                    let block_id = material_override
+                        .or_else(|| producer.material_at(local, voxels_per_block))
+                        .unwrap_or(voxel_core::core_geom::BlockId::DEFAULT);
+                    // The recentred dense grid stores i32 indices (ADR 0008): the rebased output
+                    // index fits i32 for every representable scene, as the stamp path assumes.
+                    covered.push((
+                        [output_index[0] as i32, output_index[1] as i32, output_index[2] as i32],
+                        block_id,
+                    ));
+                }
+            }
+        }
+    }
+
+    match operation {
+        // Later document-order leaf wins on overlap: appending the covered voxels reproduces the
+        // dense Union (the resolved occupancy set keeps the last writer at each cell).
+        CombineOp::Union => {
+            output.occupied.reserve(covered.len());
+            for (output_index, block_id) in covered {
+                output.occupied.push(Voxel {
+                    local_index: output_index,
+                    block_local_coord: std::array::from_fn(|axis| {
+                        (output_index[axis] as i64 + output_origin_abs[axis])
+                            .rem_euclid(voxels_per_block.max(1) as i64) as u8
+                    }),
+                    block_id,
+                    attrs: BlockAttrs::DEFAULT,
+                    grid_overlay,
+                });
+            }
+        }
+        // Occupancy-only masks (ADR 0017 Decision 1): the covered cells are removed (Subtract) or
+        // are the ONLY survivors (Intersect); surviving voxels keep their own material/overlay.
+        CombineOp::Subtract => {
+            let carved: std::collections::HashSet<[i32; 3]> =
+                covered.iter().map(|(index, _)| *index).collect();
+            output.occupied.retain(|voxel| !carved.contains(&voxel.local_index));
+        }
+        CombineOp::Intersect => {
+            let kept: std::collections::HashSet<[i32; 3]> =
+                covered.iter().map(|(index, _)| *index).collect();
+            output.occupied.retain(|voxel| kept.contains(&voxel.local_index));
+        }
+        // Unreachable: an Emboss scope is pre-composed into a CompositeProducer before it reaches
+        // a visitor, and a composed root sits at identity rotation / integer offset (in phase), so
+        // it never routes to this gather.
+        CombineOp::Emboss { .. } => {}
+    }
 }
 
 /// Resolve `producer` into its own local grid (centred at the origin, as the

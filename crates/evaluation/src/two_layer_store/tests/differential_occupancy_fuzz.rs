@@ -311,21 +311,15 @@ fn two_layer_matches_dense_for_integer_placements() {
     }
 }
 
-/// **RED-IN-WAITING — the documented Step 2 gap.** For a fractional `offset_local_voxels`
-/// seat and for a genuine rotation, the two-layer path applies the ADR 0027 affine while the
-/// dense oracle (`Scene::resolve_region`) still IGNORES both (it reads `_rotation` /
-/// `_offset_local_voxels` and drops them). So the two occupancies diverge, and this
-/// comparison FAILS today — on purpose. It is kept `#[ignore]`d so the harness DOCUMENTS the
-/// gap without breaking the gate.
-///
-/// To un-ignore: once the dense reference oracle is taught the ADR 0027 affine (applies the
-/// leaf rotation and the fractional local offset in `resolve_region` /
-/// `stamp_producer_into_chunk`), delete the `#[ignore]` — the two paths will then agree and
-/// this becomes a permanent green differential over rotated / sub-voxel placements too.
+/// **GREEN — two-layer vs the dense oracle over rotated / sub-voxel seats (Step 2 landed).**
+/// For a fractional `offset_local_voxels` seat and for a genuine rotation, BOTH paths now fold
+/// through substrate's ONE placement affine (`substrate::spatial::LeafPlacement`): the two-layer
+/// classifier resamples an out-of-phase leaf by inverse gather, and the dense oracle
+/// (`Scene::resolve_region` / `resolve_chunk_rebased`) applies the SAME affine + inverse gather
+/// (`document`'s `gather_placed_field_into_grid`) instead of the old translation-only stamp. So
+/// the occupied cell sets agree, and this is a permanent green differential — a regression that
+/// makes the dense oracle rotation- or fraction-blind again parts them here.
 #[test]
-#[ignore = "drives Step 2: the dense oracle is rotation/off-block-blind — resolve_region drops \
-            rotation AND offset_local_voxels (see off-block-placement-frame-bugs). Un-ignore \
-            once the dense reference applies the ADR 0027 affine."]
 fn two_layer_matches_dense_for_rotated_and_fractional_placements() {
     let density = 16u32;
 
