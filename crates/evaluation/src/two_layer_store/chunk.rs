@@ -265,24 +265,17 @@ impl TwoLayerChunk {
         grid_overlay: bool,
         index_offset: [i64; 3],
     ) {
-        for voxel_z in 0..density {
-            for voxel_y in 0..density {
-                for voxel_x in 0..density {
-                    let chunk_local = [
-                        block_low_voxels[0] + voxel_x as i64,
-                        block_low_voxels[1] + voxel_y as i64,
-                        block_low_voxels[2] + voxel_z as i64,
-                    ];
-                    output.push(stamped_voxel(
-                        chunk_local,
-                        [voxel_x as u8, voxel_y as u8, voxel_z as u8],
-                        block_id,
-                        grid_overlay,
-                        index_offset,
-                    ));
-                }
-            }
-        }
+        // The whole `[0, density)³` block as one inclusive box (density ≥ 1, so
+        // `density − 1` never underflows).
+        emit_voxel_box(
+            output,
+            block_low_voxels,
+            [0, 0, 0],
+            [density - 1, density - 1, density - 1],
+            block_id,
+            grid_overlay,
+            index_offset,
+        );
     }
 
     /// Expand a boundary block's cuboids back to per-voxel occupancy at their material.
@@ -300,23 +293,48 @@ impl TwoLayerChunk {
             // the grid matches the dense resolve's per-voxel overlay bit).
             let block_id = BlockId(CellKey::from_raw(cuboid.material_id()).block_id());
             let grid_overlay = CellKey::from_raw(cuboid.material_id()).has_overlay();
-            for voxel_z in cuboid.min[2]..=cuboid.max[2] {
-                for voxel_y in cuboid.min[1]..=cuboid.max[1] {
-                    for voxel_x in cuboid.min[0]..=cuboid.max[0] {
-                        let chunk_local = [
-                            block_low_voxels[0] + voxel_x as i64,
-                            block_low_voxels[1] + voxel_y as i64,
-                            block_low_voxels[2] + voxel_z as i64,
-                        ];
-                        output.push(stamped_voxel(
-                            chunk_local,
-                            [voxel_x as u8, voxel_y as u8, voxel_z as u8],
-                            block_id,
-                            grid_overlay,
-                            index_offset,
-                        ));
-                    }
-                }
+            emit_voxel_box(
+                output,
+                block_low_voxels,
+                cuboid.min,
+                cuboid.max,
+                block_id,
+                grid_overlay,
+                index_offset,
+            );
+        }
+    }
+}
+
+/// Walk the inclusive block-local box `[min, max]` and push a [`stamped_voxel`] for each
+/// cell at `block_id` / `grid_overlay`. The shared stamp loop of
+/// [`TwoLayerChunk::fill_solid_block`] (one full `[0, density)³` block) and
+/// [`TwoLayerChunk::expand_boundary_block`] (once per stored cuboid).
+#[allow(clippy::too_many_arguments)]
+fn emit_voxel_box(
+    output: &mut Vec<Voxel>,
+    block_low_voxels: [i64; 3],
+    min: [u32; 3],
+    max: [u32; 3],
+    block_id: BlockId,
+    grid_overlay: bool,
+    index_offset: [i64; 3],
+) {
+    for voxel_z in min[2]..=max[2] {
+        for voxel_y in min[1]..=max[1] {
+            for voxel_x in min[0]..=max[0] {
+                let chunk_local = [
+                    block_low_voxels[0] + voxel_x as i64,
+                    block_low_voxels[1] + voxel_y as i64,
+                    block_low_voxels[2] + voxel_z as i64,
+                ];
+                output.push(stamped_voxel(
+                    chunk_local,
+                    [voxel_x as u8, voxel_y as u8, voxel_z as u8],
+                    block_id,
+                    grid_overlay,
+                    index_offset,
+                ));
             }
         }
     }
