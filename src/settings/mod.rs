@@ -69,9 +69,11 @@ impl PlacementGhostConfig {
         PlacementGhost {
             shape: SdfShape::from_voxels(self.shape_kind, self.size_voxels, self.wall_blocks),
             offset_voxels: self.offset_voxels,
-            // The persisted ghost config does not yet carry a rotation (ADR 0027); an F9 repro of
-            // an armed tilted ghost previews it upright. The placed nodes it captures are fully
-            // rotated in the scene tree — only the transient armed-ghost tilt is dropped.
+            // The persisted ghost config does not carry the sub-voxel remainder or rotation (ADR
+            // 0027); an F9 repro of an armed tilted / off-block ghost previews it upright and
+            // voxel-aligned. The placed nodes it captures keep their full transform in the scene
+            // tree — only the transient armed-ghost tilt/fraction is dropped.
+            offset_local: [0.0, 0.0, 0.0],
             rotation: glam::Quat::IDENTITY,
         }
     }

@@ -29,6 +29,12 @@ pub struct PlacementGhost {
     /// `offset_voxels = V` occupies absolute `[V, V + turn_extent(grid))` (the placement
     /// frame, `src/app_core/placement.rs`).
     pub offset_voxels: [i64; 3],
+    /// The **sub-voxel** remainder of the corner offset (ADR 0027) — the continuous fraction a
+    /// `NoSnap` drop keeps under the cursor while `offset_voxels` holds the integer floor. The
+    /// committed node seats at `offset_voxels + offset_local`, so the ghost MUST carry it too or
+    /// it snaps to the integer voxel while the real geometry lands a fraction off (the confusing
+    /// off-by-a-few-voxels mismatch in `NoSnap` mode). Zero for Voxel / Block snap.
+    pub offset_local: [f32; 3],
     /// The node's **continuous** rotation (ADR 0027) — the exact tilt the drop would apply, so
     /// the ghost previews the shape the way it will actually land (a tube tilted to a cylinder's
     /// curved radial normal, not merely the nearest of the 24 lattice turns). Identity for a
@@ -37,28 +43,37 @@ pub struct PlacementGhost {
 }
 
 impl PlacementGhost {
-    /// The field centre in the display's render frame:
-    /// `center_world = offset_voxels - recentre + [rotation·(full/2) - min_rotated_corner]`
-    /// (ADR 0008 + ADR 0027; the frame note atop
-    /// `crates/display/src/shaders/placement_ghost.wgsl` derives it). The bracketed term is the
-    /// corner-anchored box centre — rotate the local centre `full/2`, then re-anchor by the
-    /// rotated box's low corner, the SAME anchor the classifier's `LeafAffine` /
-    /// `evaluation::seat_centre_at` fold through, so the ghost coincides with the solid drop. For
-    /// an axis-aligned turn it equals the pre-0027 `turn_extent(grid)/2`; a continuous rotation
-    /// extends it smoothly. `full` is the EXACT grid (a half-integer half on odd axes),
-    /// `recentre` the FLOORED half — the difference is the half-voxel term a naive "the shape is
-    /// at the origin" drops.
+    /// The field centre in the display's render frame — the box centre of the placed node, seated
+    /// through the **SAME** corner-anchored affine the classifier folds occupancy through
+    /// ([`substrate::spatial::LeafPlacement`], the `LeafAffine` alias), so the ghost coincides with
+    /// the solid drop BY CONSTRUCTION rather than by a kept-in-sync mirror (ADR 0008 + ADR 0027).
+    ///
+    /// Seat the continuous corner `offset_voxels + offset_local` (integer floor plus the sub-voxel
+    /// `NoSnap` remainder) via `LeafPlacement`, ask it where the producer-local centre `full/2`
+    /// lands in absolute voxels, then rebase into this rebuild's render frame by subtracting
+    /// `recentre`. `full` is the EXACT grid (a half-integer half on odd axes), `recentre` the
+    /// FLOORED half — the difference is the half-voxel term a naive "the shape is at the origin"
+    /// drops.
     pub fn center_world(&self, recentre_voxels: [i64; 3], voxels_per_block: u32) -> [f32; 3] {
+        use substrate::spatial::{LeafPlacement, ProducerLocalVoxelPoint, TrueWorldVoxelPoint};
         let grid = self.shape.grid_dimensions(voxels_per_block);
         let full = glam::Vec3::new(grid[0] as f32, grid[1] as f32, grid[2] as f32);
-        let centre_from_corner =
-            self.rotation * (full * 0.5) - min_rotated_corner(self.rotation, full);
-        let offset = glam::Vec3::new(
-            (self.offset_voxels[0] - recentre_voxels[0]) as f32,
-            (self.offset_voxels[1] - recentre_voxels[1]) as f32,
-            (self.offset_voxels[2] - recentre_voxels[2]) as f32,
+        // The continuous corner offset in ABSOLUTE voxels: integer floor + sub-voxel remainder.
+        let world_offset = glam::Vec3::new(
+            self.offset_voxels[0] as f32 + self.offset_local[0],
+            self.offset_voxels[1] as f32 + self.offset_local[1],
+            self.offset_voxels[2] as f32 + self.offset_local[2],
         );
-        (offset + centre_from_corner).to_array()
+        let placement =
+            LeafPlacement::new(self.rotation, full, TrueWorldVoxelPoint::from_voxels(world_offset));
+        let centre_absolute =
+            placement.world_of(ProducerLocalVoxelPoint::from_voxels(full * 0.5)).voxels();
+        let recentre = glam::Vec3::new(
+            recentre_voxels[0] as f32,
+            recentre_voxels[1] as f32,
+            recentre_voxels[2] as f32,
+        );
+        (centre_absolute - recentre).to_array()
     }
 
     /// The inscribed semi-axes in voxels (`grid/2` per axis, EXACT half) the SDF is
@@ -92,24 +107,6 @@ impl PlacementGhost {
     pub fn wall_voxels(&self, voxels_per_block: u32) -> f32 {
         (self.shape.wall_blocks * voxels_per_block) as f32
     }
-}
-
-/// Componentwise min of `rotation · corner` over the 8 corners of the local box `[0, full]` —
-/// the rotated box's low corner, the anchor [`PlacementGhost::center_world`] subtracts to
-/// re-seat the rotated box on `offset_voxels`. It matches the classifier's `LeafAffine` /
-/// `evaluation::seat_centre_at` corner anchor (ADR 0027), kept in step by the headless
-/// `shot --placement-ghost` verification (the ghost must coincide with the solid drop).
-fn min_rotated_corner(rotation: glam::Quat, full: glam::Vec3) -> glam::Vec3 {
-    let mut corner_min = glam::Vec3::splat(f32::INFINITY);
-    for selector in 0..8u8 {
-        let corner = glam::Vec3::new(
-            if selector & 1 == 0 { 0.0 } else { full.x },
-            if selector & 2 == 0 { 0.0 } else { full.y },
-            if selector & 4 == 0 { 0.0 } else { full.z },
-        );
-        corner_min = corner_min.min(rotation * corner);
-    }
-    corner_min
 }
 
 /// How a placed node's **position** snaps to the lattice (owner ruling 2026-07-21). A
@@ -628,4 +625,42 @@ pub struct ExportPanelState<'a> {
     pub in_flight: bool,
     /// The already-formatted line to show under the button, or `None`.
     pub status_line: Option<&'a str>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use document::voxel::SdfShape;
+    use voxel_core::voxel::ShapeKind;
+
+    /// **The ghost centre carries the sub-voxel `offset_local`** — a `NoSnap` drop's fractional
+    /// remainder — so the translucent preview sits exactly where the committed node lands rather
+    /// than snapping to the integer voxel (the off-by-a-few-voxels mismatch a user hit in `NoSnap`
+    /// mode). Two ghosts differing ONLY in `offset_local` must have centres that differ by exactly
+    /// that fraction, since `center_world` now seats through the same `LeafPlacement` affine the
+    /// classifier folds occupancy through.
+    #[test]
+    fn ghost_centre_carries_the_sub_voxel_offset() {
+        let shape = SdfShape::from_voxels(ShapeKind::Box, [16, 16, 16], 1);
+        let recentre = [3, 4, 5];
+        let density = 1;
+        let base = PlacementGhost {
+            shape,
+            offset_voxels: [10, 20, 30],
+            offset_local: [0.0, 0.0, 0.0],
+            rotation: glam::Quat::IDENTITY,
+        };
+        let shifted = PlacementGhost { offset_local: [0.25, -0.5, 0.75], ..base.clone() };
+        let base_centre = base.center_world(recentre, density);
+        let shifted_centre = shifted.center_world(recentre, density);
+        assert_eq!(
+            [
+                shifted_centre[0] - base_centre[0],
+                shifted_centre[1] - base_centre[1],
+                shifted_centre[2] - base_centre[2],
+            ],
+            [0.25, -0.5, 0.75],
+            "the ghost centre must carry the sub-voxel offset, not snap to the integer voxel"
+        );
+    }
 }

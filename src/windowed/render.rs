@@ -554,14 +554,21 @@ impl WindowedState {
                         );
                 self.pending_placement = outcome.intent.clone();
                 self.panel_state.placement_ghost = match &outcome.intent {
-                    Some(crate::Intent::PlaceNode { offset_voxels, rotation_quaternion, .. }) => {
+                    Some(crate::Intent::PlaceNode {
+                        offset_voxels,
+                        offset_local,
+                        rotation_quaternion,
+                        ..
+                    }) => {
                         // ADR 0027: the ghost previews the node as it WILL land — tilted to the
-                        // surface normal — so carry the same continuous rotation the intent would
-                        // apply (placement writes the whole tilt into the quaternion, so a `None`
-                        // is an upright drop).
+                        // surface normal AND at the exact sub-voxel offset — so carry the same
+                        // continuous rotation AND `offset_local` the intent would apply (placement
+                        // writes the whole tilt into the quaternion, so a `None` is an upright drop;
+                        // `offset_local` is the sub-voxel remainder a `NoSnap` drop keeps).
                         Some(crate::PlacementGhost {
                             shape,
                             offset_voxels: *offset_voxels,
+                            offset_local: *offset_local,
                             rotation: rotation_quaternion
                                 .map(glam::Quat::from_array)
                                 .unwrap_or(glam::Quat::IDENTITY),

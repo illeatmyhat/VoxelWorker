@@ -317,6 +317,9 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         panel_state.placement_ghost = Some(PlacementGhost {
             shape: SdfShape::from_geometry(options.geometry.clone()),
             offset_voxels: options.ghost_offset,
+            // The headless verification places on whole-voxel `--ghost-offset`, so no sub-voxel
+            // remainder (ADR 0027 `NoSnap`); the coincidence check runs at integer offsets.
+            offset_local: [0.0, 0.0, 0.0],
             // ADR 0027: `--ghost-face N` tilts the ghost against that face (local +Z → N) as the
             // continuous rotation the classifier resolves; absent, the upright identity of a
             // world-plane / +Z-face drop. The lattice turn is bridged to a `Quat` by
