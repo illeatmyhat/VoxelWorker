@@ -405,15 +405,16 @@ impl Scene {
     /// recentred render frame the resolved voxels live in (issue #29 S3). Returns
     /// `(min_corner, max_corner)` in voxels.
     ///
-    /// The box is the node's block-aligned voxel AABB **expanded out to enclosing
-    /// whole blocks** — i.e. the union of every enabled leaf under the node, each
-    /// leaf snapped to the whole-block range `[off − floor(size/2), … + size)` (the
-    /// same split `node_subtree_extent_blocks` forms), then scaled by `density`
-    /// and shifted by `− recentre_voxels_for_resolve`. Because the corners are taken
-    /// in WHOLE blocks before scaling, a sub-block (1-voxel) translate that crosses a
-    /// block boundary moves the enclosing-block box by exactly one whole block — the
-    /// spec's "a 1-voxel translate adds/removes a whole block" requirement falls out
-    /// of the expand-to-block on the shifted box.
+    /// The box is the node's voxel AABB **expanded out to enclosing whole blocks** —
+    /// i.e. the union of every enabled leaf under the node, each leaf's corner-anchored
+    /// voxel span `[off, off + size·density)` grown to whole blocks by FLOORING the low
+    /// corner and CEILING the high corner (the split `node_subtree_extent_blocks`
+    /// forms), then scaled by `density` and shifted by `− recentre_voxels_for_resolve`.
+    /// Because the low corner floors and the high corner ceils INDEPENDENTLY, a
+    /// sub-block (1-voxel) translate that crosses a block boundary grows the
+    /// enclosing-block box by exactly one whole block — the spec's "a 1-voxel translate
+    /// adds/removes a whole block" requirement — and the box always fully contains the
+    /// geometry (a non-block-aligned leaf never pokes out of its own cage).
     ///
     /// For a Group / Instance node the box is the union of all leaves under it.
     /// A size-less node (a VoxelBody-only / empty subtree, or a path that descends
@@ -509,13 +510,25 @@ impl Scene {
                 // ADR 0026: turn the block extent into world axes for an oriented leaf.
                 let size_blocks = rotated_grid_extent_blocks(rotation, size_blocks);
                 any = true;
-                // The leaf's whole-block offset, via the single floor rule.
+                let density = voxels_per_block.max(1) as i64;
+                // The leaf's whole-block low corner, via the single floor rule.
                 let world_blocks = world_block_corner_floor(world_offset_voxels, voxels_per_block);
                 for axis in 0..3 {
-                    // Corner-anchored: the offset block IS the low corner, so the leaf
-                    // spans `[off_block, off_block + size)` blocks.
+                    // Corner-anchored ENCLOSING-block box: the low corner FLOORS the
+                    // leaf's low voxel to its block, and the high corner independently
+                    // CEILS the leaf's high voxel (`offset + size·density`) to its block.
+                    // A leaf that is NOT block-aligned touches one more block than its
+                    // block size — flooring low and adding `size_blocks` would instead
+                    // slide the whole box toward the low corner and clip the geometry off
+                    // the high side (it pokes out of its own grid cage). Ceiling the high
+                    // corner is what realises the doc's "a 1-voxel translate that crosses a
+                    // block boundary adds a whole block" contract. A block-aligned leaf has
+                    // no remainder, so `high == low + size_blocks` exactly (goldens hold).
                     let low = world_blocks[axis];
-                    let high = low + size_blocks[axis] as i64;
+                    let high_voxel = world_offset_voxels[axis] + size_blocks[axis] as i64 * density;
+                    // Ceil to a whole block (signed `div_ceil` is still unstable): for a
+                    // positive divisor `ceil(a/d) == −floor(−a/d) == −((−a).div_euclid(d))`.
+                    let high = -((-high_voxel).div_euclid(density));
                     min_corner[axis] = min_corner[axis].min(low);
                     max_corner[axis] = max_corner[axis].max(high);
                 }
