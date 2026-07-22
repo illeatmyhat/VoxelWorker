@@ -248,22 +248,10 @@ var loaded_material_texture: texture_2d_array<f32>;
 @group(2) @binding(1)
 var loaded_material_sampler: sampler;
 
-// Pick the texture-array layer for a cube face from its outward normal — COPIED
-// VERBATIM from `face_layer` in shaders/cuboid_loaded.wgsl:73-84 (and the CPU
-// `face_layer` in cuboid_mesh.rs / `CubeFaceSlot`), byte-same constants + axis
-// conventions, so per-face textures land on the SAME faces the mesh path shows. Z-up:
-// +Z = up (2), -Z = down (3); the four horizontals are ±X (east/west) and ±Y
-// (south/north). Cite the source so any drift is visible.
-fn face_layer(face_normal: vec3<f32>) -> i32 {
-    let axis_magnitude = abs(face_normal);
-    if (axis_magnitude.z > 0.5) {
-        return select(3, 2, face_normal.z > 0.0);
-    } else if (axis_magnitude.x > 0.5) {
-        return select(1, 0, face_normal.x > 0.0);
-    } else {
-        return select(5, 4, face_normal.y < 0.0);
-    }
-}
+// `face_layer` (per-face D2Array layer from the normal) is shared — see
+// `shaders/cuboid_face_shading.wgsl`, prepended by `with_shared_shading` — so the
+// raymarch lands per-face textures on the SAME faces the mesh path shows, from one
+// definition instead of a hand-transcribed copy.
 
 // The sentinel marking a sculpted record whose atlas payload is NOT resident;
 // must match `NON_RESIDENT_ATLAS_SLOT` in brick_raymarch.rs.
@@ -1034,16 +1022,12 @@ fn march_brick_field(ray: Ray) -> MarchHit {
 }
 
 // ============================================================================
-// Shading — a transcription of cuboid.wgsl's fragment (per-voxel texture slice,
-// lighting, material modulation, position-based grid overlay), evaluated at an
-// explicit position instead of a rasterizer-interpolated varying.
+// Shading — evaluated at an explicit hit position instead of a rasterizer-interpolated
+// varying, but the per-voxel texture slice / lighting math is the SHARED
+// `cuboid_face_uv` + `lambert_lighting` + `coord_component` from
+// shaders/cuboid_face_shading.wgsl (prepended by `with_shared_shading`), so it can no
+// longer drift from cuboid.wgsl's fragment the way a hand transcription did.
 // ============================================================================
-
-fn coord_component(a: f32, sign_value: f32) -> f32 {
-    let base = floor(a);
-    let frac = a - base;
-    return base + select(1.0 - frac, frac, sign_value > 0.0);
-}
 
 // FXC l-value hazard (the X3500 flake): a dynamic vector-component STORE
 // (`some_vec[axis] = value`) reaches D3D's legacy FXC compiler as a dynamically
@@ -1074,23 +1058,8 @@ fn material_base_colors_lookup(material_id: u32) -> vec3<f32> {
 // builtins are illegal in this non-uniform control flow), driving the overlay's
 // screen-space line width + tier fade.
 fn shade_cuboid_surface(absolute: vec3<f32>, world_normal: vec3<f32>, material_id: u32, overlay: u32, screen_derivative: vec3<f32>) -> vec4<f32> {
-    let axis_magnitude = abs(world_normal);
-    var u_value: f32;
-    var v_value: f32;
-    if (axis_magnitude.x > 0.5) {
-        let v_sign = select(1.0, -1.0, world_normal.x > 0.0);
-        u_value = coord_component(absolute.y, 1.0);
-        v_value = coord_component(absolute.z, v_sign);
-    } else if (axis_magnitude.y > 0.5) {
-        let v_sign = select(1.0, -1.0, world_normal.y > 0.0);
-        u_value = coord_component(absolute.x, 1.0);
-        v_value = coord_component(absolute.z, v_sign);
-    } else {
-        let u_sign = select(-1.0, 1.0, world_normal.z > 0.0);
-        u_value = coord_component(absolute.x, u_sign);
-        v_value = coord_component(absolute.y, 1.0);
-    }
-    let texture_coord = vec2<f32>(u_value, v_value) / uniforms.voxels_per_block;
+    // Per-face UV direction (shared `cuboid_face_uv`, in voxels), then per-density.
+    let texture_coord = cuboid_face_uv(absolute, world_normal) / uniforms.voxels_per_block;
 
     // Tile the per-voxel slice with `fract` (a merged/coarse face spans many voxels, so
     // texture_coord runs 0..N/density) — shared by both material paths.
@@ -1114,12 +1083,8 @@ fn shade_cuboid_surface(absolute: vec3<f32>, world_normal: vec3<f32>, material_i
         sampled = textureSampleLevel(material_texture, material_sampler, atlas_uv, 0.0).rgb;
     }
 
-    let light_direction = normalize(vec3<f32>(0.4, 0.9, 0.5));
-    let normal = normalize(world_normal);
-    let diffuse = max(dot(normal, light_direction), 0.0);
-    let ambient = 0.45;
-    let lighting = ambient + (1.0 - ambient) * diffuse;
-    var color = sampled * lighting;
+    // Directional + ambient lighting (shared `lambert_lighting`).
+    var color = sampled * lambert_lighting(world_normal);
 
     if (uniforms.material_modulation_enabled > 0.5) {
         let base = material_base_colors_lookup(material_id);

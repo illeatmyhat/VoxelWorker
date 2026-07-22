@@ -134,16 +134,8 @@ fn material_base_colors_lookup(material_id: u32) -> vec3<f32> {
     return uniforms.material_base_colors[index].rgb;
 }
 
-// One in-plane UV component (pre-density) for the per-voxel texture slice, matching
-// the instanced path. `sign > 0` runs the UV with the +world axis (→ `a`); `sign
-// < 0` mirrors it within each voxel (→ `floor(a) + 1 - fract(a)`), reproducing the
-// instanced face's UV direction. The block multiples wash out under the Repeat
-// sampler, so `floor(a)` already carries the slice index.
-fn coord_component(a: f32, sign: f32) -> f32 {
-    let base = floor(a);
-    let frac = a - base;
-    return base + select(1.0 - frac, frac, sign > 0.0);
-}
+// `coord_component` (per-voxel UV component) is shared — see
+// `shaders/cuboid_face_shading.wgsl`, prepended by `with_shared_shading`.
 
 // Map an outward normal to a signed-axis debug colour — reproduces the signed-axis
 // palette the since-removed instanced `debug_face_color` (voxel.wgsl, deleted with
@@ -247,34 +239,8 @@ fn fragment_main(
     // it; `sign > 0` ⇒ `a`, `sign < 0` ⇒ the mirrored `floor(a) + 1 - fract(a)`.
     // `absolute` (the absolute voxel position) was bound at the top of the fn for
     // the band clip; reuse it here.
-    let axis_magnitude = abs(input.world_normal);
-    // Per-face (U axis, U sign) and (V axis, V sign). Z-up: the texture's VERTICAL
-    // axis (V) is world-Z on every SIDE wall, so a directional texture stands upright
-    // on all four walls (±X and ±Y), and the horizontal Z faces (top/bottom) tile in
-    // XY. Mapping: ±X U=±y V=±z; ±Y U=+x V=±z; ±Z U=±x V=+y.
-    var u_value: f32;
-    var v_value: f32;
-    if (axis_magnitude.x > 0.5) {
-        // X-facing walls (east/west): U follows horizontal Y, V follows up (Z). The
-        // V sign keys on world_normal.x exactly as the Y branch keys V on world_normal.y
-        // (so the texture is neither mirrored nor upside-down across the two walls).
-        let v_sign = select(1.0, -1.0, input.world_normal.x > 0.0);
-        u_value = coord_component(absolute.y, 1.0);
-        v_value = coord_component(absolute.z, v_sign);
-    } else if (axis_magnitude.y > 0.5) {
-        // Y-facing walls (north/south): U follows +x, V follows up (Z), sign flips with
-        // the face dir.
-        let v_sign = select(1.0, -1.0, input.world_normal.y > 0.0);
-        u_value = coord_component(absolute.x, 1.0);
-        v_value = coord_component(absolute.z, v_sign);
-    } else {
-        // Z faces (top/bottom, horizontal): U follows x (sign flips with the face dir),
-        // V follows +y. No "up" on a horizontal face.
-        let u_sign = select(-1.0, 1.0, input.world_normal.z > 0.0);
-        u_value = coord_component(absolute.x, u_sign);
-        v_value = coord_component(absolute.y, 1.0);
-    }
-    let texture_coord = vec2<f32>(u_value, v_value) / uniforms.voxels_per_block;
+    // Per-face UV direction (shared `cuboid_face_uv`, in voxels), then per-density.
+    let texture_coord = cuboid_face_uv(absolute, input.world_normal) / uniforms.voxels_per_block;
 
     // --- Per-voxel slice → atlas sub-rect (E3c-1 / O8) ---
     // The former path divided by density and let a Repeat sampler take `fract`,
@@ -288,14 +254,8 @@ fn fragment_main(
     let atlas_uv = atlas_rect.xy + tile_uv * atlas_rect.zw;
     let sampled = textureSample(material_texture, material_sampler, atlas_uv).rgb;
 
-    // Directional + ambient lighting — constants carried over from the
-    // since-removed instanced path (voxel.wgsl, deleted with the legacy mesher, #20).
-    let light_direction = normalize(vec3<f32>(0.4, 0.9, 0.5));
-    let normal = normalize(input.world_normal);
-    let diffuse = max(dot(normal, light_direction), 0.0);
-    let ambient = 0.45;
-    let lighting = ambient + (1.0 - ambient) * diffuse;
-    var color = sampled * lighting;
+    // Directional + ambient lighting (shared `lambert_lighting`).
+    var color = sampled * lambert_lighting(input.world_normal);
 
     // Per-box material modulation (ADR 0001 step 3): multiply by the material's
     // relative base colour so distinct boxes render in distinct materials.

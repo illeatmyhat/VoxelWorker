@@ -675,7 +675,7 @@ impl CuboidMeshRenderer {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("cuboid shader"),
             source: wgpu::ShaderSource::Wgsl(
-                crate::shaders::with_grid_overlay(include_str!("../shaders/cuboid.wgsl")).into(),
+                crate::shaders::with_shared_shading(include_str!("../shaders/cuboid.wgsl")).into(),
             ),
         });
 
@@ -848,7 +848,7 @@ impl CuboidMeshRenderer {
         let loaded_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("cuboid loaded-block shader"),
             source: wgpu::ShaderSource::Wgsl(
-                crate::shaders::with_grid_overlay(include_str!("../shaders/cuboid_loaded.wgsl"))
+                crate::shaders::with_shared_shading(include_str!("../shaders/cuboid_loaded.wgsl"))
                     .into(),
             ),
         });

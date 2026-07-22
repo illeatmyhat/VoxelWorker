@@ -75,31 +75,9 @@ var material_texture: texture_2d_array<f32>;
 @group(1) @binding(1)
 var material_sampler: sampler;
 
-// Pick the texture-array layer for a cube face from its outward normal — IDENTICAL
-// to the CPU `face_layer` in cuboid_mesh.rs (and `CubeFaceSlot`) so per-face textures
-// land on the same faces. Z-up: +Z = up (2), -Z = down (3); the four horizontals are
-// ±X (east/west) and ±Y (south/north).
-fn face_layer(face_normal: vec3<f32>) -> i32 {
-    let axis_magnitude = abs(face_normal);
-    if (axis_magnitude.z > 0.5) {
-        // Vertical axis (Z-up): +Z = up layer 2, -Z = down layer 3.
-        return select(3, 2, face_normal.z > 0.0);
-    } else if (axis_magnitude.x > 0.5) {
-        return select(1, 0, face_normal.x > 0.0);
-    } else {
-        // ±Y horizontals: -Y = south/front (4), +Y = north/back (5).
-        return select(5, 4, face_normal.y < 0.0);
-    }
-}
-
-// One in-plane UV component (pre-density) for the per-voxel texture slice — copied
-// verbatim from cuboid.wgsl's `coord_component` so the loaded slice phase-aligns to
-// voxel/block boundaries exactly like the procedural path.
-fn coord_component(a: f32, sign: f32) -> f32 {
-    let base = floor(a);
-    let frac = a - base;
-    return base + select(1.0 - frac, frac, sign > 0.0);
-}
+// `face_layer` (per-face D2Array layer from the normal) and `coord_component`
+// (per-voxel UV component) are shared — see `shaders/cuboid_face_shading.wgsl`,
+// prepended by `with_shared_shading`.
 
 // Signed-axis debug colour, identical to cuboid.wgsl (both carried it over from
 // the since-removed instanced voxel.wgsl, deleted with the legacy mesher, #20).
@@ -160,27 +138,8 @@ fn fragment_main(
     // Z-up: the texture's VERTICAL axis (V) is world-Z on every SIDE wall, so a
     // directional texture stands upright on all four walls (±X and ±Y); the horizontal
     // Z faces (top/bottom) tile in XY. Mapping: ±X U=±y V=±z; ±Y U=+x V=±z; ±Z U=±x V=+y.
-    let axis_magnitude = abs(input.world_normal);
-    var u_value: f32;
-    var v_value: f32;
-    if (axis_magnitude.x > 0.5) {
-        // X-facing walls (east/west): U follows horizontal Y, V follows up (Z). V sign
-        // keys on world_normal.x, mirroring the Y branch's V sign on world_normal.y.
-        let v_sign = select(1.0, -1.0, input.world_normal.x > 0.0);
-        u_value = coord_component(absolute.y, 1.0);
-        v_value = coord_component(absolute.z, v_sign);
-    } else if (axis_magnitude.y > 0.5) {
-        // Y-facing walls (north/south): U follows +x, V follows up (Z).
-        let v_sign = select(1.0, -1.0, input.world_normal.y > 0.0);
-        u_value = coord_component(absolute.x, 1.0);
-        v_value = coord_component(absolute.z, v_sign);
-    } else {
-        // Z faces (top/bottom, horizontal): U follows x, V follows +y.
-        let u_sign = select(-1.0, 1.0, input.world_normal.z > 0.0);
-        u_value = coord_component(absolute.x, u_sign);
-        v_value = coord_component(absolute.y, 1.0);
-    }
-    let texture_coord = vec2<f32>(u_value, v_value) / uniforms.voxels_per_block;
+    // Per-face UV direction (shared `cuboid_face_uv`, in voxels), then per-density.
+    let texture_coord = cuboid_face_uv(absolute, input.world_normal) / uniforms.voxels_per_block;
 
     // Tile the per-voxel slice ourselves with `fract`, then sample the per-face
     // D2Array layer selected from the outward normal. The loaded material's sampler
@@ -193,15 +152,8 @@ fn fragment_main(
     let tile_uv = fract(texture_coord);
     let sampled = textureSample(material_texture, material_sampler, tile_uv, layer).rgb;
 
-    // Directional + ambient lighting — identical constants to cuboid.wgsl (both
-    // carried over from the since-removed instanced voxel.wgsl, deleted with the
-    // legacy mesher, #20).
-    let light_direction = normalize(vec3<f32>(0.4, 0.9, 0.5));
-    let normal = normalize(input.world_normal);
-    let diffuse = max(dot(normal, light_direction), 0.0);
-    let ambient = 0.45;
-    let lighting = ambient + (1.0 - ambient) * diffuse;
-    var color = sampled * lighting;
+    // Directional + ambient lighting (shared `lambert_lighting`).
+    var color = sampled * lambert_lighting(input.world_normal);
 
     // A loaded VS block renders as a single global material (no per-box modulation),
     // matching the instanced loaded path which disables modulation.

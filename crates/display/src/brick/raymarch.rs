@@ -532,7 +532,7 @@ impl BrickRaymarchRenderer {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("brick raymarch shader"),
             source: wgpu::ShaderSource::Wgsl(
-                crate::shaders::with_grid_overlay(include_str!("../shaders/brick_raymarch.wgsl"))
+                crate::shaders::with_shared_shading(include_str!("../shaders/brick_raymarch.wgsl"))
                     .into(),
             ),
         });
