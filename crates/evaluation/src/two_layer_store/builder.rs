@@ -68,30 +68,15 @@ impl TwoLayerStore {
         // (#66, ADR 0011 Decision 4b): a stateless per-build BVH over the leaf world-AABBs;
         // each chunk queries its own box and is classified against only the overlapping
         // candidates, keeping the build ~O(chunks × (log leaves + candidates)).
+        // Each covering chunk is built independently from the (read-only, `Sync`) leaf
+        // slice + broadphase (#57), enumerated in the SAME z,y,x order the dense store
+        // assembles. The `Arc`-wrapped chunks hand to the mesh / brick / fog readers and
+        // move into the async `GeometryRebuildRequest` with O(1) refcount bumps — never a
+        // deep `TwoLayerChunk` copy (ADR 0011 G3).
         let leaves = scene.leaf_producers(voxels_per_block);
         let broadphase = leaf_edit_broadphase(&leaves, voxels_per_block);
-        // Each covering chunk is built independently from the (read-only, `Sync`) leaf slice
-        // + broadphase, so the wholesale build is embarrassingly parallel (#57). Enumerate
-        // the coords in the SAME z,y,x order the dense store assembles (X fastest), then map
-        // each coord → its chunk with rayon. A parallel `.collect()` PRESERVES ordering, so
-        // the output Vec is byte-identical to the serial nested loop regardless of thread
-        // count.
         let coords = enumerate_covering_chunk_coords(min_chunk, max_chunk);
-        coords
-            .into_par_iter()
-            .map(|coord| {
-                let candidates =
-                    chunk_candidate_leaves(&broadphase, &leaves, coord, voxels_per_block);
-                let chunk =
-                    build_two_layer_chunk_from_leaves(coord, &candidates, voxels_per_block);
-                // `Arc`-wrap the freshly built chunk so this owned covering set can be
-                // handed to the mesh / brick / fog readers, retained in the mesh
-                // renderer, AND moved into the async `GeometryRebuildRequest` with only
-                // O(1) refcount bumps — never a deep `TwoLayerChunk` copy (the per-edit
-                // clone this cleanup killed; ADR 0011 G3 record/atlas territory).
-                (coord, Arc::new(chunk))
-            })
-            .collect()
+        build_chunks_parallel(coords, &leaves, &broadphase, voxels_per_block)
     }
 
     /// Build the [`TwoLayerChunk`] for `chunk_coord` from the scene's one evaluator, or
@@ -131,6 +116,28 @@ pub(crate) fn enumerate_covering_chunk_coords(min_chunk: [i32; 3], max_chunk: [i
         }
     }
     coords
+}
+
+/// Build `coords` into `(coord, Arc<chunk>)` pairs in parallel from the read-only,
+/// `Sync` leaf slice + edit broadphase (#57 / #63 / #66): each coord queries its own
+/// candidate leaves and is classified against only those. A parallel `.collect()`
+/// preserves ordering, so the result is byte-identical to a serial build regardless of
+/// thread count. Shared by the wholesale builder ([`TwoLayerStore::build_covering_chunks`])
+/// and the resident cache's miss-fill — one definition of the parallel-build strategy.
+pub(crate) fn build_chunks_parallel(
+    coords: Vec<[i32; 3]>,
+    leaves: &[LeafProducer],
+    broadphase: &EditBroadphaseBvh,
+    voxels_per_block: u32,
+) -> Vec<([i32; 3], Arc<TwoLayerChunk>)> {
+    coords
+        .into_par_iter()
+        .map(|coord| {
+            let candidates = chunk_candidate_leaves(broadphase, leaves, coord, voxels_per_block);
+            let chunk = build_two_layer_chunk_from_leaves(coord, &candidates, voxels_per_block);
+            (coord, Arc::new(chunk))
+        })
+        .collect()
 }
 
 /// The leaf's world-AABB in absolute voxels, corner-anchored — the SAME box

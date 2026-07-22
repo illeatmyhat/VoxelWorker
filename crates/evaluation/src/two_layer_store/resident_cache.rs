@@ -3,8 +3,6 @@
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-use rayon::prelude::*;
-
 use document::scene::Scene;
 use voxel_core::spatial_index::{ChunkCoverage, VoxelAabb};
 
@@ -202,21 +200,8 @@ impl TwoLayerResidentCache {
                 .into_iter()
                 .filter(|coord| !self.resident.contains_key(coord))
                 .collect();
-        let freshly_built: Vec<([i32; 3], Arc<TwoLayerChunk>)> = missing_coords
-            .into_par_iter()
-            .map(|coord| {
-                let candidates =
-                    chunk_candidate_leaves(&broadphase, &leaves, coord, voxels_per_block);
-                (
-                    coord,
-                    Arc::new(build_two_layer_chunk_from_leaves(
-                        coord,
-                        &candidates,
-                        voxels_per_block,
-                    )),
-                )
-            })
-            .collect();
+        let freshly_built =
+            build_chunks_parallel(missing_coords, &leaves, &broadphase, voxels_per_block);
         for (coord, chunk) in freshly_built {
             self.resident.insert(coord, chunk);
         }
