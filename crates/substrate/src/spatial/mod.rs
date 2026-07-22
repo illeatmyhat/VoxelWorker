@@ -11,7 +11,7 @@ pub mod orientation;
 pub mod placement;
 pub mod ray;
 
-pub use aabb::{LatticeAabb, RealAabb};
+pub use aabb::{enclosing_block_aabb, LatticeAabb, RealAabb};
 pub use bvh::Bvh;
 pub use min_mip_pyramid::{MinMipLevel, SparseMinMipPyramid};
 pub use orientation::LatticeOrientation;

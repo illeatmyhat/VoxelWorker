@@ -509,26 +509,24 @@ impl Scene {
                 let size_blocks = rotated_grid_extent_blocks(rotation, size_blocks);
                 any = true;
                 let density = voxels_per_block.max(1) as i64;
-                // The leaf's whole-block low corner, via the single floor rule.
-                let world_blocks = world_block_corner_floor(world_offset_voxels, voxels_per_block);
+                // Corner-anchored ENCLOSING-block box: floor the leaf's low voxel to its
+                // block and CEIL the high voxel (`offset + size·density`) to its block,
+                // each axis independently. A leaf that is NOT block-aligned touches one
+                // more block than its block size — flooring low and adding `size_blocks`
+                // would instead slide the whole box toward the low corner and clip the
+                // geometry off the high side (it pokes out of its own grid cage). The
+                // outward ceil realises the doc's "a 1-voxel translate that crosses a block
+                // boundary adds a whole block" contract; a block-aligned leaf has no
+                // remainder, so `high == low + size_blocks` exactly (goldens hold). ONE
+                // definition of that floor/ceil rule lives in substrate.
+                let leaf_high_voxel: [i64; 3] = std::array::from_fn(|axis| {
+                    world_offset_voxels[axis] + size_blocks[axis] as i64 * density
+                });
+                let (low_block_corner, high_block_corner) =
+                    substrate::spatial::enclosing_block_aabb(world_offset_voxels, leaf_high_voxel, density);
                 for axis in 0..3 {
-                    // Corner-anchored ENCLOSING-block box: the low corner FLOORS the
-                    // leaf's low voxel to its block, and the high corner independently
-                    // CEILS the leaf's high voxel (`offset + size·density`) to its block.
-                    // A leaf that is NOT block-aligned touches one more block than its
-                    // block size — flooring low and adding `size_blocks` would instead
-                    // slide the whole box toward the low corner and clip the geometry off
-                    // the high side (it pokes out of its own grid cage). Ceiling the high
-                    // corner is what realises the doc's "a 1-voxel translate that crosses a
-                    // block boundary adds a whole block" contract. A block-aligned leaf has
-                    // no remainder, so `high == low + size_blocks` exactly (goldens hold).
-                    let low = world_blocks[axis];
-                    let high_voxel = world_offset_voxels[axis] + size_blocks[axis] as i64 * density;
-                    // Ceil to a whole block (signed `div_ceil` is still unstable): for a
-                    // positive divisor `ceil(a/d) == −floor(−a/d) == −((−a).div_euclid(d))`.
-                    let high = -((-high_voxel).div_euclid(density));
-                    min_corner[axis] = min_corner[axis].min(low);
-                    max_corner[axis] = max_corner[axis].max(high);
+                    min_corner[axis] = min_corner[axis].min(low_block_corner[axis]);
+                    max_corner[axis] = max_corner[axis].max(high_block_corner[axis]);
                 }
             },
         );
@@ -706,22 +704,21 @@ impl Scene {
             let size_blocks = rotated_grid_extent_blocks(rotation, size_blocks);
             any = true;
             let density = voxels_per_block.max(1) as i64;
-            // The leaf's whole-block low corner, via the single floor rule.
-            let world_blocks = world_block_corner_floor(world_offset_voxels, voxels_per_block);
+            // Corner-anchored ENCLOSING-block box: floor the low voxel to its block and
+            // CEIL the high voxel to its block, each axis independently. An off-block leaf
+            // touches one more block than its block size — `low + size_blocks` would slide
+            // the box toward the low corner and under-report the high side (the same clip
+            // fixed in `node_subtree_extent_blocks`). Block-aligned leaves have no
+            // remainder, so `high == low + size_blocks` exactly. ONE definition of that
+            // floor/ceil rule lives in substrate.
+            let leaf_high_voxel: [i64; 3] = std::array::from_fn(|axis| {
+                world_offset_voxels[axis] + size_blocks[axis] as i64 * density
+            });
+            let (low_block_corner, high_block_corner) =
+                substrate::spatial::enclosing_block_aabb(world_offset_voxels, leaf_high_voxel, density);
             for axis in 0..3 {
-                // Corner-anchored ENCLOSING-block box: floor the low voxel to its block
-                // and CEIL the high voxel to its block INDEPENDENTLY. An off-block leaf
-                // touches one more block than its block size — `low + size_blocks` would
-                // slide the box toward the low corner and under-report the high side (the
-                // same clip fixed in `node_subtree_extent_blocks`). Block-aligned leaves
-                // have no remainder, so `high == low + size_blocks` exactly.
-                let low = world_blocks[axis];
-                let high_voxel = world_offset_voxels[axis] + size_blocks[axis] as i64 * density;
-                // Ceil to a whole block (signed `div_ceil` is unstable): `ceil(a/d) ==
-                // −((−a).div_euclid(d))` for a positive divisor.
-                let high = -((-high_voxel).div_euclid(density));
-                min_corner[axis] = min_corner[axis].min(low);
-                max_corner[axis] = max_corner[axis].max(high);
+                min_corner[axis] = min_corner[axis].min(low_block_corner[axis]);
+                max_corner[axis] = max_corner[axis].max(high_block_corner[axis]);
             }
         });
         any.then_some((min_corner, max_corner))
