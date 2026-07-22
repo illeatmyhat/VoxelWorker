@@ -212,42 +212,22 @@ fn fragment_main(
         // Anchor the overlay to the TRUE world voxel frame (world block lattice), not
         // the render grid's local half-extent frame; `absolute` stays for texture UV.
         let world_voxel = absolute + uniforms.overlay_world_offset;
-        let in_plane = step(abs(input.world_normal), vec3<f32>(0.5));
-        let voxel_distance = abs(world_voxel - floor(world_voxel + 0.5));
-        let density = uniforms.voxels_per_block;
-        let block_distance =
-            abs(world_voxel / density - floor(world_voxel / density + 0.5)) * density;
-
-        // Screen-space-aware line coverage — identical maths/constants to
-        // `cuboid.wgsl` (see the comment there): minimum pixel half-width,
-        // ~1-pixel antialias band, per-axis per-tier fade near pixel pitch.
+        // `fwidth` is legal here (uniform control flow). The shared coverage math
+        // lives in `grid_overlay_color` (shaders/grid_overlay.wgsl).
         let derivative = fwidth(absolute);
-        let pixel_antialias = max(derivative, vec3<f32>(0.012));
-        let voxel_half_width =
-            max(vec3<f32>(uniforms.voxel_line_half_width), derivative * 0.6);
-        let block_half_width =
-            max(vec3<f32>(uniforms.block_line_half_width), derivative * 0.6);
-        let voxel_fade =
-            vec3<f32>(1.0) - smoothstep(vec3<f32>(0.1), vec3<f32>(0.25), derivative);
-        let block_fade = vec3<f32>(1.0)
-            - smoothstep(vec3<f32>(0.1), vec3<f32>(0.25), derivative / density);
-        let voxel_line = (vec3<f32>(1.0)
-            - smoothstep(voxel_half_width, voxel_half_width + pixel_antialias, voxel_distance))
-            * voxel_fade * in_plane;
-        let block_line = (vec3<f32>(1.0)
-            - smoothstep(block_half_width, block_half_width + pixel_antialias, block_distance))
-            * block_fade * in_plane;
-        let voxel_strength = max(max(voxel_line.x, voxel_line.y), voxel_line.z);
-        let block_strength = max(max(block_line.x, block_line.y), block_line.z);
-
-        var blend = voxel_strength * uniforms.voxel_line_alpha;
-        var line_color = uniforms.voxel_line_color;
-        let block_blend = block_strength * uniforms.block_line_alpha;
-        if (block_blend > blend) {
-            blend = block_blend;
-            line_color = uniforms.block_line_color;
-        }
-        color = mix(color, line_color, blend);
+        color = grid_overlay_color(
+            color,
+            world_voxel,
+            input.world_normal,
+            derivative,
+            uniforms.voxels_per_block,
+            uniforms.voxel_line_half_width,
+            uniforms.block_line_half_width,
+            uniforms.voxel_line_alpha,
+            uniforms.block_line_alpha,
+            uniforms.voxel_line_color,
+            uniforms.block_line_color,
+        );
     }
 
     return vec4<f32>(color, 1.0);
