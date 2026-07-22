@@ -84,6 +84,17 @@ pub fn is_axis_aligned(rotation: Quat) -> bool {
     })
 }
 
+/// Whether a placed leaf is **in phase** with the absolute voxel lattice (ADR 0027): an
+/// axis-aligned rotation AND a whole-voxel `offset_local` (no sub-voxel slide). An in-phase leaf
+/// emits one-cell-per-absolute-cell by a pure translation — the byte-identical ADR 0026
+/// forward-emit path; an out-of-phase one (a genuine rotation OR a fractional `offset_local`) must
+/// be inverse-resampled by gather. The dense oracle (`document`) and the live two-layer classifier
+/// (`evaluation`) MUST agree on this split or the two paths disagree on rotated / sub-voxel seats,
+/// so the predicate lives beside [`is_axis_aligned`] as the ONE definition both fold through.
+pub fn is_in_phase(rotation: Quat, offset_local_voxels: [f32; 3]) -> bool {
+    is_axis_aligned(rotation) && offset_local_voxels.iter().all(|slide| slide.fract() == 0.0)
+}
+
 /// The corner-anchored world↔producer-local affine of a placed leaf (ADR 0027). Pure `glam`
 /// arithmetic over the leaf's `rotation`, local `full` extent, and integer-plus-fraction
 /// `world_offset`; construct it via [`new`](Self::new) from either layer.

@@ -54,9 +54,7 @@ pub(super) fn dense_leaf_placement(
 /// axis-aligned rotation — every gate scene) keeps the exact translate-and-stamp path, so the
 /// existing goldens stay byte-identical.
 pub(super) fn leaf_is_out_of_phase(rotation: glam::Quat, offset_local_voxels: [f32; 3]) -> bool {
-    let axis_aligned = substrate::spatial::is_axis_aligned(rotation);
-    let integer_offset = offset_local_voxels.iter().all(|slide| slide.fract() == 0.0);
-    !(axis_aligned && integer_offset)
+    !substrate::spatial::is_in_phase(rotation, offset_local_voxels)
 }
 
 /// The ADR 0027 **inverse-resample gather** for a genuinely out-of-phase (rotated or sub-voxel-

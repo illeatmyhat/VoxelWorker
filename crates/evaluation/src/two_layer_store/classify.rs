@@ -699,9 +699,7 @@ pub(crate) fn compose_leaf_into_region(
     // no rotation — most placements) and every fieldless producer (cloud / VoxelBody, which is
     // NEVER continuously rotated) takes the exact forward-emit path below — byte-identical to
     // ADR 0026.
-    let axis_aligned = substrate::spatial::is_axis_aligned(leaf.rotation);
-    let integer_offset = leaf.offset_local_voxels.iter().all(|f| f.fract() == 0.0);
-    let in_phase = axis_aligned && integer_offset;
+    let in_phase = substrate::spatial::is_in_phase(leaf.rotation, leaf.offset_local_voxels);
     if !in_phase && leaf.producer.as_field().is_some() {
         gather_rotated_leaf_into_region(region, leaf, block_min_abs, density, voxels_per_block);
         return;
