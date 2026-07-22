@@ -26,6 +26,7 @@ mod subtract;
 mod sealed_scopes;
 mod intersect;
 mod fixture_definitions;
+mod differential_occupancy_fuzz;
 
     pub(super) fn shape_scene(kind: ShapeKind, voxels_per_block: u32) -> Scene {
         Scene::from_geometry(
