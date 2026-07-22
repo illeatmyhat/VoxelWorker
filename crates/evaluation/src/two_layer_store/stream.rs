@@ -18,6 +18,22 @@ use std::sync::Arc;
 #[allow(unused_imports)]
 use super::*;
 
+/// The rebase offset that maps a chunk's LOCAL voxel indices into the recentred frame:
+/// a chunk-local voxel `l` sits at absolute `chunk_min + l`, and the recentred frame
+/// subtracts `recentre_voxels`, so the offset is `chunk_coord·chunk_extent − recentre`
+/// (i64, before the i32 downcast — the same `chunk_min − recentre` rebase
+/// `resolve_chunk_rebased` applies, ADR 0008). One source of truth for the "same z,y,x
+/// order as the dense store" rebase several call sites depend on.
+fn chunk_index_offset(
+    chunk_coord: [i32; 3],
+    chunk_extent_voxels: i64,
+    recentre_voxels: [i64; 3],
+) -> [i64; 3] {
+    std::array::from_fn(|axis| {
+        chunk_coord[axis] as i64 * chunk_extent_voxels - recentre_voxels[axis]
+    })
+}
+
 /// Stream a whole scene's two-layer chunks back to one recentred [`VoxelGrid`], in the
 /// EXACT frame the dense [`Store::resolve_region`](crate::store::Store::resolve_region)
 /// assembles — the parity gate's "two-layer round-trip" (ADR 0010 parity (a)). Builds
@@ -75,11 +91,8 @@ pub fn resolve_region_two_layer(
                 // recentred frame subtracts `recentre` — so the offset is
                 // `chunk_min − recentre` (i64, before the i32 downcast). This is exactly
                 // `resolve_chunk_rebased`'s rebase with floating origin = recentre.
-                let index_offset = [
-                    chunk_x as i64 * chunk_extent_voxels - recentre_voxels[0],
-                    chunk_y as i64 * chunk_extent_voxels - recentre_voxels[1],
-                    chunk_z as i64 * chunk_extent_voxels - recentre_voxels[2],
-                ];
+                let index_offset =
+                    chunk_index_offset(chunk_coord, chunk_extent_voxels, recentre_voxels);
                 chunk.expand_occupancy_into(&mut output.occupied, index_offset);
             }
         }
@@ -129,11 +142,8 @@ pub fn expand_resident_chunks_into_grid(
         // index `l` sits at absolute `chunk_min + l`, and the recentred frame subtracts
         // the recentre — the SAME `chunk_min − recentre` offset `resolve_region_two_layer`
         // applies (ADR 0008).
-        let index_offset = [
-            chunk_coord[0] as i64 * chunk_extent_voxels - recentre_voxels[0],
-            chunk_coord[1] as i64 * chunk_extent_voxels - recentre_voxels[1],
-            chunk_coord[2] as i64 * chunk_extent_voxels - recentre_voxels[2],
-        ];
+        let index_offset =
+            chunk_index_offset(*chunk_coord, chunk_extent_voxels, recentre_voxels);
         chunk.expand_occupancy_into(&mut output.occupied, index_offset);
     }
     output
@@ -175,11 +185,7 @@ pub(crate) fn stream_chunk_recentred(
     // recentre, so the offset is `chunk_min − recentre` (i64, before the i32 downcast).
     // Unwrap at this arithmetic.
     let recentre_voxels = recentre.voxels();
-    let index_offset = [
-        chunk_coord[0] as i64 * chunk_extent_voxels - recentre_voxels[0],
-        chunk_coord[1] as i64 * chunk_extent_voxels - recentre_voxels[1],
-        chunk_coord[2] as i64 * chunk_extent_voxels - recentre_voxels[2],
-    ];
+    let index_offset = chunk_index_offset(chunk_coord, chunk_extent_voxels, recentre_voxels);
     let mut output = Vec::new();
     chunk.expand_occupancy_into(&mut output, index_offset);
     Some(output)
