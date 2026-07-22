@@ -82,7 +82,7 @@ exposes. None are designed yet.
 | tool | gizmos it owes |
 | --- | --- |
 | Box / Sphere / Cylinder / Tube / Torus | position (3 axis handles) · the shape's own dimensions · **continuous** rotation (it is a field) |
-| Sketch | the plane's anchor · its orientation · the profile itself |
+| Sketch | the plane's anchor · its orientation · the profile itself — **see the Sketch-mode section below**, ADR 0028 |
 | Sculpt (add / carve) | brush radius · metric · flow |
 | Measure | the two anchors |
 
@@ -100,6 +100,58 @@ Cross-cutting needs already visible:
 - A **reference-plane** manipulator, if/when users create their own planes (the custom-plane tier
   of placement): position + orientation, distinct chrome from the built-in origin planes so the two
   are never confused.
+
+---
+
+## Sketch mode — the epic's chrome, tools, gizmos, and cursors (ADR 0028)
+
+Entering a sketch is a **mode** (ADR 0028): the left rail swaps to sketch tools, non-sketch
+operations disable, and everything below is scoped to that mode. Sketch entities are **real,
+directly-manipulated objects** (not previews), edited inside the sketch's self-contained undo group.
+The only "ghost" kept is the pre-first-point plane affordance. Grouped by kind, most-load-bearing
+first; nothing here is designed yet.
+
+### Mode chrome — "you are editing this sketch"
+
+| element | means | why it is needed | when it arose |
+| --- | --- | --- | --- |
+| **mode banner / editing badge** | an unmistakable "editing sketch" state that colours the whole viewport frame | Fusion's blue sketch environment is the model — the mode must be impossible to miss or you edit the wrong thing; the definition-editing-chrome parallel ([[asset-drawer-linked-instances]]) | ADR 0028 |
+| **rail swap** | the left tool rail shows the sketch toolset in place of the normal tool grammar | the mode's tools are different; showing 3D ops here invites the errors "disable non-sketch ops" exists to prevent | ADR 0028 |
+| **disabled-ops treatment** | non-sketch operations greyed / withdrawn while in the mode | avoids applying a 3D op mid-sketch (Fusion greys the solid ribbon); must read as *scoped*, not *broken* | ADR 0028 |
+| **Finish / Cancel** | commit the undo group as one main-history entry / roll it back | the mode's exit; Cancel is "discard this session" = undo the open group (ADR 0028, no second stack) | ADR 0028 |
+| **working-plane display** | the sketch plane shown as a bounded grid while in the mode | the author needs to see the surface they draw on; also carries the position-snap lattice visually | ADR 0028 |
+
+### Sketch rail tools (icons) — one family, must read as a set
+
+| icon | means | why / when |
+| --- | --- | --- |
+| **select / move vertex** | the default arrow — pick and drag a profile vertex | the core direct-manipulation action; ADR 0028 first slice |
+| **line / polyline** | click to place connected profile points | the organic value prop — arbitrary profiles; ADR 0028 slice 3 |
+| **rectangle** | drag a box → a 4-point profile | the box-drag sugar, now inside the mode; ADR 0028 slice 3 |
+| **delete vertex** | remove a profile point | inverse of place; ADR 0028 slice 2 |
+| **position snap: none / voxel / block** | reuse the placement snap glyphs (above) — the profile vertex's lattice quantization | ADR 0027 snap reused for 2D (ADR 0028); lattice snapping stands in for a constraint solver |
+| **operation: extrude / revolve / (sweep)** | the lift the fused sketch feeds (a property of the same node, not a separate feature) | Extrude + Revolve ship; Sweep is the reserved arm |
+| *circle / arc / Bézier (deferred)* | curved profile segments | the glossary's Profile admits arcs/Béziers → flatten to the polygon; ADR 0028 slice 5 |
+| *NO constraint tools* | — | deliberate absence: lattice snapping delivers axis-alignment / equal-length / coincidence as a by-product of quantization (glossary *Lattice snapping*), so there is no constraint entity to draw |
+
+### On-canvas gizmos (while in the mode)
+
+| gizmo | what it is | why it is needed | when it arose |
+| --- | --- | --- | --- |
+| **profile vertex handle** | a draggable point, position-snapped, on the working plane | the load-bearing manipulator — distinct chrome from the 3D position axis-handles (those move a whole node; this moves one profile vertex) | ADR 0028 slice 2 |
+| **active / open segment** | the real segment from the last committed vertex to the cursor (and the closing segment) — a *real* entity mid-placement, not a volume ghost | you draw blind without it; reframed from "rubber-band preview" to "a real segment you're placing" (owner ruling) | ADR 0028 slice 2 |
+| **close-loop affordance** | the start vertex highlights when the cursor is near enough to close the polygon | closing the loop is the profile's completion; needs an unmistakable "click here to close" | ADR 0028 slice 3 |
+| **snap indicator** | feedback when a vertex engages the lattice / another vertex / an axis | this IS the constraint vocabulary (snapping stands in for a solver) — the author must see *why* a point locked | ADR 0028 slice 2 |
+| **working-plane manipulator (deferred)** | plane anchor + orientation, for creating a sketch from scratch | the create-from-scratch entry (slice 4); distinct chrome from the built-in origin planes so the two never confuse | ADR 0028 slice 4 |
+
+### Cursors — the pointer's feedback in the mode
+
+| state | means | the pointer must say | when it arose |
+| --- | --- | --- | --- |
+| **on-plane / place-point** | cursor is over the working plane, ready to drop a vertex (the pre-first-point plane affordance — the one kept ghost) | "a point lands *here* on the plane" — where the lattice snap will put it | ADR 0028 slice 2 |
+| **grab-vertex** | hovering an existing profile vertex | "this is draggable" — distinct from empty-plane hover | ADR 0028 slice 2 |
+| **close-loop** | cursor is near the start vertex with an open polyline | "clicking closes the profile" | ADR 0028 slice 3 |
+| **snap-engaged** | a candidate snap (grid / vertex / axis) is active under the cursor | "you are locked to *this*" — pairs with the snap-indicator gizmo | ADR 0028 slice 2 |
 
 ---
 

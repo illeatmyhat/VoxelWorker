@@ -176,6 +176,14 @@ op-stack field (see `docs/adr/0011`; generalizes the ADR 0007 fog atlas).
   by-product of quantization, so the profile layer carries no constraint entities, no
   solver, and none of the over-constrained or flipped-solution states those bring.
 
+- **Sketch mode** — the editing environment entered on a sketch scene object (`docs/adr/0028`):
+  the tool rail swaps to sketch tools and non-sketch operations disable, so the profile's **real,
+  directly-manipulated entities** (not previews) are authored in a **sealed, self-contained scope**.
+  A property of the **editor, never the document**; its edits form **one undo group** that commits
+  atomically on *Finish* or rolls back on *Cancel*. The sketch stays **fused** with its lifting
+  operation — the operation lifts its own profile, never referencing an external sketch (no operand
+  targeting, ADR 0017).
+
 ## Field
 
 - **Field** — the signed scalar meaning of a node: negative inside the body, positive
