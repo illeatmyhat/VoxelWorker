@@ -400,6 +400,92 @@ pub(super) fn rotated_grid_extent_blocks(rotation: Quat, size_blocks: [u32; 3]) 
     [max[0] as u32, max[1] as u32, max[2] as u32]
 }
 
+/// The per-leaf **voxel box** — one enabled leaf's corner-anchored world-voxel span,
+/// `(low_corner, high_corner)` with `low = world_offset − outset` and
+/// `high = low + rotated_grid`. This is THE single definition both voxel-granularity
+/// extents fold each leaf through: [`Scene::placed_extent_voxels`] (scene-wide, via
+/// `for_each_leaf`) and [`Scene::node_subtree_extent_voxels`] (subtree-scoped, via
+/// `walk_nodes`). Keeping it in one place is why a fix to the anchoring rules below
+/// (e.g. the outset double-subtract) can no longer land in one copy but not its sibling.
+///
+/// The anchoring rules, once:
+/// - the `outset` is converted to voxels and subtracted from the world offset EXACTLY
+///   once — the dilated body's low corner sits `outset_voxels` below the producer's, so
+///   the box must START there rather than merely grow its size (ADR 0008: the frame is
+///   carried);
+/// - the leaf's local producer grid is turned into world axes by
+///   [`rotated_grid_extent_voxels`] for an oriented leaf (ADR 0026/0027);
+/// - the (outset-adjusted) offset is the LOW corner and the span is the half-open
+///   `[off, off + grid)`.
+///
+/// `None` for a size-less leaf (no producer grid), so the caller skips it.
+pub(super) fn leaf_placed_voxel_box(
+    world_offset_voxels: [i64; 3],
+    rotation: Quat,
+    body: &LeafBody<'_>,
+    outset: Measurement,
+    voxels_per_block: u32,
+) -> Option<([i64; 3], [i64; 3])> {
+    let outset_voxels = outset_voxels_at(outset, voxels_per_block);
+    let world_offset_voxels: [i64; 3] =
+        std::array::from_fn(|axis| world_offset_voxels[axis] - outset_voxels);
+    let grid_voxels = body.grid_voxels(voxels_per_block, outset_voxels)?;
+    // ADR 0026: turn the grid into world axes for an oriented leaf.
+    let grid_voxels = rotated_grid_extent_voxels(rotation, grid_voxels);
+    // Corner-anchored span `[off, off + grid)` (the outset-adjusted offset is the low corner).
+    let high_corner: [i64; 3] =
+        std::array::from_fn(|axis| world_offset_voxels[axis] + grid_voxels[axis]);
+    Some((world_offset_voxels, high_corner))
+}
+
+/// The per-leaf **enclosing-block box** — one enabled leaf's world span expanded out to the
+/// whole blocks it touches, `(low_block_corner, high_block_corner)` via
+/// [`substrate::spatial::enclosing_block_aabb`] (floor the low corner to its block, CEIL the
+/// high corner to its block, each axis independently). THE single definition both
+/// whole-block extents fold each leaf through: [`Scene::placed_extent_blocks`] (scene-wide,
+/// via `for_each_leaf`) and [`Scene::node_subtree_extent_blocks`] (subtree-scoped, via
+/// `walk_nodes`).
+///
+/// Same outset-once / rotate-to-world-axes / corner-anchor rules as
+/// [`leaf_placed_voxel_box`], but the size source is the leaf's BLOCK-granular
+/// [`leaf_size_blocks`] (the producer voxel span rounded UP to whole blocks) rather than
+/// the exact voxel grid. A block-aligned leaf has no remainder, so `high == low + size_blocks`
+/// exactly (goldens hold); a non-block-aligned leaf touches one more block than its block
+/// size — the outward ceil realises the doc's "a 1-voxel translate across a block boundary
+/// adds a whole block" contract.
+///
+/// NOTE — this is deliberately NOT `leaf_placed_voxel_box` then enclosed to blocks. Because
+/// the block size is rounded up to a whole block BEFORE `high = off + size_blocks·d`, a
+/// sub-block-sized leaf at a non-block-aligned offset can enclose one block MORE than the
+/// exact voxel span would (e.g. a 20-voxel-wide leaf at `d = 16`, offset X = 1: this reports
+/// 3 blocks wide, the voxel span encloses 2). The two extents are preserved as authored;
+/// unifying them would move results (and goldens). `None` for a size-less leaf.
+pub(super) fn leaf_placed_block_box(
+    world_offset_voxels: [i64; 3],
+    rotation: Quat,
+    body: &LeafBody<'_>,
+    outset: Measurement,
+    voxels_per_block: u32,
+) -> Option<([i64; 3], [i64; 3])> {
+    let outset_voxels = outset_voxels_at(outset, voxels_per_block);
+    let world_offset_voxels: [i64; 3] =
+        std::array::from_fn(|axis| world_offset_voxels[axis] - outset_voxels);
+    let size_blocks = leaf_size_blocks(body, voxels_per_block, outset_voxels)?;
+    // ADR 0026: turn the block extent into world axes for an oriented leaf.
+    let size_blocks = rotated_grid_extent_blocks(rotation, size_blocks);
+    let density = voxels_per_block.max(1) as i64;
+    // The high voxel corner from the block-rounded size; `enclosing_block_aabb` then floors
+    // the low corner and ceils this high corner to whole blocks. ONE definition of that
+    // floor/ceil rule lives in substrate.
+    let leaf_high_voxel: [i64; 3] =
+        std::array::from_fn(|axis| world_offset_voxels[axis] + size_blocks[axis] as i64 * density);
+    Some(substrate::spatial::enclosing_block_aabb(
+        world_offset_voxels,
+        leaf_high_voxel,
+        density,
+    ))
+}
+
 impl Scene {
     /// The per-object **block lattice box** for the node at `path`, in the SAME
     /// recentred render frame the resolved voxels live in (issue #29 S3). Returns
@@ -496,34 +582,12 @@ impl Scene {
             &mut def_path,
             &mut scope_path,
             &mut |world_offset_voxels, _offset_local_voxels, _orientation, rotation, body, _grid_on_faces, _operation, outset, _scope_path| {
-                let outset_voxels = outset_voxels_at(outset, voxels_per_block);
-                // The dilated body's low corner sits `N` BELOW the producer's, so the extent
-                // must start there — growing the size alone would put a right-sized box in
-                // the wrong place (ADR 0008 — the frame is carried).
-                let world_offset_voxels: [i64; 3] =
-                    std::array::from_fn(|axis| world_offset_voxels[axis] - outset_voxels);
-                let Some(size_blocks) = leaf_size_blocks(&body, voxels_per_block, outset_voxels) else {
+                let Some((low_block_corner, high_block_corner)) =
+                    leaf_placed_block_box(world_offset_voxels, rotation, &body, outset, voxels_per_block)
+                else {
                     return;
                 };
-                // ADR 0026: turn the block extent into world axes for an oriented leaf.
-                let size_blocks = rotated_grid_extent_blocks(rotation, size_blocks);
                 any = true;
-                let density = voxels_per_block.max(1) as i64;
-                // Corner-anchored ENCLOSING-block box: floor the leaf's low voxel to its
-                // block and CEIL the high voxel (`offset + size·density`) to its block,
-                // each axis independently. A leaf that is NOT block-aligned touches one
-                // more block than its block size — flooring low and adding `size_blocks`
-                // would instead slide the whole box toward the low corner and clip the
-                // geometry off the high side (it pokes out of its own grid cage). The
-                // outward ceil realises the doc's "a 1-voxel translate that crosses a block
-                // boundary adds a whole block" contract; a block-aligned leaf has no
-                // remainder, so `high == low + size_blocks` exactly (goldens hold). ONE
-                // definition of that floor/ceil rule lives in substrate.
-                let leaf_high_voxel: [i64; 3] = std::array::from_fn(|axis| {
-                    world_offset_voxels[axis] + size_blocks[axis] as i64 * density
-                });
-                let (low_block_corner, high_block_corner) =
-                    substrate::spatial::enclosing_block_aabb(world_offset_voxels, leaf_high_voxel, density);
                 for axis in 0..3 {
                     min_corner[axis] = min_corner[axis].min(low_block_corner[axis]);
                     max_corner[axis] = max_corner[axis].max(high_block_corner[axis]);
@@ -584,25 +648,15 @@ impl Scene {
             &mut def_path,
             &mut scope_path,
             &mut |world_offset_voxels, _offset_local_voxels, _orientation, rotation, body, _grid_on_faces, _operation, outset, _scope_path| {
-                let outset_voxels = outset_voxels_at(outset, voxels_per_block);
-                // The dilated body's low corner sits `N` BELOW the producer's, so the extent
-                // must start there — growing the size alone would put a right-sized box in
-                // the wrong place (ADR 0008 — the frame is carried).
-                let world_offset_voxels: [i64; 3] =
-                    std::array::from_fn(|axis| world_offset_voxels[axis] - outset_voxels);
-                let Some(grid_voxels) = body.grid_voxels(voxels_per_block, outset_voxels) else {
+                let Some((low_corner, high_corner)) =
+                    leaf_placed_voxel_box(world_offset_voxels, rotation, &body, outset, voxels_per_block)
+                else {
                     return;
                 };
-                // ADR 0026: turn the grid into world axes for an oriented leaf.
-                let grid_voxels = rotated_grid_extent_voxels(rotation, grid_voxels);
                 any = true;
                 for axis in 0..3 {
-                    // Corner-anchored span `[off, off + grid)` (offset is the low corner).
-                    let grid = grid_voxels[axis];
-                    let low = world_offset_voxels[axis];
-                    let high = low + grid;
-                    min_corner[axis] = min_corner[axis].min(low);
-                    max_corner[axis] = max_corner[axis].max(high);
+                    min_corner[axis] = min_corner[axis].min(low_corner[axis]);
+                    max_corner[axis] = max_corner[axis].max(high_corner[axis]);
                 }
             },
         );
@@ -693,29 +747,12 @@ impl Scene {
         let mut max_corner = [i64::MIN; 3];
         let mut any = false;
         self.for_each_leaf(&mut |world_offset_voxels, _offset_local_voxels, _orientation, rotation, body, _grid_on_faces, _operation, outset, _scope_path| {
-            let outset_voxels = outset_voxels_at(outset, voxels_per_block);
-            let world_offset_voxels: [i64; 3] =
-                std::array::from_fn(|axis| world_offset_voxels[axis] - outset_voxels);
-            let Some(size_blocks) = leaf_size_blocks(&body, voxels_per_block, outset_voxels) else {
+            let Some((low_block_corner, high_block_corner)) =
+                leaf_placed_block_box(world_offset_voxels, rotation, &body, outset, voxels_per_block)
+            else {
                 return;
             };
-            // ADR 0026: turn the block extent into world axes, so an oriented leaf's block
-            // readout spans the axes it actually occupies.
-            let size_blocks = rotated_grid_extent_blocks(rotation, size_blocks);
             any = true;
-            let density = voxels_per_block.max(1) as i64;
-            // Corner-anchored ENCLOSING-block box: floor the low voxel to its block and
-            // CEIL the high voxel to its block, each axis independently. An off-block leaf
-            // touches one more block than its block size — `low + size_blocks` would slide
-            // the box toward the low corner and under-report the high side (the same clip
-            // fixed in `node_subtree_extent_blocks`). Block-aligned leaves have no
-            // remainder, so `high == low + size_blocks` exactly. ONE definition of that
-            // floor/ceil rule lives in substrate.
-            let leaf_high_voxel: [i64; 3] = std::array::from_fn(|axis| {
-                world_offset_voxels[axis] + size_blocks[axis] as i64 * density
-            });
-            let (low_block_corner, high_block_corner) =
-                substrate::spatial::enclosing_block_aabb(world_offset_voxels, leaf_high_voxel, density);
             for axis in 0..3 {
                 min_corner[axis] = min_corner[axis].min(low_block_corner[axis]);
                 max_corner[axis] = max_corner[axis].max(high_block_corner[axis]);
