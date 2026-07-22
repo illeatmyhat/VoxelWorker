@@ -924,56 +924,45 @@ fn fold_closed_scope_into_region(
     }
 }
 
+/// Whether EVERY cell on the face of `region` where axis `axis` (0=x/1=y/2=z) equals
+/// `fixed` is occupied. Sweeps the other two axes over their full extent, assembling
+/// each `(x, y, z)` so `cell_at`'s argument order is preserved exactly — the shared
+/// scan the three per-axis face checks used to open-code (the sweep ORDER is
+/// immaterial: "all cells occupied" is order-independent, the early return just prunes).
+fn face_is_solid(region: &VoxelRegion, axis: usize, fixed: u32) -> bool {
+    let extent = region.extent;
+    let swept_a = (axis + 1) % 3;
+    let swept_b = (axis + 2) % 3;
+    for u in 0..extent[swept_a] {
+        for v in 0..extent[swept_b] {
+            let mut coord = [0u32; 3];
+            coord[axis] = fixed;
+            coord[swept_a] = u;
+            coord[swept_b] = v;
+            if region.cell_at(coord[0], coord[1], coord[2]).is_none() {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 /// Compute the per-face seam-solidity flags for a resolved boundary block: a face is solid
 /// iff EVERY voxel cell on that face of the `density³` region is occupied.
 pub(crate) fn compute_seam_solidity(region: &VoxelRegion) -> SeamSolidity {
-    let [width, height, depth] = region.extent;
-    let mut solid = [[true; 2]; 3];
+    let extent = region.extent;
     // Degenerate (zero-extent) region: no face can be solid.
-    if width == 0 || height == 0 || depth == 0 {
+    if extent.contains(&0) {
         return SeamSolidity {
             solid: [[false; 2]; 3],
         };
     }
 
-    // X faces (axis 0): low x == 0, high x == width - 1.
-    for &(side, x) in &[(0usize, 0u32), (1usize, width - 1)] {
-        let mut face_solid = true;
-        'scan: for z in 0..depth {
-            for y in 0..height {
-                if region.cell_at(x, y, z).is_none() {
-                    face_solid = false;
-                    break 'scan;
-                }
-            }
-        }
-        solid[0][side] = face_solid;
-    }
-    // Y faces (axis 1): low y == 0, high y == height - 1.
-    for &(side, y) in &[(0usize, 0u32), (1usize, height - 1)] {
-        let mut face_solid = true;
-        'scan: for z in 0..depth {
-            for x in 0..width {
-                if region.cell_at(x, y, z).is_none() {
-                    face_solid = false;
-                    break 'scan;
-                }
-            }
-        }
-        solid[1][side] = face_solid;
-    }
-    // Z faces (axis 2): low z == 0, high z == depth - 1.
-    for &(side, z) in &[(0usize, 0u32), (1usize, depth - 1)] {
-        let mut face_solid = true;
-        'scan: for y in 0..height {
-            for x in 0..width {
-                if region.cell_at(x, y, z).is_none() {
-                    face_solid = false;
-                    break 'scan;
-                }
-            }
-        }
-        solid[2][side] = face_solid;
+    // Per axis: side 0 is the low face (fixed = 0), side 1 the high face (extent − 1).
+    let mut solid = [[true; 2]; 3];
+    for axis in 0..3 {
+        solid[axis][0] = face_is_solid(region, axis, 0);
+        solid[axis][1] = face_is_solid(region, axis, extent[axis] - 1);
     }
 
     SeamSolidity { solid }
