@@ -77,16 +77,19 @@ anchor inconsistency (issue #3128) is the failure mode of a muddy anchor vocabul
 ## Manipulator gizmos — per tool, once a node is placed/selected
 
 From `direct-manipulation.md`'s tool table. These are the on-canvas handles a *selected* node
-exposes. None are designed yet.
+exposes. None are designed yet. Per tool, what each handle is, why it is owed, and the trap it must
+avoid — enough for a designer to act, still short of the spec each graduates to.
 
-| tool | gizmos it owes |
-| --- | --- |
-| Box / Sphere / Cylinder / Tube / Torus | position (3 axis handles) · the shape's own dimensions · **continuous** rotation (it is a field) |
-| Sketch | the plane's anchor · its orientation · the profile itself — **see the Sketch-mode section below**, ADR 0028 |
-| Sculpt (add / carve) | brush radius · metric · flow |
-| Measure | the two anchors |
+| tool | gizmo | what it manipulates | why / the trap it avoids |
+| --- | --- | --- | --- |
+| Box / Sphere / Cylinder / Tube / Torus | **position (3 axis handles)** | the node's `offset_voxels`, dragged along one world axis, lattice-snapped | the shared translate gizmo of every solid; must snap to the same `{None/Voxel/Block}` lattice as placement so drag and drop agree |
+| ″ | **dimension handles** | the shape's own size (`Measurement`-retained), per axis | reads/writes the authored units (blocks/voxels), not raw voxels — a handle that quantized to voxels would lose the retained measurement (units UX) |
+| ″ | **continuous rotation** | the node's `Quat` (any angle — it is a field) | a **free dial, not 90° steps** (ADR 0027); its centre is the **pivot**, not the bbox centre, or a tilted object swims off its contact |
+| Sketch | — | the plane anchor · orientation · the profile | **see the Sketch-mode section below** (ADR 0028) — it is a whole mode, not a handful of handles |
+| Sculpt (add / carve) | **brush radius · metric · flow** | the stroke's footprint, its distance metric (L2/L∞), and its rate | deferred with the sculpt epic; logged so the register stays complete — a brush with no visible radius/metric is the MagicaVoxel "invisible cursor size" complaint |
+| Measure | **two anchors** | the endpoints of a measurement, each lattice-snappable | the anchors must snap to voxel/vertex/face like a profile vertex, or a measurement cannot be taken exactly |
 
-Cross-cutting needs already visible:
+Cross-cutting needs already visible (shared chrome the per-tool handles above reuse):
 - **Axis-handle translation** snapped to the lattice (the position gizmo, shared by every solid).
 - **Dimension handles** that read/write the node's `Measurement`-retained size (units UX).
 - **Continuous rotation** — rotation is a field, so the gizmo is a free dial, not 90° steps. Its
