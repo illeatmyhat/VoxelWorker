@@ -130,7 +130,11 @@ tool-settings box** on the canvas.
 | **contextual tool-settings box** | a small floating box on the canvas showing the **active tool's** settings — for the vertex/line/rectangle tools that includes **position snap** (none / voxel / block) | owner reworked C's floating readout ("useless… nowhere to change the snap") into the place tool settings live; replaces the deleted right panel as snap's home | ADR 0028, owner review 2026-07-22 |
 | **disabled non-sketch ops** | non-sketch operations **withdrawn** while in the mode (C's treatment, not dim+hatch) | avoids applying a 3D op mid-sketch; the minimal read the owner preferred — gone, not greyed | ADR 0028, owner review 2026-07-22 |
 | **working-plane display** | the sketch plane shown as a bounded grid, with C's subtle environment tint | the author needs to see the surface they draw on; also carries the position-snap lattice visually | ADR 0028 |
-| *deleted by review* | ~~explainer banner~~ · ~~"sealed scope" prose~~ · ~~held-fold ribbon~~ · ~~right-side vertex/edge/object list~~ · ~~"live solid result" readout box~~ | owner: none earn their space in sketch mode | owner review 2026-07-22 |
+| *deleted by review* | ~~explainer banner~~ · ~~"sealed scope" prose~~ · ~~held-fold ribbon~~ · ~~right-side vertex/edge/object list~~ · ~~"live solid result" readout box~~ · ~~left browser / scene tree~~ | owner: none earn their space in sketch mode — sketch mode is **rail + canvas only** ("Fusion works fine off almost none") | owner review 2026-07-22 |
+| **live solid (faint)** | the resolved solid shown as a faint translucent hint behind the profile, no readout | the ADR §4 live-volume feedback, kept subdued so the 2D profile stays primary and is never occluded | owner review 2026-07-22 (confirmed) |
+
+**Reference mock: `sketch-c2-converged.html`** (claude.ai/design project "VoxelWorker — Future UX", group
+"K · Sketch mode"). This is the locked visual target for the slice-1/2 implementation.
 
 ### Sketch rail tools (icons) — one family, must read as a set
 
