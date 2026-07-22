@@ -13,7 +13,7 @@ use voxel_core::voxel::{BlockAttrs, BlockId, Voxel, VoxelGrid, SURFACE_ISOLEVEL}
 /// if only one learns a new operation. Wrapping the *producer* sidesteps that hazard by
 /// construction: both folds consume this type through the ordinary [`VoxelProducer`]
 /// interface, so there is exactly one implementation of what outset MEANS and no second arm
-/// to keep in sync. `stamp_producer`, `carve_producer`, `intersect_producer` and the
+/// to keep in sync. `stamp_producer`, `mask_producer` (carve/intersect) and the
 /// classifier's `cell_field_interval` call are all unchanged.
 ///
 /// # The frame

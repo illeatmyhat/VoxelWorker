@@ -906,19 +906,21 @@ impl Scene {
             // ADR 0017: Subtract and Intersect leaves are occupancy-only masks — they
             // never stamp material, so they take a mask path instead of a stamp.
             match operation {
-                CombineOp::Subtract => carve_producer(
+                CombineOp::Subtract => mask_producer(
                     target,
                     region_dimensions,
                     translation_voxels,
                     producer.as_ref(),
                     voxels_per_block,
+                    false,
                 ),
-                CombineOp::Intersect => intersect_producer(
+                CombineOp::Intersect => mask_producer(
                     target,
                     region_dimensions,
                     translation_voxels,
                     producer.as_ref(),
                     voxels_per_block,
+                    true,
                 ),
                 // Unreachable in practice: a scope containing an Emboss node is pre-composed
                 // into a CompositeProducer (`CombineOp::needs_accumulated_field`), which
@@ -1190,7 +1192,7 @@ impl Scene {
             // skipped above (it carves nothing here), so this sees only
             // genuinely-overlapping cutters.
             if operation == CombineOp::Subtract {
-                carve_producer_from_chunk(
+                mask_producer_in_chunk(
                     target,
                     region_dimensions,
                     translation_voxels,
@@ -1199,6 +1201,7 @@ impl Scene {
                     voxels_per_block,
                     chunk_min_voxels,
                     chunk_max_voxels,
+                    false,
                 );
                 return;
             }
@@ -1209,7 +1212,7 @@ impl Scene {
             // restriction to this chunk's cells still commutes with the fold, because
             // a cell survives iff the mask occupies THAT cell.
             if operation == CombineOp::Intersect {
-                intersect_producer_in_chunk(
+                mask_producer_in_chunk(
                     target,
                     region_dimensions,
                     translation_voxels,
@@ -1218,6 +1221,7 @@ impl Scene {
                     voxels_per_block,
                     chunk_min_voxels,
                     chunk_max_voxels,
+                    true,
                 );
                 return;
             }
@@ -1916,72 +1920,38 @@ fn stamp_producer(
     }
 }
 
-/// Resolve `producer` into its own local grid and **carve** it out of `output`:
-/// every output voxel whose index coincides with one of the producer's occupied
-/// cells (translated by `translation_voxels`) is REMOVED (ADR 0017 Decision 1 —
-/// `Subtract` is an occupancy-only mask). Material and overlay of the surviving
-/// voxels are untouched; the cutter's own material never enters the output.
+/// Resolve `producer` into its own local grid and **occupancy-mask** `output` with it
+/// (ADR 0017 Decision 1 — `Subtract`/`Intersect` are occupancy-only, never stamping
+/// material). Each output voxel whose index coincides with one of the producer's
+/// occupied cells (translated by `translation_voxels`) is *covered*; whether covered
+/// voxels are the ones KEPT or the ones REMOVED is the single varying bit:
 ///
-/// The carve sibling of [`stamp_producer`], and like it a private helper of the
-/// dense [`Scene::resolve_region`] oracle only, so it carries the same `oracle`
-/// compile gate (see the proof chapter's "Oracles" section,
+/// * `keep_if_covered = false` → **Subtract** (carve): covered voxels are removed.
+/// * `keep_if_covered = true`  → **Intersect** (issue #75): only covered voxels
+///   survive, so every accumulated voxel outside the mask's body dies — however far
+///   from its AABB.
+///
+/// Surviving voxels keep their material and overlay; the cutter/mask's own material
+/// never enters the output. The mask sibling of [`stamp_producer`], and like it a
+/// private helper of the dense [`Scene::resolve_region`] oracle only, so it carries
+/// the same `oracle` compile gate (see the proof chapter's "Oracles" section,
 /// `docs/architecture/05-proof.md`).
 #[cfg(any(test, feature = "oracle"))]
-fn carve_producer(
+fn mask_producer(
     output: &mut VoxelGrid,
     region_dimensions: [u32; 3],
     translation_voxels: [i64; 3],
     producer: &dyn VoxelProducer,
     voxels_per_block: u32,
-) {
-    let mut local = VoxelGrid::new(region_dimensions);
-    producer.resolve(&mut local, voxels_per_block);
-
-    // The cutter's occupied INTEGER indices in the output's frame (the same
-    // i64-then-downcast translation the stamp applies, so a carved cell coincides
-    // bit-exactly with the stamped cell it removes).
-    let carved: std::collections::HashSet<[i32; 3]> = local
-        .occupied
-        .iter()
-        .map(|voxel| {
-            [
-                (voxel.local_index[0] as i64 + translation_voxels[0]) as i32,
-                (voxel.local_index[1] as i64 + translation_voxels[1]) as i32,
-                (voxel.local_index[2] as i64 + translation_voxels[2]) as i32,
-            ]
-        })
-        .collect();
-    output
-        .occupied
-        .retain(|voxel| !carved.contains(&voxel.local_index));
-}
-
-/// Resolve `producer` into its own local grid and **intersect** `output` with it:
-/// only the output voxels whose index coincides with one of the producer's occupied
-/// cells (translated by `translation_voxels`) SURVIVE (ADR 0017 Decision 1, issue
-/// #75 — `Intersect` is an occupancy-only mask). Surviving voxels keep their
-/// material and overlay; the mask's own material never enters the output, and every
-/// accumulated voxel outside the mask's body dies — however far from its AABB.
-///
-/// The intersect sibling of [`carve_producer`], and like it a private helper of the
-/// dense [`Scene::resolve_region`] oracle only, so it carries the same `oracle`
-/// compile gate (see the proof chapter's "Oracles" section,
-/// `docs/architecture/05-proof.md`).
-#[cfg(any(test, feature = "oracle"))]
-fn intersect_producer(
-    output: &mut VoxelGrid,
-    region_dimensions: [u32; 3],
-    translation_voxels: [i64; 3],
-    producer: &dyn VoxelProducer,
-    voxels_per_block: u32,
+    keep_if_covered: bool,
 ) {
     let mut local = VoxelGrid::new(region_dimensions);
     producer.resolve(&mut local, voxels_per_block);
 
     // The mask's occupied INTEGER indices in the output's frame (the same
-    // i64-then-downcast translation the stamp applies, so a kept cell coincides
-    // bit-exactly with the stamped cell it preserves).
-    let kept: std::collections::HashSet<[i32; 3]> = local
+    // i64-then-downcast translation the stamp applies, so a covered cell coincides
+    // bit-exactly with the stamped cell it keeps or removes).
+    let covered: std::collections::HashSet<[i32; 3]> = local
         .occupied
         .iter()
         .map(|voxel| {
@@ -1994,7 +1964,7 @@ fn intersect_producer(
         .collect();
     output
         .occupied
-        .retain(|voxel| kept.contains(&voxel.local_index));
+        .retain(|voxel| covered.contains(&voxel.local_index) == keep_if_covered);
 }
 
 /// Resolve `producer` into its own origin-centred local grid, translate it by
@@ -2091,18 +2061,27 @@ fn stamp_producer_into_chunk(
     }
 }
 
-/// Resolve `producer`'s cells inside the chunk window and **carve** them out of
-/// `output`: every already-stamped voxel whose (rebased) index coincides with one
-/// of the cutter's cells is REMOVED (ADR 0017 Decision 1 — `Subtract` is an
-/// occupancy-only mask; surviving voxels keep their material and overlay).
+/// Resolve `producer`'s cells inside the chunk window and **occupancy-mask** `output`
+/// with them (ADR 0017 Decision 1). Each already-stamped voxel whose (rebased) index
+/// coincides with one of the mask's cells is *covered*; `keep_if_covered` picks which
+/// side of the mask survives — the chunk-scoped sibling of [`mask_producer`]:
 ///
-/// The carve sibling of [`stamp_producer_into_chunk`]: the same local resolve
-/// window (`[chunk_min, chunk_max)` mapped into the producer's local frame — a
-/// cutter cell outside this chunk can only affect OTHER chunks) and the same
-/// i64-before-f32-downcast rebase to `floating_origin_voxels`, so the carved
-/// index coincides bit-exactly with the stamped index it removes.
+/// * `keep_if_covered = false` → **Subtract** (carve): covered voxels are removed.
+/// * `keep_if_covered = true`  → **Intersect** (issue #75): only covered voxels
+///   survive. Restricting the mask to the chunk window is EXACT (not merely
+///   conservative): a cell survives iff the mask occupies that very cell, and every
+///   output voxel here lies inside the chunk — a mask cell in another chunk can only
+///   affect that other chunk. A mask whose box misses this chunk entirely resolves an
+///   EMPTY window and thus clears everything accumulated so far, exactly
+///   `accumulated ∩ ∅ = ∅` restricted here.
+///
+/// Like [`stamp_producer_into_chunk`], uses the same local resolve window
+/// (`[chunk_min, chunk_max)` mapped into the producer's local frame — a mask cell
+/// outside this chunk can only affect OTHER chunks) and the same
+/// i64-before-f32-downcast rebase to `floating_origin_voxels`, so the covered index
+/// coincides bit-exactly with the stamped index it keeps or removes.
 #[allow(clippy::too_many_arguments)]
-fn carve_producer_from_chunk(
+fn mask_producer_in_chunk(
     output: &mut VoxelGrid,
     region_dimensions: [u32; 3],
     translation_voxels: [i64; 3],
@@ -2111,71 +2090,7 @@ fn carve_producer_from_chunk(
     voxels_per_block: u32,
     chunk_min_voxels: [i64; 3],
     chunk_max_voxels: [i64; 3],
-) {
-    // Resolve ONLY the cutter cells this chunk owns, in the producer's LOCAL
-    // voxel-index frame — the identical window arithmetic as the stamp (see
-    // `stamp_producer_into_chunk` for the half-open-edge derivation).
-    let mut local = VoxelGrid::new(region_dimensions);
-    let window_local = voxel_core::spatial_index::VoxelAabb::new(
-        [
-            chunk_min_voxels[0] - translation_voxels[0],
-            chunk_min_voxels[1] - translation_voxels[1],
-            chunk_min_voxels[2] - translation_voxels[2],
-        ],
-        [
-            chunk_max_voxels[0] - translation_voxels[0],
-            chunk_max_voxels[1] - translation_voxels[1],
-            chunk_max_voxels[2] - translation_voxels[2],
-        ],
-    );
-    producer.resolve_into(&mut local, voxels_per_block, window_local);
-
-    // Rebase the cutter's indices exactly as the stamp rebases stamped ones (pure
-    // i64 subtraction BEFORE the downcast), so carve and stamp agree bit-exactly.
-    let rebased_translation = [
-        translation_voxels[0] - floating_origin_voxels[0],
-        translation_voxels[1] - floating_origin_voxels[1],
-        translation_voxels[2] - floating_origin_voxels[2],
-    ];
-    let carved: std::collections::HashSet<[i32; 3]> = local
-        .occupied
-        .iter()
-        .map(|voxel| {
-            [
-                (voxel.local_index[0] as i64 + rebased_translation[0]) as i32,
-                (voxel.local_index[1] as i64 + rebased_translation[1]) as i32,
-                (voxel.local_index[2] as i64 + rebased_translation[2]) as i32,
-            ]
-        })
-        .collect();
-    output
-        .occupied
-        .retain(|voxel| !carved.contains(&voxel.local_index));
-}
-
-/// Resolve `producer`'s cells inside the chunk window and **intersect** `output`
-/// with them: only the already-stamped voxels whose (rebased) index coincides with
-/// one of the mask's cells SURVIVE (ADR 0017 Decision 1, issue #75 — `Intersect` is
-/// an occupancy-only mask; surviving voxels keep their material and overlay).
-///
-/// The intersect sibling of [`carve_producer_from_chunk`]: the same local resolve
-/// window and the same i64-before-f32-downcast rebase, so the kept index coincides
-/// bit-exactly with the stamped index it preserves. Restricting the mask to the
-/// chunk window is EXACT (not merely conservative): a cell survives iff the mask
-/// occupies that very cell, and every output voxel here lies inside the chunk — a
-/// mask cell in another chunk can only affect that other chunk. A mask whose box
-/// misses this chunk entirely resolves an EMPTY window and thus clears everything
-/// accumulated so far, which is exactly `accumulated ∩ ∅ = ∅` restricted here.
-#[allow(clippy::too_many_arguments)]
-fn intersect_producer_in_chunk(
-    output: &mut VoxelGrid,
-    region_dimensions: [u32; 3],
-    translation_voxels: [i64; 3],
-    floating_origin_voxels: [i64; 3],
-    producer: &dyn VoxelProducer,
-    voxels_per_block: u32,
-    chunk_min_voxels: [i64; 3],
-    chunk_max_voxels: [i64; 3],
+    keep_if_covered: bool,
 ) {
     // Resolve ONLY the mask cells this chunk owns, in the producer's LOCAL
     // voxel-index frame — the identical window arithmetic as the stamp (see
@@ -2202,7 +2117,7 @@ fn intersect_producer_in_chunk(
         translation_voxels[1] - floating_origin_voxels[1],
         translation_voxels[2] - floating_origin_voxels[2],
     ];
-    let kept: std::collections::HashSet<[i32; 3]> = local
+    let covered: std::collections::HashSet<[i32; 3]> = local
         .occupied
         .iter()
         .map(|voxel| {
@@ -2215,5 +2130,5 @@ fn intersect_producer_in_chunk(
         .collect();
     output
         .occupied
-        .retain(|voxel| kept.contains(&voxel.local_index));
+        .retain(|voxel| covered.contains(&voxel.local_index) == keep_if_covered);
 }
