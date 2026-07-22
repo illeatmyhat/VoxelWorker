@@ -189,6 +189,32 @@ pub(crate) fn clamp_window_to_grid(
     bounds
 }
 
+/// The metric Lipschitz bracket of a field over a cell (ADR 0010/0019) — the ONE fold the
+/// composite, outset, and sketch producers share for their `cell_field_interval`.
+///
+/// Occupancy is decided at voxel CENTRES (`index + 0.5`), so the region to bracket is the
+/// centre span `[min + 0.5, max − 0.5]` — the exact samples `resolve_into` visits, tighter than
+/// the whole cell box. The field is sampled at that span's centre (via `sample_centre`, the only
+/// per-producer difference) and widened by the cell circumradius in the field's `metric`, which
+/// the field is 1-Lipschitz in ([`Metric::cell_circumradius`](substrate::geom2d::Metric::cell_circumradius)).
+/// Callers keep their own empties/no-field guard and any post-refinement.
+#[inline]
+pub(crate) fn metric_cell_bracket(
+    cell_local_voxels: voxel_core::spatial_index::VoxelAabb,
+    metric: substrate::geom2d::Metric,
+    sample_centre: impl FnOnce([f32; 3]) -> f32,
+) -> FieldInterval {
+    let mut centre = [0.0f32; 3];
+    let mut half_extent = [0.0f32; 3];
+    for axis in 0..3 {
+        let low = cell_local_voxels.min[axis] as f32 + 0.5;
+        let high = (cell_local_voxels.max[axis] - 1) as f32 + 0.5;
+        centre[axis] = 0.5 * (low + high);
+        half_extent[axis] = 0.5 * (high - low);
+    }
+    FieldInterval::from_lipschitz_center(sample_centre(centre), metric.cell_circumradius(half_extent))
+}
+
 mod composite;
 mod field;
 mod outset;

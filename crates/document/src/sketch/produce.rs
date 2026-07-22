@@ -229,7 +229,9 @@ impl VoxelProducer for SketchSolid {
 
         // The metric bracket. Occupancy is decided at voxel CENTRES (`index + 0.5`), so the
         // region the bracket must cover is `[min + 0.5, max − 0.5]`, not the whole cell box —
-        // tighter, and exactly what `resolve_into` samples.
+        // tighter, and exactly what `resolve_into` samples. (`centre` / `half_extent` are kept
+        // for the box-clearance refinement below, so this cannot fold into `metric_cell_bracket`;
+        // the drift-prone metric split is still routed through `Metric::cell_circumradius`.)
         let metric = self.field_metric();
         let mut centre = [0.0f32; 3];
         let mut half_extent = [0.0f32; 3];
@@ -239,23 +241,9 @@ impl VoxelProducer for SketchSolid {
             centre[axis] = 0.5 * (low + high);
             half_extent[axis] = 0.5 * (high - low);
         }
-        // The circumradius is measured in the metric the field is 1-Lipschitz in (ADR 0019
-        // Decision 6): under Chebyshev that is the LARGEST half-extent, not the Euclidean
-        // half-diagonal — the `h` versus `h√3` tightening that makes interior elision cheaper
-        // for rectilinear bodies.
-        let circumradius = match metric {
-            substrate::geom2d::Metric::Chebyshev => {
-                half_extent.iter().copied().fold(0.0f32, f32::max)
-            }
-            substrate::geom2d::Metric::Euclidean => half_extent
-                .iter()
-                .map(|extent| extent * extent)
-                .sum::<f32>()
-                .sqrt(),
-        };
         let mut interval = crate::voxel::FieldInterval::from_lipschitz_center(
             SketchSolid::signed_distance(self, centre),
-            circumradius,
+            metric.cell_circumradius(half_extent),
         );
 
         // Refine with the two structural facts the predicates already prove. Both only ever

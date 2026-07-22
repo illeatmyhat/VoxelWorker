@@ -269,6 +269,25 @@ impl Metric {
     pub fn distance(self, a: [f32; 2], b: [f32; 2]) -> f32 {
         self.length([b[0] - a[0], b[1] - a[1]])
     }
+
+    /// The circumradius of an axis-aligned 3D cell with the given per-axis `half_extent`, measured
+    /// in THIS metric — the radius a field's 1-Lipschitz bound multiplies to bracket the cell's
+    /// coarse AIR/SOLID interval (ADR 0010/0019). Under **Chebyshev** (L∞) it is the largest
+    /// half-extent (`h`), under **Euclidean** (L2) the half-diagonal (`h√3` for a cube) — the
+    /// tightening that makes interior elision cheaper for rectilinear bodies. The 3D sibling of
+    /// [`length`](Self::length), and the ONE place this metric split lives, so a new `Metric`
+    /// variant is a compile error here rather than a silent under-bracket at one of the producers
+    /// that share it.
+    #[inline]
+    pub fn cell_circumradius(self, half_extent: [f32; 3]) -> f32 {
+        match self {
+            Metric::Euclidean => (half_extent[0] * half_extent[0]
+                + half_extent[1] * half_extent[1]
+                + half_extent[2] * half_extent[2])
+                .sqrt(),
+            Metric::Chebyshev => half_extent[0].max(half_extent[1]).max(half_extent[2]),
+        }
+    }
 }
 
 /// Distance from `point` to the closed segment `a → b`, under `metric`. Never negative; zero

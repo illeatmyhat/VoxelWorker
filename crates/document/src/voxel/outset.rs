@@ -170,32 +170,9 @@ impl VoxelProducer for OutsetProducer {
         if cell_local_voxels.is_empty() {
             return None;
         }
-        // Occupancy is decided at voxel CENTRES (`index + 0.5`), so the region to bracket is
-        // `[min + 0.5, max − 0.5]` — the same samples `resolve_into` visits.
-        let mut centre = [0.0f32; 3];
-        let mut half_extent = [0.0f32; 3];
-        for axis in 0..3 {
-            let low = cell_local_voxels.min[axis] as f32 + 0.5;
-            let high = (cell_local_voxels.max[axis] - 1) as f32 + 0.5;
-            centre[axis] = 0.5 * (low + high);
-            half_extent[axis] = 0.5 * (high - low);
-        }
-        // The circumradius belongs to the metric the field is 1-Lipschitz in: under
-        // Chebyshev the largest half-extent, under Euclidean the half-diagonal.
-        let circumradius = match self.metric() {
-            substrate::geom2d::Metric::Chebyshev => {
-                half_extent.iter().copied().fold(0.0f32, f32::max)
-            }
-            substrate::geom2d::Metric::Euclidean => half_extent
-                .iter()
-                .map(|extent| extent * extent)
-                .sum::<f32>()
-                .sqrt(),
-        };
-        Some(FieldInterval::from_lipschitz_center(
-            self.signed_distance(centre, voxels_per_block),
-            circumradius,
-        ))
+        Some(super::metric_cell_bracket(cell_local_voxels, self.metric(), |centre| {
+            self.signed_distance(centre, voxels_per_block)
+        }))
     }
 
     /// Delegated at the corresponding inner point, so a dilated Part's materials line up
