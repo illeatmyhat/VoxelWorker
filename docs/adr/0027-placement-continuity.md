@@ -149,3 +149,23 @@ not be, at one contact-solve per drag frame (`[[measure-before-rejecting]]`).
   back to the gradient walk or snap-orientation-keep-contact — acceptable because a sculpt surface has
   no crisp normal to snap to. Ancestor composition of a non-identity rotation remains guarded off (ADR
   0026 §4), landing with the general orient-any-node gizmo.
+
+## Amendment — 2026-07-22 (owner rulings during implementation)
+
+Three points diverge from or complete the decision text above; recorded here so §2 is not read
+literally.
+
+- **Precedence is combined-error, not position-dominant.** §2's "position-dominant" is superseded: when
+  both position and angle are snapped the seat **minimizes the combined position + angle error**
+  (a rim-weighted joint solve, `solve_seated_15deg`), not a strict precedence. The freer axis no longer
+  automatically wins.
+- **Seat and snap read the SDF, sampled corner-safe — never the rendered voxel geometry.** The seated
+  normal is the composed field's gradient (§3), but sampled at the **entered face's interior**, not at
+  the raw contact: at a box corner the raw gradient is the 45° diagonal, so the DDA-picked face chooses
+  *where* to sample (its face normal) while the value stays the SDF's. A corner drop seats flush to the
+  entered face — the face you approached disambiguates the three that meet there. (Voxel/Block *position*
+  snap, by contrast, is a natural fit for the voxel surface — an open follow-up, not yet wired.)
+- **NoSnap + Deg15 keeps the sub-voxel position (was "future work").** A flat face's normal is already a
+  15° multiple, so quantizing it is a no-op; the angle snap must not move the NoSnap contact off the
+  cursor. Shipped 2026-07-22 (`085a30a`): under NoSnap the drop seats at the continuous cursor contact
+  and quantizes the corner-safe normal to 15°; the snapped-position joint solve is unchanged.
