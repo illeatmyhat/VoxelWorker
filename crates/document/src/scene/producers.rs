@@ -105,22 +105,18 @@ pub struct ScopeFrame {
 }
 
 /// The [`Scene::for_each_leaf`] / [`Scene::walk_nodes`] visitor callback: invoked once per
-/// enabled leaf with `(world_offset_voxels, offset_local_voxels, orientation, rotation,
-/// content, grid_on_faces, operation, outset, scope_path)` — the accumulated world VOXEL
-/// offset (integer), the accumulated **continuous** local float offset relative to it (ADR
-/// 0027), the leaf's discrete [`LatticeOrientation`] (ADR 0026) and its continuous `Quat`
-/// rotation (ADR 0027), the leaf content, the node's on-face-grid flag (issue #29 S4), the
-/// node's own [`CombineOp`] role in the ordered fold (ADR 0017), the node's outset (ADR
-/// 0019 Decision 7), and the chain of enclosing sealed scopes (outermost first — see
-/// [`ScopeFrame`]).
+/// enabled leaf with `(world_offset_voxels, offset_local_voxels, rotation, content,
+/// grid_on_faces, operation, outset, scope_path)` — the accumulated world VOXEL offset
+/// (integer), the accumulated **continuous** local float offset relative to it (ADR 0027),
+/// the leaf's continuous `Quat` rotation (ADR 0027), the leaf content, the node's on-face-grid
+/// flag (issue #29 S4), the node's own [`CombineOp`] role in the ordered fold (ADR 0017), the
+/// node's outset (ADR 0019 Decision 7), and the chain of enclosing sealed scopes (outermost
+/// first — see [`ScopeFrame`]).
 ///
-/// **ADR 0027 (additive slice 2a).** The `[f32; 3]` float offset and the `Quat` rotation are
-/// the continuous representation threaded ALONGSIDE the discrete `orientation` / integer
-/// offset; the classifier and every extent consumer still read the discrete pair, so
-/// occupancy is byte-identical. The `Quat` a leaf carries today is
-/// [`quat_from_lattice`]`(orientation) * node.transform.rotation()` — the discrete turn
-/// composed with any continuous one (the continuous one is identity until a later slice
-/// authors it), so it faithfully mirrors the shipped ADR 0026 turn.
+/// **ADR 0027.** Placement, rotation and off-lattice slide are all carried by the continuous
+/// `Quat` and the `[f32; 3]` float offset; the classifier reads that quaternion directly. The
+/// `Quat` a leaf carries is `node.transform.rotation()` — the whole tilt seated against the
+/// surface it was dropped on.
 ///
 /// The outset arrives as an unevaluated [`Measurement`] because the walk carries no density.
 /// Each consumer resolves it against its own `voxels_per_block`, which is what keeps the
@@ -130,7 +126,6 @@ pub struct ScopeFrame {
 pub(super) type LeafVisitor<'walk> = dyn FnMut(
         [i64; 3],
         [f32; 3],
-        substrate::spatial::LatticeOrientation,
         glam::Quat,
         LeafBody<'_>,
         bool,
@@ -266,11 +261,8 @@ impl Scene {
                 // slide of its own (its members' float offsets are baked into the composed
                 // producer, not carried here).
                 [0.0, 0.0, 0.0],
-                // A composed scope bakes its members at identity orientation (ADR 0026:
-                // orientation is applied per leaf; composed-scope members are guarded
-                // identity, so the composite carries no turn of its own).
-                substrate::spatial::LatticeOrientation::IDENTITY,
-                // ADR 0027: identity continuous rotation, mirroring the identity lattice turn.
+                // ADR 0027: a composed scope carries no continuous rotation of its own — its
+                // members bake into the composite producer, so the composite is upright.
                 glam::Quat::IDENTITY,
                 LeafBody::Composed {
                     producer: composed.producer,
@@ -300,7 +292,7 @@ impl Scene {
     pub fn leaf_producers(&self, voxels_per_block: u32) -> Vec<LeafProducer> {
         let region_dimensions = self.placed_region_dimensions(voxels_per_block);
         let mut leaves = Vec::new();
-        self.for_each_leaf(&mut |world_offset_voxels, offset_local_voxels, orientation, rotation, body, grid_on_faces, operation, outset, scope_path| {
+        self.for_each_leaf(&mut |world_offset_voxels, offset_local_voxels, rotation, body, grid_on_faces, operation, outset, scope_path| {
             // ADR 0019 Decision 7: the outset dilates the body BEFORE it folds. Wrapping the
             // producer (rather than teaching the fold a new arm) means the classifier's
             // `cell_field_interval` call below and the voxel-set fold both see one definition
@@ -318,11 +310,9 @@ impl Scene {
                 world_offset_voxels: std::array::from_fn(|axis| {
                     world_offset_voxels[axis] - outset_voxels
                 }),
-                orientation,
-                // ADR 0027 (additive): the continuous rotation and the float local offset,
-                // carried alongside the discrete pair above. The `- outset_voxels` frame
-                // adjustment is an INTEGER-frame move only — the float slide is relative to
-                // the (unadjusted) integer origin, so it is NOT re-based here.
+                // ADR 0027: the continuous rotation and the float local offset. The
+                // `- outset_voxels` frame adjustment is an INTEGER-frame move only — the float
+                // slide is relative to the (unadjusted) integer origin, so it is NOT re-based here.
                 rotation,
                 offset_local_voxels,
                 producer,
@@ -437,13 +427,6 @@ impl Scene {
             if !node.enabled {
                 continue;
             }
-            // ADR 0026: composed-scope members bake at identity orientation. A member with a
-            // non-identity turn would silently lose it here (the composite has no orientation);
-            // guard so the deferred compositional case can't slip through unnoticed.
-            debug_assert!(
-                node.transform.orientation.is_identity(),
-                "composed-scope member orientation is not yet baked (ADR 0026)"
-            );
             let world_offset_voxels: [i64; 3] =
                 std::array::from_fn(|axis| parent_offset[axis] + node.transform.offset_voxels[axis]);
             match &node.content {
@@ -592,16 +575,11 @@ impl Scene {
                     visitor(
                         world_offset_voxels,
                         world_offset_local,
-                        // ADR 0026: the leaf carries its OWN orientation. Every ancestor is
-                        // guaranteed identity-oriented (asserted on the Group/Instance arms
-                        // below), so this leaf's world orientation is exactly its own — no
-                        // accumulator, offsets sum unturned.
-                        node.transform.orientation,
-                        // ADR 0027: the leaf's continuous rotation is the discrete turn
-                        // (bridged to a `Quat`) composed with any authored continuous rotation
-                        // — today the continuous one is identity, so this faithfully mirrors
-                        // the shipped ADR 0026 turn while the pipeline carries the quaternion.
-                        quat_from_lattice(node.transform.orientation) * node.transform.rotation(),
+                        // ADR 0027: the leaf's continuous rotation, the whole tilt seated
+                        // against the surface it was dropped on. The classifier reads this
+                        // quaternion directly (a lattice turn is just a rotation on the exact
+                        // classifier path).
+                        node.transform.rotation(),
                         LeafBody::Content(&node.content),
                         node.grids.voxel_grid_on_faces,
                         node.operation,
@@ -616,13 +594,6 @@ impl Scene {
                     // dilation is a different operation and the ADR rejects it: it would
                     // make an internal Subtract cutter carve MORE, where dilating the
                     // composed Part grows the finished body and partly closes that cut.
-                    // ADR 0026 guard: a non-leaf orientation would need the deferred
-                    // parent-turns-child composition. Nothing authors it today; assert so a
-                    // future orient-any-node gizmo can't silently drop the turn here.
-                    debug_assert!(
-                        node.transform.orientation.is_identity(),
-                        "non-leaf (Group) orientation is not yet composed (ADR 0026)"
-                    );
                     if let Some(composed) =
                         self.composed_scope_leaf(node, children, world_offset_voxels, def_path)
                     {
@@ -631,8 +602,7 @@ impl Scene {
                             // ADR 0027: a composed scope carries no continuous slide of its own
                             // (members' float offsets are baked into the composite producer).
                             [0.0, 0.0, 0.0],
-                            substrate::spatial::LatticeOrientation::IDENTITY,
-                            // ADR 0027: identity continuous rotation, mirroring the identity turn.
+                            // ADR 0027: identity continuous rotation — the composite is upright.
                             glam::Quat::IDENTITY,
                             LeafBody::Composed {
                                 producer: composed.producer,
@@ -665,12 +635,6 @@ impl Scene {
                     scope_path.pop();
                 }
                 NodeContent::Instance(def_id) => {
-                    // ADR 0026 guard: as for a Group, an oriented Instance would need the
-                    // deferred ancestor composition. Unauthored today; assert it stays identity.
-                    debug_assert!(
-                        node.transform.orientation.is_identity(),
-                        "non-leaf (Instance) orientation is not yet composed (ADR 0026)"
-                    );
                     // Cycle guard: an Instance may not reference an ancestor
                     // definition. If this id is already being expanded on the
                     // current path, skip it (never recurse into a cycle).
@@ -828,7 +792,7 @@ impl Scene {
         // ([`gather_placed_field_into_grid`], substrate's ONE placement affine) so the dense
         // reference agrees with the live path on rotated / sub-voxel seats. A whole-phase leaf
         // (integer offset, axis-aligned rotation) keeps the exact translate-and-stamp path below.
-        self.for_each_leaf(&mut |world_offset_voxels, offset_local_voxels, _orientation, rotation, body, grid_on_faces, operation, outset, scope_path| {
+        self.for_each_leaf(&mut |world_offset_voxels, offset_local_voxels, rotation, body, grid_on_faces, operation, outset, scope_path| {
             sync_grid_scope_stack(&mut scope_stack, &mut output, scope_path, region_dimensions);
             let target: &mut VoxelGrid = match scope_stack.last_mut() {
                 Some((_, scratch)) => scratch,
@@ -1070,7 +1034,7 @@ impl Scene {
         // the shared inverse-gather ([`gather_placed_field_into_grid`]) AND its chunk-skip AABB is
         // taken from the ROTATED world box (the placement affine), so a tilted body is neither
         // truncated by the upright skip nor stamped upright.
-        self.for_each_leaf(&mut |world_offset_voxels, offset_local_voxels, _orientation, rotation, body, grid_on_faces, operation, outset, scope_path| {
+        self.for_each_leaf(&mut |world_offset_voxels, offset_local_voxels, rotation, body, grid_on_faces, operation, outset, scope_path| {
             let outset_voxels = outset_voxels_at(outset, voxels_per_block);
             // An outset body grows on every side, so its low corner moves DOWN by the
             // outset — and the skip AABB below must use the DILATED span, or a cutter whose
@@ -1397,30 +1361,21 @@ pub(super) fn leaf_content_fingerprint(
 pub struct LeafProducer {
     /// The leaf's accumulated WORLD voxel offset (its corner-anchored low corner in the
     /// scene's absolute voxel frame). A local cell `idx` has absolute index
-    /// `world_offset_voxels + orientation·idx` (ADR 0008 — the frame is carried; the turn
-    /// too, see [`orientation`](Self::orientation)).
+    /// `world_offset_voxels + rotation·idx` (ADR 0008 — the frame is carried; the turn too,
+    /// see [`rotation`](Self::rotation)).
     pub world_offset_voxels: [i64; 3],
-    /// The leaf's lattice orientation (ADR 0026): how its producer-local `[0, full_dim)` frame
-    /// is turned into the world frame. Identity for every leaf placed on a world plane or a
-    /// `+Z` face; a signed axis permutation for a leaf stood against a side/bottom face. The
-    /// classifier applies its inverse to map a world voxel back into the producer's unturned
-    /// local frame (the producer never learns the turn).
-    pub orientation: substrate::spatial::LatticeOrientation,
-    /// The leaf's **continuous rotation** (ADR 0027), the `Quat` that subsumes the discrete
-    /// [`orientation`](Self::orientation) — a lattice turn is just a rotation that lands on
-    /// the exact classifier path (§4). Populated as
-    /// `quat_from_lattice(orientation) * node.transform.rotation()`: the discrete turn
-    /// composed with any authored continuous one. **Additive slice 2a:** it is carried but
-    /// NOT yet read by the classifier (which keeps applying `orientation`), so occupancy is
-    /// byte-identical; a later slice switches the frame map to this quaternion.
+    /// The leaf's **continuous rotation** (ADR 0027), the `Quat` the classifier reads to map a
+    /// world voxel back into the producer's unturned local frame — a lattice turn is just a
+    /// rotation that lands on the exact classifier path (§4). Populated as
+    /// `node.transform.rotation()`: the whole tilt seated against the surface the node was
+    /// dropped on (identity for an upright / world-plane drop).
     pub rotation: glam::Quat,
     /// The leaf's **continuous local offset** in voxels (ADR 0027), the accumulated float
     /// slide relative to the integer [`world_offset_voxels`](Self::world_offset_voxels)
     /// wandering origin — the field's continuous world position is
     /// `world_offset_voxels + offset_local_voxels` per axis. Zero for every voxel-snapped
     /// placement (the default), so a snapped scene's value is `[0.0, 0.0, 0.0]` and resolves
-    /// exactly as the integer offset does. **Additive slice 2a:** carried but not yet read by
-    /// resolve (see [`rotation`](Self::rotation)).
+    /// exactly as the integer offset does.
     pub offset_local_voxels: [f32; 3],
     /// The boxed producer that resolves / bounds this leaf in its own `[0, full_dim)`
     /// local voxel-index frame.
@@ -1466,9 +1421,9 @@ impl LeafProducer {
 
 /// The continuous `glam::Quat` equivalent of a discrete [`LatticeOrientation`] (ADR 0027
 /// §4). A lattice turn is one of the 24 axis-aligned rotations — a proper rotation (det `+1`,
-/// group *O*) — so it maps exactly onto a clean unit quaternion; this is the bridge that lets
-/// the ADR 0027 pipeline carry a `Quat` while placement still authors the discrete
-/// [`orientation`](NodeTransform::orientation).
+/// group *O*) — so it maps exactly onto a clean unit quaternion. The bridge a caller holding a
+/// face-normal turn uses to obtain the equivalent `Quat` the ghost / classifier speak (e.g.
+/// `shot --ghost-face`).
 ///
 /// The rotation matrix is built from the turn's action on the three basis axes: column `axis`
 /// is where the turn sends the unit vector `e_axis`, so `matrix * v == orientation.apply(v)`

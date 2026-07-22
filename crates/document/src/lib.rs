@@ -64,7 +64,6 @@
 pub mod command;
 pub mod debug_clouds;
 pub mod intent;
-pub(crate) mod orientation_serde;
 pub mod scene;
 pub mod sketch;
 pub mod voxel;

@@ -108,7 +108,7 @@ impl Scene {
     pub fn build_leaf_spatial_index(&self, voxels_per_block: u32) -> LeafSpatialIndex {
         let mut entries: Vec<LeafEntry> = Vec::new();
         let mut has_region_spanning_leaf = false;
-        self.for_each_leaf(&mut |world_offset_voxels, _offset_local_voxels, _orientation, rotation, body, grid_on_faces, operation, outset, scope_path| {
+        self.for_each_leaf(&mut |world_offset_voxels, _offset_local_voxels, rotation, body, grid_on_faces, operation, outset, scope_path| {
             // ADR 0020 Consequences: the edit-broadphase AABB must be the OUTSET bounds, not
             // the producer bounds — an outset cutter dirties a larger region than its own
             // extent, and invalidating only the undilated box leaves a stale rim behind.

@@ -5,7 +5,6 @@
 
 use glam::{Quat, Vec3};
 use serde::{Deserialize, Serialize};
-use substrate::spatial::LatticeOrientation;
 
 use voxel_core::units::{ExactRational, Measurement};
 
@@ -65,19 +64,6 @@ pub struct NodeTransform {
     #[serde(default)]
     pub offset_voxels: [i64; 3],
 
-    /// The node's **lattice orientation** (ADR 0026) — one of the 24 axis-aligned cube
-    /// rotations, how the node is turned in its parent's frame. Identity for every node until
-    /// placement stands one against a geometry face (a cylinder on a wall lies on its side).
-    /// The discrete, lattice-exact first half of the affine ADR 0001 reserved; a continuous
-    /// *rotation* (with resampling) is the deferred second half.
-    ///
-    /// Reaches the document, so it is versioned: an old scene without the field loads as
-    /// identity (`serde(default)`). Substrate is serde-free (its boundary law), so the on-disk
-    /// form travels through the domain [`orientation_serde`](crate::orientation_serde) adapter over the type's stable
-    /// gather codec.
-    #[serde(default, with = "crate::orientation_serde")]
-    pub orientation: LatticeOrientation,
-
     /// The **continuous local position**, in voxels, relative to the integer
     /// [`offset_voxels`](Self::offset_voxels) wandering origin (ADR 0027). The field's
     /// world position is `offset_voxels + offset_local_voxels` per axis — the integer
@@ -100,13 +86,12 @@ pub struct NodeTransform {
     /// pointer-small and loads an old document — predating the field — as upright.
     ///
     /// This is the general affine rotation ADR 0001 decision 3 reserved and ADR 0026
-    /// deferred behind the word *rotation*; it **subsumes** the discrete
-    /// [`orientation`](Self::orientation) (a lattice turn is just a rotation that lands on
-    /// the exact classifier path). During the ADR 0027 migration both fields coexist —
-    /// `orientation` is retired once every consumer reads the quaternion. Because a
-    /// rotation is an isometry it preserves a field's Lipschitz bound, so per-voxel
-    /// occupancy stays exact under it; only a non-axis turn loosens the block interval
-    /// bound.
+    /// deferred behind the word *rotation*; it **subsumes** the discrete lattice turn (a
+    /// lattice turn is just a rotation that lands on the exact classifier path), which is
+    /// why placement writes the whole tilt here and the discrete orientation field is gone
+    /// (ADR 0027). Because a rotation is an isometry it preserves a field's Lipschitz bound,
+    /// so per-voxel occupancy stays exact under it; only a non-axis turn loosens the block
+    /// interval bound.
     ///
     /// glam's `serde` feature is off in this crate (its math stays serde-free, the
     /// boundary law), so the quaternion travels as a plain `[f32; 4]`; read it as a
@@ -191,15 +176,6 @@ impl NodeTransform {
             offset_measurements: None,
             ..Default::default()
         }
-    }
-
-    /// This transform with its **orientation** replaced (ADR 0026). The placement door
-    /// (`Intent::PlaceNode`) calls this to stand a node against the face it was dropped on,
-    /// leaving the offset it was built with. Chainable after
-    /// [`from_offset_voxels`](Self::from_offset_voxels).
-    pub fn with_orientation(mut self, orientation: LatticeOrientation) -> Self {
-        self.orientation = orientation;
-        self
     }
 
     /// This node's continuous rotation as a [`Quat`] (ADR 0027) — identity when the
@@ -657,7 +633,7 @@ impl Scene {
             [0.0, 0.0, 0.0],
             &mut def_path,
             &mut scope_path,
-            &mut |world_offset_voxels, _offset_local_voxels, _orientation, rotation, body, _grid_on_faces, _operation, outset, _scope_path| {
+            &mut |world_offset_voxels, _offset_local_voxels, rotation, body, _grid_on_faces, _operation, outset, _scope_path| {
                 visit(world_offset_voxels, rotation, &body, outset);
             },
         );
@@ -668,7 +644,7 @@ impl Scene {
     /// [`walk_subtree_leaves`](Self::walk_subtree_leaves). Keeps the full-visitor-to-subset
     /// shim in ONE place so both scene-wide extents differ only in the per-leaf box.
     pub(super) fn walk_scene_leaves(&self, visit: &mut ReducedLeafVisitor<'_>) {
-        self.for_each_leaf(&mut |world_offset_voxels, _offset_local_voxels, _orientation, rotation, body, _grid_on_faces, _operation, outset, _scope_path| {
+        self.for_each_leaf(&mut |world_offset_voxels, _offset_local_voxels, rotation, body, _grid_on_faces, _operation, outset, _scope_path| {
             visit(world_offset_voxels, rotation, &body, outset);
         });
     }

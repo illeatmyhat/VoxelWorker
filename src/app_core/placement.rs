@@ -110,10 +110,9 @@ impl AppCore {
     ) -> PlacementOutcome {
         // A drop's rotation is written as a CONTINUOUS quaternion (ADR 0027) — surface placement
         // tilts the node's local +Z to the true gradient normal; a world-plane / upright drop
-        // leaves it `None`. The lattice `orientation` (ADR 0026) is now always identity from
-        // placement — the whole tilt lives in the quaternion, which the classifier resolves for
-        // any angle (a tube on a cylinder's curved side seats to the radial normal, not the
-        // nearest of the 24 turns). Defaulted here, set per-tier.
+        // leaves it `None`. The whole tilt lives in the quaternion, which the classifier resolves
+        // for any angle (a tube on a cylinder's curved side seats to the radial normal, not the
+        // nearest of the 24 turns). Set per-tier.
         let place_node =
             |offset_voxels: [i64; 3], offset_local: [f32; 3], rotation_quaternion: Option<[f32; 4]>| {
                 Intent::PlaceNode {
@@ -123,7 +122,6 @@ impl AppCore {
                     },
                     offset_voxels,
                     offset_local,
-                    orientation: substrate::spatial::LatticeOrientation::IDENTITY,
                     rotation_quaternion,
                 }
             };
@@ -364,97 +362,14 @@ mod tests {
     // seats regardless of it; slice 6 will make it select the angle-snap granularity).
     use ui::panel::AngleSnap;
 
-    /// **An oriented leaf's occupancy is the TURNED occupancy of the un-oriented one**
-    /// (ADR 0026) — the definitive classifier proof. A tall Cylinder (axis-locked to local Z)
-    /// turned onto +X must occupy exactly what the upright cylinder occupies after each voxel
-    /// is turned by the same rotation. This exercises the whole evaluation path: the turned
-    /// world extent, the INVERSE-permuted SDF sample (so the curved *field* turns, not merely
-    /// its bounding box), and the forward-permuted voxel emission.
-    #[test]
-    fn an_oriented_leaf_occupies_the_turned_cells_of_the_upright_one() {
-        use std::collections::HashSet;
-        use substrate::spatial::LatticeOrientation;
-
-        // A tall cylinder: radius in XY, axis (height) along local Z — asymmetric, so a turn is
-        // observable. Small so the occupancy scan below is cheap.
-        let shape = SdfShape::from_blocks(ShapeKind::Cylinder, [1, 1, 3], 1, DENSITY);
-        let size = shape.size_voxels; // the producer-local extent
-        let offset = [8i64, 8, 8]; // away from the origin, to catch offset bugs
-
-        // Place one cylinder with `orientation` on a fresh scene; collect its solid ABSOLUTE
-        // voxels within a box that covers the upright AND any turned extent.
-        let occupied = |orientation: LatticeOrientation| -> HashSet<[i64; 3]> {
-            let mut scene = Scene::default();
-            let mut app_core = AppCore::new(OrbitCamera::default());
-            app_core.apply_intent(
-                &mut scene,
-                Intent::PlaceNode {
-                    content: NodeSpec::Tool {
-                        shape: shape.clone(),
-                        material: MaterialChoice::Stone,
-                    },
-                    offset_voxels: offset,
-                    offset_local: [0.0, 0.0, 0.0],
-                    orientation,
-                    // This test drives the DISCRETE lattice-orientation path directly (no
-                    // continuous tilt) — the classifier's turned-occupancy proof.
-                    rotation_quaternion: None,
-                },
-            );
-            let RebuildOutcome::Built(output) = app_core.rebuild(&scene, DENSITY) else {
-                panic!("the density is in bounds");
-            };
-            let chunks = output.two_layer_chunks;
-            let span = *size.iter().max().unwrap() as i64;
-            let mut solids = HashSet::new();
-            for x in -1..=span {
-                for y in -1..=span {
-                    for z in -1..=span {
-                        let v = [offset[0] + x, offset[1] + y, offset[2] + z];
-                        if absolute_voxel_is_solid(&chunks, v) {
-                            solids.insert(v);
-                        }
-                    }
-                }
-            }
-            solids
-        };
-
-        let upright = occupied(LatticeOrientation::IDENTITY);
-        assert!(!upright.is_empty(), "the upright cylinder must occupy something");
-
-        // +Z -> +X: the cylinder lies on its side, poking out along +X.
-        let turn = LatticeOrientation::from_face_normal([1, 0, 0]);
-        let on_its_side = occupied(turn);
-
-        // Expected: each upright cell turned about the leaf's corner-anchored box.
-        let expected: HashSet<[i64; 3]> = upright
-            .iter()
-            .map(|v| {
-                let local = [v[0] - offset[0], v[1] - offset[1], v[2] - offset[2]];
-                let turned = turn.turn_point_in_box(local, size);
-                [offset[0] + turned[0], offset[1] + turned[1], offset[2] + turned[2]]
-            })
-            .collect();
-
-        assert_eq!(
-            on_its_side, expected,
-            "the oriented cylinder must occupy exactly the turned cells of the upright one"
-        );
-        // The turn is REAL, not a no-op: the shape is asymmetric in Z, so its cells move.
-        assert_ne!(on_its_side, upright, "a tall cylinder turned onto +X must move its cells");
-    }
-
     /// **place_primitive seats CONTINUOUSLY to the surface normal (ADR 0027).** On a flat box
     /// face the composed-field gradient normal equals the entered face normal, so the emitted
     /// intent carries a continuous `rotation_quaternion` that tilts the node's local +Z to that
-    /// normal. Since the whole tilt lives in the quaternion now, the lattice `orientation` stays
-    /// identity — placement no longer writes a discrete turn. (The occupancy correctness of an
+    /// normal. The whole tilt lives in the quaternion. (The occupancy correctness of an
     /// arbitrary rotation is proven by the classifier's own tests; this pins the placement wiring
     /// that writes the quaternion.)
     #[test]
     fn a_placed_primitive_tilts_to_the_entered_surface_normal() {
-        use substrate::spatial::LatticeOrientation;
         let fixture = placement_fixture(OrbitCamera::default());
         let cursor = [640.0, 360.0];
         // A tall (asymmetric) armed tool, so a tilt is observable.
@@ -481,15 +396,10 @@ mod tests {
             true,
             PlacementSnap::default(),
         );
-        let Some(Intent::PlaceNode { orientation, rotation_quaternion, .. }) = outcome.intent else {
+        let Some(Intent::PlaceNode { rotation_quaternion, .. }) = outcome.intent else {
             panic!("a geometry hit produces a PlaceNode, got {:?}", outcome.intent);
         };
-        // The whole tilt lives in the quaternion; the lattice orientation is left identity.
-        assert_eq!(
-            orientation,
-            LatticeOrientation::IDENTITY,
-            "placement no longer writes a discrete lattice turn"
-        );
+        // The whole tilt lives in the continuous quaternion.
         let quaternion = rotation_quaternion.expect("surface snap carries a continuous rotation");
         let axis = Quat::from_array(quaternion) * Vec3::Z;
         // On a flat box face the gradient normal IS the face normal, so the node's axis tilts to it.

@@ -143,20 +143,11 @@ pub enum Intent {
         /// distinct: this carries the pivot's sub-voxel part, never the corner's.
         #[serde(default)]
         offset_local: [f32; 3],
-        /// The node's **lattice orientation** (ADR 0026) — how it is turned to sit against
-        /// the surface it was dropped on. [`IDENTITY`](substrate::spatial::LatticeOrientation::IDENTITY)
-        /// for a world-plane or `+Z`-face drop (world-vertical); a signed axis permutation for a
-        /// side/bottom face (a cylinder lies on its side). Applied via
-        /// [`NodeTransform::with_orientation`](crate::scene::NodeTransform::with_orientation).
-        #[serde(default, with = "crate::orientation_serde")]
-        orientation: substrate::spatial::LatticeOrientation,
         /// The node's **continuous** rotation (ADR 0027) — an arbitrary quaternion (`xyzw`)
-        /// that seats it flush against a *curved* surface, tilting to the true gradient normal
-        /// rather than snapping to the nearest of the 24 lattice turns (a tube on a cylinder's
-        /// curved side tilts to the radial normal). `None` for an upright / world-plane drop.
-        /// Composes with the discrete `orientation` above at the leaf
-        /// (`leaf.rotation = quat_from_lattice(orientation) · quaternion`); surface placement
-        /// writes the whole rotation here and leaves `orientation` identity. Applied via
+        /// that seats it flush against the surface it was dropped on, tilting the node's local
+        /// `+Z` to the true gradient normal (a tube on a cylinder's curved side tilts to the
+        /// radial normal; a flat face or world-plane drop tilts to that face's normal). `None`
+        /// for an upright / world-plane drop that needs no turn. Applied via
         /// [`NodeTransform::with_rotation`](crate::scene::NodeTransform::with_rotation).
         #[serde(default)]
         rotation_quaternion: Option<[f32; 4]>,
