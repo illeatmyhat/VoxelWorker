@@ -31,8 +31,37 @@ pub fn box_corners(full: Vec3) -> [Vec3; 8] {
 /// Round each component to the nearest integer voxel index — used where the affine is KNOWN to
 /// land on integer coordinates (an axis-aligned leaf) so float round-off never grows a box by a
 /// voxel.
-fn round_to_i64(vector: Vec3) -> [i64; 3] {
-    [vector.x.round() as i64, vector.y.round() as i64, vector.z.round() as i64]
+/// Snap-to-integer tolerance for the conservative box-bound helpers below: a corner within this of
+/// an integer is treated as landing exactly on it (absorbs `world_of`/`local_of` float round-off).
+const CORNER_SNAP_TOLERANCE: f32 = 1e-3;
+
+/// The integer `[min, max)` box conservatively enclosing the real interval `[low, high]` per axis:
+/// a coordinate within [`CORNER_SNAP_TOLERANCE`] of an integer snaps to it (so an integer-landing
+/// box is recovered EXACTLY — bit-identical to round-to-nearest, every golden holds); otherwise the
+/// min FLOORS and the max CEILS so the box never sheds a boundary voxel. Unlike a plain round, a
+/// half-integer box (an axis-aligned leaf under an ADR 0027 sub-voxel seat) WIDENS rather than
+/// rounding-to-nearest, which would drop the boundary chunk/voxel on the shrunk side.
+fn conservative_box(low: Vec3, high: Vec3) -> ([i64; 3], [i64; 3]) {
+    let snap_floor = |value: f32| {
+        let nearest = value.round();
+        if (value - nearest).abs() < CORNER_SNAP_TOLERANCE {
+            nearest as i64
+        } else {
+            value.floor() as i64
+        }
+    };
+    let snap_ceil = |value: f32| {
+        let nearest = value.round();
+        if (value - nearest).abs() < CORNER_SNAP_TOLERANCE {
+            nearest as i64
+        } else {
+            value.ceil() as i64
+        }
+    };
+    (
+        [snap_floor(low.x), snap_floor(low.y), snap_floor(low.z)],
+        [snap_ceil(high.x), snap_ceil(high.y), snap_ceil(high.z)],
+    )
 }
 
 /// Whether `rotation` is one of the 24 axis-aligned lattice turns (to a `1e-4` tolerance): each of
@@ -106,10 +135,12 @@ impl LeafPlacement {
 
     /// The integer world AABB `[min, max)` (in absolute voxels) enclosing the placed box — the ONE
     /// extent every sink and the coverage/broadphase walk must agree on. For an AXIS-ALIGNED
-    /// rotation the corners land on integers, recovered by rounding (bit-identical to the pre-0027
-    /// `turn_extent` permutation, so every golden holds); for a genuine rotation the min is FLOORED
-    /// and the max CEILED to conservatively enclose the rotated box (SOUND: the true occupied set ⊆
-    /// this AABB, ADR 0027 §4).
+    /// rotation with a whole-voxel offset the corners land on integers, recovered exactly (bit-
+    /// identical to the pre-0027 `turn_extent` permutation, so every golden holds); an axis-aligned
+    /// leaf under an ADR 0027 sub-voxel seat lands on half-integers and WIDENS (floor-min/ceil-max)
+    /// so the fractional side never sheds its boundary chunk; a genuine rotation likewise floors the
+    /// min and ceils the max to conservatively enclose the rotated box (SOUND: the true occupied set
+    /// ⊆ this AABB, ADR 0027 §4).
     pub fn world_aabb(&self) -> ([i64; 3], [i64; 3]) {
         let mut world_min = Vec3::splat(f32::INFINITY);
         let mut world_max = Vec3::splat(f32::NEG_INFINITY);
@@ -119,7 +150,7 @@ impl LeafPlacement {
             world_max = world_max.max(world);
         }
         if is_axis_aligned(self.rotation) {
-            (round_to_i64(world_min), round_to_i64(world_max))
+            conservative_box(world_min, world_max)
         } else {
             (
                 [world_min.x.floor() as i64, world_min.y.floor() as i64, world_min.z.floor() as i64],
@@ -131,10 +162,11 @@ impl LeafPlacement {
     /// The producer-LOCAL integer box `[min, max)` enclosing the inverse image of an absolute voxel
     /// box `[abs_min, abs_max)` — the frame `resolve_into` / `cell_field_interval` expect (the
     /// producer never learns the leaf is turned). The inverse of [`world_aabb`](Self::world_aabb):
-    /// axis-aligned rounds (bit-identical to the pre-0027 unturn); a genuine rotation floors the
-    /// min and ceils the max to conservatively enclose the rotated preimage (SOUND — the isometry
-    /// keeps the cell radius invariant, ADR 0027 §4; the box may fall partly outside `[0, full]`,
-    /// which the producer bounds/clamps exactly as before).
+    /// a whole-phase axis-aligned leaf recovers integers exactly (bit-identical to the pre-0027
+    /// unturn); a sub-voxel-seated or genuinely-rotated one floors the min and ceils the max to
+    /// conservatively enclose the preimage (SOUND — the isometry keeps the cell radius invariant,
+    /// ADR 0027 §4; the box may fall partly outside `[0, full]`, which the producer bounds/clamps
+    /// exactly as before).
     pub fn local_aabb(&self, abs_min: [i64; 3], abs_max: [i64; 3]) -> ([i64; 3], [i64; 3]) {
         let abs_origin = Vec3::new(abs_min[0] as f32, abs_min[1] as f32, abs_min[2] as f32);
         let abs_full = Vec3::new(
@@ -150,7 +182,7 @@ impl LeafPlacement {
             local_max = local_max.max(local);
         }
         if is_axis_aligned(self.rotation) {
-            (round_to_i64(local_min), round_to_i64(local_max))
+            conservative_box(local_min, local_max)
         } else {
             (
                 [local_min.x.floor() as i64, local_min.y.floor() as i64, local_min.z.floor() as i64],
