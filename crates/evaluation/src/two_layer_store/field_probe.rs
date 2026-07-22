@@ -110,7 +110,9 @@ pub fn composed_field_at(
                 // via the classifier's own inverse affine (ADR 0027 — the frame is carried,
                 // never re-derived), then read the producer's signed distance there.
                 let affine = leaf_affine(leaf, voxels_per_block);
-                let local = affine.local_of(world_point);
+                let local = affine
+                    .local_of(substrate::spatial::TrueWorldVoxelPoint::from_voxels(world_point))
+                    .voxels();
                 let value = field.signed_distance(local.to_array(), voxels_per_block);
                 let accumulator = accumulators
                     .last_mut()

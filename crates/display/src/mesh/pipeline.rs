@@ -105,11 +105,8 @@ pub(crate) fn flat_ghost_uniforms(
         view_projection: view_projection.to_cols_array_2d(),
         // FLOORED half, matching the solid draw's corner-anchoring (an odd dim's
         // `dim/2.0` would sit half a voxel off — see `update_uniforms`).
-        grid_half_extent: [
-            (grid_dimensions[0] / 2) as f32,
-            (grid_dimensions[1] / 2) as f32,
-            (grid_dimensions[2] / 2) as f32,
-        ],
+        grid_half_extent: substrate::spatial::GridHalfExtent::of_grid_dimensions(grid_dimensions)
+            .voxels(),
         voxels_per_block: voxels_per_block.max(1) as f32,
         voxel_line_color: overlay.voxel_line_color,
         grid_overlay_enabled: 0.0,
@@ -1388,17 +1385,18 @@ impl CuboidMeshRenderer {
         self.debug_face_mode = debug_face_mode;
 
         let overlay = crate::renderer::grid_overlay_params();
+        // The render grid cage's corner-anchoring term (`floor(dim/2)`), shared by the
+        // `grid_half_extent` uniform AND the overlay's true-world offset below — ONE typed value
+        // so the two can never diverge, and so `recentre − grid_half_extent` only compiles via the
+        // audited `RecentreVoxels::render_absolute_to_true_world_offset` conversion.
+        let grid_half_extent = substrate::spatial::GridHalfExtent::of_grid_dimensions(grid_dimensions);
         let uniforms = CuboidUniforms {
             view_projection: view_projection.to_cols_array_2d(),
             // Corner-anchoring: the grid's low corner is `−floor(dim/2)`, so the GPU
             // recovers the absolute voxel frame with `world_position + floor(dim/2)`
             // (integer-valued). Using `dim/2.0` would be half a voxel off for an ODD
             // dim, mis-snapping the voxel/block grid overlay and the Z-band clip.
-            grid_half_extent: [
-                (grid_dimensions[0] / 2) as f32,
-                (grid_dimensions[1] / 2) as f32,
-                (grid_dimensions[2] / 2) as f32,
-            ],
+            grid_half_extent: grid_half_extent.voxels(),
             voxels_per_block: voxels_per_block.max(1) as f32,
             voxel_line_color: overlay.voxel_line_color,
             grid_overlay_enabled: if grid_overlay_enabled { 1.0 } else { 0.0 },
@@ -1421,16 +1419,15 @@ impl CuboidMeshRenderer {
             material_base_colors: base_colors,
             material_atlas_rects: self.atlas_rects,
             ghost_tint: [0.0, 0.0, 0.0, 0.0],
-            // `absolute + (recentre − grid_half_extent) == world_position + recentre`,
-            // the true world voxel coord — so the overlay's block lines land on the
-            // world block lattice. `grid_half_extent` here is the SAME floor(dim/2) the
-            // struct field uses; `recentre` is the resolve's carried frame (ADR 0008).
-            overlay_world_offset: {
-                let recentre = self.source_two_layer_recentre.voxels();
-                std::array::from_fn(|axis| {
-                    recentre[axis] as f32 - (grid_dimensions[axis] / 2) as f32
-                })
-            },
+            // `render_absolute + (recentre − grid_half_extent)` is the TRUE world voxel coord — so
+            // the overlay's block lines land on the world block lattice, not the render grid's
+            // half-extent frame. The subtraction happens ONLY inside this named conversion (the SAME
+            // floor(dim/2) `grid_half_extent` above), so no code can treat the render-local
+            // `world_position + grid_half_extent` as if it were true-world; `recentre` is the
+            // resolve's carried frame (ADR 0008).
+            overlay_world_offset: self
+                .source_two_layer_recentre
+                .render_absolute_to_true_world_offset(grid_half_extent),
             _overlay_pad: 0.0,
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));

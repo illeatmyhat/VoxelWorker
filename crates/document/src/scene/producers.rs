@@ -1123,9 +1123,12 @@ impl Scene {
                             world_offset_voxels[1] as f32,
                             world_offset_voxels[2] as f32,
                         ) + glam::Vec3::from_array(offset_local_voxels);
-                        let (min, max) =
-                            substrate::spatial::LeafPlacement::new(rotation, full, world_offset)
-                                .world_aabb();
+                        let (min, max) = substrate::spatial::LeafPlacement::new(
+                            rotation,
+                            full,
+                            substrate::spatial::TrueWorldVoxelPoint::from_voxels(world_offset),
+                        )
+                        .world_aabb();
                         VoxelAabb::new(min, max)
                     } else {
                         let leaf_min = world_offset_voxels;
@@ -1696,7 +1699,11 @@ fn dense_leaf_placement(
         leaf_abs_low_voxels[1] as f32,
         leaf_abs_low_voxels[2] as f32,
     ) + glam::Vec3::from_array(offset_local_voxels);
-    substrate::spatial::LeafPlacement::new(rotation, full, world_offset)
+    substrate::spatial::LeafPlacement::new(
+        rotation,
+        full,
+        substrate::spatial::TrueWorldVoxelPoint::from_voxels(world_offset),
+    )
 }
 
 /// Whether a leaf is OUT OF PHASE with the absolute voxel lattice (ADR 0027): a genuine
@@ -1783,7 +1790,10 @@ fn gather_placed_field_into_grid(
                     (output_index[1] + output_origin_abs[1]) as f32 + 0.5,
                     (output_index[2] + output_origin_abs[2]) as f32 + 0.5,
                 );
-                let local = placement.local_of(abs_centre).to_array();
+                let local = placement
+                    .local_of(substrate::spatial::TrueWorldVoxelPoint::from_voxels(abs_centre))
+                    .voxels()
+                    .to_array();
                 if field.signed_distance(local, voxels_per_block) <= SURFACE_ISOLEVEL {
                     let block_id = material_override
                         .or_else(|| producer.material_at(local, voxels_per_block))

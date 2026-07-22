@@ -87,49 +87,12 @@ impl ShapeKind {
 
 pub use crate::core_geom::{BlockAttrs, BlockId};
 
-/// The composite floating-origin recentre, in voxels — the frame value every display
-/// artifact of one rebuild is resolved in.
-///
-/// **The frame law (docs/architecture, the voxel-frame invariant).** A spatial value
-/// CARRIES the frame it was authored in; consumers decode with it and never re-derive it.
-/// A build's install must use the recentre THAT build was resolved at — so the recentre
-/// travels end-to-end (resolve → orchestrator → the async worker channels → the GPU
-/// install) as this newtype, and the compiler enforces that the install uses the request's
-/// recentre rather than a same-shaped `[i64; 3]` from somewhere else.
-///
-/// **The one mint point** is `Scene::recentre_voxels_for_resolve` (in the app-crate scene),
-/// which returns this newtype directly — so a build's recentre is born already carrying its
-/// frame. Transport only this increment: it is `Copy`, has no arithmetic, and [`voxels`] is
-/// the ONE way back to the raw triple — unwrapped only at the point of actual positional
-/// ARITHMETIC (a leaf stamp's recentre subtraction, a chunk rebase's index offset), at the
-/// GPU uniform packing, and at the raw-BY-RULE values (the dense-oracle grid's carried
-/// field, a recentre-shift delta, a comparison/cache key). The mesh / two-layer / scene
-/// transport signatures now speak this newtype. It lives in the spatial-primitive layer (this
-/// module) alongside the other frame-bearing primitives; [`new`](RecentreVoxels::new)
-/// remains for the boundary/test sites that mint a KNOWN recentre from a raw triple (e.g.
-/// the `shot` oracle grid's carried field).
-///
-/// [`voxels`]: RecentreVoxels::voxels
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct RecentreVoxels([i64; 3]);
-
-impl RecentreVoxels {
-    /// Carry a known recentre triple as its frame value — the boundary/test constructor
-    /// for a recentre that arrives as a raw `[i64; 3]` (the `shot` oracle grid's carried
-    /// field, the parity tests' known recentre). The PRODUCTION mint is
-    /// `Scene::recentre_voxels_for_resolve` (in the app-crate scene),
-    /// which returns this newtype directly.
-    pub fn new(voxels: [i64; 3]) -> Self {
-        Self(voxels)
-    }
-
-    /// The raw voxel triple — the single consumption door, called only at the point of
-    /// positional arithmetic, at the GPU uniform packing, and at the raw-by-rule oracle /
-    /// cache / delta values.
-    pub fn voxels(&self) -> [i64; 3] {
-        self.0
-    }
-}
+/// The composite floating-origin recentre, in voxels — the frame value every display artifact of
+/// one rebuild is resolved in. **Now a substrate frame primitive** (co-located with the other
+/// coordinate-frame newtypes — [`TrueWorldVoxelPoint`](substrate::spatial::TrueWorldVoxelPoint) and
+/// friends — so the recentre point-crossings live in ONE audited place); re-exported here so the
+/// long-standing `voxel_core::voxel::RecentreVoxels` path keeps resolving.
+pub use substrate::spatial::RecentreVoxels;
 
 /// One occupied voxel in the resolved grid (ADR 0003 §3a — the chunk-local integer +
 /// categorical block-palette cell).
