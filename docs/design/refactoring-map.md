@@ -145,6 +145,32 @@ checked (one legitimate historical mention remains inside an ADR reference). The
 standing rules: new ADRs describe deltas against the architecture set; new doc comments
 reference architecture chapters, not ADR numbers.
 
+## 13. File-size guard sweep — **DONE** (2026-07-22)
+
+Seventeen files sat over the 1000-line advisory guard. A parallel survey classified each,
+then a fan-out of worktree-isolated agents carved eleven of them (behaviour-preserving,
+each gated per-crate then re-gated composed; goldens byte-identical):
+
+- **Multi-concern source carves** (folder module, `mod.rs` facade re-exports for zero consumer
+  edits): `scene/producers.rs` (2081 → model/walk/resolve_oracle/resolve_chunk/scope_fold/
+  gather), `scene/graph.rs` (1478 → model/construct/navigate/gizmo/edits),
+  `renderer/view_cube.rs` (1100 → GPU renderer vs pure-CPU geometry/labels),
+  `mesh/pipeline.rs` (1647 → extracted uniforms/bindings/chunk_upload; the `CuboidMeshRenderer`
+  impl stays whole at ~1338, deliberately).
+- **Inline-test hoists** (production dropped under the guard by moving a `#[cfg(test)] mod`
+  to a sibling `tests.rs` / `tests/`): `settings.rs`, `app_core/placement.rs`,
+  `interchange/vox_export.rs`, `evaluation/chunk_storage.rs`, `two_layer_store/classify.rs`.
+- **Test-file splits by feature**: `sketch/tests.rs` (extrude/revolve/field/coarse_solid),
+  `brick/tests/incremental.rs` (occupancy vs cell-key halves).
+
+**The seven left over the guard, by design** (splitting each would fragment one cohesive thing
+or churn an already-structured test bucket for no navigability gain — do NOT re-open without a
+new reason): `brick/raymarch.rs` and `mesh/pipeline/mod.rs` (one GPU renderer struct whose
+methods thread shared private fields), `shot/capture.rs` (one linear golden-exact capture
+driver, no tests to hoist), `work/engagement/orchestrator.rs` (one display state machine over
+interlocked private flags), and three test files already hoisted/concern-split at the directory
+level (`app_core/undo_tests.rs`, `scene/tests/graph.rs`, `two_layer_store/tests/core.rs`).
+
 ---
 
 ## What *not* to refactor
