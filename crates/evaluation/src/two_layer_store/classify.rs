@@ -4,6 +4,7 @@
 use substrate::solids::{
     CellCombineOp, CellContribution, ScopedCellClassification, ScopedCellEvent,
 };
+use substrate::spatial::{ProducerLocalVoxelPoint, TrueWorldVoxelPoint};
 
 use glam::{Quat, Vec3};
 use voxel_core::core_geom::{BlockId, CellKey};
@@ -288,7 +289,7 @@ pub(crate) fn leaf_affine(leaf: &LeafProducer, voxels_per_block: u32) -> LeafAff
         leaf.world_offset_voxels[1] as f32,
         leaf.world_offset_voxels[2] as f32,
     ) + Vec3::from_array(leaf.offset_local_voxels);
-    LeafAffine::new(leaf.rotation, full, world_offset)
+    LeafAffine::new(leaf.rotation, full, TrueWorldVoxelPoint::from_voxels(world_offset))
 }
 
 /// The world offset (in ABSOLUTE voxels) that seats a producer of local dimensions `full`,
@@ -364,7 +365,7 @@ pub(crate) fn producer_local_voxel_to_abs(
         local_index[1] as f32 + 0.5,
         local_index[2] as f32 + 0.5,
     );
-    let world = affine.world_of(centre);
+    let world = affine.world_of(ProducerLocalVoxelPoint::from_voxels(centre)).voxels();
     [world.x.floor() as i64, world.y.floor() as i64, world.z.floor() as i64]
 }
 
@@ -817,7 +818,7 @@ fn gather_rotated_leaf_into_region(
             (block_min_abs[1] + y as i64) as f32 + 0.5,
             (block_min_abs[2] + z as i64) as f32 + 0.5,
         );
-        let local = affine.local_of(abs_centre).to_array();
+        let local = affine.local_of(TrueWorldVoxelPoint::from_voxels(abs_centre)).voxels().to_array();
         (field.signed_distance(local, voxels_per_block) <= SURFACE_ISOLEVEL).then_some(local)
     };
 
@@ -1180,7 +1181,9 @@ mod affine_oracle_tests {
             Vec3::new(7.0, 15.0, 23.0),
             Vec3::new(-2.0, 4.0, 12.0),
         ] {
-            let round_tripped = affine.local_of(affine.world_of(point));
+            let round_tripped = affine
+                .local_of(affine.world_of(ProducerLocalVoxelPoint::from_voxels(point)))
+                .voxels();
             assert!(
                 (round_tripped - point).length() < 1e-3,
                 "local_of(world_of({point:?})) = {round_tripped:?} must round-trip"

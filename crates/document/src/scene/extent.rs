@@ -389,14 +389,26 @@ fn world_block_corner_floor(world_offset_voxels: [i64; 3], voxels_per_block: u32
 /// (ADR 0027 §4).
 pub(super) fn rotated_grid_extent_voxels(rotation: Quat, grid_voxels: [i64; 3]) -> [i64; 3] {
     let full = Vec3::new(grid_voxels[0] as f32, grid_voxels[1] as f32, grid_voxels[2] as f32);
-    substrate::spatial::LeafPlacement::new(rotation, full, Vec3::ZERO).world_aabb().1
+    substrate::spatial::LeafPlacement::new(
+        rotation,
+        full,
+        substrate::spatial::TrueWorldVoxelPoint::from_voxels(Vec3::ZERO),
+    )
+    .world_aabb()
+    .1
 }
 
 /// The world-axis **block** extent, the block-frame twin of [`rotated_grid_extent_voxels`] for the
 /// whole-block size readouts — the same substrate placement, cast to block units.
 pub(super) fn rotated_grid_extent_blocks(rotation: Quat, size_blocks: [u32; 3]) -> [u32; 3] {
     let full = Vec3::new(size_blocks[0] as f32, size_blocks[1] as f32, size_blocks[2] as f32);
-    let max = substrate::spatial::LeafPlacement::new(rotation, full, Vec3::ZERO).world_aabb().1;
+    let max = substrate::spatial::LeafPlacement::new(
+        rotation,
+        full,
+        substrate::spatial::TrueWorldVoxelPoint::from_voxels(Vec3::ZERO),
+    )
+    .world_aabb()
+    .1;
     [max[0] as u32, max[1] as u32, max[2] as u32]
 }
 

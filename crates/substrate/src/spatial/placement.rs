@@ -12,6 +12,7 @@
 //! `[world_offset, world_offset + span_of_rotated_box)`. This is the same anchor
 //! [`seat_centre_at`] inverts when it seats a producer's centre onto a surface contact.
 
+use crate::spatial::voxel_frames::{ProducerLocalVoxelPoint, TrueWorldVoxelPoint};
 use glam::{Quat, Vec3};
 
 /// The 8 corners of the local box `[0, full]`, in a fixed order.
@@ -101,14 +102,14 @@ pub struct LeafPlacement {
 
 impl LeafPlacement {
     /// Build the placement from a leaf's `rotation`, local `full` extent and continuous
-    /// `world_offset` (all in the absolute voxel frame). `min_rotated_corner` is derived so the
-    /// low rotated corner anchors on `world_offset`.
-    pub fn new(rotation: Quat, full: Vec3, world_offset: Vec3) -> Self {
+    /// `world_offset` (a [`TrueWorldVoxelPoint`] — the absolute voxel frame). `min_rotated_corner`
+    /// is derived so the low rotated corner anchors on `world_offset`.
+    pub fn new(rotation: Quat, full: Vec3, world_offset: TrueWorldVoxelPoint) -> Self {
         let mut min_rotated_corner = Vec3::splat(f32::INFINITY);
         for corner in box_corners(full) {
             min_rotated_corner = min_rotated_corner.min(rotation * corner);
         }
-        Self { rotation, min_rotated_corner, world_offset, full }
+        Self { rotation, min_rotated_corner, world_offset: world_offset.voxels(), full }
     }
 
     /// The leaf's rotation.
@@ -121,16 +122,21 @@ impl LeafPlacement {
         self.full
     }
 
-    /// A producer-LOCAL voxel coordinate mapped to its ABSOLUTE voxel coordinate.
-    pub fn world_of(&self, local: Vec3) -> Vec3 {
-        self.rotation * local - self.min_rotated_corner + self.world_offset
+    /// A [`ProducerLocalVoxelPoint`] mapped to its [`TrueWorldVoxelPoint`] — the frame types make a
+    /// producer-local/true-world mix-up a compile error.
+    pub fn world_of(&self, local: ProducerLocalVoxelPoint) -> TrueWorldVoxelPoint {
+        TrueWorldVoxelPoint::from_voxels(
+            self.rotation * local.voxels() - self.min_rotated_corner + self.world_offset,
+        )
     }
 
-    /// The inverse: an ABSOLUTE voxel coordinate mapped back to the producer-LOCAL frame.
+    /// The inverse: a [`TrueWorldVoxelPoint`] mapped back to the producer-LOCAL frame.
     /// `local_of(world_of(p)) ≈ p` for every `p` (a rotation's inverse is exact up to float
     /// round-off, which the classifier's `+0.5` centre-sample margins absorb).
-    pub fn local_of(&self, world: Vec3) -> Vec3 {
-        self.rotation.inverse() * (world - self.world_offset + self.min_rotated_corner)
+    pub fn local_of(&self, world: TrueWorldVoxelPoint) -> ProducerLocalVoxelPoint {
+        ProducerLocalVoxelPoint::from_voxels(
+            self.rotation.inverse() * (world.voxels() - self.world_offset + self.min_rotated_corner),
+        )
     }
 
     /// The integer world AABB `[min, max)` (in absolute voxels) enclosing the placed box — the ONE
@@ -145,7 +151,7 @@ impl LeafPlacement {
         let mut world_min = Vec3::splat(f32::INFINITY);
         let mut world_max = Vec3::splat(f32::NEG_INFINITY);
         for corner in box_corners(self.full) {
-            let world = self.world_of(corner);
+            let world = self.world_of(ProducerLocalVoxelPoint::from_voxels(corner)).voxels();
             world_min = world_min.min(world);
             world_max = world_max.max(world);
         }
@@ -177,7 +183,8 @@ impl LeafPlacement {
         let mut local_min = Vec3::splat(f32::INFINITY);
         let mut local_max = Vec3::splat(f32::NEG_INFINITY);
         for corner in box_corners(abs_full) {
-            let local = self.local_of(abs_origin + corner);
+            let local =
+                self.local_of(TrueWorldVoxelPoint::from_voxels(abs_origin + corner)).voxels();
             local_min = local_min.min(local);
             local_max = local_max.max(local);
         }
