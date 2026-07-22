@@ -310,7 +310,10 @@ op-stack field (see `docs/adr/0011`; generalizes the ADR 0007 fog atlas).
   **Voxel** (the default), or **Block**.
 
 - **Angle snap** — quantizes a seated placement's rotation, **each angular degree of freedom
-  independently** (tilt, azimuth, twist), to **15° increments** (24 per turn). **Position-dominant**:
-  when position is snapped the contact is fixed and the rotation takes the nearest reachable angle;
-  when position is None the angle snap **slides the contact** to where that angle occurs on the
-  surface. See `docs/adr/0027`.
+  independently** (tilt, azimuth, twist), to **15° increments** (24 per turn). It quantizes the
+  **SDF** surface normal — never the rendered voxel geometry — sampled at a **corner-safe** point:
+  the entered face chooses *where* to sample so a sharp corner reads its face normal, not the
+  diagonal, but the value is the composed field's. When both position and angle are snapped the seat
+  **minimizes their combined error** rather than letting either strictly dominate; when position is
+  None the sub-voxel cursor position is kept and only the angle is quantized (a curved surface may
+  slide the contact to where that angle occurs). See `docs/adr/0027`.

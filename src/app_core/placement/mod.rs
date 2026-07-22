@@ -349,17 +349,15 @@ impl AppCore {
             let field = |probe: Vec3| evaluation::composed_field_at(&leaf_refs, probe, frame.density);
 
             // `pick_voxel`'s DDA answers WHICH surface is under the cursor — a definite face even at
-            // a box edge/corner where the raw gradient is an ambiguous diagonal. So the seat TILT is
-            // anchored there: project the picked voxel's face CENTRE (a face-interior point) onto the
-            // composed surface and read its gradient — the radial normal on a curved side, the face
-            // normal on a flat face, stable at sharp features (owner: "seat-to-surface works").
+            // a box edge/corner. It contributes only a graze-safe FALLBACK contact (the picked
+            // face CENTRE projected onto the composed surface) for the rare tangent where the cursor
+            // march slips past the surface; the seat itself reads from the SDF at the real contact.
             let face_centre = Vec3::new(
                 pick.absolute_voxel[0] as f32 + 0.5 + pick.face_normal[0] as f32 * 0.5,
                 pick.absolute_voxel[1] as f32 + 0.5 + pick.face_normal[1] as f32 * 0.5,
                 pick.absolute_voxel[2] as f32 + 0.5 + pick.face_normal[2] as f32 * 0.5,
             );
             let stable_surface = raycast::project_to_surface(face_centre, field);
-            let normal = raycast::gradient_normal(stable_surface, field);
 
             // The cursor ray answers WHERE on that surface, continuously: cast it at the composed
             // field — the SAME sphere-trace the GPU ghost runs (`raycast::raymarch` ↔
@@ -376,20 +374,31 @@ impl AppCore {
                 .map(|surface_hit| surface_hit.point)
                 .unwrap_or(stable_surface);
 
-            // Seat: `Continuous` places at the continuous contact with the stable picked-surface
-            // tilt; `Deg15` runs the joint position+angle solve from the stable surface point, so the
-            // angle it quantizes is the picked face's (definite at edges) — continuous sub-voxel
-            // position under 15° angle snap is future work. The seat map is the ONE definition shared
-            // with the world-plane tier below.
+            // Seat and snap on the SDF, never the rendered voxel geometry (owner ruling: quantizing
+            // the continuous field simplifies the assumptions). The tilt is the composed field's
+            // gradient, but sampled at the CORNER-SAFE `stable_surface` (the entered face's interior)
+            // — reading it at the raw contact would pick up the diagonal at a box corner, which the
+            // cursor sits on under an orbit view. The DDA face only chooses WHERE to sample; the
+            // normal itself is the SDF's.
+            let normal = raycast::gradient_normal(stable_surface, field);
             let (seat_contact, seat_normal) = match snap.angle {
+                // `Continuous` places the sub-voxel cursor point with that corner-safe tilt.
                 AngleSnap::Continuous => (continuous_contact, normal),
-                AngleSnap::Deg15 => solve_seated_15deg(
-                    stable_surface,
-                    full_size,
-                    snap,
-                    position_lattice_step(snap.position, frame.density),
-                    &field,
-                ),
+                AngleSnap::Deg15 => {
+                    let step = position_lattice_step(snap.position, frame.density);
+                    if step > 0.0 {
+                        // Position is snapped: the joint solve trades position against angle error
+                        // over the lattice, seeded from the corner-safe surface point.
+                        solve_seated_15deg(stable_surface, full_size, snap, step, &field)
+                    } else {
+                        // NoSnap position: keep the exact sub-voxel cursor point and quantize the
+                        // corner-safe SDF normal to the 15° lattice — on a flat face that is the face
+                        // axis (already a 15° multiple), so the drop is under the cursor, not snapped
+                        // to the picked voxel's centre. This is the geometry side of the same
+                        // continuous-position fix the ground plane already had.
+                        (continuous_contact, raycast::quantize_normal_to_15deg(normal))
+                    }
+                }
             };
             let (offset, offset_local, rotation) = seat_at(seat_contact, seat_normal);
             return PlacementOutcome {

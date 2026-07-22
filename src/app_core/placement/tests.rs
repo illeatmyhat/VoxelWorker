@@ -491,6 +491,60 @@
         );
     }
 
+    /// **NoSnap + Deg15 keeps the sub-voxel cursor position on a flat face (thread #1, 2026-07-22).**
+    /// A flat face's normal is already a 15° multiple, so quantizing it is a no-op — the angle snap
+    /// must not disturb the position. Before the fix, `Deg15` seeded its solve from the picked face
+    /// CENTRE (`stable_surface`) while `Continuous` seated at the cursor contact, so turning on 15°
+    /// snap silently jumped a NoSnap drop to the voxel centre. This pins the two paths to the SAME
+    /// sub-voxel position under NoSnap. Top-down ortho onto the Box's flat +Z face, cursor off the
+    /// face centre so the fraction is observable.
+    #[test]
+    fn nosnap_deg15_keeps_the_sub_voxel_cursor_position_on_a_flat_face() {
+        let camera = OrbitCamera {
+            target: Vec3::ZERO,
+            orbit_theta: -std::f32::consts::FRAC_PI_2,
+            orbit_phi: 0.0, // straight down onto the Box's top face
+            orbit_distance: 60.0,
+            roll: 0.0,
+            projection_mode: ProjectionMode::Orthographic,
+        };
+        let fixture = placement_fixture(camera);
+        // Off the screen centre but still over the centred Box, so the ray hits the flat top face
+        // at an off-centre (sub-voxel) point rather than a voxel centre.
+        let cursor = [712.0, 404.0];
+
+        let seat = |angle| {
+            let outcome = fixture.app_core.place_primitive(
+                cursor, VIEWPORT, &fixture.frame(), &fixture.scene, tool_shape(), MaterialChoice::Stone, true,
+                PlacementSnap { position: PositionSnap::NoSnap, angle, ..PlacementSnap::default() },
+            );
+            let (PlacementTarget::OnSurface { face_normal, .. }, Some(Intent::PlaceNode { offset_voxels, offset_local, .. })) =
+                (outcome.target, outcome.intent)
+            else {
+                panic!("{angle:?}: the top-down cursor must hit the flat top face");
+            };
+            assert_eq!(face_normal, [0, 0, 1], "{angle:?}: the top-down ray must enter the flat +Z face");
+            // The full continuous position: integer origin plus the sub-voxel remainder.
+            let position: [f32; 3] = std::array::from_fn(|i| offset_voxels[i] as f32 + offset_local[i]);
+            (position, offset_local)
+        };
+
+        let (continuous_pos, continuous_local) = seat(AngleSnap::Continuous);
+        let (deg15_pos, _) = seat(AngleSnap::Deg15);
+
+        // The drop is genuinely sub-voxel — otherwise the equality below proves nothing.
+        assert!(
+            continuous_local.iter().any(|f| f.abs() > 1.0e-3),
+            "the off-centre cursor must land sub-voxel, got offset_local {continuous_local:?} — move the cursor"
+        );
+        // 15° snap on a flat face must not move the NoSnap position off the cursor contact.
+        let drift: f32 = (0..3).map(|i| (deg15_pos[i] - continuous_pos[i]).powi(2)).sum::<f32>().sqrt();
+        assert!(
+            drift < 1.0e-4,
+            "NoSnap + Deg15 must keep the sub-voxel position: Deg15 {deg15_pos:?} vs Continuous {continuous_pos:?}"
+        );
+    }
+
     /// **Block position snap rounds the drop to block boundaries; voxel / no-snap keep the
     /// finest offset.** The offset math directly (owner ruling 2026-07-21).
     #[test]
