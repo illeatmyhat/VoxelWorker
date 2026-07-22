@@ -528,6 +528,43 @@ fn anchored_t_max(ray: Ray, cell_edge: f32, cell: vec3<i32>, step: vec3<i32>) ->
     return (boundary * cell_edge - ray.origin) * inverse;
 }
 
+// One advanced DDA cell: the new cell, its re-anchored `t_max`, the `t_enter` at which
+// the ray crossed into it, and the axis it crossed on (0=x/1=y/2=z).
+struct DdaStep {
+    cell: vec3<i32>,
+    t_max: vec3<f32>,
+    t_enter: f32,
+    axis: i32,
+};
+
+// Advance one cell along the DDA axis whose `t_max` is smallest (x ≤ y ≤ z tie order),
+// re-deriving the anchored `t_max` for the new cell. The ONE definition of the "step by
+// min-t axis" move the block DDA and the inner voxel DDA both run (formerly four
+// hand-copied if-chains, one of which had silently dropped the entry-axis track).
+//
+// Built with `select`/boolean masks, NEVER a dynamic component STORE (`cell[axis] =
+// …`): a dynamic-index l-value triggers a nondeterministic FXC/D3D X3500 compile
+// failure — the same hazard `axis_component_mask` documents. The returned `axis` is
+// only ever used as a dynamic READ index (`ray.direction[axis]`), which is safe.
+fn step_min_axis(
+    ray: Ray,
+    cell_edge: f32,
+    cell: vec3<i32>,
+    step: vec3<i32>,
+    t_max: vec3<f32>,
+) -> DdaStep {
+    let x_min = t_max.x <= t_max.y && t_max.x <= t_max.z;
+    let y_min = !x_min && t_max.y <= t_max.z;
+    let axis_mask = vec3<bool>(x_min, y_min, !x_min && !y_min);
+    let new_cell = select(cell, cell + step, axis_mask);
+    var out: DdaStep;
+    out.cell = new_cell;
+    out.t_enter = select(select(t_max.z, t_max.y, y_min), t_max.x, x_min);
+    out.axis = select(select(2, 1, y_min), 0, x_min);
+    out.t_max = anchored_t_max(ray, cell_edge, new_cell, step);
+    return out;
+}
+
 // The result of a hierarchical skip: whether it advanced past the current block
 // (else the caller falls through to the per-block step, guaranteeing progress),
 // and the re-seeded block DDA state at the cell's exit.
@@ -974,20 +1011,11 @@ fn march_brick_field(ray: Ray) -> MarchHit {
                             return hit;
                         }
                         // Advance; the crossed boundary becomes the next voxel's entry.
-                        if (voxel_t_max.x <= voxel_t_max.y && voxel_t_max.x <= voxel_t_max.z) {
-                            t_voxel_enter = voxel_t_max.x;
-                            voxel_cell.x = voxel_cell.x + voxel_step.x;
-                            voxel_entry_axis = 0;
-                        } else if (voxel_t_max.y <= voxel_t_max.z) {
-                            t_voxel_enter = voxel_t_max.y;
-                            voxel_cell.y = voxel_cell.y + voxel_step.y;
-                            voxel_entry_axis = 1;
-                        } else {
-                            t_voxel_enter = voxel_t_max.z;
-                            voxel_cell.z = voxel_cell.z + voxel_step.z;
-                            voxel_entry_axis = 2;
-                        }
-                        voxel_t_max = anchored_t_max(ray, 1.0, voxel_cell, voxel_step);
+                        let voxel_stepped = step_min_axis(ray, 1.0, voxel_cell, voxel_step, voxel_t_max);
+                        voxel_cell = voxel_stepped.cell;
+                        voxel_t_max = voxel_stepped.t_max;
+                        t_voxel_enter = voxel_stepped.t_enter;
+                        voxel_entry_axis = voxel_stepped.axis;
                     }
                 }
             }
@@ -996,17 +1024,10 @@ fn march_brick_field(ray: Ray) -> MarchHit {
         if (t_block_enter > t_exit) {
             break;
         }
-        if (t_max.x <= t_max.y && t_max.x <= t_max.z) {
-            block_cell.x = block_cell.x + block_step.x;
-            t_block_enter = t_max.x;
-        } else if (t_max.y <= t_max.z) {
-            block_cell.y = block_cell.y + block_step.y;
-            t_block_enter = t_max.y;
-        } else {
-            block_cell.z = block_cell.z + block_step.z;
-            t_block_enter = t_max.z;
-        }
-        t_max = anchored_t_max(ray, edge, block_cell, block_step);
+        let block_stepped = step_min_axis(ray, edge, block_cell, block_step, t_max);
+        block_cell = block_stepped.cell;
+        t_max = block_stepped.t_max;
+        t_block_enter = block_stepped.t_enter;
     }
 
     return miss;
@@ -1428,17 +1449,10 @@ fn march_brick_haze(ray: Ray) -> HazeResult {
                                     result.first_hit_t = t_voxel_enter;
                                 }
                             }
-                            if (voxel_t_max.x <= voxel_t_max.y && voxel_t_max.x <= voxel_t_max.z) {
-                                t_voxel_enter = voxel_t_max.x;
-                                voxel_cell.x = voxel_cell.x + voxel_step.x;
-                            } else if (voxel_t_max.y <= voxel_t_max.z) {
-                                t_voxel_enter = voxel_t_max.y;
-                                voxel_cell.y = voxel_cell.y + voxel_step.y;
-                            } else {
-                                t_voxel_enter = voxel_t_max.z;
-                                voxel_cell.z = voxel_cell.z + voxel_step.z;
-                            }
-                            voxel_t_max = anchored_t_max(ray, 1.0, voxel_cell, voxel_step);
+                            let voxel_stepped = step_min_axis(ray, 1.0, voxel_cell, voxel_step, voxel_t_max);
+                            voxel_cell = voxel_stepped.cell;
+                            voxel_t_max = voxel_stepped.t_max;
+                            t_voxel_enter = voxel_stepped.t_enter;
                         }
                     }
                     // Saturation early-out: below one 8-bit level of remaining
@@ -1454,17 +1468,10 @@ fn march_brick_haze(ray: Ray) -> HazeResult {
         if (t_block_enter > t_exit) {
             break;
         }
-        if (t_max.x <= t_max.y && t_max.x <= t_max.z) {
-            block_cell.x = block_cell.x + block_step.x;
-            t_block_enter = t_max.x;
-        } else if (t_max.y <= t_max.z) {
-            block_cell.y = block_cell.y + block_step.y;
-            t_block_enter = t_max.y;
-        } else {
-            block_cell.z = block_cell.z + block_step.z;
-            t_block_enter = t_max.z;
-        }
-        t_max = anchored_t_max(ray, edge, block_cell, block_step);
+        let block_stepped = step_min_axis(ray, edge, block_cell, block_step, t_max);
+        block_cell = block_stepped.cell;
+        t_max = block_stepped.t_max;
+        t_block_enter = block_stepped.t_enter;
     }
 
     return result;
