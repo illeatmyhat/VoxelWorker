@@ -256,6 +256,44 @@ pub fn snap_slide_to_normal(seat: Vec3, target_normal: Vec3, field: impl Fn(Vec3
     current
 }
 
+/// Quantize a surface `normal` to the nearest direction whose **seated rotation** lands on the
+/// **15°** angle lattice (ADR 0027 §2 — the 15° angle-snap granularity the placement spine seats
+/// to).
+///
+/// The seated rotation is `Quat::from_rotation_arc(+Z, normal)`, which carries no in-plane
+/// **twist**, so the two live angular DOFs are the **tilt** off vertical (the arc angle) and the
+/// **azimuth** of that tilt in the ground plane. Each is rounded *independently* to a 15° multiple
+/// — 24 steps per turn, with the pleasant set 0/30/45/60/90 as a subset. A near-vertical normal
+/// has an ill-defined azimuth, so a tilt that rounds to 0 (or to a half-turn) collapses to exactly
+/// `+Z` (or `-Z`). The result is a unit vector.
+pub fn quantize_normal_to_15deg(normal: Vec3) -> Vec3 {
+    // 15° in radians. Both the tilt and the azimuth round to a multiple of this.
+    const STEP: f32 = core::f32::consts::PI / 12.0;
+    let length = normal.length();
+    if length < 1.0e-12 {
+        return Vec3::Z;
+    }
+    let unit = normal / length;
+    // Tilt: the angle between the normal and +Z, in [0, π]. Round to the nearest 15°.
+    let tilt = unit.z.clamp(-1.0, 1.0).acos();
+    let tilt_quantized = (tilt / STEP).round() * STEP;
+    if tilt_quantized < 1.0e-6 {
+        return Vec3::Z; // upright — azimuth carries no information
+    }
+    if (core::f32::consts::PI - tilt_quantized) < 1.0e-6 {
+        return Vec3::NEG_Z; // straight down
+    }
+    // Azimuth: the tilt's heading in the XY plane, in (-π, π]. Round to the nearest 15°.
+    let azimuth = unit.y.atan2(unit.x);
+    let azimuth_quantized = (azimuth / STEP).round() * STEP;
+    let (sin_tilt, cos_tilt) = tilt_quantized.sin_cos();
+    Vec3::new(
+        sin_tilt * azimuth_quantized.cos(),
+        sin_tilt * azimuth_quantized.sin(),
+        cos_tilt,
+    )
+}
+
 /// Round `hit_point` to the nearest multiple of `lattice_step` on every axis, then
 /// [`project_to_surface`] so it stays seated — the position Voxel / Block snap of ADR 0027 §2.
 ///
@@ -360,6 +398,65 @@ mod tests {
         assert!(
             (normal - expected).length() < 1.0e-3,
             "expected radial-in-plane normal {expected:?}, got {normal:?}"
+        );
+    }
+
+    #[test]
+    fn quantize_15deg_fixes_axis_aligned_normals() {
+        // Every world axis is already on the 15° lattice (tilt 0/90/180), so it maps to itself.
+        for axis in [Vec3::Z, Vec3::NEG_Z, Vec3::X, Vec3::NEG_X, Vec3::Y, Vec3::NEG_Y] {
+            let quantized = quantize_normal_to_15deg(axis);
+            assert!(
+                (quantized - axis).length() < 1.0e-5,
+                "axis-aligned normal {axis:?} must be a fixed point, got {quantized:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn quantize_15deg_rounds_tilt_and_azimuth_to_nearest_step() {
+        let step = core::f32::consts::PI / 12.0; // 15°
+                                                  // A normal tilted 40° off +Z toward azimuth 20° rounds to tilt 45°, azimuth 15°.
+        let tilt = 40.0_f32.to_radians();
+        let azimuth = 20.0_f32.to_radians();
+        let normal = Vec3::new(
+            tilt.sin() * azimuth.cos(),
+            tilt.sin() * azimuth.sin(),
+            tilt.cos(),
+        );
+        let quantized = quantize_normal_to_15deg(normal);
+        // The quantized tilt and azimuth read back as multiples of 15°.
+        let quantized_tilt = quantized.z.clamp(-1.0, 1.0).acos();
+        let quantized_azimuth = quantized.y.atan2(quantized.x);
+        assert!((quantized_tilt - 3.0 * step).abs() < 1.0e-4, "tilt 40° must round to 45°");
+        assert!((quantized_azimuth - step).abs() < 1.0e-4, "azimuth 20° must round to 15°");
+        assert!((quantized.length() - 1.0).abs() < 1.0e-5, "result must be a unit vector");
+    }
+
+    #[test]
+    fn quantize_15deg_collapses_near_vertical_to_z() {
+        // A 5° tilt rounds to 0° — below the half-step — so azimuth is discarded and it is +Z.
+        let tilt = 5.0_f32.to_radians();
+        let normal = Vec3::new(tilt.sin(), 0.0, tilt.cos());
+        assert!((quantize_normal_to_15deg(normal) - Vec3::Z).length() < 1.0e-5);
+        // A degenerate zero normal falls back to +Z rather than producing NaNs.
+        assert_eq!(quantize_normal_to_15deg(Vec3::ZERO), Vec3::Z);
+    }
+
+    #[test]
+    fn snap_slide_reaches_a_quantized_normal_on_a_cylinder() {
+        // On a cylinder the constant-normal contour is a line, so sliding to a quantized normal
+        // has a solution: seed at 37° around and slide to the 45° radial direction.
+        let radius = 3.0;
+        let field = z_axis_cylinder_field(radius);
+        let seed_angle = 37.0_f32.to_radians();
+        let seed = Vec3::new(radius * seed_angle.cos(), radius * seed_angle.sin(), 2.0);
+        let target = quantize_normal_to_15deg(gradient_normal(seed, &field));
+        let seated = snap_slide_to_normal(seed, target, &field);
+        let seated_normal = gradient_normal(seated, &field);
+        assert!(
+            seated_normal.dot(target) > 0.9995,
+            "the slid contact's normal {seated_normal:?} must reach the 45° target {target:?}"
         );
     }
 

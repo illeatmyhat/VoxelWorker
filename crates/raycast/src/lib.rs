@@ -70,7 +70,7 @@ pub use placement::{
     resolve_placement, select_world_plane, world_plane_hit, PlacementTarget, WorldPlane,
 };
 pub use surface_raycast::{
-    gradient_normal, project_to_surface, raymarch, snap_slide_to_normal,
+    gradient_normal, project_to_surface, quantize_normal_to_15deg, raymarch, snap_slide_to_normal,
     snap_to_lattice_then_reproject, MarchParams, SurfaceHit,
 };
 pub use voxel_dda::VoxelDda;

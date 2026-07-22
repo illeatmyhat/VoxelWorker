@@ -32,7 +32,7 @@ use substrate::spatial::Ray;
 use document::intent::{Intent, NodeSpec};
 use document::scene::{LeafProducer, Scene};
 use document::voxel::SdfShape;
-use ui::panel::{PlacementPivot, PlacementSnap, PositionSnap};
+use ui::panel::{AngleSnap, PlacementPivot, PlacementSnap, PositionSnap};
 use voxel_core::core_geom::MaterialChoice;
 
 use super::picking::PickFrame;
@@ -52,6 +52,120 @@ fn snap_offset(offset: [i64; 3], position: PositionSnap, density: u32) -> [i64; 
             offset.map(|c| (c + d / 2).div_euclid(d) * d)
         }
     }
+}
+
+/// The corner-anchored world offset a node lands at when seated at `contact` with its local +Z
+/// turned to `seat_normal` — the ONE map from a surface contact to the placed corner, shared by
+/// the seat itself and the 15° joint solve's scoring so the two never drift.
+///
+/// `seat_centre_at` lands the object's local centre (`full/2`) at a target centroid; the pivot
+/// choice is only *where that centroid goes*: [`PlacementPivot::Base`] pushes it half the local
+/// height out along the normal (the base rests on the contact), [`PlacementPivot::VolumetricCenter`]
+/// puts the centroid on the contact (the object straddles the surface).
+fn seated_world_offset(contact: Vec3, seat_normal: Vec3, full: Vec3, pivot: PlacementPivot) -> Vec3 {
+    let rotation = Quat::from_rotation_arc(Vec3::Z, seat_normal);
+    let centre = match pivot {
+        PlacementPivot::Base => contact + seat_normal * (full.z * 0.5),
+        PlacementPivot::VolumetricCenter => contact,
+    };
+    evaluation::seat_centre_at(rotation, full, centre)
+}
+
+/// The position lattice granule, in voxels, a [`PositionSnap`] quantizes the placed corner to:
+/// one voxel, one block (`density` voxels), or none (`0.0`, no position constraint).
+fn position_lattice_step(position: PositionSnap, density: u32) -> f32 {
+    match position {
+        PositionSnap::NoSnap => 0.0,
+        PositionSnap::Voxel => 1.0,
+        PositionSnap::Block => density.max(1) as f32,
+    }
+}
+
+/// How many alternating-projection rounds the 15° joint solve walks. Each round slides the contact
+/// toward its quantized normal, then re-snaps it toward the position lattice; a handful is ample
+/// because Newton on a true distance field converges in one step and the walk only samples the
+/// tradeoff frontier for the scorer.
+const JOINT_SOLVE_ROUNDS: usize = 4;
+
+/// Seat a 15° angle-snapped drop (ADR 0027 §2): find the surface contact whose quantized seat
+/// minimizes the **combined** position + angle error, and return `(contact, quantized_normal)` to
+/// hand to the seat.
+///
+/// Position and angle are two views of one degree of freedom — *where the contact sits on the
+/// surface* — so on a curved surface the constant-normal contour (a curve) and the position lattice
+/// (a grid) generically do not intersect: no contact satisfies both exactly. Per the owner ruling
+/// (2026-07-22) the solve therefore **minimizes the combined error** rather than favouring one
+/// constraint. The two errors are made commensurable without a magic weight by charging the angular
+/// error at the object's rim: an angle error `δ` displaces the rim by `≈ rim · δ`, so both terms are
+/// world (voxel) distances.
+///
+/// It walks an alternating projection from the raw `hit` — slide toward the quantized normal, then
+/// re-snap toward the position lattice — scoring every visited contact and keeping the best. With
+/// `NoSnap` position (no lattice) the position error is zero, so it degrades to a pure slide onto
+/// the nearest reachable 15° normal.
+fn solve_seated_15deg(
+    hit: Vec3,
+    full: Vec3,
+    snap: PlacementSnap,
+    lattice_step: f32,
+    field: &impl Fn(Vec3) -> f32,
+) -> (Vec3, Vec3) {
+    // An angle error of `δ` radians swings the object's rim through `≈ rim · δ`, converting the
+    // angular error into the voxel units the position error already lives in.
+    let rim = 0.5 * full.max_element();
+
+    // Score a candidate contact by its quantized seat: how far the placed corner lands from the
+    // position lattice, plus the rim-weighted gap between the true normal and its quantization.
+    // Returns the score (smaller is better) and the quantized normal to seat with.
+    let score = |contact: Vec3| -> (f32, Vec3) {
+        let normal = raycast::gradient_normal(contact, field);
+        let quantized = raycast::quantize_normal_to_15deg(normal);
+        let position_error = if lattice_step > 0.0 {
+            let offset = seated_world_offset(contact, quantized, full, snap.pivot);
+            let rounded = (offset / lattice_step).round() * lattice_step;
+            (offset - rounded).length()
+        } else {
+            0.0
+        };
+        let angle_error = normal.dot(quantized).clamp(-1.0, 1.0).acos();
+        (position_error + rim * angle_error, quantized)
+    };
+
+    let (mut best_score, mut best_normal) = score(hit);
+    let mut best_contact = hit;
+    let mut current = hit;
+    for _ in 0..JOINT_SOLVE_ROUNDS {
+        // Angle projection: slide the contact along the surface until its normal matches the
+        // quantized target (a no-op on a flat face, where only one normal is reachable).
+        let target = raycast::quantize_normal_to_15deg(raycast::gradient_normal(current, field));
+        let slid = raycast::snap_slide_to_normal(current, target, field);
+        let (slid_score, slid_normal) = score(slid);
+        if slid_score < best_score {
+            best_score = slid_score;
+            best_contact = slid;
+            best_normal = slid_normal;
+        }
+
+        // Position projection: pull the slid contact toward the lattice and re-seat it. With no
+        // position lattice this is the slid contact unchanged.
+        let snapped = if lattice_step > 0.0 {
+            raycast::snap_to_lattice_then_reproject(slid, lattice_step, field)
+        } else {
+            slid
+        };
+        let (snapped_score, snapped_normal) = score(snapped);
+        if snapped_score < best_score {
+            best_score = snapped_score;
+            best_contact = snapped;
+            best_normal = snapped_normal;
+        }
+
+        if (snapped - current).length() < 1.0e-6 {
+            break; // the walk has settled at a fixed point
+        }
+        current = snapped;
+    }
+    (best_contact, best_normal)
 }
 
 /// The grazing threshold [`resolve_placement`] selects a world plane by:
@@ -129,29 +243,22 @@ impl AppCore {
         // Seat a node at `contact` with its local +Z turned to `surface_normal` — the ONE seating
         // definition, shared by the geometry tier and the world-plane tier (owner ruling
         // 2026-07-21: there is NO upright mode; every drop orients to the surface it lands on). The
-        // authoring PIVOT is the object's bottom-centre — its base rests on the contact, its
-        // centroid half its local height out along the normal — and `seat_centre_at` (the
-        // classifier's corner anchor) lands the corner-anchored offset there. The pivot is
-        // CONTINUOUS: a `NoSnap` drop keeps the sub-voxel remainder (origin integer part in
-        // `offset_voxels`, pivot fraction in `offset_local`), while Voxel/Block snap quantizes the
-        // corner to the lattice and drops the fraction. Returns the integer offset, the sub-voxel
-        // remainder, and the rotation, so the caller carries all three into the intent.
+        // authoring PIVOT (where the object's centroid goes relative to the contact) is `snap.pivot`
+        // via `seated_world_offset`. The pivot is CONTINUOUS: a `NoSnap` drop keeps the sub-voxel
+        // remainder (origin integer part in `offset_voxels`, pivot fraction in `offset_local`),
+        // while Voxel/Block snap quantizes the corner to the lattice and drops the fraction. Returns
+        // the integer offset, the sub-voxel remainder, and the rotation, so the caller carries all
+        // three into the intent.
+        // The armed tool's producer-local extent, in voxels — the object's full size, shared by the
+        // seat and the 15° joint solve.
+        let full_size = Vec3::new(
+            shape.size_voxels[0] as f32,
+            shape.size_voxels[1] as f32,
+            shape.size_voxels[2] as f32,
+        );
         let seat_at = |contact: Vec3, surface_normal: Vec3| -> ([i64; 3], [f32; 3], Quat) {
             let rotation = Quat::from_rotation_arc(Vec3::Z, surface_normal);
-            let full = Vec3::new(
-                shape.size_voxels[0] as f32,
-                shape.size_voxels[1] as f32,
-                shape.size_voxels[2] as f32,
-            );
-            // `seat_centre_at` lands the object's local CENTRE (`full/2`) at `centre`, so the pivot
-            // choice is just where that centroid goes: Base pushes it half the local HEIGHT out
-            // along the normal (base on the contact), VolumetricCenter puts the centroid ON the
-            // contact (object straddles the surface). Both seat to the same `surface_normal`.
-            let centre = match snap.pivot {
-                PlacementPivot::Base => contact + surface_normal * (shape.size_voxels[2] as f32 * 0.5),
-                PlacementPivot::VolumetricCenter => contact,
-            };
-            let world_offset = evaluation::seat_centre_at(rotation, full, centre);
+            let world_offset = seated_world_offset(contact, surface_normal, full_size, snap.pivot);
             let (offset_voxels, offset_local) = match snap.position {
                 // Continuous placement (ADR 0027): keep the pivot exactly under the cursor by
                 // carrying its sub-voxel fraction. The integer floor is the far-world-safe origin;
@@ -190,9 +297,10 @@ impl AppCore {
         // surface: build the composed SDF, project the pick onto it, and turn the node's local +Z
         // to the exact gradient normal, so a tube on a curved side lies along the radial normal.
         //
-        // (The `snap.angle` setting will select the ANGLE-snap granularity — continuous vs
-        // 15° increments, ADR 0027 §2 — once slice 6 wires it; today every geometry drop seats to
-        // the continuous normal regardless. It never means "upright on geometry".)
+        // `snap.angle` selects the ANGLE-snap granularity (ADR 0027 §2): `Continuous` seats to the
+        // exact gradient normal, `Deg15` runs the joint solve that trades the contact against the
+        // 15° angle lattice. Neither ever means "upright on geometry" — that is the world-plane
+        // tier's job.
         if let Some(pick) = self.pick_voxel(cursor, viewport, frame) {
             // The composed field over the scene's op-stack — the SAME fold the classifier resolves
             // (`evaluation::composed_field_at`), so the surface the node seats on is the surface it
@@ -212,9 +320,21 @@ impl AppCore {
             );
             let hit = raycast::project_to_surface(seed, field);
             let normal = raycast::gradient_normal(hit, field);
-            // Seat flush to the continuous gradient normal (ADR 0027) — one definition, shared
-            // with the world-plane tier below.
-            let (offset, offset_local, rotation) = seat_at(hit, normal);
+            // Seat flush to the gradient normal (ADR 0027) — `Continuous` uses it directly; `Deg15`
+            // slides the contact to minimize the combined position + angle error, seating with that
+            // contact's quantized normal. The seat map itself is the ONE definition shared with the
+            // world-plane tier below.
+            let (seat_contact, seat_normal) = match snap.angle {
+                AngleSnap::Continuous => (hit, normal),
+                AngleSnap::Deg15 => solve_seated_15deg(
+                    hit,
+                    full_size,
+                    snap,
+                    position_lattice_step(snap.position, frame.density),
+                    &field,
+                ),
+            };
+            let (offset, offset_local, rotation) = seat_at(seat_contact, seat_normal);
             return PlacementOutcome {
                 // `point` is the surface hit (the cursor location) for the affordance.
                 target: PlacementTarget::OnSurface { point: hit, face_normal: pick.face_normal },
@@ -365,9 +485,6 @@ mod tests {
 
     use super::*;
     use crate::{AppCore, RebuildOutcome};
-    // The orientation-snap toggle is exercised only by the tests now (a geometry drop always
-    // seats regardless of it; slice 6 will make it select the angle-snap granularity).
-    use ui::panel::AngleSnap;
 
     /// **place_primitive seats CONTINUOUSLY to the surface normal (ADR 0027).** On a flat box
     /// face the composed-field gradient normal equals the entered face normal, so the emitted
@@ -805,6 +922,48 @@ mod tests {
                 "{angle:?}: a geometry drop must seat — its +Z axis {axis:?} tilts to the surface normal {normal:?}"
             );
         }
+    }
+
+    /// **The 15° joint solve lands a quantized normal on a curved surface (ADR 0027 §2).** On a
+    /// cylinder the constant-normal contour is a vertical line, so a 15° target is reachable: a drop
+    /// seeded at an off-lattice angle (37° around) must slide to a contact whose seated normal is ON
+    /// the 15° lattice while staying seated on the surface. Continuous placement would keep the raw
+    /// 37° normal; this pins that `Deg15` actually quantizes. (Exercises the free-fn solver directly,
+    /// off a synthetic field, so it needs no camera framing — the render loop verifies the wired
+    /// path.)
+    #[test]
+    fn the_15deg_joint_solve_lands_a_quantized_normal_on_a_curved_surface() {
+        // A true distance field for a cylinder about world Z.
+        let radius = 6.0_f32;
+        let field = |p: Vec3| (p.x * p.x + p.y * p.y).sqrt() - radius;
+        let seed_angle = 37.0_f32.to_radians();
+        let hit = Vec3::new(radius * seed_angle.cos(), radius * seed_angle.sin(), 3.0);
+        let full = Vec3::new(2.0, 2.0, 6.0);
+        let snap = PlacementSnap {
+            position: PositionSnap::NoSnap,
+            angle: AngleSnap::Deg15,
+            pivot: PlacementPivot::Base,
+        };
+
+        let (contact, seat_normal) = solve_seated_15deg(hit, full, snap, 0.0, &field);
+        // The seated normal is a fixed point of the 15° quantization — it is ON the lattice.
+        let requantized = raycast::quantize_normal_to_15deg(seat_normal);
+        assert!(
+            seat_normal.dot(requantized) > 0.9999,
+            "the seated normal {seat_normal:?} must lie on the 15° lattice"
+        );
+        // The solved contact is still on the surface.
+        assert!(
+            field(contact).abs() < 1.0e-2,
+            "the solved contact must stay seated on the surface, field = {}",
+            field(contact)
+        );
+        // The raw seed normal (37° azimuth) was NOT on the lattice, so the solve genuinely moved.
+        let continuous = raycast::gradient_normal(hit, field);
+        assert!(
+            continuous.dot(raycast::quantize_normal_to_15deg(continuous)) < 0.9999,
+            "the seed's continuous normal must be off-lattice, else the test proves nothing"
+        );
     }
 
     /// **Block position snap rounds the drop to block boundaries; voxel / no-snap keep the
