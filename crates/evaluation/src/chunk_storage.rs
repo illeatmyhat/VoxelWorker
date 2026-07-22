@@ -231,10 +231,9 @@ pub fn compress(grid: &VoxelGrid) -> CompressedChunk {
     let occupancy = match build_dense_if_smaller(
         grid,
         cell_count,
-        box_spans,
-        min_corner,
-        span_xy,
-        &material_palette,
+        material_palette.len(),
+        local_linear_index,
+        palette_index_of,
         &sparse,
     ) {
         Some(dense) => dense,
@@ -257,14 +256,14 @@ pub fn compress(grid: &VoxelGrid) -> CompressedChunk {
 /// The dense form is a `bits_per_index`-bit palette index per cell over the whole
 /// occupied box (air = [`AIR_PALETTE_INDEX`], real materials offset by one), plus the
 /// occupied cells' `block_local_coord`s in scan order. It wins for near-solid chunks.
-#[allow(clippy::too_many_arguments)]
 fn build_dense_if_smaller(
     grid: &VoxelGrid,
     cell_count: u64,
-    box_spans: [u32; 3],
-    min_corner: [i64; 3],
-    span_xy: u64,
-    material_palette: &[u16],
+    palette_len: usize,
+    // The SAME row-major linear index + palette lookup the sparse pass built above,
+    // passed in rather than re-derived — one formula, no drift.
+    local_linear_index: impl Fn(&Voxel) -> u64,
+    palette_index_of: impl Fn(u16) -> u32,
     sparse: &Occupancy,
 ) -> Option<Occupancy> {
     // Guard against a pathologically huge box (a sparse pair of far-apart voxels in
@@ -276,7 +275,7 @@ fn build_dense_if_smaller(
     }
 
     // palette_len + 1 distinct values (air + each material) → bits per index.
-    let value_count = material_palette.len() as u64 + 1;
+    let value_count = palette_len as u64 + 1;
     let bits_per_index = bits_for_value_count(value_count);
 
     // Air-filled palette-index grid (air = AIR_PALETTE_INDEX = 0), then stamp each
@@ -288,23 +287,11 @@ fn build_dense_if_smaller(
     let mut indexed: Vec<(u64, &Voxel)> = grid
         .occupied
         .iter()
-        .map(|voxel| {
-            let local = [
-                (voxel.local_index[0] as i64 - min_corner[0]) as u64,
-                (voxel.local_index[1] as i64 - min_corner[1]) as u64,
-                (voxel.local_index[2] as i64 - min_corner[2]) as u64,
-            ];
-            let linear = local[2] * span_xy + local[1] * box_spans[0] as u64 + local[0];
-            (linear, voxel)
-        })
+        .map(|voxel| (local_linear_index(voxel), voxel))
         .collect();
     indexed.sort_by_key(|(linear, _)| *linear);
     for (linear, voxel) in &indexed {
-        let palette_index = material_palette
-            .iter()
-            .position(|&id| id == voxel.block_id.0)
-            .expect("block id in palette") as u32;
-        cell_values[*linear as usize] = palette_index + 1;
+        cell_values[*linear as usize] = palette_index_of(voxel.block_id.0) + 1;
         block_local_coords.push(voxel.block_local_coord);
     }
 
