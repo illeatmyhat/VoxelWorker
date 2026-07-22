@@ -33,9 +33,18 @@ struct CuboidUniforms {
     band_min: f32,
     band_max: f32,
     debug_face_mode: f32,
-    _band_pad: f32,
+    // The full Rust `CuboidUniforms` carries `ghost_mode` here then a `ghost_tint`
+    // vec4 after the atlas rects; the loaded path never ghosts, so both are declared
+    // only as pads to reach `overlay_world_offset` at the correct std140 offset.
+    _ghost_mode_pad: f32,
     material_base_colors: array<vec4<f32>, 3>,
     material_atlas_rects: array<vec4<f32>, 3>,
+    _ghost_tint_pad: vec4<f32>,
+    // Added to `voxel_absolute_position` inside the on-face overlay to recover the TRUE
+    // world voxel frame (= recentre − grid_half_extent), anchoring the lines to the
+    // world block lattice. Must match the Rust `CuboidUniforms` tail exactly.
+    overlay_world_offset: vec3<f32>,
+    _overlay_pad: f32,
 };
 
 @group(0) @binding(0)
@@ -200,11 +209,14 @@ fn fragment_main(
     // --- Position-based grid overlay (BUG 2 parity) ---
     // Per-object (issue #29 S4): master uniform ANDed with this face's flag bit.
     if (on_face_grid_enabled()) {
+        // Anchor the overlay to the TRUE world voxel frame (world block lattice), not
+        // the render grid's local half-extent frame; `absolute` stays for texture UV.
+        let world_voxel = absolute + uniforms.overlay_world_offset;
         let in_plane = step(abs(input.world_normal), vec3<f32>(0.5));
-        let voxel_distance = abs(absolute - floor(absolute + 0.5));
+        let voxel_distance = abs(world_voxel - floor(world_voxel + 0.5));
         let density = uniforms.voxels_per_block;
         let block_distance =
-            abs(absolute / density - floor(absolute / density + 0.5)) * density;
+            abs(world_voxel / density - floor(world_voxel / density + 0.5)) * density;
 
         // Screen-space-aware line coverage — identical maths/constants to
         // `cuboid.wgsl` (see the comment there): minimum pixel half-width,

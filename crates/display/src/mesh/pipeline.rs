@@ -64,6 +64,15 @@ pub(crate) struct CuboidUniforms {
     /// ADR 0012 (H1): the onion ghost tint (linear RGB + src alpha), read only when
     /// `ghost_mode > 0.5`. Appended so the solid draw's uniform layout is unchanged.
     ghost_tint: [f32; 4],
+    /// Added to `voxel_absolute_position` INSIDE the on-face grid overlay to recover
+    /// the TRUE world voxel frame (`= recentre − grid_half_extent`), so the overlay's
+    /// voxel and block lines anchor to the world block lattice — the SAME lattice the
+    /// per-object block-lattice cage draws on — instead of the render grid's local
+    /// half-extent frame (which is out of block phase whenever `recentre` is not a
+    /// whole block). Only the overlay reads it; the texture/UV slice keeps `absolute`,
+    /// so material tiling is unchanged (goldens byte-green while the overlay is off).
+    overlay_world_offset: [f32; 3],
+    _overlay_pad: f32,
 }
 
 /// Convert a packed [`MaterialAtlas`]'s per-material sub-rects into the uniform
@@ -117,6 +126,9 @@ pub(crate) fn flat_ghost_uniforms(
         material_base_colors: [[1.0, 1.0, 1.0, 0.0]; MaterialChoice::MATERIAL_COUNT],
         material_atlas_rects: [[0.0, 0.0, 1.0, 1.0]; MaterialChoice::MATERIAL_COUNT],
         ghost_tint,
+        // The ghost branch returns before the overlay, so the anchor is inert here.
+        overlay_world_offset: [0.0; 3],
+        _overlay_pad: 0.0,
     }
 }
 
@@ -1404,6 +1416,17 @@ impl CuboidMeshRenderer {
             material_base_colors: base_colors,
             material_atlas_rects: self.atlas_rects,
             ghost_tint: [0.0, 0.0, 0.0, 0.0],
+            // `absolute + (recentre − grid_half_extent) == world_position + recentre`,
+            // the true world voxel coord — so the overlay's block lines land on the
+            // world block lattice. `grid_half_extent` here is the SAME floor(dim/2) the
+            // struct field uses; `recentre` is the resolve's carried frame (ADR 0008).
+            overlay_world_offset: {
+                let recentre = self.source_two_layer_recentre.voxels();
+                std::array::from_fn(|axis| {
+                    recentre[axis] as f32 - (grid_dimensions[axis] / 2) as f32
+                })
+            },
+            _overlay_pad: 0.0,
         };
         queue.write_buffer(&self.uniform_buffer, 0, bytemuck::bytes_of(&uniforms));
 

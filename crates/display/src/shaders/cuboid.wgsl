@@ -86,6 +86,12 @@ struct CuboidUniforms {
     // ADR 0012 (H1): the onion ghost tint (linear RGB + src alpha), read only when
     // `ghost_mode > 0.5`. Appended so the solid draw's uniform layout is unchanged.
     ghost_tint: vec4<f32>,
+    // Added to `voxel_absolute_position` inside the on-face grid overlay to recover the
+    // TRUE world voxel frame (= recentre − grid_half_extent), so the overlay lines anchor
+    // to the world block lattice. Only the overlay reads it; the texture UV keeps the
+    // local `absolute`, so tiling is unchanged.
+    overlay_world_offset: vec3<f32>,
+    _overlay_pad: f32,
 };
 
 @group(0) @binding(0)
@@ -304,11 +310,15 @@ fn fragment_main(
     // voxel position (not UVs), with the block line winning over the voxel line.
     // Per-object (issue #29 S4): master uniform ANDed with this face's flag bit.
     if (on_face_grid_enabled()) {
+        // Anchor the overlay to the TRUE world voxel frame so its voxel + block lines
+        // fall on the world block lattice (the per-object cage's lattice), not the
+        // render grid's local half-extent frame. `absolute` stays for texture UV above.
+        let world_voxel = absolute + uniforms.overlay_world_offset;
         let in_plane = step(abs(input.world_normal), vec3<f32>(0.5));
-        let voxel_distance = abs(absolute - floor(absolute + 0.5));
+        let voxel_distance = abs(world_voxel - floor(world_voxel + 0.5));
         let density = uniforms.voxels_per_block;
         let block_distance =
-            abs(absolute / density - floor(absolute / density + 0.5)) * density;
+            abs(world_voxel / density - floor(world_voxel / density + 0.5)) * density;
 
         // Screen-space-aware line coverage (the `infinite_grid.wgsl` anti-moiré
         // law applied to the on-face overlay). `derivative` is voxels per pixel,
