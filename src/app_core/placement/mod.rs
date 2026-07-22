@@ -197,6 +197,44 @@ pub struct PlacementOutcome {
 }
 
 impl AppCore {
+    /// The cursor's pick ray, resolved into the ABSOLUTE voxel frame — the shared front half of
+    /// BOTH placement tiers (the geometry SDF raymarch and the world-plane hit). Returns the
+    /// unprojected render-frame ray, the `recentre` vector that rebases it to absolute, and the
+    /// unit direction; each tier derives its own origin via [`cursor_ray_origin_absolute`]. `None`
+    /// on a degenerate viewport or a failed unprojection.
+    ///
+    /// [`cursor_ray_origin_absolute`]: AppCore::cursor_ray_origin_absolute
+    fn cursor_pick_ray(
+        &self,
+        cursor: [f32; 2],
+        viewport: [f32; 4],
+        frame: &PickFrame,
+    ) -> Option<(Ray, Vec3, Vec3)> {
+        if viewport[2] <= 0.0 || viewport[3] <= 0.0 {
+            return None;
+        }
+        let aspect_ratio = viewport[2] / viewport[3];
+        let view_projection = self.view_projection(aspect_ratio, frame.region_dimensions);
+        let normalized_x = (cursor[0] - viewport[0]) / viewport[2] * 2.0 - 1.0;
+        let normalized_y = 1.0 - (cursor[1] - viewport[1]) / viewport[3] * 2.0;
+        let render_ray = unproject_screen_point_to_ray(view_projection, normalized_x, normalized_y)?;
+        let recentre = frame.recentre_voxels;
+        let recentre_vec = Vec3::new(recentre[0] as f32, recentre[1] as f32, recentre[2] as f32);
+        let unit_direction = render_ray.direction.normalize();
+        Some((render_ray, recentre_vec, unit_direction))
+    }
+
+    /// The absolute-frame origin the cursor ray is CAST from for surface intersection: the **eye**
+    /// under perspective (the near-plane origin is unreliable at far zoom — it can dip below the
+    /// ground), the pixel's **near-plane point** under orthographic (rays are parallel, there is no
+    /// single eye). Both tiers cast from here so geometry and the world planes see the same ray.
+    fn cursor_ray_origin_absolute(&self, render_ray: &Ray, recentre_vec: Vec3) -> Vec3 {
+        match self.camera.projection_mode {
+            ProjectionMode::Perspective => self.camera.eye() + recentre_vec,
+            ProjectionMode::Orthographic => render_ray.origin + recentre_vec,
+        }
+    }
+
     /// Resolve where an armed primitive would drop for a cursor position, and the
     /// [`Intent`] that places it there (`docs/design/direct-manipulation.md`).
     ///
@@ -310,24 +348,43 @@ impl AppCore {
             let leaf_refs: Vec<&LeafProducer> = leaves.iter().collect();
             let field = |probe: Vec3| evaluation::composed_field_at(&leaf_refs, probe, frame.density);
 
-            // Seed the solve at the entered face (the boundary between the solid voxel and its
-            // empty neighbour) and let damped Newton settle onto the composed surface under the
-            // cursor (`raycast::project_to_surface`, ADR 0027 §5).
-            let seed = Vec3::new(
+            // `pick_voxel`'s DDA answers WHICH surface is under the cursor — a definite face even at
+            // a box edge/corner where the raw gradient is an ambiguous diagonal. So the seat TILT is
+            // anchored there: project the picked voxel's face CENTRE (a face-interior point) onto the
+            // composed surface and read its gradient — the radial normal on a curved side, the face
+            // normal on a flat face, stable at sharp features (owner: "seat-to-surface works").
+            let face_centre = Vec3::new(
                 pick.absolute_voxel[0] as f32 + 0.5 + pick.face_normal[0] as f32 * 0.5,
                 pick.absolute_voxel[1] as f32 + 0.5 + pick.face_normal[1] as f32 * 0.5,
                 pick.absolute_voxel[2] as f32 + 0.5 + pick.face_normal[2] as f32 * 0.5,
             );
-            let hit = raycast::project_to_surface(seed, field);
-            let normal = raycast::gradient_normal(hit, field);
-            // Seat flush to the gradient normal (ADR 0027) — `Continuous` uses it directly; `Deg15`
-            // slides the contact to minimize the combined position + angle error, seating with that
-            // contact's quantized normal. The seat map itself is the ONE definition shared with the
-            // world-plane tier below.
+            let stable_surface = raycast::project_to_surface(face_centre, field);
+            let normal = raycast::gradient_normal(stable_surface, field);
+
+            // The cursor ray answers WHERE on that surface, continuously: cast it at the composed
+            // field — the SAME sphere-trace the GPU ghost runs (`raycast::raymarch` ↔
+            // `placement_ghost.wgsl`) — so a `NoSnap` drop keeps the exact sub-voxel point under the
+            // cursor instead of snapping to the picked voxel's centre (the geometry-vs-ground
+            // asymmetry the owner hit). Fall back to the stable surface point if the march grazes
+            // past (a rare tangent).
+            let continuous_contact = self
+                .cursor_pick_ray(cursor, viewport, frame)
+                .and_then(|(render_ray, recentre_vec, unit_direction)| {
+                    let origin = self.cursor_ray_origin_absolute(&render_ray, recentre_vec);
+                    raycast::raymarch(origin, unit_direction, field, &raycast::MarchParams::default())
+                })
+                .map(|surface_hit| surface_hit.point)
+                .unwrap_or(stable_surface);
+
+            // Seat: `Continuous` places at the continuous contact with the stable picked-surface
+            // tilt; `Deg15` runs the joint position+angle solve from the stable surface point, so the
+            // angle it quantizes is the picked face's (definite at edges) — continuous sub-voxel
+            // position under 15° angle snap is future work. The seat map is the ONE definition shared
+            // with the world-plane tier below.
             let (seat_contact, seat_normal) = match snap.angle {
-                AngleSnap::Continuous => (hit, normal),
+                AngleSnap::Continuous => (continuous_contact, normal),
                 AngleSnap::Deg15 => solve_seated_15deg(
-                    hit,
+                    stable_surface,
                     full_size,
                     snap,
                     position_lattice_step(snap.position, frame.density),
@@ -336,41 +393,31 @@ impl AppCore {
             };
             let (offset, offset_local, rotation) = seat_at(seat_contact, seat_normal);
             return PlacementOutcome {
-                // `point` is the surface hit (the cursor location) for the affordance.
-                target: PlacementTarget::OnSurface { point: hit, face_normal: pick.face_normal },
+                // `point` is the continuous surface contact (the cursor location) for the affordance.
+                target: PlacementTarget::OnSurface {
+                    point: continuous_contact,
+                    face_normal: pick.face_normal,
+                },
                 intent: Some(place_node(offset, offset_local, Some(rotation.to_array()))),
             };
         }
 
-        // Tier 3 — the built-in world planes. Rebuild the render-frame cursor ray
-        // exactly as `pick_voxel` does (NDC in the viewport rect, unprojected through
-        // the same view-projection), then rebase it into the ABSOLUTE voxel frame:
-        // `absolute = render + recentre_voxels`. `resolve_placement` then returns a
-        // point already in absolute voxels.
-        if viewport[2] <= 0.0 || viewport[3] <= 0.0 {
-            return PlacementOutcome { target: PlacementTarget::NoSurface, intent: None };
-        }
-        let aspect_ratio = viewport[2] / viewport[3];
-        let view_projection = self.view_projection(aspect_ratio, frame.region_dimensions);
-        let normalized_x = (cursor[0] - viewport[0]) / viewport[2] * 2.0 - 1.0;
-        let normalized_y = 1.0 - (cursor[1] - viewport[1]) / viewport[3] * 2.0;
-        let Some(render_ray) =
-            unproject_screen_point_to_ray(view_projection, normalized_x, normalized_y)
+        // Tier 3 — the built-in world planes. Cast the SAME cursor ray the geometry tier used
+        // ([`cursor_pick_ray`], the one shared ray construction), already rebased into the ABSOLUTE
+        // voxel frame. `resolve_placement` then returns a point already in absolute voxels.
+        //
+        // `unproject_screen_point_to_ray` returns the NEAR-PLANE point as the origin. Whether a
+        // world plane is "in front" of that point is the crux, and it is NOT the same question for
+        // the two projections — so the ray's reachability is resolved per projection.
+        //
+        // Precision caveat (ADR 0008): `recentre_voxels as f32` loses integer precision past ~16M
+        // voxels. Correct for the small scenes this placement slice targets; the eventual fix is the
+        // i64 origin-rebase, not a fudge here.
+        let Some((render_ray, recentre_vec, unit_direction)) =
+            self.cursor_pick_ray(cursor, viewport, frame)
         else {
             return PlacementOutcome { target: PlacementTarget::NoSurface, intent: None };
         };
-
-        // `unproject_screen_point_to_ray` returns the NEAR-PLANE point as the origin.
-        // Whether a world plane is "in front" of that point is the crux, and it is NOT the
-        // same question for the two projections — so the ray's reachability is resolved per
-        // projection.
-        //
-        // Precision caveat (ADR 0008): `recentre_voxels as f32` loses integer precision
-        // past ~16M voxels. Correct for the small scenes this placement slice targets; the
-        // eventual fix is the i64 origin-rebase, not a fudge here.
-        let recentre = frame.recentre_voxels;
-        let recentre_vec = Vec3::new(recentre[0] as f32, recentre[1] as f32, recentre[2] as f32);
-        let unit_direction = render_ray.direction.normalize();
         // A block spans `density` voxels in this frame, so the authorability limit is asked
         // in voxel units with the density as the block size.
         let block_size = frame.density.max(1) as f32;
