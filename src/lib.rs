@@ -307,6 +307,11 @@ pub fn run_egui_frame(
     // a sketch is being edited. Drawn as a foreground overlay + registered as chrome so a
     // handle drag never orbits the camera. The shell owns projection / hit-test / drag.
     sketch_handles: &[(egui::Pos2, ui::gizmos::HandleState)],
+    // ADR 0030: the sketch's committed segment lines for THIS frame — each a pair of already-
+    // projected endpoints (egui points). Drawn UNDER the vertex handles so the profile reads as
+    // connected edges (an open sketch resolves to nothing, so these are the only shape cue).
+    // Empty unless a sketch is being edited, and always empty on the headless `shot` path.
+    sketch_segment_lines: &[(egui::Pos2, egui::Pos2)],
     // ADR 0028 (#95): the add-point insert-preview marker for THIS frame (egui points), or
     // `None` when the add-point tool is idle / no edge is hovered. Drawn as a diamond on the
     // hovered profile edge. Always `None` on the headless `shot` path.
@@ -521,6 +526,10 @@ pub fn run_egui_frame(
             ) {
                 panel_response.exit_sketch = Some(exit);
             }
+            // ADR 0030: the committed segment lines, drawn FIRST so the vertex dots sit on top.
+            // Not chrome — a segment press is handled by the shell's hit-test, and these are a
+            // passive under-layer.
+            signal_chrome::sketch_segment_lines(ui, sketch_segment_lines);
             // ADR 0028 (#94): the draggable profile-vertex handles, drawn at the shell's
             // projected screen positions and registered as chrome (a handle press drags the
             // vertex, never orbits).

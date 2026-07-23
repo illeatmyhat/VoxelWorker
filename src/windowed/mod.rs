@@ -289,6 +289,12 @@ struct WindowedState {
     /// [`sketch_vertex_px`](Self::sketch_vertex_px) — the add-point hit-test splits the named
     /// segment by id, and the overlay draws a line per entry (ADR 0030, not consecutive pairs).
     sketch_segments: Vec<(document::sketch::EntityId, usize, usize)>,
+    /// Each committed segment's two endpoints in egui POINTS for THIS frame, drawn as a line on
+    /// the NEXT (ADR 0030 — a sketch's edges, so an open profile reads as connected geometry, not
+    /// loose dots). Only segments whose BOTH endpoints projected in front of the camera appear; a
+    /// behind-camera endpoint (`sketch_vertex_px` `None`) culls its line. Built in
+    /// [`refresh_sketch_overlay`](Self::refresh_sketch_overlay) alongside the handles.
+    sketch_segment_lines: Vec<(egui::Pos2, egui::Pos2)>,
     /// The add-point tool's insert-preview marker for THIS frame (egui points): where a click
     /// would drop a vertex on the hovered segment (the foot of the perpendicular from the
     /// cursor), or `None` when the add-point tool is idle / no segment is under the cursor.
@@ -615,6 +621,7 @@ impl WindowedState {
             sketch_vertex_px: Vec::new(),
             sketch_point_ids: Vec::new(),
             sketch_segments: Vec::new(),
+            sketch_segment_lines: Vec::new(),
             sketch_insert_preview: None,
             last_view_projection: None,
             sketch_edit_press: false,

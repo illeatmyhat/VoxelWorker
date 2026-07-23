@@ -340,6 +340,19 @@ pub fn sketch_insert_marker(ui: &egui::Ui, center: Pos2) {
     ui::gizmos::diamond(&painter, center, SKETCH_INSERT_MARKER_HALF);
 }
 
+/// Draw the sketch's **committed segment lines** (ADR 0030): a solid accent line per edge between
+/// its two already-projected endpoints (egui points). Painted on the same foreground layer as the
+/// handles but drawn BEFORE them (the caller orders the two), so the vertex thumbs sit on top of
+/// the edges. Not registered as chrome — a passive under-layer; the shell owns segment hit-testing.
+pub fn sketch_segment_lines(ui: &egui::Ui, lines: &[(Pos2, Pos2)]) {
+    let painter = ui
+        .ctx()
+        .layer_painter(LayerId::new(Order::Foreground, Id::new("sketch_segment_lines")));
+    for &(a, b) in lines {
+        ui::gizmos::segment(&painter, a, b);
+    }
+}
+
 /// Draw the sketch profile's **vertex handles** (ADR 0028, #94) at their already-projected
 /// screen positions, each in the given [`HandleState`], and register each handle's grab
 /// rect as chrome so a press on a handle drags the vertex instead of orbiting the camera.

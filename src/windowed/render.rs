@@ -172,6 +172,9 @@ impl WindowedState {
                 // A one-frame lag is imperceptible for handle chrome and self-corrects; the
                 // cache is refreshed at the end of `render` below.
                 &self.sketch_overlay_points,
+                // ADR 0030: the committed segment lines, projected last frame — drawn under the
+                // vertex dots so the profile reads as connected edges.
+                &self.sketch_segment_lines,
                 // ADR 0028 (#95): the add-point insert preview, projected last frame.
                 self.sketch_insert_preview,
             )
@@ -1153,6 +1156,7 @@ impl WindowedState {
         self.sketch_vertex_px.clear();
         self.sketch_point_ids.clear();
         self.sketch_segments.clear();
+        self.sketch_segment_lines.clear();
         self.sketch_insert_preview = None;
 
         let Some(target) = self.panel_state.sketch_mode else {
@@ -1214,6 +1218,21 @@ impl WindowedState {
         // the entity it targets (ADR 0030).
         self.sketch_point_ids = handles.point_ids.clone();
         self.sketch_segments = handles.segments.clone();
+
+        // The segment LINES to draw next frame: each committed edge between its two projected
+        // endpoints, in egui points (ADR 0030 — an open sketch resolves to nothing, so the edges
+        // are the only thing that shows the profile is connected). A behind-camera endpoint
+        // (`None` in `sketch_vertex_px`) culls its line, matching the vertex-dot cull.
+        for &(_, a_idx, b_idx) in &self.sketch_segments {
+            if let (Some(Some(a_px)), Some(Some(b_px))) = (
+                self.sketch_vertex_px.get(a_idx),
+                self.sketch_vertex_px.get(b_idx),
+            ) {
+                let a = egui::Pos2::new(a_px.x / pixels_per_point, a_px.y / pixels_per_point);
+                let b = egui::Pos2::new(b_px.x / pixels_per_point, b_px.y / pixels_per_point);
+                self.sketch_segment_lines.push((a, b));
+            }
+        }
 
         // Add-point insert preview: the point on the hovered segment nearest the cursor (physical
         // px), in egui points — "a vertex lands here on this edge". Drawn as a diamond next frame.
