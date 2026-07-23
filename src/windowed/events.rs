@@ -296,9 +296,18 @@ impl ApplicationHandler for App {
                         && position
                             .map(|(x, y)| state.position_in_view_cube(x, y))
                             .unwrap_or(false);
-                    let in_chrome = position
-                        .map(|(x, y)| state.position_in_signal_chrome(x, y))
-                        .unwrap_or(false);
+                    // A right-click on a sketch ENTITY opens the menu even though the vertex handle
+                    // registers as chrome (a handle rect is in the chrome set) — the entity
+                    // hit-test tells a sketch handle from the real Signal chrome (ADR 0030, Fusion:
+                    // the same menu comes up on an entity as in empty sketch space).
+                    let on_sketch_entity = state.panel_state.sketch_mode.is_some()
+                        && position
+                            .map(|(x, y)| state.cursor_over_sketch_entity(x, y))
+                            .unwrap_or(false);
+                    let in_chrome = !on_sketch_entity
+                        && position
+                            .map(|(x, y)| state.position_in_signal_chrome(x, y))
+                            .unwrap_or(false);
                     let at = position.map(|(x, y)| egui::pos2(x as f32, y as f32));
                     // A cube right-press opens the cube's own menu; a right-press anywhere else in
                     // the live viewport (not the Signal chrome) opens the general viewport menu.
@@ -307,6 +316,13 @@ impl ApplicationHandler for App {
                         state.context_menu_open_at = at;
                         state.viewport_menu_at = None;
                     } else if !in_chrome {
+                        // Fusion: right-clicking a sketch entity selects it first, so the menu's
+                        // Delete acts on it (an already-selected entity keeps the whole set).
+                        if on_sketch_entity {
+                            if let Some((x, y)) = position {
+                                state.right_click_select_sketch_entity(x, y);
+                            }
+                        }
                         state.viewport_menu_at = at;
                         state.context_menu_open_at = None;
                     } else {

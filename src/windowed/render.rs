@@ -1126,6 +1126,35 @@ impl WindowedState {
         }
     }
 
+    /// ADR 0030: is the cursor (physical px) over a sketch entity — a vertex or a segment? Used by
+    /// the right-click handler to tell a sketch handle (which registers as chrome so a LEFT press
+    /// drags it) from the real Signal chrome, so a right-click on an entity opens the context menu
+    /// even though the handle sits in the chrome hit-set.
+    pub(super) fn cursor_over_sketch_entity(&self, cursor_x: f64, cursor_y: f64) -> bool {
+        self.sketch_vertex_at(cursor_x, cursor_y).is_some()
+            || self.sketch_segment_at(cursor_x, cursor_y).is_some()
+    }
+
+    /// ADR 0030: a right-click over a sketch entity selects it (Fusion: right-clicking an entity
+    /// acts on it). If the entity is already in the selection the whole set is kept — so
+    /// right-clicking one of several selected entities deletes them all — otherwise the selection is
+    /// replaced with just that entity. Vertices take priority over segments, as everywhere.
+    pub(super) fn right_click_select_sketch_entity(&mut self, cursor_x: f64, cursor_y: f64) {
+        if let Some(index) = self.sketch_vertex_at(cursor_x, cursor_y) {
+            if let Some(&point_id) = self.sketch_point_ids.get(index) {
+                if !self.panel_state.sketch_selection.contains_point(point_id) {
+                    self.panel_state.sketch_selection.select_point(point_id);
+                }
+                return;
+            }
+        }
+        if let Some(seg_id) = self.sketch_segment_at(cursor_x, cursor_y) {
+            if !self.panel_state.sketch_selection.contains_segment(seg_id) {
+                self.panel_state.sketch_selection.select_segment(seg_id);
+            }
+        }
+    }
+
     /// ADR 0030: delete every entity in the sketch selection as ONE edit — each selected point
     /// (cascading its incident segments) then each selected segment (a no-op if a cascade already
     /// took it), committed through the same anchor-preserving path a single delete uses
