@@ -172,6 +172,8 @@ impl WindowedState {
                 // A one-frame lag is imperceptible for handle chrome and self-corrects; the
                 // cache is refreshed at the end of `render` below.
                 &self.sketch_overlay_points,
+                // ADR 0028 (#95): the add-point insert preview, projected last frame.
+                self.sketch_insert_preview,
             )
         };
 
@@ -408,6 +410,9 @@ impl WindowedState {
         // draw (in `run_egui_frame`) and the press hit-test (in `events`). A one-frame lag on
         // the handles is imperceptible and self-corrects.
         self.refresh_sketch_overlay(view_projection, prepared.viewport_px, pixels_per_point);
+        // #95: cache the projection so the release handler (in `events`) can invert a cursor
+        // into a profile coordinate for an add-point insert, using the SAME frame the overlay saw.
+        self.last_view_projection = Some(view_projection);
         // Issue #12: translate the layer-range scrubber into the shader band. The
         // band is inclusive on both ends; the upper handle is a layer index, so a
         // single-layer band is `lower == upper`. A full range draws everything.
@@ -799,38 +804,13 @@ impl WindowedState {
             return IntentEffect::none();
         };
 
-        // Cursor → render-frame ray. CAST FROM THE EYE under perspective: the near-plane ray
-        // origin is unreliable at close zoom and can sit past the target plane (placement casts
-        // from the eye for the same reason). Orthographic keeps the near-plane point (parallel
-        // rays have no single eye).
-        let [vx, vy, vw, vh] = viewport_px;
-        let ndc_x = (cursor_x as f32 - vx as f32) / vw.max(1) as f32 * 2.0 - 1.0;
-        let ndc_y = 1.0 - (cursor_y as f32 - vy as f32) / vh.max(1) as f32 * 2.0;
-        let Some(ray) = camera::unproject_screen_point_to_ray(view_projection, ndc_x, ndc_y)
+        // Cursor → the continuous profile coordinate under it, then grid-snap (round to the
+        // nearest voxel). The ray/plane math is shared with the add-point insert.
+        let Some(profile_coord) =
+            self.cursor_to_profile_coord(cursor_x, cursor_y, view_projection, viewport_px, &handles)
         else {
             return IntentEffect::none();
         };
-        let ray_origin = match self.app_core.camera.projection_mode {
-            camera::ProjectionMode::Perspective => self.app_core.camera.eye(),
-            camera::ProjectionMode::Orthographic => ray.origin,
-        };
-
-        // Intersect the ray with the sketch plane (render frame). A ray parallel to the plane,
-        // or a plane behind the viewer, leaves the vertex where it is this frame.
-        let normal = glam::Vec3::from_array(handles.plane_normal);
-        let plane_point = glam::Vec3::from_array(handles.plane_point);
-        let denom = ray.direction.dot(normal);
-        if denom.abs() < 1e-6 {
-            return IntentEffect::none();
-        }
-        let t = (plane_point - ray_origin).dot(normal) / denom;
-        if t <= 0.0 {
-            return IntentEffect::none();
-        }
-        let hit = ray_origin + ray.direction * t;
-
-        // Plane hit → continuous profile coordinate → grid snap (round to the nearest voxel).
-        let profile_coord = handles.render_hit_to_profile(hit.to_array());
         let snapped = [profile_coord[0].round() as i64, profile_coord[1].round() as i64];
 
         // Build the preview from the pre-drag producer with ONLY the dragged vertex moved, then
@@ -969,25 +949,179 @@ impl WindowedState {
         min
     }
 
+    /// Cursor (physical px) → the CONTINUOUS profile coordinate `(c0, c1)` under it on the
+    /// sketch node's plane, using `handles` for the plane + inverse map (ADR 0028). Shared by
+    /// the vertex-drag preview (#94) and the add-point insert (#95) so the frame math lives once.
+    ///
+    /// Casts from the EYE under perspective — the near-plane ray origin is unreliable at close
+    /// zoom and can sit past the target plane (placement casts from the eye for the same reason);
+    /// orthographic keeps the near-plane point (parallel rays have no single eye). `None` when the
+    /// unprojection fails, the ray is parallel to the plane, or the plane is behind the viewer.
+    fn cursor_to_profile_coord(
+        &self,
+        cursor_x: f64,
+        cursor_y: f64,
+        view_projection: glam::Mat4,
+        viewport_px: [u32; 4],
+        handles: &document::scene::SketchHandles,
+    ) -> Option<[f64; 2]> {
+        let [vx, vy, vw, vh] = viewport_px;
+        let ndc_x = (cursor_x as f32 - vx as f32) / vw.max(1) as f32 * 2.0 - 1.0;
+        let ndc_y = 1.0 - (cursor_y as f32 - vy as f32) / vh.max(1) as f32 * 2.0;
+        let ray = camera::unproject_screen_point_to_ray(view_projection, ndc_x, ndc_y)?;
+        let ray_origin = match self.app_core.camera.projection_mode {
+            camera::ProjectionMode::Perspective => self.app_core.camera.eye(),
+            camera::ProjectionMode::Orthographic => ray.origin,
+        };
+        let normal = glam::Vec3::from_array(handles.plane_normal);
+        let plane_point = glam::Vec3::from_array(handles.plane_point);
+        let denom = ray.direction.dot(normal);
+        if denom.abs() < 1e-6 {
+            return None;
+        }
+        let t = (plane_point - ray_origin).dot(normal) / denom;
+        if t <= 0.0 {
+            return None;
+        }
+        let hit = ray_origin + ray.direction * t;
+        Some(handles.render_hit_to_profile(hit.to_array()))
+    }
+
+    /// The profile-vertex index under the cursor (physical px), the nearest within the handle
+    /// grab radius, or `None`. Reads the profile-order [`sketch_vertex_px`](Self::sketch_vertex_px)
+    /// cache, so it shares the exact projection the overlay drew. Used by the vertex-drag grab
+    /// (#94) and the delete hit-test (#95).
+    fn sketch_vertex_at(&self, cursor_x: f64, cursor_y: f64) -> Option<usize> {
+        let grab_px = (crate::signal_chrome::SKETCH_HANDLE_HALF
+            + crate::signal_chrome::SKETCH_HANDLE_GRAB_PAD)
+            * self.window.scale_factor() as f32;
+        let mut nearest: Option<(usize, f32)> = None;
+        for (index, center) in self.sketch_vertex_px.iter().enumerate() {
+            let Some(center) = center else { continue };
+            let distance = (cursor_x as f32 - center.x).hypot(cursor_y as f32 - center.y);
+            if distance <= grab_px && nearest.map(|(_, best)| distance < best).unwrap_or(true) {
+                nearest = Some((index, distance));
+            }
+        }
+        nearest.map(|(index, _)| index)
+    }
+
+    /// The profile SEGMENT under the cursor (physical px): the index of its START vertex, so an
+    /// insert lands at `start + 1` (ADR 0028 #95). Segments are consecutive `Some` pairs in the
+    /// profile-order [`sketch_vertex_px`](Self::sketch_vertex_px) cache, closing the loop
+    /// (`last → first`); the nearest within the pad wins. `None` when no edge is close enough or
+    /// an endpoint is culled behind the camera.
+    fn sketch_segment_at(&self, cursor_x: f64, cursor_y: f64) -> Option<usize> {
+        let count = self.sketch_vertex_px.len();
+        if count < 2 {
+            return None;
+        }
+        let pad_px = crate::signal_chrome::SKETCH_SEGMENT_GRAB_PAD * self.window.scale_factor() as f32;
+        let cursor = egui::Pos2::new(cursor_x as f32, cursor_y as f32);
+        let mut nearest: Option<(usize, f32)> = None;
+        for start in 0..count {
+            let (Some(a), Some(b)) =
+                (self.sketch_vertex_px[start], self.sketch_vertex_px[(start + 1) % count])
+            else {
+                continue;
+            };
+            let distance = point_to_segment_distance(cursor, a, b);
+            if distance <= pad_px && nearest.map(|(_, best)| distance < best).unwrap_or(true) {
+                nearest = Some((start, distance));
+            }
+        }
+        nearest.map(|(start, _)| start)
+    }
+
+    /// ADR 0028 (#95): the add-point producer for a click at the cursor (physical px) — the
+    /// current sketch with a new grid-snapped vertex inserted into the segment under the cursor,
+    /// splitting that edge. `None` when no segment is under the cursor, the cursor cannot be
+    /// projected onto the plane, or `target` is not an enabled sketch node. The caller routes the
+    /// returned producer through [`commit_sketch_profile_edit`](Self::commit_sketch_profile_edit).
+    pub(super) fn sketch_insert_at(
+        &self,
+        cursor_x: f64,
+        cursor_y: f64,
+    ) -> Option<document::sketch::SketchSolid> {
+        let target = self.panel_state.sketch_mode?;
+        let start = self.sketch_segment_at(cursor_x, cursor_y)?;
+        let handles = self
+            .panel_state
+            .scene
+            .sketch_handles(target, self.panel_state.geometry.voxels_per_block)?;
+        let coord = self.cursor_to_profile_coord(
+            cursor_x,
+            cursor_y,
+            self.last_view_projection?,
+            self.last_viewport_px,
+            &handles,
+        )?;
+        let (producer, _) = self.sketch_node_state(target)?;
+        // Insert AFTER the segment's start vertex, so the new point splits `start → start+1`.
+        let point = document::sketch::SketchPoint::new(coord[0].round() as i64, coord[1].round() as i64);
+        Some(producer.with_point_inserted(start, point))
+    }
+
+    /// ADR 0028 (#95): the delete producer for a click at the cursor (physical px) — the current
+    /// sketch with the vertex under the cursor removed. `None` when no vertex is under the cursor
+    /// or `target` is not an enabled sketch node. A profile that falls below three vertices is
+    /// still returned (it resolves to nothing, by AC) rather than blocked. The caller routes the
+    /// returned producer through [`commit_sketch_profile_edit`](Self::commit_sketch_profile_edit).
+    pub(super) fn sketch_delete_at(
+        &self,
+        cursor_x: f64,
+        cursor_y: f64,
+    ) -> Option<document::sketch::SketchSolid> {
+        let target = self.panel_state.sketch_mode?;
+        let index = self.sketch_vertex_at(cursor_x, cursor_y)?;
+        let (producer, _) = self.sketch_node_state(target)?;
+        if index >= producer.sketch.profile.len() {
+            return None;
+        }
+        Some(producer.with_point_removed(index))
+    }
+
+    /// ADR 0028 (#95): queue an add/delete profile edit as ONE entry in the open sketch undo
+    /// group. Recomputes the bbox-min anchor compensation exactly like the vertex drag — the
+    /// producer re-anchors its bbox-min to the node origin, so a vertex inserted or removed at
+    /// the bbox extreme would shift the whole profile in world unless the node offset absorbs the
+    /// bbox-min delta — then pushes `SetSketch` (+ `SetOffset` when the anchor moved) through the
+    /// viewport-intent door so the next `render` records it through `apply_intent`. A single
+    /// click therefore coalesces to one in-mode undo step, the same discipline the drag uses.
+    pub(super) fn commit_sketch_profile_edit(
+        &mut self,
+        target: document::scene::NodeId,
+        new_producer: document::sketch::SketchSolid,
+    ) {
+        let Some((old_producer, old_offset)) = self.sketch_node_state(target) else {
+            return;
+        };
+        let new_offset = new_producer.anchor_preserving_offset(&old_producer, old_offset);
+
+        self.viewport_intents.push(crate::Intent::SetSketch {
+            target,
+            producer: new_producer,
+        });
+        if new_offset != old_offset {
+            self.viewport_intents.push(crate::Intent::SetOffset {
+                target,
+                offset_measurements: [
+                    voxel_core::units::Measurement::from_voxels(new_offset[0]),
+                    voxel_core::units::Measurement::from_voxels(new_offset[1]),
+                    voxel_core::units::Measurement::from_voxels(new_offset[2]),
+                ],
+            });
+        }
+    }
+
     /// ADR 0028 (#94): if the cursor (physical px) is over a profile-vertex handle, build the
     /// [`SketchVertexDrag`] that grabs it — the nearest handle within the grab radius, with the
     /// current producer snapshotted so the whole gesture coalesces to one command. `None` when
     /// no handle is under the cursor (the press falls through to the normal camera/placement
-    /// path). Called from the `events` press handler.
+    /// path). Called from the `events` press handler, only under the Select tool.
     pub(super) fn begin_sketch_vertex_drag(&self, cursor_x: f64, cursor_y: f64) -> Option<SketchVertexDrag> {
         let target = self.panel_state.sketch_mode?;
-        let scale = self.window.scale_factor() as f32;
-        let grab_px = (crate::signal_chrome::SKETCH_HANDLE_HALF
-            + crate::signal_chrome::SKETCH_HANDLE_GRAB_PAD)
-            * scale;
-        let mut nearest: Option<(usize, f32)> = None;
-        for (center, index) in &self.sketch_handle_px {
-            let distance = (cursor_x as f32 - center.x).hypot(cursor_y as f32 - center.y);
-            if distance <= grab_px && nearest.map(|(_, best)| distance < best).unwrap_or(true) {
-                nearest = Some((*index, distance));
-            }
-        }
-        let (index, _) = nearest?;
+        let index = self.sketch_vertex_at(cursor_x, cursor_y)?;
         let node = self.panel_state.scene.node_by_id(target)?;
         let document::scene::NodeContent::SketchTool { producer, .. } = &node.content else {
             return None;
@@ -1000,11 +1134,13 @@ impl WindowedState {
         })
     }
 
-    /// ADR 0028 (#94): recompute the sketch vertex-handle overlay for the NEXT frame — project
-    /// each profile vertex (render frame) to screen, storing the egui-point centres + state for
-    /// drawing and the physical-pixel centres + vertex index for the press hit-test. Clears the
-    /// caches outside sketch mode. A vertex behind the camera (`clip.w <= 0`) is culled from
-    /// both, which is why the pixel cache carries its vertex index explicitly.
+    /// ADR 0028 (#94, extended #95): recompute the sketch overlay for the NEXT frame. Projects
+    /// each profile vertex (render frame) to screen, storing the egui-point handles + their
+    /// interaction state for drawing, and the physical-pixel centres **in profile order** for the
+    /// press hit-tests (a culled behind-camera vertex is `None`, keeping the indices aligned so
+    /// segments can pair adjacent vertices). Also derives the delete-hover **Marked** state and
+    /// the add-point **insert-preview** marker from the armed tool. Clears everything outside
+    /// sketch mode.
     fn refresh_sketch_overlay(
         &mut self,
         view_projection: glam::Mat4,
@@ -1012,7 +1148,8 @@ impl WindowedState {
         pixels_per_point: f32,
     ) {
         self.sketch_overlay_points.clear();
-        self.sketch_handle_px.clear();
+        self.sketch_vertex_px.clear();
+        self.sketch_insert_preview = None;
 
         let Some(target) = self.panel_state.sketch_mode else {
             return;
@@ -1025,6 +1162,7 @@ impl WindowedState {
             return;
         };
 
+        let tool = self.panel_state.sketch_tool;
         let [vx, vy, vw, vh] = viewport_px.map(|component| component as f32);
         let dragging = self.sketch_drag.as_ref().map(|drag| drag.index);
         // A forgiving grab radius (physical px) so a hover reads as "draggable" near the thumb.
@@ -1034,7 +1172,9 @@ impl WindowedState {
         for (index, vertex) in handles.vertices.iter().enumerate() {
             let clip = view_projection * glam::Vec4::new(vertex[0], vertex[1], vertex[2], 1.0);
             if clip.w <= 0.0 {
-                continue; // behind the camera — cull from both caches
+                // Behind the camera: hold the index with `None` so segment adjacency survives.
+                self.sketch_vertex_px.push(None);
+                continue;
             }
             let ndc_x = clip.x / clip.w;
             let ndc_y = clip.y / clip.w;
@@ -1048,8 +1188,12 @@ impl WindowedState {
                     (cx as f32 - px).hypot(cy as f32 - py) <= hover_radius_px
                 })
                 .unwrap_or(false);
+            // Delete tool + hover = the destructive Marked state (warn ✕); otherwise the
+            // #94 idle / hover / dragged progression.
             let state = if dragging == Some(index) {
                 ui::gizmos::HandleState::Snapped
+            } else if hovered && tool == ui::panel::SketchTool::Delete {
+                ui::gizmos::HandleState::Marked
             } else if hovered {
                 ui::gizmos::HandleState::Hover
             } else {
@@ -1058,7 +1202,79 @@ impl WindowedState {
 
             let center_pt = egui::Pos2::new(px / pixels_per_point, py / pixels_per_point);
             self.sketch_overlay_points.push((center_pt, state));
-            self.sketch_handle_px.push((center_px, index));
+            self.sketch_vertex_px.push(Some(center_px));
         }
+
+        // Add-point insert preview: the point on the hovered segment nearest the cursor (physical
+        // px), in egui points — "a vertex lands here on this edge". Drawn as a diamond next frame.
+        if tool == ui::panel::SketchTool::AddPoint {
+            if let Some((cursor_x, cursor_y)) = self.last_cursor_position {
+                if let Some(start) = self.sketch_segment_at(cursor_x, cursor_y) {
+                    let count = self.sketch_vertex_px.len();
+                    if let (Some(a), Some(b)) =
+                        (self.sketch_vertex_px[start], self.sketch_vertex_px[(start + 1) % count])
+                    {
+                        let cursor = egui::Pos2::new(cursor_x as f32, cursor_y as f32);
+                        let foot = closest_point_on_segment(cursor, a, b);
+                        self.sketch_insert_preview =
+                            Some(egui::Pos2::new(foot.x / pixels_per_point, foot.y / pixels_per_point));
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The closest point on segment `a→b` to `p` (all in the same 2D space) — the foot of the
+/// perpendicular, clamped to the segment ends. The add-point insert preview sits here.
+fn closest_point_on_segment(p: egui::Pos2, a: egui::Pos2, b: egui::Pos2) -> egui::Pos2 {
+    let ab = b - a;
+    let length_squared = ab.length_sq();
+    if length_squared <= f32::EPSILON {
+        return a; // degenerate segment (coincident endpoints)
+    }
+    let t = ((p - a).dot(ab) / length_squared).clamp(0.0, 1.0);
+    a + ab * t
+}
+
+/// The distance from `p` to segment `a→b` — the add-point segment hit-test's metric.
+fn point_to_segment_distance(p: egui::Pos2, a: egui::Pos2, b: egui::Pos2) -> f32 {
+    (p - closest_point_on_segment(p, a, b)).length()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{closest_point_on_segment, point_to_segment_distance};
+    use egui::pos2;
+
+    #[test]
+    fn foot_falls_inside_the_span_for_a_perpendicular_drop() {
+        // A cursor above the middle of a horizontal edge projects to that midpoint, so the
+        // insert preview and the hit distance are the perpendicular offset.
+        let a = pos2(0.0, 0.0);
+        let b = pos2(10.0, 0.0);
+        let foot = closest_point_on_segment(pos2(4.0, 3.0), a, b);
+        assert!((foot.x - 4.0).abs() < 1e-4 && foot.y.abs() < 1e-4, "foot at (4, 0), got {foot:?}");
+        assert!((point_to_segment_distance(pos2(4.0, 3.0), a, b) - 3.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn foot_clamps_to_the_nearer_end_past_the_segment() {
+        // A cursor beyond an endpoint clamps to that endpoint — the distance is to the vertex,
+        // NOT to the infinite line, so a click off the end of an edge does not falsely hit it.
+        let a = pos2(0.0, 0.0);
+        let b = pos2(10.0, 0.0);
+        assert_eq!(closest_point_on_segment(pos2(-5.0, 0.0), a, b), a, "clamps to the start");
+        assert!(
+            (point_to_segment_distance(pos2(15.0, 0.0), a, b) - 5.0).abs() < 1e-4,
+            "distance is to the end vertex (5), not 0 on the extended line"
+        );
+    }
+
+    #[test]
+    fn a_degenerate_segment_reduces_to_its_endpoint() {
+        // Coincident endpoints (a culled/collapsed edge) must not divide by zero.
+        let a = pos2(3.0, 3.0);
+        assert_eq!(closest_point_on_segment(pos2(9.0, 9.0), a, a), a);
     }
 }

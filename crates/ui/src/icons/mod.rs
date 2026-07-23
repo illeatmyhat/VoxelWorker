@@ -42,6 +42,7 @@
 
 use egui::{Color32, Painter, Pos2, Rect, Shape, Stroke};
 
+mod add_point;
 mod array;
 mod axes_gizmo;
 mod box_solid;
@@ -576,6 +577,7 @@ pub enum Icon {
     Density,
     // Sketch mode.
     SelectVertex,
+    AddPoint,
     Polyline,
     Rectangle,
     DeleteVertex,
@@ -640,6 +642,7 @@ impl Icon {
         Icon::Flip,
         Icon::Density,
         Icon::SelectVertex,
+        Icon::AddPoint,
         Icon::Polyline,
         Icon::Rectangle,
         Icon::DeleteVertex,
@@ -704,6 +707,7 @@ impl Icon {
             Icon::Flip => g.marks(flip::DRAW),
             Icon::Density => g.marks(density::DRAW),
             Icon::SelectVertex => g.marks(select_vertex::DRAW),
+            Icon::AddPoint => g.marks(add_point::DRAW),
             Icon::Polyline => g.marks(polyline::DRAW),
             Icon::Rectangle => g.marks(rectangle::DRAW),
             Icon::DeleteVertex => g.marks(delete_vertex::DRAW),
@@ -768,6 +772,7 @@ impl Icon {
             Icon::Flip => "flip",
             Icon::Density => "density",
             Icon::SelectVertex => "select-vertex",
+            Icon::AddPoint => "add-point",
             Icon::Polyline => "polyline",
             Icon::Rectangle => "rectangle",
             Icon::DeleteVertex => "delete-vertex",
@@ -804,8 +809,9 @@ impl Icon {
             | Icon::FoldCursor | Icon::Link => Group::Structure,
             Icon::SculptAdd | Icon::Carve | Icon::Measure | Icon::Probe | Icon::Material
             | Icon::Rotate | Icon::Flip | Icon::Density => Group::Tools,
-            Icon::SelectVertex | Icon::Polyline | Icon::Rectangle | Icon::DeleteVertex
-            | Icon::CloseLoop | Icon::SnapNone | Icon::SnapVoxel | Icon::SnapBlock => Group::Sketch,
+            Icon::SelectVertex | Icon::AddPoint | Icon::Polyline | Icon::Rectangle
+            | Icon::DeleteVertex | Icon::CloseLoop | Icon::SnapNone | Icon::SnapVoxel
+            | Icon::SnapBlock => Group::Sketch,
             Icon::ChevronRight | Icon::ChevronDown | Icon::Commit | Icon::Cancel | Icon::Drawer
             | Icon::Search => Group::Chrome,
         }
@@ -880,6 +886,10 @@ impl Icon {
             Icon::SelectVertex => {
                 "Sketch: the default arrow — pick and drag a profile vertex. The node at the tip \
                  says 'a point', not a whole body."
+            }
+            Icon::AddPoint => {
+                "Sketch: click a profile edge to insert a vertex there, splitting the segment at \
+                 the grid-snapped click."
             }
             Icon::Polyline => "Sketch: click to place connected profile points — arbitrary organic outlines.",
             Icon::Rectangle => "Sketch: drag a box into a four-point profile — the box-drag sugar, inside the mode.",

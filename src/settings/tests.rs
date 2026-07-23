@@ -53,6 +53,8 @@
             },
             // Non-default (Some) so the round-trip exercises sketch-mode persistence (ADR 0028).
             sketch_mode: Some(document::scene::NodeId(9)),
+            // Non-default (not Select) so the round-trip exercises the armed sketch tool (#95).
+            sketch_tool: ui::panel::SketchTool::AddPoint,
         };
 
         let restored = save_and_reload(&config);

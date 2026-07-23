@@ -319,6 +319,27 @@ pub const SKETCH_HANDLE_HALF: f32 = 5.0;
 /// + SKETCH_HANDLE_GRAB_PAD`).
 pub const SKETCH_HANDLE_GRAB_PAD: f32 = 5.0;
 
+/// How close (egui points) the cursor must come to a profile edge for the add-point tool to
+/// treat it as hovering that segment (#95). Wider than a vertex grab so an edge is an easy
+/// target, but the shell prefers a vertex hit first, so the two never fight over the same click.
+pub const SKETCH_SEGMENT_GRAB_PAD: f32 = 7.0;
+
+/// The half-extent (egui points) of the add-point insert-preview diamond — the hollow marker
+/// on the hovered edge showing where a click drops a vertex.
+pub const SKETCH_INSERT_MARKER_HALF: f32 = 4.0;
+
+/// Draw the add-point **insert-preview** marker (ADR 0028, #95): a hollow diamond at `center`
+/// (already-projected egui points) on the hovered profile edge — "a vertex lands here". Mirrors
+/// [`sketch_vertex_handles`]'s foreground-`layer_painter` idiom so it paints over the scene, and
+/// is deliberately NOT registered as chrome: it is a passive preview, so a click passes through
+/// to the shell's stationary-release insert rather than being swallowed here.
+pub fn sketch_insert_marker(ui: &egui::Ui, center: Pos2) {
+    let painter = ui
+        .ctx()
+        .layer_painter(LayerId::new(Order::Foreground, Id::new("sketch_insert_marker")));
+    ui::gizmos::diamond(&painter, center, SKETCH_INSERT_MARKER_HALF);
+}
+
 /// Draw the sketch profile's **vertex handles** (ADR 0028, #94) at their already-projected
 /// screen positions, each in the given [`HandleState`], and register each handle's grab
 /// rect as chrome so a press on a handle drags the vertex instead of orbiting the camera.

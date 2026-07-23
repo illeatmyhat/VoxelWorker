@@ -1055,6 +1055,8 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         // ADR 0028 (#94): the headless capture computes no live vertex handles (sketch
         // authoring is a windowed-only interaction); the goldens stay handle-free.
         &[],
+        // ADR 0028 (#95): likewise no add-point insert preview in the headless goldens.
+        None,
     );
 
     // Issue #25: now that egui has laid out its panels, derive the camera aspect

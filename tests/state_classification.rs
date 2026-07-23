@@ -204,10 +204,11 @@ fn a_field_carried_across_the_seam_keeps_its_category() {
 /// The session category (ADR 0024), pinned the way the document set is: by naming its
 /// membership, so that a field joining or leaving it costs a deliberate edit here.
 ///
-/// These four are the ones ADR 0018 decision 3 and issue #88 kept out of persistence
-/// entirely, on a reading of "not document state" that the owner has since narrowed back
-/// to what it says. They are in the dump and out of the document — the browser's bargain,
-/// which is the whole content of the category.
+/// The first of these are the ones ADR 0018 decision 3 and issue #88 kept out of persistence
+/// entirely, on a reading of "not document state" that the owner has since narrowed back to
+/// what it says; the armed-tool and sketch-mode fields (ADR 0022/0028) joined later. They are
+/// all in the dump and out of the document — the browser's bargain, which is the whole content
+/// of the category.
 #[test]
 fn the_session_is_the_workspace_and_nothing_else() {
     let session_fields: Vec<&str> = AppConfig::CLASSIFIED_FIELDS
@@ -225,13 +226,17 @@ fn the_session_is_the_workspace_and_nothing_else() {
             // ADR 0022: the armed-tool placement ghost survives a mid-gesture relaunch.
             "placement_ghost",
             // ADR 0024/0026: the armed-tool snap settings persist across adds and relaunch.
-            "placement_snap"
+            "placement_snap",
+            // ADR 0028: the sketch under edit, and the tool armed in it, re-enter on a
+            // mid-edit relaunch (the same "how the workspace was left" the ghost is).
+            "sketch_mode",
+            "sketch_tool"
         ],
         "the session set changed: a field joining it now survives relaunch, and a field \
          leaving it stops surviving one"
     );
 
-    // The same four, classified the same way on the struct they are captured from. The
+    // The same set, classified the same way on the struct they are captured from. The
     // preceding test proves they have a route; this proves both ends call it the same
     // thing.
     for name in session_fields {

@@ -70,7 +70,7 @@ use serde::{Deserialize, Serialize};
 
 use camera::ProjectionMode;
 use document::scene::Scene;
-use ui::panel::{SignalStackState, ViewMode};
+use ui::panel::{SignalStackState, SketchTool, ViewMode};
 use voxel_core::core_geom::MaterialChoice;
 
 use crate::settings::{AppConfig, PlacementGhostConfig};
@@ -98,6 +98,18 @@ enum ViewModeConfig {
     Normal,
     OnionFog,
     ShowBooleans,
+}
+
+/// The same shim for the `ui` crate's [`SketchTool`] (ADR 0028, #95) — the armed sketch-mode
+/// verb. `ui` carries no serde (the crate law), so the tool is persisted from out here exactly
+/// as the viewer mode is. Mirrors all three variants; a dump naming a variant this build lacks
+/// falls back to the default (`Select`), the same tolerance every other key gets.
+#[derive(Serialize, Deserialize)]
+#[serde(remote = "SketchTool")]
+enum SketchToolConfig {
+    Select,
+    AddPoint,
+    Delete,
 }
 
 /// And for the Signal display stack's fold state. A struct rather than an enum, which
@@ -270,6 +282,11 @@ pub struct SessionArtifact {
     /// degrades a pre-field dump to `None`.
     #[serde(default)]
     pub sketch_mode: Option<document::scene::NodeId>,
+    /// The armed sketch-mode tool (ADR 0028, #95). Persisted through the `SketchToolConfig`
+    /// remote shim (the `ui` crate carries no serde); a pre-field dump degrades to the default
+    /// `Select`.
+    #[serde(default, with = "SketchToolConfig")]
+    pub sketch_tool: SketchTool,
 }
 
 /// The debugging artifact, and the superset: **a scene must be completely reproducible
@@ -336,6 +353,8 @@ impl DocumentArtifact {
             // Declined — session state. Which sketch someone was editing is where they
             // stopped, not part of the shared model.
             sketch_mode: _,
+            // Declined — session state. Which sketch tool was armed is where they stopped too.
+            sketch_tool: _,
             // Declined — session/settings. One person's snap preference must not ride into a
             // shared document.
             placement_snap: _,
@@ -394,6 +413,7 @@ impl Dump {
             placement_ghost,
             placement_snap,
             sketch_mode,
+            sketch_tool,
         } = state;
         Self {
             document: DocumentArtifact {
@@ -428,6 +448,7 @@ impl Dump {
                 placement_ghost: placement_ghost.clone(),
                 placement_snap: *placement_snap,
                 sketch_mode: *sketch_mode,
+                sketch_tool: *sketch_tool,
             },
         }
     }
@@ -473,6 +494,7 @@ impl Dump {
             placement_ghost: session.placement_ghost,
             placement_snap: session.placement_snap,
             sketch_mode: session.sketch_mode,
+            sketch_tool: session.sketch_tool,
         }
     }
 
@@ -640,6 +662,8 @@ mod tests {
             // Off its default (Some, not None) so a capture that dropped it fails the
             // round-trip rather than coinciding with a default restore (ADR 0028).
             sketch_mode: Some(document::scene::NodeId(9)),
+            // Off its default (Delete, not Select) for the same reason (ADR 0028, #95).
+            sketch_tool: SketchTool::Delete,
         }
     }
 

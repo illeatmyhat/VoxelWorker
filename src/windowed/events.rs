@@ -101,17 +101,28 @@ impl ApplicationHandler for App {
                     // only a stationary release (below) drops the node.
                     state.armed_press =
                         state.armed_tool.is_some() && !egui_consumed && !in_cube && !in_chrome;
-                    // ADR 0028 (#94): a press on a profile-vertex handle begins a vertex drag.
-                    // Only in sketch mode, on the live viewport (not egui / cube). The grab is
-                    // AUTHORITATIVE for orbit suppression: when it takes a handle we force
-                    // `left_button_held = false` so the drag never also orbits the camera —
-                    // NOT relying on the handle's chrome rect (that rect can misalign with the
-                    // grab circle under egui zoom, or lag a frame behind this cache).
+                    // ADR 0028 (#94/#95): a sketch-mode press, on the live viewport (not egui /
+                    // cube). The Select tool grabs a vertex handle (a drag that suppresses orbit);
+                    // the Add-point / Delete tools ARM a stationary-release edit (a drag still
+                    // orbits, so the view stays freely rotatable while any tool is armed).
                     if state.panel_state.sketch_mode.is_some() && !egui_consumed && !in_cube {
                         if let Some((cursor_x, cursor_y)) = position {
-                            state.sketch_drag = state.begin_sketch_vertex_drag(cursor_x, cursor_y);
-                            if state.sketch_drag.is_some() {
-                                state.left_button_held = false;
+                            match state.panel_state.sketch_tool {
+                                // The grab is AUTHORITATIVE for orbit suppression: when it takes a
+                                // handle we force `left_button_held = false` so the drag never also
+                                // orbits — NOT relying on the handle's chrome rect (that rect can
+                                // misalign under egui zoom, or lag a frame behind this cache).
+                                ui::panel::SketchTool::Select => {
+                                    state.sketch_drag =
+                                        state.begin_sketch_vertex_drag(cursor_x, cursor_y);
+                                    if state.sketch_drag.is_some() {
+                                        state.left_button_held = false;
+                                    }
+                                }
+                                // Arm the edit; a stationary release performs it, a drag orbits.
+                                ui::panel::SketchTool::AddPoint | ui::panel::SketchTool::Delete => {
+                                    state.sketch_edit_press = true;
+                                }
                             }
                         }
                     }
@@ -179,6 +190,35 @@ impl ApplicationHandler for App {
                             }
                         }
                     }
+                    // ADR 0028 (#95): a STATIONARY release with a sketch add-point / delete edit
+                    // armed performs it (a drag orbited instead — the same click-vs-drag threshold
+                    // placement uses). Runs BEFORE `last_cursor_position` is cleared below, since
+                    // the insert/delete hit-test needs the release cursor. The tool stays armed.
+                    if state.sketch_edit_press {
+                        if let (Some((down_x, down_y)), Some((up_x, up_y))) =
+                            (state.press_position, state.last_cursor_position)
+                        {
+                            let stationary = (up_x - down_x).abs()
+                                < VIEW_CUBE_DRAG_THRESHOLD_PIXELS
+                                && (up_y - down_y).abs() < VIEW_CUBE_DRAG_THRESHOLD_PIXELS;
+                            if let (true, Some(target)) = (stationary, state.panel_state.sketch_mode)
+                            {
+                                let edit = match state.panel_state.sketch_tool {
+                                    ui::panel::SketchTool::AddPoint => {
+                                        state.sketch_insert_at(up_x, up_y)
+                                    }
+                                    ui::panel::SketchTool::Delete => {
+                                        state.sketch_delete_at(up_x, up_y)
+                                    }
+                                    ui::panel::SketchTool::Select => None,
+                                };
+                                if let Some(producer) = edit {
+                                    state.commit_sketch_profile_edit(target, producer);
+                                }
+                            }
+                        }
+                    }
+                    state.sketch_edit_press = false;
                     state.armed_press = false;
                     state.left_button_held = false;
                     state.last_cursor_position = None;

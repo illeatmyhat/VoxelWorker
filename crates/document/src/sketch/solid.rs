@@ -227,6 +227,69 @@ impl SketchSolid {
         Some((min, max))
     }
 
+    /// The profile's in-plane bounding-box **minimum** per profile coordinate — `[0, 0]` for an
+    /// empty profile. Unlike [`profile_bounds`](Self::profile_bounds) this ignores degeneracy: it
+    /// is the authoring anchor the producer re-seats to the node origin, needed while a profile is
+    /// still being built (fewer than three points, zero height) and its vertices are being edited.
+    pub fn profile_bbox_min(&self) -> [i64; 2] {
+        let mut min = self
+            .sketch
+            .profile
+            .first()
+            .map(|point| point.offset_voxels)
+            .unwrap_or([0, 0]);
+        for point in &self.sketch.profile {
+            min[0] = min[0].min(point.offset_voxels[0]);
+            min[1] = min[1].min(point.offset_voxels[1]);
+        }
+        min
+    }
+
+    /// The node offset that keeps every **un-edited** profile vertex fixed in world after this
+    /// producer replaced `previous` at node offset `previous_offset` (ADR 0028, #94/#95).
+    ///
+    /// The resolve re-anchors the profile's bbox-minimum to the node origin
+    /// ([`profile_bbox_min`](Self::profile_bbox_min)), so a vertex added, removed, or dragged at
+    /// the profile's extreme moves that minimum and would drag the whole profile with it. Absorbing
+    /// the bbox-min delta into the node offset — on the plane's two in-plane axes — cancels that,
+    /// so only the edited vertex moves and the rest hold still. The normal axis never shifts (the
+    /// profile lives on the plane).
+    pub fn anchor_preserving_offset(
+        &self,
+        previous: &SketchSolid,
+        previous_offset: [i64; 3],
+    ) -> [i64; 3] {
+        let old_min = previous.profile_bbox_min();
+        let new_min = self.profile_bbox_min();
+        let [in0, in1] = self.sketch.plane.in_plane_axes();
+        let mut offset = previous_offset;
+        offset[in0] += new_min[0] - old_min[0];
+        offset[in1] += new_min[1] - old_min[1];
+        offset
+    }
+
+    /// This producer with `point` inserted just **after** profile index `after`, splitting the
+    /// edge `after → after+1` (ADR 0028, #95 add-point). `after` past the profile's end clamps to
+    /// the end (an append). Pure — returns a new producer, leaving `self` untouched.
+    pub fn with_point_inserted(&self, after: usize, point: SketchPoint) -> SketchSolid {
+        let mut next = self.clone();
+        let index = (after + 1).min(next.sketch.profile.len());
+        next.sketch.profile.insert(index, point);
+        next
+    }
+
+    /// This producer with the profile vertex at `index` removed (ADR 0028, #95 delete). An
+    /// out-of-range `index` is a no-op. Pure — returns a new producer. A profile that falls below
+    /// three vertices is left as-is here; it simply resolves to nothing (the degeneracy is the
+    /// resolve's to handle, never an error).
+    pub fn with_point_removed(&self, index: usize) -> SketchSolid {
+        let mut next = self.clone();
+        if index < next.sketch.profile.len() {
+            next.sketch.profile.remove(index);
+        }
+        next
+    }
+
     /// The resolved grid's voxel dimensions `[x, y, z]` (the prism's AABB), or
     /// `[0, 0, 0]` for a degenerate profile. The two in-plane axes get the
     /// profile's bounding-box span; the normal axis gets `height_voxels`.

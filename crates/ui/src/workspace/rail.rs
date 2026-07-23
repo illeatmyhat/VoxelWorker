@@ -21,7 +21,7 @@ use voxel_core::voxel::ShapeKind;
 
 use super::{hairline, region_frame, Edge, RAIL_WIDTH};
 use crate::icons::{large::LargeIcon, Icon};
-use crate::panel::{PanelResponse, PanelState};
+use crate::panel::{PanelResponse, PanelState, SketchTool};
 use crate::signal_theme;
 
 /// A shape cell: full rail width less the hairline, tall enough for a 26 px tile plus air.
@@ -66,13 +66,16 @@ const TOOLS: &[(Icon, bool)] = &[
 ];
 
 /// The sketch-mode rail toolset (ADR 0028): the direct-manipulation vertex tools. Rendered in
-/// place of `SHAPES`/`TOOLS` while a sketch is being edited. Slice 1 (#93) shows them as the
-/// mode indicator; the tools themselves arm in later slices (#94 select/move, #95 add/delete).
-const SKETCH_TOOLS: &[(Icon, &str)] = &[
-    (Icon::SelectVertex, "Select / move vertex"),
-    (Icon::Polyline, "Line / polyline"),
-    (Icon::Rectangle, "Rectangle"),
-    (Icon::DeleteVertex, "Delete vertex"),
+/// place of `SHAPES`/`TOOLS` while a sketch is being edited. The three that carry `Some(tool)`
+/// ARM that [`SketchTool`] on click (#94 select/move, #95 add-point/delete); Polyline and
+/// Rectangle carry `None` — drawn RESERVED until slice 3, so the finished toolbelt is visible
+/// without pretending the verbs work (the rail's standing convention).
+const SKETCH_TOOLS: &[(Icon, &str, Option<SketchTool>)] = &[
+    (Icon::SelectVertex, "Select / move vertex", Some(SketchTool::Select)),
+    (Icon::AddPoint, "Add point — split an edge", Some(SketchTool::AddPoint)),
+    (Icon::Polyline, "Line / polyline", None),
+    (Icon::Rectangle, "Rectangle", None),
+    (Icon::DeleteVertex, "Delete vertex", Some(SketchTool::Delete)),
 ];
 
 /// The set-operation picker on the sketch rail (ADR 0028 §1: the operation is a property of
@@ -121,9 +124,10 @@ pub(super) fn build_rail(
 
 /// The swapped rail while a sketch is being edited (ADR 0028): the accent `SKETCH` head (the
 /// whole-mode indicator), the vertex tools, then an `OP` separator and the set-operation
-/// picker. Slice 1 draws the tools inert — `Select` reads active, the current operation reads
-/// active, `Sweep` reads reserved; arming them is later slices (#94–#97).
-fn build_sketch_rail(ui: &mut egui::Ui, state: &PanelState) {
+/// picker. The armable vertex tools select [`PanelState::sketch_tool`] on click and light the
+/// active one; Polyline / Rectangle read reserved (slice 3), the current operation reads active,
+/// `Sweep` reads reserved (#97 wires the op clicks).
+fn build_sketch_rail(ui: &mut egui::Ui, state: &mut PanelState) {
     // The current operation of the edited node, to light the matching OP cell.
     let current_op = state
         .sketch_mode
@@ -141,10 +145,18 @@ fn build_sketch_rail(ui: &mut egui::Ui, state: &PanelState) {
     };
 
     rail_heading_active(ui, "Sketch");
-    // The vertex tools. Select is the default active tool in slice 1; the rest are drawn
-    // live-but-inert (their arming lands with the editing slices).
-    for (index, &(icon, tip)) in SKETCH_TOOLS.iter().enumerate() {
-        sketch_cell(ui, icon, tip, index == 0, false);
+    // The vertex tools. An armable tool (Some) lights when it is the current `sketch_tool` and
+    // selects it on click; Polyline / Rectangle (None) draw reserved until slice 3.
+    for &(icon, tip, tool) in SKETCH_TOOLS {
+        match tool {
+            Some(tool) => {
+                let active = state.sketch_tool == tool;
+                if sketch_tool_cell(ui, icon, tip, active) {
+                    state.sketch_tool = tool;
+                }
+            }
+            None => sketch_cell(ui, icon, tip, false, true),
+        }
     }
     rail_heading(ui, "Op");
     for &(icon, tip, reserved) in SKETCH_OPS {
@@ -180,9 +192,24 @@ fn rail_heading_active(ui: &mut egui::Ui, title: &str) {
     ui.painter().galley(at, galley, signal_theme::BG);
 }
 
-/// One sketch-mode rail cell (ADR 0028): a tool or set-operation glyph at rail-glyph size,
-/// with the active accent bar and the reserved dim treatment. Slice 1 is display-only — the
-/// cells report hover + tooltip but arm nothing yet (later slices wire the clicks).
+/// One **armable** sketch-tool rail cell (ADR 0028, #95): a clickable tool glyph that lights
+/// when `active`. Returns `true` the frame it is clicked, so the caller arms the tool. The
+/// active bar / hover fill are the shared rail treatment ([`paint_cell`]).
+fn sketch_tool_cell(ui: &mut egui::Ui, icon: Icon, tip: &str, active: bool) -> bool {
+    let (rect, cell) =
+        ui.allocate_exact_size(egui::vec2(RAIL_WIDTH, TOOL_CELL_HEIGHT), egui::Sense::click());
+    let hovered = cell.hovered();
+    paint_cell(ui, rect, active, hovered);
+    let color = cell_ink(active, hovered, false);
+    let glyph = egui::Rect::from_center_size(rect.center(), egui::Vec2::splat(TOOL_GLYPH));
+    icon.draw(ui.painter(), glyph, color);
+    let cell = cell.on_hover_text(tip.to_string());
+    cell.clicked()
+}
+
+/// One **inert** sketch-mode rail cell (ADR 0028): a set-operation glyph, or a tool whose verb
+/// is reserved for a later slice — drawn with the active accent bar and the reserved dim
+/// treatment, reporting hover + tooltip but arming nothing (the op clicks land in #97).
 fn sketch_cell(ui: &mut egui::Ui, icon: Icon, tip: &str, active: bool, reserved: bool) {
     let (rect, cell) = ui.allocate_exact_size(
         egui::vec2(RAIL_WIDTH, TOOL_CELL_HEIGHT),
@@ -193,7 +220,8 @@ fn sketch_cell(ui: &mut egui::Ui, icon: Icon, tip: &str, active: bool, reserved:
     let color = cell_ink(active, hovered, reserved);
     let glyph = egui::Rect::from_center_size(rect.center(), egui::Vec2::splat(TOOL_GLYPH));
     icon.draw(ui.painter(), glyph, color);
-    cell.on_hover_text(tip.to_string());
+    let tip = if reserved { format!("{tip} — reserved") } else { tip.to_string() };
+    cell.on_hover_text(tip);
 }
 
 /// One shape cell. Clicking an expressible shape retargets the SELECTED Tool node.

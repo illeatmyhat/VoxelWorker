@@ -4,6 +4,7 @@ use voxel_core::voxel::VoxelGrid;
 use std::collections::BTreeSet;
 
 mod coarse_solid;
+mod edits;
 mod extrude;
 mod field;
 mod revolve;

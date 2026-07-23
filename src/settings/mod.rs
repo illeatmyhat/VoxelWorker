@@ -21,7 +21,9 @@
 use camera::{HomeView, OrbitCamera, ProjectionMode};
 use voxel_core::core_geom::MaterialChoice;
 use voxel_core::voxel::ShapeKind;
-use ui::panel::{LayerRange, PanelState, PlacementGhost, PlacementSnap, SignalStackState, ViewMode};
+use ui::panel::{
+    LayerRange, PanelState, PlacementGhost, PlacementSnap, SignalStackState, SketchTool, ViewMode,
+};
 use document::scene::{NodeContent, NodeId, Scene};
 use document::voxel::{GeometryParams, SdfShape};
 
@@ -256,6 +258,14 @@ pub struct AppConfig {
     /// degrades a pre-field dump to `None` (the normal chrome).
     #[snapshot(session)]
     pub sketch_mode: Option<NodeId>,
+
+    /// The armed sketch-mode tool (ADR 0028, #95), restored so a mid-edit dump re-enters the
+    /// mode with the same tool in hand. Session state alongside [`sketch_mode`](Self::sketch_mode);
+    /// `SketchTool` lives in the serde-free `ui` crate, so `SessionArtifact` persists it through a
+    /// `SketchToolConfig` remote shim exactly as it does the viewer mode. Named `sketch_tool` to
+    /// match the [`PanelState`] field it routes to.
+    #[snapshot(session)]
+    pub sketch_tool: SketchTool,
 }
 
 impl Default for AppConfig {
@@ -286,6 +296,7 @@ impl Default for AppConfig {
             debug_brick_faces: false,
             placement_ghost: None,
             sketch_mode: None,
+            sketch_tool: SketchTool::default(),
         }
     }
 }
@@ -336,6 +347,7 @@ impl AppConfig {
             // ADR 0022: the armed placement ghost, captured as its serde-able mirror so a
             // mid-gesture dump replays the pending drop.
             placement_ghost: panel.placement_ghost.as_ref().map(PlacementGhostConfig::from_ghost),
+            sketch_tool: panel.sketch_tool,
             // ADR 0028: the sketch node under edit, so a mid-edit dump re-enters sketch mode.
             sketch_mode: panel.sketch_mode,
         }
@@ -432,6 +444,9 @@ impl AppConfig {
             // Cleared to `None` below if the id no longer resolves in the restored scene, so a
             // stale sketch node can never trap the mode.
             sketch_mode: self.sketch_mode,
+            // ADR 0028 (#95): restore the armed sketch tool, so a mid-edit repro re-enters with
+            // the same verb in hand. Latent until sketch mode is active.
+            sketch_tool: self.sketch_tool,
         };
         // step 8: restore the persisted full scene when present and non-empty;
         // otherwise (a scene-less old config, or a `Some(scene)` with no nodes — a

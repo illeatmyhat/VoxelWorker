@@ -234,6 +234,28 @@ pub enum SketchExit {
     Cancel,
 }
 
+/// The armed **sketch-mode tool** (ADR 0028) — which direct-manipulation verb a viewport
+/// click performs while a sketch is being edited. Only these three arm in slice 1 (#94 vertex
+/// drag, #95 add-point / delete); the Polyline / Rectangle tools are drawn **reserved** on the
+/// rail until slice 3, so they are not variants here yet.
+///
+/// **Session** state on the same footing as [`PanelState::placement_ghost`] and
+/// [`PanelState::sketch_mode`]: which tool was armed is how the workspace was left, never
+/// document state, and it rides into the dump so a mid-edit repro re-enters the mode with the
+/// same tool in hand (the ADR 0024 route the armed ghost and the sketch mode itself take).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SketchTool {
+    /// Select / move a profile vertex — press a handle and drag it on the plane (#94). The
+    /// default, and the only tool that grabs a vertex on press.
+    #[default]
+    Select,
+    /// Add a point: click a profile **segment** to insert a new vertex there, splitting the
+    /// edge at the grid-snapped click (owner ruling 2026-07-22, #95).
+    AddPoint,
+    /// Delete a point: click an existing profile **vertex** to remove it (#95).
+    Delete,
+}
+
 /// The floating Signal **display stack**'s viewer state (issue #88; ADR 0018 Decision 8,
 /// `docs/design/viewport-chrome-signal.md` §Chrome layout — display panel bullet).
 ///
@@ -504,6 +526,17 @@ pub struct PanelState {
     /// sketch. Cleared when the id leaves the scene (a stale node can never trap the mode).
     #[snapshot(session)]
     pub sketch_mode: Option<NodeId>,
+    /// The armed sketch-mode tool (ADR 0028, #95): which vertex verb a viewport click performs
+    /// while [`sketch_mode`](Self::sketch_mode) is `Some`. Ignored (but retained) outside the
+    /// mode, exactly like [`placement_snap`](Self::placement_snap) is retained with nothing
+    /// armed. Defaults to [`SketchTool::Select`].
+    ///
+    /// **Session** state alongside [`sketch_mode`](Self::sketch_mode) and
+    /// [`placement_ghost`](Self::placement_ghost): the armed tool is where the author left the
+    /// workspace, never document state, and rides into the dump so a mid-edit repro re-enters
+    /// with the same tool in hand.
+    #[snapshot(session)]
+    pub sketch_tool: SketchTool,
 }
 
 impl PanelState {

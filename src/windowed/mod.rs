@@ -274,11 +274,27 @@ struct WindowedState {
     /// their interaction state, refreshed at the END of each frame and drawn on the NEXT
     /// (a one-frame lag, imperceptible for handle chrome). Empty outside sketch mode.
     sketch_overlay_points: Vec<(egui::Pos2, ui::gizmos::HandleState)>,
-    /// Each drawn handle's centre in PHYSICAL pixels paired with its PROFILE-vertex index —
-    /// the press hit-test (in `events`, outside `render`) reads these to decide whether a
-    /// click grabs a vertex and which one. Carries the index explicitly because projection
-    /// may cull a behind-camera vertex, so position in this list is NOT the vertex index.
-    sketch_handle_px: Vec<(egui::Pos2, usize)>,
+    /// Every profile vertex's centre in PHYSICAL pixels, **in profile order** — `None` where
+    /// projection culled a behind-camera vertex. The press hit-tests (in `events`, outside
+    /// `render`) read these: a vertex grab / delete finds the nearest `Some`, and add-point
+    /// finds the nearest projected SEGMENT (consecutive `Some` pairs, closing the loop). Kept
+    /// in profile order — rather than the old index-paired flat list — precisely because
+    /// segments need adjacency, which a culled-and-compacted list loses.
+    sketch_vertex_px: Vec<Option<egui::Pos2>>,
+    /// The add-point tool's insert-preview marker for THIS frame (egui points): where a click
+    /// would drop a vertex on the hovered segment (the foot of the perpendicular from the
+    /// cursor), or `None` when the add-point tool is idle / no segment is under the cursor.
+    /// Refreshed alongside the handles; drawn as a diamond on the next frame.
+    sketch_insert_preview: Option<egui::Pos2>,
+    /// The last frame's world→clip matrix, cached so the release handler (in `events`) can
+    /// invert a cursor into a profile coordinate for an add-point insert — the same projection
+    /// `render` fed the overlay refresh. `None` before the first frame.
+    last_view_projection: Option<glam::Mat4>,
+    /// Whether the most recent left-press armed a sketch add-point / delete edit (sketch mode,
+    /// an edit tool, on the live viewport). A STATIONARY release with this set performs the
+    /// edit; a drag leaves it and orbits instead — the placement `armed_press` pattern, so a
+    /// click edits and a drag still rotates the view.
+    sketch_edit_press: bool,
     /// The in-progress vertex drag (a press landed on a handle), or `None`. While `Some`, each
     /// frame re-projects the cursor onto the sketch plane, grid-snaps, and DIRECTLY updates the
     /// scene node for a live re-resolve preview (no command recorded). On release the `events`
@@ -587,7 +603,10 @@ impl WindowedState {
             armed_press: false,
             viewport_intents: Vec::new(),
             sketch_overlay_points: Vec::new(),
-            sketch_handle_px: Vec::new(),
+            sketch_vertex_px: Vec::new(),
+            sketch_insert_preview: None,
+            last_view_projection: None,
+            sketch_edit_press: false,
             sketch_drag: None,
         }
     }

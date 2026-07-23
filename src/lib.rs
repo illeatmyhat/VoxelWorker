@@ -307,6 +307,10 @@ pub fn run_egui_frame(
     // a sketch is being edited. Drawn as a foreground overlay + registered as chrome so a
     // handle drag never orbits the camera. The shell owns projection / hit-test / drag.
     sketch_handles: &[(egui::Pos2, ui::gizmos::HandleState)],
+    // ADR 0028 (#95): the add-point insert-preview marker for THIS frame (egui points), or
+    // `None` when the add-point tool is idle / no edge is hovered. Drawn as a diamond on the
+    // hovered profile edge. Always `None` on the headless `shot` path.
+    sketch_insert_preview: Option<egui::Pos2>,
 ) -> PreparedEguiFrame {
     let mut panel_response = PanelResponse::default();
     let mut cube_menu_request: Option<ViewCubeMenuRequest> = None;
@@ -521,6 +525,11 @@ pub fn run_egui_frame(
             // projected screen positions and registered as chrome (a handle press drags the
             // vertex, never orbits).
             signal_chrome::sketch_vertex_handles(ui, sketch_handles, &mut chrome_rects_points);
+            // ADR 0028 (#95): the add-point insert preview — a diamond on the hovered edge. NOT
+            // chrome (a passive marker), so a click passes through to the stationary-release insert.
+            if let Some(center) = sketch_insert_preview {
+                signal_chrome::sketch_insert_marker(ui, center);
+            }
         }
 
         // Signal (#86): the faint zone-name readout, centred under the cube but BELOW the
