@@ -320,6 +320,13 @@ struct WindowedState {
     /// edit; a drag leaves it and orbits instead — the placement `armed_press` pattern, so a
     /// click edits and a drag still rotates the view.
     sketch_edit_press: bool,
+    /// Whether the most recent left-press armed a sketch **selection** resolve (sketch mode, the
+    /// Select tool, on the live viewport — NOT egui chrome or the cube). A STATIONARY release with
+    /// this set resolves the click into the selection; a drag leaves it (the vertex move happens
+    /// instead). Gating on this press-flag — rather than the release's egui-consumed bit — is what
+    /// stops a click on the context-menu Delete button from being read as a "click empty → clear"
+    /// that wipes the selection before the menu's delete runs.
+    sketch_select_press: bool,
     /// The in-progress vertex drag (a press landed on a handle), or `None`. While `Some`, each
     /// frame re-projects the cursor onto the sketch plane, grid-snaps, and DIRECTLY updates the
     /// scene node for a live re-resolve preview (no command recorded). On release the `events`
@@ -640,6 +647,7 @@ impl WindowedState {
             sketch_insert_preview: None,
             last_view_projection: None,
             sketch_edit_press: false,
+            sketch_select_press: false,
             sketch_drag: None,
             shift_held: false,
         }

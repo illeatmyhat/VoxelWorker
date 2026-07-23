@@ -113,6 +113,10 @@ impl ApplicationHandler for App {
                                 // orbits — NOT relying on the handle's chrome rect (that rect can
                                 // misalign under egui zoom, or lag a frame behind this cache).
                                 ui::panel::SketchTool::Select => {
+                                    // A viewport Select press arms a selection resolve on the
+                                    // stationary release (this arm only runs under `!egui_consumed`,
+                                    // so a press on the context menu never arms it).
+                                    state.sketch_select_press = true;
                                     state.sketch_drag =
                                         state.begin_sketch_vertex_drag(cursor_x, cursor_y);
                                     if state.sketch_drag.is_some() {
@@ -218,13 +222,12 @@ impl ApplicationHandler for App {
                             }
                         }
                     }
-                    // ADR 0030: a STATIONARY left release under the Select tool resolves the sketch
+                    // ADR 0030: a STATIONARY release of a viewport Select press resolves the sketch
                     // selection (a drag moved a vertex instead — the same click-vs-drag threshold
-                    // placement / add-point use). Runs BEFORE `last_cursor_position` is cleared
-                    // below, since the hit-test needs the release cursor.
-                    if state.panel_state.sketch_mode.is_some()
-                        && state.panel_state.sketch_tool == ui::panel::SketchTool::Select
-                    {
+                    // placement / add-point use). Gated on `sketch_select_press` so a click on the
+                    // context menu (egui-consumed, never armed) can't be read as click-empty-clear.
+                    // Runs BEFORE `last_cursor_position` is cleared below (the hit-test needs it).
+                    if state.sketch_select_press {
                         if let (Some((down_x, down_y)), Some((up_x, up_y))) =
                             (state.press_position, state.last_cursor_position)
                         {
@@ -235,6 +238,7 @@ impl ApplicationHandler for App {
                             }
                         }
                     }
+                    state.sketch_select_press = false;
                     state.sketch_edit_press = false;
                     state.armed_press = false;
                     state.left_button_held = false;

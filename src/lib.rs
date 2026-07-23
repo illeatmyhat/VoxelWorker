@@ -453,12 +453,40 @@ pub fn run_egui_frame(
                 .show(&context, |ui| {
                     egui::Frame::menu(ui.style()).show(ui, |ui| {
                         ui.set_min_width(160.0);
-                        let label =
-                            egui::RichText::new("✕  Delete").color(ui::signal_theme::WARN);
-                        if ui
-                            .add_enabled(delete_enabled, egui::Button::new(label))
-                            .clicked()
-                        {
+                        // A menu row: the warn ✕ is drawn by the egui icon painter
+                        // (`Icon::Cancel`), NEVER a font character — a unicode glyph renders as
+                        // tofu in egui's font. Manual allocate-and-paint so the icon is real
+                        // graphics, not text.
+                        let (rect, response) = ui.allocate_exact_size(
+                            egui::vec2(ui.available_width().max(150.0), 22.0),
+                            egui::Sense::click(),
+                        );
+                        let color = if delete_enabled {
+                            ui::signal_theme::WARN
+                        } else {
+                            ui.visuals().weak_text_color()
+                        };
+                        if delete_enabled && response.hovered() {
+                            ui.painter().rect_filled(
+                                rect,
+                                3.0,
+                                ui.visuals().widgets.hovered.bg_fill,
+                            );
+                        }
+                        let icon = 13.0;
+                        let icon_rect = egui::Rect::from_center_size(
+                            egui::pos2(rect.left() + 6.0 + icon / 2.0, rect.center().y),
+                            egui::vec2(icon, icon),
+                        );
+                        ui::icons::Icon::Cancel.draw(ui.painter(), icon_rect, color);
+                        ui.painter().text(
+                            egui::pos2(icon_rect.right() + 8.0, rect.center().y),
+                            egui::Align2::LEFT_CENTER,
+                            "Delete",
+                            egui::TextStyle::Button.resolve(ui.style()),
+                            color,
+                        );
+                        if delete_enabled && response.clicked() {
                             if in_sketch {
                                 // The shell owns the selection + the sketch commit path.
                                 panel_response.delete_sketch_selection = true;
