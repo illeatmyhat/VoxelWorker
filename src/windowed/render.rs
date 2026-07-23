@@ -263,14 +263,23 @@ impl WindowedState {
         }
         // ADR 0028: enter / leave sketch mode — a VIEW action on the response (entering a mode
         // mutates no document state), like `armed_tool`. Entering scopes the mode to the
-        // requested node and disarms any placement tool (non-sketch ops withdraw in the mode).
-        // Finish and Cancel both drop the mode; slice 1 groups no edits yet, so they differ
-        // only from #94 on, where they commit / roll back the undo group.
+        // requested node, disarms any placement tool (non-sketch ops withdraw in the mode), and
+        // OPENS the undo group (§4). Finish commits the session as one main-history entry;
+        // Cancel rolls it back to the enter-state (which re-resolves) — both drop the mode. The
+        // group-close effect folds into `merged_effect` below so a Cancel rebuilds like an edit.
+        let mut sketch_effect = crate::IntentEffect::none();
         if let Some(node) = prepared.panel_response.enter_sketch.take() {
             self.panel_state.sketch_mode = Some(node);
             self.armed_tool = None;
+            self.app_core.begin_sketch_group();
         }
-        if prepared.panel_response.exit_sketch.take().is_some() {
+        if let Some(exit) = prepared.panel_response.exit_sketch.take() {
+            sketch_effect = match exit {
+                ui::panel::SketchExit::Finish => self.app_core.finish_sketch_group(),
+                ui::panel::SketchExit::Cancel => {
+                    self.app_core.cancel_sketch_group(&mut self.panel_state.scene)
+                }
+            };
             self.panel_state.sketch_mode = None;
         }
         let mut intents = std::mem::take(&mut prepared.panel_response.intents);
@@ -278,7 +287,7 @@ impl WindowedState {
         // SAME door as the panel's edits (taken BEFORE the borrow of `prepared` ends), so
         // a placement re-resolves + rebuilds identically to a panel-driven add.
         intents.extend(std::mem::take(&mut self.viewport_intents));
-        let mut merged_effect = crate::IntentEffect::none();
+        let mut merged_effect = sketch_effect;
         for intent in intents {
             let effect = self
                 .app_core

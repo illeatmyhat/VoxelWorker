@@ -43,6 +43,8 @@ mod replay_tests;
 #[cfg(test)]
 mod undo_tests;
 #[cfg(test)]
+mod sketch_group_tests;
+#[cfg(test)]
 mod intent_dispatch_tests;
 
 /// The headless orchestrator: owns the per-chunk resolve `Store` and the

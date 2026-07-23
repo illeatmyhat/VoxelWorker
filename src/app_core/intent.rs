@@ -5,7 +5,7 @@
 //! between its two Vecs; `dispatch` is the single owner of every [`Scene`] field-write
 //! / edit op; [`AppCore::effect_of`] classifies the resolve cost of an intent kind.
 
-use document::command::{Command, Inverse};
+use document::command::{Command, Inverse, SketchGroup};
 use document::intent::{Intent, IntentEffect};
 use document::scene::{Node, NodeContent, NodeId, NodeTransform, Point, VoxelBody, Scene};
 use document::voxel::SdfShape;
@@ -97,30 +97,51 @@ impl AppCore {
             return effect;
         }
 
-        // Snapshot the pre-state the undo needs (selection + the id counter — see the
-        // COUNTER RULE in command.rs), then capture the inverse by reading the scene
-        // BEFORE the mutation, then dispatch (which may mint ids the inverse needs).
+        let (command, effect) = self.record(scene, intent);
+        // ADR 0028 §4: while a sketch group is OPEN, every undoable edit routes into the
+        // session (fine-grained in-mode undo/redo) through this SAME apply door — so apply and
+        // undo can never disagree about which stack an in-mode edit lives on (the asymmetry a
+        // review flagged). Finish batches the whole session onto the main stack as one
+        // transaction; outside a group each edit is its own singleton transaction.
+        if let Some(group) = self.command_stack.open_group.as_mut() {
+            group.session_undo.push(command);
+            group.session_redo.clear();
+        } else {
+            self.command_stack.undo.push(vec![command]);
+            // A fresh edit invalidates the redo future (the linear-stack rule).
+            self.command_stack.redo.clear();
+        }
+        effect
+    }
+
+    /// Snapshot the pre-state (selection + the id counter — the COUNTER RULE in command.rs),
+    /// capture the inverse by reading the scene BEFORE the mutation, dispatch (which may mint
+    /// ids the inverse needs), then assemble the [`Command`] with the add-family minted-id
+    /// patch — the shared record protocol BOTH the main-stack apply and the in-session
+    /// sketch-group apply go through, so the two can never diverge on capture ordering. Touches
+    /// no stack; the caller decides where the command lands.
+    fn record(&mut self, scene: &mut Scene, intent: Intent) -> (Command, IntentEffect) {
         let selection_before = scene.active;
         let point_selection_before = scene.active_point;
         let counter_before = scene.next_node_id;
         let inverse = self.capture_inverse(scene, &intent, counter_before);
         let (effect, minted) = self.dispatch(scene, intent.clone());
-        // The add family mints exactly one node; its inverse needs that id. We captured
-        // a placeholder above for the add family, so patch it with the real minted id.
+        // The add family mints exactly one node; its inverse needs that id (the placeholder
+        // captured above is patched with the real minted id here).
         let inverse = match (inverse, minted) {
             (Inverse::RemoveAdded { .. }, Some(id)) => Inverse::RemoveAdded { id },
             (other, _) => other,
         };
-        self.command_stack.undo.push(Command {
-            intent,
-            inverse,
-            selection_before,
-            point_selection_before,
-            counter_before,
-        });
-        // A fresh edit invalidates the redo future (the linear-stack rule).
-        self.command_stack.redo.clear();
-        effect
+        (
+            Command {
+                intent,
+                inverse,
+                selection_before,
+                point_selection_before,
+                counter_before,
+            },
+            effect,
+        )
     }
 
     /// Capture the [`Inverse`] of `intent` by reading the scene's pre-mutation state
@@ -347,13 +368,53 @@ impl AppCore {
     /// mutations — no parallel copy to drift), so only the structural arms live in
     /// [`Inverse::apply`].
     pub fn undo(&mut self, scene: &mut Scene) -> IntentEffect {
-        let Some(command) = self.command_stack.undo.pop() else {
+        // ADR 0028 §4: in an OPEN sketch group, undo is FINE-GRAINED within the session —
+        // reverse the last coalesced vertex edit without leaving the mode — routed through the
+        // group's own `session_undo`/`session_redo`, never the main stack.
+        if self.command_stack.open_group.is_some() {
+            let Some(command) = self
+                .command_stack
+                .open_group
+                .as_mut()
+                .expect("group is Some")
+                .session_undo
+                .pop()
+            else {
+                return IntentEffect::none();
+            };
+            let effect = self.reverse_command(scene, &command);
+            self.command_stack
+                .open_group
+                .as_mut()
+                .expect("group is Some")
+                .session_redo
+                .push(command);
+            return effect;
+        }
+        let Some(transaction) = self.command_stack.undo.pop() else {
             return IntentEffect::none();
         };
+        // A transaction reverses its commands in REVERSE order: each restores its own captured
+        // selection/counter, so the LAST reversed (the transaction's first command) lands the
+        // scene on the pre-transaction state. A singleton (a normal edit) is the identity case.
+        let mut effect = IntentEffect::none();
+        for command in transaction.iter().rev() {
+            effect = effect.merged_with(self.reverse_command(scene, command));
+        }
+        self.command_stack.redo.push(transaction);
+        effect
+    }
+
+    /// Apply `command`'s [`Inverse`] to `scene` and restore the captured selection + counter,
+    /// returning the forward intent's [`effect_of`](Self::effect_of) (with `selection_changed`
+    /// forced on, since an undo always restores `selection_before`). Shared by the main-stack
+    /// [`undo`](Self::undo) and the in-session undo of an open sketch group — it touches NEITHER
+    /// stack, so the caller owns the pop/push. A [`Inverse::Field`] is routed back through
+    /// [`dispatch`](Self::dispatch) (the single owner of the field-write mutations); only the
+    /// structural arms live in [`Inverse::apply`].
+    fn reverse_command(&mut self, scene: &mut Scene, command: &document::command::Command) -> IntentEffect {
         match &command.inverse {
             Inverse::Field(prior) => {
-                // Route the prior-value field-set through the same `dispatch` the forward
-                // path uses — no re-implemented field-write copy to silently diverge.
                 self.dispatch(scene, prior.clone());
             }
             structural => structural.apply(scene),
@@ -361,9 +422,16 @@ impl AppCore {
         scene.active = command.selection_before;
         scene.active_point = command.point_selection_before;
         scene.next_node_id = command.counter_before;
-        let effect = Self::effect_of(&command.intent).merged_with(IntentEffect::selection());
-        self.command_stack.redo.push(command);
-        effect
+        Self::effect_of(&command.intent).merged_with(IntentEffect::selection())
+    }
+
+    /// Re-dispatch `command`'s forward `intent`, returning its
+    /// [`effect_of`](Self::effect_of) (selection forced on). Shared by the main-stack
+    /// [`redo`](Self::redo) and the in-session redo of an open sketch group; touches neither
+    /// stack.
+    fn replay_command(&mut self, scene: &mut Scene, command: &document::command::Command) -> IntentEffect {
+        self.dispatch(scene, command.intent.clone());
+        Self::effect_of(&command.intent).merged_with(IntentEffect::selection())
     }
 
     /// Re-apply the top `redo` command's forward `intent` to `scene` (ADR 0003 Phase C
@@ -373,12 +441,86 @@ impl AppCore {
     /// the post-forward selection the caller must re-sync); [`IntentEffect::none`] when
     /// the redo stack is empty.
     pub fn redo(&mut self, scene: &mut Scene) -> IntentEffect {
-        let Some(command) = self.command_stack.redo.pop() else {
+        // ADR 0028 §4: in an OPEN sketch group, redo re-applies the last in-mode-undone edit
+        // through the group's own session stacks, never the main stack.
+        if self.command_stack.open_group.is_some() {
+            let Some(command) = self
+                .command_stack
+                .open_group
+                .as_mut()
+                .expect("group is Some")
+                .session_redo
+                .pop()
+            else {
+                return IntentEffect::none();
+            };
+            let effect = self.replay_command(scene, &command);
+            self.command_stack
+                .open_group
+                .as_mut()
+                .expect("group is Some")
+                .session_undo
+                .push(command);
+            return effect;
+        }
+        let Some(transaction) = self.command_stack.redo.pop() else {
             return IntentEffect::none();
         };
-        self.dispatch(scene, command.intent.clone());
-        let effect = Self::effect_of(&command.intent).merged_with(IntentEffect::selection());
-        self.command_stack.undo.push(command);
+        // Replay the transaction's commands in FORWARD order (the counter was rewound on undo,
+        // so each re-mints byte-identical ids). A singleton is the identity case.
+        let mut effect = IntentEffect::none();
+        for command in &transaction {
+            effect = effect.merged_with(self.replay_command(scene, command));
+        }
+        self.command_stack.undo.push(transaction);
+        effect
+    }
+
+    /// Open a sketch-editing undo GROUP (ADR 0028 §4) — the shell calls this on entering sketch
+    /// mode. Begins an empty in-session history into which every in-mode edit is then recorded
+    /// (through the same [`apply_intent`](Self::apply_intent) door). A no-op if a group is
+    /// already open (the shell prevents re-entry; guarding keeps the stack coherent).
+    pub fn begin_sketch_group(&mut self) {
+        if self.command_stack.open_group.is_none() {
+            self.command_stack.open_group = Some(SketchGroup::default());
+        }
+    }
+
+    /// Whether a sketch-editing group is currently open (ADR 0028 §4).
+    pub fn in_sketch_group(&self) -> bool {
+        self.command_stack.open_group.is_some()
+    }
+
+    /// FINISH the open sketch group (ADR 0028 §4): move the whole session onto the MAIN undo
+    /// stack as ONE [`Transaction`](document::command::Transaction), so a single undo past the
+    /// sketch reverses all of it. The scene already sits at the session's final state (every
+    /// edit was live), so this only re-files the history — it mutates nothing. A net-zero
+    /// session (no edits, or edited then in-mode-undone back to enter) files NOTHING, leaving
+    /// no empty undo entry. Returns `none` (the scene is unchanged by Finish itself).
+    pub fn finish_sketch_group(&mut self) -> IntentEffect {
+        if let Some(group) = self.command_stack.open_group.take() {
+            if !group.session_undo.is_empty() {
+                self.command_stack.undo.push(group.session_undo);
+                // A committed transaction invalidates the redo future (the linear-stack rule).
+                self.command_stack.redo.clear();
+            }
+        }
+        IntentEffect::none()
+    }
+
+    /// CANCEL the open sketch group (ADR 0028 §4): reverse every session edit (each by its own
+    /// inverse, in reverse order — restoring the producer, the selection AND the id counter to
+    /// the enter-state) and discard the session. Nothing reaches the main stack. Returns the
+    /// merged effect of the reversed edits (`scene` → re-resolve) when the session was non-empty,
+    /// else `none`.
+    pub fn cancel_sketch_group(&mut self, scene: &mut Scene) -> IntentEffect {
+        let Some(group) = self.command_stack.open_group.take() else {
+            return IntentEffect::none();
+        };
+        let mut effect = IntentEffect::none();
+        for command in group.session_undo.iter().rev() {
+            effect = effect.merged_with(self.reverse_command(scene, command));
+        }
         effect
     }
 
