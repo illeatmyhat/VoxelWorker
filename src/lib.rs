@@ -302,6 +302,11 @@ pub fn run_egui_frame(
     // Owner ruling 2026-07-21: the armed primitive's kind, or `None` when nothing is armed.
     // `Some` draws the floating `Add <shape>` dialog with the placement-snap sliders.
     armed_shape: Option<voxel_core::voxel::ShapeKind>,
+    // ADR 0028 (#94): the sketch profile's vertex handles for THIS frame — each already
+    // projected to a screen position (egui points) with its interaction state. Empty unless
+    // a sketch is being edited. Drawn as a foreground overlay + registered as chrome so a
+    // handle drag never orbits the camera. The shell owns projection / hit-test / drag.
+    sketch_handles: &[(egui::Pos2, ui::gizmos::HandleState)],
 ) -> PreparedEguiFrame {
     let mut panel_response = PanelResponse::default();
     let mut cube_menu_request: Option<ViewCubeMenuRequest> = None;
@@ -512,6 +517,10 @@ pub fn run_egui_frame(
             ) {
                 panel_response.exit_sketch = Some(exit);
             }
+            // ADR 0028 (#94): the draggable profile-vertex handles, drawn at the shell's
+            // projected screen positions and registered as chrome (a handle press drags the
+            // vertex, never orbits).
+            signal_chrome::sketch_vertex_handles(ui, sketch_handles, &mut chrome_rects_points);
         }
 
         // Signal (#86): the faint zone-name readout, centred under the cube but BELOW the

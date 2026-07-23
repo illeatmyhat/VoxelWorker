@@ -40,11 +40,13 @@ mod extent;
 mod graph;
 mod operand_body;
 mod producers;
+mod sketch_handles;
 mod spatial;
 #[cfg(test)]
 mod tests;
 
 pub use extent::{NodeTransform, RegionBlocks};
+pub use sketch_handles::SketchHandles;
 pub use graph::{
     AssemblyDef, CombineOp, DefId, Node, NodeBuilder, NodeGrids, NodeId, NodePath, Point,
     ROOT_NODE_ID,

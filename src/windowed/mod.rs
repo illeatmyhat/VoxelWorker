@@ -270,6 +270,40 @@ struct WindowedState {
     /// Placement intents produced by a viewport click this frame, drained into the SAME
     /// apply loop as the panel intents so a drop goes through `apply_intent` + rebuild.
     viewport_intents: Vec<crate::Intent>,
+    /// ADR 0028 (#94): the sketch profile's vertex handles, projected to egui points with
+    /// their interaction state, refreshed at the END of each frame and drawn on the NEXT
+    /// (a one-frame lag, imperceptible for handle chrome). Empty outside sketch mode.
+    sketch_overlay_points: Vec<(egui::Pos2, ui::gizmos::HandleState)>,
+    /// Each drawn handle's centre in PHYSICAL pixels paired with its PROFILE-vertex index —
+    /// the press hit-test (in `events`, outside `render`) reads these to decide whether a
+    /// click grabs a vertex and which one. Carries the index explicitly because projection
+    /// may cull a behind-camera vertex, so position in this list is NOT the vertex index.
+    sketch_handle_px: Vec<(egui::Pos2, usize)>,
+    /// The in-progress vertex drag (a press landed on a handle), or `None`. While `Some`, each
+    /// frame re-projects the cursor onto the sketch plane, grid-snaps, and DIRECTLY updates the
+    /// scene node for a live re-resolve preview (no command recorded). On release the `events`
+    /// handler commits it synchronously as one edit in the open undo group
+    /// (`commit_sketch_vertex_drag`), which clears this back to `None`.
+    sketch_drag: Option<SketchVertexDrag>,
+}
+
+/// An in-progress sketch profile-vertex drag (ADR 0028, #94).
+#[derive(Debug, Clone)]
+struct SketchVertexDrag {
+    /// Which profile vertex (index into `producer.sketch.profile`) is being dragged.
+    index: usize,
+    /// The sketch producer as it stood when the vertex was grabbed — the base every preview
+    /// moves the dragged vertex on (a fresh clone), so successive frames never compound, and
+    /// the RESTORE-before-commit reverts to exactly this.
+    original: document::sketch::SketchSolid,
+    /// The node's world voxel offset at grab time. The preview compensates this by the shift in
+    /// the profile's bbox-minimum so the NON-dragged vertices stay put in world while the
+    /// grabbed one tracks the cursor (the sketch producer re-anchors its bbox-min to the node
+    /// origin, so without this the grabbed min-vertex would pin and the rest would lurch).
+    original_offset: [i64; 3],
+    /// The profile's in-plane bbox-minimum at grab time — the fixed reference the per-frame
+    /// compensation measures the bbox-min shift against.
+    original_min: [i64; 2],
 }
 
 #[derive(Default)]
@@ -552,6 +586,9 @@ impl WindowedState {
             pending_placement: None,
             armed_press: false,
             viewport_intents: Vec::new(),
+            sketch_overlay_points: Vec::new(),
+            sketch_handle_px: Vec::new(),
+            sketch_drag: None,
         }
     }
 

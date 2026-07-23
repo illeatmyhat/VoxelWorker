@@ -309,6 +309,39 @@ pub fn sketch_exit_control(
     clicked
 }
 
+/// The half-extent (egui points) of a sketch profile-vertex handle's square thumb — the
+/// visible size the [`ui::gizmos::vertex_handle`] painter draws.
+pub const SKETCH_HANDLE_HALF: f32 = 5.0;
+
+/// The extra pixels around a handle's thumb that still count as a grab / chrome hit — a
+/// forgiving target so a vertex is easy to pick up and so a click near it never leaks to
+/// the camera orbit. The shell's press hit-test uses the SAME radius (`SKETCH_HANDLE_HALF
+/// + SKETCH_HANDLE_GRAB_PAD`).
+pub const SKETCH_HANDLE_GRAB_PAD: f32 = 5.0;
+
+/// Draw the sketch profile's **vertex handles** (ADR 0028, #94) at their already-projected
+/// screen positions, each in the given [`HandleState`], and register each handle's grab
+/// rect as chrome so a press on a handle drags the vertex instead of orbiting the camera.
+///
+/// Mirrors [`sketch_exit_control`]'s foreground-`layer_painter` idiom so the handles render
+/// on the headless `shot` single frame as well as the live window. Pure drawing — the shell
+/// owns the projection (world→screen), the hit-testing and the drag; this only paints what
+/// the shell computed.
+pub fn sketch_vertex_handles(
+    ui: &egui::Ui,
+    handles: &[(Pos2, ui::gizmos::HandleState)],
+    chrome_rects: &mut Vec<Rect>,
+) {
+    let painter = ui
+        .ctx()
+        .layer_painter(LayerId::new(Order::Foreground, Id::new("sketch_vertex_handles")));
+    let grab = SKETCH_HANDLE_HALF + SKETCH_HANDLE_GRAB_PAD;
+    for (center, state) in handles {
+        ui::gizmos::vertex_handle(&painter, *center, SKETCH_HANDLE_HALF, *state);
+        chrome_rects.push(Rect::from_center_size(*center, Vec2::splat(grab * 2.0)));
+    }
+}
+
 /// The glyph box inside a rail button: a CENTRED SQUARE, because the rail set is authored
 /// on a square 18-unit grid and a non-square box would stretch every mark horizontally.
 /// Side 18 pt keeps the vertical extent the inset used to give and makes

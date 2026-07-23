@@ -583,7 +583,7 @@ impl Scene {
     /// subtree extents ([`node_subtree_extent_blocks`](Self::node_subtree_extent_blocks),
     /// [`node_subtree_extent_voxels`](Self::node_subtree_extent_voxels)) share before they
     /// fold their leaf boxes.
-    fn subtree_walk_target(&self, path: &NodePath) -> Option<(NodeId, [i64; 3])> {
+    pub(super) fn subtree_walk_target(&self, path: &NodePath) -> Option<(NodeId, [i64; 3])> {
         let mut siblings: &[NodeId] = &self.roots;
         let mut parent_offset_voxels = [0i64; 3];
         let mut target: Option<&Node> = None;

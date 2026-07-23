@@ -1052,6 +1052,9 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         // The "Add <shape>" dialog shows when a ghost is armed (the `--placement-ghost`
         // headless verification path); otherwise off, so the goldens are unchanged.
         armed_shape,
+        // ADR 0028 (#94): the headless capture computes no live vertex handles (sketch
+        // authoring is a windowed-only interaction); the goldens stay handle-free.
+        &[],
     );
 
     // Issue #25: now that egui has laid out its panels, derive the camera aspect

@@ -167,6 +167,11 @@ impl WindowedState {
                     document::intent::NodeSpec::Tool { shape, .. } => Some(shape.kind),
                     _ => None,
                 }),
+                // ADR 0028 (#94): the sketch vertex handles, projected LAST frame (the
+                // viewport + camera the projection needs are only known after this call).
+                // A one-frame lag is imperceptible for handle chrome and self-corrects; the
+                // cache is refreshed at the end of `render` below.
+                &self.sketch_overlay_points,
             )
         };
 
@@ -282,12 +287,23 @@ impl WindowedState {
             };
             self.panel_state.sketch_mode = None;
         }
+        // ADR 0028 (#94): advance an in-progress sketch vertex drag — a live preview that
+        // re-resolves the volume and records ONE coalesced command in the open group. Uses
+        // this frame's viewport (from `prepared`) to build the cursor→plane ray; its effect
+        // folds into `merged_effect` below so the display re-resolves like any other edit.
+        let drag_effect = {
+            let [_, _, drag_vw, drag_vh] = prepared.viewport_px;
+            let drag_aspect = drag_vw as f32 / drag_vh.max(1) as f32;
+            let drag_view_projection =
+                self.app_core.view_projection(drag_aspect, self.region_dimensions);
+            self.update_sketch_vertex_drag(drag_view_projection, prepared.viewport_px)
+        };
         let mut intents = std::mem::take(&mut prepared.panel_response.intents);
         // ADR 0022 live placement: a viewport click's drop intent is applied through the
         // SAME door as the panel's edits (taken BEFORE the borrow of `prepared` ends), so
         // a placement re-resolves + rebuilds identically to a panel-driven add.
         intents.extend(std::mem::take(&mut self.viewport_intents));
-        let mut merged_effect = sketch_effect;
+        let mut merged_effect = sketch_effect.merged_with(drag_effect);
         for intent in intents {
             let effect = self
                 .app_core
@@ -387,6 +403,11 @@ impl WindowedState {
         // region is the per-axis max of their sizes (ADR 0001 step 2).
         let grid_dimensions = self.region_dimensions;
         let view_projection = self.app_core.view_projection(aspect_ratio, grid_dimensions);
+        // ADR 0028 (#94): refresh the sketch vertex-handle overlay from the CURRENT geometry
+        // (post-rebuild recentre) and camera, caching the projected handles for NEXT frame's
+        // draw (in `run_egui_frame`) and the press hit-test (in `events`). A one-frame lag on
+        // the handles is imperceptible and self-corrects.
+        self.refresh_sketch_overlay(view_projection, prepared.viewport_px, pixels_per_point);
         // Issue #12: translate the layer-range scrubber into the shader band. The
         // band is inclusive on both ends; the upper handle is a layer index, so a
         // single-layer band is `lower == upper`. A full range draws everything.
@@ -724,5 +745,320 @@ impl WindowedState {
         // profiling backend is enabled; under `--features tracy` this delimits the
         // frame on the Tracy timeline.
         profiling::finish_frame!();
+    }
+
+    /// ADR 0028 (#94): advance an in-progress sketch vertex drag by one frame — a LIVE PREVIEW.
+    /// The gesture is COMMITTED synchronously by [`commit_sketch_vertex_drag`], called from the
+    /// `events` release handler (NOT deferred to a render flag: deferring left a window where a
+    /// second press between release and the commit frame could orphan the un-recorded preview).
+    /// Returns the effect to merge (a `scene_changed` drives the live re-resolve).
+    ///
+    /// [`commit_sketch_vertex_drag`]: Self::commit_sketch_vertex_drag
+    fn update_sketch_vertex_drag(
+        &mut self,
+        view_projection: glam::Mat4,
+        viewport_px: [u32; 4],
+    ) -> crate::IntentEffect {
+        self.preview_sketch_vertex_drag(view_projection, viewport_px)
+    }
+
+    /// The live-preview half: project the cursor onto the sketch plane, grid-snap the profile
+    /// coordinate (grid density = voxel density ⇒ round to the nearest whole voxel), compensate
+    /// the node offset by the bbox-min shift so the NON-dragged vertices stay put in world (the
+    /// producer re-anchors its bbox-min to the node origin, so without this the grabbed
+    /// min-vertex would pin and the rest would lurch), and direct-mutate the node for a LIVE
+    /// re-resolve — no command recorded. `none` when nothing changed this frame.
+    fn preview_sketch_vertex_drag(
+        &mut self,
+        view_projection: glam::Mat4,
+        viewport_px: [u32; 4],
+    ) -> crate::IntentEffect {
+        use crate::IntentEffect;
+        let Some((index, original_min, original_offset)) = self
+            .sketch_drag
+            .as_ref()
+            .map(|drag| (drag.index, drag.original_min, drag.original_offset))
+        else {
+            return IntentEffect::none();
+        };
+        let Some(target) = self.panel_state.sketch_mode else {
+            self.sketch_drag = None;
+            return IntentEffect::none();
+        };
+        let Some((cursor_x, cursor_y)) = self.last_cursor_position else {
+            return IntentEffect::none();
+        };
+        // Recompute the handles from the CURRENT scene (not last frame's cache): a mid-drag
+        // move can shift the composite recentre / profile bbox, and the forward projection and
+        // the inverse plane-hit map must share ONE frame or the vertex jitters (ADR 0008).
+        let Some(handles) = self
+            .panel_state
+            .scene
+            .sketch_handles(target, self.panel_state.geometry.voxels_per_block)
+        else {
+            return IntentEffect::none();
+        };
+
+        // Cursor → render-frame ray. CAST FROM THE EYE under perspective: the near-plane ray
+        // origin is unreliable at close zoom and can sit past the target plane (placement casts
+        // from the eye for the same reason). Orthographic keeps the near-plane point (parallel
+        // rays have no single eye).
+        let [vx, vy, vw, vh] = viewport_px;
+        let ndc_x = (cursor_x as f32 - vx as f32) / vw.max(1) as f32 * 2.0 - 1.0;
+        let ndc_y = 1.0 - (cursor_y as f32 - vy as f32) / vh.max(1) as f32 * 2.0;
+        let Some(ray) = camera::unproject_screen_point_to_ray(view_projection, ndc_x, ndc_y)
+        else {
+            return IntentEffect::none();
+        };
+        let ray_origin = match self.app_core.camera.projection_mode {
+            camera::ProjectionMode::Perspective => self.app_core.camera.eye(),
+            camera::ProjectionMode::Orthographic => ray.origin,
+        };
+
+        // Intersect the ray with the sketch plane (render frame). A ray parallel to the plane,
+        // or a plane behind the viewer, leaves the vertex where it is this frame.
+        let normal = glam::Vec3::from_array(handles.plane_normal);
+        let plane_point = glam::Vec3::from_array(handles.plane_point);
+        let denom = ray.direction.dot(normal);
+        if denom.abs() < 1e-6 {
+            return IntentEffect::none();
+        }
+        let t = (plane_point - ray_origin).dot(normal) / denom;
+        if t <= 0.0 {
+            return IntentEffect::none();
+        }
+        let hit = ray_origin + ray.direction * t;
+
+        // Plane hit → continuous profile coordinate → grid snap (round to the nearest voxel).
+        let profile_coord = handles.render_hit_to_profile(hit.to_array());
+        let snapped = [profile_coord[0].round() as i64, profile_coord[1].round() as i64];
+
+        // Build the preview from the pre-drag producer with ONLY the dragged vertex moved, then
+        // compensate the offset by the bbox-min shift so the rest of the profile holds still.
+        let Some(drag) = self.sketch_drag.as_ref() else {
+            return IntentEffect::none();
+        };
+        let mut preview = drag.original.clone();
+        let Some(point) = preview.sketch.profile.get_mut(index) else {
+            self.sketch_drag = None;
+            return IntentEffect::none();
+        };
+        point.offset_voxels = snapped;
+        let new_min = Self::profile_bbox_min(&preview);
+        let [in0, in1] = preview.sketch.plane.in_plane_axes();
+        let mut new_offset = original_offset;
+        new_offset[in0] += new_min[0] - original_min[0];
+        new_offset[in1] += new_min[1] - original_min[1];
+
+        // Skip a redundant re-resolve when the node already shows exactly this (a stationary
+        // cursor still inside the same voxel).
+        if self.sketch_node_matches(target, &preview, new_offset) {
+            return IntentEffect::none();
+        }
+        self.set_sketch_node(target, preview, new_offset);
+        IntentEffect::scene()
+    }
+
+    /// Commit an in-progress vertex drag — called SYNCHRONOUSLY from the `events` release handler
+    /// (not deferred to a render flag: a deferred commit left a window where a second press could
+    /// orphan the un-recorded preview). Reads the final previewed producer + offset off the node,
+    /// restores the pre-drag state, then queues the final state as intents so the next `render`
+    /// applies them through `apply_intent` and they record in the open group — ONE `SetSketch`,
+    /// plus a `SetOffset` only when the anchor compensation actually moved the node. A gesture
+    /// that ended where it began records nothing (the restored original is left in place).
+    pub(super) fn commit_sketch_vertex_drag(&mut self) {
+        let Some(drag) = self.sketch_drag.take() else {
+            return;
+        };
+        let Some(target) = self.panel_state.sketch_mode else {
+            return;
+        };
+        let Some((final_producer, final_offset)) = self.sketch_node_state(target) else {
+            return;
+        };
+        // Restore the pre-drag state so `record()` captures original → final for the inverse.
+        self.set_sketch_node(target, drag.original.clone(), drag.original_offset);
+
+        if final_producer == drag.original && final_offset == drag.original_offset {
+            return; // nothing moved — leave the restored original in place
+        }
+
+        // Queue the final state through the intent door (drained + applied by the next render's
+        // loop, the same door as any placement drop) so it lands in the open group. The
+        // `SetOffset` is emitted only when the anchor compensation actually moved the node.
+        self.viewport_intents.push(crate::Intent::SetSketch {
+            target,
+            producer: final_producer,
+        });
+        if final_offset != drag.original_offset {
+            self.viewport_intents.push(crate::Intent::SetOffset {
+                target,
+                offset_measurements: [
+                    voxel_core::units::Measurement::from_voxels(final_offset[0]),
+                    voxel_core::units::Measurement::from_voxels(final_offset[1]),
+                    voxel_core::units::Measurement::from_voxels(final_offset[2]),
+                ],
+            });
+        }
+    }
+
+    /// Whether the sketch node `target` currently holds exactly `producer` + `offset_voxels` —
+    /// the no-op check the preview uses to skip a redundant re-resolve, comparing by reference
+    /// (no clone).
+    fn sketch_node_matches(
+        &self,
+        target: document::scene::NodeId,
+        producer: &document::sketch::SketchSolid,
+        offset_voxels: [i64; 3],
+    ) -> bool {
+        let Some(node) = self.panel_state.scene.node_by_id(target) else {
+            return false;
+        };
+        let document::scene::NodeContent::SketchTool { producer: current, .. } = &node.content
+        else {
+            return false;
+        };
+        current == producer && node.transform.offset_voxels == offset_voxels
+    }
+
+    /// The sketch node `target`'s current producer + world voxel offset, or `None` if it is not
+    /// an enabled sketch node — the final previewed state the commit captures.
+    fn sketch_node_state(
+        &self,
+        target: document::scene::NodeId,
+    ) -> Option<(document::sketch::SketchSolid, [i64; 3])> {
+        let node = self.panel_state.scene.node_by_id(target)?;
+        let document::scene::NodeContent::SketchTool { producer, .. } = &node.content else {
+            return None;
+        };
+        Some((producer.clone(), node.transform.offset_voxels))
+    }
+
+    /// Direct-mutate the sketch node `target`'s producer + world voxel offset — the transient
+    /// live-drag preview / restore. Always reconciled through `apply_intent` on release, so the
+    /// command stack stays the single source of truth for undo.
+    fn set_sketch_node(
+        &mut self,
+        target: document::scene::NodeId,
+        producer: document::sketch::SketchSolid,
+        offset_voxels: [i64; 3],
+    ) {
+        if let Some(node) = self.panel_state.scene.node_by_id_mut(target) {
+            if let document::scene::NodeContent::SketchTool { producer: slot, .. } =
+                &mut node.content
+            {
+                *slot = producer;
+            }
+            node.transform.offset_voxels = offset_voxels;
+        }
+    }
+
+    /// The in-plane bbox-minimum (per profile coordinate) of a sketch producer's profile — the
+    /// anchor the drag compensation measures its bbox-min shift against.
+    fn profile_bbox_min(producer: &document::sketch::SketchSolid) -> [i64; 2] {
+        let mut min = producer
+            .sketch
+            .profile
+            .first()
+            .map(|point| point.offset_voxels)
+            .unwrap_or([0, 0]);
+        for point in &producer.sketch.profile {
+            min[0] = min[0].min(point.offset_voxels[0]);
+            min[1] = min[1].min(point.offset_voxels[1]);
+        }
+        min
+    }
+
+    /// ADR 0028 (#94): if the cursor (physical px) is over a profile-vertex handle, build the
+    /// [`SketchVertexDrag`] that grabs it — the nearest handle within the grab radius, with the
+    /// current producer snapshotted so the whole gesture coalesces to one command. `None` when
+    /// no handle is under the cursor (the press falls through to the normal camera/placement
+    /// path). Called from the `events` press handler.
+    pub(super) fn begin_sketch_vertex_drag(&self, cursor_x: f64, cursor_y: f64) -> Option<SketchVertexDrag> {
+        let target = self.panel_state.sketch_mode?;
+        let scale = self.window.scale_factor() as f32;
+        let grab_px = (crate::signal_chrome::SKETCH_HANDLE_HALF
+            + crate::signal_chrome::SKETCH_HANDLE_GRAB_PAD)
+            * scale;
+        let mut nearest: Option<(usize, f32)> = None;
+        for (center, index) in &self.sketch_handle_px {
+            let distance = (cursor_x as f32 - center.x).hypot(cursor_y as f32 - center.y);
+            if distance <= grab_px && nearest.map(|(_, best)| distance < best).unwrap_or(true) {
+                nearest = Some((*index, distance));
+            }
+        }
+        let (index, _) = nearest?;
+        let node = self.panel_state.scene.node_by_id(target)?;
+        let document::scene::NodeContent::SketchTool { producer, .. } = &node.content else {
+            return None;
+        };
+        Some(SketchVertexDrag {
+            index,
+            original: producer.clone(),
+            original_offset: node.transform.offset_voxels,
+            original_min: Self::profile_bbox_min(producer),
+        })
+    }
+
+    /// ADR 0028 (#94): recompute the sketch vertex-handle overlay for the NEXT frame — project
+    /// each profile vertex (render frame) to screen, storing the egui-point centres + state for
+    /// drawing and the physical-pixel centres + vertex index for the press hit-test. Clears the
+    /// caches outside sketch mode. A vertex behind the camera (`clip.w <= 0`) is culled from
+    /// both, which is why the pixel cache carries its vertex index explicitly.
+    fn refresh_sketch_overlay(
+        &mut self,
+        view_projection: glam::Mat4,
+        viewport_px: [u32; 4],
+        pixels_per_point: f32,
+    ) {
+        self.sketch_overlay_points.clear();
+        self.sketch_handle_px.clear();
+
+        let Some(target) = self.panel_state.sketch_mode else {
+            return;
+        };
+        let Some(handles) = self
+            .panel_state
+            .scene
+            .sketch_handles(target, self.panel_state.geometry.voxels_per_block)
+        else {
+            return;
+        };
+
+        let [vx, vy, vw, vh] = viewport_px.map(|component| component as f32);
+        let dragging = self.sketch_drag.as_ref().map(|drag| drag.index);
+        // A forgiving grab radius (physical px) so a hover reads as "draggable" near the thumb.
+        let hover_radius_px =
+            (crate::signal_chrome::SKETCH_HANDLE_HALF + crate::signal_chrome::SKETCH_HANDLE_GRAB_PAD)
+                * pixels_per_point;
+        for (index, vertex) in handles.vertices.iter().enumerate() {
+            let clip = view_projection * glam::Vec4::new(vertex[0], vertex[1], vertex[2], 1.0);
+            if clip.w <= 0.0 {
+                continue; // behind the camera — cull from both caches
+            }
+            let ndc_x = clip.x / clip.w;
+            let ndc_y = clip.y / clip.w;
+            let px = vx + (ndc_x * 0.5 + 0.5) * vw;
+            let py = vy + (1.0 - (ndc_y * 0.5 + 0.5)) * vh;
+            let center_px = egui::Pos2::new(px, py);
+
+            let hovered = self
+                .last_cursor_position
+                .map(|(cx, cy)| {
+                    (cx as f32 - px).hypot(cy as f32 - py) <= hover_radius_px
+                })
+                .unwrap_or(false);
+            let state = if dragging == Some(index) {
+                ui::gizmos::HandleState::Snapped
+            } else if hovered {
+                ui::gizmos::HandleState::Hover
+            } else {
+                ui::gizmos::HandleState::Idle
+            };
+
+            let center_pt = egui::Pos2::new(px / pixels_per_point, py / pixels_per_point);
+            self.sketch_overlay_points.push((center_pt, state));
+            self.sketch_handle_px.push((center_px, index));
+        }
     }
 }

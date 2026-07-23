@@ -101,6 +101,20 @@ impl ApplicationHandler for App {
                     // only a stationary release (below) drops the node.
                     state.armed_press =
                         state.armed_tool.is_some() && !egui_consumed && !in_cube && !in_chrome;
+                    // ADR 0028 (#94): a press on a profile-vertex handle begins a vertex drag.
+                    // Only in sketch mode, on the live viewport (not egui / cube). The grab is
+                    // AUTHORITATIVE for orbit suppression: when it takes a handle we force
+                    // `left_button_held = false` so the drag never also orbits the camera —
+                    // NOT relying on the handle's chrome rect (that rect can misalign with the
+                    // grab circle under egui zoom, or lag a frame behind this cache).
+                    if state.panel_state.sketch_mode.is_some() && !egui_consumed && !in_cube {
+                        if let Some((cursor_x, cursor_y)) = position {
+                            state.sketch_drag = state.begin_sketch_vertex_drag(cursor_x, cursor_y);
+                            if state.sketch_drag.is_some() {
+                                state.left_button_held = false;
+                            }
+                        }
+                    }
                 } else {
                     // Release: a press that started in the cube and DIDN'T become a
                     // drag (stayed within the threshold) selects the picked hot-zone
@@ -170,6 +184,13 @@ impl ApplicationHandler for App {
                     state.last_cursor_position = None;
                     state.press_in_view_cube = false;
                     state.view_cube_drag_active = false;
+                    // ADR 0028 (#94): commit the vertex drag SYNCHRONOUSLY here (a no-op if no
+                    // drag is in progress). It restores the pre-drag state and queues the final
+                    // position as intents the next `render` applies as one group edit. Doing it
+                    // inline — not via a flag the next render reads — closes the window where a
+                    // second press between release and commit could orphan the un-recorded
+                    // preview. A press that never moved commits nothing.
+                    state.commit_sketch_vertex_drag();
                 }
             }
             WindowEvent::MouseInput {
