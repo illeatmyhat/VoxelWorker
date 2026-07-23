@@ -43,6 +43,21 @@ no decisions (those live in `docs/adr/`). Define a term here the first time an a
   density, `docs/adr/0003`; VS = 16³). Geometry/occupancy is addressed per voxel; a chiseled block's
   surface steps on the voxel lattice while its faces still carry the per-block texture.
 
+## Measurement
+
+- **Measurement** — an **authored quantity** carrying its parametric expression and a **kind**
+  (`Length` in blocks + voxels, `Angle` in degrees, more later). Every authored dimension is one: a
+  **position** is three `Length`s from the origin, a **size** is three, an extrude height is one, a
+  revolve turn is an `Angle`. The canonical voxel/degree number is an *evaluation* of it; the
+  expression is the truth, so a density re-target re-evaluates losslessly and a future constraint
+  solver has something to drive. _Avoid_: dimension, parameter, quantity (for this type).
+
+- **Authored quantity boundary** — measurements are the **authored** layer; **resolved occupancy
+  (the voxels a field produces) carries none** — it is `Derived` (reconstructible, never authored,
+  see Persistence). The boundary is authored intent vs. resolved occupancy, *not* geometry vs.
+  number: a future **Array / pattern** feature is *authoring*, so its count and spacing **are**
+  measurements even though it emits geometry.
+
 ## Boundary residency (the two-layer chunk)
 
 The chunk representation a boundary-aware store keeps, modelled on Vintage Story's
@@ -159,30 +174,58 @@ op-stack field (see `docs/adr/0011`; generalizes the ADR 0007 fog atlas).
 
 ## Sketching
 
-- **Profile** — the authored 2D outline a body is lifted from: a closed path of lines, arcs,
-  Bézier segments and whatever curve kinds arrive later, positioned in continuous
-  coordinates and **never required to align to the voxel lattice**. Editable input with
-  control points, kept exact; it is what the author manipulates, not what the document
-  means.
+- **Sketch entity** — a first-class piece of sketch geometry the author add/deletes independently:
+  a **point**, a **line segment**, or an **arc** (more later), each with a stable id (`docs/adr/0030`).
+  Segments and arcs reference their endpoint **points by id** — coincidence *is* shared identity, not
+  a solved constraint. A point with no incident edge is a legal **free point**. _Avoid_: vertex (a
+  point is an entity, not a slot in a loop).
 
-- **Flattened profile** — the profile reduced to a polygon at sub-voxel chord tolerance.
-  **This is the profile's meaning, not an approximation of it**: field, classification,
-  resolve and outset see only the polygon, so a new curve kind is additive at the authoring
-  layer and invisible below it. Because the polygon *is* the meaning, the flattening is
-  deterministic and versioned — changing it changes existing documents.
+- **Region** — a bounded **face of the point-segment graph**: the closed areas the entities enclose
+  (`docs/adr/0030`). Regions are **derived**, never stored. A visual crossing with no shared point
+  makes no region — snap a point at the intersection to create one.
 
-- **Lattice snapping** — the voxel grid standing in for a constraint solver. Snapping to
-  grid, edges and axes delivers axis-alignment, equal lengths and coincidence as a
-  by-product of quantization, so the profile layer carries no constraint entities, no
-  solver, and none of the over-constrained or flipped-solution states those bring.
+- **Pick / unpick** — each region is **picked (solid) by default**; the author **unpicks** regions to
+  carve holes. Explicit per-face inclusion, **not** even-odd fill. A region's identity across edits is
+  the **set of `origin` ids of its boundary edges**, so dragging a vertex or subdividing a loop edge
+  preserves an unpick, while restructuring the boundary resets it to picked. Picking regions *inside
+  one's own sketch* is authoring one's own profile, not cross-node operand targeting (ADR 0017).
+
+- **Profile** — the shape a body is lifted from, **derived from the picked regions** of the sketch
+  entities (`docs/adr/0030`). It is the *output* of authoring, not the input the author manipulates
+  (that is the entities). Positioned in continuous coordinates, never required to align to the voxel
+  lattice. _Avoid_: outline, vertex list (the profile is derived, not hand-maintained).
+
+- **Flattened profile** — the profile reduced to **`Fill` / `Hole` tagged loops** (simple polygons,
+  arcs tessellated at sub-voxel chord tolerance) resolved by **2D field CSG** — union the `Fill`
+  loops, subtract the `Hole` loops, reusing the 3D field algebra (ADR 0017). **This is the profile's
+  meaning, not an approximation of it**: field, classification, resolve and outset see only the loops,
+  so a new curve kind is additive at the authoring layer and invisible below it. Because the loops
+  *are* the meaning, the flattening is deterministic and versioned — changing it changes existing
+  documents. _Avoid_: even-odd fill (explicit `Fill`/`Hole` CSG, not global crossing parity).
+
+- **Construction line** — a sketch entity carrying `role: Construction`: reference geometry that
+  **never bounds a region** (`docs/adr/0030`). Reserved for the eventual constraint solver; the field
+  exists, the toggle UI is deferred.
+
+- **Sketch dimension** — a sketch entity that makes a `Measurement` **visible** on the canvas (an
+  arc radius, a point-to-element distance, an angle) and — with the solver — **drives** it
+  (`docs/adr/0030`). The UI face of the measurement substrate (`docs/adr/0029`). *Display-only*
+  dimensions are solver-free; *driving* dimensions need the solver. Reserved.
+
+- **Lattice snapping** — the voxel grid standing in for a constraint solver **in v1**. Snapping to
+  grid, edges and axes delivers axis-alignment, equal lengths and coincidence as a by-product of
+  quantization, so the v1 sketch layer carries no constraint entities and no solver. This is a
+  **stand-in, not a permanent no** (`docs/adr/0029`, `docs/adr/0030`): a real solver, construction
+  lines, and constraints on points/segments are the intended future, built on the `Measurement`
+  expression substrate + stable entity ids.
 
 - **Sketch mode** — the editing environment entered on a sketch scene object (`docs/adr/0028`):
-  the tool rail swaps to sketch tools and non-sketch operations disable, so the profile's **real,
+  the tool rail swaps to sketch tools and non-sketch operations disable, so the sketch's **real,
   directly-manipulated entities** (not previews) are authored in a **sealed, self-contained scope**.
   A property of the **editor, never the document**; its edits form **one undo group** that commits
   atomically on *Finish* or rolls back on *Cancel*. The sketch stays **fused** with its lifting
-  operation — the operation lifts its own profile, never referencing an external sketch (no operand
-  targeting, ADR 0017).
+  operation — the operation lifts its own derived profile, never referencing an external sketch (no
+  operand targeting, ADR 0017).
 
 ## Field
 
