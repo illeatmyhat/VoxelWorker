@@ -239,6 +239,13 @@ struct WindowedState {
     /// right-press inside the cube rect; the egui pass draws a small menu there and
     /// clears it on selection or click-away.
     context_menu_open_at: Option<egui::Pos2>,
+    /// The screen position (physical window pixels) of an open **general viewport** right-click
+    /// context menu, or `None`. Set on a right-press in the live viewport (not the cube, not the
+    /// Signal chrome, not egui); the egui pass draws a mode-dispatched menu there (Delete acts on
+    /// the sketch selection in sketch mode, the active node in normal mode — `docs/design/
+    /// tool-modes-and-navigation.md`) and clears it on selection or click-away. Distinct from the
+    /// cube's [`context_menu_open_at`](Self::context_menu_open_at); the two never open together.
+    viewport_menu_at: Option<egui::Pos2>,
     /// #13 Step 4: the ViewCube chrome zone currently under the cursor (a rotate
     /// or roll arrow / Home / Fit), driving the live hover highlight in
     /// [`ViewCubeRenderer::draw`]. Recomputed cheaply on every `CursorMoved`; held
@@ -319,11 +326,6 @@ struct WindowedState {
     /// handler commits it synchronously as one edit in the open undo group
     /// (`commit_sketch_vertex_drag`), which clears this back to `None`.
     sketch_drag: Option<SketchVertexDrag>,
-    /// The sketch editing selection — the picked points + segments (ADR 0030 /
-    /// `docs/design/sketch-selection.md`). A stationary Select-tool click resolves into it (plain
-    /// = replace, Shift = toggle, empty = clear); the overlay draws a picked entity in the
-    /// `Selected` state. Session state, cleared on entering a sketch; empty outside sketch mode.
-    sketch_selection: ui::panel::SketchSelection,
     /// Whether Shift is currently held, tracked from `WindowEvent::ModifiersChanged`. Read by the
     /// selection click resolve (Shift = toggle/accumulate rather than replace).
     shift_held: bool,
@@ -615,6 +617,7 @@ impl WindowedState {
             // Empty until the first frame fills it in (no chrome to reserve yet).
             last_chrome_rects_px: Vec::new(),
             context_menu_open_at: None,
+            viewport_menu_at: None,
             hovered_cube_zone: None,
             // ADR 0022 live placement: nothing armed until the user picks a "+ Add" chip.
             armed_tool: None,
@@ -638,7 +641,6 @@ impl WindowedState {
             last_view_projection: None,
             sketch_edit_press: false,
             sketch_drag: None,
-            sketch_selection: ui::panel::SketchSelection::default(),
             shift_held: false,
         }
     }

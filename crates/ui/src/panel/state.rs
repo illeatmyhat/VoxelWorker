@@ -611,6 +611,19 @@ pub struct PanelState {
     /// with the same tool in hand.
     #[snapshot(session)]
     pub sketch_tool: SketchTool,
+    /// The sketch editing **selection** — the picked points + segments (ADR 0030 /
+    /// `docs/design/sketch-selection.md`). A stationary Select-tool click resolves into it (plain =
+    /// replace, Shift = toggle, empty = clear); the overlay draws a picked entity `Selected` and the
+    /// general context menu's Delete acts on it. Lives here (not the shell) so both the overlay and
+    /// the menu — drawn in `run_egui_frame` — see one source.
+    ///
+    /// **Transient** state, the same category as a mouse-held-mid-drag flag: it is momentary in-mode
+    /// editing state, **cleared on entering and on leaving a sketch**, meaningless outside the mode,
+    /// and never undoable (selecting is not an edit). It does not persist — a repro dump re-enters
+    /// the sketch, which clears the selection anyway — so it reaches neither the document nor the
+    /// dump, the justified use of the escape hatch (ADR 0022/0024).
+    #[snapshot(transient)]
+    pub sketch_selection: SketchSelection,
 }
 
 impl PanelState {
@@ -734,6 +747,12 @@ pub struct PanelResponse {
     /// The shell sets [`PanelState::sketch_mode`](PanelState::sketch_mode) to it. `None` when
     /// no enter was requested.
     pub enter_sketch: Option<NodeId>,
+    /// The user chose **Delete** from the general viewport context menu while in sketch mode this
+    /// frame (ADR 0030) → the shell deletes the current sketch selection (points cascade their
+    /// segments) as one edit and clears it. A VIEW action routed through the response (the selection
+    /// + the commit path live on the shell, not the panel), like [`focus_node`](Self::focus_node).
+    /// `false` when no sketch delete was requested.
+    pub delete_sketch_selection: bool,
     /// How the user asked to **leave sketch mode** this frame (ADR 0028), via the floating
     /// `CANCEL | FINISH SKETCH` control — `Finish` commits, `Cancel` discards. A VIEW action:
     /// the shell clears [`PanelState::sketch_mode`](PanelState::sketch_mode) (and, from #94,

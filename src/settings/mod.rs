@@ -447,6 +447,9 @@ impl AppConfig {
             // ADR 0028 (#95): restore the armed sketch tool, so a mid-edit repro re-enters with
             // the same verb in hand. Latent until sketch mode is active.
             sketch_tool: self.sketch_tool,
+            // ADR 0030: the sketch selection is transient in-mode state; a fresh load starts with
+            // nothing picked (the config does not persist it — re-entering a sketch clears it anyway).
+            sketch_selection: ui::panel::SketchSelection::default(),
         };
         // step 8: restore the persisted full scene when present and non-empty;
         // otherwise (a scene-less old config, or a `Some(scene)` with no nodes — a

@@ -295,6 +295,12 @@ pub fn run_egui_frame(
     // menu's clicks. The menu clears this (`= None`) on selection or click-away.
     // The headless `shot` path passes `&mut None` (no menu).
     cube_context_menu_at: &mut Option<egui::Pos2>,
+    // The general **viewport** right-click context menu's open position (PHYSICAL window pixels,
+    // like `cube_context_menu_at` — divided by `pixels_per_point` here), or `None`. Drawn inside
+    // the egui pass so egui swallows the menu's clicks; a mode-dispatched Delete acts on the sketch
+    // selection (sketch mode) or the active node (normal mode). The headless `shot` path passes
+    // `&mut None` (no menu).
+    viewport_menu_at: &mut Option<egui::Pos2>,
     // Signal (#86): the hovered view-cube zone's name (e.g. `TOP·FRONT`), drawn as a
     // faint readout line under the cube. `None` when nothing is hovered — and always
     // `None` on the headless `shot` path, so the goldens stay pure cube geometry.
@@ -418,6 +424,69 @@ pub fn run_egui_frame(
                     .unwrap_or(false);
                 if !clicked_in_menu {
                     *cube_context_menu_at = None;
+                }
+            }
+        }
+
+        // The general VIEWPORT context menu (docs/design/tool-modes-and-navigation.md): a
+        // mode-dispatched right-click menu. Delete (a warn-red ✕, the one destructive glyph) acts
+        // on the sketch selection in sketch mode and the active node in normal mode. An egui Area,
+        // so egui owns its hit-testing and its click never leaks to the viewport.
+        if let Some(menu_pos_px) = *viewport_menu_at {
+            let menu_pos = egui::pos2(
+                menu_pos_px.x / pixels_per_point,
+                menu_pos_px.y / pixels_per_point,
+            );
+            let context = ui.ctx().clone();
+            let in_sketch = panel_state.sketch_mode.is_some();
+            // Delete is enabled only when there is something to remove: a non-empty sketch
+            // selection, or (normal mode) an active node.
+            let delete_enabled = if in_sketch {
+                !panel_state.sketch_selection.is_empty()
+            } else {
+                panel_state.scene.active_node().is_some()
+            };
+            let mut close = false;
+            let area = egui::Area::new(egui::Id::new("viewport_context_menu"))
+                .order(egui::Order::Foreground)
+                .fixed_pos(menu_pos)
+                .show(&context, |ui| {
+                    egui::Frame::menu(ui.style()).show(ui, |ui| {
+                        ui.set_min_width(160.0);
+                        let label =
+                            egui::RichText::new("✕  Delete").color(ui::signal_theme::WARN);
+                        if ui
+                            .add_enabled(delete_enabled, egui::Button::new(label))
+                            .clicked()
+                        {
+                            if in_sketch {
+                                // The shell owns the selection + the sketch commit path.
+                                panel_response.delete_sketch_selection = true;
+                            } else if let Some(id) =
+                                panel_state.scene.active_node().map(|node| node.id)
+                            {
+                                panel_response.frame_after_apply = true;
+                                panel_response
+                                    .intents
+                                    .push(document::intent::Intent::RemoveNode { target: id });
+                            }
+                            close = true;
+                        }
+                    });
+                });
+            if close {
+                *viewport_menu_at = None;
+            }
+            // Click-away: a PRIMARY click outside the menu closes it (mirrors the cube menu — the
+            // opening right-click is left alone so the menu does not flicker shut the same frame).
+            let pointer = context.input(|i| i.pointer.clone());
+            if pointer.primary_clicked() {
+                let clicked_in_menu = pointer
+                    .interact_pos()
+                    .map(|p| area.response.rect.contains(p))
+                    .unwrap_or(false);
+                if !clicked_in_menu {
+                    *viewport_menu_at = None;
                 }
             }
         }

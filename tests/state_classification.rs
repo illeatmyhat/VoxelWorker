@@ -90,15 +90,14 @@ fn the_escape_hatches_are_exactly_these() {
             ("voxel_cap_warning_millions", StateCategory::Derived),
             // The camera target, rounded to whole blocks, refreshed each frame.
             ("point_add_position_blocks", StateCategory::Derived),
+            // ADR 0030: the sketch selection — momentary in-mode editing state, cleared on
+            // entering and leaving a sketch (and the repro-restore path starts it empty), so it
+            // persists nothing. The first justified `transient`: like a mouse-held-mid-drag flag,
+            // it reaches neither artifact because it is genuinely of-the-moment.
+            ("sketch_selection", StateCategory::Transient),
         ],
         "the set of fields excused from both persistence artifacts changed"
     );
-
-    // Nothing is `transient` yet, and that is the healthy state: `derived` makes a claim a
-    // reviewer can falsify, `transient` makes one nobody can.
-    assert!(!hatches
-        .iter()
-        .any(|(_, category)| *category == StateCategory::Transient));
 }
 
 #[test]

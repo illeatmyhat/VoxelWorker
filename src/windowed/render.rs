@@ -158,6 +158,8 @@ impl WindowedState {
             [self.surface_config.width, self.surface_config.height],
                 pixels_per_point,
                 &mut self.context_menu_open_at,
+                // The general viewport right-click menu (mode-dispatched Delete).
+                &mut self.viewport_menu_at,
                 // Signal (#86): the hovered cube zone's readout name, or None.
                 self.hovered_cube_zone
                     .and_then(camera::view_cube_zone_readout)
@@ -281,7 +283,7 @@ impl WindowedState {
         if let Some(node) = prepared.panel_response.enter_sketch.take() {
             self.panel_state.sketch_mode = Some(node);
             self.armed_tool = None;
-            self.sketch_selection.clear();
+            self.panel_state.sketch_selection.clear();
             self.app_core.begin_sketch_group();
         }
         if let Some(exit) = prepared.panel_response.exit_sketch.take() {
@@ -292,7 +294,12 @@ impl WindowedState {
                 }
             };
             self.panel_state.sketch_mode = None;
-            self.sketch_selection.clear();
+            self.panel_state.sketch_selection.clear();
+        }
+        // ADR 0030: a context-menu Delete in sketch mode removes the current selection as one edit
+        // (queues a SetSketch through `viewport_intents`, gathered just below).
+        if prepared.panel_response.delete_sketch_selection {
+            self.delete_sketch_selection();
         }
         // ADR 0028 (#94): advance an in-progress sketch vertex drag — a live preview that
         // re-resolves the volume and records ONE coalesced command in the open group. Uses
@@ -1098,25 +1105,54 @@ impl WindowedState {
         if let Some(index) = self.sketch_vertex_at(cursor_x, cursor_y) {
             if let Some(&point_id) = self.sketch_point_ids.get(index) {
                 if shift {
-                    self.sketch_selection.toggle_point(point_id);
+                    self.panel_state.sketch_selection.toggle_point(point_id);
                 } else {
-                    self.sketch_selection.select_point(point_id);
+                    self.panel_state.sketch_selection.select_point(point_id);
                 }
                 return;
             }
         }
         if let Some(seg_id) = self.sketch_segment_at(cursor_x, cursor_y) {
             if shift {
-                self.sketch_selection.toggle_segment(seg_id);
+                self.panel_state.sketch_selection.toggle_segment(seg_id);
             } else {
-                self.sketch_selection.select_segment(seg_id);
+                self.panel_state.sketch_selection.select_segment(seg_id);
             }
             return;
         }
         // Empty space: a plain click clears; a Shift-click leaves the set alone (Fusion).
         if !shift {
-            self.sketch_selection.clear();
+            self.panel_state.sketch_selection.clear();
         }
+    }
+
+    /// ADR 0030: delete every entity in the sketch selection as ONE edit — each selected point
+    /// (cascading its incident segments) then each selected segment (a no-op if a cascade already
+    /// took it), committed through the same anchor-preserving path a single delete uses
+    /// ([`commit_sketch_profile_edit`](Self::commit_sketch_profile_edit)), then the selection is
+    /// cleared. No-op when nothing is picked or no sketch is being edited. Invoked by the general
+    /// viewport context menu's Delete.
+    pub(super) fn delete_sketch_selection(&mut self) {
+        let Some(target) = self.panel_state.sketch_mode else {
+            return;
+        };
+        if self.panel_state.sketch_selection.is_empty() {
+            return;
+        }
+        let Some((producer, _)) = self.sketch_node_state(target) else {
+            return;
+        };
+        let points: Vec<_> = self.panel_state.sketch_selection.points().collect();
+        let segments: Vec<_> = self.panel_state.sketch_selection.segments().collect();
+        let mut next = producer;
+        for point_id in points {
+            next = next.with_point_deleted(point_id);
+        }
+        for seg_id in segments {
+            next = next.with_segment_deleted(seg_id);
+        }
+        self.commit_sketch_profile_edit(target, next);
+        self.panel_state.sketch_selection.clear();
     }
 
     /// ADR 0028 (#95): queue an add/delete profile edit as ONE entry in the open sketch undo
@@ -1232,7 +1268,7 @@ impl WindowedState {
                 .unwrap_or(false);
             let point_id = handles.point_ids.get(index).copied();
             let selected = point_id
-                .map(|id| self.sketch_selection.contains_point(id))
+                .map(|id| self.panel_state.sketch_selection.contains_point(id))
                 .unwrap_or(false);
             // Precedence: dragged > delete-hover (warn ✕) > hover > selected > idle. Hover wins
             // over selected so the pointer always shows what it is about to act on (ADR 0030).
@@ -1297,7 +1333,7 @@ impl WindowedState {
                 // Hover/Marked on the one cursor-segment wins; else Selected if picked; else Idle.
                 let state = match hovered_segment {
                     Some((id, state)) if id == seg_id => state,
-                    _ if self.sketch_selection.contains_segment(seg_id) => {
+                    _ if self.panel_state.sketch_selection.contains_segment(seg_id) => {
                         ui::gizmos::HandleState::Selected
                     }
                     _ => ui::gizmos::HandleState::Idle,

@@ -292,11 +292,23 @@ impl ApplicationHandler for App {
                         && position
                             .map(|(x, y)| state.position_in_view_cube(x, y))
                             .unwrap_or(false);
-                    state.context_menu_open_at = if in_cube {
-                        position.map(|(x, y)| egui::pos2(x as f32, y as f32))
+                    let in_chrome = position
+                        .map(|(x, y)| state.position_in_signal_chrome(x, y))
+                        .unwrap_or(false);
+                    let at = position.map(|(x, y)| egui::pos2(x as f32, y as f32));
+                    // A cube right-press opens the cube's own menu; a right-press anywhere else in
+                    // the live viewport (not the Signal chrome) opens the general viewport menu.
+                    // The two are mutually exclusive so only one is ever up.
+                    if in_cube {
+                        state.context_menu_open_at = at;
+                        state.viewport_menu_at = None;
+                    } else if !in_chrome {
+                        state.viewport_menu_at = at;
+                        state.context_menu_open_at = None;
                     } else {
-                        None
-                    };
+                        state.context_menu_open_at = None;
+                        state.viewport_menu_at = None;
+                    }
                 }
             }
             WindowEvent::ModifiersChanged(modifiers) => {
