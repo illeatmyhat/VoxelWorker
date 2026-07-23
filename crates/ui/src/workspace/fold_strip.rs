@@ -20,7 +20,7 @@ use document::scene::{NodeId, Scene};
 
 use super::{hairline, region_frame, Edge, FOLD_STRIP_HEIGHT};
 use crate::panel::{PanelResponse, PanelState};
-use crate::signal_theme;
+use crate::theme;
 
 /// One fold card.
 const CARD_WIDTH: f32 = 150.0;
@@ -41,7 +41,7 @@ pub(super) fn build_fold_strip(
         .frame(region_frame())
         .show_inside(root_ui, |ui| {
             let band = ui.max_rect();
-            hairline(ui.painter(), band, Edge::Top, signal_theme::BORDER);
+            hairline(ui.painter(), band, Edge::Top, theme::BORDER);
 
             ui.add_space(9.0);
             header(ui, state);
@@ -67,25 +67,25 @@ fn header(ui: &mut egui::Ui, state: &PanelState) {
     let count = state.scene.roots.len();
     ui.horizontal(|ui| {
         ui.add_space(11.0);
-        let title = signal_theme::letter_spaced(
+        let title = theme::letter_spaced(
             ui,
             "Fold · root part",
-            signal_theme::TEXT_MUTED,
+            theme::TEXT_MUTED,
             9.0,
             2.0,
         );
         let (r, _) = ui.allocate_exact_size(title.size(), egui::Sense::hover());
-        ui.painter().galley(r.min, title, signal_theme::TEXT_MUTED);
+        ui.painter().galley(r.min, title, theme::TEXT_MUTED);
         ui.add_space(10.0);
-        let sub = signal_theme::letter_spaced(
+        let sub = theme::letter_spaced(
             ui,
             &format!("{count} nodes · later wins · depth is navigated, not drawn"),
-            signal_theme::TEXT_HINT,
+            theme::TEXT_HINT,
             8.5,
             1.2,
         );
         let (r, _) = ui.allocate_exact_size(sub.size(), egui::Sense::hover());
-        ui.painter().galley(r.min, sub, signal_theme::TEXT_HINT);
+        ui.painter().galley(r.min, sub, theme::TEXT_HINT);
     });
 }
 
@@ -107,38 +107,38 @@ fn card(
     );
     let painter = ui.painter();
 
-    painter.rect_filled(rect, 0.0, signal_theme::BG);
+    painter.rect_filled(rect, 0.0, theme::BG);
     let edge = if selected {
-        signal_theme::ACCENT
+        theme::ACCENT
     } else if hit.hovered() {
-        signal_theme::TEXT_FAINT
+        theme::TEXT_FAINT
     } else {
-        signal_theme::BORDER
+        theme::BORDER
     };
     painter.rect_stroke(rect, 0.0, egui::Stroke::new(1.0_f32, edge), egui::StrokeKind::Inside);
 
     let ink = if selected {
-        signal_theme::TEXT_PRIMARY
+        theme::TEXT_PRIMARY
     } else {
-        signal_theme::TEXT_SECONDARY
+        theme::TEXT_SECONDARY
     };
 
     // Row 1: the fold index and the operation, which is what position MEANS here.
-    let op = signal_theme::letter_spaced(
+    let op = theme::letter_spaced(
         ui,
         &format!("#{}  {}", index + 1, node.operation_label()),
-        if selected { signal_theme::ACCENT } else { signal_theme::TEXT_MUTED },
+        if selected { theme::ACCENT } else { theme::TEXT_MUTED },
         8.5,
         1.4,
     );
     ui.painter().galley(
         egui::pos2(rect.left() + 10.0, rect.top() + 10.0),
         op,
-        signal_theme::TEXT_MUTED,
+        theme::TEXT_MUTED,
     );
 
     // Row 2: the name.
-    let name = signal_theme::letter_spaced(ui, &node.name, ink, 10.0, 0.6);
+    let name = theme::letter_spaced(ui, &node.name, ink, 10.0, 0.6);
     ui.painter()
         .galley(egui::pos2(rect.left() + 10.0, rect.top() + 30.0), name, ink);
 

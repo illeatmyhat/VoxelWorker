@@ -38,7 +38,7 @@
 
 use egui::{Color32, Painter, Pos2, Rect, Shape, Stroke};
 
-use crate::signal_theme as tokens;
+use crate::theme::color_palette;
 
 mod axis_guide;
 mod close_loop_ring;
@@ -66,11 +66,11 @@ pub use vertex_handle::{vertex_handle, HandleState};
 /// 0028 §5). X = warn-red, Y = green, Z = accent, from the shared token table.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Axis {
-    /// The X in-plane axis — [`tokens::WARN`].
+    /// The X in-plane axis — [`color_palette::WARN`].
     X,
-    /// The Y in-plane axis — [`tokens::AXIS_Y`].
+    /// The Y in-plane axis — [`color_palette::AXIS_Y`].
     Y,
-    /// The Z axis — [`tokens::ACCENT`].
+    /// The Z axis — [`color_palette::ACCENT`].
     Z,
 }
 
@@ -78,20 +78,21 @@ impl Axis {
     /// The axis's hue from the shared palette.
     pub fn color(self) -> Color32 {
         match self {
-            Axis::X => tokens::WARN,
-            Axis::Y => tokens::AXIS_Y,
-            Axis::Z => tokens::ACCENT,
+            Axis::X => color_palette::WARN,
+            Axis::Y => color_palette::AXIS_Y,
+            Axis::Z => color_palette::ACCENT,
         }
     }
 }
 
 /// The vertex handle's dark thumb fill — the shipped handle idiom (dark fill · accent border).
-pub(crate) const HANDLE_FILL: Color32 = tokens::BG;
+pub(crate) const HANDLE_FILL: Color32 = color_palette::BG;
 /// The handle border / selected fill: the accent.
-pub(crate) const HANDLE_ACCENT: Color32 = tokens::ACCENT;
-/// A hovered handle's brighter border `#c7d3e0` — the design's glyph-hover value (not a Signal
-/// token: it is only ever a hover state, never a fill or a text tier).
-pub(crate) const HANDLE_HOVER: Color32 = Color32::from_rgb(0xc7, 0xd3, 0xe0);
+pub(crate) const HANDLE_ACCENT: Color32 = color_palette::ACCENT;
+/// A hovered handle's / edge's fill+stroke — now the [`color_palette::HANDLE_HOVER`] Signal token, so it
+/// appears in the design_reference palette by construction (owner 2026-07-23). Was a raw `#c7d3e0`
+/// here, outside the token map.
+pub(crate) const HANDLE_HOVER: Color32 = color_palette::HANDLE_HOVER;
 
 /// The manipulator stroke (handles, rings) — the 1.25 pt family weight.
 pub(crate) const STROKE_HANDLE: f32 = 1.25;

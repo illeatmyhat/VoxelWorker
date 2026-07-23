@@ -2,7 +2,7 @@
 
 use egui::{Color32, FontId, Painter, Pos2, Rect, Stroke, StrokeKind, Vec2};
 
-use crate::signal_theme as tokens;
+use crate::theme::color_palette;
 
 use super::STROKE_GUIDE;
 
@@ -16,7 +16,7 @@ pub fn label_chip(painter: &Painter, at: Pos2, text: &str, accent: Color32) -> R
     let galley = painter.layout_no_wrap(text.to_uppercase(), FontId::monospace(8.5), accent);
     let pad = Vec2::new(6.0, 3.5);
     let rect = Rect::from_min_size(at, galley.size() + pad * 2.0);
-    painter.rect_filled(rect, 0.0, tokens::BG);
+    painter.rect_filled(rect, 0.0, color_palette::BG);
     painter.rect_stroke(rect, 0.0, Stroke::new(STROKE_GUIDE, accent), StrokeKind::Inside);
     painter.galley(at + pad, galley, accent);
     rect

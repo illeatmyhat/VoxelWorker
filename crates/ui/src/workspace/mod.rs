@@ -49,7 +49,7 @@ mod top_bar;
 
 use crate::palette::BlockPalette;
 use crate::panel::{ExportPanelState, PanelResponse, PanelState};
-use crate::signal_theme;
+use crate::theme;
 
 /// Top bar height (design points) — brand, breadcrumbs, viewer segment, readouts.
 const TOP_BAR_HEIGHT: f32 = 42.0;
@@ -95,7 +95,7 @@ pub fn build_workspace(
 /// instrument surface.
 fn region_frame() -> egui::Frame {
     egui::Frame::new()
-        .fill(signal_theme::BG)
+        .fill(theme::BG)
         .inner_margin(egui::Margin::ZERO)
 }
 

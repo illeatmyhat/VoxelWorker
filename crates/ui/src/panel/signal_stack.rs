@@ -27,7 +27,7 @@
 use egui::{CornerRadius, Margin, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, UiBuilder, Vec2};
 
 use super::{controls, layers, PanelResponse, PanelState, ViewMode};
-use crate::signal_theme::{
+use crate::theme::{
     self, ACCENT, BG, BORDER, HOVER_BG, RULE, TEXT_FAINT, TEXT_HOVER, TEXT_MUTED, TEXT_SECONDARY,
 };
 
@@ -101,10 +101,10 @@ pub fn build_signal_stack(
     );
 
     let mut stack_ui = root_ui.new_child(UiBuilder::new().max_rect(max_rect));
-    // The stack's scoped Signal style (promoted to `signal_theme`, issue #89): built
+    // The stack's scoped Signal style (promoted to `theme`, issue #89): built
     // from `Style::default` so the floating stack stays byte-identical to its #80
     // rendering regardless of the app-wide restyle around it.
-    signal_theme::apply_stack_style(&mut stack_ui);
+    theme::apply_stack_style(&mut stack_ui);
     if folded {
         build_folded_tabs(&mut stack_ui, state);
     } else {
@@ -136,7 +136,7 @@ fn build_expanded_stack(
             let (bar_rect, _) =
                 ui.allocate_exact_size(Vec2::new(STACK_WIDTH, HEADER_BAR_HEIGHT), Sense::hover());
             let painter = ui.painter_at(bar_rect);
-            let title = signal_theme::letter_spaced(ui, "DISPLAY", TEXT_SECONDARY, 10.5, 2.0);
+            let title = theme::letter_spaced(ui, "DISPLAY", TEXT_SECONDARY, 10.5, 2.0);
             painter.galley(
                 Pos2::new(bar_rect.left() + 8.0, bar_rect.center().y - title.size().y * 0.5),
                 title,
@@ -151,7 +151,7 @@ fn build_expanded_stack(
             if fold_resp.hovered() {
                 ui.painter().rect_filled(fold_rect, 0.0, HOVER_BG);
             }
-            let fold_glyph = signal_theme::letter_spaced(
+            let fold_glyph = theme::letter_spaced(
                 ui,
                 "\u{00bb}",
                 if fold_resp.hovered() { TEXT_HOVER } else { TEXT_MUTED },
@@ -225,14 +225,14 @@ fn section_header(ui: &mut egui::Ui, name: &str, count: &str, open: bool) -> boo
     chevron(ui.painter(), Pos2::new(rect.left() + 11.0, rect.center().y), open);
     // Name.
     let name_color = if hovered { TEXT_HOVER } else { TEXT_SECONDARY };
-    let galley = signal_theme::letter_spaced(ui, name, name_color, 10.0, 1.5);
+    let galley = theme::letter_spaced(ui, name, name_color, 10.0, 1.5);
     ui.painter().galley(
         Pos2::new(rect.left() + 22.0, rect.center().y - galley.size().y * 0.5),
         galley,
         name_color,
     );
     // Count (faint, right-aligned).
-    let count_galley = signal_theme::letter_spaced(ui, count, TEXT_FAINT, 9.0, 0.0);
+    let count_galley = theme::letter_spaced(ui, count, TEXT_FAINT, 9.0, 0.0);
     ui.painter().galley(
         Pos2::new(rect.right() - 10.0 - count_galley.size().x, rect.center().y - count_galley.size().y * 0.5),
         count_galley,
@@ -292,7 +292,7 @@ fn edge_tab(ui: &mut egui::Ui, caption: &str, expander: bool) -> bool {
     let size = if expander { 13.0 } else { 10.0 };
     let spacing = if expander { 0.0 } else { 1.5 };
     // Measure the caption (galley size is colour-independent) to size the tab box.
-    let measured = signal_theme::letter_spaced(ui, caption, TEXT_MUTED, size, spacing);
+    let measured = theme::letter_spaced(ui, caption, TEXT_MUTED, size, spacing);
     let galley_width = measured.size().x;
     let galley_height = measured.size().y;
     let height = galley_width + 2.0 * TAB_TEXT_PAD;
@@ -304,7 +304,7 @@ fn edge_tab(ui: &mut egui::Ui, caption: &str, expander: bool) -> bool {
         .rect_stroke(rect, 0.0, Stroke::new(1.0_f32, BORDER), StrokeKind::Inside);
 
     let color = if hovered { TEXT_HOVER } else { TEXT_MUTED };
-    let galley = signal_theme::letter_spaced(ui, caption, color, size, spacing);
+    let galley = theme::letter_spaced(ui, caption, color, size, spacing);
     // Rotate the pre-laid galley 90° clockwise (egui's `Shape::text` can't letter-space,
     // hence the galley). A TextShape draws the galley from `pos` then rotates it about
     // `pos`; for +90° the galley's rotated bbox centre lands at `pos + (h/2, -w/2)`, so we

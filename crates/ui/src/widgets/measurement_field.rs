@@ -3,7 +3,7 @@
 //! One authored spatial quantity, edited as text. This is the single owner of the
 //! commit protocol every measurement editor in the app shares — see [`MeasurementField`].
 
-use crate::signal_theme;
+use crate::theme;
 use voxel_core::units::{self, DisplayUnit, Measurement, MeasurementError};
 
 /// The width of the text box, in points. Every measurement field is this wide so the
@@ -144,7 +144,7 @@ impl<'a> MeasurementField<'a> {
         ui.memory_mut(|memory| memory.data.insert_temp(text_id, buffer));
 
         if let Some(message) = ui.memory(|memory| memory.data.get_temp::<String>(error_id)) {
-            ui.colored_label(signal_theme::WARN, message);
+            ui.colored_label(theme::WARN, message);
         }
 
         commit

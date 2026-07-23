@@ -47,7 +47,7 @@ pub use state::{
 };
 
 use crate::palette::BlockPalette;
-use crate::signal_theme;
+use crate::theme;
 
 /// Build the right-hand side panel into the root [`egui::Ui`] of the frame.
 ///
@@ -102,13 +102,13 @@ pub fn build_panel(
                             .monospace()
                             .size(15.0)
                             .strong()
-                            .color(signal_theme::TEXT_PRIMARY),
+                            .color(theme::TEXT_PRIMARY),
                     );
                     ui.label(
                         egui::RichText::new("Vintage Story chiseling planner")
                             .monospace()
                             .size(9.5)
-                            .color(signal_theme::TEXT_FAINT),
+                            .color(theme::TEXT_FAINT),
                     );
                     ui.add_space(6.0);
                     ui.separator();
@@ -123,7 +123,7 @@ pub fn build_panel(
                         ui.add_space(8.0);
                         ui.separator();
                         ui.colored_label(
-                            signal_theme::WARN,
+                            theme::WARN,
                             format!("3D paused — {millions:.1}M voxels; lower size/density"),
                         );
                     }

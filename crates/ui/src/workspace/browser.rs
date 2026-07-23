@@ -15,7 +15,7 @@ use document::scene::{NodeContent, NodeId, Scene};
 use super::{hairline, region_frame, Edge, BROWSER_WIDTH};
 use crate::icons::Icon;
 use crate::panel::{PanelResponse, PanelState};
-use crate::signal_theme;
+use crate::theme;
 
 /// Row height, sized for a 13 px rail glyph beside 10 px monospace.
 const ROW_HEIGHT: f32 = 22.0;
@@ -36,7 +36,7 @@ pub(super) fn build_browser(
         .frame(region_frame())
         .show_inside(root_ui, |ui| {
             let column = ui.max_rect();
-            hairline(ui.painter(), column, Edge::Right, signal_theme::BORDER);
+            hairline(ui.painter(), column, Edge::Right, theme::BORDER);
 
             ui.add_space(9.0);
             heading(ui, "Browser");
@@ -56,14 +56,14 @@ pub(super) fn build_browser(
 
 /// A column heading.
 fn heading(ui: &mut egui::Ui, title: &str) {
-    let galley = signal_theme::letter_spaced(ui, title, signal_theme::TEXT_MUTED, 9.0, 2.0);
+    let galley = theme::letter_spaced(ui, title, theme::TEXT_MUTED, 9.0, 2.0);
     let (rect, _) = ui.allocate_exact_size(
         egui::vec2(BROWSER_WIDTH, galley.size().y + 7.0),
         egui::Sense::hover(),
     );
     ui.painter()
-        .galley(egui::pos2(rect.left() + 11.0, rect.top()), galley, signal_theme::TEXT_MUTED);
-    hairline(ui.painter(), rect, Edge::Bottom, signal_theme::RULE);
+        .galley(egui::pos2(rect.left() + 11.0, rect.top()), galley, theme::TEXT_MUTED);
+    hairline(ui.painter(), rect, Edge::Bottom, theme::RULE);
 }
 
 /// One node row: glyph, name, and the selected treatment. In **sketch mode** (ADR 0028) the
@@ -90,19 +90,19 @@ fn node_row(
     let painter = ui.painter();
 
     if selected || editing {
-        painter.rect_filled(rect, 0.0, signal_theme::HOVER_BG);
+        painter.rect_filled(rect, 0.0, theme::HOVER_BG);
         let bar = egui::Rect::from_min_size(rect.left_top(), egui::vec2(2.0, rect.height()));
-        painter.rect_filled(bar, 0.0, signal_theme::ACCENT);
+        painter.rect_filled(bar, 0.0, theme::ACCENT);
     } else if row.hovered() {
-        painter.rect_filled(rect, 0.0, signal_theme::HOVER_BG);
+        painter.rect_filled(rect, 0.0, theme::HOVER_BG);
     }
 
     let ink = if selected || editing {
-        signal_theme::ACCENT
+        theme::ACCENT
     } else if row.hovered() {
-        signal_theme::TEXT_HOVER
+        theme::TEXT_HOVER
     } else {
-        signal_theme::TEXT_SECONDARY
+        theme::TEXT_SECONDARY
     };
 
     let left = rect.left() + 10.0 + depth as f32 * INDENT;
@@ -112,7 +112,7 @@ fn node_row(
     );
     node_icon(node.content_kind_icon()).draw(painter, glyph, ink);
 
-    let label = signal_theme::letter_spaced(ui, &node.name, ink, 10.0, 0.6);
+    let label = theme::letter_spaced(ui, &node.name, ink, 10.0, 0.6);
     let at = egui::pos2(
         glyph.right() + 7.0,
         rect.center().y - label.size().y * 0.5,
@@ -121,15 +121,15 @@ fn node_row(
 
     // The accent EDITING tag, right-aligned (C2 mock's `.tag`): dark text on the accent fill.
     if editing {
-        let tag = signal_theme::letter_spaced(ui, "EDITING", signal_theme::BG, 8.0, 1.2);
+        let tag = theme::letter_spaced(ui, "EDITING", theme::BG, 8.0, 1.2);
         let pad = egui::vec2(5.0, 2.0);
         let size = tag.size() + pad * 2.0;
         let tag_rect = egui::Rect::from_min_size(
             egui::pos2(rect.right() - size.x - 7.0, rect.center().y - size.y * 0.5),
             size,
         );
-        ui.painter().rect_filled(tag_rect, 0.0, signal_theme::ACCENT);
-        ui.painter().galley(tag_rect.min + pad, tag, signal_theme::BG);
+        ui.painter().rect_filled(tag_rect, 0.0, theme::ACCENT);
+        ui.painter().galley(tag_rect.min + pad, tag, theme::BG);
     }
 
     if row.clicked() && !selected {

@@ -4,7 +4,7 @@ use egui::{Painter, Pos2, Rect, Stroke, StrokeKind, Vec2};
 
 use super::snap_ticks::snap_ticks;
 use super::{HANDLE_ACCENT, HANDLE_FILL, HANDLE_HOVER, STROKE_HANDLE};
-use crate::signal_theme as tokens;
+use crate::theme::color_palette;
 
 /// A profile vertex handle's state — the four the design sheet demonstrates, plus the
 /// destructive-hover state the Delete tool arms (#95).
@@ -39,7 +39,7 @@ pub fn vertex_handle(painter: &Painter, center: Pos2, half: f32, state: HandleSt
         HandleState::Selected | HandleState::Snapped => (HANDLE_ACCENT, HANDLE_ACCENT),
         // Destructive hover: dark thumb, warn-red border, so it reads as "armed to remove"
         // rather than "armed to drag".
-        HandleState::Marked => (HANDLE_FILL, tokens::WARN),
+        HandleState::Marked => (HANDLE_FILL, color_palette::WARN),
     };
     let rect = Rect::from_center_size(center, Vec2::splat(half * 2.0));
     painter.rect_filled(rect, 0.0, fill);
@@ -51,7 +51,7 @@ pub fn vertex_handle(painter: &Painter, center: Pos2, half: f32, state: HandleSt
     // strokes across the thumb, inset so they sit clear of the border.
     if state == HandleState::Marked {
         let arm = half - 1.0;
-        let cross = Stroke::new(STROKE_HANDLE, tokens::WARN);
+        let cross = Stroke::new(STROKE_HANDLE, color_palette::WARN);
         painter.line_segment(
             [center + Vec2::new(-arm, -arm), center + Vec2::new(arm, arm)],
             cross,

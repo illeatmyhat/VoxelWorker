@@ -15,7 +15,7 @@ use document::scene::ROOT_NODE_ID;
 
 use super::{hairline, region_frame, Edge, TOP_BAR_HEIGHT};
 use crate::panel::{PanelResponse, PanelState, ViewMode};
-use crate::signal_theme;
+use crate::theme;
 
 /// The segmented viewer control's cell size.
 const SEGMENT_HEIGHT: f32 = 22.0;
@@ -44,12 +44,12 @@ pub(super) fn build_top_bar(
                 egui::vec2(ui.available_width(), TOP_BAR_HEIGHT),
                 egui::Sense::hover(),
             );
-            hairline(ui.painter(), band, Edge::Bottom, signal_theme::BORDER);
+            hairline(ui.painter(), band, Edge::Bottom, theme::BORDER);
             let middle = band.center().y;
 
             // --- left, packed in reading order ---
             let mut x = band.left() + EDGE_PAD;
-            x += paint_left(ui, "VoxelWorker", signal_theme::TEXT_PRIMARY, 11.0, 3.0, x, middle);
+            x += paint_left(ui, "VoxelWorker", theme::TEXT_PRIMARY, 11.0, 3.0, x, middle);
             x += 14.0;
             rule(ui, x, band);
             x += 11.0;
@@ -59,12 +59,12 @@ pub(super) fn build_top_bar(
                 .node_by_id(ROOT_NODE_ID)
                 .map(|node| node.name.clone())
                 .unwrap_or_else(|| "Part".to_string());
-            x += paint_left(ui, &root_name, signal_theme::TEXT_PRIMARY, 10.0, 1.6, x, middle);
+            x += paint_left(ui, &root_name, theme::TEXT_PRIMARY, 10.0, 1.6, x, middle);
             x += 14.0;
             rule(ui, x, band);
             x += 12.0;
 
-            x += paint_left(ui, "Viewer", signal_theme::TEXT_MUTED, 9.0, 1.4, x, middle);
+            x += paint_left(ui, "Viewer", theme::TEXT_MUTED, 9.0, 1.4, x, middle);
             x += 9.0;
             viewer_segment(ui, state, x, middle);
 
@@ -84,7 +84,7 @@ fn paint_left(
     x: f32,
     middle: f32,
 ) -> f32 {
-    let galley = signal_theme::letter_spaced(ui, text, color, size, spacing);
+    let galley = theme::letter_spaced(ui, text, color, size, spacing);
     let width = galley.size().x;
     ui.painter().galley(
         egui::pos2(x, middle - galley.size().y * 0.5),
@@ -117,25 +117,25 @@ fn viewer_segment(ui: &mut egui::Ui, state: &mut PanelState, x: f32, middle: f32
         let painter = ui.painter();
 
         if active {
-            painter.rect_filled(rect, 0.0, signal_theme::ACCENT);
+            painter.rect_filled(rect, 0.0, theme::ACCENT);
         } else if hit.hovered() {
-            painter.rect_filled(rect, 0.0, signal_theme::HOVER_BG);
+            painter.rect_filled(rect, 0.0, theme::HOVER_BG);
         }
         painter.rect_stroke(
             rect,
             0.0,
-            egui::Stroke::new(1.0_f32, signal_theme::BORDER),
+            egui::Stroke::new(1.0_f32, theme::BORDER),
             egui::StrokeKind::Inside,
         );
 
         let ink = if active {
-            signal_theme::ACCENT_TEXT
+            theme::ACCENT_TEXT
         } else if hit.hovered() {
-            signal_theme::TEXT_HOVER
+            theme::TEXT_HOVER
         } else {
-            signal_theme::TEXT_SECONDARY
+            theme::TEXT_SECONDARY
         };
-        let galley = signal_theme::letter_spaced(ui, mode.status_label(), ink, 9.0, 1.2);
+        let galley = theme::letter_spaced(ui, mode.status_label(), ink, 9.0, 1.2);
         let at = rect.center() - galley.size() * 0.5;
         ui.painter().galley(at, galley, ink);
 
@@ -153,18 +153,18 @@ fn readouts(ui: &egui::Ui, state: &PanelState, band: egui::Rect, middle: f32) {
         ("Nodes", format!("{}", state.scene.arena.len())),
         ("Density", format!("{}³ / block", state.scene.voxels_per_block)),
     ] {
-        let l = signal_theme::letter_spaced(ui, label, signal_theme::TEXT_HINT, 8.5, 1.4);
-        let v = signal_theme::letter_spaced(ui, &value, signal_theme::TEXT_SECONDARY, 9.5, 0.8);
+        let l = theme::letter_spaced(ui, label, theme::TEXT_HINT, 8.5, 1.4);
+        let v = theme::letter_spaced(ui, &value, theme::TEXT_SECONDARY, 9.5, 0.8);
         let width = l.size().x.max(v.size().x);
         let left = right - width;
         let block_height = l.size().y + v.size().y + 2.0;
         let top = middle - block_height * 0.5;
         ui.painter()
-            .galley(egui::pos2(left, top), l, signal_theme::TEXT_HINT);
+            .galley(egui::pos2(left, top), l, theme::TEXT_HINT);
         ui.painter().galley(
             egui::pos2(left, top + block_height - v.size().y),
             v,
-            signal_theme::TEXT_SECONDARY,
+            theme::TEXT_SECONDARY,
         );
         right = left - READOUT_GAP;
     }
@@ -177,6 +177,6 @@ fn rule(ui: &egui::Ui, x: f32, band: egui::Rect) {
             egui::pos2(x, band.top() + 7.0),
             egui::pos2(x, band.bottom() - 7.0),
         ],
-        egui::Stroke::new(1.0_f32, signal_theme::RULE),
+        egui::Stroke::new(1.0_f32, theme::RULE),
     );
 }

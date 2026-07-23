@@ -22,7 +22,7 @@ use voxel_core::voxel::ShapeKind;
 use super::{hairline, region_frame, Edge, RAIL_WIDTH};
 use crate::icons::{large::LargeIcon, Icon};
 use crate::panel::{PanelResponse, PanelState, SketchTool};
-use crate::signal_theme;
+use crate::theme;
 
 /// A shape cell: full rail width less the hairline, tall enough for a 26 px tile plus air.
 const CELL_HEIGHT: f32 = 37.0;
@@ -100,7 +100,7 @@ pub(super) fn build_rail(
         .frame(region_frame())
         .show_inside(root_ui, |ui| {
             let column = ui.max_rect();
-            hairline(ui.painter(), column, Edge::Right, signal_theme::BORDER);
+            hairline(ui.painter(), column, Edge::Right, theme::BORDER);
 
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
@@ -167,14 +167,14 @@ fn build_sketch_rail(ui: &mut egui::Ui, state: &mut PanelState) {
 /// A rail section heading: UPPERCASE micro-label over a hairline.
 fn rail_heading(ui: &mut egui::Ui, title: &str) {
     ui.add_space(9.0);
-    let galley = signal_theme::letter_spaced(ui, title, signal_theme::TEXT_HINT, 8.0, 1.2);
+    let galley = theme::letter_spaced(ui, title, theme::TEXT_HINT, 8.0, 1.2);
     let (rect, _) = ui.allocate_exact_size(
         egui::vec2(RAIL_WIDTH, galley.size().y + 5.0),
         egui::Sense::hover(),
     );
     let at = egui::pos2(rect.center().x - galley.size().x * 0.5, rect.top());
-    ui.painter().galley(at, galley, signal_theme::TEXT_HINT);
-    hairline(ui.painter(), rect, Edge::Bottom, signal_theme::RULE);
+    ui.painter().galley(at, galley, theme::TEXT_HINT);
+    hairline(ui.painter(), rect, Edge::Bottom, theme::RULE);
 }
 
 /// The **active** rail heading — the accent-filled `SKETCH` label that is the whole mode
@@ -182,14 +182,14 @@ fn rail_heading(ui: &mut egui::Ui, title: &str) {
 /// rail. Distinct from [`rail_heading`]'s faint hairline label so entering the mode is
 /// unmistakable at a glance.
 fn rail_heading_active(ui: &mut egui::Ui, title: &str) {
-    let galley = signal_theme::letter_spaced(ui, title, signal_theme::BG, 9.0, 1.6);
+    let galley = theme::letter_spaced(ui, title, theme::BG, 9.0, 1.6);
     let (rect, _) = ui.allocate_exact_size(
         egui::vec2(RAIL_WIDTH, galley.size().y + 15.0),
         egui::Sense::hover(),
     );
-    ui.painter().rect_filled(rect, 0.0, signal_theme::ACCENT);
+    ui.painter().rect_filled(rect, 0.0, theme::ACCENT);
     let at = egui::pos2(rect.center().x - galley.size().x * 0.5, rect.center().y - galley.size().y * 0.5);
-    ui.painter().galley(at, galley, signal_theme::BG);
+    ui.painter().galley(at, galley, theme::BG);
 }
 
 /// One **armable** sketch-tool rail cell (ADR 0028, #95): a clickable tool glyph that lights
@@ -303,25 +303,25 @@ fn tool_cell(ui: &mut egui::Ui, icon: Icon, enabled: bool) {
 fn paint_cell(ui: &egui::Ui, rect: egui::Rect, active: bool, hovered: bool) {
     let painter = ui.painter();
     if hovered {
-        painter.rect_filled(rect, 0.0, signal_theme::ACTIVE_BG);
+        painter.rect_filled(rect, 0.0, theme::ACTIVE_BG);
     } else if active {
-        painter.rect_filled(rect, 0.0, signal_theme::HOVER_BG);
+        painter.rect_filled(rect, 0.0, theme::HOVER_BG);
     }
     if active {
         let bar = egui::Rect::from_min_size(rect.left_top(), egui::vec2(2.0, rect.height()));
-        painter.rect_filled(bar, 0.0, signal_theme::ACCENT);
+        painter.rect_filled(bar, 0.0, theme::ACCENT);
     }
 }
 
 /// A cell glyph's ink: accent when active, lifted on hover, dimmed when reserved.
 fn cell_ink(active: bool, hovered: bool, reserved: bool) -> egui::Color32 {
     if reserved {
-        signal_theme::TEXT_MUTED.gamma_multiply(RESERVED_DIM)
+        theme::TEXT_MUTED.gamma_multiply(RESERVED_DIM)
     } else if active {
-        signal_theme::ACCENT
+        theme::ACCENT
     } else if hovered {
-        signal_theme::TEXT_HOVER
+        theme::TEXT_HOVER
     } else {
-        signal_theme::TEXT_MUTED
+        theme::TEXT_MUTED
     }
 }

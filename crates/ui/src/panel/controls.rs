@@ -2,7 +2,7 @@
 //! the .vox export button.
 
 use super::{ExportPanelState, PanelResponse, PanelState};
-use crate::signal_theme;
+use crate::theme;
 use camera::ProjectionMode;
 use document::intent::Intent;
 
@@ -69,7 +69,7 @@ pub(super) fn build_display_body(ui: &mut egui::Ui, state: &mut PanelState, resp
 /// failure / large-export message.
 pub(super) fn build_export_section(ui: &mut egui::Ui, response: &mut PanelResponse, export: ExportPanelState) {
     ui.add_space(8.0);
-    signal_theme::section_heading(ui, "Export");
+    theme::section_heading(ui, "Export");
     let button = ui
         .add_enabled(!export.in_flight, egui::Button::new("Export .vox"))
         .on_hover_text("Write the resolved voxels as a MagicaVoxel .vox file")

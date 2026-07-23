@@ -1,7 +1,7 @@
 //! The **Points** section (issue #29 S5): the world reference grid's frames.
 
 use super::{PanelResponse, PanelState};
-use crate::signal_theme;
+use crate::theme;
 use document::intent::Intent;
 
 /// The **Points** section (issue #29 S5): the world reference grid's frames. Lists
@@ -22,7 +22,7 @@ pub(super) fn build_points_section(ui: &mut egui::Ui, state: &mut PanelState, re
         return;
     }
     ui.add_space(8.0);
-    signal_theme::section_heading(ui, "Points");
+    theme::section_heading(ui, "Points");
 
     let mut select: Option<usize> = None;
     let mut delete: Option<usize> = None;

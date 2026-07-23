@@ -1,7 +1,7 @@
 //! `design_reference` — the Signal design language, rendered by the app's own code.
 //!
 //! A printed style guide drifts the moment someone edits a constant. This binary cannot: it
-//! paints the palette straight out of [`ui::signal_theme`]'s tokens, and the widgets through
+//! paints the palette straight out of [`ui::theme`]'s tokens, and the widgets through
 //! the same [`egui::Style`] the application installs — if a token changes, this window changes
 //! with it. The glyphs are [`ui::icons`]' data-driven `Mark`s, which is a SEPARATE authoring
 //! from the live rail's own hand-painted glyphs in `signal_chrome.rs`; the two are meant to
@@ -129,7 +129,7 @@ impl Reference {
         // whole point of the reference is that it cannot diverge.
         self.bridge
             .context
-            .all_styles_mut(ui::signal_theme::apply_app_style);
+            .all_styles_mut(ui::theme::apply_app_style);
 
         let sheet = &mut self.sheet;
         let full_output = self.bridge.context.run_ui(raw_input, |ui| sheet.show(ui));

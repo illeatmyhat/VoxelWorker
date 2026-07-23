@@ -4,7 +4,7 @@
 use egui::{Painter, Pos2, Stroke, Vec2};
 
 use super::{dashed, HandleState, HANDLE_ACCENT, HANDLE_HOVER, STROKE_HANDLE, STROKE_SEGMENT};
-use crate::signal_theme as tokens;
+use crate::theme::color_palette;
 
 /// Half-length (points) of the arms of the warn `✕` stamped on a [`marked_segment`] — sized to
 /// the vertex handle's own cross so a segment delete-hover and a vertex one read at one scale.
@@ -48,9 +48,9 @@ pub fn styled_segment(painter: &Painter, a: Pos2, b: Pos2, state: HandleState) {
 /// state, so a segment delete-hover carries the same destructive vocabulary as a vertex one
 /// (colour the line, not just an overlay — the Fusion-style "this edge goes" cue in our warn hue).
 pub fn marked_segment(painter: &Painter, a: Pos2, b: Pos2) {
-    painter.line_segment([a, b], Stroke::new(STROKE_SEGMENT, tokens::WARN));
+    painter.line_segment([a, b], Stroke::new(STROKE_SEGMENT, color_palette::WARN));
     let mid = a + (b - a) * 0.5;
-    let cross = Stroke::new(STROKE_HANDLE, tokens::WARN);
+    let cross = Stroke::new(STROKE_HANDLE, color_palette::WARN);
     painter.line_segment(
         [mid + Vec2::splat(-MARK_CROSS_ARM), mid + Vec2::splat(MARK_CROSS_ARM)],
         cross,
