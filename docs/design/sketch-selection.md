@@ -42,6 +42,32 @@ The Select tool, no mode switch:
 Vertices keep priority over segments in every hit-test (a click or box near a shared endpoint
 resolves to the point), matching the existing Select-grab and delete hit order.
 
+## Move is a constraint-mediated request
+
+Press + move on a selection **requests** a translation; it is not a direct set. The constraint
+solver (ADR 0029/0030, deferred) corrects the request — clamping, projecting, or rejecting it, so an
+over-constrained selection may not move at all. The move path is therefore built as **propose delta →
+solve → apply**, never "write the new positions." Today there is no solver, so *solve* is the
+identity and a request applies verbatim; the existing single-vertex drag (#94) is exactly this
+degenerate case. When the solver lands it slots into the *solve* step with no change to the gesture
+or the apply.
+
+- **Slice 1 scope:** selection (click / shift-click / clear) + the existing single-vertex #94 drag,
+  unchanged. **Move-the-whole-selection is a later slice** (it wants the solver step to be real, and
+  the owner scoped multi-select's delivered action to Delete, not Move).
+
+## The gesture split (Select tool)
+
+| Gesture | Result |
+| --- | --- |
+| Press + release *stationary* (a click) | **Select** that entity; Shift = toggle it in/out of the set |
+| Press + *move* | **Move request** (constraint-corrected); today the #94 single-vertex drag |
+| Click empty space | **Clear** the selection |
+| Click a segment (stationary) | **Select** the segment (segments do not drag) |
+
+Selection resolves on the **stationary release**, so it never fights a drag; vertices keep priority
+over segments in the hit-test.
+
 ## The directional marquee (window vs crossing)
 
 Fusion's two-direction box, so the user picks the semantic by drag direction and reads it by style:
