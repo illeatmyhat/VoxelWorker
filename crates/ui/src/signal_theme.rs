@@ -60,8 +60,26 @@ pub const TEXT_HINT: Color32 = Color32::from_rgb(0x3c, 0x44, 0x4c);
 pub const ACCENT: Color32 = Color32::from_rgb(0x9c, 0xb4, 0xd8);
 /// Text/glyphs painted ON an accent fill `#0b0d0f` (the near-black, for contrast).
 pub const ACCENT_TEXT: Color32 = Color32::from_rgb(0x0b, 0x0d, 0x0f);
-/// Warn / subtract red `#d9603f` (the app's warn colour).
+/// Warn / subtract red `#d9603f` (the app's warn colour). Doubles as the X spatial axis.
 pub const WARN: Color32 = Color32::from_rgb(0xd9, 0x60, 0x3f);
+
+// --- Spatial axes + sketch mode (ADR 0028) ---
+// The axis triad the sketch snap guides speak in — X = WARN, Y = AXIS_Y, Z = ACCENT — and the
+// working plane's own pale-yellow palette. Axis hues are SPATIAL ONLY: a viewport spends them
+// on direction and nothing else, so a snap guide's colour IS the constraint it stands in for
+// (ADR 0028 §5; docs/design/colour-vocabulary.md).
+/// Y spatial axis — green `#7dba6a` (the only axis hue that is not already a token; X reuses
+/// [`WARN`], Z reuses [`ACCENT`]).
+pub const AXIS_Y: Color32 = Color32::from_rgb(0x7d, 0xba, 0x6a);
+/// The sketch working-plane fill — the accent at a low alpha (owner ruling 2026-07-22: the
+/// accent-blue tint of the C2 mock, not a warm plane). Faint enough that the profile drawn on
+/// the plane stays primary and is never occluded.
+pub const SKETCH_PLANE_FILL: Color32 = Color32::from_rgba_unmultiplied_const(0x9c, 0xb4, 0xd8, 0x0f);
+/// The sketch working-plane's fine grid lines — accent at a legible-but-quiet weight.
+pub const SKETCH_PLANE_GRID: Color32 = Color32::from_rgba_unmultiplied_const(0x9c, 0xb4, 0xd8, 0x24);
+/// The sketch working-plane's BLOCK grid lines — brighter, so the block lattice reads through the
+/// fine grid (every `voxels_per_block` steps).
+pub const SKETCH_PLANE_GRID_BLOCK: Color32 = Color32::from_rgba_unmultiplied_const(0x9c, 0xb4, 0xd8, 0x55);
 
 // --- Typography sizes (design points; §Tokens: monospace, 10–11 px) ---
 /// Body / control text (~10.5 px). Sized so a full blocks+voxels readout
