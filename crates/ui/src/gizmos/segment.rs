@@ -16,19 +16,23 @@ pub fn segment(painter: &Painter, a: Pos2, b: Pos2) {
     painter.line_segment([a, b], Stroke::new(STROKE_SEGMENT, HANDLE_ACCENT));
 }
 
-/// The picked-edge stroke weight — heavier than the committed [`STROKE_SEGMENT`] so a selected
-/// segment reads *bolder* than a hovered one (hover only brightens the colour at the same weight).
-const STROKE_SEGMENT_SELECTED: f32 = STROKE_SEGMENT + 1.25;
+/// The hovered-edge stroke weight — noticeably thicker than the committed [`STROKE_SEGMENT`], not
+/// merely brighter, so "the pointer is over this edge" reads at a glance.
+const STROKE_SEGMENT_HOVER: f32 = 2.75;
+/// The picked-edge stroke weight — thickest of the three, so a selected edge is unmistakable next
+/// to both an idle (thin accent) and a hovered (medium bright) one. Thickness is the primary cue
+/// (owner 2026-07-23: the colour-only contrast was too weak to see what was selected).
+const STROKE_SEGMENT_SELECTED: f32 = 4.0;
 
 /// A committed profile segment drawn in an interaction [`HandleState`] — the edge analogue of
 /// [`vertex_handle`](super::vertex_handle), so a point and a segment answer the pointer with one
-/// vocabulary. `Idle` is the plain accent edge; `Hover` brightens it (the pointer is over it and
-/// it is selectable); `Selected` is a heavier accent edge (picked, bolder than a hover); `Marked`
-/// is the Delete-armed warn edge with a `✕`. `Snapped` is unused for edges and reads as `Idle`.
+/// vocabulary. `Idle` is the thin accent edge; `Hover` is a thicker brighter edge (the pointer is
+/// over it and it is selectable); `Selected` is the thickest accent edge (picked); `Marked` is the
+/// Delete-armed warn edge with a `✕`. `Snapped` is unused for edges and reads as `Idle`.
 pub fn styled_segment(painter: &Painter, a: Pos2, b: Pos2, state: HandleState) {
     match state {
         HandleState::Hover => {
-            painter.line_segment([a, b], Stroke::new(STROKE_SEGMENT, HANDLE_HOVER));
+            painter.line_segment([a, b], Stroke::new(STROKE_SEGMENT_HOVER, HANDLE_HOVER));
         }
         HandleState::Selected => {
             painter.line_segment([a, b], Stroke::new(STROKE_SEGMENT_SELECTED, HANDLE_ACCENT));

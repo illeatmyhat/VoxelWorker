@@ -1299,16 +1299,17 @@ impl WindowedState {
             let selected = point_id
                 .map(|id| self.panel_state.sketch_selection.contains_point(id))
                 .unwrap_or(false);
-            // Precedence: dragged > delete-hover (warn ✕) > hover > selected > idle. Hover wins
-            // over selected so the pointer always shows what it is about to act on (ADR 0030).
+            // Precedence: dragged > delete-hover (warn ✕) > selected > hover > idle. A selected
+            // vertex stays filled-accent even under the cursor (only the destructive delete-hover
+            // overrides it), matching the segment rule so a point and an edge read alike (ADR 0030).
             let state = if dragging_point == point_id {
                 ui::gizmos::HandleState::Snapped
             } else if hovered && tool == ui::panel::SketchTool::Delete {
                 ui::gizmos::HandleState::Marked
-            } else if hovered {
-                ui::gizmos::HandleState::Hover
             } else if selected {
                 ui::gizmos::HandleState::Selected
+            } else if hovered {
+                ui::gizmos::HandleState::Hover
             } else {
                 ui::gizmos::HandleState::Idle
             };
@@ -1359,12 +1360,16 @@ impl WindowedState {
             ) {
                 let a = egui::Pos2::new(a_px.x / pixels_per_point, a_px.y / pixels_per_point);
                 let b = egui::Pos2::new(b_px.x / pixels_per_point, b_px.y / pixels_per_point);
-                // Hover/Marked on the one cursor-segment wins; else Selected if picked; else Idle.
+                // Precedence: delete-hover (Marked ✕) > Selected > plain Hover > Idle. A selected
+                // edge stays bold even under the cursor (Select hover never shrinks it); only the
+                // destructive delete-hover overrides it.
+                let selected = self.panel_state.sketch_selection.contains_segment(seg_id);
                 let state = match hovered_segment {
-                    Some((id, state)) if id == seg_id => state,
-                    _ if self.panel_state.sketch_selection.contains_segment(seg_id) => {
-                        ui::gizmos::HandleState::Selected
+                    Some((id, ui::gizmos::HandleState::Marked)) if id == seg_id => {
+                        ui::gizmos::HandleState::Marked
                     }
+                    _ if selected => ui::gizmos::HandleState::Selected,
+                    Some((id, state)) if id == seg_id => state,
                     _ => ui::gizmos::HandleState::Idle,
                 };
                 self.sketch_segment_lines.push((a, b, state));
