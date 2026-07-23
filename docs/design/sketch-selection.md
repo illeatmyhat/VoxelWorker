@@ -51,36 +51,42 @@ Fusion's two-direction box, so the user picks the semantic by drag direction and
 | **left → right** | **Window** | entities **fully enclosed** by the box | **solid** | faint **accent** |
 | **right → left** | **Crossing** | entities the box **intersects** (any overlap) | **dashed** | lighter |
 
-- **Window** (drag right): points inside the box; segments incident to those inside points (later
-  also segments tied by constraint logic); and any other entity fully enclosed. The "I meant this
-  whole thing" box.
-- **Crossing** (drag left): any entity the box touches, so you can grab *part* of a face or a run of
-  edges without enclosing all of it. The "reach across" box.
+- **Window** (drag right): points inside the box; **segments with ≥1 endpoint inside** (the segment
+  rides its selected point — later also segments tied by constraint logic); and any other entity
+  fully enclosed. The "I meant this whole thing" box.
+- **Crossing** (drag left): **any entity the box intersects**, so a segment passing *through* the box
+  with both endpoints outside still selects — you can grab *part* of a face or a run of edges without
+  enclosing all of it. The "reach across" box.
+- These genuinely differ: a segment crossing the box with both endpoints outside is **crossing-only**
+  (window needs an endpoint inside).
 - **Two distinct styles are required**, not decorative: the user must tell window from crossing at a
   glance mid-drag. Solid-outline/filled = window; dashed-outline/lighter = crossing. Dashed already
   means "looser / uncommitted" in the gizmo family (`dashed_segment`, `dashed_rect`), so it reads as
   the reaching box without a new idiom. Colours are Signal tokens (`ACCENT`), never Fusion's literal
   blue/green.
 
-**Open — window-select segment predicate:** is a segment with *one* endpoint inside selected
-(because it is "associated with an inside point"), or only when *both* endpoints are inside (strictly
-"fully enclosed")? The owner's phrasing allows both; resolve before the marquee slice.
+**Resolved (owner 2026-07-23):** window selects a segment with **≥1 endpoint inside**; crossing
+selects a segment the box **intersects at all**.
 
 ## Delete as an action
 
 - **Delete / Backspace key** with a non-empty selection → delete every selected entity (points
   cascade their segments, ADR 0030), one undo step.
 - **Right-click → Delete** in the context menu, same effect.
-- The Delete **tool is removed** from the sketch rail. Rail becomes Select + Add-point (Add-point's
-  eventual fold into Select is a separate, later question).
+- The Delete **tool is removed** from the sketch rail. Rail becomes Select + Add-point; **Add-point
+  stays as its own tool** (owner 2026-07-23), unchanged.
 
 ## The context menu
 
 No viewport context menu exists today (only the ViewCube's own right-click menu). Build a
 **general-purpose viewport right-click menu** for all modes, its contents **overridden per mode**:
 
-- Base (any mode): the shared actions (TBD — the point is the *infrastructure* is general).
-- **Sketch mode override:** Delete (on a selection) now; face pick/unpick and add-arc etc. later.
+- **Delete is a shared base action** — present in *every* mode's menu, drawn identically (a red `✕`,
+  the one destructive glyph, owner 2026-07-23). Its *effect* is mode-dispatched: in normal mode it
+  deletes the **selected scene node**; in sketch mode it deletes the **selected sketch entities**
+  (points cascade). One verb, one glyph, one place in the menu — the target is whatever "the
+  selection" means in the current mode.
+- **Sketch mode adds** its own entries beyond Delete later (face pick/unpick, add-arc, …).
 
 This is the surface #100 (region pick/unpick) and future sketch verbs hang off, so it is built as a
 mode-dispatched menu, not a sketch-only widget.
