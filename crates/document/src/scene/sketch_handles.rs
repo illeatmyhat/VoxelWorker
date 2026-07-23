@@ -18,7 +18,7 @@
 //! of which operation later lifts it into a volume.
 
 use super::*;
-use crate::sketch::Operation;
+use crate::sketch::{EntityId, Operation};
 use glam::Vec3;
 use substrate::spatial::{LeafPlacement, ProducerLocalVoxelPoint, TrueWorldVoxelPoint};
 
@@ -30,9 +30,13 @@ use substrate::spatial::{LeafPlacement, ProducerLocalVoxelPoint, TrueWorldVoxelP
 /// `view_projection` it uses for everything else.
 #[derive(Debug, Clone)]
 pub struct SketchHandles {
-    /// Each profile vertex's position in the render frame, in profile order (index `i`
-    /// is `producer.sketch.profile[i]`).
+    /// Each loop vertex's position in the render frame, in flattened-loop order (index
+    /// `i` corresponds to point id [`point_ids`](Self::point_ids)`[i]`).
     pub vertices: Vec<[f32; 3]>,
+    /// The point id of each vertex, in the SAME order as [`vertices`](Self::vertices), so
+    /// a drag / add-point / delete can map a hit index back to the entity it must mutate
+    /// (the entity store has no positional index — ADR 0030).
+    pub point_ids: Vec<EntityId>,
     /// A point ON the sketch plane in the render frame (the first vertex) — the ray
     /// intersection anchor.
     pub plane_point: [f32; 3],
@@ -101,7 +105,8 @@ impl Scene {
         let NodeContent::SketchTool { producer, .. } = &node.content else {
             return None;
         };
-        let profile = &producer.sketch.profile;
+        let profile = producer.sketch.flattened_loop();
+        let point_ids = producer.sketch.flattened_loop_ids();
         if profile.len() < 3 {
             return None;
         }
@@ -109,7 +114,7 @@ impl Scene {
         // The profile's in-plane bounding box (min anchors the corner-anchored frame).
         let mut min = profile[0].offset_voxels;
         let mut max = min;
-        for point in profile {
+        for point in &profile {
             for axis in 0..2 {
                 min[axis] = min[axis].min(point.offset_voxels[axis]);
                 max[axis] = max[axis].max(point.offset_voxels[axis]);
@@ -172,6 +177,7 @@ impl Scene {
 
         Some(SketchHandles {
             vertices,
+            point_ids,
             plane_point,
             plane_normal,
             placement,

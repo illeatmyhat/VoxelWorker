@@ -306,7 +306,7 @@ struct WindowedState {
 /// An in-progress sketch profile-vertex drag (ADR 0028, #94).
 #[derive(Debug, Clone)]
 struct SketchVertexDrag {
-    /// Which profile vertex (index into `producer.sketch.profile`) is being dragged.
+    /// Which loop vertex (index into the sketch's flattened loop) is being dragged.
     index: usize,
     /// The sketch producer as it stood when the vertex was grabbed — the base every preview
     /// moves the dragged vertex on (a fresh clone), so successive frames never compound, and

@@ -474,6 +474,14 @@ impl AppConfig {
         // with the seed branch and `shot.rs`. Runs after `ensure_origin_point` so the
         // origin point it may have just appended also receives an id.
         state.scene.ensure_node_ids();
+        // ADR 0030 load policy: erase structurally-invalid sketch entities (a segment
+        // referencing a missing point, a self-loop) rather than fail the load, warning on the
+        // CLI. A clean scene drops nothing.
+        for (node_name, dropped) in state.scene.repair_sketches() {
+            eprintln!(
+                "warning: dropped {dropped} invalid sketch segment(s) from \"{node_name}\" on load"
+            );
+        }
         // ADR 0028: a restored sketch mode must point at a live sketch node. Drop it if the
         // id no longer resolves to a `SketchTool` in the loaded scene (a scene-less config, a
         // deleted node, or a node that is no longer a sketch), so a stale id cannot trap the

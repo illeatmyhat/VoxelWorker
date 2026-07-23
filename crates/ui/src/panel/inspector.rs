@@ -444,7 +444,7 @@ fn build_sketch_inspector_section(
         ui.label(
             egui::RichText::new(format!(
                 "Custom profile ({} points)",
-                producer.sketch.profile.len()
+                producer.sketch.points().len()
             ))
             .small()
             .weak(),
@@ -494,7 +494,11 @@ fn build_sketch_inspector_section(
         let sketch = if rectangle_spans.is_some() {
             Sketch::rectangle(plane, width_voxels as i64, depth_voxels as i64)
         } else {
-            Sketch::new(plane, producer.sketch.profile.clone())
+            // Preserve the entity store (ids, segment origins) and only swap the plane —
+            // rebuilding from a flattened loop would mint new ids and lose lineage.
+            let mut sketch = producer.sketch.clone();
+            sketch.plane = plane;
+            sketch
         };
         // Branch on the CURRENTLY-SELECTED operation so editing a Revolve rebuilds a
         // Revolve (no clobber to Extrude). An operation SWITCH carries the defaults

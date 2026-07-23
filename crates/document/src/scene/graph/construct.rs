@@ -126,6 +126,24 @@ impl Scene {
         );
     }
 
+    /// Erase structurally-invalid sketch entities across every [`NodeContent::SketchTool`]
+    /// node (ADR 0030 load policy — erase invalid objects rather than fail the load),
+    /// returning `(node name, dropped segment count)` for each node that had drops. Called on
+    /// the load path beside [`ensure_node_ids`](Self::ensure_node_ids); the caller emits the
+    /// CLI warning. Idempotent — a clean scene drops nothing and returns empty.
+    pub fn repair_sketches(&mut self) -> Vec<(String, usize)> {
+        let mut warnings = Vec::new();
+        for node in self.arena.values_mut() {
+            if let NodeContent::SketchTool { producer, .. } = &mut node.content {
+                let dropped = producer.sketch.repair();
+                if dropped > 0 {
+                    warnings.push((node.name.clone(), dropped));
+                }
+            }
+        }
+        warnings
+    }
+
     /// Append a reference [`Point`] to the scene (issue #29). A newly-added user
     /// Point defaults to **all planes OFF** (XZ/XY/YZ) with its **axes ON** (issue
     /// #29 fix): only the Origin keeps the ground (XY, Z-up) plane on by default (via

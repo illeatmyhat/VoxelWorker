@@ -104,21 +104,100 @@ impl SketchPoint {
     }
 }
 
-/// A grid-aligned PLANE plus a closed POLYGON PROFILE of ordered points (ADR 0003
-/// §3i). The profile is a closed simple polygon: the last vertex connects back to
-/// the first, so the points list does NOT repeat the start vertex.
+/// A stable, monotonically-allocated identifier for a sketch entity (a point or a
+/// segment). **Never a `Vec` index** — an index shifts when an entity is deleted, which
+/// would silently corrupt every reference; a stable id does not (ADR 0030). Ids are
+/// handed out once and never reused.
+pub type EntityId = u32;
+
+/// Whether an entity is real geometry or a construction/reference line that never bounds
+/// a region (ADR 0030). Reserved: the toggle UI is a later slice, but the field rides the
+/// document now so it costs no second migration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum EntityRole {
+    /// Real geometry — participates in region derivation.
+    #[default]
+    Real,
+    /// Reference geometry — never bounds a region.
+    Construction,
+}
+
+/// A point entity: a first-class, independently add/delete-able vertex on the sketch
+/// plane, referenced by segments (and later arcs) through its stable [`id`](Self::id)
+/// (ADR 0030). A point with no incident edge is a legal FREE point.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Point {
+    /// Stable identity (ADR 0030) — segments reference this, not the point's `Vec` slot.
+    pub id: EntityId,
+    /// The point's in-plane position (see [`SketchPoint`]).
+    pub at: SketchPoint,
+    /// Real vs construction geometry (reserved).
+    #[serde(default)]
+    pub role: EntityRole,
+}
+
+/// A line-segment entity joining two [`Point`]s **by id** (ADR 0030). Coincidence IS
+/// shared identity: two segments meet because they name the same endpoint point, not
+/// because a solver forced their coordinates equal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Segment {
+    /// Stable identity.
+    pub id: EntityId,
+    /// Endpoint point id (tail).
+    pub from: EntityId,
+    /// Endpoint point id (head).
+    pub to: EntityId,
+    /// Lineage id for region identity across edits (ADR 0030 §3): a fresh segment's
+    /// `origin` is its own `id`; on split, both children inherit the parent's `origin`,
+    /// so subdividing a loop edge leaves a face's boundary origin-SET unchanged.
+    pub origin: EntityId,
+    /// Real vs construction geometry (reserved).
+    #[serde(default)]
+    pub role: EntityRole,
+}
+
+/// A grid-aligned PLANE plus a collection of sketch ENTITIES — points and segments
+/// (arcs, region picks, and sub-voxel/parametric coordinates arrive in later slices,
+/// ADR 0030). The extrudable **profile is DERIVED** from the closed loop the segments
+/// form (see [`flattened_loop`](Self::flattened_loop)); it is no longer a hand-maintained
+/// ordered vertex list.
+///
+/// **Slice-1 scope (issue #98):** a single closed loop, resolving byte-identical to the
+/// former `profile: Vec<SketchPoint>`. Multi-region pick/unpick (#100), sub-voxel /
+/// parametric coordinates (#101), and arcs (#102) build on this store.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Sketch {
     /// Which axis the plane normal points along (2a: axis-aligned only).
     pub plane: PlaneAxis,
-    /// The ordered profile vertices (≥3 for a non-degenerate polygon).
-    pub profile: Vec<SketchPoint>,
+    /// The point entities (unordered; loop order is derived, never stored).
+    points: Vec<Point>,
+    /// The segment entities joining points by id.
+    segments: Vec<Segment>,
+    /// The next id to hand out. Ids are monotonic and never reused, so this only grows.
+    next_id: EntityId,
 }
 
 impl Sketch {
-    /// A sketch on `plane` with the given ordered profile.
+    /// A sketch on `plane` whose entities form ONE closed loop through the given ordered
+    /// points — the common case, and the constructor every caller still uses. Builds N
+    /// point entities and N segments closing `p[i] → p[i+1]` and `p[last] → p[0]`. A
+    /// 0/1-point profile adds no wrap segment (no self-loop); the result is empty or a
+    /// lone free point.
     pub fn new(plane: PlaneAxis, profile: Vec<SketchPoint>) -> Self {
-        Self { plane, profile }
+        let mut sketch = Self {
+            plane,
+            points: Vec::with_capacity(profile.len()),
+            segments: Vec::with_capacity(profile.len()),
+            next_id: 0,
+        };
+        let ids: Vec<EntityId> = profile.iter().map(|&at| sketch.add_point(at)).collect();
+        let n = ids.len();
+        if n >= 2 {
+            for i in 0..n {
+                sketch.add_segment(ids[i], ids[(i + 1) % n]);
+            }
+        }
+        sketch
     }
 
     /// A rectangle profile spanning `[0, width] × [0, height]` voxels on `plane`
@@ -135,6 +214,202 @@ impl Sketch {
                 SketchPoint::new(0, height_voxels),
             ],
         )
+    }
+
+    /// An empty sketch on `plane` — no entities. A totally-empty sketch is first-class
+    /// (ADR 0030): it is a valid scene object that resolves to nothing, the start state a
+    /// create-from-scratch sketch is authored into.
+    pub fn empty(plane: PlaneAxis) -> Self {
+        Self { plane, points: Vec::new(), segments: Vec::new(), next_id: 0 }
+    }
+
+    /// Read-only view of the point entities.
+    pub fn points(&self) -> &[Point] {
+        &self.points
+    }
+
+    /// Read-only view of the segment entities.
+    pub fn segments(&self) -> &[Segment] {
+        &self.segments
+    }
+
+    /// Test-only mutable access to the raw segment vector, for constructing the malformed
+    /// stores the load-repair path is meant to erase.
+    #[cfg(test)]
+    pub(crate) fn segments_mut_for_test(&mut self) -> &mut Vec<Segment> {
+        &mut self.segments
+    }
+
+    /// Allocate a point entity at `at`, returning its fresh id.
+    fn add_point(&mut self, at: SketchPoint) -> EntityId {
+        let id = self.alloc_id();
+        self.points.push(Point { id, at, role: EntityRole::Real });
+        id
+    }
+
+    /// Allocate a segment `from → to`, its `origin` set to its own id (a root of its
+    /// lineage), returning its fresh id.
+    fn add_segment(&mut self, from: EntityId, to: EntityId) -> EntityId {
+        let id = self.alloc_id();
+        self.segments.push(Segment { id, from, to, origin: id, role: EntityRole::Real });
+        id
+    }
+
+    /// Hand out the next monotonic id.
+    fn alloc_id(&mut self) -> EntityId {
+        let id = self.next_id;
+        self.next_id += 1;
+        id
+    }
+
+    /// The index into [`points`](Self::points) of the point with `id`, if present.
+    fn point_index(&self, id: EntityId) -> Option<usize> {
+        self.points.iter().position(|point| point.id == id)
+    }
+
+    /// The DERIVED single closed loop, as point ids in traversal order (ADR 0030). A
+    /// deterministic walk of the point-segment graph: start at the incident point of
+    /// lowest id, then at each step follow the lowest-id neighbour that is not the one
+    /// just left. Empty if there are no segments. Slice-1 assumes one simple loop; the
+    /// general planar-face derivation is #100.
+    fn loop_order(&self) -> Vec<EntityId> {
+        if self.points.is_empty() {
+            return Vec::new();
+        }
+        // Neighbour point-ids per point, in ascending-id order for determinism.
+        let neighbours = |point_id: EntityId| -> Vec<EntityId> {
+            let mut ns: Vec<EntityId> = self
+                .segments
+                .iter()
+                .filter_map(|seg| {
+                    if seg.from == point_id {
+                        Some(seg.to)
+                    } else if seg.to == point_id {
+                        Some(seg.from)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            ns.sort_unstable();
+            ns
+        };
+        // Start at the lowest-id point that has at least one incident segment.
+        let Some(start) = self
+            .points
+            .iter()
+            .map(|point| point.id)
+            .filter(|&id| !neighbours(id).is_empty())
+            .min()
+        else {
+            return Vec::new();
+        };
+        let mut order = vec![start];
+        let mut previous = None;
+        let mut current = start;
+        // A simple loop has one unvisited neighbour per step; cap the walk at the point
+        // count so a malformed graph cannot spin forever.
+        for _ in 0..self.points.len() {
+            let ns = neighbours(current);
+            let next = ns
+                .iter()
+                .copied()
+                .find(|&n| Some(n) != previous)
+                .or_else(|| ns.first().copied());
+            let Some(next) = next else { break };
+            if next == start {
+                break;
+            }
+            order.push(next);
+            previous = Some(current);
+            current = next;
+        }
+        order
+    }
+
+    /// The DERIVED flattened profile: the closed loop's vertices in traversal order (ADR
+    /// 0030). This is what the producer resolves; slice 1 yields exactly one loop, so the
+    /// occupancy is byte-identical to the former `profile` vector (`point_in_polygon` is
+    /// winding-agnostic, so the traversal direction does not matter).
+    pub fn flattened_loop(&self) -> Vec<SketchPoint> {
+        self.loop_order()
+            .into_iter()
+            .filter_map(|id| self.point_index(id).map(|i| self.points[i].at))
+            .collect()
+    }
+
+    /// The point ids of the flattened loop, in the SAME order as
+    /// [`flattened_loop`](Self::flattened_loop) — so the UI can map a loop-vertex index
+    /// back to the entity it must mutate (drag / add-point / delete).
+    pub fn flattened_loop_ids(&self) -> Vec<EntityId> {
+        self.loop_order()
+    }
+
+    /// Mutable access to a point's position by id (the drag write path).
+    pub fn point_position_mut(&mut self, id: EntityId) -> Option<&mut SketchPoint> {
+        self.point_index(id).map(|i| &mut self.points[i].at)
+    }
+
+    /// Split the loop edge between flattened positions `after` and `after + 1` by
+    /// inserting a new point `at` on it (ADR 0030 add-point, #95's insert generalized).
+    /// The split segment keeps its id for the first half and its `origin` is inherited by
+    /// the new second half, so the bounding face's origin-set is unchanged. `after` past
+    /// the loop end appends onto the last→first closing edge. A no-op on an empty loop.
+    fn insert_point_on_loop_edge(&mut self, after: usize, at: SketchPoint) {
+        let order = self.loop_order();
+        if order.is_empty() {
+            // No loop yet: just add the point as a free vertex.
+            self.add_point(at);
+            return;
+        }
+        let a = order[after.min(order.len() - 1)];
+        let b = order[(after + 1) % order.len()];
+        let new_id = self.add_point(at);
+        // Find the segment joining a and b (either direction) and split it.
+        if let Some(seg_index) = self.segments.iter().position(|seg| {
+            (seg.from == a && seg.to == b) || (seg.from == b && seg.to == a)
+        }) {
+            let origin = self.segments[seg_index].origin;
+            let old_to = self.segments[seg_index].to;
+            // First half keeps the id: `... → new`. Second half inherits the origin.
+            self.segments[seg_index].to = new_id;
+            let id = self.alloc_id();
+            self.segments.push(Segment { id, from: new_id, to: old_to, origin, role: EntityRole::Real });
+        } else {
+            // a and b are not directly joined (an open authoring state): connect a → new.
+            self.add_segment(a, new_id);
+        }
+    }
+
+    /// Delete the loop vertex at flattened position `index`, CASCADING to its incident
+    /// segments (ADR 0030 §6 — deleting a point removes its edges; it does NOT reclose the
+    /// loop, superseding #95's loop-specific reclose). Out-of-range is a no-op.
+    fn delete_loop_vertex(&mut self, index: usize) {
+        let order = self.loop_order();
+        let Some(&id) = order.get(index) else { return };
+        self.delete_point_cascade(id);
+    }
+
+    /// Delete a point by id and every segment incident to it (ADR 0030 §6). Segments'
+    /// other endpoints survive as free points. No dangling reference can result.
+    pub fn delete_point_cascade(&mut self, id: EntityId) {
+        self.segments.retain(|seg| seg.from != id && seg.to != id);
+        self.points.retain(|point| point.id != id);
+    }
+
+    /// Erase every structurally-invalid segment — one that references a point id not in the
+    /// store, or a self-loop (`from == to`) — returning the number removed (ADR 0030 load
+    /// policy: erase invalid objects rather than fail the load). Points are never invalid; a
+    /// point left with no incident edge is a legal free point. The resolve already tolerates a
+    /// dangling reference (the missing vertex is filtered out of the flattened loop), so this
+    /// is a cleanup + audit, not a crash guard.
+    pub fn repair(&mut self) -> usize {
+        let point_ids: Vec<EntityId> = self.points.iter().map(|point| point.id).collect();
+        let before = self.segments.len();
+        self.segments.retain(|seg| {
+            seg.from != seg.to && point_ids.contains(&seg.from) && point_ids.contains(&seg.to)
+        });
+        before - self.segments.len()
     }
 }
 

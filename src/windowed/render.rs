@@ -819,7 +819,15 @@ impl WindowedState {
             return IntentEffect::none();
         };
         let mut preview = drag.original.clone();
-        let Some(point) = preview.sketch.profile.get_mut(index) else {
+        // Map the flattened-loop index the grab recorded back to the point ENTITY to mutate
+        // (the store has no positional index — ADR 0030). Topology is fixed during a drag, so
+        // the flattened order — and thus this index — is stable across the gesture.
+        let point_ids = preview.sketch.flattened_loop_ids();
+        let Some(&point_id) = point_ids.get(index) else {
+            self.sketch_drag = None;
+            return IntentEffect::none();
+        };
+        let Some(point) = preview.sketch.point_position_mut(point_id) else {
             self.sketch_drag = None;
             return IntentEffect::none();
         };
@@ -936,17 +944,7 @@ impl WindowedState {
     /// The in-plane bbox-minimum (per profile coordinate) of a sketch producer's profile — the
     /// anchor the drag compensation measures its bbox-min shift against.
     fn profile_bbox_min(producer: &document::sketch::SketchSolid) -> [i64; 2] {
-        let mut min = producer
-            .sketch
-            .profile
-            .first()
-            .map(|point| point.offset_voxels)
-            .unwrap_or([0, 0]);
-        for point in &producer.sketch.profile {
-            min[0] = min[0].min(point.offset_voxels[0]);
-            min[1] = min[1].min(point.offset_voxels[1]);
-        }
-        min
+        producer.profile_bbox_min()
     }
 
     /// Cursor (physical px) → the CONTINUOUS profile coordinate `(c0, c1)` under it on the
@@ -1075,7 +1073,7 @@ impl WindowedState {
         let target = self.panel_state.sketch_mode?;
         let index = self.sketch_vertex_at(cursor_x, cursor_y)?;
         let (producer, _) = self.sketch_node_state(target)?;
-        if index >= producer.sketch.profile.len() {
+        if index >= producer.sketch.flattened_loop().len() {
             return None;
         }
         Some(producer.with_point_removed(index))

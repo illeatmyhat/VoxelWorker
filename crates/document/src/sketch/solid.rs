@@ -207,13 +207,14 @@ impl SketchSolid {
             Operation::Extrude { height_voxels } => height_voxels == 0,
             Operation::Revolve { sweep, .. } => sweep.turn_degrees == 0,
         };
-        if self.sketch.profile.len() < 3 || operation_is_degenerate {
+        let profile = self.sketch.flattened_loop();
+        if profile.len() < 3 || operation_is_degenerate {
             return None;
         }
-        let first = self.sketch.profile[0].offset_voxels;
+        let first = profile[0].offset_voxels;
         let mut min = first;
         let mut max = first;
-        for point in &self.sketch.profile {
+        for point in &profile {
             for axis in 0..2 {
                 min[axis] = min[axis].min(point.offset_voxels[axis]);
                 max[axis] = max[axis].max(point.offset_voxels[axis]);
@@ -232,13 +233,12 @@ impl SketchSolid {
     /// is the authoring anchor the producer re-seats to the node origin, needed while a profile is
     /// still being built (fewer than three points, zero height) and its vertices are being edited.
     pub fn profile_bbox_min(&self) -> [i64; 2] {
-        let mut min = self
-            .sketch
-            .profile
+        let profile = self.sketch.flattened_loop();
+        let mut min = profile
             .first()
             .map(|point| point.offset_voxels)
             .unwrap_or([0, 0]);
-        for point in &self.sketch.profile {
+        for point in &profile {
             min[0] = min[0].min(point.offset_voxels[0]);
             min[1] = min[1].min(point.offset_voxels[1]);
         }
@@ -273,20 +273,18 @@ impl SketchSolid {
     /// the end (an append). Pure — returns a new producer, leaving `self` untouched.
     pub fn with_point_inserted(&self, after: usize, point: SketchPoint) -> SketchSolid {
         let mut next = self.clone();
-        let index = (after + 1).min(next.sketch.profile.len());
-        next.sketch.profile.insert(index, point);
+        next.sketch.insert_point_on_loop_edge(after, point);
         next
     }
 
-    /// This producer with the profile vertex at `index` removed (ADR 0028, #95 delete). An
-    /// out-of-range `index` is a no-op. Pure — returns a new producer. A profile that falls below
-    /// three vertices is left as-is here; it simply resolves to nothing (the degeneracy is the
-    /// resolve's to handle, never an error).
+    /// This producer with the loop vertex at flattened `index` deleted, CASCADING to its
+    /// incident segments (ADR 0030 §6 — deleting a point removes its edges and does NOT
+    /// reclose the loop, superseding #95's loop reclose). Out-of-range is a no-op. Pure —
+    /// returns a new producer. A loop that opens or falls below three vertices simply
+    /// resolves to nothing (the degeneracy is the resolve's to handle, never an error).
     pub fn with_point_removed(&self, index: usize) -> SketchSolid {
         let mut next = self.clone();
-        if index < next.sketch.profile.len() {
-            next.sketch.profile.remove(index);
-        }
+        next.sketch.delete_loop_vertex(index);
         next
     }
 
@@ -355,6 +353,7 @@ impl SketchSolid {
         sweep: RevolveSweep,
     ) -> Option<RevolveField> {
         let (profile_min, _profile_max) = self.profile_bounds()?;
+        let profile = self.sketch.flattened_loop();
         let dimensions = self.grid_dimensions();
         let [in_plane_0, in_plane_1] = self.sketch.plane.in_plane_axes();
         let normal = self.sketch.plane.normal_axis();
@@ -368,7 +367,7 @@ impl SketchSolid {
         };
         let mut profile_straddles_axis = false;
         let mut radial_max = 0i64;
-        for point in &self.sketch.profile {
+        for point in &profile {
             let radial_coord = point.offset_voxels[radial_profile_coord];
             if radial_coord < 0 {
                 profile_straddles_axis = true;
@@ -377,7 +376,7 @@ impl SketchSolid {
         }
 
         Some(RevolveField {
-            profile_points: to_profile_points_measured(&self.sketch.profile),
+            profile_points: to_profile_points_measured(&profile),
             axis,
             turn_degrees: sweep.turn_degrees,
             axial_world_axis,
@@ -406,7 +405,7 @@ impl SketchSolid {
                     profile_min[1] as f32 + point_local_voxels[in_plane_1],
                 ];
                 let to_profile = substrate::geom2d::signed_distance_to_polygon(
-                    &to_profile_points_measured(&self.sketch.profile),
+                    &to_profile_points_measured(&self.sketch.flattened_loop()),
                     in_profile,
                     substrate::geom2d::Metric::Chebyshev,
                 );
@@ -489,7 +488,8 @@ impl SketchSolid {
     /// [`in_plane_axes`]: PlaneAxis::in_plane_axes
     pub fn rectangle_in_plane_spans(&self) -> Option<[u32; 2]> {
         // Exactly four vertices, spanning a non-degenerate box.
-        if self.sketch.profile.len() != 4 {
+        let profile = self.sketch.flattened_loop();
+        if profile.len() != 4 {
             return None;
         }
         let (min, max) = self.profile_bounds()?;
@@ -497,7 +497,7 @@ impl SketchSolid {
         // coordinate is the box min or max), and all four distinct corners must be
         // present — i.e. the four points ARE the rectangle's corners.
         let mut corners_seen = [false; 4];
-        for point in &self.sketch.profile {
+        for point in &profile {
             let [coord_0, coord_1] = point.offset_voxels;
             let on_0 = if coord_0 == min[0] {
                 0
@@ -553,7 +553,7 @@ impl SketchSolid {
         let c0_hi = (min[0] + cell.max[in_plane_0]) as f64 - 0.5;
         let c1_lo = (min[1] + cell.min[in_plane_1]) as f64 + 0.5;
         let c1_hi = (min[1] + cell.max[in_plane_1]) as f64 - 0.5;
-        let profile_points = to_profile_points(&self.sketch.profile);
+        let profile_points = to_profile_points(&self.sketch.flattened_loop());
         substrate::geom2d::rectangle_inside_polygon(&profile_points, [c0_lo, c1_lo], [c0_hi, c1_hi])
     }
 
@@ -641,7 +641,7 @@ impl SketchSolid {
             RevolveAxis::InPlane0 => (axial_lo, axial_hi, r_lo, r_hi),
             RevolveAxis::InPlane1 => (r_lo, r_hi, axial_lo, axial_hi),
         };
-        let profile_points = to_profile_points(&self.sketch.profile);
+        let profile_points = to_profile_points(&self.sketch.flattened_loop());
         if !substrate::geom2d::rectangle_inside_polygon(&profile_points, [c0_lo, c1_lo], [c0_hi, c1_hi])
         {
             return false;
@@ -703,7 +703,7 @@ impl SketchSolid {
         // centre — §3i). The polygon test is on `min + cell`, which is FULL-derived;
         // only the iterated cell range narrows.
         let _ = (in_plane_span_0, in_plane_span_1);
-        let profile_points = to_profile_points_measured(&self.sketch.profile);
+        let profile_points = to_profile_points_measured(&self.sketch.flattened_loop());
         let mut filled_in_plane: Vec<[u32; 2]> = Vec::new();
         for cell_1 in cell_1_lo..cell_1_hi {
             let sample_1 = min[1] as f32 + cell_1 as f32 + 0.5;
