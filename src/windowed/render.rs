@@ -1219,18 +1219,35 @@ impl WindowedState {
         self.sketch_point_ids = handles.point_ids.clone();
         self.sketch_segments = handles.segments.clone();
 
+        // The segment the Delete tool is hovering, if any — the SAME decision `sketch_delete_at`
+        // makes: a vertex under the cursor takes priority (it already shows the Marked handle), so
+        // a segment marks only when no vertex is hit. Reusing those two hit-tests keeps the hover
+        // feedback exactly aligned with what a click would delete (ADR 0030, owner 2026-07-23).
+        let marked_segment = if tool == ui::panel::SketchTool::Delete {
+            self.last_cursor_position.and_then(|(cx, cy)| {
+                if self.sketch_vertex_at(cx, cy).is_some() {
+                    None
+                } else {
+                    self.nearest_sketch_segment(cx, cy).map(|(seg_id, _, _)| seg_id)
+                }
+            })
+        } else {
+            None
+        };
+
         // The segment LINES to draw next frame: each committed edge between its two projected
         // endpoints, in egui points (ADR 0030 — an open sketch resolves to nothing, so the edges
         // are the only thing that shows the profile is connected). A behind-camera endpoint
-        // (`None` in `sketch_vertex_px`) culls its line, matching the vertex-dot cull.
-        for &(_, a_idx, b_idx) in &self.sketch_segments {
+        // (`None` in `sketch_vertex_px`) culls its line, matching the vertex-dot cull. The one
+        // delete-hovered segment carries `true` so it draws warn-red with a `✕`.
+        for &(seg_id, a_idx, b_idx) in &self.sketch_segments {
             if let (Some(Some(a_px)), Some(Some(b_px))) = (
                 self.sketch_vertex_px.get(a_idx),
                 self.sketch_vertex_px.get(b_idx),
             ) {
                 let a = egui::Pos2::new(a_px.x / pixels_per_point, a_px.y / pixels_per_point);
                 let b = egui::Pos2::new(b_px.x / pixels_per_point, b_px.y / pixels_per_point);
-                self.sketch_segment_lines.push((a, b));
+                self.sketch_segment_lines.push((a, b, Some(seg_id) == marked_segment));
             }
         }
 

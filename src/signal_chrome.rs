@@ -344,12 +344,21 @@ pub fn sketch_insert_marker(ui: &egui::Ui, center: Pos2) {
 /// its two already-projected endpoints (egui points). Painted on the same foreground layer as the
 /// handles but drawn BEFORE them (the caller orders the two), so the vertex thumbs sit on top of
 /// the edges. Not registered as chrome — a passive under-layer; the shell owns segment hit-testing.
-pub fn sketch_segment_lines(ui: &egui::Ui, lines: &[(Pos2, Pos2)]) {
+pub fn sketch_segment_lines(ui: &egui::Ui, lines: &[(Pos2, Pos2, bool)]) {
     let painter = ui
         .ctx()
         .layer_painter(LayerId::new(Order::Foreground, Id::new("sketch_segment_lines")));
-    for &(a, b) in lines {
-        ui::gizmos::segment(&painter, a, b);
+    // Normal edges first, then the delete-hovered one on top, so its warn line + ✕ are never
+    // clipped by a neighbour sharing an endpoint.
+    for &(a, b, marked) in lines {
+        if !marked {
+            ui::gizmos::segment(&painter, a, b);
+        }
+    }
+    for &(a, b, marked) in lines {
+        if marked {
+            ui::gizmos::marked_segment(&painter, a, b);
+        }
     }
 }
 
