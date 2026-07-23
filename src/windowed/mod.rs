@@ -289,15 +289,16 @@ struct WindowedState {
     /// [`sketch_vertex_px`](Self::sketch_vertex_px) — the add-point hit-test splits the named
     /// segment by id, and the overlay draws a line per entry (ADR 0030, not consecutive pairs).
     sketch_segments: Vec<(document::sketch::EntityId, usize, usize)>,
-    /// Each committed segment's two endpoints in egui POINTS for THIS frame plus a
-    /// marked-for-delete flag, drawn as a line on the NEXT (ADR 0030 — a sketch's edges, so an
-    /// open profile reads as connected geometry, not loose dots). The flag is `true` for the one
-    /// segment the Delete tool is hovering when no vertex is under the cursor (vertices take
-    /// priority): that line draws warn-red with a `✕`, the segment analogue of a vertex's Marked
-    /// state. Only segments whose BOTH endpoints projected in front of the camera appear; a
-    /// behind-camera endpoint (`sketch_vertex_px` `None`) culls its line. Built in
+    /// Each committed segment's two endpoints in egui POINTS for THIS frame plus its interaction
+    /// [`HandleState`](ui::gizmos::HandleState), drawn as a line on the NEXT (ADR 0030 — a sketch's
+    /// edges, so an open profile reads as connected geometry, not loose dots). The one segment
+    /// under the cursor (when no vertex is closer — vertices take priority) carries `Hover` under
+    /// the Select tool (brighter line) or `Marked` under Delete (warn-red line + `✕`); every other
+    /// segment is `Idle`. One vocabulary with the vertex handles. Only segments whose BOTH
+    /// endpoints projected in front of the camera appear; a behind-camera endpoint
+    /// (`sketch_vertex_px` `None`) culls its line. Built in
     /// [`refresh_sketch_overlay`](Self::refresh_sketch_overlay) alongside the handles.
-    sketch_segment_lines: Vec<(egui::Pos2, egui::Pos2, bool)>,
+    sketch_segment_lines: Vec<(egui::Pos2, egui::Pos2, ui::gizmos::HandleState)>,
     /// The add-point tool's insert-preview marker for THIS frame (egui points): where a click
     /// would drop a vertex on the hovered segment (the foot of the perpendicular from the
     /// cursor), or `None` when the add-point tool is idle / no segment is under the cursor.

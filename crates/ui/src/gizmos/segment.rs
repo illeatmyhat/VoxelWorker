@@ -3,7 +3,7 @@
 
 use egui::{Painter, Pos2, Stroke, Vec2};
 
-use super::{dashed, HANDLE_ACCENT, STROKE_HANDLE, STROKE_SEGMENT};
+use super::{dashed, HandleState, HANDLE_ACCENT, HANDLE_HOVER, STROKE_HANDLE, STROKE_SEGMENT};
 use crate::signal_theme as tokens;
 
 /// Half-length (points) of the arms of the warn `✕` stamped on a [`marked_segment`] — sized to
@@ -14,6 +14,21 @@ const MARK_CROSS_ARM: f32 = 4.0;
 /// an entity, not a preview.
 pub fn segment(painter: &Painter, a: Pos2, b: Pos2) {
     painter.line_segment([a, b], Stroke::new(STROKE_SEGMENT, HANDLE_ACCENT));
+}
+
+/// A committed profile segment drawn in an interaction [`HandleState`] — the edge analogue of
+/// [`vertex_handle`](super::vertex_handle), so a point and a segment answer the pointer with one
+/// vocabulary. `Idle` is the plain accent edge; `Hover` brightens it (the pointer is over it and
+/// it is selectable); `Marked` is the Delete-armed warn edge with a `✕`. `Selected`/`Snapped`
+/// fall back to the accent edge for now — sketch multi-select will define their own treatment.
+pub fn styled_segment(painter: &Painter, a: Pos2, b: Pos2, state: HandleState) {
+    match state {
+        HandleState::Hover => {
+            painter.line_segment([a, b], Stroke::new(STROKE_SEGMENT, HANDLE_HOVER));
+        }
+        HandleState::Marked => marked_segment(painter, a, b),
+        HandleState::Idle | HandleState::Selected | HandleState::Snapped => segment(painter, a, b),
+    }
 }
 
 /// A profile segment **armed for deletion** — the Delete tool is hovering this edge (and no

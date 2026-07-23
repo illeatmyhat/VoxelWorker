@@ -308,11 +308,11 @@ pub fn run_egui_frame(
     // handle drag never orbits the camera. The shell owns projection / hit-test / drag.
     sketch_handles: &[(egui::Pos2, ui::gizmos::HandleState)],
     // ADR 0030: the sketch's committed segment lines for THIS frame — each a pair of already-
-    // projected endpoints (egui points) plus a delete-hover flag. Drawn UNDER the vertex handles
+    // projected endpoints (egui points) plus its interaction state. Drawn UNDER the vertex handles
     // so the profile reads as connected edges (an open sketch resolves to nothing, so these are
-    // the only shape cue); the flagged segment draws warn-red with a `✕` (the Delete tool is
-    // over it, no vertex closer). Empty unless a sketch is being edited, always empty on `shot`.
-    sketch_segment_lines: &[(egui::Pos2, egui::Pos2, bool)],
+    // the only shape cue); the hovered segment draws brighter (Select) or warn-red with a `✕`
+    // (Delete). Empty unless a sketch is being edited, always empty on the headless `shot` path.
+    sketch_segment_lines: &[(egui::Pos2, egui::Pos2, ui::gizmos::HandleState)],
     // ADR 0028 (#95): the add-point insert-preview marker for THIS frame (egui points), or
     // `None` when the add-point tool is idle / no edge is hovered. Drawn as a diamond on the
     // hovered profile edge. Always `None` on the headless `shot` path.

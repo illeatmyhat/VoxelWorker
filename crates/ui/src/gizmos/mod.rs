@@ -58,7 +58,7 @@ pub use diamond::diamond;
 pub use ghost_node::ghost_node;
 pub use label_chip::label_chip;
 pub use open_segment::open_segment;
-pub use segment::{dashed_segment, marked_segment, segment};
+pub use segment::{dashed_segment, marked_segment, segment, styled_segment};
 pub use snap_ticks::snap_ticks;
 pub use vertex_handle::{vertex_handle, HandleState};
 
