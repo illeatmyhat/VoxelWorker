@@ -87,17 +87,19 @@ around two different pivots.
    tool) — is arming a placement a transient state on top of a mode, or its own mode?
 5. Scope / sequencing (below).
 
-## Sequencing (proposed, TBD)
+## Sequencing (owner-ordered 2026-07-23)
 
-The model is large; likely order, smallest-foundational-first:
-
-1. **The input pivot** — left = select for scene nodes (viewport picking) + Q mode + rebind orbit to
-   Shift+MMB. The smallest change that flips the default verb without needing gizmos.
-2. **Explicit orbit mode + orbit center** — the rail toggle, the context-menu place/reset,
-   raycast-recenter.
-3. **Transform-gizmo subsystem** — W translate, then E rotate, then R scale, for scene nodes.
-4. **Sketch W move** (constraint-request) + E/R resolution.
-
-The in-flight sketch selection epic (`docs/design/sketch-selection.md`) is the sketch projection of
-Q; its remaining slices (delete-as-action, marquee) live inside Q and are unaffected by this pivot,
-so they can proceed in parallel.
+1. **General context menu** — ✅ SHIPPED (`9b074c8`). Right-click in the viewport opens a
+   mode-dispatched menu; Delete (warn-red ✕) removes the sketch selection (sketch mode) or the
+   active node (normal mode). The shared surface the orbit-center place/reset and the orbit-mode
+   toggle will later hang off.
+2. **Reorganize the "Q" subsystem** — make selection work correctly app-wide: left = select for scene
+   nodes (viewport picking) + the Q mode + rebind orbit off LMB (Shift+MMB about the orbit center).
+   Getting selection *right* here is the point, before layering more on it.
+3. **Back to sketch selection** — the remaining `sketch-selection.md` slices (delete-as-action,
+   marquee) once Q is solid.
+4. **Follow-up epics (deferred):** the **W/E/R transform-gizmo subsystem** (translate/rotate/scale for
+   scene nodes) and the **sketch E/R remapping** — both explicitly punted by the owner to a later
+   pass, after the Q selection system is correct.
+5. Explicit orbit mode + orbit center, and the sketch W move — fold in around 2–4 as their surfaces
+   (the context menu, the rail) land.
