@@ -264,6 +264,12 @@ pub struct SessionArtifact {
     /// 2026-07-21). Durable across adds and relaunch; `PlacementSnap` derives its own serde.
     #[serde(default)]
     pub placement_snap: ui::panel::PlacementSnap,
+    /// The sketch node under edit in sketch mode (ADR 0028), `None` in the normal chrome. A
+    /// dump taken mid-edit re-enters the same sketch; `NodeId` derives its own serde (it lives
+    /// in the serde-aware `document` crate), so no remote shim is needed. The `serde(default)`
+    /// degrades a pre-field dump to `None`.
+    #[serde(default)]
+    pub sketch_mode: Option<document::scene::NodeId>,
 }
 
 /// The debugging artifact, and the superset: **a scene must be completely reproducible
@@ -327,6 +333,9 @@ impl DocumentArtifact {
             // Declined — session state. An armed drop is where somebody stopped, not part
             // of the model a collaborator would open.
             placement_ghost: _,
+            // Declined — session state. Which sketch someone was editing is where they
+            // stopped, not part of the shared model.
+            sketch_mode: _,
             // Declined — session/settings. One person's snap preference must not ride into a
             // shared document.
             placement_snap: _,
@@ -384,6 +393,7 @@ impl Dump {
             debug_brick_faces,
             placement_ghost,
             placement_snap,
+            sketch_mode,
         } = state;
         Self {
             document: DocumentArtifact {
@@ -417,6 +427,7 @@ impl Dump {
                 debug_brick_faces: *debug_brick_faces,
                 placement_ghost: placement_ghost.clone(),
                 placement_snap: *placement_snap,
+                sketch_mode: *sketch_mode,
             },
         }
     }
@@ -461,6 +472,7 @@ impl Dump {
             debug_brick_faces: session.debug_brick_faces,
             placement_ghost: session.placement_ghost,
             placement_snap: session.placement_snap,
+            sketch_mode: session.sketch_mode,
         }
     }
 
@@ -625,6 +637,9 @@ mod tests {
                 angle: ui::panel::AngleSnap::Deg15,
                 pivot: ui::panel::PlacementPivot::VolumetricCenter,
             },
+            // Off its default (Some, not None) so a capture that dropped it fails the
+            // round-trip rather than coinciding with a default restore (ADR 0028).
+            sketch_mode: Some(document::scene::NodeId(9)),
         }
     }
 
@@ -684,6 +699,28 @@ mod tests {
             ["scene"],
             "the document artifact above is built from `scene` alone; a field that gained \
              `#[snapshot(document)]` must be added to it too"
+        );
+    }
+
+    /// ADR 0028 (#93 acceptance): sketch mode is session/editing state, never document state —
+    /// a saved document is byte-identical whether or not a sketch was being edited. The
+    /// exhaustive destructure in `DocumentArtifact::from_state` already declines `sketch_mode`;
+    /// this pins the property the ADR's acceptance names, from the outside.
+    #[test]
+    fn sketch_mode_never_reaches_the_document() {
+        let mut editing = distinctive_state();
+        editing.sketch_mode = Some(document::scene::NodeId(42));
+        let mut idle = distinctive_state();
+        idle.sketch_mode = None;
+        assert_eq!(
+            DocumentArtifact::from_state(&editing).scene,
+            DocumentArtifact::from_state(&idle).scene,
+            "the document must not depend on whether a sketch was being edited"
+        );
+        assert_eq!(
+            AppConfig::category_of("sketch_mode"),
+            Some(StateCategory::Session),
+            "sketch mode is session state (reaches the dump, not the document)"
         );
     }
 

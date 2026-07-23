@@ -51,6 +51,8 @@
                 angle: ui::panel::AngleSnap::Deg15,
                 pivot: ui::panel::PlacementPivot::VolumetricCenter,
             },
+            // Non-default (Some) so the round-trip exercises sketch-mode persistence (ADR 0028).
+            sketch_mode: Some(document::scene::NodeId(9)),
         };
 
         let restored = save_and_reload(&config);

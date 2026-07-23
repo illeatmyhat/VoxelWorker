@@ -219,6 +219,21 @@ impl ViewMode {
     }
 }
 
+/// How the author leaves **sketch mode** (ADR 0028 §2, §4) — the two arms of the floating
+/// `CANCEL | FINISH SKETCH` exit control.
+///
+/// The mode opens an undo GROUP on enter (ADR 0028 §4); these are the two ways it closes.
+/// In slice 1's mode-shell (#93) no edits are grouped yet, so both arms simply drop the mode
+/// — the group machinery arrives with the vertex-edit slice (#94), at which point `Finish`
+/// collapses the session to one main-history entry and `Cancel` rolls it back to enter-state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SketchExit {
+    /// Commit the sketch edits — closes the undo group as one main-stack entry (#94).
+    Finish,
+    /// Discard the sketch edits — rolls the undo group back to the enter-state (#94).
+    Cancel,
+}
+
 /// The floating Signal **display stack**'s viewer state (issue #88; ADR 0018 Decision 8,
 /// `docs/design/viewport-chrome-signal.md` §Chrome layout — display panel bullet).
 ///
@@ -477,6 +492,18 @@ pub struct PanelState {
     /// `place_primitive`.
     #[snapshot(session)]
     pub placement_snap: PlacementSnap,
+    /// The sketch node currently being edited in **sketch mode** (ADR 0028), or `None` when
+    /// the workspace is in its normal chrome. `Some(id)` swaps the rail to the sketch toolset,
+    /// withdraws the non-sketch operations, marks the node "editing" in the browser, and shows
+    /// the floating `CANCEL | FINISH SKETCH` exit control.
+    ///
+    /// **Session** state, on the same footing as [`view_mode`](Self::view_mode) and
+    /// [`placement_ghost`](Self::placement_ghost): the mode follows what you are editing, is
+    /// never document state (ADR 0022 — a saved document is byte-identical whether or not a
+    /// sketch was being edited), and rides into the dump so a mid-edit repro re-enters the same
+    /// sketch. Cleared when the id leaves the scene (a stale node can never trap the mode).
+    #[snapshot(session)]
+    pub sketch_mode: Option<NodeId>,
 }
 
 impl PanelState {
@@ -594,6 +621,17 @@ pub struct PanelResponse {
     /// click), so it rides on the response rather than `intents`. `None` when nothing
     /// was armed this frame.
     pub armed_tool: Option<NodeSpec>,
+    /// The sketch node the user asked to **enter sketch mode** on this frame (ADR 0028), via
+    /// the inspector's "Edit sketch" button. A VIEW action, NOT a document `Intent` (entering
+    /// a mode mutates nothing in the document), so it rides on the response like `focus_node`.
+    /// The shell sets [`PanelState::sketch_mode`](PanelState::sketch_mode) to it. `None` when
+    /// no enter was requested.
+    pub enter_sketch: Option<NodeId>,
+    /// How the user asked to **leave sketch mode** this frame (ADR 0028), via the floating
+    /// `CANCEL | FINISH SKETCH` control — `Finish` commits, `Cancel` discards. A VIEW action:
+    /// the shell clears [`PanelState::sketch_mode`](PanelState::sketch_mode) (and, from #94,
+    /// closes/rolls-back the undo group). `None` when no exit was requested.
+    pub exit_sketch: Option<SketchExit>,
 }
 
 impl PanelResponse {

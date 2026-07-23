@@ -48,7 +48,7 @@ pub(super) fn build_browser(
                     // the root is a concrete node, so whole-scene actions are expressed by
                     // selecting a thing rather than by the absence of a selection.
                     for (_, id, depth) in state.scene.tree_rows() {
-                        node_row(ui, &state.scene, id, depth, response);
+                        node_row(ui, &state.scene, id, depth, state.sketch_mode, response);
                     }
                 });
         });
@@ -66,25 +66,30 @@ fn heading(ui: &mut egui::Ui, title: &str) {
     hairline(ui.painter(), rect, Edge::Bottom, signal_theme::RULE);
 }
 
-/// One node row: glyph, name, and the selected treatment.
+/// One node row: glyph, name, and the selected treatment. In **sketch mode** (ADR 0028) the
+/// node being edited (`sketch_mode == Some(id)`) carries an accent `EDITING` tag — the browser
+/// stays open so the author can see and reach external scene geometry to snap to, and this
+/// marks which node the mode is scoped to.
 fn node_row(
     ui: &mut egui::Ui,
     scene: &Scene,
     id: NodeId,
     depth: usize,
+    sketch_mode: Option<NodeId>,
     response: &mut PanelResponse,
 ) {
     let Some(node) = scene.node_by_id(id) else {
         return;
     };
     let selected = scene.active == Some(id);
+    let editing = sketch_mode == Some(id);
     let (rect, row) = ui.allocate_exact_size(
         egui::vec2(BROWSER_WIDTH, ROW_HEIGHT),
         egui::Sense::click(),
     );
     let painter = ui.painter();
 
-    if selected {
+    if selected || editing {
         painter.rect_filled(rect, 0.0, signal_theme::HOVER_BG);
         let bar = egui::Rect::from_min_size(rect.left_top(), egui::vec2(2.0, rect.height()));
         painter.rect_filled(bar, 0.0, signal_theme::ACCENT);
@@ -92,7 +97,7 @@ fn node_row(
         painter.rect_filled(rect, 0.0, signal_theme::HOVER_BG);
     }
 
-    let ink = if selected {
+    let ink = if selected || editing {
         signal_theme::ACCENT
     } else if row.hovered() {
         signal_theme::TEXT_HOVER
@@ -113,6 +118,19 @@ fn node_row(
         rect.center().y - label.size().y * 0.5,
     );
     ui.painter().galley(at, label, ink);
+
+    // The accent EDITING tag, right-aligned (C2 mock's `.tag`): dark text on the accent fill.
+    if editing {
+        let tag = signal_theme::letter_spaced(ui, "EDITING", signal_theme::BG, 8.0, 1.2);
+        let pad = egui::vec2(5.0, 2.0);
+        let size = tag.size() + pad * 2.0;
+        let tag_rect = egui::Rect::from_min_size(
+            egui::pos2(rect.right() - size.x - 7.0, rect.center().y - size.y * 0.5),
+            size,
+        );
+        ui.painter().rect_filled(tag_rect, 0.0, signal_theme::ACCENT);
+        ui.painter().galley(tag_rect.min + pad, tag, signal_theme::BG);
+    }
 
     if row.clicked() && !selected {
         response.emit(Intent::SelectNode { target: Some(id) });

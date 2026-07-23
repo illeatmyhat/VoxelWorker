@@ -14,6 +14,8 @@
 //! the finished set is information, and a verb that silently appears later reads as a bug.
 
 use document::intent::Intent;
+use document::scene::NodeContent;
+use document::sketch::Operation;
 use document::voxel::SdfShape;
 use voxel_core::voxel::ShapeKind;
 
@@ -63,7 +65,27 @@ const TOOLS: &[(Icon, bool)] = &[
     (Icon::Measure, false),
 ];
 
-/// Build the pinned rail column.
+/// The sketch-mode rail toolset (ADR 0028): the direct-manipulation vertex tools. Rendered in
+/// place of `SHAPES`/`TOOLS` while a sketch is being edited. Slice 1 (#93) shows them as the
+/// mode indicator; the tools themselves arm in later slices (#94 select/move, #95 add/delete).
+const SKETCH_TOOLS: &[(Icon, &str)] = &[
+    (Icon::SelectVertex, "Select / move vertex"),
+    (Icon::Polyline, "Line / polyline"),
+    (Icon::Rectangle, "Rectangle"),
+    (Icon::DeleteVertex, "Delete vertex"),
+];
+
+/// The set-operation picker on the sketch rail (ADR 0028 §1: the operation is a property of
+/// the SAME fused node, moved here from the deleted right panel). Extrude + Revolve ship;
+/// Sweep is the reserved arm (drawn dimmed). The picker is wired in #97.
+const SKETCH_OPS: &[(Icon, &str, bool)] = &[
+    (Icon::Extrude, "Extrude (set operation)", false),
+    (Icon::Revolve, "Revolve (set operation)", false),
+    (Icon::Sweep, "Sweep — reserved", true),
+];
+
+/// Build the pinned rail column. In **sketch mode** (ADR 0028) it swaps to the sketch toolset;
+/// otherwise it shows the normal Shape + Tool sets.
 pub(super) fn build_rail(
     root_ui: &mut egui::Ui,
     state: &mut PanelState,
@@ -81,16 +103,53 @@ pub(super) fn build_rail(
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing = egui::vec2(0.0, 0.0);
-                    rail_heading(ui, "Shape");
-                    for &(icon, kind) in SHAPES {
-                        shape_cell(ui, icon, kind, state, response);
-                    }
-                    rail_heading(ui, "Tool");
-                    for &(icon, enabled) in TOOLS {
-                        tool_cell(ui, icon, enabled);
+                    if state.sketch_mode.is_some() {
+                        build_sketch_rail(ui, state);
+                    } else {
+                        rail_heading(ui, "Shape");
+                        for &(icon, kind) in SHAPES {
+                            shape_cell(ui, icon, kind, state, response);
+                        }
+                        rail_heading(ui, "Tool");
+                        for &(icon, enabled) in TOOLS {
+                            tool_cell(ui, icon, enabled);
+                        }
                     }
                 });
         });
+}
+
+/// The swapped rail while a sketch is being edited (ADR 0028): the accent `SKETCH` head (the
+/// whole-mode indicator), the vertex tools, then an `OP` separator and the set-operation
+/// picker. Slice 1 draws the tools inert — `Select` reads active, the current operation reads
+/// active, `Sweep` reads reserved; arming them is later slices (#94–#97).
+fn build_sketch_rail(ui: &mut egui::Ui, state: &PanelState) {
+    // The current operation of the edited node, to light the matching OP cell.
+    let current_op = state
+        .sketch_mode
+        .and_then(|id| state.scene.node_by_id(id))
+        .and_then(|node| match &node.content {
+            NodeContent::SketchTool { producer, .. } => Some(producer.operation.clone()),
+            _ => None,
+        });
+    let op_is_active = |icon: Icon| {
+        matches!(
+            (&current_op, icon),
+            (Some(Operation::Extrude { .. }), Icon::Extrude)
+                | (Some(Operation::Revolve { .. }), Icon::Revolve)
+        )
+    };
+
+    rail_heading_active(ui, "Sketch");
+    // The vertex tools. Select is the default active tool in slice 1; the rest are drawn
+    // live-but-inert (their arming lands with the editing slices).
+    for (index, &(icon, tip)) in SKETCH_TOOLS.iter().enumerate() {
+        sketch_cell(ui, icon, tip, index == 0, false);
+    }
+    rail_heading(ui, "Op");
+    for &(icon, tip, reserved) in SKETCH_OPS {
+        sketch_cell(ui, icon, tip, op_is_active(icon), reserved);
+    }
 }
 
 /// A rail section heading: UPPERCASE micro-label over a hairline.
@@ -104,6 +163,37 @@ fn rail_heading(ui: &mut egui::Ui, title: &str) {
     let at = egui::pos2(rect.center().x - galley.size().x * 0.5, rect.top());
     ui.painter().galley(at, galley, signal_theme::TEXT_HINT);
     hairline(ui.painter(), rect, Edge::Bottom, signal_theme::RULE);
+}
+
+/// The **active** rail heading — the accent-filled `SKETCH` label that is the whole mode
+/// indicator (ADR 0028, C2 mock's `.railhead`): dark text on the accent fill, spanning the
+/// rail. Distinct from [`rail_heading`]'s faint hairline label so entering the mode is
+/// unmistakable at a glance.
+fn rail_heading_active(ui: &mut egui::Ui, title: &str) {
+    let galley = signal_theme::letter_spaced(ui, title, signal_theme::BG, 9.0, 1.6);
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(RAIL_WIDTH, galley.size().y + 15.0),
+        egui::Sense::hover(),
+    );
+    ui.painter().rect_filled(rect, 0.0, signal_theme::ACCENT);
+    let at = egui::pos2(rect.center().x - galley.size().x * 0.5, rect.center().y - galley.size().y * 0.5);
+    ui.painter().galley(at, galley, signal_theme::BG);
+}
+
+/// One sketch-mode rail cell (ADR 0028): a tool or set-operation glyph at rail-glyph size,
+/// with the active accent bar and the reserved dim treatment. Slice 1 is display-only — the
+/// cells report hover + tooltip but arm nothing yet (later slices wire the clicks).
+fn sketch_cell(ui: &mut egui::Ui, icon: Icon, tip: &str, active: bool, reserved: bool) {
+    let (rect, cell) = ui.allocate_exact_size(
+        egui::vec2(RAIL_WIDTH, TOOL_CELL_HEIGHT),
+        egui::Sense::hover(),
+    );
+    let hovered = cell.hovered() && !reserved;
+    paint_cell(ui, rect, active, hovered);
+    let color = cell_ink(active, hovered, reserved);
+    let glyph = egui::Rect::from_center_size(rect.center(), egui::Vec2::splat(TOOL_GLYPH));
+    icon.draw(ui.painter(), glyph, color);
+    cell.on_hover_text(tip.to_string());
 }
 
 /// One shape cell. Clicking an expressible shape retargets the SELECTED Tool node.

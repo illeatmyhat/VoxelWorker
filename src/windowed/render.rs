@@ -261,6 +261,18 @@ impl WindowedState {
         if let Some(spec) = prepared.panel_response.armed_tool.take() {
             self.armed_tool = Some(spec);
         }
+        // ADR 0028: enter / leave sketch mode — a VIEW action on the response (entering a mode
+        // mutates no document state), like `armed_tool`. Entering scopes the mode to the
+        // requested node and disarms any placement tool (non-sketch ops withdraw in the mode).
+        // Finish and Cancel both drop the mode; slice 1 groups no edits yet, so they differ
+        // only from #94 on, where they commit / roll back the undo group.
+        if let Some(node) = prepared.panel_response.enter_sketch.take() {
+            self.panel_state.sketch_mode = Some(node);
+            self.armed_tool = None;
+        }
+        if prepared.panel_response.exit_sketch.take().is_some() {
+            self.panel_state.sketch_mode = None;
+        }
         let mut intents = std::mem::take(&mut prepared.panel_response.intents);
         // ADR 0022 live placement: a viewport click's drop intent is applied through the
         // SAME door as the panel's edits (taken BEFORE the borrow of `prepared` ends), so

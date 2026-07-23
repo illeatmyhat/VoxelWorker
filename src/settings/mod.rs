@@ -22,7 +22,7 @@ use camera::{HomeView, OrbitCamera, ProjectionMode};
 use voxel_core::core_geom::MaterialChoice;
 use voxel_core::voxel::ShapeKind;
 use ui::panel::{LayerRange, PanelState, PlacementGhost, PlacementSnap, SignalStackState, ViewMode};
-use document::scene::Scene;
+use document::scene::{NodeContent, NodeId, Scene};
 use document::voxel::{GeometryParams, SdfShape};
 
 /// The serde-able mirror of the armed-tool [`PlacementGhost`] (ADR 0022), carried in the
@@ -247,6 +247,15 @@ pub struct AppConfig {
     /// (voxel + surface) for a dump written before the field existed.
     #[snapshot(session)]
     pub placement_snap: PlacementSnap,
+
+    /// The sketch node being edited in sketch mode (ADR 0028), `None` in the normal chrome.
+    /// Session state on the same footing as [`placement_ghost`](Self::placement_ghost): the
+    /// mode is how the workspace was left, so a mid-edit dump (an F9 repro) re-enters the same
+    /// sketch. Named `sketch_mode` to match the [`PanelState`] field it routes to. `NodeId` is
+    /// serde-able, so it needs no `Config` mirror. The `SessionArtifact` serde default
+    /// degrades a pre-field dump to `None` (the normal chrome).
+    #[snapshot(session)]
+    pub sketch_mode: Option<NodeId>,
 }
 
 impl Default for AppConfig {
@@ -276,6 +285,7 @@ impl Default for AppConfig {
             debug_face_orientation: false,
             debug_brick_faces: false,
             placement_ghost: None,
+            sketch_mode: None,
         }
     }
 }
@@ -326,6 +336,8 @@ impl AppConfig {
             // ADR 0022: the armed placement ghost, captured as its serde-able mirror so a
             // mid-gesture dump replays the pending drop.
             placement_ghost: panel.placement_ghost.as_ref().map(PlacementGhostConfig::from_ghost),
+            // ADR 0028: the sketch node under edit, so a mid-edit dump re-enters sketch mode.
+            sketch_mode: panel.sketch_mode,
         }
     }
 
@@ -416,6 +428,10 @@ impl AppConfig {
             // ADR 0022: restore the armed placement ghost (session state), so a mid-gesture
             // repro replays the pending drop rather than resetting to no armed tool.
             placement_ghost: self.placement_ghost.as_ref().map(PlacementGhostConfig::to_ghost),
+            // ADR 0028: re-enter sketch mode on the same node a mid-edit dump was taken in.
+            // Cleared to `None` below if the id no longer resolves in the restored scene, so a
+            // stale sketch node can never trap the mode.
+            sketch_mode: self.sketch_mode,
         };
         // step 8: restore the persisted full scene when present and non-empty;
         // otherwise (a scene-less old config, or a `Some(scene)` with no nodes — a
@@ -443,6 +459,19 @@ impl AppConfig {
         // with the seed branch and `shot.rs`. Runs after `ensure_origin_point` so the
         // origin point it may have just appended also receives an id.
         state.scene.ensure_node_ids();
+        // ADR 0028: a restored sketch mode must point at a live sketch node. Drop it if the
+        // id no longer resolves to a `SketchTool` in the loaded scene (a scene-less config, a
+        // deleted node, or a node that is no longer a sketch), so a stale id cannot trap the
+        // mode with no way out.
+        if let Some(id) = state.sketch_mode {
+            let live = matches!(
+                state.scene.node_by_id(id).map(|node| &node.content),
+                Some(NodeContent::SketchTool { .. })
+            );
+            if !live {
+                state.sketch_mode = None;
+            }
+        }
         state
     }
 

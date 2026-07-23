@@ -328,6 +328,25 @@ fn build_sketch_inspector_section(
         },
     );
 
+    // ADR 0028: the entry into sketch mode. Editing a profile directly is a MODE (the rail
+    // swaps to the sketch toolset, non-sketch ops withdraw, a floating CANCEL | FINISH SKETCH
+    // appears), not an inspector control — so this button hands the shell the node to enter on
+    // (a VIEW action on the response, never a document intent). The inspector's numeric fields
+    // below stay the parametric mirror for a rectangle profile; the mode is where free vertex
+    // editing lives (slice 1/#94+).
+    ui.add_space(2.0);
+    if ui
+        .add_sized(
+            [ui.available_width(), 24.0],
+            egui::Button::new("Edit sketch"),
+        )
+        .on_hover_text("Enter sketch mode — edit the profile directly on its plane")
+        .clicked()
+    {
+        response.enter_sketch = Some(target);
+    }
+    ui.add_space(4.0);
+
     // The label for a plane choice in the picker.
     fn plane_label(plane: PlaneAxis) -> &'static str {
         match plane {

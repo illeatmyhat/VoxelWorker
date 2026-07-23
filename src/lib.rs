@@ -499,6 +499,21 @@ pub fn run_egui_frame(
             );
         }
 
+        // ADR 0028: while a sketch is being edited, the immersive accent viewport border + the
+        // floating CANCEL | FINISH SKETCH control (the two mode signals the owner review kept,
+        // besides the rail swap). Draws on BOTH paths so the mode chrome is verifiable by the
+        // headless `shot` capture. A click routes onto the response as `exit_sketch`; the
+        // button rects register as chrome so they never leak to the camera orbit.
+        if panel_state.sketch_mode.is_some() {
+            if let Some(exit) = signal_chrome::sketch_exit_control(
+                ui,
+                central_rect_points,
+                &mut chrome_rects_points,
+            ) {
+                panel_response.exit_sketch = Some(exit);
+            }
+        }
+
         // Signal (#86): the faint zone-name readout, centred under the cube but BELOW the
         // icon rail (so the two never overlap). Anchored off the post-panel central rect
         // so it tracks the cube as the side panel resizes. Non-interactive (a pure label);

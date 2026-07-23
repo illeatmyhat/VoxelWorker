@@ -18,6 +18,7 @@
 
 use egui::{Color32, FontId, Id, LayerId, Order, Pos2, Rect, Sense, Stroke, StrokeKind, TextFormat, Vec2};
 use ui::icons::Icon;
+use ui::panel::SketchExit;
 
 use crate::ViewMode;
 
@@ -41,6 +42,10 @@ const ACCENT: Color32 = Color32::from_rgb(0x9c, 0xb4, 0xd8);
 const LIT_BG: Color32 = Color32::from_rgb(0x12, 0x16, 0x1b);
 /// Status-line faint text `#4d565f`.
 const STATUS_FAINT: Color32 = Color32::from_rgb(0x4d, 0x56, 0x5f);
+/// The immersive sketch-mode border tint — the accent at ~33% (C2 mock `#9cb4d84d`).
+const ACCENT_FAINT: Color32 = Color32::from_rgba_premultiplied(0x2f, 0x37, 0x43, 0x4d);
+/// Near-opaque panel fill for the floating exit buttons (mock `#0b0d0feb`).
+const FLOAT_BG: Color32 = Color32::from_rgb(0x0b, 0x0d, 0x0f);
 
 /// Rail column width (design points; §Chrome layout: 34 px).
 const RAIL_WIDTH: f32 = 34.0;
@@ -226,6 +231,82 @@ pub fn status_line(
         viewport_rect.bottom() - galley.size().y - 6.0,
     );
     painter.galley(pos, galley, STATUS_FAINT);
+}
+
+/// The sketch-mode exit control + immersive border (ADR 0028; C2 mock). Draws a faint accent
+/// inset border framing the viewport — the "you are editing a sketch" tint — plus the floating
+/// `CANCEL` / `FINISH SKETCH` pair bottom-right, and returns the arm the user clicked. This and
+/// the rail swap are the two mode signals the owner review kept (no banner). `Finish` commits
+/// (from #94, closes the undo group as one main-history entry); `Cancel` discards.
+///
+/// Immediate-mode painted through a foreground [`layer_painter`](egui::Context::layer_painter)
+/// at absolute coordinates (NOT an `egui::Area`), like [`icon_rail`], so it renders on the
+/// headless `shot`'s single captured frame.
+pub fn sketch_exit_control(
+    ui: &egui::Ui,
+    viewport_rect: Rect,
+    chrome_rects: &mut Vec<Rect>,
+) -> Option<SketchExit> {
+    let painter = ui
+        .ctx()
+        .layer_painter(LayerId::new(Order::Foreground, Id::new("sketch_exit_control")));
+    // The immersive accent inset border — the mode tint (mock: `inset 0 0 0 2px` accent-alpha).
+    painter.rect_stroke(
+        viewport_rect.shrink(1.0),
+        0.0,
+        Stroke::new(2.0_f32, ACCENT_FAINT),
+        StrokeKind::Inside,
+    );
+
+    // The two buttons, laid right-to-left from the viewport's bottom-right corner. Finish is
+    // the primary (accent fill, dark ink); Cancel is a bordered near-black box.
+    let mono = FontId::monospace(10.0);
+    let pad = Vec2::new(14.0, 8.0);
+    let gap = 9.0;
+    let margin = 16.0;
+    let bottom = viewport_rect.bottom() - margin;
+    let mut right = viewport_rect.right() - margin;
+    let mut clicked = None;
+
+    for (exit, label, primary) in [
+        (SketchExit::Finish, "FINISH SKETCH", true),
+        (SketchExit::Cancel, "CANCEL", false),
+    ] {
+        // `PLACEHOLDER` colour so `painter.galley` fills the real ink at paint time; the size
+        // is colour-independent, so one layout serves both measuring and painting.
+        let galley = painter.layout_no_wrap(label.to_string(), mono.clone(), Color32::PLACEHOLDER);
+        let size = galley.size() + pad * 2.0;
+        let rect = Rect::from_min_max(
+            Pos2::new(right - size.x, bottom - size.y),
+            Pos2::new(right, bottom),
+        );
+        let response = ui.interact(rect, Id::new(("sketch_exit", label)), Sense::click());
+        let hovered = response.hovered();
+
+        painter.rect_filled(rect, 0.0, if primary { ACCENT } else { FLOAT_BG });
+        painter.rect_stroke(
+            rect,
+            0.0,
+            Stroke::new(1.0_f32, if primary { ACCENT } else { BORDER }),
+            StrokeKind::Inside,
+        );
+        let ink = if primary {
+            RAIL_BG
+        } else if hovered {
+            GLYPH_HOVER
+        } else {
+            GLYPH_IDLE
+        };
+        painter.galley(rect.min + pad, galley, ink);
+
+        if response.clicked() {
+            clicked = Some(exit);
+        }
+        // Register the button as chrome so a click on it never leaks to the camera orbit.
+        chrome_rects.push(rect);
+        right = rect.left() - gap;
+    }
+    clicked
 }
 
 /// The glyph box inside a rail button: a CENTRED SQUARE, because the rail set is authored
