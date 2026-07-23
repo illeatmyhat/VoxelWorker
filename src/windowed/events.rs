@@ -218,6 +218,23 @@ impl ApplicationHandler for App {
                             }
                         }
                     }
+                    // ADR 0030: a STATIONARY left release under the Select tool resolves the sketch
+                    // selection (a drag moved a vertex instead — the same click-vs-drag threshold
+                    // placement / add-point use). Runs BEFORE `last_cursor_position` is cleared
+                    // below, since the hit-test needs the release cursor.
+                    if state.panel_state.sketch_mode.is_some()
+                        && state.panel_state.sketch_tool == ui::panel::SketchTool::Select
+                    {
+                        if let (Some((down_x, down_y)), Some((up_x, up_y))) =
+                            (state.press_position, state.last_cursor_position)
+                        {
+                            let stationary = (up_x - down_x).abs() < VIEW_CUBE_DRAG_THRESHOLD_PIXELS
+                                && (up_y - down_y).abs() < VIEW_CUBE_DRAG_THRESHOLD_PIXELS;
+                            if stationary {
+                                state.resolve_sketch_selection_click(up_x, up_y);
+                            }
+                        }
+                    }
                     state.sketch_edit_press = false;
                     state.armed_press = false;
                     state.left_button_held = false;
@@ -281,6 +298,11 @@ impl ApplicationHandler for App {
                         None
                     };
                 }
+            }
+            WindowEvent::ModifiersChanged(modifiers) => {
+                // Track Shift so the sketch selection resolve can toggle/accumulate (Shift-click)
+                // rather than replace. A pure modifier update; drives nothing else here.
+                state.shift_held = modifiers.state().shift_key();
             }
             WindowEvent::CursorMoved { position, .. } => {
                 let current = (position.x, position.y);

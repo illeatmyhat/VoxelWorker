@@ -319,6 +319,14 @@ struct WindowedState {
     /// handler commits it synchronously as one edit in the open undo group
     /// (`commit_sketch_vertex_drag`), which clears this back to `None`.
     sketch_drag: Option<SketchVertexDrag>,
+    /// The sketch editing selection — the picked points + segments (ADR 0030 /
+    /// `docs/design/sketch-selection.md`). A stationary Select-tool click resolves into it (plain
+    /// = replace, Shift = toggle, empty = clear); the overlay draws a picked entity in the
+    /// `Selected` state. Session state, cleared on entering a sketch; empty outside sketch mode.
+    sketch_selection: ui::panel::SketchSelection,
+    /// Whether Shift is currently held, tracked from `WindowEvent::ModifiersChanged`. Read by the
+    /// selection click resolve (Shift = toggle/accumulate rather than replace).
+    shift_held: bool,
 }
 
 /// An in-progress sketch point-vertex drag (ADR 0028 #94, id-based per ADR 0030).
@@ -630,6 +638,8 @@ impl WindowedState {
             last_view_projection: None,
             sketch_edit_press: false,
             sketch_drag: None,
+            sketch_selection: ui::panel::SketchSelection::default(),
+            shift_held: false,
         }
     }
 

@@ -256,6 +256,80 @@ pub enum SketchTool {
     Delete,
 }
 
+/// A sketch editing **selection** — the set of picked points and segments (ADR 0030 /
+/// `docs/design/sketch-selection.md`). Points and segments carry disjoint [`EntityId`]s (one
+/// `next_id` counter per sketch), but the kind still matters for rendering and for delete
+/// (a point cascades its segments, a segment deletes alone), so the two are held apart.
+///
+/// **Session** state, like [`SketchTool`]: which entities are picked is where the author left the
+/// workspace, never document state and never undoable (selecting is not an edit). Cleared on
+/// entering a sketch. The delivered action over a selection is Delete (owner 2026-07-23); a
+/// constraint-mediated move over the whole set is a later slice.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SketchSelection {
+    points: std::collections::BTreeSet<document::sketch::EntityId>,
+    segments: std::collections::BTreeSet<document::sketch::EntityId>,
+}
+
+impl SketchSelection {
+    /// Nothing is picked.
+    pub fn is_empty(&self) -> bool {
+        self.points.is_empty() && self.segments.is_empty()
+    }
+
+    /// Drop the whole selection (a plain click on empty space).
+    pub fn clear(&mut self) {
+        self.points.clear();
+        self.segments.clear();
+    }
+
+    /// Is this point in the set?
+    pub fn contains_point(&self, id: document::sketch::EntityId) -> bool {
+        self.points.contains(&id)
+    }
+
+    /// Is this segment in the set?
+    pub fn contains_segment(&self, id: document::sketch::EntityId) -> bool {
+        self.segments.contains(&id)
+    }
+
+    /// Replace the whole selection with a single point (a plain click on a vertex).
+    pub fn select_point(&mut self, id: document::sketch::EntityId) {
+        self.clear();
+        self.points.insert(id);
+    }
+
+    /// Replace the whole selection with a single segment (a plain click on an edge).
+    pub fn select_segment(&mut self, id: document::sketch::EntityId) {
+        self.clear();
+        self.segments.insert(id);
+    }
+
+    /// Toggle a point in / out of the set (a Shift-click on a vertex — accumulate).
+    pub fn toggle_point(&mut self, id: document::sketch::EntityId) {
+        if !self.points.remove(&id) {
+            self.points.insert(id);
+        }
+    }
+
+    /// Toggle a segment in / out of the set (a Shift-click on an edge — accumulate).
+    pub fn toggle_segment(&mut self, id: document::sketch::EntityId) {
+        if !self.segments.remove(&id) {
+            self.segments.insert(id);
+        }
+    }
+
+    /// The picked point ids (ascending).
+    pub fn points(&self) -> impl Iterator<Item = document::sketch::EntityId> + '_ {
+        self.points.iter().copied()
+    }
+
+    /// The picked segment ids (ascending).
+    pub fn segments(&self) -> impl Iterator<Item = document::sketch::EntityId> + '_ {
+        self.segments.iter().copied()
+    }
+}
+
 /// The floating Signal **display stack**'s viewer state (issue #88; ADR 0018 Decision 8,
 /// `docs/design/viewport-chrome-signal.md` §Chrome layout — display panel bullet).
 ///
@@ -703,6 +777,55 @@ mod tests {
     use super::*;
     use document::voxel::SdfShape;
     use voxel_core::voxel::ShapeKind;
+
+    /// A plain click **replaces**: selecting a second point leaves only it (ADR 0030).
+    #[test]
+    fn select_point_replaces() {
+        let mut sel = SketchSelection::default();
+        sel.select_point(1);
+        sel.select_point(2);
+        assert!(!sel.contains_point(1));
+        assert!(sel.contains_point(2));
+        assert_eq!(sel.points().collect::<Vec<_>>(), vec![2]);
+    }
+
+    /// Shift-click **toggles**: it accumulates, and a second toggle removes the same entity.
+    #[test]
+    fn toggle_point_accumulates_then_removes() {
+        let mut sel = SketchSelection::default();
+        sel.toggle_point(1);
+        sel.toggle_point(2);
+        assert_eq!(sel.points().collect::<Vec<_>>(), vec![1, 2]);
+        sel.toggle_point(1);
+        assert_eq!(sel.points().collect::<Vec<_>>(), vec![2]);
+    }
+
+    /// Points and segments are held apart — a point id and a segment id never collide, and
+    /// clearing drops both.
+    #[test]
+    fn points_and_segments_are_independent() {
+        let mut sel = SketchSelection::default();
+        sel.toggle_point(7);
+        sel.toggle_segment(7);
+        assert!(sel.contains_point(7));
+        assert!(sel.contains_segment(7));
+        assert!(!sel.is_empty());
+        sel.clear();
+        assert!(sel.is_empty());
+        assert!(!sel.contains_point(7));
+        assert!(!sel.contains_segment(7));
+    }
+
+    /// Selecting a single segment replaces any prior point selection (one selection, mixed kinds).
+    #[test]
+    fn select_segment_replaces_whole_set() {
+        let mut sel = SketchSelection::default();
+        sel.toggle_point(1);
+        sel.toggle_point(2);
+        sel.select_segment(9);
+        assert!(sel.points().collect::<Vec<_>>().is_empty());
+        assert_eq!(sel.segments().collect::<Vec<_>>(), vec![9]);
+    }
 
     /// **The ghost centre carries the sub-voxel `offset_local`** — a `NoSnap` drop's fractional
     /// remainder — so the translucent preview sits exactly where the committed node lands rather

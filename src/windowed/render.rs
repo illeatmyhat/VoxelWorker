@@ -281,6 +281,7 @@ impl WindowedState {
         if let Some(node) = prepared.panel_response.enter_sketch.take() {
             self.panel_state.sketch_mode = Some(node);
             self.armed_tool = None;
+            self.sketch_selection.clear();
             self.app_core.begin_sketch_group();
         }
         if let Some(exit) = prepared.panel_response.exit_sketch.take() {
@@ -291,6 +292,7 @@ impl WindowedState {
                 }
             };
             self.panel_state.sketch_mode = None;
+            self.sketch_selection.clear();
         }
         // ADR 0028 (#94): advance an in-progress sketch vertex drag — a live preview that
         // re-resolves the volume and records ONE coalesced command in the open group. Uses
@@ -1085,6 +1087,38 @@ impl WindowedState {
         Some(producer.with_segment_deleted(seg_id))
     }
 
+    /// ADR 0030: resolve a stationary Select-tool click into the sketch selection. A vertex under
+    /// the cursor takes priority (it already answers as a handle), then a segment, else empty
+    /// space. Plain click **replaces** the selection with that one entity; `shift` **toggles** it
+    /// in/out (accumulate). A plain click on empty space **clears**; a Shift-click on empty space
+    /// keeps the selection (Fusion). Reuses the same hit-tests the drag and delete run, so what you
+    /// click is what you pick. Pure selection-state mutation — records no document edit.
+    pub(super) fn resolve_sketch_selection_click(&mut self, cursor_x: f64, cursor_y: f64) {
+        let shift = self.shift_held;
+        if let Some(index) = self.sketch_vertex_at(cursor_x, cursor_y) {
+            if let Some(&point_id) = self.sketch_point_ids.get(index) {
+                if shift {
+                    self.sketch_selection.toggle_point(point_id);
+                } else {
+                    self.sketch_selection.select_point(point_id);
+                }
+                return;
+            }
+        }
+        if let Some(seg_id) = self.sketch_segment_at(cursor_x, cursor_y) {
+            if shift {
+                self.sketch_selection.toggle_segment(seg_id);
+            } else {
+                self.sketch_selection.select_segment(seg_id);
+            }
+            return;
+        }
+        // Empty space: a plain click clears; a Shift-click leaves the set alone (Fusion).
+        if !shift {
+            self.sketch_selection.clear();
+        }
+    }
+
     /// ADR 0028 (#95): queue an add/delete profile edit as ONE entry in the open sketch undo
     /// group. Recomputes the bbox-min anchor compensation exactly like the vertex drag — the
     /// producer re-anchors its bbox-min to the node origin, so a vertex inserted or removed at
@@ -1196,14 +1230,20 @@ impl WindowedState {
                     (cx as f32 - px).hypot(cy as f32 - py) <= hover_radius_px
                 })
                 .unwrap_or(false);
-            // Delete tool + hover = the destructive Marked state (warn ✕); otherwise the
-            // #94 idle / hover / dragged progression.
-            let state = if dragging_point == handles.point_ids.get(index).copied() {
+            let point_id = handles.point_ids.get(index).copied();
+            let selected = point_id
+                .map(|id| self.sketch_selection.contains_point(id))
+                .unwrap_or(false);
+            // Precedence: dragged > delete-hover (warn ✕) > hover > selected > idle. Hover wins
+            // over selected so the pointer always shows what it is about to act on (ADR 0030).
+            let state = if dragging_point == point_id {
                 ui::gizmos::HandleState::Snapped
             } else if hovered && tool == ui::panel::SketchTool::Delete {
                 ui::gizmos::HandleState::Marked
             } else if hovered {
                 ui::gizmos::HandleState::Hover
+            } else if selected {
+                ui::gizmos::HandleState::Selected
             } else {
                 ui::gizmos::HandleState::Idle
             };
@@ -1254,8 +1294,12 @@ impl WindowedState {
             ) {
                 let a = egui::Pos2::new(a_px.x / pixels_per_point, a_px.y / pixels_per_point);
                 let b = egui::Pos2::new(b_px.x / pixels_per_point, b_px.y / pixels_per_point);
+                // Hover/Marked on the one cursor-segment wins; else Selected if picked; else Idle.
                 let state = match hovered_segment {
                     Some((id, state)) if id == seg_id => state,
+                    _ if self.sketch_selection.contains_segment(seg_id) => {
+                        ui::gizmos::HandleState::Selected
+                    }
                     _ => ui::gizmos::HandleState::Idle,
                 };
                 self.sketch_segment_lines.push((a, b, state));

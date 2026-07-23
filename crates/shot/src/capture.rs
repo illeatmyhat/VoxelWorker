@@ -1055,6 +1055,8 @@ pub(crate) async fn run_capture(options: ShotOptions) {
         // ADR 0028 (#94): the headless capture computes no live vertex handles (sketch
         // authoring is a windowed-only interaction); the goldens stay handle-free.
         &[],
+        // ADR 0030: no sketch segment lines either — windowed-only overlay.
+        &[],
         // ADR 0028 (#95): likewise no add-point insert preview in the headless goldens.
         None,
     );

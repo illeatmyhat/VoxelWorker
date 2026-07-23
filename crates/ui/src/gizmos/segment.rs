@@ -16,18 +16,25 @@ pub fn segment(painter: &Painter, a: Pos2, b: Pos2) {
     painter.line_segment([a, b], Stroke::new(STROKE_SEGMENT, HANDLE_ACCENT));
 }
 
+/// The picked-edge stroke weight — heavier than the committed [`STROKE_SEGMENT`] so a selected
+/// segment reads *bolder* than a hovered one (hover only brightens the colour at the same weight).
+const STROKE_SEGMENT_SELECTED: f32 = STROKE_SEGMENT + 1.25;
+
 /// A committed profile segment drawn in an interaction [`HandleState`] — the edge analogue of
 /// [`vertex_handle`](super::vertex_handle), so a point and a segment answer the pointer with one
 /// vocabulary. `Idle` is the plain accent edge; `Hover` brightens it (the pointer is over it and
-/// it is selectable); `Marked` is the Delete-armed warn edge with a `✕`. `Selected`/`Snapped`
-/// fall back to the accent edge for now — sketch multi-select will define their own treatment.
+/// it is selectable); `Selected` is a heavier accent edge (picked, bolder than a hover); `Marked`
+/// is the Delete-armed warn edge with a `✕`. `Snapped` is unused for edges and reads as `Idle`.
 pub fn styled_segment(painter: &Painter, a: Pos2, b: Pos2, state: HandleState) {
     match state {
         HandleState::Hover => {
             painter.line_segment([a, b], Stroke::new(STROKE_SEGMENT, HANDLE_HOVER));
         }
+        HandleState::Selected => {
+            painter.line_segment([a, b], Stroke::new(STROKE_SEGMENT_SELECTED, HANDLE_ACCENT));
+        }
         HandleState::Marked => marked_segment(painter, a, b),
-        HandleState::Idle | HandleState::Selected | HandleState::Snapped => segment(painter, a, b),
+        HandleState::Idle | HandleState::Snapped => segment(painter, a, b),
     }
 }
 
