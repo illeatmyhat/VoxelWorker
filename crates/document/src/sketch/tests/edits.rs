@@ -1,14 +1,14 @@
-//! ADR 0030 (#98) — the add-point / delete entity edits and their anchor compensation.
+//! ADR 0030 (#98) — the id-based add-point / delete entity edits and their anchor compensation.
 //!
-//! These pin the PURE producer operations the sketch shell drives on a click: inserting a
-//! vertex on a loop edge (splitting a segment), deleting a vertex (cascading to its incident
-//! segments — ADR 0030 §6, superseding #95's loop reclose), and the node-offset compensation
-//! that keeps the rest of the profile fixed when an edit moves the profile's bbox-minimum (the
-//! resolve re-anchors that minimum to the node origin). The frame invariant these serve — that
-//! the un-edited handles do not move in the render frame — is checked independently in
-//! `sketch_handles`. The profile here is DERIVED from the entity store via `flattened_loop`.
+//! These pin the PURE producer operations the sketch shell drives on a click: splitting a
+//! segment by id (add-point), deleting a point by id (cascading to its incident segments — ADR
+//! 0030 §6, deleting a point removes its edges and nothing else), and the node-offset
+//! compensation that keeps the rest of the profile fixed when an edit moves the profile's
+//! bbox-minimum (the resolve re-anchors that minimum to the node origin). Everything is keyed by
+//! stable `EntityId`, never a loop position — an open graph has no valid loop index. The profile
+//! is DERIVED from the entity store via `flattened_loop`, which is empty unless a closed loop exists.
 
-use crate::sketch::{PlaneAxis, Sketch, SketchPoint, SketchSolid};
+use crate::sketch::{EntityId, PlaneAxis, Sketch, SketchPoint, SketchSolid};
 
 /// A closed rectangular profile whose bbox-minimum is `[2, 2]`, extruded so it is a real solid.
 fn bracket() -> SketchSolid {
@@ -21,12 +21,35 @@ fn bracket() -> SketchSolid {
     SketchSolid::extrude(Sketch::new(PlaneAxis::Z, profile), 3)
 }
 
+/// The id of the point at in-plane voxel coord `at`.
+fn point_id_at(solid: &SketchSolid, at: [i64; 2]) -> EntityId {
+    solid
+        .sketch
+        .points()
+        .iter()
+        .find(|point| point.at.offset_voxels == at)
+        .unwrap_or_else(|| panic!("no point at {at:?}"))
+        .id
+}
+
+/// The id of the segment joining the points at coords `a` and `b` (either direction).
+fn segment_id_between(solid: &SketchSolid, a: [i64; 2], b: [i64; 2]) -> EntityId {
+    let (ia, ib) = (point_id_at(solid, a), point_id_at(solid, b));
+    solid
+        .sketch
+        .segments()
+        .iter()
+        .find(|seg| (seg.from == ia && seg.to == ib) || (seg.from == ib && seg.to == ia))
+        .unwrap_or_else(|| panic!("no segment between {a:?} and {b:?}"))
+        .id
+}
+
 #[test]
-fn insert_splits_the_edge_after_its_start_vertex() {
-    // Inserting after loop position 1 (the edge 1→2) lands the new point between the old
-    // vertices 1 and 2 — the segment is split and the loop order is preserved.
+fn split_inserts_a_vertex_on_the_named_segment() {
+    // Splitting the edge between [6, 2] and [6, 5] lands the new point between them in the loop.
     let before = bracket();
-    let after = before.with_point_inserted(1, SketchPoint::new(6, 3));
+    let seg = segment_id_between(&before, [6, 2], [6, 5]);
+    let after = before.with_point_on_segment(seg, SketchPoint::new(6, 3));
     let coords: Vec<[i64; 2]> = after
         .sketch
         .flattened_loop()
@@ -36,7 +59,7 @@ fn insert_splits_the_edge_after_its_start_vertex() {
     assert_eq!(
         coords,
         [[2, 2], [6, 2], [6, 3], [6, 5], [2, 5]],
-        "the new vertex splits edge 1→2, so it sits between them in the loop"
+        "the new vertex splits the named edge, so it sits between its endpoints in the loop"
     );
     assert!(
         !before
@@ -49,86 +72,83 @@ fn insert_splits_the_edge_after_its_start_vertex() {
 }
 
 #[test]
-fn insert_past_the_end_appends() {
-    // The closing edge is `last → first`; splitting it inserts a vertex on it, which the loop
-    // walk places at the end (the loop closes back to the first vertex either way).
+fn split_of_an_unknown_segment_is_a_noop() {
     let before = bracket();
-    let last = before.sketch.flattened_loop().len() - 1;
-    let after = before.with_point_inserted(last, SketchPoint::new(4, 5));
-    let coords = after.sketch.flattened_loop();
-    assert_eq!(coords.len(), 5);
     assert_eq!(
-        coords.last().unwrap().offset_voxels,
-        [4, 5],
-        "splitting the closing edge appends the new vertex at the loop's end"
+        before.with_point_on_segment(9999, SketchPoint::new(6, 3)),
+        before,
+        "an unknown segment id changes nothing"
     );
 }
 
 #[test]
-fn delete_removes_the_indexed_vertex_and_cascades_its_segments() {
-    // ADR 0030 §6: deleting a loop vertex removes the POINT and its incident segments — it does
-    // NOT reclose the loop (superseding #95). Deleting flattened index 2 ([6, 5]) drops that
-    // point and its two edges, opening the loop (which then resolves to nothing).
+fn delete_removes_the_point_and_cascades_only_its_segments() {
+    // ADR 0030 §6: deleting the point at [6, 5] removes it and its TWO incident segments — and
+    // nothing else. The two neighbours survive as free points, so the loop opens and resolves to
+    // nothing (flattened_loop is empty for an open graph, never a phantom polygon).
     let before = bracket();
-    let after = before.with_point_removed(2);
-    assert_eq!(after.sketch.points().len(), 3, "the vertex is gone");
+    let victim = point_id_at(&before, [6, 5]);
+    let after = before.with_point_deleted(victim);
+    assert_eq!(after.sketch.points().len(), 3, "exactly one point is removed");
     assert!(
         !after
             .sketch
             .points()
             .iter()
             .any(|p| p.at.offset_voxels == [6, 5]),
-        "the deleted vertex ([6, 5]) is removed"
+        "the deleted point is gone"
     );
     assert_eq!(
         after.sketch.segments().len(),
         2,
-        "its two incident segments cascade away"
+        "only its two incident segments cascade away — the other two remain"
     );
     assert!(
-        after.sketch.flattened_loop().len() < 3,
-        "the loop is open ⇒ resolves to nothing"
+        after.sketch.flattened_loop().is_empty(),
+        "the loop is open ⇒ no closed region ⇒ resolves to nothing"
     );
     assert_eq!(
-        before.with_point_removed(99),
+        before.with_point_deleted(9999),
         before,
-        "an out-of-range index changes nothing"
+        "an unknown point id changes nothing"
     );
 }
 
 #[test]
-fn deleting_down_to_a_lone_point_is_allowed_and_degenerate() {
-    // Deletes never error; a sketch under a closed triangle simply resolves to nothing. Two
-    // cascade-deletes off a triangle leave a single free point and no loop.
+fn deleting_every_point_leaves_an_empty_sketch() {
+    // Deletes never error and never touch an unrelated entity. Deleting all three points of a
+    // triangle one by one leaves nothing, resolving to nothing throughout.
     let triangle = before_triangle();
-    let after = triangle.with_point_removed(0).with_point_removed(0);
-    assert_eq!(after.sketch.points().len(), 1, "two deletes leave one free point");
+    let a = point_id_at(&triangle, [0, 0]);
+    let b = point_id_at(&triangle, [4, 0]);
+    let c = point_id_at(&triangle, [0, 4]);
+    let after = triangle
+        .with_point_deleted(a)
+        .with_point_deleted(b)
+        .with_point_deleted(c);
+    assert_eq!(after.sketch.points().len(), 0, "every point is gone");
+    assert!(after.sketch.segments().is_empty(), "no dangling segment remains");
+    assert!(after.sketch.flattened_loop().is_empty(), "no loop remains");
+    let _ = after.profile_bbox_min(); // well-defined on an empty sketch (no panic)
+}
+
+#[test]
+fn deleting_a_segment_removes_only_the_line() {
+    // ADR 0030: deleting a line removes only that segment; its endpoints survive as free points.
+    let before = bracket();
+    let seg = segment_id_between(&before, [6, 2], [6, 5]);
+    let after = before.with_segment_deleted(seg);
+    assert_eq!(after.sketch.points().len(), 4, "all four points survive as free points");
+    assert_eq!(after.sketch.segments().len(), 3, "only the one line is removed");
     assert!(
-        after.sketch.flattened_loop().len() < 3,
-        "no closed loop remains"
+        after.sketch.flattened_loop().is_empty(),
+        "the loop is open ⇒ resolves to nothing"
     );
-    // A degenerate bbox-minimum is well-defined (no panic).
-    let _ = after.profile_bbox_min();
 }
 
 fn before_triangle() -> SketchSolid {
     let profile = vec![SketchPoint::new(0, 0), SketchPoint::new(4, 0), SketchPoint::new(0, 4)];
     SketchSolid::extrude(Sketch::new(PlaneAxis::Z, profile), 3)
-}
-
-#[test]
-fn anchor_offset_absorbs_a_bbox_min_shift_on_the_in_plane_axes_only() {
-    // Inserting a vertex BELOW the current bbox-minimum (in both in-plane axes) moves the
-    // minimum from [2, 2] to [0, 1]; the compensated offset must shift by exactly that delta on
-    // the plane's in-plane axes (X, Y for PlaneAxis::Z) and never on the normal axis (Z).
-    let before = bracket();
-    let after = before.with_point_inserted(0, SketchPoint::new(0, 1));
-    let offset = after.anchor_preserving_offset(&before, [10, 10, 10]);
-    assert_eq!(
-        offset,
-        [8, 9, 10],
-        "offset shifts by the bbox-min delta [-2, -1] on X, Y; Z (the normal) is untouched"
-    );
 }
 
 #[test]
@@ -174,10 +194,27 @@ fn resolve_tolerates_a_dangling_segment_without_panic() {
 }
 
 #[test]
+fn anchor_offset_absorbs_a_bbox_min_shift_on_the_in_plane_axes_only() {
+    // Splitting an edge with a vertex BELOW the current bbox-minimum (in both in-plane axes)
+    // moves the minimum from [2, 2] to [0, 1]; the compensated offset must shift by exactly that
+    // delta on the plane's in-plane axes (X, Y for PlaneAxis::Z) and never on the normal (Z).
+    let before = bracket();
+    let seg = segment_id_between(&before, [2, 2], [6, 2]);
+    let after = before.with_point_on_segment(seg, SketchPoint::new(0, 1));
+    let offset = after.anchor_preserving_offset(&before, [10, 10, 10]);
+    assert_eq!(
+        offset,
+        [8, 9, 10],
+        "offset shifts by the bbox-min delta [-2, -1] on X, Y; Z (the normal) is untouched"
+    );
+}
+
+#[test]
 fn anchor_offset_is_unchanged_when_the_edit_stays_inside_the_bbox() {
     // A vertex added inside the existing bounds does not move the minimum, so nothing to absorb.
     let before = bracket();
-    let after = before.with_point_inserted(1, SketchPoint::new(4, 3));
+    let seg = segment_id_between(&before, [6, 2], [6, 5]);
+    let after = before.with_point_on_segment(seg, SketchPoint::new(4, 3));
     assert_eq!(
         after.anchor_preserving_offset(&before, [10, 10, 10]),
         [10, 10, 10],

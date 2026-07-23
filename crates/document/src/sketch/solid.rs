@@ -271,20 +271,30 @@ impl SketchSolid {
     /// This producer with `point` inserted just **after** profile index `after`, splitting the
     /// edge `after → after+1` (ADR 0028, #95 add-point). `after` past the profile's end clamps to
     /// the end (an append). Pure — returns a new producer, leaving `self` untouched.
-    pub fn with_point_inserted(&self, after: usize, point: SketchPoint) -> SketchSolid {
+    /// This producer with `point` inserted on the segment `seg_id`, splitting it (ADR 0030
+    /// add-point). The two halves inherit the split segment's `origin`. No-op if `seg_id` is
+    /// unknown. Pure — returns a new producer.
+    pub fn with_point_on_segment(&self, seg_id: EntityId, point: SketchPoint) -> SketchSolid {
         let mut next = self.clone();
-        next.sketch.insert_point_on_loop_edge(after, point);
+        next.sketch.split_segment(seg_id, point);
         next
     }
 
-    /// This producer with the loop vertex at flattened `index` deleted, CASCADING to its
-    /// incident segments (ADR 0030 §6 — deleting a point removes its edges and does NOT
-    /// reclose the loop, superseding #95's loop reclose). Out-of-range is a no-op. Pure —
-    /// returns a new producer. A loop that opens or falls below three vertices simply
-    /// resolves to nothing (the degeneracy is the resolve's to handle, never an error).
-    pub fn with_point_removed(&self, index: usize) -> SketchSolid {
+    /// This producer with the point `point_id` deleted, CASCADING to its incident segments
+    /// (ADR 0030 §6 — deleting a point removes its edges and nothing else; it does NOT reclose
+    /// the loop). No-op if `point_id` is unknown. Pure — returns a new producer. A loop that
+    /// opens (or falls below three vertices) simply resolves to nothing.
+    pub fn with_point_deleted(&self, point_id: EntityId) -> SketchSolid {
         let mut next = self.clone();
-        next.sketch.delete_loop_vertex(index);
+        next.sketch.delete_point_cascade(point_id);
+        next
+    }
+
+    /// This producer with just the segment `seg_id` deleted, its endpoints left as free points
+    /// (ADR 0030 — deleting a line removes only the line). No-op if unknown. Pure.
+    pub fn with_segment_deleted(&self, seg_id: EntityId) -> SketchSolid {
+        let mut next = self.clone();
+        next.sketch.delete_segment(seg_id);
         next
     }
 

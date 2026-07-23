@@ -30,13 +30,20 @@ use substrate::spatial::{LeafPlacement, ProducerLocalVoxelPoint, TrueWorldVoxelP
 /// `view_projection` it uses for everything else.
 #[derive(Debug, Clone)]
 pub struct SketchHandles {
-    /// Each loop vertex's position in the render frame, in flattened-loop order (index
-    /// `i` corresponds to point id [`point_ids`](Self::point_ids)`[i]`).
+    /// EVERY point entity's position in the render frame, in `points()` order (index `i`
+    /// corresponds to point id [`point_ids`](Self::point_ids)`[i]`). All points are shown —
+    /// including free points and the vertices of an open graph — so any entity is selectable,
+    /// not just the ones on a closed loop (ADR 0030).
     pub vertices: Vec<[f32; 3]>,
-    /// The point id of each vertex, in the SAME order as [`vertices`](Self::vertices), so
-    /// a drag / add-point / delete can map a hit index back to the entity it must mutate
-    /// (the entity store has no positional index — ADR 0030).
+    /// The point id of each vertex, in the SAME order as [`vertices`](Self::vertices), so a
+    /// drag / delete can map a hit index back to the stable entity it must mutate (the entity
+    /// store has no positional index — ADR 0030).
     pub point_ids: Vec<EntityId>,
+    /// Each segment entity as `(segment id, from-vertex index, to-vertex index)` — the indices
+    /// point into [`vertices`](Self::vertices)/[`point_ids`](Self::point_ids). The UI draws a
+    /// line per entry and hit-tests add-point against them (splitting the named segment by id).
+    /// A segment with a dangling endpoint is omitted.
+    pub segments: Vec<(EntityId, usize, usize)>,
     /// A point ON the sketch plane in the render frame (the first vertex) — the ray
     /// intersection anchor.
     pub plane_point: [f32; 3],
@@ -85,14 +92,14 @@ impl SketchHandles {
 }
 
 impl Scene {
-    /// The [`SketchHandles`] for the sketch node `node_id` — each profile vertex placed
-    /// into the render frame, plus the inverse cursor-to-profile map (#94 vertex drag).
-    /// `None` when the id is not an enabled `SketchTool` node, or its profile has fewer
-    /// than three vertices (no polygon to handle).
+    /// The [`SketchHandles`] for the sketch node `node_id` — EVERY point entity placed into
+    /// the render frame with its stable id, the segment connectivity, and the inverse
+    /// cursor-to-profile map. `None` when the id is not an enabled `SketchTool` node, or the
+    /// sketch has no points (nothing to handle).
     ///
-    /// Independent of the operation's degeneracy: a profile whose extrude height is still
-    /// `0` (nothing resolves yet) STILL returns handles, so the vertices are draggable
-    /// while the sketch is being authored.
+    /// Independent of the operation's degeneracy AND of whether a closed loop exists: an open
+    /// or not-yet-extruded sketch STILL returns handles, so every vertex stays draggable and
+    /// deletable while the sketch is authored (ADR 0030 — entities, not a loop, are the truth).
     pub fn sketch_handles(
         &self,
         node_id: NodeId,
@@ -105,19 +112,21 @@ impl Scene {
         let NodeContent::SketchTool { producer, .. } = &node.content else {
             return None;
         };
-        let profile = producer.sketch.flattened_loop();
-        let point_ids = producer.sketch.flattened_loop_ids();
-        if profile.len() < 3 {
+        let points = producer.sketch.points();
+        if points.is_empty() {
             return None;
         }
+        let point_ids: Vec<EntityId> = points.iter().map(|point| point.id).collect();
 
-        // The profile's in-plane bounding box (min anchors the corner-anchored frame).
-        let mut min = profile[0].offset_voxels;
+        // The in-plane bounding box over ALL points anchors the overlay frame. For a closed
+        // loop this equals the resolve's `profile_bbox_min`, so the handles sit on the resolved
+        // geometry; for an open graph (which resolves to nothing) it just places every vertex.
+        let mut min = points[0].at.offset_voxels;
         let mut max = min;
-        for point in &profile {
+        for point in points {
             for axis in 0..2 {
-                min[axis] = min[axis].min(point.offset_voxels[axis]);
-                max[axis] = max[axis].max(point.offset_voxels[axis]);
+                min[axis] = min[axis].min(point.at.offset_voxels[axis]);
+                max[axis] = max[axis].max(point.at.offset_voxels[axis]);
             }
         }
 
@@ -158,12 +167,12 @@ impl Scene {
             recentre[2] as f32,
         );
 
-        let vertices: Vec<[f32; 3]> = profile
+        let vertices: Vec<[f32; 3]> = points
             .iter()
             .map(|point| {
                 let mut local = [0.0f32; 3];
-                local[in0] = (point.offset_voxels[0] - min[0]) as f32;
-                local[in1] = (point.offset_voxels[1] - min[1]) as f32;
+                local[in0] = (point.at.offset_voxels[0] - min[0]) as f32;
+                local[in1] = (point.at.offset_voxels[1] - min[1]) as f32;
                 // local[normal] stays 0.0 — the profile lives on the plane.
                 let world = placement
                     .world_of(ProducerLocalVoxelPoint::from_voxels(Vec3::from_array(local)))
@@ -172,12 +181,22 @@ impl Scene {
             })
             .collect();
 
+        // Segment connectivity, mapped to vertex indices; a dangling endpoint drops the segment.
+        let index_of = |id: EntityId| point_ids.iter().position(|&pid| pid == id);
+        let segments: Vec<(EntityId, usize, usize)> = producer
+            .sketch
+            .segments()
+            .iter()
+            .filter_map(|seg| Some((seg.id, index_of(seg.from)?, index_of(seg.to)?)))
+            .collect();
+
         let plane_normal = (node.transform.rotation() * unit_axis(normal)).to_array();
         let plane_point = vertices[0];
 
         Some(SketchHandles {
             vertices,
             point_ids,
+            segments,
             plane_point,
             plane_normal,
             placement,
@@ -290,11 +309,18 @@ mod tests {
     }
 
     #[test]
-    fn degenerate_profile_returns_none() {
-        // A two-point "profile" is not a polygon (fewer than three vertices).
-        let sketch = Sketch::new(PlaneAxis::Z, vec![SketchPoint::new(0, 0), SketchPoint::new(4, 0)]);
-        let (scene, id) = scene_with_sketch(sketch, 3, [0, 0, 0]);
-        assert!(scene.sketch_handles(id, DENSITY).is_none(), "degenerate profile ⇒ None");
+    fn empty_sketch_has_no_handles_but_a_two_point_sketch_does() {
+        // No points ⇒ nothing to handle.
+        let empty = Sketch::empty(PlaneAxis::Z);
+        let (scene, id) = scene_with_sketch(empty, 3, [0, 0, 0]);
+        assert!(scene.sketch_handles(id, DENSITY).is_none(), "an empty sketch has no handles");
+
+        // Two points do not form a closed loop, but every point is still a draggable / deletable
+        // handle (ADR 0030 — entities, not a loop, drive the overlay).
+        let open = Sketch::new(PlaneAxis::Z, vec![SketchPoint::new(0, 0), SketchPoint::new(4, 0)]);
+        let (scene, id) = scene_with_sketch(open, 3, [0, 0, 0]);
+        let handles = scene.sketch_handles(id, DENSITY).expect("two-point sketch shows handles");
+        assert_eq!(handles.vertices.len(), 2, "one handle per point entity");
     }
 
     #[test]

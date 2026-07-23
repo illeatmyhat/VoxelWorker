@@ -779,10 +779,10 @@ impl WindowedState {
         viewport_px: [u32; 4],
     ) -> crate::IntentEffect {
         use crate::IntentEffect;
-        let Some((index, original_min, original_offset)) = self
+        let Some((point_id, original_min, original_offset)) = self
             .sketch_drag
             .as_ref()
-            .map(|drag| (drag.index, drag.original_min, drag.original_offset))
+            .map(|drag| (drag.point_id, drag.original_min, drag.original_offset))
         else {
             return IntentEffect::none();
         };
@@ -819,14 +819,7 @@ impl WindowedState {
             return IntentEffect::none();
         };
         let mut preview = drag.original.clone();
-        // Map the flattened-loop index the grab recorded back to the point ENTITY to mutate
-        // (the store has no positional index — ADR 0030). Topology is fixed during a drag, so
-        // the flattened order — and thus this index — is stable across the gesture.
-        let point_ids = preview.sketch.flattened_loop_ids();
-        let Some(&point_id) = point_ids.get(index) else {
-            self.sketch_drag = None;
-            return IntentEffect::none();
-        };
+        // Mutate the grabbed point ENTITY directly by its stable id (ADR 0030 — no loop index).
         let Some(point) = preview.sketch.point_position_mut(point_id) else {
             self.sketch_drag = None;
             return IntentEffect::none();
@@ -1004,31 +997,36 @@ impl WindowedState {
         nearest.map(|(index, _)| index)
     }
 
-    /// The profile SEGMENT under the cursor (physical px): the index of its START vertex, so an
-    /// insert lands at `start + 1` (ADR 0028 #95). Segments are consecutive `Some` pairs in the
-    /// profile-order [`sketch_vertex_px`](Self::sketch_vertex_px) cache, closing the loop
-    /// (`last → first`); the nearest within the pad wins. `None` when no edge is close enough or
-    /// an endpoint is culled behind the camera.
-    fn sketch_segment_at(&self, cursor_x: f64, cursor_y: f64) -> Option<usize> {
-        let count = self.sketch_vertex_px.len();
-        if count < 2 {
-            return None;
-        }
+    /// The sketch SEGMENT under the cursor (physical px) as `(segment id, endpoint a px,
+    /// endpoint b px)`, the nearest within the grab pad — iterated over the actual segment
+    /// ENTITIES (ADR 0030), not consecutive vertices, so it is correct for an open or
+    /// multi-loop graph. `None` when no edge is close enough or an endpoint is culled.
+    fn nearest_sketch_segment(
+        &self,
+        cursor_x: f64,
+        cursor_y: f64,
+    ) -> Option<(document::sketch::EntityId, egui::Pos2, egui::Pos2)> {
         let pad_px = crate::signal_chrome::SKETCH_SEGMENT_GRAB_PAD * self.window.scale_factor() as f32;
         let cursor = egui::Pos2::new(cursor_x as f32, cursor_y as f32);
-        let mut nearest: Option<(usize, f32)> = None;
-        for start in 0..count {
-            let (Some(a), Some(b)) =
-                (self.sketch_vertex_px[start], self.sketch_vertex_px[(start + 1) % count])
+        let mut nearest: Option<(document::sketch::EntityId, egui::Pos2, egui::Pos2, f32)> = None;
+        for &(seg_id, a_idx, b_idx) in &self.sketch_segments {
+            let (Some(&Some(a)), Some(&Some(b))) =
+                (self.sketch_vertex_px.get(a_idx), self.sketch_vertex_px.get(b_idx))
             else {
                 continue;
             };
             let distance = point_to_segment_distance(cursor, a, b);
-            if distance <= pad_px && nearest.map(|(_, best)| distance < best).unwrap_or(true) {
-                nearest = Some((start, distance));
+            if distance <= pad_px && nearest.map(|(_, _, _, best)| distance < best).unwrap_or(true) {
+                nearest = Some((seg_id, a, b, distance));
             }
         }
-        nearest.map(|(start, _)| start)
+        nearest.map(|(seg_id, a, b, _)| (seg_id, a, b))
+    }
+
+    /// The id of the sketch SEGMENT under the cursor (physical px), for add-point — the click
+    /// splits the named segment (ADR 0030). `None` when no edge is close enough.
+    fn sketch_segment_at(&self, cursor_x: f64, cursor_y: f64) -> Option<document::sketch::EntityId> {
+        self.nearest_sketch_segment(cursor_x, cursor_y).map(|(seg_id, _, _)| seg_id)
     }
 
     /// ADR 0028 (#95): the add-point producer for a click at the cursor (physical px) — the
@@ -1042,7 +1040,7 @@ impl WindowedState {
         cursor_y: f64,
     ) -> Option<document::sketch::SketchSolid> {
         let target = self.panel_state.sketch_mode?;
-        let start = self.sketch_segment_at(cursor_x, cursor_y)?;
+        let seg_id = self.sketch_segment_at(cursor_x, cursor_y)?;
         let handles = self
             .panel_state
             .scene
@@ -1055,28 +1053,33 @@ impl WindowedState {
             &handles,
         )?;
         let (producer, _) = self.sketch_node_state(target)?;
-        // Insert AFTER the segment's start vertex, so the new point splits `start → start+1`.
+        // Split the segment under the cursor with a grid-snapped point (ADR 0030).
         let point = document::sketch::SketchPoint::new(coord[0].round() as i64, coord[1].round() as i64);
-        Some(producer.with_point_inserted(start, point))
+        Some(producer.with_point_on_segment(seg_id, point))
     }
 
-    /// ADR 0028 (#95): the delete producer for a click at the cursor (physical px) — the current
-    /// sketch with the vertex under the cursor removed. `None` when no vertex is under the cursor
-    /// or `target` is not an enabled sketch node. A profile that falls below three vertices is
-    /// still returned (it resolves to nothing, by AC) rather than blocked. The caller routes the
-    /// returned producer through [`commit_sketch_profile_edit`](Self::commit_sketch_profile_edit).
+    /// ADR 0030: the delete producer for a click at the cursor (physical px). A POINT under the
+    /// cursor is deleted, cascading its incident segments (delete a point → remove its edges and
+    /// nothing else); otherwise a SEGMENT under the cursor is deleted on its own, its endpoints
+    /// left as free points (delete a line → remove only the line). `None` when neither is under
+    /// the cursor or `target` is not an enabled sketch node. The caller routes the returned
+    /// producer through [`commit_sketch_profile_edit`](Self::commit_sketch_profile_edit).
     pub(super) fn sketch_delete_at(
         &self,
         cursor_x: f64,
         cursor_y: f64,
     ) -> Option<document::sketch::SketchSolid> {
         let target = self.panel_state.sketch_mode?;
-        let index = self.sketch_vertex_at(cursor_x, cursor_y)?;
         let (producer, _) = self.sketch_node_state(target)?;
-        if index >= producer.sketch.flattened_loop().len() {
-            return None;
+        // Prefer a vertex hit (delete the point + its segments); fall back to a segment hit
+        // (delete just that line). ADR 0030 — delete any entity, the clicked one only.
+        if let Some(index) = self.sketch_vertex_at(cursor_x, cursor_y) {
+            if let Some(&point_id) = self.sketch_point_ids.get(index) {
+                return Some(producer.with_point_deleted(point_id));
+            }
         }
-        Some(producer.with_point_removed(index))
+        let seg_id = self.sketch_segment_at(cursor_x, cursor_y)?;
+        Some(producer.with_segment_deleted(seg_id))
     }
 
     /// ADR 0028 (#95): queue an add/delete profile edit as ONE entry in the open sketch undo
@@ -1120,12 +1123,13 @@ impl WindowedState {
     pub(super) fn begin_sketch_vertex_drag(&self, cursor_x: f64, cursor_y: f64) -> Option<SketchVertexDrag> {
         let target = self.panel_state.sketch_mode?;
         let index = self.sketch_vertex_at(cursor_x, cursor_y)?;
+        let point_id = *self.sketch_point_ids.get(index)?;
         let node = self.panel_state.scene.node_by_id(target)?;
         let document::scene::NodeContent::SketchTool { producer, .. } = &node.content else {
             return None;
         };
         Some(SketchVertexDrag {
-            index,
+            point_id,
             original: producer.clone(),
             original_offset: node.transform.offset_voxels,
             original_min: Self::profile_bbox_min(producer),
@@ -1147,6 +1151,8 @@ impl WindowedState {
     ) {
         self.sketch_overlay_points.clear();
         self.sketch_vertex_px.clear();
+        self.sketch_point_ids.clear();
+        self.sketch_segments.clear();
         self.sketch_insert_preview = None;
 
         let Some(target) = self.panel_state.sketch_mode else {
@@ -1162,7 +1168,7 @@ impl WindowedState {
 
         let tool = self.panel_state.sketch_tool;
         let [vx, vy, vw, vh] = viewport_px.map(|component| component as f32);
-        let dragging = self.sketch_drag.as_ref().map(|drag| drag.index);
+        let dragging_point = self.sketch_drag.as_ref().map(|drag| drag.point_id);
         // A forgiving grab radius (physical px) so a hover reads as "draggable" near the thumb.
         let hover_radius_px =
             (crate::signal_chrome::SKETCH_HANDLE_HALF + crate::signal_chrome::SKETCH_HANDLE_GRAB_PAD)
@@ -1188,7 +1194,7 @@ impl WindowedState {
                 .unwrap_or(false);
             // Delete tool + hover = the destructive Marked state (warn ✕); otherwise the
             // #94 idle / hover / dragged progression.
-            let state = if dragging == Some(index) {
+            let state = if dragging_point == handles.point_ids.get(index).copied() {
                 ui::gizmos::HandleState::Snapped
             } else if hovered && tool == ui::panel::SketchTool::Delete {
                 ui::gizmos::HandleState::Marked
@@ -1203,20 +1209,21 @@ impl WindowedState {
             self.sketch_vertex_px.push(Some(center_px));
         }
 
+        // The stable point id + segment connectivity for THIS frame, aligned with
+        // `sketch_vertex_px` — the press hit-tests (in `events`) read these to resolve a click to
+        // the entity it targets (ADR 0030).
+        self.sketch_point_ids = handles.point_ids.clone();
+        self.sketch_segments = handles.segments.clone();
+
         // Add-point insert preview: the point on the hovered segment nearest the cursor (physical
         // px), in egui points — "a vertex lands here on this edge". Drawn as a diamond next frame.
         if tool == ui::panel::SketchTool::AddPoint {
             if let Some((cursor_x, cursor_y)) = self.last_cursor_position {
-                if let Some(start) = self.sketch_segment_at(cursor_x, cursor_y) {
-                    let count = self.sketch_vertex_px.len();
-                    if let (Some(a), Some(b)) =
-                        (self.sketch_vertex_px[start], self.sketch_vertex_px[(start + 1) % count])
-                    {
-                        let cursor = egui::Pos2::new(cursor_x as f32, cursor_y as f32);
-                        let foot = closest_point_on_segment(cursor, a, b);
-                        self.sketch_insert_preview =
-                            Some(egui::Pos2::new(foot.x / pixels_per_point, foot.y / pixels_per_point));
-                    }
+                if let Some((_, a, b)) = self.nearest_sketch_segment(cursor_x, cursor_y) {
+                    let cursor = egui::Pos2::new(cursor_x as f32, cursor_y as f32);
+                    let foot = closest_point_on_segment(cursor, a, b);
+                    self.sketch_insert_preview =
+                        Some(egui::Pos2::new(foot.x / pixels_per_point, foot.y / pixels_per_point));
                 }
             }
         }

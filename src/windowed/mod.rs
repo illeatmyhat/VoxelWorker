@@ -281,6 +281,14 @@ struct WindowedState {
     /// in profile order — rather than the old index-paired flat list — precisely because
     /// segments need adjacency, which a culled-and-compacted list loses.
     sketch_vertex_px: Vec<Option<egui::Pos2>>,
+    /// The stable point id for each entry in [`sketch_vertex_px`](Self::sketch_vertex_px), in
+    /// the SAME order — maps an overlay hit index to the entity to drag or delete (the store has
+    /// no positional index, ADR 0030).
+    sketch_point_ids: Vec<document::sketch::EntityId>,
+    /// Each segment as `(segment id, from index, to index)` into
+    /// [`sketch_vertex_px`](Self::sketch_vertex_px) — the add-point hit-test splits the named
+    /// segment by id, and the overlay draws a line per entry (ADR 0030, not consecutive pairs).
+    sketch_segments: Vec<(document::sketch::EntityId, usize, usize)>,
     /// The add-point tool's insert-preview marker for THIS frame (egui points): where a click
     /// would drop a vertex on the hovered segment (the foot of the perpendicular from the
     /// cursor), or `None` when the add-point tool is idle / no segment is under the cursor.
@@ -303,11 +311,12 @@ struct WindowedState {
     sketch_drag: Option<SketchVertexDrag>,
 }
 
-/// An in-progress sketch profile-vertex drag (ADR 0028, #94).
+/// An in-progress sketch point-vertex drag (ADR 0028 #94, id-based per ADR 0030).
 #[derive(Debug, Clone)]
 struct SketchVertexDrag {
-    /// Which loop vertex (index into the sketch's flattened loop) is being dragged.
-    index: usize,
+    /// The stable id of the point entity being dragged — NOT a loop index, which is invalid
+    /// once the graph opens (ADR 0030).
+    point_id: document::sketch::EntityId,
     /// The sketch producer as it stood when the vertex was grabbed — the base every preview
     /// moves the dragged vertex on (a fresh clone), so successive frames never compound, and
     /// the RESTORE-before-commit reverts to exactly this.
@@ -604,6 +613,8 @@ impl WindowedState {
             viewport_intents: Vec::new(),
             sketch_overlay_points: Vec::new(),
             sketch_vertex_px: Vec::new(),
+            sketch_point_ids: Vec::new(),
+            sketch_segments: Vec::new(),
             sketch_insert_preview: None,
             last_view_projection: None,
             sketch_edit_press: false,

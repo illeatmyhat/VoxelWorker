@@ -307,24 +307,28 @@ impl Sketch {
         let mut order = vec![start];
         let mut previous = None;
         let mut current = start;
-        // A simple loop has one unvisited neighbour per step; cap the walk at the point
-        // count so a malformed graph cannot spin forever.
+        let mut closed = false;
+        // Follow the graph, never stepping back the way we came. A simple loop returns to
+        // `start`; an OPEN path dead-ends (no forward neighbour). Cap the walk at the point
+        // count so a malformed graph cannot spin forever. Only a walk that actually returns
+        // to `start` is a closed region — an open graph yields NO loop (empty), so the resolve
+        // produces nothing rather than an arbitrarily-closed phantom polygon.
         for _ in 0..self.points.len() {
-            let ns = neighbours(current);
-            let next = ns
-                .iter()
-                .copied()
-                .find(|&n| Some(n) != previous)
-                .or_else(|| ns.first().copied());
-            let Some(next) = next else { break };
+            let next = neighbours(current).into_iter().find(|&n| Some(n) != previous);
+            let Some(next) = next else { break }; // dead end ⇒ open path, no closed loop
             if next == start {
+                closed = true;
                 break;
             }
             order.push(next);
             previous = Some(current);
             current = next;
         }
-        order
+        if closed {
+            order
+        } else {
+            Vec::new()
+        }
     }
 
     /// The DERIVED flattened profile: the closed loop's vertices in traversal order (ADR
@@ -350,51 +354,45 @@ impl Sketch {
         self.point_index(id).map(|i| &mut self.points[i].at)
     }
 
-    /// Split the loop edge between flattened positions `after` and `after + 1` by
-    /// inserting a new point `at` on it (ADR 0030 add-point, #95's insert generalized).
-    /// The split segment keeps its id for the first half and its `origin` is inherited by
-    /// the new second half, so the bounding face's origin-set is unchanged. `after` past
-    /// the loop end appends onto the last→first closing edge. A no-op on an empty loop.
-    fn insert_point_on_loop_edge(&mut self, after: usize, at: SketchPoint) {
-        let order = self.loop_order();
-        if order.is_empty() {
-            // No loop yet: just add the point as a free vertex.
-            self.add_point(at);
-            return;
-        }
-        let a = order[after.min(order.len() - 1)];
-        let b = order[(after + 1) % order.len()];
-        let new_id = self.add_point(at);
-        // Find the segment joining a and b (either direction) and split it.
-        if let Some(seg_index) = self.segments.iter().position(|seg| {
-            (seg.from == a && seg.to == b) || (seg.from == b && seg.to == a)
-        }) {
-            let origin = self.segments[seg_index].origin;
-            let old_to = self.segments[seg_index].to;
-            // First half keeps the id: `... → new`. Second half inherits the origin.
-            self.segments[seg_index].to = new_id;
-            let id = self.alloc_id();
-            self.segments.push(Segment { id, from: new_id, to: old_to, origin, role: EntityRole::Real });
-        } else {
-            // a and b are not directly joined (an open authoring state): connect a → new.
-            self.add_segment(a, new_id);
-        }
-    }
-
-    /// Delete the loop vertex at flattened position `index`, CASCADING to its incident
-    /// segments (ADR 0030 §6 — deleting a point removes its edges; it does NOT reclose the
-    /// loop, superseding #95's loop-specific reclose). Out-of-range is a no-op.
-    fn delete_loop_vertex(&mut self, index: usize) {
-        let order = self.loop_order();
-        let Some(&id) = order.get(index) else { return };
-        self.delete_point_cascade(id);
-    }
-
     /// Delete a point by id and every segment incident to it (ADR 0030 §6). Segments'
     /// other endpoints survive as free points. No dangling reference can result.
     pub fn delete_point_cascade(&mut self, id: EntityId) {
         self.segments.retain(|seg| seg.from != id && seg.to != id);
         self.points.retain(|point| point.id != id);
+    }
+
+    /// Delete just the segment with id `seg_id` (ADR 0030 — deleting a line removes only the
+    /// line). Its endpoint points survive as free points. No-op if `seg_id` is unknown.
+    pub fn delete_segment(&mut self, seg_id: EntityId) {
+        self.segments.retain(|seg| seg.id != seg_id);
+    }
+
+    /// Split the segment with id `seg_id` by inserting a new point `at` on it (ADR 0030
+    /// add-point). The first half keeps the segment's id; the new second half inherits its
+    /// `origin`, so a bounding face's origin-set is unchanged. No-op if `seg_id` is unknown.
+    pub fn split_segment(&mut self, seg_id: EntityId, at: SketchPoint) {
+        let Some(index) = self.segments.iter().position(|seg| seg.id == seg_id) else {
+            return;
+        };
+        let new_point = self.add_point(at);
+        let origin = self.segments[index].origin;
+        let old_to = self.segments[index].to;
+        self.segments[index].to = new_point;
+        let id = self.alloc_id();
+        self.segments.push(Segment { id, from: new_point, to: old_to, origin, role: EntityRole::Real });
+    }
+
+    /// The in-plane bbox-minimum over ALL point entities (per coordinate), `[0, 0]` when the
+    /// sketch is empty. Unlike [`profile_bbox_min`](SketchSolid::profile_bbox_min) — the loop's
+    /// bbox, which the resolve anchors — this covers every point (including free points and the
+    /// vertices of an open graph), so the interactive overlay can place a handle on each.
+    pub fn points_bbox_min(&self) -> [i64; 2] {
+        let mut min = self.points.first().map(|point| point.at.offset_voxels).unwrap_or([0, 0]);
+        for point in &self.points {
+            min[0] = min[0].min(point.at.offset_voxels[0]);
+            min[1] = min[1].min(point.at.offset_voxels[1]);
+        }
+        min
     }
 
     /// Erase every structurally-invalid segment — one that references a point id not in the
