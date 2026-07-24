@@ -124,19 +124,18 @@ impl OrbitCamera {
         )
     }
 
-    /// A view-projection for a screen-stable gizmo at `anchor` whose near/far bracket the
-    /// gizmo itself. Zoomed far out, a screen-stable gizmo's *world* size grows with depth, so
-    /// the scene's own tight near/far window (sized to the model) would clip its axes — this
-    /// keeps the same eye and frustum but widens the depth range to `anchor ± size`. Meant for a
-    /// depth-test-OFF overlay pass, where its private depth range disturbs nothing else.
-    pub fn screen_stable_view_projection(
-        &self,
-        aspect_ratio: f32,
-        anchor: glam::Vec3,
-        screen_fraction: f32,
-    ) -> glam::Mat4 {
-        // Axis tips sit one `size` from the anchor; a margin covers the diagonal + slack.
-        let radius = self.screen_stable_size(anchor, screen_fraction) * 1.3;
+    /// A view-projection for a **depth-test-OFF overlay** anchored in the scene (the manipulator
+    /// gizmos, any other constant-size 3D widget): the main camera's eye and frustum, but with a
+    /// deliberately generous near/far bracketing one full viewport height of world space around
+    /// `anchor`. Anything that fits on screen fits inside that, at any zoom and in both
+    /// projections, so the overlay is never clipped by the scene's own tight depth range (which
+    /// is sized to the model, and far out is much smaller than a screen-stable widget). Like the
+    /// view cube's projection, the depth range is chosen to not matter — the overlay writes no
+    /// depth — rather than tuned to the geometry.
+    pub fn overlay_view_projection(&self, aspect_ratio: f32, anchor: glam::Vec3) -> glam::Mat4 {
+        let forward = -self.direction();
+        let depth = (anchor - self.eye()).dot(forward);
+        let radius = self.view_extent_at_depth(depth).max(1.0);
         self.view_projection(aspect_ratio, anchor, radius)
     }
 
@@ -291,10 +290,10 @@ mod tests {
 
     /// The regression for the far-zoom cut-off: at a large orbit distance a screen-stable gizmo
     /// is big in world units, so its axis tip falls OUTSIDE the scene's tight near/far window —
-    /// [`screen_stable_view_projection`](OrbitCamera::screen_stable_view_projection) widens the
-    /// depth range to keep it whole.
+    /// [`overlay_view_projection`](OrbitCamera::overlay_view_projection) brackets a full viewport
+    /// height around the anchor, generously keeping it whole.
     #[test]
-    fn the_gizmo_projection_keeps_a_far_zoomed_gizmo_off_the_clip_planes() {
+    fn the_overlay_projection_keeps_a_far_zoomed_gizmo_off_the_clip_planes() {
         const FRACTION: f32 = 0.16;
         let anchor = glam::Vec3::ZERO;
         for mode in [ProjectionMode::Perspective, ProjectionMode::Orthographic] {
@@ -304,9 +303,9 @@ mod tests {
             // The scene's own matrix, sized to a small (~5-block) model, clips the tip.
             let scene_vp = probe.view_projection(1.6, anchor, 45.0);
             assert!(!within_depth(scene_vp, axis_tip), "{mode:?}: scene matrix should clip the tip");
-            // The gizmo's own matrix brackets it.
-            let gizmo_vp = probe.screen_stable_view_projection(1.6, anchor, FRACTION);
-            assert!(within_depth(gizmo_vp, axis_tip), "{mode:?}: gizmo matrix must keep the tip");
+            // The overlay matrix brackets it with room to spare.
+            let overlay_vp = probe.overlay_view_projection(1.6, anchor);
+            assert!(within_depth(overlay_vp, axis_tip), "{mode:?}: overlay matrix must keep the tip");
         }
     }
 }

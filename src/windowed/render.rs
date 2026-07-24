@@ -532,12 +532,12 @@ impl WindowedState {
             let pivot = glam::Vec3::from_array(pivot);
             let fraction = display::renderer::GIZMO_SCREEN_FRACTION;
             let model = self.app_core.camera.screen_stable_model(pivot, fraction);
-            // The gizmo gets its OWN near/far (its world size grows with zoom, so the scene's
-            // tight window would clip it); it draws depth-OFF, so this disturbs nothing else.
-            let gizmo_vp =
-                self.app_core
-                    .camera
-                    .screen_stable_view_projection(aspect_ratio, pivot, fraction);
+            // The gizmo draws depth-OFF with a generous overlay near/far (the scene's tight
+            // window, sized to the model, would clip the screen-stable gizmo when zoomed far).
+            let gizmo_vp = self
+                .app_core
+                .camera
+                .overlay_view_projection(aspect_ratio, pivot);
             self.transform_gizmo_renderer
                 .update_uniforms(&self.gpu.queue, gizmo_vp, model);
         }
