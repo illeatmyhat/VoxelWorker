@@ -528,19 +528,13 @@ impl WindowedState {
             &self.panel_state.scene,
             self.panel_state.geometry.voxels_per_block,
         );
-        if let Some((pivot, extent)) = gizmo_placement {
-            let extent_dims = [
-                extent[0].round().max(0.0) as u32,
-                extent[1].round().max(0.0) as u32,
-                extent[2].round().max(0.0) as u32,
-            ];
-            self.transform_gizmo_renderer
-                .rebuild(&self.gpu.device, &self.gpu.queue, extent_dims);
-            self.transform_gizmo_renderer.update_uniforms(
-                &self.gpu.queue,
-                view_projection,
+        if let Some((pivot, _extent)) = gizmo_placement {
+            let model = self.app_core.camera.screen_stable_model(
                 glam::Vec3::from_array(pivot),
+                display::renderer::GIZMO_SCREEN_FRACTION,
             );
+            self.transform_gizmo_renderer
+                .update_uniforms(&self.gpu.queue, view_projection, model);
         }
         // Per-object block lattice + floor grid (issue #29 S3): rebuild this frame's
         // line batch from the scene — for every node whose grids are enabled (the

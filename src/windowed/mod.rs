@@ -506,10 +506,10 @@ impl WindowedState {
             startup_density,
             panel_state.debug_face_orientation,
         );
-        // The transform gizmo (issue #29 S2) is rebuilt/positioned to the SELECTED
-        // node each frame; seed it at the region size (overwritten on first frame).
+        // The transform gizmo (issue #29 S2) is a unit gizmo positioned + screen-stable-sized
+        // to the SELECTED node each frame via its model matrix (no per-frame geometry rebuild).
         let transform_gizmo_renderer =
-            TransformGizmoRenderer::new(&gpu.device, COLOR_TARGET_FORMAT, region_dimensions);
+            TransformGizmoRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
         // The boolean-operand ghost (ADR 0018 Decision 6): built empty; the first render
         // frame derives it for the loaded scene's selection when the view mode is
         // Show-booleans (`selected_ghost_dirty` below).

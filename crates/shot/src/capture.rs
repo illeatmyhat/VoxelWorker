@@ -759,25 +759,15 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     }
 
     // Transform gizmo (issue #29 S2): when `--gizmo` is passed, place it ON the
-    // active/selected node — sized to the node's own extent, positioned at its
-    // recentred pivot. `None` (no selection / no extent) keeps `--gizmo` a no-op,
-    // and the goldens (which never pass `--gizmo`) are unaffected.
+    // active/selected node at its recentred pivot, screen-stable-sized via the model
+    // matrix below. `None` (no selection / no extent) keeps `--gizmo` a no-op, and the
+    // goldens (which never pass `--gizmo`) are unaffected.
     let gizmo_placement = if options.show_origin_gizmo {
         AppCore::gizmo_placement(&panel_state.scene, options.geometry.voxels_per_block)
     } else {
         None
     };
-    let gizmo_extent_dims = gizmo_placement
-        .map(|(_, extent)| {
-            [
-                extent[0].round().max(0.0) as u32,
-                extent[1].round().max(0.0) as u32,
-                extent[2].round().max(0.0) as u32,
-            ]
-        })
-        .unwrap_or(region_dimensions);
-    let transform_gizmo_renderer =
-        TransformGizmoRenderer::new(&gpu.device, COLOR_TARGET_FORMAT, gizmo_extent_dims);
+    let transform_gizmo_renderer = TransformGizmoRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
     // Per-object block lattice + floor grid (issue #29 S3): its line batch is built
     // from the scene's grid-enabled nodes below (after the camera is known).
     let mut scene_grid_renderer = SceneGridRenderer::new(&gpu.device, COLOR_TARGET_FORMAT);
@@ -1073,7 +1063,10 @@ pub(crate) async fn run_capture(options: ShotOptions) {
     let gizmo_pivot = gizmo_placement
         .map(|(pivot, _)| glam::Vec3::from_array(pivot))
         .unwrap_or(glam::Vec3::ZERO);
-    transform_gizmo_renderer.update_uniforms(&gpu.queue, view_projection, gizmo_pivot);
+    let gizmo_model = app_core
+        .camera
+        .screen_stable_model(gizmo_pivot, display::renderer::GIZMO_SCREEN_FRACTION);
+    transform_gizmo_renderer.update_uniforms(&gpu.queue, view_projection, gizmo_model);
     // Build this capture's per-object grid batch from the scene's grid-enabled nodes
     // (issue #29 S3), then upload the camera matrix.
     scene_grid_renderer.rebuild_from_scene(

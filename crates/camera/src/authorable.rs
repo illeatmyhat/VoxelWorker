@@ -101,6 +101,29 @@ impl OrbitCamera {
         self.view_extent_at_depth(self.orbit_distance)
     }
 
+    /// The world length that occupies a fixed `screen_fraction` of the viewport height when
+    /// placed at `anchor` — the size a screen-stable manipulator (the transform gizmos) must
+    /// use so it holds constant on screen through any zoom. Perspective scales it by the
+    /// depth-to-anchor; orthographic ignores depth, its extent already tracking `orbit_distance`.
+    pub fn screen_stable_size(&self, anchor: glam::Vec3, screen_fraction: f32) -> f32 {
+        let forward = -self.direction();
+        let depth = (anchor - self.eye()).dot(forward);
+        screen_fraction * self.view_extent_at_depth(depth)
+    }
+
+    /// The model matrix that seats a **unit-space** manipulator gizmo at `anchor` and sizes it
+    /// to [`screen_stable_size`](Self::screen_stable_size): `translate(anchor) · scale(size)`.
+    /// Left-multiply by the view-projection to draw any screen-stable gizmo; a gizmo that also
+    /// carries an orientation composes its own rotation onto this.
+    pub fn screen_stable_model(&self, anchor: glam::Vec3, screen_fraction: f32) -> glam::Mat4 {
+        let size = self.screen_stable_size(anchor, screen_fraction);
+        glam::Mat4::from_scale_rotation_translation(
+            glam::Vec3::splat(size),
+            glam::Quat::IDENTITY,
+            anchor,
+        )
+    }
+
     /// The farthest `orbit_distance` at which a block of `block_size` world units still spans
     /// [`MIN_BLOCK_SCREEN_FRACTION`] of the viewport — i.e. is still worth authoring against.
     ///
@@ -221,5 +244,25 @@ mod tests {
         let doubled = probe.authorable_distance_limit(BLOCK * 2.0);
         assert!((doubled - small * 2.0).abs() < 1e-2, "{doubled} should be twice {small}");
         assert_eq!(probe.authorable_distance_limit(0.0), 0.0, "a zero-size block is never authorable");
+    }
+
+    /// The whole point of a screen-stable gizmo: its apparent size (world size ÷ view extent at
+    /// its depth) is the requested fraction at *every* zoom, in both projections. A gizmo sized
+    /// in world units instead would fail this — it would grow as you zoom in.
+    #[test]
+    fn a_screen_stable_size_holds_its_fraction_across_zoom() {
+        const FRACTION: f32 = 0.15;
+        let anchor = glam::Vec3::ZERO; // the default target, so depth == orbit_distance
+        for mode in [ProjectionMode::Perspective, ProjectionMode::Orthographic] {
+            for orbit_distance in [5.0, 50.0, 500.0] {
+                let probe = camera(mode, orbit_distance);
+                let size = probe.screen_stable_size(anchor, FRACTION);
+                let apparent = size / probe.view_extent_at_depth(orbit_distance);
+                assert!(
+                    (apparent - FRACTION).abs() < 1e-4,
+                    "{mode:?} at distance {orbit_distance}: apparent {apparent}, expected {FRACTION}"
+                );
+            }
+        }
     }
 }

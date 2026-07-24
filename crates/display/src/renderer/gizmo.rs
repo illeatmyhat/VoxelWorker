@@ -11,37 +11,39 @@ pub(crate) const GIZMO_AXIS_Z_HEX: u32 = 0x5a_8c_ff;
 /// Right-angle square colour `#bdb39a`.
 const GIZMO_SQUARE_HEX: u32 = 0xbd_b3_9a;
 
+/// The fraction of the viewport height a manipulator gizmo's axis spans — the one place the
+/// screen-stable size of the transform gizmos (and every future W/E/R manipulator) is set.
+/// Fed to [`OrbitCamera::screen_stable_model`](camera::OrbitCamera::screen_stable_model).
+pub const GIZMO_SCREEN_FRACTION: f32 = 0.16;
+
 /// The transform gizmo (issue #29 S2): three coloured axis lines and three
 /// perpendicular square line-loops, drawn with **depth-test disabled** so it
-/// shows through a solid model (correct manipulator behavior). Drawn in the MSAA pass, after the voxels. Unlike the old origin gizmo it
-/// FOLLOWS the selected node: its pivot translation is baked into the uploaded
-/// view-projection (`view_projection · translate(pivot)`) so it sits ON the
-/// object, and it is sized from the selected node's own extent. The axis-triad
-/// geometry is kept for now; full TRS handles are future work.
+/// shows through a solid model (correct manipulator behavior). Drawn in the MSAA
+/// pass, after the voxels. The geometry is a fixed **unit** gizmo; it FOLLOWS the
+/// selected node and holds a **fixed screen size** at any zoom, because the caller
+/// bakes `translate(pivot) · scale(screen_stable_size)` into the model matrix
+/// passed to [`update_uniforms`](Self::update_uniforms) (see
+/// [`OrbitCamera::screen_stable_model`](camera::OrbitCamera::screen_stable_model)).
+/// The axis-triad geometry is kept for now; full TRS handles are future work.
 pub struct TransformGizmoRenderer {
     pipeline: wgpu::RenderPipeline,
     vertex_buffer: wgpu::Buffer,
     vertex_count: u32,
-    vertex_capacity: u32,
     uniform_buffer: wgpu::Buffer,
     uniform_bind_group: wgpu::BindGroup,
 }
 
 impl TransformGizmoRenderer {
-    /// Create the transform gizmo renderer for a colour target format.
-    /// `grid_dimensions` sizes the gizmo (`L = max(dims) * 0.62`); the caller
-    /// rebuilds it to the SELECTED node's extent each frame.
-    pub fn new(
-        device: &wgpu::Device,
-        color_format: wgpu::TextureFormat,
-        grid_dimensions: [u32; 3],
-    ) -> Self {
-        let vertices = gizmo_vertices(grid_dimensions);
+    /// Create the transform gizmo renderer for a colour target format. The geometry is a
+    /// **unit** gizmo (unit axis length); its on-screen size is set per-frame by the `scale`
+    /// [`update_uniforms`](Self::update_uniforms) bakes into the model matrix, so the gizmo
+    /// holds a fixed screen size at any zoom.
+    pub fn new(device: &wgpu::Device, color_format: wgpu::TextureFormat) -> Self {
+        let vertices = gizmo_vertices();
         let vertex_count = vertices.len() as u32;
-        let vertex_capacity = vertex_count.max(1);
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("gizmo line vertices"),
-            contents: bytemuck::cast_slice(&pad_lines(vertices, vertex_capacity)),
+            contents: bytemuck::cast_slice(&vertices),
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         });
 
@@ -68,43 +70,23 @@ impl TransformGizmoRenderer {
             pipeline,
             vertex_buffer,
             vertex_count,
-            vertex_capacity,
             uniform_buffer,
             uniform_bind_group,
         }
     }
 
-    /// Resize the gizmo to a freshly-resolved grid (matches the voxel rebuild).
-    pub fn rebuild(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, grid_dimensions: [u32; 3]) {
-        let vertices = gizmo_vertices(grid_dimensions);
-        let vertex_count = vertices.len() as u32;
-        if vertex_count <= self.vertex_capacity {
-            if vertex_count > 0 {
-                queue.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&vertices));
-            }
-        } else {
-            self.vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("gizmo line vertices"),
-                contents: bytemuck::cast_slice(&vertices),
-                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            });
-            self.vertex_capacity = vertex_count;
-        }
-        self.vertex_count = vertex_count;
-    }
-
-    /// Upload the camera matrix with the selected node's `pivot` translation baked
-    /// in (issue #29 S2): the shader does `view_projection · position`, so feeding
-    /// `view_projection · translate(pivot)` here moves the whole gizmo onto the
-    /// selected node WITHOUT touching the shared `LineUniforms` layout. `pivot` is
-    /// in the SAME recentred frame as the voxels, so the gizmo sits on the object.
+    /// Upload the camera matrix with the gizmo's `model` baked in: the shader does
+    /// `view_projection · position`, so feeding `view_projection · model` here places and
+    /// sizes the unit gizmo WITHOUT touching the shared `LineUniforms` layout. `model` is the
+    /// screen-stable `translate(pivot) · scale(size)` the caller builds from
+    /// [`OrbitCamera::screen_stable_model`](camera::OrbitCamera::screen_stable_model); `pivot`
+    /// is in the SAME recentred frame as the voxels, so the gizmo sits on the object.
     pub fn update_uniforms(
         &self,
         queue: &wgpu::Queue,
         view_projection: glam::Mat4,
-        pivot: glam::Vec3,
+        model: glam::Mat4,
     ) {
-        let model = glam::Mat4::from_translation(pivot);
         let uniforms = LineUniforms {
             view_projection: (view_projection * model).to_cols_array_2d(),
             depth_bias: [0.0; 4],
@@ -124,12 +106,11 @@ impl TransformGizmoRenderer {
     }
 }
 
-/// Build the gizmo line vertices (axes + perpendicular squares), in world space.
-fn gizmo_vertices(grid_dimensions: [u32; 3]) -> Vec<LineVertex> {
-    let longest = grid_dimensions[0]
-        .max(grid_dimensions[1])
-        .max(grid_dimensions[2]) as f32;
-    let axis_length = (longest * 0.62).max(1.0);
+/// Build the gizmo line vertices (axes + perpendicular squares) in **unit** space: the axes
+/// run one unit from the origin, and the caller's model matrix scales the whole gizmo to a
+/// screen-stable world size.
+fn gizmo_vertices() -> Vec<LineVertex> {
+    let axis_length = 1.0;
     let square_side = axis_length * 0.28;
 
     let x_color = with_alpha(srgb_hex_to_linear(GIZMO_AXIS_X_HEX), 1.0);

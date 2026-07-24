@@ -58,7 +58,7 @@ pub use view_cube::{
     view_cube_corner, ViewCubeRenderer, VIEW_CUBE_VIEWPORT_MARGIN, VIEW_CUBE_VIEWPORT_PIXELS,
 };
 pub use targets::{create_depth_view, create_msaa_color_view, DEPTH_FORMAT, MSAA_SAMPLE_COUNT};
-pub use gizmo::TransformGizmoRenderer;
+pub use gizmo::{TransformGizmoRenderer, GIZMO_SCREEN_FRACTION};
 pub use grid::SceneGridRenderer;
 pub use points::{enabled_grid_planes, GridPlaneInstance, PointsRenderer};
 pub use infinite_grid::InfiniteGridRenderer;
